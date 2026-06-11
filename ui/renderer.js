@@ -358,7 +358,8 @@ async function runSmoke(flags) {
     rows: document.querySelectorAll('.step-row').length,
     title: document.title,
     hasCanvas: !!document.getElementById('sprite-canvas'),
-    bg: cs.backgroundColor, // proves styles.css loaded + applied (expect rgb(11, 13, 20))
+    bg: cs.backgroundColor, // proves styles.css + tokens loaded (dark page = rgb(26, 26, 26))
+    theme: document.documentElement.className, // proves theme bootstrap ran ('dark' by default)
     bootError: window.__bootError || null,
   };
   await invoke('smoke_emit', { line: `SMOKE_PROBE ${JSON.stringify(probe)}` });
