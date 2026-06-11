@@ -16,3 +16,5 @@ node_modules/
 
 # SDLC Factory local run journals
 .ai-run/runs/
+apple_developer
+.env.signing
