@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "checked_at": "2026-06-11T00:00:00Z",
+  "checks": {
+    "superpowers_resolvable": true,
+    "git": "git version 2.39.5 (Apple Git-154)"
+  },
+  "fingerprint": "sdlc-task-min-2026-06-11",
+  "ttl_days": 7,
+  "source": "sdlc-task Stage 0 minimum subset"
+}

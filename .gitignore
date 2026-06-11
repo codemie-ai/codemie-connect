@@ -13,3 +13,6 @@ node_modules/
 
 # Claude Code transient state
 .claude/scheduled_tasks.lock
+
+# SDLC Factory local run journals
+.ai-run/runs/
