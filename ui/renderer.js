@@ -190,13 +190,27 @@ async function runProbe(handlers) {
 
 // Renderer-boot + benign-PTY self-test (CODEMIE_SMOKE).
 async function runSmoke(flags) {
+  const cs = getComputedStyle(document.body);
   const probe = {
     rows: document.querySelectorAll('.step-row').length,
     title: document.title,
     hasCanvas: !!document.getElementById('sprite-canvas'),
+    bg: cs.backgroundColor, // proves styles.css loaded + applied (expect rgb(11, 13, 20))
     bootError: window.__bootError || null,
   };
   await invoke('smoke_emit', { line: `SMOKE_PROBE ${JSON.stringify(probe)}` });
+
+  // Exercise run_stream end-to-end: validates the streamId->stream_id arg mapping
+  // (shared by every multi-word command arg), engine:cmd-line correlation, exit code.
+  try {
+    const lines = [];
+    const r = await bridge.runner.runStream('printf "L1\\nL2\\n"; exit 0', (t) => lines.push(t));
+    await invoke('smoke_emit', {
+      line: `SMOKE_STREAM ${JSON.stringify({ code: r.code, lineCount: lines.length })}`,
+    });
+  } catch (e) {
+    await invoke('smoke_emit', { line: `SMOKE_STREAM_ERR ${(e && e.message) || e}` });
+  }
 
   try {
     let buf = '';

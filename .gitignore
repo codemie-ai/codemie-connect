@@ -10,3 +10,6 @@ node_modules/
 
 # macOS
 .DS_Store
+
+# Claude Code transient state
+.claude/scheduled_tasks.lock
