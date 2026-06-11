@@ -1,43 +1,58 @@
 # CodeMie Installer (macOS) — Tauri edition
 
-A native macOS installation wizard that installs and configures the **CodeMie Claude Code CLI**.
-This is a [Tauri v2](https://tauri.app) rewrite of the original Electron app — same wizard, same
-UX, **~1.9 MB DMG instead of ~550 MB**.
+A native macOS app that installs, configures, and connects the **CodeMie Claude Code CLI**.
+This is a [Tauri v2](https://tauri.app) rewrite of the original Electron app — same install
+flow and UX, a **~4 MB universal DMG instead of ~550 MB**.
 
 | | Electron build | Tauri build |
 |---|---|---|
-| DMG size | ~550 MB | **~1.9 MB** |
+| DMG size | ~550 MB | **~4 MB** universal (~1.9 MB single-arch) |
 | Runtime | bundled Chromium + Node | system WebKit + a tiny Rust binary |
 | Backend | Node.js modules | Rust `#[tauri::command]`s |
 
-## What it does
+## Home / launcher
 
-A guided wizard that:
+On launch the app shows a home page (2×2 tile grid) with four actions:
+
+| Tile | What it does |
+|---|---|
+| **Full installation** | The complete guided wizard — Git → Node.js → CodeMie CLI → `codemie setup` → Claude Code engine → `codemie doctor`. |
+| **Install only** | Installs Git, Node.js and the CodeMie CLI (`@codemieai/code`) and stops — skips the setup wizard, Claude engine and doctor. |
+| **Connect Claude Desktop** | Opens a **Connect / Restart** screen. Both verify sign-in via `codemie profile status` first, then point Claude Desktop at the CodeMie proxy: **Connect** runs `codemie proxy connect desktop`; **Restart** runs `codemie proxy stop` then connects again. |
+| **CLI usage analytics** | Runs `codemie analytics --report --open` to build an HTML report of your **local AI CLI usage** (Claude Code, Codex, …) and open it in the browser. |
+
+Connect/analytics output streams in an embedded terminal; navigation between views is via the
+"‹ Home" / "‹ Back" links (no page reloads).
+
+## The install wizard
+
+The **Full installation** and **Install only** tiles drive a guided wizard that:
 
 1. Checks for **Git** (offers to install the Xcode Command Line Tools if missing).
 2. Checks for **Node.js & npm** (offers to download + install the official universal `.pkg`).
 3. Installs the **CodeMie CLI** globally via npm (`@codemieai/code`).
-4. Runs **`codemie setup`** interactively (in an embedded terminal).
-5. Installs the **Claude Code engine** via `codemie install claude` (interactive).
-6. Validates with **`codemie doctor`**.
+4. *(full only)* Runs **`codemie setup`** interactively (in an embedded terminal).
+5. *(full only)* Installs the **Claude Code engine** via CodeMie (interactive).
+6. *(full only)* Validates with **`codemie doctor`**.
 
 Steps with system changes pause for approval (or auto-approve in *Unattended mode*).
 
 ## Architecture (Option B)
 
-The orchestration "brain" (`engine.js`, `handlers.js`, `models.js`) stays in the frontend as
+The orchestration "brain" (`engine.js`, `handlers.js`, `models.js`) lives in the frontend as
 vanilla ES modules — reused almost verbatim from the Electron app. Only the system-facing
 operations are Rust commands:
 
 ```
 ui/                      frontend (no bundler; loaded as ES modules)
-  renderer.js            builds the Engine in the webview, drives it via Tauri invoke/listen
+  index.html             home-view (launcher) + wizard-view + connect-view + overlays
+  renderer.js            view routing, builds the Engine, drives it via Tauri invoke/listen
   engine.js handlers.js  install plan orchestration + per-step handlers (reused)
   runner-bridge.js       wraps Rust commands as the module surface handlers expect
-  steps-ui.js sprite.js log.js terminal.js  UI widgets
+  steps-ui.js sprite.js log.js terminal.js  UI widgets (terminal has a keep-open mode)
 src-tauri/src/
   commands/runner.rs     run_capture / run_fresh_env / run_stream (login-shell exec)
-  commands/inspector.rs  git / node / npm / codemie probes
+  commands/inspector.rs  git / node / npm / codemie probes + profile-status auth check
   commands/installer.rs  Node .pkg URL + LTS lookup + osascript sudo + Xcode CLT
   commands/downloader.rs reqwest streaming download with progress events
   commands/pathman.rs    login-shell PATH resolution + ~/.zprofile persistence
@@ -46,8 +61,11 @@ src-tauri/src/
   steps.rs               embedded config/steps.yaml (serde_yaml) + logo path
 ```
 
-PTY output is base64-framed across the IPC boundary so multi-byte UTF-8 / ANSI escape
-sequences split across read boundaries are never corrupted.
+- `check_profile_status` runs `codemie profile status` (stdin closed so an expired-creds
+  re-auth prompt can't hang it) and parses the **Auth Status** line — the live gate for the
+  Connect Claude Desktop actions.
+- PTY output is base64-framed across the IPC boundary so multi-byte UTF-8 / ANSI escape
+  sequences split across read boundaries are never corrupted.
 
 ## Prerequisites
 
@@ -82,19 +100,49 @@ The DMG lands in `src-tauri/target/<target>/release/bundle/dmg/`.
 > Tauri's `bundle_dmg.sh` to skip the Finder AppleScript that styles the DMG window
 > (which otherwise fails headless).
 
-### Unsigned DMG — sharing note
-
-The DMG is intentionally **unsigned / un-notarized**. On another Mac, Gatekeeper will block the
-first launch. Recipients open it once via **right-click → Open**, or strip the quarantine flag:
+The app/Dock icon is generated from `assets/ai-run-codemie-logo-white_bg.svg`:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/CodeMie Installer.app"
+cargo tauri icon assets/ai-run-codemie-logo-white_bg.svg
+```
+
+## Running an unsigned build (Gatekeeper)
+
+The DMG is intentionally **unsigned / un-notarized**. The binary is only *ad-hoc* signed, so
+on first launch macOS Gatekeeper shows **"Apple could not verify … is free of malware"** and
+refuses to open it (`spctl -a` → `rejected: no usable signature`). This is expected — it is
+**not** a sign the build is broken.
+
+**To run it anyway (local / internal testers):**
+
+- **GUI (macOS 13–15):** in the block dialog click **Done** (not *Move to Bin*), drag the app
+  onto **Applications**, then open **System Settings → Privacy & Security → Open Anyway** and
+  authenticate. (macOS Sequoia removed the old right-click → Open bypass; this is the supported
+  path.)
+- **Terminal (most reliable):**
+  ```bash
+  cp -R "/Volumes/CodeMie Installer/CodeMie Installer.app" /Applications/
+  xattr -cr "/Applications/CodeMie Installer.app"
+  open "/Applications/CodeMie Installer.app"
+  ```
+
+**To remove the warning for everyone (proper distribution):** sign with a **Developer ID
+Application** certificate and **notarize**. This needs an Apple Developer Program membership.
+Tauri signs + notarizes + staples automatically during `cargo tauri build` when these env vars
+are set (no secrets committed):
+
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export APPLE_ID="you@example.com"
+export APPLE_PASSWORD="abcd-efgh-ijkl-mnop"   # app-specific password
+export APPLE_TEAM_ID="TEAMID"
+CI=true cargo tauri build --target universal-apple-darwin
 ```
 
 ## Tests
 
 ```bash
-# Rust unit tests (ported from the Electron app's suite)
+# Rust unit tests (ported from the Electron app's suite + the auth-status parser)
 cd src-tauri && cargo test
 
 # JS engine/model tests
@@ -104,7 +152,8 @@ npm test           # node --test ui/test/*.test.mjs
 ## Non-destructive smoke modes
 
 The wizard's real steps modify your system, so two env-gated, **non-destructive** self-tests
-exist for CI / verification (they print to stdout and quit):
+exist for CI / verification (they print to stdout and quit). They boot straight into the wizard
+view, bypassing the home page:
 
 | Env var | Behaviour |
 |---|---|
@@ -118,4 +167,6 @@ CODEMIE_SMOKE=1 ./src-tauri/target/release/app
 ```
 
 The genuine end-to-end install (npm global install, `codemie setup`, sudo `.pkg` install,
-`~/.zprofile` edits) is **never run automatically** — run the wizard by hand to exercise it.
+`~/.zprofile` edits) and the network actions (`proxy connect`, `analytics`) are **never run
+automatically** — exercise them by hand from the home page.
+```
