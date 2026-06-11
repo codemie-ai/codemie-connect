@@ -190,3 +190,25 @@ html, body {
 #fatal-title { color: var(--red); font-size: 20px; font-weight: 700; margin-bottom: 14px; }
 #fatal-message { color: var(--text); margin-bottom: 12px; }
 #fatal-reco { color: var(--amber); font-size: 12px; margin-bottom: 20px; }
+
+/* ---- Light polish (Tauri native build) — additive, parity-safe ---- */
+.btn { transition: background 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease; }
+.btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+.btn:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
+
+.step-row { transition: background 0.18s ease; }
+.step-icon { transition: color 0.18s ease; }
+.step-sub { transition: color 0.18s ease; }
+#status-dot { transition: background 0.25s ease; }
+#log-content { scroll-behavior: smooth; }
+
+@keyframes cm-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cm-rise {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.overlay:not(.hidden) { animation: cm-fade-in 0.18s ease; }
+.approval { animation: cm-rise 0.16s ease; }
+.stamp { animation: cm-fade-in 0.2s ease; }
+.step-row.sub { animation: cm-rise 0.2s ease; }
