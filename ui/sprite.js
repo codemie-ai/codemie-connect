@@ -41,7 +41,7 @@ export function initSprite(canvas, logoPath) {
   img.onload = () => {
     imgReady = true;
   };
-  img.src = `file://${logoPath}`;
+  img.src = logoPath; // same-origin asset served by Tauri (get_logo_path)
 
   let state = 'idle';
   let idx = 0;

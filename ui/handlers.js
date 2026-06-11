@@ -1,56 +1,60 @@
-'use strict';
+// Per-step handler dispatch table (ESM, Tauri frontend). Each handler receives the
+// engine `ctx` (line/setSubtitle/setStatus/progress/runSubStep) and returns true | false.
+// `deps` injects the runner-bridge modules so this stays the only "glue" layer.
+// Faithful port of src/main/handlers.js — only the system calls now cross into Rust.
 
-const path = require('node:path');
-const os = require('node:os');
+// Minimal path helpers (no Node 'path'/'os' in the browser).
+function dirname(p) {
+  const s = String(p);
+  const i = s.lastIndexOf('/');
+  if (i < 0) return '.';
+  if (i === 0) return '/';
+  return s.slice(0, i);
+}
+function joinPath(...parts) {
+  return parts.filter(Boolean).join('/').replace(/\/{2,}/g, '/');
+}
 
-// Build the per-step handler dispatch table. Each handler receives the engine `ctx`
-// (line/setSubtitle/setStatus/progress/runSubStep) and returns true | false.
-// `deps` injects the system modules so this stays the only "glue" layer.
-function makeHandlers(deps) {
-  const { inspector, runner, installer, pathman, downloader, setActivePty } = deps;
-  const arch = deps.arch || os.arch();
-  const tmpDir = deps.tmpDir || os.tmpdir();
+export function makeHandlers(deps) {
+  const { inspector, runner, installer, pathman, downloader, pty } = deps;
+  const arch = deps.arch || 'universal';
+  const tmpDir = deps.tmpDir || '/tmp';
 
   // Augment PATH (process + ~/.zprofile) with freshly-installed tool dirs, then re-probe.
-  function rememberDirs(dirs) {
+  async function rememberDirs(dirs) {
     const clean = dirs.filter(Boolean);
     if (!clean.length) return;
-    pathman.augmentProcessPath(clean);
     try {
-      pathman.persistToZprofile(clean);
+      await pathman.augmentProcessPath(clean);
+    } catch {
+      /* non-fatal */
+    }
+    try {
+      await pathman.persistToZprofile(clean);
     } catch {
       /* non-fatal */
     }
   }
 
-  // Run an interactive command in a pty, streaming to the renderer terminal.
-  // Resolves true only when the command exits cleanly (exit 0); a non-zero exit
-  // (e.g. 127 "command not found", or a cancelled/failed TUI) marks the step ERROR.
+  // Run an interactive command in a pty (in Rust), streaming to the renderer terminal.
+  // Resolves true only on a clean exit (0); the PTY output/exit are delivered as
+  // engine:pty-data / engine:pty-exit events handled by the renderer.
   function runPty(ctx, cmd, title) {
-    return new Promise((resolve) => {
-      ctx.setSubtitle(ctx.step.id, 'Interactive — follow the prompts in the terminal…');
-      ctx.line(`> ${cmd}`, 'prompt');
-      ctx.emit('pty-open', { id: ctx.step.id, title });
-      let pty;
-      try {
-        pty = runner.spawnPty(cmd);
-      } catch (err) {
-        ctx.line(`Failed to open terminal: ${err.message}`, 'stderr');
-        ctx.emit('pty-exit', { code: 1 });
-        resolve(false);
-        return;
-      }
-      setActivePty(pty);
-      pty.onData((d) => ctx.emit('pty-data', { data: d }));
-      pty.onExit(({ exitCode }) => {
-        setActivePty(null);
-        ctx.emit('pty-exit', { code: exitCode });
-        const okExit = exitCode === 0;
-        ctx.line(`(${ctx.step.title} finished, exit ${exitCode})`, okExit ? 'dim' : 'stderr');
-        if (!okExit) ctx.setSubtitle(ctx.step.id, `Did not complete (exit ${exitCode})`);
-        resolve(okExit);
+    ctx.setSubtitle(ctx.step.id, 'Interactive — follow the prompts in the terminal…');
+    ctx.line(`> ${cmd}`, 'prompt');
+    ctx.emit('pty-open', { id: ctx.step.id, title });
+    return pty
+      .spawnPty(cmd)
+      .then((code) => {
+        const okExit = code === 0;
+        ctx.line(`(${ctx.step.title} finished, exit ${code})`, okExit ? 'dim' : 'stderr');
+        if (!okExit) ctx.setSubtitle(ctx.step.id, `Did not complete (exit ${code})`);
+        return okExit;
+      })
+      .catch((err) => {
+        ctx.line(`Failed to open terminal: ${(err && err.message) || err}`, 'stderr');
+        return false;
       });
-    });
   }
 
   return {
@@ -63,9 +67,9 @@ function makeHandlers(deps) {
         ctx.line(git.version, 'success');
         return true;
       }
-      const bin = inspector.gitBinaryPath();
+      const bin = await inspector.gitBinaryPath();
       if (bin) {
-        rememberDirs([path.dirname(bin)]);
+        await rememberDirs([dirname(bin)]);
         git = await inspector.checkGit();
         if (git.found) {
           ctx.setSubtitle('1.1', `Git found — ${git.version}`);
@@ -81,8 +85,6 @@ function makeHandlers(deps) {
       return re.code === 0;
     },
 
-    // 1.1.1 handled inline via runSubStep above (no standalone dispatch needed),
-    // but keep an entry so a direct lookup never throws.
     '1.1.1': async () => true,
 
     // 1.2 — Check Node.js & npm
@@ -95,9 +97,9 @@ function makeHandlers(deps) {
         ctx.line(`Node ${node.version} / npm ${npm.version}`, 'success');
         return true;
       }
-      const bin = inspector.nodeBinaryPath();
+      const bin = await inspector.nodeBinaryPath();
       if (bin) {
-        rememberDirs([path.dirname(bin)]);
+        await rememberDirs([dirname(bin)]);
         node = await inspector.checkNode();
         npm = await inspector.checkNpm();
         if (node.found && npm.found) {
@@ -108,13 +110,13 @@ function makeHandlers(deps) {
       ctx.setSubtitle('1.2', 'Node.js not found — installing…');
       const ok = await ctx.runSubStep('1.2.1', async () => {
         const version = await installer.latestLtsNodeVersion();
-        const url = installer.nodePkgUrl(arch, version);
-        const dest = path.join(tmpDir, `node-v${version}.pkg`);
+        const url = await installer.nodePkgUrl(arch, version);
+        const dest = joinPath(tmpDir, `node-v${version}.pkg`);
         ctx.setSubtitle('1.2.1', `Downloading Node.js ${version}…`);
         await downloader.download(url, dest, (frac) => ctx.progress('1.2.1', frac));
         ctx.setSubtitle('1.2.1', 'Installing Node.js (authorize when prompted)…');
         await installer.installNode(dest);
-        rememberDirs(['/usr/local/bin']);
+        await rememberDirs(['/usr/local/bin']);
         return true;
       });
       if (!ok) return false;
@@ -141,7 +143,7 @@ function makeHandlers(deps) {
         return false;
       }
       const prefix = (await runner.runCapture('npm config get prefix')).stdout.trim();
-      if (prefix) rememberDirs([path.join(prefix, 'bin')]);
+      if (prefix) await rememberDirs([joinPath(prefix, 'bin')]);
       const re = await runner.runFreshEnv('codemie --help');
       const ok = `${re.stdout}${re.stderr}`.trim().length > 0;
       ctx.setSubtitle('1.3', ok ? 'CodeMie installed' : 'CodeMie not detected after install');
@@ -164,5 +166,3 @@ function makeHandlers(deps) {
     },
   };
 }
-
-module.exports = { makeHandlers };

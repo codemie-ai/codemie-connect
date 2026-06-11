@@ -2,6 +2,8 @@
 import { Terminal } from './vendor/xterm.mjs';
 import { FitAddon } from './vendor/addon-fit.mjs';
 
+const { invoke } = window.__TAURI__.core;
+
 let term = null;
 let fit = null;
 let overlay = null;
@@ -22,8 +24,8 @@ export function initTerminal({ overlay: ov, host, title }) {
   term.loadAddon(fit);
   term.open(hostEl);
 
-  // Keystrokes -> pty (main process routes to the active pty).
-  term.onData((d) => window.codemie.ptyInput(d));
+  // Keystrokes -> pty (Rust routes to the active pty in managed state).
+  term.onData((d) => invoke('pty_input', { data: d }));
 
   window.addEventListener('resize', () => {
     if (!overlay.classList.contains('hidden')) doFit();
@@ -33,7 +35,7 @@ export function initTerminal({ overlay: ov, host, title }) {
 function doFit() {
   try {
     fit.fit();
-    window.codemie.ptyResize(term.cols, term.rows);
+    invoke('pty_resize', { cols: term.cols, rows: term.rows });
   } catch {
     /* ignore */
   }
@@ -48,8 +50,19 @@ export function openTerminal(title) {
   term.focus();
 }
 
-export function writeData(data) {
-  if (term) term.write(data);
+// PTY data arrives base64-encoded (Rust emits it that way to avoid corrupting
+// multi-byte UTF-8 / ANSI escapes split across read boundaries). Decode to bytes
+// and let xterm handle the byte stream.
+export function writeData(b64) {
+  if (!term) return;
+  try {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    term.write(bytes);
+  } catch {
+    term.write(b64);
+  }
 }
 
 export function closeTerminal() {

@@ -1,7 +1,6 @@
-'use strict';
-
 // Step lifecycle states. Mirrors the Windows reference (core/models.py StepStatus).
-const StepStatus = Object.freeze({
+// ESM module (Tauri frontend). Pure data/logic — no Electron or Node imports.
+export const StepStatus = Object.freeze({
   PENDING: 'PENDING',
   ACTIVE: 'ACTIVE',
   COMPLETE: 'COMPLETE',
@@ -10,8 +9,8 @@ const StepStatus = Object.freeze({
   SKIPPED: 'SKIPPED',
 });
 
-// Icon + color per status (analysis §9 — GitHub-dark palette).
-const STATUS_META = Object.freeze({
+// Icon + color per status (GitHub-dark palette).
+export const STATUS_META = Object.freeze({
   [StepStatus.PENDING]: { icon: '○', color: '#484f58' },
   [StepStatus.ACTIVE]: { icon: '▶', color: '#58a6ff' },
   [StepStatus.COMPLETE]: { icon: '✓', color: '#3fb950' },
@@ -20,8 +19,8 @@ const STATUS_META = Object.freeze({
   [StepStatus.SKIPPED]: { icon: '—', color: '#484f58' },
 });
 
-// Build a normalized Step from a raw YAML entry, applying defaults.
-function makeStep(raw) {
+// Build a normalized Step from a raw entry, applying defaults.
+export function makeStep(raw) {
   return {
     id: String(raw.id),
     title: raw.title || '',
@@ -37,5 +36,3 @@ function makeStep(raw) {
     fatal_recommendation: raw.fatal_recommendation || '',
   };
 }
-
-module.exports = { StepStatus, STATUS_META, makeStep };

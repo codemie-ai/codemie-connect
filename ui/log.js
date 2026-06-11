@@ -1,4 +1,5 @@
 // Collapsible, color-tagged log panel. Mirrors ui/terminal_panel.py.
+const { invoke } = window.__TAURI__.core;
 
 let contentEl = null;
 let panelEl = null;
@@ -12,14 +13,14 @@ export function initLog({ content, panel, toggle, openBtn }) {
   panelEl = panel;
   toggleBtn = toggle;
   toggle.onclick = () => setShown(!shown);
-  openBtn.onclick = () => window.codemie.openLog();
+  openBtn.onclick = () => invoke('open_log');
 }
 
 function setShown(next) {
   shown = next;
   panelEl.classList.toggle('hidden', !shown);
   toggleBtn.textContent = shown ? '▾ Hide log' : '▸ Show log';
-  window.codemie.setWindowHeight(shown ? EXPANDED_H : COLLAPSED_H);
+  invoke('set_window_height', { height: shown ? EXPANDED_H : COLLAPSED_H });
 }
 
 export function appendLine(text, tag = 'stdout') {

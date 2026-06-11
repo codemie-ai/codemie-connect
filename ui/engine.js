@@ -1,6 +1,4 @@
-'use strict';
-
-const { StepStatus } = require('./models');
+import { StepStatus } from './models.js';
 
 // Orchestrates the install plan. Faithful port of the Windows StepEngine:
 //  - runs top-level steps in order (sub-steps run on demand from a handler),
@@ -169,4 +167,4 @@ class Engine {
   }
 }
 
-module.exports = { Engine };
+export { Engine };
