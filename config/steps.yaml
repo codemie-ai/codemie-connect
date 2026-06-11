@@ -1,0 +1,57 @@
+# CodeMie macOS installation plan (data-driven, consumed by src/main/engine.js).
+# Ported from the Windows reference; step 1.0 (PowerShell execution policy) dropped — no macOS analog.
+# Step IDs are opaque keys kept verbatim from the reference for traceability.
+steps:
+  - id: "1.1"
+    title: "Check Git"
+    description: "Verify that Git is available on this Mac."
+    fatal: true
+    fatal_recommendation: "Git could not be installed automatically. Install Git manually (Xcode Command Line Tools, or git-scm.com), then relaunch this wizard."
+
+  - id: "1.1.1"
+    title: "Install Git"
+    description: "Install the Xcode Command Line Tools (includes Git)."
+    is_sub_step: true
+    parent_id: "1.1"
+    requires_approval: true
+    approval_message: "Git was not found. Install the Xcode Command Line Tools (includes Git)? A macOS system dialog will appear to confirm."
+    spinner: true
+
+  - id: "1.2"
+    title: "Check Node.js & npm"
+    description: "Verify that Node.js and npm are available on this Mac."
+    fatal: true
+    fatal_recommendation: "Node.js could not be installed automatically. Install Node.js manually from nodejs.org, then relaunch this wizard."
+
+  - id: "1.2.1"
+    title: "Install Node.js"
+    description: "Download and install the official Node.js package."
+    is_sub_step: true
+    parent_id: "1.2"
+    requires_approval: true
+    approval_message: "Node.js was not found. Download and install the official Node.js package? You will be asked for your password to authorize the installer."
+    spinner: true
+
+  - id: "1.3"
+    title: "Install CodeMie"
+    description: "Install the CodeMie CLI globally via npm (@codemieai/code)."
+    requires_approval: true
+    approval_message: "Install the CodeMie CLI globally via npm (@codemieai/code)?"
+    spinner: true
+    fatal: true
+    fatal_recommendation: "CodeMie installation failed. Install it manually with: npm install -g @codemieai/code"
+
+  - id: "2.3.3"
+    title: "Configure CodeMie"
+    description: "Run the interactive CodeMie setup wizard."
+    interactive: true
+
+  - id: "2.3.5"
+    title: "Install Claude Code engine"
+    description: "Install the Claude Code engine through CodeMie."
+    interactive: true
+
+  - id: "2.4"
+    title: "Validate installation"
+    description: "Run codemie doctor to validate the installation."
+    spinner: true

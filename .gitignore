@@ -1,0 +1,12 @@
+# Rust / Tauri build output
+src-tauri/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+
+# Bundles
+*.dmg
+
+# macOS
+.DS_Store
