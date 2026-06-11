@@ -27,7 +27,9 @@ pub fn node_pkg_url(arch: String, version: String) -> String {
 /// falling back to FALLBACK_NODE_VERSION when offline.
 #[tauri::command]
 pub async fn latest_lts_node_version() -> String {
-    fetch_lts().await.unwrap_or_else(|| FALLBACK_NODE_VERSION.to_string())
+    fetch_lts()
+        .await
+        .unwrap_or_else(|| FALLBACK_NODE_VERSION.to_string())
 }
 
 async fn fetch_lts() -> Option<String> {
@@ -89,7 +91,10 @@ pub async fn install_git_clt(app: AppHandle) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
-    let _ = app.emit("engine:git-tick", "Opening the Command Line Tools installer…");
+    let _ = app.emit(
+        "engine:git-tick",
+        "Opening the Command Line Tools installer…",
+    );
 
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(20 * 60);
@@ -105,7 +110,10 @@ pub async fn install_git_clt(app: AppHandle) -> bool {
             }
         }
         if start.elapsed() > timeout {
-            let _ = app.emit("engine:git-tick", "Timed out waiting for the Command Line Tools.");
+            let _ = app.emit(
+                "engine:git-tick",
+                "Timed out waiting for the Command Line Tools.",
+            );
             return false;
         }
         let _ = app.emit(

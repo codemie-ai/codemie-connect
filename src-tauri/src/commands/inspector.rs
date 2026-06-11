@@ -5,7 +5,11 @@ use serde::Serialize;
 
 use crate::commands::runner::capture;
 
-const GIT_BINARIES: &[&str] = &["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"];
+const GIT_BINARIES: &[&str] = &[
+    "/usr/bin/git",
+    "/opt/homebrew/bin/git",
+    "/usr/local/bin/git",
+];
 const NODE_BINARIES: &[&str] = &["/opt/homebrew/bin/node", "/usr/local/bin/node"];
 
 #[derive(Serialize, Default, Clone)]
@@ -86,8 +90,9 @@ fn parse_profile_status(stdout: &str, stderr: &str) -> (bool, String) {
     let low = combined.to_lowercase();
     // Authenticated only when the positive marker is present and neither negative
     // state is. "expires in …" does not contain "expired", so it is not matched.
-    let authenticated =
-        low.contains("authenticated") && !low.contains("not authenticated") && !low.contains("expired");
+    let authenticated = low.contains("authenticated")
+        && !low.contains("not authenticated")
+        && !low.contains("expired");
     (authenticated, detail)
 }
 

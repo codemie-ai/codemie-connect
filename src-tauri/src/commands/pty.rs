@@ -110,7 +110,9 @@ pub fn spawn_pty(
 pub fn pty_input(state: State<AppState>, data: String) -> CmdResult<()> {
     let mut guard = state.pty.lock().unwrap();
     if let Some(h) = guard.as_mut() {
-        h.writer.write_all(data.as_bytes()).map_err(InstallerError::Io)?;
+        h.writer
+            .write_all(data.as_bytes())
+            .map_err(InstallerError::Io)?;
         let _ = h.writer.flush();
     }
     Ok(())
