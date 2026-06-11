@@ -21,10 +21,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CERT_DIR="$SCRIPT_DIR/apple_developer"
 CERT="$CERT_DIR/developerID_application.cer"
 KEY="$CERT_DIR/DeveloperID.key"
-APP="$SCRIPT_DIR/src-tauri/target/release/bundle/macos/CodeMie Installer.app"
-DMG="$SCRIPT_DIR/src-tauri/target/release/bundle/dmg/CodeMie Installer_2.0.0_aarch64.dmg"
+SOURCE_DMG="$SCRIPT_DIR/src-tauri/target/release/bundle/dmg/CodeMie Installer_2.0.0_aarch64.dmg"
 IDENTITY="Developer ID Application: ULADZISLAU SVETLAKOU (9H5BAHWPG9)"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+WORK_DIR="$(mktemp -d)"
+SIGNED_DMG="$SCRIPT_DIR/src-tauri/target/release/bundle/dmg/CodeMie Installer_2.0.0_aarch64_signed.dmg"
 
 # Load .env.signing if it exists
 if [[ -f "$SCRIPT_DIR/.env.signing" ]]; then
@@ -36,17 +37,24 @@ fi
 
 : "${KEYCHAIN_PASSWORD:?ERROR: KEYCHAIN_PASSWORD is not set. Add it to .env.signing}"
 
+cleanup() {
+  # Unmount any leftover mount
+  hdiutil detach "$WORK_DIR/mnt" -force 2>/dev/null || true
+  rm -rf "$WORK_DIR"
+}
+trap cleanup EXIT
+
 # ── Step 1: Import cert + key into Keychain ───────────────────────────────────
 echo "▶ Importing certificate and key into keychain..."
 
 # Ensure Apple Developer ID G2 intermediate CA is present (required for valid chain)
 if ! security find-certificate -c "Developer ID Certification Authority" "$KEYCHAIN" &>/dev/null; then
   echo "  Downloading Apple Developer ID intermediate CA..."
-  curl -sO /tmp/DeveloperIDG2CA.cer https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+  curl -s -o /tmp/DeveloperIDG2CA.cer https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
   security import /tmp/DeveloperIDG2CA.cer -k "$KEYCHAIN" 2>/dev/null || true
 fi
 
-# Import private key (suppress "already exists" errors — idempotent)
+# Import private key (idempotent)
 security import "$KEY" \
   -k "$KEYCHAIN" \
   -T /usr/bin/codesign \
@@ -71,61 +79,83 @@ security find-identity -v -p codesigning "$KEYCHAIN" | grep "$IDENTITY" \
   || { echo "ERROR: Signing identity not found in keychain"; exit 1; }
 echo "  ✓ Identity found"
 
-# ── Step 3: Sign the .app ─────────────────────────────────────────────────────
-if [[ -d "$APP" ]]; then
-  echo "▶ Signing .app bundle..."
-  codesign \
-    --deep \
-    --force \
-    --verify \
-    --verbose \
-    --options runtime \
-    --entitlements "$SCRIPT_DIR/src-tauri/Entitlements.plist" 2>/dev/null \
-    --sign "$IDENTITY" \
-    "$APP" \
-    || codesign \
-         --deep --force --verify --verbose \
-         --options runtime \
-         --sign "$IDENTITY" \
-         "$APP"
+# ── Step 3: Extract .app from DMG ────────────────────────────────────────────
+echo "▶ Mounting source DMG to extract .app..."
+mkdir -p "$WORK_DIR/mnt"
+hdiutil attach "$SOURCE_DMG" -mountpoint "$WORK_DIR/mnt" -nobrowse -readonly
 
-  codesign --verify --deep --strict --verbose=2 "$APP"
-  echo "  ✓ .app signed"
-else
-  echo "  ⚠ .app not found at $APP — skipping .app signing (DMG-only mode)"
-fi
+APP_IN_DMG=$(find "$WORK_DIR/mnt" -maxdepth 1 -name "*.app" | head -1)
+: "${APP_IN_DMG:?ERROR: No .app found inside DMG}"
+APP_NAME="$(basename "$APP_IN_DMG")"
+echo "  Found: $APP_NAME"
 
-# ── Step 4: Sign the DMG ──────────────────────────────────────────────────────
-echo "▶ Signing DMG: $DMG"
+echo "▶ Copying .app out of DMG..."
+cp -R "$APP_IN_DMG" "$WORK_DIR/$APP_NAME"
+hdiutil detach "$WORK_DIR/mnt" -force
+echo "  ✓ .app extracted"
+
+# ── Step 4: Sign all binaries inside the .app ────────────────────────────────
+echo "▶ Signing .app with hardened runtime + secure timestamp..."
+
+# Sign nested frameworks/dylibs/binaries first, then the .app bundle itself
+find "$WORK_DIR/$APP_NAME" -type f \( -name "*.dylib" -o -name "*.framework" \) | while read -r lib; do
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$lib" 2>/dev/null || true
+done
+
+codesign \
+  --deep \
+  --force \
+  --options runtime \
+  --timestamp \
+  --sign "$IDENTITY" \
+  "$WORK_DIR/$APP_NAME"
+
+codesign --verify --deep --strict --verbose=2 "$WORK_DIR/$APP_NAME"
+echo "  ✓ .app signed"
+
+# ── Step 5: Repackage into a new DMG ─────────────────────────────────────────
+echo "▶ Creating new DMG from signed .app..."
+rm -f "$SIGNED_DMG"
+hdiutil create \
+  -volname "CodeMie Installer" \
+  -srcfolder "$WORK_DIR/$APP_NAME" \
+  -ov \
+  -format UDZO \
+  "$SIGNED_DMG"
+echo "  ✓ DMG created: $(basename "$SIGNED_DMG")"
+
+# ── Step 6: Sign the DMG itself ───────────────────────────────────────────────
+echo "▶ Signing DMG..."
 codesign \
   --force \
   --verify \
   --verbose \
+  --timestamp \
   --sign "$IDENTITY" \
-  "$DMG"
+  "$SIGNED_DMG"
 
-codesign --verify --verbose "$DMG"
+codesign --verify --verbose "$SIGNED_DMG"
 echo "  ✓ DMG signed"
 
-# ── Step 5: Notarize (optional) ───────────────────────────────────────────────
+# ── Step 7: Notarize (optional) ───────────────────────────────────────────────
 if [[ "${NOTARIZE:-0}" == "1" ]]; then
   : "${APPLE_ID:?ERROR: APPLE_ID is required for notarization}"
   : "${APPLE_APP_PASSWORD:?ERROR: APPLE_APP_PASSWORD is required for notarization}"
   : "${APPLE_TEAM_ID:=9H5BAHWPG9}"
 
   echo "▶ Submitting DMG for notarization..."
-  xcrun notarytool submit "$DMG" \
+  xcrun notarytool submit "$SIGNED_DMG" \
     --apple-id "$APPLE_ID" \
     --password "$APPLE_APP_PASSWORD" \
     --team-id "$APPLE_TEAM_ID" \
     --wait
 
-  echo "▶ Stapling notarization ticket to DMG..."
-  xcrun stapler staple "$DMG"
-  xcrun stapler validate "$DMG"
+  echo "▶ Stapling notarization ticket..."
+  xcrun stapler staple "$SIGNED_DMG"
+  xcrun stapler validate "$SIGNED_DMG"
   echo "  ✓ DMG notarized and stapled"
 fi
 
 echo ""
-echo "✅ Done: $DMG"
-spctl --assess --type open --context context:primary-signature -v "$DMG" 2>&1 || true
+echo "✅ Done: $SIGNED_DMG"
+spctl --assess --type open --context context:primary-signature -v "$SIGNED_DMG" 2>&1 || true

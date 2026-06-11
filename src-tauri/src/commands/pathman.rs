@@ -7,6 +7,7 @@ use crate::error::CmdResult;
 use crate::state::AppState;
 
 const MARKER: &str = "# Added by CodeMie Installer";
+#[cfg(not(windows))]
 const PATH_MARKER: &str = "__CODEMIE_PATH_MARKER__";
 
 /// Candidate dirs where git/node/npm live on macOS, plus the common user npm prefix.
@@ -45,6 +46,10 @@ pub fn missing_entries(path_str: &str, entries: &[String]) -> Vec<String> {
 
 /// Merge the user's resolved shell PATH (highest priority) with the current PATH
 /// and candidate dirs, deduped.
+// Used by the macOS apply path and by an OS-neutral unit test. On Windows the
+// production code does not call it yet (registry PATH lands in a later phase),
+// so silence the dead-code warning there without removing the tested function.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn merge_shell_path(shell_path: &str, current_path: &str, candidates: &[String]) -> String {
     let mut joined = format!("{shell_path}:{current_path}");
     for c in candidates {
@@ -71,6 +76,7 @@ pub fn fresh_env_path(remembered: &[String]) -> String {
 
 /// Resolve the user's interactive-login shell PATH. Runs `$SHELL -ilc` with a marker
 /// trick (brace-delimited ${PATH}) and a hard 8s timeout via a worker thread.
+#[cfg(not(windows))]
 pub fn resolve_shell_path() -> Option<String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -95,13 +101,24 @@ pub fn resolve_shell_path() -> Option<String> {
     }
 }
 
-/// Resolve and apply the user's shell PATH to this process so child processes inherit it.
+/// Resolve and apply the user's login-shell PATH so child processes inherit it (macOS).
+#[cfg(not(windows))]
 pub fn apply_resolved_shell_path() -> String {
     let shell_path = resolve_shell_path().unwrap_or_default();
     let current = std::env::var("PATH").unwrap_or_default();
     let merged = merge_shell_path(&shell_path, &current, &candidate_dirs());
     std::env::set_var("PATH", &merged);
     merged
+}
+
+/// On Windows the GUI process already inherits a usable PATH and there is no
+/// login-shell concept, so this is a no-op that returns the current PATH
+/// unchanged. It must NOT run a shell or pass PATH through the `:`-based merge,
+/// which would corrupt the `;`-delimited Windows PATH. Registry-based PATH
+/// handling lands in a later phase.
+#[cfg(windows)]
+pub fn apply_resolved_shell_path() -> String {
+    std::env::var("PATH").unwrap_or_default()
 }
 
 /// Persist entries to ~/.zprofile, idempotently (skip entries already referenced).
@@ -174,6 +191,7 @@ mod tests {
     }
 
     // Regression: resolveShellPath must brace-delimit ${PATH} and strip markers.
+    #[cfg(unix)]
     #[test]
     fn resolve_shell_path_captures_real_login_shell_path() {
         let r = resolve_shell_path().expect("resolved shell PATH on a macOS box");
