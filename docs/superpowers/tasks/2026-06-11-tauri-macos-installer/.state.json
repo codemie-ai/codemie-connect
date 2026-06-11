@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "slug": "tauri-macos-installer",
+  "branch": "feat/tauri-macos-installer",
+  "phase": "maintenance",
+  "started_at": "2026-06-11T00:00:00Z",
+  "completed_at": "2026-06-11T09:23:37Z",
+  "last_sync_commit": "037fc8fd88bd51beeaa9a448d665a9473793bc4a"
+}
