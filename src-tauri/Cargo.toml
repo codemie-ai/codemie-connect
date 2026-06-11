@@ -37,3 +37,4 @@ futures-util = "0.3"
 thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
+portable-pty = "0.8"

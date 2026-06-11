@@ -4,10 +4,14 @@
 // so `run_fresh_env` can find a just-installed binary without an app restart —
 // the Rust analog of the Electron `pathman.augmentProcessPath` mutation.
 //
-// The active pseudo-terminal handle is added to this struct in Phase 3 (PTY).
+// `pty` holds the active pseudo-terminal so `pty_input` / `pty_resize` can reach
+// the currently running interactive command.
 use std::sync::Mutex;
+
+use crate::commands::pty::PtyHandle;
 
 #[derive(Default)]
 pub struct AppState {
     pub remembered: Mutex<Vec<String>>,
+    pub pty: Mutex<Option<PtyHandle>>,
 }

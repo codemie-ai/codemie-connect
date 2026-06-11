@@ -8,6 +8,8 @@ pub enum InstallerError {
     Io(#[from] std::io::Error),
     #[error("download failed: {0}")]
     Download(String),
+    #[error("pty error: {0}")]
+    Pty(String),
     #[error("authorization failed: {0}")]
     Sudo(String),
     #[error("{0}")]

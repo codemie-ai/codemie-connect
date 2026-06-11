@@ -3,6 +3,7 @@ pub mod inspector;
 pub mod installer;
 pub mod logger;
 pub mod pathman;
+pub mod pty;
 pub mod runner;
 pub mod smoke;
 pub mod window;
