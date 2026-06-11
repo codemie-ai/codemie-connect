@@ -99,7 +99,7 @@ export function writeLine(text) {
 // actions (keepOpen) it reveals the "back to home" affordance instead.
 export function handlePtyExit() {
   if (keepOpen) {
-    if (hintEl) hintEl.textContent = 'Finished. Click “‹ Back to Home” to return.';
+    if (hintEl) hintEl.textContent = 'Finished. Click “‹ Back” to return.';
     if (doneBtn) doneBtn.classList.remove('hidden');
   } else {
     closeTerminal();

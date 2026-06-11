@@ -51,8 +51,12 @@ const unattendedCb = document.getElementById('unattended-cb');
 
 const homeView = document.getElementById('home-view');
 const wizardView = document.getElementById('wizard-view');
+const connectView = document.getElementById('connect-view');
 const homeGrid = document.getElementById('home-grid');
 const wizardBack = document.getElementById('wizard-back');
+const connectBack = document.getElementById('connect-back');
+const connectBtn = document.getElementById('connect-btn');
+const restartBtn = document.getElementById('restart-btn');
 const modeLabel = document.getElementById('wizard-mode-label');
 const stepListEl = document.getElementById('step-list');
 
@@ -127,6 +131,7 @@ function emit(event, payload) {
 function showView(name) {
   homeView.classList.toggle('hidden', name !== 'home');
   wizardView.classList.toggle('hidden', name !== 'wizard');
+  connectView.classList.toggle('hidden', name !== 'connect');
 }
 
 // (Re)build the engine for a wizard run, optionally filtered to a subset of steps.
@@ -168,35 +173,38 @@ function hideNotice() {
 }
 
 // ---- one-shot command action (proxy connect / analytics) ----
-async function runAction(title, cmd) {
-  openTerminal(title, { keepOpen: true, onClose: () => showView('home') });
+async function runAction(title, cmd, returnView = 'home') {
+  openTerminal(title, { keepOpen: true, onClose: () => showView(returnView) });
   try {
     const code = await bridge.pty.spawnPty(cmd);
-    writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back to Home” to return.\r\n`);
+    writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
   } catch (e) {
     writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
     handlePtyExit();
   }
 }
 
-async function connectDesktop() {
-  let status;
+// Verify the active CodeMie profile is signed in via `codemie profile status`
+// (parsed live in Rust — not a hardcoded check). Returns true if authenticated;
+// otherwise shows a blocking notice that points at the full installation.
+async function ensureAuthenticated() {
+  let st;
   try {
-    status = await invoke('check_codemie_setup');
+    st = await invoke('check_profile_status');
   } catch {
-    status = { configured: false };
+    st = { authenticated: false, detail: '' };
   }
-  if (!status.configured) {
+  if (!st.authenticated) {
     showNotice({
-      title: "CodeMie isn't set up yet",
+      title: 'CodeMie isn’t signed in',
       message:
-        'Connecting Claude Desktop needs a configured CodeMie CLI (a signed-in profile). Run the full installation first, then come back and try again.',
+        `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run the full installation / sign in first, then try again.`,
       primaryLabel: 'Run full installation',
       primaryAction: () => enterWizard(null),
     });
-    return;
+    return false;
   }
-  await runAction('Connect Claude Desktop', 'codemie proxy connect desktop');
+  return true;
 }
 
 async function runAnalytics() {
@@ -280,7 +288,7 @@ async function boot() {
         enterWizard(INSTALL_ONLY_IDS);
         break;
       case 'connect-desktop':
-        connectDesktop();
+        showView('connect');
         break;
       case 'analytics':
         runAnalytics();
@@ -290,6 +298,19 @@ async function boot() {
     }
   });
   wizardBack.addEventListener('click', () => showView('home'));
+  connectBack.addEventListener('click', () => showView('home'));
+  connectBtn.addEventListener('click', async () => {
+    if (await ensureAuthenticated()) {
+      runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect');
+    }
+  });
+  restartBtn.addEventListener('click', async () => {
+    if (await ensureAuthenticated()) {
+      // Stop the running proxy first, then connect again. `;` (not `&&`) so a
+      // no-op stop (nothing running) still proceeds to connect.
+      runAction('Restart Claude Desktop proxy', 'codemie proxy stop; codemie proxy connect desktop', 'connect');
+    }
+  });
   noticeClose.addEventListener('click', hideNotice);
 
   // ---- view routing (smoke/probe go straight to the wizard so their

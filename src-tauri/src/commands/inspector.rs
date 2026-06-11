@@ -61,40 +61,47 @@ pub async fn check_codemie() -> Probe {
     codemie_from(r.code, &r.stdout, &r.stderr)
 }
 
-/// Setup-completeness status for the CodeMie CLI.
+/// CodeMie profile auth status, parsed from `codemie profile status`.
 #[derive(Serialize, Default, Clone)]
-pub struct SetupStatus {
-    pub configured: bool,
-    pub profile_count: usize,
+pub struct ProfileStatus {
+    pub authenticated: bool,
+    pub detail: String,
 }
 
-/// Pure parser: a CodeMie CLI config is "configured" when it parses as JSON and
-/// carries at least one entry under `profiles`. Returns (configured, profile_count).
-fn parse_setup_config(json: &str) -> (bool, usize) {
-    let count = serde_json::from_str::<serde_json::Value>(json)
-        .ok()
-        .and_then(|v| {
-            v.get("profiles")
-                .and_then(|p| p.as_object())
-                .map(|o| o.len())
+/// Pure parser for `codemie profile status` output. The CLI prints an "Auth Status"
+/// row in one of three states: "✓ Authenticated (expires in 23h 50m)", "✗ Expired",
+/// or "✗ Not authenticated". Returns (authenticated, detail-line). This reads the
+/// real command output rather than a hardcoded value.
+fn parse_profile_status(stdout: &str, stderr: &str) -> (bool, String) {
+    let combined = format!("{stdout}\n{stderr}");
+    let detail = combined
+        .lines()
+        .map(str::trim)
+        .find(|l| {
+            let low = l.to_lowercase();
+            low.contains("auth status") || low.contains("authenticated") || low.contains("expired")
         })
-        .unwrap_or(0);
-    (count >= 1, count)
+        .unwrap_or("")
+        .to_string();
+    let low = combined.to_lowercase();
+    // Authenticated only when the positive marker is present and neither negative
+    // state is. "expires in …" does not contain "expired", so it is not matched.
+    let authenticated =
+        low.contains("authenticated") && !low.contains("not authenticated") && !low.contains("expired");
+    (authenticated, detail)
 }
 
-/// Reads `$HOME/.codemie/codemie-cli.config.json` and reports whether the CLI has
-/// been set up (used to gate `codemie proxy connect desktop`). Missing/unreadable
-/// file → not configured.
+/// Runs `codemie profile status` and reports whether the active profile is
+/// authenticated. stdin is closed (`< /dev/null`) so the CLI's interactive
+/// re-auth prompt (shown when credentials are expired) cannot hang the capture;
+/// the status row is printed before any prompt, so the parse still works.
 #[tauri::command]
-pub fn check_codemie_setup() -> SetupStatus {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = format!("{home}/.codemie/codemie-cli.config.json");
-    let (configured, profile_count) = std::fs::read_to_string(&path)
-        .map(|s| parse_setup_config(&s))
-        .unwrap_or((false, 0));
-    SetupStatus {
-        configured,
-        profile_count,
+pub async fn check_profile_status() -> ProfileStatus {
+    let r = capture("codemie profile status < /dev/null", None).await;
+    let (authenticated, detail) = parse_profile_status(&r.stdout, &r.stderr);
+    ProfileStatus {
+        authenticated,
+        detail,
     }
 }
 
@@ -146,34 +153,34 @@ mod tests {
         assert!(!codemie_from(127, "", "zsh:1: command not found: codemie").found);
     }
 
-    // --- check_codemie_setup: pure config parsing (home-launcher) ---
+    // --- check_profile_status: pure `codemie profile status` parsing (home-launcher) ---
 
     #[test]
-    fn setup_config_empty_or_invalid_json_is_not_configured() {
-        assert_eq!(parse_setup_config(""), (false, 0));
-        assert_eq!(parse_setup_config("{ not json"), (false, 0));
-        assert_eq!(parse_setup_config("null"), (false, 0));
+    fn profile_status_authenticated_is_true_and_keeps_detail() {
+        let out = "Auth Status  │ ✓ Authenticated (expires in 23h 50m)";
+        let (ok, detail) = parse_profile_status(out, "");
+        assert!(ok);
+        assert!(detail.contains("Authenticated"));
     }
 
     #[test]
-    fn setup_config_no_profiles_key_is_not_configured() {
-        assert_eq!(parse_setup_config(r#"{"version":2}"#), (false, 0));
+    fn profile_status_expired_is_not_authenticated() {
+        assert!(!parse_profile_status("Auth Status  │ ✗ Expired", "").0);
     }
 
     #[test]
-    fn setup_config_empty_profiles_is_not_configured() {
-        assert_eq!(parse_setup_config(r#"{"profiles":{}}"#), (false, 0));
+    fn profile_status_not_authenticated_is_false() {
+        assert!(!parse_profile_status("Auth Status  │ ✗ Not authenticated", "").0);
     }
 
     #[test]
-    fn setup_config_one_profile_is_configured() {
-        let cfg = r#"{"version":2,"activeProfile":"prod","profiles":{"prod":{"baseUrl":"x"}}}"#;
-        assert_eq!(parse_setup_config(cfg), (true, 1));
+    fn profile_status_expires_in_future_not_mistaken_for_expired() {
+        // "expires in …" must NOT be read as the expired state.
+        assert!(parse_profile_status("✓ Authenticated (expires in 1h 2m)", "").0);
     }
 
     #[test]
-    fn setup_config_counts_multiple_profiles() {
-        let cfg = r#"{"profiles":{"prod":{},"dev":{}}}"#;
-        assert_eq!(parse_setup_config(cfg), (true, 2));
+    fn profile_status_empty_output_is_false() {
+        assert_eq!(parse_profile_status("", ""), (false, String::new()));
     }
 }

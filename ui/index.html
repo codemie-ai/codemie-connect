@@ -39,8 +39,8 @@
 
           <button class="home-tile" data-action="analytics">
             <div class="tile-icon">📊</div>
-            <div class="tile-title">Analytics report</div>
-            <div class="tile-desc">Generate your CodeMie usage report and open it in the browser.</div>
+            <div class="tile-title">CLI usage analytics</div>
+            <div class="tile-desc">Build an HTML report of your local AI CLI usage (Claude Code, Codex, …) and open it in the browser.</div>
           </button>
         </div>
 
@@ -92,6 +92,37 @@
         <!-- Footer -->
         <footer id="footer">EPAM Systems © People Organization - WPM</footer>
       </div>
+
+      <!-- ============ CONNECT CLAUDE DESKTOP (intermediate) ============ -->
+      <div id="connect-view" class="hidden">
+        <div id="connect-topbar">
+          <button id="connect-back" class="back-link">‹ Home</button>
+          <span class="mode-label">Claude Desktop</span>
+        </div>
+
+        <div id="connect-body">
+          <header id="connect-header">
+            <div class="connect-icon">🖥️</div>
+            <div>
+              <div id="connect-title">Connect Claude Desktop</div>
+              <div id="connect-subtitle">Point Claude Desktop at the CodeMie proxy gateway. Both actions verify your CodeMie sign-in (<code>codemie profile status</code>) first.</div>
+            </div>
+          </header>
+
+          <div id="connect-actions">
+            <button class="connect-action" id="connect-btn">
+              <div class="ca-title">Connect</div>
+              <div class="ca-desc">Start the proxy and point Claude Desktop at the CodeMie gateway.</div>
+            </button>
+            <button class="connect-action" id="restart-btn">
+              <div class="ca-title">Restart</div>
+              <div class="ca-desc">Stop the running proxy, then connect again — use if Claude Desktop lost the connection.</div>
+            </button>
+          </div>
+        </div>
+
+        <footer class="view-footer">EPAM Systems © People Organization - WPM</footer>
+      </div>
     </div>
 
     <!-- Interactive terminal overlay (pty steps + home actions) -->
@@ -100,7 +131,7 @@
         <div id="terminal-title">Interactive step</div>
         <div id="terminal-host"></div>
         <div id="terminal-hint">Follow the prompts above. This will close automatically when the step finishes.</div>
-        <button id="terminal-done" class="btn btn-accent hidden">‹ Back to Home</button>
+        <button id="terminal-done" class="btn btn-accent hidden">‹ Back</button>
       </div>
     </div>
 
