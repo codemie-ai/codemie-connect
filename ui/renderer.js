@@ -13,7 +13,6 @@ import * as bridge from './runner-bridge.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
-const { getCurrentWindow } = window.__TAURI__.window;
 
 // Steps run by "Install only" (no setup): Git, Node, CodeMie CLI — but not the
 // codemie setup wizard / Claude engine / doctor (2.x). Sub-steps are retained so
@@ -273,8 +272,14 @@ async function boot() {
     setSprite('working');
     engine.run().catch((err) => emit('terminal-line', { text: `Engine error: ${(err && err.message) || err}`, tag: 'stderr' }));
   });
-  closeBtn.addEventListener('click', () => getCurrentWindow().close());
-  document.getElementById('fatal-close').addEventListener('click', () => getCurrentWindow().close());
+  // After a run finishes, "Back to Home" returns to the launcher rather than quitting the
+  // app (macOS Cmd+Q / the window's close control handle quitting). Re-entering a wizard
+  // via enterWizard() resets the view state.
+  closeBtn.addEventListener('click', () => showView('home'));
+  document.getElementById('fatal-close').addEventListener('click', () => {
+    document.getElementById('fatal-overlay').classList.add('hidden');
+    showView('home');
+  });
 
   // ---- home / launcher ----
   homeGrid.addEventListener('click', (e) => {
