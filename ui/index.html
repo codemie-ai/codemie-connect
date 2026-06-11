@@ -8,51 +8,111 @@
   </head>
   <body>
     <div id="app">
-      <div id="main-row">
-        <!-- Left: animated sprite + controls -->
-        <aside id="sprite-panel">
-          <canvas id="sprite-canvas" width="168" height="168"></canvas>
-          <div id="sprite-label">Installer</div>
-          <div id="status-pill"><span id="status-dot"></span><span id="status-text">Idle</span></div>
-          <div id="sprite-controls">
-            <button id="install-btn" class="btn btn-accent">Install</button>
-            <button id="close-btn" class="btn btn-success hidden">Close</button>
-            <label id="unattended-label">
-              <input type="checkbox" id="unattended-cb" /> Unattended mode
-            </label>
+      <!-- ============ HOME / LAUNCHER ============ -->
+      <div id="home-view">
+        <header id="home-header">
+          <img id="home-logo" src="codemie-logo.svg" alt="CodeMie" />
+          <div class="home-heading">
+            <div id="home-title">CodeMie Installer</div>
+            <div id="home-subtitle">What would you like to do?</div>
           </div>
-        </aside>
+        </header>
 
-        <div id="v-divider"></div>
+        <div id="home-grid">
+          <button class="home-tile" data-action="full">
+            <div class="tile-icon">🚀</div>
+            <div class="tile-title">Full installation</div>
+            <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI, then run the setup wizard and Claude engine.</div>
+          </button>
 
-        <!-- Right: scrollable step list -->
-        <section id="step-panel">
-          <div id="step-header">INSTALLATION STEPS</div>
-          <div id="step-list"></div>
-        </section>
+          <button class="home-tile" data-action="install-only">
+            <div class="tile-icon">📦</div>
+            <div class="tile-title">Install only</div>
+            <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI — skip the setup wizard.</div>
+          </button>
+
+          <button class="home-tile" data-action="connect-desktop">
+            <div class="tile-icon">🖥️</div>
+            <div class="tile-title">Connect Claude Desktop</div>
+            <div class="tile-desc">Point Claude Desktop at the CodeMie proxy gateway.</div>
+          </button>
+
+          <button class="home-tile" data-action="analytics">
+            <div class="tile-icon">📊</div>
+            <div class="tile-title">Analytics report</div>
+            <div class="tile-desc">Generate your CodeMie usage report and open it in the browser.</div>
+          </button>
+        </div>
+
+        <footer id="home-footer">EPAM Systems © People Organization - WPM</footer>
       </div>
 
-      <div id="h-divider"></div>
+      <!-- ============ WIZARD (install flow) ============ -->
+      <div id="wizard-view" class="hidden">
+        <div id="wizard-topbar">
+          <button id="wizard-back" class="back-link">‹ Home</button>
+          <span id="wizard-mode-label"></span>
+        </div>
 
-      <!-- Log toggle bar (always visible) -->
-      <div id="log-bar">
-        <button id="log-toggle">▸ Show log</button>
-        <button id="open-log">Open Log</button>
+        <div id="main-row">
+          <!-- Left: animated sprite + controls -->
+          <aside id="sprite-panel">
+            <canvas id="sprite-canvas" width="168" height="168"></canvas>
+            <div id="sprite-label">Installer</div>
+            <div id="status-pill"><span id="status-dot"></span><span id="status-text">Idle</span></div>
+            <div id="sprite-controls">
+              <button id="install-btn" class="btn btn-accent">Install</button>
+              <button id="close-btn" class="btn btn-success hidden">Close</button>
+              <label id="unattended-label">
+                <input type="checkbox" id="unattended-cb" /> Unattended mode
+              </label>
+            </div>
+          </aside>
+
+          <div id="v-divider"></div>
+
+          <!-- Right: scrollable step list -->
+          <section id="step-panel">
+            <div id="step-header">INSTALLATION STEPS</div>
+            <div id="step-list"></div>
+          </section>
+        </div>
+
+        <div id="h-divider"></div>
+
+        <!-- Log toggle bar (always visible) -->
+        <div id="log-bar">
+          <button id="log-toggle">▸ Show log</button>
+          <button id="open-log">Open Log</button>
+        </div>
+
+        <!-- Collapsible log -->
+        <div id="log-panel" class="hidden"><div id="log-content"></div></div>
+
+        <!-- Footer -->
+        <footer id="footer">EPAM Systems © People Organization - WPM</footer>
       </div>
-
-      <!-- Collapsible log -->
-      <div id="log-panel" class="hidden"><div id="log-content"></div></div>
-
-      <!-- Footer -->
-      <footer id="footer">EPAM Systems © People Organization - WPM</footer>
     </div>
 
-    <!-- Interactive terminal overlay (pty steps) -->
+    <!-- Interactive terminal overlay (pty steps + home actions) -->
     <div id="terminal-overlay" class="overlay hidden">
       <div id="terminal-card">
         <div id="terminal-title">Interactive step</div>
         <div id="terminal-host"></div>
         <div id="terminal-hint">Follow the prompts above. This will close automatically when the step finishes.</div>
+        <button id="terminal-done" class="btn btn-accent hidden">‹ Back to Home</button>
+      </div>
+    </div>
+
+    <!-- Generic notice modal (e.g. CodeMie not set up) -->
+    <div id="notice-overlay" class="overlay hidden">
+      <div id="notice-card">
+        <div id="notice-title"></div>
+        <div id="notice-message"></div>
+        <div id="notice-actions">
+          <button id="notice-primary" class="btn btn-accent"></button>
+          <button id="notice-close" class="btn btn-ghost">Close</button>
+        </div>
       </div>
     </div>
 

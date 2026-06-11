@@ -1,17 +1,24 @@
 // Entry point (Option B): builds the install Engine in the renderer and drives it
-// against granular Rust commands. Engine UI events are dispatched locally; only
+// against granular Rust commands. A home/launcher view routes to the wizard or to
+// one-shot command actions. Engine UI events are dispatched locally; only
 // Rust-origin events (pty-data/exit) arrive via Tauri listen().
 import { Engine } from './engine.js';
+import { StepStatus } from './models.js';
 import { makeHandlers } from './handlers.js';
 import { initSprite } from './sprite.js';
 import * as stepsUI from './steps-ui.js';
 import { initLog, appendLine } from './log.js';
-import { initTerminal, openTerminal, writeData, closeTerminal } from './terminal.js';
+import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeTerminal } from './terminal.js';
 import * as bridge from './runner-bridge.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const { getCurrentWindow } = window.__TAURI__.window;
+
+// Steps run by "Install only" (no setup): Git, Node, CodeMie CLI — but not the
+// codemie setup wizard / Claude engine / doctor (2.x). Sub-steps are retained so
+// their parent handlers can activate them.
+const INSTALL_ONLY_IDS = ['1.1', '1.1.1', '1.2', '1.2.1', '1.3'];
 
 // Capture boot/runtime errors so the smoke self-test can read them.
 window.addEventListener('error', (e) => {
@@ -33,12 +40,27 @@ const PILL = {
 let sprite = null;
 let unattended = false;
 let engine = null;
+let handlers = null;
+let allSteps = [];
 
 const dotEl = document.getElementById('status-dot');
 const statusTextEl = document.getElementById('status-text');
 const installBtn = document.getElementById('install-btn');
 const closeBtn = document.getElementById('close-btn');
 const unattendedCb = document.getElementById('unattended-cb');
+
+const homeView = document.getElementById('home-view');
+const wizardView = document.getElementById('wizard-view');
+const homeGrid = document.getElementById('home-grid');
+const wizardBack = document.getElementById('wizard-back');
+const modeLabel = document.getElementById('wizard-mode-label');
+const stepListEl = document.getElementById('step-list');
+
+const noticeOverlay = document.getElementById('notice-overlay');
+const noticeTitle = document.getElementById('notice-title');
+const noticeMessage = document.getElementById('notice-message');
+const noticePrimary = document.getElementById('notice-primary');
+const noticeClose = document.getElementById('notice-close');
 
 function setSprite(state) {
   if (sprite) sprite.setState(state);
@@ -88,22 +110,109 @@ function emit(event, payload) {
       document.getElementById('fatal-message').textContent = p.message || 'Installation failed.';
       document.getElementById('fatal-reco').textContent = p.recommendation || '';
       document.getElementById('fatal-overlay').classList.remove('hidden');
+      wizardBack.classList.remove('hidden');
       break;
     case 'complete':
       setSprite(p.ok === false ? 'warning' : 'victory');
       installBtn.classList.add('hidden');
       closeBtn.classList.remove('hidden');
+      wizardBack.classList.remove('hidden');
       break;
     default:
       break;
   }
 }
 
+// ---- view routing ----
+function showView(name) {
+  homeView.classList.toggle('hidden', name !== 'home');
+  wizardView.classList.toggle('hidden', name !== 'wizard');
+}
+
+// (Re)build the engine for a wizard run, optionally filtered to a subset of steps.
+function enterWizard(stepIds) {
+  const steps = stepIds ? allSteps.filter((s) => stepIds.includes(s.id)) : allSteps;
+  steps.forEach((s) => {
+    s.status = StepStatus.PENDING;
+  });
+  stepsUI.renderSteps(stepListEl, steps);
+  engine = new Engine({ steps, handlers, emit, isUnattended: () => unattended });
+
+  installBtn.classList.remove('hidden');
+  installBtn.disabled = false;
+  closeBtn.classList.add('hidden');
+  wizardBack.classList.remove('hidden');
+  setSprite('idle');
+  modeLabel.textContent = stepIds ? 'Install only' : 'Full installation + setup';
+  showView('wizard');
+}
+
+// ---- notice modal ----
+function showNotice({ title, message, primaryLabel, primaryAction }) {
+  noticeTitle.textContent = title;
+  noticeMessage.textContent = message;
+  if (primaryLabel) {
+    noticePrimary.textContent = primaryLabel;
+    noticePrimary.classList.remove('hidden');
+    noticePrimary.onclick = () => {
+      hideNotice();
+      if (primaryAction) primaryAction();
+    };
+  } else {
+    noticePrimary.classList.add('hidden');
+  }
+  noticeOverlay.classList.remove('hidden');
+}
+function hideNotice() {
+  noticeOverlay.classList.add('hidden');
+}
+
+// ---- one-shot command action (proxy connect / analytics) ----
+async function runAction(title, cmd) {
+  openTerminal(title, { keepOpen: true, onClose: () => showView('home') });
+  try {
+    const code = await bridge.pty.spawnPty(cmd);
+    writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back to Home” to return.\r\n`);
+  } catch (e) {
+    writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
+    handlePtyExit();
+  }
+}
+
+async function connectDesktop() {
+  let status;
+  try {
+    status = await invoke('check_codemie_setup');
+  } catch {
+    status = { configured: false };
+  }
+  if (!status.configured) {
+    showNotice({
+      title: "CodeMie isn't set up yet",
+      message:
+        'Connecting Claude Desktop needs a configured CodeMie CLI (a signed-in profile). Run the full installation first, then come back and try again.',
+      primaryLabel: 'Run full installation',
+      primaryAction: () => enterWizard(null),
+    });
+    return;
+  }
+  await runAction('Connect Claude Desktop', 'codemie proxy connect desktop');
+}
+
+async function runAnalytics() {
+  // --report-output is set explicitly: a Finder-launched bundle's CWD is "/",
+  // which is not writable. $HOME is expanded by the pty's login shell.
+  await runAction(
+    'Analytics report',
+    'codemie analytics --report --open --report-output "$HOME/codemie-analytics.html"'
+  );
+}
+
 async function boot() {
   const flags = await invoke('smoke_mode');
 
-  const list = await invoke('get_steps');
-  stepsUI.renderSteps(document.getElementById('step-list'), list);
+  allSteps = await invoke('get_steps');
+  stepsUI.renderSteps(stepListEl, allSteps);
 
   const logoPath = await invoke('get_logo_path');
   sprite = initSprite(document.getElementById('sprite-canvas'), logoPath);
@@ -119,9 +228,11 @@ async function boot() {
     overlay: document.getElementById('terminal-overlay'),
     host: document.getElementById('terminal-host'),
     title: document.getElementById('terminal-title'),
+    hint: document.getElementById('terminal-hint'),
+    done: document.getElementById('terminal-done'),
   });
 
-  const handlers = makeHandlers({
+  handlers = makeHandlers({
     inspector: bridge.inspector,
     runner: bridge.runner,
     installer: bridge.installer,
@@ -133,7 +244,7 @@ async function boot() {
   });
 
   engine = new Engine({
-    steps: list,
+    steps: allSteps,
     handlers,
     emit,
     isUnattended: () => unattended,
@@ -141,7 +252,7 @@ async function boot() {
 
   // Rust-origin events: PTY output/exit stream from the portable-pty reader threads.
   await listen('engine:pty-data', (e) => writeData(e.payload.data));
-  await listen('engine:pty-exit', () => closeTerminal());
+  await listen('engine:pty-exit', () => handlePtyExit());
 
   // ---- controls ----
   unattendedCb.addEventListener('change', () => {
@@ -150,19 +261,50 @@ async function boot() {
   installBtn.addEventListener('click', () => {
     installBtn.disabled = true;
     unattended = unattendedCb.checked;
+    wizardBack.classList.add('hidden');
     setSprite('working');
     engine.run().catch((err) => emit('terminal-line', { text: `Engine error: ${(err && err.message) || err}`, tag: 'stderr' }));
   });
   closeBtn.addEventListener('click', () => getCurrentWindow().close());
   document.getElementById('fatal-close').addEventListener('click', () => getCurrentWindow().close());
 
+  // ---- home / launcher ----
+  homeGrid.addEventListener('click', (e) => {
+    const tile = e.target.closest('.home-tile');
+    if (!tile) return;
+    switch (tile.dataset.action) {
+      case 'full':
+        enterWizard(null);
+        break;
+      case 'install-only':
+        enterWizard(INSTALL_ONLY_IDS);
+        break;
+      case 'connect-desktop':
+        connectDesktop();
+        break;
+      case 'analytics':
+        runAnalytics();
+        break;
+      default:
+        break;
+    }
+  });
+  wizardBack.addEventListener('click', () => showView('home'));
+  noticeClose.addEventListener('click', hideNotice);
+
+  // ---- view routing (smoke/probe go straight to the wizard so their
+  //      .step-row / canvas / bg assertions still hold) ----
   if (flags.probe) {
+    showView('wizard');
     await runProbe(handlers);
     return;
   }
   if (flags.smoke) {
+    showView('wizard');
     await runSmoke(flags);
+    return;
   }
+  showView('home');
 }
 
 // Non-destructive detection-only run (CODEMIE_PROBE_SMOKE). Forces 1.3 to detect

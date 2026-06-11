@@ -1,4 +1,5 @@
-// In-app interactive terminal (xterm.js) hosting the pty steps (codemie setup / install).
+// In-app interactive terminal (xterm.js) hosting the pty steps (codemie setup /
+// install) and the home-page command actions (proxy connect / analytics).
 import { Terminal } from './vendor/xterm.mjs';
 import { FitAddon } from './vendor/addon-fit.mjs';
 
@@ -9,11 +10,22 @@ let fit = null;
 let overlay = null;
 let hostEl = null;
 let titleEl = null;
+let hintEl = null;
+let doneBtn = null;
 
-export function initTerminal({ overlay: ov, host, title }) {
+// When true, the overlay stays open on pty-exit and shows a "back" button instead
+// of auto-closing. Used by home-page actions; wizard pty steps keep auto-close.
+let keepOpen = false;
+let onCloseCb = null;
+
+const DEFAULT_HINT = 'Follow the prompts above. This will close automatically when the step finishes.';
+
+export function initTerminal({ overlay: ov, host, title, hint, done }) {
   overlay = ov;
   hostEl = host;
   titleEl = title;
+  hintEl = hint || null;
+  doneBtn = done || null;
   term = new Terminal({
     fontSize: 13,
     fontFamily: 'SF Mono, Menlo, Consolas, monospace',
@@ -26,6 +38,13 @@ export function initTerminal({ overlay: ov, host, title }) {
 
   // Keystrokes -> pty (Rust routes to the active pty in managed state).
   term.onData((d) => invoke('pty_input', { data: d }));
+
+  if (doneBtn) {
+    doneBtn.addEventListener('click', () => {
+      closeTerminal();
+      if (onCloseCb) onCloseCb();
+    });
+  }
 
   window.addEventListener('resize', () => {
     if (!overlay.classList.contains('hidden')) doFit();
@@ -41,8 +60,14 @@ function doFit() {
   }
 }
 
-export function openTerminal(title) {
+// opts.keepOpen: keep the overlay open after the command exits (home actions).
+// opts.onClose: invoked when the user dismisses a keepOpen terminal.
+export function openTerminal(title, opts = {}) {
+  keepOpen = Boolean(opts.keepOpen);
+  onCloseCb = opts.onClose || null;
   if (titleEl && title) titleEl.textContent = title;
+  if (hintEl) hintEl.textContent = DEFAULT_HINT;
+  if (doneBtn) doneBtn.classList.add('hidden');
   term.reset();
   overlay.classList.remove('hidden');
   // Fit after the overlay is laid out.
@@ -65,6 +90,24 @@ export function writeData(b64) {
   }
 }
 
+// Write a plain string (e.g. a final status line) straight to the terminal.
+export function writeLine(text) {
+  if (term) term.write(text);
+}
+
+// Called when the active pty exits. Auto-closes for wizard steps; for home
+// actions (keepOpen) it reveals the "back to home" affordance instead.
+export function handlePtyExit() {
+  if (keepOpen) {
+    if (hintEl) hintEl.textContent = 'Finished. Click “‹ Back to Home” to return.';
+    if (doneBtn) doneBtn.classList.remove('hidden');
+  } else {
+    closeTerminal();
+  }
+}
+
 export function closeTerminal() {
   if (overlay) overlay.classList.add('hidden');
+  if (doneBtn) doneBtn.classList.add('hidden');
+  keepOpen = false;
 }

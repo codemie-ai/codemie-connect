@@ -61,6 +61,43 @@ pub async fn check_codemie() -> Probe {
     codemie_from(r.code, &r.stdout, &r.stderr)
 }
 
+/// Setup-completeness status for the CodeMie CLI.
+#[derive(Serialize, Default, Clone)]
+pub struct SetupStatus {
+    pub configured: bool,
+    pub profile_count: usize,
+}
+
+/// Pure parser: a CodeMie CLI config is "configured" when it parses as JSON and
+/// carries at least one entry under `profiles`. Returns (configured, profile_count).
+fn parse_setup_config(json: &str) -> (bool, usize) {
+    let count = serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| {
+            v.get("profiles")
+                .and_then(|p| p.as_object())
+                .map(|o| o.len())
+        })
+        .unwrap_or(0);
+    (count >= 1, count)
+}
+
+/// Reads `$HOME/.codemie/codemie-cli.config.json` and reports whether the CLI has
+/// been set up (used to gate `codemie proxy connect desktop`). Missing/unreadable
+/// file → not configured.
+#[tauri::command]
+pub fn check_codemie_setup() -> SetupStatus {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = format!("{home}/.codemie/codemie-cli.config.json");
+    let (configured, profile_count) = std::fs::read_to_string(&path)
+        .map(|s| parse_setup_config(&s))
+        .unwrap_or((false, 0));
+    SetupStatus {
+        configured,
+        profile_count,
+    }
+}
+
 #[tauri::command]
 pub fn git_binary_path() -> Option<String> {
     GIT_BINARIES
@@ -107,5 +144,36 @@ mod tests {
     #[test]
     fn codemie_treats_command_not_found_as_not_installed() {
         assert!(!codemie_from(127, "", "zsh:1: command not found: codemie").found);
+    }
+
+    // --- check_codemie_setup: pure config parsing (home-launcher) ---
+
+    #[test]
+    fn setup_config_empty_or_invalid_json_is_not_configured() {
+        assert_eq!(parse_setup_config(""), (false, 0));
+        assert_eq!(parse_setup_config("{ not json"), (false, 0));
+        assert_eq!(parse_setup_config("null"), (false, 0));
+    }
+
+    #[test]
+    fn setup_config_no_profiles_key_is_not_configured() {
+        assert_eq!(parse_setup_config(r#"{"version":2}"#), (false, 0));
+    }
+
+    #[test]
+    fn setup_config_empty_profiles_is_not_configured() {
+        assert_eq!(parse_setup_config(r#"{"profiles":{}}"#), (false, 0));
+    }
+
+    #[test]
+    fn setup_config_one_profile_is_configured() {
+        let cfg = r#"{"version":2,"activeProfile":"prod","profiles":{"prod":{"baseUrl":"x"}}}"#;
+        assert_eq!(parse_setup_config(cfg), (true, 1));
+    }
+
+    #[test]
+    fn setup_config_counts_multiple_profiles() {
+        let cfg = r#"{"profiles":{"prod":{},"dev":{}}}"#;
+        assert_eq!(parse_setup_config(cfg), (true, 2));
     }
 }
