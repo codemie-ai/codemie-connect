@@ -52,6 +52,7 @@ steps:
     title: "Configure CodeMie"
     description: "Run the interactive CodeMie setup wizard."
     interactive: true
+    external_window: true
 
   - id: "2.3.5"
     title: "Install Claude Code engine"

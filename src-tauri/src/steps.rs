@@ -14,6 +14,7 @@ pub struct Step {
     pub parent_id: Option<String>,
     pub spinner: bool,
     pub interactive: bool,
+    pub external_window: bool,
     pub fatal: bool,
     pub fatal_recommendation: String,
 }
@@ -43,6 +44,8 @@ struct RawStep {
     #[serde(default)]
     interactive: bool,
     #[serde(default)]
+    external_window: bool,
+    #[serde(default)]
     fatal: bool,
     #[serde(default)]
     fatal_recommendation: String,
@@ -65,6 +68,7 @@ fn make_step(r: RawStep) -> Step {
         parent_id: r.parent_id,
         spinner: r.spinner,
         interactive: r.interactive,
+        external_window: r.external_window,
         fatal: r.fatal,
         fatal_recommendation: r.fatal_recommendation,
     }
@@ -133,5 +137,9 @@ mod tests {
 
         let setup = steps.iter().find(|s| s.id == "2.3.3").unwrap();
         assert!(setup.interactive);
+        #[cfg(windows)]
+        assert!(setup.external_window);
+        #[cfg(not(windows))]
+        assert!(!setup.external_window);
     }
 }

@@ -32,6 +32,7 @@ export function makeStep(raw) {
     parent_id: raw.parent_id != null ? String(raw.parent_id) : null,
     spinner: Boolean(raw.spinner),
     interactive: Boolean(raw.interactive),
+    externalWindow: Boolean(raw.external_window),
     fatal: Boolean(raw.fatal),
     fatal_recommendation: raw.fatal_recommendation || '',
   };
