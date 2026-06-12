@@ -250,6 +250,8 @@ mod tests {
 
     #[test]
     fn parse_codemie_version_returns_empty_on_command_not_found() {
+        // Parser robustness: real not-found errors arrive in stderr (not parsed here);
+        // this guards against shell wrappers that forward stderr to stdout.
         assert_eq!(
             parse_codemie_version("zsh:1: command not found: codemie"),
             ""
