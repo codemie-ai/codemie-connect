@@ -116,12 +116,16 @@ echo "  ✓ .app signed"
 # ── Step 5: Repackage into a new DMG ─────────────────────────────────────────
 echo "▶ Creating new DMG from signed .app..."
 rm -f "$SIGNED_DMG"
+# hdiutil auto-appends .dmg if the path doesn't end in it — use a no-space tmp name then move
+TMP_DMG="$WORK_DIR/output.dmg"
 hdiutil create \
   -volname "CodeMie Installer" \
   -srcfolder "$WORK_DIR/$APP_NAME" \
   -ov \
   -format UDZO \
-  "$SIGNED_DMG"
+  "$TMP_DMG"
+cp "$TMP_DMG" "$SIGNED_DMG"
+[[ -f "$SIGNED_DMG" ]] || { echo "ERROR: DMG not created at $SIGNED_DMG"; exit 1; }
 echo "  ✓ DMG created: $(basename "$SIGNED_DMG")"
 
 # ── Step 6: Sign the DMG itself ───────────────────────────────────────────────

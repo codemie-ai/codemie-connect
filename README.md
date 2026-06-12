@@ -108,17 +108,13 @@ cargo tauri icon assets/ai-run-codemie-logo-white_bg.svg
 
 ## Running an unsigned build (Gatekeeper)
 
-The DMG is intentionally **unsigned / un-notarized**. The binary is only *ad-hoc* signed, so
-on first launch macOS Gatekeeper shows **"Apple could not verify … is free of malware"** and
-refuses to open it (`spctl -a` → `rejected: no usable signature`). This is expected — it is
-**not** a sign the build is broken.
+The default `cargo tauri build` output is *ad-hoc* signed only, so Gatekeeper will block it
+on other Macs. This is expected for local/dev builds.
 
 **To run it anyway (local / internal testers):**
 
-- **GUI (macOS 13–15):** in the block dialog click **Done** (not *Move to Bin*), drag the app
-  onto **Applications**, then open **System Settings → Privacy & Security → Open Anyway** and
-  authenticate. (macOS Sequoia removed the old right-click → Open bypass; this is the supported
-  path.)
+- **GUI (macOS 13–15):** click **Done** in the block dialog, drag the app to **Applications**,
+  then open **System Settings → Privacy & Security → Open Anyway** and authenticate.
 - **Terminal (most reliable):**
   ```bash
   cp -R "/Volumes/CodeMie Installer/CodeMie Installer.app" /Applications/
@@ -126,18 +122,72 @@ refuses to open it (`spctl -a` → `rejected: no usable signature`). This is exp
   open "/Applications/CodeMie Installer.app"
   ```
 
-**To remove the warning for everyone (proper distribution):** sign with a **Developer ID
-Application** certificate and **notarize**. This needs an Apple Developer Program membership.
-Tauri signs + notarizes + staples automatically during `cargo tauri build` when these env vars
-are set (no secrets committed):
+## Signing & notarizing for distribution
+
+Signing produces a DMG that Gatekeeper accepts on any Mac without warnings. Requires an
+**Apple Developer Program** account and a **Developer ID Application** certificate.
+
+### Assets (`apple_developer/`)
+
+| File | What it is |
+|---|---|
+| `developerID_application.cer` | Developer ID Application certificate (public) |
+| `DeveloperID.key` | Matching private key — **never commit** |
+
+### One-shot script
+
+`sign-dmg.sh` does the full pipeline:
+
+1. Imports the cert + key into the macOS login keychain (idempotent)
+2. Downloads the Apple Developer ID G2 intermediate CA if missing
+3. Mounts the source DMG, extracts the `.app`, signs it with hardened runtime + secure timestamp
+4. Repacks a fresh DMG from the signed `.app`
+5. Signs the new DMG
+6. (optional) Submits to Apple notarization, waits for `Accepted`, staples the ticket
+
+### Setup
+
+Create `.env.signing` in the project root (it is gitignored):
 
 ```bash
-export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-export APPLE_ID="you@example.com"
-export APPLE_PASSWORD="abcd-efgh-ijkl-mnop"   # app-specific password
-export APPLE_TEAM_ID="TEAMID"
-CI=true cargo tauri build --target universal-apple-darwin
+# .env.signing — DO NOT COMMIT
+KEYCHAIN_PASSWORD=your_mac_login_password
+
+# Notarization only:
+APPLE_ID=you@example.com
+APPLE_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx   # app-specific password from appleid.apple.com
+APPLE_TEAM_ID=XXXXXXXXXX
 ```
+
+Generate an app-specific password at **appleid.apple.com → Security → App-Specific Passwords**.
+
+### Run
+
+```bash
+# Build the DMG first
+cd src-tauri && CI=true cargo tauri build && cd ..
+
+# Sign only (internal distribution, your own Mac)
+./sign-dmg.sh
+
+# Sign + notarize + staple (required for distribution to other Macs)
+NOTARIZE=1 ./sign-dmg.sh
+```
+
+The signed (and optionally notarized) DMG is written to:
+```
+src-tauri/target/release/bundle/dmg/CodeMie Installer_2.0.0_aarch64_signed.dmg
+```
+
+Verify Gatekeeper acceptance:
+```bash
+spctl --assess --type open --context context:primary-signature -v \
+  "src-tauri/target/release/bundle/dmg/CodeMie Installer_2.0.0_aarch64_signed.dmg"
+# expected: accepted
+```
+
+> **Notarization time:** typically 2–10 minutes. The script blocks with `--wait` and staples
+> automatically on success.
 
 ## Tests
 
