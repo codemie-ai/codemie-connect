@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CodeMie Installer",
+  "productName": "CodeMie Connect",
   "version": "2.0.0",
   "identifier": "com.epam.codemie.installer",
   "build": {
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "CodeMie Installation Wizard",
+        "title": "EPAM AI/Run CodeMie Connect",
         "width": 900,
         "height": 600,
         "resizable": false,
