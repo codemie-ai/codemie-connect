@@ -58,6 +58,7 @@ steps:
     title: "Install Claude Code engine"
     description: "Install the Claude Code engine through CodeMie."
     interactive: true
+    external_window: true
 
   - id: "2.4"
     title: "Validate installation"

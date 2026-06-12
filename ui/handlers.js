@@ -202,8 +202,10 @@ export function makeHandlers(deps) {
       ? runExternalWindow(ctx, '2.3.3', 'codemie setup')
       : runPty(ctx, 'codemie setup', 'CodeMie Setup — follow the prompts, then close'),
 
-    // 2.3.5 — Install Claude Code engine (interactive)
-    '2.3.5': (ctx) => runPty(ctx, 'codemie install claude --supported', 'Install Claude Code engine'),
+    // 2.3.5 — Install Claude Code engine: external PowerShell window on Windows, embedded PTY on macOS.
+    '2.3.5': (ctx) => isWin
+      ? runExternalWindow(ctx, '2.3.5', 'codemie install claude --supported')
+      : runPty(ctx, 'codemie install claude --supported', 'Install Claude Code engine'),
 
     // 2.4 — Validate
     '2.4': async (ctx) => {
