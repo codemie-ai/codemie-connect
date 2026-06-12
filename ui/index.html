@@ -30,17 +30,30 @@
         </header>
 
         <div id="home-grid">
-          <button class="home-tile" data-action="full">
-            <div class="tile-icon">🚀</div>
-            <div class="tile-title">Full installation</div>
-            <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI, then run the setup wizard and Claude engine.</div>
-          </button>
-
-          <button class="home-tile" data-action="install-only">
-            <div class="tile-icon">📦</div>
-            <div class="tile-title">Install only</div>
-            <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI — skip the setup wizard.</div>
-          </button>
+          <div id="installation-group">
+            <div class="group-label">Installation</div>
+            <div id="update-banner" class="hidden">
+              <span>⬆️ Update available: <span id="update-from"></span> → <span id="update-to"></span>. Run <strong>Update CLI</strong> to get the latest version.</span>
+              <button id="update-banner-dismiss" aria-label="Dismiss">✕</button>
+            </div>
+            <div id="installation-tiles">
+              <button class="home-tile sub-tile" data-action="full">
+                <div class="tile-icon">🚀</div>
+                <div class="tile-title">Full installation</div>
+                <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI, then run the setup wizard and Claude engine.</div>
+              </button>
+              <button class="home-tile sub-tile" data-action="install-only">
+                <div class="tile-icon">📦</div>
+                <div class="tile-title">Install only</div>
+                <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI — skip the setup wizard.</div>
+              </button>
+              <button class="home-tile sub-tile" id="update-cli-tile" data-action="update-cli">
+                <div class="tile-icon" id="update-cli-icon">🔄</div>
+                <div class="tile-title" id="update-cli-title">Update CLI</div>
+                <div class="tile-desc">Update the CodeMie CLI to the latest version.</div>
+              </button>
+            </div>
+          </div>
 
           <button class="home-tile" data-action="connect-desktop">
             <div class="tile-icon">🖥️</div>
