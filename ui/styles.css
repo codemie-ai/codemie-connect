@@ -181,7 +181,6 @@ body::before {
   font-size: 12px;
   color: var(--text);
 }
-#update-banner.hidden { display: none; }
 #update-banner-dismiss {
   background: none;
   border: 1px solid var(--border-2);
@@ -206,11 +205,13 @@ body::before {
   border-color: var(--accent);
   background: var(--surface-2);
   pointer-events: none;
+  cursor: default;
 }
 #update-cli-tile[data-state="done"] {
   border-color: #3fb950;
   background: rgba(63, 185, 80, 0.08);
   pointer-events: none;
+  cursor: default;
 }
 #update-cli-tile[data-state="error"] {
   border-color: #ff6b6b;
