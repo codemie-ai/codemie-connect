@@ -42,17 +42,36 @@ pub fn spawn_pty(
         })
         .map_err(|e| InstallerError::Pty(e.to_string()))?;
 
-    let home = std::env::var("HOME").unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_default();
-    let mut builder = CommandBuilder::new("/bin/zsh");
-    builder.arg("-lc");
-    builder.arg(&cmd);
-    builder.env("TERM", "xterm-256color");
-    builder.env("HOME", &home);
-    builder.env("PATH", &path);
-    if !home.is_empty() {
-        builder.cwd(&home);
-    }
+
+    #[cfg(not(windows))]
+    let builder = {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mut b = CommandBuilder::new("/bin/zsh");
+        b.arg("-lc");
+        b.arg(&cmd);
+        b.env("TERM", "xterm-256color");
+        b.env("HOME", &home);
+        b.env("PATH", &path);
+        if !home.is_empty() {
+            b.cwd(&home);
+        }
+        b
+    };
+
+    #[cfg(windows)]
+    let builder = {
+        let profile = std::env::var("USERPROFILE").unwrap_or_default();
+        let mut b = CommandBuilder::new("powershell.exe");
+        b.args(["-NoProfile", "-Command", &cmd]);
+        b.env("TERM", "xterm-256color");
+        b.env("USERPROFILE", &profile);
+        b.env("PATH", &path);
+        if !profile.is_empty() {
+            b.cwd(&profile);
+        }
+        b
+    };
 
     let mut child = pair
         .slave

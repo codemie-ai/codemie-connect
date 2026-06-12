@@ -87,6 +87,9 @@ export const downloader = {
   },
 };
 
+// ---- platform info ----
+export const platformInfo = () => invoke('get_platform_info');
+
 // ---- pty (replaces node-pty; the active PTY lives in Rust managed state) ----
 export const pty = {
   // Spawns an interactive command; resolves with its exit code on engine:pty-exit.

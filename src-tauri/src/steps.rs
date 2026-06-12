@@ -48,6 +48,9 @@ struct RawStep {
     fatal_recommendation: String,
 }
 
+#[cfg(windows)]
+const STEPS_YAML: &str = include_str!("../../config/steps-windows.yaml");
+#[cfg(not(windows))]
 const STEPS_YAML: &str = include_str!("../../config/steps.yaml");
 
 fn make_step(r: RawStep) -> Step {
@@ -88,7 +91,7 @@ pub fn get_logo_path() -> String {
 mod tests {
     use super::*;
 
-    // Ported from test/steps.test.js (loadSteps half).
+    #[cfg(not(windows))]
     #[test]
     fn loads_eight_steps_with_defaults() {
         let steps = load_steps();
@@ -97,7 +100,25 @@ mod tests {
             ids,
             ["1.1", "1.1.1", "1.2", "1.2.1", "1.3", "2.3.3", "2.3.5", "2.4"]
         );
+        _assert_common_fields(&steps);
+    }
 
+    #[cfg(windows)]
+    #[test]
+    fn loads_nine_steps_with_defaults() {
+        let steps = load_steps();
+        let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["1.0", "1.1", "1.1.1", "1.2", "1.2.1", "1.3", "2.3.3", "2.3.5", "2.4"]
+        );
+        let policy = steps.iter().find(|s| s.id == "1.0").unwrap();
+        assert!(policy.requires_approval);
+        assert!(!policy.approval_message.is_empty());
+        _assert_common_fields(&steps);
+    }
+
+    fn _assert_common_fields(steps: &[super::Step]) {
         let git = steps.iter().find(|s| s.id == "1.1").unwrap();
         assert!(git.fatal);
         assert!(!git.requires_approval);

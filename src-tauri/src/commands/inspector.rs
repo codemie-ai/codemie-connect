@@ -5,11 +5,13 @@ use serde::Serialize;
 
 use crate::commands::runner::capture;
 
+#[cfg(not(windows))]
 const GIT_BINARIES: &[&str] = &[
     "/usr/bin/git",
     "/opt/homebrew/bin/git",
     "/usr/local/bin/git",
 ];
+#[cfg(not(windows))]
 const NODE_BINARIES: &[&str] = &["/opt/homebrew/bin/node", "/usr/local/bin/node"];
 
 #[derive(Serialize, Default, Clone)]
@@ -125,12 +127,16 @@ fn parse_profile_status(stdout: &str, stderr: &str) -> (bool, String) {
 }
 
 /// Runs `codemie profile status` and reports whether the active profile is
-/// authenticated. stdin is closed (`< /dev/null`) so the CLI's interactive
-/// re-auth prompt (shown when credentials are expired) cannot hang the capture;
-/// the status row is printed before any prompt, so the parse still works.
+/// authenticated. On macOS stdin is closed (`< /dev/null`) so the CLI's
+/// interactive re-auth prompt cannot hang the capture. On Windows the redirect
+/// is omitted (PowerShell does not support it) and the command exits on its own.
 #[tauri::command]
 pub async fn check_profile_status() -> ProfileStatus {
-    let r = capture("codemie profile status < /dev/null", None).await;
+    #[cfg(not(windows))]
+    let status_cmd = "codemie profile status < /dev/null";
+    #[cfg(windows)]
+    let status_cmd = "codemie profile status";
+    let r = capture(status_cmd, None).await;
     let (authenticated, detail) = parse_profile_status(&r.stdout, &r.stderr);
     ProfileStatus {
         authenticated,
@@ -138,7 +144,30 @@ pub async fn check_profile_status() -> ProfileStatus {
     }
 }
 
+/// Find a binary by checking well-known install locations, then falling back to
+/// `where.exe` (Windows) or static paths (macOS) to find it anywhere on PATH.
+#[cfg(windows)]
+fn find_binary(exe_name: &str, common_locations: &[&str]) -> Option<String> {
+    // 1. Check common default install locations.
+    if let Some(p) = common_locations.iter().find(|p| Path::new(p).exists()) {
+        return Some(p.to_string());
+    }
+    // 2. Fall back to `where.exe` — finds the binary anywhere in PATH/system.
+    std::process::Command::new("where.exe")
+        .arg(exe_name)
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| {
+            String::from_utf8(out.stdout)
+                .ok()
+                .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
+                .filter(|s| !s.is_empty())
+        })
+}
+
 #[tauri::command]
+#[cfg(not(windows))]
 pub fn git_binary_path() -> Option<String> {
     GIT_BINARIES
         .iter()
@@ -147,11 +176,24 @@ pub fn git_binary_path() -> Option<String> {
 }
 
 #[tauri::command]
+#[cfg(windows)]
+pub fn git_binary_path() -> Option<String> {
+    find_binary("git.exe", &[r"C:\Program Files\Git\cmd\git.exe"])
+}
+
+#[tauri::command]
+#[cfg(not(windows))]
 pub fn node_binary_path() -> Option<String> {
     NODE_BINARIES
         .iter()
         .find(|p| Path::new(p).exists())
         .map(|s| s.to_string())
+}
+
+#[tauri::command]
+#[cfg(windows)]
+pub fn node_binary_path() -> Option<String> {
+    find_binary("node.exe", &[r"C:\Program Files\nodejs\node.exe"])
 }
 
 #[cfg(test)]

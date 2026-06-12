@@ -39,6 +39,7 @@ pub fn run() {
             commands::inspector::check_profile_status,
             commands::inspector::git_binary_path,
             commands::inspector::node_binary_path,
+            commands::installer::get_platform_info,
             commands::installer::temp_dir,
             commands::installer::node_pkg_url,
             commands::installer::latest_lts_node_version,

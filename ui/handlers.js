@@ -1,12 +1,14 @@
 // Per-step handler dispatch table (ESM, Tauri frontend). Each handler receives the
 // engine `ctx` (line/setSubtitle/setStatus/progress/runSubStep) and returns true | false.
 // `deps` injects the runner-bridge modules so this stays the only "glue" layer.
-// Faithful port of src/main/handlers.js — only the system calls now cross into Rust.
+// `deps.platform` is { os: "macos"|"windows", arch: "x86_64"|"aarch64" } from
+// get_platform_info — used to pick platform-specific paths and extensions.
 
 // Minimal path helpers (no Node 'path'/'os' in the browser).
 function dirname(p) {
   const s = String(p);
-  const i = s.lastIndexOf('/');
+  // Windows paths: use the last backslash or forward slash.
+  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
   if (i < 0) return '.';
   if (i === 0) return '/';
   return s.slice(0, i);
@@ -14,13 +16,18 @@ function dirname(p) {
 function joinPath(...parts) {
   return parts.filter(Boolean).join('/').replace(/\/{2,}/g, '/');
 }
+function joinPathWin(...parts) {
+  return parts.filter(Boolean).join('\\').replace(/\\{2,}/g, '\\');
+}
 
 export function makeHandlers(deps) {
   const { inspector, runner, installer, pathman, downloader, pty } = deps;
   const arch = deps.arch || 'universal';
   const tmpDir = deps.tmpDir || '/tmp';
+  const platform = deps.platform || { os: 'macos', arch };
+  const isWin = platform.os === 'windows';
 
-  // Augment PATH (process + ~/.zprofile) with freshly-installed tool dirs, then re-probe.
+  // Augment PATH (process + profile) with freshly-installed tool dirs, then re-probe.
   async function rememberDirs(dirs) {
     const clean = dirs.filter(Boolean);
     if (!clean.length) return;
@@ -37,8 +44,6 @@ export function makeHandlers(deps) {
   }
 
   // Run an interactive command in a pty (in Rust), streaming to the renderer terminal.
-  // Resolves true only on a clean exit (0); the PTY output/exit are delivered as
-  // engine:pty-data / engine:pty-exit events handled by the renderer.
   function runPty(ctx, cmd, title) {
     ctx.setSubtitle(ctx.step.id, 'Interactive — follow the prompts in the terminal…');
     ctx.line(`> ${cmd}`, 'prompt');
@@ -57,7 +62,7 @@ export function makeHandlers(deps) {
       });
   }
 
-  return {
+  const handlers = {
     // 1.1 — Check Git
     '1.1': async (ctx) => {
       ctx.setSubtitle('1.1', 'Checking for Git…');
@@ -111,12 +116,18 @@ export function makeHandlers(deps) {
       const ok = await ctx.runSubStep('1.2.1', async () => {
         const version = await installer.latestLtsNodeVersion();
         const url = await installer.nodePkgUrl(arch, version);
-        const dest = joinPath(tmpDir, `node-v${version}.pkg`);
+        // File extension and install dir differ by platform.
+        const ext = isWin ? '.msi' : '.pkg';
+        const filename = `node-v${version}${ext}`;
+        const dest = isWin
+          ? joinPathWin(tmpDir, filename)
+          : joinPath(tmpDir, filename);
         ctx.setSubtitle('1.2.1', `Downloading Node.js ${version}…`);
         await downloader.download(url, dest, (frac) => ctx.progress('1.2.1', frac));
-        ctx.setSubtitle('1.2.1', 'Installing Node.js (authorize when prompted)…');
+        ctx.setSubtitle('1.2.1', 'Installing Node.js…');
         await installer.installNode(dest);
-        await rememberDirs(['/usr/local/bin']);
+        const nodeDir = isWin ? 'C:\\Program Files\\nodejs' : '/usr/local/bin';
+        await rememberDirs([nodeDir]);
         return true;
       });
       if (!ok) return false;
@@ -153,8 +164,20 @@ export function makeHandlers(deps) {
         ctx.setSubtitle('1.3', 'npm install failed');
         return false;
       }
-      const newPrefix = (await runner.runCapture('npm config get prefix')).stdout.trim();
-      if (newPrefix) await rememberDirs([joinPath(newPrefix, 'bin')]);
+      // On Windows, add the standard npm global bin dirs to PATH.
+      if (isWin) {
+        const profile = await runner.runCapture('echo %USERPROFILE%');
+        const up = (profile.stdout || '').trim();
+        if (up) {
+          await rememberDirs([
+            `${up}\\AppData\\Roaming\\npm`,
+            `${up}\\AppData\\Local\\CodeMie\\npm-prefix`,
+          ]);
+        }
+      } else {
+        const newPrefix = (await runner.runCapture('npm config get prefix')).stdout.trim();
+        if (newPrefix) await rememberDirs([joinPath(newPrefix, 'bin')]);
+      }
       const re = await runner.runFreshEnv('codemie --help');
       const ok = `${re.stdout}${re.stderr}`.trim().length > 0;
       ctx.setSubtitle('1.3', ok ? 'CodeMie installed' : 'CodeMie not detected after install');

@@ -14,9 +14,19 @@ toolchain, and NSIS bundling is Windows-only).
 ## Prerequisites
 
 1. **Visual Studio Build Tools** with the "Desktop development with C++"
-   workload — provides the MSVC linker and the Windows SDK headers that the
-   `ring` crypto dependency requires.
+   workload — provides the MSVC `link.exe` linker and Windows SDK headers that
+   the `ring` crypto dependency requires.
    Download: <https://visualstudio.microsoft.com/visual-cpp-build-tools/>
+
+   > **Note:** Git also ships a `link.exe` (a POSIX hardlink utility) that ends
+   > up on `PATH` before the MSVC one. Rust's `x86_64-pc-windows-msvc` target
+   > requires the *MSVC* `link.exe`. If you see `linker 'link.exe' not found`,
+   > Build Tools are not installed. Install them with the silent bootstrapper:
+   > ```powershell
+   > Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "$env:TEMP\vs_buildtools.exe"
+   > Start-Process -FilePath "$env:TEMP\vs_buildtools.exe" -Wait -ArgumentList "--quiet","--norestart","--add","Microsoft.VisualStudio.Workload.VCTools","--includeRecommended"
+   > ```
+   > Open a **new** shell afterwards so the updated `PATH` takes effect.
 
 2. **Rust (MSVC toolchain)**: install via <https://rustup.rs>. The default
    target `x86_64-pc-windows-msvc` is correct.
@@ -28,10 +38,12 @@ toolchain, and NSIS bundling is Windows-only).
    NSIS installer bootstraps it automatically at install time
    (`webviewInstallMode: downloadBootstrapper`).
 
-5. **Tauri CLI**:
+5. **Tauri CLI** — install via npm (prebuilt binary; `cargo install` fails on current
+   stable Rust due to a version pincer between `home-0.5.12` and `tauri-utils-2.9.2`):
    ```powershell
-   cargo install tauri-cli --version "^2"
+   npm install --global @tauri-apps/cli@^2
    ```
+   Verify: `tauri --version` should print `tauri-cli 2.x.x`.
 
 ---
 
@@ -39,8 +51,11 @@ toolchain, and NSIS bundling is Windows-only).
 
 ```powershell
 # From the repository root
-cargo tauri build
+tauri build
 ```
+
+> **`cargo tauri` is not available** when the CLI is installed via npm.
+> Use `tauri build` (global) or `npx tauri build` (project-local install).
 
 The per-user NSIS installer is written to:
 

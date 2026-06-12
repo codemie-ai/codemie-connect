@@ -1,6 +1,6 @@
 // Shell execution primitives. Port of src/main/runner.js.
-// All commands run via the login shell (`/bin/zsh -lc <cmd>`) so the user's
-// profile PATH (Homebrew, npm prefix) is loaded — matching the Electron app.
+// macOS: commands run via `/bin/zsh -lc` (login shell, profile PATH loaded).
+// Windows: commands run via `powershell.exe -NoProfile -NonInteractive -Command`.
 use std::process::Stdio;
 
 use serde::Serialize;
@@ -10,8 +10,6 @@ use tokio::process::Command;
 
 use crate::error::CmdResult;
 use crate::state::AppState;
-
-const SHELL: &str = "/bin/zsh";
 
 #[derive(Serialize, Clone)]
 pub struct CaptureResult {
@@ -27,11 +25,28 @@ struct CmdLine {
     tag: String,
 }
 
+/// Build a platform-appropriate shell command. Returns a tokio Command ready to
+/// execute `cmd_str` through the OS shell.
+fn shell_cmd(cmd_str: &str) -> Command {
+    #[cfg(not(windows))]
+    {
+        let mut c = Command::new("/bin/zsh");
+        c.arg("-lc").arg(cmd_str);
+        c
+    }
+    #[cfg(windows)]
+    {
+        let mut c = Command::new("powershell.exe");
+        c.args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(cmd_str);
+        c
+    }
+}
+
 /// Run a command and capture all output. Mirrors runner.runCapture:
 /// spawn error -> code 127; no exit code -> 1.
 pub async fn capture(cmd: &str, path_override: Option<String>) -> CaptureResult {
-    let mut command = Command::new(SHELL);
-    command.arg("-lc").arg(cmd);
+    let mut command = shell_cmd(cmd);
     if let Some(p) = path_override {
         command.env("PATH", p);
     }
@@ -68,9 +83,7 @@ pub async fn run_fresh_env(state: State<'_, AppState>, cmd: String) -> CmdResult
 /// The JS bridge emits the `> cmd` prompt line itself, matching runner.runStream.
 #[tauri::command]
 pub async fn run_stream(app: AppHandle, cmd: String, stream_id: String) -> i32 {
-    let mut child = match Command::new(SHELL)
-        .arg("-lc")
-        .arg(&cmd)
+    let mut child = match shell_cmd(&cmd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -156,6 +169,24 @@ mod tests {
 
     #[tokio::test]
     async fn run_capture_reports_nonzero_exit() {
+        let r = capture("exit 3", None).await;
+        assert_eq!(r.code, 3);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests_windows {
+    use super::*;
+
+    #[tokio::test]
+    async fn run_capture_runs_via_powershell_and_captures_stdout() {
+        let r = capture("Write-Output 'hi'", None).await;
+        assert_eq!(r.code, 0);
+        assert!(r.stdout.contains("hi"));
+    }
+
+    #[tokio::test]
+    async fn run_capture_reports_nonzero_exit_windows() {
         let r = capture("exit 3", None).await;
         assert_eq!(r.code, 3);
     }

@@ -38,3 +38,6 @@ thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
 portable-pty = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"

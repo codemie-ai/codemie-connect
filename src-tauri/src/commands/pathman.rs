@@ -1,4 +1,6 @@
 // PATH management. Port of src/main/pathman.js.
+// macOS: persists to ~/.zprofile; separator ':'.
+// Windows: persists to HKCU\Environment registry; separator ';'.
 use std::collections::HashSet;
 
 use tauri::State;
@@ -6,11 +8,19 @@ use tauri::State;
 use crate::error::CmdResult;
 use crate::state::AppState;
 
+#[cfg(not(windows))]
 const MARKER: &str = "# Added by CodeMie Installer";
 #[cfg(not(windows))]
 const PATH_MARKER: &str = "__CODEMIE_PATH_MARKER__";
 
-/// Candidate dirs where git/node/npm live on macOS, plus the common user npm prefix.
+/// PATH entry separator: ';' on Windows, ':' everywhere else.
+#[cfg(windows)]
+const PATH_SEP: char = ';';
+#[cfg(not(windows))]
+const PATH_SEP: char = ':';
+
+/// Candidate dirs where git/node/npm live, plus common user npm prefixes.
+#[cfg(not(windows))]
 pub fn candidate_dirs() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
     vec![
@@ -21,22 +31,33 @@ pub fn candidate_dirs() -> Vec<String> {
     ]
 }
 
-/// Dedupe a ':'-joined PATH, preserving first-occurrence order and dropping empties.
+#[cfg(windows)]
+pub fn candidate_dirs() -> Vec<String> {
+    let profile = std::env::var("USERPROFILE").unwrap_or_default();
+    vec![
+        r"C:\Program Files\Git\cmd".to_string(),
+        r"C:\Program Files\nodejs".to_string(),
+        format!(r"{profile}\AppData\Roaming\npm"),
+        format!(r"{profile}\AppData\Local\CodeMie\npm-prefix"),
+    ]
+}
+
+/// Dedupe a PATH string, preserving first-occurrence order and dropping empties.
 pub fn dedupe_path(path_str: &str) -> String {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    for p in path_str.split(':') {
+    for p in path_str.split(PATH_SEP) {
         if p.is_empty() || !seen.insert(p) {
             continue;
         }
         out.push(p);
     }
-    out.join(":")
+    out.join(&PATH_SEP.to_string())
 }
 
 /// Return only the entries not already present in `path_str`.
 pub fn missing_entries(path_str: &str, entries: &[String]) -> Vec<String> {
-    let present: HashSet<&str> = path_str.split(':').filter(|p| !p.is_empty()).collect();
+    let present: HashSet<&str> = path_str.split(PATH_SEP).filter(|p| !p.is_empty()).collect();
     entries
         .iter()
         .filter(|e| !present.contains(e.as_str()))
@@ -51,9 +72,10 @@ pub fn missing_entries(path_str: &str, entries: &[String]) -> Vec<String> {
 // so silence the dead-code warning there without removing the tested function.
 #[cfg_attr(windows, allow(dead_code))]
 pub fn merge_shell_path(shell_path: &str, current_path: &str, candidates: &[String]) -> String {
-    let mut joined = format!("{shell_path}:{current_path}");
+    let sep = PATH_SEP.to_string();
+    let mut joined = format!("{shell_path}{sep}{current_path}");
     for c in candidates {
-        joined.push(':');
+        joined.push(PATH_SEP);
         joined.push_str(c);
     }
     dedupe_path(&joined)
@@ -64,11 +86,11 @@ pub fn fresh_env_path(remembered: &[String]) -> String {
     let current = std::env::var("PATH").unwrap_or_default();
     let mut joined = current;
     for d in remembered {
-        joined.push(':');
+        joined.push(PATH_SEP);
         joined.push_str(d);
     }
     for c in candidate_dirs() {
-        joined.push(':');
+        joined.push(PATH_SEP);
         joined.push_str(&c);
     }
     dedupe_path(&joined)
@@ -113,7 +135,7 @@ pub fn apply_resolved_shell_path() -> String {
 
 /// On Windows the GUI process already inherits a usable PATH and there is no
 /// login-shell concept, so this is a no-op that returns the current PATH
-/// unchanged. It must NOT run a shell or pass PATH through the `:`-based merge,
+/// unchanged. It must NOT run a shell or pass PATH through the `:'-based merge,
 /// which would corrupt the `;`-delimited Windows PATH. Registry-based PATH
 /// handling lands in a later phase.
 #[cfg(windows)]
@@ -121,7 +143,11 @@ pub fn apply_resolved_shell_path() -> String {
     std::env::var("PATH").unwrap_or_default()
 }
 
-/// Persist entries to ~/.zprofile, idempotently (skip entries already referenced).
+// ---- persistence ----
+
+/// Persist PATH entries for the current user. macOS: appends to ~/.zprofile.
+/// Windows: writes to HKCU\Environment registry and broadcasts WM_SETTINGCHANGE.
+#[cfg(not(windows))]
 fn persist(entries: &[String]) -> std::io::Result<String> {
     let home = std::env::var("HOME").unwrap_or_default();
     let file = format!("{home}/.zprofile");
@@ -144,6 +170,63 @@ fn persist(entries: &[String]) -> std::io::Result<String> {
     Ok(file)
 }
 
+#[cfg(windows)]
+fn persist(entries: &[String]) -> std::io::Result<String> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (env_key, _) = hkcu.create_subkey("Environment")?;
+    let current: String = env_key.get_value("PATH").unwrap_or_default();
+    let missing = missing_entries(&current, entries);
+    if missing.is_empty() {
+        return Ok(r"HKCU\Environment".to_string());
+    }
+    let new_val = format!(
+        "{}{}{}",
+        current.trim_end_matches(';'),
+        if current.is_empty() { "" } else { ";" },
+        missing.join(";")
+    );
+    env_key.set_value("PATH", &new_val)?;
+    broadcast_env_change();
+    Ok(r"HKCU\Environment".to_string())
+}
+
+/// Broadcast WM_SETTINGCHANGE so the shell and Explorer pick up the new PATH
+/// without requiring a logoff. Uses a minimal extern block — no extra crate needed.
+#[cfg(windows)]
+fn broadcast_env_change() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    #[allow(non_snake_case)]
+    extern "system" {
+        fn SendMessageTimeoutW(
+            hwnd: usize,
+            msg: u32,
+            w_param: usize,
+            l_param: *const u16,
+            flags: u32,
+            timeout: u32,
+            result: *mut usize,
+        ) -> isize;
+    }
+    let env: Vec<u16> = OsStr::new("Environment")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        SendMessageTimeoutW(
+            0xFFFF, // HWND_BROADCAST
+            0x001A, // WM_SETTINGCHANGE
+            0,
+            env.as_ptr(),
+            0x0002, // SMTO_ABORTIFHUNG
+            5000,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
 // ---- Tauri commands ----
 
 #[tauri::command]
@@ -156,7 +239,7 @@ pub fn persist_to_zprofile(entries: Vec<String>) -> CmdResult<String> {
 pub fn augment_path(state: State<AppState>, dirs: Vec<String>) {
     let mut remembered = state.remembered.lock().unwrap();
     let clean: Vec<String> = dirs.into_iter().filter(|d| !d.is_empty()).collect();
-    for d in missing_entries(&remembered.join(":"), &clean) {
+    for d in missing_entries(&remembered.join(&PATH_SEP.to_string()), &clean) {
         if !remembered.contains(&d) {
             remembered.push(d);
         }
@@ -167,13 +250,21 @@ pub fn augment_path(state: State<AppState>, dirs: Vec<String>) {
 mod tests {
     use super::*;
 
-    // Ported from test/pathman.test.js.
+    #[cfg(not(windows))]
     #[test]
     fn dedupe_path_preserves_first_occurrence_and_drops_empties() {
         assert_eq!(dedupe_path("/a:/b:/a:/c"), "/a:/b:/c");
         assert_eq!(dedupe_path("/a::/b:"), "/a:/b");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn dedupe_path_preserves_first_occurrence_and_drops_empties_windows() {
+        assert_eq!(dedupe_path(r"C:\a;C:\b;C:\a;C:\c"), r"C:\a;C:\b;C:\c");
+        assert_eq!(dedupe_path(r"C:\a;;C:\b;"), r"C:\a;C:\b");
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn missing_entries_returns_only_entries_not_present() {
         let e = vec!["/b".to_string(), "/c".to_string(), "/d".to_string()];
@@ -182,6 +273,18 @@ mod tests {
         assert!(missing_entries("/a:/b", &e2).is_empty());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn missing_entries_returns_only_entries_not_present_windows() {
+        let e = vec![
+            r"C:\b".to_string(),
+            r"C:\c".to_string(),
+            r"C:\d".to_string(),
+        ];
+        assert_eq!(missing_entries(r"C:\a;C:\b", &e), vec![r"C:\c", r"C:\d"]);
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn merge_shell_path_orders_shell_then_current_then_candidates_deduped() {
         let cand = vec!["/d".to_string(), "/a".to_string()];
