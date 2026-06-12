@@ -34,6 +34,7 @@ pub fn run() {
             commands::inspector::check_node,
             commands::inspector::check_npm,
             commands::inspector::check_codemie,
+            commands::inspector::check_codemie_version,
             commands::inspector::check_profile_status,
             commands::inspector::git_binary_path,
             commands::inspector::node_binary_path,
