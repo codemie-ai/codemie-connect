@@ -1,6 +1,6 @@
 {
   "name": "codemie-installer-macos-tauri",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "type": "module",
   "description": "EPAM AI/Run CodeMie Connect for macOS — Tauri v2 build.",
