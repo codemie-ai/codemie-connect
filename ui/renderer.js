@@ -207,8 +207,8 @@ function dismissUpdateBanner() {
 }
 
 // ---- one-shot command action (proxy connect / analytics) ----
-async function runAction(title, cmd, returnView = 'home') {
-  openTerminal(title, { keepOpen: true, onClose: () => showView(returnView) });
+async function runAction(title, cmd, returnView = 'home', hint) {
+  openTerminal(title, { keepOpen: true, hint, onClose: () => showView(returnView) });
   try {
     const code = await bridge.pty.spawnPty(cmd);
     writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
@@ -244,9 +244,21 @@ async function ensureAuthenticated() {
 async function runAnalytics() {
   // --report-output is set explicitly: a Finder-launched bundle's CWD is "/",
   // which is not writable. $HOME is expanded by the pty's login shell.
+  const { installed } = cliVersionState;
+  if (installed && semverLt(installed, '0.4.1')) {
+    showNotice({
+      title: 'CLI update required',
+      message: `Your CodeMie CLI (v${installed}) doesn't support analytics reporting. Use Update CLI to upgrade, then try again.`,
+      primaryLabel: 'Go to Update CLI',
+      primaryAction: () => hideNotice(),
+    });
+    return;
+  }
   await runAction(
     'Analytics report',
-    'codemie analytics --report --open --report-output "$HOME/codemie-analytics.html"'
+    'codemie analytics --report --open --report-output "$HOME/codemie-analytics.html"',
+    'home',
+    'Running automatically — no input needed.'
   );
 }
 
@@ -406,7 +418,7 @@ async function boot() {
   connectBack.addEventListener('click', () => showView('home'));
   connectBtn.addEventListener('click', async () => {
     if (await ensureAuthenticated()) {
-      runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect');
+      runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect', 'Running automatically — no input needed.');
     }
   });
   restartBtn.addEventListener('click', async () => {

@@ -66,7 +66,7 @@ export function openTerminal(title, opts = {}) {
   keepOpen = Boolean(opts.keepOpen);
   onCloseCb = opts.onClose || null;
   if (titleEl && title) titleEl.textContent = title;
-  if (hintEl) hintEl.textContent = DEFAULT_HINT;
+  if (hintEl) hintEl.textContent = opts.hint || DEFAULT_HINT;
   if (doneBtn) doneBtn.classList.add('hidden');
   term.reset();
   overlay.classList.remove('hidden');
