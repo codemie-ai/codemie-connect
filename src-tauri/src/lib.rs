@@ -28,6 +28,7 @@ pub fn run() {
             commands::runner::run_capture,
             commands::runner::run_fresh_env,
             commands::runner::run_stream,
+            commands::runner::run_self_update,
             commands::pathman::persist_to_zprofile,
             commands::pathman::augment_path,
             commands::inspector::check_git,
