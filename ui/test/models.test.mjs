@@ -19,4 +19,10 @@ test('makeStep applies defaults and normalizes types', () => {
   assert.strictEqual(s.is_sub_step, false);
   assert.strictEqual(s.parent_id, '1');
   assert.strictEqual(s.description, '');
+  assert.strictEqual(s.externalWindow, false);
+});
+
+test('makeStep maps external_window to externalWindow', () => {
+  const s = makeStep({ id: '2.3.3', title: 'Configure CodeMie', external_window: true });
+  assert.strictEqual(s.externalWindow, true);
 });

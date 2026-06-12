@@ -1,6 +1,9 @@
-// macOS install operations. Port of src/main/installer-macos.js.
+// Install operations. macOS: pkg/xcode-select. Windows: msi/git-for-windows exe.
+// Platform variants are selected at compile time via #[cfg(windows)] /
+// #[cfg(not(windows))].
 use std::process::Stdio;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::error::{CmdResult, InstallerError};
@@ -8,19 +11,30 @@ use crate::error::{CmdResult, InstallerError};
 // Used only if the live LTS lookup fails (offline / index unreachable).
 const FALLBACK_NODE_VERSION: &str = "24.16.0";
 
-/// The OS temp dir — download destination for the Node .pkg (replaces app.getPath('temp')).
+// ---- platform info --------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct PlatformInfo {
+    pub os: String,
+    pub arch: String,
+}
+
+/// Return the compile-time target OS and CPU architecture. Used by the JS
+/// frontend to select platform-specific paths and file extensions at runtime.
+#[tauri::command]
+pub fn get_platform_info() -> PlatformInfo {
+    PlatformInfo {
+        os: std::env::consts::OS.to_string(), // "macos" | "windows" | "linux"
+        arch: std::env::consts::ARCH.to_string(), // "x86_64" | "aarch64"
+    }
+}
+
+// ---- shared commands ------------------------------------------------------
+
+/// The OS temp dir — download destination for installers.
 #[tauri::command]
 pub fn temp_dir() -> String {
     std::env::temp_dir().to_string_lossy().to_string()
-}
-
-/// Build the official universal Node .pkg URL. The macOS Node installer is a single
-/// universal .pkg (Intel + Apple Silicon), so the URL does not depend on arch.
-#[tauri::command]
-pub fn node_pkg_url(arch: String, version: String) -> String {
-    let _ = arch; // intentionally unused — universal installer
-    let v = version.strip_prefix('v').unwrap_or(&version);
-    format!("https://nodejs.org/dist/v{v}/node-v{v}.pkg")
 }
 
 /// Resolve the newest Node.js LTS version from the official dist index,
@@ -80,8 +94,20 @@ pub async fn fetch_codemie_latest() -> String {
     fetch_codemie_npm_latest().await.unwrap_or_default()
 }
 
+// ---- macOS-specific commands -----------------------------------------------
+
+/// Build the official universal Node .pkg URL. The macOS Node installer is a
+/// single universal .pkg (Intel + Apple Silicon).
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn node_pkg_url(arch: String, version: String) -> String {
+    let _ = arch; // intentionally unused — universal installer
+    let v = version.strip_prefix('v').unwrap_or(&version);
+    format!("https://nodejs.org/dist/v{v}/node-v{v}.pkg")
+}
+
 /// Run a command with administrator privileges via osascript (native auth dialog).
-/// Replaces @vscode/sudo-prompt; requires no entitlements on an unsigned app.
+#[cfg(not(windows))]
 fn sudo_exec(cmd: &str) -> CmdResult<String> {
     let escaped = cmd.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!("do shell script \"{escaped}\" with administrator privileges");
@@ -100,6 +126,7 @@ fn sudo_exec(cmd: &str) -> CmdResult<String> {
 }
 
 /// Install a downloaded Node .pkg system-wide (requires admin auth).
+#[cfg(not(windows))]
 #[tauri::command]
 pub async fn install_node(pkg_path: String) -> CmdResult<bool> {
     let cmd = format!("installer -pkg \"{pkg_path}\" -target /");
@@ -111,6 +138,7 @@ pub async fn install_node(pkg_path: String) -> CmdResult<bool> {
 
 /// Trigger the Xcode Command Line Tools GUI installer (which provides Git), then poll
 /// until `git` becomes available. Emits human-readable ticks via `engine:git-tick`.
+#[cfg(not(windows))]
 #[tauri::command]
 pub async fn install_git_clt(app: AppHandle) -> bool {
     let _ = std::process::Command::new("xcode-select")
@@ -151,11 +179,146 @@ pub async fn install_git_clt(app: AppHandle) -> bool {
     }
 }
 
+// ---- Windows-specific commands --------------------------------------------
+
+/// Build the Node.js Windows MSI URL. The MSI filename encodes the CPU arch:
+/// x86_64 → "x64", aarch64 → "arm64".
+#[cfg(windows)]
+#[tauri::command]
+pub fn node_pkg_url(arch: String, version: String) -> String {
+    let v = version.strip_prefix('v').unwrap_or(&version);
+    let a = if arch.contains("arm") || arch == "aarch64" {
+        "arm64"
+    } else {
+        "x64"
+    };
+    format!("https://nodejs.org/dist/v{v}/node-v{v}-{a}.msi")
+}
+
+/// Install Node.js from a downloaded MSI using `msiexec /quiet /norestart`.
+#[cfg(windows)]
+#[tauri::command]
+pub async fn install_node(pkg_path: String) -> CmdResult<bool> {
+    let out = tokio::process::Command::new("msiexec")
+        .args(["/i", &pkg_path, "/quiet", "/norestart"])
+        .output()
+        .await
+        .map_err(|e| InstallerError::Other(e.to_string()))?;
+    Ok(out.status.success())
+}
+
+/// Hardcoded Git-for-Windows 64-bit release. Kept versioned to guarantee a
+/// known-good installer; update alongside the legacy Python installer.
+#[cfg(windows)]
+const GIT_WIN_URL: &str = "https://github.com/git-for-windows/git/releases/download/\
+    v2.54.0.windows.1/Git-2.54.0-64-bit.exe";
+
+/// Download and silently install Git for Windows, then poll until `git --version`
+/// succeeds. Emits human-readable progress ticks via `engine:git-tick`.
+#[cfg(windows)]
+#[tauri::command]
+pub async fn install_git_clt(app: AppHandle) -> bool {
+    let _ = app.emit("engine:git-tick", "Downloading Git for Windows…");
+
+    // Download installer to temp dir.
+    let dest = {
+        let mut p = std::env::temp_dir();
+        p.push("Git-installer.exe");
+        p
+    };
+    match download_to_file(GIT_WIN_URL, &dest, &app).await {
+        Ok(()) => {}
+        Err(e) => {
+            let _ = app.emit("engine:git-tick", format!("Download failed: {e}"));
+            return false;
+        }
+    }
+
+    let _ = app.emit("engine:git-tick", "Running Git installer (silent)…");
+    match tokio::process::Command::new(&dest)
+        .args(["/VERYSILENT", "/NORESTART"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+    {
+        Ok(s) if !s.success() => {
+            let _ = app.emit(
+                "engine:git-tick",
+                format!("Installer exited with code {:?}", s.code()),
+            );
+        }
+        Err(e) => {
+            let _ = app.emit("engine:git-tick", format!("Failed to run installer: {e}"));
+            return false;
+        }
+        _ => {}
+    }
+
+    // Poll until git is available (up to 5 minutes).
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(5 * 60);
+    loop {
+        if let Ok(out) = std::process::Command::new("git").arg("--version").output() {
+            if out.status.success()
+                && String::from_utf8_lossy(&out.stdout)
+                    .to_lowercase()
+                    .contains("git version")
+            {
+                let _ = app.emit("engine:git-tick", "Git is now available.");
+                return true;
+            }
+        }
+        if start.elapsed() > timeout {
+            let _ = app.emit("engine:git-tick", "Timed out waiting for Git.");
+            return false;
+        }
+        let _ = app.emit("engine:git-tick", "Waiting for Git to become available…");
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    }
+}
+
+/// Download a URL to a file path, emitting percentage ticks via `engine:git-tick`.
+#[cfg(windows)]
+async fn download_to_file(
+    url: &str,
+    dest: &std::path::Path,
+    app: &AppHandle,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+    let response = reqwest::get(url).await.map_err(|e| e.to_string())?;
+    let total = response.content_length().unwrap_or(0);
+    let mut stream = response.bytes_stream();
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut downloaded: u64 = 0;
+    let mut last_pct: u64 = 0;
+    use tokio::io::AsyncWriteExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+        if let Some(pct) = (downloaded * 100).checked_div(total) {
+            if pct >= last_pct + 10 {
+                last_pct = pct;
+                let _ = app.emit(
+                    "engine:git-tick",
+                    format!("Downloading Git for Windows… {pct}%"),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---- tests ----------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Ported from test/installer.test.js.
+    #[cfg(not(windows))]
     #[test]
     fn node_pkg_url_builds_official_universal_url() {
         assert_eq!(
@@ -164,6 +327,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn node_pkg_url_is_arch_independent() {
         assert_eq!(
@@ -191,5 +355,23 @@ mod tests {
     fn parse_npm_latest_returns_none_on_missing_latest_key() {
         let json = serde_json::json!({ "dist-tags": { "next": "0.6.0-beta" } });
         assert_eq!(parse_npm_latest(&json), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn node_pkg_url_builds_x64_msi_url() {
+        assert_eq!(
+            node_pkg_url("x86_64".into(), "24.15.0".into()),
+            "https://nodejs.org/dist/v24.15.0/node-v24.15.0-x64.msi"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn node_pkg_url_builds_arm64_msi_url() {
+        assert_eq!(
+            node_pkg_url("aarch64".into(), "24.15.0".into()),
+            "https://nodejs.org/dist/v24.15.0/node-v24.15.0-arm64.msi"
+        );
     }
 }

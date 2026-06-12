@@ -39,6 +39,7 @@ pub fn run() {
             commands::inspector::check_profile_status,
             commands::inspector::git_binary_path,
             commands::inspector::node_binary_path,
+            commands::installer::get_platform_info,
             commands::installer::temp_dir,
             commands::installer::node_pkg_url,
             commands::installer::latest_lts_node_version,
@@ -49,6 +50,8 @@ pub fn run() {
             commands::pty::spawn_pty,
             commands::pty::pty_input,
             commands::pty::pty_resize,
+            #[cfg(windows)]
+            commands::pty::spawn_external_ps,
             commands::logger::log_line,
             commands::logger::open_log,
             commands::window::set_window_height,

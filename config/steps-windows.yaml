@@ -1,0 +1,66 @@
+# CodeMie Windows installation plan (data-driven, consumed by src/main/engine.js).
+# Selected at compile time via #[cfg(windows)] in src-tauri/src/steps.rs.
+# Step IDs kept verbatim from the Windows reference (codemie-claude-installer-win).
+steps:
+  - id: "1.0"
+    title: "PowerShell execution policy"
+    description: "Enable script execution for this user account."
+    requires_approval: true
+    approval_message: "Allow PowerShell to run scripts for this user account? Required for installation."
+    spinner: true
+
+  - id: "1.1"
+    title: "Check Git"
+    description: "Verify that Git is available on this PC."
+    fatal: true
+    fatal_recommendation: "Git could not be installed automatically. Install Git manually from git-scm.com, then relaunch this wizard."
+
+  - id: "1.1.1"
+    title: "Install Git"
+    description: "Download Git for Windows and run the silent installer."
+    is_sub_step: true
+    parent_id: "1.1"
+    requires_approval: true
+    approval_message: "Git was not found. Download and install Git for Windows silently?"
+    spinner: true
+
+  - id: "1.2"
+    title: "Check Node.js & npm"
+    description: "Verify that Node.js and npm are available on this PC."
+    fatal: true
+    fatal_recommendation: "Node.js could not be installed automatically. Install Node.js manually from nodejs.org, then relaunch this wizard."
+
+  - id: "1.2.1"
+    title: "Install Node.js"
+    description: "Download Node.js LTS and run the silent MSI installer."
+    is_sub_step: true
+    parent_id: "1.2"
+    requires_approval: true
+    approval_message: "Node.js was not found. Download and install Node.js LTS silently?"
+    spinner: true
+
+  - id: "1.3"
+    title: "Install CodeMie"
+    description: "Install the CodeMie CLI globally via npm (@codemieai/code)."
+    requires_approval: true
+    approval_message: "Install the CodeMie CLI globally via npm (@codemieai/code)?"
+    spinner: true
+    fatal: true
+    fatal_recommendation: "CodeMie installation failed. Install it manually with: npm install -g @codemieai/code"
+
+  - id: "2.3.3"
+    title: "Configure CodeMie"
+    description: "Run the interactive CodeMie setup wizard."
+    interactive: true
+    external_window: true
+
+  - id: "2.3.5"
+    title: "Install Claude Code engine"
+    description: "Install the Claude Code engine through CodeMie."
+    interactive: true
+    external_window: true
+
+  - id: "2.4"
+    title: "Validate installation"
+    description: "Run codemie doctor to validate the installation."
+    spinner: true

@@ -42,17 +42,36 @@ pub fn spawn_pty(
         })
         .map_err(|e| InstallerError::Pty(e.to_string()))?;
 
-    let home = std::env::var("HOME").unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_default();
-    let mut builder = CommandBuilder::new("/bin/zsh");
-    builder.arg("-lc");
-    builder.arg(&cmd);
-    builder.env("TERM", "xterm-256color");
-    builder.env("HOME", &home);
-    builder.env("PATH", &path);
-    if !home.is_empty() {
-        builder.cwd(&home);
-    }
+
+    #[cfg(not(windows))]
+    let builder = {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mut b = CommandBuilder::new("/bin/zsh");
+        b.arg("-lc");
+        b.arg(&cmd);
+        b.env("TERM", "xterm-256color");
+        b.env("HOME", &home);
+        b.env("PATH", &path);
+        if !home.is_empty() {
+            b.cwd(&home);
+        }
+        b
+    };
+
+    #[cfg(windows)]
+    let builder = {
+        let profile = std::env::var("USERPROFILE").unwrap_or_default();
+        let mut b = CommandBuilder::new("powershell.exe");
+        b.args(["-NoProfile", "-Command", &cmd]);
+        b.env("TERM", "xterm-256color");
+        b.env("USERPROFILE", &profile);
+        b.env("PATH", &path);
+        if !profile.is_empty() {
+            b.cwd(&profile);
+        }
+        b
+    };
 
     let mut child = pair
         .slave
@@ -132,4 +151,33 @@ pub fn pty_resize(state: State<AppState>, cols: u16, rows: u16) -> CmdResult<()>
             .map_err(|e| InstallerError::Pty(e.to_string()))?;
     }
     Ok(())
+}
+
+// ---- Windows: external console window ----------------------------------------
+
+/// Spawn `cmd` in a new visible PowerShell window and block until it exits.
+/// Uses `CREATE_NEW_CONSOLE` so Windows opens a fresh conhost/Terminal pane.
+/// Returns the exit code (0 = success).
+#[cfg(windows)]
+#[tauri::command]
+pub async fn spawn_external_ps(cmd: String) -> CmdResult<i32> {
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    let status = tokio::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &cmd])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .status()
+        .await
+        .map_err(|e| InstallerError::Other(e.to_string()))?;
+    Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawn_external_ps_exits_zero_for_noop_command() {
+        let code = spawn_external_ps("cmd /c exit 0".into()).await.unwrap();
+        assert_eq!(code, 0);
+    }
 }

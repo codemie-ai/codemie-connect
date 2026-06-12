@@ -348,6 +348,11 @@ async function boot() {
     // Silently ignore — offline or CLI not installed
   });
 
+  const [platformInfo, tmpDir] = await Promise.all([
+    invoke('get_platform_info'),
+    invoke('temp_dir'),
+  ]);
+
   handlers = makeHandlers({
     inspector: bridge.inspector,
     runner: bridge.runner,
@@ -355,8 +360,10 @@ async function boot() {
     pathman: bridge.pathman,
     downloader: bridge.downloader,
     pty: bridge.pty,
-    arch: 'universal',
-    tmpDir: await invoke('temp_dir'),
+    externalWindow: bridge.externalWindow,
+    arch: platformInfo.arch,
+    platform: platformInfo,
+    tmpDir,
   });
 
   engine = new Engine({
