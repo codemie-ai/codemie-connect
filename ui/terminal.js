@@ -95,11 +95,17 @@ export function writeLine(text) {
   if (term) term.write(text);
 }
 
-// Called when the active pty exits. Auto-closes for wizard steps; for home
-// actions (keepOpen) it reveals the "back to home" affordance instead.
-export function handlePtyExit() {
-  if (keepOpen) {
-    if (hintEl) hintEl.textContent = 'Finished. Click “‹ Back” to return.';
+// Called when the active pty exits. Auto-closes for wizard steps on clean exit;
+// on non-zero exit keeps the overlay open so the user can read the error output.
+// For home actions (keepOpen) always reveals the “back to home” affordance.
+export function handlePtyExit(code) {
+  const failed = code !== undefined && code !== 0;
+  if (keepOpen || failed) {
+    if (hintEl) {
+      hintEl.textContent = failed
+        ? `Finished with errors (exit ${code}). Click “‹ Back” to return.`
+        : 'Finished. Click “‹ Back” to return.';
+    }
     if (doneBtn) doneBtn.classList.remove('hidden');
   } else {
     closeTerminal();

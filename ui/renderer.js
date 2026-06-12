@@ -368,7 +368,7 @@ async function boot() {
 
   // Rust-origin events: PTY output/exit stream from the portable-pty reader threads.
   await listen('engine:pty-data', (e) => writeData(e.payload.data));
-  await listen('engine:pty-exit', () => handlePtyExit());
+  await listen('engine:pty-exit', (e) => handlePtyExit(e.payload.code));
 
   // ---- controls ----
   unattendedCb.addEventListener('change', () => {
