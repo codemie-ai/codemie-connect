@@ -109,7 +109,7 @@ When the banner is visible, the Installation group gets a blue border highlight 
 
 ## Section 4 — Update CLI silent action
 
-### New Rust command (`src-tauri/src/commands/runner.rs` or new `updater.rs`)
+### New Rust command (`src-tauri/src/commands/runner.rs`)
 
 **`run_self_update() -> CmdResult<String>`**
 - Runs `codemie self-update` via `run_capture` (not PTY — silent, captures stdout/stderr)
@@ -145,13 +145,14 @@ Connect and Analytics tiles remain fully active during an update.
 
 ```js
 async function runAnalytics() {
-  const installed = await invoke('check_codemie_version');
+  // Use the installed version cached at boot — no extra IPC call needed.
+  const { installed } = cliVersionState;
   if (installed && semverLt(installed, '0.4.1')) {
     showNotice({
       title: 'CLI update required',
       message: `Your CodeMie CLI (v${installed}) doesn't support analytics reporting. Use Update CLI to upgrade, then try again.`,
       primaryLabel: 'Go to Update CLI',
-      primaryAction: () => { hideNotice(); scrollToInstallationGroup(); },
+      primaryAction: () => hideNotice(),
     });
     return;
   }
