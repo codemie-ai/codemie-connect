@@ -136,14 +136,25 @@ export function makeHandlers(deps) {
         ctx.line('CodeMie CLI already present', 'success');
         return true;
       }
+
+      // If the npm global prefix is not user-writable (e.g. system /usr/local from the
+      // official Node.js .pkg), redirect to ~/.npm-global to avoid EACCES errors.
+      const prefix = (await runner.runCapture('npm config get prefix')).stdout.trim();
+      if (prefix && (await runner.runCapture(`test -w "${prefix}"`)).code !== 0) {
+        const home = (await runner.runCapture('echo "$HOME"')).stdout.trim();
+        const userPrefix = joinPath(home, '.npm-global');
+        ctx.line('npm global prefix is not writable — redirecting to ~/.npm-global…', 'info');
+        await runner.runCapture(`npm config set prefix "${userPrefix}"`);
+      }
+
       ctx.setSubtitle('1.3', 'Installing CodeMie via npm…');
       const res = await runner.runStream('npm install -g @codemieai/code', (t, tag) => ctx.line(t, tag));
       if (res.code !== 0) {
         ctx.setSubtitle('1.3', 'npm install failed');
         return false;
       }
-      const prefix = (await runner.runCapture('npm config get prefix')).stdout.trim();
-      if (prefix) await rememberDirs([joinPath(prefix, 'bin')]);
+      const newPrefix = (await runner.runCapture('npm config get prefix')).stdout.trim();
+      if (newPrefix) await rememberDirs([joinPath(newPrefix, 'bin')]);
       const re = await runner.runFreshEnv('codemie --help');
       const ok = `${re.stdout}${re.stderr}`.trim().length > 0;
       ctx.setSubtitle('1.3', ok ? 'CodeMie installed' : 'CodeMie not detected after install');

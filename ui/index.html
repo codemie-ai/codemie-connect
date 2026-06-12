@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>CodeMie Installation Wizard</title>
+    <title>EPAM AI/Run CodeMie Connect</title>
     <!-- Render-blocking: sets the <html> theme class before first paint (no flash). -->
     <script src="theme-init.js"></script>
     <link rel="stylesheet" href="vendor/xterm.css" />
@@ -24,23 +24,36 @@
         <header id="home-header">
           <img id="home-logo" src="codemie-logo.svg" alt="CodeMie" />
           <div class="home-heading">
-            <div id="home-title">CodeMie Installer</div>
+            <div id="home-title">EPAM AI/Run CodeMie Connect</div>
             <div id="home-subtitle">What would you like to do?</div>
           </div>
         </header>
 
         <div id="home-grid">
-          <button class="home-tile" data-action="full">
-            <div class="tile-icon">🚀</div>
-            <div class="tile-title">Full installation</div>
-            <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI, then run the setup wizard and Claude engine.</div>
-          </button>
-
-          <button class="home-tile" data-action="install-only">
-            <div class="tile-icon">📦</div>
-            <div class="tile-title">Install only</div>
-            <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI — skip the setup wizard.</div>
-          </button>
+          <div id="installation-group">
+            <div class="group-label">Installation</div>
+            <div id="update-banner" class="hidden">
+              <span>⬆️ Update available: <span id="update-from"></span> → <span id="update-to"></span>. Run <strong>Update CLI</strong> to get the latest version.</span>
+              <button id="update-banner-dismiss" aria-label="Dismiss">✕</button>
+            </div>
+            <div id="installation-tiles">
+              <button class="home-tile sub-tile" data-action="full">
+                <div class="tile-icon">🚀</div>
+                <div class="tile-title">Full installation</div>
+                <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI, then run the setup wizard and Claude engine.</div>
+              </button>
+              <button class="home-tile sub-tile" data-action="install-only">
+                <div class="tile-icon">📦</div>
+                <div class="tile-title">Install only</div>
+                <div class="tile-desc">Install Git, Node &amp; the CodeMie CLI — skip the setup wizard.</div>
+              </button>
+              <button class="home-tile sub-tile" id="update-cli-tile" data-action="update-cli">
+                <div class="tile-icon" id="update-cli-icon">🔄</div>
+                <div class="tile-title" id="update-cli-title">Update CLI</div>
+                <div class="tile-desc">Update the CodeMie CLI to the latest version.</div>
+              </button>
+            </div>
+          </div>
 
           <button class="home-tile" data-action="connect-desktop">
             <div class="tile-icon">🖥️</div>
@@ -69,7 +82,7 @@
           <!-- Left: animated sprite + controls -->
           <aside id="sprite-panel">
             <canvas id="sprite-canvas" width="168" height="168"></canvas>
-            <div id="sprite-label">Installer</div>
+            <div id="sprite-label">Connect</div>
             <div id="status-pill"><span id="status-dot"></span><span id="status-text">Idle</span></div>
             <div id="sprite-controls">
               <button id="install-btn" class="btn btn-accent">Install</button>

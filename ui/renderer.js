@@ -19,6 +19,22 @@ const { listen } = window.__TAURI__.event;
 // their parent handlers can activate them.
 const INSTALL_ONLY_IDS = ['1.1', '1.1.1', '1.2', '1.2.1', '1.3'];
 
+// Compare semver strings. Returns true when a < b. Works for X.Y.Z format.
+function semverLt(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na < nb) return true;
+    if (na > nb) return false;
+  }
+  return false;
+}
+
+// Populated during boot(); consumed by runAnalytics() and runUpdateCli().
+const cliVersionState = { installed: '', latest: '', updateAvailable: false };
+
 // Capture boot/runtime errors so the smoke self-test can read them.
 window.addEventListener('error', (e) => {
   window.__bootError = String((e.error && e.error.stack) || e.message || e);
@@ -171,9 +187,28 @@ function hideNotice() {
   noticeOverlay.classList.add('hidden');
 }
 
+// ---- CLI version banner ----
+function showUpdateBanner() {
+  if (!cliVersionState.updateAvailable) return;
+  if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
+  document.getElementById('update-from').textContent = cliVersionState.installed;
+  document.getElementById('update-to').textContent = cliVersionState.latest;
+  document.getElementById('update-banner').classList.remove('hidden');
+  document.getElementById('installation-group').classList.add('update-available');
+  document.getElementById('update-cli-tile').dataset.state = 'highlight';
+}
+
+function dismissUpdateBanner() {
+  sessionStorage.setItem('update-banner-dismissed', '1');
+  document.getElementById('update-banner').classList.add('hidden');
+  document.getElementById('installation-group').classList.remove('update-available');
+  const tile = document.getElementById('update-cli-tile');
+  if (tile.dataset.state === 'highlight') delete tile.dataset.state;
+}
+
 // ---- one-shot command action (proxy connect / analytics) ----
-async function runAction(title, cmd, returnView = 'home') {
-  openTerminal(title, { keepOpen: true, onClose: () => showView(returnView) });
+async function runAction(title, cmd, returnView = 'home', hint) {
+  openTerminal(title, { keepOpen: true, hint, onClose: () => showView(returnView) });
   try {
     const code = await bridge.pty.spawnPty(cmd);
     writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
@@ -209,10 +244,67 @@ async function ensureAuthenticated() {
 async function runAnalytics() {
   // --report-output is set explicitly: a Finder-launched bundle's CWD is "/",
   // which is not writable. $HOME is expanded by the pty's login shell.
+  const { installed } = cliVersionState;
+  if (installed && semverLt(installed, '0.4.1')) {
+    showNotice({
+      title: 'CLI update required',
+      message: `Your CodeMie CLI (v${installed}) doesn't support analytics reporting. Use Update CLI to upgrade, then try again.`,
+      primaryLabel: 'Go to Update CLI',
+      primaryAction: () => hideNotice(),
+    });
+    return;
+  }
   await runAction(
     'Analytics report',
-    'codemie analytics --report --open --report-output "$HOME/codemie-analytics.html"'
+    'codemie analytics --report --open --report-output "$HOME/codemie-analytics.html"',
+    'home',
+    'Running automatically — no input needed.'
   );
+}
+
+async function runUpdateCli() {
+  const tile = document.getElementById('update-cli-tile');
+  const iconEl = document.getElementById('update-cli-icon');
+  const titleEl = document.getElementById('update-cli-title');
+  const siblings = document.querySelectorAll('#installation-tiles .sub-tile:not(#update-cli-tile)');
+
+  // Enter updating state
+  tile.dataset.state = 'updating';
+  iconEl.textContent = '⏳';
+  titleEl.textContent = 'Updating…';
+  siblings.forEach((t) => { t.style.pointerEvents = 'none'; t.style.opacity = '0.4'; });
+
+  try {
+    await invoke('run_self_update');
+
+    // Re-probe installed version after update
+    const newVersion = await invoke('check_codemie_version');
+    cliVersionState.installed = newVersion;
+    cliVersionState.updateAvailable =
+      newVersion && cliVersionState.latest
+        ? semverLt(newVersion, cliVersionState.latest)
+        : false;
+
+    tile.dataset.state = 'done';
+    iconEl.textContent = '✅';
+    titleEl.textContent = newVersion ? `Updated! → ${newVersion}` : 'Updated!';
+
+    if (!cliVersionState.updateAvailable) {
+      dismissUpdateBanner();
+    }
+
+    setTimeout(() => {
+      delete tile.dataset.state;
+      iconEl.textContent = '🔄';
+      titleEl.textContent = 'Update CLI';
+      siblings.forEach((t) => { t.style.pointerEvents = ''; t.style.opacity = ''; });
+    }, 3000);
+  } catch (e) {
+    tile.dataset.state = 'error';
+    iconEl.textContent = '❌';
+    titleEl.textContent = 'Failed — retry?';
+    siblings.forEach((t) => { t.style.pointerEvents = ''; t.style.opacity = ''; });
+  }
 }
 
 async function boot() {
@@ -239,6 +331,23 @@ async function boot() {
     done: document.getElementById('terminal-done'),
   });
 
+  // Wire update banner dismiss
+  document.getElementById('update-banner-dismiss').addEventListener('click', dismissUpdateBanner);
+
+  // Check CLI version vs npm latest at startup (non-blocking)
+  Promise.all([
+    invoke('check_codemie_version'),
+    invoke('fetch_codemie_latest'),
+  ]).then(([installed, latest]) => {
+    cliVersionState.installed = installed;
+    cliVersionState.latest = latest;
+    cliVersionState.updateAvailable =
+      Boolean(installed) && Boolean(latest) && semverLt(installed, latest);
+    showUpdateBanner();
+  }).catch(() => {
+    // Silently ignore — offline or CLI not installed
+  });
+
   handlers = makeHandlers({
     inspector: bridge.inspector,
     runner: bridge.runner,
@@ -259,7 +368,7 @@ async function boot() {
 
   // Rust-origin events: PTY output/exit stream from the portable-pty reader threads.
   await listen('engine:pty-data', (e) => writeData(e.payload.data));
-  await listen('engine:pty-exit', () => handlePtyExit());
+  await listen('engine:pty-exit', (e) => handlePtyExit(e.payload.code));
 
   // ---- controls ----
   unattendedCb.addEventListener('change', () => {
@@ -298,6 +407,9 @@ async function boot() {
       case 'analytics':
         runAnalytics();
         break;
+      case 'update-cli':
+        runUpdateCli();
+        break;
       default:
         break;
     }
@@ -306,7 +418,7 @@ async function boot() {
   connectBack.addEventListener('click', () => showView('home'));
   connectBtn.addEventListener('click', async () => {
     if (await ensureAuthenticated()) {
-      runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect');
+      runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect', 'Running automatically — no input needed.');
     }
   });
   restartBtn.addEventListener('click', async () => {

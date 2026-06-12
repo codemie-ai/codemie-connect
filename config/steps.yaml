@@ -39,7 +39,7 @@ steps:
     approval_message: "Install the CodeMie CLI globally via npm (@codemieai/code)?"
     spinner: true
     fatal: true
-    fatal_recommendation: "CodeMie installation failed. Install it manually with: npm install -g @codemieai/code"
+    fatal_recommendation: "CodeMie installation failed. If you see an EACCES error, run: npm config set prefix ~/.npm-global && npm install -g @codemieai/code — then add ~/.npm-global/bin to your PATH in ~/.zprofile."
 
   - id: "2.3.3"
     title: "Configure CodeMie"

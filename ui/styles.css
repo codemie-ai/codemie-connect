@@ -150,6 +150,74 @@ body::before {
 .tile-desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
 #home-footer { color: var(--muted); font-size: 9px; text-align: center; padding-top: 18px; }
 
+/* ---- Installation group ---- */
+#installation-group {
+  grid-column: 1 / -1;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-xl);
+  padding: 16px 20px;
+  transition: border-color 0.14s ease;
+}
+#installation-group.update-available { border-color: var(--accent); }
+.group-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+#update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(88, 166, 255, 0.08);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text);
+}
+#update-banner-dismiss {
+  background: none;
+  border: 1px solid var(--border-2);
+  color: var(--muted);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+  font: inherit;
+}
+#installation-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+.sub-tile { padding: 14px 12px; }
+.sub-tile .tile-icon { font-size: 22px; }
+.sub-tile .tile-title { font-size: 13px; }
+/* Update CLI tile state variants */
+#update-cli-tile[data-state="highlight"] { border-color: var(--accent); }
+#update-cli-tile[data-state="updating"] {
+  border-color: var(--accent);
+  background: var(--surface-2);
+  pointer-events: none;
+  cursor: default;
+}
+#update-cli-tile[data-state="done"] {
+  border-color: #3fb950;
+  background: rgba(63, 185, 80, 0.08);
+  pointer-events: none;
+  cursor: default;
+}
+#update-cli-tile[data-state="error"] {
+  border-color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.08);
+}
+
 /* ---- Wizard top bar (back to home) ---- */
 #wizard-topbar {
   display: flex;

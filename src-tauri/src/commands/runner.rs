@@ -126,6 +126,22 @@ where
     })
 }
 
+/// Run `codemie self-update` silently (captured, not PTY).
+/// Returns stdout on exit 0; serializes as an error string on non-zero exit.
+#[tauri::command]
+pub async fn run_self_update() -> CmdResult<String> {
+    let r = capture("codemie self-update", None).await;
+    if r.code == 0 {
+        Ok(r.stdout)
+    } else {
+        Err(crate::error::InstallerError::Other(format!(
+            "codemie self-update failed (exit {}): {}",
+            r.code,
+            r.stderr.trim()
+        )))
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

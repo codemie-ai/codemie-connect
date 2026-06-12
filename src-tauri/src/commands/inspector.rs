@@ -65,6 +65,34 @@ pub async fn check_codemie() -> Probe {
     codemie_from(r.code, &r.stdout, &r.stderr)
 }
 
+/// Extract the first X.Y.Z semver token from arbitrary CLI output.
+/// Handles formats: "0.4.1", "codemie 0.4.1", "v0.4.1",
+/// "@codemieai/code/0.4.1 darwin-arm64 …"
+fn parse_codemie_version(stdout: &str) -> String {
+    for token in stdout.split_whitespace() {
+        for part in token.split(|c: char| !c.is_ascii_digit() && c != '.') {
+            let p = part.trim_start_matches('v');
+            let segs: Vec<&str> = p.split('.').collect();
+            if segs.len() >= 3
+                && segs
+                    .iter()
+                    .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+            {
+                return p.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Return the installed codemie CLI version string (e.g. "0.4.1"),
+/// or an empty string if not found or version cannot be parsed.
+#[tauri::command]
+pub async fn check_codemie_version() -> String {
+    let r = capture("codemie --version", None).await;
+    parse_codemie_version(&r.stdout)
+}
+
 /// CodeMie profile auth status, parsed from `codemie profile status`.
 #[derive(Serialize, Default, Clone)]
 pub struct ProfileStatus {
@@ -187,5 +215,46 @@ mod tests {
     #[test]
     fn profile_status_empty_output_is_false() {
         assert_eq!(parse_profile_status("", ""), (false, String::new()));
+    }
+
+    // --- parse_codemie_version ---
+
+    #[test]
+    fn parse_codemie_version_plain_semver() {
+        assert_eq!(parse_codemie_version("0.4.1\n"), "0.4.1");
+    }
+
+    #[test]
+    fn parse_codemie_version_with_name_prefix() {
+        assert_eq!(parse_codemie_version("codemie 0.4.1\n"), "0.4.1");
+    }
+
+    #[test]
+    fn parse_codemie_version_strips_v_prefix() {
+        assert_eq!(parse_codemie_version("v0.4.1"), "0.4.1");
+    }
+
+    #[test]
+    fn parse_codemie_version_handles_slash_path_format() {
+        // e.g. "@codemieai/code/0.4.1 darwin-arm64 node-v20.0.0"
+        assert_eq!(
+            parse_codemie_version("@codemieai/code/0.4.1 darwin-arm64 node-v20.0.0"),
+            "0.4.1"
+        );
+    }
+
+    #[test]
+    fn parse_codemie_version_returns_empty_on_no_version() {
+        assert_eq!(parse_codemie_version(""), "");
+    }
+
+    #[test]
+    fn parse_codemie_version_returns_empty_on_command_not_found() {
+        // Parser robustness: real not-found errors arrive in stderr (not parsed here);
+        // this guards against shell wrappers that forward stderr to stdout.
+        assert_eq!(
+            parse_codemie_version("zsh:1: command not found: codemie"),
+            ""
+        );
     }
 }

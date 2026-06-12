@@ -53,6 +53,33 @@ async fn fetch_lts() -> Option<String> {
     None
 }
 
+fn parse_npm_latest(data: &serde_json::Value) -> Option<String> {
+    data.get("dist-tags")
+        .and_then(|d| d.get("latest"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+async fn fetch_codemie_npm_latest() -> Option<String> {
+    let data: serde_json::Value = reqwest::Client::new()
+        .get("https://registry.npmjs.org/@codemieai/code")
+        .header("Accept", "application/vnd.npm.install-v1+json")
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    parse_npm_latest(&data)
+}
+
+/// Return the latest published version of @codemieai/code from the npm registry,
+/// or an empty string when offline or the fetch fails.
+#[tauri::command]
+pub async fn fetch_codemie_latest() -> String {
+    fetch_codemie_npm_latest().await.unwrap_or_default()
+}
+
 /// Run a command with administrator privileges via osascript (native auth dialog).
 /// Replaces @vscode/sudo-prompt; requires no entitlements on an unsigned app.
 fn sudo_exec(cmd: &str) -> CmdResult<String> {
@@ -143,5 +170,26 @@ mod tests {
             node_pkg_url("x64".into(), "24.15.0".into()),
             node_pkg_url("arm64".into(), "24.15.0".into())
         );
+    }
+
+    #[test]
+    fn parse_npm_latest_extracts_version_from_dist_tags() {
+        let json = serde_json::json!({
+            "name": "@codemieai/code",
+            "dist-tags": { "latest": "0.5.0", "next": "0.6.0-beta" }
+        });
+        assert_eq!(parse_npm_latest(&json), Some("0.5.0".to_string()));
+    }
+
+    #[test]
+    fn parse_npm_latest_returns_none_on_missing_dist_tags() {
+        let json = serde_json::json!({ "name": "@codemieai/code" });
+        assert_eq!(parse_npm_latest(&json), None);
+    }
+
+    #[test]
+    fn parse_npm_latest_returns_none_on_missing_latest_key() {
+        let json = serde_json::json!({ "dist-tags": { "next": "0.6.0-beta" } });
+        assert_eq!(parse_npm_latest(&json), None);
     }
 }

@@ -18,3 +18,4 @@ node_modules/
 .ai-run/runs/
 apple_developer
 .env.signing
+.superpowers/

@@ -36,6 +36,7 @@ export const inspector = {
   checkNode: () => invoke('check_node'),
   checkNpm: () => invoke('check_npm'),
   checkCodemie: () => invoke('check_codemie'),
+  checkCodemieVersion: () => invoke('check_codemie_version'),
   gitBinaryPath: () => invoke('git_binary_path'),
   nodeBinaryPath: () => invoke('node_binary_path'),
 };
@@ -55,6 +56,12 @@ export const installer = {
       un();
     }
   },
+};
+
+// ---- updater ----
+export const updater = {
+  fetchCodemieLatest: () => invoke('fetch_codemie_latest'),
+  runSelfUpdate: () => invoke('run_self_update'),
 };
 
 // ---- pathman (src/main/pathman.js) ----
