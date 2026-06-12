@@ -152,3 +152,33 @@ pub fn pty_resize(state: State<AppState>, cols: u16, rows: u16) -> CmdResult<()>
     }
     Ok(())
 }
+
+// ---- Windows: external console window ----------------------------------------
+
+/// Spawn `cmd` in a new visible PowerShell window and block until it exits.
+/// Uses `CREATE_NEW_CONSOLE` so Windows opens a fresh conhost/Terminal pane.
+/// Returns the exit code (0 = success).
+#[cfg(windows)]
+#[tauri::command]
+pub async fn spawn_external_ps(cmd: String) -> CmdResult<i32> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    let status = tokio::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &cmd])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .status()
+        .await
+        .map_err(|e| InstallerError::Other(e.to_string()))?;
+    Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawn_external_ps_exits_zero_for_noop_command() {
+        let code = spawn_external_ps("cmd /c exit 0".into()).await.unwrap();
+        assert_eq!(code, 0);
+    }
+}
