@@ -187,6 +187,25 @@ function hideNotice() {
   noticeOverlay.classList.add('hidden');
 }
 
+// ---- CLI version banner ----
+function showUpdateBanner() {
+  if (!cliVersionState.updateAvailable) return;
+  if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
+  document.getElementById('update-from').textContent = cliVersionState.installed;
+  document.getElementById('update-to').textContent = cliVersionState.latest;
+  document.getElementById('update-banner').classList.remove('hidden');
+  document.getElementById('installation-group').classList.add('update-available');
+  document.getElementById('update-cli-tile').dataset.state = 'highlight';
+}
+
+function dismissUpdateBanner() {
+  sessionStorage.setItem('update-banner-dismissed', '1');
+  document.getElementById('update-banner').classList.add('hidden');
+  document.getElementById('installation-group').classList.remove('update-available');
+  const tile = document.getElementById('update-cli-tile');
+  if (tile.dataset.state === 'highlight') delete tile.dataset.state;
+}
+
 // ---- one-shot command action (proxy connect / analytics) ----
 async function runAction(title, cmd, returnView = 'home') {
   openTerminal(title, { keepOpen: true, onClose: () => showView(returnView) });
@@ -231,6 +250,51 @@ async function runAnalytics() {
   );
 }
 
+async function runUpdateCli() {
+  const tile = document.getElementById('update-cli-tile');
+  const iconEl = document.getElementById('update-cli-icon');
+  const titleEl = document.getElementById('update-cli-title');
+  const siblings = document.querySelectorAll('#installation-tiles .sub-tile:not(#update-cli-tile)');
+
+  // Enter updating state
+  tile.dataset.state = 'updating';
+  iconEl.textContent = '⏳';
+  titleEl.textContent = 'Updating…';
+  siblings.forEach((t) => { t.style.pointerEvents = 'none'; t.style.opacity = '0.4'; });
+
+  try {
+    await invoke('run_self_update');
+
+    // Re-probe installed version after update
+    const newVersion = await invoke('check_codemie_version');
+    cliVersionState.installed = newVersion;
+    cliVersionState.updateAvailable =
+      newVersion && cliVersionState.latest
+        ? semverLt(newVersion, cliVersionState.latest)
+        : false;
+
+    tile.dataset.state = 'done';
+    iconEl.textContent = '✅';
+    titleEl.textContent = newVersion ? `Updated! → ${newVersion}` : 'Updated!';
+
+    if (!cliVersionState.updateAvailable) {
+      dismissUpdateBanner();
+    }
+
+    setTimeout(() => {
+      delete tile.dataset.state;
+      iconEl.textContent = '🔄';
+      titleEl.textContent = 'Update CLI';
+      siblings.forEach((t) => { t.style.pointerEvents = ''; t.style.opacity = ''; });
+    }, 3000);
+  } catch (e) {
+    tile.dataset.state = 'error';
+    iconEl.textContent = '❌';
+    titleEl.textContent = 'Failed — retry?';
+    siblings.forEach((t) => { t.style.pointerEvents = ''; t.style.opacity = ''; });
+  }
+}
+
 async function boot() {
   const flags = await invoke('smoke_mode');
 
@@ -253,6 +317,23 @@ async function boot() {
     title: document.getElementById('terminal-title'),
     hint: document.getElementById('terminal-hint'),
     done: document.getElementById('terminal-done'),
+  });
+
+  // Wire update banner dismiss
+  document.getElementById('update-banner-dismiss').addEventListener('click', dismissUpdateBanner);
+
+  // Check CLI version vs npm latest at startup (non-blocking)
+  Promise.all([
+    invoke('check_codemie_version'),
+    invoke('fetch_codemie_latest'),
+  ]).then(([installed, latest]) => {
+    cliVersionState.installed = installed;
+    cliVersionState.latest = latest;
+    cliVersionState.updateAvailable =
+      Boolean(installed) && Boolean(latest) && semverLt(installed, latest);
+    showUpdateBanner();
+  }).catch(() => {
+    // Silently ignore — offline or CLI not installed
   });
 
   handlers = makeHandlers({
@@ -313,6 +394,9 @@ async function boot() {
         break;
       case 'analytics':
         runAnalytics();
+        break;
+      case 'update-cli':
+        runUpdateCli();
         break;
       default:
         break;
