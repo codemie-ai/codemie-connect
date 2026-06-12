@@ -360,6 +360,7 @@ async function boot() {
     pathman: bridge.pathman,
     downloader: bridge.downloader,
     pty: bridge.pty,
+    externalWindow: bridge.externalWindow,
     arch: platformInfo.arch,
     platform: platformInfo,
     tmpDir,

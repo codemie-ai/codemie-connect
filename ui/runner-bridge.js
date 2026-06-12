@@ -90,6 +90,13 @@ export const downloader = {
 // ---- platform info ----
 export const platformInfo = () => invoke('get_platform_info');
 
+// ---- external console window (Windows only) ----
+// Spawns `cmd` in a new visible PowerShell window and resolves with the exit code
+// when the window closes. Has no effect (throws) on non-Windows builds.
+export const externalWindow = {
+  spawnPs: (cmd) => invoke('spawn_external_ps', { cmd }),
+};
+
 // ---- pty (replaces node-pty; the active PTY lives in Rust managed state) ----
 export const pty = {
   // Spawns an interactive command; resolves with its exit code on engine:pty-exit.

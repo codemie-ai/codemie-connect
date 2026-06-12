@@ -161,7 +161,6 @@ pub fn pty_resize(state: State<AppState>, cols: u16, rows: u16) -> CmdResult<()>
 #[cfg(windows)]
 #[tauri::command]
 pub async fn spawn_external_ps(cmd: String) -> CmdResult<i32> {
-    use std::os::windows::process::CommandExt;
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
     let status = tokio::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-Command", &cmd])

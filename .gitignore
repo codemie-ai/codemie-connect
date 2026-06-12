@@ -20,3 +20,4 @@ apple_developer
 .env.signing
 .superpowers/
 /CLAUDE.local.md
+.idea/

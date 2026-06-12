@@ -21,7 +21,7 @@ function joinPathWin(...parts) {
 }
 
 export function makeHandlers(deps) {
-  const { inspector, runner, installer, pathman, downloader, pty } = deps;
+  const { inspector, runner, installer, pathman, downloader, pty, externalWindow } = deps;
   const arch = deps.arch || 'universal';
   const tmpDir = deps.tmpDir || '/tmp';
   const platform = deps.platform || { os: 'macos', arch };
@@ -40,6 +40,19 @@ export function makeHandlers(deps) {
       await pathman.persistToZprofile(clean);
     } catch {
       /* non-fatal */
+    }
+  }
+
+  // Open `cmd` in a new external PowerShell window (Windows only) and await exit.
+  async function runExternalWindow(ctx, stepId, cmd) {
+    ctx.setSubtitle(stepId, 'Running in external window…');
+    try {
+      const code = await externalWindow.spawnPs(cmd);
+      ctx.setSubtitle(stepId, '');
+      return code === 0;
+    } catch (err) {
+      ctx.setSubtitle(stepId, `Failed to open window: ${(err && err.message) || err}`);
+      return false;
     }
   }
 
@@ -184,8 +197,10 @@ export function makeHandlers(deps) {
       return ok;
     },
 
-    // 2.3.3 — Configure CodeMie (interactive)
-    '2.3.3': (ctx) => runPty(ctx, 'codemie setup', 'CodeMie Setup — follow the prompts, then close'),
+    // 2.3.3 — Configure CodeMie: external PowerShell window on Windows, embedded PTY on macOS.
+    '2.3.3': (ctx) => isWin
+      ? runExternalWindow(ctx, '2.3.3', 'codemie setup')
+      : runPty(ctx, 'codemie setup', 'CodeMie Setup — follow the prompts, then close'),
 
     // 2.3.5 — Install Claude Code engine (interactive)
     '2.3.5': (ctx) => runPty(ctx, 'codemie install claude --supported', 'Install Claude Code engine'),
@@ -199,4 +214,5 @@ export function makeHandlers(deps) {
       return ok;
     },
   };
+  return handlers;
 }
