@@ -61,7 +61,10 @@ fn parse_npm_latest(data: &serde_json::Value) -> Option<String> {
 }
 
 async fn fetch_codemie_npm_latest() -> Option<String> {
-    let data: serde_json::Value = reqwest::get("https://registry.npmjs.org/@codemieai/code")
+    let data: serde_json::Value = reqwest::Client::new()
+        .get("https://registry.npmjs.org/@codemieai/code")
+        .header("Accept", "application/vnd.npm.install-v1+json")
+        .send()
         .await
         .ok()?
         .json()
