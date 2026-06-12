@@ -19,6 +19,22 @@ const { listen } = window.__TAURI__.event;
 // their parent handlers can activate them.
 const INSTALL_ONLY_IDS = ['1.1', '1.1.1', '1.2', '1.2.1', '1.3'];
 
+// Compare semver strings. Returns true when a < b. Works for X.Y.Z format.
+function semverLt(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na < nb) return true;
+    if (na > nb) return false;
+  }
+  return false;
+}
+
+// Populated during boot(); consumed by runAnalytics() and runUpdateCli().
+const cliVersionState = { installed: '', latest: '', updateAvailable: false };
+
 // Capture boot/runtime errors so the smoke self-test can read them.
 window.addEventListener('error', (e) => {
   window.__bootError = String((e.error && e.error.stack) || e.message || e);
