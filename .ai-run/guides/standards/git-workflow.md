@@ -49,6 +49,16 @@ Conventional Commits — type-only (no scope required):
 
 After merge: delete the feature branch.
 
+Open MR against `main` via `glab mr create` with `--remove-source-branch`:
+
+```bash
+glab mr create \
+  --title "<type>: Capital sentence" \
+  --target-branch main \
+  --remove-source-branch \
+  --yes
+```
+
 ---
 
 ## Troubleshooting
