@@ -14,6 +14,93 @@ const GIT_BINARIES: &[&str] = &[
 #[cfg(not(windows))]
 const NODE_BINARIES: &[&str] = &["/opt/homebrew/bin/node", "/usr/local/bin/node"];
 
+const MINIMUM_NODE_MAJOR: u32 = 20;
+
+/// Parse a version string like "v22.14.0" or "22.14.0" into (22, 14, 0).
+/// Returns (0, 0, 0) for unrecognised strings (e.g. "lts/*").
+fn parse_node_version(s: &str) -> (u32, u32, u32) {
+    let s = s.trim_start_matches('v');
+    let mut parts = s.split('.').filter_map(|x| x.parse::<u32>().ok());
+    let major = parts.next().unwrap_or(0);
+    let minor = parts.next().unwrap_or(0);
+    let patch = parts.next().unwrap_or(0);
+    (major, minor, patch)
+}
+
+/// Return candidate Node.js binary paths from version managers, ordered by preference:
+/// active/default version first, then all installed versions sorted descending.
+/// Paths that do not exist on disk are included — callers must check existence.
+#[cfg(not(windows))]
+fn find_versioned_node_binaries() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let home = match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => PathBuf::from(h),
+        _ => return vec![],
+    };
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Push a path only if it has not been seen before.
+    let mut push = |p: PathBuf| {
+        if seen.insert(p.clone()) {
+            candidates.push(p);
+        }
+    };
+
+    // Helper: read_dir a path and return entries sorted by version descending.
+    let sorted_entries = |dir: &std::path::Path| -> Vec<PathBuf> {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        entries.sort_by_key(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            std::cmp::Reverse(parse_node_version(&name))
+        });
+        entries
+    };
+
+    // ── nvm ──────────────────────────────────────────────────────────────────
+    // Active version: ~/.nvm/alias/default contains a version string or alias.
+    let nvm_alias = home.join(".nvm/alias/default");
+    if let Ok(ver) = std::fs::read_to_string(&nvm_alias) {
+        let ver = ver.trim();
+        // Only proceed if it looks like a version (starts with v or digit), not "lts/*"
+        if ver.starts_with('v') || ver.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            push(home.join(format!(".nvm/versions/node/{}/bin/node", ver)));
+        }
+    }
+    // All nvm versions sorted descending
+    for dir in sorted_entries(&home.join(".nvm/versions/node")) {
+        push(dir.join("bin/node"));
+    }
+
+    // ── fnm ──────────────────────────────────────────────────────────────────
+    // Active version: ~/.fnm/aliases/default is a symlink whose target's basename is the version.
+    let fnm_alias = home.join(".fnm/aliases/default");
+    if let Ok(target) = std::fs::read_link(&fnm_alias) {
+        let ver = target.file_name().unwrap_or_default().to_string_lossy().to_string();
+        push(home.join(format!(".fnm/node-versions/{}/installation/bin/node", ver)));
+    }
+    // All fnm versions sorted descending
+    for dir in sorted_entries(&home.join(".fnm/node-versions")) {
+        push(dir.join("installation/bin/node"));
+    }
+
+    // ── asdf ─────────────────────────────────────────────────────────────────
+    for dir in sorted_entries(&home.join(".asdf/installs/nodejs")) {
+        push(dir.join("bin/node"));
+    }
+
+    // ── volta ─────────────────────────────────────────────────────────────────
+    for dir in sorted_entries(&home.join(".volta/tools/image/node")) {
+        push(dir.join("bin/node"));
+    }
+
+    candidates
+}
+
 #[derive(Serialize, Default, Clone)]
 pub struct Probe {
     pub found: bool,
@@ -52,7 +139,19 @@ pub async fn check_git() -> Probe {
 #[tauri::command]
 pub async fn check_node() -> Probe {
     let r = capture("node --version", None).await;
-    probe_from(r.code, &r.stdout)
+    let p = probe_from(r.code, &r.stdout);
+    if p.found {
+        return p;
+    }
+    // PATH probe failed (GUI apps inherit launchd PATH, not shell PATH).
+    // Try version-manager paths directly.
+    let binary = node_binary_path();
+    if let Some(ref bin) = binary {
+        let cmd = format!("\"{}\" --version", bin);
+        let r2 = capture(&cmd, None).await;
+        return probe_from(r2.code, &r2.stdout);
+    }
+    p
 }
 
 #[tauri::command]
@@ -184,10 +283,26 @@ pub fn git_binary_path() -> Option<String> {
 #[tauri::command]
 #[cfg(not(windows))]
 pub fn node_binary_path() -> Option<String> {
-    NODE_BINARIES
-        .iter()
-        .find(|p| Path::new(p).exists())
-        .map(|s| s.to_string())
+    // 1. Static Homebrew / system paths
+    if let Some(p) = NODE_BINARIES.iter().find(|p| Path::new(p).exists()) {
+        return Some(p.to_string());
+    }
+    // 2. Version-manager paths — validate each with node --version
+    for candidate in find_versioned_node_binaries() {
+        if !candidate.exists() {
+            continue;
+        }
+        if let Ok(out) = std::process::Command::new(&candidate).arg("--version").output() {
+            if out.status.success() {
+                let ver_str = String::from_utf8_lossy(&out.stdout);
+                let (major, _, _) = parse_node_version(ver_str.trim());
+                if major >= MINIMUM_NODE_MAJOR {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -298,5 +413,39 @@ mod tests {
             parse_codemie_version("zsh:1: command not found: codemie"),
             ""
         );
+    }
+
+    // --- parse_node_version ---
+
+    #[test]
+    fn parse_node_version_strips_v_prefix() {
+        assert_eq!(parse_node_version("v22.14.0"), (22, 14, 0));
+    }
+
+    #[test]
+    fn parse_node_version_without_prefix() {
+        assert_eq!(parse_node_version("20.18.1"), (20, 18, 1));
+    }
+
+    #[test]
+    fn parse_node_version_alias_string_returns_zero() {
+        assert_eq!(parse_node_version("lts/*"), (0, 0, 0));
+    }
+
+    #[test]
+    fn parse_node_version_partial_version() {
+        assert_eq!(parse_node_version("v22"), (22, 0, 0));
+    }
+
+    #[test]
+    fn parse_node_version_sorts_correctly() {
+        let mut versions = vec!["v20.18.1", "v22.14.0", "v24.0.0", "v20.9.0"];
+        versions.sort_by_key(|s| std::cmp::Reverse(parse_node_version(s)));
+        assert_eq!(versions, vec!["v24.0.0", "v22.14.0", "v20.18.1", "v20.9.0"]);
+    }
+
+    #[test]
+    fn minimum_node_major_is_twenty() {
+        assert_eq!(MINIMUM_NODE_MAJOR, 20);
     }
 }

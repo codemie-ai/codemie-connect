@@ -126,6 +126,7 @@ export function makeHandlers(deps) {
         }
       }
       ctx.setSubtitle('1.2', 'Node.js not found — installing…');
+      ctx.line("Node.js v20+ was not found via PATH, Homebrew, nvm, fnm, asdf, or volta.\nOpen a new terminal, run 'node --version' to confirm your Node.js is accessible, then relaunch this wizard.", 'warn');
       const ok = await ctx.runSubStep('1.2.1', async () => {
         const version = await installer.latestLtsNodeVersion();
         const url = await installer.nodePkgUrl(arch, version);
