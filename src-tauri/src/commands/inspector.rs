@@ -141,9 +141,13 @@ pub async fn check_node() -> Probe {
     let r = capture("node --version", None).await;
     let p = probe_from(r.code, &r.stdout);
     if p.found {
-        return p;
+        let (major, _, _) = parse_node_version(&p.version);
+        if major >= MINIMUM_NODE_MAJOR {
+            return p;
+        }
+        // version < minimum — fall through to version-manager detection
     }
-    // PATH probe failed (GUI apps inherit launchd PATH, not shell PATH).
+    // PATH probe failed or version too old (GUI apps inherit launchd PATH, not shell PATH).
     // Try version-manager paths directly.
     let binary = node_binary_path();
     if let Some(ref bin) = binary {
@@ -283,9 +287,21 @@ pub fn git_binary_path() -> Option<String> {
 #[tauri::command]
 #[cfg(not(windows))]
 pub fn node_binary_path() -> Option<String> {
-    // 1. Static Homebrew / system paths
-    if let Some(p) = NODE_BINARIES.iter().find(|p| Path::new(p).exists()) {
-        return Some(p.to_string());
+    // 1. Static Homebrew / system paths — validate version against MINIMUM_NODE_MAJOR
+    for p in NODE_BINARIES.iter() {
+        let path = Path::new(p);
+        if !path.exists() {
+            continue;
+        }
+        if let Ok(out) = std::process::Command::new(p).arg("--version").output() {
+            if out.status.success() {
+                let ver_str = String::from_utf8_lossy(&out.stdout);
+                let (major, _, _) = parse_node_version(ver_str.trim());
+                if major >= MINIMUM_NODE_MAJOR {
+                    return Some(p.to_string());
+                }
+            }
+        }
     }
     // 2. Version-manager paths — validate each with node --version
     for candidate in find_versioned_node_binaries() {
