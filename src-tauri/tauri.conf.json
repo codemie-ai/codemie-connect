@@ -26,6 +26,11 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "nsis"],
+    "resources": [
+      { "src": "../assets/windows/bin/codemie.cmd", "target": "bin/codemie.cmd" },
+      { "src": "../assets/windows/node/node.exe",   "target": "node/node.exe" },
+      { "src": "../assets/windows/cli",             "target": "cli" }
+    ],
     "category": "DeveloperTool",
     "copyright": "EPAM AI/Run CodeMie ©",
     "icon": [
