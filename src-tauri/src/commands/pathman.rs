@@ -248,8 +248,8 @@ pub fn augment_path(state: State<AppState>, dirs: Vec<String>) {
 
 /// Prepend the directory containing the bundled codemie sidecar to the
 /// process PATH so all login-shell invocations (runner.rs, pty.rs) find it.
-/// Called once in setup() before any thread is spawned.
-pub fn inject_bundled_bin_path(app: &tauri::AppHandle) {
+/// Must be called before any plugin is installed (see lib.rs setup order).
+pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
     // Build the platform-specific sidecar filename at runtime.
     // env!("TARGET") is only available in build scripts; use std::env::consts instead.
     #[cfg(target_os = "macos")]
@@ -258,25 +258,37 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) {
     let sidecar_name = format!("codemie-{}-pc-windows-msvc.exe", std::env::consts::ARCH);
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let sidecar_name = "codemie".to_string();
-    // Approach B: Tauri places the sidecar alongside the main exe
+
+    let probe = |d: &std::path::PathBuf| {
+        d.join(&sidecar_name).exists()
+            || d.join("codemie").exists()
+            || d.join("codemie.exe").exists()
+    };
+
+    // Approach B: Tauri places the sidecar alongside the main exe.
     let bin_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .filter(|d| d.join(&sidecar_name).exists() || d.join("codemie").exists())
-        // Approach A fallback: resource_dir
-        .or_else(|| {
-            app.path()
-                .resource_dir()
-                .ok()
-                .filter(|d| d.join(&sidecar_name).exists() || d.join("codemie").exists())
-        });
+        .filter(|d| probe(d))
+        // Approach A fallback: resource_dir.
+        .or_else(|| app.path().resource_dir().ok().filter(|d| probe(d)));
+
     if let Some(dir) = bin_dir {
+        let dir_str = dir.to_str().ok_or_else(|| {
+            "[inject_bundled_bin_path] sidecar dir has non-UTF-8 path; PATH unchanged".to_string()
+        })?;
         let current = std::env::var("PATH").unwrap_or_default();
-        // SAFETY: setup() runs before any thread is spawned; no data races on PATH.
-        unsafe { std::env::set_var("PATH", format!("{}:{}", dir.display(), current)) };
-        log::info!("[inject_bundled_bin_path] prepended {}", dir.display());
+        let new_path = if current.is_empty() {
+            dir_str.to_string()
+        } else {
+            format!("{}{}{}", dir_str, PATH_SEP, current)
+        };
+        // SAFETY: called before any plugin or thread is started (see lib.rs setup order).
+        unsafe { std::env::set_var("PATH", &new_path) };
+        log::info!("[inject_bundled_bin_path] prepended {}", dir_str);
+        Ok(())
     } else {
-        log::warn!("[inject_bundled_bin_path] sidecar not found; PATH unchanged");
+        Err("[inject_bundled_bin_path] sidecar not found; PATH unchanged".to_string())
     }
 }
 
