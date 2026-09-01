@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@codemieai/code": "^0.14.1"
+  }
+}
