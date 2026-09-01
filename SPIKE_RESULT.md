@@ -19,15 +19,6 @@
 **Decision**: proceed to Phase 2
 
 ## Phase 2 — pkg compilation
-**macOS invocation**: `pkg assets/codemie-cli/node_modules/@codemieai/code/bin/codemie.js --target node20-macos-arm64 --output assets/bin/codemie-aarch64-apple-darwin --no-bytecode`
-**macOS exit code**: 0
-**Mach-O verification**: CF FA ED FE (little-endian Mach-O arm64 magic bytes — `file` command unavailable on Windows; bytes verified via PowerShell)
-**File size**: 165.1 MB (173,162,842 bytes)
-**Asset warnings**: none detected — keytar native module load is lazy/guarded so no pkg snapshot errors from keytar
-**Windows**: success — `assets/bin/codemie-x86_64-pc-windows-msvc.exe` compiled (162.7 MB, 170,639,215 bytes)
-**Decision**: proceed to Phase 3
-
-## Phase 2 — pkg compilation
 
 **macOS invocation**: `pkg assets/codemie-cli/node_modules/@codemieai/code/bin/codemie.js --target node22-macos-arm64 --output assets/bin/codemie-aarch64-apple-darwin --no-bytecode --public-packages "*"`
 
