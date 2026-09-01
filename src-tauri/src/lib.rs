@@ -20,6 +20,7 @@ pub fn run() {
             // GUI-launched apps inherit a minimal PATH; resolve the user's real
             // (interactive-login) shell PATH so user-installed CLIs are discoverable.
             let resolved = commands::pathman::apply_resolved_shell_path();
+            commands::pathman::inject_bundled_bin_path(app.handle());
             commands::logger::write_line("=== CodeMie Installer session started ===", "dim");
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())

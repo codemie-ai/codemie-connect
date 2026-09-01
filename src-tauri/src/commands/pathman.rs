@@ -3,7 +3,7 @@
 // Windows: persists to HKCU\Environment registry; separator ';'.
 use std::collections::HashSet;
 
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::error::CmdResult;
 use crate::state::AppState;
@@ -243,6 +243,40 @@ pub fn augment_path(state: State<AppState>, dirs: Vec<String>) {
         if !remembered.contains(&d) {
             remembered.push(d);
         }
+    }
+}
+
+/// Prepend the directory containing the bundled codemie sidecar to the
+/// process PATH so all login-shell invocations (runner.rs, pty.rs) find it.
+/// Called once in setup() before any thread is spawned.
+pub fn inject_bundled_bin_path(app: &tauri::AppHandle) {
+    // Build the platform-specific sidecar filename at runtime.
+    // env!("TARGET") is only available in build scripts; use std::env::consts instead.
+    #[cfg(target_os = "macos")]
+    let sidecar_name = format!("codemie-{}-apple-darwin", std::env::consts::ARCH);
+    #[cfg(target_os = "windows")]
+    let sidecar_name = format!("codemie-{}-pc-windows-msvc.exe", std::env::consts::ARCH);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let sidecar_name = "codemie".to_string();
+    // Approach B: Tauri places the sidecar alongside the main exe
+    let bin_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .filter(|d| d.join(&sidecar_name).exists() || d.join("codemie").exists())
+        // Approach A fallback: resource_dir
+        .or_else(|| {
+            app.path()
+                .resource_dir()
+                .ok()
+                .filter(|d| d.join(&sidecar_name).exists() || d.join("codemie").exists())
+        });
+    if let Some(dir) = bin_dir {
+        let current = std::env::var("PATH").unwrap_or_default();
+        // SAFETY: setup() runs before any thread is spawned; no data races on PATH.
+        unsafe { std::env::set_var("PATH", format!("{}:{}", dir.display(), current)) };
+        log::info!("[inject_bundled_bin_path] prepended {}", dir.display());
+    } else {
+        log::warn!("[inject_bundled_bin_path] sidecar not found; PATH unchanged");
     }
 }
 
