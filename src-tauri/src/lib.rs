@@ -10,8 +10,6 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
         .setup(|app| {
-            // PATH injection uses set_var and must run before any plugin starts a thread.
-            let resolved = commands::pathman::apply_resolved_shell_path();
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -19,6 +17,9 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            // GUI-launched apps inherit a minimal PATH; resolve the user's real
+            // (interactive-login) shell PATH so user-installed CLIs are discoverable.
+            let resolved = commands::pathman::apply_resolved_shell_path();
             commands::logger::write_line("=== CodeMie Installer session started ===", "dim");
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())
