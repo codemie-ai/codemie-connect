@@ -392,7 +392,10 @@ mod tests {
         } else {
             Ok(())
         };
-        assert!(result.is_err(), "kill() error must propagate when child has not yet exited");
+        assert!(
+            result.is_err(),
+            "kill() error must propagate when child has not yet exited"
+        );
     }
 
     #[test]
