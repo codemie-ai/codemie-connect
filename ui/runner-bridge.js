@@ -37,6 +37,7 @@ export const inspector = {
   checkNpm: () => invoke('check_npm'),
   checkCodemie: () => invoke('check_codemie'),
   checkCodemieVersion: () => invoke('check_codemie_version'),
+  checkHandshakeState: () => invoke('check_handshake_state'),
   gitBinaryPath: () => invoke('git_binary_path'),
   nodeBinaryPath: () => invoke('node_binary_path'),
 };
