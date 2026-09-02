@@ -258,6 +258,13 @@ pub fn candidate_bin_names() -> &'static [&'static str] {
     &["codemie"]
 }
 
+/// Returns `true` when `dir` contains a recognised codemie binary file name.
+/// Extracted from the probe closure inside `inject_bundled_bin_path` so tests
+/// can call it directly without an `AppHandle`.
+pub fn probe_dir(dir: &std::path::Path) -> bool {
+    candidate_bin_names().iter().any(|n| dir.join(n).exists())
+}
+
 /// Prepend the directory containing the bundled codemie sidecar to the
 /// process PATH so all login-shell invocations (runner.rs, pty.rs) find it.
 /// Must be called before any plugin is installed (see lib.rs setup order).
@@ -271,18 +278,32 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let sidecar_name = "codemie".to_string();
 
-    let probe = |d: &std::path::PathBuf| {
-        d.join(&sidecar_name).exists()
-            || candidate_bin_names().iter().any(|n| d.join(n).exists())
+    // Full probe: check the sidecar binary name AND candidate names (codemie.exe, codemie.cmd…).
+    let probe = |d: &std::path::Path| d.join(&sidecar_name).exists() || probe_dir(d);
+
+    // Try `d` directly, then the `bin/` subdirectory. Returns the matching directory
+    // or None. tauri.conf.json places the shim at resource_dir/bin/codemie.cmd, so
+    // we must check the subdirectory when the root itself does not contain the shim.
+    let probe_with_bin = |d: std::path::PathBuf| -> Option<std::path::PathBuf> {
+        if probe(&d) {
+            Some(d)
+        } else {
+            let bin = d.join("bin");
+            if probe(&bin) {
+                Some(bin)
+            } else {
+                None
+            }
+        }
     };
 
     // Approach B: Tauri places the sidecar alongside the main exe.
     let bin_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .filter(|d| probe(d))
+        .and_then(probe_with_bin)
         // Approach A fallback: resource_dir.
-        .or_else(|| app.path().resource_dir().ok().filter(|d| probe(d)));
+        .or_else(|| app.path().resource_dir().ok().and_then(probe_with_bin));
 
     if let Some(dir) = bin_dir {
         let dir_str = dir.to_str().ok_or_else(|| {
@@ -294,9 +315,22 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
         } else {
             format!("{}{}{}", dir_str, PATH_SEP, current)
         };
-        // SAFETY: called before any plugin or thread is started (see lib.rs setup order).
+        // SAFETY: set_var mutates the process environment; Rust's safety contract
+        // requires no concurrent env reads from other threads. This call is placed
+        // inside Tauri's setup() closure, which runs synchronously before any
+        // plugin::init() call that could spawn a worker thread. In Tauri 2.x,
+        // Builder::run() wraps the event-loop initialisation; setup() executes
+        // single-threaded before the event loop starts plugins. If Tauri's internal
+        // threading model changes, this call must move to before Builder::default().
+        // See lib.rs for the call site and invocation order.
         unsafe { std::env::set_var("PATH", &new_path) };
         log::info!("[inject_bundled_bin_path] prepended {}", dir_str);
+        // Persist the new entry to HKCU\Environment so terminals opened after
+        // installation inherit it. set_var above affects the current process only.
+        #[cfg(windows)]
+        if let Err(e) = persist(&[dir_str.to_string()]) {
+            log::warn!("[inject_bundled_bin_path] HKCU\\Environment write failed: {e}");
+        }
         Ok(())
     } else {
         Err("[inject_bundled_bin_path] sidecar not found; PATH unchanged".to_string())
@@ -310,16 +344,37 @@ mod tests_windows_probe {
     use tempfile::TempDir;
 
     #[test]
-    fn probe_detects_codemie_cmd_shim() {
+    fn probe_dir_detects_codemie_cmd_shim() {
         let dir = TempDir::new().unwrap();
-        let shim = dir.path().join("codemie.cmd");
-        fs::write(&shim, "@echo off\r\n").unwrap();
-        // candidate_bin_names must include "codemie.cmd"
-        let names = candidate_bin_names();
-        assert!(names.contains(&"codemie.cmd"), "probe must list codemie.cmd");
-        // probe finds the directory when codemie.cmd is present
-        let found = dir.path().join("codemie.cmd").exists();
-        assert!(found);
+        fs::write(dir.path().join("codemie.cmd"), "@echo off\r\n").unwrap();
+        assert!(
+            probe_dir(dir.path()),
+            "probe_dir must find codemie.cmd in the directory"
+        );
+    }
+
+    #[test]
+    fn probe_dir_returns_false_for_empty_directory() {
+        let dir = TempDir::new().unwrap();
+        assert!(
+            !probe_dir(dir.path()),
+            "probe_dir must return false for a directory with no shim"
+        );
+    }
+
+    #[test]
+    fn probe_dir_detects_shim_in_bin_subdir_and_not_parent() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        fs::write(bin.join("codemie.cmd"), "@echo off\r\n").unwrap();
+        // The bin/ subdir itself should be found.
+        assert!(probe_dir(&bin), "probe_dir must find codemie.cmd in bin/");
+        // The parent dir must NOT match — the shim is only in bin/, not root.
+        assert!(
+            !probe_dir(dir.path()),
+            "probe_dir on parent must not find a shim placed only in bin/"
+        );
     }
 }
 #[cfg(test)]

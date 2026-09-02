@@ -13,10 +13,19 @@ pub fn run() {
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
             if let Err(e) = commands::pathman::inject_bundled_bin_path(app.handle()) {
-                eprintln!("{e}");
+                // eprintln! is swallowed in a packaged GUI; use log::error! so the
+                // message is captured by the log plugin (debug builds) and any
+                // custom log subscriber wired up before this point.
+                log::error!("{e}");
             }
 
             // Build AppState with Windows-specific absolute paths for bundled node.exe and CLI.
+            // NOTE(EPMCDME-14573 CR-009): the node\ and cli\ bundle.resources entries are
+            // intentionally absent from tauri.conf.json. Declaring them before the source
+            // files are delivered by EPMCDME-14505 would break `tauri build`. They will be
+            // added in EPMCDME-14505, which owns bundling node.exe and the CLI dist artefact.
+            // Until then, node_exe_path and cli_entry_path resolve to empty PathBufs and
+            // run_self_update falls back to the codemie.cmd shim on PATH.
             #[cfg(windows)]
             let (node_exe, cli_entry) = app
                 .path()

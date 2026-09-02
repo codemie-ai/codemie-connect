@@ -1,6 +1,6 @@
 // Shell execution primitives. Port of src/main/runner.js.
 // macOS: commands run via `/bin/zsh -lc` (login shell, profile PATH loaded).
-// Windows: commands run via `powershell.exe -NoProfile -NonInteractive -Command`.
+// Windows: commands run via `cmd.exe /c`.
 use std::process::Stdio;
 
 use serde::Serialize;
@@ -138,6 +138,30 @@ where
     })
 }
 
+/// Direct invocation of the bundled node.exe + CLI entry-point (Windows only).
+/// Extracted from `run_self_update` so the invocation logic can be unit-tested
+/// independently of Tauri's managed `State`.
+#[cfg(windows)]
+pub(crate) async fn self_update_direct(
+    node_exe: &std::path::Path,
+    cli_entry: &std::path::Path,
+) -> CmdResult<String> {
+    let out = tokio::process::Command::new(node_exe)
+        .args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")])
+        .output()
+        .await
+        .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(crate::error::InstallerError::Other(format!(
+            "codemie self-update failed (exit {:?}): {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}
+
 /// Run `codemie self-update` silently (captured, not PTY).
 /// On Windows, invokes the bundled node.exe + CLI absolutely when both paths are
 /// populated; falls back to the `codemie` shim on PATH via `cmd.exe /c`.
@@ -151,22 +175,22 @@ pub async fn run_self_update(
         let node = &state.node_exe_path;
         let cli = &state.cli_entry_path;
         if node.exists() && cli.exists() {
-            let out = tokio::process::Command::new(node)
-                .args([cli.as_os_str(), std::ffi::OsStr::new("self-update")])
-                .output()
-                .await
-                .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
-            return if out.status.success() {
-                Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-            } else {
-                Err(crate::error::InstallerError::Other(format!(
-                    "codemie self-update failed (exit {:?}): {}",
-                    out.status.code(),
-                    String::from_utf8_lossy(&out.stderr).trim()
-                )))
-            };
+            return self_update_direct(node, cli).await;
         }
-        // node.exe or cli entry not found; fall through to shim on PATH.
+        // At least one bundled path is absent. Log which one is missing to help
+        // diagnose PATH injection failures before falling back to the shim.
+        if !node.exists() {
+            log::warn!(
+                "[run_self_update] node_exe_path not found ({}); falling back to PATH shim",
+                node.display()
+            );
+        }
+        if !cli.exists() {
+            log::warn!(
+                "[run_self_update] cli_entry_path not found ({}); falling back to PATH shim",
+                cli.display()
+            );
+        }
     }
     let r = capture("codemie self-update", None).await;
     if r.code == 0 {
@@ -214,5 +238,30 @@ mod tests_windows {
     async fn run_capture_reports_nonzero_exit_windows() {
         let r = capture("exit 3", None).await;
         assert_eq!(r.code, 3);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests_windows_self_update {
+    use super::*;
+
+    /// Verifies that `self_update_direct` returns `Err` when the supplied node
+    /// binary is not a valid Windows executable (invalid PE format). This covers
+    /// the error-mapping path through `map_err(|e| InstallerError::Other(...))`.
+    ///
+    /// The success path (exit 0, stdout captured) requires a real node.exe binary
+    /// and is verified at integration-test time on a Windows VM (stage 7).
+    #[tokio::test]
+    async fn self_update_direct_errors_when_node_not_executable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let fake_node = dir.path().join("node.exe");
+        let fake_cli = dir.path().join("index.js");
+        std::fs::write(&fake_node, b"not a PE binary").unwrap();
+        std::fs::write(&fake_cli, b"// placeholder").unwrap();
+        let result = self_update_direct(&fake_node, &fake_cli).await;
+        assert!(
+            result.is_err(),
+            "self_update_direct must return Err when node.exe is not a valid executable"
+        );
     }
 }
