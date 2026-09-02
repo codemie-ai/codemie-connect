@@ -53,18 +53,6 @@ export const codemieConfig = {
 // ---- installer (src/main/installer-macos.js) ----
 export const installer = {
   latestLtsNodeVersion: () => invoke('latest_lts_node_version'),
-  nodePkgUrl: (arch, version) => invoke('node_pkg_url', { arch: arch || 'universal', version }),
-  installNode: (pkgPath) => invoke('install_node', { pkgPath }),
-
-  // Polls in Rust; streams human-readable ticks via engine:git-tick.
-  async installGitCLT({ onTick = () => {} } = {}) {
-    const un = await listen('engine:git-tick', (e) => onTick(String(e.payload)));
-    try {
-      return await invoke('install_git_clt');
-    } finally {
-      un();
-    }
-  },
 };
 
 // ---- updater ----

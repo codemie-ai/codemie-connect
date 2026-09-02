@@ -10,9 +10,6 @@ pub enum InstallerError {
     Download(String),
     #[error("pty error: {0}")]
     Pty(String),
-    #[cfg(not(windows))]
-    #[error("authorization failed: {0}")]
-    Sudo(String),
     #[error("{0}")]
     Other(String),
 }

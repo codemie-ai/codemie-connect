@@ -17,7 +17,7 @@ const { listen } = window.__TAURI__.event;
 // Steps run by "Install only" (no setup): Git, Node, CodeMie CLI — but not the
 // codemie setup wizard / Claude engine / doctor (2.x). Sub-steps are retained so
 // their parent handlers can activate them.
-const INSTALL_ONLY_IDS = ['1.1', '1.1.1', '1.2', '1.2.1', '1.3'];
+const INSTALL_ONLY_IDS = ['1.1', '1.1.1', '1.3'];
 
 // Compare semver strings. Returns true when a < b. Works for X.Y.Z format.
 function semverLt(a, b) {

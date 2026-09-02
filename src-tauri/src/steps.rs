@@ -97,44 +97,23 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn loads_eight_steps_with_defaults() {
+    fn loads_three_steps_post_deletion() {
         let steps = load_steps();
         let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["1.1", "1.1.1", "1.2", "1.2.1", "1.3", "2.3.3", "2.3.5", "2.4"]
-        );
+        assert_eq!(ids, ["2.3.3", "2.3.5", "2.4"]);
         _assert_common_fields(&steps);
     }
 
     #[cfg(windows)]
     #[test]
-    fn loads_nine_steps_with_defaults() {
+    fn loads_three_windows_steps_post_deletion() {
         let steps = load_steps();
         let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["1.0", "1.1", "1.1.1", "1.2", "1.2.1", "1.3", "2.3.3", "2.3.5", "2.4"]
-        );
-        let policy = steps.iter().find(|s| s.id == "1.0").unwrap();
-        assert!(policy.requires_approval);
-        assert!(!policy.approval_message.is_empty());
+        assert_eq!(ids, ["2.3.3", "2.3.5", "2.4"]);
         _assert_common_fields(&steps);
     }
 
     fn _assert_common_fields(steps: &[super::Step]) {
-        let git = steps.iter().find(|s| s.id == "1.1").unwrap();
-        assert!(git.fatal);
-        assert!(!git.requires_approval);
-        assert!(!git.is_sub_step);
-        assert_eq!(git.status, "PENDING");
-
-        let sub = steps.iter().find(|s| s.id == "1.1.1").unwrap();
-        assert!(sub.is_sub_step);
-        assert_eq!(sub.parent_id.as_deref(), Some("1.1"));
-        assert!(sub.requires_approval);
-        assert!(!sub.approval_message.is_empty());
-
         let setup = steps.iter().find(|s| s.id == "2.3.3").unwrap();
         assert!(setup.interactive);
         #[cfg(windows)]
