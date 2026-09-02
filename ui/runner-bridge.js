@@ -113,25 +113,27 @@ export const pty = {
   // callback; engine:pty-data events for other run ids are ignored.
   async spawnPty(cmd, cols = 100, rows = 30, onData) {
     const id = nextId('pty');
-    let resolveExit, dataUnlisten;
+    let resolveExit, dataUnlisten, exitUnlisten;
     const exitP = new Promise((r) => {
       resolveExit = r;
     });
-    // Register data listener BEFORE invoke so no early events for this id are missed
-    if (onData) {
-      dataUnlisten = await listen('engine:pty-data', (e) => {
-        if (e.payload.id === id) onData(e.payload.data);
-      });
-    }
-    const exitUnlisten = await listen('engine:pty-exit', (e) => {
-      if (e.payload.id === id) resolveExit(e.payload.code);
-    });
+    // CR-005: both listeners are registered inside the try block so the finally
+    // always runs and always unlistens both, even if the second listen() throws.
     try {
+      // Register data listener BEFORE invoke so no early events for this id are missed
+      if (onData) {
+        dataUnlisten = await listen('engine:pty-data', (e) => {
+          if (e.payload.id === id) onData(e.payload.data);
+        });
+      }
+      exitUnlisten = await listen('engine:pty-exit', (e) => {
+        if (e.payload.id === id) resolveExit(e.payload.code);
+      });
       await invoke('spawn_pty', { cmd, cols, rows, runId: id });
       const code = await exitP;
       return { code, id };
     } finally {
-      exitUnlisten();
+      exitUnlisten?.();
       dataUnlisten?.();
     }
   },

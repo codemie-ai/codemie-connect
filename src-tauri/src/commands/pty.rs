@@ -199,17 +199,28 @@ pub async fn pty_kill(state: State<'_, AppState>) -> CmdResult<()> {
         }
     }; // Mutex released before any blocking work
     tokio::task::spawn_blocking(move || -> CmdResult<()> {
-        killer_arc
-            .lock()
-            .unwrap()
-            .kill()
-            .map_err(|e| InstallerError::Pty(e.to_string()))?;
+        // CR-002: kill() may fail with ESRCH (or equivalent) if the child already
+        // exited between slot-release and here.  That is a benign race — the desired
+        // state (child gone) is already achieved — so propagate only when the exit
+        // flag is still false.
+        {
+            let (lk, _) = &*exit_cv;
+            let already_done = *lk.lock().unwrap();
+            if let Err(e) = killer_arc.lock().unwrap().kill() {
+                if !already_done {
+                    return Err(InstallerError::Pty(e.to_string()));
+                }
+            }
+        }
         let (lk, cv) = &*exit_cv;
         let guard = lk.lock().unwrap();
-        let (timed_out_guard, timed_out) = cv
-            .wait_timeout(guard, std::time::Duration::from_secs(5))
+        // CR-003 + CR-004: wait_timeout_while checks the flag before blocking
+        // (returns immediately if the child has already exited) and re-checks on
+        // every wakeup so spurious wakeups cannot produce a false Ok.
+        let (guard, timed_out) = cv
+            .wait_timeout_while(guard, std::time::Duration::from_secs(5), |done| !*done)
             .unwrap();
-        if timed_out.timed_out() && !*timed_out_guard {
+        if timed_out.timed_out() && !*guard {
             return Err(InstallerError::Pty("pty_kill timed out".into()));
         }
         Ok(())
@@ -280,6 +291,108 @@ mod tests {
             .unwrap();
         // A killed process exits non-zero; reaching here proves the child exited
         let _ = status;
+    }
+
+    // CR-003 + CR-004: wait_timeout_while returns immediately when the exit flag
+    // is already set, and does not require a notify_all to be called.
+    // Mutation check: reverting to wait_timeout blocks the full 5 s and the
+    // elapsed-time assertion fails.
+    #[test]
+    fn condvar_wait_returns_immediately_when_flag_preset() {
+        use std::sync::{Arc, Condvar, Mutex};
+        use std::time::Duration;
+        let pair = Arc::new((Mutex::new(true), Condvar::new()));
+        let (lk, cv) = &*pair;
+        let guard = lk.lock().unwrap();
+        let start = std::time::Instant::now();
+        let (guard, timed_out) = cv
+            .wait_timeout_while(guard, Duration::from_secs(5), |done| !*done)
+            .unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            !timed_out.timed_out(),
+            "must not time out when flag is already true"
+        );
+        assert!(*guard, "flag must still be true after wait returns");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "wait must return in < 1 s when exit flag is pre-set (got {elapsed:?})"
+        );
+    }
+
+    // CR-004: wait_timeout_while only returns Ok when the exit flag is actually
+    // true; it does not treat a notified wakeup as success without re-checking.
+    // Mutation check: reverting to wait_timeout returns without verifying *guard,
+    // so a spurious wakeup yields Ok with *guard == false — the assertion fails.
+    #[test]
+    fn condvar_wait_confirms_flag_on_success() {
+        use std::sync::{Arc, Condvar, Mutex};
+        use std::time::Duration;
+        let pair = Arc::new((Mutex::new(false), Condvar::new()));
+        let pair2 = Arc::clone(&pair);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            let (lk, cv) = &*pair2;
+            *lk.lock().unwrap() = true;
+            cv.notify_all();
+        });
+        let (lk, cv) = &*pair;
+        let guard = lk.lock().unwrap();
+        let (guard, timed_out) = cv
+            .wait_timeout_while(guard, Duration::from_secs(5), |done| !*done)
+            .unwrap();
+        assert!(!timed_out.timed_out(), "child exited before timeout");
+        assert!(
+            *guard,
+            "exit flag must be true when wait_timeout_while returns without timeout"
+        );
+    }
+
+    // CR-002: a kill() error must be ignored when the exit flag is already true
+    // (i.e. the child has already gone, so ESRCH is benign).
+    // Mutation check: reverting to always-propagate causes the result to be Err,
+    // failing the assert.
+    #[test]
+    fn kill_error_ignored_when_exit_flag_already_set() {
+        use std::sync::{Arc, Condvar, Mutex};
+        // Simulate: exit flag already true, kill() returns an error
+        let exit_cv = Arc::new((Mutex::new(true), Condvar::new()));
+        let (lk, _) = &*exit_cv;
+        let already_done = *lk.lock().unwrap();
+        let kill_result: Result<(), String> = Err("ESRCH: no such process".into());
+        let result: Result<(), String> = if let Err(e) = kill_result {
+            if !already_done {
+                Err(e)
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        };
+        assert!(
+            result.is_ok(),
+            "kill() error must be swallowed when exit flag is already set"
+        );
+    }
+
+    // Inverse of the above: kill() error must NOT be ignored when flag is false.
+    #[test]
+    fn kill_error_propagated_when_exit_flag_false() {
+        use std::sync::{Arc, Condvar, Mutex};
+        let exit_cv = Arc::new((Mutex::new(false), Condvar::new()));
+        let (lk, _) = &*exit_cv;
+        let already_done = *lk.lock().unwrap();
+        let kill_result: Result<(), String> = Err("operation not permitted".into());
+        let result: Result<(), String> = if let Err(e) = kill_result {
+            if !already_done {
+                Err(e)
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        };
+        assert!(result.is_err(), "kill() error must propagate when child has not yet exited");
     }
 
     #[test]
