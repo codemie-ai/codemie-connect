@@ -6,6 +6,7 @@ use std::process::Stdio;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+#[cfg(not(windows))]
 use crate::error::{CmdResult, InstallerError};
 
 // Used only if the live LTS lookup fails (offline / index unreachable).
@@ -181,32 +182,6 @@ pub async fn install_git_clt(app: AppHandle) -> bool {
 
 // ---- Windows-specific commands --------------------------------------------
 
-/// Build the Node.js Windows MSI URL. The MSI filename encodes the CPU arch:
-/// x86_64 → "x64", aarch64 → "arm64".
-#[cfg(windows)]
-#[tauri::command]
-pub fn node_pkg_url(arch: String, version: String) -> String {
-    let v = version.strip_prefix('v').unwrap_or(&version);
-    let a = if arch.contains("arm") || arch == "aarch64" {
-        "arm64"
-    } else {
-        "x64"
-    };
-    format!("https://nodejs.org/dist/v{v}/node-v{v}-{a}.msi")
-}
-
-/// Install Node.js from a downloaded MSI using `msiexec /quiet /norestart`.
-#[cfg(windows)]
-#[tauri::command]
-pub async fn install_node(pkg_path: String) -> CmdResult<bool> {
-    let out = tokio::process::Command::new("msiexec")
-        .args(["/i", &pkg_path, "/quiet", "/norestart"])
-        .output()
-        .await
-        .map_err(|e| InstallerError::Other(e.to_string()))?;
-    Ok(out.status.success())
-}
-
 /// Hardcoded Git-for-Windows 64-bit release. Kept versioned to guarantee a
 /// known-good installer; update alongside the legacy Python installer.
 #[cfg(windows)]
@@ -357,21 +332,4 @@ mod tests {
         assert_eq!(parse_npm_latest(&json), None);
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn node_pkg_url_builds_x64_msi_url() {
-        assert_eq!(
-            node_pkg_url("x86_64".into(), "24.15.0".into()),
-            "https://nodejs.org/dist/v24.15.0/node-v24.15.0-x64.msi"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn node_pkg_url_builds_arm64_msi_url() {
-        assert_eq!(
-            node_pkg_url("aarch64".into(), "24.15.0".into()),
-            "https://nodejs.org/dist/v24.15.0/node-v24.15.0-arm64.msi"
-        );
-    }
 }

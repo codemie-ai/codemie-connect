@@ -73,9 +73,11 @@ pub fn run() {
             commands::codemie_config::read_codemie_config,
             commands::installer::get_platform_info,
             commands::installer::temp_dir,
+            #[cfg(not(windows))]
             commands::installer::node_pkg_url,
             commands::installer::latest_lts_node_version,
             commands::installer::fetch_codemie_latest,
+            #[cfg(not(windows))]
             commands::installer::install_node,
             commands::installer::install_git_clt,
             commands::downloader::download_file,
