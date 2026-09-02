@@ -1,0 +1,6 @@
+# Playwright byproducts. Screenshots kept as evidence are written straight into
+# ../evidence/screenshots/ by evidence-capture.spec.ts; anything landing here is
+# a working file that gets rewritten on every run.
+*.png
+test-results/
+identity-geometry.json

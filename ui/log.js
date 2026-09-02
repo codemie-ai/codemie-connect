@@ -5,8 +5,8 @@ let contentEl = null;
 let panelEl = null;
 let toggleBtn = null;
 let shown = false;
-const COLLAPSED_H = 600;
-const EXPANDED_H = 600 + 220 + 36 + 18; // window grows when the log opens
+const COLLAPSED_H = 660; // matches tauri.conf.json's window height
+const EXPANDED_H = 660 + 220 + 36 + 18; // window grows when the log opens
 
 export function initLog({ content, panel, toggle, openBtn }) {
   contentEl = content;

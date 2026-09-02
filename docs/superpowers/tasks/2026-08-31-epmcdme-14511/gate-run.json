@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "branch": "feat/epmcdme-14511-app-shell-navigation",
+  "head": "f4994c5",
+  "runner": "npm+cargo",
+  "started_at": "2026-08-31T18:20:00Z",
+  "completed_at": "2026-08-31T18:22:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "17/17 node:test suites passed"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "30/30 inline Rust tests passed"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "cd src-tauri && CI=true cargo tauri build",
+      "exit_code": null,
+      "notes": "Guide 'Skip if' condition met: diff is a markup/CSS-only UI change (ui/index.html, ui/styles.css, ui/renderer.js) with no Rust source touched; fmt, clippy and cargo test all pass. Full DMG bundle build skipped per guide."
+    }
+  ],
+  "failures": {}
+}
