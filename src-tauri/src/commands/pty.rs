@@ -7,6 +7,7 @@
 //    multi-byte UTF-8 char or ANSI escape sequence split across two 4096-byte reads
 //    is never corrupted by lossy UTF-8 decoding mid-stream. The frontend decodes.
 use std::io::{Read, Write};
+use std::sync::{Arc, Condvar, Mutex};
 
 use base64::Engine as _;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -15,11 +16,26 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::error::{CmdResult, InstallerError};
 use crate::state::AppState;
 
-/// The active PTY: a writer (for keystrokes) and the master (for resize).
-/// The child process is owned by the wait thread.
+/// The active PTY: a writer (for keystrokes), the master (for resize),
+/// a killer (for pty_kill), and an exit condvar (so pty_kill can wait bounded).
 pub struct PtyHandle {
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
+    // Used by pty_kill (added in next commit).
+    #[allow(dead_code)]
+    pub killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
+    #[allow(dead_code)]
+    pub exit_cv: Arc<(Mutex<bool>, Condvar)>,
+}
+
+fn clear_if_owner<T>(slot: &Mutex<Option<(String, T)>>, id: &str) -> bool {
+    let mut g = slot.lock().unwrap();
+    if g.as_ref().is_some_and(|(sid, _)| sid == id) {
+        *g = None;
+        true
+    } else {
+        false
+    }
 }
 
 const READ_BUF: usize = 4096;
@@ -31,7 +47,8 @@ pub fn spawn_pty(
     cmd: String,
     cols: u16,
     rows: u16,
-) -> CmdResult<()> {
+    run_id: String,
+) -> CmdResult<String> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -89,16 +106,25 @@ pub fn spawn_pty(
         .take_writer()
         .map_err(|e| InstallerError::Pty(e.to_string()))?;
 
+    let killer = Arc::new(Mutex::new(child.clone_killer()));
+    let exit_cv = Arc::new((Mutex::new(false), Condvar::new()));
+
     {
         let mut guard = state.pty.lock().unwrap();
-        *guard = Some(PtyHandle {
-            writer,
-            master: pair.master,
-        });
+        *guard = Some((
+            run_id.clone(),
+            PtyHandle {
+                writer,
+                master: pair.master,
+                killer: Arc::clone(&killer),
+                exit_cv: Arc::clone(&exit_cv),
+            },
+        ));
     }
 
     // Reader thread: pump bytes -> base64 -> engine:pty-data.
     let app_reader = app.clone();
+    let run_id_r = run_id.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; READ_BUF];
         loop {
@@ -106,7 +132,10 @@ pub fn spawn_pty(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                    let _ = app_reader.emit("engine:pty-data", serde_json::json!({ "data": data }));
+                    let _ = app_reader.emit(
+                        "engine:pty-data",
+                        serde_json::json!({ "id": run_id_r, "data": data }),
+                    );
                 }
             }
         }
@@ -114,21 +143,31 @@ pub fn spawn_pty(
 
     // Child-wait thread: emit engine:pty-exit and clear the active handle.
     let app_exit = app.clone();
+    let run_id_w = run_id.clone();
+    let exit_cv_w = Arc::clone(&exit_cv);
     std::thread::spawn(move || {
         let code = child.wait().map(|s| s.exit_code() as i32).unwrap_or(1);
-        if let Some(state) = app_exit.try_state::<AppState>() {
-            *state.pty.lock().unwrap() = None;
+        {
+            let (lk, cv) = &*exit_cv_w;
+            *lk.lock().unwrap() = true;
+            cv.notify_all();
         }
-        let _ = app_exit.emit("engine:pty-exit", serde_json::json!({ "code": code }));
+        if let Some(app_state) = app_exit.try_state::<AppState>() {
+            clear_if_owner(&app_state.pty, &run_id_w);
+        }
+        let _ = app_exit.emit(
+            "engine:pty-exit",
+            serde_json::json!({ "id": run_id_w, "code": code }),
+        );
     });
 
-    Ok(())
+    Ok(run_id)
 }
 
 #[tauri::command]
 pub fn pty_input(state: State<AppState>, data: String) -> CmdResult<()> {
     let mut guard = state.pty.lock().unwrap();
-    if let Some(h) = guard.as_mut() {
+    if let Some((_, h)) = guard.as_mut() {
         h.writer
             .write_all(data.as_bytes())
             .map_err(InstallerError::Io)?;
@@ -140,7 +179,7 @@ pub fn pty_input(state: State<AppState>, data: String) -> CmdResult<()> {
 #[tauri::command]
 pub fn pty_resize(state: State<AppState>, cols: u16, rows: u16) -> CmdResult<()> {
     let guard = state.pty.lock().unwrap();
-    if let Some(h) = guard.as_ref() {
+    if let Some((_, h)) = guard.as_ref() {
         h.master
             .resize(PtySize {
                 rows,
@@ -172,12 +211,33 @@ pub async fn spawn_external_ps(cmd: String) -> CmdResult<i32> {
 }
 
 #[cfg(all(test, windows))]
-mod tests {
+mod win_tests {
     use super::*;
 
     #[tokio::test]
     async fn spawn_external_ps_exits_zero_for_noop_command() {
         let code = spawn_external_ps("cmd /c exit 0".into()).await.unwrap();
         assert_eq!(code, 0);
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::clear_if_owner;
+    use std::sync::Mutex;
+
+    #[test]
+    fn clear_if_owner_only_clears_matching_id() {
+        let slot: Mutex<Option<(String, ())>> = Mutex::new(Some(("run-2".into(), ())));
+        assert!(
+            !clear_if_owner(&slot, "run-1"),
+            "must not clear when id differs"
+        );
+        assert!(
+            slot.lock().unwrap().is_some(),
+            "run-2 must still be present"
+        );
+        assert!(clear_if_owner(&slot, "run-2"), "must clear when id matches");
+        assert!(slot.lock().unwrap().is_none(), "slot must now be empty");
     }
 }
