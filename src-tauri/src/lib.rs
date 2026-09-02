@@ -12,9 +12,6 @@ pub fn run() {
         .setup(|app| {
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
-            if let Err(e) = commands::pathman::inject_bundled_bin_path(app.handle()) {
-                eprintln!("{e}");
-            }
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
