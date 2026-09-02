@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "runner": "npm",
+  "gates": [
+    {"id": "fmt", "command": "cd src-tauri && cargo fmt --check", "source": "guide"},
+    {"id": "clippy", "command": "cd src-tauri && cargo clippy -- -D warnings", "source": "guide"},
+    {"id": "test-js", "command": "npm test", "source": "guide"},
+    {"id": "test-rust", "command": "cd src-tauri && cargo test", "source": "guide"}
+  ],
+  "ui_globs": ["\\.(tsx|jsx|css|html|vue|svelte)$", "src/(ui|frontend|components)/"],
+  "detected_at": "2026-09-02T00:00:00.000Z"
+}

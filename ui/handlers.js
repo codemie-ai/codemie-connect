@@ -63,7 +63,7 @@ export function makeHandlers(deps) {
     ctx.emit('pty-open', { id: ctx.step.id, title });
     return pty
       .spawnPty(cmd)
-      .then((code) => {
+      .then(({ code }) => {
         const okExit = code === 0;
         ctx.line(`(${ctx.step.title} finished, exit ${code})`, okExit ? 'dim' : 'stderr');
         if (!okExit) ctx.setSubtitle(ctx.step.id, `Did not complete (exit ${code})`);

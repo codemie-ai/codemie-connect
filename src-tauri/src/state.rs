@@ -13,5 +13,5 @@ use crate::commands::pty::PtyHandle;
 #[derive(Default)]
 pub struct AppState {
     pub remembered: Mutex<Vec<String>>,
-    pub pty: Mutex<Option<PtyHandle>>,
+    pub pty: Mutex<Option<(String, PtyHandle)>>,
 }

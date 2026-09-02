@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "generated": "2026-09-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "New pty.rs Rust command module + state.rs pty field (correlation ID typed slot) + lib.rs invoke registrations + runner-bridge.js pty module + handlers.js runPty/runAction + renderer.js PTY listen wiring — 6 substantive components spanning Rust service, IPC bridge, and JS UI layers."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Four non-trivial sub-problems required review fixes: blocking reader on a dedicated std::thread (not tokio) to avoid starvation (CR pattern), condvar wait_timeout_while with spurious-wakeup guard (CR-003/004), ESRCH kill race when child exits between slot-release and kill call (CR-002), and listener-cleanup ordering when exit-listen throws after data-listen succeeds (CR-005). No single existing pattern covers all four together. Streaming red flag applied: PTY is a continuous real-time output channel — Technical Risk bumped from L to XL."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Diffstat N=7; actual-mode mapping 7–10 files = L (4)."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "UI layer (renderer.js, handlers.js), IPC/API bridge (runner-bridge.js), Service/command layer (pty.rs), Infrastructure/state (state.rs, lib.rs) — 4 distinct layers touched; no DB-Persistence or External."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped L→XL: Real-time/Streaming requirement — PTY is a continuous streaming channel; blocking reader thread + base64 chunked emit constitutes a real-time stream."
+  ],
+  "split_recommendation": null
+}
