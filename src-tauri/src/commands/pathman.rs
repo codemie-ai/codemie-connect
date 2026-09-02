@@ -3,7 +3,7 @@
 // Windows: persists to HKCU\Environment registry; separator ';'.
 use std::collections::HashSet;
 
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::error::CmdResult;
 use crate::state::AppState;
