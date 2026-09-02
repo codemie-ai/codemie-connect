@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "head": "8fe93d74fa9ea0c18c125353fc4a0c5ee3557df0",
+  "result": "BLOCKED",
+  "reason": "UI surface changed (ui/handlers.js, ui/renderer.js, ui/runner-bridge.js) but no browser verification tool is configured. Additionally, this project is a Tauri desktop app whose WebView (WKWebView on macOS) is not automatable by Playwright or Cypress without tauri-driver, which is not present. No HTTP dev server exists to target.",
+  "remediation": "Rely on manual DoD smoke steps for this ticket. For permanent e2e coverage, configure tauri-driver + WebDriverIO (https://tauri.app/v1/guides/testing/webdriver/) as a project-level investment, or update gate_plan.ui_globs to include ui/**/*.js."
+}
