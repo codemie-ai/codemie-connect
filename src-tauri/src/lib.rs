@@ -4,12 +4,55 @@ mod state;
 mod steps;
 
 use state::AppState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState::default())
         .setup(|app| {
+            // PATH injection uses set_var and must run before any plugin starts a thread.
+            let resolved = commands::pathman::apply_resolved_shell_path();
+            if let Err(e) = commands::pathman::inject_bundled_bin_path(app.handle()) {
+                // eprintln! is swallowed in a packaged GUI; use log::error! so the
+                // message is captured by the log plugin (debug builds) and any
+                // custom log subscriber wired up before this point.
+                log::error!("{e}");
+            }
+
+            // Build AppState with Windows-specific absolute paths for bundled node.exe and CLI.
+            // NOTE(EPMCDME-14573 CR-009): the node\ and cli\ bundle.resources entries are
+            // intentionally absent from tauri.conf.json. Declaring them before the source
+            // files are delivered by EPMCDME-14505 would break `tauri build`. They will be
+            // added in EPMCDME-14505, which owns bundling node.exe and the CLI dist artefact.
+            // Until then, node_exe_path and cli_entry_path resolve to empty PathBufs and
+            // run_self_update falls back to the codemie.cmd shim on PATH.
+            #[cfg(windows)]
+            let (node_exe, cli_entry) = app
+                .path()
+                .resource_dir()
+                .map(|res| {
+                    (
+                        res.join("node").join("node.exe"),
+                        res.join("cli")
+                            .join("node_modules")
+                            .join("@codemieai")
+                            .join("code")
+                            .join("dist")
+                            .join("index.js"),
+                    )
+                })
+                .unwrap_or_else(|e| {
+                    log::warn!("resource_dir() failed: {e}; absolute CLI invocation unavailable");
+                    (std::path::PathBuf::new(), std::path::PathBuf::new())
+                });
+
+            app.manage(AppState {
+                #[cfg(windows)]
+                node_exe_path: node_exe,
+                #[cfg(windows)]
+                cli_entry_path: cli_entry,
+                ..AppState::default()
+            });
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -17,9 +60,6 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            // GUI-launched apps inherit a minimal PATH; resolve the user's real
-            // (interactive-login) shell PATH so user-installed CLIs are discoverable.
-            let resolved = commands::pathman::apply_resolved_shell_path();
             commands::logger::write_line("=== CodeMie Installer session started ===", "dim");
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())
@@ -42,9 +82,11 @@ pub fn run() {
             commands::codemie_config::read_codemie_config,
             commands::installer::get_platform_info,
             commands::installer::temp_dir,
+            #[cfg(not(windows))]
             commands::installer::node_pkg_url,
             commands::installer::latest_lts_node_version,
             commands::installer::fetch_codemie_latest,
+            #[cfg(not(windows))]
             commands::installer::install_node,
             commands::installer::install_git_clt,
             commands::downloader::download_file,

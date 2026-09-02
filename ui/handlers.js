@@ -105,52 +105,6 @@ export function makeHandlers(deps) {
 
     '1.1.1': async () => true,
 
-    // 1.2 — Check Node.js & npm
-    '1.2': async (ctx) => {
-      ctx.setSubtitle('1.2', 'Checking for Node.js and npm…');
-      let node = await inspector.checkNode();
-      let npm = await inspector.checkNpm();
-      if (node.found && npm.found) {
-        ctx.setSubtitle('1.2', `Node ${node.version}, npm ${npm.version}`);
-        ctx.line(`Node ${node.version} / npm ${npm.version}`, 'success');
-        return true;
-      }
-      const bin = await inspector.nodeBinaryPath();
-      if (bin) {
-        await rememberDirs([dirname(bin)]);
-        node = await inspector.checkNode();
-        npm = await inspector.checkNpm();
-        if (node.found && npm.found) {
-          ctx.setSubtitle('1.2', `Node ${node.version}, npm ${npm.version}`);
-          return true;
-        }
-      }
-      ctx.setSubtitle('1.2', 'Node.js not found — installing…');
-      const ok = await ctx.runSubStep('1.2.1', async () => {
-        const version = await installer.latestLtsNodeVersion();
-        const url = await installer.nodePkgUrl(arch, version);
-        // File extension and install dir differ by platform.
-        const ext = isWin ? '.msi' : '.pkg';
-        const filename = `node-v${version}${ext}`;
-        const dest = isWin
-          ? joinPathWin(tmpDir, filename)
-          : joinPath(tmpDir, filename);
-        ctx.setSubtitle('1.2.1', `Downloading Node.js ${version}…`);
-        await downloader.download(url, dest, (frac) => ctx.progress('1.2.1', frac));
-        ctx.setSubtitle('1.2.1', 'Installing Node.js…');
-        await installer.installNode(dest);
-        const nodeDir = isWin ? 'C:\\Program Files\\nodejs' : '/usr/local/bin';
-        await rememberDirs([nodeDir]);
-        return true;
-      });
-      if (!ok) return false;
-      const reNode = await runner.runFreshEnv('node --version');
-      const reNpm = await runner.runFreshEnv('npm --version');
-      return reNode.code === 0 && reNpm.code === 0;
-    },
-
-    '1.2.1': async () => true,
-
     // 1.3 — Install CodeMie CLI
     '1.3': async (ctx) => {
       ctx.setSubtitle('1.3', 'Checking for CodeMie…');
@@ -177,17 +131,7 @@ export function makeHandlers(deps) {
         ctx.setSubtitle('1.3', 'npm install failed');
         return false;
       }
-      // On Windows, add the standard npm global bin dirs to PATH.
-      if (isWin) {
-        const profile = await runner.runCapture('echo %USERPROFILE%');
-        const up = (profile.stdout || '').trim();
-        if (up) {
-          await rememberDirs([
-            `${up}\\AppData\\Roaming\\npm`,
-            `${up}\\AppData\\Local\\CodeMie\\npm-prefix`,
-          ]);
-        }
-      } else {
+      if (!isWin) {
         const newPrefix = (await runner.runCapture('npm config get prefix')).stdout.trim();
         if (newPrefix) await rememberDirs([joinPath(newPrefix, 'bin')]);
       }

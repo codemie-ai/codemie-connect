@@ -1,0 +1,371 @@
+diff --git a/.ai-run/sdlc-factory/doctor.json b/.ai-run/sdlc-factory/doctor.json
+index 941cf89..00b421f 100644
+--- a/.ai-run/sdlc-factory/doctor.json
++++ b/.ai-run/sdlc-factory/doctor.json
+@@ -1,11 +1 @@
+-{
+-  "schema": 1,
+-  "checked_at": "2026-06-11T00:00:00Z",
+-  "checks": {
+-    "superpowers_resolvable": true,
+-    "git": "git version 2.39.5 (Apple Git-154)"
+-  },
+-  "fingerprint": "sdlc-task-min-2026-06-11",
+-  "ttl_days": 7,
+-  "source": "sdlc-task Stage 0 minimum subset"
+-}
++{"schema":1,"checked_at":"2026-09-01T17:33:11Z","passed":true,"checks":{"superpowers":"6.2.0","node":"v26.4.0","git":"2.55.0.windows.5"},"fingerprint":"git=2.55.0.windows.5|node=v26.4.0|superpowers=6.2.0"}
+diff --git a/.claude/settings.json b/.claude/settings.json
+index 8f06cab..e607a46 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -1,5 +1,22 @@
+ {
+   "enabledPlugins": {
+     "sdlc-factory@sdlc-factory": true
++  },
++  "permissions": {
++    "allow": [
++      "mcp__jira__jira_get_issue",
++      "mcp__codegraph__query_codebase",
++      "mcp__codegraph__analyze_module_structure",
++      "mcp__codegraph__find_callers",
++      "mcp__codegraph__find_callees",
++      "mcp__codegraph__find_dependencies",
++      "mcp__codegraph__find_implementations",
++      "mcp__codegraph__get_code_snippet",
++      "mcp__codegraph__get_file_structure",
++      "mcp__codegraph__global_search",
++      "mcp__codegraph__local_search",
++      "mcp__codegraph__read_file_content",
++      "mcp__codegraph__suggest_refactoring"
++    ]
+   }
+ }
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index 61e5fdd..08a0b51 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -91,6 +91,7 @@ dependencies = [
+  "tauri",
+  "tauri-build",
+  "tauri-plugin-log",
++ "tempfile",
+  "thiserror 2.0.18",
+  "tokio",
+  "winreg 0.52.0",
+@@ -1898,6 +1899,12 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "linux-raw-sys"
++version = "0.12.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
++
+ [[package]]
+ name = "litemap"
+ version = "0.8.2"
+@@ -2999,6 +3006,19 @@ dependencies = [
+  "semver",
+ ]
+ 
++[[package]]
++name = "rustix"
++version = "1.1.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
++dependencies = [
++ "bitflags 2.13.0",
++ "errno",
++ "libc",
++ "linux-raw-sys",
++ "windows-sys 0.61.2",
++]
++
+ [[package]]
+ name = "rustls"
+ version = "0.23.40"
+@@ -3925,6 +3945,19 @@ dependencies = [
+  "toml 1.1.2+spec-1.1.0",
+ ]
+ 
++[[package]]
++name = "tempfile"
++version = "3.27.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
++dependencies = [
++ "fastrand",
++ "getrandom 0.4.2",
++ "once_cell",
++ "rustix",
++ "windows-sys 0.61.2",
++]
++
+ [[package]]
+ name = "tendril"
+ version = "0.5.0"
+diff --git a/src-tauri/src/commands/pathman.rs b/src-tauri/src/commands/pathman.rs
+index df17d5a..7b29642 100644
+--- a/src-tauri/src/commands/pathman.rs
++++ b/src-tauri/src/commands/pathman.rs
+@@ -258,6 +258,13 @@ pub fn candidate_bin_names() -> &'static [&'static str] {
+     &["codemie"]
+ }
+ 
++/// Returns `true` when `dir` contains a recognised codemie binary file name.
++/// Extracted from the probe closure inside `inject_bundled_bin_path` so tests
++/// can call it directly without an `AppHandle`.
++pub fn probe_dir(dir: &std::path::Path) -> bool {
++    candidate_bin_names().iter().any(|n| dir.join(n).exists())
++}
++
+ /// Prepend the directory containing the bundled codemie sidecar to the
+ /// process PATH so all login-shell invocations (runner.rs, pty.rs) find it.
+ /// Must be called before any plugin is installed (see lib.rs setup order).
+@@ -271,18 +278,32 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
+     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+     let sidecar_name = "codemie".to_string();
+ 
+-    let probe = |d: &std::path::PathBuf| {
+-        d.join(&sidecar_name).exists()
+-            || candidate_bin_names().iter().any(|n| d.join(n).exists())
++    // Full probe: check the sidecar binary name AND candidate names (codemie.exe, codemie.cmd…).
++    let probe = |d: &std::path::Path| d.join(&sidecar_name).exists() || probe_dir(d);
++
++    // Try `d` directly, then the `bin/` subdirectory. Returns the matching directory
++    // or None. tauri.conf.json places the shim at resource_dir/bin/codemie.cmd, so
++    // we must check the subdirectory when the root itself does not contain the shim.
++    let probe_with_bin = |d: std::path::PathBuf| -> Option<std::path::PathBuf> {
++        if probe(&d) {
++            Some(d)
++        } else {
++            let bin = d.join("bin");
++            if probe(&bin) {
++                Some(bin)
++            } else {
++                None
++            }
++        }
+     };
+ 
+     // Approach B: Tauri places the sidecar alongside the main exe.
+     let bin_dir = std::env::current_exe()
+         .ok()
+         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+-        .filter(|d| probe(d))
++        .and_then(probe_with_bin)
+         // Approach A fallback: resource_dir.
+-        .or_else(|| app.path().resource_dir().ok().filter(|d| probe(d)));
++        .or_else(|| app.path().resource_dir().ok().and_then(probe_with_bin));
+ 
+     if let Some(dir) = bin_dir {
+         let dir_str = dir.to_str().ok_or_else(|| {
+@@ -294,9 +315,22 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
+         } else {
+             format!("{}{}{}", dir_str, PATH_SEP, current)
+         };
+-        // SAFETY: called before any plugin or thread is started (see lib.rs setup order).
++        // SAFETY: set_var mutates the process environment; Rust's safety contract
++        // requires no concurrent env reads from other threads. This call is placed
++        // inside Tauri's setup() closure, which runs synchronously before any
++        // plugin::init() call that could spawn a worker thread. In Tauri 2.x,
++        // Builder::run() wraps the event-loop initialisation; setup() executes
++        // single-threaded before the event loop starts plugins. If Tauri's internal
++        // threading model changes, this call must move to before Builder::default().
++        // See lib.rs for the call site and invocation order.
+         unsafe { std::env::set_var("PATH", &new_path) };
+         log::info!("[inject_bundled_bin_path] prepended {}", dir_str);
++        // Persist the new entry to HKCU\Environment so terminals opened after
++        // installation inherit it. set_var above affects the current process only.
++        #[cfg(windows)]
++        if let Err(e) = persist(&[dir_str.to_string()]) {
++            log::warn!("[inject_bundled_bin_path] HKCU\\Environment write failed: {e}");
++        }
+         Ok(())
+     } else {
+         Err("[inject_bundled_bin_path] sidecar not found; PATH unchanged".to_string())
+@@ -310,16 +344,37 @@ mod tests_windows_probe {
+     use tempfile::TempDir;
+ 
+     #[test]
+-    fn probe_detects_codemie_cmd_shim() {
++    fn probe_dir_detects_codemie_cmd_shim() {
++        let dir = TempDir::new().unwrap();
++        fs::write(dir.path().join("codemie.cmd"), "@echo off\r\n").unwrap();
++        assert!(
++            probe_dir(dir.path()),
++            "probe_dir must find codemie.cmd in the directory"
++        );
++    }
++
++    #[test]
++    fn probe_dir_returns_false_for_empty_directory() {
+         let dir = TempDir::new().unwrap();
+-        let shim = dir.path().join("codemie.cmd");
+-        fs::write(&shim, "@echo off\r\n").unwrap();
+-        // candidate_bin_names must include "codemie.cmd"
+-        let names = candidate_bin_names();
+-        assert!(names.contains(&"codemie.cmd"), "probe must list codemie.cmd");
+-        // probe finds the directory when codemie.cmd is present
+-        let found = dir.path().join("codemie.cmd").exists();
+-        assert!(found);
++        assert!(
++            !probe_dir(dir.path()),
++            "probe_dir must return false for a directory with no shim"
++        );
++    }
++
++    #[test]
++    fn probe_dir_detects_shim_in_bin_subdir_and_not_parent() {
++        let dir = TempDir::new().unwrap();
++        let bin = dir.path().join("bin");
++        fs::create_dir(&bin).unwrap();
++        fs::write(bin.join("codemie.cmd"), "@echo off\r\n").unwrap();
++        // The bin/ subdir itself should be found.
++        assert!(probe_dir(&bin), "probe_dir must find codemie.cmd in bin/");
++        // The parent dir must NOT match — the shim is only in bin/, not root.
++        assert!(
++            !probe_dir(dir.path()),
++            "probe_dir on parent must not find a shim placed only in bin/"
++        );
+     }
+ }
+ 
+diff --git a/src-tauri/src/commands/runner.rs b/src-tauri/src/commands/runner.rs
+index 8b00a19..cc8d413 100644
+--- a/src-tauri/src/commands/runner.rs
++++ b/src-tauri/src/commands/runner.rs
+@@ -1,6 +1,6 @@
+ // Shell execution primitives. Port of src/main/runner.js.
+ // macOS: commands run via `/bin/zsh -lc` (login shell, profile PATH loaded).
+-// Windows: commands run via `powershell.exe -NoProfile -NonInteractive -Command`.
++// Windows: commands run via `cmd.exe /c`.
+ use std::process::Stdio;
+ 
+ use serde::Serialize;
+@@ -138,6 +138,30 @@ where
+     })
+ }
+ 
++/// Direct invocation of the bundled node.exe + CLI entry-point (Windows only).
++/// Extracted from `run_self_update` so the invocation logic can be unit-tested
++/// independently of Tauri's managed `State`.
++#[cfg(windows)]
++pub(crate) async fn self_update_direct(
++    node_exe: &std::path::Path,
++    cli_entry: &std::path::Path,
++) -> CmdResult<String> {
++    let out = tokio::process::Command::new(node_exe)
++        .args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")])
++        .output()
++        .await
++        .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
++    if out.status.success() {
++        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
++    } else {
++        Err(crate::error::InstallerError::Other(format!(
++            "codemie self-update failed (exit {:?}): {}",
++            out.status.code(),
++            String::from_utf8_lossy(&out.stderr).trim()
++        )))
++    }
++}
++
+ /// Run `codemie self-update` silently (captured, not PTY).
+ /// On Windows, invokes the bundled node.exe + CLI absolutely when both paths are
+ /// populated; falls back to the `codemie` shim on PATH via `cmd.exe /c`.
+@@ -151,22 +175,22 @@ pub async fn run_self_update(
+         let node = &state.node_exe_path;
+         let cli = &state.cli_entry_path;
+         if node.exists() && cli.exists() {
+-            let out = tokio::process::Command::new(node)
+-                .args([cli.as_os_str(), std::ffi::OsStr::new("self-update")])
+-                .output()
+-                .await
+-                .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
+-            return if out.status.success() {
+-                Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+-            } else {
+-                Err(crate::error::InstallerError::Other(format!(
+-                    "codemie self-update failed (exit {:?}): {}",
+-                    out.status.code(),
+-                    String::from_utf8_lossy(&out.stderr).trim()
+-                )))
+-            };
++            return self_update_direct(node, cli).await;
++        }
++        // At least one bundled path is absent. Log which one is missing to help
++        // diagnose PATH injection failures before falling back to the shim.
++        if !node.exists() {
++            log::warn!(
++                "[run_self_update] node_exe_path not found ({}); falling back to PATH shim",
++                node.display()
++            );
++        }
++        if !cli.exists() {
++            log::warn!(
++                "[run_self_update] cli_entry_path not found ({}); falling back to PATH shim",
++                cli.display()
++            );
+         }
+-        // node.exe or cli entry not found; fall through to shim on PATH.
+     }
+     let r = capture("codemie self-update", None).await;
+     if r.code == 0 {
+@@ -216,3 +240,28 @@ mod tests_windows {
+         assert_eq!(r.code, 3);
+     }
+ }
++
++#[cfg(all(test, windows))]
++mod tests_windows_self_update {
++    use super::*;
++
++    /// Verifies that `self_update_direct` returns `Err` when the supplied node
++    /// binary is not a valid Windows executable (invalid PE format). This covers
++    /// the error-mapping path through `map_err(|e| InstallerError::Other(...))`.
++    ///
++    /// The success path (exit 0, stdout captured) requires a real node.exe binary
++    /// and is verified at integration-test time on a Windows VM (stage 7).
++    #[tokio::test]
++    async fn self_update_direct_errors_when_node_not_executable() {
++        let dir = tempfile::TempDir::new().unwrap();
++        let fake_node = dir.path().join("node.exe");
++        let fake_cli = dir.path().join("index.js");
++        std::fs::write(&fake_node, b"not a PE binary").unwrap();
++        std::fs::write(&fake_cli, b"// placeholder").unwrap();
++        let result = self_update_direct(&fake_node, &fake_cli).await;
++        assert!(
++            result.is_err(),
++            "self_update_direct must return Err when node.exe is not a valid executable"
++        );
++    }
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index b4a321c..1d84ee7 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -13,10 +13,19 @@ pub fn run() {
+             // PATH injection uses set_var and must run before any plugin starts a thread.
+             let resolved = commands::pathman::apply_resolved_shell_path();
+             if let Err(e) = commands::pathman::inject_bundled_bin_path(app.handle()) {
+-                eprintln!("{e}");
++                // eprintln! is swallowed in a packaged GUI; use log::error! so the
++                // message is captured by the log plugin (debug builds) and any
++                // custom log subscriber wired up before this point.
++                log::error!("{e}");
+             }
+ 
+             // Build AppState with Windows-specific absolute paths for bundled node.exe and CLI.
++            // NOTE(EPMCDME-14573 CR-009): the node\ and cli\ bundle.resources entries are
++            // intentionally absent from tauri.conf.json. Declaring them before the source
++            // files are delivered by EPMCDME-14505 would break `tauri build`. They will be
++            // added in EPMCDME-14505, which owns bundling node.exe and the CLI dist artefact.
++            // Until then, node_exe_path and cli_entry_path resolve to empty PathBufs and
++            // run_self_update falls back to the codemie.cmd shim on PATH.
+             #[cfg(windows)]
+             let (node_exe, cli_entry) = app
+                 .path()

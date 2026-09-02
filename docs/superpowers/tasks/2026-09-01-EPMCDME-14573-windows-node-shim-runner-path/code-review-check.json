@@ -1,0 +1,49 @@
+{
+  "decision": "approve",
+  "rationale": "All 9 prior blocking findings resolved: probe_with_bin fixes the bin/ subdirectory mismatch (CR-001), persist() now writes HKCU\\Environment (CR-002), probe_dir() tests replace the tautological check (CR-003), comment and log improvements resolved CR-004/CR-006/CR-007/CR-008, self_update_direct extracted and error-path tested (CR-005), and the node/cli bundle.resources deferral is documented in source (CR-009).",
+  "confidence": "high",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {"kind": "story-ac", "item": "codemie --version exits 0 on a clean Windows user account with no system Node.js or npm installed", "status": "pending-stage-7", "notes": "code path wired; requires clean-VM runtime validation"},
+    {"kind": "story-ac", "item": "codemie install [agent] completes end-to-end using only the runtime bundled in the installer", "status": "pending-stage-7", "notes": "code path wired; requires clean-VM end-to-end runtime validation"},
+    {"kind": "story-ac", "item": "A pre-existing system Node.js installation is unmodified after CodeMie Connect is installed", "status": "pass", "notes": "install_node (msiexec) removed; bundled node lives under resource_dir"},
+    {"kind": "story-ac", "item": "No UAC credential prompt appears at any point during installation or first run", "status": "pending-stage-7", "notes": "design uses currentUser NSIS + HKCU-only PATH; requires runtime validation on clean Windows VM"},
+    {"kind": "story-ac", "item": "The PATH addition is written exclusively to HKCU\\Environment (not HKLM or any system-wide key)", "status": "pass", "notes": "persist() now called from inject_bundled_bin_path after set_var; writes HKCU\\Environment via winreg"},
+    {"kind": "story-ac", "item": "runner.rs builds codemie invocations from absolute node_exe_path and cli_entry_path in AppState, not via PowerShell PATH lookup", "status": "pass", "notes": "run_self_update #[cfg(windows)] block uses Command::new(node).args([cli, OsStr::new(\"self-update\")])"},
+    {"kind": "story-ac", "item": "cargo build and cargo clippy -- -D warnings pass with no new warnings on Windows", "status": "pending-stage-7", "notes": "requires cargo build/clippy execution on Windows"},
+    {"kind": "story-ac", "item": "cargo test passes; the PowerShell runner test is replaced, not merely deleted", "status": "pending-stage-7", "notes": "run_capture_runs_via_cmd_and_captures_stdout present in diff; pass/fail requires execution"},
+    {"kind": "spec", "item": "Shim script content: @echo off / set BUNDLE_DIR=%~dp0.. / node.exe + index.js with %*", "status": "pass", "notes": "assets/windows/bin/codemie.cmd diff matches spec verbatim"},
+    {"kind": "spec", "item": "bundle.resources entry declares bin\\codemie.cmd target in tauri.conf.json", "status": "pass", "notes": "tauri.conf.json adds \"../assets/windows/bin/codemie.cmd\": \"bin/codemie.cmd\""},
+    {"kind": "spec", "item": "bundle.resources target layout includes node\\node.exe and cli\\...\\index.js entries", "status": "partial", "notes": "only bin/codemie.cmd declared; node\\ and cli\\ resource entries absent — EPMCDME-14505 boundary"},
+    {"kind": "spec", "item": "codemie.cmd added to candidate filename list in pathman.rs Windows probe", "status": "pass", "notes": "candidate_bin_names() returns [\"codemie.exe\", \"codemie.cmd\", \"codemie\"] on Windows"},
+    {"kind": "spec", "item": "inject_bundled_bin_path calls persist() with bin dir to write HKCU\\Environment and broadcast WM_SETTINGCHANGE", "status": "pass", "notes": "persist(&[dir_str.to_string()]) called under #[cfg(windows)] after set_var; errors surfaced via log::warn!"},
+    {"kind": "spec", "item": "inject_bundled_bin_path called before any plugin or thread is started (lib.rs setup order)", "status": "pass", "notes": "inject_bundled_bin_path called before app.manage and before tauri_plugin_log"},
+    {"kind": "spec", "item": "No change to system-directory fallback list or macOS branch in pathman.rs", "status": "pass", "notes": "diff adds only candidate_bin_names and inject_bundled_bin_path; macOS-relevant code untouched"},
+    {"kind": "spec", "item": "#[cfg(all(test, windows))] test constructs temp dir with codemie.cmd and asserts the probe detects it", "status": "pass", "notes": "three tests in tests_windows_probe call probe_dir() directly; probe_dir_detects_shim_in_bin_subdir_and_not_parent covers bin/ layout"},
+    {"kind": "spec", "item": "runner.rs Windows shell_cmd changed from powershell.exe to cmd.exe /c", "status": "pass", "notes": "#[cfg(windows)] block now Command::new(\"cmd.exe\").args([\"/c\", cmd_str])"},
+    {"kind": "spec", "item": "AppState gains #[cfg(windows)] node_exe_path: PathBuf and cli_entry_path: PathBuf populated from resource_dir()", "status": "pass", "notes": "state.rs adds both fields; lib.rs setup populates via resource_dir().map(...)"},
+    {"kind": "spec", "item": "shell_cmd remains a free function with signature shell_cmd(cmd_str: &str) unchanged", "status": "pass", "notes": "function signature unchanged; no AppHandle parameter added"},
+    {"kind": "spec", "item": "Windows runner test replaced with cmd.exe /c echo equivalent verifying dispatch and exit code", "status": "pass", "notes": "run_capture_runs_via_cmd_and_captures_stdout asserts exit 0 and stdout contains output"},
+    {"kind": "spec", "item": "install_node Windows branch, node_pkg_url Windows MSI variant, and Windows MSI URL tests deleted", "status": "pass", "notes": "installer.rs has no #[cfg(windows)] install_node or node_pkg_url; lib.rs gates both with #[cfg(not(windows))]"},
+    {"kind": "spec", "item": "config/steps.yaml: steps 1.2 and 1.2.1 removed; step 1.3 messages updated to remove npm references", "status": "pass", "notes": "steps.yaml removes both steps; step 1.3 approval_message references bundled runtime"},
+    {"kind": "spec", "item": "ui/handlers.js step 1.2 handler (lines 109-150) removed", "status": "pass", "notes": "handlers.js removes '1.2' and '1.2.1' entries entirely"},
+    {"kind": "spec", "item": "ui/handlers.js Windows-specific npm PATH discovery in step 1.3 handler removed", "status": "pass", "notes": "rememberDirs for AppData\\Roaming\\npm replaced with if (!isWin) guard around newPrefix rememberDirs call"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "13 subjects reviewed; all follow the documented '<type>: <short description>' format with valid types (feat, fix, docs) and no scope anti-patterns"},
+    {"kind": "code-quality", "status": "na", "notes": "No .ai-run/guides/standards/code-quality.md found in the repository; no standard to adjudicate against"},
+    {"kind": "security", "status": "na", "notes": "No .ai-run/guides/development/security-patterns.md found. No concrete security issues newly introduced: cmd.exe /c replaces powershell.exe without changing injection exposure; run_self_update uses Command::new with absolute paths (no shell); inject_bundled_bin_path uses unsafe set_var documented as called before any plugin thread; codemie.cmd %~dp0 expansion is application-controlled."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "probe_with_bin closure tries d then d.join(\"bin\"); both current_exe and resource_dir branches call .and_then(probe_with_bin) — resource_dir/bin/codemie.cmd is now found"},
+    {"id": "CR-002", "status": "resolved", "notes": "persist(&[dir_str.to_string()]) called under #[cfg(windows)] after set_var; persist() error surfaced via log::warn!"},
+    {"id": "CR-003", "status": "resolved", "notes": "tests_windows_probe module has three tests calling probe_dir() directly: detection, empty-dir false, and bin/-subdir-not-parent assertions"},
+    {"id": "CR-004", "status": "resolved", "notes": "Line 3 of runner.rs updated to: Windows: commands run via `cmd.exe /c`"},
+    {"id": "CR-005", "status": "resolved", "notes": "self_update_direct() extracted as pub(crate) fn; tests_windows_self_update test covers error-mapping path with non-PE fake binary; success path deferred to stage-7"},
+    {"id": "CR-006", "status": "resolved", "notes": "log::warn! calls in run_self_update name the specific absent path (node_exe_path or cli_entry_path) before shim fallback"},
+    {"id": "CR-007", "status": "resolved", "notes": "SAFETY comment expanded to cite Tauri 2.x setup() single-thread guarantee and instruct relocation if threading model changes"},
+    {"id": "CR-008", "status": "resolved", "notes": "eprintln! replaced with log::error! in lib.rs setup(); inline comment explains why eprintln! is insufficient in a packaged GUI"},
+    {"id": "CR-009", "status": "resolved", "notes": "Decision made: defer node/ and cli/ bundle.resources entries to EPMCDME-14505; NOTE(EPMCDME-14573 CR-009) comment in lib.rs documents fallback behaviour"}
+  ]
+}
