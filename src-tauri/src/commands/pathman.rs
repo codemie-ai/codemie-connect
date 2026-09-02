@@ -265,6 +265,31 @@ pub fn probe_dir(dir: &std::path::Path) -> bool {
     candidate_bin_names().iter().any(|n| dir.join(n).exists())
 }
 
+/// Probe `d` directly, then its `bin/` subdirectory, using `probe_fn`.
+/// Returns the first matching directory or `None`.  Extracted from the inline
+/// closure inside `inject_bundled_bin_path` so tests can call it with any probe.
+pub(crate) fn probe_with_bin_dir(
+    d: std::path::PathBuf,
+    probe_fn: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    if probe_fn(&d) {
+        Some(d)
+    } else {
+        let bin = d.join("bin");
+        if probe_fn(&bin) { Some(bin) } else { None }
+    }
+}
+
+/// Build a new PATH string with `dir_str` prepended to `current`.
+/// Returns `dir_str` alone when `current` is empty to avoid a leading separator.
+pub(crate) fn build_new_path(current: &str, dir_str: &str) -> String {
+    if current.is_empty() {
+        dir_str.to_string()
+    } else {
+        format!("{}{}{}", dir_str, PATH_SEP, current)
+    }
+}
+
 /// Prepend the directory containing the bundled codemie sidecar to the
 /// process PATH so all login-shell invocations (runner.rs, pty.rs) find it.
 /// Must be called before any plugin is installed (see lib.rs setup order).
@@ -281,40 +306,25 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
     // Full probe: check the sidecar binary name AND candidate names (codemie.exe, codemie.cmd…).
     let probe = |d: &std::path::Path| d.join(&sidecar_name).exists() || probe_dir(d);
 
-    // Try `d` directly, then the `bin/` subdirectory. Returns the matching directory
-    // or None. tauri.conf.json places the shim at resource_dir/bin/codemie.cmd, so
-    // we must check the subdirectory when the root itself does not contain the shim.
-    let probe_with_bin = |d: std::path::PathBuf| -> Option<std::path::PathBuf> {
-        if probe(&d) {
-            Some(d)
-        } else {
-            let bin = d.join("bin");
-            if probe(&bin) {
-                Some(bin)
-            } else {
-                None
-            }
-        }
-    };
-
     // Approach B: Tauri places the sidecar alongside the main exe.
+    // tauri.conf.json places the shim at resource_dir/bin/codemie.cmd, so
+    // probe_with_bin_dir tries both `d` and `d/bin/`.
+    // `&probe` is intentional: probe must be reused across two `.and_then` call sites;
+    // passing it by value would move it into the first closure, leaving nothing for the second.
+    #[allow(clippy::needless_borrows_for_generic_args)]
     let bin_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .and_then(probe_with_bin)
+        .and_then(|d| probe_with_bin_dir(d, &probe))
         // Approach A fallback: resource_dir.
-        .or_else(|| app.path().resource_dir().ok().and_then(probe_with_bin));
+        .or_else(|| app.path().resource_dir().ok().and_then(|d| probe_with_bin_dir(d, &probe)));
 
     if let Some(dir) = bin_dir {
         let dir_str = dir.to_str().ok_or_else(|| {
             "[inject_bundled_bin_path] sidecar dir has non-UTF-8 path; PATH unchanged".to_string()
         })?;
         let current = std::env::var("PATH").unwrap_or_default();
-        let new_path = if current.is_empty() {
-            dir_str.to_string()
-        } else {
-            format!("{}{}{}", dir_str, PATH_SEP, current)
-        };
+        let new_path = build_new_path(&current, dir_str);
         // SAFETY: set_var mutates the process environment; Rust's safety contract
         // requires no concurrent env reads from other threads. This call is placed
         // inside Tauri's setup() closure, which runs synchronously before any
@@ -431,5 +441,79 @@ mod tests {
         let r = resolve_shell_path().expect("resolved shell PATH on a macOS box");
         assert!(r.contains('/'), "resolved PATH should contain directories");
         assert!(!r.contains(PATH_MARKER), "markers must be stripped");
+    }
+}
+
+#[cfg(test)]
+mod tests_inject_bundled_bin_path {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_shim(dir: &std::path::Path) {
+        #[cfg(windows)]
+        fs::write(dir.join("codemie.cmd"), b"@echo off").unwrap();
+        #[cfg(not(windows))]
+        fs::write(dir.join("codemie"), b"#!/bin/sh").unwrap();
+    }
+
+    // --- probe_with_bin_dir ---
+
+    #[test]
+    fn probe_with_bin_dir_returns_root_when_shim_in_root() {
+        let dir = TempDir::new().unwrap();
+        write_shim(dir.path());
+        let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
+        assert_eq!(result.as_deref(), Some(dir.path()));
+    }
+
+    #[test]
+    fn probe_with_bin_dir_returns_bin_subdir_when_shim_only_in_bin() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        write_shim(&bin);
+        let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
+        assert_eq!(result.as_deref(), Some(bin.as_path()));
+    }
+
+    #[test]
+    fn probe_with_bin_dir_prefers_root_over_bin_subdir() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        write_shim(dir.path());
+        write_shim(&bin);
+        let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
+        assert_eq!(result.as_deref(), Some(dir.path()), "root is checked before bin/");
+    }
+
+    #[test]
+    fn probe_with_bin_dir_returns_none_when_no_shim() {
+        let dir = TempDir::new().unwrap();
+        let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
+        assert!(result.is_none());
+    }
+
+    // --- build_new_path ---
+
+    #[test]
+    fn build_new_path_returns_dir_only_when_current_is_empty() {
+        assert_eq!(build_new_path("", "bundled_bin"), "bundled_bin");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn build_new_path_prepends_with_colon_separator() {
+        assert_eq!(build_new_path("/usr/bin:/usr/local/bin", "/app/bin"), "/app/bin:/usr/bin:/usr/local/bin");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn build_new_path_prepends_with_semicolon_separator() {
+        assert_eq!(
+            build_new_path(r"C:\Windows\System32;C:\Windows", r"C:\app\bin"),
+            r"C:\app\bin;C:\Windows\System32;C:\Windows"
+        );
     }
 }
