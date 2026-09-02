@@ -1,0 +1,16 @@
+{
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires '<type>: <short description>' with no prefix; all 5 commits in range use '[throwaway] <type>: <description>'. The '[throwaway]' prefix is not documented. Branch 'spike/EPMCDME-14504-pkg-binary' also does not match any documented pattern (feat/, fix/, chore/, docs/)."},
+    {"kind": "code-quality", "status": "na", "notes": "No guide found at .ai-run/guides/standards/code-quality.md; absent standard."},
+    {"kind": "security", "status": "na", "notes": "No guide found at .ai-run/guides/development/security-patterns.md; absent standard. New code in inject_bundled_bin_path derives PATH solely from current_exe() and Tauri resource_dir() — no user input, no credential logging, no concrete security defects observed."}
+  ],
+  "blocking_findings": [
+    {
+      "location": "commits a7265c8d..HEAD (all 5 subjects)",
+      "violation": "git-workflow.md documents commit format as '<type>: <short description>' with no prefix; every commit in the range prefixes the subject with '[throwaway]', which is not a recognised type or decorator in the guide",
+      "why_blocking": "non-conformant subjects violate the documented history convention and, under squash-merge, would carry the prefix into the main-branch record",
+      "remedy": "rebase to drop the '[throwaway]' prefix from all 5 commit subjects so each reads '<type>: <short description>'; also rename branch from 'spike/EPMCDME-14504-pkg-binary' to a documented prefix (e.g. 'feat/EPMCDME-14504-pkg-binary') before merge"
+    }
+  ],
+  "coverage_gap": false
+}

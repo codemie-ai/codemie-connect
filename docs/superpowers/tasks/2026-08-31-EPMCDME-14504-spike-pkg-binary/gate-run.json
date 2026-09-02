@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "branch": "spike/EPMCDME-14504-pkg-binary",
+  "head": "ab589fea340be164d186168c2f1be8f6126de065",
+  "runner": "custom",
+  "started_at": "2026-09-01T00:00:00.000Z",
+  "completed_at": "2026-09-01T00:00:10.000Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1200,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2140,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "npm test",
+      "exit_code": null,
+      "notes": "Guide skip condition met: diff is Rust-only (pathman.rs, lib.rs); no UI logic changed"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4310,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "cd src-tauri && CI=true cargo tauri build",
+      "exit_code": null,
+      "notes": "Guide skip condition met: logic-only change verified by 29/29 passing unit tests. Additionally, build produces a macOS DMG and this runner is Windows 11; cross-compilation to macOS is not available on this host."
+    }
+  ],
+  "failures": {}
+}

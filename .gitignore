@@ -8,6 +8,9 @@ node_modules/
 # Bundles
 *.dmg
 
+# Spike binary artifacts (pkg sidecar binaries, not committed)
+assets/bin/
+
 # macOS
 .DS_Store
 

@@ -1,0 +1,233 @@
+{
+  "decision": "request-changes",
+  "rationale": "Edge-case and acceptance lenses ran cleanly for the balanced profile; 3 edge-case candidates (Windows .exe probe miss, concurrent set_var UB, non-UTF-8 path) had uncertain reachability and are capped at major. Phase 3 of the spike was not executed — 5 required acceptance/spec criteria unmet, 1 partial, with a security-rated CWD-in-PATH defect, a spec-violating hardcoded separator, and a blocking commit-format violation requiring separate resolution. 0 deferred, 0 dismissed as noise.",
+  "confidence": "medium",
+  "risk_flags": ["security"],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "codemie --version prints a version string from inside the signed and notarized .app on a clean aarch64 VM with no system Node.js, npm, or separate JS files",
+      "status": "fail",
+      "notes": "Phase 3 not executed; SPIKE_RESULT.md has no Phase 3 section; tauri.macos.conf.json and ui/handlers.js changes absent from diff"
+    },
+    {
+      "kind": "story-ac",
+      "item": "codemie install [agent] completes without error from the same VM environment",
+      "status": "fail",
+      "notes": "Phase 3 not executed; same missing prerequisites as AC1"
+    },
+    {
+      "kind": "story-ac",
+      "item": "SPIKE_RESULT.md records exact pkg invocation and exit code, codesign output, and verbatim VM stdout/stderr — or a documented blocker if a phase halts early",
+      "status": "partial",
+      "notes": "Phase 1 and Phase 2 sections present with invocation and exit code 0; Phase 3 section entirely absent (codesign output and VM stdout/stderr missing)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "keytar compatibility documented: unconditional-blocker, guarded-non-blocker, or degraded-but-acceptable, with the evidence that led to the finding",
+      "status": "pass",
+      "notes": "SPIKE_RESULT.md Phase 1 records verdict guarded-non-blocker with call-site evidence (security.js:242 lazy dynamic import inside try/catch), affected commands, and fallback behaviour"
+    },
+    {
+      "kind": "story-ac",
+      "item": "src-tauri/tauri.macos.conf.json carries [throwaway] comments on every spike-specific key; src-tauri/tauri.conf.json is unmodified",
+      "status": "fail",
+      "notes": "tauri.macos.conf.json is not present in the diff; tauri.conf.json is correctly absent from the diff"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Existing cargo test and npm test pass on the spike branch without modification to any test",
+      "status": "pending-stage-7",
+      "notes": "No test files modified in the diff; pass/fail requires test suite execution"
+    },
+    {
+      "kind": "spec",
+      "item": "Phase 3 Rust: add inject_bundled_bin_path(app: &tauri::AppHandle) to src-tauri/src/commands/pathman.rs with detection string codemie- (not node-)",
+      "status": "pass",
+      "notes": "Function added at pathman.rs diff hunk +83-+112; sidecar_name uses codemie- prefix on both macOS and Windows"
+    },
+    {
+      "kind": "spec",
+      "item": "Phase 3 Rust: call inject_bundled_bin_path(app.handle()) in lib.rs immediately after apply_resolved_shell_path()",
+      "status": "pass",
+      "notes": "lib.rs diff hunk +125 adds the call directly after apply_resolved_shell_path() on the preceding line"
+    },
+    {
+      "kind": "spec",
+      "item": "Phase 3 Rust: PATH injection uses platform-specific separator (ported from plan.md; file already defines PATH_SEP as ; on Windows and : elsewhere)",
+      "status": "fail",
+      "notes": "inject_bundled_bin_path hardcodes ':' in format!(\"{}:{}\", ...) at pathman.rs:276 regardless of OS; existing PATH_SEP constant is not used, producing a malformed PATH on Windows"
+    },
+    {
+      "kind": "spec",
+      "item": "Phase 3 JS: short-circuit step 1.2 in ui/handlers.js (lines 109-149) so no system Node check or download occurs for the bundled binary path",
+      "status": "fail",
+      "notes": "ui/handlers.js is not in the diff; step 1.2 is not short-circuited"
+    },
+    {
+      "kind": "spec",
+      "item": "Phase 3 JS: replace step 1.3 in ui/handlers.js (line 175) — swap npm install -g @codemieai/code with a codemie --version probe",
+      "status": "fail",
+      "notes": "ui/handlers.js is not in the diff; step 1.3 is not replaced"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "fail",
+      "notes": "git-workflow.md requires '<type>: <short description>' with no prefix; all 5 commits use '[throwaway] <type>: <description>' (not documented); branch name also does not match any documented prefix."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "No guide found at .ai-run/guides/standards/code-quality.md; absent standard."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "No guide found at .ai-run/guides/development/security-patterns.md; absent standard. inject_bundled_bin_path uses only current_exe() and resource_dir() — no user input, no credential logging."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "SPIKE_RESULT.md",
+      "title": "Phase 3 documentation section absent",
+      "problem": "Phases 1 and 2 are documented with invocations and exit codes; Phase 3 — which was not halted early — has no section recording codesign output or VM stdout/stderr.",
+      "impact": "Story criterion AC3 is partially unmet; the spike record is incomplete and cannot serve as a technical decision artifact for the bundled binary approach.",
+      "recommendation": "After executing Phase 3, add a Phase 3 section to SPIKE_RESULT.md with exact pkg invocation, codesign output, and verbatim VM stdout/stderr for both codemie --version and codemie install [agent]."
+    },
+    {
+      "id": "CR-002",
+      "kind": "evidence",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "SPIKE_RESULT.md",
+      "title": "Phase 3 VM validation not executed",
+      "problem": "Phase 3 prerequisites are absent: tauri.macos.conf.json was not created and ui/handlers.js was not modified; neither codemie --version nor codemie install [agent] has been run on a clean aarch64 VM.",
+      "impact": "Story criteria AC1 and AC2 remain unmet; the spike's primary question — whether the pkg binary runs in the signed .app without system Node.js — has not been answered.",
+      "recommendation": "Complete Phase 3: address CR-009 (config), CR-010 and CR-011 (handlers.js), build and sign the .app, then run both validation commands on a clean aarch64 VM and record verbatim output in SPIKE_RESULT.md (CR-001)."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pathman.rs",
+      "line": 265,
+      "title": "Windows fallback probe misses codemie.exe",
+      "problem": "Filter guards on lines 265 and 271 check d.join(&sidecar_name).exists() || d.join(\"codemie\").exists(); the fallback probes for \"codemie\" without the .exe extension, which Rust's std::fs will not match against \"codemie.exe\" on Windows.",
+      "impact": "If the sidecar binary is placed as codemie.exe without the arch suffix, bin_dir resolves to None on Windows and PATH remains unchanged; reachability on the spike's macOS primary target is uncertain.",
+      "recommendation": "Add a #[cfg(target_os = \"windows\")]-guarded d.join(\"codemie.exe\").exists() clause to the fallback condition on both lines 265 and 271, or unify into a platform-aware probe helper."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pathman.rs",
+      "line": 274,
+      "title": "Unset PATH yields trailing separator — CWD implicit in PATH",
+      "problem": "Line 274 uses env::var(\"PATH\").unwrap_or_default(); if PATH is unset this returns \"\"; line 276 then produces \"<dir>:\" with a trailing colon, which POSIX shells interpret as an implicit '.' (CWD) entry in PATH.",
+      "impact": "Any executable in the working directory at app launch time can shadow searched commands; the attack surface is an attacker-controlled file in a writable CWD.",
+      "recommendation": "Guard the format call to omit the separator when current is empty: format!(\"{}{}{}\", dir.display(), if current.is_empty() { \"\" } else { \":\" }, current), or reuse the existing PATH_SEP pattern from add_to_path."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pathman.rs",
+      "line": 275,
+      "title": "Unsafe set_var called after log plugin install",
+      "problem": "lib.rs installs tauri_plugin_log at lines 14-18 (debug builds only) before calling inject_bundled_bin_path at line 23; the SAFETY comment asserts no thread is spawned, which may be false if the log plugin starts a background thread during install; concurrent getenv and set_var is UB in Rust.",
+      "impact": "On debug builds, process state may be silently corrupted or a SIGSEGV produced; reachability is uncertain without confirming tauri_plugin_log's thread behaviour during plugin().",
+      "recommendation": "Move the inject_bundled_bin_path call before any plugin is installed, or replace the SAFETY comment with a verified reference to tauri_plugin_log's documented thread behaviour (e.g. no background thread before the first log call)."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pathman.rs",
+      "line": 276,
+      "title": "Hardcoded colon separator ignores PATH_SEP",
+      "problem": "inject_bundled_bin_path constructs PATH as format!(\"{}:{}\", dir.display(), current), hardcoding ':' regardless of OS; pathman.rs defines PATH_SEP as ';' on Windows and ':' elsewhere — the new function ignores it.",
+      "impact": "On Windows builds PATH is written with ':' separators, rendering it malformed and preventing the sidecar from being found; the spec criterion for platform-specific separator (Spec Phase 3 Rust) is explicitly unmet.",
+      "recommendation": "Replace the ':' literal with the existing PATH_SEP constant: format!(\"{}{}{}\", dir.display(), PATH_SEP, current)."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pathman.rs",
+      "line": 276,
+      "title": "Non-UTF-8 path bytes silently replaced in PATH entry",
+      "problem": "dir.display() uses to_string_lossy() internally; on filesystems that permit non-UTF-8 path components the bin_dir entry written to PATH will contain Unicode replacement characters (U+FFFD), making the directory silently unreachable.",
+      "impact": "Uncertain reachability on macOS (HFS+/APFS enforce UTF-8); on Linux or legacy volumes the sidecar is unreachable despite PATH appearing to be set.",
+      "recommendation": "After constructing the PATH string, verify dir.to_str() returns Some; if None, log a warning and skip injection rather than silently writing a corrupted PATH entry."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pathman.rs",
+      "line": 278,
+      "title": "Sidecar not found logged but not surfaced to user",
+      "problem": "When both current_exe and resource_dir probes fail, the else branch at line 278-280 emits a log::warn! only; inject_bundled_bin_path returns () and lib.rs line 23 discards the result; no user-visible error is produced.",
+      "impact": "All codemie invocations fail silently with 'command not found'; the user cannot distinguish a broken installation from a missing sidecar.",
+      "recommendation": "Return Result<(), String> from inject_bundled_bin_path, propagate through setup(), and surface the failure as a visible dialog or structured error entry in the installer log."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src-tauri/tauri.macos.conf.json",
+      "title": "Required spike config file absent from diff",
+      "problem": "The spec requires src-tauri/tauri.macos.conf.json with externalBin: [\"../assets/bin/codemie\"], bundle.macOS.signingIdentity, and [throwaway] comments on every spike-specific key; the file does not appear in the diff.",
+      "impact": "Story criterion AC5 is unmet; the spike cannot be built or run in its intended signed/notarized form without the platform-specific Tauri configuration.",
+      "recommendation": "Create src-tauri/tauri.macos.conf.json with the keys specified in the spike plan, add [throwaway] comments on each spike-specific key, and reference it in the Tauri build invocation."
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "ui/handlers.js",
+      "line": 109,
+      "title": "System Node probe not bypassed for bundled binary",
+      "problem": "ui/handlers.js lines 109-149 (step 1.2 — the system Node check and download step) are unmodified; the spec requires short-circuiting this step when the bundled binary path is in use.",
+      "impact": "Spec criterion Phase 3 JS (step 1.2) is unmet; the bundled binary install flow will trigger an unnecessary and potentially failing system Node probe.",
+      "recommendation": "Add a guard at the top of the '1.2' handler to return true immediately when the PATH-injected codemie binary is detected, bypassing the Node check and download entirely."
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "ui/handlers.js",
+      "line": 175,
+      "title": "npm install not replaced with codemie --version probe",
+      "problem": "ui/handlers.js line 175 still invokes npm install -g @codemieai/code; the spec requires replacing step 1.3 with a codemie --version probe against the PATH-injected binary.",
+      "impact": "Spec criterion Phase 3 JS (step 1.3) is unmet; the install flow will attempt a global npm install instead of validating the bundled binary.",
+      "recommendation": "Replace the npm install -g @codemieai/code invocation at line 175 with a codemie --version probe and treat exit code 0 as the success criterion."
+    },
+    {
+      "id": "CR-012",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "'[throwaway]' prefix violates documented commit format",
+      "problem": "git-workflow.md documents commit format as '<type>: <short description>' with no prefix; all 5 commits in range use '[throwaway] <type>: <description>'; the branch name 'spike/EPMCDME-14504-pkg-binary' also does not match any documented prefix pattern.",
+      "impact": "Non-conformant commit subjects violate the documented history convention; under squash-merge the prefix would carry into the main-branch record.",
+      "recommendation": "Rebase to drop the '[throwaway]' prefix from all 5 commit subjects so each reads '<type>: <short description>'; also rename the branch to a documented prefix (e.g. feat/EPMCDME-14504-pkg-binary) before merge."
+    }
+  ]
+}
