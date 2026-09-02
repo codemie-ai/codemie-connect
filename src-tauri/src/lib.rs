@@ -51,6 +51,7 @@ pub fn run() {
             commands::pty::spawn_pty,
             commands::pty::pty_input,
             commands::pty::pty_resize,
+            commands::pty::pty_kill,
             #[cfg(windows)]
             commands::pty::spawn_external_ps,
             commands::logger::log_line,

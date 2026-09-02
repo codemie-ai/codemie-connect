@@ -17,14 +17,11 @@ use crate::error::{CmdResult, InstallerError};
 use crate::state::AppState;
 
 /// The active PTY: a writer (for keystrokes), the master (for resize),
-/// a killer (for pty_kill), and an exit condvar (so pty_kill can wait bounded).
+/// a killer and exit condvar for `pty_kill`.
 pub struct PtyHandle {
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
-    // Used by pty_kill (added in next commit).
-    #[allow(dead_code)]
     pub killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
-    #[allow(dead_code)]
     pub exit_cv: Arc<(Mutex<bool>, Condvar)>,
 }
 
@@ -192,6 +189,35 @@ pub fn pty_resize(state: State<AppState>, cols: u16, rows: u16) -> CmdResult<()>
     Ok(())
 }
 
+#[tauri::command]
+pub async fn pty_kill(state: State<'_, AppState>) -> CmdResult<()> {
+    let (killer_arc, exit_cv) = {
+        let guard = state.pty.lock().unwrap();
+        match guard.as_ref() {
+            Some((_, h)) => (Arc::clone(&h.killer), Arc::clone(&h.exit_cv)),
+            None => return Ok(()), // nothing running — no-op
+        }
+    }; // Mutex released before any blocking work
+    tokio::task::spawn_blocking(move || -> CmdResult<()> {
+        killer_arc
+            .lock()
+            .unwrap()
+            .kill()
+            .map_err(|e| InstallerError::Pty(e.to_string()))?;
+        let (lk, cv) = &*exit_cv;
+        let guard = lk.lock().unwrap();
+        let (timed_out_guard, timed_out) = cv
+            .wait_timeout(guard, std::time::Duration::from_secs(5))
+            .unwrap();
+        if timed_out.timed_out() && !*timed_out_guard {
+            return Err(InstallerError::Pty("pty_kill timed out".into()));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| InstallerError::Other(e.to_string()))?
+}
+
 // ---- Windows: external console window ----------------------------------------
 
 /// Spawn `cmd` in a new visible PowerShell window and block until it exits.
@@ -225,6 +251,36 @@ mod win_tests {
 mod tests {
     use super::clear_if_owner;
     use std::sync::Mutex;
+
+    #[test]
+    fn kill_terminates_real_child() {
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+        use std::time::Duration;
+        let sys = native_pty_system();
+        let pair = sys
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "sleep 30"]);
+        let mut child = pair.slave.spawn_command(cmd).unwrap();
+        let mut killer = child.clone_killer();
+        killer.kill().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            tx.send(child.wait()).ok();
+        });
+        let status = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("child did not exit within 5 s after kill")
+            .unwrap();
+        // A killed process exits non-zero; reaching here proves the child exited
+        let _ = status;
+    }
 
     #[test]
     fn clear_if_owner_only_clears_matching_id() {
