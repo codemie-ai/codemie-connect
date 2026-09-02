@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "head": "f4304659b2762cab4075ecf0b6ac868bfdf8d517",
+  "feature_id": "two-column-shell-layout",
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_command": "npx playwright test evidence-capture.spec.ts -g \"shell-two-column-layout\"",
+  "app_url": "http://localhost:8934/index.html",
+  "viewport": "1000x660 (the shipped window size)",
+  "screenshot_path": "evidence/screenshots/shell-two-column-layout.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "assertion_style": "computed geometry and computed style (getBoundingClientRect / getComputedStyle)",
+  "notes": "Sidebar left, content column right, identity bar across the top, command-log footer along the bottom. Window sized 1000x660 for the shell: at the former 900x600 the squeezed home grid overflowed its track and its tiles rendered under #home-footer (see shell-overflow.spec.ts)."
+}

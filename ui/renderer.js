@@ -64,9 +64,20 @@ const installBtn = document.getElementById('install-btn');
 const closeBtn = document.getElementById('close-btn');
 const unattendedCb = document.getElementById('unattended-cb');
 
-const homeView = document.getElementById('home-view');
-const wizardView = document.getElementById('wizard-view');
-const connectView = document.getElementById('connect-view');
+// The six routed views, plus wizard-view for the legacy install engine — which
+// showView must still toggle even though the sidebar never routes to it.
+const views = {
+  home: document.getElementById('home-view'),
+  setup: document.getElementById('setup-view'),
+  agents: document.getElementById('agents-view'),
+  connect: document.getElementById('connect-view'),
+  health: document.getElementById('health-view'),
+  about: document.getElementById('about-view'),
+  wizard: document.getElementById('wizard-view'),
+};
+const homeView = views.home;
+const wizardView = views.wizard;
+const connectView = views.connect;
 const homeGrid = document.getElementById('home-grid');
 const wizardBack = document.getElementById('wizard-back');
 const connectBack = document.getElementById('connect-back');
@@ -125,6 +136,7 @@ function emit(event, payload) {
       openTerminal(p.title);
       break;
     case 'fatal':
+      setInstallRunning(false);
       setSprite('error');
       document.getElementById('fatal-message').textContent = p.message || 'Installation failed.';
       document.getElementById('fatal-reco').textContent = p.recommendation || '';
@@ -132,6 +144,7 @@ function emit(event, payload) {
       wizardBack.classList.remove('hidden');
       break;
     case 'complete':
+      setInstallRunning(false);
       setSprite(p.ok === false ? 'warning' : 'victory');
       installBtn.classList.add('hidden');
       closeBtn.classList.remove('hidden');
@@ -142,11 +155,36 @@ function emit(event, payload) {
   }
 }
 
+// True while engine.run() is in flight. The sidebar is a new way out of the
+// wizard that origin/main did not have — wizard-back is hidden during a run and
+// close-btn only appears once it ends — and leaving mid-install would let a
+// second Engine be constructed over the step list the first is still mutating.
+let installRunning = false;
+
+function setInstallRunning(on) {
+  installRunning = on;
+  document.getElementById('app-sidebar').dataset.busy = on ? '1' : '';
+  // The banner is shell chrome and stays on screen during a run. Its controls
+  // are guarded, but a guard the user cannot see reads as a broken button.
+  document.getElementById('update-banner').dataset.busy = on ? '1' : '';
+  ['update-banner-run', 'update-banner-dismiss'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = on;
+  });
+}
+
 // ---- view routing ----
 function showView(name) {
-  homeView.classList.toggle('hidden', name !== 'home');
-  wizardView.classList.toggle('hidden', name !== 'wizard');
-  connectView.classList.toggle('hidden', name !== 'connect');
+  Object.entries(views).forEach(([key, el]) => {
+    el.classList.toggle('hidden', key !== name);
+  });
+  // The wireframe draws the routed entry as a filled pill. aria-current carries
+  // it, so the highlight and the accessible state cannot drift apart. Views with
+  // no sidebar entry (setup, wizard) simply leave every entry unmarked.
+  document.querySelectorAll('#app-sidebar .sidebar-item').forEach((btn) => {
+    if (btn.dataset.view === name) btn.setAttribute('aria-current', 'page');
+    else btn.removeAttribute('aria-current');
+  });
 }
 
 // (Re)build the engine for a wizard run, optionally filtered to a subset of steps.
@@ -187,23 +225,72 @@ function hideNotice() {
   noticeOverlay.classList.add('hidden');
 }
 
+// ---- identity bar ----
+// Every value comes from ~/.codemie/codemie-cli.config.json via the Rust reader;
+// nothing here is hard-coded. An empty segment is hidden by CSS along with its
+// separator, which is how an absent account and the unconfigured states render.
+function renderIdentity(cfg) {
+  const set = (id, text) => { document.getElementById(id).textContent = text || ''; };
+  // No config yet: 01-home.png puts the product name where the identity goes.
+  // Anything that is not a resolved config shows the product name rather than an
+  // empty bar — that covers no-configuration and the read-failed fallback.
+  set('identity-product', cfg.state === 'valid' || cfg.state === 'broken' ? '' : 'CodeMie Desktop');
+  // null when the config records no userEmail — omit rather than fill in.
+  set('identity-account', cfg.account);
+  set('identity-profile', cfg.profile);
+  // Empty in the broken state, where only the account and profile are readable.
+  set('identity-model', cfg.model);
+  set('identity-project', cfg.project);
+}
+
 // ---- CLI version banner ----
+// The badge reports whether an update exists; the banner reports whether the
+// user still wants to be told. They are separate, which is why dismissing the
+// banner leaves the badge standing, as 01-home.png draws it in steady state.
+// The home grid was kept, so its update-available cue is carried-forward
+// behaviour and has to keep working: an accent border on the installation group
+// and a highlighted Update CLI tile. Guarded because EPMCDME-14589 removes the
+// grid, after which these lookups return null.
+function setGridUpdateCue(on) {
+  const group = document.getElementById('installation-group');
+  const tile = document.getElementById('update-cli-tile');
+  if (group) group.classList.toggle('update-available', on);
+  if (!tile) return;
+  if (on) tile.dataset.state = 'highlight';
+  else if (tile.dataset.state === 'highlight') delete tile.dataset.state;
+}
+
+function setVersionBadge() {
+  document.getElementById('identity-version-badge').textContent =
+    cliVersionState.updateAvailable ? `${cliVersionState.latest} available` : '';
+}
+
 function showUpdateBanner() {
+  setVersionBadge();
+  setGridUpdateCue(cliVersionState.updateAvailable);
   if (!cliVersionState.updateAvailable) return;
   if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
   document.getElementById('update-from').textContent = cliVersionState.installed;
   document.getElementById('update-to').textContent = cliVersionState.latest;
   document.getElementById('update-banner').classList.remove('hidden');
-  document.getElementById('installation-group').classList.add('update-available');
-  document.getElementById('update-cli-tile').dataset.state = 'highlight';
+}
+
+// Nothing left to announce — used after a successful update, which is not a
+// dismissal and so must not set the key that suppresses the banner all session.
+function hideUpdateBanner() {
+  document.getElementById('update-banner').classList.add('hidden');
+  setVersionBadge();
+  setGridUpdateCue(cliVersionState.updateAvailable);
 }
 
 function dismissUpdateBanner() {
   sessionStorage.setItem('update-banner-dismissed', '1');
   document.getElementById('update-banner').classList.add('hidden');
-  document.getElementById('installation-group').classList.remove('update-available');
-  const tile = document.getElementById('update-cli-tile');
-  if (tile.dataset.state === 'highlight') delete tile.dataset.state;
+  setVersionBadge();
+  // origin/main cleared the grid cue on dismiss. The badge is what survives —
+  // it reports that an update exists; the cue and banner report that we are
+  // still asking about it, and dismissing answers that.
+  setGridUpdateCue(false);
 }
 
 // ---- one-shot command action (proxy connect / analytics) ----
@@ -262,18 +349,40 @@ async function runAnalytics() {
   );
 }
 
-async function runUpdateCli() {
+// Reachable from two places — the update banner's button and the home grid's
+// Update CLI tile — so progress has to render on both. Showing it only on the
+// banner meant a click from the tile ran a real `npm install -g` with no visible
+// feedback whenever the banner was hidden, and nothing stopped a second click.
+let updateCliRunning = false;
+
+function setUpdateProgress(state, label, icon) {
+  const btn = document.getElementById('update-banner-run');
+  if (btn) {
+    btn.dataset.state = state;
+    btn.textContent = label;
+    btn.disabled = state === 'updating';
+  }
+  // The grid tile animates in place, as it does on the shipped app.
   const tile = document.getElementById('update-cli-tile');
+  if (!tile) return;
+  if (state) tile.dataset.state = state;
+  else delete tile.dataset.state;
   const iconEl = document.getElementById('update-cli-icon');
   const titleEl = document.getElementById('update-cli-title');
-  const siblings = document.querySelectorAll('#installation-tiles .sub-tile:not(#update-cli-tile)');
+  if (iconEl) iconEl.textContent = icon;
+  if (titleEl) titleEl.textContent = label;
+  // Its siblings are inert while the update runs, so a second install cannot be
+  // started from the same group.
+  document.querySelectorAll('#installation-tiles .sub-tile:not(#update-cli-tile)').forEach((t) => {
+    t.style.pointerEvents = state === 'updating' ? 'none' : '';
+    t.style.opacity = state === 'updating' ? '0.4' : '';
+  });
+}
 
-  // Enter updating state
-  tile.dataset.state = 'updating';
-  iconEl.textContent = '⏳';
-  titleEl.textContent = 'Updating…';
-  siblings.forEach((t) => { t.style.pointerEvents = 'none'; t.style.opacity = '0.4'; });
-
+async function runUpdateCli() {
+  if (updateCliRunning) return;
+  updateCliRunning = true;
+  setUpdateProgress('updating', 'Updating…', '⏳');
   try {
     await invoke('run_self_update');
 
@@ -285,30 +394,29 @@ async function runUpdateCli() {
         ? semverLt(newVersion, cliVersionState.latest)
         : false;
 
-    tile.dataset.state = 'done';
-    iconEl.textContent = '✅';
-    titleEl.textContent = newVersion ? `Updated! → ${newVersion}` : 'Updated!';
+    setUpdateProgress('done', newVersion ? `Updated! → ${newVersion}` : 'Updated!', '✅');
 
     if (!cliVersionState.updateAvailable) {
-      dismissUpdateBanner();
+      hideUpdateBanner();
     }
 
     setTimeout(() => {
-      delete tile.dataset.state;
-      iconEl.textContent = '🔄';
-      titleEl.textContent = 'Update CLI';
-      siblings.forEach((t) => { t.style.pointerEvents = ''; t.style.opacity = ''; });
+      setUpdateProgress('', 'Update CLI', '🔄');
+      updateCliRunning = false;
     }, 3000);
-  } catch (e) {
-    tile.dataset.state = 'error';
-    iconEl.textContent = '❌';
-    titleEl.textContent = 'Failed — retry?';
-    siblings.forEach((t) => { t.style.pointerEvents = ''; t.style.opacity = ''; });
+  } catch {
+    setUpdateProgress('error', 'Failed — retry?', '❌');
+    updateCliRunning = false;
   }
 }
 
 async function boot() {
   const flags = await invoke('smoke_mode');
+
+  // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
+  // so the router is otherwise unreachable from devtools. CODEMIE_DEV=1 exposes
+  // it for verification only.
+  if (flags.dev) window.__codemie = { showView };
 
   allSteps = await invoke('get_steps');
   stepsUI.renderSteps(stepListEl, allSteps);
@@ -332,7 +440,18 @@ async function boot() {
   });
 
   // Wire update banner dismiss
-  document.getElementById('update-banner-dismiss').addEventListener('click', dismissUpdateBanner);
+  // The banner is shell-level now, so unlike origin/main — where it lived inside
+  // the home grid and showView('wizard') hid it — it stays on screen during an
+  // install. Both its controls need the same guard the sidebar has, or a
+  // self-update can run concurrently with the engine's own CLI install step.
+  document.getElementById('update-banner-run').addEventListener('click', () => {
+    if (installRunning) return;
+    runUpdateCli();
+  });
+  document.getElementById('update-banner-dismiss').addEventListener('click', () => {
+    if (installRunning) return;
+    dismissUpdateBanner();
+  });
 
   // Check CLI version vs npm latest at startup (non-blocking)
   Promise.all([
@@ -347,6 +466,19 @@ async function boot() {
   }).catch(() => {
     // Silently ignore — offline or CLI not installed
   });
+
+  // Identity bar: live auth status. EPMCDME-14515 rewrites check_profile_status
+  // into four states and must update this caller as well as the Connections one.
+  invoke('check_profile_status').then((st) => {
+    document.getElementById('identity-auth-status').textContent = st.authenticated ? 'Signed in' : 'Not signed in';
+  }).catch(() => {
+    document.getElementById('identity-auth-status').textContent = 'Not signed in';
+  });
+
+  // Identity bar: profile / model / project / account, read from the config file.
+  bridge.codemieConfig.read()
+    .then((cfg) => renderIdentity(cfg || {}))
+    .catch(() => renderIdentity({}));
 
   const [platformInfo, tmpDir] = await Promise.all([
     invoke('get_platform_info'),
@@ -385,8 +517,12 @@ async function boot() {
     installBtn.disabled = true;
     unattended = unattendedCb.checked;
     wizardBack.classList.add('hidden');
+    setInstallRunning(true);
     setSprite('working');
-    engine.run().catch((err) => emit('terminal-line', { text: `Engine error: ${(err && err.message) || err}`, tag: 'stderr' }));
+    engine.run().catch((err) => {
+      setInstallRunning(false); // otherwise the sidebar stays inert with no way back
+      emit('terminal-line', { text: `Engine error: ${(err && err.message) || err}`, tag: 'stderr' });
+    });
   });
   // After a run finishes, "Back to Home" returns to the launcher rather than quitting the
   // app (macOS Cmd+Q / the window's close control handle quitting). Re-entering a wizard
@@ -421,6 +557,18 @@ async function boot() {
         break;
     }
   });
+  document.querySelectorAll('#sidebar-main-group .sidebar-item, #sidebar-about').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
+      showView(btn.dataset.view);
+    });
+  });
+  showView('home');
+  document.getElementById('sidebar-analytics').addEventListener('click', () => {
+    if (installRunning) return; // hidden today, but restoring it must not restore the gap
+    runAnalytics();
+  });
+
   wizardBack.addEventListener('click', () => showView('home'));
   connectBack.addEventListener('click', () => showView('home'));
   connectBtn.addEventListener('click', async () => {
@@ -485,6 +633,16 @@ async function runSmoke(flags) {
     bg: cs.backgroundColor, // proves styles.css + tokens loaded (dark page = rgb(26, 26, 26))
     theme: document.documentElement.className, // proves theme bootstrap ran ('dark' by default)
     bootError: window.__bootError || null,
+    // The identity bar as actually rendered, so the config-state checks in the
+    // Definition of Done can be made against the built binary instead of a
+    // stubbed page. Empty segments are dropped, not marked: CSS hides them, so
+    // omitting them here is what the bar really reads — and a placeholder
+    // character in this line would look exactly like the em-dashes the
+    // identity criterion forbids.
+    identity: ['product', 'account', 'profile', 'model', 'project']
+      .map((k) => document.getElementById(`identity-${k}`).textContent)
+      .filter(Boolean)
+      .join(' · '),
   };
   await invoke('smoke_emit', { line: `SMOKE_PROBE ${JSON.stringify(probe)}` });
 

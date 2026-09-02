@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "head": "f4304659b2762cab4075ecf0b6ac868bfdf8d517",
+  "feature_id": "sidebar-grouping",
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_command": "npx playwright test sidebar-entries.spec.ts",
+  "app_url": "http://localhost:8934/index.html",
+  "viewport": "1000x660 (the shipped window size)",
+  "screenshot_path": "evidence/screenshots/sidebar-no-analytics-entry.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "assertion_style": "computed geometry and computed style (getBoundingClientRect / getComputedStyle)",
+  "notes": "Exactly Home, Agents, Connections, Health, then About below a painted divider. The routed entry carries aria-current=page and renders as the filled accent pill 01-home.png draws."
+}

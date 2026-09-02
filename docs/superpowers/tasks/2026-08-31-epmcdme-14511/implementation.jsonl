@@ -1,0 +1,5 @@
+{"task_id":"task-1","status":"done","commit":"4f55340","test_command":"npm test (regression only; manual smoke check of showView(\"wizard\") deferred to app run)"}
+{"task_id":"task-2","status":"done","commit":"d9837d5","test_command":"npm test (regression only; manual click-through per view deferred to app run)"}
+{"task_id":"task-3","status":"done","commit":"eceeca2","test_command":"npm test (regression only; live check_profile_status/version-badge behavior deferred to app run)"}
+{"task_id":"task-4","status":"done","commit":"b9e8272","test_command":"npm test (regression only; update-banner show/dismiss visual check deferred to app run)"}
+{"task_id":"task-5","status":"done","commit":"59618a9","test_command":"npm test (regression only; sidebar analytics entry-point click-through deferred to app run)"}

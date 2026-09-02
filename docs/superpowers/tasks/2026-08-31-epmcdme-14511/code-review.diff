@@ -1,0 +1,189 @@
+diff --git a/ui/index.html b/ui/index.html
+index c4f7e21..dbc2f38 100644
+--- a/ui/index.html
++++ b/ui/index.html
+@@ -19,6 +19,36 @@
+         <span class="theme-ico theme-ico-moon" aria-hidden="true">☾</span>
+       </label>
+ 
++      <!-- ============ SIDEBAR ============ -->
++      <nav id="app-sidebar">
++        <div id="sidebar-main-group">
++          <button id="sidebar-home" class="sidebar-item" data-view="home">Home</button>
++          <button id="sidebar-agents" class="sidebar-item" data-view="agents">Agents</button>
++          <button id="sidebar-connections" class="sidebar-item" data-view="connect">Connections</button>
++          <button id="sidebar-health" class="sidebar-item" data-view="health">Health</button>
++        </div>
++        <div id="sidebar-divider"></div>
++        <div id="sidebar-bottom-group">
++          <button id="sidebar-analytics" class="sidebar-item">CLI usage analytics</button>
++          <button id="sidebar-about" class="sidebar-item" data-view="about">About</button>
++        </div>
++      </nav>
++
++      <!-- ============ IDENTITY BAR ============ -->
++      <div id="identity-bar">
++        <span id="identity-auth-status">Checking sign-in…</span>
++        <span id="identity-profile">—</span>
++        <span id="identity-model">—</span>
++        <span id="identity-project">—</span>
++        <span id="identity-version-badge"></span>
++      </div>
++
++      <!-- ============ UPDATE BANNER ============ -->
++      <div id="update-banner" class="hidden">
++        <span>⬆️ Update available: <span id="update-from"></span> → <span id="update-to"></span>. Run <strong>Update CLI</strong> to get the latest version.</span>
++        <button id="update-banner-dismiss" aria-label="Dismiss">✕</button>
++      </div>
++
+       <!-- ============ HOME / LAUNCHER ============ -->
+       <div id="home-view">
+         <header id="home-header">
+@@ -32,10 +62,6 @@
+         <div id="home-grid">
+           <div id="installation-group">
+             <div class="group-label">Installation</div>
+-            <div id="update-banner" class="hidden">
+-              <span>⬆️ Update available: <span id="update-from"></span> → <span id="update-to"></span>. Run <strong>Update CLI</strong> to get the latest version.</span>
+-              <button id="update-banner-dismiss" aria-label="Dismiss">✕</button>
+-            </div>
+             <div id="installation-tiles">
+               <button class="home-tile sub-tile" data-action="full">
+                 <div class="tile-icon">🚀</div>
+@@ -60,12 +86,6 @@
+             <div class="tile-title">Connect Claude Desktop</div>
+             <div class="tile-desc">Point Claude Desktop at the CodeMie proxy gateway.</div>
+           </button>
+-
+-          <button class="home-tile" data-action="analytics">
+-            <div class="tile-icon">📊</div>
+-            <div class="tile-title">CLI usage analytics</div>
+-            <div class="tile-desc">Build an HTML report of your local AI CLI usage (Claude Code, Codex, …) and open it in the browser.</div>
+-          </button>
+         </div>
+ 
+         <footer id="home-footer">EPAM AI/Run CodeMie ©</footer>
+@@ -117,6 +137,15 @@
+         <footer id="footer">EPAM AI/Run CodeMie ©</footer>
+       </div>
+ 
++      <!-- ============ AGENTS (placeholder) ============ -->
++      <div id="agents-view" class="hidden"></div>
++
++      <!-- ============ HEALTH (placeholder) ============ -->
++      <div id="health-view" class="hidden"></div>
++
++      <!-- ============ ABOUT (placeholder) ============ -->
++      <div id="about-view" class="hidden"></div>
++
+       <!-- ============ CONNECT CLAUDE DESKTOP (intermediate) ============ -->
+       <div id="connect-view" class="hidden">
+         <div id="connect-topbar">
+@@ -147,6 +176,9 @@
+ 
+         <footer class="view-footer">EPAM AI/Run CodeMie ©</footer>
+       </div>
++
++      <!-- ============ FOOTER LOG (empty slot — populated by a later ticket) ============ -->
++      <div id="command-log-footer" class="hidden"></div>
+     </div>
+ 
+     <!-- Interactive terminal overlay (pty steps + home actions) -->
+diff --git a/ui/renderer.js b/ui/renderer.js
+index aec609f..d126ddd 100644
+--- a/ui/renderer.js
++++ b/ui/renderer.js
+@@ -64,9 +64,17 @@ const installBtn = document.getElementById('install-btn');
+ const closeBtn = document.getElementById('close-btn');
+ const unattendedCb = document.getElementById('unattended-cb');
+ 
+-const homeView = document.getElementById('home-view');
+-const wizardView = document.getElementById('wizard-view');
+-const connectView = document.getElementById('connect-view');
++const views = {
++  home: document.getElementById('home-view'),
++  agents: document.getElementById('agents-view'),
++  connect: document.getElementById('connect-view'),
++  health: document.getElementById('health-view'),
++  about: document.getElementById('about-view'),
++  wizard: document.getElementById('wizard-view'),
++};
++const homeView = views.home;
++const wizardView = views.wizard;
++const connectView = views.connect;
+ const homeGrid = document.getElementById('home-grid');
+ const wizardBack = document.getElementById('wizard-back');
+ const connectBack = document.getElementById('connect-back');
+@@ -144,9 +152,9 @@ function emit(event, payload) {
+ 
+ // ---- view routing ----
+ function showView(name) {
+-  homeView.classList.toggle('hidden', name !== 'home');
+-  wizardView.classList.toggle('hidden', name !== 'wizard');
+-  connectView.classList.toggle('hidden', name !== 'connect');
++  Object.entries(views).forEach(([key, el]) => {
++    el.classList.toggle('hidden', key !== name);
++  });
+ }
+ 
+ // (Re)build the engine for a wizard run, optionally filtered to a subset of steps.
+@@ -194,16 +202,11 @@ function showUpdateBanner() {
+   document.getElementById('update-from').textContent = cliVersionState.installed;
+   document.getElementById('update-to').textContent = cliVersionState.latest;
+   document.getElementById('update-banner').classList.remove('hidden');
+-  document.getElementById('installation-group').classList.add('update-available');
+-  document.getElementById('update-cli-tile').dataset.state = 'highlight';
+ }
+ 
+ function dismissUpdateBanner() {
+   sessionStorage.setItem('update-banner-dismissed', '1');
+   document.getElementById('update-banner').classList.add('hidden');
+-  document.getElementById('installation-group').classList.remove('update-available');
+-  const tile = document.getElementById('update-cli-tile');
+-  if (tile.dataset.state === 'highlight') delete tile.dataset.state;
+ }
+ 
+ // ---- one-shot command action (proxy connect / analytics) ----
+@@ -344,10 +347,20 @@ async function boot() {
+     cliVersionState.updateAvailable =
+       Boolean(installed) && Boolean(latest) && semverLt(installed, latest);
+     showUpdateBanner();
++    if (cliVersionState.updateAvailable) {
++      document.getElementById('identity-version-badge').textContent = `${cliVersionState.latest} available`;
++    }
+   }).catch(() => {
+     // Silently ignore — offline or CLI not installed
+   });
+ 
++  // Identity bar: live auth status (profile/model/project stay static placeholders).
++  invoke('check_profile_status').then((st) => {
++    document.getElementById('identity-auth-status').textContent = st.authenticated ? 'Signed in' : 'Not signed in';
++  }).catch(() => {
++    document.getElementById('identity-auth-status').textContent = 'Not signed in';
++  });
++
+   const [platformInfo, tmpDir] = await Promise.all([
+     invoke('get_platform_info'),
+     invoke('temp_dir'),
+@@ -411,9 +424,6 @@ async function boot() {
+       case 'connect-desktop':
+         showView('connect');
+         break;
+-      case 'analytics':
+-        runAnalytics();
+-        break;
+       case 'update-cli':
+         runUpdateCli();
+         break;
+@@ -421,6 +431,11 @@ async function boot() {
+         break;
+     }
+   });
++  document.querySelectorAll('#sidebar-main-group .sidebar-item, #sidebar-about').forEach((btn) => {
++    btn.addEventListener('click', () => showView(btn.dataset.view));
++  });
++  document.getElementById('sidebar-analytics').addEventListener('click', () => runAnalytics());
++
+   wizardBack.addEventListener('click', () => showView('home'));
+   connectBack.addEventListener('click', () => showView('home'));
+   connectBtn.addEventListener('click', async () => {

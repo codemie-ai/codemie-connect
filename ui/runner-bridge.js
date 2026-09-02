@@ -41,6 +41,15 @@ export const inspector = {
   nodeBinaryPath: () => invoke('node_binary_path'),
 };
 
+// ---- codemie config (~/.codemie/codemie-cli.config.json) ----
+// read() resolves { state, profile, model, project, account } where state is
+// 'no-configuration' | 'valid' | 'broken'. `account` is null when the config
+// records no userEmail — an absent account, distinct from an unread one
+// ('no-configuration'). Never rejects; a missing file is a state, not an error.
+export const codemieConfig = {
+  read: () => invoke('read_codemie_config'),
+};
+
 // ---- installer (src/main/installer-macos.js) ----
 export const installer = {
   latestLtsNodeVersion: () => invoke('latest_lts_node_version'),

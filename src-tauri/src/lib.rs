@@ -39,6 +39,7 @@ pub fn run() {
             commands::inspector::check_profile_status,
             commands::inspector::git_binary_path,
             commands::inspector::node_binary_path,
+            commands::codemie_config::read_codemie_config,
             commands::installer::get_platform_info,
             commands::installer::temp_dir,
             commands::installer::node_pkg_url,

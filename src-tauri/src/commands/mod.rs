@@ -1,3 +1,4 @@
+pub mod codemie_config;
 pub mod downloader;
 pub mod inspector;
 pub mod installer;

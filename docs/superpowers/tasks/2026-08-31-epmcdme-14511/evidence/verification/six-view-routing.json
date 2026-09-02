@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "head": "f4304659b2762cab4075ecf0b6ac868bfdf8d517",
+  "feature_id": "six-view-routing",
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_command": "npx playwright test view-routing.spec.ts",
+  "app_url": "http://localhost:8934/index.html",
+  "viewport": "1000x660 (the shipped window size)",
+  "screenshot_path": "evidence/screenshots/setup-view-routed.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "assertion_style": "computed geometry and computed style (getBoundingClientRect / getComputedStyle)",
+  "notes": "Home, Setup, Agents, Connections, Health and About all route inside one shell with no page reload, plus wizard-view for the legacy install engine. setup-view is its own empty container, distinct from wizard-view, and is reached through the CODEMIE_DEV window hook since it has no sidebar entry."
+}

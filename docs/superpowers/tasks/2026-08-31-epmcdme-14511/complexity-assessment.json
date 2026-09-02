@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Build a real navigation shell (sidebar, identity bar, six-view routing) in ui/renderer.js replacing the current three-hard-coded-div toggle, and re-home the existing CLI analytics entry point into it.",
+  "generated": "2026-08-31T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 16,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Net-new subsystem: sidebar, identity bar, router/view-registry, footer log stub, update-banner region and analytics re-homing are 4+ distinct components with no existing sidebar/router precedent in the repo — new abstractions, not an extension of one; bumped from L to XL under the 'Refactor large subsystem' red flag since showView's 3-way toggle is being replaced wholesale." },
+    { "dimension": "technical_risk", "reason": "No exact precedent exists (greenfield UI area — five targeted codegraph queries found nothing beyond the 3-way showView toggle), and the code being rewritten (showView, runAnalytics caller wiring) has zero existing test coverage, so the refactor has no regression safety net; smoke-mode (CODEMIE_SMOKE/CODEMIE_PROBE_SMOKE) depends on showView('wizard') and .step-row DOM structure that must survive the rewrite. Rollback is still simple (frontend-only, single commit revert), keeping this at L rather than XL." },
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria are concrete and enumerated (six views, sidebar grouping, identity-bar fields, footer/update-banner slots, analytics re-entry), but the identity bar's account/profile/model/project data sources are explicitly flagged as speculative/unconfirmed in the research and left open for spec/plan." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: 'replacing the current three-hard-coded-div toggle' with a six-view router/sidebar/identity-bar is a wholesale refactor of the navigation subsystem"
+  ],
+  "split_recommendation": null
+}

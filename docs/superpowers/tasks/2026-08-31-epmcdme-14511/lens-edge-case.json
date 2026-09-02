@@ -1,0 +1,28 @@
+[
+  {
+    "location": "ui/renderer.js:154-157",
+    "trigger_condition": "showView(name) called with a name absent from the `views` map (e.g. data-view typo)",
+    "guard_snippet": "if (!views[name]) { console.error('Unknown view', name); return; }",
+    "potential_consequence": "Every view element is hidden simultaneously; app shows a blank screen with no visible content"
+  },
+  {
+    "location": "ui/renderer.js:207-210,350-352",
+    "trigger_condition": "User dismisses the update banner, then app relaunches with the same update still pending",
+    "guard_snippet": "if (sessionStorage.getItem('update-banner-dismissed') !== '1') { badge.textContent = ...; }",
+    "potential_consequence": "Identity-bar version badge keeps showing 'update available' even though the user already dismissed it; no way to clear the badge at all"
+  },
+  {
+    "location": "ui/renderer.js:434-436",
+    "trigger_condition": "User clicks a sidebar item (agents/health/about/connect/home) while an install engine.run() or pty session is still active in wizard-view",
+    "guard_snippet": "if (engineRunning) { if (!confirm('Installation in progress — leave anyway?')) return; }",
+    "potential_consequence": "Sidebar silently navigates away from a running install; user loses visibility into the in-progress pty output without cancelling it"
+  },
+  {
+    "location": "ui/renderer.js:130-136 (removed), styles.css:162,203 (orphaned)",
+    "trigger_condition": "CLI update becomes available — previously highlighted #installation-group and #update-cli-tile via classList/dataset",
+    "guard_snippet": "Re-add the classList.add('update-available') / dataset.state='highlight' toggles in showUpdateBanner()/dismissUpdateBanner(), or delete the now-unreachable CSS rules",
+    "potential_consequence": "Update-available visual highlight on the CLI tile is permanently lost; CSS rules for it become dead/unreachable code",
+    "kind": "deletion",
+    "confidence": "medium"
+  }
+]

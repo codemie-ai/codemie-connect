@@ -1,0 +1,41 @@
+diff --git a/.ai-run/sdlc-factory/doctor.json b/.ai-run/sdlc-factory/doctor.json
+index 941cf89..1cf45ac 100644
+--- a/.ai-run/sdlc-factory/doctor.json
++++ b/.ai-run/sdlc-factory/doctor.json
+@@ -1,11 +1 @@
+-{
+-  "schema": 1,
+-  "checked_at": "2026-06-11T00:00:00Z",
+-  "checks": {
+-    "superpowers_resolvable": true,
+-    "git": "git version 2.39.5 (Apple Git-154)"
+-  },
+-  "fingerprint": "sdlc-task-min-2026-06-11",
+-  "ttl_days": 7,
+-  "source": "sdlc-task Stage 0 minimum subset"
+-}
++{"schema":1,"checked_at":"2026-08-31T14:17:43Z","passed":true,"checks":{"superpowers":"6.2.0","node":"v24.6.0","git":"2.50.1"},"fingerprint":"git=2.50.1|node=v24.6.0|superpowers=6.2.0"}
+diff --git a/ui/renderer.js b/ui/renderer.js
+index d126ddd..a922714 100644
+--- a/ui/renderer.js
++++ b/ui/renderer.js
+@@ -198,6 +198,8 @@ function hideNotice() {
+ // ---- CLI version banner ----
+ function showUpdateBanner() {
+   if (!cliVersionState.updateAvailable) return;
++  document.getElementById('installation-group').classList.add('update-available');
++  document.getElementById('update-cli-tile').dataset.state = 'highlight';
+   if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
+   document.getElementById('update-from').textContent = cliVersionState.installed;
+   document.getElementById('update-to').textContent = cliVersionState.latest;
+@@ -207,6 +209,10 @@ function showUpdateBanner() {
+ function dismissUpdateBanner() {
+   sessionStorage.setItem('update-banner-dismissed', '1');
+   document.getElementById('update-banner').classList.add('hidden');
++  document.getElementById('installation-group').classList.remove('update-available');
++  const tile = document.getElementById('update-cli-tile');
++  if (tile.dataset.state === 'highlight') delete tile.dataset.state;
++  document.getElementById('identity-version-badge').textContent = '';
+ }
+ 
+ // ---- one-shot command action (proxy connect / analytics) ----
