@@ -1,0 +1,48 @@
+   Compiling app v2.0.1 (C:\Work\codemie\codemie-claude-installer-macos\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.46s
+     Running unittests src\lib.rs (target\x86_64-pc-windows-msvc\debug\deps\app_lib-0f001b4c1aecd72f.exe)
+
+running 28 tests
+test commands::inspector::tests::check_node_parses_version_and_found_on_exit_0 ... ok
+test commands::inspector::tests::codemie_found_false_when_output_empty ... ok
+test commands::inspector::tests::parse_codemie_version_handles_slash_path_format ... ok
+test commands::inspector::tests::parse_codemie_version_plain_semver ... ok
+test commands::inspector::tests::codemie_lenient_nonempty_output_is_installed_even_if_exit_nonzero ... ok
+test commands::inspector::tests::parse_codemie_version_returns_empty_on_command_not_found ... ok
+test commands::inspector::tests::parse_codemie_version_returns_empty_on_no_version ... ok
+test commands::inspector::tests::codemie_treats_command_not_found_as_not_installed ... ok
+test commands::inspector::tests::parse_codemie_version_strips_v_prefix ... ok
+test commands::inspector::tests::probe_found_false_on_nonzero_exit ... ok
+test commands::inspector::tests::profile_status_authenticated_is_true_and_keeps_detail ... ok
+test commands::inspector::tests::profile_status_expires_in_future_not_mistaken_for_expired ... ok
+test commands::inspector::tests::profile_status_not_authenticated_is_false ... ok
+test commands::inspector::tests::parse_codemie_version_with_name_prefix ... ok
+test commands::inspector::tests::profile_status_empty_output_is_false ... ok
+test commands::inspector::tests::profile_status_expired_is_not_authenticated ... ok
+test commands::installer::tests::parse_npm_latest_returns_none_on_missing_latest_key ... ok
+test commands::installer::tests::parse_npm_latest_extracts_version_from_dist_tags ... ok
+test commands::installer::tests::parse_npm_latest_returns_none_on_missing_dist_tags ... ok
+test commands::logger::tests::format_line_generates_timestamp_when_none_given ... ok
+test commands::logger::tests::format_line_tags_and_timestamps ... ok
+test commands::pathman::tests::dedupe_path_preserves_first_occurrence_and_drops_empties_windows ... ok
+test commands::pathman::tests::missing_entries_returns_only_entries_not_present_windows ... ok
+test commands::pathman::tests_windows_probe::probe_detects_codemie_cmd_shim ... ok
+test steps::tests::loads_nine_steps_with_defaults ... ok
+test commands::runner::tests_windows::run_capture_reports_nonzero_exit_windows ... ok
+test commands::runner::tests_windows::run_capture_runs_via_cmd_and_captures_stdout ... ok
+test commands::pty::tests::spawn_external_ps_exits_zero_for_noop_command ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s
+
+     Running unittests src\main.rs (target\x86_64-pc-windows-msvc\debug\deps\app-b1486411d080ae77.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests app_lib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
