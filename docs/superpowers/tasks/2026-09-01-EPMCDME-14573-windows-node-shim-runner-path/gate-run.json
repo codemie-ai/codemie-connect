@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "branch": "spike/EPMCDME-14504-pkg-binary",
+  "head": "89b461efd9adeacceb10d6bbd9e4ccf0ebf4b6e4",
+  "runner": "npm",
+  "started_at": "2026-09-02T10:59:46Z",
+  "completed_at": "2026-09-02T11:25:03Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8000,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0,
+      "notes": "Initial run failed (installer.rs trailing blank line, runner.rs long fn signature); auto-fixed by cargo fmt; re-run passed."
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7800,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1200,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "17/17 node:test assertions passed in ui/test/*.test.mjs."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 56600,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "31/31 inline unit tests passed across inspector, installer, logger, pathman, runner, pty, steps."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "cd src-tauri && CI=true cargo tauri build",
+      "exit_code": null,
+      "notes": "Guide skip condition met: logic-only changes verified by 31 Rust + 17 JS tests passing. macOS Tauri bundle (DMG) also not buildable on Windows host; CI macOS runner is the authoritative build check."
+    }
+  ],
+  "failures": {}
+}

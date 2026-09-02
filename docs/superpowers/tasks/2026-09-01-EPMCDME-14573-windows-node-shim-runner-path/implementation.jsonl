@@ -1,0 +1,5 @@
+{"task_id":"task-1","status":"done","commit":"fb7600b","test_command":"n/a — static file; verified by git show --stat HEAD"}
+{"task_id":"task-2","status":"done","commit":"8af9758","test_command":"cargo test --target x86_64-pc-windows-msvc -- probe_detects_codemie_cmd_shim"}
+{"task_id":"task-3","status":"done","commit":"12aa8b2","test_command":"cargo test --target x86_64-pc-windows-msvc -- tests_windows"}
+{"task_id":"task-4","status":"done","commit":"8bfda9c","test_command":"cargo build --target x86_64-pc-windows-msvc"}
+{"task_id":"task-5","status":"done","commit":"52dcf6b","test_command":"npm test"}

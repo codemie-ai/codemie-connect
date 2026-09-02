@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "task": "Implement Windows bundled Node.js shim (codemie.cmd), update inject_bundled_bin_path probe for .cmd, change shell_cmd to cmd.exe /c, register shim dir via persist(), remove install_node Windows branch from installer.rs and lib.rs, and update runner tests.",
+  "generated": "2026-09-01T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS":  "6-9 — < half day — plan directly",
+    "S":   "10-14 — 1 day — plan directly",
+    "M":   "15-20 — 2-3 days — brainstorm first",
+    "L":   "21-26 — 4-5 days — brainstorm first",
+    "XL":  "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "shell_cmd is the core shared dispatch function used by all five Windows runner paths (capture, run_capture, run_stream, run_fresh_env, run_self_update); changing the Windows branch propagates across the entire runner subsystem. Beyond that, four further touchpoints span three distinct layers: pathman.rs probe update (Service), installer.rs + lib.rs deletion (Service), tauri.conf.json bundle.resources addition (Infrastructure), and handlers.js step removal (UI/JS)."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "bundle.resources is greenfield with no prior pattern in the repo — node runtime layout and NSIS target paths must be determined from scratch. Three-piece alignment risk: inject_bundled_bin_path probe (must detect codemie.cmd), shell_cmd (cmd.exe /c must find .cmd via PATH), and shim (%~dp0.. must resolve to the directory containing node.exe) must all agree; mismatch in any coordinate produces a silent failure. Product name discrepancy ('CodeMie Desktop' in the ticket vs 'CodeMie Connect' in tauri.conf.json:productName) must be resolved before any hardcoded path is committed. Runner Windows tests break with the shell_cmd change and must be replaced with cmd.exe equivalents."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Seven files require substantive edits (runner.rs, pathman.rs, installer.rs, lib.rs, steps.yaml, handlers.js, tauri.conf.json) plus one new file (codemie.cmd), spanning six distinct directories: src-tauri/src/commands/, src-tauri/src/, src-tauri/, config/, ui/, assets/bin/."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L (4) to XL (5): shell_cmd is a core shared utility used by all five Windows runner commands — changing the Windows branch propagates across the entire runner subsystem."
+  ],
+  "split_recommendation": null
+}
