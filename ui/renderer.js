@@ -297,7 +297,7 @@ function dismissUpdateBanner() {
 async function runAction(title, cmd, returnView = 'home', hint) {
   openTerminal(title, { keepOpen: true, hint, onClose: () => showView(returnView) });
   try {
-    const code = await bridge.pty.spawnPty(cmd);
+    const { code } = await bridge.pty.spawnPty(cmd);
     writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
   } catch (e) {
     writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
@@ -667,7 +667,7 @@ async function runSmoke(flags) {
         /* ignore */
       }
     });
-    const code = await bridge.pty.spawnPty('echo PTY_SELFTEST_OK; exit 0', 80, 24);
+    const { code } = await bridge.pty.spawnPty('echo PTY_SELFTEST_OK; exit 0', 80, 24);
     un();
     await invoke('smoke_emit', {
       line: `SMOKE_PTY ${JSON.stringify({ exit: code, sawMarker: buf.includes('PTY_SELFTEST_OK') })}`,

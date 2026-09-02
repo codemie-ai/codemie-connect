@@ -108,21 +108,34 @@ export const externalWindow = {
 
 // ---- pty (replaces node-pty; the active PTY lives in Rust managed state) ----
 export const pty = {
-  // Spawns an interactive command; resolves with its exit code on engine:pty-exit.
-  // PTY output (engine:pty-data) is routed to the terminal by the renderer.
-  async spawnPty(cmd, cols = 100, rows = 30) {
-    let resolveExit;
-    const exit = new Promise((r) => {
+  // Spawns an interactive command; resolves with { code, id } on engine:pty-exit
+  // for the matching run id.  Per-run output is delivered via the optional onData
+  // callback; engine:pty-data events for other run ids are ignored.
+  async spawnPty(cmd, cols = 100, rows = 30, onData) {
+    const id = nextId('pty');
+    let resolveExit, dataUnlisten;
+    const exitP = new Promise((r) => {
       resolveExit = r;
     });
-    const un = await listen('engine:pty-exit', (e) => resolveExit(e.payload.code));
+    // Register data listener BEFORE invoke so no early events for this id are missed
+    if (onData) {
+      dataUnlisten = await listen('engine:pty-data', (e) => {
+        if (e.payload.id === id) onData(e.payload.data);
+      });
+    }
+    const exitUnlisten = await listen('engine:pty-exit', (e) => {
+      if (e.payload.id === id) resolveExit(e.payload.code);
+    });
     try {
-      await invoke('spawn_pty', { cmd, cols, rows });
-      return await exit;
+      await invoke('spawn_pty', { cmd, cols, rows, runId: id });
+      const code = await exitP;
+      return { code, id };
     } finally {
-      un();
+      exitUnlisten();
+      dataUnlisten?.();
     }
   },
   input: (data) => invoke('pty_input', { data }),
   resize: (cols, rows) => invoke('pty_resize', { cols, rows }),
+  kill: () => invoke('pty_kill'),
 };
