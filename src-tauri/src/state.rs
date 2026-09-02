@@ -14,4 +14,12 @@ use crate::commands::pty::PtyHandle;
 pub struct AppState {
     pub remembered: Mutex<Vec<String>>,
     pub pty: Mutex<Option<(String, PtyHandle)>>,
+    /// Absolute path to the bundled node.exe (Windows only).
+    /// Populated in the `setup` closure from `resource_dir()`.
+    #[cfg(windows)]
+    pub node_exe_path: std::path::PathBuf,
+    /// Absolute path to the bundled CLI entry-point (Windows only).
+    /// Populated in the `setup` closure from `resource_dir()`.
+    #[cfg(windows)]
+    pub cli_entry_path: std::path::PathBuf,
 }

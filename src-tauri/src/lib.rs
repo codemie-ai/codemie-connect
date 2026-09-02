@@ -4,12 +4,46 @@ mod state;
 mod steps;
 
 use state::AppState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState::default())
         .setup(|app| {
+            // PATH injection uses set_var and must run before any plugin starts a thread.
+            let resolved = commands::pathman::apply_resolved_shell_path();
+            if let Err(e) = commands::pathman::inject_bundled_bin_path(app.handle()) {
+                eprintln!("{e}");
+            }
+
+            // Build AppState with Windows-specific absolute paths for bundled node.exe and CLI.
+            #[cfg(windows)]
+            let (node_exe, cli_entry) = app
+                .path()
+                .resource_dir()
+                .map(|res| {
+                    (
+                        res.join("node").join("node.exe"),
+                        res.join("cli")
+                            .join("node_modules")
+                            .join("@codemieai")
+                            .join("code")
+                            .join("dist")
+                            .join("index.js"),
+                    )
+                })
+                .unwrap_or_else(|e| {
+                    log::warn!("resource_dir() failed: {e}; absolute CLI invocation unavailable");
+                    (std::path::PathBuf::new(), std::path::PathBuf::new())
+                });
+
+            app.manage(AppState {
+                #[cfg(windows)]
+                node_exe_path: node_exe,
+                #[cfg(windows)]
+                cli_entry_path: cli_entry,
+                ..AppState::default()
+            });
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -17,9 +51,6 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            // GUI-launched apps inherit a minimal PATH; resolve the user's real
-            // (interactive-login) shell PATH so user-installed CLIs are discoverable.
-            let resolved = commands::pathman::apply_resolved_shell_path();
             commands::logger::write_line("=== CodeMie Installer session started ===", "dim");
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())
