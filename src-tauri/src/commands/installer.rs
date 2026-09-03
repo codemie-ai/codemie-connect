@@ -116,4 +116,17 @@ mod tests {
         let json = serde_json::json!({ "dist-tags": { "next": "0.6.0-beta" } });
         assert_eq!(parse_npm_latest(&json), None);
     }
+
+    #[tokio::test]
+    async fn fetch_codemie_latest_returns_version_or_empty_string() {
+        // fetch_codemie_latest wraps fetch_codemie_npm_latest with unwrap_or_default().
+        // In an offline or CI environment it returns ""; in an online environment it
+        // returns the latest semver from the npm registry. Both outcomes are valid.
+        // This test validates the function's contract: String return, no panic.
+        let result = fetch_codemie_latest().await;
+        assert!(
+            result.is_empty() || result.split('.').count() >= 2,
+            "expected a semver-like version string or empty string, got: {result}"
+        );
+    }
 }

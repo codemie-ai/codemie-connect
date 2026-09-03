@@ -71,14 +71,16 @@ export const pathman = {
 // ---- downloader (src/main/downloader.js) ----
 export const downloader = {
   // onProgress(fraction) called per chunk via the engine:download-progress event.
-  async download(url, dest, onProgress = () => {}) {
+  // expectedSha256 is forwarded to verify_download in Rust; pass null to skip
+  // the integrity check (acceptable only when no hash is published by the source).
+  async download(url, dest, onProgress = () => {}, expectedSha256 = null) {
     const id = nextId('dl');
     const un = await listen('engine:download-progress', (e) => {
       const p = e.payload;
       if (p && p.id === id) onProgress(p.fraction);
     });
     try {
-      return await invoke('download_file', { url, dest, progressId: id });
+      return await invoke('download_file', { url, dest, progressId: id, expectedSha256 });
     } finally {
       un();
     }

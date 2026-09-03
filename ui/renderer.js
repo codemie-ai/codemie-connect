@@ -14,10 +14,11 @@ import * as bridge from './runner-bridge.js';
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// Steps run by "Install only" (no setup): Git, Node, CodeMie CLI — but not the
-// codemie setup wizard / Claude engine / doctor (2.x). Sub-steps are retained so
-// their parent handlers can activate them.
-const INSTALL_ONLY_IDS = ['1.1', '1.1.1', '1.3'];
+// Steps run by "Install only": all current installation steps.
+// Acquisition steps (1.x — Git, Node, CLI install) were removed with the bundled
+// runtime; the only remaining steps are setup and validation (2.x). INSTALL_ONLY_IDS
+// now equals the full step set so the tile runs something rather than an empty list.
+const INSTALL_ONLY_IDS = ['2.3.3', '2.3.5', '2.4'];
 
 // Compare semver strings. Returns true when a < b. Works for X.Y.Z format.
 function semverLt(a, b) {

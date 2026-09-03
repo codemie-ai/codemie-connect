@@ -14,6 +14,24 @@ pub struct HandshakeState {
     pub bundled_takes_precedence: bool,
 }
 
+/// Extract the first X.Y.Z semver token from `output`, stripping a leading `v`
+/// so both "1.2.3" and "v1.2.3" (common npm CLI format) are accepted.
+pub fn parse_global_version(output: &str) -> Option<String> {
+    output.split_whitespace().find_map(|s| {
+        let candidate = s.strip_prefix('v').unwrap_or(s);
+        let parts: Vec<&str> = candidate.split('.').collect();
+        if parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        {
+            Some(candidate.to_string())
+        } else {
+            None
+        }
+    })
+}
+
 /// Pure, testable function. `probe` returns true when a codemie binary is
 /// found at a given path; inject a closure in tests, pass a real fs check in production.
 pub fn detect_handshake_state(
@@ -48,16 +66,7 @@ pub fn detect_handshake_state(
             .filter(|o| o.status.success())
             .and_then(|o| {
                 let text = String::from_utf8_lossy(&o.stdout).to_string();
-                // Extract first token that looks like X.Y.Z semver.
-                text.split_whitespace()
-                    .find(|s| {
-                        let parts: Vec<&str> = s.split('.').collect();
-                        parts.len() == 3
-                            && parts.iter().all(|p| {
-                                !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())
-                            })
-                    })
-                    .map(str::to_string)
+                parse_global_version(&text)
             })
     } else {
         None
@@ -71,11 +80,24 @@ pub fn detect_handshake_state(
 }
 
 /// IPC command: returns handshake state using AppState's pre-injection PATH.
+/// The detection involves a blocking `std::process::Command` (codemie --version),
+/// so we offload it to a dedicated thread via `spawn_blocking` to avoid blocking
+/// the tokio worker thread.
 #[tauri::command]
 pub async fn check_handshake_state(app: tauri::AppHandle) -> HandshakeState {
     let state = app.state::<AppState>();
-    let real_probe = |p: &std::path::Path| p.exists();
-    detect_handshake_state(&state.pre_injection_path, state.bundled_injected, &real_probe)
+    let path_env = state.pre_injection_path.clone();
+    let bundled_injected = state.bundled_injected;
+    tokio::task::spawn_blocking(move || {
+        let real_probe = |p: &std::path::Path| p.exists();
+        detect_handshake_state(&path_env, bundled_injected, &real_probe)
+    })
+    .await
+    .unwrap_or_else(|_| HandshakeState {
+        global_found: false,
+        global_version: None,
+        bundled_takes_precedence: false,
+    })
 }
 
 #[cfg(test)]
@@ -106,5 +128,34 @@ mod tests {
     fn bundled_takes_precedence_when_injected_and_global_found() {
         let s = detect_handshake_state("/usr/local/bin", true, &always);
         assert!(s.bundled_takes_precedence);
+    }
+
+    #[test]
+    fn parse_global_version_accepts_bare_semver() {
+        assert_eq!(
+            parse_global_version("codemie 1.2.3"),
+            Some("1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_global_version_strips_v_prefix() {
+        // npm CLI binaries commonly output "v1.2.3"; the leading 'v' must be stripped.
+        assert_eq!(
+            parse_global_version("v1.2.3"),
+            Some("1.2.3".to_string())
+        );
+        // Multi-word output: "codemie v2.0.1" — picks the space-separated v-prefixed token.
+        assert_eq!(
+            parse_global_version("codemie v2.0.1"),
+            Some("2.0.1".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_global_version_returns_none_for_non_semver() {
+        assert_eq!(parse_global_version("codemie"), None);
+        assert_eq!(parse_global_version(""), None);
+        assert_eq!(parse_global_version("vX.Y.Z"), None);
     }
 }

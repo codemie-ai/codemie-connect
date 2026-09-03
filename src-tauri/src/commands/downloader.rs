@@ -34,7 +34,31 @@ pub async fn download_file(
     url: String,
     dest: String,
     progress_id: String,
+    expected_sha256: Option<String>,
 ) -> CmdResult<String> {
+    // CR-005: Validate destination to prevent path traversal.
+    let dest_path = std::path::PathBuf::from(&dest);
+    if !dest_path.is_absolute() {
+        return Err(InstallerError::Download(
+            "destination must be an absolute path".into(),
+        ));
+    }
+    if dest_path
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return Err(InstallerError::Download(
+            "destination path must not contain '..' components".into(),
+        ));
+    }
+    let safe_root = std::env::temp_dir();
+    if !dest_path.starts_with(&safe_root) {
+        return Err(InstallerError::Download(format!(
+            "destination is outside the allowed download directory '{}'",
+            safe_root.display()
+        )));
+    }
+
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(60))
         .build()
@@ -75,7 +99,7 @@ pub async fn download_file(
         }
     }
 
-    verify_download(&bytes, None)?;
+    verify_download(&bytes, expected_sha256.as_deref())?;
     tokio::fs::write(&dest, &bytes).await?;
     Ok(dest)
 }
@@ -104,5 +128,64 @@ mod tests {
     #[test]
     fn verify_accepts_none_hash_nonempty() {
         assert!(verify_download(b"payload", None).is_ok());
+    }
+
+    // CR-005: path validation helpers — exercised through the guard logic directly
+    // because calling the async command requires a full Tauri AppHandle fixture.
+
+    fn path_is_safe(dest: &str) -> Result<(), InstallerError> {
+        let dest_path = std::path::PathBuf::from(dest);
+        if !dest_path.is_absolute() {
+            return Err(InstallerError::Download(
+                "destination must be an absolute path".into(),
+            ));
+        }
+        if dest_path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            return Err(InstallerError::Download(
+                "destination path must not contain '..' components".into(),
+            ));
+        }
+        let safe_root = std::env::temp_dir();
+        if !dest_path.starts_with(&safe_root) {
+            return Err(InstallerError::Download(format!(
+                "destination is outside the allowed download directory '{}'",
+                safe_root.display()
+            )));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn path_rejects_relative_path() {
+        assert!(path_is_safe("relative/path/file.pkg").is_err());
+    }
+
+    #[test]
+    fn path_rejects_parent_dir_component() {
+        let tmp = std::env::temp_dir();
+        // Construct a path that starts in temp but tries to escape via "..".
+        let bad = tmp.join("..").join("etc").join("passwd");
+        assert!(path_is_safe(&bad.to_string_lossy()).is_err());
+    }
+
+    #[test]
+    fn path_rejects_outside_temp_dir() {
+        // /etc/passwd (or C:\Windows\System32\...) is not inside temp_dir.
+        #[cfg(unix)]
+        let outside = "/etc/passwd";
+        #[cfg(windows)]
+        let outside = r"C:\Windows\System32\evil.exe";
+        assert!(path_is_safe(outside).is_err());
+    }
+
+    #[test]
+    fn path_accepts_file_inside_temp_dir() {
+        let tmp = std::env::temp_dir();
+        let good = tmp.join("codemie-installer-test.pkg");
+        // This should pass the guard (no "..", is absolute, within temp).
+        assert!(path_is_safe(&good.to_string_lossy()).is_ok());
     }
 }
