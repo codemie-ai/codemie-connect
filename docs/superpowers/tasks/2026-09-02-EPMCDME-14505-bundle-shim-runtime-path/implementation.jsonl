@@ -1,0 +1,4 @@
+{"task_id":"1","status":"done","commit":"e417c99","test_command":"cd src-tauri && cargo test --lib -- steps"}
+{"task_id":"2","status":"done","commit":"4f37b9e","test_command":"cargo test --manifest-path src-tauri/Cargo.toml --lib -- downloader"}
+{"task_id":"3","status":"done","commit":"7b08be4","test_command":"cargo test --manifest-path src-tauri/Cargo.toml --lib -- handshake"}
+{"task_id":"4","status":"done","commit":"6f1a1c1","test_command":"docs/testing/launch-sandbox.ps1 (requires Windows Sandbox feature enabled)"}

@@ -1,0 +1,136 @@
+{
+  "decision": "request-changes",
+  "rationale": "6 of 15 prior blocking findings resolved (CR-004 hash forwarding, CR-005 path validation, CR-006 v-prefix stripping, CR-007 spawn_blocking, CR-008 test added, CR-013 INSTALL_ONLY_IDS). 9 unresolved: CR-001, CR-002, CR-009, CR-010, CR-011, CR-012 not in changed_files; CR-003 downloader.rs modified but Vec::with_capacity(total as usize) cap not applied; CR-014 renderer.js modified but runProbe safe-set still references deleted step IDs; CR-015 commit-format not addressable via source edit and not in changed_files.",
+  "confidence": "low",
+  "risk_flags": ["security", "breaking-change"],
+  "business_review": [
+    { "kind": "story-ac", "item": "No-Node machine installs from download, app starts without terminal", "status": "pass", "notes": "all six acquisition-step layers deleted; bundled runtime now covers Node/Git/CLI" },
+    { "kind": "story-ac", "item": "Installation never prompts for admin credential", "status": "pass", "notes": "sudo_exec, install_node (macOS+Windows), install_git_clt (macOS+Windows) all removed from installer.rs and invoke_handler" },
+    { "kind": "story-ac", "item": "Removing the app leaves ~/.codemie in place", "status": "pending-stage-7", "notes": "spec explicitly flags 'manual verification required (no NSIS script in repo)'; requires Windows smoke test on clean machine" },
+    { "kind": "story-ac", "item": "Unwritable install location stops with location+reason, leaves nothing behind", "status": "pass", "notes": "tokio::fs::write fails at File::create for unwritable paths before any bytes written; error propagates as InstallerError::Io" },
+    { "kind": "story-ac", "item": "Truncated/modified downloaded file stops without installing", "status": "pass", "notes": "verify_download rejects empty data; returns Err on SHA-256 mismatch; called in download_file before write — downloader.rs:55-74" },
+    { "kind": "story-ac", "item": "Pre-existing global npm CodeMie — warn which will take precedence before any change", "status": "pass", "notes": "check_handshake_state IPC command delivers HandshakeState contract; UI rendering deferred to S12 per non-goal" },
+    { "kind": "spec", "item": "Cluster 1 Layer 1: config/steps.yaml — delete steps 1.1, 1.1.1, 1.3", "status": "pass", "notes": "all three deleted; diff also removes 1.2 and 1.2.1 (extra, not contradicting spec)" },
+    { "kind": "spec", "item": "Cluster 1 Layer 2: config/steps-windows.yaml — delete steps 1.0, 1.1, 1.1.1, 1.2, 1.2.1, 1.3", "status": "pass", "notes": "all six acquisition steps removed; only 2.3.3, 2.3.5, 2.4 remain" },
+    { "kind": "spec", "item": "Cluster 1 Layer 3: installer.rs — remove install_node, install_git_clt, node_pkg_url, sudo_exec and their unit tests", "status": "pass", "notes": "all four functions and their tests deleted from installer.rs" },
+    { "kind": "spec", "item": "Cluster 1 Layer 4: lib.rs — remove install_node, install_git_clt from invoke_handler", "status": "pass", "notes": "both entries deleted from invoke_handler in lib.rs:84-103" },
+    { "kind": "spec", "item": "Cluster 1 Layer 5: ui/handlers.js:109-142 — remove step 1.3 handler and 1.1, 1.1.1, 1.2, 1.2.1 handlers", "status": "pass", "notes": "all five step handlers deleted; handlers object now starts at 2.3.3" },
+    { "kind": "spec", "item": "Cluster 1 Layer 6: ui/runner-bridge.js — remove exports for removed handlers", "status": "pass", "notes": "nodePkgUrl, installNode, installGitCLT removed from installer export in runner-bridge.js" },
+    { "kind": "spec", "item": "Mandatory cleanup: error.rs — remove InstallerError::Sudo", "status": "pass", "notes": "Sudo variant and #[cfg(not(windows))] guard deleted from error.rs" },
+    { "kind": "spec", "item": "Mandatory cleanup: renderer.js INSTALL_ONLY_IDS — remove '1.2' and '1.2.1' entries", "status": "pass", "notes": "'1.2' and '1.2.1' removed; array is ['1.1','1.1.1','1.3'] — those three IDs are also gone but spec only mandated removing 1.2 and 1.2.1" },
+    { "kind": "spec", "item": "Mandatory cleanup: steps.rs — rewrite step-count assertions for post-deletion counts", "status": "pass", "notes": "loads_three_steps_post_deletion asserting [\"2.3.3\",\"2.3.5\",\"2.4\"] for both platforms" },
+    { "kind": "spec", "item": "Cluster 2: verify_download(data: &[u8], expected_hash: Option<&str>) -> Result added", "status": "pass", "notes": "function present in downloader.rs; return type uses InstallerError — functionally matches spec" },
+    { "kind": "spec", "item": "Cluster 2: verify_download rejects empty/zero-length data unconditionally", "status": "pass", "notes": "data.is_empty() check at downloader.rs:10 returns Err before any hash check" },
+    { "kind": "spec", "item": "Cluster 2: SHA-256 computed and compared when expected_hash is Some", "status": "pass", "notes": "Sha256::digest(data) hex formatted and compared to want at downloader.rs:13-22" },
+    { "kind": "spec", "item": "Cluster 2: None hash — only truncation guard applies", "status": "pass", "notes": "hash block gated on if let Some(want) = expected_hash; None path returns Ok(()) after empty check" },
+    { "kind": "spec", "item": "Cluster 2: verify_download called for every download path before payload written or forwarded", "status": "pass", "notes": "called at downloader.rs:55 with None before tokio::fs::write; only one download path exists" },
+    { "kind": "spec", "item": "Cluster 2: no new dependency if sha2 already in Cargo.toml", "status": "pass", "notes": "sha2 was absent; spec allows adding it when absent; sha2 = \"0.10\" added to Cargo.toml" },
+    { "kind": "spec", "item": "Cluster 3: HandshakeState struct with global_found, global_version, bundled_takes_precedence", "status": "pass", "notes": "struct defined at handshake.rs:11-15 with exactly the three specified pub fields" },
+    { "kind": "spec", "item": "Cluster 3: global_found probes pre-injection PATH (before inject_bundled_bin_path)", "status": "pass", "notes": "check_handshake_state reads state.pre_injection_path captured before inject_bundled_bin_path call" },
+    { "kind": "spec", "item": "Cluster 3: global_version populated via check_codemie_version logic (inspector.rs:93-96) when global_found", "status": "partial", "notes": "version detection reimplemented inline in handshake.rs:42-64 with custom semver parsing; subprocess not injectable/mocked" },
+    { "kind": "spec", "item": "Cluster 3: bundled_takes_precedence true when bundled bin dir earlier in PATH than npm global", "status": "pass", "notes": "bundled_injected && global_found is functionally equivalent; inject always prepends bundled dir to PATH" },
+    { "kind": "spec", "item": "Cluster 3: check_handshake_state registered in lib.rs invoke_handler", "status": "pass", "notes": "commands::handshake::check_handshake_state in invoke_handler at lib.rs:87" },
+    { "kind": "spec", "item": "Cluster 3: check_handshake_state exported through ui/runner-bridge.js", "status": "pass", "notes": "checkHandshakeState: () => invoke('check_handshake_state') added to inspector export in runner-bridge.js" },
+    { "kind": "spec", "item": "Test coverage: verify_download — (a) empty input, (b) hash mismatch, (c) hash match, (d) None hash with non-empty data", "status": "pass", "notes": "all four tests present in downloader.rs" },
+    { "kind": "spec", "item": "Test coverage: check_handshake_state — unit tests for global-found and global-not-found paths, mock the subprocess or use a test double", "status": "partial", "notes": "two path tests present; probe injectable; codemie --version subprocess not mocked; global_version not asserted in any test" },
+    { "kind": "spec", "item": "Test coverage: steps.rs — rewritten step-count assertion for macOS and Windows post-deletion counts", "status": "pass", "notes": "loads_three_steps_post_deletion and loads_three_windows_steps_post_deletion both assert [\"2.3.3\",\"2.3.5\",\"2.4\"]" },
+    { "kind": "spec", "item": "Test coverage: installer.rs — delete node_pkg_url and related tests with their functions", "status": "pass", "notes": "node_pkg_url_builds_official_universal_url and arch/MSI url tests all deleted" },
+    { "kind": "spec", "item": "Test coverage: installer.rs — retain or add coverage for parse_npm_latest", "status": "pass", "notes": "parse_npm_latest_extracts_version_from_dist_tags and parse_npm_latest_returns_none_without_latest_key retained" },
+    { "kind": "spec", "item": "Test coverage: installer.rs — retain or add coverage for fetch_codemie_latest", "status": "fail", "notes": "no test for fetch_codemie_latest present in installer.rs or in the diff; function remains at installer.rs:89 with no coverage" }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "fail",
+      "notes": "git-workflow.md forbids scope notation; anti-patterns requires plain '<type>: <description>'. 4 commits use '(EPMCDME-14505)' scope suffix; 1 uses a branch slug as the type token."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": ".ai-run/guides/standards/code-quality.md is absent from the repo; no standard to adjudicate against"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": ".ai-run/guides/development/security-patterns.md absent; concrete defects: (1) verify_download always None at downloader.rs:78; (2) dest path not validated before write at downloader.rs:79."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "unresolved",
+      "notes": "assets/windows/bin/codemie.cmd not in changed_files; existence check for bundled node.exe and CLI entry-point not added."
+    },
+    {
+      "id": "CR-002",
+      "status": "unresolved",
+      "notes": "src-tauri/src/commands/codemie_config.rs not in changed_files; USERPROFILE fallback not added."
+    },
+    {
+      "id": "CR-003",
+      "status": "unresolved",
+      "notes": "downloader.rs modified but Vec::with_capacity(total as usize) at line 83 remains uncapped; the 512MB pre-alloc cap was not applied and full buffer-in-heap design unchanged."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "expected_sha256: Option<String> parameter added to download_file; forwarded to verify_download(&bytes, expected_sha256.as_deref()) at line 102."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "Path validation added at lines 39-60: absolute path required, ParentDir components rejected, destination must be within std::env::temp_dir()."
+    },
+    {
+      "id": "CR-006",
+      "status": "resolved",
+      "notes": "parse_global_version strips leading 'v' via .strip_prefix('v').unwrap_or(s); tests cover bare semver and v-prefixed output ('v1.2.3', 'codemie v2.0.1')."
+    },
+    {
+      "id": "CR-007",
+      "status": "resolved",
+      "notes": "detect_handshake_state wrapped in tokio::task::spawn_blocking at lines 91-100; blocking subprocess call no longer occupies a tokio worker thread."
+    },
+    {
+      "id": "CR-008",
+      "status": "resolved",
+      "notes": "fetch_codemie_latest_returns_version_or_empty_string test added at installer.rs:121; validates String return contract and no-panic for both online and offline execution."
+    },
+    {
+      "id": "CR-009",
+      "status": "unresolved",
+      "notes": "src-tauri/src/commands/pty.rs not in changed_files; spawn_pty slot-overwrite guard not added; prior PTY child still leaks on re-entry."
+    },
+    {
+      "id": "CR-010",
+      "status": "unresolved",
+      "notes": "src-tauri/src/commands/pty.rs not in changed_files; pty_kill run_id parameter and clear_if_owner validation not added."
+    },
+    {
+      "id": "CR-011",
+      "status": "unresolved",
+      "notes": "src-tauri/src/commands/runner.rs not in changed_files; tokio::time::timeout wrapper not added to self_update_direct."
+    },
+    {
+      "id": "CR-012",
+      "status": "unresolved",
+      "notes": "tauri.conf.json not in changed_files; codemie.cmd resource entry still unconditionally included in all build targets including dmg."
+    },
+    {
+      "id": "CR-013",
+      "status": "resolved",
+      "notes": "INSTALL_ONLY_IDS updated to ['2.3.3', '2.3.5', '2.4'] at renderer.js:21; wizard tile now runs the current valid step set instead of an empty list."
+    },
+    {
+      "id": "CR-014",
+      "status": "unresolved",
+      "notes": "renderer.js in changed_files but runProbe safe-set at line 608 still contains new Set(['1.1', '1.1.1', '1.2', '1.2.1', '1.3']); all five IDs were deleted from steps.yaml; probe always produces empty step set and false green."
+    },
+    {
+      "id": "CR-015",
+      "status": "unresolved",
+      "notes": "Commit format is not a source file; not in changed_files; no evidence of history rewrite in the fix-up diff."
+    }
+  ]
+}

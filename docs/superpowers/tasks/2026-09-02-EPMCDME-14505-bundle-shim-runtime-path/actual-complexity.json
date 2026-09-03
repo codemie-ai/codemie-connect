@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "generated": "2026-09-03T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 3, "label": "M" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 28,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 35,
+  "routing": "split-required",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "12 Rust command/infrastructure files (downloader, handshake, installer, pathman, pty, runner, smoke, window, error, lib, state, steps) plus 6 UI files (handlers.js, index.html, log.js, renderer.js, runner-bridge.js, styles.css) plus config YAML; entire admin-elevated install subsystem deleted; new abstractions codemie_config.rs, PTY run-id slot contract, AppState pre_injection_path/bundled_injected fields; red flag applied: large subsystem refactor and multiple workflows affected (install, download, handshake, PTY lifecycle, self-update, identity bar, sidebar routing)"
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Path traversal prevention in download_file (CR-005) is new injection-surface coverage with no prior reusable utility — floor applied; SHA-256 integrity check via sha2 is a new pattern; spawn_blocking fix for blocking codemie --version subprocess; PTY kill with Arc<Condvar> concurrent state management; set_var timing constraint in lib.rs setup closure; red flag: security requirements bumped from L to XL"
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "35+ files reconstructed from 8,397-line diff: 23 core implementation files modified/new (Rust commands, UI, config YAML) plus codemie_config.rs new, package-lock.json for CLI sidecar bundle new, docs/spike/review artifacts new — 16+ files maps to XXL; XL calibration example epmcdme-10303 scored L with 14 files, confirming XXL here"
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Five distinct layers: UI (index.html, styles.css, renderer.js, log.js — identity bar, sidebar routing, window height), IPC/API (runner-bridge.js exports removed/added, lib.rs invoke_handler), Service (all commands/* — 8 command files with new logic), Infrastructure (state.rs AppState expansion, error.rs Sudo removal, steps.rs rewrite, Cargo.toml sha2 dep), External (SHA-256 for download integrity, npm registry query, codemie binary subprocess probe)"
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL (5) to XXL (6): Migrate/Refactor large subsystem — admin-elevated Git/Node/CLI acquisition flow deleted across six sync layers",
+    "Component Scope: affects multiple workflows — install, download, handshake, PTY lifecycle, self-update, identity bar, sidebar routing — bump applied additively",
+    "Technical Risk bumped from L (4) to XL (5): security requirements — path traversal prevention (dest path absolute + no-dotdot + temp-dir constraint) and SHA-256 integrity check, both new patterns with no existing reusable utility for the injection surface"
+  ],
+  "split_recommendation": "by-phase within single repo: Slice 1 — acquisition-flow deletion (Cluster 1, six layers: steps YAML + installer.rs + lib.rs + handlers.js + runner-bridge.js); Slice 2 — download integrity (Cluster 2: verify_download + SHA-256 + path validation); Slice 3 — handshake IPC (Cluster 3: handshake.rs + check_handshake_state + codemie_config.rs); Slice 4 — shell chrome (identity bar, sidebar routing, PTY run-id, window resize); each slice is independently shippable and the dependency order is 1 → 2 → 3, with 4 parallel to 2-3"
+}

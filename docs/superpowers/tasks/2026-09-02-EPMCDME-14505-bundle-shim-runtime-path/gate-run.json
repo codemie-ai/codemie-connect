@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14573-bundle-shim-runtime-path",
+  "head": "bf249fdafe98b44a9d4ced6a5c58449129c6f4cc",
+  "runner": "custom",
+  "started_at": "2026-09-03T00:00:00.000Z",
+  "completed_at": "2026-09-03T00:04:00.000Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3200,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0,
+      "notes": "Initially failed; auto-fix (cargo fmt) reformatted handshake.rs, pathman.rs, runner.rs, lib.rs. Re-check exited 0."
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7690,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0,
+      "notes": "Initially failed: unnecessary_lazy_evaluations in handshake.rs:96 (unwrap_or_else → unwrap_or). Fixed manually; re-run exited 0."
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 980,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "19/19 passing. UI surface changed (ui/*.js, ui/styles.css, ui/index.html), so skip-if condition did not apply."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 48050,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "58/58 passing across all modules including new pathman tests (probe_with_bin_dir, build_new_path) and handshake tests."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "cd src-tauri && CI=true cargo tauri build",
+      "exit_code": null,
+      "notes": "Guide skip-if applies: logic-only change verified by 58 Rust + 19 JS passing tests. Additionally, this host is Windows; the build command targets a macOS DMG and would fail on platform. To run locally, execute on a macOS host with cargo-tauri installed."
+    }
+  ],
+  "failures": {}
+}

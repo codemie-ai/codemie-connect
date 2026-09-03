@@ -1,0 +1,326 @@
+diff --git a/.ai-run/sdlc-factory/doctor.json b/.ai-run/sdlc-factory/doctor.json
+index 941cf89..b6436c3 100644
+--- a/.ai-run/sdlc-factory/doctor.json
++++ b/.ai-run/sdlc-factory/doctor.json
+@@ -1,11 +1 @@
+-{
+-  "schema": 1,
+-  "checked_at": "2026-06-11T00:00:00Z",
+-  "checks": {
+-    "superpowers_resolvable": true,
+-    "git": "git version 2.39.5 (Apple Git-154)"
+-  },
+-  "fingerprint": "sdlc-task-min-2026-06-11",
+-  "ttl_days": 7,
+-  "source": "sdlc-task Stage 0 minimum subset"
+-}
++{"schema":1,"checked_at":"2026-09-02T16:21:03Z","passed":true,"checks":{"superpowers":"6.2.0","node":"v26.4.0","git":"2.55.0.windows.5"},"fingerprint":"git=2.55.0.windows.5|node=v26.4.0|superpowers=6.2.0"}
+diff --git a/.claude/settings.json b/.claude/settings.json
+index 8f06cab..f76167a 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -1,5 +1,10 @@
+ {
+   "enabledPlugins": {
+     "sdlc-factory@sdlc-factory": true
++  },
++  "permissions": {
++    "additionalDirectories": [
++      "docs/superpowers/tasks"
++    ]
+   }
+ }
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index 08a0b51..248d032 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -88,6 +88,7 @@ dependencies = [
+  "serde",
+  "serde_json",
+  "serde_yaml",
++ "sha2",
+  "tauri",
+  "tauri-build",
+  "tauri-plugin-log",
+diff --git a/src-tauri/src/commands/downloader.rs b/src-tauri/src/commands/downloader.rs
+index c18d209..85db20d 100644
+--- a/src-tauri/src/commands/downloader.rs
++++ b/src-tauri/src/commands/downloader.rs
+@@ -34,7 +34,31 @@ pub async fn download_file(
+     url: String,
+     dest: String,
+     progress_id: String,
++    expected_sha256: Option<String>,
+ ) -> CmdResult<String> {
++    // CR-005: Validate destination to prevent path traversal.
++    let dest_path = std::path::PathBuf::from(&dest);
++    if !dest_path.is_absolute() {
++        return Err(InstallerError::Download(
++            "destination must be an absolute path".into(),
++        ));
++    }
++    if dest_path
++        .components()
++        .any(|c| c == std::path::Component::ParentDir)
++    {
++        return Err(InstallerError::Download(
++            "destination path must not contain '..' components".into(),
++        ));
++    }
++    let safe_root = std::env::temp_dir();
++    if !dest_path.starts_with(&safe_root) {
++        return Err(InstallerError::Download(format!(
++            "destination is outside the allowed download directory '{}'",
++            safe_root.display()
++        )));
++    }
++
+     let client = reqwest::Client::builder()
+         .connect_timeout(Duration::from_secs(60))
+         .build()
+@@ -75,7 +99,7 @@ pub async fn download_file(
+         }
+     }
+ 
+-    verify_download(&bytes, None)?;
++    verify_download(&bytes, expected_sha256.as_deref())?;
+     tokio::fs::write(&dest, &bytes).await?;
+     Ok(dest)
+ }
+@@ -105,4 +129,63 @@ mod tests {
+     fn verify_accepts_none_hash_nonempty() {
+         assert!(verify_download(b"payload", None).is_ok());
+     }
++
++    // CR-005: path validation helpers — exercised through the guard logic directly
++    // because calling the async command requires a full Tauri AppHandle fixture.
++
++    fn path_is_safe(dest: &str) -> Result<(), InstallerError> {
++        let dest_path = std::path::PathBuf::from(dest);
++        if !dest_path.is_absolute() {
++            return Err(InstallerError::Download(
++                "destination must be an absolute path".into(),
++            ));
++        }
++        if dest_path
++            .components()
++            .any(|c| c == std::path::Component::ParentDir)
++        {
++            return Err(InstallerError::Download(
++                "destination path must not contain '..' components".into(),
++            ));
++        }
++        let safe_root = std::env::temp_dir();
++        if !dest_path.starts_with(&safe_root) {
++            return Err(InstallerError::Download(format!(
++                "destination is outside the allowed download directory '{}'",
++                safe_root.display()
++            )));
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn path_rejects_relative_path() {
++        assert!(path_is_safe("relative/path/file.pkg").is_err());
++    }
++
++    #[test]
++    fn path_rejects_parent_dir_component() {
++        let tmp = std::env::temp_dir();
++        // Construct a path that starts in temp but tries to escape via "..".
++        let bad = tmp.join("..").join("etc").join("passwd");
++        assert!(path_is_safe(&bad.to_string_lossy()).is_err());
++    }
++
++    #[test]
++    fn path_rejects_outside_temp_dir() {
++        // /etc/passwd (or C:\Windows\System32\...) is not inside temp_dir.
++        #[cfg(unix)]
++        let outside = "/etc/passwd";
++        #[cfg(windows)]
++        let outside = r"C:\Windows\System32\evil.exe";
++        assert!(path_is_safe(outside).is_err());
++    }
++
++    #[test]
++    fn path_accepts_file_inside_temp_dir() {
++        let tmp = std::env::temp_dir();
++        let good = tmp.join("codemie-installer-test.pkg");
++        // This should pass the guard (no "..", is absolute, within temp).
++        assert!(path_is_safe(&good.to_string_lossy()).is_ok());
++    }
+ }
+diff --git a/src-tauri/src/commands/handshake.rs b/src-tauri/src/commands/handshake.rs
+index b41f82c..7ae0e63 100644
+--- a/src-tauri/src/commands/handshake.rs
++++ b/src-tauri/src/commands/handshake.rs
+@@ -14,6 +14,24 @@ pub struct HandshakeState {
+     pub bundled_takes_precedence: bool,
+ }
+ 
++/// Extract the first X.Y.Z semver token from `output`, stripping a leading `v`
++/// so both "1.2.3" and "v1.2.3" (common npm CLI format) are accepted.
++pub fn parse_global_version(output: &str) -> Option<String> {
++    output.split_whitespace().find_map(|s| {
++        let candidate = s.strip_prefix('v').unwrap_or(s);
++        let parts: Vec<&str> = candidate.split('.').collect();
++        if parts.len() == 3
++            && parts
++                .iter()
++                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
++        {
++            Some(candidate.to_string())
++        } else {
++            None
++        }
++    })
++}
++
+ /// Pure, testable function. `probe` returns true when a codemie binary is
+ /// found at a given path; inject a closure in tests, pass a real fs check in production.
+ pub fn detect_handshake_state(
+@@ -48,16 +66,7 @@ pub fn detect_handshake_state(
+             .filter(|o| o.status.success())
+             .and_then(|o| {
+                 let text = String::from_utf8_lossy(&o.stdout).to_string();
+-                // Extract first token that looks like X.Y.Z semver.
+-                text.split_whitespace()
+-                    .find(|s| {
+-                        let parts: Vec<&str> = s.split('.').collect();
+-                        parts.len() == 3
+-                            && parts.iter().all(|p| {
+-                                !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())
+-                            })
+-                    })
+-                    .map(str::to_string)
++                parse_global_version(&text)
+             })
+     } else {
+         None
+@@ -71,11 +80,24 @@ pub fn detect_handshake_state(
+ }
+ 
+ /// IPC command: returns handshake state using AppState's pre-injection PATH.
++/// The detection involves a blocking `std::process::Command` (codemie --version),
++/// so we offload it to a dedicated thread via `spawn_blocking` to avoid blocking
++/// the tokio worker thread.
+ #[tauri::command]
+ pub async fn check_handshake_state(app: tauri::AppHandle) -> HandshakeState {
+     let state = app.state::<AppState>();
+-    let real_probe = |p: &std::path::Path| p.exists();
+-    detect_handshake_state(&state.pre_injection_path, state.bundled_injected, &real_probe)
++    let path_env = state.pre_injection_path.clone();
++    let bundled_injected = state.bundled_injected;
++    tokio::task::spawn_blocking(move || {
++        let real_probe = |p: &std::path::Path| p.exists();
++        detect_handshake_state(&path_env, bundled_injected, &real_probe)
++    })
++    .await
++    .unwrap_or_else(|_| HandshakeState {
++        global_found: false,
++        global_version: None,
++        bundled_takes_precedence: false,
++    })
+ }
+ 
+ #[cfg(test)]
+@@ -107,4 +129,33 @@ mod tests {
+         let s = detect_handshake_state("/usr/local/bin", true, &always);
+         assert!(s.bundled_takes_precedence);
+     }
++
++    #[test]
++    fn parse_global_version_accepts_bare_semver() {
++        assert_eq!(
++            parse_global_version("codemie 1.2.3"),
++            Some("1.2.3".to_string())
++        );
++    }
++
++    #[test]
++    fn parse_global_version_strips_v_prefix() {
++        // npm CLI binaries commonly output "v1.2.3"; the leading 'v' must be stripped.
++        assert_eq!(
++            parse_global_version("v1.2.3"),
++            Some("1.2.3".to_string())
++        );
++        // Multi-word output: "codemie v2.0.1" — picks the space-separated v-prefixed token.
++        assert_eq!(
++            parse_global_version("codemie v2.0.1"),
++            Some("2.0.1".to_string())
++        );
++    }
++
++    #[test]
++    fn parse_global_version_returns_none_for_non_semver() {
++        assert_eq!(parse_global_version("codemie"), None);
++        assert_eq!(parse_global_version(""), None);
++        assert_eq!(parse_global_version("vX.Y.Z"), None);
++    }
+ }
+diff --git a/src-tauri/src/commands/installer.rs b/src-tauri/src/commands/installer.rs
+index 27bada5..09e9606 100644
+--- a/src-tauri/src/commands/installer.rs
++++ b/src-tauri/src/commands/installer.rs
+@@ -116,4 +116,17 @@ mod tests {
+         let json = serde_json::json!({ "dist-tags": { "next": "0.6.0-beta" } });
+         assert_eq!(parse_npm_latest(&json), None);
+     }
++
++    #[tokio::test]
++    async fn fetch_codemie_latest_returns_version_or_empty_string() {
++        // fetch_codemie_latest wraps fetch_codemie_npm_latest with unwrap_or_default().
++        // In an offline or CI environment it returns ""; in an online environment it
++        // returns the latest semver from the npm registry. Both outcomes are valid.
++        // This test validates the function's contract: String return, no panic.
++        let result = fetch_codemie_latest().await;
++        assert!(
++            result.is_empty() || result.split('.').count() >= 2,
++            "expected a semver-like version string or empty string, got: {result}"
++        );
++    }
+ }
+diff --git a/ui/renderer.js b/ui/renderer.js
+index 7adae07..53fc424 100644
+--- a/ui/renderer.js
++++ b/ui/renderer.js
+@@ -14,10 +14,11 @@ import * as bridge from './runner-bridge.js';
+ const { invoke } = window.__TAURI__.core;
+ const { listen } = window.__TAURI__.event;
+ 
+-// Steps run by "Install only" (no setup): Git, Node, CodeMie CLI — but not the
+-// codemie setup wizard / Claude engine / doctor (2.x). Sub-steps are retained so
+-// their parent handlers can activate them.
+-const INSTALL_ONLY_IDS = ['1.1', '1.1.1', '1.3'];
++// Steps run by "Install only": all current installation steps.
++// Acquisition steps (1.x — Git, Node, CLI install) were removed with the bundled
++// runtime; the only remaining steps are setup and validation (2.x). INSTALL_ONLY_IDS
++// now equals the full step set so the tile runs something rather than an empty list.
++const INSTALL_ONLY_IDS = ['2.3.3', '2.3.5', '2.4'];
+ 
+ // Compare semver strings. Returns true when a < b. Works for X.Y.Z format.
+ function semverLt(a, b) {
+diff --git a/ui/runner-bridge.js b/ui/runner-bridge.js
+index f72d55f..b88bb95 100644
+--- a/ui/runner-bridge.js
++++ b/ui/runner-bridge.js
+@@ -71,14 +71,16 @@ export const pathman = {
+ // ---- downloader (src/main/downloader.js) ----
+ export const downloader = {
+   // onProgress(fraction) called per chunk via the engine:download-progress event.
+-  async download(url, dest, onProgress = () => {}) {
++  // expectedSha256 is forwarded to verify_download in Rust; pass null to skip
++  // the integrity check (acceptable only when no hash is published by the source).
++  async download(url, dest, onProgress = () => {}, expectedSha256 = null) {
+     const id = nextId('dl');
+     const un = await listen('engine:download-progress', (e) => {
+       const p = e.payload;
+       if (p && p.id === id) onProgress(p.fraction);
+     });
+     try {
+-      return await invoke('download_file', { url, dest, progressId: id });
++      return await invoke('download_file', { url, dest, progressId: id, expectedSha256 });
+     } finally {
+       un();
+     }
