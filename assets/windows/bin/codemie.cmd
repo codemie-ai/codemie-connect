@@ -1,3 +1,3 @@
 @echo off
-set BUNDLE_DIR=%~dp0..
-"%BUNDLE_DIR%\node\node.exe" "%BUNDLE_DIR%\cli\node_modules\@codemieai\code\dist\index.js" %*
+:: Bundled codemie.exe lives in the same directory as this shim.
+"%~dp0codemie.exe" %*

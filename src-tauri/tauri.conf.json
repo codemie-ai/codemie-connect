@@ -27,7 +27,8 @@
     "active": true,
     "targets": ["dmg", "nsis"],
     "resources": {
-      "../assets/windows/bin/codemie.cmd": "bin/codemie.cmd"
+      "../assets/windows/bin/codemie.cmd": "bin/codemie.cmd",
+      "../assets/bin/codemie-x86_64-pc-windows-msvc.exe": "bin/codemie.exe"
     },
     "category": "DeveloperTool",
     "copyright": "EPAM AI/Run CodeMie ©",
@@ -43,10 +44,11 @@
     },
     "windows": {
       "webviewInstallMode": {
-        "type": "downloadBootstrapper"
+        "type": "offlineInstaller"
       },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "installer-hooks.nsi"
       }
     }
   }
