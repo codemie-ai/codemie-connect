@@ -93,7 +93,7 @@ pub async fn check_handshake_state(app: tauri::AppHandle) -> HandshakeState {
         detect_handshake_state(&path_env, bundled_injected, &real_probe)
     })
     .await
-    .unwrap_or_else(|_| HandshakeState {
+    .unwrap_or(HandshakeState {
         global_found: false,
         global_version: None,
         bundled_takes_precedence: false,
@@ -141,10 +141,7 @@ mod tests {
     #[test]
     fn parse_global_version_strips_v_prefix() {
         // npm CLI binaries commonly output "v1.2.3"; the leading 'v' must be stripped.
-        assert_eq!(
-            parse_global_version("v1.2.3"),
-            Some("1.2.3".to_string())
-        );
+        assert_eq!(parse_global_version("v1.2.3"), Some("1.2.3".to_string()));
         // Multi-word output: "codemie v2.0.1" — picks the space-separated v-prefixed token.
         assert_eq!(
             parse_global_version("codemie v2.0.1"),

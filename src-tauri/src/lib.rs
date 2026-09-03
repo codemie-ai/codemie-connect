@@ -15,8 +15,7 @@ pub fn run() {
             // Capture PATH before injection so check_handshake_state can search the
             // pre-bundle PATH for a global codemie binary.
             let pre_injection_path = std::env::var("PATH").unwrap_or_default();
-            let bundled_injected =
-                commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
+            let bundled_injected = commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
             if !bundled_injected {
                 // eprintln! is swallowed in a packaged GUI; use log::error! so the
                 // message is captured by the log plugin (debug builds) and any

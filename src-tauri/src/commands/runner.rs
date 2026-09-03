@@ -167,9 +167,7 @@ pub(crate) async fn self_update_direct(
 /// populated; falls back to the `codemie` shim on PATH via `cmd.exe /c`.
 /// Returns stdout on exit 0; serializes as an error string on non-zero exit.
 #[tauri::command]
-pub async fn run_self_update(
-    state: tauri::State<'_, crate::state::AppState>,
-) -> CmdResult<String> {
+pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) -> CmdResult<String> {
     #[cfg(windows)]
     {
         let node = &state.node_exe_path;

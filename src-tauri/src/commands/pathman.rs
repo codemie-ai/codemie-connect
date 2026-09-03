@@ -276,7 +276,11 @@ pub(crate) fn probe_with_bin_dir(
         Some(d)
     } else {
         let bin = d.join("bin");
-        if probe_fn(&bin) { Some(bin) } else { None }
+        if probe_fn(&bin) {
+            Some(bin)
+        } else {
+            None
+        }
     }
 }
 
@@ -317,7 +321,12 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .and_then(|d| probe_with_bin_dir(d, &probe))
         // Approach A fallback: resource_dir.
-        .or_else(|| app.path().resource_dir().ok().and_then(|d| probe_with_bin_dir(d, &probe)));
+        .or_else(|| {
+            app.path()
+                .resource_dir()
+                .ok()
+                .and_then(|d| probe_with_bin_dir(d, &probe))
+        });
 
     if let Some(dir) = bin_dir {
         let dir_str = dir.to_str().ok_or_else(|| {
@@ -485,7 +494,11 @@ mod tests_inject_bundled_bin_path {
         write_shim(dir.path());
         write_shim(&bin);
         let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
-        assert_eq!(result.as_deref(), Some(dir.path()), "root is checked before bin/");
+        assert_eq!(
+            result.as_deref(),
+            Some(dir.path()),
+            "root is checked before bin/"
+        );
     }
 
     #[test]
@@ -505,7 +518,10 @@ mod tests_inject_bundled_bin_path {
     #[cfg(not(windows))]
     #[test]
     fn build_new_path_prepends_with_colon_separator() {
-        assert_eq!(build_new_path("/usr/bin:/usr/local/bin", "/app/bin"), "/app/bin:/usr/bin:/usr/local/bin");
+        assert_eq!(
+            build_new_path("/usr/bin:/usr/local/bin", "/app/bin"),
+            "/app/bin:/usr/bin:/usr/local/bin"
+        );
     }
 
     #[cfg(windows)]
