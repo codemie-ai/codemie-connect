@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "branch": "feat/epmcdme-14654-steps-ui-factory",
+  "head": "c2f53859938f0236228fadc00040b67c433f2a57",
+  "runner": "npm",
+  "started_at": "2026-09-03T12:10:55Z",
+  "completed_at": "2026-09-03T12:12:10Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 338,
+      "command": "npm test",
+      "exit_code": 0
+    },
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 1229,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 1,
+      "notes": "Known pre-existing failure on codemie-desktop base (EPMCDME-14573 fix in review). Unformatted blocks in installer.rs, pathman.rs, runner.rs. Out of scope for this JS-only ticket."
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 3278,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 101,
+      "notes": "Known pre-existing failure on codemie-desktop base (EPMCDME-14573 fix in review). Unused variable `state` at src/commands/runner.rs:171. Out of scope for this JS-only ticket."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 8505,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 1,
+      "notes": "Known pre-existing failure on codemie-desktop base (EPMCDME-14573 fix in review). steps::tests::loads_eight_steps_with_defaults at src/steps.rs:103 — left has 6 IDs, right expects 8 (missing 1.2 and 1.2.1). Out of scope for this JS-only ticket."
+    }
+  ],
+  "failures": {
+    "fmt": "Diff in src/commands/installer.rs:331 — trailing blank line inside closing brace.\nDiff in src/commands/pathman.rs:276 — inline if/else on single line needs block expansion.\nDiff in src/commands/pathman.rs:317 — chained .or_else() needs line-broken closure.\nDiff in src/commands/pathman.rs:485 — assert_eq! call needs multi-line expansion.\nDiff in src/commands/pathman.rs:505 — assert_eq! call needs multi-line expansion.\nDiff in src/commands/runner.rs:167 — fn signature needs to expand run_self_update params onto separate lines.",
+    "lint": "error: unused variable: `state`\n   --> src/commands/runner.rs:171:5\n    |\n171 |     state: tauri::State<'_, crate::state::AppState>,\n    |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`\n    |\n    = note: `-D unused-variables` implied by `-D warnings`\nerror: could not compile `app` (lib) due to 1 previous error",
+    "unit-rust": "---- steps::tests::loads_eight_steps_with_defaults stdout ----\nthread 'steps::tests::loads_eight_steps_with_defaults' panicked at src/steps.rs:103:9:\nassertion `left == right` failed\n  left: [\"1.1\", \"1.1.1\", \"1.3\", \"2.3.3\", \"2.3.5\", \"2.4\"]\n right: [\"1.1\", \"1.1.1\", \"1.2\", \"1.2.1\", \"1.3\", \"2.3.3\", \"2.3.5\", \"2.4\"]\nfailures:\n    steps::tests::loads_eight_steps_with_defaults\ntest result: FAILED. 47 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.75s"
+  }
+}
