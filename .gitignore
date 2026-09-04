@@ -24,3 +24,5 @@ apple_developer
 .superpowers/
 /CLAUDE.local.md
 .idea/test-results/
+assets/windows/node/
+assets/staging-manifest.json
