@@ -26,8 +26,11 @@ function promptId(line) {
   for (const [anchor, id] of ANCHOR_MAP) {
     if (line.includes(anchor)) return id;
   }
-  if (isQuestion(line)) return 'credential';
+  // credential catch-all: only after provider is answered (credential always follows provider),
+  // and only for lines that look complete (end with punctuation or whitespace after content)
+  if (isQuestion(line) && line.trim().length > 20) return 'credential';
   return null;
+  // Note: the caller also gates credential on snapped.has('provider') to avoid partial renders
 }
 
 function readScreen(term) {
@@ -55,17 +58,28 @@ function next() {
   i += CHUNK;
   term.write(chunk, () => {
     const lines = readScreen(term);
-    const qLine = lines.find(isQuestion) ?? '';
+    // Answered prompts keep their '?' prefix — the OPEN prompt is the LAST question line.
+    const qLine = [...lines].reverse().find(isQuestion) ?? '';
     if (qLine && qLine !== prevQuestion) {
       const id = promptId(qLine);
+      // credential always follows provider; skip it until provider has been captured
+      // to avoid false positives from partial renders of codemieUrl or other prompts
+      if (id === 'credential' && !snapped.has('provider')) {
+        prevQuestion = qLine;
+        next();
+        return;
+      }
       if (id && !snapped.has(id)) {
         snapped.add(id);
         writeFileSync(`${FIXTURE_DIR}/${id}.json`, JSON.stringify(lines, null, 2));
         console.log(`Captured: ${id}`);
-        // When the first post-provider prompt appears, the answered provider line
-        // is already on screen above it — save that composite screen as the
-        // answered-detection fixture used by the re-detection test.
-        if ((id === 'codemieUrl' || id === 'credential') && !snapped.has('provider-answered-then-next-open')) {
+        // When the first post-provider prompt appears AND the provider anchor text is
+        // already visible on screen (meaning provider was answered), save that composite
+        // screen as the answered-detection fixture used by the re-detection test.
+        // Require that the provider anchor is on screen AND that provider has been snapped
+        // (avoids capturing partial codemieUrl/credential renders that appear before provider is fully answered).
+        const providerAnswered = lines.some(l => l.includes('Choose your LLM provider:')) && snapped.has('provider');
+        if ((id === 'codemieUrl' || id === 'credential') && providerAnswered && !snapped.has('provider-answered-then-next-open')) {
           snapped.add('provider-answered-then-next-open');
           writeFileSync(`${FIXTURE_DIR}/provider-answered-then-next-open.json`, JSON.stringify(lines, null, 2));
           console.log('Captured: provider-answered-then-next-open');
