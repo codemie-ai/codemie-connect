@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "../assets/windows/bin/codemie.cmd": "bin/codemie.cmd",
+      "../assets/windows/node/node.exe": "node/node.exe"
+    }
+  }
+}

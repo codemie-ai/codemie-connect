@@ -108,6 +108,9 @@ pub fn spawn_pty(
 
     {
         let mut guard = state.pty.lock().unwrap();
+        if guard.is_some() {
+            return Err(InstallerError::Pty("PTY already active".into()));
+        }
         *guard = Some((
             run_id.clone(),
             PtyHandle {

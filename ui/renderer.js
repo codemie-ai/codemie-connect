@@ -601,18 +601,18 @@ async function boot() {
   showView('home');
 }
 
-// Non-destructive detection-only run (CODEMIE_PROBE_SMOKE). Forces 1.3 to detect
-// without installing so the smoke never runs `npm install -g`.
+// Non-destructive detection-only run (CODEMIE_PROBE_SMOKE). Runs only the
+// detection steps so the smoke never runs an actual install.
 async function runProbe(handlers) {
   unattended = true;
-  const safe = new Set(['1.1', '1.1.1', '1.2', '1.2.1', '1.3']);
+  const safe = new Set(['2.3.3', '2.3.5', '2.4']);
   engine.steps = engine.steps.filter((s) => safe.has(s.id));
-  handlers['1.3'] = async (ctx) => {
-    ctx.setSubtitle('1.3', 'Checking for CodeMie…');
-    const ex = await bridge.inspector.checkCodemie();
-    ctx.setSubtitle('1.3', ex.found ? 'CodeMie already installed' : 'CodeMie not detected (probe: install skipped)');
-    return ex.found;
-  };
+  if (engine.steps.length === 0) {
+    await invoke('smoke_emit', { line: 'PROBE_ERR no steps matched the probe filter — safe set out of date' });
+    await invoke('smoke_emit', { line: 'PROBE_DONE' });
+    await invoke('close_app');
+    return;
+  }
   try {
     await engine.run();
     const result = engine.steps.map((s) => `${s.id}:${s.status}`).join(' ');

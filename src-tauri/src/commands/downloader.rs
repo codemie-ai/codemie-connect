@@ -77,10 +77,11 @@ pub async fn download_file(
         )));
     }
 
+    const MAX_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024; // 512 MB
     let total = resp.content_length().unwrap_or(0);
     let mut done: u64 = 0;
     let mut bytes: Vec<u8> = if total > 0 {
-        Vec::with_capacity(total as usize)
+        Vec::with_capacity((total as usize).min(MAX_DOWNLOAD_BYTES))
     } else {
         Vec::new()
     };
@@ -88,6 +89,11 @@ pub async fn download_file(
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| InstallerError::Download(e.to_string()))?;
+        if bytes.len() + chunk.len() > MAX_DOWNLOAD_BYTES {
+            return Err(InstallerError::Download(
+                "download exceeds 512 MB limit".into(),
+            ));
+        }
         bytes.extend_from_slice(&chunk);
         done += chunk.len() as u64;
         if total > 0 {
