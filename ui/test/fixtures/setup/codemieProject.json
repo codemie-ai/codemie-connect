@@ -1,5 +1,4 @@
 [
-  "development with a complete ecosystem designed to make you more productive.",
   "",
   "🚀 What Makes CodeMie Special:",
   "",
@@ -16,17 +15,18 @@
   "",
   "Let's configure your AI assistant.",
   "",
-  "? Where would you like to store this configuration? Global (~/.codemie/) - ",
-  "Available across all repositories",
+  "? Where would you like to store this configuration? Global (~/.codemie/) - Available across all ",
+  "repositories",
   "? Choose your LLM provider:",
   " CodeMie SSO - Enterprise SSO Authentication with centralized model management",
   "? CodeMie organization URL: https://codemie.lab.epam.com",
   "Opening browser for authentication...",
-  "  If browser does not open, visit: https://codemie.lab.epam.com/code-assistant-api/v1/auth/login/649",
-  "66",
+  "  If browser does not open, visit: https://codemie.lab.epam.com/code-assistant-api/v1/auth/login/505",
+  "92",
   "✓ Authentication successful!",
   "",
   "Found 2 accessible project(s)",
   "? Select your project: (Use arrow keys)",
-  "❯ epm-sdai "
+  "❯ epm-sdai ",
+  "  mert_efe@epam.com "
 ]

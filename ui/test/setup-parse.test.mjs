@@ -53,25 +53,46 @@ test('storage options and selectedIndex', () => {
 
 test('provider options and selectedIndex', () => {
   const r = detectPrompt(fixture('provider'));
-  // provider.json is a real recording; the 30-row viewport shows the first 3 options.
-  // The trailing options are scrolled off (100-col terminal, fixture rows 0-29).
   assert.deepEqual(r.options, [
     'CodeMie SSO - Enterprise SSO Authentication with centralized model management',
     'LiteLLM - Universal gateway to 100+ LLM providers',
-    'AWS Bedrock - Amazon Bedrock - Access Claude,',
+    'AWS Bedrock - Amazon Bedrock - Access Claude, Llama, Mistral & more via AWS',
+    'Anthropic Subscription - Native Claude Code authentication using your Claude subscription',
+    'Moonshot Subscription - Native Kimi Code CLI authentication using your Moonshot subscription',
+    'Ollama - Popular open-source local LLM runner - optimized for coding with 16GB RAM',
   ]);
   assert.equal(r.selectedIndex, 0);
 });
 
 test('codemieProject options and selectedIndex', () => {
   const r = detectPrompt(fixture('codemieProject'));
-  assert.deepEqual(r.options, ['epm-sdai']);
+  assert.deepEqual(r.options, ['epm-sdai', 'mert_efe@epam.com']);
   assert.equal(r.selectedIndex, 0);
 });
 
-test('model options and selectedIndex — Custom row excluded', () => {
+// model.json is a real capture of a windowed list: the CLI sets pageSize 15
+// (dist/cli/commands/setup.js), so the screen carries exactly 15 rows out of a longer
+// list. Asserting all fifteen is what makes the windowing requirement testable.
+test('model options and selectedIndex — windowed at 15, Custom row excluded', () => {
   const r = detectPrompt(fixture('model'));
-  assert.deepEqual(r.options, ['claude-sonnet-5', 'claude-haiku-4-5-20251001']);
+  assert.deepEqual(r.options, [
+    '⭐ claude-sonnet-5',
+    'claude-4-5-sonnet',
+    'claude-4-5-sonnet-vertex',
+    'claude-haiku-4-5-20251001',
+    'claude-opus-4-5-20251101',
+    'claude-opus-4-6-20260205',
+    'claude-opus-4-6-vertex',
+    'claude-opus-4-7',
+    'claude-opus-4-8',
+    'claude-opus-5',
+    'claude-sonnet-4-5-20250929',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-6-vertex',
+    'deepseek-v4-pro',
+    'gemini-3-flash',
+  ]);
+  assert.equal(r.options.length, 15, 'inquirer pageSize is 15');
   assert.equal(r.selectedIndex, 0);
 });
 
@@ -96,10 +117,18 @@ test('real recording — answered storage (? prefix) above open provider is reso
 //
 // The correct outcome is null: the visible prompt is genuinely incomplete and cannot be safely identified.
 test('partial-render incomplete prompt line returns null, not credential', () => {
+  // A prompt line torn mid-word by a partial render carries no ':' and matches no anchor.
+  // Claiming it as a credential input would make a driver type an API key into it.
+  const screen = Array(30).fill('');
+  screen[0] = '? Choose your LLM provider: AI/Run CodeMie SSO';
+  screen[1] = '? CodeMie organization';
+  assert.equal(detectPrompt(screen), null);
+});
+
+test('answered provider above an open prompt resolves to the open one', () => {
   const r = detectPrompt(fixture('provider-answered-then-next-open'));
-  // (b) incomplete line must never be misclassified as credential
-  assert.equal(r, null, 'incomplete prompt line must return null, not be claimed as credential');
-  // (a) returning null is also not 'provider' — both properties are satisfied
+  assert.equal(r.id, 'codemieUrl', 'the open prompt wins, not the answered provider above it');
+  assert.notEqual(r.id, 'provider');
 });
 
 test('windowed model list excludes trailing Custom row from options', () => {
@@ -151,4 +180,33 @@ test('input message preserves parenthesized default value — codemieUrl (https:
 test('detectPrompt returns null for unrecognized prompt (analyticsSync)', () => {
   const r = detectPrompt(fixture('analyticsSync'));
   assert.equal(r, null, 'unrecognized prompt must return null, not credential');
+});
+
+// The three guards below had no coverage: deleting any of them left the suite green.
+// Each is load-bearing, so each gets a test that fails when it is removed.
+
+test('an unrecognized yes/no prompt returns null, never credential', () => {
+  // Without this guard a driver would type an API key into a consent question.
+  const screen = Array(30).fill('');
+  screen[0] = '? Overwrite the existing configuration: are you sure? (y/N)';
+  assert.equal(detectPrompt(screen), null);
+});
+
+test('the first selection marker wins when a partial render leaves two', () => {
+  const screen = Array(30).fill('');
+  screen[0] = '? Choose your LLM provider:';
+  screen[1] = '❯ CodeMie SSO';
+  screen[2] = '  LiteLLM';
+  screen[3] = '❯ AWS Bedrock';
+  const r = detectPrompt(screen);
+  assert.equal(r.selectedIndex, 0, 'a stale marker lower down must not win');
+});
+
+// A list question sitting on the last visible row has no room for its options. The parser
+// reports no prompt rather than a list with an empty choice set. Documented here as the
+// contract: EPMCDME-14668 must not treat this as "nothing is waiting for input".
+test('a list question with no visible options returns null', () => {
+  const screen = Array(30).fill('');
+  screen[29] = '? Choose your LLM provider: (Use arrow keys)';
+  assert.equal(detectPrompt(screen), null);
 });

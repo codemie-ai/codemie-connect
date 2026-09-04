@@ -1,7 +1,4 @@
 [
-  "║                                                            ║",
-  "║          Welcome to CodeMie CLI! 🎉                        ║",
-  "║                                                            ║",
   "╚════════════════════════════════════════════════════════════╝",
   "",
   "Thank you for choosing CodeMie! You're about to experience AI-powered",
@@ -22,11 +19,14 @@
   "",
   "Let's configure your AI assistant.",
   "",
-  "? Where would you like to store this configuration? Global (~/.codemie/) - ",
-  "Available across all repositories",
+  "? Where would you like to store this configuration? Global (~/.codemie/) - Available across all ",
+  "repositories",
   "? Choose your LLM provider:",
   " (Use arrow keys)",
   "❯ CodeMie SSO - Enterprise SSO Authentication with centralized model management ",
   "  LiteLLM - Universal gateway to 100+ LLM providers ",
-  "  AWS Bedrock - Amazon Bedrock - Access Claude,"
+  "  AWS Bedrock - Amazon Bedrock - Access Claude, Llama, Mistral & more via AWS ",
+  "  Anthropic Subscription - Native Claude Code authentication using your Claude subscription ",
+  "  Moonshot Subscription - Native Kimi Code CLI authentication using your Moonshot subscription ",
+  "  Ollama - Popular open-source local LLM runner - optimized for coding with 16GB RAM "
 ]
