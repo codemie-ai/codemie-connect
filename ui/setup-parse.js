@@ -32,7 +32,12 @@ export function detectPrompt(lines) {
   for (let i = 0; i < lines.length; i++) if (isQ(lines[i])) idx = i;
   if (idx === -1) return null;
   const line = lines[idx];
-  const spec = PROMPTS.find(p => p.anchor && line.includes(p.anchor)) ?? { id: 'credential', kind: 'input' };
+  const named = PROMPTS.find(p => p.anchor && line.includes(p.anchor));
+  // If no named anchor matched, check whether the line is an unrecognized confirm-style prompt
+  // (ends with a yes/no hint like "(y/N)" or "(Y/n)"). Those must return null — returning
+  // 'credential' for a consent/confirm question would cause a driver to type an API key into it.
+  if (!named && /\(y\/N\)\s*$|\(Y\/n\)\s*$|\(Y\/N\)\s*$|\(y\/n\)\s*$/i.test(line)) return null;
+  const spec = named ?? { id: 'credential', kind: 'input' };
   const message = line.replace(/^\s*\?\s*/, '').trim();
   if (spec.kind !== 'list') return { kind: spec.kind, id: spec.id, message };
   const { options, selectedIndex } = parseOptions(lines, idx);

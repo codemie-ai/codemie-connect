@@ -106,3 +106,10 @@ test('windowed model list excludes trailing Custom row from options', () => {
     'Custom row must be excluded from options'
   );
 });
+
+// Regression test for credential catch-all bug: an unrecognized consent/confirm prompt
+// (analytics sync, not in PROMPTS) must return null, not be misclassified as 'credential'.
+test('detectPrompt returns null for unrecognized prompt (analyticsSync)', () => {
+  const r = detectPrompt(fixture('analyticsSync'));
+  assert.equal(r, null, 'unrecognized prompt must return null, not credential');
+});
