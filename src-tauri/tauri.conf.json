@@ -28,7 +28,8 @@
     "targets": ["dmg", "nsis"],
     "resources": {
       "../assets/windows/bin/codemie.cmd": "bin/codemie.cmd",
-      "../assets/bin/codemie-x86_64-pc-windows-msvc.exe": "bin/codemie.exe"
+      "../assets/windows/node/node.exe": "node/node.exe",
+      "../assets/codemie-cli/node_modules": "cli/node_modules"
     },
     "category": "DeveloperTool",
     "copyright": "EPAM AI/Run CodeMie ©",
