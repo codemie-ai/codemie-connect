@@ -34,8 +34,59 @@ for (const [id, kind, msgSnippet] of CASES) {
   });
 }
 
-// Fixture captures a screen where the provider prompt is answered (✔ prefix) and the
-// next prompt (codemieUrl or credential) is already open below it.
+// Exact options and selectedIndex for list-kind prompts (real recordings: gate, storage, provider,
+// codemieProject; format-accurate constructed: model).
+test('gate options and selectedIndex', () => {
+  const r = detectPrompt(fixture('gate'));
+  assert.deepEqual(r.options, ['Add a new profile', 'Update an existing profile', 'Cancel']);
+  assert.equal(r.selectedIndex, 0);
+});
+
+test('storage options and selectedIndex', () => {
+  const r = detectPrompt(fixture('storage'));
+  assert.deepEqual(r.options, [
+    'Global (~/.codemie/) - Available across all repositories',
+    'Local (.codemie/) - Only for this repository',
+  ]);
+  assert.equal(r.selectedIndex, 0);
+});
+
+test('provider options and selectedIndex', () => {
+  const r = detectPrompt(fixture('provider'));
+  // provider.json is a real recording; the 30-row viewport shows the first 3 options.
+  // The trailing options are scrolled off (100-col terminal, fixture rows 0-29).
+  assert.deepEqual(r.options, [
+    'CodeMie SSO - Enterprise SSO Authentication with centralized model management',
+    'LiteLLM - Universal gateway to 100+ LLM providers',
+    'AWS Bedrock - Amazon Bedrock - Access Claude,',
+  ]);
+  assert.equal(r.selectedIndex, 0);
+});
+
+test('codemieProject options and selectedIndex', () => {
+  const r = detectPrompt(fixture('codemieProject'));
+  assert.deepEqual(r.options, ['epm-sdai']);
+  assert.equal(r.selectedIndex, 0);
+});
+
+test('model options and selectedIndex — Custom row excluded', () => {
+  const r = detectPrompt(fixture('model'));
+  assert.deepEqual(r.options, ['claude-sonnet-5', 'claude-haiku-4-5-20251001']);
+  assert.equal(r.selectedIndex, 0);
+});
+
+// Real-recording discriminator test: provider.json is a real terminal capture where the answered
+// storage prompt (with '?' prefix — NOT '✔') sits above the open provider prompt.
+// The parser must find the LAST '?' line (provider) and not the first (answered storage).
+test('real recording — answered storage (? prefix) above open provider is resolved correctly', () => {
+  const r = detectPrompt(fixture('provider'));
+  assert.equal(r.id, 'provider', 'answered storage ? line must not shadow open provider');
+  assert.equal(r.kind, 'list');
+  assert.ok(r.options.length > 0, 'provider must have visible options');
+});
+
+// Fixture captures a screen where the provider prompt is answered (? prefix — real recording format)
+// and the next prompt (codemieUrl or credential) is already open below it.
 // The parser must return the NEXT prompt's id — never 'provider' again.
 test('answered provider prompt is not re-detected when next prompt is open', () => {
   const r = detectPrompt(fixture('provider-answered-then-next-open'));
