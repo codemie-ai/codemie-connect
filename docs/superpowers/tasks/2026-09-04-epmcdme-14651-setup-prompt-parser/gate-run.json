@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "branch": "feat/epmcdme-14651-setup-prompt-parser",
+  "head": "0904fb56d9ca6280d421088200cbfaf277c55f36",
+  "runner": "npm",
+  "started_at": "2026-09-04T00:00:00Z",
+  "completed_at": "2026-09-04T00:00:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "rust-fmt",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": null,
+      "notes": "Pre-existing failure inherited from EPMCDME-14573 merge; this branch touches no src-tauri/ files; being fixed under a separate MR. Repo owner override: do not treat as blocking for this ticket."
+    },
+    {
+      "id": "rust-lint",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": null,
+      "notes": "Pre-existing failure inherited from EPMCDME-14573 merge; this branch touches no src-tauri/ files; being fixed under a separate MR. Repo owner override: do not treat as blocking for this ticket."
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 92,
+      "command": "npm test",
+      "exit_code": 0
+    },
+    {
+      "id": "rust-test",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": null,
+      "notes": "Pre-existing failure inherited from EPMCDME-14573 merge; this branch touches no src-tauri/ files; being fixed under a separate MR. Repo owner override: do not treat as blocking for this ticket."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "cd src-tauri && CI=true cargo tauri build",
+      "exit_code": null,
+      "notes": "Guide Skip-if satisfied: logic-only change (all diffs in ui/) verified by passing unit tests."
+    }
+  ],
+  "failures": {}
+}
