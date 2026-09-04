@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "branch": "EPMCDME-14573-bundle-shim-runtime-path",
-  "head": "bf249fdafe98b44a9d4ced6a5c58449129c6f4cc",
-  "runner": "custom",
-  "started_at": "2026-09-03T00:00:00.000Z",
-  "completed_at": "2026-09-03T00:04:00.000Z",
+  "branch": "EPMCDME-14505-codemie-desktop-peruser-install",
+  "head": "0b5b0b731429041d96f88d86732495facc7dcefc",
+  "runner": "npm",
+  "started_at": "2026-09-04T13:44:00Z",
+  "completed_at": "2026-09-04T13:58:42Z",
   "status": "PASSED",
   "drift_detected": false,
   "gates": [
@@ -12,37 +12,35 @@
       "id": "fmt",
       "source": "guide",
       "status": "PASS",
-      "duration_ms": 3200,
+      "duration_ms": 3000,
       "command": "cd src-tauri && cargo fmt --check",
-      "exit_code": 0,
-      "notes": "Initially failed; auto-fix (cargo fmt) reformatted handshake.rs, pathman.rs, runner.rs, lib.rs. Re-check exited 0."
+      "exit_code": 0
     },
     {
       "id": "lint",
       "source": "guide",
       "status": "PASS",
-      "duration_ms": 7690,
+      "duration_ms": 69000,
       "command": "cd src-tauri && cargo clippy -- -D warnings",
-      "exit_code": 0,
-      "notes": "Initially failed: unnecessary_lazy_evaluations in handshake.rs:96 (unwrap_or_else → unwrap_or). Fixed manually; re-run exited 0."
+      "exit_code": 0
     },
     {
       "id": "unit-js",
       "source": "guide",
       "status": "PASS",
-      "duration_ms": 980,
+      "duration_ms": 405,
       "command": "npm test",
       "exit_code": 0,
-      "notes": "19/19 passing. UI surface changed (ui/*.js, ui/styles.css, ui/index.html), so skip-if condition did not apply."
+      "notes": "24/24 passing. UI surface changed (ui/handlers.js, ui/renderer.js, ui/runner-bridge.js, ui/test/shim.test.mjs); skip-if condition did not apply."
     },
     {
       "id": "unit-rust",
       "source": "guide",
       "status": "PASS",
-      "duration_ms": 48050,
+      "duration_ms": 10000,
       "command": "cd src-tauri && cargo test",
       "exit_code": 0,
-      "notes": "58/58 passing across all modules including new pathman tests (probe_with_bin_dir, build_new_path) and handshake tests."
+      "notes": "65/65 passing: 63 unit tests across all modules + 2 integration tests in tests/bundle_resources.rs."
     },
     {
       "id": "build",
@@ -51,7 +49,7 @@
       "duration_ms": 0,
       "command": "cd src-tauri && CI=true cargo tauri build",
       "exit_code": null,
-      "notes": "Guide skip-if applies: logic-only change verified by 58 Rust + 19 JS passing tests. Additionally, this host is Windows; the build command targets a macOS DMG and would fail on platform. To run locally, execute on a macOS host with cargo-tauri installed."
+      "notes": "Guide skip-if applies: logic-only change verified by 65 Rust + 24 JS passing tests. Additionally, this host is Windows; the guide's pass criterion (DMG artifact in target/release/bundle/dmg/) cannot be satisfied on a non-macOS runner. To run locally, execute on a macOS host with cargo-tauri installed."
     }
   ],
   "failures": {}

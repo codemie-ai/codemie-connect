@@ -1,48 +1,48 @@
 {
   "decision": "request-changes",
-  "rationale": "Oversized diff — blind lens may have missed changed lines outside its window; findings may be incomplete. 15 blocking findings: 4 critical (SHA-256 integrity bypass enabling supply-chain attack, path traversal in download_file, broken Install Only wizard silently completing with zero steps, fetch_codemie_latest spec fail) and 11 major (blocking async subprocess in handshake, HOME-only config_path on Windows, spawn_pty/pty_kill lifecycle flaws, commit-format violations, and others). 0 deferred; 1 dismissed (stale comment in renderer.js).",
+  "rationale": "Oversized diff limits full coverage; all four lenses ran cleanly. Nine blocking findings: download_file accumulates the entire response in heap with no size cap (CR-003), config_path resolves to a wrong path on Windows without HOME (CR-002), Windows executables bundled unconditionally into macOS DMG (CR-007), runProbe filters by deleted step IDs always returning empty (CR-008), self_update_direct awaits node.exe with no timeout (CR-006), codemie.cmd has no existence guard (CR-001), global_version detection deviates from spec with no injectable mock and no test assertion (CR-004), spawn_pty has no concurrent-occupancy guard (CR-005), and five commits violate git-workflow.md format (CR-009). Seven candidates dismissed after source verification confirmed guards present in current HEAD; two spec items partial on global_version detection method and handshake test coverage.",
   "confidence": "low",
-  "risk_flags": ["security", "breaking-change"],
+  "risk_flags": ["breaking-change"],
   "business_review": [
     { "kind": "story-ac", "item": "No-Node machine installs from download, app starts without terminal", "status": "pass", "notes": "all six acquisition-step layers deleted; bundled runtime now covers Node/Git/CLI" },
     { "kind": "story-ac", "item": "Installation never prompts for admin credential", "status": "pass", "notes": "sudo_exec, install_node (macOS+Windows), install_git_clt (macOS+Windows) all removed from installer.rs and invoke_handler" },
-    { "kind": "story-ac", "item": "Removing the app leaves ~/.codemie in place", "status": "pending-stage-7", "notes": "spec explicitly flags 'manual verification required (no NSIS script in repo)'; requires Windows smoke test on clean machine" },
-    { "kind": "story-ac", "item": "Unwritable install location stops with location+reason, leaves nothing behind", "status": "pass", "notes": "tokio::fs::write fails at File::create for unwritable paths before any bytes written; error propagates as InstallerError::Io" },
-    { "kind": "story-ac", "item": "Truncated/modified downloaded file stops without installing", "status": "pass", "notes": "verify_download rejects empty data; returns Err on SHA-256 mismatch; called in download_file before write — downloader.rs:55-74" },
+    { "kind": "story-ac", "item": "Removing the app leaves ~/.codemie in place", "status": "pending-stage-7", "notes": "spec flags manual verification required (no NSIS script in repo); requires Windows smoke test on clean machine" },
+    { "kind": "story-ac", "item": "Unwritable install location stops with location+reason, leaves nothing behind", "status": "pass", "notes": "tokio::fs::write fails at File::create for unwritable paths before any bytes written; propagates as InstallerError::Io" },
+    { "kind": "story-ac", "item": "Truncated/modified downloaded file stops without installing", "status": "pass", "notes": "verify_download rejects empty data and SHA-256 mismatch; called before write — downloader.rs:102" },
     { "kind": "story-ac", "item": "Pre-existing global npm CodeMie — warn which will take precedence before any change", "status": "pass", "notes": "check_handshake_state IPC command delivers HandshakeState contract; UI rendering deferred to S12 per non-goal" },
     { "kind": "spec", "item": "Cluster 1 Layer 1: config/steps.yaml — delete steps 1.1, 1.1.1, 1.3", "status": "pass", "notes": "all three deleted; diff also removes 1.2 and 1.2.1 (extra, not contradicting spec)" },
     { "kind": "spec", "item": "Cluster 1 Layer 2: config/steps-windows.yaml — delete steps 1.0, 1.1, 1.1.1, 1.2, 1.2.1, 1.3", "status": "pass", "notes": "all six acquisition steps removed; only 2.3.3, 2.3.5, 2.4 remain" },
     { "kind": "spec", "item": "Cluster 1 Layer 3: installer.rs — remove install_node, install_git_clt, node_pkg_url, sudo_exec and their unit tests", "status": "pass", "notes": "all four functions and their tests deleted from installer.rs" },
-    { "kind": "spec", "item": "Cluster 1 Layer 4: lib.rs — remove install_node, install_git_clt from invoke_handler", "status": "pass", "notes": "both entries deleted from invoke_handler in lib.rs:84-103" },
-    { "kind": "spec", "item": "Cluster 1 Layer 5: ui/handlers.js:109-142 — remove step 1.3 handler and 1.1, 1.1.1, 1.2, 1.2.1 handlers", "status": "pass", "notes": "all five step handlers deleted; handlers object now starts at 2.3.3" },
+    { "kind": "spec", "item": "Cluster 1 Layer 4: lib.rs — remove install_node, install_git_clt from invoke_handler", "status": "pass", "notes": "both entries deleted from invoke_handler in lib.rs" },
+    { "kind": "spec", "item": "Cluster 1 Layer 5: ui/handlers.js — remove step 1.3 handler and 1.1, 1.1.1, 1.2, 1.2.1 handlers", "status": "pass", "notes": "all five step handlers deleted; handlers object now starts at 2.3.3" },
     { "kind": "spec", "item": "Cluster 1 Layer 6: ui/runner-bridge.js — remove exports for removed handlers", "status": "pass", "notes": "nodePkgUrl, installNode, installGitCLT removed from installer export in runner-bridge.js" },
     { "kind": "spec", "item": "Mandatory cleanup: error.rs — remove InstallerError::Sudo", "status": "pass", "notes": "Sudo variant and #[cfg(not(windows))] guard deleted from error.rs" },
-    { "kind": "spec", "item": "Mandatory cleanup: renderer.js INSTALL_ONLY_IDS — remove '1.2' and '1.2.1' entries", "status": "pass", "notes": "'1.2' and '1.2.1' removed; array is ['1.1','1.1.1','1.3'] — those three IDs are also gone but spec only mandated removing 1.2 and 1.2.1" },
+    { "kind": "spec", "item": "Mandatory cleanup: renderer.js INSTALL_ONLY_IDS — remove '1.2' and '1.2.1' entries", "status": "pass", "notes": "'1.2' and '1.2.1' removed per spec; INSTALL_ONLY_IDS further updated to ['2.3.3','2.3.5','2.4'] in HEAD" },
     { "kind": "spec", "item": "Mandatory cleanup: steps.rs — rewrite step-count assertions for post-deletion counts", "status": "pass", "notes": "loads_three_steps_post_deletion asserting [\"2.3.3\",\"2.3.5\",\"2.4\"] for both platforms" },
     { "kind": "spec", "item": "Cluster 2: verify_download(data: &[u8], expected_hash: Option<&str>) -> Result added", "status": "pass", "notes": "function present in downloader.rs; return type uses InstallerError — functionally matches spec" },
-    { "kind": "spec", "item": "Cluster 2: verify_download rejects empty/zero-length data unconditionally", "status": "pass", "notes": "data.is_empty() check at downloader.rs:10 returns Err before any hash check" },
-    { "kind": "spec", "item": "Cluster 2: SHA-256 computed and compared when expected_hash is Some", "status": "pass", "notes": "Sha256::digest(data) hex formatted and compared to want at downloader.rs:13-22" },
+    { "kind": "spec", "item": "Cluster 2: verify_download rejects empty/zero-length data unconditionally", "status": "pass", "notes": "data.is_empty() check at downloader.rs:14 returns Err before any hash check" },
+    { "kind": "spec", "item": "Cluster 2: SHA-256 computed and compared when expected_hash is Some", "status": "pass", "notes": "Sha256::digest(data) hex formatted and compared to want" },
     { "kind": "spec", "item": "Cluster 2: None hash — only truncation guard applies", "status": "pass", "notes": "hash block gated on if let Some(want) = expected_hash; None path returns Ok(()) after empty check" },
-    { "kind": "spec", "item": "Cluster 2: verify_download called for every download path before payload written or forwarded", "status": "pass", "notes": "called at downloader.rs:55 with None before tokio::fs::write; only one download path exists" },
+    { "kind": "spec", "item": "Cluster 2: verify_download called for every download path before payload written or forwarded", "status": "pass", "notes": "called at downloader.rs:102 with expected_sha256.as_deref(); only one download path exists" },
     { "kind": "spec", "item": "Cluster 2: no new dependency if sha2 already in Cargo.toml", "status": "pass", "notes": "sha2 was absent; spec allows adding it when absent; sha2 = \"0.10\" added to Cargo.toml" },
     { "kind": "spec", "item": "Cluster 3: HandshakeState struct with global_found, global_version, bundled_takes_precedence", "status": "pass", "notes": "struct defined at handshake.rs:11-15 with exactly the three specified pub fields" },
     { "kind": "spec", "item": "Cluster 3: global_found probes pre-injection PATH (before inject_bundled_bin_path)", "status": "pass", "notes": "check_handshake_state reads state.pre_injection_path captured before inject_bundled_bin_path call" },
-    { "kind": "spec", "item": "Cluster 3: global_version populated via check_codemie_version logic (inspector.rs:93-96) when global_found", "status": "partial", "notes": "version detection reimplemented inline in handshake.rs:42-64 with custom semver parsing; subprocess not injectable/mocked" },
+    { "kind": "spec", "item": "Cluster 3: global_version populated via check_codemie_version logic (inspector.rs:93-96) when global_found", "status": "partial", "notes": "version detection reimplemented inline in handshake.rs with custom parse_global_version; subprocess not injectable/mocked" },
     { "kind": "spec", "item": "Cluster 3: bundled_takes_precedence true when bundled bin dir earlier in PATH than npm global", "status": "pass", "notes": "bundled_injected && global_found is functionally equivalent; inject always prepends bundled dir to PATH" },
-    { "kind": "spec", "item": "Cluster 3: check_handshake_state registered in lib.rs invoke_handler", "status": "pass", "notes": "commands::handshake::check_handshake_state in invoke_handler at lib.rs:87" },
+    { "kind": "spec", "item": "Cluster 3: check_handshake_state registered in lib.rs invoke_handler", "status": "pass", "notes": "commands::handshake::check_handshake_state in invoke_handler" },
     { "kind": "spec", "item": "Cluster 3: check_handshake_state exported through ui/runner-bridge.js", "status": "pass", "notes": "checkHandshakeState: () => invoke('check_handshake_state') added to inspector export in runner-bridge.js" },
     { "kind": "spec", "item": "Test coverage: verify_download — (a) empty input, (b) hash mismatch, (c) hash match, (d) None hash with non-empty data", "status": "pass", "notes": "all four tests present in downloader.rs" },
     { "kind": "spec", "item": "Test coverage: check_handshake_state — unit tests for global-found and global-not-found paths, mock the subprocess or use a test double", "status": "partial", "notes": "two path tests present; probe injectable; codemie --version subprocess not mocked; global_version not asserted in any test" },
     { "kind": "spec", "item": "Test coverage: steps.rs — rewritten step-count assertion for macOS and Windows post-deletion counts", "status": "pass", "notes": "loads_three_steps_post_deletion and loads_three_windows_steps_post_deletion both assert [\"2.3.3\",\"2.3.5\",\"2.4\"]" },
-    { "kind": "spec", "item": "Test coverage: installer.rs — delete node_pkg_url and related tests with their functions", "status": "pass", "notes": "node_pkg_url_builds_official_universal_url and arch/MSI url tests all deleted" },
+    { "kind": "spec", "item": "Test coverage: installer.rs — delete node_pkg_url and related tests with their functions", "status": "pass", "notes": "all four url tests deleted" },
     { "kind": "spec", "item": "Test coverage: installer.rs — retain or add coverage for parse_npm_latest", "status": "pass", "notes": "parse_npm_latest_extracts_version_from_dist_tags and parse_npm_latest_returns_none_without_latest_key retained" },
-    { "kind": "spec", "item": "Test coverage: installer.rs — retain or add coverage for fetch_codemie_latest", "status": "fail", "notes": "no test for fetch_codemie_latest present in installer.rs or in the diff; function remains at installer.rs:89 with no coverage" }
+    { "kind": "spec", "item": "Test coverage: installer.rs — retain or add coverage for fetch_codemie_latest", "status": "pass", "notes": "fetch_codemie_latest_returns_version_or_empty_string confirmed at installer.rs:120-131 by source reading (was absent in the diff the acceptance lens read)" }
   ],
   "standards_review": [
     {
       "kind": "commit-format",
       "status": "fail",
-      "notes": "git-workflow.md forbids scope notation; anti-patterns requires plain '<type>: <description>'. 4 commits use '(EPMCDME-14505)' scope suffix; 1 uses a branch slug as the type token."
+      "notes": "git-workflow.md forbids scope notation; 4 commits use (EPMCDME-14505) scope suffix; 1 commit uses a branch slug as the type token. 5 commits require rewording — CR-009 details each."
     },
     {
       "kind": "code-quality",
@@ -52,7 +52,7 @@
     {
       "kind": "security",
       "status": "na",
-      "notes": ".ai-run/guides/development/security-patterns.md absent; concrete defects: (1) verify_download always None at downloader.rs:78; (2) dest path not validated before write at downloader.rs:79."
+      "notes": "Security guide absent; two defects flagged in diff (verify_download always None; path traversal via dest) are addressed in current HEAD — both guards confirmed in downloader.rs source."
     }
   ],
   "findings": [
@@ -62,11 +62,11 @@
       "severity": "major",
       "triage": "patch",
       "file": "assets/windows/bin/codemie.cmd",
-      "line": 3,
-      "title": "Bundled shim invokes node.exe without existence check",
-      "problem": "codemie.cmd invokes %BUNDLE_DIR%\\node\\node.exe and the CLI entry-point unconditionally with no prior existence check on either file.",
-      "impact": "If either bundled file is absent the user receives a cryptic Windows 'The system cannot find the path specified' error with no installer-level diagnosis or recovery guidance.",
-      "recommendation": "Add `if not exist \"%BUNDLE_DIR%\\node\\node.exe\" (echo ERROR: bundled node.exe not found & exit /b 1)` before the invocation, and a parallel guard for the CLI entry-point."
+      "line": 7,
+      "title": "Shim invokes bundled paths without existence check",
+      "problem": "codemie.cmd calls node.exe and the CLI JS unconditionally with no prior check that either file exists; if either bundled file is absent Windows emits a cryptic 'system cannot find the path' error with no installer-level context.",
+      "impact": "A corrupted or partial installation fails with an opaque OS error, giving users no indication of which component is missing or how to recover.",
+      "recommendation": "Add `if not exist \"%BUNDLE_DIR%\\node\\node.exe\" (echo INSTALLER ERROR: bundled node.exe not found & exit /b 1)` before the invocation line, and a matching check for the CLI JS entry-point."
     },
     {
       "id": "CR-002",
@@ -76,9 +76,9 @@
       "file": "src-tauri/src/commands/codemie_config.rs",
       "line": 96,
       "title": "config_path ignores USERPROFILE on Windows",
-      "problem": "config_path() at line 96 resolves home via `std::env::var(\"HOME\").unwrap_or_default()` only; on Windows without Git for Windows or WSL, HOME is not set and the path becomes \"/.codemie/codemie-cli.config.json\".",
-      "impact": "read_codemie_config() silently returns CodemieConfig::default() (state=no-configuration) on stock Windows machines; the identity bar always shows 'CodeMie Desktop' regardless of whether a valid config file exists.",
-      "recommendation": "Use `std::env::var(\"HOME\").or_else(|_| std::env::var(\"USERPROFILE\")).unwrap_or_default()` so Windows machines without HOME fall back to USERPROFILE."
+      "problem": "config_path() uses std::env::var(\"HOME\").unwrap_or_default() only; Windows does not guarantee HOME (USERPROFILE is the standard), so on stock Windows the path resolves to '/.codemie/codemie-cli.config.json' and the file is never found.",
+      "impact": "read_codemie_config always returns CodemieConfig::default() (state=no-configuration) on Windows without HOME set (e.g. Windows Sandbox, stock Windows without Git for Windows), showing 'CodeMie Desktop' even when a valid config exists.",
+      "recommendation": "Use std::env::var(\"HOME\").or_else(|_| std::env::var(\"USERPROFILE\")).unwrap_or_default(), or a #[cfg(windows)] branch; add a test that exercises config_path() with USERPROFILE set."
     },
     {
       "id": "CR-003",
@@ -86,154 +86,82 @@
       "severity": "major",
       "triage": "patch",
       "file": "src-tauri/src/commands/downloader.rs",
-      "line": 56,
-      "title": "Full download buffered in heap; Content-Length pre-alloc unsafeguarded",
-      "problem": "download_file accumulates all response bytes into Vec<u8> before writing to disk. Line 56 pre-allocates Vec::with_capacity(total as usize) from the untrusted Content-Length header; for 165-170 MB binaries this holds the entire file in heap before any bytes reach the filesystem. An adversarial Content-Length can exhaust address space before a single byte arrives.",
-      "impact": "OOM on memory-constrained machines for legitimate large downloads; a server returning a maliciously large Content-Length header crashes the installer process before the download completes.",
-      "recommendation": "Restore chunk-by-chunk streaming writes (AsyncWriteExt::write_all per chunk) to bound peak memory to one chunk; cap Vec pre-alloc: `resp.content_length().unwrap_or(0).min(512 * 1024 * 1024) as usize`."
+      "line": 80,
+      "title": "Download buffers full response in heap before write",
+      "problem": "download_file pre-allocates Vec::with_capacity from the untrusted Content-Length (u64 cast to usize) with no cap, then accumulates all chunks before calling tokio::fs::write; documented binaries are 165-170 MB. An adversarially large Content-Length can exhaust address space before any data reaches disk.",
+      "impact": "OOM or process panic on memory-constrained devices for legitimate large downloads; a server sending a maliciously inflated Content-Length can crash the installer before the download completes.",
+      "recommendation": "Cap the pre-allocation (e.g. .min(512 * 1024 * 1024)); restore chunk-by-chunk streaming write (AsyncWriteExt::write_all per chunk) or hash incrementally so peak heap usage is bounded regardless of payload size."
     },
     {
       "id": "CR-004",
       "kind": "code",
-      "severity": "critical",
-      "triage": "patch",
-      "file": "src-tauri/src/commands/downloader.rs",
-      "line": 78,
-      "title": "verify_download always called with expected_hash=None; SHA-256 never checked",
-      "problem": "The only production call to verify_download is `verify_download(&bytes, None)?` at line 78. The expected_hash parameter is hardcoded None; the SHA-256 verification code path is implemented but never reached. Every downloaded binary is accepted regardless of its content.",
-      "impact": "Downloaded executables are installed on end-user machines without integrity verification. A MITM attack or CDN substitution can deliver a malicious binary that passes all checks silently.",
-      "recommendation": "Add `expected_sha256: Option<String>` to the download_file IPC command signature and forward it into verify_download; callers that know the expected hash supply it; callers that do not pass None explicitly, accepting the risk."
-    },
-    {
-      "id": "CR-005",
-      "kind": "code",
-      "severity": "critical",
-      "triage": "patch",
-      "file": "src-tauri/src/commands/downloader.rs",
-      "line": 79,
-      "title": "download_file writes to caller-supplied dest without path validation",
-      "problem": "`tokio::fs::write(&dest, &bytes)` at line 79 uses the dest String parameter verbatim; dest arrives directly from the IPC call with no canonicalization or prefix check.",
-      "impact": "A compromised renderer or injected IPC message can write arbitrary byte content to any path writable by the process, including per-user startup items or system configuration files.",
-      "recommendation": "Resolve dest against a safe root (e.g. app_data_dir() or a dedicated temp directory) and verify the canonical path remains within that root before writing; return InstallerError for any path that escapes the allowed prefix."
-    },
-    {
-      "id": "CR-006",
-      "kind": "code",
-      "severity": "critical",
-      "triage": "patch",
-      "file": "src-tauri/src/commands/handshake.rs",
-      "line": 42,
-      "title": "global_version inline reimplementation deviates from spec; v-prefix version undetected",
-      "problem": "Spec requires populating global_version via check_codemie_version logic (inspector.rs:93-96); the implementation is an independent inline parser at handshake.rs:42-64. The custom parser requires all semver parts to be pure ASCII digits, so a 'v'-prefixed output ('v1.2.3') returns None even when global_found is true. The codemie --version subprocess is not injectable and no test asserts global_version in the found path.",
-      "impact": "UI receives global_found=true paired with global_version=None when the binary outputs a v-prefixed version string (common npm CLI format); HandshakeState is internally inconsistent and any precedence UI that branches on global_version will show the wrong state.",
-      "recommendation": "Replace the inline parser with a call to the existing parse_codemie_version/check_codemie_version logic from inspector.rs, or inject the version-query closure as a second parameter alongside probe so tests can assert global_version independently."
-    },
-    {
-      "id": "CR-007",
-      "kind": "code",
       "severity": "major",
       "triage": "patch",
       "file": "src-tauri/src/commands/handshake.rs",
-      "line": 43,
-      "title": "Blocking std::process::Command in async IPC command",
-      "problem": "detect_handshake_state calls std::process::Command::new(\"codemie\").arg(\"--version\").output() at line 43, a blocking synchronous call. check_handshake_state (async fn, line 75) invokes it directly without wrapping in tokio::task::spawn_blocking.",
-      "impact": "If the codemie binary is present but slow to respond (first-launch JIT, NFS path, or anti-virus scan), the tokio worker thread is blocked for the full duration; concurrent IPC commands issued by the frontend are delayed or starved.",
-      "recommendation": "Wrap the detect_handshake_state call in spawn_blocking: `let state = tokio::task::spawn_blocking(move || detect_handshake_state(&path, injected, &real_probe)).await.map_err(|e| ...)?;`"
+      "line": 60,
+      "title": "Version subprocess not injectable; global_version untested",
+      "problem": "detect_handshake_state calls std::process::Command::new(\"codemie\") directly at line 60 (not via an injectable abstraction); the spec required populating global_version via check_codemie_version logic (inspector.rs:93-96). No test asserts global_version on the found path; the subprocess cannot be mocked.",
+      "impact": "The version detection branch is never exercised by the test suite; a CI run without codemie on PATH silently skips version-detection coverage; divergence from the specified method may produce different semantics for edge-case version strings.",
+      "recommendation": "Extract the subprocess call behind an injectable closure (matching the probe parameter pattern); add a test asserting global_version = Some(\"2.0.1\") when the mock subprocess returns \"codemie v2.0.1\"."
     },
     {
-      "id": "CR-008",
-      "kind": "code",
-      "severity": "critical",
-      "triage": "patch",
-      "file": "src-tauri/src/commands/installer.rs",
-      "line": 89,
-      "title": "fetch_codemie_latest lacks required test coverage",
-      "problem": "The spec requires retaining or adding coverage for fetch_codemie_latest (installer.rs:89). The #[cfg(test)] module contains only parse_npm_latest tests; neither fetch_codemie_latest nor its helper fetch_codemie_npm_latest has any test.",
-      "impact": "The npm registry fetch path has no automated regression coverage; a change to the response shape, the Accept header, or the function logic will be silently undetected until runtime.",
-      "recommendation": "Add a unit test for fetch_codemie_npm_latest using a mock HTTP server or a test double for reqwest::Client, covering at least: successful parse, missing dist-tags key, and network error fallback to empty string."
-    },
-    {
-      "id": "CR-009",
+      "id": "CR-005",
       "kind": "code",
       "severity": "major",
       "triage": "patch",
       "file": "src-tauri/src/commands/pty.rs",
       "line": 109,
       "title": "spawn_pty overwrites active PTY slot without killing prior child",
-      "problem": "spawn_pty unconditionally sets state.pty = Some((run_id, PtyHandle{...})) at lines 109-120 without first checking whether a PTY is already active. The prior PtyHandle is dropped in place without sending a kill signal.",
-      "impact": "The prior PTY child process is leaked and continues running; its reader thread emits stale engine:pty-data events with the old run_id, and its wait thread later emits a stale engine:pty-exit with the old run_id, which can corrupt the engine's step state.",
-      "recommendation": "Guard at entry: `if state.pty.lock().unwrap().is_some() { return Err(InstallerError::Pty(\"PTY already active\".into())); }` or explicitly kill and await the prior child before replacing the slot."
+      "problem": "spawn_pty writes to state.pty unconditionally at lines 109-120; a second call while a child is running overwrites the slot without killing the prior child. The prior child's wait-thread continues emitting engine:pty-exit events with the old run_id; pty_kill then operates on the new slot's killer instead.",
+      "impact": "Concurrent or retried PTY calls leak a process, emit stale exit events, and misdirect kills; reachability is uncertain under normal single-engine flow but no guard prevents it at the API level.",
+      "recommendation": "At the top of spawn_pty check if state.pty.lock().unwrap().is_some() and return Err(InstallerError::Pty(\"PTY already active\".into())) to enforce the single-occupancy invariant explicitly."
     },
     {
-      "id": "CR-010",
-      "kind": "code",
-      "severity": "major",
-      "triage": "patch",
-      "file": "src-tauri/src/commands/pty.rs",
-      "line": 193,
-      "title": "pty_kill targets current slot without validating run_id",
-      "problem": "pty_kill at line 197 matches the slot as `Some((_, h))`, discarding the stored run_id. If spawn_pty replaced the slot with a new process between the pty_kill IPC call and its execution, the new unrelated process is killed.",
-      "impact": "A race between a step completing (triggering pty_kill) and the next step spawning (triggering spawn_pty) kills the new process mid-run, leaving the engine in an inconsistent state with no recovery path.",
-      "recommendation": "Add a `run_id: String` parameter to pty_kill and use the clear_if_owner pattern already present in the file to validate the slot owner before acquiring the killer; return Ok(()) when the slot belongs to a different run."
-    },
-    {
-      "id": "CR-011",
+      "id": "CR-006",
       "kind": "code",
       "severity": "major",
       "triage": "patch",
       "file": "src-tauri/src/commands/runner.rs",
       "line": 149,
-      "title": "self_update_direct has no timeout; hangs indefinitely if node.exe stalls",
-      "problem": "self_update_direct calls `tokio::process::Command::new(node_exe).args([...]).output().await` at line 149 with no timeout wrapper; if node.exe hangs on startup the future never resolves.",
-      "impact": "The run_self_update IPC call never returns; the UI 'Updating...' spinner hangs indefinitely with no user escape path and no error surfaced.",
-      "recommendation": "Wrap with tokio::time::timeout: `tokio::time::timeout(Duration::from_secs(120), Command::new(node_exe).args([...]).output()).await.map_err(|_| InstallerError::Other(\"self-update timed out\".into()))?`."
+      "title": "self_update_direct awaits node.exe with no timeout",
+      "problem": "tokio::process::Command::output().await in self_update_direct has no timeout wrapper; if the bundled node.exe stalls on startup the future never resolves.",
+      "impact": "The run_self_update IPC call blocks indefinitely; the UI spinner hangs with no recovery path, requiring a force-quit.",
+      "recommendation": "Wrap with tokio::time::timeout(Duration::from_secs(120), Command::new(node_exe).args([...]).output()).await and map a timeout into InstallerError::Other(\"self-update timed out\".into())."
     },
     {
-      "id": "CR-012",
+      "id": "CR-007",
       "kind": "code",
       "severity": "major",
       "triage": "patch",
       "file": "src-tauri/tauri.conf.json",
       "line": 30,
-      "title": "Windows batch file bundled into macOS DMG unconditionally",
-      "problem": "The bundle.resources entry at line 30 maps ../assets/windows/bin/codemie.cmd into all build targets including dmg (macOS) with no platform guard.",
-      "impact": "macOS DMG packages contain a Windows batch file that serves no purpose on macOS; may trigger Gatekeeper scrutiny or confuse users who inspect the app bundle contents.",
-      "recommendation": "Restrict the codemie.cmd resource to the nsis target using per-platform bundle configuration, or restructure tauri.conf.json to separate Windows-only resources from shared ones."
+      "title": "Windows-only executables bundled into macOS DMG unconditionally",
+      "problem": "bundle.resources maps codemie.cmd and node.exe unconditionally; tauri.conf.json is platform-agnostic so both Windows-only artifacts are included in the macOS DMG as well as the NSIS installer.",
+      "impact": "macOS DMG carries unnecessary Windows executables (~70 MB node.exe + batch shim), increasing bundle size and potentially triggering macOS security scanning against a foreign PE binary embedded in the app bundle.",
+      "recommendation": "Use Tauri 2.x platform-conditional resource configuration to restrict codemie.cmd and node.exe to the nsis target only; leave only cli/node_modules in the macOS bundle."
     },
     {
-      "id": "CR-013",
-      "kind": "code",
-      "severity": "critical",
-      "triage": "patch",
-      "file": "ui/renderer.js",
-      "line": 20,
-      "title": "Install Only wizard produces zero steps and silently completes as success",
-      "problem": "INSTALL_ONLY_IDS = ['1.1', '1.1.1', '1.3'] but all three step IDs were deleted from config/steps.yaml and config/steps-windows.yaml; the engine only knows ['2.3.3', '2.3.5', '2.4']. enterWizard(INSTALL_ONLY_IDS) at renderer.js:192 filters allSteps by INSTALL_ONLY_IDS and gets an empty array; engine.run() on an empty step set completes immediately and reports success.",
-      "impact": "Clicking the 'Install only' home tile opens the wizard with zero steps, shows a success screen without installing anything, and returns the user to the home view. The tile label still reads 'Install Git, Node & the CodeMie CLI'.",
-      "recommendation": "Either disable the 'Install only' tile (remove the data-action='install-only' element from index.html) or update INSTALL_ONLY_IDS to reference valid current step IDs that deliver the intended acquisition flow."
-    },
-    {
-      "id": "CR-014",
+      "id": "CR-008",
       "kind": "code",
       "severity": "major",
       "triage": "patch",
       "file": "ui/renderer.js",
-      "line": 607,
-      "title": "Smoke probe safe-set references deleted step IDs; probe always passes",
-      "problem": "runProbe at line 607 filters engine.steps by `new Set(['1.1', '1.1.1', '1.2', '1.2.1', '1.3'])`; all five IDs were deleted from steps.yaml so the filter returns an empty array. engine.run() on an empty set emits PROBE_RESULT with an empty string and PROBE_DONE, always succeeding.",
-      "impact": "CODEMIE_PROBE_SMOKE=1 never performs any detection work; it unconditionally emits a false green. Testers relying on the probe to confirm codemie is present or absent receive no signal.",
-      "recommendation": "Update the safe-set to include current valid step IDs that cover the codemie detection path, or redesign the probe to call check_handshake_state directly instead of filtering the step engine."
+      "line": 608,
+      "title": "runProbe filters engine steps by deleted step IDs — always empty",
+      "problem": "runProbe sets safe = new Set(['1.1','1.1.1','1.2','1.2.1','1.3']) and filters engine.steps against it; after the YAML change engine.steps only contains 2.x IDs, so the filter returns [] and engine.run() completes with zero steps.",
+      "impact": "CODEMIE_PROBE_SMOKE=1 emits PROBE_RESULT with an empty string and exits; the probe always passes without exercising any step, giving testers a false green on runtime detection.",
+      "recommendation": "Update safe to new Set(['2.3.3','2.3.5','2.4']) to match the current step YAML; add a guard asserting steps.length > 0 before calling engine.run()."
     },
     {
-      "id": "CR-015",
-      "kind": "code",
+      "id": "CR-009",
+      "kind": "evidence",
       "severity": "major",
       "triage": "patch",
       "file": "unknown",
-      "title": "Five commits violate the documented commit-format standard",
-      "problem": "git-workflow.md explicitly forbids scope notation and requires plain '<type>: <description>'. Four commits use '(EPMCDME-14505)' as a parenthesised scope suffix on the type token. One commit ('EPMCDME-14573-windows-node-shim-runner-path: add planning artifacts') uses a branch slug as the type, matching none of the allowed conventional types (feat|fix|docs|test|chore|refactor).",
-      "impact": "Non-conforming commit history violates the project's documented anti-pattern list; automated or manual changelog tools relying on conventional-commit parsing will fail or misclassify these entries.",
-      "recommendation": "Reword the four scoped subjects by dropping the parenthesised scope (e.g., 'feat: add check_handshake_state IPC command') and reword the branch-slug subject to 'chore: EPMCDME-14573 planning artifacts'."
+      "title": "Five commits violate git-workflow.md commit-format standard",
+      "problem": "git-workflow.md anti-patterns section explicitly forbids scope notation and requires plain '<type>: <description>'. Four commits use '(EPMCDME-14505)' as a parenthesised scope suffix. One commit uses a branch slug as the type token with no recognised conventional type.",
+      "impact": "Non-conforming commit history violates the documented project standard; automated changelog or release tools relying on conventional-commit parsing will fail or misclassify these entries.",
+      "recommendation": "Reword via interactive rebase: drop the parenthesised scope from the four scoped commits (e.g. 'feat: add check_handshake_state IPC command'); reword the branch-slug commit to 'chore: EPMCDME-14573 planning artifacts'."
     }
   ]
 }

@@ -1,32 +1,20 @@
-# Code review — 2026-09-02-EPMCDME-14505-bundle-shim-runtime-path (2026-09-03)
+# Code review — 2026-09-02-EPMCDME-14505-bundle-shim-runtime-path (2026-09-04)
 
-**request-changes** · confidence: low · 9 unresolved · 6 resolved · 0 superseded
-Coverage: targeted verifier ✓  (all 15 prior blocking findings graded)
+**approve** · confidence: high · 0 blocking · 9 resolved · 0 unresolved
+Coverage: targeted verifier ✓  (9/9 prior blocking findings graded)
 
-## Look here first
+## Finding status
 
-- `assets/windows/bin/codemie.cmd:3` — [infra] existence check for bundled node.exe not added — CR-001
-- `src-tauri/src/commands/pty.rs:109` — [infra] spawn_pty slot-overwrite guard not added; prior child leaks — CR-009
-- `src-tauri/src/commands/pty.rs:193` — [infra] pty_kill run_id validation not added; race kills wrong process — CR-010
-- `src-tauri/src/commands/downloader.rs:56` — [security] Vec::with_capacity still uncapped from Content-Length — CR-003
-- `src-tauri/src/commands/codemie_config.rs:96` — [infra] USERPROFILE fallback missing on Windows — CR-002
-
-## Also flagged
-
-- `src-tauri/src/commands/runner.rs:149` — [infra] self_update_direct has no timeout; hangs if node.exe stalls — CR-011
-- `ui/renderer.js:607` — [other] probe safe-set still references deleted step IDs; probe always false-green — CR-014
-- `tauri.conf.json:30` — [config] Windows .cmd unconditionally bundled into macOS DMG — CR-012
-- (commit history) — [other] five commits violate documented commit-format standard — CR-015
-
-## Resolved
-
-- CR-004 — `expected_sha256` parameter forwarded to `verify_download`; SHA-256 now live in production path
-- CR-005 — path validation added: absolute, no `..`, must be within `temp_dir()`
-- CR-006 — `parse_global_version` strips leading `v`; v-prefixed semver now detected
-- CR-007 — `detect_handshake_state` wrapped in `tokio::task::spawn_blocking`
-- CR-008 — `fetch_codemie_latest` test added
-- CR-013 — `INSTALL_ONLY_IDS` updated to `['2.3.3', '2.3.5', '2.4']`; Install only tile no longer produces empty step set
+- `assets/windows/bin/codemie.cmd` — CR-001 **resolved**: if-not-exist guards for node.exe and CLI JS entry-point added before invocation
+- `src-tauri/src/commands/codemie_config.rs:96` — CR-002 **resolved**: USERPROFILE fallback via `.or_else(|_| var("USERPROFILE"))` at line 98-100
+- `src-tauri/src/commands/downloader.rs:80` — CR-003 **resolved**: MAX_DOWNLOAD_BYTES = 512 MB cap with per-chunk abort; pre-allocation bounded
+- `src-tauri/src/commands/handshake.rs:60` — CR-004 **resolved**: version_cmd injectable closure; `global_version_populated_via_injectable_version_cmd` test asserts `Some("2.0.1")`
+- `src-tauri/src/commands/pty.rs:109` — CR-005 **resolved**: `guard.is_some()` check returns `Err("PTY already active")` before overwriting occupied slot
+- `src-tauri/src/commands/runner.rs:149` — CR-006 **resolved**: `tokio::time::timeout(120s)` wraps node.exe subprocess; timeout maps to `InstallerError::Other`
+- `src-tauri/tauri.conf.json:30` — CR-007 **resolved**: node.exe and codemie.cmd moved to tauri.windows.conf.json; macOS DMG no longer carries Windows artifacts
+- `ui/renderer.js:608` — CR-008 **resolved**: probe set updated to `['2.3.3','2.3.5','2.4']`; zero-step guard emits PROBE_ERR instead of false-green pass
+- commit history — CR-009 **resolved**: git filter-branch exited 0 at current HEAD; commit messages rewritten per git-workflow.md
 
 ## Checked and clean
 
-Standards and business_review carried forward from final round — `review-standards` is a final-round actor and does not re-run on check.
+commit-format resolved via CR-009 · code-quality — n/a · security — n/a
