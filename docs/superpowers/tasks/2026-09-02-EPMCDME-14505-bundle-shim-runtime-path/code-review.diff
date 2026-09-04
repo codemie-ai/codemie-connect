@@ -121,8 +121,40 @@ index ffe1fea..5a8d160 100644
 +
 +Ticket ID: extract from the current branch name (pattern `EPMCDME-\d+`) or from the run work item.
 +`<path-to-artifact>`: use `data.artifact_path`, or the path to `spec.md` / `plan.md` in the run directory.
+diff --git a/.ai-run/sdlc-factory/doctor.json b/.ai-run/sdlc-factory/doctor.json
+index 941cf89..b6436c3 100644
+--- a/.ai-run/sdlc-factory/doctor.json
++++ b/.ai-run/sdlc-factory/doctor.json
+@@ -1,11 +1 @@
+-{
+-  "schema": 1,
+-  "checked_at": "2026-06-11T00:00:00Z",
+-  "checks": {
+-    "superpowers_resolvable": true,
+-    "git": "git version 2.39.5 (Apple Git-154)"
+-  },
+-  "fingerprint": "sdlc-task-min-2026-06-11",
+-  "ttl_days": 7,
+-  "source": "sdlc-task Stage 0 minimum subset"
+-}
++{"schema":1,"checked_at":"2026-09-02T16:21:03Z","passed":true,"checks":{"superpowers":"6.2.0","node":"v26.4.0","git":"2.55.0.windows.5"},"fingerprint":"git=2.55.0.windows.5|node=v26.4.0|superpowers=6.2.0"}
+diff --git a/.claude/settings.json b/.claude/settings.json
+index 8f06cab..f76167a 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -1,5 +1,10 @@
+ {
+   "enabledPlugins": {
+     "sdlc-factory@sdlc-factory": true
++  },
++  "permissions": {
++    "additionalDirectories": [
++      "docs/superpowers/tasks"
++    ]
+   }
+ }
 diff --git a/.gitignore b/.gitignore
-index 1052027..d0b3624 100644
+index 1052027..0101b54 100644
 --- a/.gitignore
 +++ b/.gitignore
 @@ -8,6 +8,9 @@ node_modules/
@@ -135,13 +167,15 @@ index 1052027..d0b3624 100644
  # macOS
  .DS_Store
  
-@@ -20,4 +23,4 @@ apple_developer
+@@ -20,4 +23,6 @@ apple_developer
  .env.signing
  .superpowers/
  /CLAUDE.local.md
 -.idea/
 \ No newline at end of file
 +.idea/test-results/
++assets/windows/node/
++assets/staging-manifest.json
 diff --git a/SPIKE_RESULT.md b/SPIKE_RESULT.md
 new file mode 100644
 index 0000000..5136d10
@@ -4277,13 +4311,174 @@ index 0000000..133bf0f
 +}
 diff --git a/assets/windows/bin/codemie.cmd b/assets/windows/bin/codemie.cmd
 new file mode 100644
-index 0000000..4f737da
+index 0000000..f4887ee
 --- /dev/null
 +++ b/assets/windows/bin/codemie.cmd
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,8 @@
 +@echo off
-+set BUNDLE_DIR=%~dp0..
-+"%BUNDLE_DIR%\node\node.exe" "%BUNDLE_DIR%\cli\node_modules\@codemieai\code\dist\index.js" %*
++:: CodeMie CLI shim. Runs the bundled Node runtime against the bundled CLI tree.
++:: %~dp0.. is the install root, so this file is correct regardless of where
++:: the product is installed and needs no update if productName changes.
++setlocal
++set "BUNDLE_DIR=%~dp0.."
++"%BUNDLE_DIR%\node\node.exe" "%BUNDLE_DIR%\cli\node_modules\@codemieai\code\bin\codemie.js" %*
++exit /b %ERRORLEVEL%
+diff --git a/build-installer.ps1 b/build-installer.ps1
+new file mode 100644
+index 0000000..f0ec5d2
+--- /dev/null
++++ b/build-installer.ps1
+@@ -0,0 +1,150 @@
++# build-installer.ps1
++# Stages the bundled Node runtime + CodeMie CLI tree, verifies every artifact,
++# then builds the NSIS installer via Tauri.
++#
++# Usage: .\build-installer.ps1 [-SkipStage] [-NoBaseline]
++#
++# -SkipStage   Reuse an already-staged tree. Does NOT skip verification.
++# -NoBaseline  Forwarded to stage-runtime.ps1 (drops the ~159 MB baseline build).
++#
++# There is deliberately no switch to skip verification. Every defect this
++# script guards against was produced by a tool that reported success:
++#   * pkg emitted a warning and exited 0, shipping a snapshot missing a file.
++#   * dist/index.js exits 0 and prints nothing, so the CLI never starts.
++#   * A glob in bundle.resources flattens 19,754 files and reports errors: 0.
++# An exit-code check is not verification. Do not add a bypass.
++
++param(
++    [switch]$SkipStage,
++    [switch]$NoBaseline
++)
++
++Set-StrictMode -Version Latest
++$ErrorActionPreference = "Stop"
++
++$Root       = $PSScriptRoot
++$Cfg        = Get-Content (Join-Path $Root "runtime.json") -Raw | ConvertFrom-Json
++$NodeExe    = Join-Path $Root "assets\windows\node\node.exe"
++$CliModules = Join-Path $Root "assets\codemie-cli\node_modules"
++$CliEntry   = Join-Path $CliModules "@codemieai\code\bin\codemie.js"
++$Manifest   = Join-Path $Root "assets\staging-manifest.json"
++
++function Fail([string]$msg) { Write-Host ""; Write-Error "[build] $msg"; exit 1 }
++function Step([string]$msg) { Write-Host ""; Write-Host "==> $msg" -ForegroundColor Cyan }
++
++# ── 1. Stage ────────────────────────────────────────────────────────────────
++if ($SkipStage) {
++    Step "[1/5] Skipping staging (-SkipStage); verification still runs"
++} else {
++    Step "[1/5] Staging bundled runtime and CLI tree"
++    $stageArgs = @("-File", (Join-Path $Root "scripts\stage-runtime.ps1"))
++    if ($NoBaseline) { $stageArgs += "-NoBaseline" }
++    & pwsh @stageArgs
++    if ($LASTEXITCODE -ne 0) { Fail "stage-runtime.ps1 failed with exit code $LASTEXITCODE" }
++}
++
++# ── 2. Pre-build assertions ─────────────────────────────────────────────────
++Step "[2/5] Verifying staged artifacts"
++
++if (-not (Test-Path $NodeExe)) { Fail "missing bundled runtime: $NodeExe" }
++$nodeSize = (Get-Item $NodeExe).Length
++if ($nodeSize -lt 10MB) {
++    Fail "bundled node.exe is $nodeSize bytes, expected > 10 MB — 0-byte placeholder at $NodeExe"
++}
++
++$nodeVersion = (& $NodeExe --version 2>&1).Trim()
++if ($LASTEXITCODE -ne 0) { Fail "node.exe --version failed: $nodeVersion" }
++if ($nodeVersion -ne "v$($Cfg.nodeVersion)") {
++    Fail "bundled node reports $nodeVersion but runtime.json pins v$($Cfg.nodeVersion)"
++}
++Write-Host "    node $nodeVersion ($([math]::Round($nodeSize/1MB,1)) MB)" -ForegroundColor DarkCyan
++
++foreach ($rel in @(
++    "@codemieai\code\bin\codemie.js",
++    "@codemieai\code\dist\cli\index.js",
++    "@codemieai\code\package.json",
++    "keytar\build\Release\keytar.node"
++)) {
++    $p = Join-Path $CliModules $rel
++    if (-not (Test-Path $p)) { Fail "missing required bundled file: $p" }
++    if ((Get-Item $p).Length -eq 0) { Fail "required bundled file is empty: $p" }
++}
++
++if (-not (Test-Path $Manifest)) { Fail "missing staging manifest: $Manifest (run without -SkipStage)" }
++$mf = Get-Content $Manifest -Raw | ConvertFrom-Json
++if ($mf.cliVersion -ne $Cfg.cliVersion) {
++    Fail "staging manifest reports CLI $($mf.cliVersion) but runtime.json pins $($Cfg.cliVersion)"
++}
++Write-Host "    CLI $($mf.cliVersion): $($mf.fileCount) files, $([math]::Round($mf.byteSize/1MB,1)) MB" -ForegroundColor DarkCyan
++
++# ── 3. Smoke-test the staged tree ───────────────────────────────────────────
++Step "[3/5] Smoke-testing the staged CLI"
++
++# Non-empty stdout is the real assertion. dist/index.js would exit 0 silently.
++$smoke = & $NodeExe $CliEntry --version 2>&1
++$smokeCode = $LASTEXITCODE
++if ($smokeCode -ne 0) { Fail "staged CLI exited $smokeCode`n$smoke" }
++if ([string]::IsNullOrWhiteSpace(($smoke | Out-String))) {
++    Fail "staged CLI produced NO output. The entry point is almost certainly wrong — dist/index.js is a library barrel that exits 0 and prints nothing. Expected bin/codemie.js."
++}
++Write-Host "    codemie --version -> $(($smoke | Out-String).Trim())" -ForegroundColor Green
++
++# ── 4. Build ────────────────────────────────────────────────────────────────
++Step "[4/5] Building NSIS installer via Tauri"
++Push-Location $Root
++try {
++    npx tauri build --bundles nsis
++    if ($LASTEXITCODE -ne 0) { Fail "tauri build failed with exit code $LASTEXITCODE" }
++} finally { Pop-Location }
++
++# ── 5. Post-build assertions ────────────────────────────────────────────────
++Step "[5/5] Verifying the produced bundle"
++
++# tauri-build copies bundle.resources into target_dir itself, NOT a
++# resources/ subdirectory: copy_resources() does target_dir.join(target),
++# and target_dir is out_dir's third parent — i.e. target\release.
++# Verified in tauri-build-2.6.2/src/lib.rs:88-103 and :536-543.
++$ReleaseDir = Join-Path $Root "src-tauri\target\release"
++if (-not (Test-Path $ReleaseDir)) { Fail "no release directory at $ReleaseDir" }
++
++$CliTreeRoot = Join-Path $ReleaseDir "cli\node_modules"
++
++foreach ($rel in @(
++    "bin\codemie.cmd",
++    "node\node.exe",
++    "cli\node_modules\@codemieai\code\bin\codemie.js"
++)) {
++    $p = Join-Path $ReleaseDir $rel
++    if (-not (Test-Path $p)) {
++        Fail "bundle is missing $rel (looked at $p). If the CLI tree is present but flat, a glob key crept back into bundle.resources — see spec §5."
++    }
++}
++
++# A flattened tree still contains every file NAME, so presence checks alone
++# cannot detect Form A. Assert nesting depth: the scoped path above
++# (cli\node_modules\@codemieai\code\bin\codemie.js) is 5 segments deep and
++# would not exist under a flattened layout, but assert independently too.
++$deep = Get-ChildItem $CliTreeRoot -Recurse -File -ErrorAction SilentlyContinue |
++        Where-Object { $_.FullName.Substring($CliTreeRoot.Length).Trim('\').Split('\').Count -ge 4 } |
++        Select-Object -First 1
++if (-not $deep) {
++    Fail "bundled cli\node_modules has no nested files — the tree was FLATTENED. Remove any '*' from the bundle.resources CLI-tree key (spec §5)."
++}
++
++# Scope the stray-binary scan to the three resource roots. Scanning all of
++# target\release would walk build intermediates and is both slow and noisy.
++foreach ($scope in @("bin", "node", "cli")) {
++    $d = Join-Path $ReleaseDir $scope
++    if (-not (Test-Path $d)) { continue }
++    $stray = Get-ChildItem $d -Recurse -File -Filter "codemie*.exe" -ErrorAction SilentlyContinue
++    if ($stray) { Fail "pkg binary present in bundle: $($stray[0].FullName)" }
++}
++
++$SetupExe = Get-ChildItem (Join-Path $ReleaseDir "bundle\nsis\*-setup.exe") -ErrorAction SilentlyContinue |
++            Sort-Object LastWriteTime -Descending | Select-Object -First 1
++if (-not $SetupExe) { Fail "no *-setup.exe produced in $ReleaseDir\bundle\nsis" }
++
++Write-Host ""
++Write-Host "==> Done — all assertions passed." -ForegroundColor Green
++Write-Host "    Installer: $($SetupExe.FullName)"
++Write-Host "    Size:      $([math]::Round($SetupExe.Length / 1MB, 1)) MB"
 diff --git a/config/steps-windows.yaml b/config/steps-windows.yaml
 index 64825a3..84d3dad 100644
 --- a/config/steps-windows.yaml
@@ -5138,11 +5333,192 @@ index 5926377..7577757 100644
 +    "test:ui": "cd docs/superpowers/tasks/2026-08-31-epmcdme-14511/dynamic-tests && npx playwright test"
    }
  }
+diff --git a/runtime.json b/runtime.json
+new file mode 100644
+index 0000000..fef87be
+--- /dev/null
++++ b/runtime.json
+@@ -0,0 +1,6 @@
++{
++  "nodeVersion": "22.23.2",
++  "nodeWin64Sha256": "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97",
++  "cliPackage": "@codemieai/code",
++  "cliVersion": "0.14.1"
++}
+diff --git a/scripts/stage-runtime.ps1 b/scripts/stage-runtime.ps1
+new file mode 100644
+index 0000000..ad8c9b7
+--- /dev/null
++++ b/scripts/stage-runtime.ps1
+@@ -0,0 +1,159 @@
++# Sole producer of the bundled runtime artifacts. Idempotent.
++# Usage: .\scripts\stage-runtime.ps1 [-NoBaseline] [-Force]
++#   -NoBaseline  Drop codemie-opencode-windows-x64-baseline (~159 MB).
++#                WARNING: breaks codemie-opencode on CPUs without modern SIMD.
++#   -Force       Re-download Node and reinstall the CLI tree from scratch.
++param(
++    [switch]$NoBaseline,
++    [switch]$Force
++)
++
++Set-StrictMode -Version Latest
++$ErrorActionPreference = "Stop"
++
++$Root      = Split-Path -Parent $PSScriptRoot
++$Cfg       = Get-Content (Join-Path $Root "runtime.json") -Raw | ConvertFrom-Json
++$NodeDir   = Join-Path $Root "assets\windows\node"
++$NodeExe   = Join-Path $NodeDir "node.exe"
++$CliDir    = Join-Path $Root "assets\codemie-cli"
++$CliModules= Join-Path $CliDir "node_modules"
++$Manifest  = Join-Path $Root "assets\staging-manifest.json"
++
++function Fail([string]$msg) { Write-Error "[stage-runtime] $msg"; exit 1 }
++
++# ── 1. Node runtime ─────────────────────────────────────────────────────────
++if ($Force -and (Test-Path $NodeDir)) { Remove-Item $NodeDir -Recurse -Force }
++
++if (-not (Test-Path $NodeExe)) {
++    Write-Host "==> Fetching Node v$($Cfg.nodeVersion) (win-x64)..." -ForegroundColor Cyan
++    New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
++
++    $zipName = "node-v$($Cfg.nodeVersion)-win-x64.zip"
++    $zipUrl  = "https://nodejs.org/dist/v$($Cfg.nodeVersion)/$zipName"
++    $tmp     = Join-Path ([System.IO.Path]::GetTempPath()) "codemie-node-stage"
++    if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
++    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
++    $zipPath = Join-Path $tmp $zipName
++
++    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
++
++    $actual = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
++    $expect = $Cfg.nodeWin64Sha256.ToLower()
++    if ($actual -ne $expect) {
++        Fail "Node zip checksum mismatch for $zipName`n  expected: $expect`n  actual:   $actual"
++    }
++    Write-Host "    checksum OK" -ForegroundColor DarkCyan
++
++    Expand-Archive -Path $zipPath -DestinationPath $tmp -Force
++    $src = Join-Path $tmp "node-v$($Cfg.nodeVersion)-win-x64\node.exe"
++    if (-not (Test-Path $src)) { Fail "node.exe not found in extracted archive at $src" }
++    Copy-Item $src $NodeExe -Force
++    Remove-Item $tmp -Recurse -Force
++    Write-Host "    node.exe staged" -ForegroundColor Green
++} else {
++    Write-Host "==> node.exe already staged (use -Force to refresh)" -ForegroundColor Yellow
++}
++
++# ── 2. CLI tree ─────────────────────────────────────────────────────────────
++$wantSpec = "$($Cfg.cliPackage)@$($Cfg.cliVersion)"
++$installedVersion = $null
++$cliPkgJson = Join-Path $CliModules "$($Cfg.cliPackage)\package.json"
++if (Test-Path $cliPkgJson) {
++    $installedVersion = (Get-Content $cliPkgJson -Raw | ConvertFrom-Json).version
++}
++
++if ($Force -or ($installedVersion -ne $Cfg.cliVersion)) {
++    Write-Host "==> Installing $wantSpec (production deps only)..." -ForegroundColor Cyan
++    if ($Force -and (Test-Path $CliModules)) { Remove-Item $CliModules -Recurse -Force }
++    New-Item -ItemType Directory -Force -Path $CliDir | Out-Null
++
++    # Minimal manifest so npm resolves exactly the pinned CLI and nothing else.
++    @{
++        name         = "codemie-cli-bundle"
++        version      = "0.0.0"
++        private      = $true
++        dependencies = @{ "$($Cfg.cliPackage)" = $Cfg.cliVersion }
++    } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $CliDir "package.json") -Encoding UTF8
++
++    Push-Location $CliDir
++    try {
++        # --omit=dev drops node-pty (64 MB) and typescript (23 MB).
++        # Postinstall scripts MUST run: keytar and codemie-opencode need them.
++        npm install --omit=dev
++        if ($LASTEXITCODE -ne 0) { Fail "npm install failed with exit code $LASTEXITCODE" }
++    } finally { Pop-Location }
++} else {
++    Write-Host "==> CLI tree already at $wantSpec (use -Force to refresh)" -ForegroundColor Yellow
++}
++
++# ── 3. Prune ────────────────────────────────────────────────────────────────
++Write-Host "==> Pruning..." -ForegroundColor Cyan
++$before = (Get-ChildItem $CliModules -Recurse -File -ErrorAction SilentlyContinue).Count
++
++Get-ChildItem $CliModules -Recurse -File -Filter "*.map" -ErrorAction SilentlyContinue |
++    Remove-Item -Force -ErrorAction SilentlyContinue
++
++foreach ($d in @("test", "tests", "__tests__", "example", "examples", "docs")) {
++    Get-ChildItem $CliModules -Recurse -Directory -Filter $d -ErrorAction SilentlyContinue |
++        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
++}
++
++foreach ($p in @("node-pty", "typescript", "@rollup", "@esbuild")) {
++    $t = Join-Path $CliModules $p
++    if (Test-Path $t) { Remove-Item $t -Recurse -Force }
++}
++
++if ($NoBaseline) {
++    $bl = Join-Path $CliModules "@codemieai\codemie-opencode-windows-x64-baseline"
++    if (Test-Path $bl) {
++        Remove-Item $bl -Recurse -Force
++        Write-Warning "Removed codemie-opencode baseline build — codemie-opencode will not run on CPUs without modern SIMD."
++    }
++}
++
++$after = (Get-ChildItem $CliModules -Recurse -File).Count
++Write-Host "    files: $before -> $after" -ForegroundColor DarkCyan
++
++# ── 4. Verify (see spec §6 — these are not negotiable) ──────────────────────
++Write-Host "==> Verifying staged artifacts..." -ForegroundColor Cyan
++
++if (-not (Test-Path $NodeExe)) { Fail "missing: $NodeExe" }
++$nodeSize = (Get-Item $NodeExe).Length
++if ($nodeSize -lt 10MB) { Fail "node.exe is only $nodeSize bytes — expected > 10 MB (0-byte placeholder?)" }
++
++$reportedVersion = & $NodeExe --version 2>&1
++if ($LASTEXITCODE -ne 0) { Fail "node.exe --version failed: $reportedVersion" }
++if ($reportedVersion.Trim() -ne "v$($Cfg.nodeVersion)") {
++    Fail "node.exe reports $reportedVersion, expected v$($Cfg.nodeVersion)"
++}
++
++$required = @(
++    "$($Cfg.cliPackage)\bin\codemie.js",
++    "$($Cfg.cliPackage)\dist\cli\index.js",
++    "$($Cfg.cliPackage)\package.json",
++    "keytar\build\Release\keytar.node"
++)
++foreach ($r in $required) {
++    $p = Join-Path $CliModules $r
++    if (-not (Test-Path $p)) { Fail "missing required bundled file: $p" }
++    if ((Get-Item $p).Length -eq 0) { Fail "required bundled file is empty: $p" }
++}
++
++$actualCli = (Get-Content $cliPkgJson -Raw | ConvertFrom-Json).version
++if ($actualCli -ne $Cfg.cliVersion) {
++    Fail "staged CLI is $actualCli but runtime.json pins $($Cfg.cliVersion)"
++}
++
++# ── 5. Manifest ─────────────────────────────────────────────────────────────
++$files = Get-ChildItem $CliModules -Recurse -File
++@{
++    nodeVersion = $Cfg.nodeVersion
++    cliPackage  = $Cfg.cliPackage
++    cliVersion  = $Cfg.cliVersion
++    noBaseline  = [bool]$NoBaseline
++    fileCount   = $files.Count
++    byteSize    = ($files | Measure-Object -Property Length -Sum).Sum
++} | ConvertTo-Json | Set-Content $Manifest -Encoding UTF8
++
++$mb = [math]::Round(((Get-Content $Manifest -Raw | ConvertFrom-Json).byteSize / 1MB), 1)
++Write-Host "==> Staging OK: $($files.Count) files, $mb MB" -ForegroundColor Green
 diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
-index 61e5fdd..08a0b51 100644
+index 61e5fdd..248d032 100644
 --- a/src-tauri/Cargo.lock
 +++ b/src-tauri/Cargo.lock
-@@ -91,6 +91,7 @@ dependencies = [
+@@ -88,9 +88,11 @@ dependencies = [
+  "serde",
+  "serde_json",
+  "serde_yaml",
++ "sha2",
   "tauri",
   "tauri-build",
   "tauri-plugin-log",
@@ -5150,7 +5526,7 @@ index 61e5fdd..08a0b51 100644
   "thiserror 2.0.18",
   "tokio",
   "winreg 0.52.0",
-@@ -1898,6 +1899,12 @@ dependencies = [
+@@ -1898,6 +1900,12 @@ dependencies = [
   "libc",
  ]
  
@@ -5163,7 +5539,7 @@ index 61e5fdd..08a0b51 100644
  [[package]]
  name = "litemap"
  version = "0.8.2"
-@@ -2999,6 +3006,19 @@ dependencies = [
+@@ -2999,6 +3007,19 @@ dependencies = [
   "semver",
  ]
  
@@ -5183,7 +5559,7 @@ index 61e5fdd..08a0b51 100644
  [[package]]
  name = "rustls"
  version = "0.23.40"
-@@ -3925,6 +3945,19 @@ dependencies = [
+@@ -3925,6 +3946,19 @@ dependencies = [
   "toml 1.1.2+spec-1.1.0",
  ]
  
@@ -5204,7 +5580,7 @@ index 61e5fdd..08a0b51 100644
  name = "tendril"
  version = "0.5.0"
 diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
-index c41eabe..0d21899 100644
+index c41eabe..d669f7d 100644
 --- a/src-tauri/Cargo.toml
 +++ b/src-tauri/Cargo.toml
 @@ -34,6 +34,7 @@ tauri-plugin-log = "2"
@@ -5215,13 +5591,44 @@ index c41eabe..0d21899 100644
  thiserror = "2"
  chrono = { version = "0.4", default-features = false, features = ["clock"] }
  base64 = "0.22"
-@@ -41,3 +42,6 @@ portable-pty = "0.8"
+@@ -41,3 +42,7 @@ portable-pty = "0.8"
  
  [target.'cfg(windows)'.dependencies]
  winreg = "0.52"
 +
 +[dev-dependencies]
 +tempfile = "3"
++tauri-utils = { version = "2", features = ["resources"] }
+diff --git a/src-tauri/installer-hooks.nsi b/src-tauri/installer-hooks.nsi
+new file mode 100644
+index 0000000..c57a2f2
+--- /dev/null
++++ b/src-tauri/installer-hooks.nsi
+@@ -0,0 +1,24 @@
++; installer-hooks.nsi
++; Registers / unregisters $INSTDIR\bin in HKCU PATH using only NSIS
++; built-ins — no external plugins required.
++
++!macro NSIS_HOOK_POSTINSTALL
++  ; Read the current user PATH (may be empty on a fresh account).
++  ReadRegStr $0 HKCU "Environment" "PATH"
++  ; Append a semicolon only when PATH is non-empty.
++  ${If} $0 != ""
++    StrCpy $0 "$0;"
++  ${EndIf}
++  ; Write bin dir as REG_EXPAND_SZ (correct type for PATH).
++  WriteRegExpandStr HKCU "Environment" "PATH" "$0$INSTDIR\bin"
++  ; Broadcast WM_SETTINGCHANGE so open shells inherit the new PATH.
++  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
++!macroend
++
++!macro NSIS_HOOK_POSTUNINSTALL
++  ; Remove our entry from PATH via PowerShell (available on all supported Windows).
++  ExecWait 'powershell.exe -NoProfile -NonInteractive -Command \
++    "$p=[Environment]::GetEnvironmentVariable($\"PATH$\",$\"User$\"); \
++     $p=($p.Split($\";\") | Where-Object { $_ -ne $\"$INSTDIR\bin$\" }) -join $\";\"; \
++     [Environment]::SetEnvironmentVariable($\"PATH$\", $p, $\"User$\")"'
++!macroend
 diff --git a/src-tauri/src/commands/codemie_config.rs b/src-tauri/src/commands/codemie_config.rs
 new file mode 100644
 index 0000000..82f679d
@@ -5575,10 +5982,10 @@ index bed48a5..85db20d 100644
 +}
 diff --git a/src-tauri/src/commands/handshake.rs b/src-tauri/src/commands/handshake.rs
 new file mode 100644
-index 0000000..7ae0e63
+index 0000000..5fd3ee7
 --- /dev/null
 +++ b/src-tauri/src/commands/handshake.rs
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,158 @@
 +// Handshake precedence detection — determines whether a global npm CodeMie
 +// installation is present and whether the bundled runtime takes PATH precedence.
 +use std::ffi::OsStr;
@@ -5674,7 +6081,7 @@ index 0000000..7ae0e63
 +        detect_handshake_state(&path_env, bundled_injected, &real_probe)
 +    })
 +    .await
-+    .unwrap_or_else(|_| HandshakeState {
++    .unwrap_or(HandshakeState {
 +        global_found: false,
 +        global_version: None,
 +        bundled_takes_precedence: false,
@@ -5722,10 +6129,7 @@ index 0000000..7ae0e63
 +    #[test]
 +    fn parse_global_version_strips_v_prefix() {
 +        // npm CLI binaries commonly output "v1.2.3"; the leading 'v' must be stripped.
-+        assert_eq!(
-+            parse_global_version("v1.2.3"),
-+            Some("1.2.3".to_string())
-+        );
++        assert_eq!(parse_global_version("v1.2.3"), Some("1.2.3".to_string()));
 +        // Multi-word output: "codemie v2.0.1" — picks the space-separated v-prefixed token.
 +        assert_eq!(
 +            parse_global_version("codemie v2.0.1"),
@@ -6054,7 +6458,7 @@ index 92e339c..b841055 100644
  pub mod installer;
  pub mod logger;
 diff --git a/src-tauri/src/commands/pathman.rs b/src-tauri/src/commands/pathman.rs
-index 95fa90d..51c93dd 100644
+index 95fa90d..1671513 100644
 --- a/src-tauri/src/commands/pathman.rs
 +++ b/src-tauri/src/commands/pathman.rs
 @@ -3,7 +3,7 @@
@@ -6066,7 +6470,7 @@ index 95fa90d..51c93dd 100644
  
  use crate::error::CmdResult;
  use crate::state::AppState;
-@@ -246,6 +246,147 @@ pub fn augment_path(state: State<AppState>, dirs: Vec<String>) {
+@@ -246,6 +246,186 @@ pub fn augment_path(state: State<AppState>, dirs: Vec<String>) {
      }
  }
  
@@ -6074,7 +6478,7 @@ index 95fa90d..51c93dd 100644
 +/// Extracted as a named function so tests can call it directly.
 +#[cfg(windows)]
 +pub fn candidate_bin_names() -> &'static [&'static str] {
-+    &["codemie.exe", "codemie.cmd", "codemie"]
++    &["codemie.cmd", "codemie"]
 +}
 +
 +#[cfg(not(windows))]
@@ -6100,7 +6504,11 @@ index 95fa90d..51c93dd 100644
 +        Some(d)
 +    } else {
 +        let bin = d.join("bin");
-+        if probe_fn(&bin) { Some(bin) } else { None }
++        if probe_fn(&bin) {
++            Some(bin)
++        } else {
++            None
++        }
 +    }
 +}
 +
@@ -6122,9 +6530,9 @@ index 95fa90d..51c93dd 100644
 +    // env!("TARGET") is only available in build scripts; use std::env::consts instead.
 +    #[cfg(target_os = "macos")]
 +    let sidecar_name = format!("codemie-{}-apple-darwin", std::env::consts::ARCH);
-+    #[cfg(target_os = "windows")]
-+    let sidecar_name = format!("codemie-{}-pc-windows-msvc.exe", std::env::consts::ARCH);
-+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
++    // Windows no longer ships a sidecar binary — the shim is found by
++    // candidate_bin_names() via probe_dir. macOS is unchanged.
++    #[cfg(not(target_os = "macos"))]
 +    let sidecar_name = "codemie".to_string();
 +
 +    // Full probe: check the sidecar binary name AND candidate names (codemie.exe, codemie.cmd…).
@@ -6141,7 +6549,12 @@ index 95fa90d..51c93dd 100644
 +        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
 +        .and_then(|d| probe_with_bin_dir(d, &probe))
 +        // Approach A fallback: resource_dir.
-+        .or_else(|| app.path().resource_dir().ok().and_then(|d| probe_with_bin_dir(d, &probe)));
++        .or_else(|| {
++            app.path()
++                .resource_dir()
++                .ok()
++                .and_then(|d| probe_with_bin_dir(d, &probe))
++        });
 +
 +    if let Some(dir) = bin_dir {
 +        let dir_str = dir.to_str().ok_or_else(|| {
@@ -6210,11 +6623,41 @@ index 95fa90d..51c93dd 100644
 +            "probe_dir on parent must not find a shim placed only in bin/"
 +        );
 +    }
++
++    /// The pkg binary is no longer produced. Leaving `codemie.exe` in the
++    /// candidate list — and first, at that — means a stale binary from an
++    /// earlier install shadows the shim and reproduces the crash this
++    /// ticket fixes.
++    #[test]
++    fn candidate_bin_names_exclude_pkg_exe() {
++        assert!(
++            !candidate_bin_names().contains(&"codemie.exe"),
++            "codemie.exe must not be a probe candidate: {:?}",
++            candidate_bin_names()
++        );
++        assert_eq!(
++            candidate_bin_names().first(),
++            Some(&"codemie.cmd"),
++            "the shim must be the first candidate"
++        );
++    }
++
++    /// A directory holding only the stale pkg binary must not be treated as
++    /// the bundled bin dir.
++    #[test]
++    fn probe_dir_ignores_stale_pkg_exe() {
++        let dir = TempDir::new().unwrap();
++        fs::write(dir.path().join("codemie.exe"), b"stale").unwrap();
++        assert!(
++            !probe_dir(dir.path()),
++            "a directory with only codemie.exe must not be detected"
++        );
++    }
 +}
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -302,3 +443,77 @@ mod tests {
+@@ -302,3 +482,84 @@ mod tests {
          assert!(!r.contains(PATH_MARKER), "markers must be stripped");
      }
  }
@@ -6260,7 +6703,11 @@ index 95fa90d..51c93dd 100644
 +        write_shim(dir.path());
 +        write_shim(&bin);
 +        let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
-+        assert_eq!(result.as_deref(), Some(dir.path()), "root is checked before bin/");
++        assert_eq!(
++            result.as_deref(),
++            Some(dir.path()),
++            "root is checked before bin/"
++        );
 +    }
 +
 +    #[test]
@@ -6280,7 +6727,10 @@ index 95fa90d..51c93dd 100644
 +    #[cfg(not(windows))]
 +    #[test]
 +    fn build_new_path_prepends_with_colon_separator() {
-+        assert_eq!(build_new_path("/usr/bin:/usr/local/bin", "/app/bin"), "/app/bin:/usr/bin:/usr/local/bin");
++        assert_eq!(
++            build_new_path("/usr/bin:/usr/local/bin", "/app/bin"),
++            "/app/bin:/usr/bin:/usr/local/bin"
++        );
 +    }
 +
 +    #[cfg(windows)]
@@ -6645,7 +7095,7 @@ index 1680720..9768775 100644
 +    }
 +}
 diff --git a/src-tauri/src/commands/runner.rs b/src-tauri/src/commands/runner.rs
-index e6fb334..5690211 100644
+index e6fb334..f2ea2a8 100644
 --- a/src-tauri/src/commands/runner.rs
 +++ b/src-tauri/src/commands/runner.rs
 @@ -1,6 +1,6 @@
@@ -6668,7 +7118,7 @@ index e6fb334..5690211 100644
          c
      }
  }
-@@ -139,10 +138,60 @@ where
+@@ -139,10 +138,58 @@ where
      })
  }
  
@@ -6702,9 +7152,7 @@ index e6fb334..5690211 100644
  /// Returns stdout on exit 0; serializes as an error string on non-zero exit.
  #[tauri::command]
 -pub async fn run_self_update() -> CmdResult<String> {
-+pub async fn run_self_update(
-+    state: tauri::State<'_, crate::state::AppState>,
-+) -> CmdResult<String> {
++pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) -> CmdResult<String> {
 +    #[cfg(windows)]
 +    {
 +        let node = &state.node_exe_path;
@@ -6730,7 +7178,7 @@ index e6fb334..5690211 100644
      let r = capture("codemie self-update", None).await;
      if r.code == 0 {
          Ok(r.stdout)
-@@ -179,10 +228,10 @@ mod tests_windows {
+@@ -179,10 +226,10 @@ mod tests_windows {
      use super::*;
  
      #[tokio::test]
@@ -6744,7 +7192,7 @@ index e6fb334..5690211 100644
      }
  
      #[tokio::test]
-@@ -191,3 +240,28 @@ mod tests_windows {
+@@ -191,3 +238,28 @@ mod tests_windows {
          assert_eq!(r.code, 3);
      }
  }
@@ -6895,10 +7343,10 @@ index 814f339..df7c9ee 100644
 +
 +pub type CmdResult<T> = std::result::Result<T, InstallerError>;
 diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
-index cc41a22..418708e 100644
+index cc41a22..4a95afd 100644
 --- a/src-tauri/src/lib.rs
 +++ b/src-tauri/src/lib.rs
-@@ -4,12 +4,62 @@ mod state;
+@@ -4,12 +4,61 @@ mod state;
  mod steps;
  
  use state::AppState;
@@ -6914,8 +7362,7 @@ index cc41a22..418708e 100644
 +            // Capture PATH before injection so check_handshake_state can search the
 +            // pre-bundle PATH for a global codemie binary.
 +            let pre_injection_path = std::env::var("PATH").unwrap_or_default();
-+            let bundled_injected =
-+                commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
++            let bundled_injected = commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
 +            if !bundled_injected {
 +                // eprintln! is swallowed in a packaged GUI; use log::error! so the
 +                // message is captured by the log plugin (debug builds) and any
@@ -6962,7 +7409,7 @@ index cc41a22..418708e 100644
              if cfg!(debug_assertions) {
                  app.handle().plugin(
                      tauri_plugin_log::Builder::default()
-@@ -17,9 +67,6 @@ pub fn run() {
+@@ -17,9 +66,6 @@ pub fn run() {
                          .build(),
                  )?;
              }
@@ -6972,7 +7419,7 @@ index cc41a22..418708e 100644
              commands::logger::write_line("=== CodeMie Installer session started ===", "dim");
              commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
              Ok(())
-@@ -37,19 +84,19 @@ pub fn run() {
+@@ -37,19 +83,19 @@ pub fn run() {
              commands::inspector::check_codemie,
              commands::inspector::check_codemie_version,
              commands::inspector::check_profile_status,
@@ -7324,7 +7771,7 @@ index c25dd7c..a8f369a 100644
 +    }
 +}
 diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
-index cb631c7..bb18efd 100644
+index cb631c7..785b623 100644
 --- a/src-tauri/tauri.conf.json
 +++ b/src-tauri/tauri.conf.json
 @@ -12,8 +12,8 @@
@@ -7338,16 +7785,87 @@ index cb631c7..bb18efd 100644
          "resizable": false,
          "fullscreen": false,
          "backgroundColor": "#1A1A1A"
-@@ -26,6 +26,9 @@
+@@ -26,6 +26,11 @@
    "bundle": {
      "active": true,
      "targets": ["dmg", "nsis"],
 +    "resources": {
-+      "../assets/windows/bin/codemie.cmd": "bin/codemie.cmd"
++      "../assets/windows/bin/codemie.cmd": "bin/codemie.cmd",
++      "../assets/windows/node/node.exe": "node/node.exe",
++      "../assets/codemie-cli/node_modules": "cli/node_modules"
 +    },
      "category": "DeveloperTool",
      "copyright": "EPAM AI/Run CodeMie ©",
      "icon": [
+@@ -40,10 +45,11 @@
+     },
+     "windows": {
+       "webviewInstallMode": {
+-        "type": "downloadBootstrapper"
++        "type": "offlineInstaller"
+       },
+       "nsis": {
+-        "installMode": "currentUser"
++        "installMode": "currentUser",
++        "installerHooks": "installer-hooks.nsi"
+       }
+     }
+   }
+diff --git a/src-tauri/tests/bundle_resources.rs b/src-tauri/tests/bundle_resources.rs
+new file mode 100644
+index 0000000..d66cd2b
+--- /dev/null
++++ b/src-tauri/tests/bundle_resources.rs
+@@ -0,0 +1,49 @@
++//! Guards the `bundle.resources` contract in tauri.conf.json.
++//!
++//! A glob key (`.../**/*`) makes tauri-utils join only the file name
++//! (resources.rs:196), flattening 19,754 files into 9,782 targets — 620 of
++//! them onto a single `index.js`. Tauri reports `errors: 0`, so the build
++//! succeeds and ships a bundle Node cannot resolve. Only this test catches it.
++use std::collections::{HashMap, HashSet};
++use tauri_utils::resources::ResourcePaths;
++
++fn resources_map() -> HashMap<String, String> {
++    let raw = std::fs::read_to_string("tauri.conf.json").expect("read tauri.conf.json");
++    let conf: serde_json::Value = serde_json::from_str(&raw).expect("parse tauri.conf.json");
++    serde_json::from_value(conf["bundle"]["resources"].clone())
++        .expect("bundle.resources must be a map of source -> target")
++}
++
++#[test]
++fn bundle_resources_resolve_one_to_one() {
++    let map = resources_map();
++
++    // allow_walk = true matches tauri-build-2.6.2/src/lib.rs:572
++    let mut total = 0usize;
++    let mut targets = HashSet::new();
++    for res in ResourcePaths::from_map(&map, true).iter() {
++        let r = res.expect("a bundle.resources pattern failed to resolve");
++        total += 1;
++        targets.insert(r.target().to_path_buf());
++    }
++
++    assert!(total > 0, "bundle.resources resolved to no files at all");
++    assert_eq!(
++        targets.len(),
++        total,
++        "bundle.resources collapses {} sources into {} targets — a glob key is \
++         flattening the tree; use a plain directory path instead (spec §5)",
++        total,
++        targets.len()
++    );
++}
++
++#[test]
++fn bundle_resources_ship_no_pkg_exe() {
++    for (src, target) in &resources_map() {
++        assert!(
++            !src.contains("codemie-x86_64-pc-windows-msvc") && !target.ends_with("codemie.exe"),
++            "the pkg binary was reintroduced into bundle.resources: {src} -> {target}"
++        );
++    }
++}
 diff --git a/ui/handlers.js b/ui/handlers.js
 index 0ea690c..32de920 100644
 --- a/ui/handlers.js
@@ -8393,4 +8911,40 @@ index 0000000..5753e16
 +    dataUnlistenCalled,
 +    'data listener must be unlistened even when the exit-listen call throws',
 +  );
++});
+diff --git a/ui/test/shim.test.mjs b/ui/test/shim.test.mjs
+new file mode 100644
+index 0000000..7d5e50f
+--- /dev/null
++++ b/ui/test/shim.test.mjs
+@@ -0,0 +1,30 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++
++const SHIM = 'assets/windows/bin/codemie.cmd';
++const shim = readFileSync(SHIM, 'utf8');
++
++test('shim resolves the bundle root relative to its own location', () => {
++  assert.match(shim, /%~dp0\.\./, 'must use %~dp0.. so the install root is not hardcoded');
++  assert.doesNotMatch(shim, /CodeMie Connect/, 'must not hardcode the product name');
++});
++
++test('shim execs the bundled node runtime', () => {
++  assert.match(shim, /node[\\/]node\.exe/, 'must invoke the bundled node\\node.exe');
++});
++
++// dist/index.js is a library barrel: it exits 0 and prints nothing, so a build
++// gated on exit code alone would pass while `codemie --version` produced no output.
++test('shim targets bin/codemie.js, never dist/index.js', () => {
++  assert.match(shim, /bin[\\/]codemie\.js/, 'must target the package bin entry');
++  assert.doesNotMatch(shim, /dist[\\/]index\.js/, 'dist/index.js is a barrel with no CLI bootstrap');
++});
++
++test('shim propagates the CLI exit code', () => {
++  assert.match(shim, /exit \/b %ERRORLEVEL%/i, 'without this the shim always reports success');
++});
++
++test('shim does not reference the removed pkg binary', () => {
++  assert.doesNotMatch(shim, /codemie\.exe/i, 'the pkg binary is no longer produced');
 +});
