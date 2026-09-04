@@ -38,24 +38,35 @@ export function detectPrompt(lines) {
   // 'credential' for a consent/confirm question would cause a driver to type an API key into it.
   if (!named && /\(y\/N\)\s*$|\(Y\/n\)\s*$|\(Y\/N\)\s*$|\(y\/n\)\s*$/i.test(line)) return null;
   const spec = named ?? { id: 'credential', kind: 'input' };
-  const message = line.replace(/^\s*\?\s*/, '').trim();
+  let message = line.replace(/^\s*\?\s*/, '').trim();
+  // CR-003: for confirm-kind prompts, strip trailing yes/no hint text (e.g. "(Y/n)", "(y/N)").
+  // Only exact yes/no patterns — never a general trailing-parens strip, which would destroy
+  // parenthesized default values that input-kind prompts carry (e.g. "(sonnet)", "(anthropic-subscription)").
+  if (spec.kind === 'confirm') message = message.replace(/\s*\([yn]\/[yn]\)\s*$/i, '').trim();
+  // New defect fix: credential catch-all must refuse an incomplete/partial line. A genuinely
+  // complete credential prompt always includes a ':' in its label (e.g. "? API key:", "? Ollama base URL:").
+  // A line like "? CodeMie organization" (truncated mid-word at a chunk boundary) has no ':', so
+  // returning 'credential' for it would cause a driver to type an API key into an unfinished prompt.
+  if (spec.id === 'credential' && !message.includes(':')) return null;
   if (spec.kind !== 'list') return { kind: spec.kind, id: spec.id, message };
   const { options, selectedIndex } = parseOptions(lines, idx);
   return options.length ? { kind: 'list', id: spec.id, message, options, selectedIndex } : null;
 }
 
 function parseOptions(lines, idx) {
-  const options = []; let selectedIndex = 0;
+  const options = []; let selectedIndex = 0; let seenSel = false;
   for (let r = idx + 1; r < lines.length; r++) {
     const raw = lines[r], t = raw.trim();
     if (!t) break;
     if (isQ(raw)) break;                        // next prompt begins
-    if (t.startsWith('(')) continue;            // '(Use arrow keys)' sits on its own line
+    if (/^\(.*\)$/.test(t)) continue;           // skip lines that are entirely a parenthesized hint (e.g. '(Use arrow keys)')
     if (/custom model/i.test(t) && /manual/i.test(t)) continue;
     const sel = /^[>❯]/.test(raw.trimStart());
     const label = t.replace(/^[>❯]\s*/, '').trim();
     if (!label) continue;
-    if (sel) selectedIndex = options.length;
+    // CR-005: only the FIRST selection marker wins; ignore subsequent markers
+    // (guards against partial terminal renders that can produce multiple '>' rows)
+    if (sel && !seenSel) { selectedIndex = options.length; seenSel = true; }
     options.push(label);
   }
   return { options, selectedIndex };

@@ -26,11 +26,10 @@ function promptId(line) {
   for (const [anchor, id] of ANCHOR_MAP) {
     if (line.includes(anchor)) return id;
   }
-  // credential catch-all: only after provider is answered (credential always follows provider),
-  // and only for lines that look complete (end with punctuation or whitespace after content)
-  if (isQuestion(line) && line.trim().length > 20) return 'credential';
+  // credential catch-all: any remaining question line; the caller gates on snapped.has('provider')
+  // to prevent false positives from partial renders that occur before provider is answered.
+  if (isQuestion(line)) return 'credential';
   return null;
-  // Note: the caller also gates credential on snapped.has('provider') to avoid partial renders
 }
 
 function readScreen(term) {
@@ -66,7 +65,7 @@ function next() {
       // to avoid false positives from partial renders of codemieUrl or other prompts
       if (id === 'credential' && !snapped.has('provider')) {
         prevQuestion = qLine;
-        next();
+        setImmediate(next);
         return;
       }
       if (id && !snapped.has(id)) {
@@ -87,7 +86,9 @@ function next() {
       }
       prevQuestion = qLine;
     }
-    next();
+    // CR-007: use setImmediate instead of direct recursion so traversal does not overflow
+    // the call stack on large recordings (~40 000 chunks for a 10 MB typescript file).
+    setImmediate(next);
   });
 }
 next();

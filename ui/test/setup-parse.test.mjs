@@ -85,17 +85,21 @@ test('real recording — answered storage (? prefix) above open provider is reso
   assert.ok(r.options.length > 0, 'provider must have visible options');
 });
 
-// Fixture captures a screen where the provider prompt is answered (? prefix — real recording format)
-// and the next prompt (codemieUrl or credential) is already open below it.
-// The parser must return the NEXT prompt's id — never 'provider' again.
-test('answered provider prompt is not re-detected when next prompt is open', () => {
+// This fixture captures a partial-render transition state: the provider question has been answered
+// and the next codemieUrl prompt has started rendering — but only "? CodeMie organization" has
+// appeared (the line is cut off before "URL:", a transient state at 256-byte chunk boundaries).
+//
+// Two properties must hold simultaneously:
+//   (a) answered-prompt-not-redetected: the parser must not re-identify 'provider'
+//   (b) partial-render-not-misclassified: the incomplete line must NOT fall through to 'credential'
+//       (which would cause a future driver to type an API key into an unfinished URL prompt)
+//
+// The correct outcome is null: the visible prompt is genuinely incomplete and cannot be safely identified.
+test('partial-render incomplete prompt line returns null, not credential', () => {
   const r = detectPrompt(fixture('provider-answered-then-next-open'));
-  assert.ok(r !== null, 'expected non-null — next open prompt should be detected');
-  assert.notEqual(r.id, 'provider', 'answered provider must not be re-detected');
-  assert.ok(
-    r.id === 'codemieUrl' || r.id === 'credential',
-    `expected codemieUrl or credential, got: ${r.id}`
-  );
+  // (b) incomplete line must never be misclassified as credential
+  assert.equal(r, null, 'incomplete prompt line must return null, not be claimed as credential');
+  // (a) returning null is also not 'provider' — both properties are satisfied
 });
 
 test('windowed model list excludes trailing Custom row from options', () => {
@@ -105,6 +109,41 @@ test('windowed model list excludes trailing Custom row from options', () => {
     !r.options?.some(o => /custom/i.test(o) && /manual/i.test(o)),
     'Custom row must be excluded from options'
   );
+});
+
+// CR-003: confirm-kind messages must have yes/no hint text stripped, but input-kind messages
+// must preserve parenthesized DEFAULT VALUES (e.g. "(sonnet)", "(anthropic-subscription)").
+test('confirm message strips trailing (Y/n) hint — activate', () => {
+  const r = detectPrompt(fixture('activate'));
+  assert.equal(r.kind, 'confirm');
+  assert.ok(!r.message.includes('(Y/n)'), `message must not contain (Y/n), got: "${r.message}"`);
+  assert.ok(!r.message.includes('(y/N)'), `message must not contain (y/N), got: "${r.message}"`);
+  assert.ok(r.message.includes('Switch to profile'), `message must retain prompt text, got: "${r.message}"`);
+});
+
+test('confirm message strips trailing (Y/n) hint — installClaude', () => {
+  const r = detectPrompt(fixture('installClaude'));
+  assert.equal(r.kind, 'confirm');
+  assert.ok(!r.message.includes('(Y/n)') && !r.message.includes('(y/N)'), `message must not contain yes/no hint, got: "${r.message}"`);
+  assert.ok(r.message.includes('Would you like to install Claude Code now?'), `message must retain prompt text, got: "${r.message}"`);
+});
+
+test('input message preserves parenthesized default value — modelManual (sonnet)', () => {
+  const r = detectPrompt(fixture('modelManual'));
+  assert.equal(r.kind, 'input');
+  assert.ok(r.message.includes('(sonnet)'), `default "(sonnet)" must be preserved, got: "${r.message}"`);
+});
+
+test('input message preserves parenthesized default value — profileName (anthropic-subscription)', () => {
+  const r = detectPrompt(fixture('profileName'));
+  assert.equal(r.kind, 'input');
+  assert.ok(r.message.includes('(anthropic-subscription)'), `default "(anthropic-subscription)" must be preserved, got: "${r.message}"`);
+});
+
+test('input message preserves parenthesized default value — codemieUrl (https://...)', () => {
+  const r = detectPrompt(fixture('codemieUrl'));
+  assert.equal(r.kind, 'input');
+  assert.ok(r.message.includes('(https://codemie.lab.epam.com)'), `default URL must be preserved, got: "${r.message}"`);
 });
 
 // Regression test for credential catch-all bug: an unrecognized consent/confirm prompt
