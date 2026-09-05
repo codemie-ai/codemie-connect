@@ -28,3 +28,12 @@ test('shim propagates the CLI exit code', () => {
 test('shim does not reference the removed pkg binary', () => {
   assert.doesNotMatch(shim, /codemie\.exe/i, 'the pkg binary is no longer produced');
 });
+
+// lib.rs builds the absolute CLI entry that self_update_direct runs with the bundled
+// node.exe. It must point at the same entry as the shim: dist/index.js would make
+// `codemie self-update` exit 0 without doing anything.
+test('lib.rs cli_entry_path targets bin/codemie.js, never dist/index.js', () => {
+  const lib = readFileSync('src-tauri/src/lib.rs', 'utf8');
+  assert.match(lib, /\.join\("bin"\)\s*\.join\("codemie\.js"\)/, 'must target the package bin entry');
+  assert.doesNotMatch(lib, /\.join\("dist"\)\s*\.join\("index\.js"\)/, 'dist/index.js is a barrel with no CLI bootstrap');
+});

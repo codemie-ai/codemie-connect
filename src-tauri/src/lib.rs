@@ -38,8 +38,8 @@ pub fn run() {
                             .join("node_modules")
                             .join("@codemieai")
                             .join("code")
-                            .join("dist")
-                            .join("index.js"),
+                            .join("bin")
+                            .join("codemie.js"),
                     )
                 })
                 .unwrap_or_else(|e| {
