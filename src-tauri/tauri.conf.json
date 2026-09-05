@@ -26,9 +26,6 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "nsis"],
-    "resources": {
-      "../assets/codemie-cli/node_modules": "cli/node_modules"
-    },
     "category": "DeveloperTool",
     "copyright": "EPAM AI/Run CodeMie ©",
     "icon": [

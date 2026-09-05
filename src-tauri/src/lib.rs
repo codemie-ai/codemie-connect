@@ -24,12 +24,9 @@ pub fn run() {
             }
 
             // Build AppState with Windows-specific absolute paths for bundled node.exe and CLI.
-            // NOTE(EPMCDME-14573 CR-009): the node\ and cli\ bundle.resources entries are
-            // intentionally absent from tauri.conf.json. Declaring them before the source
-            // files are delivered by EPMCDME-14505 would break `tauri build`. They will be
-            // added in EPMCDME-14505, which owns bundling node.exe and the CLI dist artefact.
-            // Until then, node_exe_path and cli_entry_path resolve to empty PathBufs and
-            // run_self_update falls back to the codemie.cmd shim on PATH.
+            // The node\ and cli\ bundle.resources entries live in tauri.windows.conf.json
+            // (staged by scripts/stage-runtime.ps1). If resource_dir() fails, both paths
+            // stay empty and run_self_update falls back to the codemie.cmd shim on PATH.
             #[cfg(windows)]
             let (node_exe, cli_entry) = app
                 .path()
