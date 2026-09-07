@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "../assets/macos/bin/codemie": "bin/codemie",
+      "../assets/macos/node/bin/node": "node/bin/node",
+      "../assets/codemie-cli/node_modules": "cli/node_modules"
+    }
+  }
+}
