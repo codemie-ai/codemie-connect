@@ -250,7 +250,7 @@ pub fn augment_path(state: State<AppState>, dirs: Vec<String>) {
 /// Extracted as a named function so tests can call it directly.
 #[cfg(windows)]
 pub fn candidate_bin_names() -> &'static [&'static str] {
-    &["codemie.exe", "codemie.cmd", "codemie"]
+    &["codemie.cmd", "codemie"]
 }
 
 #[cfg(not(windows))]
@@ -276,7 +276,11 @@ pub(crate) fn probe_with_bin_dir(
         Some(d)
     } else {
         let bin = d.join("bin");
-        if probe_fn(&bin) { Some(bin) } else { None }
+        if probe_fn(&bin) {
+            Some(bin)
+        } else {
+            None
+        }
     }
 }
 
@@ -298,9 +302,9 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
     // env!("TARGET") is only available in build scripts; use std::env::consts instead.
     #[cfg(target_os = "macos")]
     let sidecar_name = format!("codemie-{}-apple-darwin", std::env::consts::ARCH);
-    #[cfg(target_os = "windows")]
-    let sidecar_name = format!("codemie-{}-pc-windows-msvc.exe", std::env::consts::ARCH);
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    // Windows no longer ships a sidecar binary — the shim is found by
+    // candidate_bin_names() via probe_dir. macOS is unchanged.
+    #[cfg(not(target_os = "macos"))]
     let sidecar_name = "codemie".to_string();
 
     // Full probe: check the sidecar binary name AND candidate names (codemie.exe, codemie.cmd…).
@@ -317,7 +321,12 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .and_then(|d| probe_with_bin_dir(d, &probe))
         // Approach A fallback: resource_dir.
-        .or_else(|| app.path().resource_dir().ok().and_then(|d| probe_with_bin_dir(d, &probe)));
+        .or_else(|| {
+            app.path()
+                .resource_dir()
+                .ok()
+                .and_then(|d| probe_with_bin_dir(d, &probe))
+        });
 
     if let Some(dir) = bin_dir {
         let dir_str = dir.to_str().ok_or_else(|| {
@@ -384,6 +393,36 @@ mod tests_windows_probe {
         assert!(
             !probe_dir(dir.path()),
             "probe_dir on parent must not find a shim placed only in bin/"
+        );
+    }
+
+    /// The pkg binary is no longer produced. Leaving `codemie.exe` in the
+    /// candidate list — and first, at that — means a stale binary from an
+    /// earlier install shadows the shim and reproduces the crash this
+    /// ticket fixes.
+    #[test]
+    fn candidate_bin_names_exclude_pkg_exe() {
+        assert!(
+            !candidate_bin_names().contains(&"codemie.exe"),
+            "codemie.exe must not be a probe candidate: {:?}",
+            candidate_bin_names()
+        );
+        assert_eq!(
+            candidate_bin_names().first(),
+            Some(&"codemie.cmd"),
+            "the shim must be the first candidate"
+        );
+    }
+
+    /// A directory holding only the stale pkg binary must not be treated as
+    /// the bundled bin dir.
+    #[test]
+    fn probe_dir_ignores_stale_pkg_exe() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("codemie.exe"), b"stale").unwrap();
+        assert!(
+            !probe_dir(dir.path()),
+            "a directory with only codemie.exe must not be detected"
         );
     }
 }
@@ -485,7 +524,11 @@ mod tests_inject_bundled_bin_path {
         write_shim(dir.path());
         write_shim(&bin);
         let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
-        assert_eq!(result.as_deref(), Some(dir.path()), "root is checked before bin/");
+        assert_eq!(
+            result.as_deref(),
+            Some(dir.path()),
+            "root is checked before bin/"
+        );
     }
 
     #[test]
@@ -505,7 +548,10 @@ mod tests_inject_bundled_bin_path {
     #[cfg(not(windows))]
     #[test]
     fn build_new_path_prepends_with_colon_separator() {
-        assert_eq!(build_new_path("/usr/bin:/usr/local/bin", "/app/bin"), "/app/bin:/usr/bin:/usr/local/bin");
+        assert_eq!(
+            build_new_path("/usr/bin:/usr/local/bin", "/app/bin"),
+            "/app/bin:/usr/bin:/usr/local/bin"
+        );
     }
 
     #[cfg(windows)]

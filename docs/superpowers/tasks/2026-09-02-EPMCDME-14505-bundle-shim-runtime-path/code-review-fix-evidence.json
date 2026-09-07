@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "reviewed_head": "d34a85e811be30097e703bb89bc43b68c5f421c5",
+  "findings": {
+    "CR-009": {
+      "commands": [
+        {
+          "command": "git filter-branch -f --msg-filter \"bash /tmp/fix-msgs.sh\" -- main..HEAD",
+          "exit_code": 0,
+          "head": "0b5b0b731429041d96f88d86732495facc7dcefc"
+        },
+        {
+          "command": "git log --format=\"%s\" main..HEAD",
+          "exit_code": 0,
+          "head": "0b5b0b731429041d96f88d86732495facc7dcefc"
+        }
+      ]
+    }
+  }
+}

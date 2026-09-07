@@ -26,9 +26,6 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "nsis"],
-    "resources": {
-      "../assets/windows/bin/codemie.cmd": "bin/codemie.cmd"
-    },
     "category": "DeveloperTool",
     "copyright": "EPAM AI/Run CodeMie ©",
     "icon": [
@@ -43,10 +40,11 @@
     },
     "windows": {
       "webviewInstallMode": {
-        "type": "downloadBootstrapper"
+        "type": "offlineInstaller"
       },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "installer-hooks.nsi"
       }
     }
   }

@@ -92,8 +92,16 @@ pub fn parse_config(raw: &str) -> CodemieConfig {
 
 /// The app is Finder-launched with cwd `/`, so a repository-local `.codemie/`
 /// never applies — the global file under $HOME is always the right one.
+/// On Windows, HOME is typically unset; fall back to USERPROFILE.
 fn config_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    config_path_with(
+        &std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default(),
+    )
+}
+
+fn config_path_with(home: &str) -> String {
     format!("{home}/.codemie/codemie-cli.config.json")
 }
 
@@ -158,5 +166,17 @@ mod tests {
         let json = serde_json::to_string(&CodemieConfig::default()).unwrap();
         assert!(json.contains(r#""state":"no-configuration""#), "{json}");
         assert!(json.contains(r#""account":null"#), "{json}");
+    }
+
+    #[test]
+    fn config_path_with_unix_home() {
+        let p = config_path_with("/home/alice");
+        assert_eq!(p, "/home/alice/.codemie/codemie-cli.config.json");
+    }
+
+    #[test]
+    fn config_path_with_windows_userprofile() {
+        let p = config_path_with("C:\\Users\\alice");
+        assert_eq!(p, "C:\\Users\\alice/.codemie/codemie-cli.config.json");
     }
 }

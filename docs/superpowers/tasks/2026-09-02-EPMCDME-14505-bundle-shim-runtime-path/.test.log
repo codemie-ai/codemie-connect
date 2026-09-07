@@ -1,0 +1,88 @@
+   Compiling app v2.0.1 (C:\Work\codemie\codemie-claude-installer-macos\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.50s
+     Running unittests src\lib.rs (target\debug\deps\app_lib-e85ce817a9c753bf.exe)
+
+running 60 tests
+test commands::codemie_config::tests::resolving_active_profile_is_valid ... ok
+test commands::codemie_config::tests::unresolvable_active_profile_is_broken_but_still_readable ... ok
+test commands::codemie_config::tests::state_serializes_to_its_documented_name ... ok
+test commands::codemie_config::tests::unreadable_file_is_no_configuration ... ok
+test commands::codemie_config::tests::valid_config_may_record_no_account ... ok
+test commands::downloader::tests::path_rejects_parent_dir_component ... ok
+test commands::downloader::tests::path_rejects_outside_temp_dir ... ok
+test commands::downloader::tests::path_accepts_file_inside_temp_dir ... ok
+test commands::downloader::tests::path_rejects_relative_path ... ok
+test commands::downloader::tests::verify_accepts_correct_sha256 ... ok
+test commands::downloader::tests::verify_accepts_none_hash_nonempty ... ok
+test commands::downloader::tests::verify_rejects_empty_data ... ok
+test commands::downloader::tests::verify_rejects_hash_mismatch ... ok
+test commands::handshake::tests::no_global_when_path_empty ... ok
+test commands::handshake::tests::parse_global_version_accepts_bare_semver ... ok
+test commands::handshake::tests::parse_global_version_returns_none_for_non_semver ... ok
+test commands::handshake::tests::parse_global_version_strips_v_prefix ... ok
+test commands::inspector::tests::check_node_parses_version_and_found_on_exit_0 ... ok
+test commands::inspector::tests::codemie_found_false_when_output_empty ... ok
+test commands::handshake::tests::global_found_when_probe_matches ... ok
+test commands::handshake::tests::bundled_takes_precedence_when_injected_and_global_found ... ok
+test commands::inspector::tests::codemie_lenient_nonempty_output_is_installed_even_if_exit_nonzero ... ok
+test commands::inspector::tests::codemie_treats_command_not_found_as_not_installed ... ok
+test commands::inspector::tests::parse_codemie_version_returns_empty_on_command_not_found ... ok
+test commands::inspector::tests::parse_codemie_version_returns_empty_on_no_version ... ok
+test commands::inspector::tests::parse_codemie_version_handles_slash_path_format ... ok
+test commands::inspector::tests::parse_codemie_version_plain_semver ... ok
+test commands::inspector::tests::parse_codemie_version_strips_v_prefix ... ok
+test commands::inspector::tests::probe_found_false_on_nonzero_exit ... ok
+test commands::inspector::tests::parse_codemie_version_with_name_prefix ... ok
+test commands::inspector::tests::profile_status_authenticated_is_true_and_keeps_detail ... ok
+test commands::inspector::tests::profile_status_empty_output_is_false ... ok
+test commands::inspector::tests::profile_status_expired_is_not_authenticated ... ok
+test commands::inspector::tests::profile_status_expires_in_future_not_mistaken_for_expired ... ok
+test commands::inspector::tests::profile_status_not_authenticated_is_false ... ok
+test commands::installer::tests::parse_npm_latest_returns_none_on_missing_dist_tags ... ok
+test commands::installer::tests::parse_npm_latest_extracts_version_from_dist_tags ... ok
+test commands::installer::tests::parse_npm_latest_returns_none_on_missing_latest_key ... ok
+test commands::pathman::tests::dedupe_path_preserves_first_occurrence_and_drops_empties_windows ... ok
+test commands::pathman::tests::missing_entries_returns_only_entries_not_present_windows ... ok
+test commands::logger::tests::format_line_tags_and_timestamps ... ok
+test commands::logger::tests::format_line_generates_timestamp_when_none_given ... ok
+test commands::pathman::tests_inject_bundled_bin_path::build_new_path_prepends_with_semicolon_separator ... ok
+test commands::pathman::tests_inject_bundled_bin_path::build_new_path_returns_dir_only_when_current_is_empty ... ok
+test commands::pathman::tests_windows_probe::candidate_bin_names_exclude_pkg_exe ... ok
+test commands::pathman::tests_inject_bundled_bin_path::probe_with_bin_dir_returns_none_when_no_shim ... ok
+test commands::pathman::tests_inject_bundled_bin_path::probe_with_bin_dir_returns_bin_subdir_when_shim_only_in_bin ... ok
+test commands::pathman::tests_inject_bundled_bin_path::probe_with_bin_dir_returns_root_when_shim_in_root ... ok
+test commands::pathman::tests_windows_probe::probe_dir_detects_codemie_cmd_shim ... ok
+test commands::pathman::tests_inject_bundled_bin_path::probe_with_bin_dir_prefers_root_over_bin_subdir ... ok
+test commands::pathman::tests_windows_probe::probe_dir_returns_false_for_empty_directory ... ok
+test commands::pathman::tests_windows_probe::probe_dir_ignores_stale_pkg_exe ... ok
+test commands::pathman::tests_windows_probe::probe_dir_detects_shim_in_bin_subdir_and_not_parent ... ok
+test commands::window::tests::log_panel_heights_are_not_clamped ... ok
+test steps::tests::loads_three_windows_steps_post_deletion ... ok
+test commands::runner::tests_windows_self_update::self_update_direct_errors_when_node_not_executable ... ok
+test commands::runner::tests_windows::run_capture_reports_nonzero_exit_windows ... ok
+test commands::runner::tests_windows::run_capture_runs_via_cmd_and_captures_stdout ... ok
+test commands::installer::tests::fetch_codemie_latest_returns_version_or_empty_string ... ok
+test commands::pty::win_tests::spawn_external_ps_exits_zero_for_noop_command ... ok
+
+test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.17s
+
+     Running unittests src\main.rs (target\debug\deps\app-36f8a0afe6dc33e2.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\bundle_resources.rs (target\debug\deps\bundle_resources-853f4991159e87e9.exe)
+
+running 2 tests
+test bundle_resources_ship_no_pkg_exe ... ok
+test bundle_resources_resolve_one_to_one ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.35s
+
+   Doc-tests app_lib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,29 @@
+[
+  {
+    "location": "ui/renderer.js:20 — INSTALL_ONLY_IDS = ['1.1', '1.1.1', '1.3']",
+    "trigger_condition": "Steps 1.1, 1.1.1, and 1.3 were removed from config/steps.yaml and config/steps-windows.yaml; INSTALL_ONLY_IDS still references them",
+    "guard_snippet": "assert that enterWizard(INSTALL_ONLY_IDS) produces a non-empty step list — e.g., assert.ok(steps.length > 0) after allSteps.filter(s => INSTALL_ONLY_IDS.includes(s.id))",
+    "potential_consequence": "Clicking the 'Install only' home tile calls enterWizard(['1.1','1.1.1','1.3']); allSteps only contains '2.3.3', '2.3.5', '2.4', so the filter returns []; the wizard opens with 0 steps and engine.run() completes immediately; the tile description still says 'Install Git, Node & the CodeMie CLI' but nothing runs. None of the JS unit tests (engine.test.mjs, models.test.mjs, version-utils.test.mjs, pty-bridge.test.mjs) exercise enterWizard or INSTALL_ONLY_IDS.",
+    "gap_shape": "regression-gap",
+    "consumer": "The 'Install only' home tile (data-action='install-only') at ui/index.html:94, handled by renderer.js:545 (homeGrid click → enterWizard(INSTALL_ONLY_IDS))",
+    "evidence": "config/steps.yaml and config/steps-windows.yaml both now contain only steps '2.3.3', '2.3.5', '2.4' (read directly). enterWizard at renderer.js:192 does allSteps.filter(s => stepIds.includes(s.id)) — with the new YAML, the filter returns []. ui/test/* contains no test for enterWizard or INSTALL_ONLY_IDS (grepped for 'INSTALL_ONLY', 'install.only', 'enterWizard' across ui/test/ — no matches)."
+  },
+  {
+    "location": "ui/renderer.js:607 — runProbe: const safe = new Set(['1.1', '1.1.1', '1.2', '1.2.1', '1.3'])",
+    "trigger_condition": "runProbe filters engine.steps by the same deleted step IDs; after the YAML change engine.steps contains only 2.x steps, so the filtered set is empty",
+    "guard_snippet": "assert that after filtering, engine.steps.length > 0 before calling engine.run(); or assert PROBE_RESULT contains at least one step:status token",
+    "potential_consequence": "CODEMIE_PROBE_SMOKE=1 mode runs engine.run() on an empty step list, emits 'PROBE_RESULT ' (empty string), then 'PROBE_DONE', and quits. The probe always 'passes' with no detection work done. A tester relying on the probe to confirm codemie is present gets a false green. No automated test sets CODEMIE_PROBE_SMOKE or asserts PROBE_RESULT content.",
+    "gap_shape": "regression-gap",
+    "consumer": "CODEMIE_PROBE_SMOKE=1 manual verification mode, runProbe() called from boot() at renderer.js:592",
+    "evidence": "Read renderer.js:603-623: engine.steps is filtered by safe which contains only deleted step IDs; allSteps from invoke('get_steps') now returns ['2.3.3','2.3.5','2.4'] (confirmed by reading config/steps.yaml). Grep for 'CODEMIE_PROBE' across scripts and CI config found no automated invocation; README.md:210 documents it as a manual mode."
+  },
+  {
+    "location": "src-tauri/src/commands/codemie_config.rs:326 — config_path() uses std::env::var(\"HOME\")",
+    "trigger_condition": "On Windows, HOME is not the standard environment variable for the user home directory (USERPROFILE is); in a clean Windows environment without HOME set, config_path() returns '/.codemie/codemie-cli.config.json'",
+    "guard_snippet": "#[cfg(windows)] let home = std::env::var(\"USERPROFILE\").or_else(|_| std::env::var(\"HOME\")).unwrap_or_default(); — with a unit test that calls read_codemie_config() after writing a temp config file to the resolved path",
+    "potential_consequence": "On Windows without HOME set (e.g. Windows Sandbox, stock Windows without Git for Windows), std::fs::read_to_string('/.codemie/codemie-cli.config.json') returns Err, so read_codemie_config() returns CodemieConfig::default() (state=no-configuration). renderIdentity shows 'CodeMie Desktop' instead of the user's account/profile even when a valid ~/.codemie/codemie-cli.config.json exists. The codemie_config.rs tests only call parse_config() with hardcoded strings and never exercise config_path() or the file-read path.",
+    "gap_shape": "regression-gap",
+    "consumer": "renderer.js:800 via bridge.codemieConfig.read() → invoke('read_codemie_config') → config_path() → std::fs::read_to_string",
+    "evidence": "Read codemie_config.rs:326: fn config_path() { let home = std::env::var(\"HOME\").unwrap_or_default(); format!(\"{home}/.codemie/...\") } — no #[cfg(windows)] branch. The five tests in the module (unreadable_file_is_no_configuration, resolving_active_profile_is_valid, valid_config_may_record_no_account, unresolvable_active_profile_is_broken_but_still_readable, state_serializes_to_its_documented_name) all call parse_config(raw_string) directly — none call config_path() or read_codemie_config(). docs/testing/codemie-sandbox-smoke.ps1 does not set HOME and does not assert identity bar content."
+  }
+]

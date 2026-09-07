@@ -22,4 +22,11 @@ pub struct AppState {
     /// Populated in the `setup` closure from `resource_dir()`.
     #[cfg(windows)]
     pub cli_entry_path: std::path::PathBuf,
+    /// The value of the PATH environment variable captured before
+    /// `inject_bundled_bin_path` prepends the bundled bin directory.
+    /// Written once during setup; read-only thereafter.
+    pub pre_injection_path: String,
+    /// True when `inject_bundled_bin_path` succeeded during setup.
+    /// Used by `check_handshake_state` to determine precedence.
+    pub bundled_injected: bool,
 }

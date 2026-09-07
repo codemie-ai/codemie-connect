@@ -12,20 +12,21 @@ pub fn run() {
         .setup(|app| {
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
-            if let Err(e) = commands::pathman::inject_bundled_bin_path(app.handle()) {
+            // Capture PATH before injection so check_handshake_state can search the
+            // pre-bundle PATH for a global codemie binary.
+            let pre_injection_path = std::env::var("PATH").unwrap_or_default();
+            let bundled_injected = commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
+            if !bundled_injected {
                 // eprintln! is swallowed in a packaged GUI; use log::error! so the
                 // message is captured by the log plugin (debug builds) and any
                 // custom log subscriber wired up before this point.
-                log::error!("{e}");
+                log::error!("inject_bundled_bin_path failed");
             }
 
             // Build AppState with Windows-specific absolute paths for bundled node.exe and CLI.
-            // NOTE(EPMCDME-14573 CR-009): the node\ and cli\ bundle.resources entries are
-            // intentionally absent from tauri.conf.json. Declaring them before the source
-            // files are delivered by EPMCDME-14505 would break `tauri build`. They will be
-            // added in EPMCDME-14505, which owns bundling node.exe and the CLI dist artefact.
-            // Until then, node_exe_path and cli_entry_path resolve to empty PathBufs and
-            // run_self_update falls back to the codemie.cmd shim on PATH.
+            // The node\ and cli\ bundle.resources entries live in tauri.windows.conf.json
+            // (staged by scripts/stage-runtime.ps1). If resource_dir() fails, both paths
+            // stay empty and run_self_update falls back to the codemie.cmd shim on PATH.
             #[cfg(windows)]
             let (node_exe, cli_entry) = app
                 .path()
@@ -37,8 +38,8 @@ pub fn run() {
                             .join("node_modules")
                             .join("@codemieai")
                             .join("code")
-                            .join("dist")
-                            .join("index.js"),
+                            .join("bin")
+                            .join("codemie.js"),
                     )
                 })
                 .unwrap_or_else(|e| {
@@ -47,6 +48,8 @@ pub fn run() {
                 });
 
             app.manage(AppState {
+                pre_injection_path,
+                bundled_injected,
                 #[cfg(windows)]
                 node_exe_path: node_exe,
                 #[cfg(windows)]
@@ -77,18 +80,14 @@ pub fn run() {
             commands::inspector::check_codemie,
             commands::inspector::check_codemie_version,
             commands::inspector::check_profile_status,
+            commands::handshake::check_handshake_state,
             commands::inspector::git_binary_path,
             commands::inspector::node_binary_path,
             commands::codemie_config::read_codemie_config,
             commands::installer::get_platform_info,
             commands::installer::temp_dir,
-            #[cfg(not(windows))]
-            commands::installer::node_pkg_url,
             commands::installer::latest_lts_node_version,
             commands::installer::fetch_codemie_latest,
-            #[cfg(not(windows))]
-            commands::installer::install_node,
-            commands::installer::install_git_clt,
             commands::downloader::download_file,
             commands::pty::spawn_pty,
             commands::pty::pty_input,

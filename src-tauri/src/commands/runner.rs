@@ -146,11 +146,15 @@ pub(crate) async fn self_update_direct(
     node_exe: &std::path::Path,
     cli_entry: &std::path::Path,
 ) -> CmdResult<String> {
-    let out = tokio::process::Command::new(node_exe)
-        .args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")])
-        .output()
-        .await
-        .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        tokio::process::Command::new(node_exe)
+            .args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")])
+            .output(),
+    )
+    .await
+    .map_err(|_| crate::error::InstallerError::Other("self-update timed out after 120 s".into()))?
+    .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -167,9 +171,8 @@ pub(crate) async fn self_update_direct(
 /// populated; falls back to the `codemie` shim on PATH via `cmd.exe /c`.
 /// Returns stdout on exit 0; serializes as an error string on non-zero exit.
 #[tauri::command]
-pub async fn run_self_update(
-    state: tauri::State<'_, crate::state::AppState>,
-) -> CmdResult<String> {
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) -> CmdResult<String> {
     #[cfg(windows)]
     {
         let node = &state.node_exe_path;

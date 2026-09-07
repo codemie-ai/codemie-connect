@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "head": "0b5b0b731429041d96f88d86732495facc7dcefc",
+  "feature_id": "runprobe-zero-step-guard",
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_command": "npx playwright test --config=playwright.config.ts",
+  "app_url": "http://localhost:8935/index.html",
+  "screenshot_path": "evidence/screenshots/runprobe-zero-step-guard-emits-probe-err-when-no-steps-match.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "tests_run": 2,
+  "tests_passed": 2,
+  "test_names": [
+    "runProbe zero-step guard emits PROBE_ERR when no steps match the safe set",
+    "runProbe does not fire the zero-step guard when steps match the safe set"
+  ],
+  "notes": "Test 3: with stale step IDs (1.1, 1.3) in probe mode, smoke_emit receives 'PROBE_ERR no steps matched the probe filter — safe set out of date' followed by 'PROBE_DONE'. Test 4: with current step IDs (2.3.3, 2.3.5, 2.4) in probe mode, the zero-step guard does not fire, wizard shows 3 step rows."
+}

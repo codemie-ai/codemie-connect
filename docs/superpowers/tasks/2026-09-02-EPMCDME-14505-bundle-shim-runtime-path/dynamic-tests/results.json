@@ -1,0 +1,250 @@
+{
+  "config": {
+    "argv": [
+      "C:\\Program Files\\nodejs\\node.exe",
+      "C:\\Work\\codemie\\codemie-claude-installer-macos\\node_modules\\@playwright\\test\\cli.js",
+      "test",
+      "--config=playwright.config.ts"
+    ],
+    "configFile": "C:\\Work\\codemie\\codemie-claude-installer-macos\\docs\\superpowers\\tasks\\2026-09-02-EPMCDME-14505-bundle-shim-runtime-path\\dynamic-tests\\playwright.config.ts",
+    "rootDir": "C:/Work/codemie/codemie-claude-installer-macos/docs/superpowers/tasks/2026-09-02-EPMCDME-14505-bundle-shim-runtime-path/dynamic-tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "C:/Work/codemie/codemie-claude-installer-macos/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "C:/Work/codemie/codemie-claude-installer-macos/docs/superpowers/tasks/2026-09-02-EPMCDME-14505-bundle-shim-runtime-path/dynamic-tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "results.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.62.1",
+    "workers": 4,
+    "webServer": {
+      "command": "node static-server.mjs",
+      "port": 8935,
+      "reuseExistingServer": false
+    }
+  },
+  "suites": [
+    {
+      "title": "install-only-steps.spec.ts",
+      "file": "install-only-steps.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "install-only tile enters wizard with the three current steps",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1788,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-04T14:16:52.027Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\install-only-steps-install-03566-ith-the-three-current-steps\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "98ca1e9deb1d98a82d92-f587780b984d4679ff05",
+          "file": "install-only-steps.spec.ts",
+          "line": 82,
+          "column": 1
+        },
+        {
+          "title": "install-only with stale steps renders an empty wizard — confirms IDs are tightly scoped",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 970,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-04T14:16:54.419Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\install-only-steps-install-4d06a-irms-IDs-are-tightly-scoped\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "98ca1e9deb1d98a82d92-d5d016f89cbc025df05e",
+          "file": "install-only-steps.spec.ts",
+          "line": 113,
+          "column": 1
+        },
+        {
+          "title": "runProbe zero-step guard emits PROBE_ERR when no steps match the safe set",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1004,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-04T14:16:55.428Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\install-only-steps-runProb-8bb42-no-steps-match-the-safe-set\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "98ca1e9deb1d98a82d92-e02732470f9ac8b68d4a",
+          "file": "install-only-steps.spec.ts",
+          "line": 135,
+          "column": 1
+        },
+        {
+          "title": "runProbe does not fire the zero-step guard when steps match the safe set",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3495,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-04T14:16:56.465Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\install-only-steps-runProb-aedbe-en-steps-match-the-safe-set\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "98ca1e9deb1d98a82d92-6e45478dfc6a8e4a0514",
+          "file": "install-only-steps.spec.ts",
+          "line": 165,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-09-04T14:16:49.754Z",
+    "duration": 11256.514000000001,
+    "expected": 4,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}
