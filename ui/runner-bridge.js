@@ -38,6 +38,7 @@ export const inspector = {
   checkCodemie: () => invoke('check_codemie'),
   checkCodemieVersion: () => invoke('check_codemie_version'),
   checkHandshakeState: () => invoke('check_handshake_state'),
+  checkProfileStatus: () => invoke('check_profile_status'),
   gitBinaryPath: () => invoke('git_binary_path'),
   nodeBinaryPath: () => invoke('node_binary_path'),
 };

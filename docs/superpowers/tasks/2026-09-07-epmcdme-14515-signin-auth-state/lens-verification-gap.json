@@ -1,0 +1,20 @@
+[
+  {
+    "location": "ui/renderer.js ensureAuthenticated() — `unknown` state no longer blocks the auth gate",
+    "trigger_condition": "If the `unknown` branch were accidentally removed or the condition reverted, `unknown` would block the user, but no test would fail",
+    "guard_snippet": "assert that ensureAuthenticated() called with a mock returning { state: 'unknown' } resolves to true (does not invoke showNotice)",
+    "potential_consequence": "A regression that re-blocks users whose CLI output has no Auth Status row (e.g. a provider that omits it) would ship undetected; the Rust-layer tests only verify the parser returns 'unknown', not that the JS gate honours it",
+    "gap_shape": "regression-gap",
+    "consumer": "ensureAuthenticated() at ui/renderer.js:239, called before any runAction() that gates on auth",
+    "evidence": "Searched ui/test/ for 'ensureAuthenticated', 'checkProfileStatus', and 'profile_status' — no JS test exercises ensureAuthenticated() at all. The Rust test profile_status_no_auth_status_row_is_unknown_not_not_signed_in (inspector.rs:~303) verifies the parser output only. pty-bridge.test.mjs mocks invoke but does not import or call renderer.js."
+  },
+  {
+    "location": "ui/renderer.js ensureAuthenticated() — `no_profile` state newly added to the blocking branch",
+    "trigger_condition": "If the `no_profile` arm of the condition were dropped from ensureAuthenticated(), a user with no active profile would silently pass the gate; no JS test would catch it",
+    "guard_snippet": "assert that ensureAuthenticated() called with { state: 'no_profile' } resolves to false and invokes showNotice",
+    "potential_consequence": "A user who has not run `codemie setup` would bypass the auth gate and attempt to connect Claude Desktop without a profile, failing silently downstream; the Rust test for 'no_profile' (profile_status_no_active_profile in inspector.rs) only covers the parser",
+    "gap_shape": "regression-gap",
+    "consumer": "ensureAuthenticated() at ui/renderer.js:239",
+    "evidence": "Same search as above — no JS test for ensureAuthenticated() exists anywhere in ui/test/. The Rust parser test verifies state='no_profile' is emitted; the JS gating condition at renderer.js:249 is untested."
+  }
+]

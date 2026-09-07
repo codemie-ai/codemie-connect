@@ -1,0 +1,50 @@
+[
+  {
+    "location": "src-tauri/src/commands/inspector.rs:59",
+    "trigger_condition": "stdout is non-empty but auth info arrives only on stderr",
+    "guard_snippet": "let combined = format!(\"{stdout}\\n{stderr}\");",
+    "potential_consequence": "Auth Status row missed; parser returns `unknown`, gates pass when they should not"
+  },
+  {
+    "location": "src-tauri/src/commands/inspector.rs:86",
+    "trigger_condition": "Auth Status row text is `✗ Not authenticated` (no separate `Authentication required` line)",
+    "guard_snippet": "if lower.contains(\"authenticated\") && !lower.contains(\"not authenticated\") {",
+    "potential_consequence": "Substring match on `not authenticated` returns `signed_in`; user not blocked when they should be"
+  },
+  {
+    "location": "ui/renderer.js:275 (startSignIn)",
+    "trigger_condition": "`bridge.runner.runStream` rejects (IPC error or Rust error)",
+    "guard_snippet": "try { await bridge.runner.runStream(...); } catch { /* show error notice */ }",
+    "potential_consequence": "lines never collected, error check skipped, profile status never re-read, UI stale"
+  },
+  {
+    "location": "ui/renderer.js:287 (startSignIn)",
+    "trigger_condition": "`bridge.inspector.checkProfileStatus()` rejects after login stream completes",
+    "guard_snippet": "const st = await bridge.inspector.checkProfileStatus().catch(() => ({ state: 'unknown', detail: '' }));",
+    "potential_consequence": "`updateIdentityAuthStatus` never called; identity bar left showing pre-login state"
+  },
+  {
+    "location": "ui/renderer.js:271 (startSignIn)",
+    "trigger_condition": "function invoked a second time while `runStream` is still running",
+    "guard_snippet": "let signingIn = false; if (signingIn) return; signingIn = true; try { ... } finally { signingIn = false; }",
+    "potential_consequence": "Two concurrent `codemie profile login` streams race; output interleaved, state unpredictable"
+  },
+  {
+    "location": "ui/renderer.js:244-246 (ensureAuthenticated catch)",
+    "trigger_condition": "transient IPC error causes `checkProfileStatus` to reject",
+    "guard_snippet": "st = { state: 'unknown', detail: '' }; /* let unknown pass through */",
+    "potential_consequence": "Transient error maps to `not_signed_in`; user sees blocking modal even when signed in"
+  },
+  {
+    "location": "ui/signin-parse.js:3 (findLoginError)",
+    "trigger_condition": "`lines` parameter is `null` or `undefined`",
+    "guard_snippet": "if (!Array.isArray(lines)) return null;",
+    "potential_consequence": "TypeError thrown; startSignIn promise rejects, profile status re-read skipped"
+  },
+  {
+    "location": "src-tauri/src/commands/inspector.rs:60-65 (no_profile branch)",
+    "trigger_condition": "`No active profile found` message arrives on stderr while stdout is non-empty",
+    "guard_snippet": "merge stdout+stderr before all sentinel checks (same fix as finding 1)",
+    "potential_consequence": "`no_profile` state not returned; parser falls through to `unknown`; no-profile case silently passes gates"
+  }
+]

@@ -10,6 +10,8 @@ import * as stepsUI from './steps-ui.js';
 import { initLog, appendLine } from './log.js';
 import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeTerminal } from './terminal.js';
 import * as bridge from './runner-bridge.js';
+import { findLoginError } from './signin-parse.js';
+import { isBlockedState } from './auth-gate.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -244,6 +246,22 @@ function renderIdentity(cfg) {
   set('identity-project', cfg.project);
 }
 
+// Updates the identity bar's auth-status element from a ProfileStatus shape.
+// Reused by the sign-in handler (Task 3) after login completes.
+function updateIdentityAuthStatus(st) {
+  const el = document.getElementById('identity-auth-status');
+  if (!el) return;
+  if (st.state === 'signed_in') {
+    el.textContent = st.detail || 'Signed in';
+  } else if (st.state === 'unknown') {
+    el.textContent = 'Auth status unknown';
+  } else if (st.state === 'no_profile') {
+    el.textContent = 'No profile';
+  } else {
+    el.textContent = 'Not signed in';
+  }
+}
+
 // ---- CLI version banner ----
 // The badge reports whether an update exists; the banner reports whether the
 // user still wants to be told. They are separate, which is why dismissing the
@@ -309,14 +327,16 @@ async function runAction(title, cmd, returnView = 'home', hint) {
 // Verify the active CodeMie profile is signed in via `codemie profile status`
 // (parsed live in Rust — not a hardcoded check). Returns true if authenticated;
 // otherwise shows a blocking notice that points at the full installation.
+// Gates only on not_signed_in and no_profile; unknown is treated as authenticated
+// so a profile whose provider omits an Auth Status row never blocks the user.
 async function ensureAuthenticated() {
   let st;
   try {
-    st = await invoke('check_profile_status');
+    st = await bridge.inspector.checkProfileStatus();
   } catch {
-    st = { authenticated: false, detail: '' };
+    st = { state: 'not_signed_in', detail: '' };
   }
-  if (!st.authenticated) {
+  if (isBlockedState(st.state)) {
     showNotice({
       title: 'CodeMie isn’t signed in',
       message:
@@ -327,6 +347,47 @@ async function ensureAuthenticated() {
     return false;
   }
   return true;
+}
+
+// Launches `codemie profile login`, streams output, surfaces any error line via
+// showNotice, then re-reads profile status. Does NOT trust the exit code — the
+// CLI exits 0 on some failure paths; stdout is the source of truth.
+// --url is not required: the CLI infers codeMieUrl from the active profile.
+// Sign-in button UI surface is provided by EPMCDME-14589; startSignIn is defined
+// here so it is available when that ticket wires it.
+async function startSignIn() {
+  hideNotice();
+  try {
+    const lines = [];
+    // run_stream takes a command string, not an array — matches all existing callers
+    await bridge.runner.runStream('codemie profile login', (line) => { lines.push(line); });
+    // Exit code is ignored — profile login exits 0 on failure; scan stdout instead.
+    const errorLine = findLoginError(lines);
+    if (errorLine) {
+      showNotice({
+        title: 'Sign in failed',
+        message: errorLine,
+        primaryLabel: 'OK',
+        primaryAction: hideNotice,
+      });
+    }
+  } catch (err) {
+    showNotice({
+      title: 'Sign in failed',
+      message: err?.message ?? 'An unexpected error occurred during sign-in.',
+      primaryLabel: 'OK',
+      primaryAction: hideNotice,
+    });
+  }
+  // Always re-read profile status; never assume success from absence of an error line.
+  // Falls back to the safe unknown state if the IPC call itself rejects.
+  let st;
+  try {
+    st = await bridge.inspector.checkProfileStatus();
+  } catch {
+    st = { state: 'unknown', detail: '' };
+  }
+  updateIdentityAuthStatus(st);
 }
 
 async function runAnalytics() {
@@ -468,12 +529,11 @@ async function boot() {
     // Silently ignore — offline or CLI not installed
   });
 
-  // Identity bar: live auth status. EPMCDME-14515 rewrites check_profile_status
-  // into four states and must update this caller as well as the Connections one.
-  invoke('check_profile_status').then((st) => {
-    document.getElementById('identity-auth-status').textContent = st.authenticated ? 'Signed in' : 'Not signed in';
+  // Identity bar: live auth status.
+  bridge.inspector.checkProfileStatus().then((st) => {
+    updateIdentityAuthStatus(st);
   }).catch(() => {
-    document.getElementById('identity-auth-status').textContent = 'Not signed in';
+    updateIdentityAuthStatus({ state: 'not_signed_in', detail: '' });
   });
 
   // Identity bar: profile / model / project / account, read from the config file.
