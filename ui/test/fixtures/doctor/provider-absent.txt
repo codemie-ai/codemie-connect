@@ -1,0 +1,27 @@
+Node Version:
+  ✓ v20.11.0 detected
+
+Npm:
+  ✓ 10.2.4 detected
+
+Python:
+  ✓ 3.11.4 detected
+
+Uv:
+  ✓ 0.4.18 detected
+
+AWS CLI:
+  ✓ 2.15.0 detected
+
+Active Profile:
+  ⚠ No active profile configured
+      Run: codemie setup
+
+JWT Auth:
+  ✓ Authenticated
+
+Agents:
+  ✓ 3 agents installed
+  ✓ All agents up to date
+
+⚠ Some issues detected. Review the checks above.
