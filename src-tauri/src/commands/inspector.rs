@@ -96,34 +96,86 @@ pub async fn check_codemie_version() -> String {
 }
 
 /// CodeMie profile auth status, parsed from `codemie profile status`.
-#[derive(Serialize, Default, Clone)]
+#[derive(Serialize, Clone)]
 pub struct ProfileStatus {
-    pub authenticated: bool,
+    pub state: String,
     pub detail: String,
 }
 
-/// Pure parser for `codemie profile status` output. The CLI prints an "Auth Status"
-/// row in one of three states: "✓ Authenticated (expires in 23h 50m)", "✗ Expired",
-/// or "✗ Not authenticated". Returns (authenticated, detail-line). This reads the
-/// real command output rather than a hardcoded value.
-fn parse_profile_status(stdout: &str, stderr: &str) -> (bool, String) {
+impl Default for ProfileStatus {
+    fn default() -> Self {
+        ProfileStatus {
+            state: "unknown".into(),
+            detail: String::new(),
+        }
+    }
+}
+
+/// Pure parser for `codemie profile status` output.
+/// Returns a `ProfileStatus` with `state` set to one of:
+/// `"signed_in"` | `"not_signed_in"` | `"unknown"` | `"no_profile"`.
+fn parse_profile_status(stdout: &str, stderr: &str) -> ProfileStatus {
+    // CR-001: always merge both streams so stderr auth errors are never discarded.
     let combined = format!("{stdout}\n{stderr}");
-    let detail = combined
+    if combined.contains("No active profile found") {
+        return ProfileStatus {
+            state: "no_profile".into(),
+            detail: combined.trim().to_string(),
+        };
+    }
+    if combined.contains("Authentication required to use this profile") {
+        let detail = combined
+            .lines()
+            .find(|l| l.trim_start().starts_with('✗'))
+            .unwrap_or("")
+            .to_string();
+        return ProfileStatus {
+            state: "not_signed_in".into(),
+            detail,
+        };
+    }
+    // CR-003: standalone "✗ Token expired" without an "Authentication required" line.
+    if let Some(exp_line) = combined
+        .lines()
+        .find(|l| l.trim_start().starts_with('✗') && l.to_lowercase().contains("expired"))
+    {
+        return ProfileStatus {
+            state: "not_signed_in".into(),
+            detail: exp_line.to_string(),
+        };
+    }
+    // U+2502 (│) separators — look for the Auth Status row. Trimmed and matched
+    // case-insensitively, same as the pre-14515 parser.
+    if let Some(auth_line) = combined
         .lines()
         .map(str::trim)
-        .find(|l| {
-            let low = l.to_lowercase();
-            low.contains("auth status") || low.contains("authenticated") || low.contains("expired")
-        })
-        .unwrap_or("")
-        .to_string();
-    let low = combined.to_lowercase();
-    // Authenticated only when the positive marker is present and neither negative
-    // state is. "expires in …" does not contain "expired", so it is not matched.
-    let authenticated = low.contains("authenticated")
-        && !low.contains("not authenticated")
-        && !low.contains("expired");
-    (authenticated, detail)
+        .find(|l| l.to_lowercase().contains("auth status"))
+    {
+        let lower = auth_line.to_lowercase();
+        if lower.contains("expired") {
+            return ProfileStatus {
+                state: "not_signed_in".into(),
+                detail: auth_line.to_string(),
+            };
+        }
+        // CR-002: explicit "not authenticated" check must come before the positive one.
+        if lower.contains("not authenticated") {
+            return ProfileStatus {
+                state: "not_signed_in".into(),
+                detail: auth_line.to_string(),
+            };
+        }
+        if lower.contains("authenticated") {
+            return ProfileStatus {
+                state: "signed_in".into(),
+                detail: auth_line.to_string(),
+            };
+        }
+    }
+    ProfileStatus {
+        state: "unknown".into(),
+        detail: String::new(),
+    }
 }
 
 /// Runs `codemie profile status` and reports whether the active profile is
@@ -137,11 +189,7 @@ pub async fn check_profile_status() -> ProfileStatus {
     #[cfg(windows)]
     let status_cmd = "codemie profile status";
     let r = capture(status_cmd, None).await;
-    let (authenticated, detail) = parse_profile_status(&r.stdout, &r.stderr);
-    ProfileStatus {
-        authenticated,
-        detail,
-    }
+    parse_profile_status(&r.stdout, &r.stderr)
 }
 
 /// Find a binary by checking well-known install locations, then falling back to
@@ -230,33 +278,95 @@ mod tests {
 
     // --- check_profile_status: pure `codemie profile status` parsing (home-launcher) ---
 
+    // Row 1 — signed_in
     #[test]
-    fn profile_status_authenticated_is_true_and_keeps_detail() {
-        let out = "Auth Status  │ ✓ Authenticated (expires in 23h 50m)";
-        let (ok, detail) = parse_profile_status(out, "");
-        assert!(ok);
-        assert!(detail.contains("Authenticated"));
+    fn profile_status_authenticated() {
+        let stdout =
+            "│ Auth Status │ ✓ Authenticated (expires in 2h) │\n│ Provider │ ai-run-sso │\n";
+        let r = parse_profile_status(stdout, "");
+        assert_eq!(r.state, "signed_in");
+        assert!(r.detail.contains("Authenticated"));
     }
 
+    // Row 2 — not_signed_in, expired
+    // NOTE: No real-CLI-output fixture exists for this row (the available SSO session is
+    // fresh and cannot be aged; credentials are encrypted at rest). This test asserts
+    // against the documented string pattern only. Documented in MR description.
     #[test]
-    fn profile_status_expired_is_not_authenticated() {
-        assert!(!parse_profile_status("Auth Status  │ ✗ Expired", "").0);
+    fn profile_status_expired_no_real_fixture_pattern_only() {
+        let stdout = "│ Auth Status │ Expired │\n│ Provider │ ai-run-sso │\n";
+        let r = parse_profile_status(stdout, "");
+        assert_eq!(r.state, "not_signed_in");
+        assert!(r.detail.to_lowercase().contains("expired"));
     }
 
+    // Row 3 — unknown: profile rows present, no Auth Status row; detail must be ""
     #[test]
-    fn profile_status_not_authenticated_is_false() {
-        assert!(!parse_profile_status("Auth Status  │ ✗ Not authenticated", "").0);
+    fn profile_status_no_auth_status_row_is_unknown_not_not_signed_in() {
+        let stdout =
+            "│ Provider │ anthropic-subscription │\n│ Profile  │ MertPersonal           │\n";
+        let r = parse_profile_status(stdout, "");
+        assert_eq!(r.state, "unknown");
+        assert_eq!(r.detail, "");
     }
 
+    // Row 4 — not_signed_in: "✗ …" reason line + warning (verified fixture)
+    #[test]
+    fn profile_status_sso_credentials_missing_is_not_signed_in() {
+        let stdout = "✗ No SSO credentials found for https://codemie.lab.epam.com. Please run: codemie profile login --url https://codemie.lab.epam.com\n⚠️  Authentication required to use this profile\n";
+        let r = parse_profile_status(stdout, "");
+        assert_eq!(r.state, "not_signed_in");
+        assert!(r.detail.starts_with("✗ No SSO credentials found"));
+    }
+
+    // Row 5 — no_profile (verified fixture)
+    #[test]
+    fn profile_status_no_active_profile() {
+        let stdout = "No active profile found. Run \"codemie setup\" to create one.\n";
+        let r = parse_profile_status(stdout, "");
+        assert_eq!(r.state, "no_profile");
+        assert!(r.detail.contains("No active profile found"));
+    }
+
+    // Empty output fallback
+    #[test]
+    fn profile_status_empty_output_is_unknown() {
+        let r = parse_profile_status("", "");
+        assert_eq!(r.state, "unknown");
+        assert_eq!(r.detail, "");
+    }
+
+    // "expires in" must not be mistaken for "expired"
     #[test]
     fn profile_status_expires_in_future_not_mistaken_for_expired() {
-        // "expires in …" must NOT be read as the expired state.
-        assert!(parse_profile_status("✓ Authenticated (expires in 1h 2m)", "").0);
+        let stdout = "│ Auth Status │ ✓ Authenticated (expires in 3d) │\n";
+        let r = parse_profile_status(stdout, "");
+        assert_eq!(r.state, "signed_in");
     }
 
+    // CR-001 regression: non-empty stdout must not shadow stderr auth errors
     #[test]
-    fn profile_status_empty_output_is_false() {
-        assert_eq!(parse_profile_status("", ""), (false, String::new()));
+    fn profile_status_stderr_merged_when_stdout_nonempty() {
+        let stdout = "some unrelated line\n";
+        let stderr = "No active profile found. Run \"codemie setup\" to create one.\n";
+        let r = parse_profile_status(stdout, stderr);
+        assert_eq!(r.state, "no_profile");
+    }
+
+    // CR-002 regression: "Not authenticated" Auth Status row must return not_signed_in
+    #[test]
+    fn profile_status_not_authenticated_is_not_signed_in() {
+        let stdout = "│ Auth Status │ Not authenticated │\n│ Provider │ some-provider │\n";
+        let r = parse_profile_status(stdout, "");
+        assert_eq!(r.state, "not_signed_in");
+    }
+
+    // CR-003: standalone "✗ Token expired" line (no table row, no "Authentication required")
+    #[test]
+    fn profile_status_standalone_token_expired_is_not_signed_in() {
+        let stdout = "✗ Token expired\n";
+        let r = parse_profile_status(stdout, "");
+        assert_eq!(r.state, "not_signed_in");
     }
 
     // --- parse_codemie_version ---

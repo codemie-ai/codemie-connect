@@ -1,1 +1,1 @@
-{"schema":1,"checked_at":"2026-09-02T16:21:03Z","passed":true,"checks":{"superpowers":"6.2.0","node":"v26.4.0","git":"2.55.0.windows.5"},"fingerprint":"git=2.55.0.windows.5|node=v26.4.0|superpowers=6.2.0"}
+{"schema":1,"checked_at":"2026-09-07T14:41:32Z","passed":true,"checks":{"superpowers":"6.3.0","node":"v24.6.0","git":"2.50.1"},"fingerprint":"git=2.50.1|node=v24.6.0|superpowers=6.3.0"}

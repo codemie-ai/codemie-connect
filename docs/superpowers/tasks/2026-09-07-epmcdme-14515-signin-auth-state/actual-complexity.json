@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "generated": "2026-09-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Handles authentication state — `parse_profile_status` is a new Rust parser with no prior precedent in the codebase. Exit code is deliberately ignored in favour of stdout parsing (unreliable CLI contract). CR-001/002/003 regression tests document edge cases where naive parsing would yield wrong auth state. Auth red flag bumped base M to L."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "8 files changed (diffstat): 4 modified (inspector.rs, renderer.js, runner-bridge.js, doctor.json) and 4 new (auth-gate.js, signin-parse.js, auth-gate.test.mjs, signin.test.mjs) across src-tauri/src/commands/, ui/, and ui/test/."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Four distinct layers touched: UI (renderer.js, auth-gate.js, signin-parse.js), API/IPC bridge (runner-bridge.js adding checkProfileStatus), Service (inspector.rs adding ProfileStatus struct and check_profile_status command), and External (codemie CLI invoked via `codemie profile status` and `codemie profile login`)."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M (3) to L (4): affects authentication/authorization — auth state parsing and sign-in flow introduced"
+  ],
+  "split_recommendation": null
+}
