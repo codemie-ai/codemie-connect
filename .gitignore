@@ -19,6 +19,13 @@ assets/bin/
 
 # SDLC Factory local run journals
 .ai-run/runs/
+
+# SDLC Factory task-dir artifacts intentionally excluded from commit-artifacts:
+# machine/environment-specific or regenerable from git history (see commit-artifacts script).
+docs/superpowers/tasks/*/.state.json
+docs/superpowers/tasks/*/gate-plan.json
+docs/superpowers/tasks/*/*.diff
+docs/superpowers/tasks/*/.test.log
 apple_developer
 .env.signing
 .superpowers/
