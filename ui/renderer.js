@@ -10,6 +10,9 @@ import * as stepsUI from './steps-ui.js';
 import { initLog, appendLine } from './log.js';
 import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeTerminal } from './terminal.js';
 import * as bridge from './runner-bridge.js';
+import { parseDoctorOutput } from './doctor-parse.js';
+import { groupDoctorResults } from './doctor-groups.js';
+import { renderHealth, showLoading, showLogError } from './health-ui.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -162,6 +165,11 @@ function emit(event, payload) {
 // second Engine be constructed over the step list the first is still mutating.
 let installRunning = false;
 
+// True once the Health screen's own doctor run has fired for this app
+// session — the auto-run-on-first-visit happens exactly once; "Check
+// everything again" is the only way to re-run after that.
+let healthChecked = false;
+
 function setInstallRunning(on) {
   installRunning = on;
   document.getElementById('app-sidebar').dataset.busy = on ? '1' : '';
@@ -304,6 +312,29 @@ async function runAction(title, cmd, returnView = 'home', hint) {
     writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
     handlePtyExit();
   }
+}
+
+// Health screen's own doctor invocation — independent of wizard step 2.4,
+// which stays exit-code-only. Filters to stdout lines only; doctor's own
+// prompt/echo line ('> codemie doctor') and any stderr noise are dropped.
+async function runHealthCheck() {
+  showLoading(views.health);
+  const lines = [];
+  await bridge.runner.runStream('codemie doctor', (t, tag) => {
+    if (tag === 'stdout') lines.push(t);
+  });
+  const grouped = groupDoctorResults(parseDoctorOutput(lines.join('\n')));
+  renderHealth(views.health, grouped, {
+    onRecheck: runHealthCheck,
+    onNavigate: (view) => showView(view),
+    onOpenLog: async () => {
+      try {
+        await invoke('open_log');
+      } catch (e) {
+        showLogError(views.health, `Can't read your log: ${(e && e.message) || e}`);
+      }
+    },
+  });
 }
 
 // Verify the active CodeMie profile is signed in via `codemie profile status`
@@ -562,6 +593,10 @@ async function boot() {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
       showView(btn.dataset.view);
+      if (btn.dataset.view === 'health' && !healthChecked) {
+        healthChecked = true;
+        runHealthCheck();
+      }
     });
   });
   showView('home');
