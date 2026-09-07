@@ -23,24 +23,27 @@ pub fn run() {
                 log::error!("inject_bundled_bin_path failed");
             }
 
-            // Build AppState with Windows-specific absolute paths for bundled node.exe and CLI.
-            // The node\ and cli\ bundle.resources entries live in tauri.windows.conf.json
-            // (staged by scripts/stage-runtime.ps1). If resource_dir() fails, both paths
-            // stay empty and run_self_update falls back to the codemie.cmd shim on PATH.
-            #[cfg(windows)]
+            // The bundled runtime and CLI entry live under resource_dir(): node/node.exe
+            // on Windows (tauri.windows.conf.json), node/bin/node on macOS
+            // (tauri.macos.conf.json). If resource_dir() fails, both paths stay empty and
+            // run_self_update falls back to the codemie shim on PATH.
             let (node_exe, cli_entry) = app
                 .path()
                 .resource_dir()
                 .map(|res| {
-                    (
-                        res.join("node").join("node.exe"),
-                        res.join("cli")
-                            .join("node_modules")
-                            .join("@codemieai")
-                            .join("code")
-                            .join("bin")
-                            .join("codemie.js"),
-                    )
+                    let node = if cfg!(windows) {
+                        res.join("node").join("node.exe")
+                    } else {
+                        res.join("node").join("bin").join("node")
+                    };
+                    let entry = res
+                        .join("cli")
+                        .join("node_modules")
+                        .join("@codemieai")
+                        .join("code")
+                        .join("bin")
+                        .join("codemie.js");
+                    (node, entry)
                 })
                 .unwrap_or_else(|e| {
                     log::warn!("resource_dir() failed: {e}; absolute CLI invocation unavailable");
@@ -50,9 +53,7 @@ pub fn run() {
             app.manage(AppState {
                 pre_injection_path,
                 bundled_injected,
-                #[cfg(windows)]
                 node_exe_path: node_exe,
-                #[cfg(windows)]
                 cli_entry_path: cli_entry,
                 ..AppState::default()
             });

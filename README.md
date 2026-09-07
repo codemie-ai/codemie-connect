@@ -83,6 +83,14 @@ cargo tauri dev
 
 ## Build a shareable DMG
 
+The DMG ships the CodeMie CLI with its own Node runtime (Apple Silicon). Build it with the verifying script:
+
+```bash
+./build-installer.sh
+```
+
+It downloads the pinned Node (`runtime.json`), installs the CLI tree under `assets/codemie-cli/`, asserts every bundled artifact before and after the Tauri build, and prints the DMG path. The plain commands below skip those checks and, until `scripts/stage-runtime.sh` has run once, fail with `resource path ... doesn't exist`.
+
 ```bash
 cd src-tauri
 

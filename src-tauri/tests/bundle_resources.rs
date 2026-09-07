@@ -43,7 +43,7 @@ fn resources_map() -> HashMap<String, String> {
 fn bundle_resources_resolve_one_to_one() {
     let map = resources_map();
     if map.is_empty() {
-        // Nothing declared for this platform (macOS until EPMCDME-14572); nothing can flatten.
+        // Nothing declared for this platform; nothing can flatten.
         return;
     }
 

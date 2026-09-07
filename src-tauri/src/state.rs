@@ -14,13 +14,11 @@ use crate::commands::pty::PtyHandle;
 pub struct AppState {
     pub remembered: Mutex<Vec<String>>,
     pub pty: Mutex<Option<(String, PtyHandle)>>,
-    /// Absolute path to the bundled node.exe (Windows only).
-    /// Populated in the `setup` closure from `resource_dir()`.
-    #[cfg(windows)]
+    /// Absolute path to the bundled node binary: `node/node.exe` on Windows,
+    /// `node/bin/node` on macOS. Populated in the `setup` closure from `resource_dir()`.
     pub node_exe_path: std::path::PathBuf,
-    /// Absolute path to the bundled CLI entry-point (Windows only).
+    /// Absolute path to the bundled CLI entry-point (`bin/codemie.js`).
     /// Populated in the `setup` closure from `resource_dir()`.
-    #[cfg(windows)]
     pub cli_entry_path: std::path::PathBuf,
     /// The value of the PATH environment variable captured before
     /// `inject_bundled_bin_path` prepends the bundled bin directory.

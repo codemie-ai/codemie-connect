@@ -42,8 +42,9 @@ Gates ordered fastest to slowest. All Rust commands run from `src-tauri/`; JS co
 
 ### Build
 
-**Run**: `cd src-tauri && CI=true cargo tauri build`
-**Pass**: DMG lands in `src-tauri/target/release/bundle/dmg/`
-**Fail**: Rust compile error or Tauri bundle error printed to stderr
-**Universal build**: `rustup target add x86_64-apple-darwin aarch64-apple-darwin && CI=true cargo tauri build --target universal-apple-darwin`
+**Prerequisite (both platforms)**: the bundled runtime must be staged once per checkout or `tauri-build` aborts every cargo command with `resource path ... doesn't exist`. macOS: `scripts/stage-runtime.sh`. Windows: `scripts\stage-runtime.ps1`. The staged tree is gitignored and survives branch switches; worktrees need their own.
+**Run**: `./build-installer.sh` (macOS) or `.\build-installer.ps1` (Windows). Both stage, assert every artifact, build, then assert the produced bundle. There is no switch to skip verification.
+**Pass**: `Done. All assertions passed.` with the app and DMG (macOS) or the NSIS setup exe (Windows) paths
+**Fail**: the first failing assertion names the missing, empty or non-executable path
+**Plain Tauri build**: `cd src-tauri && CI=true cargo tauri build` still works but verifies nothing; use it only for UI-only changes
 **Skip if**: logic-only change verified by tests; skip to save ~2–5 min build time

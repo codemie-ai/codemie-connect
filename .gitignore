@@ -25,4 +25,5 @@ apple_developer
 /CLAUDE.local.md
 .idea/test-results/
 assets/windows/node/
+assets/macos/node/
 assets/staging-manifest.json

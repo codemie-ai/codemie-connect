@@ -1,0 +1,14 @@
+#!/bin/sh
+# CodeMie CLI shim. Runs the bundled Node runtime against the bundled CLI tree.
+# $(dirname "$0")/.. is Contents/Resources, so this file is correct wherever the
+# app is installed and needs no update if productName changes.
+RES="$(cd "$(dirname "$0")/.." && pwd)"
+if [ ! -x "$RES/node/bin/node" ]; then
+  echo "error: bundled node runtime not found: $RES/node/bin/node" 1>&2
+  exit 1
+fi
+if [ ! -f "$RES/cli/node_modules/@codemieai/code/bin/codemie.js" ]; then
+  echo "error: bundled CLI entry not found: $RES/cli/node_modules/@codemieai/code/bin/codemie.js" 1>&2
+  exit 1
+fi
+exec "$RES/node/bin/node" "$RES/cli/node_modules/@codemieai/code/bin/codemie.js" "$@"
