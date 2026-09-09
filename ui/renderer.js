@@ -487,7 +487,15 @@ async function boot() {
   // of the production boot path.
   if (flags.dev) {
     const { startSetup } = await import('./setup-driver.js');
-    window.__codemie = { showView, startSetup };
+    const { createSetupView } = await import('./setup-view.js');
+    window.__codemie = {
+      showView,
+      startSetup,
+      startGuidedSetup: () => {
+        showView('setup');
+        return createSetupView(document.getElementById('setup-view')).start();
+      },
+    };
   }
 
   allSteps = await invoke('get_steps');
