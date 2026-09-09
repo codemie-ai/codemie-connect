@@ -7,7 +7,11 @@
 // A line is an open question iff it starts with '?' (ignoring leading whitespace).
 // Answered inquirer lines also keep their '?' prefix — so the OPEN prompt is always the
 // LAST question line on screen, not the first.
-const isQ = (l) => l.trimStart().startsWith('?');
+// Exported so setup-driver.js's idle-check (CR-004 fix) can reuse this exact predicate to
+// tell "no question is on screen at all" (CLI still doing background work) apart from
+// "a question is on screen that detectPrompt just didn't classify" (a real stall), instead
+// of reimplementing a second, possibly-divergent rule.
+export const isQ = (l) => l.trimStart().startsWith('?');
 
 // Ordered: all named anchors first; credential catch-all last.
 const PROMPTS = [

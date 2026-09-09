@@ -1,0 +1,14 @@
+{"task_id":"task-1","status":"done","commit":"1608320","test_command":"node --test ui/test/terminal-suspend.test.mjs"}
+{"task_id":"task-2","status":"done","commit":"f77f003","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-3","status":"done","commit":"363740d","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-4","status":"done","commit":"b007f25","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-5","status":"done","commit":"2f1ddfc","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-6","status":"done","commit":"490dfd8","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-7","status":"done","commit":"a9dd17a","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-8","status":"done","commit":"3fbbe36","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-9","status":"done","commit":"b9a840d","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-10","status":"done","commit":"23a3101","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-11","status":"done","commit":"cefae8b","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-12","status":"done","commit":"09fbe41","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-13","status":"done","commit":"c14a0c9","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-14","status":"done","commit":"c14a0c9","test_command":"npm test && (cd src-tauri && cargo fmt --check && cargo clippy -- -D warnings && cargo test)"}

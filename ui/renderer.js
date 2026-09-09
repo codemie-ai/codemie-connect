@@ -478,7 +478,17 @@ async function boot() {
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
   // so the router is otherwise unreachable from devtools. CODEMIE_DEV=1 exposes
   // it for verification only.
-  if (flags.dev) window.__codemie = { showView };
+  //
+  // startSetup is exposed the same way and for the same reason: EPMCDME-14513
+  // owns the setup-view UI that will call it, and until that lands the driver
+  // has no caller in the app, so EPMCDME-14668's Definition of done ("one
+  // in-app smoke with a minimal onPrompt — a CODEMIE_DEV=1 console hook is
+  // enough") cannot be executed at all. Lazy-imported so the driver stays out
+  // of the production boot path.
+  if (flags.dev) {
+    const { startSetup } = await import('./setup-driver.js');
+    window.__codemie = { showView, startSetup };
+  }
 
   allSteps = await invoke('get_steps');
   stepsUI.renderSteps(stepListEl, allSteps);
