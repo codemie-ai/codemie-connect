@@ -70,8 +70,34 @@ export function showLoading(container) {
 }
 
 export function showLogError(container, message) {
-  const el = container.querySelector('.health-log-error');
-  if (!el) return;
+  // CR-003: showLoading() wipes the whole container, including this element.
+  // "Check everything again" can race a pending open_log rejection — when
+  // that rejection's handler finally runs, the lookup below would otherwise
+  // return null and drop the failure with no user-visible message. Recreate
+  // the banner rather than no-op, so the message is never silently lost.
+  let el = container.querySelector('.health-log-error');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'health-log-error';
+    container.appendChild(el);
+  }
   el.textContent = message;
   el.classList.remove('hidden');
+}
+
+// Explicit failure/empty-result state for the Health screen, rendered by
+// health-controller.js when the doctor run itself could not be trusted
+// (CR-005: zero stdout records look identical to a real all-clear; CR-006: a
+// runStream rejection must not leave the screen stuck on "Checking…"
+// forever). Always offers a retry so the user is never stranded.
+export function showRunError(container, message, onRetry) {
+  container.innerHTML = '';
+  const el = document.createElement('div');
+  el.className = 'health-error';
+  el.textContent = message;
+  container.appendChild(el);
+  const btn = document.createElement('button');
+  btn.textContent = 'Check everything again';
+  btn.onclick = () => onRetry && onRetry();
+  container.appendChild(btn);
 }

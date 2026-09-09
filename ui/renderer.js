@@ -10,9 +10,7 @@ import * as stepsUI from './steps-ui.js';
 import { initLog, appendLine } from './log.js';
 import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeTerminal } from './terminal.js';
 import * as bridge from './runner-bridge.js';
-import { parseDoctorOutput } from './doctor-parse.js';
-import { groupDoctorResults } from './doctor-groups.js';
-import { renderHealth, showLoading, showLogError } from './health-ui.js';
+import { createHealthController } from './health-controller.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -315,27 +313,20 @@ async function runAction(title, cmd, returnView = 'home', hint) {
 }
 
 // Health screen's own doctor invocation — independent of wizard step 2.4,
-// which stays exit-code-only. Filters to stdout lines only; doctor's own
-// prompt/echo line ('> codemie doctor') and any stderr noise are dropped.
-async function runHealthCheck() {
-  showLoading(views.health);
-  const lines = [];
-  await bridge.runner.runStream('codemie doctor', (t, tag) => {
-    if (tag === 'stdout') lines.push(t);
-  });
-  const grouped = groupDoctorResults(parseDoctorOutput(lines.join('\n')));
-  renderHealth(views.health, grouped, {
-    onRecheck: runHealthCheck,
-    onNavigate: (view) => showView(view),
-    onOpenLog: async () => {
-      try {
-        await invoke('open_log');
-      } catch (e) {
-        showLogError(views.health, `Can't read your log: ${(e && e.message) || e}`);
-      }
-    },
-  });
-}
+// which stays exit-code-only. The stdout-filter/parse/group pipeline and the
+// open-log failure path live in health-controller.js, which is unit-tested
+// directly (ui/test/health-controller.test.mjs); onFailure resets
+// healthChecked so a failed run does not permanently consume the one-shot
+// auto-run guard below (CR-006).
+const healthController = createHealthController({
+  container: views.health,
+  runStream: (cmd, onLine) => bridge.runner.runStream(cmd, onLine),
+  openLog: () => invoke('open_log'),
+  onNavigate: (view) => showView(view),
+  onFailure: () => {
+    healthChecked = false;
+  },
+});
 
 // Verify the active CodeMie profile is signed in via `codemie profile status`
 // (parsed live in Rust — not a hardcoded check). Returns true if authenticated;
@@ -595,7 +586,7 @@ async function boot() {
       showView(btn.dataset.view);
       if (btn.dataset.view === 'health' && !healthChecked) {
         healthChecked = true;
-        runHealthCheck();
+        healthController.run();
       }
     });
   });

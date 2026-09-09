@@ -41,3 +41,30 @@ test('summary reflects only what ran, no hardcoded total', () => {
   assert.deepEqual(withProvider, { passing: 2, total: 2 });
   assert.deepEqual(withoutProvider, { passing: 1, total: 1 });
 });
+
+// CR-001: the collapsed runtime row must get the same remedy treatment as a
+// per-name row when one of the four collapsed checks fails.
+test('CR-001: a failing runtime check gets a remedy on the collapsed row', () => {
+  const { rows } = groupDoctorResults([
+    { name: 'Node Version', status: 'error', message: 'not found', hint: 'Install Node 20+' },
+    ok('Npm'),
+    ok('Python'),
+    ok('Uv'),
+  ]);
+  const row = rows.find((r) => r.label === 'Everything CodeMie needs to run is included');
+  assert.equal(row.status, 'fail');
+  assert.equal(row.remedyText, 'Install Node 20+');
+  assert.deepEqual(row.action, { kind: 'recheck', label: 'Check again' });
+});
+
+// CR-002: a check name with two distinct failing detail lines must surface
+// both hints, not just the first match.
+test('CR-002: a check with two distinct failures surfaces both hints', () => {
+  const { rows } = groupDoctorResults([
+    { name: 'Agents', status: 'error', message: 'No agents installed', hint: 'Run: codemie install agent' },
+    { name: 'Agents', status: 'warn', message: 'Agent outdated', hint: 'Run: codemie update agent' },
+  ]);
+  const row = rows.find((r) => r.label === 'Agents');
+  assert.match(row.remedyText, /Run: codemie install agent/);
+  assert.match(row.remedyText, /Run: codemie update agent/);
+});

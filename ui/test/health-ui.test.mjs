@@ -89,7 +89,7 @@ function findByTagAndText(root, tag, text) {
 globalThis.document = { createElement: (tag) => makeEl(tag) };
 
 // ── Import module under test (after stub is in place) ───────────────────────
-const { renderHealth } = await import('../health-ui.js');
+const { renderHealth, showLoading, showLogError } = await import('../health-ui.js');
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -144,4 +144,17 @@ test('Check everything again calls onRecheck', () => {
   });
   container._findButton('Check everything again')._click();
   assert.ok(recalled);
+});
+
+// CR-003: showLoading() wipes the container (including the .health-log-error
+// element renderHealth built), which is exactly what "Check everything
+// again" does while an earlier open-log rejection is still pending. Once the
+// wipe has happened, showLogError must still surface the message rather than
+// silently no-op on a missing element.
+test('CR-003: showLogError recreates the error banner after the container was wiped', () => {
+  const container = makeEl('div');
+  renderHealth(container, { rows: [], summary: { passing: 0, total: 0 } }, {});
+  showLoading(container); // simulates a recheck racing ahead of a pending open_log rejection
+  showLogError(container, "Can't read your log: boom");
+  assert.ok(container._innerText().includes("Can't read your log: boom"));
 });

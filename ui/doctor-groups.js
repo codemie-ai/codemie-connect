@@ -16,6 +16,23 @@ const DEEP_LINKS = { Agents: { view: 'agents', label: 'Go to Agents' } };
 
 const worst = (items) => (items.some((r) => r.status === 'error' || r.status === 'warn') ? 'fail' : 'pass');
 
+// Builds the remedyText/action pair for a row from every failing item in the
+// group, not just the first (CR-002), so a check with two distinct failures
+// (e.g. Agents in the fixtures) surfaces both hints instead of silently
+// dropping the second. deepLink (when given) always wins the action slot;
+// otherwise a Check-again action is offered whenever any failing item has a
+// hint to act on.
+function remedyFor(items, status, deepLink) {
+  if (status !== 'fail') return { remedyText: undefined, action: undefined };
+  const failing = items.filter((r) => r.status === 'error' || r.status === 'warn');
+  const hints = [...new Set(failing.map((r) => r.hint).filter(Boolean))];
+  const remedyText = hints.length ? hints.join('\n') : undefined;
+  let action;
+  if (deepLink) action = { kind: 'navigate', ...deepLink };
+  else if (hints.length) action = { kind: 'recheck', label: 'Check again' };
+  return { remedyText, action };
+}
+
 export function groupDoctorResults(records) {
   const runtime = records.filter((r) => RUNTIME_NAMES.has(r.name));
   const rest = records.filter((r) => !RUNTIME_NAMES.has(r.name));
@@ -27,24 +44,27 @@ export function groupDoctorResults(records) {
 
   const rows = [];
   if (runtime.length) {
+    // CR-001: the collapsed row gets the same remedy treatment as a per-name
+    // row — previously it was pushed with only {group, label, status} and a
+    // failing runtime check (a missing binary) had no visible remedy at all.
+    const status = worst(runtime);
+    const { remedyText, action } = remedyFor(runtime, status, undefined);
     rows.push({
       group: 'codemie',
       label: 'Everything CodeMie needs to run is included',
-      status: worst(runtime),
+      status,
+      remedyText,
+      action,
     });
   }
   for (const [name, items] of byName) {
     const status = worst(items);
-    const failing = items.find((r) => r.status === 'error' || r.status === 'warn');
-    const deepLink = DEEP_LINKS[name];
-    let action;
-    if (status === 'fail' && deepLink) action = { kind: 'navigate', ...deepLink };
-    else if (status === 'fail' && failing?.hint) action = { kind: 'recheck', label: 'Check again' };
+    const { remedyText, action } = remedyFor(items, status, DEEP_LINKS[name]);
     rows.push({
       group: GROUP_BY_NAME[name] || 'codemie',
       label: name,
       status,
-      remedyText: status === 'fail' ? failing?.hint : undefined,
+      remedyText,
       action,
     });
   }
