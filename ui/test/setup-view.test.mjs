@@ -96,7 +96,7 @@ function findByClass(root, cls) {
 globalThis.document = { createElement: (tag) => makeEl(tag) };
 
 // ── Import module under test (after stub is in place) ───────────────────────
-const { createSetupView, deriveRowTitle, stripHint } = await import('../setup-view.js');
+const { createSetupView, deriveRowTitle, stripHint, renderOptionCards } = await import('../setup-view.js');
 
 function findRowById(container, id) {
   for (const child of container.children) {
@@ -436,6 +436,80 @@ test('double-rejection: the stored comparison base never advances past the origi
   const input = control._children.find((c) => c.type === 'text');
   input.value = 'final-name';
   submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+});
+
+// ── renderOptionCards ─────────────────────────────────────────────────────────
+
+test('renderOptionCards: splits an option string at the FIRST " - " into title/description', () => {
+  const [card] = renderOptionCards([
+    'CodeMie SSO - Enterprise SSO Authentication with centralized model management',
+  ]);
+  assert.deepEqual(card, {
+    title: 'CodeMie SSO',
+    description: 'Enterprise SSO Authentication with centralized model management',
+    recommended: false,
+  });
+});
+
+test('renderOptionCards: model fixture -- starred entry strips "⭐ " to title, recommended true', () => {
+  // Real parsed strings this module receives, per ui/setup-parse.js's parseOptions
+  // applied to ui/test/fixtures/setup/model.json lines 16-17:
+  //   "❯ ⭐ claude-sonnet-5 "  -> "⭐ claude-sonnet-5"
+  //   "  claude-4-5-sonnet "  -> "claude-4-5-sonnet"
+  const [starred, plain] = renderOptionCards(['⭐ claude-sonnet-5', 'claude-4-5-sonnet']);
+  assert.deepEqual(starred, { title: 'claude-sonnet-5', description: '', recommended: true });
+  assert.deepEqual(plain, { title: 'claude-4-5-sonnet', description: '', recommended: false });
+});
+
+test('renderOptionCards: provider prompt badges index 0 regardless of star', () => {
+  const cards = renderOptionCards(['⭐ OpenAI', 'Bedrock', 'Anthropic'], { badgeIndex: 0 });
+  assert.equal(cards[0].recommended, true, 'index 0 is recommended even without/with a star');
+  assert.equal(cards[1].recommended, false);
+  assert.equal(cards[2].recommended, false);
+  assert.equal(cards[0].title, 'OpenAI', 'star is still stripped from the title');
+});
+
+test('renderOptionCards: model list (no badgeIndex) badges by star only, never by index', () => {
+  const cards = renderOptionCards(['claude-4-5-sonnet', '⭐ claude-sonnet-5', 'claude-opus-4-5-20251101']);
+  assert.equal(cards[0].recommended, false, 'index 0 is not starred, not recommended');
+  assert.equal(cards[1].recommended, true, 'starred entry is recommended regardless of index');
+  assert.equal(cards[2].recommended, false);
+});
+
+test('renderOptionCards: no " - " separator yields the whole string as title, empty description', () => {
+  const [card] = renderOptionCards(['claude-sonnet-5']);
+  assert.deepEqual(card, { title: 'claude-sonnet-5', description: '', recommended: false });
+});
+
+// ── renderOptionCards wired into the list control ────────────────────────────
+
+test('list prompt: provider options render parsed titles and badge the recommended (index 0) entry', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({
+      kind: 'list',
+      id: 'provider',
+      message: 'Pick a provider',
+      options: ['CodeMie SSO - Enterprise SSO Authentication with centralized model management', 'Bedrock - AWS'],
+    });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  const row = findRowById(container, 'provider-1');
+  const control = row.querySelector('.prompt-control');
+  const labels = control._children.filter((c) => c.className === 'prompt-option-label');
+  assert.equal(labels[0].textContent, 'CodeMie SSO', 'label reflects the parsed title, not the raw option string');
+
+  const radios = control._children.filter((c) => c.type === 'radio');
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  radios[0].checked = true;
   submitBtn.onclick();
 
   await startPromise;

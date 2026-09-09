@@ -60,11 +60,46 @@ function findControlHost(container, rowId) {
   return row.querySelector('.step-main');
 }
 
+// Splits a single already-parsed option string (setup-parse.js's parseOptions
+// has already stripped the cursor marker and trimmed whitespace -- this
+// module never sees raw terminal lines) into a { title, description,
+// recommended } card descriptor.
+//
+// - A leading "⭐ " star marker is stripped from the string before the
+//   " - " split, and remembered as `starred`.
+// - The remainder is split at the FIRST literal " - " (indexOf, not a
+//   regex, to keep "first occurrence" unambiguous): everything before is
+//   the title, everything after is the description. No " - " means the
+//   whole remainder is the title and description is ''.
+// - `recommended` is index-based (`index === badgeIndex`) when `badgeIndex`
+//   is a defined number -- the `provider` list's fixed-position badge,
+//   ignoring the star entirely -- and star-based (`starred`) otherwise --
+//   every other list, including `model`, whose recommended entry is
+//   whichever one the CLI starred, not a fixed index.
+//
+// Markup/visual card styling (badge element, card layout) is Task 4's job;
+// this function only produces the parsed strings + recommended flag.
+export function renderOptionCards(options, { badgeIndex } = {}) {
+  const useIndexBadge = typeof badgeIndex === 'number';
+  return options.map((option, index) => {
+    const starMatch = option.match(/^⭐\s*/);
+    const starred = !!starMatch;
+    const remainder = starred ? option.slice(starMatch[0].length) : option;
+    const idx = remainder.indexOf(' - ');
+    const title = idx === -1 ? remainder : remainder.slice(0, idx);
+    const description = idx === -1 ? '' : remainder.slice(idx + 3);
+    const recommended = useIndexBadge ? index === badgeIndex : starred;
+    return { title, description, recommended };
+  });
+}
+
 function renderListControl(host, prompt, submit) {
   const control = document.createElement('div');
   control.className = 'prompt-control';
   const radios = [];
-  prompt.options.forEach((label, index) => {
+  const badgeIndex = prompt.id === 'provider' ? 0 : undefined;
+  const cards = renderOptionCards(prompt.options, { badgeIndex });
+  cards.forEach(({ title, description, recommended }, index) => {
     const radio = document.createElement('input');
     radio.type = 'radio';
     radio.name = `${prompt.rowId}-choice`;
@@ -72,7 +107,9 @@ function renderListControl(host, prompt, submit) {
     radios.push(radio);
     const text = document.createElement('span');
     text.className = 'prompt-option-label';
-    text.textContent = label;
+    text.textContent = title;
+    if (description) text.dataset.description = description;
+    if (recommended) text.dataset.recommended = 'true';
     control.appendChild(radio);
     control.appendChild(text);
   });
