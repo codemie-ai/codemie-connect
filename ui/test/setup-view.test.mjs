@@ -463,7 +463,12 @@ test('double-rejection: the stored comparison base never advances past the origi
   const fakeStartSetup = async ({ onPrompt }) => {
     await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: (sso)' });
     await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: taken' });
-    return onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: taken2' });
+    // Deliberately does NOT start with "taken" (the first re-ask's own
+    // stripped text): if the stored base were wrongly advanced to that first
+    // re-ask (instead of staying pinned to the original "Enter a name for
+    // this profile:"), this message would fail the startsWith comparison
+    // against it and be mistaken for a new occurrence.
+    return onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: still-invalid' });
   };
 
   const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
