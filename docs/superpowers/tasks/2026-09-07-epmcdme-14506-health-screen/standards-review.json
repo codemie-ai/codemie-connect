@@ -1,0 +1,9 @@
+{
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 6 subjects in range follow the documented '<type>: <short description>' form using allowed types (feat, chore) with no scope; the embedded 'EPMCDME-14506 — ...' segment is part of the short description, consistent with git-workflow.md's note that commits carry ticket context."},
+    {"kind": "code-quality", "status": "na", "notes": "No .ai-run/guides/standards/code-quality.md found in the repo and no ArtifactRef was passed; absent guide, not adjudicated."},
+    {"kind": "security", "status": "na", "notes": "No .ai-run/guides/development/security-patterns.md found in the repo and no ArtifactRef was passed; absent guide, not adjudicated. Reviewed the changed surface anyway (src-tauri/src/commands/logger.rs open_log/spawn_open change, ui/doctor-parse.js parsing of codemie-doctor stdout, ui/health-ui.js DOM rendering): logger.rs builds the Windows 'cmd /c start' argument list from an internally-derived log_path() (HOME/USERPROFILE + fixed suffix), not user input; health-ui.js writes all doctor-derived text (row.label, row.remedyText, action.label) via textContent, never innerHTML, so parsed doctor output cannot inject markup. No concrete security issue found in this change."}
+  ],
+  "blocking_findings": [],
+  "coverage_gap": false
+}

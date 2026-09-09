@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "head": "3706543b25717d17445ab338e95bb35e13f3da83",
+  "surface_change_detected": true,
+  "changed_files": [
+    "src-tauri/src/commands/logger.rs",
+    "ui/doctor-groups.js",
+    "ui/doctor-parse.js",
+    "ui/health-controller.js",
+    "ui/health-ui.js",
+    "ui/renderer.js"
+  ],
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_dir": "docs/superpowers/tasks/2026-09-07-epmcdme-14506-health-screen/dynamic-tests",
+  "test_command": "npx playwright test",
+  "app_url": "http://localhost:8941/index.html",
+  "rationale": "No existing Playwright/e2e coverage exists for the Health screen (ui/test/*.test.mjs are node:test unit tests against a plain-object DOM stub, not a browser). A dynamic Playwright suite was generated, following the pattern already used for EPMCDME-14511/14505 (static-server.mjs serving ui/ + a window.__TAURI__ invoke/listen stub), to drive the real index.html/renderer.js/health-controller.js/health-ui.js/doctor-parse.js/doctor-groups.js pipeline end to end in a real browser DOM.",
+  "features": [
+    "health-autorun-summary-grouping",
+    "health-autorun-once",
+    "health-deep-link-remedy",
+    "health-check-again-remedy",
+    "health-check-everything-again",
+    "health-open-log-success",
+    "health-open-log-failure"
+  ]
+}

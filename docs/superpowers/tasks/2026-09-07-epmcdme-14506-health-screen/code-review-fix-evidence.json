@@ -1,0 +1,84 @@
+{
+  "findings": [
+    {
+      "id": "CR-001",
+      "status": "fixed",
+      "file": "ui/doctor-groups.js",
+      "fix": "Collapsed runtime row now runs the same remedyFor() logic as per-name rows and gets remedyText/action when worst(runtime) === 'fail'.",
+      "evidence": {
+        "test_file": "ui/test/doctor-groups.test.mjs",
+        "test": "CR-001: a failing runtime check gets a remedy on the collapsed row"
+      }
+    },
+    {
+      "id": "CR-002",
+      "status": "fixed",
+      "file": "ui/doctor-groups.js",
+      "fix": "remedyFor() filters all failing items for a name (not items.find's first match) and joins their unique hints.",
+      "evidence": {
+        "test_file": "ui/test/doctor-groups.test.mjs",
+        "test": "CR-002: a check with two distinct failures surfaces both hints"
+      }
+    },
+    {
+      "id": "CR-003",
+      "status": "fixed",
+      "file": "ui/health-ui.js",
+      "fix": "showLogError() recreates the .health-log-error element when the container was wiped (e.g. by a racing showLoading()) instead of returning early and dropping the message.",
+      "evidence": {
+        "test_file": "ui/test/health-ui.test.mjs",
+        "test": "CR-003: showLogError recreates the error banner after the container was wiped"
+      }
+    },
+    {
+      "id": "CR-004",
+      "status": "fixed",
+      "file": "ui/health-controller.js",
+      "fix": "createHealthController().run() carries a `running` busy flag mirroring installRunning; a second concurrent run() call is a synchronous no-op.",
+      "evidence": {
+        "test_file": "ui/test/health-controller.test.mjs",
+        "test": "CR-004: a second run() call while one is in flight is a no-op"
+      }
+    },
+    {
+      "id": "CR-005",
+      "status": "fixed",
+      "file": "ui/health-controller.js",
+      "fix": "Zero parsed records renders showRunError()'s explicit could-not-determine state with a retry action instead of falling through to renderHealth()'s 0/0 summary.",
+      "evidence": {
+        "test_file": "ui/test/health-controller.test.mjs",
+        "test": "CR-005: zero stdout records render an explicit could-not-determine state, not 0 of 0"
+      }
+    },
+    {
+      "id": "CR-006",
+      "status": "fixed",
+      "file": "ui/health-controller.js",
+      "fix": "run() wraps the runStream call in try/catch; a rejection renders showRunError() with a working retry action and calls onFailure(), which renderer.js wires to reset healthChecked so the one-shot auto-run guard is not permanently consumed.",
+      "evidence": {
+        "test_file": "ui/test/health-controller.test.mjs",
+        "test": "CR-006: a runStream rejection renders a retry action instead of hanging, and reports failure; CR-006: the rendered retry action runs another doctor check"
+      }
+    },
+    {
+      "id": "CR-007",
+      "status": "fixed",
+      "file": "ui/health-controller.js",
+      "fix": "runHealthCheck's pipeline (stdout-tag filter, join, parse -> group -> render) was extracted into createHealthController() so the real call chain — not just the two pure functions — is exercised by a test that stubs runStream with mixed-tag lines.",
+      "evidence": {
+        "test_file": "ui/test/health-controller.test.mjs",
+        "test": "CR-007: runHealthCheck pipeline renders only stdout-derived records"
+      }
+    },
+    {
+      "id": "CR-008",
+      "status": "fixed",
+      "file": "ui/health-controller.js",
+      "fix": "The open_log catch -> showLogError wiring (renderer.js's former inline onOpenLog) moved into health-controller.js's handleOpenLog() and is now directly covered.",
+      "evidence": {
+        "test_file": "ui/test/health-controller.test.mjs",
+        "test": "CR-008: an open_log rejection surfaces through showLogError, not silently"
+      }
+    }
+  ]
+}

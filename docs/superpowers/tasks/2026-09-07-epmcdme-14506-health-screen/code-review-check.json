@@ -1,0 +1,136 @@
+{
+  "decision": "approve",
+  "rationale": "All 8 prior blocking findings were graded resolved against current source: doctor-groups.js now carries the collapsed runtime row and multi-failure joins through remedyFor() (CR-001/CR-002, matching new tests); health-ui.js's showLogError recreates the wiped error banner (CR-003); the runHealthCheck wiring was extracted into a new ui/health-controller.js (imported by renderer.js, which is in changed_files) that adds a running-guard (CR-004), an explicit could-not-determine state for zero stdout records (CR-005), a try/catch around runStream with onFailure resetting renderer.js's healthChecked one-shot guard (CR-006), and a real end-to-end pipeline test plus an open_log-rejection test (CR-007/CR-008), all verified by reading health-controller.js, doctor-groups.js, health-ui.js and renderer.js directly rather than trusting fix_evidence's self-reported status. Note: health-controller.js and ui/test/health-controller.test.mjs (new files carrying the CR-004..CR-008 fixes) were absent from the supplied changed_files list, likely because a diff-against-HEAD computation misses new untracked files; renderer.js's import of createHealthController (itself in changed_files) confirmed the wiring is genuine, so this did not block verification. business_review and standards_review are carried forward unchanged from the prior verdict per contract.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "Decision 1: parsing/grouping/remedy logic lives in JS; run_stream path unchanged; JS joins streamed lines after process exit, then parses", "status": "pass", "notes": "runHealthCheck collects stdout lines and joins only after runStream resolves; no new Rust invocation command added."},
+    {"kind": "spec", "item": "Decision 2 / Non-goal: wizard step 2.4 (handlers.js) untouched", "status": "pass", "notes": "handlers.js absent from the diff and changed_files."},
+    {"kind": "spec", "item": "Decision 3: screen auto-runs full check set on first navigation, re-runs only via explicit recheck actions", "status": "pass", "notes": "boot() sets healthChecked and calls runHealthCheck only once per session; showLoading precedes the run."},
+    {"kind": "spec", "item": "Decision 4: per-row Check again triggers the same full re-run as Check everything again", "status": "pass", "notes": "Both action kind 'recheck' and the summary button route to the same onRecheck/runHealthCheck callback."},
+    {"kind": "spec", "item": "Decision 5: summary always reads <passing> of <total> fine, computed from whatever ran, no hardcoded total", "status": "pass", "notes": "health-ui.js reads summary.passing/summary.total; doctor-groups.js computes both from rows.length."},
+    {"kind": "spec", "item": "Decision 6: Node/Npm/Python/uv collapse into one line under CodeMie itself", "status": "pass", "notes": "RUNTIME_NAMES collapse mechanic verified correct; the row's missing remedy on failure is tracked separately as CR-001."},
+    {"kind": "spec", "item": "Decision 7: remaining checks mapped to account/tools/codemie by the stated principle", "status": "pass", "notes": "GROUP_BY_NAME matches the stated mapping exactly for all known check names."},
+    {"kind": "spec", "item": "Decision 8: remedy = doctor hint text; deep-link when hint names a screen; else Check-again when hinted; else no button", "status": "pass", "notes": "Verified for per-name rows; the first-failing-only and runtime-row gaps are tracked as CR-002/CR-001."},
+    {"kind": "spec", "item": "Decision 9: existing footer Open Log button untouched; Health screen adds its own Open today's log action", "status": "pass", "notes": "log.js untouched; health-ui.js adds a separate button whose handler catches rejection via showLogError."},
+    {"kind": "spec", "item": "Decision 10: Windows log directory follows %USERPROFILE%\\AppData\\Local\\CodeMie\\Logs, mirroring macOS", "status": "pass", "notes": "logger.rs's #[cfg(windows)] log_dir_with matches; unit test asserts the exact path."},
+    {"kind": "spec", "item": "Decision 11: open_log checks existence/readability before opening, returns a typed error the UI renders, never a silent no-op", "status": "pass", "notes": "ensure_log_readable gates spawn_open; renderer.js's onOpenLog catches and calls showLogError; a DOM-race edge case is tracked as CR-003."},
+    {"kind": "spec", "item": "Decision 12: parser ships with fixture-based tests (all-passing, provider failure, provider absent)", "status": "pass", "notes": "All three fixtures added under ui/test/fixtures/doctor/ with matching doctor-parse.test.mjs cases."},
+    {"kind": "spec", "item": "Testing: logger.rs's cfg(test) block extended with Windows-path and existence-check unit tests", "status": "pass", "notes": "Four new unit tests cover Windows/non-Windows log_dir and ensure_log_readable success/failure."},
+    {"kind": "spec", "item": "Testing: grouping/remedy-mapping module gets its own unit tests independent of the parser", "status": "pass", "notes": "doctor-groups.test.mjs builds records by hand and asserts groupDoctorResults directly, but doesn't cover a failing runtime row or a multi-failure check."},
+    {"kind": "spec", "item": "Testing (manual DoD): full pass, forced provider failure, open-log on macOS/Windows, open-log against a missing/renamed log", "status": "pending-stage-7", "notes": "Code paths exist for all four scenarios; remaining obligation is Stage 7's runtime/manual execution, not a code change."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 6 subjects follow '<type>: <short description>' with allowed types (feat, chore); ticket context embedded in the description per convention."},
+    {"kind": "code-quality", "status": "na", "notes": "No code-quality guide found in the repo and no ArtifactRef was passed; absent guide, not adjudicated."},
+    {"kind": "security", "status": "na", "notes": "No security guide found and no ArtifactRef passed; absent guide, not adjudicated. Changed surface reviewed manually anyway (Windows spawn_open argument, doctor-stdout parsing, DOM rendering via textContent) — no concrete issue found."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/doctor-groups.js",
+      "line": 29,
+      "title": "Failed runtime check has no remedy",
+      "problem": "The collapsed Node/Npm/Python/Uv row is pushed with only {group, label, status} — unlike per-check rows it is never given a remedyText or action, even when worst(runtime) resolves to 'fail'.",
+      "impact": "A user sees a red 'Everything CodeMie needs to run is included' row with zero indication of which of the four runtime checks failed or what to do about it, defeating the screen's remedy-per-failure goal for the row group most likely to fail (a missing binary).",
+      "recommendation": "Find the failing runtime record(s) and its hint the same way per-name rows do, and attach a remedyText/action (e.g. a 'Check again' button when a hint exists) to the collapsed row too."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/doctor-groups.js",
+      "line": 38,
+      "title": "Only the first of multiple failures gets a remedy",
+      "problem": "`items.find((r) => r.status === 'error' || r.status === 'warn')` picks only the first failing detail line for a check name; a check reporting two distinct failures (e.g. Agents in the fixtures) has its second failure's hint silently absorbed into the aggregate status.",
+      "impact": "When a check fails for two reasons at once, the row shows 'fail' but only ever surfaces the first cause's remedy — the second failure has no visible hint or action.",
+      "recommendation": "Use `items.filter(...)` to collect all failing items for the name and join their hints/actions, instead of taking only the first match."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/health-ui.js",
+      "line": 64,
+      "title": "Concurrent open-log error can be dropped silently",
+      "problem": "showLoading(container) unconditionally does `container.innerHTML = ''`, removing the `.health-log-error` element that showLogError looks up. Clicking 'Open today's log' then 'Check everything again' before the first invoke('open_log') settles races showLoading's wipe against the pending rejection's handler.",
+      "impact": "When the log-open rejection's showLogError callback finally runs after the wipe, querySelector returns null, showLogError returns early, and the log-open failure is reported nowhere — a silent no-op contrary to the spec's 'never a silent no-op' requirement for this path.",
+      "recommendation": "Give showLogError a fallback path (re-render the error banner independent of the row list), or disable the log button while open_log is pending so it cannot race a recheck."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 320,
+      "title": "No re-entrancy guard on runHealthCheck",
+      "problem": "runHealthCheck() has no busy-flag equivalent to the existing `installRunning` pattern; nothing stops 'Check everything again' or a per-row 'Check again' from firing a second `runStream('codemie doctor', ...)` while an earlier one is still in flight.",
+      "impact": "Two concurrent doctor runs can both eventually call renderHealth(); whichever resolves last overwrites the render regardless of which check is actually current, and a rapid double-click doubles the doctor process load for no benefit.",
+      "recommendation": "Add a `healthRunning` flag mirroring `installRunning`: return early from runHealthCheck() (and disable the recheck buttons) while a run is already in flight."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 322,
+      "title": "Empty doctor stdout reads as a false all-clear",
+      "problem": "runHealthCheck only accumulates lines tagged 'stdout'; if `codemie doctor` exits having written nothing to stdout (its own error output on stderr, or a non-zero exit with no stdout), parseDoctorOutput('') returns no records and groupDoctorResults returns rows: [] with summary {passing:0, total:0}.",
+      "impact": "The Health screen renders '0 of 0 fine' — visually indistinguishable from a genuine all-clear — silently masking a total failure to run any health check at all.",
+      "recommendation": "When the run resolves with zero records, render an explicit 'could not determine health' state instead of falling through to the normal 0/0 summary."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 323,
+      "title": "Doctor run failure leaves Health screen stuck forever",
+      "problem": "runHealthCheck() has no try/catch around `await bridge.runner.runStream('codemie doctor', ...)`. If the doctor process fails to spawn or run_stream's invoke rejects, the await throws and renderHealth() — which draws the 'Check everything again' button — never runs. The sidebar click handler had already set `healthChecked = true` before calling runHealthCheck(), so the one-time auto-run guard also blocks any later automatic retry.",
+      "impact": "The Health view is left showing showLoading()'s 'Checking…' text permanently: no error is shown, no recheck button is ever rendered, and re-clicking the sidebar's Health entry does nothing because healthChecked is already true — the only way out is restarting the app.",
+      "recommendation": "Wrap the runStream call in try/catch; on failure render an explicit error state with a working retry action, and don't let a failed run permanently consume the one-shot healthChecked guard."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 326,
+      "title": "Doctor pipeline has no end-to-end test",
+      "problem": "The wiring inside runHealthCheck — the stdout-tag filter, `lines.join('\\n')`, and the handoff into parseDoctorOutput/groupDoctorResults — has no test exercising the actual call chain; doctor-parse.test.mjs and doctor-groups.test.mjs both call the two pure functions directly with hand-built fixtures/records.",
+      "impact": "If the stdout-tag filter were inverted or the join/parse hookup broken, the Health screen would render on the doctor's own prompt echo or stderr noise instead of real results (or render nothing) — and both existing test files would keep passing, giving false confidence around exactly the class of gap found in CR-006.",
+      "recommendation": "Add a test that stubs bridge.runner.runStream to emit mixed-tag lines and asserts the resulting render reflects only the stdout-derived records, exercising runHealthCheck's real call chain."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 333,
+      "title": "Open-log failure path has no test",
+      "problem": "The wiring that surfaces an open_log rejection through showLogError (renderer.js's onOpenLog catch block) is untested, and showLogError itself has no direct unit test; health-ui.test.mjs's three tests only cover renderHealth's rows/summary/buttons.",
+      "impact": "If the catch block were dropped, or showLogError's '.health-log-error' selector drifted from the class name renderHealth actually renders, a failed log-open (now reachable since open_log can reject via ensure_log_readable) would fail silently with no user-visible message, and no test would catch it.",
+      "recommendation": "Add a test that stubs invoke('open_log') to reject and asserts showLogError is invoked with a message, plus a direct unit test of showLogError(container, msg) asserting it unhides '.health-log-error' and sets its text."
+    }
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "doctor-groups.js's collapsed runtime row now runs through remedyFor(runtime, status, undefined) and gets remedyText/action on failure; verified against source and the new CR-001 test."},
+    {"id": "CR-002", "status": "resolved", "notes": "remedyFor() filters all failing items (not .find's first match) and joins unique hints with '\\n'; verified against source and the new CR-002 test covering two distinct Agents failures."},
+    {"id": "CR-003", "status": "resolved", "notes": "showLogError() now looks up '.health-log-error' and recreates it via appendChild when absent, instead of returning early; verified against source and the new CR-003 test simulating a wipe-then-error race."},
+    {"id": "CR-004", "status": "resolved", "notes": "runHealthCheck was extracted into ui/health-controller.js's createHealthController().run(), which sets a `running` flag and returns immediately if already running (finally clears it); verified against source and two CR-004/health-controller.test.mjs tests."},
+    {"id": "CR-005", "status": "resolved", "notes": "run() checks `records.length === 0` and calls showRunError() with a could-not-determine message and retry action instead of falling through to renderHealth's 0/0; verified against source and the CR-005 test."},
+    {"id": "CR-006", "status": "resolved", "notes": "run() wraps runStream in try/catch; the catch renders showRunError() with a working retry and calls onFailure(), which renderer.js wires to reset healthChecked so the one-shot guard is not permanently stuck; verified against source (renderer.js + health-controller.js) and two CR-006 tests."},
+    {"id": "CR-007", "status": "resolved", "notes": "The stdout-tag filter/join/parse/group/render pipeline now lives in one function (run()) covered by a test that stubs runStream with mixed prompt/stdout/stderr-tagged lines and asserts only stdout-derived output renders; verified the runner-bridge.js onLine(text, tag) signature matches what the test stub and run() both assume."},
+    {"id": "CR-008", "status": "resolved", "notes": "handleOpenLog()'s catch now calls showLogError with a formatted message; covered by a CR-008 test stubbing a rejecting openLog and asserting the message renders via the real Open today's log button click."}
+  ]
+}

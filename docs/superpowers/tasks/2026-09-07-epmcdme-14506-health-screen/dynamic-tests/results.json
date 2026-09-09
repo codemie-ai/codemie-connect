@@ -1,0 +1,369 @@
+{
+  "config": {
+    "argv": [
+      "C:\\Program Files\\nodejs\\node.exe",
+      "C:\\Work\\codemie\\codemie-claude-installer-macos\\node_modules\\@playwright\\test\\cli.js",
+      "test"
+    ],
+    "configFile": "C:\\Work\\codemie\\codemie-claude-installer-macos\\docs\\superpowers\\tasks\\2026-09-07-epmcdme-14506-health-screen\\dynamic-tests\\playwright.config.ts",
+    "rootDir": "C:/Work/codemie/codemie-claude-installer-macos/docs/superpowers/tasks/2026-09-07-epmcdme-14506-health-screen/dynamic-tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "C:/Work/codemie/codemie-claude-installer-macos/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "C:/Work/codemie/codemie-claude-installer-macos/docs/superpowers/tasks/2026-09-07-epmcdme-14506-health-screen/dynamic-tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "results.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.62.1",
+    "workers": 4,
+    "webServer": {
+      "command": "node static-server.mjs",
+      "port": 8941,
+      "reuseExistingServer": false
+    }
+  },
+  "suites": [
+    {
+      "title": "health-screen.spec.ts",
+      "file": "health-screen.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "Health screen auto-runs the full check set on first navigation, shows a loading state, then the passing/total summary with runtime checks collapsed into one CodeMie row",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1381,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-09T09:12:26.808Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\health-screen-Health-scree-34121-lapsed-into-one-CodeMie-row\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "1b4aaf1a2c693b2cba7c-e88fb3a3251befca19a7",
+          "file": "health-screen.spec.ts",
+          "line": 147,
+          "column": 1
+        },
+        {
+          "title": "navigating away from Health and back does not re-trigger the doctor run (one-shot auto-run)",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1328,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-09T09:12:28.518Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\health-screen-navigating-a-876bb-ctor-run-one-shot-auto-run-\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "1b4aaf1a2c693b2cba7c-8db0d45c4828a073f31b",
+          "file": "health-screen.spec.ts",
+          "line": 180,
+          "column": 1
+        },
+        {
+          "title": "a failing check with a doctor hint that names an existing screen (Agents) gets a deep-link remedy button that navigates there",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 983,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-09T09:12:29.865Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\health-screen-a-failing-ch-0cb0d-button-that-navigates-there\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "1b4aaf1a2c693b2cba7c-8b60d1d087a6ac878d4d",
+          "file": "health-screen.spec.ts",
+          "line": 197,
+          "column": 1
+        },
+        {
+          "title": "a failing check with a doctor hint but no deep-link (Provider) gets a Check again remedy button that re-runs the full check set",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 954,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-09T09:12:30.866Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\health-screen-a-failing-ch-c63db--re-runs-the-full-check-set\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "1b4aaf1a2c693b2cba7c-67c60e56ad678ca2630c",
+          "file": "health-screen.spec.ts",
+          "line": 216,
+          "column": 1
+        },
+        {
+          "title": "\"Check everything again\" re-runs the full doctor check set and refreshes the summary",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 910,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-09T09:12:31.837Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\health-screen--Check-every-2db44-t-and-refreshes-the-summary\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "1b4aaf1a2c693b2cba7c-0021e5b2dae64497aa57",
+          "file": "health-screen.spec.ts",
+          "line": 239,
+          "column": 1
+        },
+        {
+          "title": "\"Open today's log\" invokes the same open_log capability and shows no error when it succeeds",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1191,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-09T09:12:32.765Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\health-screen--Open-today--8538a-s-no-error-when-it-succeeds\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "1b4aaf1a2c693b2cba7c-1647bc966fb670012ea2",
+          "file": "health-screen.spec.ts",
+          "line": 253,
+          "column": 1
+        },
+        {
+          "title": "\"Open today's log\" surfaces a visible \"can't read your log\" error when the log cannot be opened",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1204,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-09-09T09:12:33.975Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Work\\codemie\\codemie-claude-installer-macos\\test-results\\health-screen--Open-today--d91a1-en-the-log-cannot-be-opened\\test-finished-1.png"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "1b4aaf1a2c693b2cba7c-70dad3c54a76ba31595d",
+          "file": "health-screen.spec.ts",
+          "line": 267,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-09-09T09:12:25.042Z",
+    "duration": 11707.485,
+    "expected": 7,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

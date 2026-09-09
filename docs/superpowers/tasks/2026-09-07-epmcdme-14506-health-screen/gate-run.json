@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "branch": "feature/EPMCDME-14506-health-screen",
+  "head": "4dae5bcf3f8e07edda91b6a36b2e84dd5ff352ae",
+  "runner": "custom",
+  "started_at": "2026-09-09T08:57:37.764Z",
+  "completed_at": "2026-09-09T09:02:24.321Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1366,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0,
+      "notes": "Initial run failed (unformatted src/commands/logger.rs: spawn_open multiline call and one assert_eq! in tests). Ran auto-fix `cargo fmt` and re-ran once; check now passes cleanly. logger.rs was reformatted on disk as a side effect."
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 89617,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3292,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "80/80 node:test assertions passed across ui/test/*.test.mjs, including new doctor-groups, doctor-parse, health-controller, and health-ui suites."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 31150,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "66 lib unit tests + 2 bundle_resources integration tests + 0 doc-tests, all passed."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "cd src-tauri && CI=true cargo tauri build",
+      "exit_code": null,
+      "notes": "Skip if: logic-only change verified by tests. Diff (codemie-desktop...HEAD) touches only src-tauri/src/commands/logger.rs, ui/*.js logic files, and their test/fixture files — no Cargo.toml, package.json, or tauri.conf.json changes — and is covered by the unit-rust and unit-js gates above, both PASS. Also note: this host is Windows, so a macOS DMG bundle could not be produced here regardless; CI/macOS still owes the real bundle build."
+    }
+  ],
+  "failures": {}
+}

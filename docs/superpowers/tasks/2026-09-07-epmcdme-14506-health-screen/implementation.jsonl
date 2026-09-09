@@ -1,0 +1,5 @@
+{"task_id":"1","status":"done","commit":"6987e5f","test_command":"cargo test --lib commands::logger (from src-tauri/)"}
+{"task_id":"2","status":"done","commit":"a651587","test_command":"node --test ui/test/doctor-parse.test.mjs"}
+{"task_id":"3","status":"done","commit":"a2d6881","test_command":"node --test ui/test/doctor-groups.test.mjs"}
+{"task_id":"4","status":"done","commit":"b31b750","test_command":"node --test ui/test/health-ui.test.mjs"}
+{"task_id":"5","status":"done","commit":"fb35ae9","test_command":"node --test ui/test/*.test.mjs (wiring-only task; verifies no regression)"}
