@@ -16,13 +16,26 @@ import { StepStatus } from './models.js';
 // Ids the real driver answers itself (setup-driver.js's AUTO_LIST/
 // AUTO_CONFIRM tables) and must never be rendered as rows, even if a
 // misbehaving caller (a test fake, a future driver bug) calls onPrompt with
-// one of them anyway.
+// one of them anyway. The answers mirror the driver's own fixed policy
+// (storage: first "global" option; activate: yes) so a run that somehow
+// reached here would still end up with the profile active.
 const NEVER_RENDERED_PROMPT_IDS = new Set(['gate', 'activate']);
 
 // Independently re-declared from ui/setup-driver.js:108's DEFAULT_HINT --
 // this file must not import setup-driver.js at module scope (see header
 // comment above), so the pattern is duplicated here on purpose.
 const DEFAULT_HINT = /\s*\([^()]*\)\s*$/;
+
+// The bundled CLI's own install lines (cli/commands/setup.js:728 and :737).
+// The version suffix is conditional there, so it is optional here too. onLog
+// hands over the raw PTY chunk text; chalk and ora wrap each line in colour
+// codes as a whole, so the codes sit around these phrases, never inside them,
+// and a plain match on the raw text is enough.
+const INSTALL_OK = /Claude Code(?:\s+(v\S+))?\s+installed successfully/;
+const INSTALL_FAILED = /Failed to install Claude Code/;
+// Keep only this much of the accumulated log; every phrase above is far
+// shorter, so a chunk boundary inside one can never fall off the buffer.
+const INSTALL_LOG_KEEP = 4000;
 
 // Strips a trailing " (default hint)" suffix, if present. Used both by
 // deriveRowTitle (further stripped of a trailing colon there) and by the
@@ -102,9 +115,6 @@ function findControlHost(container, rowId) {
 //   ignoring the star entirely -- and star-based (`starred`) otherwise --
 //   every other list, including `model`, whose recommended entry is
 //   whichever one the CLI starred, not a fixed index.
-//
-// Markup/visual card styling (badge element, card layout) is Task 4's job;
-// this function only produces the parsed strings + recommended flag.
 export function renderOptionCards(options, { badgeIndex } = {}) {
   const useIndexBadge = typeof badgeIndex === 'number';
   return options.map((option, index) => {
@@ -119,15 +129,30 @@ export function renderOptionCards(options, { badgeIndex } = {}) {
   });
 }
 
+function makeContinueButton(onClick) {
+  const btn = document.createElement('button');
+  btn.className = 'prompt-submit';
+  btn.classList.toggle('setup-continue-btn', true);
+  btn.textContent = 'Continue';
+  btn.onclick = onClick;
+  return btn;
+}
+
 function renderListControl(host, prompt, submit) {
   const control = document.createElement('div');
   control.className = 'prompt-control';
   const radios = [];
+  const cardEls = [];
   const badgeIndex = prompt.id === 'provider' ? 0 : undefined;
   const cards = renderOptionCards(prompt.options, { badgeIndex });
+  function select(index) {
+    radios.forEach((r, i) => { r.checked = i === index; });
+    cardEls.forEach((c, i) => c.classList.toggle('selected', i === index));
+  }
   cards.forEach(({ title, description, recommended }, index) => {
     const card = document.createElement('div');
     card.className = 'setup-option-card' + (recommended ? ' recommended' : '');
+    cardEls.push(card);
 
     const radio = document.createElement('input');
     radio.type = 'radio';
@@ -159,20 +184,19 @@ function renderListControl(host, prompt, submit) {
 
     // Clicking anywhere on the card selects it -- the radio input remains
     // the single source of truth Continue reads from on submit.
-    card.onclick = () => { radio.checked = true; };
+    card.onclick = () => select(index);
 
     control.appendChild(card);
   });
-  const btn = document.createElement('button');
-  btn.className = 'prompt-submit';
-  btn.classList.toggle('setup-continue-btn', true);
-  btn.textContent = 'Continue';
-  btn.onclick = () => {
+  // The CLI's cursor starts on the first entry (the recommended provider,
+  // the starred model), so that is what Continue submits untouched. Showing
+  // the selection up front keeps what is submitted equal to what is seen.
+  if (radios.length) select(0);
+  control.appendChild(makeContinueButton(() => {
     const chosen = radios.findIndex((r) => r.checked);
     const index = chosen === -1 ? 0 : chosen;
-    submit(index, prompt.options[index]);
-  };
-  control.appendChild(btn);
+    submit(index, cards[index].title);
+  }));
   host.appendChild(control);
 }
 
@@ -185,15 +209,10 @@ function renderInputControl(host, prompt, submit) {
   const { defaultValue } = deriveRowTitle(prompt.message);
   if (defaultValue) input.value = defaultValue;
   control.appendChild(input);
-  const btn = document.createElement('button');
-  btn.className = 'prompt-submit';
-  btn.classList.toggle('setup-continue-btn', true);
-  btn.textContent = 'Continue';
-  btn.onclick = () => {
+  control.appendChild(makeContinueButton(() => {
     const value = input.value ?? '';
     submit(value, value);
-  };
-  control.appendChild(btn);
+  }));
   host.appendChild(control);
 }
 
@@ -223,15 +242,10 @@ function renderConfirmControl(host, prompt, submit) {
   control.appendChild(no);
   control.appendChild(noLabel);
 
-  const btn = document.createElement('button');
-  btn.className = 'prompt-submit';
-  btn.classList.toggle('setup-continue-btn', true);
-  btn.textContent = 'Continue';
-  btn.onclick = () => {
+  control.appendChild(makeContinueButton(() => {
     const answer = !no.checked; // Yes wins unless No was explicitly picked.
     submit(answer, answer ? 'Yes' : 'No');
-  };
-  control.appendChild(btn);
+  }));
   host.appendChild(control);
 }
 
@@ -245,19 +259,31 @@ export function createSetupView(container, deps = {}) {
   // genuinely different message arrives for that id.
   const baseMessageByPromptId = new Map();
 
+  // The row currently waiting on the user (or, for installClaude answered
+  // yes, on the CLI's install). null between prompts.
+  let activeRowId = null;
+  // The most recently inserted row of any kind except the transient one;
+  // the fallback target when a failure names nothing better.
+  let lastRowId = null;
+  // The generic "Working…" row shown while the CLI is between prompts.
+  let transient = null;
+  let transientSeq = 0;
+  // installClaude answered yes: { rowId, buffer, done }. The only row that
+  // reads onLog -- the CLI reports the install outcome as plain output and
+  // exits normally either way, so resolution alone cannot tell success from
+  // failure (cli/commands/setup.js:737-742).
+  let install = null;
+
   // Lazy-default wiring per this file's own header comment: never resolved
   // (and never imports the underlying module) until actually invoked.
   const startSetup = deps.startSetup ?? (async (...args) => {
     const mod = await import('./setup-driver.js');
     return mod.startSetup(...args);
   });
-  // Not called anywhere in this task (Task 7 wires it up); present here only
-  // to establish the same lazy-default shape as startSetup above.
   const readConfig = deps.readConfig ?? (async (...args) => {
     const mod = await import('./runner-bridge.js');
     return mod.codemieConfig.read(...args);
   });
-  void readConfig;
 
   function nextOccurrence(promptId) {
     const n = (occurrenceCounts.get(promptId) || 0) + 1;
@@ -270,9 +296,11 @@ export function createSetupView(container, deps = {}) {
     return n ? `${promptId}-${n}` : null;
   }
 
+  // Every kind goes through deriveRowTitle: the default hint only ever
+  // appears on input prompts, but list/confirm questions end in a colon
+  // too ("Select your project:"), which a heading must not carry.
   function rowTitleFor(prompt) {
-    if (prompt.kind === 'input') return deriveRowTitle(prompt.message).title;
-    return prompt.message || prompt.id;
+    return deriveRowTitle(prompt.message).title || prompt.id;
   }
 
   // PROMPT_COPY-aware heading for the OPEN row: an override on top of
@@ -308,6 +336,11 @@ export function createSetupView(container, deps = {}) {
     host.appendChild(helperEl);
   }
 
+  function removeHelperText(host) {
+    if (!host) return;
+    host.querySelector('.step-helper')?.remove();
+  }
+
   // Collapses a row's visible title to its PROMPT_COPY collapsedLabel (if
   // any) and toggles the `collapsed` class -- shared by every control's
   // submit path and by the initial storage row, so every collapsed row
@@ -330,11 +363,85 @@ export function createSetupView(container, deps = {}) {
     }
   }
 
+  function markError(rowId) {
+    if (!rowId) return false;
+    stepsUi.setStatus(rowId, StepStatus.ERROR);
+    return true;
+  }
+
+  // ---- transient "Working…" row -------------------------------------------
+  // The CLI has no prompt on screen while it fetches models, waits for the
+  // browser sign-in, saves the profile. steps-ui has no remove primitive and
+  // insertSubStep dedupes on id, so every gap gets a fresh id and the old
+  // element is dropped from the DOM directly.
+  function showTransientSpinner() {
+    if (transient) return;
+    transientSeq += 1;
+    const id = `working-${transientSeq}`;
+    stepsUi.insertSubStep(null, { id, title: 'Working…', description: '' });
+    stepsUi.setStatus(id, StepStatus.ACTIVE);
+    stepsUi.startSpinner(id);
+    transient = { id };
+  }
+
+  function hideTransientSpinner() {
+    if (!transient) return;
+    stepsUi.stopSpinner(transient.id);
+    findRow(container, transient.id)?.remove();
+    transient = null;
+  }
+
+  // ---- installClaude: driven by onLog, not by resolution ------------------
+  function beginInstallWatch(rowId) {
+    stepsUi.setSubtitle(rowId, 'Installing…');
+    stepsUi.startSpinner(rowId);
+    install = { rowId, buffer: '', done: false };
+  }
+
+  function finishInstall(status, subtitle) {
+    if (!install || install.done) return;
+    install.done = true;
+    stepsUi.setStatus(install.rowId, status);
+    stepsUi.setSubtitle(install.rowId, subtitle);
+    collapseRow(install.rowId, 'installClaude');
+    if (activeRowId === install.rowId) activeRowId = null;
+  }
+
+  function onLog(text) {
+    if (!install || install.done) return;
+    install.buffer = (install.buffer + String(text ?? '')).slice(-INSTALL_LOG_KEEP);
+    const ok = install.buffer.match(INSTALL_OK);
+    if (ok) {
+      finishInstall(StepStatus.COMPLETE, ok[1] || 'Installed');
+      return;
+    }
+    if (INSTALL_FAILED.test(install.buffer)) finishInstall(StepStatus.ERROR, 'Install failed');
+  }
+
+  // Safety net: the run settled while the install row was still waiting on
+  // a line that never came. Never leave it spinning with no terminal state.
+  function settleInstallRow() {
+    if (install && !install.done) finishInstall(StepStatus.ERROR, 'Not confirmed');
+  }
+
   function renderControl(host, prompt, rowId, resolve) {
     function submit(value, humanText) {
-      stepsUi.setStatus(rowId, StepStatus.COMPLETE);
-      stepsUi.setSubtitle(rowId, humanText);
-      collapseRow(rowId, prompt.id);
+      clearControls(host);
+      removeHelperText(host);
+      activeRowId = null;
+      if (prompt.id === 'installClaude' && value === true) {
+        // The install that follows arrives as ordinary CLI output with no
+        // further prompt; this row's own spinner covers that gap, so no
+        // transient row here.
+        activeRowId = rowId;
+        beginInstallWatch(rowId);
+      } else {
+        const text = prompt.id === 'installClaude' && value === false ? 'Skipped' : humanText;
+        stepsUi.setStatus(rowId, StepStatus.COMPLETE);
+        stepsUi.setSubtitle(rowId, text);
+        collapseRow(rowId, prompt.id);
+        showTransientSpinner();
+      }
       resolve(value);
     }
 
@@ -353,12 +460,14 @@ export function createSetupView(container, deps = {}) {
     if (NEVER_RENDERED_PROMPT_IDS.has(prompt.id)) {
       // The real driver already answers these itself and never calls the
       // real onPrompt for them; this guard only matters for a misbehaving
-      // fake driver in a test. Resolve immediately with a harmless default
-      // so nothing hangs waiting on a row that must never render.
-      if (prompt.kind === 'confirm') return Promise.resolve(false);
+      // fake driver in a test. Answer with the driver's own policy so
+      // nothing hangs waiting on a row that must never render.
+      if (prompt.kind === 'confirm') return Promise.resolve(true);
       if (prompt.kind === 'list') return Promise.resolve(0);
       return Promise.resolve('');
     }
+
+    hideTransientSpinner();
 
     const stripped = stripHint(prompt.message);
     const storedBase = baseMessageByPromptId.get(prompt.id);
@@ -383,7 +492,10 @@ export function createSetupView(container, deps = {}) {
         if (titleEl) titleEl.textContent = headingFor(prompt);
       }
       stepsUi.setStatus(rowId, StepStatus.ACTIVE);
+      activeRowId = rowId;
       clearControls(host);
+      removeHelperText(host);
+      appendHelperText(host, prompt.id);
 
       return new Promise((resolve) => renderControl(host, prompt, rowId, resolve));
     }
@@ -396,6 +508,8 @@ export function createSetupView(container, deps = {}) {
 
     stepsUi.insertSubStep(null, { id: rowId, title: headingFor(prompt), description: '' });
     stepsUi.setStatus(rowId, StepStatus.ACTIVE);
+    activeRowId = rowId;
+    lastRowId = rowId;
 
     const host = findControlHost(container, rowId);
     appendHelperText(host, prompt.id);
@@ -403,6 +517,61 @@ export function createSetupView(container, deps = {}) {
     return new Promise((resolve) => renderControl(host, prompt, rowId, resolve));
   }
 
+  // ---- settle ---------------------------------------------------------------
+  // The driver resolved { profileName }. The CLI printing success is not the
+  // proof; the configuration file is: the new profile must be the active one.
+  async function handleResolve(result) {
+    hideTransientSpinner();
+    settleInstallRow();
+    const profileName = result && typeof result.profileName === 'string' ? result.profileName : '';
+    let cfg = null;
+    try {
+      cfg = await readConfig();
+    } catch {
+      cfg = null;
+    }
+    const ok = !!cfg && cfg.state === 'valid' && profileName !== '' && cfg.profile === profileName;
+    if (!ok) markError(lastRowId);
+    return ok;
+  }
+
+  // The driver rejected { step, message, raw }. Mark the step; the failure
+  // detail and the retry are EPMCDME-14588's.
+  function handleReject(err) {
+    const step = err && typeof err === 'object' ? err.step ?? null : null;
+    let converted = false;
+    if (step && occurrenceCounts.has(step)) {
+      markError(latestOccurrenceRowId(step));
+    } else if (step === 'model') {
+      // Rejected from inside collectModelOptions, before the model prompt
+      // ever reached onPrompt: there is no row to mark yet, so add it.
+      const rowId = `model-${nextOccurrence('model')}`;
+      stepsUi.insertSubStep(null, { id: rowId, title: PROMPT_COPY.model.collapsedLabel, description: '' });
+      lastRowId = rowId;
+      markError(rowId);
+    } else if (activeRowId) {
+      markError(activeRowId);
+    } else if (transient) {
+      // Failed between prompts: the "Working…" row is the only thing on
+      // screen that describes where the run was, so it becomes the marker.
+      const row = findRow(container, transient.id);
+      const titleEl = row ? row.querySelector('.step-title') : null;
+      if (titleEl) titleEl.textContent = 'Setup stopped';
+      markError(transient.id); // ERROR status also stops its spinner.
+      transient = null;
+      converted = true;
+    } else {
+      markError(lastRowId);
+    }
+    settleInstallRow();
+    activeRowId = null;
+    if (!converted) hideTransientSpinner();
+  }
+
+  // Resolves { ok, profileName } on a verified profile, { ok: false, error }
+  // otherwise. Never rejects: the rows already show the outcome, and
+  // EPMCDME-14588 reads `error` (the driver's { step, message, raw }) from
+  // here to build the failure UI.
   async function start() {
     stepsUi.renderSteps(container, []);
 
@@ -421,13 +590,27 @@ export function createSetupView(container, deps = {}) {
     stepsUi.setStatus('storage', StepStatus.COMPLETE);
     stepsUi.setSubtitle('storage', 'This computer');
     collapseRow('storage', 'storage');
+    lastRowId = 'storage';
 
+    // The CLI takes a moment to reach its first prompt; never leave the
+    // screen sitting on one collapsed row with nothing moving.
+    showTransientSpinner();
+
+    let result;
     try {
-      await startSetup({ onPrompt, onLog: () => {} });
-    } catch {
-      // Resolution/rejection UI is Task 7's job; Task 1 just avoids an
-      // unhandled rejection escaping start().
+      result = await startSetup({ onPrompt, onLog });
+    } catch (err) {
+      handleReject(err);
+      return { ok: false, error: err };
     }
+    const ok = await handleResolve(result);
+    if (!ok) {
+      return {
+        ok: false,
+        error: { step: null, message: 'the created profile is not the active one', raw: '' },
+      };
+    }
+    return { ok: true, profileName: result.profileName };
   }
 
   return { start };

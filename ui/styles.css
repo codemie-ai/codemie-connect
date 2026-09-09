@@ -534,6 +534,7 @@ body::before {
 }
 .setup-option-card:hover { background: var(--surface-2); }
 .setup-option-card.recommended { border-color: var(--accent-blue); }
+.setup-option-card.selected { background: var(--surface-2); border-color: var(--accent-blue); box-shadow: inset 0 0 0 1px var(--accent-blue); }
 .setup-option-title { font-weight: 600; }
 .setup-option-description { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .setup-option-badge {

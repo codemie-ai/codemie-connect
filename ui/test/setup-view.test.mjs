@@ -108,6 +108,17 @@ function collectAll(el, predicate) {
 
 globalThis.document = { createElement: (tag) => makeEl(tag) };
 
+// steps-ui.js drives its spinners with setInterval. A test that fails mid-flow
+// leaves its fake driver waiting forever and that interval alive, which keeps
+// the process from exiting and hangs the whole runner instead of reporting
+// the failure. Hand out unref'd timers so a live spinner never pins the loop.
+const realSetInterval = globalThis.setInterval;
+globalThis.setInterval = (fn, ms, ...rest) => {
+  const t = realSetInterval(fn, ms, ...rest);
+  if (t && typeof t.unref === 'function') t.unref();
+  return t;
+};
+
 // ── Import module under test (after stub is in place) ───────────────────────
 const { createSetupView, deriveRowTitle, stripHint, renderOptionCards } = await import('../setup-view.js');
 
@@ -117,6 +128,17 @@ function findRowById(container, id) {
   }
   return null;
 }
+
+// The config reader as the happy path sees it: the profile the driver reported
+// is the active one. Every existing round-trip test resolves { profileName:
+// "default" }, so this one fake serves them all.
+const okConfig = async () => ({ state: "valid", profile: "default", model: "", project: "", account: null });
+
+// Spinner glyphs steps-ui.js cycles through while a row is ACTIVE with a spinner.
+const SPINNER_GLYPHS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+const findControl = (row) => row.querySelector(".prompt-control");
+const clickContinue = (row) => findControl(row)._children.find((c) => c.className === "prompt-submit").onclick();
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -130,7 +152,7 @@ test('start() inserts a collapsed/COMPLETE storage row before startSetup runs', 
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   await view.start();
 
   assert.ok(sawStorageRowBeforeStart, 'storage row exists and is COMPLETE before startSetup is invoked');
@@ -147,7 +169,7 @@ test('gate and confirm-kind activate prompts never render a row', async () => {
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   await view.start();
 
   assert.equal(findRowById(container, 'gate-1'), null, 'no gate row ever appears');
@@ -167,7 +189,7 @@ test('list prompt: renders radio options, resolves with selected index, marks ro
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   // Give onPrompt's synchronous body a tick to run and insert the row.
@@ -183,7 +205,10 @@ test('list prompt: renders radio options, resolves with selected index, marks ro
   const radios = collectAll(control, (c) => c.type === 'radio');
   assert.equal(radios.length, 3, 'one radio per option');
 
-  radios[1].checked = true; // select "Bedrock" (index 1)
+  // A real radio group unchecks its siblings; the stub does not, so select
+  // through the card click the way a user does.
+  const cardEls = collectAll(control, (c) => (c.className || '').split(' ').includes('setup-option-card'));
+  cardEls[1].onclick(); // select "Bedrock" (index 1)
   const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
   assert.ok(submitBtn, 'submit control present');
   submitBtn.onclick();
@@ -201,10 +226,11 @@ test('input prompt: renders a text field, resolves with the typed string, marks 
   let resolvedAnswer;
   const fakeStartSetup = async ({ onPrompt }) => {
     resolvedAnswer = await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile:' });
-    return { profileName: resolvedAnswer };
+    // The config fake reports "default" as active; the typed value is what the driver types, not what the config says.
+    return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -225,65 +251,86 @@ test('input prompt: renders a text field, resolves with the typed string, marks 
   assert.equal(row.querySelector('.step-sub').textContent, 'my-workspace', 'subtitle echoes the typed value');
 });
 
-test('confirm prompt: Yes is pre-selected, resolves with a boolean, marks row COMPLETE', async () => {
+test('confirm prompt: Yes is pre-selected, resolves true, and the row waits on the CLI install instead of completing', async () => {
   const container = makeEl('div');
   let resolvedAnswer;
-  const fakeStartSetup = async ({ onPrompt }) => {
-    resolvedAnswer = await onPrompt({ kind: 'confirm', id: 'installClaude', message: 'Install Claude Code?' });
+  let capturedLog;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const fakeStartSetup = async ({ onPrompt, onLog }) => {
+    capturedLog = onLog;
+    resolvedAnswer = await onPrompt({ kind: 'confirm', id: 'installClaude', message: 'Would you like to install Claude Code now?' });
+    await gate;
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
   const row = findRowById(container, 'installClaude-1');
   assert.ok(row, 'installClaude-1 row was inserted');
+  assert.equal(row.querySelector('.step-title').textContent, 'Would you like to install Claude Code now?', 'heading is the CLI question as asked');
 
-  const control = row.querySelector('.prompt-control');
+  const control = findControl(row);
   const radios = control._children.filter((c) => c.type === 'radio');
   assert.equal(radios.length, 2, 'Yes/No radios present');
-  const yesRadio = radios.find((r) => r.value === 'yes');
-  assert.ok(yesRadio.checked, 'Yes is pre-selected');
+  assert.ok(radios.find((r) => r.value === 'yes').checked, 'Yes is pre-selected');
 
   // Accept the default (Yes) without touching anything.
-  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
-  submitBtn.onclick();
-
-  await startPromise;
+  clickContinue(row);
+  await Promise.resolve();
 
   assert.equal(resolvedAnswer, true, 'resolved with boolean true for the pre-selected Yes');
-  assert.equal(row.querySelector('.step-icon').textContent, '✓', 'row is COMPLETE');
-  assert.equal(row.querySelector('.step-sub').textContent, 'Yes', 'subtitle is the human-readable choice');
+  assert.equal(findControl(row), null, 'control is removed once answered');
+  assert.ok(row.classList._set.has('active'), 'row stays ACTIVE while the CLI installs');
+  assert.ok(!row.classList._set.has('collapsed'), 'row is not collapsed yet');
+  assert.equal(row.querySelector('.step-sub').textContent, 'Installing…');
+  assert.equal(container._children.filter((c) => c.dataset && /^working-/.test(c.dataset.id || '')).length, 0,
+    'no transient Working row while the install row carries its own spinner');
+  await tick(120);
+  assert.ok(SPINNER_GLYPHS.includes(row.querySelector('.step-icon').textContent), 'install row shows a spinner glyph');
+
+  // The CLI's own success line, colour-coded and split across two chunks.
+  capturedLog('\x1b[32m✔ Claude Code v1');
+  capturedLog('.2.3 installed successfully\x1b[39m\n');
+  assert.equal(row.querySelector('.step-icon').textContent, '✓', 'row is COMPLETE once the CLI reports success');
+  assert.equal(row.querySelector('.step-sub').textContent, 'v1.2.3', 'subtitle is the installed version');
+  assert.equal(row.querySelector('.step-title').textContent, 'Claude Code', 'collapsed label from PROMPT_COPY');
+  assert.ok(row.classList._set.has('collapsed'));
+
+  release();
+  const outcome = await startPromise;
+  assert.deepEqual(outcome, { ok: true, profileName: 'default' });
+  assert.equal(row.querySelector('.step-icon').textContent, '✓', 'settling does not disturb a confirmed install');
 });
 
-test('confirm prompt: choosing No resolves with false', async () => {
+test('confirm prompt: choosing No resolves false and collapses to "Claude Code — Skipped"', async () => {
   const container = makeEl('div');
   let resolvedAnswer;
   const fakeStartSetup = async ({ onPrompt }) => {
-    resolvedAnswer = await onPrompt({ kind: 'confirm', id: 'installClaude', message: 'Install Claude Code?' });
+    resolvedAnswer = await onPrompt({ kind: 'confirm', id: 'installClaude', message: 'Would you like to install Claude Code now?' });
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
   const row = findRowById(container, 'installClaude-1');
-  const control = row.querySelector('.prompt-control');
+  const control = findControl(row);
   const radios = control._children.filter((c) => c.type === 'radio');
-  const yesRadio = radios.find((r) => r.value === 'yes');
-  const noRadio = radios.find((r) => r.value === 'no');
-  yesRadio.checked = false;
-  noRadio.checked = true;
-
-  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
-  submitBtn.onclick();
+  radios.find((r) => r.value === 'yes').checked = false;
+  radios.find((r) => r.value === 'no').checked = true;
+  clickContinue(row);
 
   await startPromise;
 
   assert.equal(resolvedAnswer, false, 'resolved with boolean false when No is chosen');
-  assert.equal(row.querySelector('.step-sub').textContent, 'No');
+  assert.equal(row.querySelector('.step-icon').textContent, '✓', 'row is COMPLETE immediately');
+  assert.equal(row.querySelector('.step-sub').textContent, 'Skipped');
+  assert.equal(row.querySelector('.step-title').textContent, 'Claude Code');
+  assert.equal(findControl(row), null, 'control is removed once answered');
 });
 
 // ── deriveRowTitle / stripHint unit tests ────────────────────────────────────
@@ -325,7 +372,7 @@ test('reopen: a re-ask whose stripped message starts-with the stored base reopen
     return { first, second };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
   await Promise.resolve();
   await Promise.resolve();
@@ -356,7 +403,7 @@ test('reopen: a byte-identical hint-stripped message (masked-password re-ask) re
     return onPrompt({ kind: 'input', id: 'password', message: 'Enter password:' });
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -387,7 +434,7 @@ test('new occurrence: same id but a different (non-prefix) hint-stripped message
     return onPrompt({ kind: 'input', id: 'freeform', message: 'Totally different question: (other)' });
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -417,7 +464,7 @@ test('double-rejection: the stored comparison base never advances past the origi
     return onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: taken2' });
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   // First ask.
@@ -513,7 +560,7 @@ test('list prompt: provider options render parsed titles and badge the recommend
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -546,7 +593,7 @@ test('input prompt: row title uses deriveRowTitle, input is pre-filled with the 
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -570,7 +617,7 @@ test('header: "Set up CodeMie" heading renders once at mount, before the storage
   const container = makeEl('div');
   const fakeStartSetup = async () => ({ profileName: 'default' });
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   await view.start();
 
   const headers = container._children.filter((c) => c.className === 'setup-view-heading');
@@ -595,7 +642,7 @@ test('PROMPT_COPY: provider row renders its heading/helper while active, collaps
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -630,7 +677,7 @@ test('PROMPT_COPY: model row renders its own heading/helper and collapses to "Mo
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -657,7 +704,7 @@ test('PROMPT_COPY: a prompt id outside the table (credential) falls back to deri
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -681,7 +728,7 @@ test('collapsed class is added only once a row reaches COMPLETE, never while PEN
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -712,7 +759,7 @@ test('option cards: recommended card gets a badge element and the "recommended" 
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -756,7 +803,7 @@ test('Continue button (list): clicking Continue with a card selected resolves th
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -780,10 +827,11 @@ test('Continue button (input): clicking Continue with a typed value resolves the
   let resolvedAnswer;
   const fakeStartSetup = async ({ onPrompt }) => {
     resolvedAnswer = await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile:' });
-    return { profileName: resolvedAnswer };
+    // The config fake reports "default" as active; the typed value is what the driver types, not what the config says.
+    return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   const startPromise = view.start();
 
   await Promise.resolve();
@@ -799,4 +847,364 @@ test('Continue button (input): clicking Continue with a typed value resolves the
   await startPromise;
 
   assert.equal(resolvedAnswer, 'my-workspace-2', 'Continue resolves with the typed string');
+});
+
+// ── Answered rows: control and helper removed, value is the card title ──────
+
+test('answering a list prompt removes its control and helper text and collapses to the card title', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({
+      kind: 'list',
+      id: 'provider',
+      message: 'Choose your LLM provider:',
+      options: ['CodeMie SSO - Enterprise SSO Authentication with centralized model management', 'Ollama - Popular open-source local LLM runner - optimized for coding with 16GB RAM'],
+    });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+
+  const row = findRowById(container, 'provider-1');
+  assert.ok(row.querySelector('.step-helper'), 'helper text shown while open');
+  clickContinue(row);
+  await startPromise;
+
+  assert.equal(findControl(row), null, 'option cards and Continue are gone once answered');
+  assert.equal(row.querySelector('.step-helper'), null, 'helper text is gone once answered');
+  assert.equal(row.querySelector('.step-sub').textContent, 'CodeMie SSO', 'collapsed value is the card title, not the raw option string');
+  assert.equal(row.querySelector('.step-title').textContent, 'How to reach a model');
+});
+
+test('list control pre-selects the first card and a card click moves the selection', async () => {
+  const container = makeEl('div');
+  let resolvedAnswer;
+  const fakeStartSetup = async ({ onPrompt }) => {
+    resolvedAnswer = await onPrompt({ kind: 'list', id: 'model', message: 'Choose a model (3 available):', options: ['⭐ claude-sonnet-5', 'claude-4-5-sonnet', 'gpt-5'] });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+
+  const row = findRowById(container, 'model-1');
+  const control = findControl(row);
+  const radios = collectAll(control, (c) => c.type === 'radio');
+  const cards = collectAll(control, (c) => (c.className || '').split(' ').includes('setup-option-card'));
+  assert.ok(radios[0].checked, 'first radio is checked on render');
+  assert.ok(cards[0].classList._set.has('selected'), 'first card carries the selected class on render');
+  assert.ok(!radios[1].checked && !radios[2].checked);
+
+  cards[2].onclick();
+  assert.ok(radios[2].checked && !radios[0].checked, 'clicking a card moves the checked radio');
+  assert.ok(cards[2].classList._set.has('selected') && !cards[0].classList._set.has('selected'), 'and the selected class');
+
+  clickContinue(row);
+  await startPromise;
+  assert.equal(resolvedAnswer, 2);
+  assert.equal(row.querySelector('.step-sub').textContent, 'gpt-5');
+});
+
+test('list prompt without a copy override: heading is the CLI question without its trailing colon', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'list', id: 'codemieProject', message: 'Select your project:', options: ['EPM-CDME', 'OTHER'] });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+
+  const row = findRowById(container, 'codemieProject-1');
+  assert.equal(row.querySelector('.step-title').textContent, 'Select your project');
+  clickContinue(row);
+  await startPromise;
+  assert.equal(row.querySelector('.step-title').textContent, 'CodeMie project');
+  assert.equal(row.querySelector('.step-sub').textContent, 'EPM-CDME');
+});
+
+test('never-rendered activate confirm is answered with the driver\'s own policy (yes)', async () => {
+  const container = makeEl('div');
+  let activateAnswer;
+  let gateAnswer;
+  const fakeStartSetup = async ({ onPrompt }) => {
+    gateAnswer = await onPrompt({ kind: 'list', id: 'gate', message: 'What would you like to do?', options: ['Add a new profile', 'Cancel'] });
+    activateAnswer = await onPrompt({ kind: 'confirm', id: 'activate', message: 'Switch to profile "x" as active?' });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  await view.start();
+  assert.equal(activateAnswer, true, 'activate is confirmed, matching setup-driver.js AUTO_CONFIRM');
+  assert.equal(gateAnswer, 0);
+});
+
+// ── Task 5: transient "Working…" row ────────────────────────────────────────
+
+const workingRows = (container) => container._children.filter((c) => c.dataset && /^working-/.test(c.dataset.id || ''));
+
+test('transient spinner: shown right after start, hidden by the first prompt, shown again after an answer, gone on resolve', async () => {
+  const container = makeEl('div');
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await gate;
+    await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile:' });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+
+  let working = workingRows(container);
+  assert.equal(working.length, 1, 'one Working row before the first prompt');
+  assert.equal(working[0].querySelector('.step-title').textContent, 'Working…');
+  assert.ok(working[0].classList._set.has('active'));
+  const storageIndex = container._children.findIndex((c) => c.dataset && c.dataset.id === 'storage');
+  assert.ok(container._children.indexOf(working[0]) > storageIndex, 'Working row sits below the storage row');
+  await tick(120);
+  assert.ok(SPINNER_GLYPHS.includes(working[0].querySelector('.step-icon').textContent), 'it spins');
+
+  release();
+  await tick();
+  assert.equal(workingRows(container).length, 0, 'hidden the moment the prompt arrives');
+  const row = findRowById(container, 'profileName-1');
+  assert.ok(row, 'prompt row inserted');
+
+  clickContinue(row);
+  working = workingRows(container);
+  assert.equal(working.length, 1, 'shown again after the answer, while the CLI works');
+  assert.equal(working[0].dataset.id, 'working-2', 'a fresh id per gap');
+  assert.ok(container._children.indexOf(working[0]) > container._children.indexOf(row), 'below the answered row');
+
+  await startPromise;
+  assert.equal(workingRows(container).length, 0, 'gone once the run resolves');
+});
+
+test('transient spinner: not inserted after installClaude yes, inserted after installClaude no', async () => {
+  const runWith = async (answerYes) => {
+    const container = makeEl('div');
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let capturedLog;
+    const fakeStartSetup = async ({ onPrompt, onLog }) => {
+      capturedLog = onLog;
+      await onPrompt({ kind: 'confirm', id: 'installClaude', message: 'Would you like to install Claude Code now?' });
+      await gate;
+      return { profileName: 'default' };
+    };
+    const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+    const startPromise = view.start();
+    await Promise.resolve();
+    const row = findRowById(container, 'installClaude-1');
+    if (!answerYes) {
+      const radios = findControl(row)._children.filter((c) => c.type === 'radio');
+      radios.find((r) => r.value === 'yes').checked = false;
+      radios.find((r) => r.value === 'no').checked = true;
+    }
+    clickContinue(row);
+    const count = workingRows(container).length;
+    if (answerYes) capturedLog('Claude Code v1.0.0 installed successfully');
+    release();
+    await startPromise;
+    return count;
+  };
+  assert.equal(await runWith(true), 0, 'yes: the install row\'s own spinner covers the gap');
+  assert.equal(await runWith(false), 1, 'no: the usual Working row covers the gap');
+});
+
+// ── Task 6: installClaude driven by onLog ───────────────────────────────────
+
+async function installYesHarness({ feed = [], settle = 'resolve', rejectWith } = {}) {
+  const container = makeEl('div');
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let capturedLog;
+  const fakeStartSetup = async ({ onPrompt, onLog }) => {
+    capturedLog = onLog;
+    await onPrompt({ kind: 'confirm', id: 'installClaude', message: 'Would you like to install Claude Code now?' });
+    await gate;
+    if (settle === 'reject') throw rejectWith;
+    return { profileName: 'default' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+  const row = findRowById(container, 'installClaude-1');
+  clickContinue(row);
+  for (const chunk of feed) capturedLog(chunk);
+  const before = { icon: row.querySelector('.step-icon').textContent, sub: row.querySelector('.step-sub').textContent };
+  release();
+  const outcome = await startPromise;
+  return { row, before, outcome, container };
+}
+
+test('installClaude: success line without a version collapses to "Claude Code — Installed"', async () => {
+  const { row, before } = await installYesHarness({ feed: ['\x1b[32m✔ Claude Code installed successfully\x1b[39m\n'] });
+  assert.equal(before.icon, '✓');
+  assert.equal(before.sub, 'Installed');
+  assert.equal(row.querySelector('.step-title').textContent, 'Claude Code');
+});
+
+test('installClaude: the CLI\'s failure line marks the row ERROR even though the run resolves normally', async () => {
+  const { row, before, outcome } = await installYesHarness({ feed: ['\x1b[31m✖ Failed to install Claude Code\x1b[39m\n', 'You can install it manually later using:\n'] });
+  assert.equal(before.icon, '✗', 'ERROR from the log line, before the run settles');
+  assert.equal(before.sub, 'Install failed');
+  assert.equal(row.querySelector('.step-icon').textContent, '✗', 'resolution does not overwrite it');
+  assert.deepEqual(outcome, { ok: true, profileName: 'default' }, 'the profile itself is fine');
+});
+
+test('installClaude: safety net marks the row ERROR when the run settles with no install line seen', async () => {
+  const { row, before } = await installYesHarness({ feed: ['Installing Claude Code (supported version)...\n'] });
+  assert.ok(row.classList._set.has('active') === false, 'row is no longer ACTIVE after settling');
+  assert.notEqual(before.icon, '✗', 'it was still pending before the run settled');
+  assert.equal(row.querySelector('.step-icon').textContent, '✗');
+  assert.equal(row.querySelector('.step-sub').textContent, 'Not confirmed');
+});
+
+test('installClaude: safety net also fires on rejection', async () => {
+  const { row } = await installYesHarness({ settle: 'reject', rejectWith: { step: null, message: 'setup exited with code 1', raw: '' } });
+  assert.equal(row.querySelector('.step-icon').textContent, '✗');
+  assert.equal(row.querySelector('.step-sub').textContent, 'Not confirmed');
+});
+
+test('installClaude: log lines before the yes answer are ignored', async () => {
+  const container = makeEl('div');
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const fakeStartSetup = async ({ onPrompt, onLog }) => {
+    onLog('Claude Code v9.9.9 installed successfully\n'); // noise from an earlier phase
+    await onPrompt({ kind: 'confirm', id: 'installClaude', message: 'Would you like to install Claude Code now?' });
+    await gate;
+    return { profileName: 'default' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+  const row = findRowById(container, 'installClaude-1');
+  clickContinue(row);
+  assert.equal(row.querySelector('.step-sub').textContent, 'Installing…', 'still waiting: the earlier line did not count');
+  release();
+  await startPromise;
+  assert.equal(row.querySelector('.step-sub').textContent, 'Not confirmed');
+});
+
+// ── Task 7: success and failure mapping ─────────────────────────────────────
+
+async function runProfileFlow({ readConfig, settle, rejectWith, before }) {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x', 'Ollama - y'] });
+    await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: (sso)' });
+    if (before) await before();
+    if (settle === 'reject') throw rejectWith;
+    return { profileName: 'sso' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+  clickContinue(findRowById(container, 'provider-1'));
+  await tick();
+  clickContinue(findRowById(container, 'profileName-1'));
+  const outcome = await startPromise;
+  return { container, outcome };
+}
+
+test('success: readConfig reports the new profile active; every row stays COMPLETE and start() says ok', async () => {
+  let calls = 0;
+  const readConfig = async () => { calls += 1; return { state: 'valid', profile: 'sso', model: 'm', project: 'p', account: 'a@b' }; };
+  const { container, outcome } = await runProfileFlow({ readConfig });
+  assert.equal(calls, 1, 'the config reader is consulted once');
+  assert.deepEqual(outcome, { ok: true, profileName: 'sso' });
+  assert.equal(findRowById(container, 'profileName-1').querySelector('.step-icon').textContent, '✓');
+  assert.equal(findRowById(container, 'provider-1').querySelector('.step-icon').textContent, '✓');
+  assert.equal(workingRows(container).length, 0);
+});
+
+test('mismatch: a different active profile marks the last row ERROR and start() says not ok', async () => {
+  const readConfig = async () => ({ state: 'valid', profile: 'other', model: '', project: '', account: null });
+  const { container, outcome } = await runProfileFlow({ readConfig });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.error.step, null);
+  assert.equal(findRowById(container, 'profileName-1').querySelector('.step-icon').textContent, '✗', 'last row is ERROR');
+  assert.equal(findRowById(container, 'provider-1').querySelector('.step-icon').textContent, '✓', 'earlier rows untouched');
+});
+
+test('broken config or a throwing reader is a mismatch too', async () => {
+  const broken = await runProfileFlow({ readConfig: async () => ({ state: 'broken', profile: 'sso', model: '', project: '', account: null }) });
+  assert.equal(broken.outcome.ok, false);
+  const throwing = await runProfileFlow({ readConfig: async () => { throw new Error('ipc down'); } });
+  assert.equal(throwing.outcome.ok, false);
+  assert.equal(findRowById(throwing.container, 'profileName-1').querySelector('.step-icon').textContent, '✗');
+});
+
+test('rejection naming an answered step marks that row ERROR and start() hands the driver error back', async () => {
+  const err = { step: 'provider', message: 'invalid provider selection index: 7', raw: '' };
+  const { container, outcome } = await runProfileFlow({ readConfig: okConfig, settle: 'reject', rejectWith: err });
+  assert.deepEqual(outcome, { ok: false, error: err });
+  assert.equal(findRowById(container, 'provider-1').querySelector('.step-icon').textContent, '✗');
+  assert.equal(findRowById(container, 'profileName-1').querySelector('.step-icon').textContent, '✓', 'only the named row');
+  assert.equal(workingRows(container).length, 0, 'the Working row is not left behind');
+});
+
+test('rejection with step "model" before any model row inserts the model row in ERROR', async () => {
+  const err = { step: 'model', message: 'model list did not redraw within 5000ms after an arrow-key step', raw: '' };
+  const { container } = await runProfileFlow({ readConfig: okConfig, settle: 'reject', rejectWith: err });
+  const modelRow = findRowById(container, 'model-1');
+  assert.ok(modelRow, 'model-1 row was inserted for the failure');
+  assert.equal(modelRow.querySelector('.step-icon').textContent, '✗');
+  assert.equal(modelRow.querySelector('.step-title').textContent, 'Model');
+  assert.equal(workingRows(container).length, 0);
+});
+
+test('rejection with step null while a prompt is open marks the open row ERROR', async () => {
+  const container = makeEl('div');
+  const err = { step: null, message: 'setup exited with code 1', raw: '' };
+  const fakeStartSetup = async ({ onPrompt }) => {
+    void onPrompt({ kind: 'input', id: 'credential', message: 'API key:' }); // left unanswered
+    await tick();
+    throw err;
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const outcome = await view.start();
+  assert.equal(outcome.ok, false);
+  const row = findRowById(container, 'credential-1');
+  assert.equal(row.querySelector('.step-icon').textContent, '✗');
+  assert.equal(workingRows(container).length, 0);
+});
+
+test('rejection with step null between prompts turns the Working row into the one ERROR row on screen', async () => {
+  const err = { step: null, message: 'unrecognized prompt, run stalled', raw: '' };
+  const { container, outcome } = await runProfileFlow({ readConfig: okConfig, settle: 'reject', rejectWith: err });
+  assert.equal(outcome.ok, false);
+  const working = workingRows(container);
+  assert.equal(working.length, 1, 'the transient row is kept, not hidden');
+  assert.equal(working[0].querySelector('.step-icon').textContent, '✗');
+  assert.equal(working[0].querySelector('.step-title').textContent, 'Setup stopped');
+  const errorRows = container._children.filter((c) => c.dataset && c.dataset.id && c.querySelector('.step-icon') && c.querySelector('.step-icon').textContent === '✗');
+  assert.equal(errorRows.length, 1, 'exactly one ERROR row');
+  assert.equal(findRowById(container, 'profileName-1').querySelector('.step-icon').textContent, '✓', 'answered rows untouched');
+});
+
+test('rejection naming a repeated catch-all id marks its latest occurrence, not the first', async () => {
+  const container = makeEl('div');
+  const err = { step: 'credential', message: 'boom', raw: '' };
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'input', id: 'credential', message: 'AWS Access Key ID:' });
+    await onPrompt({ kind: 'input', id: 'credential', message: 'AWS Secret Access Key: [input is hidden]' });
+    throw err;
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+  clickContinue(findRowById(container, 'credential-1'));
+  await tick();
+  clickContinue(findRowById(container, 'credential-2'));
+  await startPromise;
+  assert.equal(findRowById(container, 'credential-2').querySelector('.step-icon').textContent, '✗');
+  assert.equal(findRowById(container, 'credential-1').querySelector('.step-icon').textContent, '✓');
 });
