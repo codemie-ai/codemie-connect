@@ -56,7 +56,10 @@ fn ensure_log_readable(path: &str) -> CmdResult<()> {
 
 #[cfg(not(windows))]
 fn spawn_open(path: &str) -> CmdResult<()> {
-    std::process::Command::new("open").arg(path).spawn().map_err(InstallerError::Io)?;
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map_err(InstallerError::Io)?;
     Ok(())
 }
 #[cfg(windows)]
@@ -128,7 +131,10 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn log_dir_uses_home_library_logs_codemie() {
-        assert_eq!(log_dir_with("/Users/alice"), "/Users/alice/Library/Logs/CodeMie");
+        assert_eq!(
+            log_dir_with("/Users/alice"),
+            "/Users/alice/Library/Logs/CodeMie"
+        );
     }
 
     #[test]
