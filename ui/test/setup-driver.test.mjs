@@ -426,6 +426,59 @@ test('an answered list echo (provider, whose answer renders on the next row) is 
   assert.deepEqual(fake.writes, ['\r'], 'and must be answered exactly once');
 });
 
+test('an answered model echo is not re-dispatched or answered twice (the list mark in the model branch)', async () => {
+  // Same guard as the provider case, on the paginated model branch. No real
+  // recording shows a non-blank row between the answered model line and the
+  // next question (the profile-name prompt lands with its own "?"), so the
+  // following row here is synthetic: it is the shape the parser needs before
+  // it would read the answered line as a one-entry list again. The mark is
+  // defence in depth, mirroring the provider case measured in the app.
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const baseModel = (opts) => [
+    '? Choose a model (2 available):',
+    ...opts.map((o, i) => `${i === 0 ? '❯ ' : '  '}${o}`),
+  ].concat(Array(30).fill('')).slice(0, 30);
+  const frames = [
+    baseModel(['gpt-4', 'gpt-4o']),
+    baseModel(['gpt-4', 'gpt-4o']), // repeat at once: the walk settles after one step
+  ];
+  termInstance.__setLines(frames[0]);
+  let frameIdx = 0;
+  let answered;
+  const answeredP = new Promise((r) => { answered = r; });
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' && frameIdx < frames.length - 1) {
+      frameIdx += 1;
+      termInstance.__setLines(frames[frameIdx]);
+      fake.feedRaw('REDRAW');
+    }
+    if (d === '\r') answered();
+  };
+  let onPromptCalls = 0;
+  const p = startSetup(
+    { onPrompt: async () => { onPromptCalls += 1; return 0; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  await answeredP;
+  await flushMicrotasks(); // the answer is written and the handler has left its in-flight window
+  // inquirer keeps the '?' prefix and appends the chosen label; the spinner
+  // row below it is what parseOptions would read as a one-entry option list.
+  termInstance.__setLines(['? Choose a model (2 available): gpt-4', '⠋ Saving profile...', ...Array(28).fill('')]);
+  fake.feedRaw('ECHO');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.equal(onPromptCalls, 1, 'model must reach onPrompt exactly once');
+  assert.equal(fake.writes.filter((w) => w === '\r').length, 1, 'and must be answered exactly once');
+  // Without the mark the echo re-enters the model branch, whose pagination walk
+  // starts with an arrow-down before it ever reaches onPrompt -- so the write
+  // log, not the onPrompt count, is what catches it.
+  assert.equal(fake.writes[fake.writes.length - 1], '\r', 'nothing is written after the answer: the echo started no second walk');
+});
+
 test('a non-boolean confirm answer rejects instead of typing it into the CLI', async () => {
   const fake = makeFakePty();
   const termInstance = makeFakeTerminal()();
