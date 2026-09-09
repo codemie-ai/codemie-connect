@@ -4,14 +4,12 @@ DONE
 
 ## Commit
 
-SHA: `11ab57a64f1ebd6d9ea2cb254baa6c98268a00af`
+SHA: `47926b5a5c086388306c63dfe86a2b786366209e`
 
 ```
-commit 11ab57a64f1ebd6d9ea2cb254baa6c98268a00af
-Author: Mert <mert_efe@epam.com>
-Date:   Wed Sep 9 19:37:32 2026 +0300
+commit 47926b5a5c086388306c63dfe86a2b786366209e
 
-    EPMCDME-14513: setup-view row title derivation and reopen-vs-new-row logic
+    feat: setup-view row title derivation and reopen-vs-new-row logic
 
  ui/setup-view.js            | 113 ++++++++++++++++++++----
  ui/test/setup-view.test.mjs | 203 +++++++++++++++++++++++++++++++++++++++++++-

@@ -8,7 +8,7 @@ ui/test/setup-view.test.mjs` → EXIT=0, 49/49 pass.
 
 One real gap was found (mechanism 2) and fixed in
 `ui/test/setup-view.test.mjs`. `ui/setup-view.js` needed no changes — it is
-byte-identical to HEAD (025c0cf) at the end of this pass.
+byte-identical to HEAD (744bd07) at the end of this pass.
 
 ## Mechanism-by-mechanism results
 
@@ -73,7 +73,7 @@ fix.
 
 ## Commit
 
-`28d164f` — "EPMCDME-14513: strengthen double-rejection test against a
+`01507db` — "test: strengthen double-rejection test against a
 mutation-blind case" (test-file only; `ui/setup-view.js` untouched).
 
 ## Final verification

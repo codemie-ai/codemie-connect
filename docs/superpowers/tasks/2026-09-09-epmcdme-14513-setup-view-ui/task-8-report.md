@@ -7,7 +7,7 @@ Task 8 completed successfully. Modified `ui/renderer.js` to wire the setup-view 
 ## Changes
 
 - **File modified:** `ui/renderer.js`
-- **Commit SHA:** `025c0cf1c94a26083b4242261c42ce66cc2e2917` (short: `025c0cf`)
+- **Commit SHA:** `744bd0732b83f8fac60175a02e2e410c59b97833` (short: `744bd07`)
 - **Changed files (from git show --stat HEAD):** `ui/renderer.js` (10 insertions, 1 deletion)
 
 ## What was changed
@@ -29,7 +29,7 @@ The existing `showView` and `startSetup` entries were left completely untouched.
 - **Syntax check:** `node --check ui/renderer.js` — passed (no errors)
 - **Test suite:** `node --test ui/test/*.test.mjs` — EXIT=0, 177 tests passed, 0 failures
 - **Git status:** Only `ui/renderer.js` was modified, nothing else
-- **Commit message:** Follows convention on this branch (`EPMCDME-14513: wire setup-view dev hook (task 8)`)
+- **Commit message:** Follows convention on this branch (`feat: wire setup-view dev hook (task 8)`)
 
 ## No concerns
 

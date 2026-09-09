@@ -4,15 +4,13 @@ DONE_WITH_CONCERNS
 
 ## Commit
 
-`73a57bbfb22e8be5755fb8b782143f8711800560` on branch `feat/epmcdme-14513-setup-view-ui`
+`c349583dd005f106c05ea01ee9e05a64ef639593` on branch `feat/epmcdme-14513-setup-view-ui`
 
 ```
 $ git show --stat HEAD
-commit 73a57bbfb22e8be5755fb8b782143f8711800560
-Author: Mert <mert_efe@epam.com>
-Date:   Wed Sep 9 20:02:02 2026 +0300
+commit c349583dd005f106c05ea01ee9e05a64ef639593
 
-    EPMCDME-14513: setup-view header/copy/collapsed-row layout and option-card markup
+    feat: setup-view header/copy/collapsed-row layout and option-card markup
 
     Adds the "Set up CodeMie" mount-time header, a PROMPT_COPY table that
     overrides open-row heading/helper text and the collapsed-row label for

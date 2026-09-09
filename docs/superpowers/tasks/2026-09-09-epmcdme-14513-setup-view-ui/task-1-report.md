@@ -2,7 +2,7 @@ DONE
 
 ## Commit
 
-`0185af8` — EPMCDME-14513: setup-view module skeleton, storage row, one-shot round trip
+`2d19992` — feat: setup-view module skeleton, storage row, one-shot round trip
 
 ## Files changed (`git show --stat HEAD`)
 

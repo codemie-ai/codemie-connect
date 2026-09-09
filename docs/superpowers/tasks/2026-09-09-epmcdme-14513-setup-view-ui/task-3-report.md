@@ -2,16 +2,14 @@ DONE
 
 ## Commit
 
-SHA: `403ff7bea678dd8902585b2536a296413f71d24f`
-Subject: `EPMCDME-14513: setup-view option-card string parsing (renderOptionCards)`
+SHA: `0e17e9ada12f3bf37ac1f861f7ad298d93ef3f6d`
+Subject: `feat: setup-view option-card string parsing (renderOptionCards)`
 
 ```
 $ git show --stat HEAD
-commit 403ff7bea678dd8902585b2536a296413f71d24f
-Author: Mert <mert_efe@epam.com>
-Date:   Wed Sep 9 19:46:01 2026 +0300
+commit 0e17e9ada12f3bf37ac1f861f7ad298d93ef3f6d
 
-    EPMCDME-14513: setup-view option-card string parsing (renderOptionCards)
+    feat: setup-view option-card string parsing (renderOptionCards)
 
  ui/setup-view.js            | 41 ++++++++++++++++++++++--
  ui/test/setup-view.test.mjs | 76 ++++++++++++++++++++++++++++++++++++++++++++-
