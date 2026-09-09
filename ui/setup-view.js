@@ -129,6 +129,69 @@ export function renderOptionCards(options, { badgeIndex } = {}) {
   });
 }
 
+// One selectable card, the wireframe's option shape: the radio stays in the DOM as
+// the single source of truth for what is chosen (and for assistive tech), the
+// card itself is what the user sees and clicks.
+function makeCard({ title, description, recommended, name, value }) {
+  const card = document.createElement('div');
+  card.className = 'setup-option-card' + (recommended ? ' recommended' : '');
+
+  const radio = document.createElement('input');
+  radio.type = 'radio';
+  radio.name = name;
+  radio.value = value;
+  card.appendChild(radio);
+
+  // title/description come straight from the CLI's own driver-supplied
+  // option strings -- always rendered via .textContent, never innerHTML.
+  const titleEl = document.createElement('div');
+  titleEl.className = 'setup-option-title';
+  titleEl.textContent = title;
+  card.appendChild(titleEl);
+
+  if (description) {
+    const descEl = document.createElement('div');
+    descEl.className = 'setup-option-description';
+    descEl.textContent = description;
+    card.appendChild(descEl);
+  }
+
+  if (recommended) {
+    const badge = document.createElement('span');
+    badge.className = 'setup-option-badge';
+    badge.textContent = 'Recommended'; // static UI copy, not driver-supplied text.
+    card.appendChild(badge);
+  }
+  return { card, radio };
+}
+
+// A group of cards where exactly one is selected; select(i) keeps the radios
+// and the visual state in step, and the first card starts selected.
+function makeCardGroup(control, name, items) {
+  const radios = [];
+  const cardEls = [];
+  function select(index) {
+    radios.forEach((r, i) => { r.checked = i === index; });
+    cardEls.forEach((c, i) => c.classList.toggle('selected', i === index));
+  }
+  items.forEach((item, index) => {
+    const { card, radio } = makeCard({ ...item, name, value: String(index) });
+    // Clicking anywhere on the card selects it -- the radio input remains
+    // the single source of truth Continue reads from on submit.
+    card.onclick = () => select(index);
+    radios.push(radio);
+    cardEls.push(card);
+    control.appendChild(card);
+  });
+  if (radios.length) select(0);
+  return {
+    selectedIndex: () => {
+      const chosen = radios.findIndex((r) => r.checked);
+      return chosen === -1 ? 0 : chosen;
+    },
+  };
+}
+
 function makeContinueButton(onClick) {
   const btn = document.createElement('button');
   btn.className = 'prompt-submit';
@@ -141,60 +204,14 @@ function makeContinueButton(onClick) {
 function renderListControl(host, prompt, submit) {
   const control = document.createElement('div');
   control.className = 'prompt-control';
-  const radios = [];
-  const cardEls = [];
   const badgeIndex = prompt.id === 'provider' ? 0 : undefined;
   const cards = renderOptionCards(prompt.options, { badgeIndex });
-  function select(index) {
-    radios.forEach((r, i) => { r.checked = i === index; });
-    cardEls.forEach((c, i) => c.classList.toggle('selected', i === index));
-  }
-  cards.forEach(({ title, description, recommended }, index) => {
-    const card = document.createElement('div');
-    card.className = 'setup-option-card' + (recommended ? ' recommended' : '');
-    cardEls.push(card);
-
-    const radio = document.createElement('input');
-    radio.type = 'radio';
-    radio.name = `${prompt.rowId}-choice`;
-    radio.value = String(index);
-    radios.push(radio);
-    card.appendChild(radio);
-
-    // title/description come straight from the CLI's own driver-supplied
-    // option strings -- always rendered via .textContent, never innerHTML.
-    const titleEl = document.createElement('div');
-    titleEl.className = 'setup-option-title';
-    titleEl.textContent = title;
-    card.appendChild(titleEl);
-
-    if (description) {
-      const descEl = document.createElement('div');
-      descEl.className = 'setup-option-description';
-      descEl.textContent = description;
-      card.appendChild(descEl);
-    }
-
-    if (recommended) {
-      const badge = document.createElement('span');
-      badge.className = 'setup-option-badge';
-      badge.textContent = 'Recommended'; // static UI copy, not driver-supplied text.
-      card.appendChild(badge);
-    }
-
-    // Clicking anywhere on the card selects it -- the radio input remains
-    // the single source of truth Continue reads from on submit.
-    card.onclick = () => select(index);
-
-    control.appendChild(card);
-  });
   // The CLI's cursor starts on the first entry (the recommended provider,
   // the starred model), so that is what Continue submits untouched. Showing
   // the selection up front keeps what is submitted equal to what is seen.
-  if (radios.length) select(0);
+  const group = makeCardGroup(control, `${prompt.rowId}-choice`, cards);
   control.appendChild(makeContinueButton(() => {
-    const chosen = radios.findIndex((r) => r.checked);
-    const index = chosen === -1 ? 0 : chosen;
+    const index = group.selectedIndex();
     submit(index, cards[index].title);
   }));
   host.appendChild(control);
@@ -219,31 +236,13 @@ function renderInputControl(host, prompt, submit) {
 function renderConfirmControl(host, prompt, submit) {
   const control = document.createElement('div');
   control.className = 'prompt-control';
-
-  const yesLabel = document.createElement('span');
-  yesLabel.className = 'prompt-option-label';
-  yesLabel.textContent = 'Yes';
-  const yes = document.createElement('input');
-  yes.type = 'radio';
-  yes.name = `${prompt.rowId}-confirm`;
-  yes.value = 'yes';
-  yes.checked = true; // CLI default is Yes ("(Y/n)"); pre-select it.
-
-  const noLabel = document.createElement('span');
-  noLabel.className = 'prompt-option-label';
-  noLabel.textContent = 'No';
-  const no = document.createElement('input');
-  no.type = 'radio';
-  no.name = `${prompt.rowId}-confirm`;
-  no.value = 'no';
-
-  control.appendChild(yes);
-  control.appendChild(yesLabel);
-  control.appendChild(no);
-  control.appendChild(noLabel);
-
+  // CLI default is Yes ("(Y/n)"); the first card starts selected.
+  const group = makeCardGroup(control, `${prompt.rowId}-confirm`, [
+    { title: 'Yes', description: '', recommended: false },
+    { title: 'No', description: '', recommended: false },
+  ]);
   control.appendChild(makeContinueButton(() => {
-    const answer = !no.checked; // Yes wins unless No was explicitly picked.
+    const answer = group.selectedIndex() === 0;
     submit(answer, answer ? 'Yes' : 'No');
   }));
   host.appendChild(control);
@@ -531,7 +530,16 @@ export function createSetupView(container, deps = {}) {
       cfg = null;
     }
     const ok = !!cfg && cfg.state === 'valid' && profileName !== '' && cfg.profile === profileName;
-    if (!ok) markError(lastRowId);
+    if (!ok) {
+      markError(lastRowId);
+      return ok;
+    }
+    // Not a step (the CLI asked nothing here): a closing line under the list,
+    // so the finished flow says what it achieved instead of just going quiet.
+    const status = document.createElement('div');
+    status.className = 'setup-view-status';
+    status.textContent = `Setup complete. ${profileName} is now the active profile.`;
+    container.appendChild(status);
     return ok;
   }
 
@@ -573,6 +581,16 @@ export function createSetupView(container, deps = {}) {
   // EPMCDME-14588 reads `error` (the driver's { step, message, raw }) from
   // here to build the failure UI.
   async function start() {
+    // Every start() is a fresh run (EPMCDME-14588 retries by calling it
+    // again): forget the previous run's rows, ids and reopen bases, or the
+    // next provider prompt would be taken for a reopen of a row that is gone.
+    occurrenceCounts.clear();
+    baseMessageByPromptId.clear();
+    activeRowId = null;
+    lastRowId = null;
+    transient = null;
+    transientSeq = 0;
+    install = null;
     stepsUi.renderSteps(container, []);
 
     // renderSteps just cleared `container` via innerHTML = '' -- the header

@@ -273,9 +273,13 @@ test('confirm prompt: Yes is pre-selected, resolves true, and the row waits on t
   assert.equal(row.querySelector('.step-title').textContent, 'Would you like to install Claude Code now?', 'heading is the CLI question as asked');
 
   const control = findControl(row);
-  const radios = control._children.filter((c) => c.type === 'radio');
+  const radios = collectAll(control, (c) => c.type === 'radio');
   assert.equal(radios.length, 2, 'Yes/No radios present');
-  assert.ok(radios.find((r) => r.value === 'yes').checked, 'Yes is pre-selected');
+  assert.ok(radios[0].checked, 'Yes is pre-selected');
+  const yesNoCards = collectAll(control, (c) => (c.className || '').split(' ').includes('setup-option-card'));
+  assert.equal(yesNoCards.length, 2, 'Yes and No render as cards');
+  assert.equal(yesNoCards[0].querySelector('.setup-option-title').textContent, 'Yes');
+  assert.ok(yesNoCards[0].classList._set.has('selected'), 'the Yes card starts selected');
 
   // Accept the default (Yes) without touching anything.
   clickContinue(row);
@@ -319,9 +323,7 @@ test('confirm prompt: choosing No resolves false and collapses to "Claude Code �
   await Promise.resolve();
   const row = findRowById(container, 'installClaude-1');
   const control = findControl(row);
-  const radios = control._children.filter((c) => c.type === 'radio');
-  radios.find((r) => r.value === 'yes').checked = false;
-  radios.find((r) => r.value === 'no').checked = true;
+  collectAll(control, (c) => (c.className || '').split(' ').includes('setup-option-card'))[1].onclick(); // pick No
   clickContinue(row);
 
   await startPromise;
@@ -1002,9 +1004,7 @@ test('transient spinner: not inserted after installClaude yes, inserted after in
     await Promise.resolve();
     const row = findRowById(container, 'installClaude-1');
     if (!answerYes) {
-      const radios = findControl(row)._children.filter((c) => c.type === 'radio');
-      radios.find((r) => r.value === 'yes').checked = false;
-      radios.find((r) => r.value === 'no').checked = true;
+      collectAll(findControl(row), (c) => (c.className || '').split(' ').includes('setup-option-card'))[1].onclick(); // pick No
     }
     clickContinue(row);
     const count = workingRows(container).length;
@@ -1207,4 +1207,44 @@ test('rejection naming a repeated catch-all id marks its latest occurrence, not 
   await startPromise;
   assert.equal(findRowById(container, 'credential-2').querySelector('.step-icon').textContent, '✗');
   assert.equal(findRowById(container, 'credential-1').querySelector('.step-icon').textContent, '✓');
+});
+
+// ── Final pass: fresh runs and the closing line ─────────────────────────────
+
+test('success appends a closing status line naming the active profile; a mismatch does not', async () => {
+  const good = await runProfileFlow({ readConfig: async () => ({ state: 'valid', profile: 'sso', model: '', project: '', account: null }) });
+  const status = good.container._children.find((c) => c.className === 'setup-view-status');
+  assert.ok(status, 'status line rendered');
+  assert.equal(status.textContent, 'Setup complete. sso is now the active profile.');
+  assert.equal(good.container._children.indexOf(status), good.container._children.length - 1, 'it sits under the list');
+
+  const bad = await runProfileFlow({ readConfig: async () => ({ state: 'valid', profile: 'other', model: '', project: '', account: null }) });
+  assert.equal(bad.container._children.find((c) => c.className === 'setup-view-status'), undefined, 'no status line on a mismatch');
+});
+
+test('start() called again on the same view is a fresh run: ids, reopen bases and the closing line all reset', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x', 'Ollama - y'] });
+    return { profileName: 'default' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+
+  let startPromise = view.start();
+  await Promise.resolve();
+  clickContinue(findRowById(container, 'provider-1'));
+  await startPromise;
+  assert.ok(container._children.find((c) => c.className === 'setup-view-status'), 'first run finished with its closing line');
+
+  startPromise = view.start();
+  await Promise.resolve();
+  const row = findRowById(container, 'provider-1');
+  assert.ok(row, 'the second run starts at provider-1 again, not provider-2');
+  assert.equal(findRowById(container, 'provider-2'), null);
+  assert.ok(row.classList._set.has('active'), 'and it is a live, open row, not a stale reopen');
+  assert.ok(findControl(row), 'with its control rendered');
+  assert.equal(container._children.filter((c) => c.className === 'setup-view-status').length, 0, 'the old closing line is gone while the run is open');
+  clickContinue(row);
+  await startPromise;
+  assert.equal(container._children.filter((c) => c.className === 'setup-view-heading').length, 1, 'one header, not two');
 });
