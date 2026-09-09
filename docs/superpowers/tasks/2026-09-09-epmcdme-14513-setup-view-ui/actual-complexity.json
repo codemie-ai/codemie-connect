@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-09-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 6, "label": "XXL" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New setup-view.js (664 lines) glues setup-driver.js's headless prompt contract to steps-ui.js's row renderer, plus renderer.js wiring — but the change also had to edit setup-driver.js itself, a shared/core module completed under a separate prior ticket (EPMCDME-14668) and explicitly declared out-of-scope by this ticket's text, to fix a real correctness bug (a mis-classified answered-list echo silently skipping the organization-URL prompt). Editing a declared-out-of-scope shared foundation is the L->XL 'touches core shared utilities' bump." },
+    { "dimension": "requirements_clarity", "reason": "The ticket text repeatedly conflicted with verified real behavior rather than merely having gaps: the spec claimed onPrompt call patterns the driver doesn't make, named a config-reader field (activeProfile) that doesn't exist, described a build order contradicted by the CLI's real fresh-machine flow, specced a row-per-id model contradictory with steps-ui.js's actual dedup-on-id behavior (redesigned to row-per-occurrence), specced installClaude rejection semantics the CLI doesn't implement, and misread the wireframe's illustrative option grouping as a literal render target. This drove 4 spec-approval rounds and 3 plan-approval rounds, and the already-approved spec was later found to self-contradict across two sections on the same field's title-derivation rule. This is 'conflicting, discovery needed first', not a same-M/S-clarity ticket with a couple of open questions." },
+    { "dimension": "technical_risk", "reason": "Code review surfaced a security-classified, confirmed defect (secret/credential fields rendered unmasked, with the typed secret permanently echoed into visible DOM state), fixed only via a newly-invented CLI-message heuristic (isSecretPrompt) with no existing reusable pattern for that surface. Independently, the implementation walkthrough against the live CLI uncovered a genuine correctness bug in already-merged code from a separate completed ticket, plus a start()-re-entrancy bug and a race-prone ordering dependency between spinner-hide and error-resolution mapping. This is security-sensitive work with real discovered defects and no exact precedent, matching XL rather than the M/L a UI-glue ticket would normally carry." },
+    { "dimension": "file_change_estimate", "reason": "8 files changed, 2212 insertions across a new 664-line setup-view.js and its 1352-line test file, plus edits to renderer.js, setup-driver.js, styles.css, and setup-driver.test.mjs." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: setup-driver.js, a shared core module from a separate completed prior ticket (EPMCDME-14668), had to be edited for a correctness bug despite being declared out-of-scope by this ticket's own text.",
+    "Technical Risk held at XL: a confirmed security-classified defect (unmasked/echoed secret input) required a novel detection heuristic with no existing reusable pattern, alongside a genuine correctness bug found only via live-CLI verification and a re-entrancy bug.",
+    "Requirements Clarity red flag: the ticket text directly contradicted verified real system behavior (wrong field name, wrong build order, contradictory dedup model, wrong reject semantics, misread wireframe) across 4 spec + 3 plan approval rounds, and the approved spec was found to self-contradict internally."
+  ],
+  "split_recommendation": null
+}

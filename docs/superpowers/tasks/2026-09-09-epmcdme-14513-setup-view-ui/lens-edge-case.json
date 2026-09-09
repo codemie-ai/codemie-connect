@@ -1,0 +1,32 @@
+[
+  {
+    "location": "ui/setup-view.js:207-216 (renderListControl, via setup-driver.js:442-464 collectModelOptions filtering)",
+    "trigger_condition": "a list prompt (e.g. 'model' after collectModelOptions filters out every custom-model entry) arrives with an empty options array",
+    "guard_snippet": "if (!cards.length) return submit(0, ''); // or render an empty-state message instead of a card group",
+    "potential_consequence": "Continue's handler reads cards[index].title on an undefined card and throws, hanging the run"
+  },
+  {
+    "location": "ui/setup-view.js:22 (NEVER_RENDERED_PROMPT_IDS)",
+    "trigger_condition": "'storage' prompt reaches onPrompt (the AUTO_LIST fixed-policy id the driver normally answers itself, per setup-driver.js:73-74)",
+    "guard_snippet": "const NEVER_RENDERED_PROMPT_IDS = new Set(['gate', 'activate', 'storage']);",
+    "potential_consequence": "a second, live 'storage-1' row renders and duplicates the pre-inserted collapsed storage row, contradicting its own comment describing storage's mirrored answer"
+  },
+  {
+    "location": "ui/setup-view.js:448-451 (renderControl)",
+    "trigger_condition": "findControlHost/row lookup returns null for the row a prompt needs (e.g. reopen path finds no row, or a row is removed unexpectedly)",
+    "guard_snippet": "if (!host) { resolve(undefined); markError(rowId); return; }",
+    "potential_consequence": "submit is never wired up, the onPrompt promise never resolves, and the whole setup run hangs silently with no error"
+  },
+  {
+    "location": "ui/setup-view.js:583-679 (start)",
+    "trigger_condition": "start() is invoked again while a previous call on the same view instance has not yet settled",
+    "guard_snippet": "if (running) throw new Error('start already in progress'); running = true; try { ... } finally { running = false; }",
+    "potential_consequence": "occurrenceCounts/baseMessageByPromptId/activeRowId/container are shared and clobbered between the two overlapping runs, corrupting both"
+  },
+  {
+    "location": "ui/setup-view.js:27,53-59 (DEFAULT_HINT / deriveRowTitle)",
+    "trigger_condition": "a prompt message's default hint itself contains parentheses (nested parens), e.g. 'URL: (default (fallback))'",
+    "guard_snippet": "match balanced parens (e.g. a small paren-depth scanner) instead of /\\s*\\([^()]*\\)\\s*$/",
+    "potential_consequence": "hint is left un-stripped in the visible row title and defaultValue is empty, so the input is not pre-filled and the title shows raw hint text"
+  }
+]

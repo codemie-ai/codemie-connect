@@ -1,0 +1,22 @@
+{
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires <type>: <short description> with type in feat|fix|docs|test|chore|refactor. 9 of 10 subjects in the range use 'EPMCDME-14513: <description>' with the ticket id as the leading token instead of a documented type (e.g. 'EPMCDME-14513: wire setup-view dev hook (task 8)', 'EPMCDME-14513: driver marks an answered list prompt as answered once...'). Only the docs wireframes commit ('docs: EPMCDME-14513 — add the 24 Aug design-exploration wireframes...') matches the format."},
+    {"kind": "code-quality", "status": "na", "notes": "no .ai-run/guides/standards/code-quality.md in the repo and no ArtifactRef passed for it; absent guide, not a coverage gap."},
+    {"kind": "security", "status": "na", "notes": "no .ai-run/guides/development/security-patterns.md in the repo and no ArtifactRef passed for it; absent guide, not a coverage gap. One concrete security issue found independently of any guide, reported in blocking_findings: ui/setup-view.js's renderInputControl() always creates a plain input.type='text' control for kind:'input' prompts regardless of prompt id, and setup-driver.js's own comments confirm the CLI marks some of these as secret (message text 'AWS Secret Access Key: [input is hidden]', id 'credential' covers API keys). The typed value is never masked while entering it, and submit() in renderControl() echoes the raw entered value back as the row's permanent subtitle via stepsUi.setSubtitle(rowId, text) once the row collapses, so an API key/secret credential is displayed in clear text in the UI both during and after entry."}
+  ],
+  "blocking_findings": [
+    {
+      "location": "commits 025c0cf, and 8 other 'EPMCDME-14513: ...' subjects in the review range (all except the 'docs: EPMCDME-14513 — add the 24 Aug...' commit)",
+      "violation": "git-workflow.md's Commit Message Format section requires '<type>: <short description>' with type in feat|fix|docs|test|chore|refactor; these subjects use the ticket id as the leading token instead of a documented type",
+      "why_blocking": "commit-format is one of the standards this gate always treats as blocking, and the documented format is violated across almost the whole range",
+      "remedy": "prefix each commit subject with the correct conventional type (feat:/fix:/test:/refactor:/chore:) and move the ticket id into the body, matching the repo's own examples in git-workflow.md"
+    },
+    {
+      "location": "ui/setup-view.js: renderInputControl() (around line 220-234) and renderControl()'s submit() (around line 426-445)",
+      "violation": "kind:'input' prompts are always rendered with input.type='text' with no masking, and the raw entered value is echoed back permanently as the collapsed row's subtitle via stepsUi.setSubtitle(rowId, text); this includes the 'credential' prompt id, which setup-driver.js's own comments identify as carrying secrets the underlying CLI itself marks hidden (e.g. 'AWS Secret Access Key: [input is hidden]')",
+      "why_blocking": "an API key or cloud secret typed into the guided setup is shown in clear text on screen while typing and remains visible in clear text in the completed row afterward, exposing it to shoulder-surfing, screen recording, or screenshots",
+      "remedy": "give input-kind prompts whose id/message signals a secret (e.g. 'credential', or a message containing '[input is hidden]') a masked input.type='password' control, and store/display a redacted placeholder (e.g. bullets or 'Set') as the row's subtitle instead of the raw value"
+    }
+  ],
+  "coverage_gap": false
+}

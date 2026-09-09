@@ -1,0 +1,9 @@
+{"task_id":"1","status":"done","commit":"0185af8","test_command":"node --test ui/test/setup-view.test.mjs"}
+{"task_id":"2","status":"done","commit":"11ab57a","test_command":"node --test ui/test/setup-view.test.mjs"}
+{"task_id":"3","status":"done","commit":"403ff7b","test_command":"node --test ui/test/setup-view.test.mjs"}
+{"task_id":"4","status":"done","commit":"73a57bb","test_command":"node --test ui/test/setup-view.test.mjs"}
+{"task_id":"5","status":"done","commit":"324779b","test_command":"node --test ui/test/setup-view.test.mjs","note":"done by hand alongside 6 and 7 during a real-CLI walk; see plan.md status note"}
+{"task_id":"6","status":"done","commit":"324779b","test_command":"node --test ui/test/setup-view.test.mjs","note":"done by hand alongside 5 and 7 during a real-CLI walk; see plan.md status note"}
+{"task_id":"7","status":"done","commit":"324779b","test_command":"node --test ui/test/setup-view.test.mjs","note":"done by hand alongside 5 and 6 during a real-CLI walk; see plan.md status note"}
+{"task_id":"8","status":"done","commit":"025c0cf","test_command":"node --test ui/test/*.test.mjs"}
+{"task_id":"9","status":"done","commit":"28d164f","test_command":"node --test ui/test/setup-view.test.mjs"}
