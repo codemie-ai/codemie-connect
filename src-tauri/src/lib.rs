@@ -15,13 +15,26 @@ pub fn run() {
             // Capture PATH before injection so check_handshake_state can search the
             // pre-bundle PATH for a global codemie binary.
             let pre_injection_path = std::env::var("PATH").unwrap_or_default();
-            let bundled_injected = commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
-            if !bundled_injected {
-                // eprintln! is swallowed in a packaged GUI; use log::error! so the
-                // message is captured by the log plugin (debug builds) and any
-                // custom log subscriber wired up before this point.
-                log::error!("inject_bundled_bin_path failed");
-            }
+            // Dev escape hatch: CODEMIE_CLI_MODE=system (debug builds only) skips the
+            // bundled-CLI PATH injection below so shell commands resolve `codemie`
+            // from the system PATH instead of the CLI under development.
+            let use_system_cli = commands::pathman::use_system_cli();
+            let bundled_injected = if use_system_cli {
+                log::info!(
+                    "[dev] CODEMIE_CLI_MODE=system: skipping bundled CLI PATH injection, using system PATH"
+                );
+                false
+            } else {
+                let injected =
+                    commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
+                if !injected {
+                    // eprintln! is swallowed in a packaged GUI; use log::error! so the
+                    // message is captured by the log plugin (debug builds) and any
+                    // custom log subscriber wired up before this point.
+                    log::error!("inject_bundled_bin_path failed");
+                }
+                injected
+            };
 
             // Build AppState with Windows-specific absolute paths for bundled node.exe and CLI.
             // The node\ and cli\ bundle.resources entries live in tauri.windows.conf.json
@@ -65,6 +78,17 @@ pub fn run() {
             }
             commands::logger::write_line("=== CodeMie Installer session started ===", "dim");
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
+            commands::logger::write_line(
+                &format!(
+                    "CLI mode: {}",
+                    if use_system_cli {
+                        "system (dev override, CODEMIE_CLI_MODE=system)"
+                    } else {
+                        "bundled"
+                    }
+                ),
+                "dim",
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

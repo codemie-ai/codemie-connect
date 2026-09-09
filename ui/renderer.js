@@ -320,7 +320,16 @@ async function runAction(title, cmd, returnView = 'home', hint) {
 // auto-run guard below (CR-006).
 const healthController = createHealthController({
   container: views.health,
-  runStream: (cmd, onLine) => bridge.runner.runStream(cmd, onLine),
+  // Mirror every line (stdout and stderr) to the on-disk log, same as the
+  // main terminal's emit() sink does — health-controller.js's own onLine
+  // only keeps stdout in memory for parsing, so without this the doctor
+  // run's real output (including a stderr-only failure) was invisible in
+  // codemie_wizard.log.
+  runStream: (cmd, onLine) =>
+    bridge.runner.runStream(cmd, (text, tag) => {
+      invoke('log_line', { text, tag: tag || 'stdout' }).catch(() => {});
+      onLine(text, tag);
+    }),
   openLog: () => invoke('open_log'),
   onNavigate: (view) => showView(view),
   onFailure: () => {

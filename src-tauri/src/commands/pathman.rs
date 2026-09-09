@@ -294,6 +294,20 @@ pub(crate) fn build_new_path(current: &str, dir_str: &str) -> String {
     }
 }
 
+/// Dev-only escape hatch: when `CODEMIE_CLI_MODE=system` is set, callers should
+/// skip `inject_bundled_bin_path` so shell commands resolve `codemie` from the
+/// system PATH instead of the CLI under development — useful when a broken local
+/// build shouldn't block installer work. Unset (or any other value) keeps today's
+/// default of the bundled/locally-built CLI taking PATH precedence. Ignored in
+/// release builds so the override can't be set on an installed app by accident.
+pub fn use_system_cli() -> bool {
+    cfg!(debug_assertions) && env_flag_is_system(std::env::var("CODEMIE_CLI_MODE").ok())
+}
+
+pub(crate) fn env_flag_is_system(value: Option<String>) -> bool {
+    value.is_some_and(|v| v.eq_ignore_ascii_case("system"))
+}
+
 /// Prepend the directory containing the bundled codemie sidecar to the
 /// process PATH so all login-shell invocations (runner.rs, pty.rs) find it.
 /// Must be called before any plugin is installed (see lib.rs setup order).
@@ -480,6 +494,21 @@ mod tests {
         let r = resolve_shell_path().expect("resolved shell PATH on a macOS box");
         assert!(r.contains('/'), "resolved PATH should contain directories");
         assert!(!r.contains(PATH_MARKER), "markers must be stripped");
+    }
+
+    #[test]
+    fn env_flag_is_system_true_only_for_system_case_insensitive() {
+        assert!(env_flag_is_system(Some("system".to_string())));
+        assert!(env_flag_is_system(Some("SYSTEM".to_string())));
+        assert!(env_flag_is_system(Some("System".to_string())));
+    }
+
+    #[test]
+    fn env_flag_is_system_false_for_unset_or_other_values() {
+        assert!(!env_flag_is_system(None));
+        assert!(!env_flag_is_system(Some("".to_string())));
+        assert!(!env_flag_is_system(Some("bundled".to_string())));
+        assert!(!env_flag_is_system(Some("systemx".to_string())));
     }
 }
 
