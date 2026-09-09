@@ -395,6 +395,37 @@ test('an answered installClaude echo is not re-dispatched as a second confirm', 
   assert.deepEqual(fake.writes, ['y\r'], 'and must be answered exactly once');
 });
 
+test('an answered list echo (provider, whose answer renders on the next row) is not re-dispatched or answered twice', async () => {
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  termInstance.__setLines(fixture('provider'));
+  const seen = [];
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt); return 0; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => termInstance });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  // The real screen right after Enter, before the CLI's next question renders.
+  // The provider message ends in "\n" (cli/commands/setup.js:243), so the
+  // answered label sits on the row BELOW the question and parseOptions reads it
+  // as a one-entry option list: rows 24-25 of the real recording
+  // provider-answered-then-next-open.json, without row 26 (the next prompt,
+  // which arrives in a later chunk while the CLI checks LiteLLM enforcement).
+  // Measured in the app on 2026-09-09: without the answered-once mark this
+  // came back to onPrompt as a second provider prompt, and answering it wrote
+  // a stray Enter that accepted the organization URL's default.
+  termInstance.__setLines([
+    '? Choose your LLM provider:',
+    ' CodeMie SSO - Enterprise SSO Authentication with centralized model management',
+    ...Array(28).fill(''),
+  ]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.equal(seen.length, 1, 'provider must reach onPrompt exactly once');
+  assert.deepEqual(fake.writes, ['\r'], 'and must be answered exactly once');
+});
+
 test('a non-boolean confirm answer rejects instead of typing it into the CLI', async () => {
   const fake = makeFakePty();
   const termInstance = makeFakeTerminal()();

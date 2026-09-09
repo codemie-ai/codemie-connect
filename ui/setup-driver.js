@@ -353,11 +353,24 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
     // was ever called once.
     //
     // Membership is deliberately narrow: the three fixed-policy ids (AUTO_LIST /
-    // AUTO_CONFIRM) and every kind:'confirm' prompt. All of them are named
-    // anchors the CLI asks exactly once and never re-asks -- a confirm accepts
-    // any input, so there is no validation loop that could legitimately re-open
-    // one, and detectPrompt returns null for an unrecognized (y/N) line, so a
-    // confirm reaching here is always a named anchor and never the catch-all.
+    // AUTO_CONFIRM), every kind:'confirm' prompt, and every kind:'list' prompt
+    // once the caller has answered it. All of them are named anchors the CLI
+    // asks exactly once and never re-asks -- a confirm accepts any input and a
+    // list cannot fail validation, so there is no loop that could legitimately
+    // re-open one, and detectPrompt returns null for an unrecognized (y/N)
+    // line, so a confirm reaching here is always a named anchor and never the
+    // catch-all.
+    //
+    // The list case was measured in the app on 2026-09-09, on EPMCDME-14513's
+    // first real walk: the CLI's provider question ends in a newline
+    // (cli/commands/setup.js:243), so its answered line is "? Choose your LLM
+    // provider:" with the chosen label on the NEXT row (rows 24-25 of the real
+    // recording provider-answered-then-next-open.json). parseOptions reads that
+    // row as a one-entry option list, so the echo came back as a fresh provider
+    // prompt with a different signature, the caller answered it again, and the
+    // stray Enter accepted the organization URL's default before the caller
+    // ever saw that prompt. Any other answered list is exposed the same way
+    // whenever a non-blank row follows it before the next question renders.
     //
     // A blanket per-id guard would be WRONG: 'credential' is the parser's
     // catch-all, so a single run legitimately carries several distinct prompts
@@ -447,6 +460,7 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
           };
         }
         await innerDeps.input(translateListAnswer(prompt.selectedIndex, rawIndex));
+        answeredOnce.add(prompt.id); // see the list note above answeredOnce's check
         return;
       }
 
@@ -465,6 +479,7 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
           };
         }
         await innerDeps.input(translateListAnswer(prompt.selectedIndex, answer));
+        answeredOnce.add(prompt.id); // see the list note above answeredOnce's check
         return;
       }
 
