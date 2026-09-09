@@ -46,6 +46,32 @@ export function deriveRowTitle(message) {
   return { title, defaultValue };
 }
 
+// Wireframe-named-step copy overrides. Checked BEFORE falling back to
+// deriveRowTitle/raw-message title derivation -- an override, never a
+// takeover: any prompt id absent from this table (codemieUrl, credential,
+// any other) keeps the general rowTitleFor()-derived title untouched.
+//
+// - `heading`/`helper` describe the OPEN (ACTIVE) row: heading replaces the
+//   row's title, helper is new copy shown only while the row is open.
+// - `collapsedLabel` replaces the row's title the moment it reaches
+//   COMPLETE (the wireframe's "label -- value" collapsed shape); ids with no
+//   collapsedLabel keep whatever heading/derived title they already show.
+export const PROMPT_COPY = {
+  provider: {
+    heading: 'How should CodeMie reach a model?',
+    helper: 'You can change this later.',
+    collapsedLabel: 'How to reach a model',
+  },
+  codemieProject: { collapsedLabel: 'CodeMie project' },
+  model: {
+    heading: 'Which model?',
+    helper: 'These are the models your account can use.',
+    collapsedLabel: 'Model',
+  },
+  profileName: { heading: 'Profile name', collapsedLabel: 'Profile name' },
+  installClaude: { collapsedLabel: 'Claude Code' },
+};
+
 function findRow(container, id) {
   const kids = container.children ?? [];
   for (const child of kids) {
@@ -100,21 +126,46 @@ function renderListControl(host, prompt, submit) {
   const badgeIndex = prompt.id === 'provider' ? 0 : undefined;
   const cards = renderOptionCards(prompt.options, { badgeIndex });
   cards.forEach(({ title, description, recommended }, index) => {
+    const card = document.createElement('div');
+    card.className = 'setup-option-card' + (recommended ? ' recommended' : '');
+
     const radio = document.createElement('input');
     radio.type = 'radio';
     radio.name = `${prompt.rowId}-choice`;
     radio.value = String(index);
     radios.push(radio);
-    const text = document.createElement('span');
-    text.className = 'prompt-option-label';
-    text.textContent = title;
-    if (description) text.dataset.description = description;
-    if (recommended) text.dataset.recommended = 'true';
-    control.appendChild(radio);
-    control.appendChild(text);
+    card.appendChild(radio);
+
+    // title/description come straight from the CLI's own driver-supplied
+    // option strings -- always rendered via .textContent, never innerHTML.
+    const titleEl = document.createElement('div');
+    titleEl.className = 'setup-option-title';
+    titleEl.textContent = title;
+    card.appendChild(titleEl);
+
+    if (description) {
+      const descEl = document.createElement('div');
+      descEl.className = 'setup-option-description';
+      descEl.textContent = description;
+      card.appendChild(descEl);
+    }
+
+    if (recommended) {
+      const badge = document.createElement('span');
+      badge.className = 'setup-option-badge';
+      badge.textContent = 'Recommended'; // static UI copy, not driver-supplied text.
+      card.appendChild(badge);
+    }
+
+    // Clicking anywhere on the card selects it -- the radio input remains
+    // the single source of truth Continue reads from on submit.
+    card.onclick = () => { radio.checked = true; };
+
+    control.appendChild(card);
   });
   const btn = document.createElement('button');
   btn.className = 'prompt-submit';
+  btn.classList.toggle('setup-continue-btn', true);
   btn.textContent = 'Continue';
   btn.onclick = () => {
     const chosen = radios.findIndex((r) => r.checked);
@@ -136,6 +187,7 @@ function renderInputControl(host, prompt, submit) {
   control.appendChild(input);
   const btn = document.createElement('button');
   btn.className = 'prompt-submit';
+  btn.classList.toggle('setup-continue-btn', true);
   btn.textContent = 'Continue';
   btn.onclick = () => {
     const value = input.value ?? '';
@@ -173,6 +225,7 @@ function renderConfirmControl(host, prompt, submit) {
 
   const btn = document.createElement('button');
   btn.className = 'prompt-submit';
+  btn.classList.toggle('setup-continue-btn', true);
   btn.textContent = 'Continue';
   btn.onclick = () => {
     const answer = !no.checked; // Yes wins unless No was explicitly picked.
@@ -222,6 +275,54 @@ export function createSetupView(container, deps = {}) {
     return prompt.message || prompt.id;
   }
 
+  // PROMPT_COPY-aware heading for the OPEN row: an override on top of
+  // rowTitleFor's general derivation, never a replacement of it -- ids with
+  // no `heading` entry (or no table entry at all) keep rowTitleFor's result.
+  // Shared by both the new-occurrence and reopen code paths in onPrompt.
+  function headingFor(prompt) {
+    const copy = PROMPT_COPY[prompt.id];
+    if (copy && copy.heading) return copy.heading;
+    return rowTitleFor(prompt);
+  }
+
+  function helperFor(promptId) {
+    const copy = PROMPT_COPY[promptId];
+    return (copy && copy.helper) || '';
+  }
+
+  function collapsedLabelFor(promptId) {
+    const copy = PROMPT_COPY[promptId];
+    return copy ? copy.collapsedLabel : undefined;
+  }
+
+  // Helper text describes the row while it's open (ACTIVE); it is distinct
+  // from steps-ui.js's `.step-sub`, which only ever holds the answered
+  // subtitle once a row is COMPLETE. A new `.step-helper` element is the
+  // only way to show both without conflating them.
+  function appendHelperText(host, promptId) {
+    const text = helperFor(promptId);
+    if (!text || !host) return;
+    const helperEl = document.createElement('div');
+    helperEl.className = 'step-helper';
+    helperEl.textContent = text;
+    host.appendChild(helperEl);
+  }
+
+  // Collapses a row's visible title to its PROMPT_COPY collapsedLabel (if
+  // any) and toggles the `collapsed` class -- shared by every control's
+  // submit path and by the initial storage row, so every collapsed row
+  // gets the same "label -- value" shape (styled in ui/styles.css).
+  function collapseRow(rowId, promptId) {
+    const row = findRow(container, rowId);
+    if (!row) return;
+    row.classList.toggle('collapsed', true);
+    const label = collapsedLabelFor(promptId);
+    if (label) {
+      const titleEl = row.querySelector('.step-title');
+      if (titleEl) titleEl.textContent = label;
+    }
+  }
+
   function clearControls(host) {
     if (!host) return;
     for (const child of [...host.children]) {
@@ -233,6 +334,7 @@ export function createSetupView(container, deps = {}) {
     function submit(value, humanText) {
       stepsUi.setStatus(rowId, StepStatus.COMPLETE);
       stepsUi.setSubtitle(rowId, humanText);
+      collapseRow(rowId, prompt.id);
       resolve(value);
     }
 
@@ -272,6 +374,14 @@ export function createSetupView(container, deps = {}) {
       const host = row ? row.querySelector('.step-main') : null;
       const subEl = row ? row.querySelector('.step-sub') : null;
       if (subEl) subEl.textContent = ''; // bypass setSubtitle, which ignores empty strings.
+      if (row) {
+        // Reopening (a validation-rejected re-ask) un-collapses the row and
+        // restores the OPEN-row heading -- a prior submit may have swapped
+        // the title to a collapsedLabel via collapseRow().
+        row.classList.toggle('collapsed', false);
+        const titleEl = row.querySelector('.step-title');
+        if (titleEl) titleEl.textContent = headingFor(prompt);
+      }
       stepsUi.setStatus(rowId, StepStatus.ACTIVE);
       clearControls(host);
 
@@ -284,10 +394,11 @@ export function createSetupView(container, deps = {}) {
     const occurrence = nextOccurrence(prompt.id);
     const rowId = `${prompt.id}-${occurrence}`;
 
-    stepsUi.insertSubStep(null, { id: rowId, title: rowTitleFor(prompt), description: '' });
+    stepsUi.insertSubStep(null, { id: rowId, title: headingFor(prompt), description: '' });
     stepsUi.setStatus(rowId, StepStatus.ACTIVE);
 
     const host = findControlHost(container, rowId);
+    appendHelperText(host, prompt.id);
 
     return new Promise((resolve) => renderControl(host, prompt, rowId, resolve));
   }
@@ -295,12 +406,21 @@ export function createSetupView(container, deps = {}) {
   async function start() {
     stepsUi.renderSteps(container, []);
 
+    // renderSteps just cleared `container` via innerHTML = '' -- the header
+    // must be appended AFTER that call (never before it) so it survives as
+    // the list's first child, ahead of every row inserted below.
+    const heading = document.createElement('h1');
+    heading.className = 'setup-view-heading';
+    heading.textContent = 'Set up CodeMie';
+    container.appendChild(heading);
+
     // Storage is a fixed-policy choice (setup-driver.js's AUTO_LIST always
     // picks "global") -- render it as an already-decided, collapsed row
     // before the driver ever runs, never through onPrompt.
     stepsUi.insertSubStep(null, { id: 'storage', title: 'Where to store it', description: '' });
     stepsUi.setStatus('storage', StepStatus.COMPLETE);
     stepsUi.setSubtitle('storage', 'This computer');
+    collapseRow('storage', 'storage');
 
     try {
       await startSetup({ onPrompt, onLog: () => {} });

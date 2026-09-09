@@ -519,6 +519,49 @@ body::before {
 .stamp.approved { color: var(--green); }
 .stamp.ignored { color: var(--amber); }
 
+/* ---- Setup view (guided setup) ---- */
+.setup-view-heading { margin: 0 0 14px; font-size: 20px; font-weight: 700; color: var(--text); }
+
+.step-helper { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+.setup-option-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+.setup-option-card:hover { background: var(--surface-2); }
+.setup-option-card.recommended { border-color: var(--accent-blue); }
+.setup-option-title { font-weight: 600; }
+.setup-option-description { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.setup-option-badge {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: var(--radius-md);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--color-text-inverse);
+  background: var(--accent-blue);
+}
+
+.setup-continue-btn { margin-top: 10px; }
+
+/* Collapsed rows (COMPLETE, this view only): "label -- value [icon]" on one
+   line instead of the default stacked title/subtitle -- never touches the
+   bare .step-row rules above, which every other panel also relies on. */
+#setup-view .step-row.collapsed .step-main { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+#setup-view .step-row.collapsed .step-sub {
+  margin-top: 0;
+  font-weight: 700;
+  color: var(--text);
+}
+#setup-view .step-row.collapsed .step-sub::before { content: '\2014'; margin-right: 2px; font-weight: 400; color: var(--muted); }
+#setup-view .step-row.collapsed .step-icon { order: 2; margin-left: auto; }
+
 /* ---- Log bar + panel ---- */
 #log-bar {
   height: 36px;

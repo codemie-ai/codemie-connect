@@ -93,6 +93,19 @@ function findByClass(root, cls) {
   return null;
 }
 
+// Recursively collects every descendant (not just direct children) matching
+// predicate. Needed because Task 4's option-card markup nests each radio one
+// level deeper than the old flat `.prompt-control > input[radio]` shape that
+// earlier tests' `._children.filter(...)` relied on.
+function collectAll(el, predicate) {
+  const out = [];
+  for (const c of el._children) {
+    if (predicate(c)) out.push(c);
+    out.push(...collectAll(c, predicate));
+  }
+  return out;
+}
+
 globalThis.document = { createElement: (tag) => makeEl(tag) };
 
 // ── Import module under test (after stub is in place) ───────────────────────
@@ -165,7 +178,9 @@ test('list prompt: renders radio options, resolves with selected index, marks ro
 
   const control = row.querySelector('.prompt-control');
   assert.ok(control, 'a control was rendered');
-  const radios = control._children.filter((c) => c.type === 'radio');
+  // Task 4 nests each radio one level deeper inside a `.setup-option-card`,
+  // so this must search descendants, not just direct children.
+  const radios = collectAll(control, (c) => c.type === 'radio');
   assert.equal(radios.length, 3, 'one radio per option');
 
   radios[1].checked = true; // select "Bedrock" (index 1)
@@ -504,10 +519,13 @@ test('list prompt: provider options render parsed titles and badge the recommend
   await Promise.resolve();
   const row = findRowById(container, 'provider-1');
   const control = row.querySelector('.prompt-control');
-  const labels = control._children.filter((c) => c.className === 'prompt-option-label');
-  assert.equal(labels[0].textContent, 'CodeMie SSO', 'label reflects the parsed title, not the raw option string');
+  // Task 4 replaces the flat `.prompt-option-label` span with real
+  // `.setup-option-card` markup (title/description/badge elements); the
+  // title now lives in a nested `.setup-option-title` element.
+  const titles = collectAll(control, (c) => c.className === 'setup-option-title');
+  assert.equal(titles[0].textContent, 'CodeMie SSO', 'card title reflects the parsed title, not the raw option string');
 
-  const radios = control._children.filter((c) => c.type === 'radio');
+  const radios = collectAll(control, (c) => c.type === 'radio');
   const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
   radios[0].checked = true;
   submitBtn.onclick();
@@ -544,4 +562,241 @@ test('input prompt: row title uses deriveRowTitle, input is pre-filled with the 
   submitBtn.onclick();
 
   await startPromise;
+});
+
+// ── Task 4: header, PROMPT_COPY, collapsed rows, option cards, Continue ─────
+
+test('header: "Set up CodeMie" heading renders once at mount, before the storage row', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async () => ({ profileName: 'default' });
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  await view.start();
+
+  const headers = container._children.filter((c) => c.className === 'setup-view-heading');
+  assert.equal(headers.length, 1, 'exactly one header rendered');
+  assert.equal(headers[0].textContent, 'Set up CodeMie');
+  assert.equal(container._children[0], headers[0], 'header is the first child of the container');
+
+  const storageIndex = container._children.findIndex((c) => c.dataset && c.dataset.id === 'storage');
+  assert.ok(storageIndex > 0, 'storage row is inserted after the header');
+});
+
+test('PROMPT_COPY: provider row renders its heading/helper while active, collapses to "How to reach a model"', async () => {
+  const container = makeEl('div');
+  let resolvedAnswer;
+  const fakeStartSetup = async ({ onPrompt }) => {
+    resolvedAnswer = await onPrompt({
+      kind: 'list',
+      id: 'provider',
+      message: 'Choose your LLM provider:',
+      options: ['OpenAI', 'Bedrock'],
+    });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  const row = findRowById(container, 'provider-1');
+  assert.equal(row.querySelector('.step-title').textContent, 'How should CodeMie reach a model?');
+  const helperEl = row.querySelector('.step-helper');
+  assert.ok(helperEl, 'helper element rendered for the open row');
+  assert.equal(helperEl.textContent, 'You can change this later.');
+
+  const control = row.querySelector('.prompt-control');
+  const radios = collectAll(control, (c) => c.type === 'radio');
+  radios[0].checked = true;
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+
+  assert.equal(resolvedAnswer, 0);
+  assert.equal(row.querySelector('.step-title').textContent, 'How to reach a model', 'collapsed label overrides the open heading');
+  assert.ok(row.classList._set.has('collapsed'), 'row carries the collapsed class once COMPLETE');
+});
+
+test('PROMPT_COPY: model row renders its own heading/helper and collapses to "Model", never the provider label', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({
+      kind: 'list',
+      id: 'model',
+      message: 'Choose a model',
+      options: ['⭐ claude-sonnet-5', 'claude-4-5-sonnet'],
+    });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  const row = findRowById(container, 'model-1');
+  assert.equal(row.querySelector('.step-title').textContent, 'Which model?');
+  assert.equal(row.querySelector('.step-helper').textContent, 'These are the models your account can use.');
+
+  const control = row.querySelector('.prompt-control');
+  const radios = collectAll(control, (c) => c.type === 'radio');
+  radios[0].checked = true;
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+
+  assert.equal(row.querySelector('.step-title').textContent, 'Model');
+  assert.notEqual(row.querySelector('.step-title').textContent, 'How to reach a model', 'never swapped with the provider label');
+});
+
+test('PROMPT_COPY: a prompt id outside the table (credential) falls back to deriveRowTitle, proving an override not a takeover', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'input', id: 'credential', message: 'API key:' });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  const row = findRowById(container, 'credential-1');
+  assert.equal(row.querySelector('.step-title').textContent, 'API key', 'deriveRowTitle fallback used, no table entry for this id');
+  assert.equal(row.querySelector('.step-helper'), null, 'no helper text rendered when the table has no entry');
+
+  const control = row.querySelector('.prompt-control');
+  const input = control._children.find((c) => c.type === 'text');
+  input.value = 'sk-test';
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+});
+
+test('collapsed class is added only once a row reaches COMPLETE, never while PENDING/ACTIVE', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile:' });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  const row = findRowById(container, 'profileName-1');
+  assert.ok(row.classList._set.has('active'), 'row is ACTIVE');
+  assert.ok(!row.classList._set.has('collapsed'), 'ACTIVE row does not carry the collapsed class');
+
+  const control = row.querySelector('.prompt-control');
+  const input = control._children.find((c) => c.type === 'text');
+  input.value = 'my-profile';
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+
+  assert.ok(row.classList._set.has('collapsed'), 'COMPLETE row carries the collapsed class');
+});
+
+test('option cards: recommended card gets a badge element and the "recommended" class; markup uses real elements, not dataset text', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({
+      kind: 'list',
+      id: 'model',
+      message: 'Choose a model',
+      options: ['⭐ claude-sonnet-5 - Balanced default', 'claude-4-5-sonnet'],
+    });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  const row = findRowById(container, 'model-1');
+  const control = row.querySelector('.prompt-control');
+  const cards = control._children.filter((c) => (c.className || '').split(' ').includes('setup-option-card'));
+  assert.equal(cards.length, 2, 'one card per option');
+
+  const [recommendedCard, plainCard] = cards;
+  assert.ok((recommendedCard.className || '').split(' ').includes('recommended'), 'starred option carries the recommended class');
+  const titleEl = recommendedCard._children.find((c) => c.className === 'setup-option-title');
+  assert.equal(titleEl.textContent, 'claude-sonnet-5');
+  const descEl = recommendedCard._children.find((c) => c.className === 'setup-option-description');
+  assert.equal(descEl.textContent, 'Balanced default');
+  const badge = recommendedCard._children.find((c) => c.className === 'setup-option-badge');
+  assert.ok(badge, 'recommended badge element present');
+  assert.equal(badge.textContent, 'Recommended');
+
+  assert.ok(!(plainCard.className || '').split(' ').includes('recommended'), 'non-starred option has no recommended class');
+  assert.equal(
+    plainCard._children.find((c) => c.className === 'setup-option-description'),
+    undefined,
+    'no description element when the option has an empty description',
+  );
+
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+  await startPromise;
+});
+
+test('Continue button (list): clicking Continue with a card selected resolves the prompt with that card\'s index', async () => {
+  const container = makeEl('div');
+  let resolvedAnswer;
+  const fakeStartSetup = async ({ onPrompt }) => {
+    resolvedAnswer = await onPrompt({
+      kind: 'list',
+      id: 'model',
+      message: 'Choose a model',
+      options: ['claude-sonnet-5', 'claude-opus'],
+    });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  const row = findRowById(container, 'model-1');
+  const control = row.querySelector('.prompt-control');
+  const cards = control._children.filter((c) => (c.className || '').split(' ').includes('setup-option-card'));
+  assert.equal(cards.length, 2, 'one card per option');
+
+  cards[1].onclick(); // select "claude-opus" (index 1) via the card itself
+
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+
+  assert.equal(resolvedAnswer, 1, 'Continue resolves with the selected card\'s index');
+});
+
+test('Continue button (input): clicking Continue with a typed value resolves the prompt with that string', async () => {
+  const container = makeEl('div');
+  let resolvedAnswer;
+  const fakeStartSetup = async ({ onPrompt }) => {
+    resolvedAnswer = await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile:' });
+    return { profileName: resolvedAnswer };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  const row = findRowById(container, 'profileName-1');
+  const control = row.querySelector('.prompt-control');
+  const input = control._children.find((c) => c.type === 'text');
+  input.value = 'my-workspace-2';
+
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  assert.ok(submitBtn.classList && submitBtn.classList._set.has('setup-continue-btn'), 'Continue button carries the dedicated styling class');
+  submitBtn.onclick();
+
+  await startPromise;
+
+  assert.equal(resolvedAnswer, 'my-workspace-2', 'Continue resolves with the typed string');
 });
