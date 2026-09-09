@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "branch": "feat/epmcdme-14668-setup-driver",
+  "head": "f74a7b012cc78236f8babb364c6291852679569a",
+  "runner": "custom",
+  "started_at": "2026-09-08T14:15:00Z",
+  "completed_at": "2026-09-08T14:16:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 137,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4334,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 556,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "111 tests passed (node:test), 0 failed"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 12888,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "77 + 2 tests passed across lib and bundle_resources.rs"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "./build-installer.sh",
+      "exit_code": null,
+      "notes": "Guide Skip-if: logic-only change (setup-driver.js, setup-parse.js, terminal.js) verified by unit tests, no rendering surface touched; build not run to save ~2-5 min."
+    }
+  ],
+  "failures": {}
+}

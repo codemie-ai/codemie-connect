@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-09-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 5,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "New headless-driver module drives the codemie CLI over a live PTY byte stream (base64-decoded and fed into a headless xterm.js Terminal), re-parsing the screen on every chunk with no exact existing precedent in the codebase; involves a single-flight lock, a per-run prompt-signature dedup guard, an in-flight guard against concurrent redraws during model-list pagination, and an idle-timer heuristic (IDLE_MS/YN_HINT) to disambiguate 'CLI still working' from 'unclassified stalled prompt' -- several defect-fix comments (CR-001..CR-005) in setup-driver.js confirm these edge cases surfaced only during implementation." },
+    { "dimension": "component_scope", "reason": "New setup-driver.js module coordinates 3 components across the frontend: itself (prompt state machine), setup-parse.js's detectPrompt/isQ (reused, minor edits), and terminal.js's suspendPtyInput/resumePtyInput -- a change to a core shared utility (terminal.js) consumed by other PTY-driven flows (wizard steps, home-page proxy/analytics actions), not just this feature." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: real-time/streaming PTY byte-stream handling (onData callback processing live terminal redraws chunk-by-chunk)",
+    "Component Scope bumped from M to L: touches terminal.js, a core shared utility used by other PTY-driven flows beyond this feature (suspendPtyInput/resumePtyInput now gate all keystroke forwarding during a setup run)"
+  ],
+  "split_recommendation": null
+}
