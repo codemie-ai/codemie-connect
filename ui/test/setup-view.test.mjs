@@ -96,7 +96,7 @@ function findByClass(root, cls) {
 globalThis.document = { createElement: (tag) => makeEl(tag) };
 
 // ── Import module under test (after stub is in place) ───────────────────────
-const { createSetupView } = await import('../setup-view.js');
+const { createSetupView, deriveRowTitle, stripHint } = await import('../setup-view.js');
 
 function findRowById(container, id) {
   for (const child of container.children) {
@@ -269,4 +269,205 @@ test('confirm prompt: choosing No resolves with false', async () => {
 
   assert.equal(resolvedAnswer, false, 'resolved with boolean false when No is chosen');
   assert.equal(row.querySelector('.step-sub').textContent, 'No');
+});
+
+// ── deriveRowTitle / stripHint unit tests ────────────────────────────────────
+
+test('deriveRowTitle: strips the default hint and trailing colon, hint becomes defaultValue', () => {
+  const result = deriveRowTitle('CodeMie organization URL: (https://codemie.lab.epam.com)');
+  assert.deepEqual(result, { title: 'CodeMie organization URL', defaultValue: 'https://codemie.lab.epam.com' });
+});
+
+test('deriveRowTitle: a hint-less message strips only the trailing colon, empty defaultValue', () => {
+  const result = deriveRowTitle('credential:');
+  assert.deepEqual(result, { title: 'credential', defaultValue: '' });
+});
+
+test('stripHint: removes the default-hint suffix but leaves the colon intact', () => {
+  assert.equal(stripHint('Enter a name for this profile: (sso)'), 'Enter a name for this profile:');
+  assert.equal(stripHint('Enter a name for this profile: taken'), 'Enter a name for this profile: taken');
+});
+
+// ── Reopen-vs-new-row behavior ───────────────────────────────────────────────
+
+test('reopen: a re-ask whose stripped message starts-with the stored base reopens the same row', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    const first = onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: (sso)' });
+    await Promise.resolve();
+    // Reopen before the first prompt resolves is unrealistic for a real driver
+    // (it awaits one prompt at a time), but here we just want to inspect state
+    // between the two onPrompt invocations, so resolve the first immediately.
+    const row1 = findRowById(container, 'profileName-1');
+    const control1 = row1.querySelector('.prompt-control');
+    const submitBtn1 = control1._children.find((c) => c.className === 'prompt-submit');
+    submitBtn1.onclick();
+    await first;
+
+    // Re-ask: inquirer dropped the hint and appended the rejected input.
+    const second = onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: taken' });
+    await Promise.resolve();
+    return { first, second };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Exactly one row for this prompt id -- no profileName-2.
+  assert.ok(findRowById(container, 'profileName-1'), 'profileName-1 row exists');
+  assert.equal(findRowById(container, 'profileName-2'), null, 'no second occurrence row was created');
+
+  const row = findRowById(container, 'profileName-1');
+  assert.ok(row.classList._set.has('active'), 'reopened row is ACTIVE again');
+  assert.equal(row.querySelector('.step-sub').textContent, '', 'old subtitle was cleared on reopen');
+
+  // Answer the reopened row so start() can finish.
+  const control = row.querySelector('.prompt-control');
+  const input = control._children.find((c) => c.type === 'text');
+  input.value = 'my-profile';
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+});
+
+test('reopen: a byte-identical hint-stripped message (masked-password re-ask) reopens the same row', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'input', id: 'password', message: 'Enter password:' });
+    // Second ask is identical after stripHint (no hint to begin with).
+    return onPrompt({ kind: 'input', id: 'password', message: 'Enter password:' });
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  let row = findRowById(container, 'password-1');
+  assert.ok(row, 'password-1 row inserted');
+  let control = row.querySelector('.prompt-control');
+  let submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(findRowById(container, 'password-2'), null, 'identical re-ask reopens, does not create a new row');
+  row = findRowById(container, 'password-1');
+  assert.ok(row.classList._set.has('active'), 'row is ACTIVE again after reopen');
+
+  control = row.querySelector('.prompt-control');
+  submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+});
+
+test('new occurrence: same id but a different (non-prefix) hint-stripped message inserts a new row', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'input', id: 'freeform', message: 'First question: (default)' });
+    return onPrompt({ kind: 'input', id: 'freeform', message: 'Totally different question: (other)' });
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  let row = findRowById(container, 'freeform-1');
+  let control = row.querySelector('.prompt-control');
+  let submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const row2 = findRowById(container, 'freeform-2');
+  assert.ok(row2, 'a genuinely different message creates a new occurrence row instead of reopening');
+
+  control = row2.querySelector('.prompt-control');
+  submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+});
+
+test('double-rejection: the stored comparison base never advances past the original ask; exactly one row survives', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: (sso)' });
+    await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: taken' });
+    return onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: taken2' });
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  // First ask.
+  await Promise.resolve();
+  let row = findRowById(container, 'profileName-1');
+  let control = row.querySelector('.prompt-control');
+  let submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  // First rejection re-ask ("taken") -- reopens profileName-1.
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(findRowById(container, 'profileName-2'), null, 'first rejection does not create a second row');
+  row = findRowById(container, 'profileName-1');
+  control = row.querySelector('.prompt-control');
+  submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  // Second rejection re-ask ("taken2") -- must still compare against the
+  // original stored base ("Enter a name for this profile:"), not against
+  // "Enter a name for this profile: taken", and must still reopen the same
+  // single row rather than creating a third occurrence.
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(findRowById(container, 'profileName-2'), null, 'second rejection still does not create a new row');
+  assert.equal(findRowById(container, 'profileName-3'), null, 'second rejection does not create a third row');
+  row = findRowById(container, 'profileName-1');
+  assert.ok(row.classList._set.has('active'), 'row is ACTIVE again after the second reopen');
+
+  control = row.querySelector('.prompt-control');
+  const input = control._children.find((c) => c.type === 'text');
+  input.value = 'final-name';
+  submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
+});
+
+// ── deriveRowTitle wired into the input control ──────────────────────────────
+
+test('input prompt: row title uses deriveRowTitle, input is pre-filled with the parsed default', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({
+      kind: 'input',
+      id: 'orgUrl',
+      message: 'CodeMie organization URL: (https://codemie.lab.epam.com)',
+    });
+    return { profileName: 'default' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup });
+  const startPromise = view.start();
+
+  await Promise.resolve();
+  const row = findRowById(container, 'orgUrl-1');
+  assert.ok(row, 'orgUrl-1 row was inserted');
+  assert.equal(row.querySelector('.step-title').textContent, 'CodeMie organization URL', 'title strips hint + colon');
+
+  const control = row.querySelector('.prompt-control');
+  const input = control._children.find((c) => c.type === 'text');
+  assert.equal(input.value, 'https://codemie.lab.epam.com', 'input is pre-filled with the parsed default');
+
+  const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
+  submitBtn.onclick();
+
+  await startPromise;
 });
