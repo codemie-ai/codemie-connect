@@ -46,6 +46,20 @@ export function stripHint(message) {
   return (message || '').replace(DEFAULT_HINT, '');
 }
 
+// inquirer renders an open password prompt without a mask as
+// "? AWS Secret Access Key: [input is hidden]" (vendored
+// inquirer/lib/prompts/password.js:71-77); the marker is part of the message
+// the driver hands over and must never become part of a title.
+const HIDDEN_INPUT_MARKER = /\s*\[input is hidden\]\s*$/;
+
+// The parser cannot tell a secret from any other catch-all input, but the
+// question can: the CLI's own secret prompts all say key, secret, password or
+// token (litellm.setup-steps.js:29, bedrock.setup-steps.js:163-169), or carry
+// inquirer's hidden-input marker. Base URLs, regions and names do not match.
+export function isSecretPrompt(message) {
+  return HIDDEN_INPUT_MARKER.test(message || '') || /\b(?:api[ -]?key|key|secret|password|token|passphrase)\b/i.test(message || '');
+}
+
 // Derives a row title and pre-fill default from a driver prompt message.
 // "CodeMie organization URL: (https://codemie.lab.epam.com)" ->
 //   { title: "CodeMie organization URL", defaultValue: "https://codemie.lab.epam.com" }
@@ -54,7 +68,7 @@ export function deriveRowTitle(message) {
   const raw = message || '';
   const hintMatch = raw.match(DEFAULT_HINT);
   const defaultValue = hintMatch ? hintMatch[0].replace(/^\s*\(/, '').replace(/\)\s*$/, '') : '';
-  const withoutHint = stripHint(raw);
+  const withoutHint = stripHint(raw).replace(HIDDEN_INPUT_MARKER, '');
   const title = withoutHint.replace(/\s*:\s*$/, '');
   return { title, defaultValue };
 }
@@ -220,15 +234,19 @@ function renderListControl(host, prompt, submit) {
 function renderInputControl(host, prompt, submit) {
   const control = document.createElement('div');
   control.className = 'prompt-control';
+  const secret = isSecretPrompt(prompt.message);
   const input = document.createElement('input');
-  input.type = 'text';
+  // A secret is masked while typed and never written back into the row: the
+  // CLI hides these itself, and the collapsed line is permanent.
+  input.type = secret ? 'password' : 'text';
   input.className = 'prompt-input';
+  if (secret) input.autocomplete = 'off';
   const { defaultValue } = deriveRowTitle(prompt.message);
-  if (defaultValue) input.value = defaultValue;
+  if (defaultValue && !secret) input.value = defaultValue;
   control.appendChild(input);
   control.appendChild(makeContinueButton(() => {
     const value = input.value ?? '';
-    submit(value, value);
+    submit(value, secret ? 'Entered' : value);
   }));
   host.appendChild(control);
 }
@@ -580,7 +598,18 @@ export function createSetupView(container, deps = {}) {
   // otherwise. Never rejects: the rows already show the outcome, and
   // EPMCDME-14588 reads `error` (the driver's { step, message, raw }) from
   // here to build the failure UI.
-  async function start() {
+  //
+  // One run at a time per view: a second start() while one is in flight
+  // (only reachable from the dev console today) returns that run's promise
+  // instead of resetting the rows and state out from under it.
+  let inFlight = null;
+  function start() {
+    if (inFlight) return inFlight;
+    inFlight = run().finally(() => { inFlight = null; });
+    return inFlight;
+  }
+
+  async function run() {
     // Every start() is a fresh run (EPMCDME-14588 retries by calling it
     // again): forget the previous run's rows, ids and reopen bases, or the
     // next provider prompt would be taken for a reopen of a row that is gone.

@@ -120,7 +120,7 @@ globalThis.setInterval = (fn, ms, ...rest) => {
 };
 
 // ── Import module under test (after stub is in place) ───────────────────────
-const { createSetupView, deriveRowTitle, stripHint, renderOptionCards } = await import('../setup-view.js');
+const { createSetupView, deriveRowTitle, stripHint, renderOptionCards, isSecretPrompt } = await import('../setup-view.js');
 
 function findRowById(container, id) {
   for (const child of container.children) {
@@ -720,12 +720,14 @@ test('PROMPT_COPY: a prompt id outside the table (credential) falls back to deri
   assert.equal(row.querySelector('.step-helper'), null, 'no helper text rendered when the table has no entry');
 
   const control = row.querySelector('.prompt-control');
-  const input = control._children.find((c) => c.type === 'text');
+  const input = control._children.find((c) => c.type === 'password');
+  assert.ok(input, 'an API key is typed into a masked field');
   input.value = 'sk-test';
   const submitBtn = control._children.find((c) => c.className === 'prompt-submit');
   submitBtn.onclick();
 
   await startPromise;
+  assert.equal(row.querySelector('.step-sub').textContent, 'Entered', 'the key never lands in the collapsed row');
 });
 
 test('collapsed class is added only once a row reaches COMPLETE, never while PENDING/ACTIVE', async () => {
@@ -1252,4 +1254,99 @@ test('start() called again on the same view is a fresh run: ids, reopen bases an
   clickContinue(row);
   await startPromise;
   assert.equal(container._children.filter((c) => c.className === 'setup-view-heading').length, 1, 'one header, not two');
+});
+
+// ── Secrets: masked while typed, never echoed into the row ──────────────────
+
+test('isSecretPrompt: the CLI\'s key/secret/password/token questions and the hidden-input marker, nothing else', () => {
+  for (const m of ['API key:', 'API Key (optional, leave empty if not required):', 'AWS Secret Access Key: [input is hidden]', 'AWS Access Key ID:', 'Bearer token:', 'Password:']) {
+    assert.ok(isSecretPrompt(m), `${m} is a secret`);
+  }
+  for (const m of ['Ollama base URL: (http://localhost:11434)', 'LiteLLM Proxy URL:', 'AWS Region: (us-east-1)', 'CodeMie organization URL: (https://codemie.lab.epam.com)', 'Enter a name for this profile: (sso)']) {
+    assert.ok(!isSecretPrompt(m), `${m} is not a secret`);
+  }
+});
+
+test('deriveRowTitle drops inquirer\'s hidden-input marker from an unmasked password question', () => {
+  assert.deepEqual(deriveRowTitle('AWS Secret Access Key: [input is hidden]'), { title: 'AWS Secret Access Key', defaultValue: '' });
+});
+
+test('a secret credential renders a password field with no pre-fill and collapses to "Entered"', async () => {
+  const container = makeEl('div');
+  let resolvedAnswer;
+  const fakeStartSetup = async ({ onPrompt }) => {
+    resolvedAnswer = await onPrompt({ kind: 'input', id: 'credential', message: 'AWS Secret Access Key: [input is hidden]' });
+    return { profileName: 'default' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+  const row = findRowById(container, 'credential-1');
+  assert.equal(row.querySelector('.step-title').textContent, 'AWS Secret Access Key');
+  const input = findControl(row)._children.find((c) => c.type === 'password');
+  assert.ok(input, 'masked field');
+  assert.equal(input.value, '', 'nothing pre-filled');
+  input.value = 'wJalrXUtnFEMI';
+  clickContinue(row);
+  await startPromise;
+  assert.equal(resolvedAnswer, 'wJalrXUtnFEMI', 'the driver still gets the real value');
+  assert.equal(row.querySelector('.step-sub').textContent, 'Entered');
+  const texts = [];
+  (function walk(el) { texts.push(el.textContent || '', el.value || ''); for (const c of el._children || []) walk(c); })(container);
+  assert.ok(!texts.some((t) => t.includes('wJalrXUtnFEMI')), 'the value is nowhere in the DOM once answered');
+});
+
+test('a non-secret credential (a base URL) keeps the plain field, the pre-fill and the value as subtitle', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'input', id: 'credential', message: 'Ollama base URL: (http://localhost:11434)' });
+    return { profileName: 'default' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+  const row = findRowById(container, 'credential-1');
+  const input = findControl(row)._children.find((c) => c.type === 'text');
+  assert.ok(input, 'plain text field');
+  assert.equal(input.value, 'http://localhost:11434', 'pre-filled with the CLI default');
+  clickContinue(row);
+  await startPromise;
+  assert.equal(row.querySelector('.step-sub').textContent, 'http://localhost:11434');
+});
+
+// ── One run at a time ───────────────────────────────────────────────────────
+
+test('start() while a run is in flight returns that run instead of resetting it; a later start() is fresh', async () => {
+  const container = makeEl('div');
+  let calls = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const fakeStartSetup = async ({ onPrompt }) => {
+    calls += 1;
+    await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile:' });
+    await gate;
+    return { profileName: 'default' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+
+  const first = view.start();
+  await Promise.resolve();
+  const row = findRowById(container, 'profileName-1');
+  const second = view.start();
+  assert.equal(second, first, 'the in-flight run is handed back');
+  assert.equal(calls, 1, 'the driver is started once');
+  assert.equal(findRowById(container, 'profileName-1'), row, 'the open row survived untouched');
+  assert.equal(container._children.filter((c) => c.className === 'setup-view-heading').length, 1, 'one header');
+
+  clickContinue(row);
+  release();
+  const outcome = await first;
+  assert.equal(outcome.ok, true);
+
+  const third = view.start();
+  assert.notEqual(third, first, 'after settling, start() begins a fresh run');
+  await Promise.resolve();
+  assert.equal(calls, 2);
+  clickContinue(findRowById(container, 'profileName-1'));
+  await third;
 });
