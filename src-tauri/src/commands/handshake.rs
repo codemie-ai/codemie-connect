@@ -32,6 +32,19 @@ pub fn parse_global_version(output: &str) -> Option<String> {
     })
 }
 
+/// Returns true when a `codemie` binary exists in any directory of `path_env`.
+/// Windows checks both the npm `.cmd` shim and a plain `.exe`; other platforms
+/// check the extension-less binary name.
+pub fn probe_global_codemie(path_env: &str, probe: &dyn Fn(&std::path::Path) -> bool) -> bool {
+    let bin_names: &[&str] = if cfg!(windows) {
+        &["codemie.cmd", "codemie.exe"]
+    } else {
+        &["codemie"]
+    };
+    std::env::split_paths(OsStr::new(path_env))
+        .any(|dir| bin_names.iter().any(|&name| probe(&dir.join(name))))
+}
+
 /// Pure, testable function. `probe` returns true when a codemie binary is
 /// found at a given path; `version_cmd` returns the version string for a given
 /// PATH env string. Inject closures in tests, pass real implementations in production.
@@ -41,23 +54,7 @@ pub fn detect_handshake_state(
     probe: &dyn Fn(&std::path::Path) -> bool,
     version_cmd: &dyn Fn(&str) -> Option<String>,
 ) -> HandshakeState {
-    // On Windows npm global packages install a .cmd shim; fall back to .exe.
-    // On macOS/Linux the binary has no extension.
-    let bin_names: &[&str] = if cfg!(windows) {
-        &["codemie.cmd", "codemie.exe"]
-    } else {
-        &["codemie"]
-    };
-
-    let mut global_found = false;
-    'outer: for dir in std::env::split_paths(OsStr::new(path_env)) {
-        for &name in bin_names {
-            if probe(&dir.join(name)) {
-                global_found = true;
-                break 'outer;
-            }
-        }
-    }
+    let global_found = probe_global_codemie(path_env, probe);
 
     let global_version = if global_found {
         version_cmd(path_env)
@@ -127,6 +124,16 @@ mod tests {
     fn global_found_when_probe_matches() {
         let s = detect_handshake_state("/usr/local/bin", false, &always, &no_version);
         assert!(s.global_found);
+    }
+
+    #[test]
+    fn probe_global_codemie_false_on_empty_path() {
+        assert!(!probe_global_codemie("", &never));
+    }
+
+    #[test]
+    fn probe_global_codemie_true_when_probe_matches() {
+        assert!(probe_global_codemie("/usr/local/bin", &always));
     }
 
     #[test]

@@ -12,47 +12,62 @@ pub fn run() {
         .setup(|app| {
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
-            // Capture PATH before injection so check_handshake_state can search the
-            // pre-bundle PATH for a global codemie binary.
+            // Capture PATH before injection so detection searches the pre-bundle PATH.
             let pre_injection_path = std::env::var("PATH").unwrap_or_default();
-            let bundled_injected = commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
-            if !bundled_injected {
-                // eprintln! is swallowed in a packaged GUI; use log::error! so the
-                // message is captured by the log plugin (debug builds) and any
-                // custom log subscriber wired up before this point.
-                log::error!("inject_bundled_bin_path failed");
-            }
+
+            // Detect an existing CodeMie CLI before touching PATH ourselves. If found,
+            // the bundle must not be installed or registered at all (EPMCDME-14581).
+            let existing_cli_detected =
+                commands::handshake::probe_global_codemie(&pre_injection_path, &|p| p.exists());
+
+            let bundled_injected = if existing_cli_detected {
+                false
+            } else {
+                let injected = commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
+                if !injected {
+                    // eprintln! is swallowed in a packaged GUI; use log::error! so the
+                    // message is captured by the log plugin (debug builds) and any
+                    // custom log subscriber wired up before this point.
+                    log::error!("inject_bundled_bin_path failed");
+                }
+                injected
+            };
 
             // The bundled runtime and CLI entry live under resource_dir(): node/node.exe
             // on Windows (tauri.windows.conf.json), node/bin/node on macOS
-            // (tauri.macos.conf.json). If resource_dir() fails, both paths stay empty and
-            // run_self_update falls back to the codemie shim on PATH.
-            let (node_exe, cli_entry) = app
-                .path()
-                .resource_dir()
-                .map(|res| {
-                    let node = if cfg!(windows) {
-                        res.join("node").join("node.exe")
-                    } else {
-                        res.join("node").join("bin").join("node")
-                    };
-                    let entry = res
-                        .join("cli")
-                        .join("node_modules")
-                        .join("@codemieai")
-                        .join("code")
-                        .join("bin")
-                        .join("codemie.js");
-                    (node, entry)
-                })
-                .unwrap_or_else(|e| {
-                    log::warn!("resource_dir() failed: {e}; absolute CLI invocation unavailable");
-                    (std::path::PathBuf::new(), std::path::PathBuf::new())
-                });
+            // (tauri.macos.conf.json). Skipped entirely when an existing CLI takes
+            // precedence, so run_self_update falls back to the PATH-resolved `codemie`
+            // shim instead of a bundled binary that was never installed.
+            let (node_exe, cli_entry) = if existing_cli_detected {
+                (std::path::PathBuf::new(), std::path::PathBuf::new())
+            } else {
+                app.path()
+                    .resource_dir()
+                    .map(|res| {
+                        let node = if cfg!(windows) {
+                            res.join("node").join("node.exe")
+                        } else {
+                            res.join("node").join("bin").join("node")
+                        };
+                        let entry = res
+                            .join("cli")
+                            .join("node_modules")
+                            .join("@codemieai")
+                            .join("code")
+                            .join("bin")
+                            .join("codemie.js");
+                        (node, entry)
+                    })
+                    .unwrap_or_else(|e| {
+                        log::warn!("resource_dir() failed: {e}; absolute CLI invocation unavailable");
+                        (std::path::PathBuf::new(), std::path::PathBuf::new())
+                    })
+            };
 
             app.manage(AppState {
                 pre_injection_path,
                 bundled_injected,
+                existing_cli_detected,
                 node_exe_path: node_exe,
                 cli_entry_path: cli_entry,
                 ..AppState::default()
@@ -65,6 +80,12 @@ pub fn run() {
                 )?;
             }
             commands::logger::write_line("=== CodeMie Installer session started ===", "dim");
+            if existing_cli_detected {
+                commands::logger::write_line(
+                    "Existing CodeMie CLI detected on PATH — using it instead of installing the bundled CLI.",
+                    "info",
+                );
+            }
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())
         })

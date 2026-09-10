@@ -1,18 +1,11 @@
 ; installer-hooks.nsi
-; Registers / unregisters $INSTDIR\bin in HKCU PATH using only NSIS
-; built-ins — no external plugins required.
+; PATH registration is conditional (only when no system codemie exists) and is
+; handled by the Tauri app itself on first launch (pathman::inject_bundled_bin_path),
+; not by the installer. Uninstall must still remove that entry if it was added,
+; otherwise it survives reinstalls and future uninstalls indefinitely.
 
 !macro NSIS_HOOK_POSTINSTALL
-  ; Read the current user PATH (may be empty on a fresh account).
-  ReadRegStr $0 HKCU "Environment" "PATH"
-  ; Append a semicolon only when PATH is non-empty.
-  ${If} $0 != ""
-    StrCpy $0 "$0;"
-  ${EndIf}
-  ; Write bin dir as REG_EXPAND_SZ (correct type for PATH).
-  WriteRegExpandStr HKCU "Environment" "PATH" "$0$INSTDIR\bin"
-  ; Broadcast WM_SETTINGCHANGE so open shells inherit the new PATH.
-  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  ; PATH registration removed — the app decides at runtime whether to persist it.
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

@@ -36,8 +36,11 @@ fn shell_cmd(cmd_str: &str) -> Command {
     }
     #[cfg(windows)]
     {
+        // Without this flag, spawning a console subprocess from this GUI-subsystem
+        // app briefly flashes a visible cmd.exe window on screen.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut c = Command::new("cmd.exe");
-        c.args(["/c", cmd_str]);
+        c.args(["/c", cmd_str]).creation_flags(CREATE_NO_WINDOW);
         c
     }
 }
@@ -145,15 +148,18 @@ pub(crate) async fn self_update_direct(
     node_exe: &std::path::Path,
     cli_entry: &std::path::Path,
 ) -> CmdResult<String> {
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        tokio::process::Command::new(node_exe)
-            .args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")])
-            .output(),
-    )
-    .await
-    .map_err(|_| crate::error::InstallerError::Other("self-update timed out after 120 s".into()))?
-    .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut node_cmd = tokio::process::Command::new(node_exe);
+    node_cmd.args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")]);
+    #[cfg(windows)]
+    node_cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(120), node_cmd.output())
+        .await
+        .map_err(|_| {
+            crate::error::InstallerError::Other("self-update timed out after 120 s".into())
+        })?
+        .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -176,19 +182,23 @@ pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) ->
     if node.exists() && cli.exists() {
         return self_update_direct(node, cli).await;
     }
-    // At least one bundled path is absent. Log which one is missing to help
-    // diagnose PATH injection failures before falling back to the shim.
-    if !node.exists() {
-        log::warn!(
-            "[run_self_update] node_exe_path not found ({}); falling back to PATH shim",
-            node.display()
-        );
-    }
-    if !cli.exists() {
-        log::warn!(
-            "[run_self_update] cli_entry_path not found ({}); falling back to PATH shim",
-            cli.display()
-        );
+    // At least one bundled path is absent. When an existing CLI took precedence
+    // (EPMCDME-14581), node_exe_path/cli_entry_path were never populated by
+    // design — that's expected, not a PATH-injection failure, so only warn
+    // when it wasn't.
+    if !state.existing_cli_detected {
+        if !node.exists() {
+            log::warn!(
+                "[run_self_update] node_exe_path not found ({}); falling back to PATH shim",
+                node.display()
+            );
+        }
+        if !cli.exists() {
+            log::warn!(
+                "[run_self_update] cli_entry_path not found ({}); falling back to PATH shim",
+                cli.display()
+            );
+        }
     }
     let r = capture("codemie self-update", None).await;
     if r.code == 0 {
