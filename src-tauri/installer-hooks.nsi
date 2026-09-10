@@ -1,10 +1,17 @@
 ; installer-hooks.nsi
-; Disabled PATH registration — codemie binary is no longer added to HKCU PATH.
+; PATH registration is conditional (only when no system codemie exists) and is
+; handled by the Tauri app itself on first launch (pathman::inject_bundled_bin_path),
+; not by the installer. Uninstall must still remove that entry if it was added,
+; otherwise it survives reinstalls and future uninstalls indefinitely.
 
 !macro NSIS_HOOK_POSTINSTALL
-  ; PATH registration removed
+  ; PATH registration removed — the app decides at runtime whether to persist it.
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
-  ; PATH unregistration removed
+  ; Remove our entry from PATH via PowerShell (available on all supported Windows).
+  ExecWait 'powershell.exe -NoProfile -NonInteractive -Command \
+    "$p=[Environment]::GetEnvironmentVariable($\"PATH$\",$\"User$\"); \
+     $p=($p.Split($\";\") | Where-Object { $_ -ne $\"$INSTDIR\bin$\" }) -join $\";\"; \
+     [Environment]::SetEnvironmentVariable($\"PATH$\", $p, $\"User$\")"'
 !macroend
