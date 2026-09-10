@@ -176,19 +176,23 @@ pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) ->
     if node.exists() && cli.exists() {
         return self_update_direct(node, cli).await;
     }
-    // At least one bundled path is absent. Log which one is missing to help
-    // diagnose PATH injection failures before falling back to the shim.
-    if !node.exists() {
-        log::warn!(
-            "[run_self_update] node_exe_path not found ({}); falling back to PATH shim",
-            node.display()
-        );
-    }
-    if !cli.exists() {
-        log::warn!(
-            "[run_self_update] cli_entry_path not found ({}); falling back to PATH shim",
-            cli.display()
-        );
+    // At least one bundled path is absent. When an existing CLI took precedence
+    // (EPMCDME-14581), node_exe_path/cli_entry_path were never populated by
+    // design — that's expected, not a PATH-injection failure, so only warn
+    // when it wasn't.
+    if !state.existing_cli_detected {
+        if !node.exists() {
+            log::warn!(
+                "[run_self_update] node_exe_path not found ({}); falling back to PATH shim",
+                node.display()
+            );
+        }
+        if !cli.exists() {
+            log::warn!(
+                "[run_self_update] cli_entry_path not found ({}); falling back to PATH shim",
+                cli.display()
+            );
+        }
     }
     let r = capture("codemie self-update", None).await;
     if r.code == 0 {

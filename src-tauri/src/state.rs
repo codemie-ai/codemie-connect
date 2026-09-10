@@ -32,8 +32,5 @@ pub struct AppState {
     /// is skipped and `node_exe_path`/`cli_entry_path` are left empty so
     /// `run_self_update` falls back to the PATH-resolved CLI instead of a
     /// bundled one that was never installed (EPMCDME-14581).
-    // Not yet read outside this module: `runner.rs`'s guard on this field lands
-    // in EPMCDME-14581 Task 3. Remove this allow once that guard reads it.
-    #[allow(dead_code)]
     pub existing_cli_detected: bool,
 }
