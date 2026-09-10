@@ -196,13 +196,17 @@ pub async fn check_profile_status() -> ProfileStatus {
 /// `where.exe` (Windows) or static paths (macOS) to find it anywhere on PATH.
 #[cfg(windows)]
 fn find_binary(exe_name: &str, common_locations: &[&str]) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+
     // 1. Check common default install locations.
     if let Some(p) = common_locations.iter().find(|p| Path::new(p).exists()) {
         return Some(p.to_string());
     }
     // 2. Fall back to `where.exe` — finds the binary anywhere in PATH/system.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     std::process::Command::new("where.exe")
         .arg(exe_name)
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()
         .filter(|out| out.status.success())

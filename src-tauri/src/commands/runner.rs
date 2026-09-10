@@ -36,8 +36,11 @@ fn shell_cmd(cmd_str: &str) -> Command {
     }
     #[cfg(windows)]
     {
+        // Without this flag, spawning a console subprocess from this GUI-subsystem
+        // app briefly flashes a visible cmd.exe window on screen.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut c = Command::new("cmd.exe");
-        c.args(["/c", cmd_str]);
+        c.args(["/c", cmd_str]).creation_flags(CREATE_NO_WINDOW);
         c
     }
 }
@@ -145,15 +148,18 @@ pub(crate) async fn self_update_direct(
     node_exe: &std::path::Path,
     cli_entry: &std::path::Path,
 ) -> CmdResult<String> {
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        tokio::process::Command::new(node_exe)
-            .args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")])
-            .output(),
-    )
-    .await
-    .map_err(|_| crate::error::InstallerError::Other("self-update timed out after 120 s".into()))?
-    .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut node_cmd = tokio::process::Command::new(node_exe);
+    node_cmd.args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")]);
+    #[cfg(windows)]
+    node_cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(120), node_cmd.output())
+        .await
+        .map_err(|_| {
+            crate::error::InstallerError::Other("self-update timed out after 120 s".into())
+        })?
+        .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
