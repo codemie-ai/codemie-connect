@@ -327,6 +327,11 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
   // onPrompt, used to recognise that prompt's answered echo. Input prompts
   // cannot join answeredOnce below; see the note in handleDetectedPrompt.
   let lastAnsweredInput = null;
+  // Set when we deliberately cleared readline's buffer for a re-answer (see the
+  // ctrl-U write below). The clear makes the CLI repaint the bare question, one
+  // screen state that is indistinguishable from a genuine re-ask; this drops
+  // exactly that one repaint and nothing else.
+  let lineKillRepaint = null;
 
   // Ids already answered in THIS run that the CLI asks at most once, so a
   // second answer is always wrong. See the round-5 note in
@@ -403,6 +408,16 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
     // rather than a strict extension of it. An echo never carries the hint, so it
     // stays strictly longer.
     const redetected = stableQuestion(prompt.message);
+    // Our own ctrl-U repaint: the bare question, same id, immediately after we
+    // cleared the line to re-answer it. Left alone it is dispatched as a fresh
+    // ask, the caller renders a control nobody is waiting on, and promptInFlight
+    // stays set -- the run then never sees the CLI's next prompt. A real re-ask
+    // after a failed validate always carries the rejected value (inquirer
+    // restores it, input.js:88), so it is a strict extension, not this shape.
+    if (lineKillRepaint === prompt.id) {
+      lineKillRepaint = null;
+      if (lastAnsweredInput !== null && redetected === lastAnsweredInput.message) return;
+    }
     if (
       lastAnsweredInput !== null
       && prompt.id === lastAnsweredInput.id
@@ -518,7 +533,24 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
       if (prompt.kind === 'input') {
         const answer = await onPromptCb({ kind: 'input', id: prompt.id, message: prompt.message });
         if (prompt.id === 'profileName') profileName = String(answer);
-        await innerDeps.input(`${answer}\r`);
+        const question = stableQuestion(prompt.message);
+        const reAnswer = lastAnsweredInput !== null
+          && lastAnsweredInput.id === prompt.id
+          && question.length > lastAnsweredInput.message.length
+          && question.startsWith(lastAnsweredInput.message);
+        // A re-answer is written behind \x15 (ctrl-U, "delete to start of
+        // line"). On a failed validate inquirer pushes the rejected value BACK
+        // into readline's buffer so a human can edit it in place
+        // (inquirer/lib/prompts/input.js:88-89); we send a whole new answer
+        // instead, so without the line kill the CLI receives
+        // "not-a-urlhttps://codemie.lab.epam.com" and rejects it forever.
+        // Measured against the vendored CLI: without it the corrected answer
+        // never lands, with it the same answer is accepted.
+        // A FIRST ask must not get it: that buffer is already empty, and the
+        // clear repaints the bare question line, which readScreen would then
+        // report as a fresh ask of the prompt just answered.
+        if (reAnswer) lineKillRepaint = prompt.id;
+        await innerDeps.input(`${reAnswer ? '\x15' : ''}${answer}\r`);
         // Recorded after the write so a throwing input() never arms the guard.
         // Two details keep the stored prefix anchored on the stable part of the
         // question. First, strip the default hint, which the echo will not carry.
@@ -531,11 +563,6 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
         // matched against its own question. "Shortest wins" would be wrong there:
         // it would pin the catch-all to the shortest AWS prompt and miss the
         // echoes of the other two.
-        const question = stableQuestion(prompt.message);
-        const reAnswer = lastAnsweredInput !== null
-          && lastAnsweredInput.id === prompt.id
-          && question.length > lastAnsweredInput.message.length
-          && question.startsWith(lastAnsweredInput.message);
         if (!reAnswer) lastAnsweredInput = { id: prompt.id, message: question };
         return;
       }

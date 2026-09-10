@@ -397,6 +397,37 @@ test('reopen: a re-ask whose stripped message starts-with the stored base reopen
   await startPromise;
 });
 
+test('reopen: the row keeps the original question as its heading, not the re-ask line carrying the rejected value', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    const first = onPrompt({ kind: 'input', id: 'codemieUrl', message: 'CodeMie organization URL: (https://codemie.lab.epam.com)' });
+    await tick();
+    const row1 = findRowById(container, 'codemieUrl-1');
+    findControl(row1)._children.find((c) => c.type === 'text').value = 'not-a-url';
+    clickContinue(row1);
+    await first;
+
+    // inquirer puts the rejected value back on the question line
+    // (inquirer/lib/prompts/input.js:88), so the re-ask message arrives as
+    // "<question>: <rejected value>".
+    return onPrompt({ kind: 'input', id: 'codemieUrl', message: 'CodeMie organization URL: not-a-url' });
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await tick();
+  await tick();
+
+  const row = findRowById(container, 'codemieUrl-1');
+  const heading = row.querySelector('.step-title').textContent;
+  assert.equal(heading, 'CodeMie organization URL', 'the reopened row asks the original question again');
+  assert.ok(!heading.includes('not-a-url'), 'the rejected value never becomes part of the heading');
+
+  findControl(row)._children.find((c) => c.type === 'text').value = 'https://codemie.lab.epam.com';
+  clickContinue(row);
+  await startPromise;
+});
+
 test('reopen: a byte-identical hint-stripped message (masked-password re-ask) reopens the same row', async () => {
   const container = makeEl('div');
   const fakeStartSetup = async ({ onPrompt }) => {
@@ -1156,6 +1187,23 @@ test('rejection naming an answered step marks that row ERROR and start() hands t
   assert.equal(findRowById(container, 'provider-1').querySelector('.step-icon').textContent, '✗');
   assert.equal(findRowById(container, 'profileName-1').querySelector('.step-icon').textContent, '✓', 'only the named row');
   assert.equal(workingRows(container).length, 0, 'the Working row is not left behind');
+});
+
+test('a failed run leaves no live control on the row it marks ERROR', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
+    await tick();
+    throw { step: null, message: 'pty closed', raw: '' };
+  };
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const result = await view.start();
+
+  assert.equal(result.ok, false);
+  const row = findRowById(container, 'provider-1');
+  assert.equal(row.querySelector('.step-icon').textContent, '✗', 'the open row is the one marked');
+  assert.equal(findControl(row), null, 'its option cards and Continue button are gone');
 });
 
 test('rejection with step "model" before any model row inserts the model row in ERROR', async () => {

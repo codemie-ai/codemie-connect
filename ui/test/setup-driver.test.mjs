@@ -4,6 +4,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { startSetup } from '../setup-driver.js';
 
+// A re-answer after a failed validate is written behind ctrl-U so it replaces
+// the rejected value inquirer put back on the line instead of appending to it.
+// First answers, confirms and lists are written as-is.
+const ans = (text) => `\x15${text}\r`; // a RE-answer: ctrl-U kills the rejected value inquirer put back on the line
+
 // Most tests in this file don't override deps.suspendPtyInput/resumePtyInput,
 // so startSetup lazily default-imports the real ui/terminal.js (Task 13),
 // which reads window.__TAURI__.core.invoke at module scope. Stubbing it once,
@@ -542,6 +547,40 @@ test('a masked credential echo is recognised too (the answer is not rendered bac
 // does validate the profile name (setup.js:491 rejects a name that already
 // exists), and suppressing that screen hangs the run with the single-flight
 // lock held. This walks the whole sequence: reject, re-ask, answer, echo.
+test('the bare-question repaint our own ctrl-U causes is not dispatched as a re-ask', async () => {
+  // Clearing the line for a re-answer makes the CLI repaint the question with
+  // nothing after it. Dispatching that as a fresh ask leaves a control open
+  // that nobody answers, and promptInFlight then blocks every later prompt.
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const answers = ['nope', 'https://codemie.lab.epam.com'];
+  const seen = [];
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+
+  // validate rejected it: inquirer puts the rejected value back on the line
+  t.__setLines(['', '? CodeMie organization URL: nope', '>> Please enter a valid URL', ...Array(27).fill('')]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+
+  // our ctrl-U cleared the line: the CLI repaints the bare question
+  t.__setLines(['', '? CodeMie organization URL: ', ...Array(28).fill('')]);
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+
+  fake.exit(0);
+  await p.catch(() => {});
+
+  assert.deepEqual(seen, [
+    'CodeMie organization URL: (https://codemie.lab.epam.com)',
+    'CodeMie organization URL: nope',
+  ], 'the repaint must not reach onPrompt as a third ask');
+  assert.deepEqual(fake.writes, ['nope\r', ans('https://codemie.lab.epam.com')]);
+});
+
 test('a failed validate is re-asked, and the echo after the retry is still suppressed', async () => {
   const fake = makeFakePty();
   const t = makeFakeTerminal()();
@@ -563,7 +602,14 @@ test('a failed validate is re-asked, and the echo after the retry is still suppr
   fake.exit(0);
   await p.catch(() => {});
   assert.deepEqual(seen, ['profileName', 'profileName'], 'the rejection must be re-asked, the echo must not');
-  assert.deepEqual(fake.writes, ['taken\r', 'fresh\r']);
+  // Both answers are written behind ctrl-U. inquirer's validate failure pushes
+  // the rejected text back into readline's buffer (input.js:88-89), so without
+  // the line kill the CLI would receive "takenfresh" and reject it forever.
+  assert.deepEqual(fake.writes, ['taken\r', ans('fresh')]);
+  assert.ok(
+    !fake.writes.some((w) => w.includes('takenfresh')),
+    'the corrected answer never arrives appended to the rejected one',
+  );
 });
 
 // A password prompt's validate error lands two rows down: screen-manager.js:91
@@ -589,7 +635,7 @@ test('a password validate failure, with its blank row before the >> marker, is r
   fake.exit(0);
   await p.catch(() => {});
   assert.deepEqual(seen, ['credential', 'credential']);
-  assert.deepEqual(fake.writes, ['\r', 'real-secret\r']);
+  assert.deepEqual(fake.writes, ['\r', ans('real-secret')]);
 });
 
 test('the guard does not suppress a DIFFERENT prompt under the credential catch-all, yet suppresses each of their echoes (bedrock asks three in a row)', async () => {

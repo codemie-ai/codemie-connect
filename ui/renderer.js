@@ -488,12 +488,19 @@ async function boot() {
   if (flags.dev) {
     const { startSetup } = await import('./setup-driver.js');
     const { createSetupView } = await import('./setup-view.js');
+    // One view instance for the one #setup-view container, created lazily and
+    // reused. A second instance would mount over the first one's rows and start
+    // a second `codemie setup` alongside it (they race over the config file);
+    // setup-view's own re-entrancy guard is per instance and cannot see that.
+    // start() is safe to call again on a settled instance -- it resets itself.
+    let setupView = null;
     window.__codemie = {
       showView,
       startSetup,
       startGuidedSetup: () => {
         showView('setup');
-        return createSetupView(document.getElementById('setup-view')).start();
+        if (!setupView) setupView = createSetupView(document.getElementById('setup-view'));
+        return setupView.start();
       },
     };
   }

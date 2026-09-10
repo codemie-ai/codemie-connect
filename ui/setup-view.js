@@ -383,6 +383,13 @@ export function createSetupView(container, deps = {}) {
   function markError(rowId) {
     if (!rowId) return false;
     stepsUi.setStatus(rowId, StepStatus.ERROR);
+    // A failed run leaves no live control behind: the promise this row's
+    // Continue would resolve is already settled, so the button would look
+    // clickable and do nothing. EPMCDME-14588 puts the retry affordance here.
+    const row = findRow(container, rowId);
+    const host = row ? row.querySelector('.step-main') : null;
+    clearControls(host);
+    removeHelperText(host);
     return true;
   }
 
@@ -506,7 +513,12 @@ export function createSetupView(container, deps = {}) {
         // the title to a collapsedLabel via collapseRow().
         row.classList.toggle('collapsed', false);
         const titleEl = row.querySelector('.step-title');
-        if (titleEl) titleEl.textContent = headingFor(prompt);
+        // Heading comes from storedBase, never from this re-ask's message:
+        // inquirer puts the rejected value back on the question line
+        // (inquirer/lib/prompts/input.js:88 `this.rl.line += value`), so the
+        // live message reads "CodeMie organization URL: not-a-url". The row
+        // must keep asking the original question.
+        if (titleEl) titleEl.textContent = headingFor({ ...prompt, message: storedBase });
       }
       stepsUi.setStatus(rowId, StepStatus.ACTIVE);
       activeRowId = rowId;
