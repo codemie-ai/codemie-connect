@@ -1,10 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CodeMie Connect",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "identifier": "com.epam.codemie.installer",
   "build": {
     "frontendDist": "../ui"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "PLACEHOLDER_ED25519_PUBKEY_PROVISIONED_BY_EPMCDME_14509",
+      "endpoints": [
+        "PLACEHOLDER_UPDATE_ENDPOINT_URL_PROVISIONED_BY_EPMCDME_14509"
+      ]
+    }
   },
   "app": {
     "withGlobalTauri": true,
