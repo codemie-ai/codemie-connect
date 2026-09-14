@@ -106,4 +106,16 @@ mod tests {
         let just_now = Instant::now();
         assert!(should_check(Some(just_now), Duration::from_secs(0)));
     }
+
+    #[test]
+    fn throttle_fires_after_24h() {
+        let past = Instant::now() - Duration::from_secs(1);
+        assert!(should_check(Some(past), Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn error_serialises_to_string() {
+        let e = InstallerError::Other("update failed".to_string());
+        assert_eq!(e.to_string(), "update failed");
+    }
 }
