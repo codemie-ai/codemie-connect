@@ -89,6 +89,7 @@ pub fn run() {
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())
         })
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::runner::run_capture,
             commands::runner::run_fresh_env,
@@ -125,6 +126,9 @@ pub fn run() {
             commands::smoke::smoke_emit,
             steps::get_steps,
             steps::get_logo_path,
+            commands::app_updater::check_for_update,
+            commands::app_updater::download_and_install,
+            commands::app_updater::restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
