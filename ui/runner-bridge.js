@@ -58,9 +58,31 @@ export const installer = {
 };
 
 // ---- updater ----
+async function checkForAppUpdate() {
+  return invoke('check_for_update');
+}
+
+async function downloadAndInstall(id, onProgress) {
+  const unlisten = await listen('engine:update-progress', (event) => {
+    if (event.payload.id === id) onProgress(event.payload);
+  });
+  try {
+    await invoke('download_and_install', { id });
+  } finally {
+    unlisten();
+  }
+}
+
+async function restartApp() {
+  return invoke('restart_app');
+}
+
 export const updater = {
   fetchCodemieLatest: () => invoke('fetch_codemie_latest'),
   runSelfUpdate: () => invoke('run_self_update'),
+  checkForAppUpdate,
+  downloadAndInstall,
+  restartApp,
 };
 
 // ---- pathman (src/main/pathman.js) ----
