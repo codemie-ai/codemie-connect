@@ -1398,3 +1398,108 @@ test('start() while a run is in flight returns that run instead of resetting it;
   clickContinue(findRowById(container, 'profileName-1'));
   await third;
 });
+
+// ── Profile name as the CLI saves it ────────────────────────────────────────
+
+const inputOf = (row) => findControl(row)._children.find((c) => c.className === 'prompt-input');
+const configWith = (profile) => async () => ({ state: 'valid', profile, model: '', project: '', account: null });
+
+test('a profile name typed with surrounding spaces is verified as the trimmed name the CLI saves', async () => {
+  // setup.js:501 saves newProfileName.trim(); the driver reports the raw answer.
+  const container = makeEl('div');
+  const view = createSetupView(container, { startSetup: async () => ({ profileName: '  demo ' }), readConfig: configWith('demo') });
+  const outcome = await view.start();
+  assert.equal(outcome.ok, true, 'a working setup is not reported as failed');
+  assert.equal(outcome.profileName, 'demo');
+  const status = container._children.find((c) => c.className === 'setup-view-status');
+  assert.equal(status.textContent, 'Setup complete. demo is now the active profile.');
+});
+
+test('an input left empty submits the default the CLI would use, not an empty answer', async () => {
+  // inquirer's filterInput (input.js:69-71) turns an empty line into the
+  // default, so the CLI saves "demo-2". Answering '' made the driver report ''
+  // and the view then flagged a working setup as failed.
+  const container = makeEl('div');
+  let answered;
+  const fakeStartSetup = async ({ onPrompt }) => {
+    answered = await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: (demo-2)' });
+    return { profileName: String(answered) };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: configWith('demo-2') });
+  const p = view.start();
+  await tick(0);
+  const row = findRowById(container, 'profileName-1');
+  inputOf(row).value = '';
+  clickContinue(row);
+  const outcome = await p;
+  assert.equal(answered, 'demo-2');
+  assert.equal(row.querySelector('.step-sub').textContent, 'demo-2');
+  assert.equal(outcome.ok, true);
+});
+
+test('whitespace is submitted as typed: only a truly empty field falls back to the default', async () => {
+  const container = makeEl('div');
+  let answered;
+  const fakeStartSetup = async ({ onPrompt }) => {
+    answered = await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: (demo-2)' });
+    return { profileName: 'demo-2' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: configWith('demo-2') });
+  const p = view.start();
+  await tick(0);
+  const row = findRowById(container, 'profileName-1');
+  inputOf(row).value = '   ';
+  clickContinue(row);
+  await p;
+  assert.equal(answered, '   ', 'the CLI validates it and re-asks; the view must not hide that');
+});
+
+// ── Reopened input after a rejected answer ──────────────────────────────────
+
+test('a reopened input is built from the first ask: its default is back and the rejected text does not change the field', async () => {
+  // The re-ask message carries the rejected value, not the hint
+  // ("CodeMie organization URL: my-token-host"; base.js:157-160 drops the hint
+  // once the line was touched). Building the field from it lost the default and,
+  // for a value containing "token", turned the URL field into a password field.
+  const container = makeEl('div');
+  const answers = [];
+  const fakeStartSetup = async ({ onPrompt }) => {
+    answers.push(await onPrompt({ kind: 'input', id: 'codemieUrl', message: 'CodeMie organization URL: (https://codemie.lab.epam.com)' }));
+    answers.push(await onPrompt({ kind: 'input', id: 'codemieUrl', message: 'CodeMie organization URL: my-token-host' }));
+    return { profileName: 'default' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const p = view.start();
+  await tick(0);
+  let row = findRowById(container, 'codemieUrl-1');
+  inputOf(row).value = 'my-token-host';
+  clickContinue(row);
+  await tick(0);
+  row = findRowById(container, 'codemieUrl-1');
+  const reopened = inputOf(row);
+  assert.equal(reopened.type, 'text', 'still a plain URL field');
+  assert.equal(reopened.value, 'https://codemie.lab.epam.com', 'the CLI default is pre-filled again');
+  clickContinue(row);
+  await p;
+  assert.deepEqual(answers, ['my-token-host', 'https://codemie.lab.epam.com']);
+  assert.equal(row.querySelector('.step-sub').textContent, 'https://codemie.lab.epam.com', 'collapses to the value, not "Entered"');
+});
+
+// ── A row still open when the run settles ───────────────────────────────────
+
+test('a row still open when the run succeeds loses its control and is marked skipped', async () => {
+  // The CLI exited 0, so it was not waiting on this row: a Continue left under
+  // "Setup complete" would look clickable and do nothing.
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['A - a', 'B - b'] });
+    await tick(0);
+    return { profileName: 'default' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const outcome = await view.start();
+  assert.equal(outcome.ok, true);
+  const row = findRowById(container, 'provider-1');
+  assert.ok(!findControl(row), 'no live control is left behind'); // a boolean: inspecting the stub DOM on failure never finishes
+  assert.equal(row.querySelector('.step-icon').textContent, '—', 'marked SKIPPED, not left ACTIVE');
+});

@@ -119,16 +119,17 @@ function stableQuestion(message) {
 // small window below the question, skipping empty rows, rather than one row.
 const VALIDATION_ERROR_WINDOW = 3;
 
-function hasValidationErrorLine(lines) {
+// The ">>" error under the last question on screen, or null when there is none.
+function validationErrorText(lines) {
   let idx = -1;
   for (let i = 0; i < lines.length; i += 1) if (isQ(lines[i])) idx = i;
-  if (idx === -1) return false;
+  if (idx === -1) return null;
   for (let r = idx + 1; r <= idx + VALIDATION_ERROR_WINDOW && r < lines.length; r += 1) {
     const t = lines[r].trim();
     if (!t) continue;
-    if (VALIDATION_ERROR_MARKER.test(t)) return true;
+    if (VALIDATION_ERROR_MARKER.test(t)) return t;
   }
-  return false;
+  return null;
 }
 
 function pickAutoListIndex(options, wantRe) {
@@ -323,15 +324,17 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
   // themselves provoke.
   let promptInFlight = false;
 
-  // The id and message of the last kind:'input' prompt answered through
-  // onPrompt, used to recognise that prompt's answered echo. Input prompts
-  // cannot join answeredOnce below; see the note in handleDetectedPrompt.
+  // The kind:'input' prompt answered last, until the CLI moves on to another
+  // prompt: { id, message, shownKey, progressed }. `message` is the stable
+  // question (default hint stripped, never the rejected value), `shownKey` the
+  // question-plus-error of the screen we answered, and `progressed` whether a
+  // screen without an error has shown up since (repaint, typing, echo). Input
+  // prompts cannot join answeredOnce below; see the note in handleDetectedPrompt.
   let lastAnsweredInput = null;
-  // Set when we deliberately cleared readline's buffer for a re-answer (see the
-  // ctrl-U write below). The clear makes the CLI repaint the bare question, one
-  // screen state that is indistinguishable from a genuine re-ask; this drops
-  // exactly that one repaint and nothing else.
-  let lineKillRepaint = null;
+  // Every input question answered in this run, { id, message }. Its answered
+  // line stays on screen after the CLI has moved on, and can be the last
+  // question line again for a chunk (see handleDetectedPrompt).
+  const answeredInputs = [];
 
   // Ids already answered in THIS run that the CLI asks at most once, so a
   // second answer is always wrong. See the round-5 note in
@@ -387,49 +390,62 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
     // (a rejected credential's error + re-ask) reach onPrompt again.
     if (answeredOnce.has(prompt.id)) return;
 
-    // The same answered-line echo reaches kind:'input' prompts, and they cannot
-    // join answeredOnce for the two reasons just given. What separates an echo
-    // from a genuine re-ask is the shape inquirer renders: an echo is the SAME
-    // question with the answer appended, so its message is a STRICT extension of
-    // the one just answered ("Enter a name for this profile: myprofile", and
-    // "API key: ****" for a masked one). A re-ask carries the identical message,
-    // so it is equal in length, never longer -- it falls through to the signature
-    // check below and stays governed by the R4-1 idle gate exactly as before. A
-    // genuinely different prompt under the 'credential' catch-all is not a prefix
-    // of the previous one at all, so bedrock's three-in-a-row still works.
+    // kind:'input' prompts cannot join answeredOnce for the two reasons just
+    // given, yet the question we just answered stays on screen for a while. The
+    // driver reads the screen after every chunk, and measured against the real
+    // CLI in the app (2026-09-14, recorded chunk by chunk) the stream after one
+    // of our answers is, in order: the screen we answered, not yet redrawn; for a
+    // re-answer, the bare question our ctrl-U repaints; the answer typed out one
+    // character at a time; and only then the verdict -- the accepted echo and the
+    // next question, or a fresh ">>" error. Every one of those screens carries
+    // the same question, and treating one as a new ask left a control open that
+    // nothing was waiting on, while promptInFlight made the driver ignore the
+    // CLI's real next prompt (the "Switch to profile" confirm was never answered).
     //
-    // Without this, answering profileName wrote "myprofile\r" a second time into
-    // whichever prompt the CLI had already moved on to -- one of the trailing
-    // y/n confirms, which inquirer then resolves with its default. On the
-    // credential path it put the key into the next prompt, echoed on screen.
-    // Compared with the hint stripped from THIS message too: a genuine re-ask
-    // is the open form again, hint and all ("API key: (anthropic-subscription)"),
-    // and stripping it makes the re-ask equal in length to the stored question
-    // rather than a strict extension of it. An echo never carries the hint, so it
-    // stays strictly longer.
+    // So after an input answer, the same question comes back as a question only
+    // with a ">>" error under it -- the one way inquirer re-asks
+    // (input.js:88-91). A screen without one is progress (repaint, typing, echo:
+    // "Enter a name for this profile: myprofile", "API key: ****"). A screen with
+    // the very error we answered is that screen again, unless progress was seen
+    // in between: then it is a new rejection -- the same wrong name entered twice
+    // -- and it is asked again even though it looks identical, so the signature
+    // dedupe below must not swallow it. A different question under the
+    // 'credential' catch-all does not start with the stored one, so bedrock's
+    // three-in-a-row is untouched. Compared with the default hint stripped: the
+    // echo and the re-ask never carry it once the line was touched (base.js:157-160).
     const redetected = stableQuestion(prompt.message);
-    // Our own ctrl-U repaint: the bare question, same id, immediately after we
-    // cleared the line to re-answer it. Left alone it is dispatched as a fresh
-    // ask, the caller renders a control nobody is waiting on, and promptInFlight
-    // stays set -- the run then never sees the CLI's next prompt. A real re-ask
-    // after a failed validate always carries the rejected value (inquirer
-    // restores it, input.js:88), so it is a strict extension, not this shape.
-    if (lineKillRepaint === prompt.id) {
-      lineKillRepaint = null;
-      if (lastAnsweredInput !== null && redetected === lastAnsweredInput.message) return;
-    }
     if (
       lastAnsweredInput !== null
       && prompt.id === lastAnsweredInput.id
-      && redetected.length > lastAnsweredInput.message.length
       && redetected.startsWith(lastAnsweredInput.message)
-      && !hasValidationErrorLine(lines)
+    ) {
+      const error = validationErrorText(lines);
+      if (error === null) {
+        lastAnsweredInput.progressed = true;
+        return;
+      }
+      if (!lastAnsweredInput.progressed && `${redetected}\n${error}` === lastAnsweredInput.shownKey) return;
+      lastPromptSignature = null;
+    }
+    // An input answered earlier, after the CLI moved on: its answered line is
+    // still on screen, and when a later prompt is erased (the project list, as
+    // its answer is written) it is the last question line again for a chunk --
+    // "CodeMie organization URL: https://codemie.lab.epam.com", recorded
+    // 2026-09-14. That line carries its answer, so it is strictly longer than the
+    // question. A bare question is not an answered line and is left alone.
+    else if (
+      validationErrorText(lines) === null
+      && answeredInputs.some((a) => a.id === prompt.id
+        && redetected.length > a.message.length
+        && redetected.startsWith(a.message))
     ) return;
 
     const sig = promptSignature(prompt);
     if (sig === lastPromptSignature) return; // same occurrence already in-flight or answered: ignore
     lastPromptSignature = sig; // mark before awaiting, so mid-await redraws are caught too
     lastPromptScreenText = lines.join('\n');
+    // The CLI moved on to another prompt: the input answered before it is done.
+    if (lastAnsweredInput !== null && prompt.id !== lastAnsweredInput.id) lastAnsweredInput = null;
     promptInFlight = true;
     try {
       if (prompt.id === 'customModel' || prompt.id === 'modelManual') {
@@ -534,10 +550,14 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
         const answer = await onPromptCb({ kind: 'input', id: prompt.id, message: prompt.message });
         if (prompt.id === 'profileName') profileName = String(answer);
         const question = stableQuestion(prompt.message);
+        // A re-answer is an answer to the input prompt just answered, which the
+        // CLI rejected: its ">>" error is on screen. Not "the question carries
+        // the rejected value" -- a whitespace-only rejection leaves nothing
+        // visible after the question, yet inquirer still put the spaces back.
+        const error = validationErrorText(lines);
         const reAnswer = lastAnsweredInput !== null
           && lastAnsweredInput.id === prompt.id
-          && question.length > lastAnsweredInput.message.length
-          && question.startsWith(lastAnsweredInput.message);
+          && error !== null;
         // A re-answer is written behind \x15 (ctrl-U, "delete to start of
         // line"). On a failed validate inquirer pushes the rejected value BACK
         // into readline's buffer so a human can edit it in place
@@ -545,25 +565,26 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
         // instead, so without the line kill the CLI receives
         // "not-a-urlhttps://codemie.lab.epam.com" and rejects it forever.
         // Measured against the vendored CLI: without it the corrected answer
-        // never lands, with it the same answer is accepted.
-        // A FIRST ask must not get it: that buffer is already empty, and the
-        // clear repaints the bare question line, which readScreen would then
-        // report as a fresh ask of the prompt just answered.
-        if (reAnswer) lineKillRepaint = prompt.id;
+        // never lands, with it the same answer is accepted. A first ask does not
+        // need it: that buffer is already empty.
         await innerDeps.input(`${reAnswer ? '\x15' : ''}${answer}\r`);
-        // Recorded after the write so a throwing input() never arms the guard.
-        // Two details keep the stored prefix anchored on the stable part of the
-        // question. First, strip the default hint, which the echo will not carry.
-        // Second, when this answer is a RE-answer after a validation failure, the
-        // message we just answered carries the rejected value ("Enter a name for
-        // this profile: taken") -- it extends the prefix already stored, so keep
-        // the stored one; the next echo extends the original question, not the
-        // rejected one. Any other message under the same id (bedrock's next
-        // credential prompt) replaces it, so each of those prompts' echoes is
-        // matched against its own question. "Shortest wins" would be wrong there:
-        // it would pin the catch-all to the shortest AWS prompt and miss the
-        // echoes of the other two.
-        if (!reAnswer) lastAnsweredInput = { id: prompt.id, message: question };
+        // Recorded after the write, so a throwing input() records nothing. The
+        // stored question is the stable one: default hint stripped, and on a
+        // re-answer the one already stored, since the message just answered
+        // carries the rejected value ("Enter a name for this profile: taken").
+        // Any other message under the same id (bedrock's next credential prompt)
+        // replaces it, so each of those prompts is matched against its own
+        // question. "Shortest wins" would be wrong there: it would pin the
+        // catch-all to the shortest AWS prompt and miss the other two.
+        lastAnsweredInput = {
+          id: prompt.id,
+          message: reAnswer ? lastAnsweredInput.message : question,
+          shownKey: `${question}\n${error ?? ''}`,
+          progressed: false,
+          writtenAt: Date.now(),
+        };
+        const { id, message } = lastAnsweredInput;
+        if (!answeredInputs.some((a) => a.id === id && a.message === message)) answeredInputs.push({ id, message });
         return;
       }
 
@@ -722,6 +743,19 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
       lastPromptSignature = null;
       lastPromptScreenText = null;
     }
+    // No question on screen, long after our last answer and after the CLI had
+    // gone quiet: it moved on from that input, so the same question showing up
+    // later is a new ask (a rejected credential re-shown after an error). The
+    // time is measured from our write, not only from the last chunk: the first
+    // chunk after an answer follows the user's think time, and in the recorded
+    // stream it can be a question-less partial redraw milliseconds after the
+    // write -- that must not end it.
+    if (
+      !prompt
+      && signatureEligibleToClear
+      && lastAnsweredInput !== null
+      && Date.now() - lastAnsweredInput.writtenAt >= IDLE_MS
+    ) lastAnsweredInput = null;
     // This chunk just arrived, so the CLI is active again: reset the
     // staleness debounce for the NEXT chunk (mirrors scheduleIdleCheck's own
     // reset-on-every-chunk pattern).

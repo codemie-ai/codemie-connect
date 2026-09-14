@@ -245,7 +245,11 @@ function renderInputControl(host, prompt, submit) {
   if (defaultValue && !secret) input.value = defaultValue;
   control.appendChild(input);
   control.appendChild(makeContinueButton(() => {
-    const value = input.value ?? '';
+    const typed = input.value ?? '';
+    // An empty line is the CLI's default (inquirer input.js:69-71). Answer with
+    // that default explicitly, so the value reported, shown and verified is the
+    // one the CLI saves. Whitespace is a real answer the CLI validates.
+    const value = typed === '' && defaultValue && !secret ? defaultValue : typed;
     submit(value, secret ? 'Entered' : value);
   }));
   host.appendChild(control);
@@ -275,6 +279,10 @@ export function createSetupView(container, deps = {}) {
   // recognized reopen -- only set the first time an id is seen, or when a
   // genuinely different message arrives for that id.
   const baseMessageByPromptId = new Map();
+  // The first ask's full message per prompt id, default hint included. A
+  // reopened row builds its control from this, not from the re-ask: the re-ask
+  // carries the rejected value instead of the hint (inquirer base.js:157-160).
+  const firstAskByPromptId = new Map();
 
   // The row currently waiting on the user (or, for installClaude answered
   // yes, on the CLI's install). null between prompts.
@@ -526,12 +534,14 @@ export function createSetupView(container, deps = {}) {
       removeHelperText(host);
       appendHelperText(host, prompt.id);
 
-      return new Promise((resolve) => renderControl(host, prompt, rowId, resolve));
+      const firstAsk = firstAskByPromptId.get(prompt.id) ?? prompt.message;
+      return new Promise((resolve) => renderControl(host, { ...prompt, message: firstAsk }, rowId, resolve));
     }
 
     // New occurrence: either the first time this id is seen, or a genuinely
     // different re-ask.
     baseMessageByPromptId.set(prompt.id, stripped);
+    firstAskByPromptId.set(prompt.id, prompt.message);
     const occurrence = nextOccurrence(prompt.id);
     const rowId = `${prompt.id}-${occurrence}`;
 
@@ -549,10 +559,27 @@ export function createSetupView(container, deps = {}) {
   // ---- settle ---------------------------------------------------------------
   // The driver resolved { profileName }. The CLI printing success is not the
   // proof; the configuration file is: the new profile must be the active one.
+  // The run succeeded, so the CLI was not waiting on a row still open here
+  // (only a misread screen leaves one): drop its control rather than leave a
+  // Continue under "Setup complete" that looks clickable and does nothing.
+  function releaseOpenRow() {
+    if (!activeRowId) return;
+    const row = findRow(container, activeRowId);
+    const host = row ? row.querySelector('.step-main') : null;
+    clearControls(host);
+    removeHelperText(host);
+    stepsUi.setStatus(activeRowId, StepStatus.SKIPPED);
+    activeRowId = null;
+  }
+
+  // Returns the verified profile name, or null when the config does not show
+  // it as the active profile.
   async function handleResolve(result) {
     hideTransientSpinner();
     settleInstallRow();
-    const profileName = result && typeof result.profileName === 'string' ? result.profileName : '';
+    releaseOpenRow();
+    // The driver reports the raw answer; the CLI saves it trimmed (setup.js:501).
+    const profileName = result && typeof result.profileName === 'string' ? result.profileName.trim() : '';
     let cfg = null;
     try {
       cfg = await readConfig();
@@ -562,7 +589,7 @@ export function createSetupView(container, deps = {}) {
     const ok = !!cfg && cfg.state === 'valid' && profileName !== '' && cfg.profile === profileName;
     if (!ok) {
       markError(lastRowId);
-      return ok;
+      return null;
     }
     // Not a step (the CLI asked nothing here): a closing line under the list,
     // so the finished flow says what it achieved instead of just going quiet.
@@ -570,7 +597,7 @@ export function createSetupView(container, deps = {}) {
     status.className = 'setup-view-status';
     status.textContent = `Setup complete. ${profileName} is now the active profile.`;
     container.appendChild(status);
-    return ok;
+    return profileName;
   }
 
   // The driver rejected { step, message, raw }. Mark the step; the failure
@@ -627,6 +654,7 @@ export function createSetupView(container, deps = {}) {
     // next provider prompt would be taken for a reopen of a row that is gone.
     occurrenceCounts.clear();
     baseMessageByPromptId.clear();
+    firstAskByPromptId.clear();
     activeRowId = null;
     lastRowId = null;
     transient = null;
@@ -662,14 +690,14 @@ export function createSetupView(container, deps = {}) {
       handleReject(err);
       return { ok: false, error: err };
     }
-    const ok = await handleResolve(result);
-    if (!ok) {
+    const verified = await handleResolve(result);
+    if (verified === null) {
       return {
         ok: false,
         error: { step: null, message: 'the created profile is not the active one', raw: '' },
       };
     }
-    return { ok: true, profileName: result.profileName };
+    return { ok: true, profileName: verified };
   }
 
   return { start };

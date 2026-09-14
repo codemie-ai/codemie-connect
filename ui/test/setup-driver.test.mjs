@@ -612,6 +612,278 @@ test('a failed validate is re-asked, and the echo after the retry is still suppr
   );
 });
 
+// A correction can be rejected again. The screens below are what the idle read
+// actually sees: measured against the vendored inquirer in a real PTY, the
+// repaint our ctrl-U causes and the next rejection arrive within ~2 ms of each
+// other, so there is no separate bare-question screen in between.
+const nameScreen = (rest, error) => ['', `? Enter a name for this profile: ${rest}`, ...(error ? [`>> ${error}`] : []), ...Array(error ? 27 : 28).fill('')];
+
+test('a correction rejected a second time is re-asked and re-answered behind ctrl-U again', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const answers = ['taken', 'also-taken', 'fresh'];
+  const seen = [];
+  t.__setLines(nameScreen('(default) '));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('taken', 'A profile with this name already exists'));
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('also-taken', 'A profile with this name already exists'));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('fresh'));
+  fake.feedRaw('DDDD');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, [
+    'Enter a name for this profile: (default)',
+    'Enter a name for this profile: taken',
+    'Enter a name for this profile: also-taken',
+  ], 'the second rejection is a real re-ask, not the repaint of our own ctrl-U');
+  assert.deepEqual(fake.writes, ['taken\r', ans('also-taken'), ans('fresh')]);
+});
+
+test('a correction rejected with only whitespace on its line is re-asked, not taken for our own repaint', async () => {
+  // setup.js:492 rejects a whitespace-only name ("Profile name is required").
+  // inquirer puts the spaces back on the line, so the rejection screen is the
+  // bare question plus an error: the same question text our own repaint would
+  // show. Only the error line tells them apart. Dropping it left the CLI
+  // waiting on a question the app never showed, and the run hung.
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const answers = ['taken', '   ', 'fresh'];
+  const seen = [];
+  t.__setLines(nameScreen('(default) '));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('taken', 'A profile with this name already exists'));
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('   ', 'Profile name is required'));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('fresh'));
+  fake.feedRaw('DDDD');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.equal(seen.length, 3, `the whitespace rejection reaches onPrompt as a third ask (saw ${JSON.stringify(seen)})`);
+  // The spaces inquirer put back must be cleared too, or the CLI receives
+  // "   fresh" instead of "fresh".
+  assert.deepEqual(fake.writes, ['taken\r', ans('   '), ans('fresh')]);
+});
+
+test('after a re-answer, the next question under the same catch-all id is dispatched, not dropped as our repaint', async (ctx) => {
+  // bedrock asks three prompts under the one 'credential' id, and validates the
+  // first non-empty (bedrock.setup-steps.js:164-165). A corrected Access Key ID
+  // is accepted at once, so the next screen is already the Secret Access Key
+  // question -- same id, no error, a different question. Only the question
+  // comparison keeps the guard from swallowing it and hanging the run.
+  // The empty first answer's re-ask is the identical question, so it reaches
+  // onPrompt only after the R4-1 idle window: the user's think time in the
+  // app, the mocked clock here.
+  ctx.mock.timers.enable({ apis: ['setTimeout'] });
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  const answers = ['', 'AKIA', 'sk'];
+  const seen = [];
+  t.__setLines(pad(['', '? AWS Access Key ID: ']));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  await ctx.mock.timers.tick(200);
+  t.__setLines(pad(['', '? AWS Access Key ID: ', '>> Access Key ID is required']));
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  await ctx.mock.timers.tick(200);
+  t.__setLines(pad(['', '? AWS Access Key ID: AKIA', '? AWS Secret Access Key: ']));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['AWS Access Key ID:', 'AWS Access Key ID:', 'AWS Secret Access Key:']);
+  assert.deepEqual(fake.writes, ['\r', ans('AKIA'), 'sk\r']);
+});
+
+// The next two tests replay screens recorded chunk by chunk from the real CLI in
+// the app on 2026-09-14 (driver instrumented, `codemie setup`, CodeMie SSO). The
+// driver reads the screen after EVERY chunk, so it sees what no settled screen
+// shows: first the screen it just answered, unchanged; then our ctrl-U's bare
+// repaint; then the answer being typed out one character at a time; and only
+// then the CLI's verdict -- a fresh ">>" error, or the next question.
+const MODELS_DONE = '✔ Found 41 available models';
+const MODEL_ECHO = '? Choose a model (41 available): ⭐ claude-sonnet-5';
+const NAME_Q = '? Enter a name for this profile: ';
+const typedOut = (prefix, text) => [...text].map((_, i) => [MODELS_DONE, MODEL_ECHO, `${NAME_Q}${prefix}${text.slice(0, i + 1)}`]);
+
+async function replay(frames, answers) {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  const seen = [];
+  t.__setLines(pad(frames[0]));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  for (const frame of frames.slice(1)) {
+    t.__setLines(pad(frame));
+    fake.feedRaw('AAAA');
+    await flushMicrotasks();
+  }
+  fake.exit(0);
+  const result = await p.catch((e) => ({ rejected: e }));
+  return { seen, writes: fake.writes, result };
+}
+
+test('real stream: a whitespace correction is re-asked once, and the activate confirm after the fix is still answered', async () => {
+  const rejectTaken = [MODEL_ECHO, `${NAME_Q}codemie`, '>> A profile with this name already exists'];
+  const rejectBlank = [MODEL_ECHO, `${NAME_Q}   `, '>> Profile name is required'];
+  const saved = '✔ Profile "walk-check" saved to global config';
+  const frames = [
+    [MODELS_DONE, MODEL_ECHO, `${NAME_Q}(codemie-sso-1) `],
+    ...typedOut('', 'codemie'),
+    rejectTaken,
+    // after "\x15   \r": the answered screen again, the repaint, the spaces typed out, the verdict
+    rejectTaken,
+    [MODELS_DONE, MODEL_ECHO, NAME_Q],
+    ...typedOut('', '   '),
+    rejectBlank,
+    // after "\x15  walk-check \r"
+    rejectBlank,
+    [MODELS_DONE, MODEL_ECHO, NAME_Q],
+    ...typedOut('', '  walk-check '),
+    [MODEL_ECHO, `${NAME_Q}  walk-check `, '⠋ Saving profile...'],
+    [MODEL_ECHO, `${NAME_Q}  walk-check `, saved],
+    [`${NAME_Q}  walk-check `, saved, '? Switch to profile "walk-check" as active? (Y/n) '],
+  ];
+  const { seen, writes, result } = await replay(frames, ['codemie', '   ', '  walk-check ']);
+  assert.deepEqual(seen, [
+    'Enter a name for this profile: (codemie-sso-1)',
+    'Enter a name for this profile: codemie',
+    'Enter a name for this profile:',
+  ], 'three real questions: no phantom from the answered screen, the repaint or the typing');
+  assert.deepEqual(writes, ['codemie\r', ans('   '), ans('  walk-check '), 'y\r'], 'the activate confirm is answered');
+  assert.equal(result.profileName, '  walk-check ');
+});
+
+test('real stream: the same rejected name entered twice is asked a third time', async () => {
+  const rejectTaken = [MODEL_ECHO, `${NAME_Q}codemie`, '>> A profile with this name already exists'];
+  const frames = [
+    [MODELS_DONE, MODEL_ECHO, `${NAME_Q}(codemie-sso-1) `],
+    ...typedOut('', 'codemie'),
+    rejectTaken,
+    rejectTaken,
+    [MODELS_DONE, MODEL_ECHO, NAME_Q],
+    ...typedOut('', 'codemie'),
+    rejectTaken, // identical to the last question, yet a new rejection
+    rejectTaken,
+    [MODELS_DONE, MODEL_ECHO, NAME_Q],
+    ...typedOut('', 'fresh'),
+  ];
+  const { seen, writes } = await replay(frames, ['codemie', 'codemie', 'fresh']);
+  assert.deepEqual(seen, [
+    'Enter a name for this profile: (codemie-sso-1)',
+    'Enter a name for this profile: codemie',
+    'Enter a name for this profile: codemie',
+  ]);
+  assert.deepEqual(writes, ['codemie\r', ans('codemie'), ans('fresh')]);
+});
+
+test('real stream: a question-less chunk right after our answer does not make the driver forget the answered question', async (ctx) => {
+  // Recorded 2026-09-14: the first chunk after the "codemie" answer carried no
+  // question line (a partial redraw), and it came after the user's think time,
+  // so the CLI looked "quiet". Treating that as "the CLI moved on" dropped the
+  // record of the answered name: the next answer went out without ctrl-U, and
+  // the CLI received "codemie   " instead of "   ".
+  ctx.mock.timers.enable({ apis: ['setTimeout'] });
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  const rejectTaken = [MODEL_ECHO, `${NAME_Q}codemie`, '>> A profile with this name already exists'];
+  const answers = ['codemie', '   ', 'fresh'];
+  const seen = [];
+  t.__setLines(pad([MODELS_DONE, MODEL_ECHO, `${NAME_Q}(codemie-sso-1) `]));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  const feed = async (frame) => { t.__setLines(pad(frame)); fake.feedRaw('AAAA'); await flushMicrotasks(); };
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  await ctx.mock.timers.tick(200); // the pause before the CLI's first chunk
+  await feed([MODELS_DONE]); // no question line on it
+  for (const frame of typedOut('', 'codemie')) await feed(frame);
+  await feed(rejectTaken);
+  await feed(rejectTaken);
+  await feed([MODELS_DONE, MODEL_ECHO, NAME_Q]);
+  for (const frame of typedOut('', '   ')) await feed(frame);
+  await feed([MODEL_ECHO, `${NAME_Q}   `, '>> Profile name is required']);
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(fake.writes, ['codemie\r', ans('   '), ans('fresh')], 'the second answer still clears the rejected name');
+  assert.equal(seen.length, 3);
+});
+
+test('real stream: an earlier answered line that is the last question again after the next prompt was answered is not a new ask', async () => {
+  // Recorded 2026-09-14: writing the project answer erases the list, and for
+  // one chunk the URL answered two prompts earlier is the last question line on
+  // screen again. Asking it opened a URL control nobody was waiting on, and the
+  // run then ignored every real prompt behind it.
+  const urlAnswered = '? CodeMie organization URL: https://codemie.lab.epam.com';
+  const frames = [
+    ['? Choose your LLM provider:', ' CodeMie SSO - Enterprise SSO Authentication with centralized model management', '? CodeMie organization URL: (https://codemie.lab.epam.com) '],
+    [urlAnswered, 'Opening browser for authentication...'],
+    [urlAnswered, '✓ Authentication successful!', 'Found 2 accessible project(s)'],
+    ['Found 2 accessible project(s)', '? Select your project: (Use arrow keys)', '❯ epm-sdai ', '  mert_efe@epam.com '],
+    [urlAnswered, '✓ Authentication successful!', 'Found 2 accessible project(s)'], // chunk 134
+    ['Found 2 accessible project(s)', '? Select your project: epm-sdai', '✓ Selected project: epm-sdai'],
+  ];
+  const { seen, writes } = await replay(frames, ['https://codemie.lab.epam.com', 0]);
+  assert.deepEqual(seen, [
+    'CodeMie organization URL: (https://codemie.lab.epam.com)',
+    'Select your project: (Use arrow keys)',
+  ], 'the URL is not asked a second time');
+  assert.deepEqual(writes, ['https://codemie.lab.epam.com\r', '\r']);
+});
+
+test('once the CLI moves on to another prompt, a later ask of the answered question is a new ask', async () => {
+  // Screens of the input answered last are filtered until the CLI asks
+  // something else. That filter must end there, not survive into the rest of
+  // the run and swallow a later, genuine ask of the same question.
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  // A list prompt in between leaves lastAnsweredInput on the URL question, which
+  // is exactly when a stale guard would match a later bare ask of it.
+  const answers = ['nope', 'https://codemie.lab.epam.com', 0, 'https://other.example.com'];
+  const seen = [];
+  t.__setLines(pad(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ']));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  t.__setLines(pad(['', '? CodeMie organization URL: nope', '>> Please enter a valid URL']));
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  t.__setLines(pad(['', '? CodeMie organization URL: https://codemie.lab.epam.com', '? Choose your LLM provider:',
+    '❯ CodeMie SSO - Enterprise SSO Authentication', '  LiteLLM - Universal gateway to 100+ LLM providers']));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+  t.__setLines(pad(['', '? Choose your LLM provider:', 'CodeMie SSO', '? CodeMie organization URL: ']));
+  fake.feedRaw('DDDD');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['codemieUrl', 'codemieUrl', 'provider', 'codemieUrl'], 'the later ask of the URL is dispatched');
+});
+
 // A password prompt's validate error lands two rows down: screen-manager.js:91
 // joins question + '\n' + bottomContent, and password.js:64 starts bottomContent
 // with its own '\n'. bedrock's secret prompt validates non-empty
