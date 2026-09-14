@@ -120,7 +120,7 @@ globalThis.setInterval = (fn, ms, ...rest) => {
 };
 
 // ── Import module under test (after stub is in place) ───────────────────────
-const { createSetupView, deriveRowTitle, stripHint, renderOptionCards, isSecretPrompt } = await import('../setup-view.js');
+const { createSetupView, deriveRowTitle, stripHint, renderOptionCards, isSecretPrompt, maskSecret } = await import('../setup-view.js');
 
 function findRowById(container, id) {
   for (const child of container.children) {
@@ -758,7 +758,7 @@ test('PROMPT_COPY: a prompt id outside the table (credential) falls back to deri
   submitBtn.onclick();
 
   await startPromise;
-  assert.equal(row.querySelector('.step-sub').textContent, 'Entered', 'the key never lands in the collapsed row');
+  assert.equal(row.querySelector('.step-sub').textContent, '••••', 'a key this short shows none of its characters');
 });
 
 test('collapsed class is added only once a row reaches COMPLETE, never while PENDING/ACTIVE', async () => {
@@ -1319,7 +1319,14 @@ test('deriveRowTitle drops inquirer\'s hidden-input marker from an unmasked pass
   assert.deepEqual(deriveRowTitle('AWS Secret Access Key: [input is hidden]'), { title: 'AWS Secret Access Key', defaultValue: '' });
 });
 
-test('a secret credential renders a password field with no pre-fill and collapses to "Entered"', async () => {
+test('maskSecret shows only the last four characters, and none of a short or empty value', () => {
+  assert.equal(maskSecret('sk-proj-abcdefgh4f2a'), '••••4f2a');
+  assert.equal(maskSecret('12345678'), '••••5678', 'eight characters is long enough');
+  assert.equal(maskSecret('1234567'), '••••', 'shorter than eight shows nothing');
+  assert.equal(maskSecret(''), '', 'nothing entered, nothing shown');
+});
+
+test('a secret credential renders a password field with no pre-fill and collapses to a masked value', async () => {
   const container = makeEl('div');
   let resolvedAnswer;
   const fakeStartSetup = async ({ onPrompt }) => {
@@ -1338,7 +1345,7 @@ test('a secret credential renders a password field with no pre-fill and collapse
   clickContinue(row);
   await startPromise;
   assert.equal(resolvedAnswer, 'wJalrXUtnFEMI', 'the driver still gets the real value');
-  assert.equal(row.querySelector('.step-sub').textContent, 'Entered');
+  assert.equal(row.querySelector('.step-sub').textContent, '••••FEMI', 'only the last four characters, masked');
   const texts = [];
   (function walk(el) { texts.push(el.textContent || '', el.value || ''); for (const c of el._children || []) walk(c); })(container);
   assert.ok(!texts.some((t) => t.includes('wJalrXUtnFEMI')), 'the value is nowhere in the DOM once answered');

@@ -60,6 +60,17 @@ export function isSecretPrompt(message) {
   return HIDDEN_INPUT_MARKER.test(message || '') || /\b(?:api[ -]?key|key|secret|password|token|passphrase)\b/i.test(message || '');
 }
 
+// The collapsed line for a secret: the last four characters behind a mask
+// ("••••4f2a"), the way the wireframe draws a key, so the user can tell which
+// key went in while the value itself never reaches the page. Only the end is
+// shown -- some secrets are random from the first character (AWS secret keys).
+// A value shorter than eight characters shows none of itself.
+export function maskSecret(value) {
+  const text = String(value ?? '');
+  if (text === '') return '';
+  return text.length >= 8 ? `••••${text.slice(-4)}` : '••••';
+}
+
 // Derives a row title and pre-fill default from a driver prompt message.
 // "CodeMie organization URL: (https://codemie.lab.epam.com)" ->
 //   { title: "CodeMie organization URL", defaultValue: "https://codemie.lab.epam.com" }
@@ -236,8 +247,9 @@ function renderInputControl(host, prompt, submit) {
   control.className = 'prompt-control';
   const secret = isSecretPrompt(prompt.message);
   const input = document.createElement('input');
-  // A secret is masked while typed and never written back into the row: the
-  // CLI hides these itself, and the collapsed line is permanent.
+  // A secret is masked while typed and only its last four characters are
+  // written back into the row (maskSecret): the CLI hides these itself, and the
+  // collapsed line is permanent.
   input.type = secret ? 'password' : 'text';
   input.className = 'prompt-input';
   if (secret) input.autocomplete = 'off';
@@ -250,7 +262,7 @@ function renderInputControl(host, prompt, submit) {
     // that default explicitly, so the value reported, shown and verified is the
     // one the CLI saves. Whitespace is a real answer the CLI validates.
     const value = typed === '' && defaultValue && !secret ? defaultValue : typed;
-    submit(value, secret ? 'Entered' : value);
+    submit(value, secret ? maskSecret(value) : value);
   }));
   host.appendChild(control);
 }
