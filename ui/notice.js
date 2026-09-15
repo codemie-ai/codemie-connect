@@ -21,6 +21,11 @@ export function showNotice({ title, message, primaryLabel, primaryAction, second
   } else {
     noticeMessage.textContent = '';
     if (message) noticeMessage.appendChild(message);
+    // A raw command screen is read from the bottom: the failure is its last
+    // line, while the top is the CLI's welcome banner. Only possible once the
+    // node is in the document, so it happens here rather than in the caller.
+    const raw = noticeMessage.querySelector?.('.notice-raw');
+    if (raw) raw.scrollTop = raw.scrollHeight;
   }
   if (primaryLabel) {
     noticePrimary.textContent = primaryLabel;

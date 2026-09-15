@@ -1841,3 +1841,39 @@ test('a restart clears the previous run\'s answered values', async () => {
   await Promise.resolve();
   assert.equal(view.getAnsweredValues().size, 0, 'the retry starts from an empty map, not a mix of two runs');
 });
+
+// Measured against the real CLI 2026-09-15: after "✖ Ollama is not running" the
+// CLI prints its whole install guide, which scrolls the anchor out of the 30-row
+// viewport before it exits 1. Classifying only the rejection's own screen
+// therefore missed it and showed a bare "setup exited with code 1" notice.
+test('an Ollama failure seen on screen is still reported once the exit screen has scrolled past it', async () => {
+  const container = makeEl('div');
+  const noticeCalls = [];
+  let capturedOnScreen;
+  const scrolledPast = ['## Documentation', '  - Official website: https://ollama.com', ...Array(28).fill('')];
+  const view = createSetupView(container, {
+    startSetup: async ({ onPrompt, onScreen }) => {
+      capturedOnScreen = onScreen;
+      await onPrompt({ kind: 'input', id: 'credential', message: 'Ollama base URL:' });
+      capturedOnScreen(fixtureLines('ollamaNotRunning'));
+      throw { step: null, message: 'setup exited with code 1', raw: scrolledPast.join('\n') };
+    },
+    readConfig: okConfig,
+    showNotice: (opts) => noticeCalls.push(opts),
+  });
+  const startPromise = view.start();
+  const row = await untilRow(container, 'credential-1');
+  inputOf(row).value = 'http://localhost:11434';
+  clickContinue(row);
+  await startPromise;
+  assert.equal(noticeCalls.length, 0, 'a step-scoped failure never opens the flow-stopping notice');
+  // The failure lands on whichever row was in flight -- here the "Working…" row
+  // the flow shows after an answer -- not necessarily the answered one.
+  const subtitles = (container._children ?? [])
+    .filter((el) => el.dataset && el.dataset.id)
+    .map((row) => row.querySelector('.step-sub')?.textContent ?? '');
+  assert.ok(
+    subtitles.includes('Ollama is not running'),
+    `a step carries the CLI's own words, not the exit code; saw ${JSON.stringify(subtitles)}`,
+  );
+});

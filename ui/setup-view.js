@@ -322,6 +322,15 @@ export function createSetupView(container, deps = {}) {
   // unrelated failure once the first notice had been dismissed.
   const shownFailureKeys = new Set();
 
+  // A failure seen on screen that nothing has rendered yet. The CLI can print
+  // more after it and scroll it out of the 30-row viewport before the process
+  // exits -- Ollama prints its whole install guide -- so by the time the
+  // rejection arrives, its `raw` screen no longer carries the anchor. Measured
+  // 2026-09-15: without this, "Ollama is not running" came through as a bare
+  // "setup exited with code 1". Recoverable failures are rendered as they are
+  // seen and never wait here.
+  let pendingFailure = null;
+
   // Lazy-default wiring per this file's own header comment: never resolved
   // (and never imports the underlying module) until actually invoked.
   const startSetup = deps.startSetup ?? (async (...args) => {
@@ -644,7 +653,8 @@ export function createSetupView(container, deps = {}) {
     // would misreport a "Try again" click as the run breaking.
     if (err?.cancelled === true) return;
     const step = err && typeof err === 'object' ? err.step ?? null : null;
-    const failure = err && typeof err.raw === 'string' ? detectFailure(err.raw.split('\n')) : null;
+    const failure = (err && typeof err.raw === 'string' ? detectFailure(err.raw.split('\n')) : null)
+      ?? pendingFailure;
     let converted = false;
     let rowId;
     if (step && occurrenceCounts.has(step)) {
@@ -748,7 +758,13 @@ export function createSetupView(container, deps = {}) {
   // this is the only path that ever sees it.
   function handleScreen(lines) {
     const failure = detectFailure(lines);
-    if (failure?.id !== 'authTimeout') return;
+    if (!failure) return;
+    if (failure.id !== 'authTimeout') {
+      // Not recoverable: the CLI is about to exit and its remediation text may
+      // scroll this off the screen first, so hold it for handleReject.
+      pendingFailure = failure;
+      return;
+    }
     // Recoverable: the CLI carries on and re-asks the organization URL, and the
     // driver dispatches that re-ask, so the run is still live underneath.
     openFailureNotice(failure.message, lines.join('\n'), `${failure.id}:${failure.line}`, { recoverable: true });
@@ -782,6 +798,7 @@ export function createSetupView(container, deps = {}) {
     transientSeq = 0;
     install = null;
     shownFailureKeys.clear();
+    pendingFailure = null;
     // A retry re-answers every prompt from the top, so last run's values must
     // not linger: EPMCDME-14656's replay would otherwise read a mix of two runs.
     answeredValues.clear();
