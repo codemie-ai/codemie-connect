@@ -1715,3 +1715,30 @@ test('handleReject\'s fallthrough never re-adds a notice for a cancel-for-retry'
   assert.equal(outcome.ok, false);
   assert.equal(noticeCalls.length, 0, 'still zero notices for a cancel-for-retry, after Task 4\'s fallthrough change');
 });
+
+// ── EPMCDME-14588 Task 5: capture each answered value for EPMCDME-14656 ────
+
+test('getAnsweredValues() holds each prompt id\'s most recently submitted value', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x', 'Ollama - y'] });
+    await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: (sso)' });
+    return { profileName: 'sso' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const startPromise = view.start();
+  await Promise.resolve();
+  clickContinue(findRowById(container, 'provider-1')); // submits index 0
+  await tick();
+  const row = findRowById(container, 'profileName-1');
+  const control = row.querySelector('.prompt-control');
+  const input = control._children.find((c) => c.type === 'text');
+  input.value = 'my-workspace';
+  clickContinue(row);
+  await startPromise;
+
+  const answered = view.getAnsweredValues();
+  assert.ok(answered instanceof Map);
+  assert.equal(answered.get('provider'), 0);
+  assert.equal(answered.get('profileName'), 'my-workspace');
+});

@@ -292,6 +292,10 @@ export function createSetupView(container, deps = {}) {
   // recognized reopen -- only set the first time an id is seen, or when a
   // genuinely different message arrives for that id.
   const baseMessageByPromptId = new Map();
+  // Most recently submitted value per prompt id -- a data-capture point for
+  // EPMCDME-14656 (replay/step-revisit) to build on later. Nothing in this
+  // file reads it; held in memory only, never replayed or persisted here.
+  const answeredValues = new Map();
   // The first ask's full message per prompt id, default hint included. A
   // reopened row builds its control from this, not from the re-ask: the re-ask
   // carries the rejected value instead of the hint (inquirer base.js:157-160).
@@ -488,6 +492,7 @@ export function createSetupView(container, deps = {}) {
 
   function renderControl(host, prompt, rowId, resolve) {
     function submit(value, humanText) {
+      answeredValues.set(prompt.id, value);
       clearControls(host);
       removeHelperText(host);
       activeRowId = null;
@@ -791,5 +796,5 @@ export function createSetupView(container, deps = {}) {
     return { ok: true, profileName: verified };
   }
 
-  return { start };
+  return { start, getAnsweredValues: () => new Map(answeredValues) };
 }
