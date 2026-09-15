@@ -221,14 +221,14 @@ let activeDone = null;
 let requestCancel = null;
 let cancelPending = false;
 
-export async function startSetup({ onPrompt, onLog, replay } = {}, deps = {}) {
+export async function startSetup({ onPrompt, onLog, replay, onScreen } = {}, deps = {}) {
   if (active) {
     throw { step: null, message: 'startSetup already in progress', raw: '' };
   }
   active = true;
   cancelPending = false;
   try {
-    activeDone = runSetup({ onPrompt, onLog, replay }, deps);
+    activeDone = runSetup({ onPrompt, onLog, replay, onScreen }, deps);
     return await activeDone;
   } finally {
     active = false;
@@ -261,7 +261,7 @@ export async function cancelSetup() {
 }
 
 // eslint-disable-next-line no-unused-vars -- replay is accepted and intentionally ignored (EPMCDME-14656 implements it later)
-async function runSetup({ onPrompt, onLog, replay }, deps) {
+async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
   const spawnPty = deps.spawnPty ?? (await import('./runner-bridge.js')).pty.spawnPty;
   const input = deps.input ?? (await import('./runner-bridge.js')).pty.input;
   const kill = deps.kill ?? (await import('./runner-bridge.js')).pty.kill;
@@ -808,6 +808,7 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
     if (settled) return; // the run may have settled while this chunk's write was parsing
     onLog?.(text); // collectModelOptions()'s own screen reads see real, fully-parsed state
     const lines = readScreen();
+    onScreen?.(lines);
     const prompt = detectPrompt(lines);
 
     // Round-4 review fix (R4-1): the signature is only allowed to be cleared

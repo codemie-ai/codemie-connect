@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { startSetup, cancelSetup } from '../setup-driver.js';
+import { detectFailure } from '../setup-parse.js';
 
 // A re-answer after a failed validate is written behind ctrl-U so it replaces
 // the rejected value inquirer put back on the line instead of appending to it.
@@ -1722,4 +1723,40 @@ test('cancelSetup ends a live run, kills the child, and frees the lock for a fre
 
 test('cancelSetup with no run in flight is a no-op', async () => {
   assert.equal(await cancelSetup(), false);
+});
+
+// EPMCDME-14588 Task 3. onScreen(lines) fires once per processed PTY chunk,
+// handed the same settled-screen array (readScreen()'s return value) the
+// driver already computes internally -- ANSI-free, one string per row --
+// so callers (setup-view.js's authTimeout notice) never re-derive it from
+// raw onLog text.
+test('onScreen(lines) fires once per processed chunk, with the settled, parsed screen', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const recorded = [];
+  const recordScreen = (lines) => recorded.push([...lines]);
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup(
+    { onPrompt: async () => 'https://codemie.invalid', onScreen: recordScreen },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t },
+  );
+  fake.feedRaw('AAAA'); // chunk 1: the fresh prompt
+  await flushMicrotasks();
+
+  t.__setLines(['', '? CodeMie organization URL: https://codemie.invalid', ...Array(28).fill('')]);
+  fake.feedRaw('BBBB'); // chunk 2: the answered echo
+  await flushMicrotasks();
+
+  t.__setLines(fixture('authTimeout'));
+  fake.feedRaw('CCCC'); // chunk 3: the unreachable-service warning + re-ask
+  await flushMicrotasks();
+
+  fake.exit(0);
+  await p.catch(() => {});
+
+  assert.equal(recorded.length, 3, 'onScreen fired exactly once per processed chunk');
+  const lastLines = recorded[recorded.length - 1];
+  const failure = detectFailure(lastLines);
+  assert.equal(failure?.id, 'authTimeout', 'the callback really received the settled, parsed screen');
+  assert.equal(failure.message, 'Authentication timeout - no response received', "the fixture's own reason text");
 });
