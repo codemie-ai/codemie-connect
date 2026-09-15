@@ -76,6 +76,11 @@ const FAILURES = [
     // (sso.auth.js's catch-all), so it can carry parentheses of its own, and
     // stopping at the first ')' would hand back a fragment of it.
     reason: (line) => line.match(/\((.*)\)/)?.[1] ?? null,
+    // The reason is only guaranteed to start on the anchor row. The sentence
+    // wraps at the terminal's width, and a longer error.message pushes the
+    // closing ')' onto the next row, where a single-row read finds nothing and
+    // falls back to the generic text. Rejoin the wrapped rows before matching.
+    wraps: true,
     fallback: 'CodeMie could not be reached',
   },
   {
@@ -95,11 +100,21 @@ const FAILURES = [
  * by nature: act on an occurrence once, keyed on `line`, rather than on every
  * chunk that still shows it.
  */
+// A row that ends exactly at the terminal's width was wrapped, so the sentence
+// continues on the next row with no separator. Two rows is enough for every
+// reason the CLI can print at COLS=100.
+const WRAP_LOOKAHEAD = 2;
+
+function anchorText(lines, idx, wraps) {
+  if (!wraps) return lines[idx];
+  return lines.slice(idx, idx + 1 + WRAP_LOOKAHEAD).join('');
+}
+
 export function detectFailure(lines) {
   for (const f of FAILURES) {
     const line = lines.findIndex((l) => l.includes(f.anchor));
     if (line === -1) continue;
-    return { id: f.id, message: f.reason(lines[line]) ?? f.fallback, line };
+    return { id: f.id, message: f.reason(anchorText(lines, line, f.wraps)) ?? f.fallback, line };
   }
   return null;
 }

@@ -675,6 +675,45 @@ test('an echo whose answer ends in parentheses is still suppressed', async () =>
   assert.deepEqual(fake.writes, ['myprofile (work)\r'], 'the answer must reach the CLI exactly once');
 });
 
+// The two conditions the re-ask gate adds, each isolated: a suite that only
+// exercises them together passes with either one stuck true.
+test('a bare re-ask WITHOUT the default hint is not dispatched, however long the gap', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const seen = [];
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return 'https://codemie.invalid'; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  await new Promise((r) => { setTimeout(r, 250); }); // past IDLE_MS, and the screen changes below
+  // The repaint our own ctrl-U causes: same question, no hint, no answer on it.
+  t.__setLines(['', '? CodeMie organization URL: ', '', ...Array(27).fill('')]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['codemieUrl'], 'no hint means the line was touched: a repaint, not a fresh ask');
+});
+
+test('an unchanged screen is not a re-ask, however long the gap', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const seen = [];
+  const open = ['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')];
+  t.__setLines(open);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return 'https://codemie.invalid'; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  await new Promise((r) => { setTimeout(r, 250); });
+  fake.feedRaw('BBBB'); // same screen the answer was written against: the CLI has not caught up
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['codemieUrl'], 'an unchanged screen is the CLI lagging, not a new question');
+});
+
 // A correction can be rejected again. The screens below are what the idle read
 // actually sees: measured against the vendored inquirer in a real PTY, the
 // repaint our ctrl-U causes and the next rejection arrive within ~2 ms of each
@@ -1759,4 +1798,26 @@ test('onScreen(lines) fires once per processed chunk, with the settled, parsed s
   const failure = detectFailure(lastLines);
   assert.equal(failure?.id, 'authTimeout', 'the callback really received the settled, parsed screen');
   assert.equal(failure.message, 'Authentication timeout - no response received', "the fixture's own reason text");
+});
+
+// A rejecting kill() sits in the run's finally, so without care its error
+// REPLACES the rejection the run already had -- and the real pty_kill does
+// reject ("pty_kill timed out", src-tauri/src/commands/pty.rs). The caller would
+// then get a bare Error with no step and no raw: the generic failure the UI is
+// not allowed to show.
+test('a failing kill() does not replace the run\'s own rejection', async () => {
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  termInstance.__setLines(fixture('customModel')); // rejects with step:'model'
+  const p = startSetup(
+    { onPrompt: async () => 0 },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input,
+      kill: async () => { throw new Error('pty_kill timed out'); }, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  await assert.rejects(p, (err) => {
+    assert.equal(err.step, 'model', 'the run\'s own reason survives');
+    assert.equal(typeof err.raw, 'string', 'and so does its output');
+    return true;
+  });
 });

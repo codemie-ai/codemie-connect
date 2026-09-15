@@ -315,12 +315,14 @@ export function createSetupView(container, deps = {}) {
   // exits normally either way, so resolution alone cannot tell success from
   // failure (cli/commands/setup.js:737-742).
   let install = null;
-  // Failure occurrences already shown as a notice this run, keyed by id and
-  // the screen row the anchor sat on -- authTimeout's anchor stays on screen
-  // after the flow moves on, so this stays edge-triggered per occurrence
-  // rather than a single run-wide latch, which would swallow a second,
-  // unrelated failure once the first notice had been dismissed.
-  const shownFailureKeys = new Set();
+  // The failure currently visible on screen, by id, or null. The anchor line
+  // stays up after the CLI moves on, so acting on every screen that still shows
+  // it would reopen the notice over a live prompt. Acting on the transition
+  // instead -- absent, then present -- fires once per occurrence and fires
+  // again for a genuinely new one, without depending on where the line sits: a
+  // 30-row viewport with no scrollback renumbers every row each time the CLI
+  // prints, so a row index is not an identity.
+  let failureOnScreen = null;
 
   // A failure seen on screen that nothing has rendered yet. The CLI can print
   // more after it and scroll it out of the 30-row viewport before the process
@@ -653,8 +655,13 @@ export function createSetupView(container, deps = {}) {
     // would misreport a "Try again" click as the run breaking.
     if (err?.cancelled === true) return;
     const step = err && typeof err === 'object' ? err.step ?? null : null;
-    const failure = (err && typeof err.raw === 'string' ? detectFailure(err.raw.split('\n')) : null)
-      ?? pendingFailure;
+    // An authTimeout on the exit screen is not why the run ended: the CLI
+    // recovers from it and carries on, and handleScreen already reported it,
+    // but its warning line stays visible. Taking it here would title a later,
+    // unrelated failure with the timeout's words. Only a failure that actually
+    // ends a run counts, and pendingFailure holds exactly those.
+    const onExitScreen = err && typeof err.raw === 'string' ? detectFailure(err.raw.split('\n')) : null;
+    const failure = (onExitScreen?.id === 'authTimeout' ? null : onExitScreen) ?? pendingFailure;
     let converted = false;
     let rowId;
     if (step && occurrenceCounts.has(step)) {
@@ -684,21 +691,21 @@ export function createSetupView(container, deps = {}) {
       rowId = lastRowId;
       markError(rowId);
     }
-    // ollamaDown is a step-level error: the row already carries markError's
-    // terminal state (EPMCDME-14588 AC), so all that's left is the CLI's own
-    // reason as its subtitle. Every other case (null, or authTimeout) falls
-    // through unchanged here -- EPMCDME-14588's notice branch handles those.
-    if (failure?.id === 'ollamaDown') {
-      stepsUi.setSubtitle(rowId, failure.message);
-    } else {
-      // authTimeout, or any other non-step-scoped rejection: the row above
-      // already carries a terminal status, so the notice is the only thing
-      // left to tell the user the run stopped and give them a way back in.
-      // err is the driver's { step, message, raw } on every path it raises, but
-      // an IPC-level throw can reject with null or a bare string, and reading
-      // .message off that would turn a handled failure into a crash.
-      openFailureNotice(failure?.message ?? err?.message ?? 'Setup failed', err?.raw ?? '');
-    }
+    // A classified failure names its own step, so the row carries the CLI's own
+    // words next to markError's terminal state.
+    if (failure) stepsUi.setSubtitle(rowId, failure.message);
+    // Every rejection also opens the notice: it is the only place the command's
+    // raw output is shown (EPMCDME-14588 AC) and the only way back into the
+    // flow. err is the driver's { step, message, raw } on every path it raises,
+    // but an IPC-level throw can reject with null or a bare string, and reading
+    // .message off that would turn a handled failure into a crash.
+    openFailureNotice(
+      failure?.message ?? err?.message ?? 'Setup failed',
+      // A held failure carries the screen that showed it; the rejection's own
+      // screen can have scrolled past it. Only pendingFailure has `screen`, so
+      // this picks the held one when that is where the classification came from.
+      (failure?.screen ?? err?.raw) ?? '',
+    );
     settleInstallRow();
     activeRowId = null;
     if (!converted) hideTransientSpinner();
@@ -724,11 +731,7 @@ export function createSetupView(container, deps = {}) {
   // under the notice is live. Cancelling there would kill a run that was about
   // to work, so that notice only reports, and its button returns the user to
   // the step still waiting for them.
-  function openFailureNotice(message, raw, key = null, { recoverable = false } = {}) {
-    if (key !== null) {
-      if (shownFailureKeys.has(key)) return;
-      shownFailureKeys.add(key);
-    }
+  function openFailureNotice(message, raw, { recoverable = false } = {}) {
     const body = document.createElement('div');
     const summary = document.createElement('div');
     summary.textContent = message;
@@ -758,16 +761,23 @@ export function createSetupView(container, deps = {}) {
   // this is the only path that ever sees it.
   function handleScreen(lines) {
     const failure = detectFailure(lines);
-    if (!failure) return;
+    if (!failure) {
+      failureOnScreen = null;
+      return;
+    }
+    const isNewOccurrence = failure.id !== failureOnScreen;
+    failureOnScreen = failure.id;
+    if (!isNewOccurrence) return;
     if (failure.id !== 'authTimeout') {
       // Not recoverable: the CLI is about to exit and its remediation text may
-      // scroll this off the screen first, so hold it for handleReject.
-      pendingFailure = failure;
+      // scroll this off the screen first, so hold it -- and the screen that
+      // still showed it -- for handleReject.
+      pendingFailure = { ...failure, screen: lines.join('\n') };
       return;
     }
     // Recoverable: the CLI carries on and re-asks the organization URL, and the
     // driver dispatches that re-ask, so the run is still live underneath.
-    openFailureNotice(failure.message, lines.join('\n'), `${failure.id}:${failure.line}`, { recoverable: true });
+    openFailureNotice(failure.message, lines.join('\n'), { recoverable: true });
   }
 
   // Resolves { ok, profileName } on a verified profile, { ok: false, error }
@@ -797,7 +807,7 @@ export function createSetupView(container, deps = {}) {
     transient = null;
     transientSeq = 0;
     install = null;
-    shownFailureKeys.clear();
+    failureOnScreen = null;
     pendingFailure = null;
     // A retry re-answers every prompt from the top, so last run's values must
     // not linger: EPMCDME-14656's replay would otherwise read a mix of two runs.

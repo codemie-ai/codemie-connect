@@ -221,6 +221,11 @@ let activeDone = null;
 let requestCancel = null;
 let cancelPending = false;
 
+// How long cancelSetup() waits for the run to unwind before returning anyway.
+// The unwind kills the child and waits for its exit to be reported; the Rust
+// side gives that 5s, so this sits just past it.
+const CANCEL_UNWIND_TIMEOUT_MS = 6000;
+
 export async function startSetup({ onPrompt, onLog, replay, onScreen } = {}, deps = {}) {
   if (active) {
     throw { step: null, message: 'startSetup already in progress', raw: '' };
@@ -256,7 +261,15 @@ export async function cancelSetup() {
   if (!active) return false;
   cancelPending = true;
   requestCancel?.();
-  await activeDone?.catch(() => {});
+  // Bounded: the unwind waits on the child reporting its exit, and a child that
+  // never does would leave this pending forever. The caller is a "Try again"
+  // click whose notice has already closed, so hanging here strands the user on
+  // an empty screen. Returning lets the next startSetup decide -- it raises its
+  // own single-flight rejection, which the UI can report.
+  await Promise.race([
+    activeDone?.catch(() => {}) ?? Promise.resolve(),
+    new Promise((resolve) => { setTimeout(resolve, CANCEL_UNWIND_TIMEOUT_MS); }),
+  ]);
   return true;
 }
 
@@ -937,8 +950,17 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
       // always runs resumePtyInput() regardless -- a kill() rejection can
       // never permanently suspend ui/terminal.js's keystroke forwarding.
       if (!exited) {
-        await kill();
-        await spawnResultPromise.catch(() => {});
+        // A rejection here would REPLACE the run's own rejection, and the real
+        // pty_kill does reject: src-tauri/src/commands/pty.rs returns
+        // "pty_kill timed out" after its condvar wait. The caller would then get
+        // a bare Error with no step and no raw -- exactly the generic failure
+        // the UI must never show -- instead of why the run actually ended.
+        const killed = await kill().then(() => true, () => false);
+        // Only wait for the exit report if the kill was accepted. A child that
+        // was never killed may never report one, and waiting forever holds the
+        // single-flight lock: every later startSetup would reject with "already
+        // in progress" and the app could not run setup again.
+        if (killed) await spawnResultPromise.catch(() => {});
       }
     }
   } finally {

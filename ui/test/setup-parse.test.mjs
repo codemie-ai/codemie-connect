@@ -255,3 +255,17 @@ test('a reason containing parentheses is captured whole', () => {
   screen[10] = '⚠️  Could not check for mandatory integrations (connect ECONNREFUSED (127.0.0.1:443)). Continuing';
   assert.equal(detectFailure(screen).message, 'connect ECONNREFUSED (127.0.0.1:443)');
 });
+
+// The reason is only guaranteed to START on the anchor row. The CLI's message
+// comes from a bare error.message, and a longer one pushes the closing ')' onto
+// the next row, where a single-row read finds nothing and falls back to generic
+// text -- the one thing the acceptance criteria rule out.
+test('a reason whose closing parenthesis wrapped to the next row is still read', () => {
+  const reason = 'connect ETIMEDOUT some.very.long.host.name.example.com:443 after 120000ms';
+  const sentence = `⚠️  Could not check for mandatory integrations (${reason}). Continuing with normal provider setup.`;
+  const screen = Array(30).fill('');
+  screen[10] = sentence.slice(0, 100);   // wrapped exactly as a 100-column terminal does
+  screen[11] = sentence.slice(100);
+  assert.ok(screen[10].indexOf(')') === -1, 'the closing paren really is on the next row');
+  assert.equal(detectFailure(screen).message, reason);
+});

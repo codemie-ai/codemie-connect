@@ -1866,7 +1866,14 @@ test('an Ollama failure seen on screen is still reported once the exit screen ha
   inputOf(row).value = 'http://localhost:11434';
   clickContinue(row);
   await startPromise;
-  assert.equal(noticeCalls.length, 0, 'a step-scoped failure never opens the flow-stopping notice');
+  // The notice is the only place the command's raw output is shown, so a
+  // run-ending failure opens it even though the step already carries the error.
+  assert.equal(noticeCalls.length, 1, 'the run ended, so the notice offers the raw output and a way back');
+  assert.ok(allText(noticeCalls[0].message).includes('Ollama is not running'), 'the CLI\'s own words, not the exit code');
+  assert.ok(
+    allText(noticeCalls[0].message).includes('ollama serve'),
+    'the raw output is the screen that actually showed the failure, not the scrolled-past exit screen',
+  );
   // The failure lands on whichever row was in flight -- here the "Working…" row
   // the flow shows after an answer -- not necessarily the answered one.
   const subtitles = (container._children ?? [])
@@ -1876,4 +1883,64 @@ test('an Ollama failure seen on screen is still reported once the exit screen ha
     subtitles.includes('Ollama is not running'),
     `a step carries the CLI's own words, not the exit code; saw ${JSON.stringify(subtitles)}`,
   );
+});
+
+// The anchor line stays on screen while the CLI keeps printing, and a 30-row
+// viewport with no scrollback renumbers every row each time it does. Acting on
+// the screen rather than on the transition reopened the notice on top of the
+// live prompt, once per row of scroll.
+test('the authTimeout notice does not reopen as the screen scrolls under it', async () => {
+  const container = makeEl('div');
+  const noticeCalls = [];
+  let capturedOnScreen;
+  const view = createSetupView(container, {
+    startSetup: async ({ onScreen }) => { capturedOnScreen = onScreen; return new Promise(() => {}); },
+    readConfig: okConfig,
+    showNotice: (opts) => noticeCalls.push(opts),
+  });
+  view.start();
+  await Promise.resolve();
+
+  const base = fixtureLines('authTimeout');
+  capturedOnScreen(base);
+  assert.equal(noticeCalls.length, 1, 'the first sighting opens it');
+  // the CLI prints another line: every row shifts up by one, same failure
+  capturedOnScreen([...base.slice(1), '']);
+  capturedOnScreen([...base.slice(2), '', '']);
+  assert.equal(noticeCalls.length, 1, 'scrolling is not a new occurrence');
+
+  // the anchor finally leaves the screen, then a later timeout brings it back
+  capturedOnScreen(Array(30).fill(''));
+  capturedOnScreen(base);
+  assert.equal(noticeCalls.length, 2, 'a genuinely new occurrence is reported again');
+});
+
+// The authTimeout warning stays on screen after the CLI recovers from it, so a
+// later, unrelated rejection carries it in `raw`. Classifying that would title
+// the new failure with the old one's words.
+test('a recovered authTimeout does not relabel a later, unrelated failure', async () => {
+  const container = makeEl('div');
+  const noticeCalls = [];
+  let capturedOnScreen;
+  const view = createSetupView(container, {
+    startSetup: async ({ onPrompt, onScreen }) => {
+      capturedOnScreen = onScreen;
+      capturedOnScreen(fixtureLines('authTimeout')); // reported, and the run carries on
+      await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
+      // it later fails for a different reason, with the old warning still on screen
+      throw { step: null, message: 'unrecognized prompt, run stalled', raw: fixtureLines('authTimeout').join('\n') };
+    },
+    readConfig: okConfig,
+    showNotice: (opts) => noticeCalls.push(opts),
+  });
+  const startPromise = view.start();
+  const row = await untilRow(container, 'provider-1');
+  clickContinue(row);
+  await startPromise;
+  // The body is [summary, raw]. The raw screen legitimately still shows the old
+  // warning; it is the summary that must name the new failure.
+  const body = noticeCalls[noticeCalls.length - 1].message;
+  const summary = (body._children ?? [])[0]?.textContent ?? '';
+  assert.equal(summary, 'unrecognized prompt, run stalled', 'reported in its own words');
+  assert.ok(!summary.includes('Authentication timeout'), 'not the recovered warning still sitting on the screen');
 });
