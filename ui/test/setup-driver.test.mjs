@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { startSetup } from '../setup-driver.js';
+import { startSetup, cancelSetup } from '../setup-driver.js';
 
 // A re-answer after a failed validate is written behind ctrl-U so it replaces
 // the rejected value inquirer put back on the line instead of appending to it.
@@ -610,6 +610,68 @@ test('a failed validate is re-asked, and the echo after the retry is still suppr
     !fake.writes.some((w) => w.includes('takenfresh')),
     'the corrected answer never arrives appended to the rejected one',
   );
+});
+
+// EPMCDME-14588. An unreachable CodeMie service is not an error the CLI reports:
+// the SSO callback times out after 120s, the gate prints a yellow warning
+// (setup.js:60) and the flow CONTINUES, asking the organization URL again. That
+// re-ask carries no '>>' error, so the echo guard above swallowed it and the run
+// hung forever on a single spinner with the CLI still waiting for input
+// (measured 2026-09-15: 3 dispatches, 52 swallows, 0 settles).
+//
+// The screen fed as the third step is the real one, captured from the CLI and
+// stored as fixtures/setup/authTimeout.json. What separates it from the echo and
+// from our own ctrl-U repaint is inquirer's default hint: a fresh prompt renders
+// it, a line that has been touched never does (base.js:157-160).
+test('the org-URL re-ask after the unreachable-service warning reaches onPrompt (real screen)', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const seen = [];
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return 'https://codemie.invalid'; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+
+  // the answered echo: still suppressed, exactly as before
+  t.__setLines(['', '? CodeMie organization URL: https://codemie.invalid', ...Array(28).fill('')]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+
+  // The CLI then goes quiet for its full 120s SSO timeout. Waiting past the
+  // driver's own IDLE_MS reproduces that gap: a re-ask inside it is a cosmetic
+  // redraw of the still-open question, not a new one.
+  await new Promise((r) => { setTimeout(r, 250); });
+
+  // 120s later: the warning, then the same question asked afresh
+  t.__setLines(fixture('authTimeout'));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['codemieUrl', 'codemieUrl'], 'the re-asked URL must reach onPrompt, not hang the run');
+});
+
+// The guard for the rule above: an answer that itself ends in parentheses also
+// makes the echo line end in parentheses, and must not be mistaken for a fresh
+// prompt's default hint. The hint test alone would re-dispatch this one.
+test('an echo whose answer ends in parentheses is still suppressed', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const seen = [];
+  t.__setLines(['', '? Enter a name for this profile: (default) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return 'myprofile (work)'; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  t.__setLines(['', '? Enter a name for this profile: myprofile (work)', ...Array(28).fill('')]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['profileName'], 'the echo must not be re-dispatched as a fresh ask');
+  assert.deepEqual(fake.writes, ['myprofile (work)\r'], 'the answer must reach the CLI exactly once');
 });
 
 // A correction can be rejected again. The screens below are what the idle read
@@ -1405,6 +1467,22 @@ test('non-zero exit rejects with { step, message, raw }', async () => {
   await assert.rejects(p, (err) => { assert.ok('step' in err); assert.ok(err.message); assert.ok('raw' in err); return true; });
 });
 
+// EPMCDME-14588: `raw` is what the failure UI shows behind "Show details", so an
+// empty one leaves the user with a bare exit code and nothing to look at.
+test('a non-zero exit carries the screen in raw, not an empty string', async () => {
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  termInstance.__setLines(fixture('gate'));
+  const p = startSetup({ onPrompt: async () => 0 },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => termInstance });
+  fake.feedRaw('AAAA');
+  fake.exit(1);
+  await assert.rejects(p, (err) => {
+    assert.match(err.raw, /What would you like to do\?/, 'raw carries the command output that was on screen');
+    return true;
+  });
+});
+
 test('replay parameter accepted and is a documented no-op', async () => {
   const fake = makeFakePty();
   const termInstance = makeFakeTerminal()();
@@ -1605,4 +1683,43 @@ test('REAL Terminal: the answered storage line, wrapped at COLS, is not re-dispa
   assert.deepEqual(seen, ['provider'], 'the run survived the answered-storage echo and reached the next prompt');
   fake.exit(0);
   await p;
+});
+
+// EPMCDME-14588: Try again has to end the live run first. The unreachable-service
+// failure is one the CLI never exits on -- it re-asks -- so without this the
+// single-flight lock rejects the fresh startSetup, and a second `codemie setup`
+// would race the first over the config file.
+test('cancelSetup ends a live run, kills the child, and frees the lock for a fresh run', async () => {
+  const fake = makeFakePty();
+  let kills = 0;
+  const killSpy = async () => { kills += 1; return fake.kill(); };
+  const t = makeFakeTerminal()();
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async () => 'https://codemie.invalid' },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: killSpy, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+
+  assert.equal(await cancelSetup(), true, 'a live run reports that it was cancelled');
+  await assert.rejects(p, (err) => {
+    assert.equal(err.cancelled, true, 'the UI can tell a cancel from a real failure');
+    assert.match(err.raw, /CodeMie organization URL/, 'the screen at cancel time is still reported');
+    return true;
+  });
+  assert.equal(kills, 1, 'the CLI child is killed, never left running');
+
+  // the lock is free again: a fresh run starts rather than hitting single-flight
+  const fake2 = makeFakePty();
+  const t2 = makeFakeTerminal()();
+  t2.__setLines(fixture('gate'));
+  const p2 = startSetup({ onPrompt: async () => 0 },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake2.spawnPty, input: fake2.input, kill: fake2.kill, Terminal: () => t2 });
+  fake2.exit(0);
+  let err2 = null;
+  await p2.catch((e) => { err2 = e; });
+  assert.ok(!err2 || !/already in progress/i.test(err2.message), 'Try again is not blocked by the cancelled run');
+});
+
+test('cancelSetup with no run in flight is a no-op', async () => {
+  assert.equal(await cancelSetup(), false);
 });

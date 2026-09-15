@@ -213,16 +213,51 @@ async function collectModelOptions(initialOptions, initialSelectedIndex, { curre
 // (there is only one PTY slot in Rust-managed state).
 let active = false;
 
+// EPMCDME-14588. Handles on the run in flight, so it can be ended from outside.
+// `requestCancel` only exists once runSetup has built its settle pair, which is
+// several awaits in (the lazy dep imports), so a cancel that arrives before then
+// is remembered and applied there instead of being dropped.
+let activeDone = null;
+let requestCancel = null;
+let cancelPending = false;
+
 export async function startSetup({ onPrompt, onLog, replay } = {}, deps = {}) {
   if (active) {
     throw { step: null, message: 'startSetup already in progress', raw: '' };
   }
   active = true;
+  cancelPending = false;
   try {
-    return await runSetup({ onPrompt, onLog, replay }, deps);
+    activeDone = runSetup({ onPrompt, onLog, replay }, deps);
+    return await activeDone;
   } finally {
     active = false;
+    activeDone = null;
+    requestCancel = null;
+    cancelPending = false;
   }
+}
+
+/**
+ * End the run in flight, if there is one. Resolves once it has fully unwound:
+ * the child killed and the single-flight lock released, so the caller can start
+ * a fresh run immediately. Returns whether there was a run to cancel.
+ *
+ * Try again needs this because the failures that matter are ones the CLI does
+ * NOT exit on -- an unreachable CodeMie service re-asks the organization URL
+ * and keeps waiting (setup.js:60). Starting over without ending that run first
+ * would hit the single-flight guard above, and on the Rust side would leave a
+ * second `codemie setup` racing the first over the configuration file.
+ *
+ * The rejection it causes carries `cancelled: true`, so a caller can tell a
+ * deliberate cancel from a genuine failure.
+ */
+export async function cancelSetup() {
+  if (!active) return false;
+  cancelPending = true;
+  requestCancel?.();
+  await activeDone?.catch(() => {});
+  return true;
 }
 
 // eslint-disable-next-line no-unused-vars -- replay is accepted and intentionally ignored (EPMCDME-14656 implements it later)
@@ -264,6 +299,18 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
     settled = true;
     rejectRun(error);
   }
+
+  // EPMCDME-14588: the settle pair now exists, so cancelSetup() has something to
+  // call. A cancel that arrived while the lazy dep imports above were still
+  // running is applied here rather than lost. The unwind is the ordinary one --
+  // the finally below kills the child and frees the lock.
+  requestCancel = () => settleReject({
+    step: null,
+    cancelled: true,
+    message: 'setup cancelled',
+    raw: readScreen().join('\n'),
+  });
+  if (cancelPending) requestCancel();
 
   // Captured from the profileName input prompt's own answer (Task 9's
   // uniform input branch); resolved into the final result on zero exit.
@@ -419,13 +466,45 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
       && prompt.id === lastAnsweredInput.id
       && redetected.startsWith(lastAnsweredInput.message)
     ) {
-      const error = validationErrorText(lines);
-      if (error === null) {
-        lastAnsweredInput.progressed = true;
-        return;
+      // EPMCDME-14588: the CLI can ask the same question again with no '>>' error
+      // at all. An unreachable CodeMie service times the SSO callback out after
+      // 120s, the gate prints a yellow warning (setup.js:60) and the flow
+      // continues, re-asking the organization URL. Swallowing that hangs the run
+      // with the CLI still waiting for input.
+      //
+      // A fresh prompt instance is told apart from a redraw by inquirer's default
+      // hint: it renders one, while a line that has been touched never does
+      // (base.js:157-160) -- neither the answered echo nor the bare repaint our
+      // own ctrl-U causes. The equality is what makes the hint safe to trust:
+      // an answer that itself ends in parentheses leaves the line longer than the
+      // question, so it stays an echo.
+      //
+      // The screen must also have moved on since the answer was written, and the
+      // CLI must have gone quiet for IDLE_MS first: a cosmetic line rendered
+      // above a still-open question changes the raw text within milliseconds
+      // while the question itself, hint included, is untouched (round-4 review
+      // fix #1). The real re-ask arrives 120s after the write.
+      //
+      // Residual limit: a prompt the CLI gives no default is re-asked as a bare
+      // line and still cannot be told from the repaint. Every prompt on the
+      // measured failure paths carries one.
+      if (
+        redetected === lastAnsweredInput.message
+        && DEFAULT_HINT.test(prompt.message)
+        && lines.join('\n') !== lastAnsweredInput.screenText
+        && Date.now() - lastAnsweredInput.writtenAt >= IDLE_MS
+      ) {
+        lastAnsweredInput = null;
+        lastPromptSignature = null;
+      } else {
+        const error = validationErrorText(lines);
+        if (error === null) {
+          lastAnsweredInput.progressed = true;
+          return;
+        }
+        if (!lastAnsweredInput.progressed && `${redetected}\n${error}` === lastAnsweredInput.shownKey) return;
+        lastPromptSignature = null;
       }
-      if (!lastAnsweredInput.progressed && `${redetected}\n${error}` === lastAnsweredInput.shownKey) return;
-      lastPromptSignature = null;
     }
     // An input answered earlier, after the CLI moved on: its answered line is
     // still on screen, and when a later prompt is erased (the project list, as
@@ -582,6 +661,10 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
           shownKey: `${question}\n${error ?? ''}`,
           progressed: false,
           writtenAt: Date.now(),
+          // The screen this answer was written against. A chunk that redraws it
+          // unchanged is the CLI not having caught up yet, never a new ask
+          // (EPMCDME-14588's re-ask check below).
+          screenText: lines.join('\n'),
         };
         const { id, message } = lastAnsweredInput;
         if (!answeredInputs.some((a) => a.id === id && a.message === message)) answeredInputs.push({ id, message });
@@ -833,11 +916,15 @@ async function runSetup({ onPrompt, onLog, replay }, deps) {
         if (code === 0) {
           settleResolve({ profileName });
         } else {
-          settleReject({ step: null, message: `setup exited with code ${code}`, raw: '' });
+          // EPMCDME-14588: the exit code alone says nothing the user can act on,
+          // and the CLI's own fatal message never reaches the terminal
+          // (logger.js:278 gates it on CODEMIE_DEBUG). The screen is what it did
+          // print, so it is what "Show details" has to show.
+          settleReject({ step: null, message: `setup exited with code ${code}`, raw: readScreen().join('\n') });
         }
       },
       (err) => {
-        settleReject({ step: null, message: `spawn failed: ${err?.message ?? err}`, raw: '' });
+        settleReject({ step: null, message: `spawn failed: ${err?.message ?? err}`, raw: readScreen().join('\n') });
       },
     );
 
