@@ -311,6 +311,11 @@ export function createSetupView(container, deps = {}) {
   // exits normally either way, so resolution alone cannot tell success from
   // failure (cli/commands/setup.js:737-742).
   let install = null;
+  // The flow-stopping notice (authTimeout, or any other non-ollamaDown
+  // failure) is acted on once per run, not once per PTY chunk -- authTimeout's
+  // anchor stays on screen after the flow moves on, and detectFailure would
+  // keep matching it on every later onScreen call otherwise.
+  let noticeFailureShown = false;
 
   // Lazy-default wiring per this file's own header comment: never resolved
   // (and never imports the underlying module) until actually invoked.
@@ -321,6 +326,18 @@ export function createSetupView(container, deps = {}) {
   const readConfig = deps.readConfig ?? (async (...args) => {
     const mod = await import('./runner-bridge.js');
     return mod.codemieConfig.read(...args);
+  });
+  const showNoticeFn = deps.showNotice ?? (async (...args) => {
+    const mod = await import('./notice.js');
+    return mod.showNotice(...args);
+  });
+  const hideNoticeFn = deps.hideNotice ?? (async (...args) => {
+    const mod = await import('./notice.js');
+    return mod.hideNotice(...args);
+  });
+  const cancelSetupFn = deps.cancelSetup ?? (async (...args) => {
+    const mod = await import('./setup-driver.js');
+    return mod.cancelSetup(...args);
   });
 
   function nextOccurrence(promptId) {
@@ -655,10 +672,55 @@ export function createSetupView(container, deps = {}) {
     // terminal state (EPMCDME-14588 AC), so all that's left is the CLI's own
     // reason as its subtitle. Every other case (null, or authTimeout) falls
     // through unchanged here -- EPMCDME-14588's notice branch handles those.
-    if (failure?.id === 'ollamaDown') stepsUi.setSubtitle(rowId, failure.message);
+    if (failure?.id === 'ollamaDown') {
+      stepsUi.setSubtitle(rowId, failure.message);
+    } else {
+      // authTimeout, or any other non-step-scoped rejection: the row above
+      // already carries a terminal status, so the notice is the only thing
+      // left to tell the user the run stopped and give them a way back in.
+      openFailureNotice(failure?.message ?? err.message, err.raw ?? '');
+    }
     settleInstallRow();
     activeRowId = null;
     if (!converted) hideTransientSpinner();
+  }
+
+  // The flow-stopping notice: the CLI's own reason plus its raw screen,
+  // appended inside the notice body itself (never a separate widget), with
+  // "Try again" ending the current run via cancelSetup() -- fully awaited,
+  // so two `codemie setup` processes are never alive at once -- before
+  // starting a fresh one. Shown at most once per run (see noticeFailureShown).
+  function openFailureNotice(message, raw) {
+    if (noticeFailureShown) return;
+    noticeFailureShown = true;
+    const body = document.createElement('div');
+    const summary = document.createElement('div');
+    summary.textContent = message;
+    const rawEl = document.createElement('pre');
+    rawEl.className = 'notice-raw';
+    rawEl.textContent = raw;
+    body.appendChild(summary);
+    body.appendChild(rawEl);
+    showNoticeFn({
+      title: 'Setup stopped',
+      message: body,
+      primaryLabel: 'Try again',
+      primaryAction: async () => { await cancelSetupFn(); start(); },
+      secondaryLabel: 'Show details',
+      // The raw output is already in the body above; the secondary action
+      // exists only so "Show details" renders as a second button next to
+      // "Try again" -- there is no separate panel to open or close.
+      secondaryAction: () => {},
+    });
+  }
+
+  // Proactive authTimeout detection off Task 3's onScreen(lines) callback --
+  // the settled, ANSI-free screen, never onLog's raw text. The CLI's own flow
+  // continues past this warning, so it never reaches onPrompt/handleReject;
+  // this is the only path that ever sees it.
+  function handleScreen(lines) {
+    const failure = detectFailure(lines);
+    if (failure?.id === 'authTimeout') openFailureNotice(failure.message, lines.join('\n'));
   }
 
   // Resolves { ok, profileName } on a verified profile, { ok: false, error }
@@ -688,6 +750,7 @@ export function createSetupView(container, deps = {}) {
     transient = null;
     transientSeq = 0;
     install = null;
+    noticeFailureShown = false;
     stepsUi.renderSteps(container, []);
 
     // renderSteps just cleared `container` via innerHTML = '' -- the header
@@ -713,7 +776,7 @@ export function createSetupView(container, deps = {}) {
 
     let result;
     try {
-      result = await startSetup({ onPrompt, onLog });
+      result = await startSetup({ onPrompt, onLog, onScreen: handleScreen });
     } catch (err) {
       handleReject(err);
       return { ok: false, error: err };

@@ -66,11 +66,16 @@ function makeEl(tag) {
         else if (el.classList._set.has(cls)) el.classList._set.delete(cls);
         else el.classList._set.add(cls);
       },
+      add(cls) { el.classList._set.add(cls); },
+      remove(cls) { el.classList._set.delete(cls); },
+      contains(cls) { return el.classList._set.has(cls); },
     },
     remove() {
       const p = el._parent;
       if (p) p._children = p._children.filter((c) => c !== el);
     },
+    replaceChildren() { el._children = []; },
+    addEventListener(evt, fn) { el._listeners[evt] = fn; },
     set onclick(fn) { el._listeners.click = fn; },
     get onclick() { return el._listeners.click; },
   };
@@ -92,6 +97,15 @@ function makeEl(tag) {
     },
   });
   return el;
+}
+
+// Concatenates every textContent in el and its descendants -- used to check
+// a notice body (a plain container div wrapping a summary + a <pre>) really
+// carries the CLI's own reason text, without depending on which child it's in.
+function allText(el) {
+  let out = el.textContent || '';
+  for (const c of el._children || []) out += allText(c);
+  return out;
 }
 
 function findByClass(root, cls) {
@@ -116,7 +130,20 @@ function collectAll(el, predicate) {
   return out;
 }
 
-globalThis.document = { createElement: (tag) => makeEl(tag) };
+// EPMCDME-14588's setup-view.js falls back to a real dynamic import of
+// ./notice.js whenever a test doesn't inject deps.showNotice -- most of the
+// pre-existing tests below don't. getElementById here is what lets that
+// fallback module load without throwing (notice.js reads these ids at
+// module scope); nothing in this file inspects the resulting stub elements
+// directly -- only the tests that inject their own fake showNotice do.
+const noticeStubEls = {};
+for (const id of ['notice-overlay', 'notice-title', 'notice-message', 'notice-primary', 'notice-secondary', 'notice-close']) {
+  noticeStubEls[id] = makeEl('div');
+}
+globalThis.document = {
+  createElement: (tag) => makeEl(tag),
+  getElementById: (id) => noticeStubEls[id] ?? makeEl('div'),
+};
 
 // steps-ui.js drives its spinners with setInterval. A test that fails mid-flow
 // leaves its fake driver waiting forever and that interval alive, which keeps
@@ -1574,4 +1601,117 @@ test('handleReject: an ollamaDown driver rejection marks the open row ERROR with
   const row = findRowById(container, 'credential-1');
   assert.equal(row.querySelector('.step-icon').textContent, '✗', 'the ollamaDown-classified row is ERROR');
   assert.equal(row.querySelector('.step-sub').textContent, 'Ollama is not running', 'subtitle is the fixture\'s own anchor text');
+});
+
+// ── EPMCDME-14588 Task 4: the flow-stopping notice + "Try again" ───────────
+
+test('an authTimeout screen reaching onScreen shows a "Try again"/"Show details" notice with the CLI\'s own reason', async () => {
+  const container = makeEl('div');
+  const noticeCalls = [];
+  let capturedOnScreen;
+  const fakeStartSetup = async ({ onScreen }) => {
+    capturedOnScreen = onScreen;
+    return new Promise(() => {}); // never settles in this test
+  };
+  const view = createSetupView(container, {
+    startSetup: fakeStartSetup,
+    readConfig: okConfig,
+    showNotice: (opts) => noticeCalls.push(opts),
+  });
+  view.start();
+  await Promise.resolve();
+  assert.equal(typeof capturedOnScreen, 'function', 'run() passed onScreen through to startSetup');
+
+  capturedOnScreen(fixtureLines('authTimeout'));
+  assert.equal(noticeCalls.length, 1, 'exactly one notice for this run');
+  const call = noticeCalls[0];
+  assert.equal(call.primaryLabel, 'Try again');
+  assert.equal(call.secondaryLabel, 'Show details');
+  assert.ok(
+    allText(call.message).includes('Authentication timeout - no response received'),
+    'the notice body carries the CLI\'s own reason text',
+  );
+
+  // The anchor line stays on screen after the flow moves on -- a second
+  // onScreen call with the same fixture must not reopen the notice.
+  capturedOnScreen(fixtureLines('authTimeout'));
+  assert.equal(noticeCalls.length, 1, 'the notice is shown at most once per run');
+});
+
+test('a generic non-ollamaDown rejection also opens exactly one failure notice via handleReject\'s fallthrough', async () => {
+  const container = makeEl('div');
+  const noticeCalls = [];
+  const err = { step: null, message: 'unrecognized prompt, run stalled', raw: '' };
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
+    throw err;
+  };
+  const view = createSetupView(container, {
+    startSetup: fakeStartSetup,
+    readConfig: okConfig,
+    showNotice: (opts) => noticeCalls.push(opts),
+  });
+  const startPromise = view.start();
+  await Promise.resolve();
+  clickContinue(findRowById(container, 'provider-1'));
+  const outcome = await startPromise;
+  assert.equal(outcome.ok, false);
+  assert.equal(noticeCalls.length, 1, 'the fallthrough opens the notice for a non-ollamaDown, non-cancelled rejection');
+  assert.ok(allText(noticeCalls[0].message).includes(err.message), 'no detectFailure match -- falls back to err.message');
+});
+
+test('"Try again" cancels the current run, fully awaited, before starting a fresh one', async () => {
+  const container = makeEl('div');
+  const order = [];
+  const err = { step: null, message: 'unrecognized prompt, run stalled', raw: '' };
+  let runCount = 0;
+  const innerFakeStartSetup = async ({ onPrompt }) => {
+    runCount += 1;
+    if (runCount === 1) {
+      await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
+      throw err;
+    }
+    return new Promise(() => {}); // the retried run never settles in this test
+  };
+  const cancelSetup = async () => {
+    order.push('cancel-start');
+    await Promise.resolve();
+    order.push('cancel-done');
+    return true;
+  };
+  let capturedPrimaryAction;
+  const view = createSetupView(container, {
+    startSetup: (...args) => { order.push('start'); return innerFakeStartSetup(...args); },
+    readConfig: okConfig,
+    showNotice: (opts) => { capturedPrimaryAction = opts.primaryAction; },
+    cancelSetup,
+  });
+  const startPromise = view.start();
+  await Promise.resolve();
+  clickContinue(findRowById(container, 'provider-1'));
+  await startPromise;
+
+  assert.equal(typeof capturedPrimaryAction, 'function');
+  await capturedPrimaryAction();
+  assert.deepEqual(order, ['start', 'cancel-start', 'cancel-done', 'start'], 'cancelSetup() resolves before startSetup() is invoked again');
+});
+
+test('handleReject\'s fallthrough never re-adds a notice for a cancel-for-retry', async () => {
+  const container = makeEl('div');
+  const noticeCalls = [];
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
+    throw { step: null, cancelled: true, message: 'setup cancelled', raw: 'whatever' };
+  };
+  const view = createSetupView(container, {
+    startSetup: fakeStartSetup,
+    readConfig: okConfig,
+    showNotice: (opts) => noticeCalls.push(opts),
+  });
+  const startPromise = view.start();
+  await Promise.resolve();
+  clickContinue(findRowById(container, 'provider-1'));
+  const outcome = await startPromise;
+  assert.equal(outcome.ok, false);
+  assert.equal(noticeCalls.length, 0, 'still zero notices for a cancel-for-retry, after Task 4\'s fallthrough change');
 });
