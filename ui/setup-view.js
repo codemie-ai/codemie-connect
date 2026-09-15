@@ -12,6 +12,7 @@
 // safe to import statically.
 import { createStepsUi } from './steps-ui.js';
 import { StepStatus } from './models.js';
+import { detectFailure } from './setup-parse.js';
 
 // Ids the real driver answers itself (setup-driver.js's AUTO_LIST/
 // AUTO_CONFIRM tables) and must never be rendered as rows, even if a
@@ -615,31 +616,46 @@ export function createSetupView(container, deps = {}) {
   // The driver rejected { step, message, raw }. Mark the step; the failure
   // detail and the retry are EPMCDME-14588's.
   function handleReject(err) {
+    // cancelSetup()'s own rejection ({ step: null, cancelled: true, ... }) is a
+    // deliberate cancel-for-retry, not a failure -- classifying or rendering it
+    // would misreport a "Try again" click as the run breaking.
+    if (err?.cancelled === true) return;
     const step = err && typeof err === 'object' ? err.step ?? null : null;
+    const failure = err && typeof err.raw === 'string' ? detectFailure(err.raw.split('\n')) : null;
     let converted = false;
+    let rowId;
     if (step && occurrenceCounts.has(step)) {
-      markError(latestOccurrenceRowId(step));
+      rowId = latestOccurrenceRowId(step);
+      markError(rowId);
     } else if (step === 'model') {
       // Rejected from inside collectModelOptions, before the model prompt
       // ever reached onPrompt: there is no row to mark yet, so add it.
-      const rowId = `model-${nextOccurrence('model')}`;
+      rowId = `model-${nextOccurrence('model')}`;
       stepsUi.insertSubStep(null, { id: rowId, title: PROMPT_COPY.model.collapsedLabel, description: '' });
       lastRowId = rowId;
       markError(rowId);
     } else if (activeRowId) {
-      markError(activeRowId);
+      rowId = activeRowId;
+      markError(rowId);
     } else if (transient) {
       // Failed between prompts: the "Working…" row is the only thing on
       // screen that describes where the run was, so it becomes the marker.
-      const row = findRow(container, transient.id);
+      rowId = transient.id;
+      const row = findRow(container, rowId);
       const titleEl = row ? row.querySelector('.step-title') : null;
       if (titleEl) titleEl.textContent = 'Setup stopped';
-      markError(transient.id); // ERROR status also stops its spinner.
+      markError(rowId); // ERROR status also stops its spinner.
       transient = null;
       converted = true;
     } else {
-      markError(lastRowId);
+      rowId = lastRowId;
+      markError(rowId);
     }
+    // ollamaDown is a step-level error: the row already carries markError's
+    // terminal state (EPMCDME-14588 AC), so all that's left is the CLI's own
+    // reason as its subtitle. Every other case (null, or authTimeout) falls
+    // through unchanged here -- EPMCDME-14588's notice branch handles those.
+    if (failure?.id === 'ollamaDown') stepsUi.setSubtitle(rowId, failure.message);
     settleInstallRow();
     activeRowId = null;
     if (!converted) hideTransientSpinner();

@@ -1,6 +1,16 @@
 // ui/test/setup-view.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// Reads a captured CLI screen (an array of lines) straight from
+// ui/test/fixtures/setup/<id>.json -- the same fixtures ui/setup-driver.test.mjs
+// and ui/setup-parse.test.mjs use. EPMCDME-14588's failure-classification
+// tests must never hand-write screen text.
+function fixtureLines(id) {
+  return JSON.parse(readFileSync(fileURLToPath(new URL(`fixtures/setup/${id}.json`, import.meta.url)), 'utf8'));
+}
 
 // ── Minimal DOM stub ─────────────────────────────────────────────────────────
 // Adapted from ui/test/steps-ui.test.mjs's hand-rolled stub (makeEl/
@@ -1509,4 +1519,59 @@ test('a row still open when the run succeeds loses its control and is marked ski
   const row = findRowById(container, 'provider-1');
   assert.ok(!findControl(row), 'no live control is left behind'); // a boolean: inspecting the stub DOM on failure never finishes
   assert.equal(row.querySelector('.step-icon').textContent, '—', 'marked SKIPPED, not left ACTIVE');
+});
+
+// ── EPMCDME-14588: handleReject's cancelled short-circuit + ollamaDown ──────
+
+test('handleReject: cancelSetup()\'s own rejection changes no row and never shows a notice', async () => {
+  const container = makeEl('div');
+  const noticeCalls = [];
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
+    // submit() leaves a transient "Working…" row on screen right where the
+    // cancel arrives -- the strongest witness that handleReject did nothing:
+    // without the short-circuit, the transient/lastRowId branches would
+    // still convert or mark something.
+    throw { step: null, cancelled: true, message: 'setup cancelled', raw: 'whatever' };
+  };
+  const view = createSetupView(container, {
+    startSetup: fakeStartSetup,
+    readConfig: okConfig,
+    showNotice: (...args) => noticeCalls.push(args),
+  });
+  const startPromise = view.start();
+  await Promise.resolve();
+  clickContinue(findRowById(container, 'provider-1'));
+  await Promise.resolve();
+  const working = workingRows(container);
+  assert.equal(working.length, 1, 'the transient row is still on screen when the cancel rejection arrives');
+  const workingBefore = { icon: working[0].querySelector('.step-icon').textContent, title: working[0].querySelector('.step-title').textContent };
+  const providerBefore = findRowById(container, 'provider-1').querySelector('.step-icon').textContent;
+  const outcome = await startPromise;
+  assert.equal(providerBefore, '✓', 'row already completed from its own answer, before the cancel rejection arrives');
+  assert.equal(findRowById(container, 'provider-1').querySelector('.step-icon').textContent, providerBefore, 'a cancel-for-retry never re-marks a row');
+  assert.deepEqual(
+    { icon: working[0].querySelector('.step-icon').textContent, title: working[0].querySelector('.step-title').textContent },
+    workingBefore,
+    'the transient row is untouched -- not converted to "Setup stopped"/ERROR',
+  );
+  assert.equal(outcome.ok, false);
+  assert.equal(noticeCalls.length, 0, 'a cancel-for-retry is never rendered as a failure');
+});
+
+test('handleReject: an ollamaDown driver rejection marks the open row ERROR with the CLI\'s own words', async () => {
+  const container = makeEl('div');
+  const raw = fixtureLines('ollamaNotRunning').join('\n');
+  const err = { step: null, message: 'setup exited with code 1', raw };
+  const fakeStartSetup = async ({ onPrompt }) => {
+    void onPrompt({ kind: 'input', id: 'credential', message: 'Ollama base URL: (http://localhost:11434)' });
+    await tick(0);
+    throw err;
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const outcome = await view.start();
+  assert.equal(outcome.ok, false);
+  const row = findRowById(container, 'credential-1');
+  assert.equal(row.querySelector('.step-icon').textContent, '✗', 'the ollamaDown-classified row is ERROR');
+  assert.equal(row.querySelector('.step-sub').textContent, 'Ollama is not running', 'subtitle is the fixture\'s own anchor text');
 });
