@@ -26,6 +26,8 @@ docs/superpowers/tasks/*/.state.json
 docs/superpowers/tasks/*/gate-plan.json
 docs/superpowers/tasks/*/*.diff
 docs/superpowers/tasks/*/.test.log
+docs/superpowers/tasks/*/*.local.json
+docs/superpowers/tasks/*/*.local.log
 apple_developer
 .env.signing
 .superpowers/
