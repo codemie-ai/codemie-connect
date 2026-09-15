@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-09-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 12,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New notice.js modal module plus edits across setup-view.js (reject/notice/retry glue), setup-driver.js (cancelSetup, onScreen, requestCancel), setup-parse.js (detectFailure/FAILURES) and wiring in index.html/renderer.js -- six components, several new abstractions (notice modal, cancellation handshake, failure classifier), but all confined to the single UI layer with no backend/Rust changes." },
+    { "dimension": "technical_risk", "reason": "Extends the already timing-sensitive PTY/xterm parsing path (idle debounce, signature dedup, re-ask vs redraw disambiguation) with new proactive failure detection (onScreen) and a cancel-and-restart handshake; base risk is M (well-established driver pattern, no new integration) bumped to L by the real-time/streaming red flag, mitigated by dedicated fixture-backed tests (authTimeout.json, ollamaNotRunning.json)." },
+    { "dimension": "file_change_estimate", "reason": "12 files changed per diffstat (8 modified: notice.js is new but the rest -- setup-view.js, setup-driver.js, setup-parse.js, index.html, renderer.js -- are edits to existing files, plus 4 new/updated test and fixture files under ui/test/), maps to the 11-15 XL band on the actual-mode file-count table." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: real-time PTY/terminal streaming timing logic (idle debounce, redraw-vs-reask disambiguation) is central to the change"
+  ],
+  "split_recommendation": null
+}

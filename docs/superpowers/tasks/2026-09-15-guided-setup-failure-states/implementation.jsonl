@@ -1,0 +1,5 @@
+{"task_id":"task-1","status":"done","commit":"f3fb96f","test_command":"node --test ui/test/notice.test.mjs"}
+{"task_id":"task-2","status":"done","commit":"4126462","test_command":"node --test ui/test/setup-view.test.mjs"}
+{"task_id":"task-3","status":"done","commit":"2360e57","test_command":"node --test ui/test/setup-driver.test.mjs"}
+{"task_id":"task-4","status":"done","commit":"d77a982","test_command":"node --test ui/test/setup-view.test.mjs"}
+{"task_id":"task-5","status":"done","commit":"823603b","test_command":"node --test ui/test/setup-view.test.mjs"}

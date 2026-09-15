@@ -1,0 +1,86 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec/story artifact was passed for acceptance, so business_review is empty and confidence is capped at low. Verified 5 of 15 lens findings against the real setup-driver.js/setup-parse.js/notice.js source and the bundled codemie-cli itself: a proactive-notice-vs-driver-recovery race, a run-scoped notice latch that can suppress a later real failure, a possible crash on a message-less rejection, a never-cleared answeredValues map, and a nested-parens gap in the auth-timeout reason regex. Dismissed 10 as noise after verification: two edge-case findings (simultaneous authTimeout/ollamaDown anchors; anchor-splitting terminal wrap) are unreachable because authTimeout and ollamaDown fire from mutually exclusive provider branches in the bundled CLI and both anchors are far short of the 100-col wrap width; the empty-parens fallback bypass is unreachable because every throw site in the enforcement code path was read and none produces an empty message; the cancelSetup return-value race is already guarded by the settled flag and has no live consumer; the 'Show details does nothing' finding matches the task's own stated design (raw output already inside the notice body); the re-ask heuristic's no-default-hint gap and the hypothetical future-FAILURES-entry gap are both already disclosed as known/speculative limitations in the diff's own comments. No findings were deferred as pre-existing. Standards audit ran clean (commit-format pass; code-quality/security na, no guide present, no coverage gap).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 7 commit subjects in range match '<type>: <short description>' with types from {feat, fix, docs, test, chore, refactor}: 5 feat, 2 fix, no scopes used"
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "No code-quality guide in the repo and no ArtifactRef was passed for this check"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "No security-patterns guide in the repo and no ArtifactRef was passed; manual scan of changed files found only a fixed pty spawn and textContent-only rendering, no injection-prone patterns"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-parse.js",
+      "line": 75,
+      "title": "authTimeout reason regex mishandles nested parens",
+      "problem": "FAILURES[0].reason captures only the FIRST parenthesized group on the anchor line (line.match(/\\(([^()]*)\\)/)?.[1]). That reason text flows from an unbounded catch-all (error instanceof Error ? error.message : String(error) in the vendored CLI's sso.auth.js authenticate()), so a network/browser error whose own message contains parentheses would truncate or scramble the extracted reason.",
+      "impact": "Every throw site actually reachable inside detectLiteLLMEnforcement's try block was read and none currently produces parens, so this is not proven live -- graded major under the uncertain-reachability cap rather than dismissed, since the value ultimately comes from a generic error catch with no message-format guarantee.",
+      "recommendation": "Capture up to the LAST ')' on the line (e.g. /\\((.*)\\)/) instead of the first non-nested group, so a reason that itself contains parens is not truncated."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-view.js",
+      "line": 686,
+      "title": "handleReject can crash on a message-less rejection",
+      "problem": "openFailureNotice(failure?.message ?? err.message, err.raw ?? '') reads err.message unconditionally. Every rejection setup-driver.js itself raises is a { step, message, raw } object, but a Tauri invoke() failure or a synchronous throw at the spawnPty IPC boundary could reject with null/undefined/a bare string, and err.message on null/undefined throws.",
+      "impact": "That throw happens inside run()'s catch block, so it escapes as an unhandled rejection instead of resolving { ok: false, error } -- a well-handled failure path turns into a crash with no row marked and no notice shown. Not proven reachable against the current driver, so capped at major.",
+      "recommendation": "Guard with err?.message ?? 'Setup failed' and err?.raw ?? '', the same way handleReject already guards err?.cancelled."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-view.js",
+      "line": 699,
+      "title": "noticeFailureShown suppresses every later failure this run",
+      "problem": "The noticeFailureShown latch is a single run-scoped boolean set the first time ANY failure notice opens (proactive handleScreen authTimeout, or reactive handleReject), reset only in run()'s next start(). Dismissing the first notice with Close (not Try again) leaves it set for the rest of the run.",
+      "impact": "If the run later fails for an unrelated reason via handleReject, openFailureNotice returns immediately and the user never sees that second, real failure's summary, raw output or retry option -- the row only shows a bare ERROR status.",
+      "recommendation": "Scope the latch to the specific failure occurrence (e.g. keyed by detectFailure's line index, or cleared once the anchor line leaves the screen) instead of latching for the whole run."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-view.js",
+      "line": 726,
+      "title": "Proactive authTimeout notice fights the driver's own recovery",
+      "problem": "handleScreen opens a 'Setup stopped' / Try again notice the instant detectFailure sees the authTimeout anchor via onScreen, while setup-driver.js's redetected re-ask logic treats that same warning as recoverable and keeps the run alive, re-invoking onPrompt for the re-asked organization URL underneath the notice.",
+      "impact": "The two mechanisms disagree about whether the run has stopped: clicking Try again calls cancelSetup() and kills a process that may have been about to recover on its own, while ignoring the notice still gets a working re-ask. This is a real inconsistency introduced by this diff; the correct fix depends on a product decision this run has no spec to resolve, so it stays blocking rather than being deferred.",
+      "recommendation": "Decide which mechanism owns 'the run has stopped' for authTimeout -- either suppress the proactive notice once the driver's re-ask actually recovers, or stop the driver's silent recovery once the UI has declared the run stopped -- and implement only that one."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-view.js",
+      "line": 758,
+      "title": "answeredValues not cleared on run() reset",
+      "problem": "run()'s reset block clears occurrenceCounts, baseMessageByPromptId, firstAskByPromptId and noticeFailureShown for a fresh start(), but never calls answeredValues.clear(), even though it sits right next to noticeFailureShown = false; in the same hunk.",
+      "impact": "A Try again cycle or any restart leaves the previous run's answers in the map, so getAnsweredValues() returns a mix of two different runs' values for any prompt id not yet re-answered in the new run -- exactly the data EPMCDME-14656's replay work is meant to consume correctly.",
+      "recommendation": "Add answeredValues.clear(); to run()'s reset block next to noticeFailureShown = false;."
+    }
+  ]
+}
