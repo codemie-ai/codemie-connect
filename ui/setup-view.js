@@ -315,11 +315,12 @@ export function createSetupView(container, deps = {}) {
   // exits normally either way, so resolution alone cannot tell success from
   // failure (cli/commands/setup.js:737-742).
   let install = null;
-  // The flow-stopping notice (authTimeout, or any other non-ollamaDown
-  // failure) is acted on once per run, not once per PTY chunk -- authTimeout's
-  // anchor stays on screen after the flow moves on, and detectFailure would
-  // keep matching it on every later onScreen call otherwise.
-  let noticeFailureShown = false;
+  // Failure occurrences already shown as a notice this run, keyed by id and
+  // the screen row the anchor sat on -- authTimeout's anchor stays on screen
+  // after the flow moves on, so this stays edge-triggered per occurrence
+  // rather than a single run-wide latch, which would swallow a second,
+  // unrelated failure once the first notice had been dismissed.
+  const shownFailureKeys = new Set();
 
   // Lazy-default wiring per this file's own header comment: never resolved
   // (and never imports the underlying module) until actually invoked.
@@ -683,7 +684,10 @@ export function createSetupView(container, deps = {}) {
       // authTimeout, or any other non-step-scoped rejection: the row above
       // already carries a terminal status, so the notice is the only thing
       // left to tell the user the run stopped and give them a way back in.
-      openFailureNotice(failure?.message ?? err.message, err.raw ?? '');
+      // err is the driver's { step, message, raw } on every path it raises, but
+      // an IPC-level throw can reject with null or a bare string, and reading
+      // .message off that would turn a handled failure into a crash.
+      openFailureNotice(failure?.message ?? err?.message ?? 'Setup failed', err?.raw ?? '');
     }
     settleInstallRow();
     activeRowId = null;
@@ -694,10 +698,18 @@ export function createSetupView(container, deps = {}) {
   // appended inside the notice body itself (never a separate widget), with
   // "Try again" ending the current run via cancelSetup() -- fully awaited,
   // so two `codemie setup` processes are never alive at once -- before
-  // starting a fresh one. Shown at most once per run (see noticeFailureShown).
-  function openFailureNotice(message, raw) {
-    if (noticeFailureShown) return;
-    noticeFailureShown = true;
+  // starting a fresh one.
+  //
+  // `key` marks one occurrence (by failure id + the screen line its anchor sat
+  // on) as already shown, so a later, unrelated failure in the same run still
+  // gets its own notice instead of being swallowed by a run-wide latch. A
+  // rejection passes none, since it can only land once per run and must never
+  // be suppressed by an earlier notice.
+  function openFailureNotice(message, raw, key = null) {
+    if (key !== null) {
+      if (shownFailureKeys.has(key)) return;
+      shownFailureKeys.add(key);
+    }
     const body = document.createElement('div');
     const summary = document.createElement('div');
     summary.textContent = message;
@@ -725,7 +737,7 @@ export function createSetupView(container, deps = {}) {
   // this is the only path that ever sees it.
   function handleScreen(lines) {
     const failure = detectFailure(lines);
-    if (failure?.id === 'authTimeout') openFailureNotice(failure.message, lines.join('\n'));
+    if (failure?.id === 'authTimeout') openFailureNotice(failure.message, lines.join('\n'), `${failure.id}:${failure.line}`);
   }
 
   // Resolves { ok, profileName } on a verified profile, { ok: false, error }
@@ -755,7 +767,10 @@ export function createSetupView(container, deps = {}) {
     transient = null;
     transientSeq = 0;
     install = null;
-    noticeFailureShown = false;
+    shownFailureKeys.clear();
+    // A retry re-answers every prompt from the top, so last run's values must
+    // not linger: EPMCDME-14656's replay would otherwise read a mix of two runs.
+    answeredValues.clear();
     stepsUi.renderSteps(container, []);
 
     // renderSteps just cleared `container` via innerHTML = '' -- the header

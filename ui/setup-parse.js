@@ -72,7 +72,10 @@ const FAILURES = [
     anchor: 'Could not check for mandatory integrations',
     // The CLI's own reason is parenthesised on the anchor row. The sentence
     // around it wraps at the terminal's width; the reason itself does not.
-    reason: (line) => line.match(/\(([^()]*)\)/)?.[1] ?? null,
+    // Greedy to the LAST ')': the reason comes from a bare `error.message`
+    // (sso.auth.js's catch-all), so it can carry parentheses of its own, and
+    // stopping at the first ')' would hand back a fragment of it.
+    reason: (line) => line.match(/\((.*)\)/)?.[1] ?? null,
     fallback: 'CodeMie could not be reached',
   },
   {

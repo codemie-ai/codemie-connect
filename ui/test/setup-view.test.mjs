@@ -1742,3 +1742,67 @@ test('getAnsweredValues() holds each prompt id\'s most recently submitted value'
   assert.equal(answered.get('provider'), 0);
   assert.equal(answered.get('profileName'), 'my-workspace');
 });
+
+// ── EPMCDME-14588 review fixes (CR-002, CR-003, CR-005) ────────────────────
+
+test('a second, unrelated failure still opens its own notice after the first was dismissed', async () => {
+  const container = makeEl('div');
+  const noticeCalls = [];
+  let capturedOnScreen;
+  const err = { step: null, message: 'unrecognized prompt, run stalled', raw: '' };
+  const view = createSetupView(container, {
+    startSetup: async ({ onPrompt, onScreen }) => {
+      capturedOnScreen = onScreen;
+      await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
+      throw err;
+    },
+    readConfig: okConfig,
+    showNotice: (opts) => noticeCalls.push(opts),
+  });
+  const startPromise = view.start();
+  await Promise.resolve();
+  capturedOnScreen(fixtureLines('authTimeout')); // first failure, notice shown then dismissed
+  clickContinue(findRowById(container, 'provider-1'));
+  await startPromise;
+  assert.equal(noticeCalls.length, 2, 'the later rejection is not swallowed by the earlier notice');
+  assert.ok(allText(noticeCalls[1].message).includes(err.message));
+});
+
+test('a rejection that is not an object does not crash the run', async () => {
+  const container = makeEl('div');
+  const noticeCalls = [];
+  const view = createSetupView(container, {
+    startSetup: async () => { throw null; },
+    readConfig: okConfig,
+    showNotice: (opts) => noticeCalls.push(opts),
+  });
+  const outcome = await view.start();
+  assert.equal(outcome.ok, false, 'the failure is still reported as a handled outcome');
+  assert.equal(noticeCalls.length, 1);
+  assert.ok(allText(noticeCalls[0].message).includes('Setup failed'));
+});
+
+test('a restart clears the previous run\'s answered values', async () => {
+  const container = makeEl('div');
+  let runs = 0;
+  const view = createSetupView(container, {
+    startSetup: async ({ onPrompt }) => {
+      runs += 1;
+      if (runs === 1) {
+        await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
+        throw { step: null, message: 'stopped', raw: '' };
+      }
+      return new Promise(() => {});
+    },
+    readConfig: okConfig,
+    showNotice: () => {},
+  });
+  const first = view.start();
+  await Promise.resolve();
+  clickContinue(findRowById(container, 'provider-1'));
+  await first;
+  assert.equal(view.getAnsweredValues().size, 1, 'the first run recorded its answer');
+  view.start();
+  await Promise.resolve();
+  assert.equal(view.getAnsweredValues().size, 0, 'the retry starts from an empty map, not a mix of two runs');
+});

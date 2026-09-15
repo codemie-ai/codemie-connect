@@ -247,3 +247,11 @@ test('a failure screen still reports its open prompt to detectPrompt', () => {
   const r = detectPrompt(fixture('authTimeout'));
   assert.equal(r.id, 'codemieUrl');
 });
+
+// CR-001: the reason is a bare error.message from the CLI's catch-all, so it can
+// carry parentheses of its own. Stopping at the first ')' returned a fragment.
+test('a reason containing parentheses is captured whole', () => {
+  const screen = Array(30).fill('');
+  screen[10] = '⚠️  Could not check for mandatory integrations (connect ECONNREFUSED (127.0.0.1:443)). Continuing';
+  assert.equal(detectFailure(screen).message, 'connect ECONNREFUSED (127.0.0.1:443)');
+});
