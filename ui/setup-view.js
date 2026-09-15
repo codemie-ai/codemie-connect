@@ -705,7 +705,16 @@ export function createSetupView(container, deps = {}) {
   // gets its own notice instead of being swallowed by a run-wide latch. A
   // rejection passes none, since it can only land once per run and must never
   // be suppressed by an earlier notice.
-  function openFailureNotice(message, raw, key = null) {
+  // Two shapes, because two kinds of failure reach here. A rejection has ended
+  // the run, so its notice offers "Try again", which ends the run via
+  // cancelSetup() -- fully awaited, so two `codemie setup` processes are never
+  // alive at once -- before starting a fresh one. A `recoverable` failure has
+  // not: the CLI warns and asks again by itself (an unreachable CodeMie re-asks
+  // the organization URL) and the driver dispatches that re-ask, so the step
+  // under the notice is live. Cancelling there would kill a run that was about
+  // to work, so that notice only reports, and its button returns the user to
+  // the step still waiting for them.
+  function openFailureNotice(message, raw, key = null, { recoverable = false } = {}) {
     if (key !== null) {
       if (shownFailureKeys.has(key)) return;
       shownFailureKeys.add(key);
@@ -719,10 +728,12 @@ export function createSetupView(container, deps = {}) {
     body.appendChild(summary);
     body.appendChild(rawEl);
     showNoticeFn({
-      title: 'Setup stopped',
+      title: recoverable ? 'CodeMie did not respond' : 'Setup stopped',
       message: body,
-      primaryLabel: 'Try again',
-      primaryAction: async () => { await cancelSetupFn(); start(); },
+      primaryLabel: recoverable ? 'Back to setup' : 'Try again',
+      // Recoverable: showNotice hides the overlay before running this, so
+      // closing is all it takes -- the step underneath is still waiting.
+      primaryAction: recoverable ? () => {} : async () => { await cancelSetupFn(); start(); },
       secondaryLabel: 'Show details',
       // The raw output is already in the body above; the secondary action
       // exists only so "Show details" renders as a second button next to
@@ -737,7 +748,10 @@ export function createSetupView(container, deps = {}) {
   // this is the only path that ever sees it.
   function handleScreen(lines) {
     const failure = detectFailure(lines);
-    if (failure?.id === 'authTimeout') openFailureNotice(failure.message, lines.join('\n'), `${failure.id}:${failure.line}`);
+    if (failure?.id !== 'authTimeout') return;
+    // Recoverable: the CLI carries on and re-asks the organization URL, and the
+    // driver dispatches that re-ask, so the run is still live underneath.
+    openFailureNotice(failure.message, lines.join('\n'), `${failure.id}:${failure.line}`, { recoverable: true });
   }
 
   // Resolves { ok, profileName } on a verified profile, { ok: false, error }

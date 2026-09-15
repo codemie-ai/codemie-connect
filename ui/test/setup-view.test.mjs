@@ -1605,7 +1605,7 @@ test('handleReject: an ollamaDown driver rejection marks the open row ERROR with
 
 // ── EPMCDME-14588 Task 4: the flow-stopping notice + "Try again" ───────────
 
-test('an authTimeout screen reaching onScreen shows a "Try again"/"Show details" notice with the CLI\'s own reason', async () => {
+test('an authTimeout screen reaching onScreen shows a "Back to setup"/"Show details" notice with the CLI\'s own reason', async () => {
   const container = makeEl('div');
   const noticeCalls = [];
   let capturedOnScreen;
@@ -1625,7 +1625,9 @@ test('an authTimeout screen reaching onScreen shows a "Try again"/"Show details"
   capturedOnScreen(fixtureLines('authTimeout'));
   assert.equal(noticeCalls.length, 1, 'exactly one notice for this run');
   const call = noticeCalls[0];
-  assert.equal(call.primaryLabel, 'Try again');
+  // Recoverable: the CLI re-asks the organization URL and the driver dispatches
+  // that re-ask, so the notice reports and returns the user to the live step.
+  assert.equal(call.primaryLabel, 'Back to setup');
   assert.equal(call.secondaryLabel, 'Show details');
   assert.ok(
     allText(call.message).includes('Authentication timeout - no response received'),
@@ -1743,7 +1745,38 @@ test('getAnsweredValues() holds each prompt id\'s most recently submitted value'
   assert.equal(answered.get('profileName'), 'my-workspace');
 });
 
-// ── EPMCDME-14588 review fixes (CR-002, CR-003, CR-005) ────────────────────
+// ── EPMCDME-14588 review fixes (CR-001 … CR-005) ───────────────────────────
+
+// Rows appear an indeterminate number of microtasks after start(), so a test
+// that clicks one must wait for the row itself, not for a fixed tick count.
+async function untilRow(container, id, ticks = 50) {
+  for (let i = 0; i < ticks; i += 1) {
+    const row = findRowById(container, id);
+    if (row) return row;
+    await Promise.resolve();
+  }
+  throw new Error(`row ${id} never rendered`);
+}
+
+// CR-004. The driver recovers from an auth timeout by dispatching the CLI's own
+// re-ask, so the run is still live under the notice and must not be cancelled.
+test('the recoverable authTimeout notice never cancels the live run', async () => {
+  const container = makeEl('div');
+  let capturedOnScreen;
+  let capturedPrimary;
+  let cancels = 0;
+  const view = createSetupView(container, {
+    startSetup: async ({ onScreen }) => { capturedOnScreen = onScreen; return new Promise(() => {}); },
+    readConfig: okConfig,
+    showNotice: (opts) => { capturedPrimary = opts.primaryAction; },
+    cancelSetup: async () => { cancels += 1; return true; },
+  });
+  view.start();
+  await Promise.resolve();
+  capturedOnScreen(fixtureLines('authTimeout'));
+  await capturedPrimary();
+  assert.equal(cancels, 0, 'the step underneath is still waiting for an answer; killing the run would lose it');
+});
 
 test('a second, unrelated failure still opens its own notice after the first was dismissed', async () => {
   const container = makeEl('div');
@@ -1760,9 +1793,11 @@ test('a second, unrelated failure still opens its own notice after the first was
     showNotice: (opts) => noticeCalls.push(opts),
   });
   const startPromise = view.start();
-  await Promise.resolve();
+  // The row is rendered several microtasks deep inside onPrompt, so waiting a
+  // fixed number of ticks makes this test a race: wait for the row itself.
+  const row = await untilRow(container, 'provider-1');
   capturedOnScreen(fixtureLines('authTimeout')); // first failure, notice shown then dismissed
-  clickContinue(findRowById(container, 'provider-1'));
+  clickContinue(row);
   await startPromise;
   assert.equal(noticeCalls.length, 2, 'the later rejection is not swallowed by the earlier notice');
   assert.ok(allText(noticeCalls[1].message).includes(err.message));
