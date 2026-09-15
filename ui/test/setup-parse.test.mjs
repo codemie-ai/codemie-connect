@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { detectPrompt } from '../setup-parse.js';
+import { detectPrompt, detectFailure } from '../setup-parse.js';
 
 function fixture(id) {
   const p = fileURLToPath(new URL(`fixtures/setup/${id}.json`, import.meta.url));
@@ -209,4 +209,41 @@ test('a list question with no visible options returns null', () => {
   const screen = Array(30).fill('');
   screen[29] = '? Choose your LLM provider: (Use arrow keys)';
   assert.equal(detectPrompt(screen), null);
+});
+
+// EPMCDME-14588. Two failures the CLI reports on screen, both captured from the
+// real CLI (0.14.1) and stored as fixtures. Neither arrives as a prompt: the
+// first is a warning the flow continues past, the second precedes exit 1.
+test('the CodeMie auth timeout is classified, with the CLI\'s own reason', () => {
+  const r = detectFailure(fixture('authTimeout'));
+  assert.equal(r.id, 'authTimeout');
+  assert.equal(r.message, 'Authentication timeout - no response received');
+});
+
+test('Ollama not running is classified', () => {
+  const r = detectFailure(fixture('ollamaNotRunning'));
+  assert.equal(r.id, 'ollamaDown');
+  assert.equal(r.message, 'Ollama is not running');
+});
+
+test('a healthy screen carries no failure', () => {
+  assert.equal(detectFailure(fixture('provider')), null);
+  assert.equal(detectFailure(fixture('codemieUrl')), null);
+});
+
+// The warning wraps at the terminal's width: the reason itself stays on the
+// anchor row, but the sentence does not, so a classifier that reads only whole
+// lines still has to find it.
+test('the wrapped warning line is still classified', () => {
+  const screen = Array(30).fill('');
+  screen[10] = '⚠️  Could not check for mandatory integrations (Authentication timeout - no response received). Conti';
+  screen[11] = 'nuing with normal provider setup.';
+  assert.equal(detectFailure(screen).message, 'Authentication timeout - no response received');
+});
+
+// detectPrompt keeps its own contract: the failure screen's last question is a
+// real prompt and must still be reported as one.
+test('a failure screen still reports its open prompt to detectPrompt', () => {
+  const r = detectPrompt(fixture('authTimeout'));
+  assert.equal(r.id, 'codemieUrl');
 });

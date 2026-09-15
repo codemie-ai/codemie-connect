@@ -57,6 +57,50 @@ export function detectPrompt(lines) {
   return options.length ? { kind: 'list', id: spec.id, message, options, selectedIndex } : null;
 }
 
+// EPMCDME-14588. Failures the CLI puts on screen. They are not prompts and so
+// never come back from detectPrompt: the auth timeout is a warning the flow
+// carries on past (setup.js:60), and Ollama's precedes exit 1
+// (ollama.setup-steps.js:49-60). Nothing else in the CLI reports a failure
+// visibly -- its fatal handler logs to file only (logger.js:278 gates the
+// console on CODEMIE_DEBUG) -- so this is the whole set, measured 2026-09-15.
+//
+// Both screens are captured from the real CLI: test/fixtures/setup/authTimeout.json
+// and ollamaNotRunning.json.
+const FAILURES = [
+  {
+    id: 'authTimeout',
+    anchor: 'Could not check for mandatory integrations',
+    // The CLI's own reason is parenthesised on the anchor row. The sentence
+    // around it wraps at the terminal's width; the reason itself does not.
+    reason: (line) => line.match(/\(([^()]*)\)/)?.[1] ?? null,
+    fallback: 'CodeMie could not be reached',
+  },
+  {
+    id: 'ollamaDown',
+    anchor: 'Ollama is not running',
+    reason: () => 'Ollama is not running',
+  },
+];
+
+/**
+ * Classify a visible CLI failure on the current screen.
+ *
+ * Returns `null` or `{ id, message, line }`, where `message` is the CLI's own
+ * words and `line` is the row the anchor was found on.
+ *
+ * The anchor stays on screen after the flow moves on, so this is edge-triggered
+ * by nature: act on an occurrence once, keyed on `line`, rather than on every
+ * chunk that still shows it.
+ */
+export function detectFailure(lines) {
+  for (const f of FAILURES) {
+    const line = lines.findIndex((l) => l.includes(f.anchor));
+    if (line === -1) continue;
+    return { id: f.id, message: f.reason(lines[line]) ?? f.fallback, line };
+  }
+  return null;
+}
+
 function parseOptions(lines, idx) {
   const options = []; let selectedIndex = 0; let seenSel = false;
   for (let r = idx + 1; r < lines.length; r++) {
