@@ -146,6 +146,7 @@ function emit(event, payload) {
       installBtn.classList.add('hidden');
       closeBtn.classList.remove('hidden');
       wizardBack.classList.remove('hidden');
+      refreshIdentityOnComplete();
       break;
     default:
       break;
@@ -238,6 +239,28 @@ function renderIdentity(cfg) {
   // Empty in the broken state, where only the account and profile are readable.
   set('identity-model', cfg.model);
   set('identity-project', cfg.project);
+}
+
+// Re-reads the identity bar once setup finishes writing what it displays —
+// `emit`'s 'complete' case calls this fire-and-forget so `emit` itself stays
+// synchronous. Both of the bar's sources are re-read, the way boot reads them:
+// a setup run can sign the user in as well as write the profile, so refreshing
+// only the config would leave the auth segment contradicting the four beside it.
+async function refreshIdentityOnComplete() {
+  let cfg;
+  try {
+    cfg = await bridge.codemieConfig.read();
+  } catch {
+    cfg = {};
+  }
+  renderIdentity(cfg || {});
+  let st;
+  try {
+    st = await bridge.inspector.checkProfileStatus();
+  } catch {
+    st = { state: 'unknown', detail: '' };
+  }
+  updateIdentityAuthStatus(st);
 }
 
 // Updates the identity bar's auth-status element from a ProfileStatus shape.
@@ -481,7 +504,7 @@ async function boot() {
   // of the production boot path.
   if (flags.dev) {
     const { startSetup } = await import('./setup-driver.js');
-    window.__codemie = { showView, startSetup };
+    window.__codemie = { showView, startSetup, emit };
   }
 
   allSteps = await invoke('get_steps');
