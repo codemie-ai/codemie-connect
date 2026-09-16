@@ -576,16 +576,18 @@ body::before {
   display: inline-block;
   margin-top: 10px;
   padding: 6px 16px;
-  border: 1px solid var(--accent-blue);
+  /* The wireframe's Continue is the filled primary, the same weight as the
+     failure panel's "Try again" -- not an outline. */
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--accent-blue);
+  background: var(--gradient-primary-btn);
+  color: var(--color-text-inverse);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.18s ease, color 0.18s ease;
 }
-.setup-continue-btn:hover { background: var(--accent-blue); color: var(--color-text-inverse); }
+.setup-continue-btn:hover { filter: brightness(1.08); }
 
 /* Closing line under the list once the profile is verified active. */
 .setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }
