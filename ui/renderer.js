@@ -16,12 +16,6 @@ import { isBlockedState } from './auth-gate.js';
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// Steps run by "Install only": all current installation steps.
-// Acquisition steps (1.x — Git, Node, CLI install) were removed with the bundled
-// runtime; the only remaining steps are setup and validation (2.x). INSTALL_ONLY_IDS
-// now equals the full step set so the tile runs something rather than an empty list.
-const INSTALL_ONLY_IDS = ['2.3.3', '2.3.5', '2.4'];
-
 // Compare semver strings. Returns true when a < b. Works for X.Y.Z format.
 function semverLt(a, b) {
   const pa = a.split('.').map(Number);
@@ -190,9 +184,9 @@ function showView(name) {
   });
 }
 
-// (Re)build the engine for a wizard run, optionally filtered to a subset of steps.
-function enterWizard(stepIds) {
-  const steps = stepIds ? allSteps.filter((s) => stepIds.includes(s.id)) : allSteps;
+// (Re)build the engine for a wizard run.
+function enterWizard() {
+  const steps = allSteps;
   steps.forEach((s) => {
     s.status = StepStatus.PENDING;
   });
@@ -204,7 +198,7 @@ function enterWizard(stepIds) {
   closeBtn.classList.add('hidden');
   wizardBack.classList.remove('hidden');
   setSprite('idle');
-  modeLabel.textContent = stepIds ? 'Install only' : 'Full installation + setup';
+  modeLabel.textContent = 'Setup';
   showView('wizard');
 }
 
@@ -326,7 +320,7 @@ async function runAction(title, cmd, returnView = 'home', hint) {
 
 // Verify the active CodeMie profile is signed in via `codemie profile status`
 // (parsed live in Rust — not a hardcoded check). Returns true if authenticated;
-// otherwise shows a blocking notice that points at the full installation.
+// otherwise shows a blocking notice that points at setup.
 // Gates only on not_signed_in and no_profile; unknown is treated as authenticated
 // so a profile whose provider omits an Auth Status row never blocks the user.
 async function ensureAuthenticated() {
@@ -340,9 +334,9 @@ async function ensureAuthenticated() {
     showNotice({
       title: 'CodeMie isn’t signed in',
       message:
-        `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run the full installation / sign in first, then try again.`,
-      primaryLabel: 'Run full installation',
-      primaryAction: () => enterWizard(null),
+        `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
+      primaryLabel: 'Run setup',
+      primaryAction: () => enterWizard(),
     });
     return false;
   }
@@ -610,10 +604,7 @@ async function boot() {
     if (!tile) return;
     switch (tile.dataset.action) {
       case 'full':
-        enterWizard(null);
-        break;
-      case 'install-only':
-        enterWizard(INSTALL_ONLY_IDS);
+        enterWizard();
         break;
       case 'connect-desktop':
         showView('connect');
