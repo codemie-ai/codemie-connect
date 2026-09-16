@@ -13,6 +13,7 @@
 import { createStepsUi } from './steps-ui.js';
 import { StepStatus } from './models.js';
 import { detectFailure } from './setup-parse.js';
+import { renderFailurePanel as renderPanel } from './failure-panel.js';
 
 // Ids the real driver answers itself (setup-driver.js's AUTO_LIST/
 // AUTO_CONFIRM tables) and must never be rendered as rows, even if a
@@ -342,14 +343,6 @@ export function createSetupView(container, deps = {}) {
   const readConfig = deps.readConfig ?? (async (...args) => {
     const mod = await import('./runner-bridge.js');
     return mod.codemieConfig.read(...args);
-  });
-  const showNoticeFn = deps.showNotice ?? (async (...args) => {
-    const mod = await import('./notice.js');
-    return mod.showNotice(...args);
-  });
-  const hideNoticeFn = deps.hideNotice ?? (async (...args) => {
-    const mod = await import('./notice.js');
-    return mod.hideNotice(...args);
   });
   const cancelSetupFn = deps.cancelSetup ?? (async (...args) => {
     const mod = await import('./setup-driver.js');
@@ -694,18 +687,19 @@ export function createSetupView(container, deps = {}) {
     // A classified failure names its own step, so the row carries the CLI's own
     // words next to markError's terminal state.
     if (failure) stepsUi.setSubtitle(rowId, failure.message);
-    // Every rejection also opens the notice: it is the only place the command's
-    // raw output is shown (EPMCDME-14588 AC) and the only way back into the
-    // flow. err is the driver's { step, message, raw } on every path it raises,
-    // but an IPC-level throw can reject with null or a bare string, and reading
-    // .message off that would turn a handled failure into a crash.
-    openFailureNotice(
-      failure?.message ?? err?.message ?? 'Setup failed',
+    // Every rejection also draws the panel: it carries the explanation, the
+    // command's raw output and the way back into the flow. err is the driver's
+    // { step, message, raw } on every path it raises, but an IPC-level throw can
+    // reject with null or a bare string, and reading .message off that would
+    // turn a handled failure into a crash.
+    renderFailurePanel({
+      id: failure?.id,
+      cliMessage: failure?.message ?? err?.message ?? 'Setup failed',
       // A held failure carries the screen that showed it; the rejection's own
       // screen can have scrolled past it. Only pendingFailure has `screen`, so
       // this picks the held one when that is where the classification came from.
-      (failure?.screen ?? err?.raw) ?? '',
-    );
+      raw: (failure?.screen ?? err?.raw) ?? '',
+    });
     settleInstallRow();
     activeRowId = null;
     if (!converted) hideTransientSpinner();
@@ -731,27 +725,42 @@ export function createSetupView(container, deps = {}) {
   // under the notice is live. Cancelling there would kill a run that was about
   // to work, so that notice only reports, and its button returns the user to
   // the step still waiting for them.
-  function openFailureNotice(message, raw, { recoverable = false } = {}) {
-    const body = document.createElement('div');
-    const summary = document.createElement('div');
-    summary.textContent = message;
-    const rawEl = document.createElement('pre');
-    rawEl.className = 'notice-raw';
-    rawEl.textContent = raw;
-    body.appendChild(summary);
-    body.appendChild(rawEl);
-    showNoticeFn({
-      title: recoverable ? 'CodeMie did not respond' : 'Setup stopped',
-      message: body,
-      primaryLabel: recoverable ? 'Back to setup' : 'Try again',
-      // Recoverable: showNotice hides the overlay before running this, so
-      // closing is all it takes -- the step underneath is still waiting.
-      primaryAction: recoverable ? () => {} : async () => { await cancelSetupFn(); start(); },
-      secondaryLabel: 'Show details',
-      // The raw output is already in the body above; the secondary action
-      // exists only so "Show details" renders as a second button next to
-      // "Try again" -- there is no separate panel to open or close.
-      secondaryAction: () => {},
+  // Copy is ours and names the failure and what to do about it -- "NAMED, NOT
+  // GENERIC", as the wireframe puts it -- with the CLI's own sentence kept
+  // underneath, and the transcript behind "Show details". The panel itself is
+  // ui/failure-panel.js, shared with every other screen that reports a failure.
+  const FAILURE_COPY = {
+    authTimeout: {
+      title: 'Could not reach CodeMie',
+      explanation: "CodeMie's sign-in service did not answer. This is usually the VPN — connect to the EPAM VPN and try again. It is not a problem with your account or your password.",
+    },
+    ollamaDown: {
+      title: 'Ollama is not running',
+      explanation: 'Setup needs Ollama running on this computer. Start it, then try again. Nothing has been saved.',
+    },
+  };
+  const FAILURE_FALLBACK = {
+    title: 'Setup stopped',
+    explanation: 'The setup command stopped before it finished. Nothing has been saved.',
+  };
+
+  // `recoverable` decides what "Try again" does, not what it says. When the CLI
+  // has carried on and is asking again underneath, trying again means answering
+  // that live step, so the panel only steps out of the way; cancelling there
+  // would kill a run that was about to work. When the run has ended, it ends the
+  // old one -- fully awaited -- and starts a fresh one.
+  function renderFailurePanel({ id, cliMessage, raw, recoverable = false }) {
+    const copy = FAILURE_COPY[id] ?? FAILURE_FALLBACK;
+    renderPanel(container, {
+      title: copy.title,
+      explanation: copy.explanation,
+      detail: cliMessage,
+      raw,
+      command: 'codemie setup --force',
+      primaryLabel: 'Try again',
+      onPrimary: recoverable
+        ? (block) => { block.remove(); }
+        : async (block) => { block.remove(); await cancelSetupFn(); start(); },
     });
   }
 
@@ -777,7 +786,12 @@ export function createSetupView(container, deps = {}) {
     }
     // Recoverable: the CLI carries on and re-asks the organization URL, and the
     // driver dispatches that re-ask, so the run is still live underneath.
-    openFailureNotice(failure.message, lines.join('\n'), { recoverable: true });
+    renderFailurePanel({
+      id: failure.id,
+      cliMessage: failure.message,
+      raw: lines.join('\n'),
+      recoverable: true,
+    });
   }
 
   // Resolves { ok, profileName } on a verified profile, { ok: false, error }

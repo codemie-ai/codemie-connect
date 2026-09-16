@@ -1583,7 +1583,7 @@ test('handleReject: cancelSetup()\'s own rejection changes no row and never show
     'the transient row is untouched -- not converted to "Setup stopped"/ERROR',
   );
   assert.equal(outcome.ok, false);
-  assert.equal(noticeCalls.length, 0, 'a cancel-for-retry is never rendered as a failure');
+  assert.equal(failureBlocks(container).length, 0, 'a cancel-for-retry is never rendered as a failure');
 });
 
 test('handleReject: an ollamaDown driver rejection marks the open row ERROR with the CLI\'s own words', async () => {
@@ -1605,39 +1605,46 @@ test('handleReject: an ollamaDown driver rejection marks the open row ERROR with
 
 // ── EPMCDME-14588 Task 4: the flow-stopping notice + "Try again" ───────────
 
-test('an authTimeout screen reaching onScreen shows a "Back to setup"/"Show details" notice with the CLI\'s own reason', async () => {
+test('an authTimeout screen draws the failure panel, named, with the CLI\'s own reason under it', async () => {
   const container = makeEl('div');
-  const noticeCalls = [];
   let capturedOnScreen;
   const fakeStartSetup = async ({ onScreen }) => {
     capturedOnScreen = onScreen;
     return new Promise(() => {}); // never settles in this test
   };
-  const view = createSetupView(container, {
-    startSetup: fakeStartSetup,
-    readConfig: okConfig,
-    showNotice: (opts) => noticeCalls.push(opts),
-  });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   view.start();
   await Promise.resolve();
   assert.equal(typeof capturedOnScreen, 'function', 'run() passed onScreen through to startSetup');
 
   capturedOnScreen(fixtureLines('authTimeout'));
-  assert.equal(noticeCalls.length, 1, 'exactly one notice for this run');
-  const call = noticeCalls[0];
-  // Recoverable: the CLI re-asks the organization URL and the driver dispatches
-  // that re-ask, so the notice reports and returns the user to the live step.
-  assert.equal(call.primaryLabel, 'Back to setup');
-  assert.equal(call.secondaryLabel, 'Show details');
-  assert.ok(
-    allText(call.message).includes('Authentication timeout - no response received'),
-    'the notice body carries the CLI\'s own reason text',
-  );
+  const blocks = failureBlocks(container);
+  assert.equal(blocks.length, 1, 'exactly one panel for this occurrence');
+  const panel = panelOf(blocks[0]);
+  // Named, not generic -- our own sentence about what happened and what to do,
+  // with the CLI's own words kept underneath it.
+  assert.ok(allText(panel).includes('Could not reach CodeMie'));
+  assert.ok(allText(panel).includes('VPN'), 'the panel says what to actually do about it');
+  assert.ok(allText(panel).includes('Authentication timeout - no response received'), 'the CLI\'s own reason is kept');
+  assert.ok(panelButton(blocks[0], 'Try again'), 'the wireframe\'s primary action');
+  assert.ok(panelButton(blocks[0], 'Show details'), 'and its secondary');
 
-  // The anchor line stays on screen after the flow moves on -- a second
-  // onScreen call with the same fixture must not reopen the notice.
+  // The transcript is collapsed until asked for, and headed by the command.
+  const raw = rawOf(blocks[0]);
+  assert.ok(raw.classList.contains('hidden'), 'details start collapsed, as drawn');
+  const details = panelButton(blocks[0], 'Show details');
+  details.onclick();
+  assert.equal(raw.classList.contains('hidden'), false, 'Show details actually reveals it');
+  assert.equal(details.textContent, 'Hide details', 'and the button says what the next click does');
+  assert.ok(raw.textContent.startsWith('$ codemie setup'), 'headed by the command that produced it');
+  // ...and back again.
+  details.onclick();
+  assert.equal(raw.classList.contains('hidden'), true, 'Hide details collapses it');
+  assert.equal(details.textContent, 'Show details');
+
+  // The anchor line stays on screen after the flow moves on.
   capturedOnScreen(fixtureLines('authTimeout'));
-  assert.equal(noticeCalls.length, 1, 'the notice is shown at most once per run');
+  assert.equal(failureBlocks(container).length, 1, 'the panel is drawn at most once per occurrence');
 });
 
 test('a generic non-ollamaDown rejection also opens exactly one failure notice via handleReject\'s fallthrough', async () => {
@@ -1658,8 +1665,8 @@ test('a generic non-ollamaDown rejection also opens exactly one failure notice v
   clickContinue(findRowById(container, 'provider-1'));
   const outcome = await startPromise;
   assert.equal(outcome.ok, false);
-  assert.equal(noticeCalls.length, 1, 'the fallthrough opens the notice for a non-ollamaDown, non-cancelled rejection');
-  assert.ok(allText(noticeCalls[0].message).includes(err.message), 'no detectFailure match -- falls back to err.message');
+  assert.equal(failureBlocks(container).length, 1, 'the fallthrough draws the panel for a non-ollamaDown, non-cancelled rejection');
+  assert.ok(allText(failureBlocks(container)[0]).includes(err.message), 'no detectFailure match -- falls back to err.message');
 });
 
 test('"Try again" cancels the current run, fully awaited, before starting a fresh one', async () => {
@@ -1685,7 +1692,6 @@ test('"Try again" cancels the current run, fully awaited, before starting a fres
   const view = createSetupView(container, {
     startSetup: (...args) => { order.push('start'); return innerFakeStartSetup(...args); },
     readConfig: okConfig,
-    showNotice: (opts) => { capturedPrimaryAction = opts.primaryAction; },
     cancelSetup,
   });
   const startPromise = view.start();
@@ -1693,8 +1699,9 @@ test('"Try again" cancels the current run, fully awaited, before starting a fres
   clickContinue(findRowById(container, 'provider-1'));
   await startPromise;
 
-  assert.equal(typeof capturedPrimaryAction, 'function');
-  await capturedPrimaryAction();
+  const tryAgain = panelButton(failureBlocks(container)[0], 'Try again');
+  assert.equal(typeof tryAgain?.onclick, 'function');
+  await tryAgain.onclick();
   assert.deepEqual(order, ['start', 'cancel-start', 'cancel-done', 'start'], 'cancelSetup() resolves before startSetup() is invoked again');
 });
 
@@ -1715,7 +1722,7 @@ test('handleReject\'s fallthrough never re-adds a notice for a cancel-for-retry'
   clickContinue(findRowById(container, 'provider-1'));
   const outcome = await startPromise;
   assert.equal(outcome.ok, false);
-  assert.equal(noticeCalls.length, 0, 'still zero notices for a cancel-for-retry, after Task 4\'s fallthrough change');
+  assert.equal(failureBlocks(container).length, 0, 'still nothing rendered for a cancel-for-retry');
 });
 
 // ── EPMCDME-14588 Task 5: capture each answered value for EPMCDME-14656 ────
@@ -1745,6 +1752,17 @@ test('getAnsweredValues() holds each prompt id\'s most recently submitted value'
   assert.equal(answered.get('profileName'), 'my-workspace');
 });
 
+
+// The failure panel the wireframes draw: a red block inside the card, with the
+// command's transcript in its own element under it. Replaces the old modal.
+const failureBlocks = (container) => (container._children ?? []).filter((c) => c.className === 'failure-block');
+const panelOf = (block) => block.querySelector('.failure-panel');
+const panelButton = (block, label) => {
+  const actions = block.querySelector('.failure-actions');
+  return (actions?._children ?? []).find((b) => b.textContent === label);
+};
+const rawOf = (block) => block.querySelector('.failure-raw');
+
 // ── EPMCDME-14588 review fixes (CR-001 … CR-005) ───────────────────────────
 
 // Rows appear an indeterminate number of microtasks after start(), so a test
@@ -1768,13 +1786,12 @@ test('the recoverable authTimeout notice never cancels the live run', async () =
   const view = createSetupView(container, {
     startSetup: async ({ onScreen }) => { capturedOnScreen = onScreen; return new Promise(() => {}); },
     readConfig: okConfig,
-    showNotice: (opts) => { capturedPrimary = opts.primaryAction; },
     cancelSetup: async () => { cancels += 1; return true; },
   });
   view.start();
   await Promise.resolve();
   capturedOnScreen(fixtureLines('authTimeout'));
-  await capturedPrimary();
+  await panelButton(failureBlocks(container)[0], 'Try again').onclick();
   assert.equal(cancels, 0, 'the step underneath is still waiting for an answer; killing the run would lose it');
 });
 
@@ -1799,8 +1816,10 @@ test('a second, unrelated failure still opens its own notice after the first was
   capturedOnScreen(fixtureLines('authTimeout')); // first failure, notice shown then dismissed
   clickContinue(row);
   await startPromise;
-  assert.equal(noticeCalls.length, 2, 'the later rejection is not swallowed by the earlier notice');
-  assert.ok(allText(noticeCalls[1].message).includes(err.message));
+  // One panel at a time: the later failure replaces the earlier one rather than
+  // stacking, and it is the later one's words that survive.
+  assert.equal(failureBlocks(container).length, 1, 'the panel is replaced, not stacked');
+  assert.ok(allText(failureBlocks(container)[0]).includes(err.message), 'the later rejection is not swallowed by the earlier panel');
 });
 
 test('a rejection that is not an object does not crash the run', async () => {
@@ -1813,8 +1832,8 @@ test('a rejection that is not an object does not crash the run', async () => {
   });
   const outcome = await view.start();
   assert.equal(outcome.ok, false, 'the failure is still reported as a handled outcome');
-  assert.equal(noticeCalls.length, 1);
-  assert.ok(allText(noticeCalls[0].message).includes('Setup failed'));
+  assert.equal(failureBlocks(container).length, 1);
+  assert.ok(allText(failureBlocks(container)[0]).includes('Setup failed'));
 });
 
 test('a restart clears the previous run\'s answered values', async () => {
@@ -1868,11 +1887,12 @@ test('an Ollama failure seen on screen is still reported once the exit screen ha
   await startPromise;
   // The notice is the only place the command's raw output is shown, so a
   // run-ending failure opens it even though the step already carries the error.
-  assert.equal(noticeCalls.length, 1, 'the run ended, so the notice offers the raw output and a way back');
-  assert.ok(allText(noticeCalls[0].message).includes('Ollama is not running'), 'the CLI\'s own words, not the exit code');
+  const block = failureBlocks(container)[0];
+  assert.ok(block, 'the run ended, so the panel offers the raw output and a way back');
+  assert.ok(allText(panelOf(block)).includes('Ollama is not running'), 'the CLI\'s own words, not the exit code');
   assert.ok(
-    allText(noticeCalls[0].message).includes('ollama serve'),
-    'the raw output is the screen that actually showed the failure, not the scrolled-past exit screen',
+    rawOf(block).textContent.includes('ollama serve'),
+    'the transcript is the screen that actually showed the failure, not the scrolled-past exit screen',
   );
   // The failure lands on whichever row was in flight -- here the "Working…" row
   // the flow shows after an answer -- not necessarily the answered one.
@@ -1902,17 +1922,22 @@ test('the authTimeout notice does not reopen as the screen scrolls under it', as
   await Promise.resolve();
 
   const base = fixtureLines('authTimeout');
+  let redrawCount = 0;
+  const countPanels = () => { redrawCount += 1; };
   capturedOnScreen(base);
-  assert.equal(noticeCalls.length, 1, 'the first sighting opens it');
+  countPanels();
+  assert.equal(failureBlocks(container).length, 1, 'the first sighting draws it');
   // the CLI prints another line: every row shifts up by one, same failure
   capturedOnScreen([...base.slice(1), '']);
   capturedOnScreen([...base.slice(2), '', '']);
-  assert.equal(noticeCalls.length, 1, 'scrolling is not a new occurrence');
+  assert.equal(failureBlocks(container).length, 1, 'scrolling is not a new occurrence');
 
   // the anchor finally leaves the screen, then a later timeout brings it back
   capturedOnScreen(Array(30).fill(''));
+  const before = failureBlocks(container)[0];
   capturedOnScreen(base);
-  assert.equal(noticeCalls.length, 2, 'a genuinely new occurrence is reported again');
+  if (failureBlocks(container)[0] !== before) countPanels();
+  assert.equal(redrawCount, 2, 'a genuinely new occurrence is reported again');
 });
 
 // The authTimeout warning stays on screen after the CLI recovers from it, so a
@@ -1937,10 +1962,33 @@ test('a recovered authTimeout does not relabel a later, unrelated failure', asyn
   const row = await untilRow(container, 'provider-1');
   clickContinue(row);
   await startPromise;
-  // The body is [summary, raw]. The raw screen legitimately still shows the old
-  // warning; it is the summary that must name the new failure.
-  const body = noticeCalls[noticeCalls.length - 1].message;
-  const summary = (body._children ?? [])[0]?.textContent ?? '';
-  assert.equal(summary, 'unrecognized prompt, run stalled', 'reported in its own words');
-  assert.ok(!summary.includes('Authentication timeout'), 'not the recovered warning still sitting on the screen');
+  // The transcript legitimately still shows the old warning; it is the panel's
+  // own CLI line that must name the new failure.
+  const cli = failureBlocks(container)[0].querySelector('.failure-detail');
+  assert.equal(cli.textContent, 'unrecognized prompt, run stalled', 'reported in its own words');
+  assert.ok(!cli.textContent.includes('Authentication timeout'), 'not the recovered warning still sitting on the screen');
+});
+
+// The CLI's own sentence sits under our title, but only when it says something
+// our title does not -- for Ollama the two are word-for-word the same.
+test('the panel does not repeat itself when the CLI\'s words match the title', async () => {
+  const container = makeEl('div');
+  let capturedOnScreen;
+  const view = createSetupView(container, {
+    startSetup: async ({ onPrompt, onScreen }) => {
+      capturedOnScreen = onScreen;
+      await onPrompt({ kind: 'input', id: 'credential', message: 'Ollama base URL:' });
+      capturedOnScreen(fixtureLines('ollamaNotRunning'));
+      throw { step: null, message: 'setup exited with code 1', raw: '' };
+    },
+    readConfig: okConfig,
+  });
+  const startPromise = view.start();
+  const row = await untilRow(container, 'credential-1');
+  inputOf(row).value = 'http://localhost:11434';
+  clickContinue(row);
+  await startPromise;
+  const block = failureBlocks(container)[0];
+  assert.equal(panelOf(block).querySelector('.failure-detail'), null, 'no line repeating the title');
+  assert.ok(allText(panelOf(block)).includes('Ollama is not running'), 'the title still says it');
 });

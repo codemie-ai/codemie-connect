@@ -714,3 +714,42 @@ body::before {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ---- The app's failure panel (ui/failure-panel.js) ----
+   Reported inside the screen that failed, with the answered steps still visible
+   above it, rather than over a modal that hides the flow. Red with actions for
+   an error; amber and actionless for a warning, as Home draws it. */
+.failure-block { margin: 14px 12px 0; }
+.failure-panel {
+  padding: 16px 18px;
+  border: 1px solid #ff6b6b;
+  border-radius: var(--radius-l, 12px);
+  background: var(--surface);
+}
+.failure-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.failure-body { font-size: 13px; line-height: 1.5; color: var(--muted); }
+/* The CLI's own sentence, kept verbatim under our explanation of it. */
+.failure-detail { margin-top: 8px; font-size: 12px; color: var(--muted); opacity: 0.85; }
+.failure-actions { display: flex; gap: 10px; margin-top: 14px; }
+.failure-actions .btn { width: auto; padding: 8px 16px; }
+.failure-raw {
+  font-family: var(--font-mono);
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius-m, 8px);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* A warning is the same shape in amber, and carries no actions. */
+.failure-panel.warning { border-color: var(--amber); }
+
+/* A row with no subtitle must not reserve one: the 14px placeholder pushed the
+   icon and title above the row's real centre, which is what the "Working…" row
+   showed. */
+#setup-view .step-sub:empty { min-height: 0; margin-top: 0; }

@@ -474,7 +474,7 @@ async function boot() {
       startSetup,
       startGuidedSetup: () => {
         showView('setup');
-        if (!setupView) setupView = createSetupView(document.getElementById('setup-view'), { showNotice, hideNotice });
+        if (!setupView) setupView = createSetupView(document.getElementById('setup-view'));
         return setupView.start();
       },
     };
