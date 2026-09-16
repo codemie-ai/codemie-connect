@@ -12,7 +12,6 @@ import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeT
 import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
 import { isBlockedState } from './auth-gate.js';
-import { showNotice, hideNotice } from './notice.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -89,6 +88,11 @@ const connectBtn = document.getElementById('connect-btn');
 const restartBtn = document.getElementById('restart-btn');
 const modeLabel = document.getElementById('wizard-mode-label');
 const stepListEl = document.getElementById('step-list');
+const noticeOverlay = document.getElementById('notice-overlay');
+const noticeTitle = document.getElementById('notice-title');
+const noticeMessage = document.getElementById('notice-message');
+const noticePrimary = document.getElementById('notice-primary');
+const noticeClose = document.getElementById('notice-close');
 
 function setSprite(state) {
   if (sprite) sprite.setState(state);
@@ -201,6 +205,26 @@ function enterWizard(stepIds) {
   setSprite('idle');
   modeLabel.textContent = stepIds ? 'Install only' : 'Full installation + setup';
   showView('wizard');
+}
+
+// ---- notice modal ----
+function showNotice({ title, message, primaryLabel, primaryAction }) {
+  noticeTitle.textContent = title;
+  noticeMessage.textContent = message;
+  if (primaryLabel) {
+    noticePrimary.textContent = primaryLabel;
+    noticePrimary.classList.remove('hidden');
+    noticePrimary.onclick = () => {
+      hideNotice();
+      if (primaryAction) primaryAction();
+    };
+  } else {
+    noticePrimary.classList.add('hidden');
+  }
+  noticeOverlay.classList.remove('hidden');
+}
+function hideNotice() {
+  noticeOverlay.classList.add('hidden');
 }
 
 // ---- identity bar ----
@@ -644,6 +668,7 @@ async function boot() {
       runAction('Restart Claude Desktop proxy', 'codemie proxy stop; codemie proxy connect desktop', 'connect');
     }
   });
+  noticeClose.addEventListener('click', hideNotice);
   // ---- view routing (smoke/probe go straight to the wizard so their
   //      .step-row / canvas / bg assertions still hold) ----
   if (flags.probe) {
