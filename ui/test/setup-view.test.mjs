@@ -1993,3 +1993,31 @@ test('the panel does not repeat itself when the CLI\'s words match the title', a
   assert.ok(allText(panelOf(block)).includes('Ollama is not running'), 'the title still says it');
 });
 
+
+// The CLI opens the browser and then waits on the user, up to its own 120s
+// timeout. A bare spinner for two minutes reads as a hang, so the row says what
+// it is waiting for the moment the CLI prints its browser lines.
+test('the waiting row says it is waiting on the browser sign-in', async () => {
+  const container = makeEl('div');
+  let capturedOnScreen;
+  const view = createSetupView(container, {
+    startSetup: async ({ onScreen }) => { capturedOnScreen = onScreen; return new Promise(() => {}); },
+    readConfig: okConfig,
+  });
+  view.start();
+  await Promise.resolve();
+
+  const waitingRow = () => (container._children ?? []).find((c) => c.dataset?.id?.startsWith('working-'));
+  assert.equal(waitingRow().querySelector('.step-title').textContent, 'Working…', 'before the browser opens it is a plain gap');
+
+  const screen = Array(30).fill('');
+  screen[10] = 'Opening browser for authentication...';
+  screen[11] = '  If browser does not open, visit: https://codemie.lab.epam.com/code-assistant-api/v1/auth/login/61575';
+  capturedOnScreen(screen);
+
+  const row = waitingRow();
+  assert.equal(row.querySelector('.step-title').textContent, 'Waiting for you to finish signing in');
+  assert.match(row.querySelector('.step-sub').textContent, /browser tab should have opened/i);
+  // Not a countdown: the wait is the user's own, so nothing implies a deadline.
+  assert.ok(!/\d+\s*(s|sec|second)/i.test(row.querySelector('.step-sub').textContent), 'no timer in the copy');
+});

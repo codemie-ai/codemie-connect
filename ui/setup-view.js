@@ -334,6 +334,15 @@ export function createSetupView(container, deps = {}) {
   // seen and never wait here.
   let pendingFailure = null;
 
+  // The CLI's own browser-sign-in line (sso.auth.js:98). The wait that follows
+  // is the user's: the CLI sits on a local callback server until the browser
+  // comes back, up to its own 120s timeout. Saying nothing for two minutes reads
+  // as a hang, so the row says what it is waiting for. The CLI also prints the
+  // URL to visit if the tab never opened; that line is in the transcript the
+  // failure panel shows, so it is not repeated here.
+  const BROWSER_OPENED = /Opening browser for authentication/;
+  let waitingForSignIn = false;
+
   // Lazy-default wiring per this file's own header comment: never resolved
   // (and never imports the underlying module) until actually invoked.
   const startSetup = deps.startSetup ?? (async (...args) => {
@@ -440,6 +449,24 @@ export function createSetupView(container, deps = {}) {
     return true;
   }
 
+  // ---- browser sign-in wait ------------------------------------------------
+  function noteSignIn(lines) {
+    if (!BROWSER_OPENED.test(lines.join('\n'))) return;
+    waitingForSignIn = true;
+    describeSignInWait();
+  }
+
+  function describeSignInWait() {
+    if (!waitingForSignIn || !transient) return;
+    const titleEl = findRow(container, transient.id)?.querySelector('.step-title');
+    if (titleEl) titleEl.textContent = 'Waiting for you to finish signing in';
+    stepsUi.setSubtitle(transient.id, 'A browser tab should have opened for CodeMie sign-in.');
+  }
+
+  function clearSignInWait() {
+    waitingForSignIn = false;
+  }
+
   // ---- transient "Working…" row -------------------------------------------
   // The CLI has no prompt on screen while it fetches models, waits for the
   // browser sign-in, saves the profile. steps-ui has no remove primitive and
@@ -453,9 +480,12 @@ export function createSetupView(container, deps = {}) {
     stepsUi.setStatus(id, StepStatus.ACTIVE);
     stepsUi.startSpinner(id);
     transient = { id };
+    // The CLI can close and reopen the gap while the browser wait is still on.
+    describeSignInWait();
   }
 
   function hideTransientSpinner() {
+    clearSignInWait();
     if (!transient) return;
     stepsUi.stopSpinner(transient.id);
     findRow(container, transient.id)?.remove();
@@ -769,6 +799,7 @@ export function createSetupView(container, deps = {}) {
   // continues past this warning, so it never reaches onPrompt/handleReject;
   // this is the only path that ever sees it.
   function handleScreen(lines) {
+    noteSignIn(lines);
     const failure = detectFailure(lines);
     if (!failure) {
       failureOnScreen = null;
