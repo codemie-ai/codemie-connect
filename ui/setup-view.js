@@ -333,7 +333,6 @@ export function createSetupView(container, deps = {}) {
   // "setup exited with code 1". Recoverable failures are rendered as they are
   // seen and never wait here.
   let pendingFailure = null;
-  let progressEl = null;
 
   // Lazy-default wiring per this file's own header comment: never resolved
   // (and never imports the underlying module) until actually invoked.
@@ -428,36 +427,9 @@ export function createSetupView(container, deps = {}) {
     }
   }
 
-  // The wireframe puts a row of dots beside the card's title. The flow's step
-  // count is genuinely variable -- the project step is absent when the account
-  // has one project, the credential step never appears on the SSO path -- so
-  // rather than pretending to know a total, there is one dot per step the flow
-  // has actually revealed, carrying that step's state.
-  function refreshProgress() {
-    if (!progressEl) return;
-    progressEl.replaceChildren();
-    for (const row of container.children ?? []) {
-      if (!row?.dataset?.id) continue;
-      const dot = document.createElement('span');
-      dot.className = 'setup-progress-dot';
-      dot.dataset.status = row.dataset.status ?? 'PENDING';
-      progressEl.appendChild(dot);
-    }
-  }
-
-  function setRowStatus(id, status) {
-    stepsUi.setStatus(id, status);
-    refreshProgress();
-  }
-
-  function addRow(parentId, step) {
-    stepsUi.insertSubStep(parentId, step);
-    refreshProgress();
-  }
-
   function markError(rowId) {
     if (!rowId) return false;
-    setRowStatus(rowId, StepStatus.ERROR);
+    stepsUi.setStatus(rowId, StepStatus.ERROR);
     // A failed run leaves no live control behind: the promise this row's
     // Continue would resolve is already settled, so the button would look
     // clickable and do nothing. EPMCDME-14588 puts the retry affordance here.
@@ -477,8 +449,8 @@ export function createSetupView(container, deps = {}) {
     if (transient) return;
     transientSeq += 1;
     const id = `working-${transientSeq}`;
-    addRow(null, { id, title: 'Working…', description: '' });
-    setRowStatus(id, StepStatus.ACTIVE);
+    stepsUi.insertSubStep(null, { id, title: 'Working…', description: '' });
+    stepsUi.setStatus(id, StepStatus.ACTIVE);
     stepsUi.startSpinner(id);
     transient = { id };
   }
@@ -500,7 +472,7 @@ export function createSetupView(container, deps = {}) {
   function finishInstall(status, subtitle) {
     if (!install || install.done) return;
     install.done = true;
-    setRowStatus(install.rowId, status);
+    stepsUi.setStatus(install.rowId, status);
     stepsUi.setSubtitle(install.rowId, subtitle);
     collapseRow(install.rowId, 'installClaude');
     if (activeRowId === install.rowId) activeRowId = null;
@@ -537,7 +509,7 @@ export function createSetupView(container, deps = {}) {
         beginInstallWatch(rowId);
       } else {
         const text = prompt.id === 'installClaude' && value === false ? 'Skipped' : humanText;
-        setRowStatus(rowId, StepStatus.COMPLETE);
+        stepsUi.setStatus(rowId, StepStatus.COMPLETE);
         stepsUi.setSubtitle(rowId, text);
         collapseRow(rowId, prompt.id);
         showTransientSpinner();
@@ -596,7 +568,7 @@ export function createSetupView(container, deps = {}) {
         // must keep asking the original question.
         if (titleEl) titleEl.textContent = headingFor({ ...prompt, message: storedBase });
       }
-      setRowStatus(rowId, StepStatus.ACTIVE);
+      stepsUi.setStatus(rowId, StepStatus.ACTIVE);
       activeRowId = rowId;
       clearControls(host);
       removeHelperText(host);
@@ -613,8 +585,8 @@ export function createSetupView(container, deps = {}) {
     const occurrence = nextOccurrence(prompt.id);
     const rowId = `${prompt.id}-${occurrence}`;
 
-    addRow(null, { id: rowId, title: headingFor(prompt), description: '' });
-    setRowStatus(rowId, StepStatus.ACTIVE);
+    stepsUi.insertSubStep(null, { id: rowId, title: headingFor(prompt), description: '' });
+    stepsUi.setStatus(rowId, StepStatus.ACTIVE);
     activeRowId = rowId;
     lastRowId = rowId;
 
@@ -636,7 +608,7 @@ export function createSetupView(container, deps = {}) {
     const host = row ? row.querySelector('.step-main') : null;
     clearControls(host);
     removeHelperText(host);
-    setRowStatus(activeRowId, StepStatus.SKIPPED);
+    stepsUi.setStatus(activeRowId, StepStatus.SKIPPED);
     activeRowId = null;
   }
 
@@ -692,7 +664,7 @@ export function createSetupView(container, deps = {}) {
       // Rejected from inside collectModelOptions, before the model prompt
       // ever reached onPrompt: there is no row to mark yet, so add it.
       rowId = `model-${nextOccurrence('model')}`;
-      addRow(null, { id: rowId, title: PROMPT_COPY.model.collapsedLabel, description: '' });
+      stepsUi.insertSubStep(null, { id: rowId, title: PROMPT_COPY.model.collapsedLabel, description: '' });
       lastRowId = rowId;
       markError(rowId);
     } else if (activeRowId) {
@@ -859,22 +831,16 @@ export function createSetupView(container, deps = {}) {
     // renderSteps just cleared `container` via innerHTML = '' -- the header
     // must be appended AFTER that call (never before it) so it survives as
     // the list's first child, ahead of every row inserted below.
-    const header = document.createElement('div');
-    header.className = 'setup-view-header';
     const heading = document.createElement('h1');
     heading.className = 'setup-view-heading';
     heading.textContent = 'Set up CodeMie';
-    progressEl = document.createElement('div');
-    progressEl.className = 'setup-progress';
-    header.appendChild(heading);
-    header.appendChild(progressEl);
-    container.appendChild(header);
+    container.appendChild(heading);
 
     // Storage is a fixed-policy choice (setup-driver.js's AUTO_LIST always
     // picks "global") -- render it as an already-decided, collapsed row
     // before the driver ever runs, never through onPrompt.
-    addRow(null, { id: 'storage', title: 'Where to store it', description: '' });
-    setRowStatus('storage', StepStatus.COMPLETE);
+    stepsUi.insertSubStep(null, { id: 'storage', title: 'Where to store it', description: '' });
+    stepsUi.setStatus('storage', StepStatus.COMPLETE);
     stepsUi.setSubtitle('storage', 'This computer');
     collapseRow('storage', 'storage');
     lastRowId = 'storage';
