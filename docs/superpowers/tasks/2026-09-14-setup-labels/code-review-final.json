@@ -1,0 +1,22 @@
+{
+  "decision": "request-changes",
+  "rationale": "README.md still documents the removed 'Full installation' / 'Install only' tiles (CR-001), left stale by this rename. Compact profile ran edge-case only (acceptance n/a, no spec); 2 findings dismissed as noise: the archived install-only-steps.spec.ts under a prior task's dynamic-tests dir is unreachable (not wired into npm test or its own playwright.config testDir), and the home-grid 'Installation' group label is a generic category header not explicitly in the task's copy list, judged cosmetic.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "README.md",
+      "line": 19,
+      "title": "README still describes removed install tiles",
+      "problem": "README rows/prose at lines 19-20 and 29 still describe a 'Full installation' tile and an 'Install only' tile that installs Git/Node/CLI and skips the wizard; this change renamed the former to 'Setup' and deleted the latter entirely.",
+      "impact": "Docs now describe two options where only one ('Setup') exists, misleading anyone reading the README to understand available install modes.",
+      "recommendation": "Update the README table/prose to drop the 'Install only' row and rename 'Full installation' to 'Setup', matching the renderer copy."
+    }
+  ]
+}

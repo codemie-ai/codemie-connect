@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-14979-setup-labels",
+  "head": "e5ee6997e911cabd3c36257053144dafd3084b79",
+  "runner": "custom",
+  "started_at": "2026-09-14T14:45:55Z",
+  "completed_at": "2026-09-14T14:50:30Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "132/132 node:test suites passed"
+    },
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9000,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0,
+      "notes": "0 warnings"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 19000,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "81 unit tests + 2 bundle_resources integration tests, all ok"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 90000,
+      "command": "cd src-tauri && CI=true cargo tauri build",
+      "exit_code": 0,
+      "notes": "Plain tauri build variant per quality-gates.md (verifies no bundle-resources assertions beyond the bundle_resources.rs test suite); produced CodeMie Connect_2.0.1_aarch64.dmg (95.9M) at src-tauri/target/release/bundle/dmg/"
+    }
+  ],
+  "failures": {}
+}

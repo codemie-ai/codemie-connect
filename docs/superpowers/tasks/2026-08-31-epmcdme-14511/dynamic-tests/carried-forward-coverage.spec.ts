@@ -45,24 +45,10 @@ const PENDING = { check_codemie_version: '0.13.0', fetch_codemie_latest: '0.14.2
 const titles = (page: Page) =>
   page.$$eval('#step-list .step-row .step-title', (e) => e.map((x) => x.textContent!.trim()));
 
-test('"Install only" reaches the wizard with the install subset, not the full run', async ({ page }) => {
-  // The ticket: "Install only has no other caller and no other route, so it must
-  // not disappear silently." Nothing asserted it ran, nor that it ran *filtered*.
-  await boot(page, UP_TO_DATE);
-  await page.locator('.home-tile[data-action="install-only"]').click();
-  await expect(page.locator('#wizard-view')).not.toHaveClass(/hidden/);
-  await expect(page.locator('#wizard-mode-label')).toHaveText('Install only');
-
-  const shown = await titles(page);
-  expect(shown, 'the install-only subset, not every step').toEqual(
-    ['Check Git', 'Check Node', 'Install CodeMie']);
-  expect(shown, 'setup steps must be filtered out').not.toContain('Configure');
-});
-
-test('"Full installation" reaches the wizard with every step', async ({ page }) => {
+test('"Setup" reaches the wizard with every step', async ({ page }) => {
   await boot(page, UP_TO_DATE);
   await page.locator('.home-tile[data-action="full"]').click();
-  await expect(page.locator('#wizard-mode-label')).toHaveText('Full installation + setup');
+  await expect(page.locator('#wizard-mode-label')).toHaveText('Setup');
   expect(await titles(page)).toContain('Configure');
 });
 
