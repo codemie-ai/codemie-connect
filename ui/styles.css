@@ -521,7 +521,9 @@ body::before {
 
 /* ---- Setup view (guided setup) ---- */
 #setup-view { padding: 4px 12px 24px 0; max-width: 720px; }
-.setup-view-heading { margin: 0 0 14px; font-size: 20px; font-weight: 700; color: var(--text); }
+/* 12px left, so the title lines up with the rows' own padding rather than
+   sitting flush against the container edge while every row is indented. */
+.setup-view-heading { margin: 0 0 14px 12px; font-size: 20px; font-weight: 700; color: var(--text); }
 
 /* The open question reads as a heading; its helper line sits right under it. */
 #setup-view .step-row.active .step-title { font-size: 15px; }
