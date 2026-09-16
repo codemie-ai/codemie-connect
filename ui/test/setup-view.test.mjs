@@ -695,9 +695,11 @@ test('header: "Set up CodeMie" heading renders once at mount, before the storage
   const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   await view.start();
 
-  const headers = container._children.filter((c) => c.className === 'setup-view-heading');
+  const headers = container._children.filter((c) => c.className === 'setup-view-header');
   assert.equal(headers.length, 1, 'exactly one header rendered');
-  assert.equal(headers[0].textContent, 'Set up CodeMie');
+  // The title now shares a header row with the flow's progress dots.
+  assert.equal(headers[0].querySelector('.setup-view-heading').textContent, 'Set up CodeMie');
+  assert.ok(headers[0].querySelector('.setup-progress'), 'and the dots sit beside it');
   assert.equal(container._children[0], headers[0], 'header is the first child of the container');
 
   const storageIndex = container._children.findIndex((c) => c.dataset && c.dataset.id === 'storage');
@@ -1338,7 +1340,7 @@ test('start() called again on the same view is a fresh run: ids, reopen bases an
   assert.equal(container._children.filter((c) => c.className === 'setup-view-status').length, 0, 'the old closing line is gone while the run is open');
   clickContinue(row);
   await startPromise;
-  assert.equal(container._children.filter((c) => c.className === 'setup-view-heading').length, 1, 'one header, not two');
+  assert.equal(container._children.filter((c) => c.className === 'setup-view-header').length, 1, 'one header, not two');
 });
 
 // ── Secrets: masked while typed, never echoed into the row ──────────────────
@@ -1428,7 +1430,7 @@ test('start() while a run is in flight returns that run instead of resetting it;
   assert.equal(second, first, 'the in-flight run is handed back');
   assert.equal(calls, 1, 'the driver is started once');
   assert.equal(findRowById(container, 'profileName-1'), row, 'the open row survived untouched');
-  assert.equal(container._children.filter((c) => c.className === 'setup-view-heading').length, 1, 'one header');
+  assert.equal(container._children.filter((c) => c.className === 'setup-view-header').length, 1, 'one header');
 
   clickContinue(row);
   release();
@@ -1991,4 +1993,38 @@ test('the panel does not repeat itself when the CLI\'s words match the title', a
   const block = failureBlocks(container)[0];
   assert.equal(panelOf(block).querySelector('.failure-detail'), null, 'no line repeating the title');
   assert.ok(allText(panelOf(block)).includes('Ollama is not running'), 'the title still says it');
+});
+
+// The wireframe puts a row of dots beside the title. The step count is variable
+// -- the project step is absent for a single-project account, the credential
+// step never appears on the SSO path -- so the dots track the steps the flow has
+// revealed, one each, carrying that step's state.
+test('the header dots follow the steps as they appear and change state', async () => {
+  const container = makeEl('div');
+  const view = createSetupView(container, {
+    startSetup: async ({ onPrompt }) => {
+      await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
+      return new Promise(() => {});
+    },
+    readConfig: okConfig,
+  });
+  view.start();
+  await Promise.resolve();
+  const dots = () => (container._children.find((c) => c.className === 'setup-view-header')
+    ?.querySelector('.setup-progress')?._children ?? []);
+  const rowCount = () => container._children.filter((c) => c.dataset?.id).length;
+  assert.ok(dots().length >= 1, 'the driver-answered storage step is already a dot');
+  assert.equal(dots()[0].dataset.status, 'COMPLETE', 'and it is complete');
+
+  const row = await untilRow(container, 'provider-1');
+  assert.equal(dots().length, rowCount(), 'one dot per step the flow has revealed');
+  assert.equal(dots().at(-1).dataset.status, 'ACTIVE', 'the open step is the active dot');
+
+  clickContinue(row);
+  await Promise.resolve();
+  assert.equal(dots().length, rowCount(), 'still one dot per step');
+  assert.ok(
+    dots().some((d) => d.dataset.status === 'COMPLETE'),
+    'answering a step completes its dot',
+  );
 });

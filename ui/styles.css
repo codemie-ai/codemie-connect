@@ -753,3 +753,28 @@ body::before {
    icon and title above the row's real centre, which is what the "Working…" row
    showed. */
 #setup-view .step-sub:empty { min-height: 0; margin-top: 0; }
+
+/* The wireframe draws a completed step's tick as a badge, not a loose glyph.
+   Only COMPLETE gets the ring: a circle around "▶" or "—" reads as a button. */
+#setup-view .step-row[data-status="COMPLETE"] .step-icon {
+  width: 20px;
+  height: 20px;
+  line-height: 18px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-full, 999px);
+  font-size: 11px;
+}
+
+/* The card's header: title on the left, the flow's progress dots on the right. */
+.setup-view-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 12px 14px; }
+.setup-view-header .setup-view-heading { margin: 0; }
+.setup-progress { display: flex; align-items: center; gap: 6px; }
+.setup-progress-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full, 999px);
+  background: var(--dim);
+}
+.setup-progress-dot[data-status="COMPLETE"] { background: var(--green); }
+.setup-progress-dot[data-status="ACTIVE"] { background: var(--accent); }
+.setup-progress-dot[data-status="ERROR"] { background: var(--red); }
