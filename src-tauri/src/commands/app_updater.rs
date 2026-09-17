@@ -128,7 +128,7 @@ fn get_base_url() -> String {
 #[cfg(target_os = "windows")]
 fn get_base_url_windows() -> String {
     std::env::var("CODEMIE_INSTALLER_BASE_URL_WINDOWS").unwrap_or_else(|_| {
-        "https://github.com/codemie-ai/codemie-code/tree/main/install/windows".to_string()
+        "https://github.com/codemie-ai/codemie-code/raw/main/install/windows".to_string()
     })
 }
 
@@ -136,7 +136,7 @@ fn get_base_url_windows() -> String {
 #[cfg(target_os = "macos")]
 fn get_base_url_macos() -> String {
     std::env::var("CODEMIE_INSTALLER_BASE_URL_MACOS").unwrap_or_else(|_| {
-        "https://github.com/codemie-ai/codemie-code/tree/main/install/macos".to_string()
+        "https://github.com/codemie-ai/codemie-code/raw/main/install/macos".to_string()
     })
 }
 
@@ -175,6 +175,15 @@ fn should_check(last: Option<Instant>, interval: Duration) -> bool {
     }
 }
 
+/// Validate that a version string is a valid semantic version (number.number.number)
+fn is_valid_version(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// Compare semantic versions: returns true if new_version > current_version
 fn is_newer_version(current: &str, new: &str) -> bool {
     let current_parts: Vec<u32> = current.split('.').filter_map(|p| p.parse().ok()).collect();
@@ -209,6 +218,16 @@ pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<St
             Ok(version_text) => {
                 let latest_version = version_text.trim();
                 *state.last_update_check.lock().unwrap() = Some(Instant::now());
+
+                // Validate that version is in semantic version format (e.g., "2.1.0")
+                // This prevents HTML 404 pages from being treated as valid versions
+                if !is_valid_version(latest_version) {
+                    eprintln!(
+                        "[app-updater] Invalid version format received: {}",
+                        latest_version
+                    );
+                    return Ok(None);
+                }
 
                 eprintln!(
                     "[app-updater] Current version: {}, Latest available: {}",
@@ -267,6 +286,16 @@ pub async fn download_and_install(
         .map_err(|e| InstallerError::Other(format!("Failed to read version: {e}")))?;
 
     let latest_version = version_text.trim();
+    
+    // Validate that version is in semantic version format (e.g., "2.1.0")
+    // This prevents HTML 404 pages from being treated as valid versions
+    if !is_valid_version(latest_version) {
+        return Err(InstallerError::Other(format!(
+            "Invalid version format received: {}",
+            latest_version
+        )));
+    }
+    
     eprintln!("[app-updater] Latest version available: {}", latest_version);
 
     // Construct the installer URL based on the version
