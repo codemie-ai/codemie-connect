@@ -7,7 +7,11 @@ use futures_util::StreamExt;
 use crate::error::{CmdResult, InstallerError};
 use crate::state::AppState;
 
-/// Launches the installer and lets the NSIS/DMG installer handle the rest (including uninstall).
+#[cfg(target_os = "macos")]
+use std::path::{Path, PathBuf};
+
+/// Launches the installer and lets the NSIS installer handle the rest (including uninstall).
+#[cfg(target_os = "windows")]
 fn launch_installer(installer_path: &str) -> CmdResult<()> {
     eprintln!("[app-updater] Launching installer: {}", installer_path);
     
@@ -16,6 +20,93 @@ fn launch_installer(installer_path: &str) -> CmdResult<()> {
         .map_err(|e| InstallerError::Other(format!("Failed to spawn installer: {e}")))?;
 
     Ok(())
+}
+
+/// A DMG cannot be run like the Windows setup exe. Mount it, swap the running
+/// app's bundle for the one inside, and start the new app once this process
+/// has exited.
+#[cfg(target_os = "macos")]
+fn launch_installer(installer_path: &str) -> CmdResult<()> {
+    let exe = std::env::current_exe()?;
+    let app = app_bundle_of(&exe).ok_or_else(|| {
+        InstallerError::Other("CodeMie Connect is not running from an app bundle".to_string())
+    })?;
+    install_app_from_dmg(Path::new(installer_path), &app)?;
+
+    // Wait for this process to exit, so the new app does not start next to the old one.
+    Command::new("/bin/sh")
+        .args([
+            "-c",
+            "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; open \"$2\"",
+            "sh",
+        ])
+        .arg(std::process::id().to_string())
+        .arg(&app)
+        .spawn()?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
+    exe.ancestors()
+        .find(|p| p.extension().is_some_and(|ext| ext == "app"))
+        .map(Path::to_path_buf)
+}
+
+#[cfg(target_os = "macos")]
+fn install_app_from_dmg(dmg: &Path, target: &Path) -> CmdResult<()> {
+    let mount = std::env::temp_dir().join(format!("codemie-update-{}", std::process::id()));
+    run_tool(
+        Command::new("hdiutil")
+            .args([
+                "attach",
+                "-nobrowse",
+                "-readonly",
+                "-noautoopen",
+                "-mountpoint",
+            ])
+            .arg(&mount)
+            .arg(dmg),
+    )?;
+    let result = replace_app_bundle(&mount, target);
+    let _ = Command::new("hdiutil").arg("detach").arg(&mount).status();
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn replace_app_bundle(mount: &Path, target: &Path) -> CmdResult<()> {
+    let new_app = std::fs::read_dir(mount)?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .find(|p| p.extension().is_some_and(|ext| ext == "app"))
+        .ok_or_else(|| InstallerError::Other("The update has no app in it".to_string()))?;
+
+    // Copy next to the installed app first, so a failed copy leaves it untouched.
+    let staged = target.with_extension("app-update");
+    let old = target.with_extension("app-old");
+    let _ = std::fs::remove_dir_all(&staged);
+    let _ = std::fs::remove_dir_all(&old);
+    run_tool(Command::new("ditto").arg(&new_app).arg(&staged))?;
+
+    std::fs::rename(target, &old)?;
+    if let Err(e) = std::fs::rename(&staged, target) {
+        let _ = std::fs::rename(&old, target);
+        return Err(e.into());
+    }
+    let _ = std::fs::remove_dir_all(&old);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn run_tool(cmd: &mut Command) -> CmdResult<()> {
+    let out = cmd.output()?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(InstallerError::Other(format!(
+        "{} failed: {}",
+        cmd.get_program().to_string_lossy(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    )))
 }
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -306,5 +397,65 @@ mod tests {
     #[test]
     fn installer_url_names_the_arm64_dmg() {
         assert!(get_installer_url("2.1.1").ends_with("/CodeMie%20Connect_2.1.1_aarch64.dmg"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_the_app_bundle_the_binary_runs_from() {
+        assert_eq!(
+            app_bundle_of(Path::new(
+                "/Applications/CodeMie Connect.app/Contents/MacOS/app"
+            )),
+            Some(Path::new("/Applications/CodeMie Connect.app").to_path_buf())
+        );
+        assert_eq!(
+            app_bundle_of(Path::new("/repo/src-tauri/target/release/app")),
+            None
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn replaces_the_app_bundle_with_the_one_in_the_dmg() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("New.app/Contents")).unwrap();
+        std::fs::write(src.join("New.app/Contents/version"), "new").unwrap();
+        let dmg = dir.path().join("update.dmg");
+        let created = Command::new("hdiutil")
+            .args([
+                "create",
+                "-quiet",
+                "-fs",
+                "HFS+",
+                "-volname",
+                "Update",
+                "-srcfolder",
+            ])
+            .arg(&src)
+            .arg(&dmg)
+            .status()
+            .unwrap();
+        assert!(created.success());
+
+        let target = dir.path().join("CodeMie Connect.app");
+        std::fs::create_dir_all(target.join("Contents")).unwrap();
+        std::fs::write(target.join("Contents/version"), "old").unwrap();
+        std::fs::write(target.join("Contents/stale"), "").unwrap();
+
+        install_app_from_dmg(&dmg, &target).unwrap();
+
+        let version = std::fs::read_to_string(target.join("Contents/version")).unwrap();
+        assert_eq!(version, "new");
+        assert!(!target.join("Contents/stale").exists());
+        let mut left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["CodeMie Connect.app", "src", "update.dmg"]);
+        let mounted = Command::new("hdiutil").arg("info").output().unwrap();
+        let canonical = dmg.canonicalize().unwrap();
+        assert!(!String::from_utf8_lossy(&mounted.stdout).contains(canonical.to_str().unwrap()));
     }
 }
