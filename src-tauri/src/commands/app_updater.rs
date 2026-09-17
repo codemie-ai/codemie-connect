@@ -1,8 +1,8 @@
-use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, State};
+use futures_util::StreamExt;
 use reqwest::Client;
 use std::process::Command;
-use futures_util::StreamExt;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::error::{CmdResult, InstallerError};
 use crate::state::AppState;
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
 fn launch_installer(installer_path: &str) -> CmdResult<()> {
     eprintln!("[app-updater] Launching installer: {}", installer_path);
-    
+
     Command::new(installer_path)
         .spawn()
         .map_err(|e| InstallerError::Other(format!("Failed to spawn installer: {e}")))?;
@@ -117,7 +117,7 @@ fn get_base_url() -> String {
     {
         get_base_url_windows()
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         get_base_url_macos()
@@ -127,15 +127,17 @@ fn get_base_url() -> String {
 /// Get the Windows installer base URL (configurable via CODEMIE_INSTALLER_BASE_URL_WINDOWS)
 #[cfg(target_os = "windows")]
 fn get_base_url_windows() -> String {
-    std::env::var("CODEMIE_INSTALLER_BASE_URL_WINDOWS")
-        .unwrap_or_else(|_| "https://github.com/codemie-ai/codemie-code/tree/main/install/windows".to_string())
+    std::env::var("CODEMIE_INSTALLER_BASE_URL_WINDOWS").unwrap_or_else(|_| {
+        "https://github.com/codemie-ai/codemie-code/tree/main/install/windows".to_string()
+    })
 }
 
 /// Get the macOS installer base URL (configurable via CODEMIE_INSTALLER_BASE_URL_MACOS)
 #[cfg(target_os = "macos")]
 fn get_base_url_macos() -> String {
-    std::env::var("CODEMIE_INSTALLER_BASE_URL_MACOS")
-        .unwrap_or_else(|_| "https://github.com/codemie-ai/codemie-code/tree/main/install/macos".to_string())
+    std::env::var("CODEMIE_INSTALLER_BASE_URL_MACOS").unwrap_or_else(|_| {
+        "https://github.com/codemie-ai/codemie-code/tree/main/install/macos".to_string()
+    })
 }
 
 /// Get the version.txt URL
@@ -147,9 +149,13 @@ fn get_version_url() -> String {
 fn get_installer_url(version: &str) -> String {
     #[cfg(target_os = "windows")]
     {
-        format!("{}/CodeMie%20Connect_{}_x64-setup.exe", get_base_url(), version)
+        format!(
+            "{}/CodeMie%20Connect_{}_x64-setup.exe",
+            get_base_url(),
+            version
+        )
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         format!(
@@ -171,14 +177,8 @@ fn should_check(last: Option<Instant>, interval: Duration) -> bool {
 
 /// Compare semantic versions: returns true if new_version > current_version
 fn is_newer_version(current: &str, new: &str) -> bool {
-    let current_parts: Vec<u32> = current
-        .split('.')
-        .filter_map(|p| p.parse().ok())
-        .collect();
-    let new_parts: Vec<u32> = new
-        .split('.')
-        .filter_map(|p| p.parse().ok())
-        .collect();
+    let current_parts: Vec<u32> = current.split('.').filter_map(|p| p.parse().ok()).collect();
+    let new_parts: Vec<u32> = new.split('.').filter_map(|p| p.parse().ok()).collect();
 
     for i in 0..new_parts.len().max(current_parts.len()) {
         let new_part = new_parts.get(i).copied().unwrap_or(0);
@@ -193,9 +193,7 @@ fn is_newer_version(current: &str, new: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn check_for_update(
-    state: State<'_, AppState>,
-) -> CmdResult<Option<String>> {
+pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<String>> {
     let last = *state.last_update_check.lock().unwrap();
     if !should_check(last, CHECK_INTERVAL) {
         return Ok(None);
@@ -204,28 +202,34 @@ pub async fn check_for_update(
     // Fetch latest version from remote repository
     let version_url = get_version_url();
     eprintln!("[app-updater] Checking for updates at: {}", version_url);
-    
+
     let client = Client::new();
     match client.get(&version_url).send().await {
-        Ok(response) => {
-            match response.text().await {
-                Ok(version_text) => {
-                    let latest_version = version_text.trim();
-                    *state.last_update_check.lock().unwrap() = Some(Instant::now());
+        Ok(response) => match response.text().await {
+            Ok(version_text) => {
+                let latest_version = version_text.trim();
+                *state.last_update_check.lock().unwrap() = Some(Instant::now());
 
-                    eprintln!("[app-updater] Current version: {}, Latest available: {}", APP_VERSION, latest_version);
-                    
-                    if is_newer_version(APP_VERSION, latest_version) {
-                        eprintln!("[app-updater] Update available: {} -> {}", APP_VERSION, latest_version);
-                        Ok(Some(latest_version.to_string()))
-                    } else {
-                        eprintln!("[app-updater] Already on latest version");
-                        Ok(None)
-                    }
+                eprintln!(
+                    "[app-updater] Current version: {}, Latest available: {}",
+                    APP_VERSION, latest_version
+                );
+
+                if is_newer_version(APP_VERSION, latest_version) {
+                    eprintln!(
+                        "[app-updater] Update available: {} -> {}",
+                        APP_VERSION, latest_version
+                    );
+                    Ok(Some(latest_version.to_string()))
+                } else {
+                    eprintln!("[app-updater] Already on latest version");
+                    Ok(None)
                 }
-                Err(e) => Err(InstallerError::Other(format!("Failed to read version: {e}"))),
             }
-        }
+            Err(e) => Err(InstallerError::Other(format!(
+                "Failed to read version: {e}"
+            ))),
+        },
         Err(_e) => {
             // Silently fail and mark as checked — don't spam errors on network issues
             *state.last_update_check.lock().unwrap() = Some(Instant::now());
@@ -249,26 +253,29 @@ pub async fn download_and_install(
     // First, fetch the latest version to construct the correct installer URL
     let version_url = get_version_url();
     eprintln!("[app-updater] Fetching version from: {}", version_url);
-    
+
     let client = Client::new();
     let version_response = client
         .get(&version_url)
         .send()
         .await
         .map_err(|e| InstallerError::Other(format!("Failed to fetch version: {e}")))?;
-    
+
     let version_text = version_response
         .text()
         .await
         .map_err(|e| InstallerError::Other(format!("Failed to read version: {e}")))?;
-    
+
     let latest_version = version_text.trim();
     eprintln!("[app-updater] Latest version available: {}", latest_version);
 
     // Construct the installer URL based on the version
     let installer_url = get_installer_url(latest_version);
-    eprintln!("[app-updater] Downloading installer from: {}", installer_url);
-    
+    eprintln!(
+        "[app-updater] Downloading installer from: {}",
+        installer_url
+    );
+
     // Extract filename from URL (last part after /)
     let filename = installer_url
         .split('/')
@@ -277,7 +284,7 @@ pub async fn download_and_install(
         .split('?')
         .next()
         .unwrap_or("installer.exe");
-    
+
     let response = client
         .get(&installer_url)
         .send()
@@ -312,7 +319,10 @@ pub async fn download_and_install(
     std::fs::write(&installer_path, installer_bytes)
         .map_err(|e| InstallerError::Other(format!("Failed to save installer: {e}")))?;
 
-    eprintln!("[app-updater] Installer saved to: {}", installer_path.display());
+    eprintln!(
+        "[app-updater] Installer saved to: {}",
+        installer_path.display()
+    );
 
     // Launch the installer (NSIS/DMG will handle uninstall as part of its process)
     let installer_str = installer_path.to_string_lossy().to_string();
@@ -324,7 +334,7 @@ pub async fn download_and_install(
     // Exit the app to release file locks and allow installer to proceed
     eprintln!("[app-updater] Exiting app to release file locks. Installer will proceed...");
     app.exit(0);
-    
+
     Ok(())
 }
 
