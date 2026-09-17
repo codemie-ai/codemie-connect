@@ -61,7 +61,11 @@ fn get_installer_url(version: &str) -> String {
     
     #[cfg(target_os = "macos")]
     {
-        format!("{}/CodeMie%20Connect_{}_x64.dmg", get_base_url(), version)
+        format!(
+            "{}/CodeMie%20Connect_{}_aarch64.dmg",
+            get_base_url(),
+            version
+        )
     }
 }
 
@@ -296,5 +300,11 @@ mod tests {
     fn error_serialises_to_string() {
         let e = InstallerError::Other("update failed".to_string());
         assert_eq!(e.to_string(), "update failed");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn installer_url_names_the_arm64_dmg() {
+        assert!(get_installer_url("2.1.1").ends_with("/CodeMie%20Connect_2.1.1_aarch64.dmg"));
     }
 }
