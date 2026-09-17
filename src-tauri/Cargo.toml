@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "2.2.0"
+version = "2.1.0"
 description = "EPAM AI/Run CodeMie Connect for macOS"
 authors = ["EPAM Systems — People Organization / WPM"]
 license = ""
