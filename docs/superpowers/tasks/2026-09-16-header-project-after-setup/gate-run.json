@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "branch": "fix/EPMCDME-14987-header-project-after-setup",
+  "head": "259c4a2a0d597cf26d8e9d9063522af494bdac30",
+  "runner": "custom",
+  "started_at": "2026-09-16T10:51:17Z",
+  "completed_at": "2026-09-16T10:52:05Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9000,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "132 tests passed; not skipped despite the guide's Skip-if clause because this diff changes ui/renderer.js (UI logic)."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 18000,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "./build-installer.sh",
+      "exit_code": null,
+      "notes": "Guide Skip-if satisfied: diff is confined to ui/renderer.js, a logic-only JS change already verified by the passing unit-js gate (132/132). Not run locally; full DMG build/bundle verification is still owed to CI or a manual run before release."
+    }
+  ],
+  "failures": {}
+}

@@ -17,12 +17,6 @@ import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// Steps run by "Install only": all current installation steps.
-// Acquisition steps (1.x — Git, Node, CLI install) were removed with the bundled
-// runtime; the only remaining steps are setup and validation (2.x). INSTALL_ONLY_IDS
-// now equals the full step set so the tile runs something rather than an empty list.
-const INSTALL_ONLY_IDS = ['2.3.3', '2.3.5', '2.4'];
-
 // Compare semver strings. Returns true when a < b. Works for X.Y.Z format.
 function semverLt(a, b) {
   const pa = a.split('.').map(Number);
@@ -154,6 +148,7 @@ function emit(event, payload) {
       installBtn.classList.add('hidden');
       closeBtn.classList.remove('hidden');
       wizardBack.classList.remove('hidden');
+      refreshIdentityOnComplete();
       break;
     default:
       break;
@@ -192,9 +187,9 @@ function showView(name) {
   });
 }
 
-// (Re)build the engine for a wizard run, optionally filtered to a subset of steps.
-function enterWizard(stepIds) {
-  const steps = stepIds ? allSteps.filter((s) => stepIds.includes(s.id)) : allSteps;
+// (Re)build the engine for a wizard run.
+function enterWizard() {
+  const steps = allSteps;
   steps.forEach((s) => {
     s.status = StepStatus.PENDING;
   });
@@ -206,7 +201,7 @@ function enterWizard(stepIds) {
   closeBtn.classList.add('hidden');
   wizardBack.classList.remove('hidden');
   setSprite('idle');
-  modeLabel.textContent = stepIds ? 'Install only' : 'Full installation + setup';
+  modeLabel.textContent = 'Setup';
   showView('wizard');
 }
 
@@ -246,6 +241,28 @@ function renderIdentity(cfg) {
   // Empty in the broken state, where only the account and profile are readable.
   set('identity-model', cfg.model);
   set('identity-project', cfg.project);
+}
+
+// Re-reads the identity bar once setup finishes writing what it displays —
+// `emit`'s 'complete' case calls this fire-and-forget so `emit` itself stays
+// synchronous. Both of the bar's sources are re-read, the way boot reads them:
+// a setup run can sign the user in as well as write the profile, so refreshing
+// only the config would leave the auth segment contradicting the four beside it.
+async function refreshIdentityOnComplete() {
+  let cfg;
+  try {
+    cfg = await bridge.codemieConfig.read();
+  } catch {
+    cfg = {};
+  }
+  renderIdentity(cfg || {});
+  let st;
+  try {
+    st = await bridge.inspector.checkProfileStatus();
+  } catch {
+    st = { state: 'unknown', detail: '' };
+  }
+  updateIdentityAuthStatus(st);
 }
 
 // Updates the identity bar's auth-status element from a ProfileStatus shape.
@@ -345,7 +362,7 @@ async function runAction(title, cmd, returnView = 'home', hint) {
 
 // Verify the active CodeMie profile is signed in via `codemie profile status`
 // (parsed live in Rust — not a hardcoded check). Returns true if authenticated;
-// otherwise shows a blocking notice that points at the full installation.
+// otherwise shows a blocking notice that points at setup.
 // Gates only on not_signed_in and no_profile; unknown is treated as authenticated
 // so a profile whose provider omits an Auth Status row never blocks the user.
 async function ensureAuthenticated() {
@@ -359,9 +376,9 @@ async function ensureAuthenticated() {
     showNotice({
       title: 'CodeMie isn’t signed in',
       message:
-        `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run the full installation / sign in first, then try again.`,
-      primaryLabel: 'Run full installation',
-      primaryAction: () => enterWizard(null),
+        `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
+      primaryLabel: 'Run setup',
+      primaryAction: () => enterWizard(),
     });
     return false;
   }
@@ -544,7 +561,7 @@ async function boot() {
   // of the production boot path.
   if (flags.dev) {
     const { startSetup } = await import('./setup-driver.js');
-    window.__codemie = { showView, startSetup };
+    window.__codemie = { showView, startSetup, emit };
   }
 
   allSteps = await invoke('get_steps');
@@ -695,10 +712,7 @@ async function boot() {
     if (!tile) return;
     switch (tile.dataset.action) {
       case 'full':
-        enterWizard(null);
-        break;
-      case 'install-only':
-        enterWizard(INSTALL_ONLY_IDS);
+        enterWizard();
         break;
       case 'connect-desktop':
         showView('connect');

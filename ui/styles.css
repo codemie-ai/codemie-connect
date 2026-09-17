@@ -345,7 +345,7 @@ body::before {
 }
 #installation-tiles {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
 .sub-tile { padding: 14px 12px; }

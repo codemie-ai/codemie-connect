@@ -8,7 +8,7 @@ import { test, expect, Page } from '@playwright/test';
 // `toBeHidden()` is what proves the segment was actually omitted.
 
 const BASE_INVOKES: Record<string, unknown> = {
-  smoke_mode: { probe: false, smoke: false },
+  smoke_mode: { probe: false, smoke: false, dev: true },
   get_steps: [],
   get_logo_path: '',
   check_profile_status: { authenticated: true, detail: '' },
@@ -46,6 +46,7 @@ async function boot(page: Page, responses: Record<string, unknown>) {
       core: { invoke: async (cmd: string) => (cmd in r ? (r as any)[cmd] : null) },
       event: { listen: async () => () => {} },
     };
+    (window as any).__invokeResponses = r;
   }, { r: responses });
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
@@ -92,6 +93,36 @@ test('broken config shows what is readable and hides the rest', async ({ page })
   await expect(page.locator('#identity-model')).toBeHidden();
   await expect(page.locator('#identity-project')).toBeHidden();
   await expect(page.locator('#identity-product')).toBeHidden();
+});
+
+test('setup completion re-renders the project from the refreshed config', async ({ page }) => {
+  await boot(page, withConfig({ state: 'valid', profile: 'default', model: 'sonnet', project: '', account: null }));
+  await expect(page.locator('#identity-project')).toBeHidden();
+  await page.evaluate(() => {
+    (window as any).__invokeResponses.read_codemie_config =
+      { state: 'valid', profile: 'default', model: 'sonnet', project: 'epm-cdme', account: null };
+    (window as any).__codemie.emit('complete', { ok: true });
+  });
+  await expect(page.locator('#identity-project')).toHaveText('epm-cdme');
+});
+
+// A setup run can sign the user in as well as write the profile, so the auth
+// segment is re-read too. Refreshing only the config left it reading the state
+// from boot next to four segments that had moved on.
+test('setup completion re-renders the auth status alongside the config', async ({ page }) => {
+  await boot(page, {
+    ...withConfig({ state: 'no-configuration', profile: '', model: '', project: '', account: null }),
+    check_profile_status: { state: 'no_profile', detail: '' },
+  });
+  await expect(page.locator('#identity-auth-status')).toHaveText('No profile');
+  await page.evaluate(() => {
+    (window as any).__invokeResponses.read_codemie_config =
+      { state: 'valid', profile: 'default', model: 'sonnet', project: 'epm-cdme', account: null };
+    (window as any).__invokeResponses.check_profile_status = { state: 'signed_in', detail: 'a@epam.com' };
+    (window as any).__codemie.emit('complete', { ok: true });
+  });
+  await expect(page.locator('#identity-auth-status')).toHaveText('a@epam.com');
+  await expect(page.locator('#identity-project')).toHaveText('epm-cdme');
 });
 
 test('a hidden segment does not leave a dangling separator', async ({ page }) => {
