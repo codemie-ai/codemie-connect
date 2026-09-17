@@ -184,7 +184,9 @@ fn is_valid_version(version: &str) -> bool {
         return false;
     }
     // All parts must be non-empty and contain only digits
-    parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    parts
+        .iter()
+        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Compare semantic versions: returns true if new_version > current_version
@@ -289,7 +291,7 @@ pub async fn download_and_install(
         .map_err(|e| InstallerError::Other(format!("Failed to read version: {e}")))?;
 
     let latest_version = version_text.trim();
-    
+
     // Validate that version is in semantic version format (e.g., "2.1.0")
     // This prevents HTML 404 pages from being treated as valid versions
     if !is_valid_version(latest_version) {
@@ -298,7 +300,7 @@ pub async fn download_and_install(
             latest_version
         )));
     }
-    
+
     eprintln!("[app-updater] Latest version available: {}", latest_version);
 
     // Construct the installer URL based on the version
