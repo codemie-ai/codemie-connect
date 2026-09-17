@@ -272,7 +272,7 @@ pub async fn download_and_install(
     // Extract filename from URL (last part after /)
     let filename = installer_url
         .split('/')
-        .last()
+        .next_back()
         .unwrap_or("installer.exe")
         .split('?')
         .next()
