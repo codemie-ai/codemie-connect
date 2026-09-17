@@ -125,6 +125,10 @@ pub fn run() {
             commands::smoke::smoke_emit,
             steps::get_steps,
             steps::get_logo_path,
+            commands::app_updater::check_for_update,
+            commands::app_updater::download_and_install,
+            commands::app_updater::restart_app,
+            commands::app_updater::get_app_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

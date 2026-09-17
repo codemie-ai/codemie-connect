@@ -1,3 +1,4 @@
+pub mod app_updater;
 pub mod codemie_config;
 pub mod downloader;
 pub mod handshake;

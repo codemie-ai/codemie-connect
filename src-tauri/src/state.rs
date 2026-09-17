@@ -7,6 +7,7 @@
 // `pty` holds the active pseudo-terminal so `pty_input` / `pty_resize` can reach
 // the currently running interactive command.
 use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::commands::pty::PtyHandle;
 
@@ -33,4 +34,7 @@ pub struct AppState {
     /// `run_self_update` falls back to the PATH-resolved CLI instead of a
     /// bundled one that was never installed (EPMCDME-14581).
     pub existing_cli_detected: bool,
+    /// Timestamp of the last successful app update check. Guards the 24 h throttle in
+    /// `commands::app_updater::check_for_update`.
+    pub last_update_check: Mutex<Option<Instant>>,
 }

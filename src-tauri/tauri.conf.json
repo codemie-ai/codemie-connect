@@ -1,10 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CodeMie Connect",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "identifier": "com.epam.codemie.installer",
   "build": {
     "frontendDist": "../ui"
+  },
+  "plugins": {
   },
   "app": {
     "withGlobalTauri": true,

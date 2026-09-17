@@ -12,6 +12,7 @@ import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeT
 import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
 import { isBlockedState } from './auth-gate.js';
+import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -31,6 +32,7 @@ function semverLt(a, b) {
 
 // Populated during boot(); consumed by runAnalytics() and runUpdateCli().
 const cliVersionState = { installed: '', latest: '', updateAvailable: false };
+const appVersionState = { latest: null, updateAvailable: false };
 
 // Capture boot/runtime errors so the smoke self-test can read them.
 window.addEventListener('error', (e) => {
@@ -329,6 +331,23 @@ function dismissUpdateBanner() {
   setGridUpdateCue(false);
 }
 
+function showAppUpdateBanner(latestVersion) {
+  // Always show the banner on fresh check — sessionStorage is cleared per session,
+  // so dismissed state should not persist across app restarts.
+  // The backend throttles checks to 24h via codemie.app.lastUpdateCheck in localStorage.
+  document.getElementById('app-update-to').textContent = latestVersion;
+  document.getElementById('app-update-banner').classList.remove('hidden');
+}
+
+function hideAppUpdateBanner() {
+  document.getElementById('app-update-banner').classList.add('hidden');
+}
+
+function dismissAppUpdateBanner() {
+  sessionStorage.setItem('app-update-banner-dismissed', '1');
+  hideAppUpdateBanner();
+}
+
 // ---- one-shot command action (proxy connect / analytics) ----
 async function runAction(title, cmd, returnView = 'home', hint) {
   openTerminal(title, { keepOpen: true, hint, onClose: () => showView(returnView) });
@@ -489,6 +508,44 @@ async function runUpdateCli() {
   }
 }
 
+let updateAppRunning = false;
+
+async function runUpdateApp() {
+  if (updateAppRunning) return;
+  updateAppRunning = true;
+
+  const bannerRunBtn = document.getElementById('app-update-banner-run');
+  bannerRunBtn.disabled = true;
+  bannerRunBtn.textContent = 'Downloading…';
+
+  const id = `app-update-${Date.now()}`;
+  try {
+    await bridge.updater.downloadAndInstall(id, ({ percent }) => {
+      bannerRunBtn.textContent = `Downloading… ${percent}%`;
+    });
+
+    bannerRunBtn.textContent = 'Installer running…';
+    bannerRunBtn.disabled = true;
+    // The installer window is now visible and running
+    // Wait for Tauri's runtime to clean up gracefully before exiting
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await bridge.updater.restartApp();
+  } catch (err) {
+    bannerRunBtn.disabled = false;
+    bannerRunBtn.textContent = 'Update app';
+    const banner = document.getElementById('app-update-banner');
+    let errorEl = banner.querySelector('.update-error');
+    if (!errorEl) {
+      errorEl = document.createElement('span');
+      errorEl.className = 'update-error';
+      banner.appendChild(errorEl);
+    }
+    errorEl.textContent = String(err);
+  } finally {
+    updateAppRunning = false;
+  }
+}
+
 async function boot() {
   const flags = await invoke('smoke_mode');
 
@@ -541,6 +598,14 @@ async function boot() {
     if (installRunning) return;
     dismissUpdateBanner();
   });
+  document.getElementById('app-update-banner-run').addEventListener('click', () => {
+    if (installRunning) return;
+    runUpdateApp();
+  });
+  document.getElementById('app-update-banner-dismiss').addEventListener('click', () => {
+    if (installRunning) return;
+    dismissAppUpdateBanner();
+  });
 
   // Check CLI version vs npm latest at startup (non-blocking)
   Promise.all([
@@ -555,6 +620,26 @@ async function boot() {
   }).catch(() => {
     // Silently ignore — offline or CLI not installed
   });
+
+  // App self-update check — once per 24 h
+  // Use version-based localStorage key so each app version has its own check state
+  const appVersion = await invoke('get_app_version');
+  const lastUpdateCheckKey = `codemie.app.lastUpdateCheck.${appVersion}`;
+  const lastAppCheck = localStorage.getItem(lastUpdateCheckKey);
+  
+  if (shouldCheckForAppUpdate(lastAppCheck)) {
+    bridge.updater.checkForAppUpdate().then((latestVersion) => {
+      if (latestVersion) {
+        appVersionState.latest = latestVersion;
+        appVersionState.updateAvailable = true;
+        showAppUpdateBanner(latestVersion);
+      }
+      localStorage.setItem(lastUpdateCheckKey, new Date().toISOString());
+    }).catch((err) => {
+      console.error('[app-updater] check failed:', err);
+      // Silent failure on boot — do not show an error banner.
+    });
+  }
 
   // Identity bar: live auth status.
   bridge.inspector.checkProfileStatus().then((st) => {
