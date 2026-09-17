@@ -1,11 +1,9 @@
 {
   "version": 2,
-  "activeProfile": "epm-cdme",
+  "activeProfile": "MarianOpus47",
   "profiles": {
     "epm-cdme": {
-      "codeMieProject": "epm-cdme",
       "provider": "ai-run-sso",
-      "codeMieUrl": "https://codemie.lab.epam.com",
       "apiKey": "sso-provided",
       "baseUrl": "https://codemie.lab.epam.com/code-assistant-api",
       "model": "claude-sonnet-4-6",
@@ -28,5 +26,9 @@
         "claude"
       ]
     }
-  ]
+  ],
+  "workspace": {
+    "codeMieUrl": "https://codemie.lab.epam.com",
+    "codeMieProject": "epm-cdme"
+  }
 }

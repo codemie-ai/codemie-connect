@@ -315,7 +315,9 @@ function dismissUpdateBanner() {
 }
 
 function showAppUpdateBanner(latestVersion) {
-  if (sessionStorage.getItem('app-update-banner-dismissed')) return;
+  // Always show the banner on fresh check — sessionStorage is cleared per session,
+  // so dismissed state should not persist across app restarts.
+  // The backend throttles checks to 24h via codemie.app.lastUpdateCheck in localStorage.
   document.getElementById('app-update-to').textContent = latestVersion;
   document.getElementById('app-update-banner').classList.remove('hidden');
 }
@@ -505,8 +507,11 @@ async function runUpdateApp() {
       bannerRunBtn.textContent = `Downloading… ${percent}%`;
     });
 
-    bannerRunBtn.textContent = 'Restarting…';
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    bannerRunBtn.textContent = 'Installer running…';
+    bannerRunBtn.disabled = true;
+    // The installer window is now visible and running
+    // Wait for Tauri's runtime to clean up gracefully before exiting
+    await new Promise((resolve) => setTimeout(resolve, 2000));
     await bridge.updater.restartApp();
   } catch (err) {
     bannerRunBtn.disabled = false;
@@ -600,7 +605,11 @@ async function boot() {
   });
 
   // App self-update check — once per 24 h
-  const lastAppCheck = localStorage.getItem('codemie.app.lastUpdateCheck');
+  // Use version-based localStorage key so each app version has its own check state
+  const appVersion = await invoke('get_app_version');
+  const lastUpdateCheckKey = `codemie.app.lastUpdateCheck.${appVersion}`;
+  const lastAppCheck = localStorage.getItem(lastUpdateCheckKey);
+  
   if (shouldCheckForAppUpdate(lastAppCheck)) {
     bridge.updater.checkForAppUpdate().then((latestVersion) => {
       if (latestVersion) {
@@ -608,7 +617,7 @@ async function boot() {
         appVersionState.updateAvailable = true;
         showAppUpdateBanner(latestVersion);
       }
-      localStorage.setItem('codemie.app.lastUpdateCheck', new Date().toISOString());
+      localStorage.setItem(lastUpdateCheckKey, new Date().toISOString());
     }).catch((err) => {
       console.error('[app-updater] check failed:', err);
       // Silent failure on boot — do not show an error banner.
