@@ -175,12 +175,15 @@ fn should_check(last: Option<Instant>, interval: Duration) -> bool {
     }
 }
 
-/// Validate that a version string is a valid semantic version (number.number.number)
+/// Validate that a version string is a valid semantic version (minimum: N.N.N, e.g., 2.1.0)
+/// Also accepts 4+ part versions like N.N.N.N (e.g., 2.1.0.1)
 fn is_valid_version(version: &str) -> bool {
     let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() < 2 {
+    // Require at least 3 parts (MAJOR.MINOR.PATCH as minimum)
+    if parts.len() < 3 {
         return false;
     }
+    // All parts must be non-empty and contain only digits
     parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
