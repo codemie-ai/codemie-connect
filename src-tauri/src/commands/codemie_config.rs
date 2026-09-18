@@ -73,13 +73,23 @@ pub fn parse_config(raw: &str) -> CodemieConfig {
         .and_then(|p| p.get(profile))
         .filter(|p| p.is_object())
     {
-        Some(p) => CodemieConfig {
-            state: ConfigState::Valid,
-            profile: profile.to_string(),
-            model: str_field(p, "model"),
-            project: str_field(p, "codeMieProject"),
-            account,
-        },
+        Some(p) => {
+            // CLI 0.15 moved the project out of the profile into the top-level
+            // `workspace`, which wins over the profile the way the CLI's own config
+            // loader applies it. Profiles written by older CLIs still carry their own.
+            let project = json
+                .get("workspace")
+                .map(|w| str_field(w, "codeMieProject"))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| str_field(p, "codeMieProject"));
+            CodemieConfig {
+                state: ConfigState::Valid,
+                profile: profile.to_string(),
+                model: str_field(p, "model"),
+                project,
+                account,
+            }
+        }
         // activeProfile names nothing in `profiles`. Show what is readable.
         None => CodemieConfig {
             state: ConfigState::Broken,
@@ -151,6 +161,27 @@ mod tests {
         assert_eq!(c.state, ConfigState::Valid);
         assert_eq!(c.model, "claude-sonnet-4-6");
         assert!(c.account.is_none(), "absent account must stay absent");
+    }
+
+    // Shape written by CLI 0.15: the profile has no project, the workspace does.
+    #[test]
+    fn project_is_read_from_the_workspace_when_the_profile_has_none() {
+        let c = parse_config(
+            r#"{"activeProfile":"test9",
+                "profiles":{"test9":{"model":"claude-sonnet-5"}},
+                "workspace":{"codeMieUrl":"https://codemie.lab.epam.com","codeMieProject":"epm-sdai"}}"#,
+        );
+        assert_eq!(c.project, "epm-sdai");
+    }
+
+    #[test]
+    fn workspace_project_wins_over_the_profile_like_the_cli() {
+        let c = parse_config(
+            r#"{"activeProfile":"old",
+                "profiles":{"old":{"model":"x","codeMieProject":"from-profile"}},
+                "workspace":{"codeMieProject":"from-workspace"}}"#,
+        );
+        assert_eq!(c.project, "from-workspace");
     }
 
     #[test]

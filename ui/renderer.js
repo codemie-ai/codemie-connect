@@ -653,6 +653,17 @@ async function boot() {
     .then((cfg) => renderIdentity(cfg || {}))
     .catch(() => renderIdentity({}));
 
+  // Re-read the identity bar when the window comes back to the front, so a
+  // profile switched in a terminal shows without restarting the app. Skipped
+  // during a setup run, which refreshes the bar itself when it completes, and
+  // spaced out because the auth half runs the CLI.
+  let identityReadAt = Date.now();
+  window.addEventListener('focus', () => {
+    if (installRunning || Date.now() - identityReadAt < 5000) return;
+    identityReadAt = Date.now();
+    refreshIdentityOnComplete();
+  });
+
   const [platformInfo, tmpDir] = await Promise.all([
     invoke('get_platform_info'),
     invoke('temp_dir'),
