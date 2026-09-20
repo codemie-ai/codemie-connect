@@ -1,9 +1,0 @@
-{
-  "standards_review": [
-    {"kind": "commit-format", "status": "pass", "notes": "4 subjects audited: 3 feat and 1 chore, all matching the documented <type>: <short description> format with no disallowed scopes. Types are all in the permitted set."},
-    {"kind": "code-quality", "status": "na", "notes": ".ai-run/guides/standards/code-quality.md does not exist in the repo and no ArtifactRef was passed."},
-    {"kind": "security", "status": "na", "notes": ".ai-run/guides/development/security-patterns.md does not exist in the repo and no ArtifactRef was passed. Changed files (inspector.rs, runner-bridge.js, renderer.js, signin-parse.js) were reviewed for concrete issues: no credential logging, no user-controlled shell injection (startSignIn hard-codes the command string), no path traversal, and profile-status detail values are CLI output strings rather than secrets. No concrete security defects found."}
-  ],
-  "blocking_findings": [],
-  "coverage_gap": false
-}

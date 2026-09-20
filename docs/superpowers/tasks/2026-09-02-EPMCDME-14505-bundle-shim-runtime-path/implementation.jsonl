@@ -1,6 +1,0 @@
-{"task_id":"task-1","status":"done","commit":"5468a7c","test_command":"npm test"}
-{"task_id":"task-2","status":"done","commit":"8320129","test_command":"npm test"}
-{"task_id":"task-3","status":"done","commit":"0451650","test_command":"cd src-tauri && cargo test --test bundle_resources"}
-{"task_id":"task-4","status":"done","commit":"e3ef97d","test_command":"cd src-tauri && cargo test"}
-{"task_id":"task-5","status":"done","commit":"cd39000","test_command":".\build-installer.ps1 -SkipStage"}
-{"task_id":"task-6","status":"done","commit":"d34a85e","test_command":"npm test"}

@@ -20,15 +20,47 @@ assets/bin/
 # SDLC Factory local run journals
 .ai-run/runs/
 
-# SDLC Factory task-dir artifacts intentionally excluded from commit-artifacts:
-# machine/environment-specific or regenerable from git history (see commit-artifacts script).
-docs/superpowers/tasks/*/state.local.json
-docs/superpowers/tasks/*/.state.json
-docs/superpowers/tasks/*/gate-plan.local.json
-docs/superpowers/tasks/*/gate-plan.json
-docs/superpowers/tasks/*/*.diff
-docs/superpowers/tasks/*/test.local.log
-docs/superpowers/tasks/*/.test.log
+# SDLC Factory: keep the durable record, ignore the machine state.
+# Same shape as epm-cdme/codemie (MR !4289): prose is durable, so a new Factory
+# artifact needs no rule here; resume cursors, diff snapshots, per-lens review
+# inputs and task briefs stay ignored.
+docs/superpowers/tasks/**
+!docs/superpowers/tasks/*/
+!docs/superpowers/tasks/*/**/
+# Durable: every hand-authored document, plus the records a run cannot regenerate
+!docs/superpowers/tasks/*/**/*.md
+!docs/superpowers/tasks/*/**/*.py
+!docs/superpowers/tasks/*/**/actual-complexity.json
+!docs/superpowers/tasks/*/**/code-review-final.json
+!docs/superpowers/tasks/*/**/code-review-findings.json
+!docs/superpowers/tasks/*/**/complexity.json
+!docs/superpowers/tasks/*/**/complexity-assessment.json
+!docs/superpowers/tasks/*/**/complexity-assessment-actual.json
+!docs/superpowers/tasks/*/**/gate-run.json
+!docs/superpowers/tasks/*/**/meta.json
+!docs/superpowers/tasks/*/**/decisions.jsonl
+!docs/superpowers/tasks/*/**/events.jsonl
+!docs/superpowers/tasks/*/**/work-item-events.jsonl
+# Durable in this repo: the run's own evidence and its Playwright suites
+# (the CodeMie repo covers its equivalents with *.py; ours are .ts/.mjs/.png)
+!docs/superpowers/tasks/*/**/evidence/**
+!docs/superpowers/tasks/*/**/dynamic-tests/**
+# ...minus the documents the Factory generates around a run rather than as its record
+docs/superpowers/tasks/*/**/lens-*.md
+docs/superpowers/tasks/*/**/code-review-brief.md
+docs/superpowers/tasks/*/**/mr-body.md
+docs/superpowers/tasks/*/**/mr-title.txt
+docs/superpowers/tasks/*/**/mr-description.md
+# Shape rules: disposable machine state, whatever the Factory names it next
+docs/superpowers/tasks/*/**/*.local.*
+docs/superpowers/reviews/*/**/*.local.*
+# The legacy reviews/ folder keeps the same split: verdicts stay, review inputs go
+docs/superpowers/reviews/*/**/lens-*
+docs/superpowers/reviews/*/**/code-review-brief.md
+docs/superpowers/reviews/*/**/*.diff
+docs/superpowers/reviews/*/**/*.head
+docs/superpowers/reviews/*/**/standards-review.json
+docs/superpowers/reviews/*/**/code-review-check*
 apple_developer
 .env.signing
 .superpowers/

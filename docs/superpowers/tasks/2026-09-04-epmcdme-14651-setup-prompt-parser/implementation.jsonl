@@ -1,6 +1,0 @@
-{"task_id":"task-1","status":"done","commit":"9bd9a23","test_command":"node --input-type=module -e \"import {readdirSync,readFileSync} from 'node:fs'; const d='ui/test/fixtures/setup'; for (const f of readdirSync(d)) { const a=JSON.parse(readFileSync(d+'/'+f,'utf8')); if (!Array.isArray(a)||a.length!==30) throw new Error(f); } console.log('OK')\""}
-{"task_id":"task-2","status":"done","commit":"0bb6294","test_command":"node --test ui/test/setup-parse.test.mjs"}
-{"task_id":"task-3","status":"done","commit":"25e140d","test_command":"npm test"}
-{"task_id":"task-4-real-fixtures","status":"done","commit":"1a8e3d1","test_command":"npm test"}
-{"task_id":"task-5-credential-fix","status":"done","commit":"51c6834","test_command":"npm test"}
-{"task_id":"review-fix","status":"done","commit":"0904fb5","test_command":"npm test"}

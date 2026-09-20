@@ -1,2 +1,0 @@
-{"task_id":"task-1","status":"done","commit":"3de2efc","test_command":"node --test ui/test/steps-ui.test.mjs"}
-{"task_id":"task-2","status":"done","commit":"c2f5385","test_command":"npm test"}

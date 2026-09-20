@@ -1,9 +1,0 @@
-{
-  "standards_review": [
-    {"kind": "commit-format", "status": "pass", "notes": "13 subjects reviewed; all follow the documented '<type>: <short description>' format with valid types (feat, fix, docs) and no scope anti-patterns"},
-    {"kind": "code-quality", "status": "na", "notes": "No .ai-run/guides/standards/code-quality.md found in the repository; no standard to adjudicate against"},
-    {"kind": "security", "status": "na", "notes": "No .ai-run/guides/development/security-patterns.md found in the repository. No concrete security issues newly introduced: the cmd.exe /c dispatch replaces powershell.exe without changing injection exposure; run_self_update on Windows now uses Command::new with absolute paths (no shell), which is safer; inject_bundled_bin_path uses unsafe set_var documented as called before any plugin thread; codemie.cmd %~dp0 expansion is application-controlled. The pre-existing prefix interpolation risk in ui/handlers.js lines 167 and 171 (npm output embedded in shell strings with only quote-wrapping) predates this PR and was not introduced by these commits."}
-  ],
-  "blocking_findings": [],
-  "coverage_gap": false
-}

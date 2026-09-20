@@ -1,3 +1,0 @@
-{"task_id":"task-1","status":"done","commit":"5bc39ca","test_command":"cd src-tauri && cargo test"}
-{"task_id":"task-2","status":"done","commit":"8b46559","test_command":"cd src-tauri && cargo test"}
-{"task_id":"task-3","status":"done","commit":"db7e738","test_command":"npm test"}
