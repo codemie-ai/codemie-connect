@@ -60,6 +60,8 @@ docs/superpowers/tasks/**
 # (the CodeMie repo covers its equivalents with *.py; ours are .ts/.mjs/.png)
 !docs/superpowers/tasks/*/**/evidence/**
 !docs/superpowers/tasks/*/**/dynamic-tests/**
+# ...but not the run output the suites write
+docs/superpowers/tasks/*/**/dynamic-tests/results.json
 # ...minus the documents the Factory generates around a run rather than as its record
 docs/superpowers/tasks/*/**/lens-*.md
 docs/superpowers/tasks/*/**/code-review-brief.md
