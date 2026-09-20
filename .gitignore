@@ -16,6 +16,21 @@ assets/bin/
 
 # Claude Code transient state
 .claude/scheduled_tasks.lock
+.claude/settings.local.json
+/.mcp.json*
+
+# Editors
+.idea/
+.vscode/
+
+# Local env files (the signing one is listed further down)
+.env
+.env.local
+
+# Generated locally, never committed
+/.codegraph/
+docs/codemie/
+dist/
 
 # SDLC Factory local run journals
 .ai-run/runs/
