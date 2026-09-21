@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-14589-home-checklist",
+  "head": "4e3cbe157fec7f47f656fe1242429955ef5800a0",
+  "runner": "npm+cargo",
+  "started_at": "2026-09-21T10:02:05Z",
+  "completed_at": "2026-09-21T10:02:33Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7586,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "317 tests passing, 0 failures"
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1229,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "lint-clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3958,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 20145,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "94 unit + 2 integration passed (bundle_resources.rs); no Rust code changed this session"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "N/A",
+      "command": "./build-installer.sh",
+      "notes": "Out of requested scope; guide's own Skip-if also applies (JS-only change verified by tests, no Rust changes)"
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "SKIPPED",
+      "notes": "Diff touches ui/index.html (UI glob) but the guide defines no gate beyond npm test for UI surface changes; ui/test/home-copy.test.mjs (covering this change) ran as part of the unit-js gate above. package.json's test:ui (Playwright dynamic-tests suite) is a separate, unrelated fixture suite and was out of the requested scope."
+    }
+  ],
+  "failures": {}
+}

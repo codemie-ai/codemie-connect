@@ -1,0 +1,11 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens (the only applicable compact-profile lens) surfaced 2 candidates that both trace to the same pre-existing gap in runAnalytics()'s CLI-installed guard, now reachable via the newly-unhidden sidebar entry; deferred (1) as out of scope per this ticket's own scoping and matching the identical unguarded pattern already live on Connect Claude Desktop, not introduced by this diff. Acceptance lens did not run — no-spec (task has no story/spec artifact) — so confidence is capped low and business_review is empty. Standards audit not expected for the compact profile, no coverage gap. No dismissed findings.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not run — compact profile omits it for this round." }
+  ],
+  "findings": []
+}
