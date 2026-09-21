@@ -1,0 +1,101 @@
+
+📦 Available Agents:
+
+  CodeMie Code (0.0.47)
+    Command: codemie-code
+    Status: ✓ installed
+    CodeMie Code - AI coding assistant
+
+  Claude Code (2.1.269)
+    Command: claude
+    Status: ✓ installed
+    Claude Code - official Anthropic CLI tool
+
+  Claude Code ACP
+    Command: claude-acp
+    Status: not installed
+    Claude Code ACP adapter for editor integration (Zed, Emacs, etc.)
+
+  Gemini CLI
+    Command: gemini
+    Status: not installed
+    Google Gemini CLI - AI coding assistant
+
+  OpenCode CLI (1.18.31)
+    Command: opencode
+    Status: ✓ installed
+    OpenCode - open-source AI coding assistant
+
+  OpenAI Codex CLI
+    Command: codex
+    Status: not installed
+    OpenAI Codex CLI - AI coding agent by OpenAI
+
+  Pi
+    Command: pi
+    Status: not installed
+    Pi - open-source coding agent harness
+
+  Kimi Code
+    Command: kimi
+    Status: not installed
+    Kimi Code CLI - Moonshot AI coding agent
+
+  Kimi Code ACP
+    Command: kimi-acp
+    Status: not installed
+    Kimi Code CLI ACP mode for IDE integration
+
+  OpenWiki
+    Command: openwiki
+    Status: not installed
+    OpenWiki - agent-written, self-updating wiki for your codebase
+
+  GitHub Copilot CLI
+    Command: copilot
+    Status: not installed
+    GitHub Copilot CLI - AI coding agent managed by CodeMie
+
+🛠️  Available Frameworks:
+
+  SpecKit
+    Command: speckit
+    Status: not installed
+    GitHub's spec-driven development toolkit
+    Docs: https://github.com/github/spec-kit
+
+  BMAD Method
+    Command: bmad
+    Status: not installed
+    Business Methodology for Agile Development with AI agents
+    Docs: https://github.com/bmad-code-org/BMAD-METHOD
+
+  Codebase Memory MCP
+    Command: codebase-memory
+    Status: not installed
+    Persistent code intelligence graph with MCP tools and 3D visualization UI
+    Docs: https://github.com/DeusData/codebase-memory-mcp
+
+  CodeGraph v1.5.0
+    Command: codegraph
+    Status: ✓ installed
+    Local-first code intelligence graph and MCP server for AI agents
+    Docs: https://www.npmjs.com/package/@colbymchenry/codegraph
+
+  Graphify
+    Command: graphify
+    Status: not installed
+    Queryable knowledge graph for your codebase, docs and images (Claude Code skill)
+    Docs: https://github.com/safishamsi/graphify
+
+
+──────────────────────────────────────────────────
+  Next Steps:
+
+  • Install an agent:      codemie install <agent>
+  • Run an agent:          codemie-<agent>
+  • Run a quick task:      codemie --task "your task"
+  • Install framework:     codemie install <framework>
+  • Initialize framework:    codemie-<agent> init
+  • Explore more:          codemie --help
+
