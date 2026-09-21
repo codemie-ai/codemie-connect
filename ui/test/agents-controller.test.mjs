@@ -228,7 +228,10 @@ function fakeRunStream(scriptedLines, code = 0) {
   };
 }
 
-test('clicking Install on a not-installed row runs the exact install command with no version', async () => {
+// No --supported: it routes every agent to the native-installer path and
+// fails for the eight that install through npm. See
+// .ai-run/decisions/2026-09-21-EPMCDME-14514-install-without-supported.md.
+test('clicking Install on a not-installed row runs the exact install command with no version and no flag', async () => {
   const container = makeEl('div');
   const runStream = fakeRunStream([['Installing gemini…', 'stdout']]);
   await createAgentsController({
@@ -240,7 +243,7 @@ test('clicking Install on a not-installed row runs the exact install command wit
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
   slot._children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(runStream.calls, ['codemie install gemini --supported']);
+  assert.deepEqual(runStream.calls, ['codemie install gemini']);
 });
 
 test('clicking Update on an installed row runs the exact update command; Remove runs uninstall', async () => {
@@ -401,7 +404,7 @@ test('a second click on the same row while its action is in flight does not fire
   await new Promise((r) => setImmediate(r));
   release();
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(runStream.calls, ['codemie install gemini --supported']);
+  assert.deepEqual(runStream.calls, ['codemie install gemini']);
 });
 
 test('a failing action with no real output never shows the echoed command as the error message', async () => {
@@ -468,4 +471,40 @@ test('refresh() re-reads and re-renders without going through the loading-blanki
   seenLoadingText.length = 0;
   await c.refresh();
   assert.equal(seenLoadingText.some((t) => /Reading the agent list/.test(t)), false);
+});
+
+// Captured from a real failing run of `codemie install claude-acp --supported`.
+// The CLI does not stop at its error: it prints the reason, then the whole
+// list of available agents, then a tip. Taking the last line rendered
+// "Tip: Run codemie install to see all agents" on the row, which says nothing
+// about the failure.
+const REAL_FAILURE = [
+  ['- Installing Claude Code ACP v2.1.269 (supported version)...', 'stdout'],
+  ['✖ Failed to install Claude Code ACP', 'stderr'],
+  ['✗ Failed to install agent claude-acp: No installer URLs configured for native installation', 'stderr'],
+  ['', 'stdout'],
+  ['💡 Available agents:', 'stdout'],
+  ['   • claude-acp', 'stdout'],
+  ['   • gemini', 'stdout'],
+  ['', 'stdout'],
+  ['💡 Tip: Run codemie install to see all agents', 'stdout'],
+];
+
+test('a failure that keeps printing after its error shows the error, not the trailing tip', async () => {
+  const container = makeEl('div');
+  const runStream = fakeRunStream(REAL_FAILURE, 1);
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream: runStream.fn,
+    stepsUi: fakeStepsUi(),
+  });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="claude-acp"]');
+  slot._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  const row = c.getLastAgents().find((a) => a.command === 'claude-acp');
+  assert.equal(row.actionMessage, 'Failed to install agent claude-acp: No installer URLs configured for native installation');
+  assert.doesNotMatch(row.actionMessage, /Tip:|Available agents/);
 });

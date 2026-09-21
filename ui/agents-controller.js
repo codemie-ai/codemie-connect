@@ -25,6 +25,11 @@ const NO_NETWORK = /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ENETUNREACH|EAI_AGAIN|getad
 // runStream, however it got corrupted.
 const SAFE_COMMAND = /^[A-Za-z0-9._-]+$/;
 
+// How the CLI marks a line that states a failure, and the glyph to strip off
+// it before the row shows it.
+const ERROR_LINE = /^\s*[✗✖×]\s|^\s*(Error|Failed)\b/i;
+const ERROR_GLYPH = /^\s*[✗✖×]\s*/;
+
 export function createAgentsController({ container, runCapture, runStream, stepsUi, onFailure, onResult } = {}) {
   // A second run() while the first is in flight is a no-op, as on Health: the
   // read is cheap but re-rendering under a half-finished one loses row state.
@@ -136,11 +141,25 @@ export function createAgentsController({ container, runCapture, runStream, steps
   function messageFor(lines) {
     const accumulated = lines.join('\n');
     if (NO_NETWORK.test(accumulated)) return 'Installing needs a connection.';
+    // The CLI does not end on its error. A failed install prints the reason,
+    // then the whole list of available agents, then a tip — so the last line
+    // is "Tip: Run codemie install to see all agents", which tells the user
+    // nothing about what went wrong. Its own error glyphs mark the real line;
+    // the last of them is the most specific.
+    const failures = lines.filter((l) => ERROR_LINE.test(l));
+    if (failures.length) return failures[failures.length - 1].replace(ERROR_GLYPH, '').trim();
     const lastNonEmpty = [...lines].reverse().find((l) => l && l.trim());
     return lastNonEmpty || accumulated || 'The command failed with no output.';
   }
 
-  const onInstall = (agent) => runAction(agent, `codemie install ${agent.command} --supported`);
+  // No --supported: the flag pushes every agent down the native-installer path,
+  // which only claude and kimi have URLs for, so it fails for the eight that
+  // install through npm ("No installer URLs configured for native
+  // installation"). A bare install already resolves to the supported version
+  // for claude and codex, the two the CLI treats as version-sensitive, and it
+  // passes no explicit version, which is what the ticket forbids. See
+  // .ai-run/decisions/2026-09-21-EPMCDME-14514-install-without-supported.md.
+  const onInstall = (agent) => runAction(agent, `codemie install ${agent.command}`);
   const onUpdate = (agent) => runAction(agent, `codemie update ${agent.command}`);
   const onRemove = (agent) => runAction(agent, `codemie uninstall ${agent.command}`);
 
