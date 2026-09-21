@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Parse codemie doctor's text output into a structured, three-group (account/tools/CodeMie) Health screen with per-failure remedies, and add a real Windows implementation for opening the debug log.",
+  "generated": "2026-09-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Five components across three layers with no shared build-out yet: a new frontend view/rendering module for the three grouped headings and per-row remedy/action buttons, a new orchestration path in the doctor-invocation handler feeding both the wizard step and the new screen, a new text-to-structured-result parser (new abstraction, no existing doctor-specific parser to extend), a Rust backend command-layer change (logger.rs's open_log/log_path, the one commands/ module still missing the #[cfg(windows)] fork every sibling module has), and command registration in lib.rs. logger.rs is also a shared session-logging utility used across the app, which is why Component Scope is bumped a step beyond its base multi-component read." },
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria are concrete (Given/When/Then) but leave real design decisions open: the doctor check list is not fixed in count (a Provider check appears only for some configs), which directly conflicts with the AC's fixed-total example ('13 of 14 fine'); the relationship between the existing global footer 'Open Log' button and the new health-screen 'Open today's log' action is undefined; and the ticket's grouping wording differs from an earlier scoping doc, requiring confirmation before build." },
+    { "dimension": "technical_risk", "reason": "codemie doctor has no machine-readable output mode (confirmed by reading the vendored formatter source) — the parser must key off fixed console-formatted text (bold header, icon+message lines, optional hint line) owned by a third-party package this repo doesn't control, so a future CLI version bump can silently break the parser with no compile-time signal. Zero test coverage exists today for open_log (either platform), the doctor-invoking handler, or any doctor-output fixture. Mitigating factor: strong precedent exists for the parser shape (inspector.rs's parse_profile_status / setup-parse.js) and for the Windows HOME/USERPROFILE fallback, which keeps this at L rather than XL." },
+    { "dimension": "file_change_estimate", "reason": "Modified: ui/handlers.js, ui/renderer.js, ui/index.html, src-tauri/src/commands/logger.rs, src-tauri/src/lib.rs, plus likely a CSS/style file (~6). New: a health-screen rendering module, a doctor-output parser module, at least one new test file, and new fixture files capturing real doctor output (passing + failing cases) (~5-6). Spans ui/, ui/test/, ui/test/fixtures/, and src-tauri/src/commands/ — 3+ directories." },
+    { "dimension": "affected_layers", "reason": "Touches UI (new health-view content), API/IPC (Tauri invoke boundary for the doctor run and log-open commands), Service (parsing/grouping/remedy business logic per the frontend-brain architecture rule), and Infrastructure (Windows-specific file-open mechanism and log path resolution in the Rust backend) — four distinct layers, no persistence/schema change involved." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: logger.rs is a shared core utility (write_line/log_line used for session logging across multiple app steps, not just this task), and this task changes its platform-forking behavior (open_log, log_path) for the first time in that module."
+  ],
+  "split_recommendation": null
+}

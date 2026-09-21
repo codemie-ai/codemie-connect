@@ -13,6 +13,7 @@ import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
 import { isBlockedState } from './auth-gate.js';
 import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
+import { createHealthController } from './health-controller.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -160,6 +161,11 @@ function emit(event, payload) {
 // second Engine be constructed over the step list the first is still mutating.
 let installRunning = false;
 
+// True once the Health screen's own doctor run has fired for this app
+// session — the auto-run-on-first-visit happens exactly once; "Check
+// everything again" is the only way to re-run after that.
+let healthChecked = false;
+
 function setInstallRunning(on) {
   installRunning = on;
   document.getElementById('app-sidebar').dataset.busy = on ? '1' : '';
@@ -184,6 +190,13 @@ function showView(name) {
     if (btn.dataset.view === name) btn.setAttribute('aria-current', 'page');
     else btn.removeAttribute('aria-current');
   });
+  // The first visit runs the checks, however the view was reached: the sidebar,
+  // a deep link from another screen, or the dev hook. After that only "Check
+  // everything again" re-runs them.
+  if (name === 'health' && !healthChecked) {
+    healthChecked = true;
+    healthController.run();
+  }
 }
 
 // (Re)build the engine for a wizard run.
@@ -358,6 +371,32 @@ async function runAction(title, cmd, returnView = 'home', hint) {
     handlePtyExit();
   }
 }
+
+// Health screen's own doctor invocation — independent of wizard step 2.4,
+// which stays exit-code-only. The stdout-filter/parse/group pipeline and the
+// open-log failure path live in health-controller.js, which is unit-tested
+// directly (ui/test/health-controller.test.mjs); onFailure resets
+// healthChecked so a failed run does not permanently consume the one-shot
+// auto-run guard below (CR-006).
+const healthController = createHealthController({
+  container: views.health,
+  // Mirror every line (stdout and stderr) to the on-disk log, same as the
+  // main terminal's emit() sink does — health-controller.js's own onLine
+  // only keeps stdout in memory for parsing, so without this the doctor
+  // run's real output (including a stderr-only failure) was invisible in
+  // codemie_wizard.log.
+  runStream: (cmd, onLine) =>
+    bridge.runner.runStream(cmd, (text, tag) => {
+      invoke('log_line', { text, tag: tag || 'stdout' }).catch(() => {});
+      onLine(text, tag);
+    }),
+  openLog: () => invoke('open_log'),
+  onNavigate: (view) => showView(view),
+  signIn: () => startSignIn(),
+  onFailure: () => {
+    healthChecked = false;
+  },
+});
 
 // Verify the active CodeMie profile is signed in via `codemie profile status`
 // (parsed live in Rust — not a hardcoded check). Returns true if authenticated;
