@@ -115,8 +115,8 @@ test('the count is what the list held, never a hardcoded number', () => {
   const container = makeEl('div');
   renderAgents(container, { agents }, { stepsUi: fakeStepsUi() });
   assert.match(container._text(), /2 of 3 installed/);
-  assert.deepEqual(summarise(agents), { installed: 2, total: 3 });
-  assert.deepEqual(summarise([]), { installed: 0, total: 0 });
+  assert.deepEqual(summarise(agents), { installed: 2, total: 3, updateAvailable: 0 });
+  assert.deepEqual(summarise([]), { installed: 0, total: 0, updateAvailable: 0 });
 });
 
 test('no action button is drawn while its handler is absent', () => {
@@ -163,4 +163,29 @@ test('the screen says agents are run from a terminal, since it cannot launch one
   renderAgents(container, { agents }, { stepsUi: fakeStepsUi() });
   assert.match(container._text(), /Run an agent from a terminal/);
   assert.doesNotMatch(container._text(), /\bLaunch\b|\bRun agent\b/);
+});
+
+test('an agent with updateAvailable is WARNING even though it is installed', () => {
+  const withUpdate = agents.map((a) => (a.command === 'claude' ? { ...a, updateAvailable: true } : a));
+  const stepsUi = fakeStepsUi();
+  renderAgents(makeEl('div'), { agents: withUpdate }, { stepsUi });
+  const status = Object.fromEntries(stepsUi.calls.filter((c) => c[0] === 'setStatus').map((c) => [c[1], c[2]]));
+  assert.equal(status.claude, 'WARNING');
+});
+
+test('summarise reports how many agents have an update available', () => {
+  const withUpdate = agents.map((a) => (a.command === 'claude' ? { ...a, updateAvailable: true } : a));
+  assert.equal(summarise(withUpdate).updateAvailable, 1);
+  assert.equal(summarise(agents).updateAvailable, 0);
+});
+
+test('the header names the update count only when it is greater than zero', () => {
+  const withUpdate = agents.map((a) => (a.command === 'claude' ? { ...a, updateAvailable: true } : a));
+  const withUpdates = makeEl('div');
+  renderAgents(withUpdates, { agents: withUpdate }, { stepsUi: fakeStepsUi() });
+  assert.match(withUpdates._text(), /2 of 3 installed · 1 update available/);
+
+  const withoutUpdates = makeEl('div');
+  renderAgents(withoutUpdates, { agents }, { stepsUi: fakeStepsUi() });
+  assert.doesNotMatch(withoutUpdates._text(), /update available/);
 });

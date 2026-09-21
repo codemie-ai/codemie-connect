@@ -20,9 +20,15 @@ function el(tag, className, text) {
   return node;
 }
 
-// An agent's row state. Install failure (ERROR) and update-available (WARNING)
-// are set on the live row by the actions, not derived here.
-const statusOf = (agent) => (agent.installed ? StepStatus.COMPLETE : StepStatus.PENDING);
+// An agent's row state. An in-flight/failed action (agent.actionStatus, set
+// by the controller) takes priority; then an available update (WARNING),
+// even though the agent is installed; otherwise plain installed/not-installed.
+const statusOf = (agent) => {
+  if (agent.actionStatus === 'error') return StepStatus.ERROR;
+  if (agent.actionStatus === 'running') return StepStatus.ACTIVE;
+  if (agent.updateAvailable) return StepStatus.WARNING;
+  return agent.installed ? StepStatus.COMPLETE : StepStatus.PENDING;
+};
 
 // The version comes from `codemie list`, which prints the agent's own
 // `<command> --version`. `codemie update --check` reports a different number
@@ -32,16 +38,21 @@ const statusOf = (agent) => (agent.installed ? StepStatus.COMPLETE : StepStatus.
 const subtitleOf = (agent) => (agent.installed && agent.version ? `${agent.description} · ${agent.version}` : agent.description);
 
 export function summarise(agents) {
-  return { installed: agents.filter((a) => a.installed).length, total: agents.length };
+  return {
+    installed: agents.filter((a) => a.installed).length,
+    total: agents.length,
+    updateAvailable: agents.filter((a) => a.updateAvailable).length,
+  };
 }
 
 export function renderAgents(container, { agents }, handlers = {}) {
   const { stepsUi, onInstall, onUpdate, onRemove } = handlers;
   container.innerHTML = '';
 
-  const { installed, total } = summarise(agents);
+  const { installed, total, updateAvailable } = summarise(agents);
+  const summaryText = `${installed} of ${total} installed${updateAvailable ? ` · ${updateAvailable} update available` : ''}`;
   const head = el('div', 'agents-head');
-  head.append(el('span', 'agents-title', 'Agents'), el('span', 'agents-summary', `${installed} of ${total} installed`));
+  head.append(el('span', 'agents-title', 'Agents'), el('span', 'agents-summary', summaryText));
   container.appendChild(head);
 
   container.appendChild(el('div', 'agents-note', 'Run an agent from a terminal. This screen only sets them up.'));
