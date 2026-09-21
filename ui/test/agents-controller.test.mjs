@@ -183,7 +183,8 @@ test('output that parses to nothing is an error, never "0 of 0 installed"', asyn
   assert.equal(c.getLastAgents(), null);
 });
 
-test('a second run while the first is in flight is a no-op', async () => {
+test('a second run while the first is in flight waits for it instead of racing it', async () => {
+  const seen = [];
   let calls = 0;
   let release;
   const gate = new Promise((r) => {
@@ -191,20 +192,24 @@ test('a second run while the first is in flight is a no-op', async () => {
   });
   const c = createAgentsController({
     container: makeEl('div'),
-    runCapture: async () => {
+    runCapture: async (cmd) => {
       calls += 1;
-      await gate;
-      return { code: 0, stdout: fixture, stderr: '' };
+      seen.push(cmd);
+      if (calls === 1) await gate;
+      return { code: 0, stdout: cmd === 'codemie list' ? fixture : '', stderr: '' };
     },
     stepsUi: fakeStepsUi(),
   });
   const first = c.run();
   await c.run();
+  // Nothing from the second call has run yet: the first read is still open.
+  assert.equal(calls, 1);
   release();
   await first;
-  // One full load() reads both `codemie list` and `codemie update --check`;
-  // the second run() call must add none of its own.
-  assert.equal(calls, 2);
+  // One full load() reads `codemie list` and `codemie update --check`. The
+  // deferred second load follows it rather than being dropped, which is what
+  // a post-action refresh depends on to put the row's result on screen.
+  assert.deepEqual(seen, ['codemie list', 'codemie update --check', 'codemie list', 'codemie update --check']);
 });
 
 // The controller now builds its own onInstall/onUpdate/onRemove internally,

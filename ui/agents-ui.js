@@ -53,7 +53,7 @@ export function renderAgents(container, { agents }, handlers = {}) {
   container.innerHTML = '';
 
   const { installed, total, updateAvailable } = summarise(agents);
-  const summaryText = `${installed} of ${total} installed${updateAvailable ? ` · ${updateAvailable} update available` : ''}`;
+  const summaryText = `${installed} of ${total} installed${updateAvailable ? ` · ${updateAvailable} update${updateAvailable === 1 ? '' : 's'} available` : ''}`;
   const head = el('div', 'agents-head');
   head.append(el('span', 'agents-title', 'Agents'), el('span', 'agents-summary', summaryText));
   container.appendChild(head);

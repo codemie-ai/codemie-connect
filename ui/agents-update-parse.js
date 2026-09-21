@@ -13,10 +13,15 @@
 //       Latest:  0.15.2 (up to date)
 //
 //   ✓ All agents are up to date!         <- or "N update(s) available" + a tip
+//                                           (the CLI writes "1 update available"
+//                                           and "2 updates available")
 //
 // Only the block between the heading and the trailing summary line is read.
 const HEADING = /Agent Update Status:/;
-const SUMMARY = /update\(s\) available|All agents are up to date/;
+// Anchored: a record's own "Latest: X (update available)" line carries the
+// same words, and an unanchored match would stop the parse at the first agent
+// that has an update.
+const SUMMARY = /^\s*\d+\s+updates? available|All agents are up to date/;
 
 export function parseUpdateStatus(stdout) {
   const lines = String(stdout || '').split(/\r?\n/);

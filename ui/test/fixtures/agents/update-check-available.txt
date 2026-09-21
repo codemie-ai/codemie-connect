@@ -19,5 +19,5 @@
     Current: 1.18.31
     Latest:  1.18.31 (up to date)
 
-1 update(s) available
+1 update available
 💡 Run 'codemie update' to install updates

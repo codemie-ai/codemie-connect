@@ -29,6 +29,10 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // A second run() while the first is in flight is a no-op, as on Health: the
   // read is cheap but re-rendering under a half-finished one loses row state.
   let running = false;
+  // A refresh asked for while a load is in flight is remembered and run
+  // afterwards. Dropping it left the row that asked for it showing a spinner
+  // and no failure message until something else triggered a load.
+  let pendingRefresh = false;
   let lastAgents = null;
   // command -> the message an action's failure left on that row, merged onto
   // the agent record on every load() so a refresh never drops it.
@@ -40,7 +44,10 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // silent: true is what a post-action refresh uses — it skips showLoading so
   // the container is never blanked outside the very first load.
   async function load({ silent }) {
-    if (running) return;
+    if (running) {
+      pendingRefresh = true;
+      return;
+    }
     running = true;
     if (!silent) showLoading(container);
     try {
@@ -87,6 +94,10 @@ export function createAgentsController({ container, runCapture, runStream, steps
       onFailure?.();
     } finally {
       running = false;
+      if (pendingRefresh) {
+        pendingRefresh = false;
+        await load({ silent: true });
+      }
     }
   }
 

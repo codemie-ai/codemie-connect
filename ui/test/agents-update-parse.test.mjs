@@ -35,9 +35,29 @@ test('flags the agent whose Latest line says "(update available)"', () => {
   ]);
 });
 
-test('does not emit a record for the trailing "N update(s) available" / tip lines', () => {
+test('does not emit a record for the trailing summary / tip lines', () => {
   const records = parseUpdateStatus(available);
   assert.equal(records.length, 3);
-  assert.equal(records.some((r) => /update\(s\) available/i.test(r.displayName)), false);
+  assert.equal(records.some((r) => /available/i.test(r.displayName)), false);
   assert.equal(records.some((r) => /Run 'codemie update'/i.test(r.displayName)), false);
+});
+
+// The CLI writes "1 update available" and "2 updates available" (its
+// update.js builds the plural with `update${n > 1 ? 's' : ''}`), never the
+// literal "update(s)". A stop pattern that only matched the latter would
+// never fire on real output; one that matched the words anywhere would fire
+// on a record's own "(update available)" line and drop every agent after the
+// first one with an update.
+test('stops at the real summary wording, singular and plural, and not at a record line', () => {
+  const twoUpdates = available.replace('1 update available', '2 updates available');
+  assert.equal(parseUpdateStatus(twoUpdates).length, 3);
+
+  const everyoneOutdated = available
+    .replace('0.15.2 (up to date)', '0.16.0 (update available)')
+    .replace('1.18.31 (up to date)', '1.19.0 (update available)')
+    .replace('1 update available', '3 updates available');
+  assert.deepEqual(
+    parseUpdateStatus(everyoneOutdated).map((r) => r.updateAvailable),
+    [true, true, true],
+  );
 });
