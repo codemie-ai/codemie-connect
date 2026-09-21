@@ -519,6 +519,93 @@ body::before {
 .stamp.approved { color: var(--green); }
 .stamp.ignored { color: var(--amber); }
 
+/* ---- Setup view (guided setup) ---- */
+#setup-view { padding: 4px 12px 24px 0; max-width: 720px; }
+/* 12px left, so the title lines up with the rows' own padding rather than
+   sitting flush against the container edge while every row is indented. */
+.setup-view-heading { margin: 0 0 14px 12px; font-size: 20px; font-weight: 700; color: var(--text); }
+
+/* The open question reads as a heading; its helper line sits right under it. */
+#setup-view .step-row.active .step-title { font-size: 15px; }
+.step-helper { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+/* Option cards: the card is the control, the radio only records the choice. */
+.prompt-control { margin-top: 10px; }
+.setup-option-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+.setup-option-card:hover { background: var(--surface-2); }
+.setup-option-card.selected { background: var(--surface-2); border-color: var(--accent-blue); box-shadow: inset 0 0 0 1px var(--accent-blue); }
+.setup-option-card input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; pointer-events: none; }
+.setup-option-title { font-weight: 600; }
+.setup-option-description { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.setup-option-badge {
+  display: inline-block;
+  margin: 6px 0 0 0;
+  padding: 1px 8px;
+  border: 1px solid var(--accent-blue);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--accent-blue);
+  background: transparent;
+}
+
+/* Text input: one full-width field, Continue on its own line below. */
+.prompt-input {
+  display: block;
+  width: 100%;
+  max-width: 520px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+.prompt-input:focus { outline: none; border-color: var(--accent-blue); box-shadow: inset 0 0 0 1px var(--accent-blue); }
+
+.setup-continue-btn {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 6px 16px;
+  /* The wireframe's Continue is the filled primary, the same weight as the
+     failure panel's "Try again" -- not an outline. */
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--gradient-primary-btn);
+  color: var(--color-text-inverse);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.setup-continue-btn:hover { filter: brightness(1.08); }
+
+/* Closing line under the list once the profile is verified active. */
+.setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }
+
+/* Collapsed rows (COMPLETE, this view only): "label -- value [icon]" on one
+   line instead of the default stacked title/subtitle -- never touches the
+   bare .step-row rules above, which every other panel also relies on. */
+#setup-view .step-row.collapsed .step-main { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+#setup-view .step-row.collapsed .step-sub {
+  margin-top: 0;
+  font-weight: 700;
+  color: var(--text);
+}
+#setup-view .step-row.collapsed .step-sub::before { content: '\2014'; margin-right: 2px; font-weight: 400; color: var(--muted); }
+#setup-view .step-row.collapsed .step-icon { order: 2; margin-left: auto; }
+
 /* ---- Log bar + panel ---- */
 #log-bar {
   height: 36px;
@@ -603,6 +690,22 @@ body::before {
 }
 #notice-title { color: var(--violet); font-size: 17px; font-weight: 700; margin-bottom: 12px; }
 #notice-message { color: var(--text); font-size: 13px; line-height: 1.5; margin-bottom: 22px; }
+/* A failure notice carries the command's raw screen, which is 30 rows and taller
+   than the window: without a cap the card grows past the bottom edge and takes
+   its own buttons with it (measured in the app, EPMCDME-14588). */
+.notice-raw {
+  max-height: 220px;
+  overflow: auto;
+  text-align: left;
+  white-space: pre-wrap;
+  margin: 10px 0 0;
+  padding: 10px;
+  background: var(--surface-2);
+  border-radius: var(--radius-m, 8px);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
 #notice-actions { display: flex; gap: 10px; justify-content: center; }
 #notice-actions .btn { width: auto; padding: 9px 18px; }
 .btn-ghost { background: var(--surface-2); color: var(--text); }
@@ -614,4 +717,54 @@ body::before {
 @keyframes cm-rise {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- The app's failure panel (ui/failure-panel.js) ----
+   Reported inside the screen that failed, with the answered steps still visible
+   above it, rather than over a modal that hides the flow. Red with actions for
+   an error; amber and actionless for a warning, as Home draws it. */
+.failure-block { margin: 14px 12px 0; }
+.failure-panel {
+  padding: 16px 18px;
+  border: 1px solid #ff6b6b;
+  border-radius: var(--radius-l, 12px);
+  background: var(--surface);
+}
+.failure-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.failure-body { font-size: 13px; line-height: 1.5; color: var(--muted); }
+/* The CLI's own sentence, kept verbatim under our explanation of it. */
+.failure-detail { margin-top: 8px; font-size: 12px; color: var(--muted); opacity: 0.85; }
+.failure-actions { display: flex; gap: 10px; margin-top: 14px; }
+.failure-actions .btn { width: auto; padding: 8px 16px; }
+.failure-raw {
+  font-family: var(--font-mono);
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius-m, 8px);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* A warning is the same shape in amber, and carries no actions. */
+.failure-panel.warning { border-color: var(--amber); }
+
+/* A row with no subtitle must not reserve one: the 14px placeholder pushed the
+   icon and title above the row's real centre, which is what the "Working…" row
+   showed. */
+#setup-view .step-sub:empty { min-height: 0; margin-top: 0; }
+
+/* The wireframe draws a completed step's tick as a badge, not a loose glyph.
+   Only COMPLETE gets the ring: a circle around "▶" or "—" reads as a button. */
+#setup-view .step-row[data-status="COMPLETE"] .step-icon {
+  width: 20px;
+  height: 20px;
+  line-height: 18px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-full, 999px);
+  font-size: 11px;
 }

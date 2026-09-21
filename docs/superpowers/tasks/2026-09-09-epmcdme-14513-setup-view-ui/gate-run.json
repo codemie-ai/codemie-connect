@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "branch": "feat/epmcdme-14513-setup-view-ui",
+  "head": "887709ff17c1dac2c88bad6274cb6508b0dd82e7",
+  "runner": "custom",
+  "started_at": "2026-09-09T19:00:00Z",
+  "completed_at": "2026-09-09T19:03:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1239,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9230,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2290,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "183/183 node:test assertions passed, including new ui/test/setup-driver.test.mjs and ui/test/setup-view.test.mjs"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 17630,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "77 lib tests + 2 bundle_resources tests passed; no Rust source touched by this diff"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "./build-installer.sh",
+      "exit_code": null,
+      "notes": "Guide 'Skip if: logic-only change verified by tests' applies — diff is ui/*.js + ui/styles.css + docs/wireframes/*.png only, no Rust or bundling changes, and JS unit tests cover the new setup-view/setup-driver logic."
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": null,
+      "exit_code": null,
+      "notes": "Diff touches ui/styles.css (matches ui_globs) but quality-gates.md defines no UI browser-test gate. npm has a test:ui script, but it is not listed in the guide and targets Playwright fixtures under docs/superpowers/tasks/2026-08-31-epmcdme-14511/dynamic-tests from an unrelated task, not this feature. Browser verification of the setup view is a separate feature-verification decision for the caller."
+    }
+  ],
+  "failures": {}
+}

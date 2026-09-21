@@ -84,7 +84,6 @@ const connectBtn = document.getElementById('connect-btn');
 const restartBtn = document.getElementById('restart-btn');
 const modeLabel = document.getElementById('wizard-mode-label');
 const stepListEl = document.getElementById('step-list');
-
 const noticeOverlay = document.getElementById('notice-overlay');
 const noticeTitle = document.getElementById('notice-title');
 const noticeMessage = document.getElementById('notice-message');
@@ -561,7 +560,23 @@ async function boot() {
   // of the production boot path.
   if (flags.dev) {
     const { startSetup } = await import('./setup-driver.js');
-    window.__codemie = { showView, startSetup, emit };
+    const { createSetupView } = await import('./setup-view.js');
+    // One view instance for the one #setup-view container, created lazily and
+    // reused. A second instance would mount over the first one's rows and start
+    // a second `codemie setup` alongside it (they race over the config file);
+    // setup-view's own re-entrancy guard is per instance and cannot see that.
+    // start() is safe to call again on a settled instance -- it resets itself.
+    let setupView = null;
+    window.__codemie = {
+      showView,
+      startSetup,
+      emit,
+      startGuidedSetup: () => {
+        showView('setup');
+        if (!setupView) setupView = createSetupView(document.getElementById('setup-view'));
+        return setupView.start();
+      },
+    };
   }
 
   allSteps = await invoke('get_steps');
@@ -765,7 +780,6 @@ async function boot() {
     }
   });
   noticeClose.addEventListener('click', hideNotice);
-
   // ---- view routing (smoke/probe go straight to the wizard so their
   //      .step-row / canvas / bg assertions still hold) ----
   if (flags.probe) {
