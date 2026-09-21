@@ -49,13 +49,9 @@
       <div id="shell-body">
 
       <!-- ============ SIDEBAR ============ -->
-      <!-- Hidden for v1, not deleted. Agents, Connections and Health are Stage 2
-           screens, so shipping the nav now would advertise three entries that
-           lead nowhere. Home is the only view v1 shows, and the home grid is
-           its own navigation. Remove the `hidden` class to bring the shell
-           back; #shell-body is a flex row, so the view column simply takes the
-           full width while this is out. -->
-      <nav id="app-sidebar" class="hidden">
+      <!-- v2: the nav is on. Home, Agents, Connections and Health each have a
+           screen now; About still has no owner and stays hidden below. -->
+      <nav id="app-sidebar">
         <div id="sidebar-main-group">
           <button id="sidebar-home" class="sidebar-item" data-view="home">Home</button>
           <button id="sidebar-agents" class="sidebar-item" data-view="agents">Agents</button>
@@ -195,10 +191,9 @@
       </div><!-- /#shell-body -->
 
       <!-- ============ FOOTER LOG (collapsible slot — populated by a later ticket) ============ -->
-      <!-- Hidden for v1, not deleted: nothing writes to #command-log-body yet,
-           so the disclosure opens on an empty panel. Remove the `hidden` class
-           when the ticket that fills it lands. -->
-      <details id="command-log-footer" class="hidden">
+      <!-- v2: one line per command the app ran this session (ui/command-log.js).
+           Per-row output and "Copy all" are EPMCDME-14512's. -->
+      <details id="command-log-footer">
         <summary>what CodeMie ran</summary>
         <div id="command-log-body"></div>
       </details>

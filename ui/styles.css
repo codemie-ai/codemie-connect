@@ -303,6 +303,16 @@ body::before {
 /* Wins over .btn's full width, which is declared later in this file. */
 .home-card .btn.home-card-action { width: auto; padding: 7px 14px; font-size: 13px; margin-top: 12px; }
 
+/* ---- Command-log lines (ui/command-log.js) ---- */
+.command-log-empty { color: var(--dim); padding: 4px 0 2px; }
+.command-log-line { display: flex; gap: 12px; padding: 2px 0; white-space: nowrap; }
+.command-log-when { color: var(--dim); flex: none; }
+.command-log-cmd { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.command-log-status { flex: none; margin-left: auto; }
+.command-log-line.ok .command-log-status { color: var(--green); }
+.command-log-line.failed .command-log-status { color: var(--red); }
+.command-log-line.running .command-log-status { color: var(--amber); }
+
 /* ---- Wizard top bar (back to home) ---- */
 #wizard-topbar {
   display: flex;

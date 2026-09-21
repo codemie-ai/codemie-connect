@@ -18,6 +18,14 @@ test('home: install-only stays gone', () => {
   assert.doesNotMatch(html, /Install only/);
 });
 
+// EPMCDME-14589, at the PM's request: the shell nav and the command-log footer
+// are on for v2; About and the analytics entry stay hidden until owned.
+test('shell: the nav and the command-log footer are no longer hidden', () => {
+  assert.match(html, /<nav id="app-sidebar">/);
+  assert.match(html, /<details id="command-log-footer">/);
+  assert.match(html, /id="sidebar-about" class="sidebar-item hidden"/);
+});
+
 test('wizard: step header reads SETUP STEPS', () => {
   assert.match(html, /<div id="step-header">SETUP STEPS<\/div>/);
 });

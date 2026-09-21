@@ -17,6 +17,7 @@ import { createHealthController } from './health-controller.js';
 import { createHomeView } from './home-view.js';
 import { deriveHome } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
+import { createCommandLog } from './command-log.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -804,7 +805,9 @@ async function boot() {
   });
 
   // ---- home ----
-  // The Home body is ui/home-view.js; its sources are wired in the Home section above.
+  // The Home body is ui/home-view.js; its sources are wired in the Home section
+  // above. The command-log footer hears about every command the bridge runs.
+  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
   refreshAgents();
   document.querySelectorAll('#sidebar-main-group .sidebar-item, #sidebar-about').forEach((btn) => {
     btn.addEventListener('click', () => {
