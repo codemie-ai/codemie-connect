@@ -7,6 +7,10 @@ use serde::Serialize;
 pub struct SmokeFlags {
     pub probe: bool,
     pub smoke: bool,
+    /// Exposes the view router for manual verification. Deliberately separate
+    /// from the smoke flags, which take an early-return boot path that closes
+    /// the app within seconds.
+    pub dev: bool,
     pub smoke_ms: u64,
     pub shot: Option<String>,
 }
@@ -16,6 +20,7 @@ pub fn smoke_mode() -> SmokeFlags {
     SmokeFlags {
         probe: std::env::var("CODEMIE_PROBE_SMOKE").is_ok(),
         smoke: std::env::var("CODEMIE_SMOKE").is_ok(),
+        dev: std::env::var("CODEMIE_DEV").is_ok(),
         smoke_ms: std::env::var("CODEMIE_SMOKE_MS")
             .ok()
             .and_then(|s| s.parse().ok())

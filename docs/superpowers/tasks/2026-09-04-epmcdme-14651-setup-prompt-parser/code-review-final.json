@@ -1,0 +1,94 @@
+{
+  "decision": "request-changes",
+  "rationale": "Seven defects: two parser crashes on invalid input (non-array argument and non-string elements), confirm-kind message leaks raw (Y/n) hint text confirmed by the activate.json recording, an overly broad '(' prefix filter silently drops valid options, and last-of-multiple selection markers wins rather than first; in the recording tool, a >20-char heuristic misses short credential prompts and recursive next() overflows the stack on large recordings. No spec existed; blind and verification-gap lenses are n/a for the compact profile. One finding dismissed (30-element viewport limit; JSDoc-documented contract enforced by the driver's readScreen).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-parse.js",
+      "line": 10,
+      "title": "Non-string element crashes detectPrompt",
+      "problem": "isQ(l) calls l.trimStart() with no type guard. A null, undefined, or numeric element anywhere in the lines array causes a TypeError on that iteration.",
+      "impact": "The parse aborts mid-scan and detectPrompt throws instead of returning null, crashing the caller.",
+      "recommendation": "Add a type guard: const isQ = (l) => typeof l === 'string' && l.trimStart().startsWith('?');"
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-parse.js",
+      "line": 32,
+      "title": "No array-type guard crashes on null input",
+      "problem": "detectPrompt(lines) accesses lines.length with no Array.isArray guard. A null, undefined, or non-array argument throws TypeError before any parsing begins.",
+      "impact": "Caller crashes; detectPrompt never returns, halting the setup driver.",
+      "recommendation": "Add if (!Array.isArray(lines)) return null; at the top of detectPrompt."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-parse.js",
+      "line": 41,
+      "title": "Confirm message includes raw hint text",
+      "problem": "For confirm-kind prompts (activate, installClaude) the message is built by stripping only the leading '?' from the line; the trailing '(Y/n)' or '(y/N)' suffix is not removed. The activate.json recording confirms the live line ends with '(Y/n)': '? Switch to profile \"anthropic-subscription\" as active? (Y/n) '.",
+      "impact": "Callers receive messages like 'Switch to profile ... (Y/n)' or 'Would you like to install Claude Code now? (Y/n)' instead of clean prompt text; any UI layer displaying or logging the message gets the raw hint artifact.",
+      "recommendation": "Strip the confirm hint after building the message for confirm-kind entries: message = message.replace(/\\s*\\(y\\/[nN]\\)\\s*$|\\s*\\([yY]\\/n\\)\\s*$/i, '').trim();"
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-parse.js",
+      "line": 53,
+      "title": "Paren-start filter silently drops valid list options",
+      "problem": "if (t.startsWith('(')) continue; skips every trimmed option line that begins with '('. The intent is to skip the '(Use arrow keys)' and '(Move up and down...)' hint lines, but the filter is over-broad and will match any option whose label starts with a parenthesis.",
+      "impact": "An option like '(beta) model-name' or '(free tier) provider' is silently excluded from the returned options list; the driver sees fewer options than are on screen. Reachability is uncertain against current fixtures but the filter is structurally incorrect.",
+      "recommendation": "Replace with explicit hint-text matches: if (/^\\(Use arrow keys\\)/i.test(t) || /^\\(Move up and down/i.test(t)) continue;"
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-parse.js",
+      "line": 55,
+      "title": "Last selection marker wins on multi-marker screens",
+      "problem": "if (sel) selectedIndex = options.length; unconditionally overwrites selectedIndex for every '>' or '\\u276f' marked row. In a partial terminal render with multiple markers (a transient state possible at 256-byte chunk boundaries), the last marked row is returned as the selection, not the first (cursor position).",
+      "impact": "selectedIndex misreports the current selection; the driver highlights the wrong option. Reachability is uncertain — normal renders carry one marker — but partial-render multi-marker states are possible during chunk-boundary writes.",
+      "recommendation": "Record only the first selection marker: introduce a seenSel boolean flag and skip subsequent sel=true assignments once seenSel is true."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/test/tools/replay-capture.mjs",
+      "line": 31,
+      "title": "Short credential prompts never captured",
+      "problem": "promptId returns 'credential' only when line.trim().length > 20. A credential prompt label of 20 characters or fewer (e.g., '? API key: ' is 11 chars) returns null, so no fixture is written for that prompt.",
+      "impact": "Any provider whose credential prompt text is short never has a fixture captured by this tool, leaving that prompt undetected and untested.",
+      "recommendation": "Remove the length heuristic and rely solely on snapped.has('provider') as the false-positive guard: inside that branch, return 'credential' for any question line regardless of length."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/test/tools/replay-capture.mjs",
+      "line": 59,
+      "title": "Recursive next() overflows stack on large recordings",
+      "problem": "Each 256-byte chunk calls next() recursively from inside the term.write callback. For a ~10 MB TypeScript recording (~40 000 chunks), the synchronous recursion depth exceeds Node.js's default stack limit (~10 000 frames) and throws RangeError.",
+      "impact": "The recording tool crashes mid-capture on large session files, leaving fixture files incomplete or absent.",
+      "recommendation": "Replace the recursive next() call with setImmediate(next) to yield to the event loop between chunks, making traversal iterative."
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "codemie-cli-bundle",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@codemieai/code": "0.15.2"
+  }
+}

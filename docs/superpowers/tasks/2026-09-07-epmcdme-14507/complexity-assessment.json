@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "task": "Add in-app self-update to CodeMie Desktop by integrating tauri-plugin-updater with a once-per-day throttle, app-version banner distinct from the existing CLI-update banner, and offline/blocked-download error surfacing.",
+  "generated": "2026-09-11T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 3, "label": "M" },
+    "affected_layers":      { "score": 6, "label": "XXL" }
+  },
+  "total": 30,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S":  "10-14 — 1 day — plan directly",
+    "M":  "15-20 — 2-3 days — brainstorm first",
+    "L":  "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL":"32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Spans new Rust commands/updater.rs module, frontend boot flow and banner state (renderer.js, index.html), bridge module (runner-bridge.js), four config surfaces (Cargo.toml, tauri.conf.json, capabilities/default.json, CSP), plus a new external integration point for the update manifest endpoint — 4+ components across entirely new subsystem abstraction; bumped XL→XXL by 'integration with new external service' red flag."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "No tauri-plugin-updater precedent exists in this repo; binary replacement/restart is novel; existing failure-handling collapses all errors to empty string with no precedent for distinguishable offline vs blocked surfacing; ACs enumerate offline/blocked, daily throttle, and restart-preserving-state edge cases with zero existing test template coverage; CSP must be explicitly widened for the manifest/artifact host — two auto-bumps (security surface gap + edge-case AC with no test template) advance base XL to XXL."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "UI (renderer.js, index.html), API (Tauri IPC command registration), Service (updater.rs logic, daily throttle persistence), Infrastructure (tauri.conf.json plugin block, capabilities/default.json permission, CSP connect-src), External (update manifest/artifact endpoint via tauri-plugin-updater) — full stack plus External; bumped XL→XXL by 'integration with new external service' red flag."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Core requirements are defined but 2 of 7 ACs explicitly depend on an unshipped 'app-managed install' branch in the CLI team's bundled package (confirmed absent in the staged 0.14.1 tree); throttle persistence mechanism, CSP/endpoint host, and banner visual spec are open design decisions; 'installed agents' AC depends on an unimplemented placeholder view (#agents-view) in the same codebase."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Estimated 11 modified files (Cargo.toml, Cargo.lock, tauri.conf.json, tauri.windows.conf.json, capabilities/default.json, lib.rs, state.rs, renderer.js, index.html, runner-bridge.js, version-utils.test.mjs) plus 2 new files (commands/updater.rs, updater.test.mjs) across 5 directories — falls in XL range."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped XL→XXL: integration with new external service (update manifest/artifact endpoint added via tauri-plugin-updater).",
+    "Affected Layers bumped XL→XXL: integration with new external service adds External layer on top of the full UI+API+Service+Infrastructure stack.",
+    "Technical Risk auto-bump (security surface): binary update mechanism with CSP expansion and signed-artifact handling has no existing reusable template in this repo covering that injection/execution surface.",
+    "Technical Risk auto-bump (edge-case ACs): acceptance criteria enumerate offline/blocked download, once-per-day throttle, and restart-preserving-state cases; no existing test template covers any of these defensive patterns (all current failure-handling collapses to empty string; no throttle or restart test exists)."
+  ],
+  "split_recommendation": {
+    "strategy": "by-dependency",
+    "secondary_strategy": null,
+    "ordering_note": "Rust backend must ship first — the frontend bridge and banner depend on the new IPC commands being registered and the plugin capability being in place.",
+    "slices": [
+      {
+        "title": "Backend: tauri-plugin-updater integration, updater command module, daily throttle, error surfacing",
+        "slice_slug": "backend-updater",
+        "component": "codemie",
+        "feature": "self-update",
+        "scope": "Add tauri-plugin-updater to Cargo.toml; wire the updater:default capability and CSP connect-src; implement commands/updater.rs with check-for-update, download-and-install, and throttle-timestamp logic; add CmdResult error variants that distinguish offline from blocked; register all commands in lib.rs; add Rust unit tests for throttle guards and error-path variants.",
+        "depends_on": null
+      },
+      {
+        "title": "Frontend: app-version update banner, boot-flow integration, bridge functions, frontend tests",
+        "slice_slug": "frontend-updater",
+        "component": "codemie",
+        "feature": "self-update",
+        "scope": "Add app-scoped update state (distinct from cliVersionState) to renderer.js; add an app-update banner section to index.html that is visually distinguishable from the CLI banner; extend runner-bridge.js updater exports with the new backend commands; integrate the daily update check into boot(); persist the throttle timestamp via localStorage; surface offline/blocked errors in the banner; add node:test cases for throttle logic and banner state transitions.",
+        "depends_on": "Backend: tauri-plugin-updater integration, updater command module, daily throttle, error surfacing"
+      }
+    ]
+  }
+}

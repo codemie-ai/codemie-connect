@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "branch": "feat/epmcdme-14647-pty-correlation-id",
+  "head": "8becdf5d9ea1cf788a8f81235c1dde3541448a9f",
+  "runner": "npm",
+  "started_at": "2026-09-02T00:00:00.000Z",
+  "completed_at": "2026-09-02T00:05:00.000Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0,
+      "notes": "Initially FAIL: pty.rs assert! macro needed rustfmt block-wrap. Auto-fix `cargo fmt` applied; re-check exited 0."
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3230,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "test-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1081,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "19 tests, 0 failed."
+    },
+    {
+      "id": "test-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 490,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "42 passed, 2 ignored (require TTY harness — intentional), 0 failed."
+    }
+  ],
+  "failures": {}
+}

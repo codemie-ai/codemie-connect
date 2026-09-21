@@ -13,6 +13,25 @@ let titleEl = null;
 let hintEl = null;
 let doneBtn = null;
 
+// Setup-driver (EPMCDME-14668) suspends keystroke -> pty_input forwarding while it
+// drives `codemie setup --force` on the same PTY, then restores it when the run
+// settles. suspendPtyInput/resumePtyInput are consumed by setup-driver.js as an
+// injected, lazily-defaulted dep — never a static import (this module reads
+// window.__TAURI__ at module scope, which setup-driver.test.mjs never stubs).
+let ptyInputSuspended = false;
+
+export function suspendPtyInput() {
+  ptyInputSuspended = true;
+}
+
+export function resumePtyInput() {
+  ptyInputSuspended = false;
+}
+
+export function __forwardOnData(d) {
+  if (!ptyInputSuspended) invoke('pty_input', { data: d });
+}
+
 // When true, the overlay stays open on pty-exit and shows a "back" button instead
 // of auto-closing. Used by home-page actions; wizard pty steps keep auto-close.
 let keepOpen = false;
@@ -37,7 +56,7 @@ export function initTerminal({ overlay: ov, host, title, hint, done }) {
   term.open(hostEl);
 
   // Keystrokes -> pty (Rust routes to the active pty in managed state).
-  term.onData((d) => invoke('pty_input', { data: d }));
+  term.onData(__forwardOnData);
 
   if (doneBtn) {
     doneBtn.addEventListener('click', () => {

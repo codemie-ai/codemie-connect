@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "head": "f4304659b2762cab4075ecf0b6ac868bfdf8d517",
+  "feature_id": "identity-bar",
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_command": "npx playwright test identity-bar-config.spec.ts",
+  "app_url": "http://localhost:8934/index.html",
+  "viewport": "1000x660 (the shipped window size)",
+  "screenshot_path": "evidence/screenshots/identity-bar-verified.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "assertion_style": "computed geometry and computed style (getBoundingClientRect / getComputedStyle)",
+  "notes": "Account, profile, model and project read at run time from ~/.codemie/codemie-cli.config.json via read_codemie_config. No em-dash placeholders remain. Covers all four states the wireframe draws: SSO profile, API-key profile with no userEmail (segment omitted, not blanked), no configuration (product name shown), and a broken profile (account and profile only). Separator run asserted on ::before computed content, since innerText cannot see pseudo-elements."
+}

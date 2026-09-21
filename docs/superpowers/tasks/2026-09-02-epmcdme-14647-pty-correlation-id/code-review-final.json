@@ -1,0 +1,82 @@
+{
+  "decision": "request-changes",
+  "rationale": "No acceptance spec (compact profile, no-spec mode); confidence is low. 6 blocking findings confirmed against source: one critical UI-hang in runner-bridge.js (exitP awaited with no timeout), four concurrency bugs in pty_kill (spurious-wakeup false Ok, missed pre-exit flag check, ESRCH not tolerated, no run_id guard), and one JS listener leak. 0 deferred, 0 dismissed.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pty.rs",
+      "line": 193,
+      "title": "pty_kill lacks run_id guard",
+      "problem": "pty_kill takes no run_id parameter; it kills whichever PTY slot is occupied, ignoring which session the caller intended to terminate. The state tuple stores the run_id but pty_kill discards it (matches on `(_, h)`).",
+      "impact": "If a new PTY session starts between a caller's kill decision and the actual kill invocation, the new session is terminated instead. The JS bridge passes no id to pty_kill, making this race undetectable at the call site.",
+      "recommendation": "Add an optional `run_id: Option<String>` parameter to pty_kill; early-return Ok(()) when the slot's id does not match. Update the JS bridge (runner-bridge.js:140) accordingly. If the id-agnostic design is intentional per the 'No concurrent-spawn guard' constraint, document the accepted race in a code comment."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pty.rs",
+      "line": 202,
+      "title": "kill() not tolerant of ESRCH after slot release",
+      "problem": "The state Mutex is released at line 200 before kill() is called at line 205. Between these two points the child can exit naturally; kill() then returns an OS ESRCH error, which is mapped directly to InstallerError::Pty and propagated to the caller.",
+      "impact": "pty_kill returns an error when the child is already gone — the desired final state — causing callers to treat a benign race as a failure and potentially surfacing a spurious error in the UI.",
+      "recommendation": "Wrap the kill() call: `.or_else(|e| if is_no_such_process_error(&e) { Ok(()) } else { Err(e) })`. Implement `is_no_such_process_error` to match the platform error code (ESRCH on Unix, ERROR_INVALID_HANDLE / ERROR_ACCESS_DENIED on Windows)."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pty.rs",
+      "line": 207,
+      "title": "condvar wait skips pre-exit flag check",
+      "problem": "wait_timeout is entered without first inspecting the exit flag. If the child has already exited and called notify_all before the Mutex is acquired here, the notification is lost and wait_timeout blocks for the full 5 seconds.",
+      "impact": "pty_kill unnecessarily stalls a tokio spawn_blocking thread for 5 seconds after a fast-exiting child, delaying the caller and wasting a thread-pool slot.",
+      "recommendation": "After `let guard = lk.lock().unwrap();`, add `if *guard { return Ok(()); }` before calling wait_timeout."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pty.rs",
+      "line": 209,
+      "title": "wait_timeout not guarded against spurious wakeup",
+      "problem": "cv.wait_timeout can return on a spurious wakeup with timed_out() returning false. The subsequent check `if timed_out.timed_out() && !*timed_out_guard` only returns an error on a real timeout; a spurious wakeup causes the function to return Ok(()) without verifying the exit flag.",
+      "impact": "pty_kill incorrectly reports success while the child process is still running; callers believe the PTY is terminated when it is not, potentially leaving a zombie shell holding PTY resources.",
+      "recommendation": "Replace cv.wait_timeout with cv.wait_timeout_while(guard, Duration::from_secs(5), |exited| !*exited). That variant loops on spurious wakeups and only returns when the exit flag is true or the timeout elapses."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/runner-bridge.js",
+      "line": 122,
+      "title": "pty-data listener leaks when exit-listen throws",
+      "problem": "dataUnlisten is registered at line 122 outside the try block; if the subsequent listen('engine:pty-exit') call at line 126 throws, the error propagates before the try block is entered, so the finally block never runs and dataUnlisten is never called.",
+      "impact": "The engine:pty-data listener stays active indefinitely, invoking onData for every subsequent PTY run. Repeated spawnPty calls stack up additional leaked listeners with no cleanup path.",
+      "recommendation": "Move both listen calls inside the try block (register exitUnlisten first, then dataUnlisten, then invoke spawn_pty). Add a catch clause that calls dataUnlisten?.() and exitUnlisten?.() before rethrowing, so partial registration is always cleaned up."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "ui/runner-bridge.js",
+      "line": 131,
+      "title": "spawnPty awaits exitP with no timeout",
+      "problem": "exitP resolves only when engine:pty-exit fires for the matching id. If Tauri state is lost, the app is backgrounded mid-run, or emit silently fails after spawn_pty returns, the promise never settles.",
+      "impact": "spawnPty hangs indefinitely; the install orchestration is blocked and the UI freezes with no recovery path short of an app restart.",
+      "recommendation": "Race exitP against a rejection timeout: `const code = await Promise.race([exitP, new Promise((_, reject) => setTimeout(() => reject(new Error('pty exit timeout')), PTY_TIMEOUT_MS))]);`. Ensure both exitUnlisten and dataUnlisten are called in the finally block regardless of which branch wins."
+    }
+  ]
+}

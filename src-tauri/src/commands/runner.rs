@@ -1,6 +1,6 @@
 // Shell execution primitives. Port of src/main/runner.js.
 // macOS: commands run via `/bin/zsh -lc` (login shell, profile PATH loaded).
-// Windows: commands run via `powershell.exe -NoProfile -NonInteractive -Command`.
+// Windows: commands run via `cmd.exe /c`.
 use std::process::Stdio;
 
 use serde::Serialize;
@@ -36,9 +36,11 @@ fn shell_cmd(cmd_str: &str) -> Command {
     }
     #[cfg(windows)]
     {
-        let mut c = Command::new("powershell.exe");
-        c.args(["-NoProfile", "-NonInteractive", "-Command"])
-            .arg(cmd_str);
+        // Without this flag, spawning a console subprocess from this GUI-subsystem
+        // app briefly flashes a visible cmd.exe window on screen.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut c = Command::new("cmd.exe");
+        c.args(["/c", cmd_str]).creation_flags(CREATE_NO_WINDOW);
         c
     }
 }
@@ -139,10 +141,65 @@ where
     })
 }
 
+/// Direct invocation of the bundled node binary + CLI entry-point.
+/// Extracted from `run_self_update` so the invocation logic can be unit-tested
+/// independently of Tauri's managed `State`.
+pub(crate) async fn self_update_direct(
+    node_exe: &std::path::Path,
+    cli_entry: &std::path::Path,
+) -> CmdResult<String> {
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut node_cmd = tokio::process::Command::new(node_exe);
+    node_cmd.args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")]);
+    #[cfg(windows)]
+    node_cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(120), node_cmd.output())
+        .await
+        .map_err(|_| {
+            crate::error::InstallerError::Other("self-update timed out after 120 s".into())
+        })?
+        .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(crate::error::InstallerError::Other(format!(
+            "codemie self-update failed (exit {:?}): {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}
+
 /// Run `codemie self-update` silently (captured, not PTY).
+/// Invokes the bundled node + CLI entry absolutely when both paths exist;
+/// falls back to the `codemie` shim on PATH through the platform shell.
 /// Returns stdout on exit 0; serializes as an error string on non-zero exit.
 #[tauri::command]
-pub async fn run_self_update() -> CmdResult<String> {
+pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) -> CmdResult<String> {
+    let node = &state.node_exe_path;
+    let cli = &state.cli_entry_path;
+    if node.exists() && cli.exists() {
+        return self_update_direct(node, cli).await;
+    }
+    // At least one bundled path is absent. When an existing CLI took precedence
+    // (EPMCDME-14581), node_exe_path/cli_entry_path were never populated by
+    // design — that's expected, not a PATH-injection failure, so only warn
+    // when it wasn't.
+    if !state.existing_cli_detected {
+        if !node.exists() {
+            log::warn!(
+                "[run_self_update] node_exe_path not found ({}); falling back to PATH shim",
+                node.display()
+            );
+        }
+        if !cli.exists() {
+            log::warn!(
+                "[run_self_update] cli_entry_path not found ({}); falling back to PATH shim",
+                cli.display()
+            );
+        }
+    }
     let r = capture("codemie self-update", None).await;
     if r.code == 0 {
         Ok(r.stdout)
@@ -179,15 +236,41 @@ mod tests_windows {
     use super::*;
 
     #[tokio::test]
-    async fn run_capture_runs_via_powershell_and_captures_stdout() {
-        let r = capture("Write-Output 'hi'", None).await;
+    async fn run_capture_runs_via_cmd_and_captures_stdout() {
+        let r = capture("echo hello_from_cmd", None).await;
         assert_eq!(r.code, 0);
-        assert!(r.stdout.contains("hi"));
+        assert!(r.stdout.trim().contains("hello_from_cmd"));
     }
 
     #[tokio::test]
     async fn run_capture_reports_nonzero_exit_windows() {
         let r = capture("exit 3", None).await;
         assert_eq!(r.code, 3);
+    }
+}
+
+#[cfg(test)]
+mod tests_self_update {
+    use super::*;
+
+    /// `self_update_direct` must surface a spawn failure as `Err`, on both
+    /// platforms: a file that is not a valid executable (Windows: not a PE;
+    /// unix: no execute bit) cannot be run as the bundled node.
+    /// The success path needs the real bundled node and is exercised by
+    /// build-installer's post-build shim smoke.
+    #[tokio::test]
+    async fn self_update_direct_errors_when_node_not_executable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let fake_node = dir
+            .path()
+            .join(if cfg!(windows) { "node.exe" } else { "node" });
+        let fake_cli = dir.path().join("codemie.js");
+        std::fs::write(&fake_node, b"not an executable").unwrap();
+        std::fs::write(&fake_cli, b"// placeholder").unwrap();
+        let result = self_update_direct(&fake_node, &fake_cli).await;
+        assert!(
+            result.is_err(),
+            "self_update_direct must return Err when the node binary cannot be executed"
+        );
     }
 }

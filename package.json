@@ -1,10 +1,11 @@
 {
   "name": "codemie-installer-macos-tauri",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
-  "description": "EPAM AI/Run CodeMie Connect for macOS — Tauri v2 build.",
+  "description": "EPAM AI/Run CodeMie Connect for macOS \u2014 Tauri v2 build.",
   "scripts": {
-    "test": "node --test ui/test/*.test.mjs"
+    "test": "node --test ui/test/*.test.mjs",
+    "test:ui": "cd docs/superpowers/tasks/2026-08-31-epmcdme-14511/dynamic-tests && npx playwright test"
   }
 }

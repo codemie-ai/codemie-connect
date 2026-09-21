@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "head": "f4304659b2762cab4075ecf0b6ac868bfdf8d517",
+  "feature_id": "analytics-entry-point",
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_command": "npx playwright test app-shell-navigation.spec.ts -g \"analytics entry\"",
+  "app_url": "http://localhost:8934/index.html",
+  "viewport": "1000x660 (the shipped window size)",
+  "screenshot_path": "evidence/screenshots/sidebar-no-analytics-entry.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "assertion_style": "computed geometry and computed style (getBoundingClientRect / getComputedStyle)",
+  "notes": "SUPERSEDED: this record previously certified a working analytics entry point in the sidebar. EPMCDME-14350 lists usage analytics under Out of Scope with a follow-up story, so no entry point may ship. #sidebar-analytics is now hidden (display:none) and absent from the visible sidebar items; the test is inverted so the regression cannot return unnoticed. Hidden rather than deleted so the follow-up story restores it by removing one class. EPMCDME-14516 to be reopened and closed as won't-do."
+}

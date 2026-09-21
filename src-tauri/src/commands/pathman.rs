@@ -3,7 +3,7 @@
 // Windows: persists to HKCU\Environment registry; separator ';'.
 use std::collections::HashSet;
 
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::error::CmdResult;
 use crate::state::AppState;
@@ -246,6 +246,337 @@ pub fn augment_path(state: State<AppState>, dirs: Vec<String>) {
     }
 }
 
+/// Static candidate binary names used by the bundled-bin probe.
+/// Extracted as a named function so tests can call it directly.
+#[cfg(windows)]
+pub fn candidate_bin_names() -> &'static [&'static str] {
+    &["codemie.cmd", "codemie"]
+}
+
+#[cfg(not(windows))]
+pub fn candidate_bin_names() -> &'static [&'static str] {
+    &["codemie"]
+}
+
+/// Returns `true` when `dir` contains a recognised codemie binary file name.
+/// Extracted from the probe closure inside `inject_bundled_bin_path` so tests
+/// can call it directly without an `AppHandle`.
+pub fn probe_dir(dir: &std::path::Path) -> bool {
+    candidate_bin_names().iter().any(|n| dir.join(n).exists())
+}
+
+/// Probe `d` directly, then its `bin/` subdirectory, using `probe_fn`.
+/// Returns the first matching directory or `None`.  Extracted from the inline
+/// closure inside `inject_bundled_bin_path` so tests can call it with any probe.
+pub(crate) fn probe_with_bin_dir(
+    d: std::path::PathBuf,
+    probe_fn: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    if probe_fn(&d) {
+        Some(d)
+    } else {
+        let bin = d.join("bin");
+        if probe_fn(&bin) {
+            Some(bin)
+        } else {
+            None
+        }
+    }
+}
+
+/// Build a new PATH string with `dir_str` prepended to `current`.
+/// Returns `dir_str` alone when `current` is empty to avoid a leading separator.
+pub(crate) fn build_new_path(current: &str, dir_str: &str) -> String {
+    if current.is_empty() {
+        dir_str.to_string()
+    } else {
+        format!("{}{}{}", dir_str, PATH_SEP, current)
+    }
+}
+
+/// Why the bundled bin dir was, or was not, written to the user's persistent PATH.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PersistOutcome {
+    Persisted,
+    SkippedDevBuild,
+    SkippedLocation,
+    Failed(String),
+}
+
+/// Whether a bundle directory is a real install location. On macOS a DMG mount
+/// or an App Translocation sandbox has a throwaway path; writing it to
+/// ~/.zprofile would leave a dead entry behind, and the next launch from
+/// /Applications persists the real one. Windows has no such case.
+pub(crate) fn is_install_location(dir: &std::path::Path) -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+    !dir.starts_with("/Volumes")
+        && !dir
+            .components()
+            .any(|c| c.as_os_str() == "AppTranslocation")
+}
+
+/// Persist `dir` unless this is a dev build (`target/debug/bin`, which
+/// tauri-build populates for `cargo tauri dev`, is not an install) or `dir` is
+/// not an install location. `persist_fn` is injected so the decision is
+/// testable without touching ~/.zprofile or the registry.
+pub(crate) fn maybe_persist(
+    dir: &std::path::Path,
+    dev_build: bool,
+    persist_fn: impl FnOnce(&[String]) -> std::io::Result<String>,
+) -> PersistOutcome {
+    if dev_build {
+        return PersistOutcome::SkippedDevBuild;
+    }
+    if !is_install_location(dir) {
+        return PersistOutcome::SkippedLocation;
+    }
+    match persist_fn(&[dir.to_string_lossy().into_owned()]) {
+        Ok(_) => PersistOutcome::Persisted,
+        Err(e) => PersistOutcome::Failed(e.to_string()),
+    }
+}
+
+/// Prepend the directory containing the bundled codemie shim to the process
+/// PATH so all login-shell invocations (runner.rs, pty.rs) find it, and persist
+/// it for terminals opened later. Must be called before any plugin is
+/// installed (see lib.rs setup order).
+pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
+    // Approach B: next to the main executable. Approach A: resource_dir, where
+    // tauri.<os>.conf.json places the shim at bin/codemie(.cmd); probe_with_bin_dir
+    // tries both `d` and `d/bin/`.
+    let bin_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .and_then(|d| probe_with_bin_dir(d, probe_dir))
+        .or_else(|| {
+            app.path()
+                .resource_dir()
+                .ok()
+                .and_then(|d| probe_with_bin_dir(d, probe_dir))
+        });
+
+    let Some(dir) = bin_dir else {
+        return Err("[inject_bundled_bin_path] bundled shim not found; PATH unchanged".to_string());
+    };
+    let dir_str = dir.to_str().ok_or_else(|| {
+        "[inject_bundled_bin_path] shim dir has non-UTF-8 path; PATH unchanged".to_string()
+    })?;
+    let current = std::env::var("PATH").unwrap_or_default();
+    let new_path = build_new_path(&current, dir_str);
+    // SAFETY: set_var mutates the process environment; Rust's safety contract
+    // requires no concurrent env reads from other threads. This call is placed
+    // inside Tauri's setup() closure, which runs synchronously before any
+    // plugin::init() call that could spawn a worker thread. In Tauri 2.x,
+    // Builder::run() wraps the event-loop initialisation; setup() executes
+    // single-threaded before the event loop starts plugins. If Tauri's internal
+    // threading model changes, this call must move to before Builder::default().
+    // See lib.rs for the call site and invocation order.
+    unsafe { std::env::set_var("PATH", &new_path) };
+    log::info!("[inject_bundled_bin_path] prepended {}", dir_str);
+
+    // set_var affects the current process only. Persist so terminals opened
+    // after installation inherit it: HKCU\Environment on Windows (the NSIS hook
+    // writes it too), ~/.zprofile on macOS, where the app is its own installer.
+    match maybe_persist(&dir, cfg!(debug_assertions), persist) {
+        PersistOutcome::Persisted => {}
+        PersistOutcome::SkippedDevBuild => {
+            log::info!("[inject_bundled_bin_path] dev build; not persisting {dir_str}")
+        }
+        PersistOutcome::SkippedLocation => log::warn!(
+            "[inject_bundled_bin_path] not persisting {dir_str}: the app runs from a DMG mount or an App Translocation path; move it to /Applications"
+        ),
+        PersistOutcome::Failed(e) => {
+            log::warn!("[inject_bundled_bin_path] PATH persist failed: {e}")
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests_windows_probe {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn probe_dir_detects_codemie_cmd_shim() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("codemie.cmd"), "@echo off\r\n").unwrap();
+        assert!(
+            probe_dir(dir.path()),
+            "probe_dir must find codemie.cmd in the directory"
+        );
+    }
+
+    #[test]
+    fn probe_dir_returns_false_for_empty_directory() {
+        let dir = TempDir::new().unwrap();
+        assert!(
+            !probe_dir(dir.path()),
+            "probe_dir must return false for a directory with no shim"
+        );
+    }
+
+    #[test]
+    fn probe_dir_detects_shim_in_bin_subdir_and_not_parent() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        fs::write(bin.join("codemie.cmd"), "@echo off\r\n").unwrap();
+        // The bin/ subdir itself should be found.
+        assert!(probe_dir(&bin), "probe_dir must find codemie.cmd in bin/");
+        // The parent dir must NOT match — the shim is only in bin/, not root.
+        assert!(
+            !probe_dir(dir.path()),
+            "probe_dir on parent must not find a shim placed only in bin/"
+        );
+    }
+
+    /// The pkg binary is no longer produced. Leaving `codemie.exe` in the
+    /// candidate list — and first, at that — means a stale binary from an
+    /// earlier install shadows the shim and reproduces the crash this
+    /// ticket fixes.
+    #[test]
+    fn candidate_bin_names_exclude_pkg_exe() {
+        assert!(
+            !candidate_bin_names().contains(&"codemie.exe"),
+            "codemie.exe must not be a probe candidate: {:?}",
+            candidate_bin_names()
+        );
+        assert_eq!(
+            candidate_bin_names().first(),
+            Some(&"codemie.cmd"),
+            "the shim must be the first candidate"
+        );
+    }
+
+    /// A directory holding only the stale pkg binary must not be treated as
+    /// the bundled bin dir.
+    #[test]
+    fn probe_dir_ignores_stale_pkg_exe() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("codemie.exe"), b"stale").unwrap();
+        assert!(
+            !probe_dir(dir.path()),
+            "a directory with only codemie.exe must not be detected"
+        );
+    }
+}
+#[cfg(test)]
+mod tests_persist_decision {
+    use super::*;
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    fn install_dir() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\Users\alice\AppData\Local\Programs\CodeMie Connect\bin")
+        } else {
+            PathBuf::from("/Applications/CodeMie Connect.app/Contents/Resources/bin")
+        }
+    }
+
+    /// Records what the injected persist function was called with.
+    fn recorder(
+        calls: &RefCell<Vec<Vec<String>>>,
+    ) -> impl FnOnce(&[String]) -> std::io::Result<String> + '_ {
+        move |entries| {
+            calls.borrow_mut().push(entries.to_vec());
+            Ok("recorded".to_string())
+        }
+    }
+
+    #[test]
+    fn dev_build_never_persists_even_from_an_install_location() {
+        let calls = RefCell::new(Vec::new());
+        let out = maybe_persist(&install_dir(), true, recorder(&calls));
+        assert_eq!(out, PersistOutcome::SkippedDevBuild);
+        assert!(
+            calls.borrow().is_empty(),
+            "persist must not be called from a dev build"
+        );
+    }
+
+    #[test]
+    fn release_build_persists_exactly_the_bundle_dir() {
+        let calls = RefCell::new(Vec::new());
+        let dir = install_dir();
+        let out = maybe_persist(&dir, false, recorder(&calls));
+        assert_eq!(out, PersistOutcome::Persisted);
+        assert_eq!(
+            *calls.borrow(),
+            vec![vec![dir.to_string_lossy().into_owned()]],
+            "persist must receive the bundle dir and nothing else"
+        );
+    }
+
+    #[test]
+    fn persist_error_is_reported_not_swallowed() {
+        let out = maybe_persist(&install_dir(), false, |_| {
+            Err(std::io::Error::other("disk full"))
+        });
+        assert_eq!(out, PersistOutcome::Failed("disk full".to_string()));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn dmg_mount_and_app_translocation_are_not_install_locations() {
+        let calls = RefCell::new(Vec::new());
+        for dir in [
+            "/Volumes/CodeMie Connect/CodeMie Connect.app/Contents/Resources/bin",
+            "/private/var/folders/x1/abc/T/AppTranslocation/6F0A-1B2C/d/CodeMie Connect.app/Contents/Resources/bin",
+        ] {
+            assert!(!is_install_location(Path::new(dir)), "{dir}");
+            assert_eq!(
+                maybe_persist(Path::new(dir), false, recorder(&calls)),
+                PersistOutcome::SkippedLocation
+            );
+        }
+        assert!(
+            calls.borrow().is_empty(),
+            "persist must not be called for a throwaway path"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn applications_folders_are_install_locations() {
+        assert!(is_install_location(Path::new(
+            "/Applications/CodeMie Connect.app/Contents/Resources/bin"
+        )));
+        assert!(is_install_location(Path::new(
+            "/Users/alice/Applications/CodeMie Connect.app/Contents/Resources/bin"
+        )));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_has_no_throwaway_locations() {
+        assert!(is_install_location(Path::new(r"D:\Some\Mount\bin")));
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests_macos_probe {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn probe_dir_detects_the_macos_shim() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("codemie"), b"#!/bin/sh\n").unwrap();
+        assert!(probe_dir(dir.path()));
+    }
+
+    #[test]
+    fn probe_dir_returns_false_for_empty_directory() {
+        let dir = TempDir::new().unwrap();
+        assert!(!probe_dir(dir.path()));
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +631,86 @@ mod tests {
         let r = resolve_shell_path().expect("resolved shell PATH on a macOS box");
         assert!(r.contains('/'), "resolved PATH should contain directories");
         assert!(!r.contains(PATH_MARKER), "markers must be stripped");
+    }
+}
+
+#[cfg(test)]
+mod tests_inject_bundled_bin_path {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_shim(dir: &std::path::Path) {
+        #[cfg(windows)]
+        fs::write(dir.join("codemie.cmd"), b"@echo off").unwrap();
+        #[cfg(not(windows))]
+        fs::write(dir.join("codemie"), b"#!/bin/sh").unwrap();
+    }
+
+    // --- probe_with_bin_dir ---
+
+    #[test]
+    fn probe_with_bin_dir_returns_root_when_shim_in_root() {
+        let dir = TempDir::new().unwrap();
+        write_shim(dir.path());
+        let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
+        assert_eq!(result.as_deref(), Some(dir.path()));
+    }
+
+    #[test]
+    fn probe_with_bin_dir_returns_bin_subdir_when_shim_only_in_bin() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        write_shim(&bin);
+        let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
+        assert_eq!(result.as_deref(), Some(bin.as_path()));
+    }
+
+    #[test]
+    fn probe_with_bin_dir_prefers_root_over_bin_subdir() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        write_shim(dir.path());
+        write_shim(&bin);
+        let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
+        assert_eq!(
+            result.as_deref(),
+            Some(dir.path()),
+            "root is checked before bin/"
+        );
+    }
+
+    #[test]
+    fn probe_with_bin_dir_returns_none_when_no_shim() {
+        let dir = TempDir::new().unwrap();
+        let result = probe_with_bin_dir(dir.path().to_path_buf(), probe_dir);
+        assert!(result.is_none());
+    }
+
+    // --- build_new_path ---
+
+    #[test]
+    fn build_new_path_returns_dir_only_when_current_is_empty() {
+        assert_eq!(build_new_path("", "bundled_bin"), "bundled_bin");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn build_new_path_prepends_with_colon_separator() {
+        assert_eq!(
+            build_new_path("/usr/bin:/usr/local/bin", "/app/bin"),
+            "/app/bin:/usr/bin:/usr/local/bin"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn build_new_path_prepends_with_semicolon_separator() {
+        assert_eq!(
+            build_new_path(r"C:\Windows\System32;C:\Windows", r"C:\app\bin"),
+            r"C:\app\bin;C:\Windows\System32;C:\Windows"
+        );
     }
 }

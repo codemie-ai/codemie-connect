@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "head": "f4304659b2762cab4075ecf0b6ac868bfdf8d517",
+  "feature_id": "update-banner-and-footer-placement",
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_command": "npx playwright test update-banner-shell.spec.ts",
+  "app_url": "http://localhost:8934/index.html",
+  "viewport": "1000x660 (the shipped window size)",
+  "screenshot_path": "evidence/screenshots/update-banner-in-shell.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "assertion_style": "computed geometry and computed style (getBoundingClientRect / getComputedStyle)",
+  "notes": "Banner lives in the shell (parent #app), not inside #home-view, so EPMCDME-14507 can place its component without editing Home. Verified with a FORCED pending update: installed and latest are both 0.14.1 today, so neither banner nor badge can appear on a current machine. Update CLI runs from the banner itself; showUpdateBanner and dismissUpdateBanner no longer read any home-grid id. Dismissing hides the banner and leaves the badge, which tracks whether an update exists."
+}

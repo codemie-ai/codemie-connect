@@ -1,10 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CodeMie Connect",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "identifier": "com.epam.codemie.installer",
   "build": {
     "frontendDist": "../ui"
+  },
+  "plugins": {
   },
   "app": {
     "withGlobalTauri": true,
@@ -12,8 +14,8 @@
       {
         "label": "main",
         "title": "EPAM AI/Run CodeMie Connect",
-        "width": 900,
-        "height": 600,
+        "width": 1000,
+        "height": 660,
         "resizable": false,
         "fullscreen": false,
         "backgroundColor": "#1A1A1A"
@@ -40,10 +42,11 @@
     },
     "windows": {
       "webviewInstallMode": {
-        "type": "downloadBootstrapper"
+        "type": "offlineInstaller"
       },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "installer-hooks.nsi"
       }
     }
   }

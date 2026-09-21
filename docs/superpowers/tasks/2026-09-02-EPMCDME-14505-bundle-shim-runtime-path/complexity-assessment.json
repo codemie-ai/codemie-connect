@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "task": "Delete admin-elevated Node/Git/CLI acquisition flow across six sync layers, add download integrity check, and expose precedence-warning via existing check_codemie inspector command.",
+  "generated": "2026-09-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "4+ components across multiple subsystems must move in sync: installer.rs + error.rs (deletion + Sudo variant prune), downloader.rs (new integrity logic), inspector.rs (handshake extension), lib.rs (deregistration), handlers.js + runner-bridge.js + renderer.js (JS layer), and two YAML step-plan files compiled into the binary — plus a new handshake-precedence abstraction surface."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest existing pattern is downloader.rs, which performs zero integrity verification; the security-sensitive SHA-256/size check has no reusable util in this codebase, satisfying the auto-bump rule. Additional risk: tight coupling to S1 branch EPMCDME-14573 (inject_bundled_bin_path), stale steps.rs test requiring rewrite, and InstallerError::Sudo dead-variant that will hard-fail cargo clippy -D warnings if not pruned in sync."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Approximately 10 files modified across 4 directories: config/ (steps.yaml, steps-windows.yaml), src-tauri/src/ (lib.rs, steps.rs), src-tauri/src/commands/ (installer.rs, error.rs, downloader.rs, inspector.rs), ui/ (handlers.js, runner-bridge.js, renderer.js). L boundary (8–10 modified, 3+ directories) is met."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "4 distinct layers touched: Config/Infrastructure (YAML step plans compiled at build time), Service/Rust-commands (installer, downloader, inspector), External (CLI invocation via check_codemie/check_codemie_version), and UI/JS (handlers, bridge, renderer). No DB schema migration."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L(4) to XL(5): security requirement — AC requires truncated/modified files to be rejected; closest existing pattern (downloader.rs) covers no integrity verification, making the SHA-256/size check a security-sensitive addition with no existing reusable util."
+  ],
+  "split_recommendation": null
+}

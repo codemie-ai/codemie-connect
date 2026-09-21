@@ -1,0 +1,110 @@
+{
+  "decision": "request-changes",
+  "rationale": "2 critical auth bugs: stdout/stderr merge discards error output whenever stdout is non-empty, and 'not authenticated' in an Auth Status row incorrectly returns signed_in; both allow an unauthenticated user to pass the gate. 5 additional major patch findings: expired-state test has no real CLI fixture, ensureAuthenticated unknown/no_profile paths are untested, startSignIn has no error handling around its awaits, and findLoginError matches too narrow a set of error prefixes. No spec; confidence low. 5 deferred to EPMCDME-14589 (startSignIn pre-wiring design gaps plus pre-existing ensureAuthenticated catch behavior); 1 dismissed (findLoginError null-guard, call site always supplies an array).",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "4 subjects audited: 3 feat and 1 chore, all matching the documented <type>: <short description> format with no disallowed scopes. Types are all in the permitted set."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": ".ai-run/guides/standards/code-quality.md does not exist in the repo and no ArtifactRef was passed."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": ".ai-run/guides/development/security-patterns.md does not exist in the repo and no ArtifactRef was passed. Changed files (inspector.rs, runner-bridge.js, renderer.js, signin-parse.js) were reviewed for concrete issues: no credential logging, no user-controlled shell injection (startSignIn hard-codes the command string), no path traversal, and profile-status detail values are CLI output strings rather than secrets. No concrete security defects found."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/inspector.rs",
+      "line": 118,
+      "title": "stdout/stderr merge drops stderr auth errors",
+      "problem": "parse_profile_status selects stdout OR stderr exclusively: `let combined = if stdout.is_empty() { stderr } else { stdout }`. When stdout contains any content (even a blank line) the entire stderr is discarded, including 'No active profile found' and auth error messages that the CLI may route there.",
+      "impact": "A profile whose CLI writes its auth error or no_profile sentinel only to stderr returns 'unknown' or 'signed_in' instead of 'not_signed_in' or 'no_profile'. ensureAuthenticated passes the user through when it should block, an auth bypass.",
+      "recommendation": "Always concatenate both streams before applying any sentinel check: `let combined = format!(\"{stdout}\\n{stderr}\");`. Apply all existing checks against the merged string unchanged."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/inspector.rs",
+      "line": 145,
+      "title": "'not authenticated' in Auth Status row returns signed_in",
+      "problem": "When the CLI emits an Auth Status row containing 'Not authenticated' (without a separate 'Authentication required to use this profile' line), the first sentinel at line 125 does not match, the code reaches the Auth Status row check, and `lower.contains(\"authenticated\")` at line 145 is true — returning signed_in instead of not_signed_in.",
+      "impact": "A user who is not signed in passes the ensureAuthenticated gate because the parser misidentifies 'Not authenticated' as the positive 'authenticated' state. Any provider that uses this row format produces an auth bypass.",
+      "recommendation": "Tighten the signed_in check to exclude negated forms: `if lower.contains(\"authenticated\") && !lower.contains(\"not authenticated\")`. Alternatively add an explicit 'not authenticated' check before the positive one."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/inspector.rs",
+      "line": 139,
+      "title": "Expired-state test uses invented fixture with no real CLI capture",
+      "problem": "The test profile_status_expired_no_real_fixture_pattern_only is explicitly flagged as having no real CLI fixture. The synthetic string '│ Auth Status │ Expired │' may not match the actual CLI table format. If the CLI emits expired-token info on a line not containing 'Auth Status' (e.g. a standalone '✗ Token expired' row), the `find(|l| l.contains(\"Auth Status\"))` guard misses it and the parser returns 'unknown' instead of 'not_signed_in'.",
+      "impact": "A user with an expired token may pass the ensureAuthenticated gate rather than being prompted to re-authenticate, and the test provides no protection against that regression since it was written to the invented fixture.",
+      "recommendation": "Capture real 'codemie profile status' output for an expired-token profile and replace the synthetic fixture. Add a test covering a standalone '✗ Token expired' line to ensure the fallback path returns 'not_signed_in' or is explicitly documented as 'unknown'."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 338,
+      "title": "ensureAuthenticated no_profile blocking branch untested",
+      "problem": "No JS test exercises ensureAuthenticated() with { state: 'no_profile' }. The gating condition at line 338 includes no_profile in the blocking branch but the path through showNotice and return false is completely untested.",
+      "impact": "A future edit dropping no_profile from the condition would let a user who has not run 'codemie setup' bypass the auth gate and attempt to connect Claude Desktop, failing silently downstream, with no test failure to catch the regression.",
+      "recommendation": "Add a Node test that stubs bridge.inspector.checkProfileStatus to resolve { state: 'no_profile' }, calls ensureAuthenticated(), and asserts it returns false and invokes showNotice."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 338,
+      "title": "ensureAuthenticated unknown-passes-gate is untested",
+      "problem": "No JS test exercises ensureAuthenticated() with { state: 'unknown' }. The intentional permissive policy — unknown is treated as authenticated so a provider that omits an Auth Status row never blocks the user — is documented only in a comment at line 329 and has no test.",
+      "impact": "A future edit tightening the condition to also block 'unknown' would regress the exact bug this ticket fixes (providers that omit an Auth Status row), and no test would fail.",
+      "recommendation": "Add a Node test that stubs bridge.inspector.checkProfileStatus to resolve { state: 'unknown' }, calls ensureAuthenticated(), and asserts it returns true without invoking showNotice."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 357,
+      "title": "startSignIn has no error handling around awaits",
+      "problem": "startSignIn awaits bridge.runner.runStream (line 361) and bridge.inspector.checkProfileStatus (line 373) with no surrounding try/catch. A runStream rejection (IPC error or Rust-side failure) skips the error-line scan and the status re-read entirely; a checkProfileStatus rejection leaves updateIdentityAuthStatus uncalled.",
+      "impact": "Either rejection causes startSignIn to reject as an unhandled promise, the identity bar stays frozen at its pre-login state, and the user receives no feedback about the failure.",
+      "recommendation": "Wrap the function body in try/catch. On runStream rejection show an error notice via showNotice. On checkProfileStatus rejection fall back to updateIdentityAuthStatus({ state: 'unknown', detail: '' }) so the bar is updated to the safe fallback."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/signin-parse.js",
+      "line": 3,
+      "title": "findLoginError regex misses most CLI error formats",
+      "problem": "findLoginError matches only lines starting with '✗' or 'Error:' (capital E). The CLI exits 0 on failure, making this regex the sole error signal. Failures surfaced as 'error: ...' (lowercase), 'FAILED: ...', multi-line OAuth errors, or timeout messages return null and are treated as a successful login.",
+      "impact": "A failed login that uses any error format other than the two matched prefixes is silently treated as success: no notice is shown, the UI re-reads profile status and reports 'not_signed_in' with no explanation of why sign-in failed.",
+      "recommendation": "Broaden the pattern, e.g. /^\\s*(✗|[Ee]rror[: ]|FAILED[: ]|failed[: ])/i, and add a test covering each error prefix the CLI is known to emit. Document which strings are expected so the coverage gap is explicit."
+    }
+  ]
+}

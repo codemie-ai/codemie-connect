@@ -4,12 +4,74 @@ mod state;
 mod steps;
 
 use state::AppState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState::default())
         .setup(|app| {
+            // PATH injection uses set_var and must run before any plugin starts a thread.
+            let resolved = commands::pathman::apply_resolved_shell_path();
+            // Capture PATH before injection so detection searches the pre-bundle PATH.
+            let pre_injection_path = std::env::var("PATH").unwrap_or_default();
+
+            // Detect an existing CodeMie CLI before touching PATH ourselves. If found,
+            // the bundle must not be installed or registered at all (EPMCDME-14581).
+            let existing_cli_detected =
+                commands::handshake::probe_global_codemie(&pre_injection_path, &|p| p.exists());
+
+            let bundled_injected = if existing_cli_detected {
+                false
+            } else {
+                let injected = commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
+                if !injected {
+                    // eprintln! is swallowed in a packaged GUI; use log::error! so the
+                    // message is captured by the log plugin (debug builds) and any
+                    // custom log subscriber wired up before this point.
+                    log::error!("inject_bundled_bin_path failed");
+                }
+                injected
+            };
+
+            // The bundled runtime and CLI entry live under resource_dir(): node/node.exe
+            // on Windows (tauri.windows.conf.json), node/bin/node on macOS
+            // (tauri.macos.conf.json). Skipped entirely when an existing CLI takes
+            // precedence, so run_self_update falls back to the PATH-resolved `codemie`
+            // shim instead of a bundled binary that was never installed.
+            let (node_exe, cli_entry) = if existing_cli_detected {
+                (std::path::PathBuf::new(), std::path::PathBuf::new())
+            } else {
+                app.path()
+                    .resource_dir()
+                    .map(|res| {
+                        let node = if cfg!(windows) {
+                            res.join("node").join("node.exe")
+                        } else {
+                            res.join("node").join("bin").join("node")
+                        };
+                        let entry = res
+                            .join("cli")
+                            .join("node_modules")
+                            .join("@codemieai")
+                            .join("code")
+                            .join("bin")
+                            .join("codemie.js");
+                        (node, entry)
+                    })
+                    .unwrap_or_else(|e| {
+                        log::warn!("resource_dir() failed: {e}; absolute CLI invocation unavailable");
+                        (std::path::PathBuf::new(), std::path::PathBuf::new())
+                    })
+            };
+
+            app.manage(AppState {
+                pre_injection_path,
+                bundled_injected,
+                existing_cli_detected,
+                node_exe_path: node_exe,
+                cli_entry_path: cli_entry,
+                ..AppState::default()
+            });
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -17,10 +79,13 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            // GUI-launched apps inherit a minimal PATH; resolve the user's real
-            // (interactive-login) shell PATH so user-installed CLIs are discoverable.
-            let resolved = commands::pathman::apply_resolved_shell_path();
             commands::logger::write_line("=== CodeMie Installer session started ===", "dim");
+            if existing_cli_detected {
+                commands::logger::write_line(
+                    "Existing CodeMie CLI detected on PATH — using it instead of installing the bundled CLI.",
+                    "info",
+                );
+            }
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())
         })
@@ -37,19 +102,19 @@ pub fn run() {
             commands::inspector::check_codemie,
             commands::inspector::check_codemie_version,
             commands::inspector::check_profile_status,
+            commands::handshake::check_handshake_state,
             commands::inspector::git_binary_path,
             commands::inspector::node_binary_path,
+            commands::codemie_config::read_codemie_config,
             commands::installer::get_platform_info,
             commands::installer::temp_dir,
-            commands::installer::node_pkg_url,
             commands::installer::latest_lts_node_version,
             commands::installer::fetch_codemie_latest,
-            commands::installer::install_node,
-            commands::installer::install_git_clt,
             commands::downloader::download_file,
             commands::pty::spawn_pty,
             commands::pty::pty_input,
             commands::pty::pty_resize,
+            commands::pty::pty_kill,
             #[cfg(windows)]
             commands::pty::spawn_external_ps,
             commands::logger::log_line,
@@ -60,6 +125,10 @@ pub fn run() {
             commands::smoke::smoke_emit,
             steps::get_steps,
             steps::get_logo_path,
+            commands::app_updater::check_for_update,
+            commands::app_updater::download_and_install,
+            commands::app_updater::restart_app,
+            commands::app_updater::get_app_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

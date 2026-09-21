@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "generated": "2026-09-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 3, "label": "M" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 37,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "pathman.rs, runner.rs, installer.rs, lib.rs, state.rs in the Rust backend plus ui/handlers.js in the frontend plus the new assets/windows/bin/codemie.cmd shim — 4+ components spanning Service, UI, Infrastructure, and External layers"
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "unsafe { std::env::set_var } with documented thread-safety constraint; raw extern 'system' block for SendMessageTimeoutW (WM_SETTINGCHANGE broadcast); Windows registry writes via winreg — none of these have an existing codebase pattern to copy from"
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "diffstat reports 37 files changed; per rubric 16+ maps to XXL — inflated by 20 SDLC factory artifacts (docs/superpowers/), but the raw diffstat count drives this dimension in actual mode"
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "UI (ui/handlers.js), Service (Rust command modules), Infrastructure (PATH injection, tauri.conf.json, config/steps.yaml), External (HKCU\\Environment registry + WM_SETTINGCHANGE) — four distinct layers"
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

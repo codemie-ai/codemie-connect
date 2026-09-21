@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "2.0.1"
+version = "2.1.0"
 description = "EPAM AI/Run CodeMie Connect for macOS"
 authors = ["EPAM Systems — People Organization / WPM"]
 license = ""
@@ -34,6 +34,7 @@ tauri-plugin-log = "2"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "process", "io-util", "time", "fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 futures-util = "0.3"
+sha2 = "0.10"
 thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
@@ -41,3 +42,7 @@ portable-pty = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+
+[dev-dependencies]
+tempfile = "3"
+tauri-utils = { version = "2", features = ["resources"] }

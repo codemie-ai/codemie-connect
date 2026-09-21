@@ -64,8 +64,138 @@ body::before {
 
 #app { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100vh; }
 
+/* ---- Shell body: sidebar column on the left, view column on the right ---- */
+#shell-body {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+}
+#view-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ---- Identity bar (full-width top bar) ---- */
+#identity-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  background: var(--panel-dark);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+#identity-auth-status,
+#identity-product { color: var(--text); font-weight: 600; }
+/* An empty segment is a real state — an absent account, or no config at all.
+   Hiding it also drops its separator, since the middot below is a ::before. */
+#identity-bar > span:empty { display: none; }
+#identity-bar > span + span::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--dim);
+}
+#identity-version-badge {
+  margin-left: auto;
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+/* The badge is pushed to the far right — it must not carry a leading middot.
+   Needs two ids to outrank `#identity-bar > span + span::before` above. */
+#identity-bar > #identity-version-badge::before { content: none; }
+#identity-version-badge:empty { display: none; }
+/* The theme toggle is the last item in the bar. The badge's `margin-left: auto`
+   already pushes both to the right; when the badge is empty (and so removed from
+   the flex flow) the toggle takes over that job. */
+#identity-bar > #theme-toggle { margin-left: 12px; }
+#identity-version-badge:empty + #theme-toggle { margin-left: auto; }
+
+/* ---- Sidebar nav (main group above, divider, bottom group below) ---- */
+#app-sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 180px;
+  width: 180px;
+  background: var(--panel-dark);
+  border-right: 1px solid var(--border);
+  padding: 12px;
+  gap: 3px;
+  overflow-y: auto;
+}
+#sidebar-main-group,
+#sidebar-bottom-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+/* About + analytics sit at the very bottom of the sidebar column. */
+#sidebar-bottom-group { margin-top: auto; }
+#sidebar-divider { height: 1px; background: var(--border); margin: 6px 4px; }
+
+/* ---- Collapsible command-log footer ("what CodeMie ran") ---- */
+#command-log-footer {
+  border-top: 1px solid var(--border);
+  background: var(--panel-dark);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+#command-log-footer > summary {
+  padding: 8px 16px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+}
+#command-log-footer > summary::-webkit-details-marker { display: none; }
+#command-log-footer > summary::before { content: "▸ "; }
+#command-log-footer[open] > summary::before { content: "▾ "; }
+#command-log-body { padding: 0 16px 10px; }
+.sidebar-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+/* No navigating away from a running install — see setInstallRunning. */
+#app-sidebar[data-busy="1"] { pointer-events: none; opacity: 0.4; }
+.sidebar-item:hover { background: var(--surface-2); border-color: var(--accent); }
+.sidebar-item:active { background: var(--surface-2); }
+/* Routed entry — the filled pill 01-home.png draws on Home. Both values are
+   sampled from that wireframe rather than derived from --accent: its selected
+   nav text is periwinkle (#C4B5FD) where --accent is fuchsia (#C084FC), and the
+   pill is a flat indigo fill rather than a translucent wash of the accent. */
+.sidebar-item[aria-current="page"] {
+  --nav-selected-bg:   #2B263E;
+  --nav-selected-text: #C4B5FD;
+  background: var(--nav-selected-bg);
+  color: var(--nav-selected-text);
+  font-weight: 600;
+}
+
 /* ---- Theme toggle (fixed top-right, above content, below overlays) ---- */
-#theme-toggle { position: fixed; top: 10px; right: 12px; z-index: 45; }
+/* Lives inside #identity-bar as a normal flex child — it used to be
+   position: fixed, which floated it over the bar and clipped the version badge. */
+#theme-toggle { flex: 0 0 auto; }
 .theme-ico { font-size: 12px; line-height: 1; opacity: 0.55; transition: opacity var(--transition-base); }
 :root.light .theme-ico-sun  { opacity: 1; }
 :root.dark  .theme-ico-moon { opacity: 1; }
@@ -168,20 +298,20 @@ body::before {
   color: var(--muted);
   margin-bottom: 12px;
 }
-#update-banner {
+.top-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   background: rgba(88, 166, 255, 0.08);
   border: 1px solid var(--accent);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   padding: 8px 12px;
   margin-bottom: 12px;
   font-size: 12px;
   color: var(--text);
 }
-#update-banner-dismiss {
+.top-banner > button:last-of-type {
   background: none;
   border: 1px solid var(--border-2);
   color: var(--muted);
@@ -191,9 +321,31 @@ body::before {
   flex-shrink: 0;
   font: inherit;
 }
+.top-banner[data-busy="1"] { opacity: 0.5; }
+.top-banner > span + button {
+  background: var(--surface-2);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 12px;
+  margin-left: auto;
+  cursor: pointer;
+  flex-shrink: 0;
+  font: inherit;
+  font-weight: 600;
+}
+.top-banner > span + button[data-state="updating"] { cursor: default; opacity: 0.6; }
+.top-banner > span + button[data-state="done"] {
+  border-color: #3fb950;
+  background: rgba(63, 185, 80, 0.08);
+}
+.top-banner > span + button[data-state="error"] {
+  border-color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.08);
+}
 #installation-tiles {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
 .sub-tile { padding: 14px 12px; }

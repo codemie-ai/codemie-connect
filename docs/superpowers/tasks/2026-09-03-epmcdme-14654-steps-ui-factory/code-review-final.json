@@ -1,0 +1,34 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec was present (compact profile, no story artifact); confidence is low. Two major defects confirmed reachable: active spinner intervals are never cancelled when renderSteps re-renders (leak to detached nodes), and showApproval re-entry after stampApproval leaves orphaned no-op buttons. Three candidates dismissed: setInterval is natively available in Node.js and the test file deliberately avoids startSpinner; the insertSubStep silent-drop path is task-specified intentional behavior documented in code comments; stepsById dead-map allocation is below the emission floor.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/steps-ui.js",
+      "line": 57,
+      "title": "Active spinner intervals leak on renderSteps re-render",
+      "problem": "renderSteps clears the rows Map and resets container.innerHTML but never iterates spinners or calls clearInterval. After re-render the spinners Map still holds live interval handles that continue writing to detached DOM nodes indefinitely.",
+      "impact": "Every re-render while at least one step is ACTIVE leaks a setInterval handle. In a long-running install session with multiple renderSteps calls (e.g. phase transitions) this accumulates unbounded callbacks and prevents GC of the orphaned nodes.",
+      "recommendation": "At the top of renderSteps, before rows.clear() and the innerHTML reset, iterate spinners: `spinners.forEach((t) => clearInterval(t)); spinners.clear();`"
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/steps-ui.js",
+      "line": 108,
+      "title": "showApproval re-entry after stamp adds orphaned no-op buttons",
+      "problem": "showApproval removes any existing .approval element and always appends a new approval bar, but does not guard against being called after stampApproval has already written a .stamp element. A second call appends approval buttons alongside the existing stamp.",
+      "impact": "The redundant buttons are permanently visible but are no-ops on click (stampApproval has its own early-return guard against double-stamp). The UI presents a confusing approved-yet-actionable state that cannot be dismissed without a full re-render.",
+      "recommendation": "Add an early-return guard at the start of showApproval after the rec null-check: `if (rec.main.querySelector('.stamp')) return;`"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+# Deferred from code review — 2026-09-01-EPMCDME-14573-windows-node-shim-runner-path (2026-09-02)
+
+- **download_to_file issues reqwest::get with no timeout** — `src-tauri/src/commands/installer.rs` — the `download_to_file` helper calls `reqwest::get(url)` with no timeout, so a slow or unresponsive server hangs the Git-for-Windows download indefinitely. Pre-existing: this helper predates EPMCDME-14573; the Windows `install_git_clt` function and its download helper were not added or materially modified by this change.
+
+- **install_git_clt non-zero installer exit falls through to polling loop** — `src-tauri/src/commands/installer.rs` — when the Git-for-Windows installer process exits with a non-zero code, the `Ok(s) if !s.success()` arm emits a tick event and falls through to the 5-minute polling loop rather than returning `false`; the user sees an exit-code message followed by silent waiting. Pre-existing: this Windows `install_git_clt` path predates EPMCDME-14573; recovering or surfacing the installer failure was not in scope for this change.

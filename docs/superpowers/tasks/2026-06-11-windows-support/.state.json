@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "slug": "windows-support",
-  "branch": "feat/windows-support",
-  "phase": "maintenance",
-  "started_at": "2026-06-11T00:00:00Z",
-  "completed_at": "2026-06-11T01:00:00Z",
-  "last_sync_commit": "3e514903b61fca61eb90ec4b6e184a4aca6dfe53"
-}

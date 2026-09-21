@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "head": "f4304659b2762cab4075ecf0b6ac868bfdf8d517",
+  "feature_id": "collapsible-footer",
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_command": "npx playwright test app-shell-navigation.spec.ts -g \"command-log footer\"",
+  "app_url": "http://localhost:8934/index.html",
+  "viewport": "1000x660 (the shipped window size)",
+  "screenshot_path": "evidence/screenshots/shell-two-column-layout.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "assertion_style": "computed geometry and computed style (getBoundingClientRect / getComputedStyle)",
+  "notes": "A <details id=command-log-footer> labelled \"what CodeMie ran\", collapsed by default, with an empty #command-log-body and no behaviour of its own. EPMCDME-14512 fills it."
+}

@@ -1,5 +1,10 @@
 {
   "enabledPlugins": {
     "sdlc-factory@sdlc-factory": true
+  },
+  "permissions": {
+    "additionalDirectories": [
+      "docs/superpowers/tasks"
+    ]
   }
 }

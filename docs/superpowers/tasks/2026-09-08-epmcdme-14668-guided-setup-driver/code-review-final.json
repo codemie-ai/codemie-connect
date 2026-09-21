@@ -1,0 +1,70 @@
+{
+  "decision": "request-changes",
+  "rationale": "Verified against ui/setup-driver.js: model-list pagination is unbounded (no loop cap) and, more seriously, an in-flight paginated model prompt can be re-dispatched by a concurrent PTY redraw because the dedup signature includes options that change on every scroll step, racing two collectModelOptions() walks against each other. The idle-settle timer only answers unrecognized (y/N) prompts and otherwise never reschedules, so a genuinely unclassified prompt hangs the run forever with no error surfaced. kill() rejecting inside the exit finally block also skips resumePtyInput(), permanently suspending ui/terminal.js keystroke forwarding. A caller-supplied out-of-range model answer index is not validated and silently misnavigates the cursor instead of erroring. blind and verification-gap lenses are n/a for the compact profile; acceptance is genuine no-spec (forces confidence low). 3 edge-case findings dismissed as noise: the atob-failure fallback matches ui/terminal.js's own existing pattern, the generic-fallback String(answer) branch is confirmed dead code by its own comment, and the AUTO_LIST/AUTO_CONFIRM kind-mismatch scenario has no live path against the current fixed PROMPTS table.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-driver.js",
+      "line": 70,
+      "title": "Unbounded model-pagination walk",
+      "problem": "collectModelOptions() walks arrow-down in an unconditional `while (true)` loop, stopping only when a step reveals no option not already collected. Nothing bounds the number of steps.",
+      "impact": "If the CLI's model list keeps revealing entries (paginated feed that never repeats, or a rendering glitch that always looks 'new'), the walk never terminates: the run hangs with the module-level single-flight `active` lock held, blocking every later startSetup() call for the rest of the session.",
+      "recommendation": "Cap the walk at a fixed step count (e.g. 200) and reject with { step: 'model', message: 'pagination did not settle' } when exceeded."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "ui/setup-driver.js",
+      "line": 178,
+      "title": "Concurrent model-prompt redraws race the pagination walk",
+      "problem": "handleDetectedPrompt() is fired detached (via .catch(), not awaited) from onData for every PTY chunk. Its dedup guard is keyed on JSON.stringify({id, message, options}), but during a paginated model walk the CLI redraws the same open prompt with a different visible options slice on every arrow-key step -- which is exactly the pagination this code drives. Each such redraw produces a distinct signature, defeating the guard and letting a second handleDetectedPrompt('model', ...) fire while the first collectModelOptions() call is still in flight.",
+      "impact": "Two concurrent collectModelOptions() walks write arrow-key bytes to the same PTY at once, corrupting cursor position and the collected option list -- the driver's answer for the model step becomes unreliable on essentially every account with a paginated model list, which is the mainline path this feature exists to handle.",
+      "recommendation": "Add an in-flight flag (e.g. a modelWalkInProgress boolean) checked at prompt-dispatch time and skip re-dispatch of 'model' while a walk is running, instead of relying on the options-inclusive signature to dedupe it."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-driver.js",
+      "line": 185,
+      "title": "Out-of-range model answer index silently misnavigates",
+      "problem": "`const rawIndex = raw.indexOf(filtered[answer]);` is never validated. If onPromptCb returns an index outside `filtered`'s bounds, `filtered[answer]` is undefined, `raw.indexOf(undefined)` returns -1, and translateListAnswer(selectedIndex, -1) still computes a (wrong but non-throwing) arrow-key sequence.",
+      "impact": "An out-of-range answer from the caller moves the cursor to the wrong menu entry and confirms it with \\r, silently selecting the wrong model with no error surfaced anywhere in the run.",
+      "recommendation": "Throw { step: 'model', message: 'invalid model selection index' } when rawIndex === -1, before calling translateListAnswer."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "ui/setup-driver.js",
+      "line": 231,
+      "title": "Idle timer never resolves an unrecognized, non-(y/N) prompt",
+      "problem": "scheduleIdleCheck()'s one-shot setTimeout only acts when the settled screen's last line matches YN_HINT; for any other unclassified prompt (detectPrompt returns null and there is no y/N hint) it does nothing. scheduleIdleCheck() is only re-invoked from onData, so once the screen stops changing no further idle check is ever scheduled.",
+      "impact": "A CLI prompt this driver cannot classify and that carries no (y/N) hint hangs the run forever: no timeout, no settleReject, no onPrompt call -- the caller never learns the run stalled, and the single-flight lock stays held.",
+      "recommendation": "On idle with no YN_HINT match, settleReject({ step: null, message: 'unrecognized idle prompt', raw: lines.join(\"\\n\") }) instead of doing nothing."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-driver.js",
+      "line": 293,
+      "title": "kill() rejection skips resumePtyInput() cleanup",
+      "problem": "The exit path is `finally { if (!exited) { await kill(); await spawnResultPromise.catch(() => {}); } resumePtyInput(); }`. If `kill()` itself throws (e.g. the pty_kill invoke fails), the throw propagates out of the finally block and `resumePtyInput()` on the next line never executes.",
+      "impact": "ui/terminal.js's onData -> pty_input keystroke forwarding stays suspended for the rest of the session after a kill failure -- the interactive terminal silently stops accepting user input with no visible cause.",
+      "recommendation": "Wrap the exit-path kill in its own try/finally: `try { await kill(); await spawnResultPromise.catch(() => {}); } finally { resumePtyInput(); }`, so resumePtyInput() always runs regardless of kill()'s outcome."
+    }
+  ]
+}

@@ -37,31 +37,52 @@ export const inspector = {
   checkNpm: () => invoke('check_npm'),
   checkCodemie: () => invoke('check_codemie'),
   checkCodemieVersion: () => invoke('check_codemie_version'),
+  checkHandshakeState: () => invoke('check_handshake_state'),
+  checkProfileStatus: () => invoke('check_profile_status'),
   gitBinaryPath: () => invoke('git_binary_path'),
   nodeBinaryPath: () => invoke('node_binary_path'),
+};
+
+// ---- codemie config (~/.codemie/codemie-cli.config.json) ----
+// read() resolves { state, profile, model, project, account } where state is
+// 'no-configuration' | 'valid' | 'broken'. `account` is null when the config
+// records no userEmail — an absent account, distinct from an unread one
+// ('no-configuration'). Never rejects; a missing file is a state, not an error.
+export const codemieConfig = {
+  read: () => invoke('read_codemie_config'),
 };
 
 // ---- installer (src/main/installer-macos.js) ----
 export const installer = {
   latestLtsNodeVersion: () => invoke('latest_lts_node_version'),
-  nodePkgUrl: (arch, version) => invoke('node_pkg_url', { arch: arch || 'universal', version }),
-  installNode: (pkgPath) => invoke('install_node', { pkgPath }),
-
-  // Polls in Rust; streams human-readable ticks via engine:git-tick.
-  async installGitCLT({ onTick = () => {} } = {}) {
-    const un = await listen('engine:git-tick', (e) => onTick(String(e.payload)));
-    try {
-      return await invoke('install_git_clt');
-    } finally {
-      un();
-    }
-  },
 };
 
 // ---- updater ----
+async function checkForAppUpdate() {
+  return invoke('check_for_update');
+}
+
+async function downloadAndInstall(id, onProgress) {
+  const unlisten = await listen('engine:update-progress', (event) => {
+    if (event.payload.id === id) onProgress(event.payload);
+  });
+  try {
+    await invoke('download_and_install', { id });
+  } finally {
+    unlisten();
+  }
+}
+
+async function restartApp() {
+  return invoke('restart_app');
+}
+
 export const updater = {
   fetchCodemieLatest: () => invoke('fetch_codemie_latest'),
   runSelfUpdate: () => invoke('run_self_update'),
+  checkForAppUpdate,
+  downloadAndInstall,
+  restartApp,
 };
 
 // ---- pathman (src/main/pathman.js) ----
@@ -73,14 +94,16 @@ export const pathman = {
 // ---- downloader (src/main/downloader.js) ----
 export const downloader = {
   // onProgress(fraction) called per chunk via the engine:download-progress event.
-  async download(url, dest, onProgress = () => {}) {
+  // expectedSha256 is forwarded to verify_download in Rust; pass null to skip
+  // the integrity check (acceptable only when no hash is published by the source).
+  async download(url, dest, onProgress = () => {}, expectedSha256 = null) {
     const id = nextId('dl');
     const un = await listen('engine:download-progress', (e) => {
       const p = e.payload;
       if (p && p.id === id) onProgress(p.fraction);
     });
     try {
-      return await invoke('download_file', { url, dest, progressId: id });
+      return await invoke('download_file', { url, dest, progressId: id, expectedSha256 });
     } finally {
       un();
     }
@@ -99,21 +122,36 @@ export const externalWindow = {
 
 // ---- pty (replaces node-pty; the active PTY lives in Rust managed state) ----
 export const pty = {
-  // Spawns an interactive command; resolves with its exit code on engine:pty-exit.
-  // PTY output (engine:pty-data) is routed to the terminal by the renderer.
-  async spawnPty(cmd, cols = 100, rows = 30) {
-    let resolveExit;
-    const exit = new Promise((r) => {
+  // Spawns an interactive command; resolves with { code, id } on engine:pty-exit
+  // for the matching run id.  Per-run output is delivered via the optional onData
+  // callback; engine:pty-data events for other run ids are ignored.
+  async spawnPty(cmd, cols = 100, rows = 30, onData) {
+    const id = nextId('pty');
+    let resolveExit, dataUnlisten, exitUnlisten;
+    const exitP = new Promise((r) => {
       resolveExit = r;
     });
-    const un = await listen('engine:pty-exit', (e) => resolveExit(e.payload.code));
+    // CR-005: both listeners are registered inside the try block so the finally
+    // always runs and always unlistens both, even if the second listen() throws.
     try {
-      await invoke('spawn_pty', { cmd, cols, rows });
-      return await exit;
+      // Register data listener BEFORE invoke so no early events for this id are missed
+      if (onData) {
+        dataUnlisten = await listen('engine:pty-data', (e) => {
+          if (e.payload.id === id) onData(e.payload.data);
+        });
+      }
+      exitUnlisten = await listen('engine:pty-exit', (e) => {
+        if (e.payload.id === id) resolveExit(e.payload.code);
+      });
+      await invoke('spawn_pty', { cmd, cols, rows, runId: id });
+      const code = await exitP;
+      return { code, id };
     } finally {
-      un();
+      exitUnlisten?.();
+      dataUnlisten?.();
     }
   },
   input: (data) => invoke('pty_input', { data }),
   resize: (cols, rows) => invoke('pty_resize', { cols, rows }),
+  kill: () => invoke('pty_kill'),
 };

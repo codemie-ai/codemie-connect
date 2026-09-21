@@ -12,12 +12,11 @@ flow and UX, a **~4 MB universal DMG instead of ~550 MB**.
 
 ## Home / launcher
 
-On launch the app shows a home page (2×2 tile grid) with four actions:
+On launch the app shows a home page (2×2 tile grid) with three actions:
 
 | Tile | What it does |
 |---|---|
-| **Full installation** | The complete guided wizard — Git → Node.js → CodeMie CLI → `codemie setup` → Claude Code engine → `codemie doctor`. |
-| **Install only** | Installs Git, Node.js and the CodeMie CLI (`@codemieai/code`) and stops — skips the setup wizard, Claude engine and doctor. |
+| **Setup** | Run the setup wizard and Claude engine. |
 | **Connect Claude Desktop** | Opens a **Connect / Restart** screen. Both verify sign-in via `codemie profile status` first, then point Claude Desktop at the CodeMie proxy: **Connect** runs `codemie proxy connect desktop`; **Restart** runs `codemie proxy stop` then connects again. |
 | **CLI usage analytics** | Runs `codemie analytics --report --open` to build an HTML report of your **local AI CLI usage** (Claude Code, Codex, …) and open it in the browser. |
 
@@ -26,14 +25,14 @@ Connect/analytics output streams in an embedded terminal; navigation between vie
 
 ## The install wizard
 
-The **Full installation** and **Install only** tiles drive a guided wizard that:
+The **Setup** tile drives a guided wizard that:
 
 1. Checks for **Git** (offers to install the Xcode Command Line Tools if missing).
 2. Checks for **Node.js & npm** (offers to download + install the official universal `.pkg`).
 3. Installs the **CodeMie CLI** globally via npm (`@codemieai/code`).
-4. *(full only)* Runs **`codemie setup`** interactively (in an embedded terminal).
-5. *(full only)* Installs the **Claude Code engine** via CodeMie (interactive).
-6. *(full only)* Validates with **`codemie doctor`**.
+4. Runs **`codemie setup`** interactively (in an embedded terminal).
+5. Installs the **Claude Code engine** via CodeMie (interactive).
+6. Validates with **`codemie doctor`**.
 
 Steps with system changes pause for approval (or auto-approve in *Unattended mode*).
 
@@ -82,6 +81,14 @@ cargo tauri dev
 ```
 
 ## Build a shareable DMG
+
+The DMG ships the CodeMie CLI with its own Node runtime (Apple Silicon). Build it with the verifying script:
+
+```bash
+./build-installer.sh
+```
+
+It downloads the pinned Node (`runtime.json`), installs the CLI tree under `assets/codemie-cli/`, asserts every bundled artifact before and after the Tauri build, and prints the DMG path. The plain commands below skip those checks and, until `scripts/stage-runtime.sh` has run once, fail with `resource path ... doesn't exist`.
 
 ```bash
 cd src-tauri
