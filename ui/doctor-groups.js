@@ -142,7 +142,9 @@ export function groupDoctorResults(records) {
   for (const [name, items] of sections) {
     if (RUNTIME.has(name)) continue;
     if (name === AGENTS) {
-      items.forEach((item) => rows.push(agentRow(item)));
+      // "No agents installed (CodeMie Code is built-in)" is a note, not an
+      // agent that passed; a tick beside it would say the opposite.
+      items.filter((item) => item.status !== 'info').forEach((item) => rows.push(agentRow(item)));
       continue;
     }
     // A section the CLI only reported on ("Not using JWT authentication

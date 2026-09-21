@@ -111,6 +111,15 @@ test('a session about to expire also offers to sign in again', () => {
   assert.deepEqual(rows[0].action, { kind: 'signin', label: 'Sign in again' });
 });
 
+// AgentsCheck.js prints this single info line when nothing is installed.
+test('the CLI note for no installed agents is not a passing agent row', () => {
+  const { rows, summary } = groupDoctorResults([
+    { name: 'Installed Agents', status: 'info', message: 'No agents installed (CodeMie Code is built-in)' },
+  ]);
+  assert.deepEqual(rows, []);
+  assert.deepEqual(summary, { passing: 0, total: 0 });
+});
+
 test('a problem with no hint gets no remedy and no action', () => {
   const { rows } = groupDoctorResults([{ name: 'AWS CLI', status: 'error', message: 'Not found' }]);
   assert.equal(rows[0].status, 'fail');
