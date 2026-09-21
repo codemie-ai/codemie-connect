@@ -21,10 +21,10 @@ export const HOME_ITEMS = Object.freeze([
 const item = (def, status, subtitle) => ({ id: def.id, title: def.title, status, subtitle: subtitle || '' });
 const clock = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-// The CLI's own line is "Auth Status | ✓ Authenticated (expires in 22h 9m)";
-// the identity bar shows it whole, the checklist keeps the part that says
-// something: "Authenticated (expires in 22h 9m)".
-const signedInDetail = (detail) => (detail || '').replace(/^Auth Status\s*\|\s*/, '').replace(/^✓\s*/, '').trim() || 'Signed in';
+// The CLI's own line is "Auth Status │ ✓ Authenticated (expires in 22h 9m)",
+// with a box-drawing bar; the identity bar shows it whole, the checklist
+// keeps the part that says something: "Authenticated (expires in 22h 9m)".
+const signedInDetail = (detail) => (detail || '').replace(/^Auth Status\s*[|│]\s*/, '').replace(/^✓\s*/, '').trim() || 'Signed in';
 
 function signInItem(def, auth) {
   const state = auth && auth.state;

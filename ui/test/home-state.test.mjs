@@ -47,8 +47,10 @@ test('unknown auth satisfies the sign-in item and is never rendered as not signe
 });
 
 test('the signed-in subtitle keeps the CLI sentence without its "Auth Status |" prefix', () => {
-  const s = deriveHome({ config: valid, auth: { state: 'signed_in', detail: 'Auth Status | ✓ Authenticated (expires in 22h 9m)' }, agents, health: healthy });
+  // The CLI draws the bar as U+2502; an ASCII bar is accepted too.
+  const s = deriveHome({ config: valid, auth: { state: 'signed_in', detail: 'Auth Status │ ✓ Authenticated (expires in 22h 9m)' }, agents, health: healthy });
   assert.equal(s.items[0].subtitle, 'Authenticated (expires in 22h 9m)');
+  assert.equal(deriveHome({ config: valid, auth: { state: 'signed_in', detail: 'Auth Status | ✓ Authenticated' } }).items[0].subtitle, 'Authenticated');
   assert.equal(deriveHome({ config: valid, auth: { state: 'signed_in', detail: '' } }).items[0].subtitle, 'Signed in');
 });
 
