@@ -14,6 +14,7 @@ import { findLoginError } from './signin-parse.js';
 import { isBlockedState } from './auth-gate.js';
 import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 import { createHealthController } from './health-controller.js';
+import { createAgentsController } from './agents-controller.js';
 import { createHomeView } from './home-view.js';
 import { deriveHome } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
@@ -169,6 +170,7 @@ let installRunning = false;
 // session — the auto-run-on-first-visit happens exactly once; "Check
 // everything again" is the only way to re-run after that.
 let healthChecked = false;
+let agentsChecked = false;
 
 function setInstallRunning(on) {
   installRunning = on;
@@ -266,6 +268,10 @@ function showView(name) {
   if (name === 'health' && !healthChecked) {
     healthChecked = true;
     healthController.run();
+  }
+  if (name === 'agents' && !agentsChecked) {
+    agentsChecked = true;
+    agentsController.run();
   }
   if (name === 'home') refreshAgents();
 }
@@ -458,6 +464,23 @@ const healthController = createHealthController({
   },
   onFailure: () => {
     healthChecked = false;
+  },
+});
+
+// The Agents screen (EPMCDME-14514). Its own steps-ui instance, its own
+// `codemie list` read; onResult hands the same records to Home so the checklist
+// item and the Agents card do not need a second read to agree with the screen.
+// onFailure releases the one-shot guard the way Health's does.
+const agentsController = createAgentsController({
+  container: views.agents,
+  runCapture: (cmd) => bridge.runner.runCapture(cmd),
+  stepsUi: stepsUI.createStepsUi(),
+  onResult: (agents) => {
+    home.agents = agents;
+    renderHome();
+  },
+  onFailure: () => {
+    agentsChecked = false;
   },
 });
 
