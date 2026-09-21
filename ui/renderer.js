@@ -817,7 +817,7 @@ async function boot() {
   });
   showView('home');
   document.getElementById('sidebar-analytics').addEventListener('click', () => {
-    if (installRunning) return; // hidden today, but restoring it must not restore the gap
+    if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
     runAnalytics();
   });
 
