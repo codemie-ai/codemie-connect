@@ -606,6 +606,59 @@ body::before {
 #setup-view .step-row.collapsed .step-sub::before { content: '\2014'; margin-right: 2px; font-weight: 400; color: var(--muted); }
 #setup-view .step-row.collapsed .step-icon { order: 2; margin-left: auto; }
 
+/* ---- Health (ui/health-ui.js) ----
+   `codemie doctor` regrouped by who can act on a problem. A problem's remedy is
+   the app's failure panel, drawn smaller and dashed so it reads as part of its
+   row rather than as the screen's own failure. */
+#health-view { padding: 22px 28px 28px; max-width: 760px; animation: cm-fade-in 0.2s ease; }
+.health-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.health-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.health-summary { font-size: 12px; color: var(--muted); }
+.health-group-heading {
+  margin: 20px 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.health-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.health-row-main { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.health-icon { width: 16px; flex: none; font-weight: 700; text-align: center; }
+.health-pass .health-icon { color: var(--green); }
+.health-warn .health-icon { color: var(--amber); }
+.health-fail .health-icon { color: var(--red); }
+.health-label { font-size: 14px; color: var(--text); }
+.health-detail { font-size: 12px; color: var(--muted); }
+.health-detail::before { content: '\00B7'; margin-right: 8px; }
+.health-row .failure-block { margin: 10px 0 2px 26px; max-width: 620px; }
+/* One line where it fits, as the wireframe draws it: "What to do: … [action]". */
+.health-row .failure-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 10px 14px;
+  border-style: dashed;
+}
+.health-row .failure-title { font-size: 13px; margin-bottom: 0; }
+.health-row .failure-title::after { content: ':'; }
+/* Two hints from the CLI arrive on two lines; keep them that way. */
+.health-row .failure-body { white-space: pre-line; color: var(--text); }
+.health-row .failure-detail { flex-basis: 100%; margin-top: 0; font-family: var(--font-mono); font-size: 11px; }
+.health-row .failure-actions { margin: 0 0 0 6px; }
+.health-row .failure-actions .btn { padding: 6px 14px; font-size: 13px; }
+.health-actions { display: flex; gap: 10px; margin-top: 18px; }
+.health-actions .btn { width: auto; padding: 9px 18px; }
+.health-log-slot .failure-block { margin: 14px 0 0; }
+#health-view > .failure-block { margin: 0; }
+
 /* ---- Log bar + panel ---- */
 #log-bar {
   height: 36px;

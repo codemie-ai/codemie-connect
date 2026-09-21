@@ -90,7 +90,8 @@ export function renderFailurePanel(container, {
     };
     actions.appendChild(details);
   }
-  if (actions._children?.length !== 0) panel.appendChild(actions);
+  // Only when it holds a button: an empty row still takes its top margin.
+  if (primaryLabel || raw) panel.appendChild(actions);
 
   block.appendChild(panel);
   block.appendChild(rawEl);
