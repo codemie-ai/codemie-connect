@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-14514-agents-screen",
+  "head": "e30c02a486f084f8176d826039cb992210932425",
+  "runner": "npm+cargo (guide-defined)",
+  "started_at": "2026-09-21T12:22:04Z",
+  "completed_at": "2026-09-21T12:23:30Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8269,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "353 tests, 0 fail"
+    },
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1250,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 18162,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 37953,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "94 unit tests + 2 integration tests, all ok"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "N/A",
+      "notes": "Outside requested scope (caller asked only for npm test, cargo fmt/clippy/test); guide also allows Skip if logic-only change verified by tests."
+    }
+  ],
+  "failures": {}
+}

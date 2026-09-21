@@ -1,0 +1,109 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance did not run because no story/spec artifact carries extractable criteria, so confidence is capped at low; the standards audit's commit-format fail and its concrete shell-injection risk (agent.command interpolated unvalidated into zsh -lc-executed install/update/remove commands) are both kept as blocking findings. 6 candidate reports were dismissed after verifying against source outside the diff hunk (two blind-lens claims — a stuck spinner and a runStream this-binding break — were refuted by code already present, and 4 more carried no real consequence: CODEMIE_SHOT reachability, a dead statusOf branch, and a low-likelihood duplicate-command DOM collision, one blind + one edge-case pair merged into the same claim). No findings were deferred.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires `<type>: <short description>`; all 5 commits in range use `EPMCDME-14514 : <subject>` instead"},
+    {"kind": "code-quality", "status": "na", "notes": "no code-quality guide in the repo and no ArtifactRef passed for this check"},
+    {"kind": "security", "status": "na", "notes": "no security-patterns guide in the repo and no ArtifactRef passed for this check; one concrete issue reported anyway as a finding"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/agents-controller.js",
+      "line": 84,
+      "title": "No concurrency guard on row actions",
+      "problem": "runAction has no per-agent in-flight guard: a double-click on the same row's Install/Update/Remove button before the first runStream resolves fires a second concurrent CLI invocation for the same agent, and two different rows' actions completing close together can have one's `load({ silent: true })` refresh silently dropped by the shared `running` guard in load().",
+      "impact": "Two concurrent npm-backed install/update/remove operations can race for the same agent, and a completed action's success/failure state can be delayed until an unrelated later refresh.",
+      "recommendation": "Guard runAction with a per-agent in-flight check (e.g. skip when agent.actionStatus === 'running', which also fixes the currently-dead status branch in agents-ui.js), and queue or retry a load() that was dropped by the running-guard instead of discarding it."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/agents-controller.js",
+      "line": 90,
+      "title": "Action failure message can show the echoed command",
+      "problem": "runAction's onLine callback is `(text) => { lines.push(text); ... }`, dropping runStream's second `tag` argument entirely (the sibling health-controller.js filters `tag === 'stdout'`; this one accumulates every tag). runStream unconditionally emits a `('> <command>', 'prompt')` line first (ui/runner-bridge.js:37), so when a failing command produces no further real output before its non-zero exit, messageFor's `lastNonEmpty` fallback resolves to that echoed prompt line.",
+      "impact": "A user whose Install/Update/Remove fails with no real stdout/stderr before exit sees the row's error subtitle rendered as the literal invoked command (e.g. `> codemie install gemini --supported`) instead of any diagnostic text — undermining the task's explicit 'CLI error text shown' failure-handling requirement. No test in ui/test/agents-controller.test.mjs reproduces this because every fakeRunStream stub scripts only real output lines and skips the bridge's mandatory leading prompt call.",
+      "recommendation": "Filter onLine's accumulation to `tag === 'stdout'` (or `'stdout'`/`'stderr'`, excluding `'prompt'`) the way health-controller.js already does, and add a stub in the test double that reproduces the bridge's real leading prompt call."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/agents-controller.js",
+      "line": 107,
+      "title": "NO_NETWORK regex misses common failure signatures",
+      "problem": "NO_NETWORK is a fixed regex (`ECONNREFUSED|ENOTFOUND|ETIMEDOUT|getaddrinfo`) that does not cover other common network-failure signatures such as `ENETUNREACH`, `EAI_AGAIN`, or TLS/proxy errors.",
+      "impact": "Some real connectivity failures fall through to the raw-CLI-text branch instead of the task's required 'installing needs a connection' message, showing a less helpful message for a subset of no-network cases.",
+      "recommendation": "Broaden NO_NETWORK to cover the additional common Node/npm network error codes, or match more generally on a short allow-list of known transport-layer failure substrings."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "ui/agents-controller.js",
+      "line": 112,
+      "title": "Unvalidated agent.command reaches a shell string",
+      "problem": "agent.command is parsed unvalidated from `codemie list` stdout (ui/agents-parse.js) and interpolated directly into shell command strings (`codemie install ${agent.command} --supported`, `codemie update ${agent.command}`, `codemie uninstall ${agent.command}`) that src-tauri/src/commands/runner.rs executes via `/bin/zsh -lc <cmd_str>` (full shell interpretation, not argv-safe exec).",
+      "impact": "Any `Command:` line in `codemie list` output that is not a bare identifier (corrupted output, or a compromised/malicious CLI or agent package) is interpreted by the login shell, giving command injection through a value the frontend never validates or allow-lists — a new pattern this diff introduces, unlike the app's other invocations of fixed literal command strings.",
+      "recommendation": "Validate agent.command against a strict allow-list pattern (e.g. `/^[a-z0-9-]+$/`) before building the action command string, or switch these three call sites to an argv-based exec that does not go through shell_cmd."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/agents-join.js",
+      "line": 6,
+      "title": "joinUpdateStatus has no name normalization or dedupe guard",
+      "problem": "joinUpdateStatus builds `byName` as an exact-string Map keyed on `r.displayName` with no case/whitespace normalization, and looks it up with `.get(a.name)`; a duplicate displayName in the update-check records would also silently collapse to one Map entry.",
+      "impact": "Any drift between how `codemie list` and `codemie update --check` format the same agent's display name silently under-flags an available update rather than surfacing a mismatch, and a duplicate name would silently misattribute the flag to the wrong agent.",
+      "recommendation": "Normalize both sides (trim + case-fold) before building the Map, and warn or dedupe on a duplicate displayName rather than silently overwriting the earlier entry."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/agents-ui.js",
+      "line": 29,
+      "title": "WARNING+Install is an unhandled state combination",
+      "problem": "statusOf renders WARNING whenever `agent.updateAvailable` is true regardless of `agent.installed`, while buildActions renders the Install button whenever `!agent.installed`. `codemie list` and `codemie update --check` are two separate sequential reads in load(); if the two disagree (e.g. an agent was uninstalled between the two calls, or update-check reports a name list() doesn't corroborate), the row shows a WARNING badge next to an Install button.",
+      "impact": "A user can see a confusing, self-contradictory row state (update available on an agent the UI also says is not installed) with no code path that resolves or explains it.",
+      "recommendation": "Have statusOf ignore updateAvailable when `!agent.installed` (`agent.updateAvailable && agent.installed` for the WARNING branch)."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/agents-update-parse.js",
+      "line": 34,
+      "title": "Brittle fixed-indentation regexes in the update-check parser",
+      "problem": "parseUpdateStatus's name-line regex (`/^\\s{2}(\\S.*)$/`) matches any exactly-two-space-indented line as a new agent record with nothing anchoring it to the expected heading/summary-bounded block shape, and the Latest-line regex (`/^\\s{4}Latest:\\s+.*\\(update available\\)/`) requires exactly four leading spaces with no tolerance for the CLI using a different indent.",
+      "impact": "An unexpected two-space-indented line (e.g. a warning banner) between the heading and summary would be silently treated as a new agent's display name, and any indentation drift in the CLI's Latest line would silently make an available update never get flagged — both failure modes are undetectable from the UI.",
+      "recommendation": "Anchor the name-line match to the expected record shape (e.g. require it to be immediately followed by a `Current:` line) and relax the Latest-line match to tolerate varying leading whitespace."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit messages don't match documented format",
+      "problem": ".ai-run/guides/standards/git-workflow.md documents `<type>: <short description>` (feat|fix|docs|test|chore|refactor, no ticket prefix) with real repo examples matching that shape; all 5 commits in this range instead use `EPMCDME-14514 : <subject>`.",
+      "impact": "Breaks the documented, machine-parseable commit history convention the workflow guide establishes for this repo.",
+      "recommendation": "Reword the commit subjects to `<type>: <short description>` before merge, or update git-workflow.md if the ticket-prefixed format is now the intended team convention — the two currently disagree and should be reconciled either way."
+    }
+  ]
+}
