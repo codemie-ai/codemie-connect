@@ -190,6 +190,13 @@ function showView(name) {
     if (btn.dataset.view === name) btn.setAttribute('aria-current', 'page');
     else btn.removeAttribute('aria-current');
   });
+  // The first visit runs the checks, however the view was reached: the sidebar,
+  // a deep link from another screen, or the dev hook. After that only "Check
+  // everything again" re-runs them.
+  if (name === 'health' && !healthChecked) {
+    healthChecked = true;
+    healthController.run();
+  }
 }
 
 // (Re)build the engine for a wizard run.
@@ -789,10 +796,6 @@ async function boot() {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
       showView(btn.dataset.view);
-      if (btn.dataset.view === 'health' && !healthChecked) {
-        healthChecked = true;
-        healthController.run();
-      }
     });
   });
   showView('home');
