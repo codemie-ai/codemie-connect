@@ -25,6 +25,10 @@ function makeEl(tag) {
       el._children.push(child);
       return child;
     },
+    remove() {
+      const p = el._parent;
+      if (p) p._children = p._children.filter((c) => c !== el);
+    },
     append(...children) {
       children.forEach((c) => el.appendChild(c));
     },
@@ -39,6 +43,9 @@ function makeEl(tag) {
       },
       remove(cls) {
         el.classList._set.delete(cls);
+      },
+      contains(cls) {
+        return el.classList._set.has(cls);
       },
       toggle(cls, force) {
         if (force === true) el.classList._set.add(cls);
@@ -97,10 +104,12 @@ test('CR-007: runHealthCheck pipeline renders only stdout-derived records', asyn
   const runStream = async (cmd, onLine) => {
     seenCmd.push(cmd);
     onLine('> codemie doctor', 'prompt');
-    onLine('Node Version:', 'stdout');
-    onLine('  ✓ v20.11.0 detected', 'stdout');
+    onLine('Node.js:', 'stdout');
+    // Shaped like a failing item on purpose: if stderr reached the parser this
+    // would become a record under Node.js and the count below would be 0 of 1.
+    onLine('  ✗ some noisy stderr the parser must never see', 'stderr');
+    onLine('  ✓ Version v22.23.2', 'stdout');
     onLine('', 'stdout');
-    onLine('some noisy stderr the parser must never see', 'stderr');
     return { code: 0 };
   };
   const controller = createHealthController({ container, runStream, openLog: async () => {} });
@@ -175,8 +184,8 @@ test('CR-006: the rendered retry action runs another doctor check', async () => 
   const runStream = async (cmd, onLine) => {
     attempts += 1;
     if (attempts === 1) throw new Error('first attempt fails');
-    onLine('Node Version:', 'stdout');
-    onLine('  ✓ v20.11.0 detected', 'stdout');
+    onLine('Node.js:', 'stdout');
+    onLine('  ✓ Version v22.23.2', 'stdout');
     return { code: 0 };
   };
   const controller = createHealthController({ container, runStream, openLog: async () => {} });
@@ -192,8 +201,8 @@ test('CR-006: the rendered retry action runs another doctor check', async () => 
 test("CR-008: an open_log rejection surfaces through showLogError, not silently", async () => {
   const container = makeEl('div');
   const runStream = async (cmd, onLine) => {
-    onLine('Node Version:', 'stdout');
-    onLine('  ✓ v20.11.0 detected', 'stdout');
+    onLine('Node.js:', 'stdout');
+    onLine('  ✓ Version v22.23.2', 'stdout');
     return { code: 0 };
   };
   const openLog = async () => {
@@ -205,5 +214,79 @@ test("CR-008: an open_log rejection surfaces through showLogError, not silently"
   assert.ok(logBtn, "the Open today's log button must be rendered");
   logBtn._click();
   await new Promise((r) => setTimeout(r, 0)); // let the rejected openLog() settle
-  assert.ok(container._innerText().includes("Can't read your log: log file missing"));
+  assert.ok(container._innerText().includes('CodeMie cannot open your log'));
+  assert.ok(container._innerText().includes('log file missing'));
+});
+
+test('a log that opens clears an earlier "cannot open your log"', async () => {
+  const container = makeEl('div');
+  const runStream = async (cmd, onLine) => {
+    onLine('Node.js:', 'stdout');
+    onLine('  ✓ Version v22.23.2', 'stdout');
+    return { code: 0 };
+  };
+  let attempts = 0;
+  const openLog = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('log file missing');
+  };
+  const controller = createHealthController({ container, runStream, openLog });
+  await controller.run();
+  container._findButton("Open today's log")._click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(container._innerText().includes('CodeMie cannot open your log'));
+  container._findButton("Open today's log")._click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(!container._innerText().includes('CodeMie cannot open your log'));
+});
+
+// The whole pipeline over real CLI output: what run_stream delivers line by
+// line, stderr spinner included, ends up as the grouped screen.
+test('real doctor output renders grouped, counted and stamped with the injected clock', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const raw = readFileSync(fileURLToPath(new URL('fixtures/doctor/sso-expired.txt', import.meta.url)), 'utf8');
+  const container = makeEl('div');
+  const runStream = async (cmd, onLine) => {
+    onLine('- Checking Node.js...', 'stderr');
+    raw.split('\n').forEach((line) => onLine(line, 'stdout'));
+    return { code: 1 };
+  };
+  const checkedAt = new Date(2026, 8, 21, 9, 30);
+  const controller = createHealthController({ container, runStream, openLog: async () => {}, now: () => checkedAt });
+  await controller.run();
+  const text = container._innerText();
+  const clock = checkedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  assert.ok(text.includes(`5 of 8 fine · checked at ${clock}`));
+  assert.ok(text.includes('Your CodeMie account'));
+  assert.ok(text.includes('SSO credentials not found'));
+  assert.ok(container._findButton('Sign in again'));
+  assert.ok(!text.includes('Checking Node.js'));
+});
+
+test('"Sign in again" runs the app sign-in, then checks again', async () => {
+  const container = makeEl('div');
+  const order = [];
+  let runs = 0;
+  const runStream = async (cmd, onLine) => {
+    runs += 1;
+    order.push(`doctor ${runs}`);
+    onLine('CodeMie SSO Provider:', 'stdout');
+    if (runs === 1) {
+      onLine('  ✗ SSO credentials not found', 'stdout');
+      onLine('      Run: codemie profile login', 'stdout');
+    } else {
+      onLine('  ✓ Provider operational', 'stdout');
+    }
+    return { code: 0 };
+  };
+  const signIn = async () => {
+    order.push('sign in');
+  };
+  const controller = createHealthController({ container, runStream, openLog: async () => {}, signIn });
+  await controller.run();
+  container._findButton('Sign in again')._click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(order, ['doctor 1', 'sign in', 'doctor 2']);
+  assert.ok(container._innerText().includes('1 of 1 fine'));
 });

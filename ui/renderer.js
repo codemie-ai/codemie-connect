@@ -385,6 +385,7 @@ const healthController = createHealthController({
     }),
   openLog: () => invoke('open_log'),
   onNavigate: (view) => showView(view),
+  signIn: () => startSignIn(),
   onFailure: () => {
     healthChecked = false;
   },
