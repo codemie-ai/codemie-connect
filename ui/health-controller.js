@@ -24,6 +24,7 @@ export function createHealthController({
   openLog,
   onNavigate,
   onFailure,
+  onResult,
   signIn,
   now = () => new Date(),
 } = {}) {
@@ -32,6 +33,10 @@ export function createHealthController({
   // one was still in flight. A second run() call is a no-op until the first
   // settles.
   let running = false;
+  // Tracks the last successfully rendered { rows, summary, checkedAt }
+  // result, nulled on either failure path, so a caller (e.g. Home) can read
+  // the most recent state without re-running the check.
+  let lastResult = null;
 
   async function handleOpenLog() {
     try {
@@ -60,11 +65,14 @@ export function createHealthController({
         // stderr) must not render as "0 of 0 fine" — that is visually
         // indistinguishable from a genuine all-clear.
         showRunError(container, 'The check produced no output, so nothing can be said about this computer.', run);
+        lastResult = null;
         return;
       }
+      const result = { ...groupDoctorResults(records), checkedAt: now() };
+      lastResult = result;
       renderHealth(
         container,
-        { ...groupDoctorResults(records), checkedAt: now() },
+        result,
         {
           onRecheck: run,
           onNavigate,
@@ -75,16 +83,18 @@ export function createHealthController({
           },
         },
       );
+      onResult?.(result);
     } catch (e) {
       // CR-006: previously nothing caught a spawn/invoke failure here, so
       // renderHealth() (which draws the recheck button) never ran and the
       // screen was stuck on showLoading()'s "Checking..." forever.
       showRunError(container, String((e && e.message) || e), run);
+      lastResult = null;
       onFailure?.();
     } finally {
       running = false;
     }
   }
 
-  return { run };
+  return { run, getLastResult: () => lastResult };
 }

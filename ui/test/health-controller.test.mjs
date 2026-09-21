@@ -150,6 +150,7 @@ test('CR-005: zero stdout records render an explicit could-not-determine state, 
   assert.ok(!container._innerText().includes('0 of 0'));
   assert.ok(container._innerText().toLowerCase().includes('could not'));
   assert.ok(container._findButton('Check everything again'), 'a retry action must be offered');
+  assert.equal(controller.getLastResult(), null);
 });
 
 // CR-006: a rejected runStream must not leave the screen stuck on
@@ -174,6 +175,7 @@ test('CR-006: a runStream rejection renders a retry action instead of hanging, a
   assert.ok(container._innerText().includes('doctor not found'));
   assert.ok(container._findButton('Check everything again'), 'a retry action must be rendered');
   assert.ok(failureNotified, 'onFailure must fire so the one-shot auto-run guard is not stuck forever');
+  assert.equal(controller.getLastResult(), null);
 });
 
 // CR-006 continued: after a failed run, calling run() again (as the rendered
@@ -262,6 +264,50 @@ test('real doctor output renders grouped, counted and stamped with the injected 
   assert.ok(text.includes('SSO credentials not found'));
   assert.ok(container._findButton('Sign in again'));
   assert.ok(!text.includes('Checking Node.js'));
+});
+
+test('getLastResult() is null before any run', async () => {
+  const container = makeEl('div');
+  const runStream = async () => ({ code: 0 });
+  const controller = createHealthController({ container, runStream, openLog: async () => {} });
+  assert.equal(controller.getLastResult(), null);
+});
+
+test('getLastResult() returns the rendered result after a successful run', async () => {
+  const container = makeEl('div');
+  const runStream = async (cmd, onLine) => {
+    onLine('Node.js:', 'stdout');
+    onLine('  ✓ Version v22.23.2', 'stdout');
+    return { code: 0 };
+  };
+  const checkedAt = new Date(2026, 8, 21, 9, 30);
+  const controller = createHealthController({ container, runStream, openLog: async () => {}, now: () => checkedAt });
+  await controller.run();
+  const result = controller.getLastResult();
+  assert.ok(result);
+  assert.equal(result.checkedAt, checkedAt);
+  assert.ok(Array.isArray(result.rows));
+  assert.ok(result.summary);
+});
+
+test('onResult is invoked with the rendered result after a successful run', async () => {
+  const container = makeEl('div');
+  const runStream = async (cmd, onLine) => {
+    onLine('Node.js:', 'stdout');
+    onLine('  ✓ Version v22.23.2', 'stdout');
+    return { code: 0 };
+  };
+  let seen;
+  const controller = createHealthController({
+    container,
+    runStream,
+    openLog: async () => {},
+    onResult: (r) => {
+      seen = r;
+    },
+  });
+  await controller.run();
+  assert.deepEqual(seen, controller.getLastResult());
 });
 
 test('"Sign in again" runs the app sign-in, then checks again', async () => {
