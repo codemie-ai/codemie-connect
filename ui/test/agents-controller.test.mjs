@@ -69,6 +69,26 @@ function fakeStepsUi() {
     setSubtitle(id, t) {
       calls.push(['setSubtitle', id, t]);
     },
+    startSpinner(id) {
+      calls.push(['startSpinner', id]);
+    },
+    stopSpinner(id) {
+      calls.push(['stopSpinner', id]);
+    },
+  };
+}
+
+// A `codemie update --check` capture with zero records — none of the tests
+// below care about the join outcome, only about the action wiring.
+const upToDateCheck = readFileSync(fileURLToPath(new URL('fixtures/agents/update-check.txt', import.meta.url)), 'utf8');
+
+// runCapture stub that answers `codemie list` and `codemie update --check`
+// distinctly, the way the controller now calls both from load().
+function fakeRunCapture(listStdout = fixture) {
+  return async (cmd) => {
+    if (cmd === 'codemie list') return { code: 0, stdout: listStdout, stderr: '' };
+    if (cmd === 'codemie update --check') return { code: 0, stdout: upToDateCheck, stderr: '' };
+    throw new Error(`unexpected runCapture command: ${cmd}`);
   };
 }
 
@@ -93,17 +113,33 @@ test('a successful read renders the agents and hands the same records to the cal
   assert.match(container._text(), /3 of 11 installed/);
 });
 
-test('the command it runs is exactly `codemie list`', async () => {
+test('a load reads exactly `codemie list` and `codemie update --check`', async () => {
   const cmds = [];
   await createAgentsController({
     container: makeEl('div'),
     runCapture: async (cmd) => {
       cmds.push(cmd);
-      return { code: 0, stdout: fixture, stderr: '' };
+      if (cmd === 'codemie list') return { code: 0, stdout: fixture, stderr: '' };
+      return { code: 0, stdout: upToDateCheck, stderr: '' };
     },
     stepsUi: fakeStepsUi(),
   }).run();
-  assert.deepEqual(cmds, ['codemie list']);
+  assert.deepEqual(cmds, ['codemie list', 'codemie update --check']);
+});
+
+test('a failed update-check read is best-effort: the list still renders with no agent flagged', async () => {
+  const container = makeEl('div');
+  const c = createAgentsController({
+    container,
+    runCapture: async (cmd) => {
+      if (cmd === 'codemie list') return { code: 0, stdout: fixture, stderr: '' };
+      return { code: 1, stdout: '', stderr: 'network down' };
+    },
+    stepsUi: fakeStepsUi(),
+  });
+  await c.run();
+  assert.equal(c.getLastAgents().every((a) => a.updateAvailable === false), true);
+  assert.match(container._text(), /3 of 11 installed/);
 });
 
 test('a non-zero exit shows the CLI text, keeps no stale list, and releases the caller guard', async () => {
@@ -166,19 +202,165 @@ test('a second run while the first is in flight is a no-op', async () => {
   await c.run();
   release();
   await first;
-  assert.equal(calls, 1);
+  // One full load() reads both `codemie list` and `codemie update --check`;
+  // the second run() call must add none of its own.
+  assert.equal(calls, 2);
 });
 
-test('the action handlers the caller supplies reach the rows', async () => {
+// The controller now builds its own onInstall/onUpdate/onRemove internally,
+// driving the caller-supplied runStream directly (per ui/runner-bridge.js's
+// contract: the resolved promise carries only { code }, never text; any
+// text comes from the onLine callback, scripted here as [text, tag] pairs).
+function fakeRunStream(scriptedLines, code = 0) {
+  const calls = [];
+  return {
+    calls,
+    fn: async (cmd, onLine) => {
+      calls.push(cmd);
+      for (const [text, tag] of scriptedLines) onLine(text, tag);
+      return { code };
+    },
+  };
+}
+
+test('clicking Install on a not-installed row runs the exact install command with no version', async () => {
   const container = makeEl('div');
-  const seen = [];
+  const runStream = fakeRunStream([['Installing gemini…', 'stdout']]);
   await createAgentsController({
     container,
-    runCapture: ok(fixture),
+    runCapture: fakeRunCapture(),
+    runStream: runStream.fn,
     stepsUi: fakeStepsUi(),
-    actions: { onInstall: (a) => seen.push(a.command) },
   }).run();
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
   slot._children[0].onclick({ stopPropagation() {} });
-  assert.deepEqual(seen, ['gemini']);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(runStream.calls, ['codemie install gemini --supported']);
+});
+
+test('clicking Update on an installed row runs the exact update command; Remove runs uninstall', async () => {
+  const container = makeEl('div');
+  const runStream = fakeRunStream([]);
+  await createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream: runStream.fn,
+    stepsUi: fakeStepsUi(),
+  }).run();
+  const slot = container.querySelector('.agent-actions[data-id="claude"]');
+  slot._children[0].onclick({ stopPropagation() {} }); // Update
+  await new Promise((r) => setImmediate(r));
+  slot._children[1].onclick({ stopPropagation() {} }); // Remove
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(runStream.calls, ['codemie update claude', 'codemie uninstall claude']);
+});
+
+test('while an action is in flight the row is ACTIVE with a spinner and the latest streamed line as subtitle, and settling refreshes without ever blanking to the loading text', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  const runStream = async (cmd, onLine) => {
+    onLine('Installing gemini…', 'stdout');
+    await gate;
+    onLine('Installed.', 'stdout');
+    return { code: 0 };
+  };
+  const textsDuringRefresh = [];
+  const c = createAgentsController({
+    container,
+    runCapture: async (cmd) => {
+      if (cmd === 'codemie list') {
+        // A refresh's list read happens after the action starts; capture the
+        // container's text at that moment, before this read resolves, so a
+        // stray showLoading() call (the loading-blanking path) would show up
+        // here as "Reading the agent list…".
+        textsDuringRefresh.push(container._text());
+        return { code: 0, stdout: fixture, stderr: '' };
+      }
+      return { code: 0, stdout: upToDateCheck, stderr: '' };
+    },
+    runStream,
+    stepsUi,
+  });
+  await c.run();
+  textsDuringRefresh.length = 0;
+  const slot = container.querySelector('.agent-actions[data-id="gemini"]');
+  slot._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(stepsUi.calls.some((call) => call[0] === 'setStatus' && call[1] === 'gemini' && call[2] === 'ACTIVE'), true);
+  assert.equal(stepsUi.calls.some((call) => call[0] === 'startSpinner' && call[1] === 'gemini'), true);
+  assert.equal(stepsUi.calls.some((call) => call[0] === 'setSubtitle' && call[1] === 'gemini' && call[2] === 'Installing gemini…'), true);
+
+  release();
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(textsDuringRefresh.some((t) => /Reading the agent list/.test(t)), false);
+});
+
+test('a failing action leaves the row actionMessage equal to the accumulated stderr text after refresh', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  const runStream = async (cmd, onLine) => {
+    onLine('some progress', 'stdout');
+    onLine('boom: install failed', 'stderr');
+    return { code: 1 };
+  };
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream,
+    stepsUi,
+  });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="gemini"]');
+  slot._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  const subtitles = stepsUi.calls.filter((call) => call[0] === 'setSubtitle' && call[1] === 'gemini');
+  assert.equal(subtitles.at(-1)[2], 'boom: install failed');
+});
+
+test('accumulated text matching a connection-error pattern renders as "Installing needs a connection."', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  const runStream = async (cmd, onLine) => {
+    onLine('Error: connect ECONNREFUSED 127.0.0.1:443', 'stderr');
+    return { code: 1 };
+  };
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream,
+    stepsUi,
+  });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="gemini"]');
+  slot._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  const subtitles = stepsUi.calls.filter((call) => call[0] === 'setSubtitle' && call[1] === 'gemini');
+  assert.equal(subtitles.at(-1)[2], 'Installing needs a connection.');
+});
+
+test('refresh() re-reads and re-renders without going through the loading-blanking path run() uses', async () => {
+  const container = makeEl('div');
+  const seenLoadingText = [];
+  const c = createAgentsController({
+    container,
+    runCapture: async (cmd) => {
+      seenLoadingText.push(container._text());
+      if (cmd === 'codemie list') return { code: 0, stdout: fixture, stderr: '' };
+      return { code: 0, stdout: upToDateCheck, stderr: '' };
+    },
+    stepsUi: fakeStepsUi(),
+  });
+  await c.run();
+  seenLoadingText.length = 0;
+  await c.refresh();
+  assert.equal(seenLoadingText.some((t) => /Reading the agent list/.test(t)), false);
 });

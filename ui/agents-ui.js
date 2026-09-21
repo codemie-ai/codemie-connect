@@ -35,7 +35,10 @@ const statusOf = (agent) => {
 // for the built-in agent on purpose (it substitutes the CLI package's version),
 // so the two are never shown side by side. See
 // .ai-run/decisions/2026-09-21-EPMCDME-14514-agent-version-authority.md.
-const subtitleOf = (agent) => (agent.installed && agent.version ? `${agent.description} · ${agent.version}` : agent.description);
+const subtitleOf = (agent) => {
+  if (agent.actionMessage) return agent.actionMessage;
+  return agent.installed && agent.version ? `${agent.description} · ${agent.version}` : agent.description;
+};
 
 export function summarise(agents) {
   return {
