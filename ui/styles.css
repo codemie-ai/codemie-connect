@@ -764,3 +764,29 @@ body::before {
   border-radius: var(--radius-full, 999px);
   font-size: 11px;
 }
+
+/* ---- Agents screen (EPMCDME-14514) ---- */
+/* The rows are step rows, so their look comes from the step list; only the
+   header, the note and the per-row action slot are this screen's own. */
+.agents-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.agents-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.agents-summary { font-size: 12px; color: var(--muted); }
+.agents-note { margin: 10px 0 4px; font-size: 12px; color: var(--dim); }
+.agents-list { margin-top: 4px; }
+.agent-actions { display: flex; gap: 8px; margin: 6px 0 2px 26px; }
+.agent-actions .btn { width: auto; padding: 4px 12px; font-size: 12px; }
+.agents-error {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--red);
+  border-radius: var(--radius, 8px);
+}
+.agents-error-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.agents-error-detail { margin: 6px 0 12px; font-size: 12px; color: var(--muted); white-space: pre-wrap; }
