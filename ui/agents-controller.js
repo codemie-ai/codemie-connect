@@ -103,8 +103,11 @@ export function createAgentsController({ container, runCapture, runStream, steps
     stepsUi.startSpinner(agent.command);
     const lines = [];
     try {
-      const { code } = await runStream(command, (text) => {
-        lines.push(text);
+      const { code } = await runStream(command, (text, tag) => {
+        // runStream always emits a leading `('> <command>', 'prompt')` line
+        // (ui/runner-bridge.js); it must never become the fallback error
+        // message when a failing command produces no other output.
+        if (tag !== 'prompt') lines.push(text);
         stepsUi.setSubtitle(agent.command, text);
       });
       if (code !== 0) {
@@ -123,7 +126,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
     const accumulated = lines.join('\n');
     if (NO_NETWORK.test(accumulated)) return 'Installing needs a connection.';
     const lastNonEmpty = [...lines].reverse().find((l) => l && l.trim());
-    return lastNonEmpty || accumulated;
+    return lastNonEmpty || accumulated || 'The command failed with no output.';
   }
 
   const onInstall = (agent) => runAction(agent, `codemie install ${agent.command} --supported`);

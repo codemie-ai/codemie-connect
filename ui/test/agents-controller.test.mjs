@@ -399,6 +399,30 @@ test('a second click on the same row while its action is in flight does not fire
   assert.deepEqual(runStream.calls, ['codemie install gemini --supported']);
 });
 
+test('a failing action with no real output never shows the echoed command as the error message', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  // Mirrors ui/runner-bridge.js's real runStream: it always emits a leading
+  // `('> <command>', 'prompt')` line before any real output.
+  const runStream = async (cmd, onLine) => {
+    onLine(`> ${cmd}`, 'prompt');
+    return { code: 1 };
+  };
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream,
+    stepsUi,
+  });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="gemini"]');
+  slot._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  const subtitles = stepsUi.calls.filter((call) => call[0] === 'setSubtitle' && call[1] === 'gemini');
+  assert.doesNotMatch(subtitles.at(-1)[2], /^> codemie install/);
+});
+
 test('refresh() re-reads and re-renders without going through the loading-blanking path run() uses', async () => {
   const container = makeEl('div');
   const seenLoadingText = [];
