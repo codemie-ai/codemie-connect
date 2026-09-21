@@ -871,6 +871,14 @@ async function boot() {
     await runSmoke(flags);
     return;
   }
+  // CODEMIE_SHOT names the view to open at boot. The Rust side has exposed the
+  // flag since the smoke work but nothing read it, so a screen other than Home
+  // could only be reached by clicking — which a background capture cannot do.
+  // Screenshot evidence for a screen's own ticket now needs no temporary hook.
+  if (flags.shot && views[flags.shot]) {
+    showView(flags.shot);
+    return;
+  }
   showView('home');
 }
 
