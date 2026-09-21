@@ -423,6 +423,30 @@ test('a failing action with no real output never shows the echoed command as the
   assert.doesNotMatch(subtitles.at(-1)[2], /^> codemie install/);
 });
 
+test('ENETUNREACH and EAI_AGAIN also render as "Installing needs a connection."', async () => {
+  for (const errCode of ['ENETUNREACH', 'EAI_AGAIN']) {
+    const container = makeEl('div');
+    const stepsUi = fakeStepsUi();
+    const runStream = async (cmd, onLine) => {
+      onLine(`Error: connect ${errCode} 127.0.0.1:443`, 'stderr');
+      return { code: 1 };
+    };
+    const c = createAgentsController({
+      container,
+      runCapture: fakeRunCapture(),
+      runStream,
+      stepsUi,
+    });
+    await c.run();
+    const slot = container.querySelector('.agent-actions[data-id="gemini"]');
+    slot._children[0].onclick({ stopPropagation() {} });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const subtitles = stepsUi.calls.filter((call) => call[0] === 'setSubtitle' && call[1] === 'gemini');
+    assert.equal(subtitles.at(-1)[2], 'Installing needs a connection.', `expected ${errCode} to be treated as no-network`);
+  }
+});
+
 test('refresh() re-reads and re-renders without going through the loading-blanking path run() uses', async () => {
   const container = makeEl('div');
   const seenLoadingText = [];

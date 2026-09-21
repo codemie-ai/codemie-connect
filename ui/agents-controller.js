@@ -17,7 +17,7 @@ import { renderAgents, showLoading, showRunError } from './agents-ui.js';
 // Any of these substrings in an action's accumulated streamed text means the
 // failure was a lack of network access, not something the CLI's own error
 // text should be shown for.
-const NO_NETWORK = /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|getaddrinfo/i;
+const NO_NETWORK = /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ENETUNREACH|EAI_AGAIN|getaddrinfo/i;
 
 // agent.command is parsed unvalidated from `codemie list` stdout and
 // interpolated straight into a shell string the Rust side runs via
