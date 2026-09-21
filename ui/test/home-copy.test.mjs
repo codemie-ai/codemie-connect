@@ -5,13 +5,16 @@ import { readFileSync } from 'node:fs';
 const html = readFileSync('ui/index.html', 'utf8');
 const renderer = readFileSync('ui/renderer.js', 'utf8');
 
-test('home tile: Setup title and description replace Full installation', () => {
-  assert.match(html, /<div class="tile-title">Setup<\/div>/);
-  assert.match(html, /<div class="tile-desc">Run the setup wizard and Claude engine\.<\/div>/);
+// EPMCDME-14589: the launcher grid is gone; Home's body is ui/home-view.js.
+test('home: the tile grid is gone and the body slot is there', () => {
+  assert.doesNotMatch(html, /id="home-grid"/);
+  assert.doesNotMatch(html, /class="home-tile/);
+  assert.doesNotMatch(html, /data-action="/);
+  assert.match(html, /<div id="home-body"><\/div>/);
+  assert.doesNotMatch(renderer, /home-grid|homeGrid|update-cli-tile/);
 });
 
-test('home tile: Install only action is removed', () => {
-  assert.doesNotMatch(html, /data-action="install-only"/);
+test('home: install-only stays gone', () => {
   assert.doesNotMatch(html, /Install only/);
 });
 

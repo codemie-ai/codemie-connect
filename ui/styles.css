@@ -245,130 +245,63 @@ body::before {
 #home-title { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: 0.2px; }
 #home-subtitle { color: var(--muted); font-size: 13px; margin-top: 2px; }
 
-#home-grid {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-auto-rows: 1fr;
-  gap: 16px;
-  min-height: 0;
-}
-.home-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  text-align: left;
-  gap: 8px;
-  padding: 20px;
-  background: var(--surface);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-xl);
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease, box-shadow 0.14s ease;
-}
-.home-tile:hover {
-  background: var(--surface-2);
-  border-color: var(--accent);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-lg);
-}
-.home-tile:active { transform: translateY(0); box-shadow: none; }
-.tile-icon { font-size: 30px; line-height: 1; }
-.tile-title { font-size: 15px; font-weight: 700; color: var(--violet); }
-.tile-desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
 #home-footer { color: var(--muted); font-size: 9px; text-align: center; padding-top: 18px; }
 
 /* ---- Installation group ---- */
-#installation-group {
-  grid-column: 1 / -1;
+/* ---- Home body (ui/home-view.js): checklist, then status cards ---- */
+#home-body { flex: 1; min-height: 0; overflow-y: auto; }
+.home-check { max-width: 720px; }
+.home-check-title { font-size: 18px; font-weight: 700; color: var(--text); margin: 0 0 4px; }
+.home-check-sub { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+.home-check-list .step-row { cursor: pointer; }
+.home-check-list .step-row:hover .step-title { color: var(--violet); }
+.home-check-list .step-row[data-id="sign-in"] { cursor: default; flex-wrap: wrap; }
+/* Item 1 completes in place: a control under its own row, as the wireframe draws it. */
+.home-signin {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 4px 36px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.home-signin .btn { width: auto; padding: 8px 18px; }
+.home-signin-hint { font-size: 12px; color: var(--muted); }
+
+.home-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; max-width: 760px; }
+.home-card {
+  padding: 16px 18px;
   background: var(--surface);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-xl);
-  padding: 16px 20px;
-  transition: border-color 0.14s ease;
+  cursor: pointer;
+  transition: border-color 0.14s ease, transform 0.14s ease;
 }
-#installation-group.update-available { border-color: var(--accent); }
-.group-label {
+.home-card[data-card="profile"] { cursor: default; }
+.home-card:not([data-card="profile"]):hover { border-color: var(--accent); transform: translateY(-1px); }
+.home-card-good { border-color: rgba(63, 185, 80, 0.45); }
+.home-card-warn { border-color: rgba(210, 153, 34, 0.55); }
+.home-card-bad { border-color: rgba(255, 107, 107, 0.6); }
+.home-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.home-card-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.home-card-badge {
   font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-  margin-bottom: 12px;
+  padding: 2px 9px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-full, 999px);
 }
-.top-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  background: rgba(88, 166, 255, 0.08);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-lg);
-  padding: 8px 12px;
-  margin-bottom: 12px;
-  font-size: 12px;
-  color: var(--text);
-}
-.top-banner > button:last-of-type {
-  background: none;
-  border: 1px solid var(--border-2);
-  color: var(--muted);
-  border-radius: 4px;
-  padding: 2px 8px;
-  cursor: pointer;
-  flex-shrink: 0;
-  font: inherit;
-}
-.top-banner[data-busy="1"] { opacity: 0.5; }
-.top-banner > span + button {
-  background: var(--surface-2);
-  border: 1px solid var(--accent);
-  color: var(--text);
-  border-radius: 4px;
-  padding: 4px 12px;
-  margin-left: auto;
-  cursor: pointer;
-  flex-shrink: 0;
-  font: inherit;
-  font-weight: 600;
-}
-.top-banner > span + button[data-state="updating"] { cursor: default; opacity: 0.6; }
-.top-banner > span + button[data-state="done"] {
-  border-color: #3fb950;
-  background: rgba(63, 185, 80, 0.08);
-}
-.top-banner > span + button[data-state="error"] {
-  border-color: #ff6b6b;
-  background: rgba(255, 107, 107, 0.08);
-}
-#installation-tiles {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.sub-tile { padding: 14px 12px; }
-.sub-tile .tile-icon { font-size: 22px; }
-.sub-tile .tile-title { font-size: 13px; }
-/* Update CLI tile state variants */
-#update-cli-tile[data-state="highlight"] { border-color: var(--accent); }
-#update-cli-tile[data-state="updating"] {
-  border-color: var(--accent);
-  background: var(--surface-2);
-  pointer-events: none;
-  cursor: default;
-}
-#update-cli-tile[data-state="done"] {
-  border-color: #3fb950;
-  background: rgba(63, 185, 80, 0.08);
-  pointer-events: none;
-  cursor: default;
-}
-#update-cli-tile[data-state="error"] {
-  border-color: #ff6b6b;
-  background: rgba(255, 107, 107, 0.08);
-}
+.tone-good { color: var(--green); }
+.tone-warn { color: var(--amber); }
+.tone-bad { color: var(--red); }
+.tone-muted { color: var(--dim); }
+.home-card-line { font-size: 13px; color: var(--text); }
+.home-card-note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+/* Wins over .btn's full width, which is declared later in this file. */
+.home-card .btn.home-card-action { width: auto; padding: 7px 14px; font-size: 13px; margin-top: 12px; }
 
 /* ---- Wizard top bar (back to home) ---- */
 #wizard-topbar {
