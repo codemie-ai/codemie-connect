@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-14506-health-screen",
+  "head": "8899798831819a5dcc0e69a3c9000f1276d32b6b",
+  "runner": "npm+cargo (guide-defined)",
+  "started_at": "2026-09-21T08:38:03Z",
+  "completed_at": "2026-09-21T08:39:08Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1200,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3793,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9236,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "291 tests, 291 pass, 0 fail (baseline was ~288, now 291 with this session's new tests)"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 33400,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "94 unit + 0 main + 2 bundle_resources integration tests, all pass (matches expected baseline 94 + 2)"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "N/A",
+      "command": "./build-installer.sh",
+      "notes": "Outside requested scope: caller asked to run npm test, cargo test, cargo fmt --check, cargo clippy only"
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "SKIPPED",
+      "notes": "Diff since merge_base touches UI surface (ui/*.js, ui/styles.css) but quality-gates.md defines no UI test gate; package.json has a test:ui (Playwright) script but it is not listed in the guide, so it was not invoked here. Browser verification is a separate caller decision."
+    }
+  ],
+  "failures": {}
+}
