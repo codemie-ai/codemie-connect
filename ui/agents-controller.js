@@ -33,6 +33,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // command -> the message an action's failure left on that row, merged onto
   // the agent record on every load() so a refresh never drops it.
   const rowErrors = new Map();
+  // agent.command values with an action currently running; a new action
+  // request for one already in this set is ignored rather than racing it.
+  const inFlight = new Set();
 
   // silent: true is what a post-action refresh uses — it skips showLoading so
   // the container is never blanked outside the very first load.
@@ -88,11 +91,13 @@ export function createAgentsController({ container, runCapture, runStream, steps
   }
 
   async function runAction(agent, command) {
+    if (inFlight.has(agent.command)) return;
     if (!SAFE_COMMAND.test(agent.command)) {
       rowErrors.set(agent.command, 'This agent’s command name is not safe to run and was blocked.');
       await load({ silent: true });
       return;
     }
+    inFlight.add(agent.command);
     rowErrors.delete(agent.command);
     stepsUi.setStatus(agent.command, 'ACTIVE');
     stepsUi.startSpinner(agent.command);
@@ -109,6 +114,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
       lines.push(String((e && e.message) || e));
       rowErrors.set(agent.command, messageFor(lines));
     } finally {
+      inFlight.delete(agent.command);
       await load({ silent: true });
     }
   }

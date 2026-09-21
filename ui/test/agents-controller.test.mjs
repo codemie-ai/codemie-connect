@@ -371,6 +371,34 @@ test('an agent.command with shell metacharacters is never handed to runStream', 
   assert.deepEqual(runStream.calls, []);
 });
 
+test('a second click on the same row while its action is in flight does not fire a second runStream call', async () => {
+  const container = makeEl('div');
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  const runStream = fakeRunStream([]);
+  runStream.fn = async (cmd, onLine) => {
+    runStream.calls.push(cmd);
+    await gate;
+    return { code: 0 };
+  };
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream: runStream.fn,
+    stepsUi: fakeStepsUi(),
+  });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="gemini"]');
+  slot._children[0].onclick({ stopPropagation() {} });
+  slot._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  release();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(runStream.calls, ['codemie install gemini --supported']);
+});
+
 test('refresh() re-reads and re-renders without going through the loading-blanking path run() uses', async () => {
   const container = makeEl('div');
   const seenLoadingText = [];
