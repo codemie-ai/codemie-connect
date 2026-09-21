@@ -7,9 +7,28 @@ const { listen } = window.__TAURI__.event;
 let counter = 0;
 const nextId = (p) => `${p}${++counter}`;
 
+// The command-log footer: told when a command starts, and given the exit code
+// when it is known. A no-op until renderer.js registers the footer.
+let onCommand = null;
+export function setCommandListener(fn) {
+  onCommand = fn;
+}
+const started = (cmd) => {
+  try {
+    return (onCommand && onCommand(cmd)) || (() => {});
+  } catch {
+    return () => {};
+  }
+};
+
 // ---- runner (src/main/runner.js) ----
 export const runner = {
-  runCapture: (cmd) => invoke('run_capture', { cmd }),
+  runCapture: async (cmd) => {
+    const finish = started(cmd);
+    const res = await invoke('run_capture', { cmd });
+    finish(res && res.code);
+    return res;
+  },
   runFreshEnv: (cmd) => invoke('run_fresh_env', { cmd }),
 
   // Streams output lines via the engine:cmd-line event (keyed by a call id),
@@ -17,15 +36,18 @@ export const runner = {
   async runStream(cmd, onLine = () => {}) {
     onLine(`> ${cmd}`, 'prompt');
     const id = nextId('stream');
+    const finish = started(cmd);
     const un = await listen('engine:cmd-line', (e) => {
       const p = e.payload;
       if (p && p.id === id) onLine(p.text, p.tag);
     });
+    let code = null;
     try {
-      const code = await invoke('run_stream', { cmd, streamId: id });
+      code = await invoke('run_stream', { cmd, streamId: id });
       return { code };
     } finally {
       un();
+      finish(code);
     }
   },
 };
@@ -143,8 +165,10 @@ export const pty = {
       exitUnlisten = await listen('engine:pty-exit', (e) => {
         if (e.payload.id === id) resolveExit(e.payload.code);
       });
+      const finish = started(cmd);
       await invoke('spawn_pty', { cmd, cols, rows, runId: id });
       const code = await exitP;
+      finish(code);
       return { code, id };
     } finally {
       exitUnlisten?.();

@@ -14,6 +14,10 @@ import { findLoginError } from './signin-parse.js';
 import { isBlockedState } from './auth-gate.js';
 import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 import { createHealthController } from './health-controller.js';
+import { createHomeView } from './home-view.js';
+import { deriveHome } from './home-state.js';
+import { parseAgentList } from './agents-parse.js';
+import { createCommandLog } from './command-log.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -78,7 +82,6 @@ const views = {
 const homeView = views.home;
 const wizardView = views.wizard;
 const connectView = views.connect;
-const homeGrid = document.getElementById('home-grid');
 const wizardBack = document.getElementById('wizard-back');
 const connectBack = document.getElementById('connect-back');
 const connectBtn = document.getElementById('connect-btn');
@@ -149,6 +152,7 @@ function emit(event, payload) {
       closeBtn.classList.remove('hidden');
       wizardBack.classList.remove('hidden');
       refreshIdentityOnComplete();
+      refreshAgents();
       break;
     default:
       break;
@@ -178,6 +182,72 @@ function setInstallRunning(on) {
   });
 }
 
+// ---- Home (EPMCDME-14589) ----
+// One screen, two states: the checklist until nothing is left to tick, then the
+// status cards. Everything it shows comes from four sources that already exist:
+// the config reader and auth status (the identity bar's own reads feed them in),
+// `codemie list` through ui/agents-parse.js, and Health's last result.
+const home = { config: null, auth: null, agents: undefined, health: null };
+const homeScreen = createHomeView(document.getElementById('home-body'), {
+  stepsUi: stepsUI.createStepsUi(),
+  onItem: (id) => {
+    if (id === 'model') openGuidedSetup();
+    else if (id === 'agent') showView('agents');
+    else if (id === 'health') showView('health');
+  },
+  onSignIn: () => startSignIn(),
+  onCard: (id) => showView(id),
+  onSetupAgain: () => openGuidedSetup(),
+});
+
+function renderHome() {
+  const state = deriveHome(home);
+  homeScreen.render(state);
+  const sub = document.getElementById('home-subtitle');
+  if (sub) sub.textContent = state.done ? 'Everything is set up. Here is how things stand.' : '';
+}
+
+// `codemie list` is Home's one bounded CLI read (its ticket allows exactly this
+// one). Spaced out: showView('home') and window focus both ask for it.
+let agentsReadAt = 0;
+let agentsReading = false;
+async function refreshAgents() {
+  if (agentsReading || Date.now() - agentsReadAt < 5000) return;
+  agentsReading = true;
+  try {
+    const res = await bridge.runner.runCapture('codemie list');
+    home.agents = res && res.code === 0 ? parseAgentList(res.stdout) : null;
+  } catch {
+    home.agents = null;
+  } finally {
+    agentsReading = false;
+    agentsReadAt = Date.now();
+  }
+  renderHome();
+}
+
+// One view instance for the one #setup-view container, created lazily and
+// reused. A second instance would mount over the first one's rows and start a
+// second `codemie setup` alongside it (they race over the config file);
+// setup-view's own re-entrancy guard is per instance and cannot see that.
+// start() is safe to call again on a settled instance: it resets itself. The
+// module is imported on first use so the driver stays out of the boot path.
+let setupView = null;
+async function openGuidedSetup() {
+  showView('setup');
+  if (!setupView) {
+    const { createSetupView } = await import('./setup-view.js');
+    setupView = createSetupView(document.getElementById('setup-view'));
+  }
+  try {
+    return await setupView.start();
+  } finally {
+    // A run writes the profile and may sign the user in; Home re-reads both.
+    refreshIdentityOnComplete();
+    refreshAgents();
+  }
+}
+
 // ---- view routing ----
 function showView(name) {
   Object.entries(views).forEach(([key, el]) => {
@@ -197,6 +267,7 @@ function showView(name) {
     healthChecked = true;
     healthController.run();
   }
+  if (name === 'home') refreshAgents();
 }
 
 // (Re)build the engine for a wizard run.
@@ -253,6 +324,8 @@ function renderIdentity(cfg) {
   // Empty in the broken state, where only the account and profile are readable.
   set('identity-model', cfg.model);
   set('identity-project', cfg.project);
+  home.config = cfg;
+  renderHome();
 }
 
 // Re-reads the identity bar once setup finishes writing what it displays —
@@ -291,25 +364,14 @@ function updateIdentityAuthStatus(st) {
   } else {
     el.textContent = 'Not signed in';
   }
+  home.auth = st;
+  renderHome();
 }
 
 // ---- CLI version banner ----
 // The badge reports whether an update exists; the banner reports whether the
 // user still wants to be told. They are separate, which is why dismissing the
 // banner leaves the badge standing, as 01-home.png draws it in steady state.
-// The home grid was kept, so its update-available cue is carried-forward
-// behaviour and has to keep working: an accent border on the installation group
-// and a highlighted Update CLI tile. Guarded because EPMCDME-14589 removes the
-// grid, after which these lookups return null.
-function setGridUpdateCue(on) {
-  const group = document.getElementById('installation-group');
-  const tile = document.getElementById('update-cli-tile');
-  if (group) group.classList.toggle('update-available', on);
-  if (!tile) return;
-  if (on) tile.dataset.state = 'highlight';
-  else if (tile.dataset.state === 'highlight') delete tile.dataset.state;
-}
-
 function setVersionBadge() {
   document.getElementById('identity-version-badge').textContent =
     cliVersionState.updateAvailable ? `${cliVersionState.latest} available` : '';
@@ -317,7 +379,6 @@ function setVersionBadge() {
 
 function showUpdateBanner() {
   setVersionBadge();
-  setGridUpdateCue(cliVersionState.updateAvailable);
   if (!cliVersionState.updateAvailable) return;
   if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
   document.getElementById('update-from').textContent = cliVersionState.installed;
@@ -330,7 +391,6 @@ function showUpdateBanner() {
 function hideUpdateBanner() {
   document.getElementById('update-banner').classList.add('hidden');
   setVersionBadge();
-  setGridUpdateCue(cliVersionState.updateAvailable);
 }
 
 function dismissUpdateBanner() {
@@ -340,7 +400,6 @@ function dismissUpdateBanner() {
   // origin/main cleared the grid cue on dismiss. The badge is what survives —
   // it reports that an update exists; the cue and banner report that we are
   // still asking about it, and dismissing answers that.
-  setGridUpdateCue(false);
 }
 
 function showAppUpdateBanner(latestVersion) {
@@ -393,6 +452,10 @@ const healthController = createHealthController({
   openLog: () => invoke('open_log'),
   onNavigate: (view) => showView(view),
   signIn: () => startSignIn(),
+  onResult: (result) => {
+    home.health = result;
+    renderHome();
+  },
   onFailure: () => {
     healthChecked = false;
   },
@@ -498,21 +561,6 @@ function setUpdateProgress(state, label, icon) {
     btn.textContent = label;
     btn.disabled = state === 'updating';
   }
-  // The grid tile animates in place, as it does on the shipped app.
-  const tile = document.getElementById('update-cli-tile');
-  if (!tile) return;
-  if (state) tile.dataset.state = state;
-  else delete tile.dataset.state;
-  const iconEl = document.getElementById('update-cli-icon');
-  const titleEl = document.getElementById('update-cli-title');
-  if (iconEl) iconEl.textContent = icon;
-  if (titleEl) titleEl.textContent = label;
-  // Its siblings are inert while the update runs, so a second install cannot be
-  // started from the same group.
-  document.querySelectorAll('#installation-tiles .sub-tile:not(#update-cli-tile)').forEach((t) => {
-    t.style.pointerEvents = state === 'updating' ? 'none' : '';
-    t.style.opacity = state === 'updating' ? '0.4' : '';
-  });
 }
 
 async function runUpdateCli() {
@@ -599,23 +647,7 @@ async function boot() {
   // of the production boot path.
   if (flags.dev) {
     const { startSetup } = await import('./setup-driver.js');
-    const { createSetupView } = await import('./setup-view.js');
-    // One view instance for the one #setup-view container, created lazily and
-    // reused. A second instance would mount over the first one's rows and start
-    // a second `codemie setup` alongside it (they race over the config file);
-    // setup-view's own re-entrancy guard is per instance and cannot see that.
-    // start() is safe to call again on a settled instance -- it resets itself.
-    let setupView = null;
-    window.__codemie = {
-      showView,
-      startSetup,
-      emit,
-      startGuidedSetup: () => {
-        showView('setup');
-        if (!setupView) setupView = createSetupView(document.getElementById('setup-view'));
-        return setupView.start();
-      },
-    };
+    window.__codemie = { showView, startSetup, emit, startGuidedSetup: openGuidedSetup };
   }
 
   allSteps = await invoke('get_steps');
@@ -716,6 +748,7 @@ async function boot() {
     if (installRunning || Date.now() - identityReadAt < 5000) return;
     identityReadAt = Date.now();
     refreshIdentityOnComplete();
+    refreshAgents();
   });
 
   const [platformInfo, tmpDir] = await Promise.all([
@@ -771,27 +804,11 @@ async function boot() {
     showView('home');
   });
 
-  // ---- home / launcher ----
-  homeGrid.addEventListener('click', (e) => {
-    const tile = e.target.closest('.home-tile');
-    if (!tile) return;
-    switch (tile.dataset.action) {
-      case 'full':
-        enterWizard();
-        break;
-      case 'connect-desktop':
-        showView('connect');
-        break;
-      case 'analytics':
-        runAnalytics();
-        break;
-      case 'update-cli':
-        runUpdateCli();
-        break;
-      default:
-        break;
-    }
-  });
+  // ---- home ----
+  // The Home body is ui/home-view.js; its sources are wired in the Home section
+  // above. The command-log footer hears about every command the bridge runs.
+  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
+  refreshAgents();
   document.querySelectorAll('#sidebar-main-group .sidebar-item, #sidebar-about').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
@@ -800,7 +817,7 @@ async function boot() {
   });
   showView('home');
   document.getElementById('sidebar-analytics').addEventListener('click', () => {
-    if (installRunning) return; // hidden today, but restoring it must not restore the gap
+    if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
     runAnalytics();
   });
 
