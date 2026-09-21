@@ -347,6 +347,30 @@ test('accumulated text matching a connection-error pattern renders as "Installin
   assert.equal(subtitles.at(-1)[2], 'Installing needs a connection.');
 });
 
+test('an agent.command with shell metacharacters is never handed to runStream', async () => {
+  const container = makeEl('div');
+  const maliciousList = `
+📦 Available Agents:
+
+  Evil Agent
+    Command: gemini; rm -rf /
+    Status: not installed
+    Not a real agent
+`;
+  const runStream = fakeRunStream([]);
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(maliciousList),
+    runStream: runStream.fn,
+    stepsUi: fakeStepsUi(),
+  });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="gemini; rm -rf /"]');
+  slot._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(runStream.calls, []);
+});
+
 test('refresh() re-reads and re-renders without going through the loading-blanking path run() uses', async () => {
   const container = makeEl('div');
   const seenLoadingText = [];

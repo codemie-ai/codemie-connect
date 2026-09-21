@@ -19,6 +19,12 @@ import { renderAgents, showLoading, showRunError } from './agents-ui.js';
 // text should be shown for.
 const NO_NETWORK = /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|getaddrinfo/i;
 
+// agent.command is parsed unvalidated from `codemie list` stdout and
+// interpolated straight into a shell string the Rust side runs via
+// `/bin/zsh -lc`. A command that fails this check is never handed to
+// runStream, however it got corrupted.
+const SAFE_COMMAND = /^[A-Za-z0-9._-]+$/;
+
 export function createAgentsController({ container, runCapture, runStream, stepsUi, onFailure, onResult } = {}) {
   // A second run() while the first is in flight is a no-op, as on Health: the
   // read is cheap but re-rendering under a half-finished one loses row state.
@@ -82,6 +88,11 @@ export function createAgentsController({ container, runCapture, runStream, steps
   }
 
   async function runAction(agent, command) {
+    if (!SAFE_COMMAND.test(agent.command)) {
+      rowErrors.set(agent.command, 'This agent’s command name is not safe to run and was blocked.');
+      await load({ silent: true });
+      return;
+    }
     rowErrors.delete(agent.command);
     stepsUi.setStatus(agent.command, 'ACTIVE');
     stepsUi.startSpinner(agent.command);
