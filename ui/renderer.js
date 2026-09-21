@@ -474,6 +474,7 @@ const healthController = createHealthController({
 const agentsController = createAgentsController({
   container: views.agents,
   runCapture: (cmd) => bridge.runner.runCapture(cmd),
+  runStream: bridge.runner.runStream,
   stepsUi: stepsUI.createStepsUi(),
   onResult: (agents) => {
     home.agents = agents;
