@@ -54,10 +54,20 @@ pub fn candidate_dirs() -> Vec<String> {
 /// zprofile PATH block, so npm-installed agents run from a fresh terminal
 /// without a separate persist call. Idempotent: doesn't duplicate an entry
 /// the caller already included.
-pub fn build_persist_entries(mut entries: Vec<String>) -> Vec<String> {
-    let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
-    if !entries.contains(&agents_bin) {
-        entries.push(agents_bin);
+pub fn build_persist_entries(entries: Vec<String>) -> Vec<String> {
+    build_persist_entries_with(&crate::commands::npm_env::npm_env().bin_dir, entries)
+}
+
+/// Pure: the body of `build_persist_entries` with the agents bin dir supplied,
+/// so the no-home case is testable without mutating the process environment.
+/// An empty `agents_bin` is npm_env's "no override" value, and an empty PATH
+/// entry means the current directory on both platforms, so it is never added.
+pub(crate) fn build_persist_entries_with(
+    agents_bin: &str,
+    mut entries: Vec<String>,
+) -> Vec<String> {
+    if !agents_bin.is_empty() && !entries.iter().any(|e| e == agents_bin) {
+        entries.push(agents_bin.to_string());
     }
     entries
 }
@@ -352,7 +362,14 @@ pub(crate) fn maybe_persist(
     if !is_install_location(dir) {
         return PersistOutcome::SkippedLocation;
     }
-    match persist_fn(&[dir.to_string_lossy().into_owned()]) {
+    // Through build_persist_entries so the npm-agents bin dir rides along with
+    // the shim dir. This is the only persist that runs in the normal flow —
+    // persist_to_zprofile is reached from the legacy install wizard alone — and
+    // without it an agent installed from the app would not run in a terminal.
+    match persist_fn(&build_persist_entries(vec![dir
+        .to_string_lossy()
+        .into_owned()]))
+    {
         Ok(_) => PersistOutcome::Persisted,
         Err(e) => PersistOutcome::Failed(e.to_string()),
     }
@@ -519,16 +536,27 @@ mod tests_persist_decision {
         );
     }
 
+    // The agents bin dir rides along here because this is the only persist the
+    // normal flow reaches: persist_to_zprofile is called from the legacy install
+    // wizard's rememberDirs alone (ui/handlers.js), which a user who never runs
+    // that wizard never triggers. Without it, an agent the app installed would
+    // not be on PATH in the user's own terminal.
     #[test]
-    fn release_build_persists_exactly_the_bundle_dir() {
+    fn release_build_persists_the_bundle_dir_and_the_agents_bin_dir() {
         let calls = RefCell::new(Vec::new());
         let dir = install_dir();
         let out = maybe_persist(&dir, false, recorder(&calls));
         assert_eq!(out, PersistOutcome::Persisted);
         assert_eq!(
             *calls.borrow(),
-            vec![vec![dir.to_string_lossy().into_owned()]],
-            "persist must receive the bundle dir and nothing else"
+            vec![build_persist_entries(vec![dir
+                .to_string_lossy()
+                .into_owned()])],
+            "persist must receive the bundle dir plus the npm-agents bin dir"
+        );
+        assert!(
+            calls.borrow()[0].contains(&crate::commands::npm_env::npm_env().bin_dir),
+            "the agents bin dir must be among the persisted entries"
         );
     }
 
@@ -606,6 +634,16 @@ mod tests {
         let out = build_persist_entries(vec!["/opt/homebrew/bin".to_string()]);
         let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
         assert_eq!(out, vec!["/opt/homebrew/bin".to_string(), agents_bin]);
+    }
+
+    #[test]
+    fn build_persist_entries_adds_nothing_when_there_is_no_home_dir() {
+        let out = build_persist_entries_with("", vec!["/opt/homebrew/bin".to_string()]);
+        assert_eq!(out, vec!["/opt/homebrew/bin".to_string()]);
+        assert!(
+            !out.iter().any(|e| e.is_empty()),
+            "an empty PATH entry means the current directory; it must never be persisted"
+        );
     }
 
     #[test]
