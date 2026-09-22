@@ -394,7 +394,6 @@ function showUpdateBanner() {
   setVersionBadge();
   if (!cliVersionState.updateAvailable) return;
   if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
-  document.getElementById('update-from').textContent = cliVersionState.installed;
   document.getElementById('update-to').textContent = cliVersionState.latest;
   document.getElementById('update-banner').classList.remove('hidden');
 }
@@ -649,7 +648,7 @@ async function runUpdateApp() {
     await bridge.updater.restartApp();
   } catch (err) {
     bannerRunBtn.disabled = false;
-    bannerRunBtn.textContent = 'Update app';
+    bannerRunBtn.textContent = 'Update and restart';
     const banner = document.getElementById('app-update-banner');
     let errorEl = banner.querySelector('.update-error');
     if (!errorEl) {
