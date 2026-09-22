@@ -856,6 +856,9 @@ body::before {
 }
 
 /* ---- Agents screen (EPMCDME-14514) ---- */
+/* The same inset the other screens have; without it the title sat on the
+   sidebar's edge and the summary ran off the window's right edge. */
+#agents-view { padding: 22px 28px 28px; animation: cm-fade-in 0.2s ease; }
 /* The rows are step rows, so their look comes from the step list; only the
    header, the note and the per-row action slot are this screen's own. */
 .agents-head {

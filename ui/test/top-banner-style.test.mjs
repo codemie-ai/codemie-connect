@@ -75,3 +75,13 @@ test('top-banner: the app-update error text is appended inside the text column',
   assert.match(catchBlock, /top-banner-body/);
   assert.doesNotMatch(catchBlock, /\bbanner\.appendChild\(errorEl\)/);
 });
+
+// Every routed screen has its own inset. The Agents screen had none, so its
+// title sat on the sidebar's edge and its summary ran off the window.
+test('every routed screen has padding of its own', () => {
+  for (const id of ['home-view', 'health-view', 'agents-view']) {
+    const rule = css.match(new RegExp(`#${id}\\s*\\{[^}]*\\}`));
+    assert.ok(rule, `#${id} has a rule`);
+    assert.match(rule[0], /padding:/, `#${id} is padded`);
+  }
+});
