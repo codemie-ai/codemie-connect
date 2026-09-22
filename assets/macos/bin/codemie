@@ -11,4 +11,13 @@ if [ ! -f "$RES/cli/node_modules/@codemieai/code/bin/codemie.js" ]; then
   echo "error: bundled CLI entry not found: $RES/cli/node_modules/@codemieai/code/bin/codemie.js" 1>&2
   exit 1
 fi
+# Agent installs and every uninstall shell out to `npm` by name, so the bundled
+# npm has to be findable. It sits next to the bundled node, a directory kept off
+# the user's own PATH on purpose (EPMCDME-14572), so it is added here instead:
+# only for this process tree, and appended, so a user's own npm still wins.
+# ${PATH:+...} keeps an empty PATH from becoming a leading ":", which POSIX
+# reads as the current directory.
+PATH="${PATH:+$PATH:}$RES/node/bin"
+export PATH
+
 exec "$RES/node/bin/node" "$RES/cli/node_modules/@codemieai/code/bin/codemie.js" "$@"
