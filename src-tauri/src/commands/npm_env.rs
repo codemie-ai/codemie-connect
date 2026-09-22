@@ -36,7 +36,7 @@ impl NpmEnv {
 ///
 /// An empty `home` (unset/empty HOME or USERPROFILE) returns `NpmEnv::empty()`
 /// rather than a root-relative path — see the module-level tests for why.
-fn npm_env_for(home: &str, windows: bool) -> NpmEnv {
+pub(crate) fn npm_env_for(home: &str, windows: bool) -> NpmEnv {
     if home.is_empty() {
         return NpmEnv::empty();
     }
@@ -65,18 +65,12 @@ pub fn npm_env() -> NpmEnv {
 /// Pure: prepends `bin_dir` to `existing_path` and dedupes. An empty
 /// `bin_dir` (the "no override" value from `npm_env_for`) leaves
 /// `existing_path` unchanged instead of prefixing an empty entry.
-fn prefixed_path_with_bin_dir(bin_dir: &str, existing_path: &str) -> String {
+pub(crate) fn prefixed_path_with_bin_dir(bin_dir: &str, existing_path: &str) -> String {
     if bin_dir.is_empty() {
         return crate::commands::pathman::dedupe_path(existing_path);
     }
     let combined = format!("{bin_dir}{PATH_SEP}{existing_path}");
     crate::commands::pathman::dedupe_path(&combined)
-}
-
-/// Prepend the npm-agents bin dir to `existing_path`, reading it from
-/// `npm_env()`.
-pub fn prefixed_path(existing_path: &str) -> String {
-    prefixed_path_with_bin_dir(&npm_env().bin_dir, existing_path)
 }
 
 #[cfg(test)]
