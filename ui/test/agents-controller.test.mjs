@@ -508,3 +508,33 @@ test('a failure that keeps printing after its error shows the error, not the tra
   assert.equal(row.actionMessage, 'Failed to install agent claude-acp: No installer URLs configured for native installation');
   assert.doesNotMatch(row.actionMessage, /Tip:|Available agents/);
 });
+
+// Captured from a real failing run: the app's own CLI, told to reach a registry
+// that refuses connections (ui/test/fixtures/agents/install-no-registry.txt).
+// The CLI prints its own two error lines and then ~40 lines of npm's raw dump,
+// so the row must not end up showing the last line of that noise.
+const noRegistry = readFileSync(new URL('fixtures/agents/install-no-registry.txt', import.meta.url), 'utf8')
+  .split('\n')
+  .filter(Boolean);
+
+test('a real registry-unreachable failure reads as a connection problem, and Home is told the same', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  const c = createAgentsController({
+    container,
+    runCapture: async (cmd) => (cmd === 'codemie list'
+      ? { code: 0, stdout: fixture, stderr: '' }
+      : { code: 0, stdout: upToDateCheck, stderr: '' }),
+    runStream: async (cmd, onLine) => {
+      for (const line of noRegistry) onLine(line, 'stdout');
+      return { code: 1 };
+    },
+    stepsUi,
+  });
+  await c.run();
+  const result = await c.install({ name: 'Gemini CLI', command: 'gemini' });
+  assert.deepEqual(result, { ok: false, message: 'Installing needs a connection.' });
+  const subtitles = stepsUi.calls.filter((c2) => c2[0] === 'setSubtitle' && c2[1] === 'gemini').map((c2) => c2[2]);
+  assert.equal(subtitles.at(-1), 'Installing needs a connection.', 'the Agents row settles on the same message');
+  assert.ok(!subtitles.at(-1).includes('npm error'), "npm's raw dump never becomes the row's message");
+});

@@ -138,14 +138,27 @@ test('item 1 gets an in-place Sign in control while it is open, and none once co
   assert.equal(container._all((n) => n._tag === 'button' && n.textContent === 'Sign in').length, 0);
 });
 
-test('clicking items 2, 3 and 4 reports the item; item 1 does not navigate', () => {
+// Items 2 and 4 navigate; items 1 and 3 complete in place (EPMCDME-15189,
+// superseding EPMCDME-14589's "a screen for items 2, 3 and 4").
+test('clicking items 2 and 4 reports the item; items 1 and 3 do not navigate', () => {
   const container = makeEl('div');
   const opened = [];
   createHomeView(container, { stepsUi: fakeStepsUi(), onItem: (id) => opened.push(id) }).render(checklist);
   for (const id of ['model', 'agent', 'health', 'sign-in']) {
     container.querySelector(`.step-row[data-id="${id}"]`)._click();
   }
-  assert.deepEqual(opened, ['model', 'agent', 'health']);
+  assert.deepEqual(opened, ['model', 'health']);
+});
+
+// A ticked item 3 opens the same way: one agent installed does not mean there
+// is nothing left to add, and the screen is still a click away from inside it.
+test('a completed item 3 opens in place too, rather than navigating', () => {
+  const container = makeEl('div');
+  const opened = [];
+  const done = { ...checklist, items: checklist.items.map((i) => (i.id === 'agent' ? item('agent', 'COMPLETE', 'Claude Code') : i)) };
+  createHomeView(container, { stepsUi: fakeStepsUi(), onItem: (id) => opened.push(id) }).render(done);
+  container.querySelector('.step-row[data-id="agent"]')._click();
+  assert.deepEqual(opened, []);
 });
 
 test('when everything is done the three cards replace the checklist, on the same container', () => {
@@ -162,7 +175,7 @@ test('when everything is done the three cards replace the checklist, on the same
   assert.equal(stepsUi.calls.filter((c) => c[0] === 'renderSteps').length, 1, 'cards do not touch the step list');
 });
 
-test('the Profile card offers Run setup again; the other cards open their screen', () => {
+test('the Profile card offers Set up again; the other cards open their screen', () => {
   const container = makeEl('div');
   const events = [];
   createHomeView(container, {
@@ -170,7 +183,7 @@ test('the Profile card offers Run setup again; the other cards open their screen
     onSetupAgain: () => events.push('setup-again'),
     onCard: (id) => events.push(`card:${id}`),
   }).render(steady);
-  container._all((n) => n._tag === 'button' && n.textContent === 'Run setup again')[0]._click();
+  container._all((n) => n._tag === 'button' && n.textContent === 'Set up again')[0]._click();
   container.querySelector('.home-card-warn')._click();
   container._all((n) => n.dataset.card === 'agents')[0]._click();
   assert.deepEqual(events, ['setup-again', 'card:health', 'card:agents']);
