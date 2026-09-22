@@ -27,6 +27,14 @@ test('top-banner: CLI banner keeps the verbatim reassurance line', () => {
   assert.match(cliBanner, /Your profile, settings and agents are kept\./);
 });
 
+// The app banner says its own thing. With both on screen the same sentence
+// twice reads like a template rather than something written for the user.
+test('top-banner: the app banner does not repeat the CLI banner\'s line', () => {
+  const appBanner = html.slice(html.indexOf('<div id="app-update-banner"'));
+  assert.doesNotMatch(appBanner, /Your profile, settings and agents are kept\./);
+  assert.match(appBanner, /Everything you set up stays\./);
+});
+
 // EPMCDME-15189: each banner is a title + a line + an actions block, not one
 // flat span. Fails if the card structure ever gets collapsed back down.
 test('top-banner: each banner has a title, a line and an actions block', () => {
