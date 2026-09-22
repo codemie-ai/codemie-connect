@@ -39,7 +39,20 @@ pub fn candidate_dirs() -> Vec<String> {
         r"C:\Program Files\nodejs".to_string(),
         format!(r"{profile}\AppData\Roaming\npm"),
         format!(r"{profile}\AppData\Local\CodeMie\npm-prefix"),
+        format!(r"{profile}\.codemie\agents"),
     ]
+}
+
+/// Always include the npm-agents bin dir in the entries persisted to the
+/// zprofile PATH block, so npm-installed agents run from a fresh terminal
+/// without a separate persist call. Idempotent: doesn't duplicate an entry
+/// the caller already included.
+pub fn build_persist_entries(mut entries: Vec<String>) -> Vec<String> {
+    let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+    if !entries.contains(&agents_bin) {
+        entries.push(agents_bin);
+    }
+    entries
 }
 
 /// Dedupe a PATH string, preserving first-occurrence order and dropping empties.
@@ -231,7 +244,7 @@ fn broadcast_env_change() {
 
 #[tauri::command]
 pub fn persist_to_zprofile(entries: Vec<String>) -> CmdResult<String> {
-    persist(&entries).map_err(Into::into)
+    persist(&build_persist_entries(entries)).map_err(Into::into)
 }
 
 /// Remember freshly-installed tool dirs for subsequent run_fresh_env calls.
@@ -580,6 +593,20 @@ mod tests_macos_probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_persist_entries_appends_agents_bin_dir_once() {
+        let out = build_persist_entries(vec!["/opt/homebrew/bin".to_string()]);
+        let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+        assert_eq!(out, vec!["/opt/homebrew/bin".to_string(), agents_bin]);
+    }
+
+    #[test]
+    fn build_persist_entries_does_not_duplicate_if_caller_already_included_it() {
+        let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+        let out = build_persist_entries(vec![agents_bin.clone()]);
+        assert_eq!(out, vec![agents_bin]);
+    }
 
     #[cfg(not(windows))]
     #[test]
