@@ -46,7 +46,10 @@ fn pty_env_pairs(existing_path: &str) -> Vec<(String, String)> {
     let env = crate::commands::npm_env::npm_env();
     let path = crate::commands::npm_env::prefixed_path(existing_path);
     #[cfg(not(windows))]
-    let home_var = ("HOME".to_string(), std::env::var("HOME").unwrap_or_default());
+    let home_var = (
+        "HOME".to_string(),
+        std::env::var("HOME").unwrap_or_default(),
+    );
     #[cfg(windows)]
     let home_var = (
         "USERPROFILE".to_string(),
