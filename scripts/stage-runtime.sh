@@ -55,12 +55,27 @@ if [ ! -x "$NODE_BIN" ]; then
   actual:   $ACTUAL"
   fi
   echo "    checksum OK"
-  # Only the binary ships; npm, headers and docs stay out (spec §2).
-  tar -xzf "$TMP/$TARBALL" -C "$TMP" "node-v$NODE_VERSION-darwin-arm64/bin/node"
+  # node + npm's own tree ship (EPMCDME-15180); headers stay out.
+  tar -xzf "$TMP/$TARBALL" -C "$TMP" \
+    "node-v$NODE_VERSION-darwin-arm64/bin/node" \
+    "node-v$NODE_VERSION-darwin-arm64/lib/node_modules/npm"
+  [ -d "$TMP/node-v$NODE_VERSION-darwin-arm64/lib/node_modules/npm" ] || fail "npm tree not found in Node tarball at lib/node_modules/npm — tarball layout may have changed"
   mkdir -p "$NODE_DIR/bin"
   cp "$TMP/node-v$NODE_VERSION-darwin-arm64/bin/node" "$NODE_BIN"
   chmod 755 "$NODE_BIN"
+  mkdir -p "$NODE_DIR/lib/node_modules"
+  cp -R "$TMP/node-v$NODE_VERSION-darwin-arm64/lib/node_modules/npm" "$NODE_DIR/lib/node_modules/npm"
+  # npm shim: execs the staged node against npm's own CLI entry. Written
+  # instead of relying on the tarball's bin/npm relative symlink surviving
+  # Tauri bundling (unverified — see technical-analysis.md §6).
+  cat > "$NODE_DIR/bin/npm" <<'NPM_SHIM'
+#!/bin/sh
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+exec "$DIR/bin/node" "$DIR/lib/node_modules/npm/bin/npm-cli.js" "$@"
+NPM_SHIM
+  chmod 755 "$NODE_DIR/bin/npm"
   echo "    node staged at $NODE_BIN"
+  echo "    npm staged at $NODE_DIR/bin/npm"
 else
   say "node already staged at $NODE_BIN (use --force to refresh)"
 fi
@@ -110,6 +125,11 @@ NODE_SIZE="$(stat -f %z "$NODE_BIN")"
 [ "$NODE_SIZE" -gt 10485760 ] || fail "node is only $NODE_SIZE bytes, expected > 10 MB (0-byte placeholder?)"
 REPORTED="$("$NODE_BIN" --version 2>&1)" || fail "node --version failed: $REPORTED"
 [ "$REPORTED" = "v$NODE_VERSION" ] || fail "node reports $REPORTED, expected v$NODE_VERSION"
+
+[ -x "$NODE_DIR/bin/npm" ] || fail "missing or not executable: $NODE_DIR/bin/npm"
+[ -s "$NODE_DIR/lib/node_modules/npm/bin/npm-cli.js" ] || fail "missing or empty: $NODE_DIR/lib/node_modules/npm/bin/npm-cli.js"
+NPM_REPORTED="$("$NODE_DIR/bin/npm" --version 2>&1)" || fail "npm --version failed: $NPM_REPORTED"
+echo "    npm $NPM_REPORTED"
 
 for r in \
   "$CLI_PACKAGE/bin/codemie.js" \
