@@ -188,3 +188,21 @@ test('the Profile card offers Set up again; the other cards open their screen', 
   container._all((n) => n.dataset.card === 'agents')[0]._click();
   assert.deepEqual(events, ['setup-again', 'card:health', 'card:agents']);
 });
+
+// The welcome heading already titles the checklist; the header only earns its
+// place once setup is done, where its line says something the cards do not.
+test('Home\'s header hides while the checklist is up and shows once setup is done', async () => {
+  const { applyHomeHeader } = await import('../home-view.js');
+  const classes = new Set();
+  const header = { classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)) } };
+  const sub = { textContent: 'stale' };
+  const root = { getElementById: (id) => ({ 'home-header': header, 'home-subtitle': sub })[id] };
+
+  applyHomeHeader(root, { done: false });
+  assert.equal(classes.has('hidden'), true, 'hidden during onboarding');
+  assert.equal(sub.textContent, '');
+
+  applyHomeHeader(root, { done: true });
+  assert.equal(classes.has('hidden'), false, 'shown once done');
+  assert.equal(sub.textContent, 'Everything is set up. Here is how things stand.');
+});

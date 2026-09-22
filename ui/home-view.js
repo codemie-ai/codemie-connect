@@ -191,3 +191,15 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
 
   return { render };
 }
+
+// Home's own header (logo, name and a status line) sits above the body this
+// view renders. While the checklist is on screen its welcome heading already
+// does that job, and two titles stacked read as one too many, so the header
+// only shows once setup is done — where its line, "Everything is set up",
+// says something the cards do not.
+export function applyHomeHeader(root, { done } = {}) {
+  const header = root?.getElementById?.('home-header');
+  if (header) header.classList.toggle('hidden', !done);
+  const sub = root?.getElementById?.('home-subtitle');
+  if (sub) sub.textContent = done ? 'Everything is set up. Here is how things stand.' : '';
+}

@@ -16,7 +16,7 @@ import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 import { createHealthController } from './health-controller.js';
 import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
-import { createHomeView } from './home-view.js';
+import { createHomeView, applyHomeHeader } from './home-view.js';
 import { deriveHome } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
@@ -212,8 +212,7 @@ function renderHome() {
   // The other screens stay locked until the checklist is done; Home never is,
   // so an item that opened Agents or Health always has a way back.
   applyOnboardingNav(document, { done: state.done });
-  const sub = document.getElementById('home-subtitle');
-  if (sub) sub.textContent = state.done ? 'Everything is set up. Here is how things stand.' : '';
+  applyHomeHeader(document, { done: state.done });
 }
 
 // `codemie list` is Home's one bounded CLI read (its ticket allows exactly this
