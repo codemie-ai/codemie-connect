@@ -3,6 +3,8 @@
     "resources": {
       "../assets/windows/bin/codemie.cmd": "bin/codemie.cmd",
       "../assets/windows/node/node.exe": "node/node.exe",
+      "../assets/windows/node/npm.cmd": "node/npm.cmd",
+      "../assets/windows/node/node_modules/npm": "node/node_modules/npm",
       "../assets/codemie-cli/node_modules": "cli/node_modules"
     }
   }
