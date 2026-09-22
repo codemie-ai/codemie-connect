@@ -48,8 +48,22 @@ if (-not (Test-Path $NodeExe)) {
     $src = Join-Path $tmp "node-v$($Cfg.nodeVersion)-win-x64\node.exe"
     if (-not (Test-Path $src)) { Fail "node.exe not found in extracted archive at $src" }
     Copy-Item $src $NodeExe -Force
-    Remove-Item $tmp -Recurse -Force
     Write-Host "    node.exe staged" -ForegroundColor Green
+
+    # npm ships as a sibling of node.exe in the Windows zip layout (node_modules\npm,
+    # not under lib\ as on macOS). EPMCDME-15180: no separate download.
+    $npmSrc = Join-Path $tmp "node-v$($Cfg.nodeVersion)-win-x64\node_modules\npm"
+    if (-not (Test-Path $npmSrc)) { Fail "npm tree not found in Node zip at node_modules\npm — zip layout may have changed" }
+    Copy-Item $npmSrc (Join-Path $NodeDir "node_modules\npm") -Recurse -Force
+
+    # npm shim: execs the staged node.exe against npm's own CLI entry.
+    @'
+@echo off
+"%~dp0node.exe" "%~dp0node_modules\npm\bin\npm-cli.js" %*
+'@ | Set-Content (Join-Path $NodeDir "npm.cmd") -Encoding ASCII
+    Write-Host "    npm.cmd staged" -ForegroundColor Green
+
+    Remove-Item $tmp -Recurse -Force
 } else {
     Write-Host "==> node.exe already staged (use -Force to refresh)" -ForegroundColor Yellow
 }
@@ -126,6 +140,14 @@ if ($LASTEXITCODE -ne 0) { Fail "node.exe --version failed: $reportedVersion" }
 if ($reportedVersion.Trim() -ne "v$($Cfg.nodeVersion)") {
     Fail "node.exe reports $reportedVersion, expected v$($Cfg.nodeVersion)"
 }
+
+if (-not (Test-Path (Join-Path $NodeDir "npm.cmd"))) { Fail "missing: $NodeDir\npm.cmd" }
+$npmCli = Join-Path $NodeDir "node_modules\npm\bin\npm-cli.js"
+if (-not (Test-Path $npmCli)) { Fail "missing: $npmCli" }
+if ((Get-Item $npmCli).Length -eq 0) { Fail "empty: $npmCli" }
+$npmVersion = & (Join-Path $NodeDir "npm.cmd") --version 2>&1
+if ($LASTEXITCODE -ne 0) { Fail "npm.cmd --version failed: $npmVersion" }
+Write-Host "    npm $(($npmVersion | Out-String).Trim())" -ForegroundColor DarkCyan
 
 $required = @(
     "$($Cfg.cliPackage)\bin\codemie.js",
