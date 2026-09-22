@@ -44,14 +44,24 @@ function modelItem(def, config) {
   return item(def, StepStatus.PENDING, 'Sign in with CodeMie, or bring your own key');
 }
 
+// The CLI's built-in agent ships inside the CLI package, so `codemie list`
+// reports it installed on a machine where nothing has been installed at all --
+// measured on a clean profile with an empty PATH, where `which codemie-code`
+// finds nothing and the list still says "✓ installed". Counting it would tick
+// this item before the user has done anything, which is why the step looks at
+// the agents a user actually installs. See
+// .ai-run/decisions/2026-09-22-EPMCDME-15189-builtin-agent-does-not-tick.md.
+export const BUILTIN_AGENT_COMMAND = 'codemie-code';
+
 function agentItem(def, agents) {
   if (agents === undefined) return item(def, StepStatus.PENDING, 'Checking…');
   if (agents === null) return item(def, StepStatus.PENDING, 'Could not read the agent list');
-  const installed = agents.filter((a) => a.installed);
+  const installed = agents.filter((a) => a.installed && a.command !== BUILTIN_AGENT_COMMAND);
   if (installed.length) {
     return item(def, StepStatus.COMPLETE, installed.map((a) => a.name).join(' · '));
   }
-  return item(def, StepStatus.PENDING, `${agents.length} available`);
+  const available = agents.filter((a) => !a.installed).length;
+  return item(def, StepStatus.PENDING, `${available} available`);
 }
 
 // "Passed" is no failing row. A warning (an agent the CLI has advice on) is
@@ -114,6 +124,11 @@ export function deriveHome({ config, auth, agents, health } = {}) {
   return {
     items,
     done,
+    // The records themselves, for the picker item 3 expands into. Passed
+    // through unchanged, including `undefined` (not read yet) and `null` (the
+    // read failed): a picker that turned both into an empty list would tell
+    // the user every agent was already installed.
+    agents,
     cards: [profileCard(config, auth), healthCard(health), agentsCard(agents)],
   };
 }
