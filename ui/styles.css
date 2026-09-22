@@ -239,13 +239,14 @@ body::before {
 #main-row { display: flex; flex: 1; min-height: 0; }
 
 /* ---- Home / launcher ---- */
-#home-view { padding: 26px 32px; animation: cm-fade-in 0.2s ease; }
-#home-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
-#home-logo { width: 56px; height: 56px; flex: none; }
-#home-title { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: 0.2px; }
+#home-view { padding: 18px 32px 26px; animation: cm-fade-in 0.2s ease; }
+/* Kept small: the identity bar already names the app, and the checklist needs
+   the vertical space more than the branding does. */
+#home-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+#home-logo { width: 28px; height: 28px; flex: none; }
+#home-title { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: 0.2px; }
 #home-subtitle { color: var(--muted); font-size: 13px; margin-top: 2px; }
 
-#home-footer { color: var(--muted); font-size: 9px; text-align: center; padding-top: 18px; }
 
 /* ---- Installation group ---- */
 /* ---- Home body (ui/home-view.js): checklist, then status cards ---- */
@@ -256,6 +257,9 @@ body::before {
 .home-check-list .step-row { cursor: pointer; }
 .home-check-list .step-row:hover .step-title { color: var(--violet); }
 .home-check-list .step-row[data-id="sign-in"] { cursor: default; flex-wrap: wrap; }
+/* Item 3 does the same when it is open: the control belongs under the row,
+   not beside its title. overflow stays visible so a long list is not clipped. */
+.home-check-list .step-row[data-id="agent"] { flex-wrap: wrap; overflow: visible; }
 /* Item 1 completes in place: a control under its own row, as the wireframe draws it. */
 .home-signin {
   flex-basis: 100%;
@@ -270,6 +274,55 @@ body::before {
 }
 .home-signin .btn { width: auto; padding: 8px 18px; }
 .home-signin-hint { font-size: 12px; color: var(--muted); }
+
+/* ---- Sidebar entries locked during onboarding (ui/shell-nav.js) ---- */
+.sidebar-item.locked { opacity: 0.4; cursor: default; }
+.sidebar-item.locked:hover { background: none; }
+
+/* The chevron that says item 3 opens, and which way it is now. */
+.home-row-toggle { color: var(--dim); font-size: 13px; line-height: 1.4; flex: none; align-self: center; }
+.home-check-list .step-row:hover .home-row-toggle { color: var(--violet); }
+
+/* ---- Item 3's in-place agent list (ui/home-agent-picker.js) ---- */
+/* Sits under the checklist row the way .home-signin does. One action per row:
+   the name and description on the left, Install or "Installed" on the right. */
+.home-picker {
+  flex-basis: 100%;
+  margin: 8px 0 4px 36px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.home-picker-line { font-size: 12px; color: var(--muted); padding: 6px 8px; }
+.home-picker-error { font-size: 12px; color: var(--red, #ff6b6b); padding: 6px 8px; }
+/* Ten agents would push the rest of the checklist off the screen, so the list
+   scrolls inside the row rather than growing it without limit. */
+.home-agent-list { max-height: 196px; overflow-y: auto; }
+.home-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 8px;
+  border-radius: var(--radius-md, 8px);
+}
+.home-agent-row:hover { background: var(--surface-2); }
+.home-agent-row.installed:hover { background: none; }
+.home-agent-main { flex: 1; min-width: 0; }
+.home-agent-name { font-size: 13px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.home-agent-desc { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-agent-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-full, 999px);
+  padding: 0 7px;
+}
+.home-picker .btn.home-agent-install { width: auto; padding: 4px 14px; font-size: 12px; flex: none; }
+.home-agent-have { font-size: 11px; color: var(--dim); flex: none; }
+.home-agent-progress { font-size: 11px; color: var(--muted); flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-agent-row.installed .home-agent-name, .home-agent-row.installed .home-agent-desc { opacity: 0.55; }
 
 .home-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; max-width: 760px; }
 .home-card {
@@ -301,7 +354,44 @@ body::before {
 .home-card-line { font-size: 13px; color: var(--text); }
 .home-card-note { font-size: 12px; color: var(--muted); margin-top: 4px; }
 /* Wins over .btn's full width, which is declared later in this file. */
-.home-card .btn.home-card-action { width: auto; padding: 7px 14px; font-size: 13px; margin-top: 12px; }
+/* In the title row, pushed right: under the card it made the Profile card
+   taller than the card beside it. */
+.home-card .btn.home-card-action { width: auto; padding: 4px 10px; font-size: 12px; margin-left: auto; }
+
+/* ---- Update banners (EPMCDME-15189) ---- */
+.top-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-xl);
+}
+.top-banner-body { flex: 1 1 auto; min-width: 0; }
+.top-banner-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.top-banner-line { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.top-banner-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+.top-banner .btn.top-banner-action { width: auto; padding: 8px 18px; }
+.top-banner-dismiss {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px;
+}
+.top-banner-dismiss:disabled { opacity: 0.5; cursor: default; }
+.top-banner .update-error {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--red);
+}
 
 /* ---- Command-log lines (ui/command-log.js) ---- */
 .command-log-empty { color: var(--dim); padding: 4px 0 2px; }

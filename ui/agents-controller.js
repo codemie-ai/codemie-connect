@@ -106,18 +106,24 @@ export function createAgentsController({ container, runCapture, runStream, steps
     }
   }
 
-  async function runAction(agent, command) {
-    if (inFlight.has(agent.command)) return;
+  // Returns { ok } or { ok: false, message }. The Agents screen ignores the
+  // result and reads the row's own error; Home's checklist has no row to read,
+  // so it is handed back. `onLine` is Home's too: its picker shows the
+  // command's output where the install was started from.
+  async function runAction(agent, command, { onLine } = {}) {
+    if (inFlight.has(agent.command)) return { ok: false, message: 'That agent is already being worked on.' };
     if (!SAFE_COMMAND.test(agent.command)) {
-      rowErrors.set(agent.command, 'This agent’s command name is not safe to run and was blocked.');
+      const message = 'This agent’s command name is not safe to run and was blocked.';
+      rowErrors.set(agent.command, message);
       await load({ silent: true });
-      return;
+      return { ok: false, message };
     }
     inFlight.add(agent.command);
     rowErrors.delete(agent.command);
     stepsUi.setStatus(agent.command, 'ACTIVE');
     stepsUi.startSpinner(agent.command);
     const lines = [];
+    let message = null;
     try {
       const { code } = await runStream(command, (text, tag) => {
         // runStream always emits a leading `('> <command>', 'prompt')` line
@@ -125,17 +131,21 @@ export function createAgentsController({ container, runCapture, runStream, steps
         // message when a failing command produces no other output.
         if (tag !== 'prompt') lines.push(text);
         stepsUi.setSubtitle(agent.command, text);
+        onLine?.(text, tag);
       });
       if (code !== 0) {
-        rowErrors.set(agent.command, messageFor(lines));
+        message = messageFor(lines);
+        rowErrors.set(agent.command, message);
       }
     } catch (e) {
       lines.push(String((e && e.message) || e));
-      rowErrors.set(agent.command, messageFor(lines));
+      message = messageFor(lines);
+      rowErrors.set(agent.command, message);
     } finally {
       inFlight.delete(agent.command);
       await load({ silent: true });
     }
+    return message ? { ok: false, message } : { ok: true };
   }
 
   function messageFor(lines) {
@@ -159,7 +169,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // for claude and codex, the two the CLI treats as version-sensitive, and it
   // passes no explicit version, which is what the ticket forbids. See
   // .ai-run/decisions/2026-09-21-EPMCDME-14514-install-without-supported.md.
-  const onInstall = (agent) => runAction(agent, `codemie install ${agent.command}`);
+  const onInstall = (agent, opts) => runAction(agent, `codemie install ${agent.command}`, opts);
   const onUpdate = (agent) => runAction(agent, `codemie update ${agent.command}`);
   const onRemove = (agent) => runAction(agent, `codemie uninstall ${agent.command}`);
 
@@ -167,5 +177,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
     run: () => load({ silent: false }),
     refresh: () => load({ silent: true }),
     getLastAgents: () => lastAgents,
+    // Home's checklist installs through the same action the screen's own
+    // button runs, so there is one install path and one set of failure
+    // messages, not a second copy of the command.
+    install: (agent, onLine) => onInstall(agent, { onLine }),
   };
 }

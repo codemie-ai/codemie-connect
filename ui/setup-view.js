@@ -14,6 +14,8 @@ import { createStepsUi } from './steps-ui.js';
 import { StepStatus } from './models.js';
 import { detectFailure } from './setup-parse.js';
 import { renderFailurePanel as renderPanel } from './failure-panel.js';
+// The option-card control is shared with Home's checklist; see ui/option-cards.js.
+import { makeCardGroup } from './option-cards.js';
 
 // Ids the real driver answers itself (setup-driver.js's AUTO_LIST/
 // AUTO_CONFIRM tables) and must never be rendered as rows, even if a
@@ -154,69 +156,6 @@ export function renderOptionCards(options, { badgeIndex } = {}) {
     const recommended = useIndexBadge ? index === badgeIndex : starred;
     return { title, description, recommended };
   });
-}
-
-// One selectable card, the wireframe's option shape: the radio stays in the DOM as
-// the single source of truth for what is chosen (and for assistive tech), the
-// card itself is what the user sees and clicks.
-function makeCard({ title, description, recommended, name, value }) {
-  const card = document.createElement('div');
-  card.className = 'setup-option-card' + (recommended ? ' recommended' : '');
-
-  const radio = document.createElement('input');
-  radio.type = 'radio';
-  radio.name = name;
-  radio.value = value;
-  card.appendChild(radio);
-
-  // title/description come straight from the CLI's own driver-supplied
-  // option strings -- always rendered via .textContent, never innerHTML.
-  const titleEl = document.createElement('div');
-  titleEl.className = 'setup-option-title';
-  titleEl.textContent = title;
-  card.appendChild(titleEl);
-
-  if (description) {
-    const descEl = document.createElement('div');
-    descEl.className = 'setup-option-description';
-    descEl.textContent = description;
-    card.appendChild(descEl);
-  }
-
-  if (recommended) {
-    const badge = document.createElement('span');
-    badge.className = 'setup-option-badge';
-    badge.textContent = 'Recommended'; // static UI copy, not driver-supplied text.
-    card.appendChild(badge);
-  }
-  return { card, radio };
-}
-
-// A group of cards where exactly one is selected; select(i) keeps the radios
-// and the visual state in step, and the first card starts selected.
-function makeCardGroup(control, name, items) {
-  const radios = [];
-  const cardEls = [];
-  function select(index) {
-    radios.forEach((r, i) => { r.checked = i === index; });
-    cardEls.forEach((c, i) => c.classList.toggle('selected', i === index));
-  }
-  items.forEach((item, index) => {
-    const { card, radio } = makeCard({ ...item, name, value: String(index) });
-    // Clicking anywhere on the card selects it -- the radio input remains
-    // the single source of truth Continue reads from on submit.
-    card.onclick = () => select(index);
-    radios.push(radio);
-    cardEls.push(card);
-    control.appendChild(card);
-  });
-  if (radios.length) select(0);
-  return {
-    selectedIndex: () => {
-      const chosen = radios.findIndex((r) => r.checked);
-      return chosen === -1 ? 0 : chosen;
-    },
-  };
 }
 
 function makeContinueButton(onClick) {

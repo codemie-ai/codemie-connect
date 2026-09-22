@@ -15,6 +15,7 @@ import { isBlockedState } from './auth-gate.js';
 import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 import { createHealthController } from './health-controller.js';
 import { createAgentsController } from './agents-controller.js';
+import { applyOnboardingNav } from './shell-nav.js';
 import { createHomeView } from './home-view.js';
 import { deriveHome } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
@@ -200,11 +201,17 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
   onSignIn: () => startSignIn(),
   onCard: (id) => showView(id),
   onSetupAgain: () => openGuidedSetup(),
+  // Item 3 installs through the Agents controller, which refreshes Home on its
+  // own when the action finishes, so the item ticks without a second read here.
+  onInstallAgent: (agent, onLine) => agentsController.install(agent, onLine),
 });
 
 function renderHome() {
   const state = deriveHome(home);
   homeScreen.render(state);
+  // The other screens stay locked until the checklist is done; Home never is,
+  // so an item that opened Agents or Health always has a way back.
+  applyOnboardingNav(document, { done: state.done });
   const sub = document.getElementById('home-subtitle');
   if (sub) sub.textContent = state.done ? 'Everything is set up. Here is how things stand.' : '';
 }
@@ -387,7 +394,6 @@ function showUpdateBanner() {
   setVersionBadge();
   if (!cliVersionState.updateAvailable) return;
   if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
-  document.getElementById('update-from').textContent = cliVersionState.installed;
   document.getElementById('update-to').textContent = cliVersionState.latest;
   document.getElementById('update-banner').classList.remove('hidden');
 }
@@ -642,13 +648,14 @@ async function runUpdateApp() {
     await bridge.updater.restartApp();
   } catch (err) {
     bannerRunBtn.disabled = false;
-    bannerRunBtn.textContent = 'Update app';
+    bannerRunBtn.textContent = 'Update and restart';
     const banner = document.getElementById('app-update-banner');
+    const banBody = banner.querySelector('.top-banner-body');
     let errorEl = banner.querySelector('.update-error');
     if (!errorEl) {
       errorEl = document.createElement('span');
       errorEl.className = 'update-error';
-      banner.appendChild(errorEl);
+      banBody.appendChild(errorEl);
     }
     errorEl.textContent = String(err);
   } finally {

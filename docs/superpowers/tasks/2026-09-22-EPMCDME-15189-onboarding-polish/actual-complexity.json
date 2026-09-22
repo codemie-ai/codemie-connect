@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "4 files changed (ui/index.html, ui/renderer.js, ui/styles.css, plus one new test file ui/test/top-banner-style.test.mjs), all within the ui/ tree." },
+    { "dimension": "technical_risk", "reason": "Pure CSS/markup restyling of one existing component (.top-banner) using established flexbox patterns; two small robustness fixes (flex-wrap, min-width:0, error text placement) came from code review, not novel design." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

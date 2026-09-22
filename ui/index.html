@@ -33,16 +33,26 @@
 
       <!-- ============ UPDATE BANNER ============ -->
       <div id="update-banner" class="top-banner hidden">
-        <span>⬆️ Update available: <span id="update-from"></span> → <span id="update-to"></span>.</span>
-        <button id="update-banner-run">Update CLI</button>
-        <button id="update-banner-dismiss" aria-label="Dismiss">✕</button>
+        <div class="top-banner-body">
+          <div class="top-banner-title">CodeMie CLI <span id="update-to"></span> is available</div>
+          <div class="top-banner-line">Your profile, settings and agents are kept.</div>
+        </div>
+        <div class="top-banner-actions">
+          <button id="update-banner-run" class="btn btn-accent top-banner-action">Update CLI</button>
+          <button id="update-banner-dismiss" class="top-banner-dismiss" aria-label="Dismiss">✕</button>
+        </div>
       </div>
 
       <!-- ============ APP UPDATE BANNER ============ -->
       <div id="app-update-banner" class="top-banner hidden">
-        <span>⬆️ CodeMie Connect update available → <span id="app-update-to"></span></span>
-        <button id="app-update-banner-run">Update app</button>
-        <button id="app-update-banner-dismiss" aria-label="Dismiss">✕</button>
+        <div class="top-banner-body">
+          <div class="top-banner-title">CodeMie <span id="app-update-to"></span> is available</div>
+          <div class="top-banner-line">Takes about a minute. Everything you set up stays.</div>
+        </div>
+        <div class="top-banner-actions">
+          <button id="app-update-banner-run" class="btn btn-accent top-banner-action">Update and restart</button>
+          <button id="app-update-banner-dismiss" class="top-banner-dismiss" aria-label="Dismiss">✕</button>
+        </div>
       </div>
 
       <!-- ============ SHELL BODY: sidebar column + view column ============ -->
@@ -91,8 +101,6 @@
 
         <!-- Home body: the onboarding checklist, then the status cards (ui/home-view.js). -->
         <div id="home-body"></div>
-
-        <footer id="home-footer">EPAM AI/Run CodeMie ©</footer>
       </div>
 
       <!-- ============ WIZARD (install flow) ============ -->
