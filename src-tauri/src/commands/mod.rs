@@ -5,6 +5,7 @@ pub mod handshake;
 pub mod inspector;
 pub mod installer;
 pub mod logger;
+pub mod npm_env;
 pub mod pathman;
 pub mod pty;
 pub mod runner;
