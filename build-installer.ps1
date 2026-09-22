@@ -62,6 +62,10 @@ if ($nodeVersion -ne "v$($Cfg.nodeVersion)") {
 }
 Write-Host "    node $nodeVersion ($([math]::Round($nodeSize/1MB,1)) MB)" -ForegroundColor DarkCyan
 
+$NpmCmd = Join-Path $Root "assets\windows\node\npm.cmd"
+if (-not (Test-Path $NpmCmd)) { Fail "missing bundled npm: $NpmCmd" }
+if ((Get-Item $NpmCmd).Length -eq 0) { Fail "bundled npm is empty: $NpmCmd" }
+
 foreach ($rel in @(
     "@codemieai\code\bin\codemie.js",
     "@codemieai\code\dist\cli\index.js",

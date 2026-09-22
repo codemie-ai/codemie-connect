@@ -62,6 +62,11 @@ NODE_REPORTED="$("$NODE_BIN" --version 2>&1)" || fail "node --version failed: $N
 [ "$NODE_REPORTED" = "v$NODE_VERSION" ] || fail "bundled node reports $NODE_REPORTED but runtime.json pins v$NODE_VERSION"
 echo "    node $NODE_REPORTED ($(( NODE_SIZE / 1048576 )) MB)"
 
+NPM_BIN="$ROOT/assets/macos/node/bin/npm"
+[ -f "$NPM_BIN" ] || fail "missing bundled npm: $NPM_BIN"
+[ -x "$NPM_BIN" ] || fail "bundled npm is not executable: $NPM_BIN"
+[ -s "$NPM_BIN" ] || fail "bundled npm is empty: $NPM_BIN"
+
 for rel in \
   "@codemieai/code/bin/codemie.js" \
   "@codemieai/code/dist/cli/index.js" \
