@@ -650,11 +650,12 @@ async function runUpdateApp() {
     bannerRunBtn.disabled = false;
     bannerRunBtn.textContent = 'Update and restart';
     const banner = document.getElementById('app-update-banner');
+    const banBody = banner.querySelector('.top-banner-body');
     let errorEl = banner.querySelector('.update-error');
     if (!errorEl) {
       errorEl = document.createElement('span');
       errorEl.className = 'update-error';
-      banner.appendChild(errorEl);
+      banBody.appendChild(errorEl);
     }
     errorEl.textContent = String(err);
   } finally {

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const css = readFileSync('ui/styles.css', 'utf8');
 const html = readFileSync('ui/index.html', 'utf8');
+const rendererJs = readFileSync('ui/renderer.js', 'utf8');
 
 // EPMCDME-15189: .top-banner had no CSS definition at all, so both update
 // banners rendered as plain unstyled text. This fails if that regresses.
@@ -39,4 +40,30 @@ test('top-banner: each banner has a title, a line and an actions block', () => {
     assert.match(banner, /class="top-banner-line"/);
     assert.match(banner, /class="top-banner-actions"/);
   }
+});
+
+// EPMCDME-15189 code review CR-002: a nowrap row has no defined shrink/wrap
+// behavior, so a long version string or a narrow window overflows or clips
+// the card instead of wrapping within it.
+test('top-banner: the card row wraps instead of forcing a single nowrap line', () => {
+  const rule = css.match(/\.top-banner\s*\{[^}]*\}/)[0];
+  assert.match(rule, /flex-wrap:\s*wrap/);
+});
+
+test('top-banner: the text column can shrink below its content width', () => {
+  const rule = css.match(/\.top-banner-body\s*\{[^}]*\}/)[0];
+  assert.match(rule, /min-width:\s*0/);
+});
+
+// EPMCDME-15189 code review CR-001: runUpdateApp()'s catch block used to
+// append .update-error as a raw flex sibling of the title/actions row, where
+// it could overlap them instead of dropping to its own line. It must land
+// inside the text column so the card's wrapped layout carries it too.
+test('top-banner: the app-update error text is appended inside the text column', () => {
+  const catchBlock = rendererJs.slice(
+    rendererJs.indexOf('async function runUpdateApp'),
+    rendererJs.indexOf('\n}', rendererJs.indexOf('async function runUpdateApp'))
+  );
+  assert.match(catchBlock, /top-banner-body/);
+  assert.doesNotMatch(catchBlock, /\bbanner\.appendChild\(errorEl\)/);
 });

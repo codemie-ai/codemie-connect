@@ -361,6 +361,7 @@ body::before {
 /* ---- Update banners (EPMCDME-15189) ---- */
 .top-banner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -370,6 +371,7 @@ body::before {
   border: 1px solid var(--border-2);
   border-radius: var(--radius-xl);
 }
+.top-banner-body { flex: 1 1 auto; min-width: 0; }
 .top-banner-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .top-banner-line { font-size: 13px; color: var(--muted); margin-top: 4px; }
 .top-banner-actions { display: flex; align-items: center; gap: 10px; flex: none; }
