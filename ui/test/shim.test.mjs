@@ -21,6 +21,15 @@ test('shim targets bin/codemie.js, never dist/index.js', () => {
   assert.doesNotMatch(shim, /dist[\\/]index\.js/, 'dist/index.js is a barrel with no CLI bootstrap');
 });
 
+// Agent installs and every uninstall shell out to `npm` by name. The bundled npm
+// sits beside the bundled node, a directory deliberately kept off the user's own
+// PATH, so each shim puts it on PATH for its own process tree only — appended, so
+// a user's own npm keeps winning.
+test('shim puts the bundled node directory on PATH, appended', () => {
+  assert.match(shim, /set "PATH=%PATH%;%BUNDLE_DIR%\\node"/, 'without this, `npm` is not found and every agent install fails on a clean machine');
+  assert.match(shim, /if defined PATH/, 'an empty PATH would otherwise gain a leading ";", which is the current directory');
+});
+
 test('shim propagates the CLI exit code', () => {
   assert.match(shim, /exit \/b %ERRORLEVEL%/i, 'without this the shim always reports success');
 });
@@ -51,6 +60,14 @@ test('macOS shim resolves Contents/Resources with one hop, never two', () => {
 
 test('macOS shim execs the bundled node runtime', () => {
   assert.match(macShim, /exec "\$RES\/node\/bin\/node"/, 'must exec node/bin/node so exit code and signals pass through');
+});
+
+test('macOS shim puts the bundled node directory on PATH, appended, before the exec', () => {
+  assert.match(macShim, /PATH="\$\{PATH:\+\$PATH:\}\$RES\/node\/bin"/, 'without this, `npm` is not found and every agent install fails on a clean machine');
+  assert.ok(
+    macShim.indexOf('$RES/node/bin"\nexport PATH') < macShim.indexOf('exec "$RES/node/bin/node"'),
+    'the export has to happen before the exec replaces the process',
+  );
 });
 
 test('macOS shim targets bin/codemie.js, never dist/index.js', () => {

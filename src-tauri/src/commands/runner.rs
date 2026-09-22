@@ -25,24 +25,49 @@ struct CmdLine {
     tag: String,
 }
 
-/// Build a platform-appropriate shell command. Returns a tokio Command ready to
-/// execute `cmd_str` through the OS shell.
-fn shell_cmd(cmd_str: &str) -> Command {
+/// Pure: builds the platform-appropriate shell `Command` for `cmd_str` from
+/// an explicit `home` value, with no environment reads. Always compiled on
+/// every platform so tests can exercise this without mutating the process
+/// environment (`std::env::set_var` on `HOME` is process-global and races
+/// with anything else in the test binary that spawns a real child).
+fn shell_cmd_for(cmd_str: &str, home: &str, base_path: &str, windows: bool) -> Command {
+    let env = crate::commands::npm_env::npm_env_for(home, windows);
+    let path = crate::commands::npm_env::prefixed_path_with_bin_dir(&env.bin_dir, base_path);
     #[cfg(not(windows))]
-    {
+    let mut c = {
         let mut c = Command::new("/bin/zsh");
         c.arg("-lc").arg(cmd_str);
         c
-    }
+    };
     #[cfg(windows)]
-    {
+    let mut c = {
         // Without this flag, spawning a console subprocess from this GUI-subsystem
         // app briefly flashes a visible cmd.exe window on screen.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut c = Command::new("cmd.exe");
         c.args(["/c", cmd_str]).creation_flags(CREATE_NO_WINDOW);
         c
+    };
+    // An empty prefix is npm_env_for()'s "no override" value (home was
+    // unset or empty) — leave npm_config_prefix unset rather than pointing
+    // it at a root-relative path.
+    if !env.prefix.is_empty() {
+        c.env("npm_config_prefix", &env.prefix);
     }
+    c.env("PATH", &path);
+    c
+}
+
+/// Build a platform-appropriate shell command. Returns a tokio Command ready to
+/// execute `cmd_str` through the OS shell. Reads the platform's home-dir env
+/// var and delegates to `shell_cmd_for`.
+fn shell_cmd(cmd_str: &str) -> Command {
+    #[cfg(not(windows))]
+    let home = std::env::var("HOME").unwrap_or_default();
+    #[cfg(windows)]
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let base = std::env::var("PATH").unwrap_or_default();
+    shell_cmd_for(cmd_str, &home, &base, cfg!(windows))
 }
 
 /// Run a command and capture all output. Mirrors runner.runCapture:
@@ -215,6 +240,37 @@ pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) ->
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shell_cmd_sets_npm_config_prefix_and_prefixed_path_by_default() {
+        let out = shell_cmd_for(
+            "echo $npm_config_prefix; echo $PATH",
+            "/Users/test",
+            "",
+            false,
+        )
+        .output()
+        .await
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut lines = stdout.lines();
+        assert_eq!(lines.next().unwrap(), "/Users/test/.codemie/agents");
+        // Not `starts_with`: macOS's system-wide /etc/zprofile runs
+        // `path_helper -s` on every login shell, which reorders PATH —
+        // system dirs from /etc/paths(.d) first, then the caller's other
+        // entries appended in their original order. shell_cmd still sets
+        // PATH with the agents bin dir prepended; path_helper is what
+        // moves it, on every real machine, not just this one. Presence is
+        // what functionally matters — the dir is found by `npm`/agents
+        // installed there regardless of position.
+        let path_line = lines.next().unwrap();
+        assert!(
+            path_line
+                .split(':')
+                .any(|p| p == "/Users/test/.codemie/agents/bin"),
+            "PATH must contain the agents bin dir: {path_line}"
+        );
+    }
 
     // Ported from test/runner.test.js — runs against the real login shell.
     #[tokio::test]

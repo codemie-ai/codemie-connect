@@ -37,6 +37,49 @@ fn clear_if_owner<T>(slot: &Mutex<Option<(String, T)>>, id: &str) -> bool {
 
 const READ_BUF: usize = 4096;
 
+/// Pure: computes the env-var pairs used to spawn the PTY child — `TERM`,
+/// the platform's home-dir var, `PATH` (prepended with the npm-agents bin
+/// dir), and `npm_config_prefix` — from an explicit `home` value and no
+/// environment reads. Always compiled on every platform so tests can
+/// exercise both the unix and Windows shapes from any host without
+/// mutating the process environment (`std::env::set_var` on `HOME` is
+/// process-global and races with anything else in the test binary that
+/// spawns a real child, e.g. `tests::kill_terminates_real_child`).
+fn pty_env_pairs_for(home: &str, existing_path: &str, windows: bool) -> Vec<(String, String)> {
+    let env = crate::commands::npm_env::npm_env_for(home, windows);
+    let path = crate::commands::npm_env::prefixed_path_with_bin_dir(&env.bin_dir, existing_path);
+    let home_var = if windows {
+        ("USERPROFILE".to_string(), home.to_string())
+    } else {
+        ("HOME".to_string(), home.to_string())
+    };
+    let mut pairs = vec![
+        ("TERM".to_string(), "xterm-256color".to_string()),
+        home_var,
+        ("PATH".to_string(), path),
+    ];
+    // An empty prefix is npm_env_for()'s "no override" value (home was
+    // unset or empty) — leave npm_config_prefix unset rather than pointing
+    // it at a root-relative path.
+    if !env.prefix.is_empty() {
+        pairs.push(("npm_config_prefix".to_string(), env.prefix));
+    }
+    pairs
+}
+
+/// Reads the platform's home-dir env var and delegates to `pty_env_pairs_for`.
+/// This is the only place in this module that touches the process
+/// environment for home-dir resolution. `spawn_pty` is a spawn path
+/// independent of `runner.rs::shell_cmd`, so it needs the shared npm_env
+/// helper wired in separately.
+fn pty_env_pairs(existing_path: &str) -> Vec<(String, String)> {
+    #[cfg(not(windows))]
+    let home = std::env::var("HOME").unwrap_or_default();
+    #[cfg(windows)]
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    pty_env_pairs_for(&home, existing_path, cfg!(windows))
+}
+
 #[tauri::command]
 pub fn spawn_pty(
     app: AppHandle,
@@ -64,9 +107,9 @@ pub fn spawn_pty(
         let mut b = CommandBuilder::new("/bin/zsh");
         b.arg("-lc");
         b.arg(&cmd);
-        b.env("TERM", "xterm-256color");
-        b.env("HOME", &home);
-        b.env("PATH", &path);
+        for (k, v) in pty_env_pairs(&path) {
+            b.env(k, v);
+        }
         if !home.is_empty() {
             b.cwd(&home);
         }
@@ -78,9 +121,9 @@ pub fn spawn_pty(
         let profile = std::env::var("USERPROFILE").unwrap_or_default();
         let mut b = CommandBuilder::new("powershell.exe");
         b.args(["-NoProfile", "-Command", &cmd]);
-        b.env("TERM", "xterm-256color");
-        b.env("USERPROFILE", &profile);
-        b.env("PATH", &path);
+        for (k, v) in pty_env_pairs(&path) {
+            b.env(k, v);
+        }
         if !profile.is_empty() {
             b.cwd(&profile);
         }
@@ -248,6 +291,24 @@ pub async fn spawn_external_ps(cmd: String) -> CmdResult<i32> {
         .await
         .map_err(|e| InstallerError::Other(e.to_string()))?;
     Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests_pty_env {
+    use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pty_env_pairs_includes_npm_config_prefix_and_prefixed_path() {
+        let pairs = pty_env_pairs_for("/Users/test", "/usr/bin", false);
+        let prefix = pairs
+            .iter()
+            .find(|(k, _)| k == "npm_config_prefix")
+            .unwrap();
+        assert_eq!(prefix.1, "/Users/test/.codemie/agents");
+        let path = pairs.iter().find(|(k, _)| k == "PATH").unwrap();
+        assert!(path.1.starts_with("/Users/test/.codemie/agents/bin:"));
+    }
 }
 
 #[cfg(all(test, windows))]
