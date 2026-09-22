@@ -28,10 +28,14 @@ struct CmdLine {
 /// Build a platform-appropriate shell command. Returns a tokio Command ready to
 /// execute `cmd_str` through the OS shell.
 fn shell_cmd(cmd_str: &str) -> Command {
+    let env = crate::commands::npm_env::npm_env();
+    let base = std::env::var("PATH").unwrap_or_default();
+    let path = crate::commands::npm_env::prefixed_path(&base);
     #[cfg(not(windows))]
     {
         let mut c = Command::new("/bin/zsh");
         c.arg("-lc").arg(cmd_str);
+        c.env("npm_config_prefix", &env.prefix).env("PATH", &path);
         c
     }
     #[cfg(windows)]
@@ -41,6 +45,7 @@ fn shell_cmd(cmd_str: &str) -> Command {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut c = Command::new("cmd.exe");
         c.args(["/c", cmd_str]).creation_flags(CREATE_NO_WINDOW);
+        c.env("npm_config_prefix", &env.prefix).env("PATH", &path);
         c
     }
 }
@@ -215,6 +220,33 @@ pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) ->
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shell_cmd_sets_npm_config_prefix_and_prefixed_path_by_default() {
+        std::env::set_var("HOME", "/Users/test");
+        let out = shell_cmd("echo $npm_config_prefix; echo $PATH")
+            .output()
+            .await
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut lines = stdout.lines();
+        assert_eq!(lines.next().unwrap(), "/Users/test/.codemie/agents");
+        // Not `starts_with`: macOS's system-wide /etc/zprofile runs
+        // `path_helper -s` on every login shell, which reorders PATH —
+        // system dirs from /etc/paths(.d) first, then the caller's other
+        // entries appended in their original order. shell_cmd still sets
+        // PATH with the agents bin dir prepended; path_helper is what
+        // moves it, on every real machine, not just this one. Presence is
+        // what functionally matters — the dir is found by `npm`/agents
+        // installed there regardless of position.
+        let path_line = lines.next().unwrap();
+        assert!(
+            path_line
+                .split(':')
+                .any(|p| p == "/Users/test/.codemie/agents/bin"),
+            "PATH must contain the agents bin dir: {path_line}"
+        );
+    }
 
     // Ported from test/runner.test.js — runs against the real login shell.
     #[tokio::test]
