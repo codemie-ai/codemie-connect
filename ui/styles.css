@@ -358,6 +358,39 @@ body::before {
    taller than the card beside it. */
 .home-card .btn.home-card-action { width: auto; padding: 4px 10px; font-size: 12px; margin-left: auto; }
 
+/* ---- Update banners (EPMCDME-15189) ---- */
+.top-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-xl);
+}
+.top-banner-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.top-banner-line { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.top-banner-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+.top-banner .btn.top-banner-action { width: auto; padding: 8px 18px; }
+.top-banner-dismiss {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px;
+}
+.top-banner-dismiss:disabled { opacity: 0.5; cursor: default; }
+.top-banner .update-error {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--red);
+}
+
 /* ---- Command-log lines (ui/command-log.js) ---- */
 .command-log-empty { color: var(--dim); padding: 4px 0 2px; }
 .command-log-line { display: flex; gap: 12px; padding: 2px 0; white-space: nowrap; }
