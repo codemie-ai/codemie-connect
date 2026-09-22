@@ -24,7 +24,10 @@ function Fail([string]$msg) { Write-Error "[stage-runtime] $msg"; exit 1 }
 # ── 1. Node runtime ─────────────────────────────────────────────────────────
 if ($Force -and (Test-Path $NodeDir)) { Remove-Item $NodeDir -Recurse -Force }
 
-if (-not (Test-Path $NodeExe)) {
+# npm is staged from the same zip, so a checkout that already has node.exe but
+# no npm.cmd (every checkout made before EPMCDME-15180) must still fetch it —
+# hence the second condition, rather than leaving -Force as the only way out.
+if (-not (Test-Path $NodeExe) -or -not (Test-Path (Join-Path $NodeDir "npm.cmd"))) {
     Write-Host "==> Fetching Node v$($Cfg.nodeVersion) (win-x64)..." -ForegroundColor Cyan
     New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
 
@@ -54,7 +57,11 @@ if (-not (Test-Path $NodeExe)) {
     # not under lib\ as on macOS). EPMCDME-15180: no separate download.
     $npmSrc = Join-Path $tmp "node-v$($Cfg.nodeVersion)-win-x64\node_modules\npm"
     if (-not (Test-Path $npmSrc)) { Fail "npm tree not found in Node zip at node_modules\npm — zip layout may have changed" }
-    Copy-Item $npmSrc (Join-Path $NodeDir "node_modules\npm") -Recurse -Force
+    # Remove first: Copy-Item -Recurse copies *into* an existing destination
+    # directory, which would nest the tree as node_modules\npm\npm.
+    $npmDst = Join-Path $NodeDir "node_modules\npm"
+    if (Test-Path $npmDst) { Remove-Item $npmDst -Recurse -Force }
+    Copy-Item $npmSrc $npmDst -Recurse -Force
 
     # npm shim: execs the staged node.exe against npm's own CLI entry.
     @'

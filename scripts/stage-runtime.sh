@@ -41,7 +41,10 @@ CLI_VERSION="$(cfg cliVersion)"
 # ── 1. Node runtime ─────────────────────────────────────────────────────────
 if [ "$FORCE" = 1 ] && [ -d "$NODE_DIR" ]; then rm -rf "$NODE_DIR"; fi
 
-if [ ! -x "$NODE_BIN" ]; then
+# npm is staged from the same tarball, so a checkout that already has node but
+# no npm (every checkout made before EPMCDME-15180) must still fetch it — hence
+# the second condition, rather than leaving --force as the only way out.
+if [ ! -x "$NODE_BIN" ] || [ ! -x "$NODE_DIR/bin/npm" ]; then
   say "Fetching Node v$NODE_VERSION (darwin-arm64)..."
   TARBALL="node-v$NODE_VERSION-darwin-arm64.tar.gz"
   URL="https://nodejs.org/dist/v$NODE_VERSION/$TARBALL"
@@ -64,6 +67,9 @@ if [ ! -x "$NODE_BIN" ]; then
   cp "$TMP/node-v$NODE_VERSION-darwin-arm64/bin/node" "$NODE_BIN"
   chmod 755 "$NODE_BIN"
   mkdir -p "$NODE_DIR/lib/node_modules"
+  # Remove first: `cp -R src dst` copies *into* dst when dst is an existing
+  # directory, which would nest the tree as node_modules/npm/npm.
+  rm -rf "$NODE_DIR/lib/node_modules/npm"
   cp -R "$TMP/node-v$NODE_VERSION-darwin-arm64/lib/node_modules/npm" "$NODE_DIR/lib/node_modules/npm"
   # npm shim: execs the staged node against npm's own CLI entry. Written
   # instead of relying on the tarball's bin/npm relative symlink surviving
