@@ -66,6 +66,11 @@ NPM_BIN="$ROOT/assets/macos/node/bin/npm"
 [ -f "$NPM_BIN" ] || fail "missing bundled npm: $NPM_BIN"
 [ -x "$NPM_BIN" ] || fail "bundled npm is not executable: $NPM_BIN"
 [ -s "$NPM_BIN" ] || fail "bundled npm is empty: $NPM_BIN"
+NPM_CLI="$ROOT/assets/macos/node/lib/node_modules/npm/bin/npm-cli.js"
+[ -s "$NPM_CLI" ] || fail "missing or empty: $NPM_CLI (the npm shim would exec into this and fail at runtime)"
+NPM_REPORTED="$("$NPM_BIN" --version 2>&1)" || fail "bundled npm --version failed: $NPM_REPORTED ($NPM_BIN)"
+[ -n "$(echo "$NPM_REPORTED" | tr -d '[:space:]')" ] || fail "bundled npm produced NO output: $NPM_BIN"
+echo "    npm $NPM_REPORTED"
 
 for rel in \
   "@codemieai/code/bin/codemie.js" \

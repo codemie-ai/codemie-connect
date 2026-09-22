@@ -20,15 +20,22 @@ const PATH_SEP: char = ';';
 const PATH_SEP: char = ':';
 
 /// Candidate dirs where git/node/npm live, plus common user npm prefixes.
+/// Includes the npm-agents bin dir (matching the Windows branch below) so
+/// `run_fresh_env` can find a just-installed agent on macOS too.
 #[cfg(not(windows))]
 pub fn candidate_dirs() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    vec![
+    let mut dirs = vec![
         "/opt/homebrew/bin".to_string(),
         "/usr/local/bin".to_string(),
         "/usr/bin".to_string(),
         format!("{home}/.npm-global/bin"),
-    ]
+    ];
+    let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+    if !agents_bin.is_empty() {
+        dirs.push(agents_bin);
+    }
+    dirs
 }
 
 #[cfg(windows)]
@@ -606,6 +613,16 @@ mod tests {
         let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
         let out = build_persist_entries(vec![agents_bin.clone()]);
         assert_eq!(out, vec![agents_bin]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn candidate_dirs_includes_the_agents_bin_dir() {
+        let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+        assert!(
+            candidate_dirs().contains(&agents_bin),
+            "candidate_dirs must include the agents bin dir so run_fresh_env can find a just-installed agent"
+        );
     }
 
     #[cfg(not(windows))]

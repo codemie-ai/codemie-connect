@@ -32,22 +32,28 @@ fn shell_cmd(cmd_str: &str) -> Command {
     let base = std::env::var("PATH").unwrap_or_default();
     let path = crate::commands::npm_env::prefixed_path(&base);
     #[cfg(not(windows))]
-    {
+    let mut c = {
         let mut c = Command::new("/bin/zsh");
         c.arg("-lc").arg(cmd_str);
-        c.env("npm_config_prefix", &env.prefix).env("PATH", &path);
         c
-    }
+    };
     #[cfg(windows)]
-    {
+    let mut c = {
         // Without this flag, spawning a console subprocess from this GUI-subsystem
         // app briefly flashes a visible cmd.exe window on screen.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut c = Command::new("cmd.exe");
         c.args(["/c", cmd_str]).creation_flags(CREATE_NO_WINDOW);
-        c.env("npm_config_prefix", &env.prefix).env("PATH", &path);
         c
+    };
+    // An empty prefix is npm_env()'s "no override" value (HOME/USERPROFILE was
+    // unset or empty) — leave npm_config_prefix unset rather than pointing it
+    // at a root-relative path.
+    if !env.prefix.is_empty() {
+        c.env("npm_config_prefix", &env.prefix);
     }
+    c.env("PATH", &path);
+    c
 }
 
 /// Run a command and capture all output. Mirrors runner.runCapture:

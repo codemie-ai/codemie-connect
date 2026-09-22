@@ -55,12 +55,18 @@ fn pty_env_pairs(existing_path: &str) -> Vec<(String, String)> {
         "USERPROFILE".to_string(),
         std::env::var("USERPROFILE").unwrap_or_default(),
     );
-    vec![
+    let mut pairs = vec![
         ("TERM".to_string(), "xterm-256color".to_string()),
         home_var,
         ("PATH".to_string(), path),
-        ("npm_config_prefix".to_string(), env.prefix),
-    ]
+    ];
+    // An empty prefix is npm_env()'s "no override" value (HOME/USERPROFILE was
+    // unset or empty) — leave npm_config_prefix unset rather than pointing it
+    // at a root-relative path.
+    if !env.prefix.is_empty() {
+        pairs.push(("npm_config_prefix".to_string(), env.prefix));
+    }
+    pairs
 }
 
 #[tauri::command]

@@ -65,6 +65,13 @@ Write-Host "    node $nodeVersion ($([math]::Round($nodeSize/1MB,1)) MB)" -Foreg
 $NpmCmd = Join-Path $Root "assets\windows\node\npm.cmd"
 if (-not (Test-Path $NpmCmd)) { Fail "missing bundled npm: $NpmCmd" }
 if ((Get-Item $NpmCmd).Length -eq 0) { Fail "bundled npm is empty: $NpmCmd" }
+$NpmCli = Join-Path $Root "assets\windows\node\node_modules\npm\bin\npm-cli.js"
+if (-not (Test-Path $NpmCli)) { Fail "missing: $NpmCli (the npm shim would exec into this and fail at runtime)" }
+if ((Get-Item $NpmCli).Length -eq 0) { Fail "empty: $NpmCli (the npm shim would exec into this and fail at runtime)" }
+$npmReported = & $NpmCmd --version 2>&1
+if ($LASTEXITCODE -ne 0) { Fail "bundled npm.cmd --version failed: $npmReported ($NpmCmd)" }
+if ([string]::IsNullOrWhiteSpace(($npmReported | Out-String))) { Fail "bundled npm produced NO output: $NpmCmd" }
+Write-Host "    npm $(($npmReported | Out-String).Trim())" -ForegroundColor DarkCyan
 
 foreach ($rel in @(
     "@codemieai\code\bin\codemie.js",
