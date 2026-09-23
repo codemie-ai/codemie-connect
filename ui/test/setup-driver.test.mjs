@@ -900,6 +900,28 @@ test('real stream: the same rejected name entered twice is asked a third time', 
   assert.deepEqual(writes, ['codemie\r', ans('codemie'), ans('fresh')]);
 });
 
+test('real stream (windows): a rejected profile name is re-asked once and the correction is accepted', async () => {
+  const frames = fixture('windows-profile-name-correction');
+  const { seen, writes, result } = await replay(frames, ['default', 'epmcdme-14982-capture-2784']);
+  assert.deepEqual(seen, [
+    'Enter a name for this profile: (codemie-sso)',
+    'Enter a name for this profile: default',
+  ], 'the rejected name is asked once; no phantom third ask from the collapsed echo/rejection chunk');
+  assert.deepEqual(writes, ['default\r', ans('epmcdme-14982-capture-2784'), 'y\r']);
+  assert.equal(result.profileName, 'epmcdme-14982-capture-2784');
+});
+
+test('real stream (windows): the activate confirm is auto-answered after a corrected profile name', async () => {
+  const frames = fixture('windows-activate-confirm');
+  const { seen, writes, result } = await replay(frames, ['default', 'epmcdme-14982-capture-2784']);
+  assert.deepEqual(seen, [
+    'Enter a name for this profile: (codemie-sso)',
+    'Enter a name for this profile: default',
+  ], 'no third onPrompt call for the activate confirm -- it is auto-answered');
+  assert.deepEqual(writes.slice(-1), ['y\r'], 'the activate confirm is auto-answered');
+  assert.equal(result.profileName, 'epmcdme-14982-capture-2784');
+});
+
 test('real stream: a question-less chunk right after our answer does not make the driver forget the answered question', async (ctx) => {
   // Recorded 2026-09-14: the first chunk after the "codemie" answer carried no
   // question line (a partial redraw), and it came after the user's think time,
