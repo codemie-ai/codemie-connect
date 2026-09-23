@@ -27,6 +27,8 @@ const clock = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '
 const signedInDetail = (detail) => (detail || '').replace(/^Auth Status\s*[|│]\s*/, '').replace(/^✓\s*/, '').trim() || 'Signed in';
 
 function signInItem(def, auth) {
+  // Not read yet: say so, rather than offer Sign in to someone signed in.
+  if (!auth) return item(def, StepStatus.ACTIVE, 'Checking…');
   const state = auth && auth.state;
   // `unknown` means the provider does not report auth status, not that the
   // user is signed out. The profile is usable, which is what the item asks.
@@ -58,7 +60,7 @@ function agentItem(def, agents) {
   if (agents === null) return item(def, StepStatus.PENDING, 'Could not read the agent list');
   const installed = agents.filter((a) => a.installed && a.command !== BUILTIN_AGENT_COMMAND);
   if (installed.length) {
-    return item(def, StepStatus.COMPLETE, installed.map((a) => a.name).join(' · '));
+    return item(def, StepStatus.COMPLETE, `Already installed: ${installed.map((a) => a.name).join(' · ')}`);
   }
   const available = agents.filter((a) => !a.installed).length;
   return item(def, StepStatus.PENDING, `${available} available`);
@@ -66,7 +68,8 @@ function agentItem(def, agents) {
 
 // "Passed" is no failing row. A warning (an agent the CLI has advice on) is
 // not a reason to keep the checklist on screen forever.
-function healthItem(def, health) {
+function healthItem(def, health, running) {
+  if (!health && running) return item(def, StepStatus.ACTIVE, 'Checking…');
   if (!health) return item(def, StepStatus.PENDING, 'Not checked yet');
   const failing = health.rows.filter((r) => r.status === 'fail').length;
   const { passing, total } = health.summary;
@@ -78,7 +81,8 @@ function healthItem(def, health) {
 function profileCard(config, auth) {
   const state = auth && auth.state;
   const badge =
-    state === 'signed_in' ? { text: 'active', tone: 'good' }
+    !auth ? { text: 'checking', tone: 'muted' }
+    : state === 'signed_in' ? { text: 'active', tone: 'good' }
     : state === 'unknown' ? { text: 'active', tone: 'good' }
     : config && config.state === 'broken' ? { text: 'needs attention', tone: 'bad' }
     : { text: 'not signed in', tone: 'warn' };
@@ -117,13 +121,44 @@ function agentsCard(agents) {
   };
 }
 
-export function deriveHome({ config, auth, agents, health } = {}) {
+// Whether Home should start the health check itself: the checklist is up, the
+// steps before the check are done and it has not run. Finishing setup used to
+// leave the user on a checklist that just waited for a click on its last step.
+export function autoHealthCheck(state) {
+  if (!state || state.done) return false;
+  const health = state.items.find((i) => i.id === 'health');
+  const before = state.items.filter((i) => i.id !== 'health');
+  return !!health && health.status === StepStatus.PENDING && before.every((i) => i.status === StepStatus.COMPLETE);
+}
+
+// What Home's Sign in does. `codemie profile login` opens the browser for the
+// CodeMie URL a profile records, and with no profile it refuses ("No AI/Run
+// CodeMie URL configured", measured 2026-09-23) -- so until there is a profile,
+// Sign in opens guided setup, whose own steps sign the user in in the browser.
+export function signInAction({ config, auth } = {}) {
+  const noProfile = (auth && auth.state === 'no_profile') || !config || config.state === 'no-configuration';
+  return noProfile ? 'setup' : 'login';
+}
+
+// `onboarded` is whether the checklist has ever been finished on this machine
+// (the renderer remembers it). Health is read fresh each time the app opens, so
+// without it a user who finished setup yesterday is back on the checklist, with
+// the sidebar locked, until they run the check again.
+export function deriveHome({ config, auth, agents, health, onboarded = false, healthRunning = false } = {}) {
   const [signIn, model, agent, healthDef] = HOME_ITEMS;
-  const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health)];
-  const done = items.every((i) => i.status === StepStatus.COMPLETE);
+  const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health, healthRunning)];
+  const complete = items.every((i) => i.status === StepStatus.COMPLETE);
+  // Once setup has finished, only a lapsed sign-in brings the checklist back:
+  // its Sign in button is the only one Home has until the broken-profile panel
+  // (EPMCDME-14658). An auth read still in flight is not a lapsed sign-in.
+  const signedOut = !!auth && auth.state !== 'signed_in' && auth.state !== 'unknown';
+  const done = complete || (onboarded && !signedOut);
   return {
     items,
     done,
+    // The sidebar locks only for a first setup, never for a user who has
+    // finished it once and has merely been signed out since.
+    unlocked: done || onboarded,
     // The records themselves, for the picker item 3 expands into. Passed
     // through unchanged, including `undefined` (not read yet) and `null` (the
     // read failed): a picker that turned both into an empty list would tell

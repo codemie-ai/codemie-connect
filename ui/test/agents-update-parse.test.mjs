@@ -8,16 +8,16 @@ import { parseUpdateStatus } from '../agents-update-parse.js';
 // the spinner text "- Checking for updates...", confirming a stdout-only
 // read is clean of it). All three agents report up to date.
 const upToDate = readFileSync(fileURLToPath(new URL('fixtures/agents/update-check.txt', import.meta.url)), 'utf8');
-// update-check-available.txt: synthetic per its own header comment; Claude
-// Code is authored with an available update.
+// update-check-available.txt: a real capture too (stdout only, 2026-09-23),
+// taken the day OpenCode CLI 1.18.32 was out and 1.18.31 installed.
 const available = readFileSync(fileURLToPath(new URL('fixtures/agents/update-check-available.txt', import.meta.url)), 'utf8');
 
 test('parses one record per agent from a real up-to-date capture, none updateAvailable', () => {
   const records = parseUpdateStatus(upToDate);
   assert.deepEqual(records, [
-    { displayName: 'CodeMie Code', updateAvailable: false },
-    { displayName: 'Claude Code', updateAvailable: false },
-    { displayName: 'OpenCode CLI', updateAvailable: false },
+    { displayName: 'CodeMie Code', updateAvailable: false, latest: '0.15.2' },
+    { displayName: 'Claude Code', updateAvailable: false, latest: '2.1.269' },
+    { displayName: 'OpenCode CLI', updateAvailable: false, latest: '1.18.31' },
   ]);
 });
 
@@ -26,12 +26,12 @@ test('does not emit a record for the trailing "All agents are up to date!" summa
   assert.equal(records.some((r) => /up to date/i.test(r.displayName)), false);
 });
 
-test('flags the agent whose Latest line says "(update available)"', () => {
+test('flags the agent whose Latest line says "(update available)", with the version it offers', () => {
   const records = parseUpdateStatus(available);
   assert.deepEqual(records, [
-    { displayName: 'CodeMie Code', updateAvailable: false },
-    { displayName: 'Claude Code', updateAvailable: true },
-    { displayName: 'OpenCode CLI', updateAvailable: false },
+    { displayName: 'CodeMie Code', updateAvailable: false, latest: '0.15.2' },
+    { displayName: 'Claude Code', updateAvailable: false, latest: '2.1.269' },
+    { displayName: 'OpenCode CLI', updateAvailable: true, latest: '1.18.32' },
   ]);
 });
 
@@ -54,7 +54,7 @@ test('stops at the real summary wording, singular and plural, and not at a recor
 
   const everyoneOutdated = available
     .replace('0.15.2 (up to date)', '0.16.0 (update available)')
-    .replace('1.18.31 (up to date)', '1.19.0 (update available)')
+    .replace('2.1.269 (up to date)', '2.2.0 (update available)')
     .replace('1 update available', '3 updates available');
   assert.deepEqual(
     parseUpdateStatus(everyoneOutdated).map((r) => r.updateAvailable),

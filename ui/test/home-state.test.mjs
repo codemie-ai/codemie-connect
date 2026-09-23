@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveHome, HOME_ITEMS } from '../home-state.js';
+import { deriveHome, HOME_ITEMS, signInAction, autoHealthCheck } from '../home-state.js';
 import { StepStatus } from '../models.js';
 
 const valid = { state: 'valid', profile: 'demo7', model: 'claude-sonnet-5', project: 'epm-sdai', account: 'me@epam.com' };
@@ -101,4 +101,93 @@ test('a broken profile is a warning on item 2, not an error and not first run', 
   assert.equal(s.items[1].status, StepStatus.WARNING);
   assert.equal(s.items[1].subtitle, 'Your profile is no longer working');
   assert.equal(s.cards[0].badge.text, 'needs attention');
+});
+
+// Once setup has finished on this machine, Home stays on its cards. Health is
+// read fresh each time the app opens, so without this a user who finished
+// setup yesterday was back on the checklist, with the sidebar locked, every
+// morning until they ran the check again.
+test('after setup has finished once, Home opens on the cards before any read comes back', () => {
+  const s = deriveHome({ config: null, auth: null, agents: undefined, health: null, onboarded: true });
+  assert.equal(s.done, true);
+  assert.equal(s.unlocked, true);
+});
+
+test('after setup has finished once, an unchecked health or a missing agent does not bring the checklist back', () => {
+  const builtinOnly = [{ name: 'CodeMie Code', command: 'codemie-code', installed: true, version: '0.0.47', description: '' }];
+  const s = deriveHome({ config: valid, auth: signedIn, agents: builtinOnly, health: null, onboarded: true });
+  assert.equal(s.done, true);
+});
+
+// The checklist's Sign in button is the only one Home has until the
+// broken-profile panel lands (EPMCDME-14658), so a lapsed sign-in still shows
+// it. The sidebar stays open all the same.
+test('after setup has finished once, a lapsed sign-in shows the checklist again but keeps the sidebar open', () => {
+  const s = deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: null, onboarded: true });
+  assert.equal(s.done, false);
+  assert.equal(s.unlocked, true);
+});
+
+test('before setup has ever finished, the sidebar unlocks only with the checklist', () => {
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null }).unlocked, false);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: healthy }).unlocked, true);
+});
+
+// A returning user now sees the cards before the auth read has come back, so
+// the Profile card must not claim they are signed out in the meantime.
+test('the Profile card does not say "not signed in" before the auth read comes back', () => {
+  const s = deriveHome({ config: valid, auth: null, agents: undefined, health: null, onboarded: true });
+  const profile = s.cards.find((c) => c.id === 'profile');
+  assert.notEqual(profile.badge.text, 'not signed in');
+  assert.equal(profile.badge.tone, 'muted');
+});
+
+// `codemie profile login` needs a profile to know which CodeMie to open; with
+// none it refuses (measured: "No AI/Run CodeMie URL configured"). Guided setup
+// signs the user in in the browser as one of its own steps, so that is where
+// Sign in goes until there is a profile to sign in to.
+test('Sign in opens guided setup when there is no profile, and signs in when there is', () => {
+  assert.equal(signInAction({ config: { state: 'no-configuration' }, auth: { state: 'no_profile' } }), 'setup');
+  assert.equal(signInAction({ config: null, auth: { state: 'no_profile' } }), 'setup');
+  assert.equal(signInAction({ config: valid, auth: { state: 'not_signed_in' } }), 'login');
+  assert.equal(signInAction({ config: { state: 'broken', profile: 'x' }, auth: { state: 'not_signed_in' } }), 'login');
+});
+
+// Finishing setup returned the user to a checklist that just sat there, the
+// last step waiting on a click nothing pointed at. Once the steps before it
+// are done, the health check runs by itself; while it runs the step says so.
+test('the health check starts by itself once the steps before it are done', () => {
+  const ready = deriveHome({ config: valid, auth: signedIn, agents, health: null });
+  assert.equal(autoHealthCheck(ready), true);
+  const notReady = deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: null });
+  assert.equal(autoHealthCheck(notReady), false);
+  const alreadyChecked = deriveHome({ config: valid, auth: signedIn, agents, health: healthy });
+  assert.equal(autoHealthCheck(alreadyChecked), false);
+  const running = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true });
+  assert.equal(autoHealthCheck(running), false);
+});
+
+test('a running health check shows on its step', () => {
+  const s = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true });
+  const h = s.items.find((i) => i.id === 'health');
+  assert.equal(h.status, StepStatus.ACTIVE);
+  assert.equal(h.subtitle, 'Checking…');
+});
+
+// A bare list of names under a ticked step did not say why it was ticked.
+test('a ticked "Install an agent" says the agents are already installed', () => {
+  const two = [
+    { name: 'Claude Code', command: 'claude', installed: true },
+    { name: 'OpenCode CLI', command: 'opencode', installed: true },
+  ];
+  const s = deriveHome({ config: valid, auth: signedIn, agents: two, health: null });
+  assert.equal(s.items[2].subtitle, 'Already installed: Claude Code · OpenCode CLI');
+});
+
+// Measured at launch: until the sign-in read came back, item 1 showed its Sign
+// in button to a user who was signed in all along.
+test('before the sign-in read comes back, item 1 says it is checking', () => {
+  const s = deriveHome({ config: valid, auth: null, agents, health: null });
+  assert.equal(s.items[0].status, StepStatus.ACTIVE);
+  assert.equal(s.items[0].subtitle, 'Checking…');
 });

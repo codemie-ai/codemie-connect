@@ -41,3 +41,13 @@ test('findLoginError matches lowercase "failed: ..." prefix', () => {
   const result = findLoginError(lines);
   assert.equal(result, 'failed: network unreachable');
 });
+
+// Measured 2026-09-23 on an empty home directory: with no profile, `codemie
+// profile login` prints this and exits 0. Nothing matched it, so Sign in did
+// nothing at all on screen.
+test('findLoginError reports the CLI\'s ❌ refusal', () => {
+  assert.equal(
+    findLoginError(['', '❌ No AI/Run CodeMie URL configured or provided', 'Use: codemie profile login --url https://your-airun-codemie-instance.com']),
+    '❌ No AI/Run CodeMie URL configured or provided',
+  );
+});

@@ -31,6 +31,9 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
   let busy = null;
   let failure = null;
   let lastState = null;
+  // Item 3 opens by itself once, when it becomes the step the user is on;
+  // after that only the user opens or closes it.
+  let agentAutoOpened = false;
 
   function renderChecklist({ items, agents }) {
     const block = el('section', 'home-check');
@@ -51,7 +54,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
     // Item 1 completes in place: there is no sign-in screen to go to.
     const signIn = items.find((i) => i.id === 'sign-in');
     const signInRow = listEl.querySelector('.step-row[data-id="sign-in"]');
-    if (signIn && signIn.status !== StepStatus.COMPLETE && signInRow) {
+    if (signIn && signIn.status === StepStatus.PENDING && signInRow) {
       const control = el('div', 'home-signin');
       const btn = el('button', 'btn btn-accent', 'Sign in');
       btn.onclick = (e) => {
@@ -62,6 +65,32 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       signInRow.appendChild(control);
     }
 
+    // Item 4 runs by itself (the renderer starts the check once the steps
+    // before it are done), so its row is not a link: clicking it took the user
+    // off Home to a screen that looked like the row opening. While it runs it
+    // shows a spinner; if it found problems, the row offers the way to them,
+    // since the sidebar's Health stays locked until the checklist finishes.
+    const health = items.find((i) => i.id === 'health');
+    const healthRow = listEl.querySelector('.step-row[data-id="health"]');
+    if (health && healthRow) {
+      if (health.status === StepStatus.ACTIVE) {
+        const spin = el('span', 'inline-spinner');
+        spin.setAttribute?.('aria-hidden', 'true');
+        const sub = healthRow.querySelector('.step-sub');
+        if (sub && sub.prepend) sub.prepend(spin);
+        else healthRow.appendChild(spin);
+      } else if (health.status === StepStatus.WARNING || health.status === StepStatus.ERROR) {
+        const control = el('div', 'home-signin');
+        const btn = el('button', 'btn btn-ghost', 'Open Health');
+        btn.onclick = (e) => {
+          e?.stopPropagation?.();
+          onItem?.('health');
+        };
+        control.appendChild(btn);
+        healthRow.appendChild(control);
+      }
+    }
+
     // Item 3 completes in place too, the same way: the agents that are not
     // installed, as option cards. Update and remove stay on the Agents screen,
     // which "See all agents" opens.
@@ -70,6 +99,14 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
     // nowhere, so the row only opens once its turn comes: no chevron before
     // that, and a click does nothing.
     const agentReady = itemsBefore(items, 'agent').every((i) => i.status === StepStatus.COMPLETE);
+    // Its turn and nothing installed yet: open the list rather than leave the
+    // checklist waiting for a click nothing points at.
+    const agentItem = items.find((i) => i.id === 'agent');
+    // Only once the list has been read: before that the step is pending too.
+    if (agentReady && !agentAutoOpened && Array.isArray(agents) && agentItem && agentItem.status === StepStatus.PENDING && expanded === null) {
+      expanded = 'agent';
+      agentAutoOpened = true;
+    }
     if (agentRow && agentReady) {
       // The chevron goes on before the list does, so it stays on the title line
       // while the list wraps under it.
@@ -90,7 +127,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
 
     listEl.onclick = (e) => {
       const row = e?.target?.closest?.('.step-row');
-      if (!row || row.dataset.id === 'sign-in') return;
+      if (!row || row.dataset.id === 'sign-in' || row.dataset.id === 'health') return;
       const id = row.dataset.id;
       // Item 3 opens in place whether it is ticked or not: ticked means one
       // agent is installed, not that there is nothing left to add. The list
@@ -151,7 +188,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       // made this card taller than the one beside it.
       if (card.id === 'profile') {
         const again = el('button', 'btn btn-ghost home-card-action', 'Set up again');
-        again.title = 'Creates a new profile and makes it active. Your existing profiles stay as they are.';
+        again.title = 'Add a new profile, or update one you already have.';
         again.onclick = (e) => {
           e?.stopPropagation?.();
           onSetupAgain?.();
@@ -161,13 +198,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       node.appendChild(head);
       if (card.line) node.appendChild(el('div', 'home-card-line', card.line));
       if (card.note) node.appendChild(el('div', 'home-card-note', card.note));
-      // Guided setup only ever adds a profile (EPMCDME-14350 Out of Scope), so
-      // say so rather than letting the user discover three profiles later.
-      if (card.id === 'profile') {
-        node.appendChild(el('div', 'home-card-note', 'Setting up again adds a new profile and makes it active.'));
-      } else {
-        node.onclick = () => onCard?.(card.id);
-      }
+      if (card.id !== 'profile') node.onclick = () => onCard?.(card.id);
       grid.appendChild(node);
     }
     container.appendChild(grid);

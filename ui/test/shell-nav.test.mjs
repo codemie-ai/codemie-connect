@@ -5,7 +5,7 @@ import { applyOnboardingNav } from '../shell-nav.js';
 // A root holding the four sidebar entries, queried the way the module does.
 function makeRoot() {
   const entries = new Map();
-  for (const id of ['sidebar-home', 'sidebar-agents', 'sidebar-connections', 'sidebar-health']) {
+  for (const id of ['sidebar-home', 'sidebar-agents', 'sidebar-connections', 'sidebar-health', 'sidebar-analytics']) {
     entries.set(id, {
       id,
       disabled: false,
@@ -30,7 +30,8 @@ function makeRoot() {
 test('while the checklist is unfinished the other screens are locked', () => {
   const root = makeRoot();
   applyOnboardingNav(root, { done: false });
-  for (const id of ['sidebar-agents', 'sidebar-connections', 'sidebar-health']) {
+  // CLI usage analytics reports on sessions there are none of yet.
+  for (const id of ['sidebar-agents', 'sidebar-connections', 'sidebar-health', 'sidebar-analytics']) {
     const el = root.entries.get(id);
     assert.equal(el.disabled, true, `${id} must not be clickable`);
     assert.equal(el.classes.has('locked'), true);

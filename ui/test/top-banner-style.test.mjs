@@ -85,3 +85,46 @@ test('every routed screen has padding of its own', () => {
     assert.match(rule[0], /padding:/, `#${id} is padded`);
   }
 });
+
+// Home's three status cards read as one set only when they are one height:
+// the Agents card on the second row sat shorter than the two above it.
+test('Home status cards share one row height', () => {
+  const rule = css.match(/\.home-cards\s*\{[^}]*\}/)?.[0] ?? '';
+  assert.match(rule, /grid-auto-rows:\s*1fr/);
+});
+
+// 01-home.png draws the update as a card in Home, under the status cards,
+// not as a bar across the top of the window.
+test('update cards sit inside Home, under its body', () => {
+  const homeStart = html.indexOf('<div id="home-view"');
+  const homeEnd = html.indexOf('<!-- ============ WIZARD');
+  const body = html.indexOf('<div id="home-body"');
+  for (const id of ['update-banner', 'app-update-banner']) {
+    const at = html.indexOf(`<div id="${id}"`);
+    assert.ok(at > body && at < homeEnd && at > homeStart, `${id} is inside #home-view, after #home-body`);
+  }
+});
+
+// Home's body grows with its content instead of filling the view, so the
+// update cards follow right under the status cards, not at the window's foot.
+test('Home body takes its content height, so the update cards follow it', () => {
+  const rule = css.match(/#home-body\s*\{[^}]*\}/)?.[0] ?? '';
+  assert.match(rule, /flex:\s*0 1 auto/);
+});
+
+// Connections is reached from the sidebar like every other screen, so it
+// carries neither the old launcher's "‹ Home" link nor its copyright footer
+// (Home lost that footer in EPMCDME-15189).
+test('Connections has no back link and no footer of its own', () => {
+  const connect = html.slice(html.indexOf('<div id="connect-view"'), html.indexOf('</div><!-- /#view-container -->'));
+  assert.doesNotMatch(connect, /connect-back|‹ Home/);
+  assert.doesNotMatch(connect, /<footer/);
+});
+
+// Setup's option cards: the Recommended badge sits at the card's right, not
+// under its text.
+test('setup: the Recommended badge sits on the right of its card', () => {
+  const rule = css.match(/\.setup-option-badge\s*\{[^}]*\}/)?.[0] ?? '';
+  assert.match(rule, /position:\s*absolute/);
+  assert.match(rule, /right:\s*\d+px/);
+});

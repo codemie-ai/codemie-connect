@@ -124,11 +124,11 @@ body::before {
 #app-sidebar {
   display: flex;
   flex-direction: column;
-  flex: 0 0 180px;
-  width: 180px;
+  flex: 0 0 164px;
+  width: 164px;
   background: var(--panel-dark);
   border-right: 1px solid var(--border);
-  padding: 12px;
+  padding: 12px 10px;
   gap: 3px;
   overflow-y: auto;
 }
@@ -169,10 +169,13 @@ body::before {
   background: none;
   border: 1px solid transparent;
   border-radius: var(--radius-lg);
-  padding: 12px 14px;
+  padding: 12px;
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  /* 13px keeps "CLI usage analytics" on one line inside the narrower sidebar
+     with the same padding on both sides; at 14px it ran into the right edge. */
+  font-size: 13px;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
@@ -250,13 +253,16 @@ body::before {
 
 /* ---- Installation group ---- */
 /* ---- Home body (ui/home-view.js): checklist, then status cards ---- */
-#home-body { flex: 1; min-height: 0; overflow-y: auto; }
+#home-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
 .home-check { max-width: 720px; }
 .home-check-title { font-size: 18px; font-weight: 700; color: var(--text); margin: 0 0 4px; }
 .home-check-sub { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
 .home-check-list .step-row { cursor: pointer; }
 .home-check-list .step-row:hover .step-title { color: var(--violet); }
 .home-check-list .step-row[data-id="sign-in"] { cursor: default; flex-wrap: wrap; }
+/* Health runs by itself and is not a link: no pointer, no hover colour. */
+.home-check-list .step-row[data-id="health"] { cursor: default; flex-wrap: wrap; }
+.home-check-list .step-row[data-id="health"]:hover .step-title { color: inherit; }
 /* Item 3 does the same when it is open: the control belongs under the row,
    not beside its title. overflow stays visible so a long list is not clipped. */
 .home-check-list .step-row[data-id="agent"] { flex-wrap: wrap; overflow: visible; }
@@ -277,7 +283,7 @@ body::before {
 
 /* ---- Sidebar entries locked during onboarding (ui/shell-nav.js) ---- */
 .sidebar-item.locked { opacity: 0.4; cursor: default; }
-.sidebar-item.locked:hover { background: none; }
+.sidebar-item.locked:hover { background: none; border-color: transparent; }
 
 /* The chevron that says item 3 opens, and which way it is now. */
 .home-row-toggle { color: var(--dim); font-size: 13px; line-height: 1.4; flex: none; align-self: center; }
@@ -324,7 +330,7 @@ body::before {
 .home-agent-progress { font-size: 11px; color: var(--muted); flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-agent-row.installed .home-agent-name, .home-agent-row.installed .home-agent-desc { opacity: 0.55; }
 
-.home-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; max-width: 760px; }
+.home-cards { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr; gap: 14px; max-width: 760px; }
 .home-card {
   padding: 16px 18px;
   background: var(--surface);
@@ -366,16 +372,25 @@ body::before {
   justify-content: space-between;
   gap: 16px;
   padding: 14px 18px;
-  margin-bottom: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border-2);
+  margin-top: 12px;
+  background: color-mix(in srgb, var(--violet) 9%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--violet) 55%, transparent);
   border-radius: var(--radius-xl);
 }
+/* Under the status cards, as wide as they are (01-home.png). */
+#home-updates { max-width: 760px; flex: none; }
 .top-banner-body { flex: 1 1 auto; min-width: 0; }
 .top-banner-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .top-banner-line { font-size: 13px; color: var(--muted); margin-top: 4px; }
 .top-banner-actions { display: flex; align-items: center; gap: 10px; flex: none; }
-.top-banner .btn.top-banner-action { width: auto; padding: 8px 18px; }
+.top-banner .btn.top-banner-action {
+  width: auto;
+  padding: 8px 18px;
+  background: color-mix(in srgb, var(--violet) 14%, transparent);
+  border: 1px solid var(--violet);
+  color: var(--text);
+}
+.top-banner .btn.top-banner-action:hover:not(:disabled) { background: color-mix(in srgb, var(--violet) 26%, transparent); filter: none; }
 .top-banner-dismiss {
   background: none;
   border: none;
@@ -427,15 +442,6 @@ body::before {
 #wizard-mode-label, .mode-label { color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }
 
 /* ---- Connect Claude Desktop (intermediate screen) ---- */
-#connect-topbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 34px;
-  padding: 0 14px;
-  background: var(--panel-dark);
-  border-bottom: 1px solid var(--border);
-}
 #connect-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 28px 32px; gap: 22px; }
 #connect-header { display: flex; align-items: center; gap: 16px; }
 .connect-icon { font-size: 34px; line-height: 1; flex: none; }
@@ -462,7 +468,6 @@ body::before {
 .connect-action:active { transform: translateY(0); box-shadow: none; }
 .ca-title { font-size: 15px; font-weight: 700; color: var(--violet); }
 .ca-desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
-.view-footer { background: var(--color-bg-nav); color: var(--muted); font-size: 9px; text-align: center; padding: 6px; }
 
 /* ---- Sprite panel ---- */
 #sprite-panel {
@@ -577,11 +582,19 @@ body::before {
 .setup-option-card:hover { background: var(--surface-2); }
 .setup-option-card.selected { background: var(--surface-2); border-color: var(--accent-blue); box-shadow: inset 0 0 0 1px var(--accent-blue); }
 .setup-option-card input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; pointer-events: none; }
+/* A long list scrolls inside its own box (ui/setup-view.js LONG_LIST). */
+.setup-option-scroll { max-height: 340px; overflow-y: auto; padding-right: 6px; margin-bottom: 8px; }
+.setup-option-scroll .setup-option-card:last-child { margin-bottom: 0; }
 .setup-option-title { font-weight: 600; }
 .setup-option-description { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .setup-option-badge {
+  /* On the card's right, centred, so it never pushes the card taller. */
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-block;
-  margin: 6px 0 0 0;
+  margin: 0;
   padding: 1px 8px;
   border: 1px solid var(--accent-blue);
   border-radius: 999px;
@@ -591,6 +604,8 @@ body::before {
   color: var(--accent-blue);
   background: transparent;
 }
+/* Room for the badge, so a long description never runs under it. */
+.setup-option-card.recommended { padding-right: 130px; }
 
 /* Text input: one full-width field, Continue on its own line below. */
 .prompt-input {
@@ -626,6 +641,9 @@ body::before {
 
 /* Closing line under the list once the profile is verified active. */
 .setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }
+.setup-view-redirect { display: flex; align-items: center; gap: 8px; margin: 6px 12px 0; color: var(--muted); font-size: 12px; }
+.inline-spinner { width: 11px; height: 11px; border: 1.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: cm-spin 0.8s linear infinite; flex: none; }
+.step-sub .inline-spinner { display: inline-block; vertical-align: -1px; margin-right: 6px; }
 
 /* Collapsed rows (COMPLETE, this view only): "label -- value [icon]" on one
    line instead of the default stacked title/subtitle -- never touches the
@@ -859,6 +877,23 @@ body::before {
 /* The same inset the other screens have; without it the title sat on the
    sidebar's edge and the summary ran off the window's right edge. */
 #agents-view { padding: 22px 28px 28px; animation: cm-fade-in 0.2s ease; }
+
+/* ---- The spinner Agents and Health show while their first read runs
+   (ui/screen-loading.js). Only while it is there does the screen stretch to
+   the full height, so the spinner sits in the middle of the page and the
+   loaded screen keeps its own flow. ---- */
+#agents-view:has(> .screen-loading),
+#health-view:has(> .screen-loading) { display: flex; flex-direction: column; flex: 1 0 auto; }
+.screen-loading { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 160px; }
+.screen-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: cm-spin 0.8s linear infinite;
+}
+@keyframes cm-spin { to { transform: rotate(360deg); } }
 /* The rows are step rows, so their look comes from the step list; only the
    header, the note and the per-row action slot are this screen's own. */
 .agents-head {

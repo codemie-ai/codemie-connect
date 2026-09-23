@@ -140,14 +140,35 @@ test('item 1 gets an in-place Sign in control while it is open, and none once co
 
 // Items 2 and 4 navigate; items 1 and 3 complete in place (EPMCDME-15189,
 // superseding EPMCDME-14589's "a screen for items 2, 3 and 4").
-test('clicking items 2 and 4 reports the item; items 1 and 3 do not navigate', () => {
+// Item 4 runs by itself, and clicking its row took the user off Home to a
+// screen that looked like the row opening. Only item 2 navigates on a click.
+test('clicking item 2 reports the item; items 1, 3 and 4 do not navigate', () => {
   const container = makeEl('div');
   const opened = [];
   createHomeView(container, { stepsUi: fakeStepsUi(), onItem: (id) => opened.push(id) }).render(checklist);
   for (const id of ['model', 'agent', 'health', 'sign-in']) {
     container.querySelector(`.step-row[data-id="${id}"]`)._click();
   }
-  assert.deepEqual(opened, ['model', 'health']);
+  assert.deepEqual(opened, ['model']);
+});
+
+// A check that found problems keeps the checklist up, and the sidebar's Health
+// is locked until it finishes: the row itself offers the way to the problems.
+test('a health check with problems offers Open Health in its row; a running one shows a spinner', () => {
+  const opened = [];
+  const warned = { ...checklist, items: checklist.items.map((i) => (i.id === 'health' ? item('health', 'WARNING', '1 problem to fix') : i)) };
+  const container = makeEl('div');
+  createHomeView(container, { stepsUi: fakeStepsUi(), onItem: (id) => opened.push(id) }).render(warned);
+  const btn = container._all((n) => n._tag === 'button' && n.textContent === 'Open Health')[0];
+  assert.ok(btn, 'Open Health is offered');
+  btn.onclick({ stopPropagation() {} });
+  assert.deepEqual(opened, ['health']);
+
+  const running = { ...checklist, items: checklist.items.map((i) => (i.id === 'health' ? item('health', 'ACTIVE', 'Checking…') : i)) };
+  const c2 = makeEl('div');
+  createHomeView(c2, { stepsUi: fakeStepsUi() }).render(running);
+  assert.ok(c2.querySelector('.inline-spinner'), 'a small spinner beside Checking…');
+  assert.equal(c2._all((n) => n._tag === 'button' && n.textContent === 'Open Health').length, 0);
 });
 
 // A ticked item 3 opens the same way: one agent installed does not mean there
@@ -205,4 +226,11 @@ test('Home\'s header hides while the checklist is up and shows once setup is don
   applyHomeHeader(root, { done: true });
   assert.equal(classes.has('hidden'), false, 'shown once done');
   assert.equal(sub.textContent, 'Everything is set up. Here is how things stand.');
+});
+
+test('no Sign in button while the sign-in read is still out', () => {
+  const container = makeEl('div');
+  const reading = { ...checklist, items: checklist.items.map((i) => (i.id === 'sign-in' ? item('sign-in', 'ACTIVE', 'Checking…') : i)) };
+  createHomeView(container, { stepsUi: fakeStepsUi() }).render(reading);
+  assert.equal(container._all((n) => n._tag === 'button' && n.textContent === 'Sign in').length, 0);
 });

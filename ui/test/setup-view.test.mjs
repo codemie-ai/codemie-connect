@@ -198,10 +198,9 @@ test('start() inserts a collapsed/COMPLETE storage row before startSetup runs', 
   assert.equal(storageRow.querySelector('.step-sub').textContent, 'This computer');
 });
 
-test('gate and confirm-kind activate prompts never render a row', async () => {
+test('the confirm-kind activate prompt never renders a row', async () => {
   const container = makeEl('div');
   const fakeStartSetup = async ({ onPrompt }) => {
-    await onPrompt({ kind: 'list', id: 'gate', message: 'Add a new profile?', options: ['create', 'update'] });
     await onPrompt({ kind: 'confirm', id: 'activate', message: 'Activate this profile now?' });
     return { profileName: 'default' };
   };
@@ -209,8 +208,58 @@ test('gate and confirm-kind activate prompts never render a row', async () => {
   const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   await view.start();
 
-  assert.equal(findRowById(container, 'gate-1'), null, 'no gate row ever appears');
   assert.equal(findRowById(container, 'activate-1'), null, 'no activate row ever appears');
+});
+
+// The CLI's own first question when profiles exist. The driver passes it on
+// without Cancel; the answer is the user's, as in a terminal.
+test('add or update: the question is a step, and updating asks which profile and says it was updated', async () => {
+  const container = makeEl('div');
+  const asked = [];
+  const fakeStartSetup = async ({ onPrompt }) => {
+    const pending = onPrompt({ kind: 'list', id: 'gate', message: 'What would you like to do?', options: ['Add a new profile', 'Update an existing profile'] });
+    await tick();
+    const gateRow = findRowById(container, 'gate-1');
+    asked.push(gateRow.querySelector('.step-title').textContent);
+    // Pick the second card, then Continue.
+    const radios = [];
+    (function walk(n) { if ((n.className || '').startsWith('setup-option-card')) radios.push(n); (n._children || []).forEach(walk); })(gateRow);
+    radios[1].onclick();
+    clickContinue(gateRow);
+    const gateAnswer = await pending;
+    asked.push(gateAnswer);
+    const pick = onPrompt({ kind: 'list', id: 'updateProfile', message: 'Select profile to update:', options: ['Mert', 'MertPersonal', 'codemie'] });
+    await tick();
+    const pickRow = findRowById(container, 'updateProfile-1');
+    asked.push(pickRow.querySelector('.step-title').textContent);
+    const radios2 = [];
+    (function walk(n) { if ((n.className || '').startsWith('setup-option-card')) radios2.push(n); (n._children || []).forEach(walk); })(pickRow);
+    radios2[2].onclick();
+    clickContinue(pickRow);
+    asked.push(await pick);
+    return { profileName: 'codemie', updated: true };
+  };
+  // Updating does not switch profiles: the active one stays what it was.
+  const readConfig = async () => ({ state: 'valid', profile: 'Mert', model: '', project: '', account: null });
+
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig });
+  const result = await view.start();
+
+  assert.deepEqual(asked, ['Add a new profile or update one?', 1, 'Which profile should be updated?', 2]);
+  assert.equal(findRowById(container, 'gate-1').querySelector('.step-sub').textContent, 'Update an existing profile');
+  assert.equal(findRowById(container, 'updateProfile-1').querySelector('.step-sub').textContent, 'codemie');
+  assert.equal(result.ok, true);
+  const status = container._children.find((c) => c.className === 'setup-view-status');
+  assert.equal(status.textContent, 'Setup complete. codemie is updated.');
+});
+
+test('an update that leaves the configuration unreadable is not reported as done', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async () => ({ profileName: 'codemie', updated: true });
+  const readConfig = async () => ({ state: 'broken', profile: null, model: '', project: '', account: null });
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig });
+  const result = await view.start();
+  assert.equal(result.ok, false);
 });
 
 test('list prompt: renders radio options, resolves with selected index, marks row COMPLETE', async () => {
@@ -1007,9 +1056,7 @@ test('list prompt without a copy override: heading is the CLI question without i
 test('never-rendered activate confirm is answered with the driver\'s own policy (yes)', async () => {
   const container = makeEl('div');
   let activateAnswer;
-  let gateAnswer;
   const fakeStartSetup = async ({ onPrompt }) => {
-    gateAnswer = await onPrompt({ kind: 'list', id: 'gate', message: 'What would you like to do?', options: ['Add a new profile', 'Cancel'] });
     activateAnswer = await onPrompt({ kind: 'confirm', id: 'activate', message: 'Switch to profile "x" as active?' });
     return { profileName: 'default' };
   };
@@ -1017,7 +1064,6 @@ test('never-rendered activate confirm is answered with the driver\'s own policy 
   const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
   await view.start();
   assert.equal(activateAnswer, true, 'activate is confirmed, matching setup-driver.js AUTO_CONFIRM');
-  assert.equal(gateAnswer, 0);
 });
 
 // ── Task 5: transient "Working…" row ────────────────────────────────────────
@@ -2020,4 +2066,112 @@ test('the waiting row says it is waiting on the browser sign-in', async () => {
   assert.match(row.querySelector('.step-sub').textContent, /browser tab should have opened/i);
   // Not a countdown: the wait is the user's own, so nothing implies a deadline.
   assert.ok(!/\d+\s*(s|sec|second)/i.test(row.querySelector('.step-sub').textContent), 'no timer in the copy');
+});
+
+// Measured in a first run on 2026-09-23: the CLI's "Opening browser" line stays
+// on its screen after the sign-in is done, and every later gap (fetching the
+// project list, saving) was titled "Waiting for you to finish signing in"
+// again. The line counts once, when it first appears.
+test('a later gap is not titled as the sign-in wait just because the old line is still on screen', async () => {
+  const container = makeEl('div');
+  let capturedOnScreen;
+  let onPromptFn;
+  const view = createSetupView(container, {
+    startSetup: async ({ onScreen, onPrompt }) => { capturedOnScreen = onScreen; onPromptFn = onPrompt; return new Promise(() => {}); },
+    readConfig: okConfig,
+  });
+  view.start();
+  await Promise.resolve();
+  const screen = Array(30).fill('');
+  screen[10] = 'Opening browser for authentication...';
+  capturedOnScreen(screen);
+  // The sign-in is done: the next question arrives, and is answered.
+  const pending = onPromptFn({ kind: 'list', id: 'codemieProject', message: 'Select your project:', options: ['a', 'b'] });
+  await tick();
+  clickContinue(findRowById(container, 'codemieProject-1'));
+  await pending;
+  // A new gap opens while the old browser line is still on the CLI's screen.
+  capturedOnScreen(screen);
+  const gaps = (container._children ?? []).filter((c) => c.dataset?.id?.startsWith('working-'));
+  const last = gaps[gaps.length - 1];
+  assert.equal(last.querySelector('.step-title').textContent, 'Working…');
+});
+
+// A 41-model list made the setup screen a long page with Continue at its
+// bottom. A long list scrolls inside its own box; Continue stays under it.
+test('a long list scrolls in its own box with Continue outside it; a short one does not', async () => {
+  for (const [count, boxed] of [[12, true], [3, false]]) {
+    const container = makeEl('div');
+    const options = Array.from({ length: count }, (_, i) => `model-${i}`);
+    let control = null;
+    const fakeStartSetup = async ({ onPrompt }) => {
+      const pending = onPrompt({ kind: 'list', id: 'model', message: 'Choose a model', options });
+      await tick();
+      control = findControl(findRowById(container, 'model-1'));
+      clickContinue(findRowById(container, 'model-1'));
+      await pending;
+      return { profileName: 'default' };
+    };
+    const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+    await view.start();
+    const box = control._children.find((c) => c.className === 'setup-option-scroll');
+    assert.equal(!!box, boxed, `${count} options`);
+    if (boxed) {
+      assert.equal(collectAll(box, (c) => (c.className || '').split(' ').includes('setup-option-card')).length, count);
+      assert.ok(control._children.some((c) => c.className === 'prompt-submit'), 'Continue is outside the box');
+    }
+  }
+});
+
+// Setup is opened from Home's checklist or its Profile card, and the next step
+// is back there: a verified run returns to Home by itself, a failed one stays
+// on its Try again.
+test('a finished setup goes back to Home by itself; a failed one stays', async () => {
+  let doneCalls = 0;
+  const container = makeEl('div');
+  const view = createSetupView(container, { startSetup: async () => ({ profileName: 'default' }), readConfig: okConfig, onDone: () => { doneCalls += 1; }, doneDelayMs: 0 });
+  await view.start();
+  const going = container._children.find((c) => c.className === 'setup-view-redirect');
+  assert.ok(going, 'it says where it is going');
+  assert.ok(going._children.some((c) => c.textContent === 'Taking you back to Home…'));
+  await tick(5);
+  assert.equal(doneCalls, 1);
+
+  let failedDone = 0;
+  const failed = makeEl('div');
+  const view2 = createSetupView(failed, { startSetup: async () => ({ profileName: 'other' }), readConfig: okConfig, onDone: () => { failedDone += 1; }, doneDelayMs: 0 });
+  await view2.start();
+  await tick(5);
+  assert.equal(failedDone, 0);
+  assert.equal(failed._children.find((c) => c.className === 'setup-view-redirect'), undefined);
+});
+
+// A question lower down the page (the model step, under five answered rows)
+// opened with its Continue below the window. Opening a question scrolls just
+// far enough for its Continue to show.
+test('opening a question scrolls its Continue into view', async () => {
+  const scrolled = [];
+  const realCreate = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = realCreate(tag);
+    el.scrollIntoView = (opts) => scrolled.push({ className: el.className, opts });
+    return el;
+  };
+  try {
+    const container = makeEl('div');
+    const fakeStartSetup = async ({ onPrompt }) => {
+      const pending = onPrompt({ kind: 'list', id: 'model', message: 'Choose a model', options: ['a', 'b'] });
+      await tick();
+      clickContinue(findRowById(container, 'model-1'));
+      await pending;
+      return { profileName: 'default' };
+    };
+    const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+    await view.start();
+  } finally {
+    globalThis.document.createElement = realCreate;
+  }
+  const cont = scrolled.find((s) => s.className === 'prompt-submit setup-continue-btn' || s.className.includes('prompt-submit'));
+  assert.ok(cont, 'Continue was scrolled into view');
+  assert.equal(cont.opts.block, 'nearest');
 });

@@ -31,30 +31,6 @@
         </label>
       </div>
 
-      <!-- ============ UPDATE BANNER ============ -->
-      <div id="update-banner" class="top-banner hidden">
-        <div class="top-banner-body">
-          <div class="top-banner-title">CodeMie CLI <span id="update-to"></span> is available</div>
-          <div class="top-banner-line">Your profile, settings and agents are kept.</div>
-        </div>
-        <div class="top-banner-actions">
-          <button id="update-banner-run" class="btn btn-accent top-banner-action">Update CLI</button>
-          <button id="update-banner-dismiss" class="top-banner-dismiss" aria-label="Dismiss">✕</button>
-        </div>
-      </div>
-
-      <!-- ============ APP UPDATE BANNER ============ -->
-      <div id="app-update-banner" class="top-banner hidden">
-        <div class="top-banner-body">
-          <div class="top-banner-title">CodeMie <span id="app-update-to"></span> is available</div>
-          <div class="top-banner-line">Takes about a minute. Everything you set up stays.</div>
-        </div>
-        <div class="top-banner-actions">
-          <button id="app-update-banner-run" class="btn btn-accent top-banner-action">Update and restart</button>
-          <button id="app-update-banner-dismiss" class="top-banner-dismiss" aria-label="Dismiss">✕</button>
-        </div>
-      </div>
-
       <!-- ============ SHELL BODY: sidebar column + view column ============ -->
       <div id="shell-body">
 
@@ -101,6 +77,34 @@
 
         <!-- Home body: the onboarding checklist, then the status cards (ui/home-view.js). -->
         <div id="home-body"></div>
+
+        <!-- Updates are cards under the status cards, as 01-home.png draws them.
+             The identity bar's version badge stays up top. -->
+        <div id="home-updates">
+          <!-- ============ UPDATE BANNER ============ -->
+          <div id="update-banner" class="top-banner hidden">
+            <div class="top-banner-body">
+              <div class="top-banner-title">CodeMie CLI <span id="update-to"></span> is available</div>
+              <div class="top-banner-line">Your profile, settings and agents are kept.</div>
+            </div>
+            <div class="top-banner-actions">
+              <button id="update-banner-run" class="btn btn-accent top-banner-action">Update CLI</button>
+              <button id="update-banner-dismiss" class="top-banner-dismiss" aria-label="Dismiss">✕</button>
+            </div>
+          </div>
+
+          <!-- ============ APP UPDATE BANNER ============ -->
+          <div id="app-update-banner" class="top-banner hidden">
+            <div class="top-banner-body">
+              <div class="top-banner-title">CodeMie <span id="app-update-to"></span> is available</div>
+              <div class="top-banner-line">Takes about a minute. Everything you set up stays.</div>
+            </div>
+            <div class="top-banner-actions">
+              <button id="app-update-banner-run" class="btn btn-accent top-banner-action">Update and restart</button>
+              <button id="app-update-banner-dismiss" class="top-banner-dismiss" aria-label="Dismiss">✕</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- ============ WIZARD (install flow) ============ -->
@@ -164,11 +168,6 @@
 
       <!-- ============ CONNECT CLAUDE DESKTOP (intermediate) ============ -->
       <div id="connect-view" class="hidden">
-        <div id="connect-topbar">
-          <button id="connect-back" class="back-link">‹ Home</button>
-          <span class="mode-label">Claude Desktop</span>
-        </div>
-
         <div id="connect-body">
           <header id="connect-header">
             <div class="connect-icon">🖥️</div>
@@ -190,7 +189,6 @@
           </div>
         </div>
 
-        <footer class="view-footer">EPAM AI/Run CodeMie ©</footer>
       </div>
 
       </div><!-- /#view-container -->

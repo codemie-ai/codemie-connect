@@ -16,8 +16,9 @@ import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 import { createHealthController } from './health-controller.js';
 import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
+import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
-import { deriveHome } from './home-state.js';
+import { deriveHome, signInAction, autoHealthCheck } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
 
@@ -85,7 +86,6 @@ const homeView = views.home;
 const wizardView = views.wizard;
 const connectView = views.connect;
 const wizardBack = document.getElementById('wizard-back');
-const connectBack = document.getElementById('connect-back');
 const connectBtn = document.getElementById('connect-btn');
 const restartBtn = document.getElementById('restart-btn');
 const modeLabel = document.getElementById('wizard-mode-label');
@@ -198,7 +198,7 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
     else if (id === 'agent') showView('agents');
     else if (id === 'health') showView('health');
   },
-  onSignIn: () => startSignIn(),
+  onSignIn: () => (signInAction(home) === 'setup' ? openGuidedSetup() : startSignIn()),
   onCard: (id) => showView(id),
   onSetupAgain: () => openGuidedSetup(),
   // Item 3 installs through the Agents controller, which refreshes Home on its
@@ -206,12 +206,36 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
   onInstallAgent: (agent, onLine) => agentsController.install(agent, onLine),
 });
 
+// Whether the checklist has ever been finished here, read once at boot.
+// localStorage itself can throw on access, so it is fetched guarded too.
+const homeStorage = (() => {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+})();
+let onboarded = readOnboarded(homeStorage);
+
+let autoHealthStarted = false;
+
 function renderHome() {
-  const state = deriveHome(home);
+  const state = deriveHome({ ...home, onboarded });
+  if (state.done && !onboarded) {
+    onboarded = true;
+    rememberOnboarded(homeStorage);
+  }
   homeScreen.render(state);
-  // The other screens stay locked until the checklist is done; Home never is,
-  // so an item that opened Agents or Health always has a way back.
-  applyOnboardingNav(document, { done: state.done });
+  // The last step starts by itself once the ones before it are done, instead
+  // of leaving the user on a checklist that waits for a click. Once a session:
+  // a check that fails leaves its step saying so, and Home does not retry it.
+  if (!autoHealthStarted && autoHealthCheck(state)) {
+    autoHealthStarted = true;
+    setTimeout(startHealthInPlace, 0);
+  }
+  // The other screens stay locked until the checklist is first done; Home
+  // never is, so an item that opened Agents or Health always has a way back.
+  applyOnboardingNav(document, { done: state.unlocked });
   applyHomeHeader(document, { done: state.done });
 }
 
@@ -241,14 +265,27 @@ async function refreshAgents() {
 // start() is safe to call again on a settled instance: it resets itself. The
 // module is imported on first use so the driver stays out of the boot path.
 let setupView = null;
+// True while a guided setup run is open; runAction reads it. setupSettled
+// resolves once that run has fully unwound.
+let setupRunning = false;
+let setupSettled = Promise.resolve();
 async function openGuidedSetup() {
   showView('setup');
   if (!setupView) {
     const { createSetupView } = await import('./setup-view.js');
-    setupView = createSetupView(document.getElementById('setup-view'));
+    // A verified run returns to Home by itself, unless the user has already
+    // gone somewhere else in the meantime.
+    setupView = createSetupView(document.getElementById('setup-view'), {
+      onDone: () => {
+        if (!views.setup.classList.contains('hidden')) showView('home');
+      },
+    });
   }
+  const run = setupView.start();
+  setupRunning = true;
+  setupSettled = run.then(() => {}, () => {}).finally(() => { setupRunning = false; });
   try {
-    return await setupView.start();
+    return await run;
   } finally {
     // A run writes the profile and may sign the user in; Home re-reads both.
     refreshIdentityOnComplete();
@@ -431,7 +468,26 @@ function dismissAppUpdateBanner() {
 }
 
 // ---- one-shot command action (proxy connect / analytics) ----
+// The app has one terminal (PTY) slot, and guided setup holds it for as long
+// as a run is open -- including while it waits on a question the user walked
+// away from. Anything else that needs the slot (the analytics report, the
+// Claude Desktop connection) asks to stop that run first, instead of failing
+// with the bridge's bare "PTY already active".
 async function runAction(title, cmd, returnView = 'home', hint) {
+  if (setupRunning) {
+    showNotice({
+      title: 'Setup is still running',
+      message: 'Guided setup is waiting for an answer, and only one can run at a time. Stop setup to go on; you can start it again from Home.',
+      primaryLabel: 'Stop setup and continue',
+      primaryAction: async () => {
+        const { cancelSetup } = await import('./setup-driver.js');
+        await cancelSetup();
+        await setupSettled;
+        runAction(title, cmd, returnView, hint);
+      },
+    });
+    return;
+  }
   openTerminal(title, { keepOpen: true, hint, onClose: () => showView(returnView) });
   try {
     const { code } = await bridge.pty.spawnPty(cmd);
@@ -461,16 +517,31 @@ const healthController = createHealthController({
       onLine(text, tag);
     }),
   openLog: () => invoke('open_log'),
-  onNavigate: (view) => showView(view),
+  // 'setup' is not a screen to show but a run to start: guided setup.
+  onNavigate: (view) => (view === 'setup' ? openGuidedSetup() : showView(view)),
   signIn: () => startSignIn(),
   onResult: (result) => {
     home.health = result;
+    home.healthRunning = false;
     renderHome();
   },
   onFailure: () => {
     healthChecked = false;
+    home.healthRunning = false;
+    renderHome();
   },
 });
+
+// Runs the health check from Home, without leaving it: the step shows it
+// running, and its result ticks the step (or names the problems) the same way
+// a check run from the Health screen does.
+function startHealthInPlace() {
+  if (healthChecked) return;
+  healthChecked = true;
+  home.healthRunning = true;
+  renderHome();
+  healthController.run();
+}
 
 // The Agents screen (EPMCDME-14514). Its own steps-ui instance, its own
 // `codemie list` read; onResult hands the same records to Home so the checklist
@@ -508,7 +579,7 @@ async function ensureAuthenticated() {
       message:
         `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
       primaryLabel: 'Run setup',
-      primaryAction: () => enterWizard(),
+      primaryAction: () => openGuidedSetup(),
     });
     return false;
   }
@@ -852,7 +923,6 @@ async function boot() {
   });
 
   wizardBack.addEventListener('click', () => showView('home'));
-  connectBack.addEventListener('click', () => showView('home'));
   connectBtn.addEventListener('click', async () => {
     if (await ensureAuthenticated()) {
       runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect', 'Running automatically — no input needed.');

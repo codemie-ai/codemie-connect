@@ -307,7 +307,6 @@ test('generic list (provider): a non-numeric onPrompt answer index rejects inste
 // tested. Using /add a new profile/i here targets the same branch (create-new, never
 // update) that the acceptance criteria and negative constraints describe.
 for (const [id, expectRe, forbidRe] of [
-  ['gate', /add a new profile/i, /update/i],
   ['storage', /global/i, /local/i],
 ]) {
   test(`${id} fixture is auto-answered, never calls onPrompt`, async () => {
@@ -1445,7 +1444,7 @@ test('data arriving after startSetup has settled is ignored: no further onPrompt
   termInstance.__setLines(fixture('activate'));
   let onPromptCalls = 0;
   let dataCb;
-  const spawnCapture = async (_cmd, _cols, _rows, onData) => { dataCb = onData; return fake.spawnPty('codemie setup --force', 100, 30, onData); };
+  const spawnCapture = async (_cmd, _cols, _rows, onData) => { dataCb = onData; return fake.spawnPty('cd /; codemie setup', 100, 30, onData); };
   const p = startSetup({ onPrompt: async () => { onPromptCalls += 1; return true; } },
     { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: spawnCapture, input: fake.input, kill: fake.kill, Terminal: () => termInstance });
   fake.feedRaw('AAAA');
@@ -1515,7 +1514,7 @@ test('successful full run resolves { profileName } on zero exit', async () => {
   fake.feedRaw('AAAA');
   fake.exit(0);
   const result = await p;
-  assert.deepEqual(result, { profileName: 'my-profile' });
+  assert.deepEqual(result, { profileName: 'my-profile', updated: false });
 });
 
 test('non-zero exit rejects with { step, message, raw }', async () => {
@@ -1842,4 +1841,272 @@ test('a failing kill() does not replace the run\'s own rejection', async () => {
     assert.equal(typeof err.raw, 'string', 'and so does its output');
     return true;
   });
+});
+
+
+// ---- Add or update (the CLI's own first question) -------------------------
+// The app used to run `codemie setup --force`, which skips that question and
+// always adds. Now the user answers it, as they would in a terminal.
+
+test('setup runs from / and without --force, so the CLI asks add-or-update itself', async () => {
+  const fake = makeFakePty();
+  let cmd = null;
+  const p = startSetup({ onPrompt: async () => 0 },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, input: fake.input, kill: fake.kill, Terminal: makeFakeTerminal(),
+      spawnPty: (c, cols, rows, onData) => { cmd = c; return fake.spawnPty(c, cols, rows, onData); } });
+  await flushMicrotasks();
+  fake.exit(1);
+  await p.catch(() => {});
+  // From the home directory the CLI reads ~/.codemie/codemie-cli.config.json as
+  // a repository-local config too (config.js hasProjectConfig joins cwd with
+  // .codemie/codemie-cli.config.json), and an update would then save the
+  // profile in the local format over the global file. / has no .codemie.
+  assert.equal(cmd, 'cd /; codemie setup');
+});
+
+test('the add-or-update question goes to the user, without the CLI\'s Cancel', async () => {
+  for (const [answer, expected] of [[0, '\r'], [1, '\x1b[B\r']]) {
+    const fake = makeFakePty();
+    const termInstance = makeFakeTerminal()();
+    termInstance.__setLines(fixture('gate'));
+    let seen = null;
+    const p = startSetup(
+      { onPrompt: async (prompt) => { seen = prompt; return answer; } },
+      { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => termInstance },
+    );
+    fake.feedRaw('AAAA');
+    await flushMicrotasks();
+    fake.exit(1);
+    await p.catch(() => {});
+    assert.equal(seen.id, 'gate');
+    assert.deepEqual(seen.options, ['Add a new profile', 'Update an existing profile']);
+    assert.deepEqual(fake.writes, [expected]);
+  }
+});
+
+// inquirer's list loops by default (list.js: `loop === undefined ? true`) and
+// shows seven rows at a time. This reproduces paginator.js getInfiniteLines for
+// a ten-profile list so every frame the walk sees is one the CLI would draw:
+// the cursor row moves down to the middle of the page, then the page scrolls
+// under it, then wraps round to the first profile.
+function updateProfileFrame(names, active, state) {
+  const pageSize = 7;
+  const middle = Math.floor(pageSize / 2);
+  if (state.pointer === undefined) state.pointer = 0;
+  if (state.pointer < middle && state.last < active && active - state.last < pageSize) {
+    state.pointer = Math.min(middle, state.pointer + active - state.last);
+  }
+  state.last = active;
+  const rows = names.map((n, i) => `${i === active ? '❯ ' : '  '}${n} `);
+  const top = Math.max(0, active + rows.length - state.pointer);
+  const visible = [...rows, ...rows, ...rows].splice(top, pageSize);
+  return [
+    '? What would you like to do? Update an existing profile',
+    '? Select profile to update: ',
+    ...visible,
+    '(Move up and down to reveal more choices)',
+  ].concat(Array(30).fill('')).slice(0, 30);
+}
+
+test('updating walks the whole paged profile list, answers the one picked, and reports it as an update', async () => {
+  const names = Array.from({ length: 10 }, (_, i) => `profile${i}`);
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const state = {};
+  let active = 0;
+  termInstance.__setLines(updateProfileFrame(names, active, state));
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      termInstance.__setLines(updateProfileFrame(names, active, state));
+      fake.feedRaw('REDRAW');
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 8; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 60 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await flushMicrotasks();
+  fake.exit(0);
+  const result = await p;
+  assert.equal(seen.id, 'updateProfile');
+  assert.deepEqual(seen.options, names, 'every profile, in the CLI\'s order, not just the first page');
+  assert.equal(fake.writes[fake.writes.length - 1], '\x1b[B'.repeat(8) + '\r');
+  assert.deepEqual(result, { profileName: 'profile8', updated: true });
+});
+
+// A list shorter than its page is drawn whole, and inquirer's default loop
+// (incrementListIndex.js: down from the last entry goes to the first) means
+// the cursor keeps moving forever: "nothing new and the cursor did not move"
+// never happens. Three profiles is the common case for an update. The walk
+// stops once the highlighted entry is one it has already highlighted.
+test('a short looping list (three profiles) is walked once round, not until the step limit', async () => {
+  const names = ['Mert', 'MertPersonal', 'codemie'];
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  let active = 0;
+  const frame = () => [
+    '? What would you like to do? Update an existing profile',
+    '? Select profile to update: ',
+    ...names.map((n, i) => `${i === active ? '❯ ' : '  '}${n} `),
+  ].concat(Array(30).fill('')).slice(0, 30);
+  termInstance.__setLines(frame());
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      termInstance.__setLines(frame());
+      fake.feedRaw('REDRAW');
+    } else if (d.endsWith('\r')) {
+      // The answer: its arrows move the cursor before the Enter.
+      active = (active + d.split('\x1b[B').length - 1) % names.length;
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 2; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 60 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await flushMicrotasks();
+  fake.exit(0);
+  const result = await p;
+  assert.deepEqual(seen.options, names);
+  assert.equal(fake.writes.filter((w) => w === '\x1b[B').length, 3, 'once round and no further');
+  assert.equal(fake.writes.filter((w) => w === '\x1b[A').length, 3, 'and back to the first entry');
+  assert.equal(active, 2, 'the cursor ends on the profile picked');
+  assert.deepEqual(result, { profileName: 'codemie', updated: true });
+});
+
+// The CLI redraws a list in more than one chunk, and a chunk can land before
+// the row carrying the cursor marker is repainted. detectPrompt then reports
+// the first row as selected (parseOptions' default), which on the first page is
+// the entry the walk started on, so it read as having gone all the way round.
+// Only a row that really carries the marker counts.
+test('a redraw that lands before the cursor row is repainted does not end the walk', async () => {
+  const names = Array.from({ length: 10 }, (_, i) => `profile${i}`);
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const state = {};
+  let active = 0;
+  termInstance.__setLines(updateProfileFrame(names, active, state));
+  let arrows = 0;
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      const frame = updateProfileFrame(names, active, state);
+      arrows += 1;
+      if (arrows === 2) {
+        // The second press: its first chunk has the rows but no marker yet;
+        // the marker row follows in the next one.
+        termInstance.__setLines(frame.map((l) => l.replace('❯', ' ')));
+        fake.feedRaw('PARTIAL');
+        await flushMicrotasks();
+      }
+      termInstance.__setLines(frame);
+      fake.feedRaw('REDRAW');
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 0; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 60 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await flushMicrotasks();
+  fake.exit(0);
+  await p;
+  assert.deepEqual(seen.options, names);
+});
+
+
+// Measured against the real CLI on 2026-09-23: a 41-model list came back with
+// 15. The chunk that followed the first arrow key was the tail of the list's
+// first drawing, marker unmoved, and the walk took it for the answer to the
+// press: nothing changed, so the list must be over. The press is answered by
+// the marker moving, however many chunks that takes.
+test('a chunk that arrives after a press but before its redraw does not end the walk', async () => {
+  const names = Array.from({ length: 10 }, (_, i) => `profile${i}`);
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const state = {};
+  let active = 0;
+  termInstance.__setLines(updateProfileFrame(names, active, state));
+  let arrows = 0;
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      arrows += 1;
+      if (arrows === 1) {
+        // The first drawing's tail: same screen, marker where it was.
+        fake.feedRaw('TAIL');
+        await flushMicrotasks();
+      }
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      termInstance.__setLines(updateProfileFrame(names, active, state));
+      fake.feedRaw('REDRAW');
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 0; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 300 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await new Promise((r) => setTimeout(r, 10));
+  fake.exit(0);
+  await p;
+  assert.deepEqual(seen.options, names, 'every profile, not the first page');
+});
+
+// Measured against the real CLI on 2026-09-23: mid-walk, a chunk can catch the
+// list half erased, with the question above it (answered, "? Select your
+// project: epm-sdai") as the last question line on screen. detectPrompt then
+// reads the lines under that one as its options, and "✓ Selected project" and
+// "✔ Found 41 available models" joined the model list, two places ahead of
+// every model after them: picking one of those sent the CLI two arrows too
+// many. Only a screen showing the list's own question is read.
+test('a chunk showing an earlier question does not add its lines to the list being walked', async () => {
+  const names = Array.from({ length: 10 }, (_, i) => `profile${i}`);
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const state = {};
+  let active = 0;
+  termInstance.__setLines(updateProfileFrame(names, active, state));
+  let arrows = 0;
+  const half = [
+    '? What would you like to do? Update an existing profile',
+    '✓ Using the existing organization',
+    '✔ Found 10 profiles',
+  ].concat(Array(30).fill('')).slice(0, 30);
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      arrows += 1;
+      if (arrows === 5) {
+        termInstance.__setLines(half);
+        fake.feedRaw('HALF');
+        await flushMicrotasks();
+      }
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      termInstance.__setLines(updateProfileFrame(names, active, state));
+      fake.feedRaw('REDRAW');
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 8; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 300 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await new Promise((r) => setTimeout(r, 10));
+  fake.exit(0);
+  const result = await p;
+  assert.deepEqual(seen.options, names);
+  assert.equal(fake.writes[fake.writes.length - 1], '\x1b[B'.repeat(8) + '\r', 'eight arrows for the ninth profile, no more');
+  assert.deepEqual(result, { profileName: 'profile8', updated: true });
 });

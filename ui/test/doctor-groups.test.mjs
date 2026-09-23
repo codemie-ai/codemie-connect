@@ -76,11 +76,11 @@ test('sso-expired: the row is named after the error and offers to sign in again'
 
 test('a problem whose hint is not about signing in keeps the CLI hint and offers a recheck', () => {
   const { rows } = groupDoctorResults([
-    { name: 'Active Profile', status: 'warn', message: 'No active profile', hint: 'Run: codemie setup' },
+    { name: 'Active Profile', status: 'warn', message: 'Profile file is not readable', hint: 'Check the permissions on ~/.codemie' },
   ]);
   assert.equal(rows[0].group, 'account');
-  assert.equal(rows[0].label, 'No active profile');
-  assert.equal(rows[0].remedyText, 'Run: codemie setup');
+  assert.equal(rows[0].label, 'Profile file is not readable');
+  assert.equal(rows[0].remedyText, 'Check the permissions on ~/.codemie');
   assert.deepEqual(rows[0].action, { kind: 'recheck', label: 'Check again' });
 });
 
@@ -168,4 +168,17 @@ test('a section this screen has never heard of still renders, under CodeMie itse
 test('the summary counts the rows that ran, with no total written down anywhere', () => {
   assert.deepEqual(groupDoctorResults([ok('Node.js'), ok('AWS CLI')]).summary, { passing: 2, total: 2 });
   assert.deepEqual(groupDoctorResults([ok('Node.js')]).summary, { passing: 1, total: 1 });
+});
+
+// Real output, captured 2026-09-23 from the bundled CLI under an empty HOME: a
+// machine with no CodeMie configuration at all. The CLI's remedy is a terminal
+// command, "Run: codemie setup"; in the app the same thing is its own guided
+// setup, so the row offers that instead of "Check again", which changes nothing.
+test('no configuration: the profile row offers the app\'s own setup, not a terminal command', () => {
+  const { rows } = grouped('no-config');
+  const profile = rows.find((r) => r.group === 'account' && r.status === 'fail');
+  assert.equal(profile.label, 'No configuration found');
+  assert.deepEqual(profile.action, { kind: 'navigate', view: 'setup', label: 'Set up CodeMie' });
+  assert.equal(profile.remedyText, 'Set up CodeMie to create your profile.');
+  assert.equal(profile.remedyDetail, 'Run: codemie setup');
 });

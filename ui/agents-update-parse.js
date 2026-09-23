@@ -37,13 +37,17 @@ export function parseUpdateStatus(stdout) {
     if (SUMMARY.test(line)) break;
 
     const name = line.match(/^\s{2}(\S.*)$/);
-    const latest = line.match(/^\s{4}Latest:\s+.*\(update available\)/);
+    const latest = line.match(/^\s{4}Latest:\s+(\S+)/);
     if (name) {
       current = { displayName: name[1].trim(), updateAvailable: false };
       out.push(current);
       continue;
     }
-    if (latest && current) current.updateAvailable = true;
+    if (latest && current) {
+      // The version on offer, so the row can say what Update would install.
+      current.latest = latest[1];
+      if (/\(update available\)/.test(line)) current.updateAvailable = true;
+    }
   }
   return out;
 }

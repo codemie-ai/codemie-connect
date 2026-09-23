@@ -1,4 +1,4 @@
-// Headless driver for `codemie setup --force`. Drives the CLI through a real
+// Headless driver for `codemie setup`. Drives the CLI through a real
 // (headless) xterm.js Terminal fed with the PTY's byte stream, re-parses the
 // screen via ./setup-parse.js's detectPrompt after every chunk, and answers
 // prompts either automatically (fixed policy) or by calling the caller's
@@ -14,6 +14,16 @@ import { detectPrompt, isQ } from './setup-parse.js';
 
 const COLS = 100;
 const ROWS = 30;
+
+// No --force: that flag skips the CLI's "add a new profile or update one"
+// question, and the user answers it now. Run from /, not the home directory
+// the PTY starts in: from ~ the CLI finds ~/.codemie/codemie-cli.config.json
+// again as a repository-local config (config.js hasProjectConfig), announces
+// "Local configuration detected", and an update saves the profile in the
+// local format over the global file. / has no .codemie. `;` rather than `&&`
+// so the same line runs in zsh and in Windows PowerShell 5.1, which has no
+// `&&`; `cd /` goes to the root of the current drive there.
+const SETUP_COMMAND = 'cd /; codemie setup';
 
 // Unrecognized (y/N)-style prompt (e.g. the analytics-sync consent screen):
 // setup-parse.js deliberately returns null for these (its own defect-fix
@@ -58,10 +68,15 @@ function translateConfirmAnswer(v) {
   return v ? 'y\r' : 'n\r';
 }
 
-// Fixed-policy answers, applied before ever calling onPrompt. `gate` always
-// takes the create-new-profile branch (never "update"); `storage` always
-// picks the global option (never "local"); `activate` is a confirm-kind
-// prompt answered yes.
+// Fixed-policy answers, applied before ever calling onPrompt. `storage`
+// always picks the global option (never "local"); `activate` is a
+// confirm-kind prompt answered yes.
+//
+// `gate` ("What would you like to do?": add a new profile or update one) was
+// fixed policy too, always "add", and the app ran `codemie setup --force`,
+// which skips the question entirely. It is the user's decision now, like
+// installClaude below: the question goes to onPrompt without the CLI's
+// Cancel, since the setup screen has its own way out.
 //
 // `installClaude` was fixed-policy here too (answered no) until the story
 // author ratified the open question EPMCDME-14513 carries: guided setup
@@ -70,9 +85,11 @@ function translateConfirmAnswer(v) {
 // other prompt -- EPMCDME-14513 renders it. Note the CLI's own default is Yes
 // ("(Y/n)"), so the rendered control should default to yes as well.
 const AUTO_LIST = {
-  gate: /add a new profile/i,
   storage: /global/i,
 };
+
+// The gate's own way out; the setup screen has a Cancel of its own.
+const GATE_CANCEL = /^cancel$/i;
 const AUTO_CONFIRM = { activate: true };
 
 // inquirer renders a failed `validate` as the question line with the rejected
@@ -145,66 +162,109 @@ function pickAutoListIndex(options, wantRe) {
 // number of steps to return the cursor to its starting position. Returns the
 // deduplicated raw option list (Custom included) and the same list with any
 // `/^custom/i` entry filtered out, for presenting to onPrompt.
-async function collectModelOptions(initialOptions, initialSelectedIndex, { currentChunkSeq, waitForChunkAfter, writeArrowDown, writeArrowUp }) {
+// The label on the row that really carries the cursor marker under the open
+// question, or undefined when no row does yet. detectPrompt cannot say: its
+// selectedIndex falls back to the first row when it finds no marker, and the
+// CLI repaints a list in more than one chunk, so a chunk can arrive before the
+// marker row has been redrawn (measured 2026-09-23, a 41-model list read as 15).
+function markedLabel(lines) {
+  let q = -1;
+  for (let i = 0; i < lines.length; i += 1) if (isQ(lines[i])) q = i;
+  if (q === -1) return undefined;
+  for (let r = q + 1; r < lines.length; r += 1) {
+    const raw = lines[r];
+    if (!raw.trim() || isQ(raw)) break;
+    const m = raw.trimStart().match(/^[>❯]\s*(.*)$/);
+    if (m) return m[1].trim() || undefined;
+  }
+  return undefined;
+}
+
+// Walks a paged inquirer list to its end and back, returning every option in
+// the CLI's order. Used for the model list and for the profile list an update
+// picks from; both show a page at a time. `step` names the prompt in errors.
+async function collectListOptions(initialOptions, initialSelectedIndex, { step, initialLines = [], currentChunkSeq, waitForChunkAfter, writeArrowDown, writeArrowUp }) {
   const raw = [...initialOptions];
   let steps = 0;
   let settledPagination = false;
-  let lastLines = [];
-  // Round-4 review fix (R4-2): a real inquirer list renders a fixed-size
-  // viewport PAGE and only scrolls once the cursor reaches the bottom of the
-  // currently-rendered page -- so the first several arrow-down presses on a
-  // long list reveal ZERO new options (the cursor is simply moving within
-  // the already-visible page) even though the walk is making real progress.
-  // Terminating on "no new option appeared" alone (the old rule) mistakes
-  // that for the list having only one entry. detectPrompt's selectedIndex is
-  // the cursor's position within whatever is currently rendered, so tracking
-  // it lets the walk tell "cursor moved within the page" (keep going) apart
-  // from "arrow-down had no visible effect at all" (genuinely exhausted).
-  let lastSelectedIndex = initialSelectedIndex;
+  let lastLines = initialLines;
+  // Each press is read by where the cursor marker ends up, not by the first
+  // chunk that follows it. Measured against the real CLI on 2026-09-23: the
+  // chunk after an arrow key can be the tail of the list's first drawing, with
+  // the marker still where it was, and reading that as the answer to the press
+  // ended a 41-model walk after one step with 15 models. So a press is waited
+  // on until the marker has moved to another row, or until the screen has gone
+  // quiet with it unmoved.
+  //
+  // inquirer's lists loop by default (incrementListIndex.js: down from the last
+  // entry goes to the first), so every press moves the marker: within a page,
+  // or with the page scrolling under it (paginator.js keeps it mid-page), or
+  // round to the top. Coming back to an entry already highlighted means the
+  // walk has been all the way round. A marker that does not move at all means
+  // a list that does not loop has reached its end. Either way nothing is left.
+  let current = markedLabel(initialLines) ?? initialOptions[initialSelectedIndex];
+  const highlighted = new Set([current]);
   while (steps < MAX_MODEL_PAGINATION_STEPS) {
     // Capture the sequence number BEFORE writing the arrow key, so a redraw
     // chunk that lands while writeArrowDown() itself is still in flight (an
     // async PTY-input round trip) is never missed by the wait below.
-    const baseSeq = currentChunkSeq();
+    let seq = currentChunkSeq();
     await writeArrowDown();
     steps += 1;
-    let chunk;
-    try {
-      // Round-3 review fix #2: the CLI's redrawn output after this arrow-key
-      // press arrives as a NEW, separate PTY chunk some time later -- never
-      // read the screen synchronously right after writeArrowDown() (that
-      // would still observe the PRE-redraw buffer, exactly the bug this fix
-      // closes). Wait for that chunk to actually land and be parsed, with a
-      // timeout so a CLI that never redraws fails fast instead of hanging.
-      chunk = await waitForChunkAfter(baseSeq, MODEL_STEP_REDRAW_TIMEOUT_MS);
-    } catch {
+    const deadline = Date.now() + MODEL_STEP_REDRAW_TIMEOUT_MS;
+    let sawChunk = false;
+    let moved;
+    while (moved === undefined) {
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      let chunk;
+      try {
+        // Round-3 review fix #2: the redraw arrives as a NEW PTY chunk some
+        // time after the key, never read the screen synchronously.
+        chunk = await waitForChunkAfter(seq, left);
+      } catch {
+        break;
+      }
+      sawChunk = true;
+      // Wait for the chunk after THIS one, not after the latest: a chunk that
+      // landed while this one was being handed over is still to be read.
+      seq = chunk.seq ?? currentChunkSeq();
+      lastLines = chunk.lines;
+      // Only a screen showing this list's own question is read. Mid-redraw
+      // the list can be half erased with an earlier, answered question the
+      // last one on screen, and detectPrompt then reads that question's
+      // trailing lines as options (measured: "✓ Selected project" and
+      // "✔ Found 41 available models" in the model list, which shifted every
+      // later model by two and would have picked the wrong one).
+      if (chunk.prompt?.id !== step) continue;
+      for (const o of chunk.prompt.options ?? []) if (!raw.includes(o)) raw.push(o);
+      const now = markedLabel(chunk.lines);
+      if (now !== undefined && now !== current) moved = now;
+    }
+    if (!sawChunk) {
       throw {
-        step: 'model',
-        message: `model list did not redraw within ${MODEL_STEP_REDRAW_TIMEOUT_MS}ms after an arrow-key step`,
+        step,
+        message: `${step} list did not redraw within ${MODEL_STEP_REDRAW_TIMEOUT_MS}ms after an arrow-key step`,
         raw: lastLines.join('\n'),
       };
     }
-    lastLines = chunk.lines;
-    const newOptions = chunk.prompt?.options ?? [];
-    const newSelectedIndex = chunk.prompt?.selectedIndex;
-    const before = raw.length;
-    for (const o of newOptions) if (!raw.includes(o)) raw.push(o);
-    const optionsChanged = raw.length !== before;
-    const cursorMoved = newSelectedIndex !== undefined && newSelectedIndex !== lastSelectedIndex;
-    if (newSelectedIndex !== undefined) lastSelectedIndex = newSelectedIndex;
-    // Stop only once BOTH the options list AND the cursor position were
-    // unchanged by this step -- i.e. the arrow-down press had no visible
-    // effect at all, meaning the list has genuinely been exhausted.
-    if (!optionsChanged && !cursorMoved) { settledPagination = true; break; }
+    if (moved === undefined || highlighted.has(moved)) { settledPagination = true; break; }
+    highlighted.add(moved);
+    current = moved;
   }
   if (!settledPagination) {
     throw {
-      step: 'model',
-      message: `model list pagination did not settle after ${MAX_MODEL_PAGINATION_STEPS} steps`,
+      step,
+      message: `${step} list pagination did not settle after ${MAX_MODEL_PAGINATION_STEPS} steps`,
       raw: raw.join('\n'),
     };
   }
   for (let i = 0; i < steps; i += 1) await writeArrowUp();
+  return raw;
+}
+
+async function collectModelOptions(initialOptions, initialSelectedIndex, deps) {
+  const raw = await collectListOptions(initialOptions, initialSelectedIndex, { ...deps, step: 'model' });
   const filtered = raw.filter((o) => !/^custom/i.test(o));
   return { raw, filtered };
 }
@@ -328,6 +388,9 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
   // Captured from the profileName input prompt's own answer (Task 9's
   // uniform input branch); resolved into the final result on zero exit.
   let profileName = null;
+  // True once the user picked "Update an existing profile" and a profile to
+  // update. The CLI then asks no profile name and does not switch profiles.
+  let updated = false;
 
   // Per-run (closure-scoped) dedup guard: a single startSetup() call is a
   // single PTY, so there is no concurrency beyond the module-level single-
@@ -561,8 +624,44 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
         return;
       }
 
+      if (prompt.id === 'gate') {
+        const shown = prompt.options.filter((o) => !GATE_CANCEL.test(o));
+        const answer = await onPromptCb({ kind: 'list', id: prompt.id, message: prompt.message, options: shown });
+        const rawIndex = Number.isInteger(answer) ? prompt.options.indexOf(shown[answer]) : -1;
+        if (rawIndex === -1) {
+          throw { step: 'gate', message: `invalid gate selection index: ${JSON.stringify(answer)}`, raw: lines.join('\n') };
+        }
+        await innerDeps.input(translateListAnswer(prompt.selectedIndex, rawIndex));
+        answeredOnce.add(prompt.id);
+        return;
+      }
+
+      // Only reached after the user chose to update. The list is paged like the
+      // model list, so it is walked to the end first; the profile picked is
+      // the one the CLI then updates in place.
+      if (prompt.id === 'updateProfile') {
+        const raw = await collectListOptions(prompt.options, prompt.selectedIndex, {
+          step: 'updateProfile',
+          initialLines: lines,
+          currentChunkSeq,
+          waitForChunkAfter,
+          writeArrowDown: () => innerDeps.input('\x1b[B'),
+          writeArrowUp: () => innerDeps.input('\x1b[A'),
+        });
+        const answer = await onPromptCb({ kind: 'list', id: prompt.id, message: prompt.message, options: raw });
+        if (!Number.isInteger(answer) || answer < 0 || answer >= raw.length) {
+          throw { step: 'updateProfile', message: `invalid updateProfile selection index: ${JSON.stringify(answer)}`, raw: lines.join('\n') };
+        }
+        await innerDeps.input(translateListAnswer(prompt.selectedIndex, answer));
+        profileName = raw[answer];
+        updated = true;
+        answeredOnce.add(prompt.id);
+        return;
+      }
+
       if (prompt.id === 'model') {
         const { raw, filtered } = await collectModelOptions(prompt.options, prompt.selectedIndex, {
+          initialLines: lines,
           currentChunkSeq,
           waitForChunkAfter,
           writeArrowDown: () => innerDeps.input('\x1b[B'),
@@ -859,7 +958,7 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
     noteChunkArrivedForSignatureStaleness();
 
     chunkSeq += 1;
-    lastChunkResult = { lines, prompt };
+    lastChunkResult = { lines, prompt, seq: chunkSeq };
     const waiters = chunkWaiters;
     chunkWaiters = [];
     for (const w of waiters) w.resolve(lastChunkResult);
@@ -905,7 +1004,7 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
   // after suspending is guaranteed to reach the same finally that resumes it.
   try {
     suspendPtyInput(); // spawn initiated: suspend ui/terminal.js's own keystroke forwarding
-    const spawnResultPromise = spawnPty('codemie setup --force', COLS, ROWS, onData).then(
+    const spawnResultPromise = spawnPty(SETUP_COMMAND, COLS, ROWS, onData).then(
       async ({ code }) => {
         exited = true;
         // The real bridge only fires its exit event after all pty-data
@@ -928,7 +1027,7 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
     spawnResultPromise.then(
       (code) => {
         if (code === 0) {
-          settleResolve({ profileName });
+          settleResolve({ profileName, updated });
         } else {
           // EPMCDME-14588: the exit code alone says nothing the user can act on,
           // and the CLI's own fatal message never reaches the terminal

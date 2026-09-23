@@ -16,6 +16,7 @@ export const isQ = (l) => l.trimStart().startsWith('?');
 // Ordered: all named anchors first; credential catch-all last.
 const PROMPTS = [
   { id: 'gate',          kind: 'list',    anchor: 'What would you like to do?' },
+  { id: 'updateProfile', kind: 'list',    anchor: 'Select profile to update:' },
   { id: 'storage',       kind: 'list',    anchor: 'Where would you like to store this configuration?' },
   { id: 'provider',      kind: 'list',    anchor: 'Choose your LLM provider:' },
   { id: 'codemieUrl',    kind: 'input',   anchor: 'CodeMie organization URL:' },
