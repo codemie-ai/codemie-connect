@@ -585,8 +585,13 @@ body::before {
 .setup-option-title { font-weight: 600; }
 .setup-option-description { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .setup-option-badge {
+  /* On the card's right, centred, so it never pushes the card taller. */
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-block;
-  margin: 6px 0 0 0;
+  margin: 0;
   padding: 1px 8px;
   border: 1px solid var(--accent-blue);
   border-radius: 999px;
@@ -596,6 +601,8 @@ body::before {
   color: var(--accent-blue);
   background: transparent;
 }
+/* Room for the badge, so a long description never runs under it. */
+.setup-option-card.recommended { padding-right: 130px; }
 
 /* Text input: one full-width field, Continue on its own line below. */
 .prompt-input {
@@ -628,6 +635,9 @@ body::before {
   transition: background 0.18s ease, color 0.18s ease;
 }
 .setup-continue-btn:hover { filter: brightness(1.08); }
+/* Continue stays in view while a list longer than the window scrolls: six
+   providers already pushed it below the fold. */
+.prompt-control .setup-continue-btn { position: sticky; bottom: 12px; z-index: 1; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
 
 /* Closing line under the list once the profile is verified active. */
 .setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }
