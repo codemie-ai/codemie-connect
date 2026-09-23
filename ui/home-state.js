@@ -118,6 +118,15 @@ function agentsCard(agents) {
   };
 }
 
+// What Home's Sign in does. `codemie profile login` opens the browser for the
+// CodeMie URL a profile records, and with no profile it refuses ("No AI/Run
+// CodeMie URL configured", measured 2026-09-23) -- so until there is a profile,
+// Sign in opens guided setup, whose own steps sign the user in in the browser.
+export function signInAction({ config, auth } = {}) {
+  const noProfile = (auth && auth.state === 'no_profile') || !config || config.state === 'no-configuration';
+  return noProfile ? 'setup' : 'login';
+}
+
 // `onboarded` is whether the checklist has ever been finished on this machine
 // (the renderer remembers it). Health is read fresh each time the app opens, so
 // without it a user who finished setup yesterday is back on the checklist, with

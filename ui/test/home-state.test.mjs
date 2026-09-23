@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveHome, HOME_ITEMS } from '../home-state.js';
+import { deriveHome, HOME_ITEMS, signInAction } from '../home-state.js';
 import { StepStatus } from '../models.js';
 
 const valid = { state: 'valid', profile: 'demo7', model: 'claude-sonnet-5', project: 'epm-sdai', account: 'me@epam.com' };
@@ -140,4 +140,15 @@ test('the Profile card does not say "not signed in" before the auth read comes b
   const profile = s.cards.find((c) => c.id === 'profile');
   assert.notEqual(profile.badge.text, 'not signed in');
   assert.equal(profile.badge.tone, 'muted');
+});
+
+// `codemie profile login` needs a profile to know which CodeMie to open; with
+// none it refuses (measured: "No AI/Run CodeMie URL configured"). Guided setup
+// signs the user in in the browser as one of its own steps, so that is where
+// Sign in goes until there is a profile to sign in to.
+test('Sign in opens guided setup when there is no profile, and signs in when there is', () => {
+  assert.equal(signInAction({ config: { state: 'no-configuration' }, auth: { state: 'no_profile' } }), 'setup');
+  assert.equal(signInAction({ config: null, auth: { state: 'no_profile' } }), 'setup');
+  assert.equal(signInAction({ config: valid, auth: { state: 'not_signed_in' } }), 'login');
+  assert.equal(signInAction({ config: { state: 'broken', profile: 'x' }, auth: { state: 'not_signed_in' } }), 'login');
 });

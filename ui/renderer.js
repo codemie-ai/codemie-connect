@@ -18,7 +18,7 @@ import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
 import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
-import { deriveHome } from './home-state.js';
+import { deriveHome, signInAction } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
 
@@ -199,7 +199,7 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
     else if (id === 'agent') showView('agents');
     else if (id === 'health') showView('health');
   },
-  onSignIn: () => startSignIn(),
+  onSignIn: () => (signInAction(home) === 'setup' ? openGuidedSetup() : startSignIn()),
   onCard: (id) => showView(id),
   onSetupAgain: () => openGuidedSetup(),
   // Item 3 installs through the Agents controller, which refreshes Home on its
@@ -257,6 +257,10 @@ async function refreshAgents() {
 // start() is safe to call again on a settled instance: it resets itself. The
 // module is imported on first use so the driver stays out of the boot path.
 let setupView = null;
+// True while a guided setup run is open; runAction reads it. setupSettled
+// resolves once that run has fully unwound.
+let setupRunning = false;
+let setupSettled = Promise.resolve();
 async function openGuidedSetup() {
   showView('setup');
   if (!setupView) {
@@ -269,8 +273,11 @@ async function openGuidedSetup() {
       },
     });
   }
+  const run = setupView.start();
+  setupRunning = true;
+  setupSettled = run.then(() => {}, () => {}).finally(() => { setupRunning = false; });
   try {
-    return await setupView.start();
+    return await run;
   } finally {
     // A run writes the profile and may sign the user in; Home re-reads both.
     refreshIdentityOnComplete();
@@ -453,7 +460,26 @@ function dismissAppUpdateBanner() {
 }
 
 // ---- one-shot command action (proxy connect / analytics) ----
+// The app has one terminal (PTY) slot, and guided setup holds it for as long
+// as a run is open -- including while it waits on a question the user walked
+// away from. Anything else that needs the slot (the analytics report, the
+// Claude Desktop connection) asks to stop that run first, instead of failing
+// with the bridge's bare "PTY already active".
 async function runAction(title, cmd, returnView = 'home', hint) {
+  if (setupRunning) {
+    showNotice({
+      title: 'Setup is still running',
+      message: 'Guided setup is waiting for an answer, and only one can run at a time. Stop setup to go on; you can start it again from Home.',
+      primaryLabel: 'Stop setup and continue',
+      primaryAction: async () => {
+        const { cancelSetup } = await import('./setup-driver.js');
+        await cancelSetup();
+        await setupSettled;
+        runAction(title, cmd, returnView, hint);
+      },
+    });
+    return;
+  }
   openTerminal(title, { keepOpen: true, hint, onClose: () => showView(returnView) });
   try {
     const { code } = await bridge.pty.spawnPty(cmd);
@@ -483,7 +509,8 @@ const healthController = createHealthController({
       onLine(text, tag);
     }),
   openLog: () => invoke('open_log'),
-  onNavigate: (view) => showView(view),
+  // 'setup' is not a screen to show but a run to start: guided setup.
+  onNavigate: (view) => (view === 'setup' ? openGuidedSetup() : showView(view)),
   signIn: () => startSignIn(),
   onResult: (result) => {
     home.health = result;

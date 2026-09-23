@@ -64,6 +64,15 @@ function remedyFor(items) {
   const problems = items.filter(isProblem);
   const hints = [...new Set(problems.map((r) => r.hint).filter(Boolean))];
   const remedyDetail = hints.join('\n') || undefined;
+  // No profile at all (the CLI says "Run: codemie setup"). The app's own
+  // guided setup is that command, so the row opens it.
+  if (hints.some((h) => /\bcodemie setup\b/.test(h))) {
+    return {
+      remedyText: 'Set up CodeMie to create your profile.',
+      remedyDetail,
+      action: { kind: 'navigate', view: 'setup', label: 'Set up CodeMie' },
+    };
+  }
   if (hints.some((h) => h.includes('codemie profile login'))) {
     return {
       remedyText: 'Sign in again to restore your CodeMie session.',
