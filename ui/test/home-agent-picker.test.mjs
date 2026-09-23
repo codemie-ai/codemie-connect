@@ -147,7 +147,8 @@ test('item 3 expands in place instead of navigating, and collapses when clicked 
   const container = makeEl('div');
   const opened = [];
   const view = createHomeView(container, { stepsUi: fakeStepsUi(), onItem: (id) => opened.push(id) });
-  view.render(checklist());
+  // Ticked, so it does not open by itself (see the next test for that).
+  view.render(checklist('COMPLETE'));
   assert.equal(container.querySelector('.home-picker'), null);
 
   container.querySelector('.step-row[data-id="agent"]')._click();
@@ -160,13 +161,47 @@ test('item 3 expands in place instead of navigating, and collapses when clicked 
   assert.equal(container.querySelector('.home-picker'), null);
 });
 
+// When "Install an agent" is the step the user is on (the two before it done,
+// nothing installed yet), its list opens by itself: the checklist moves on to
+// it rather than waiting for a click nothing points at. Closing it is kept.
+test('item 3 opens by itself when it is the step the user is on, and stays closed once closed', () => {
+  const container = makeEl('div');
+  const view = createHomeView(container, { stepsUi: fakeStepsUi() });
+  view.render(checklist());
+  assert.ok(container.querySelector('.home-picker'), 'open without a click');
+  container.querySelector('.step-row[data-id="agent"]')._click();
+  assert.equal(container.querySelector('.home-picker'), null);
+  view.render(checklist());
+  assert.equal(container.querySelector('.home-picker'), null, 'a refresh does not reopen what the user closed');
+});
+
+// Measured in the app: at launch the step reads "Checking…" until the agent
+// list arrives, and opening it then showed "Reading the agent list…" and stayed
+// open once the list said agents were installed after all.
+test('item 3 does not open by itself before the agent list has been read', () => {
+  const container = makeEl('div');
+  const view = createHomeView(container, { stepsUi: fakeStepsUi() });
+  view.render({ ...checklist(), agents: undefined });
+  assert.equal(container.querySelector('.home-picker'), null, 'not while reading');
+  view.render(checklist('COMPLETE'));
+  assert.equal(container.querySelector('.home-picker'), null, 'and not once it turns out agents are installed');
+});
+
+test('item 3 does not open by itself before its turn', () => {
+  const container = makeEl('div');
+  const view = createHomeView(container, { stepsUi: fakeStepsUi() });
+  const early = checklist();
+  early.items = early.items.map((i) => (i.id === 'model' ? { ...i, status: 'PENDING' } : i));
+  view.render(early);
+  assert.equal(container.querySelector('.home-picker'), null);
+});
+
 // The list already shows every agent, installed or not, so the only button in
 // the row is the one that installs; the Agents screen is the sidebar's job.
 test('the row offers nothing but installing: no second way out of the flow', () => {
   const container = makeEl('div');
   const view = createHomeView(container, { stepsUi: fakeStepsUi() });
   view.render(checklist());
-  container.querySelector('.step-row[data-id="agent"]')._click();
   const buttons = container.querySelector('.home-picker')._all((n) => n._tag === 'button').map((b) => b.textContent);
   assert.deepEqual(new Set(buttons), new Set(['Install']));
 });
@@ -177,9 +212,9 @@ test('the row offers nothing but installing: no second way out of the flow', () 
 test('an expanded row survives a refresh that arrives while it is open', () => {
   const container = makeEl('div');
   const view = createHomeView(container, { stepsUi: fakeStepsUi() });
-  view.render(checklist());
+  view.render(checklist('COMPLETE'));
   container.querySelector('.step-row[data-id="agent"]')._click();
-  view.render(checklist());
+  view.render(checklist('COMPLETE'));
   assert.ok(container.querySelector('.home-picker'), 'still open after the re-render');
 });
 
@@ -203,8 +238,7 @@ test('the install runs through the caller, streams its output into the row, and 
       return { ok: true };
     },
   });
-  view.render(checklist());
-  container.querySelector('.step-row[data-id="agent"]')._click();
+  view.render(checklist()); // its turn: the list is already open
   await container._all((n) => n._tag === 'button' && n.textContent === 'Install')[0].onclick({ stopPropagation() {} });
 
   assert.deepEqual(calls, ['claude']);
@@ -223,8 +257,7 @@ test('a failed install leaves the row open with the reason, and the item incompl
     stepsUi: fakeStepsUi(),
     onInstallAgent: async () => ({ ok: false, message: 'Installing needs a connection.' }),
   });
-  view.render(checklist());
-  container.querySelector('.step-row[data-id="agent"]')._click();
+  view.render(checklist()); // its turn: the list is already open
   await container._all((n) => n._tag === 'button' && n.textContent === 'Install')[0].onclick({ stopPropagation() {} });
 
   assert.ok(container.querySelector('.home-picker'), 'the row stays open');
@@ -237,8 +270,7 @@ test('an install that throws is reported in the row rather than lost', async () 
     stepsUi: fakeStepsUi(),
     onInstallAgent: async () => { throw new Error('the bridge went away'); },
   });
-  view.render(checklist());
-  container.querySelector('.step-row[data-id="agent"]')._click();
+  view.render(checklist()); // its turn: the list is already open
   await container._all((n) => n._tag === 'button' && n.textContent === 'Install')[0].onclick({ stopPropagation() {} });
   assert.ok(container._text().includes('the bridge went away'));
 });
@@ -259,7 +291,7 @@ test('an unread or failed agent list says so, and offers nothing to install', ()
 test('item 3 carries a chevron that flips with the row', () => {
   const container = makeEl('div');
   const view = createHomeView(container, { stepsUi: fakeStepsUi() });
-  view.render(checklist());
+  view.render(checklist('COMPLETE'));
   const chevron = () => container.querySelector('.home-row-toggle')?.textContent;
   assert.equal(chevron(), '⌄', 'closed');
   container.querySelector('.step-row[data-id="agent"]')._click();
@@ -281,6 +313,5 @@ test('item 3 does not open while the steps above it are unfinished', () => {
 
   view.render(checklist());
   assert.ok(container.querySelector('.home-row-toggle'), 'the chevron appears once the steps above are done');
-  container.querySelector('.step-row[data-id="agent"]')._click();
-  assert.ok(container.querySelector('.home-picker'));
+  assert.ok(container.querySelector('.home-picker'), 'and, its turn come, the list is open');
 });

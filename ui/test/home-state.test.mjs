@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveHome, HOME_ITEMS, signInAction } from '../home-state.js';
+import { deriveHome, HOME_ITEMS, signInAction, autoHealthCheck } from '../home-state.js';
 import { StepStatus } from '../models.js';
 
 const valid = { state: 'valid', profile: 'demo7', model: 'claude-sonnet-5', project: 'epm-sdai', account: 'me@epam.com' };
@@ -151,4 +151,25 @@ test('Sign in opens guided setup when there is no profile, and signs in when the
   assert.equal(signInAction({ config: null, auth: { state: 'no_profile' } }), 'setup');
   assert.equal(signInAction({ config: valid, auth: { state: 'not_signed_in' } }), 'login');
   assert.equal(signInAction({ config: { state: 'broken', profile: 'x' }, auth: { state: 'not_signed_in' } }), 'login');
+});
+
+// Finishing setup returned the user to a checklist that just sat there, the
+// last step waiting on a click nothing pointed at. Once the steps before it
+// are done, the health check runs by itself; while it runs the step says so.
+test('the health check starts by itself once the steps before it are done', () => {
+  const ready = deriveHome({ config: valid, auth: signedIn, agents, health: null });
+  assert.equal(autoHealthCheck(ready), true);
+  const notReady = deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: null });
+  assert.equal(autoHealthCheck(notReady), false);
+  const alreadyChecked = deriveHome({ config: valid, auth: signedIn, agents, health: healthy });
+  assert.equal(autoHealthCheck(alreadyChecked), false);
+  const running = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true });
+  assert.equal(autoHealthCheck(running), false);
+});
+
+test('a running health check shows on its step', () => {
+  const s = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true });
+  const h = s.items.find((i) => i.id === 'health');
+  assert.equal(h.status, StepStatus.ACTIVE);
+  assert.equal(h.subtitle, 'Checking…');
 });

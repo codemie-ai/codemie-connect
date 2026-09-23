@@ -31,6 +31,9 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
   let busy = null;
   let failure = null;
   let lastState = null;
+  // Item 3 opens by itself once, when it becomes the step the user is on;
+  // after that only the user opens or closes it.
+  let agentAutoOpened = false;
 
   function renderChecklist({ items, agents }) {
     const block = el('section', 'home-check');
@@ -70,6 +73,14 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
     // nowhere, so the row only opens once its turn comes: no chevron before
     // that, and a click does nothing.
     const agentReady = itemsBefore(items, 'agent').every((i) => i.status === StepStatus.COMPLETE);
+    // Its turn and nothing installed yet: open the list rather than leave the
+    // checklist waiting for a click nothing points at.
+    const agentItem = items.find((i) => i.id === 'agent');
+    // Only once the list has been read: before that the step is pending too.
+    if (agentReady && !agentAutoOpened && Array.isArray(agents) && agentItem && agentItem.status === StepStatus.PENDING && expanded === null) {
+      expanded = 'agent';
+      agentAutoOpened = true;
+    }
     if (agentRow && agentReady) {
       // The chevron goes on before the list does, so it stays on the title line
       // while the list wraps under it.

@@ -66,7 +66,8 @@ function agentItem(def, agents) {
 
 // "Passed" is no failing row. A warning (an agent the CLI has advice on) is
 // not a reason to keep the checklist on screen forever.
-function healthItem(def, health) {
+function healthItem(def, health, running) {
+  if (!health && running) return item(def, StepStatus.ACTIVE, 'Checking…');
   if (!health) return item(def, StepStatus.PENDING, 'Not checked yet');
   const failing = health.rows.filter((r) => r.status === 'fail').length;
   const { passing, total } = health.summary;
@@ -118,6 +119,16 @@ function agentsCard(agents) {
   };
 }
 
+// Whether Home should start the health check itself: the checklist is up, the
+// steps before the check are done and it has not run. Finishing setup used to
+// leave the user on a checklist that just waited for a click on its last step.
+export function autoHealthCheck(state) {
+  if (!state || state.done) return false;
+  const health = state.items.find((i) => i.id === 'health');
+  const before = state.items.filter((i) => i.id !== 'health');
+  return !!health && health.status === StepStatus.PENDING && before.every((i) => i.status === StepStatus.COMPLETE);
+}
+
 // What Home's Sign in does. `codemie profile login` opens the browser for the
 // CodeMie URL a profile records, and with no profile it refuses ("No AI/Run
 // CodeMie URL configured", measured 2026-09-23) -- so until there is a profile,
@@ -131,9 +142,9 @@ export function signInAction({ config, auth } = {}) {
 // (the renderer remembers it). Health is read fresh each time the app opens, so
 // without it a user who finished setup yesterday is back on the checklist, with
 // the sidebar locked, until they run the check again.
-export function deriveHome({ config, auth, agents, health, onboarded = false } = {}) {
+export function deriveHome({ config, auth, agents, health, onboarded = false, healthRunning = false } = {}) {
   const [signIn, model, agent, healthDef] = HOME_ITEMS;
-  const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health)];
+  const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health, healthRunning)];
   const complete = items.every((i) => i.status === StepStatus.COMPLETE);
   // Once setup has finished, only a lapsed sign-in brings the checklist back:
   // its Sign in button is the only one Home has until the broken-profile panel

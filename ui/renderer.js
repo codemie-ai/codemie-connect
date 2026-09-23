@@ -18,7 +18,7 @@ import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
 import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
-import { deriveHome, signInAction } from './home-state.js';
+import { deriveHome, signInAction, autoHealthCheck } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
 
@@ -217,6 +217,8 @@ const homeStorage = (() => {
 })();
 let onboarded = readOnboarded(homeStorage);
 
+let autoHealthStarted = false;
+
 function renderHome() {
   const state = deriveHome({ ...home, onboarded });
   if (state.done && !onboarded) {
@@ -224,6 +226,13 @@ function renderHome() {
     rememberOnboarded(homeStorage);
   }
   homeScreen.render(state);
+  // The last step starts by itself once the ones before it are done, instead
+  // of leaving the user on a checklist that waits for a click. Once a session:
+  // a check that fails leaves its step saying so, and Home does not retry it.
+  if (!autoHealthStarted && autoHealthCheck(state)) {
+    autoHealthStarted = true;
+    setTimeout(startHealthInPlace, 0);
+  }
   // The other screens stay locked until the checklist is first done; Home
   // never is, so an item that opened Agents or Health always has a way back.
   applyOnboardingNav(document, { done: state.unlocked });
@@ -513,12 +522,26 @@ const healthController = createHealthController({
   signIn: () => startSignIn(),
   onResult: (result) => {
     home.health = result;
+    home.healthRunning = false;
     renderHome();
   },
   onFailure: () => {
     healthChecked = false;
+    home.healthRunning = false;
+    renderHome();
   },
 });
+
+// Runs the health check from Home, without leaving it: the step shows it
+// running, and its result ticks the step (or names the problems) the same way
+// a check run from the Health screen does.
+function startHealthInPlace() {
+  if (healthChecked) return;
+  healthChecked = true;
+  home.healthRunning = true;
+  renderHome();
+  healthController.run();
+}
 
 // The Agents screen (EPMCDME-14514). Its own steps-ui instance, its own
 // `codemie list` read; onResult hands the same records to Home so the checklist
