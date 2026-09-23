@@ -93,13 +93,23 @@ test('Home status cards share one row height', () => {
   assert.match(rule, /grid-auto-rows:\s*1fr/);
 });
 
-// The banners are cards with rounded corners; flush against the window's
-// edges the corners were cut off and they read as bars, not cards.
-test('top-banner: banners are inset from the window edges', () => {
-  const rule = css.match(/\.top-banner\s*\{[^}]*\}/)?.[0] ?? '';
-  const margin = rule.match(/margin:\s*([^;]+);/)?.[1] ?? '';
-  const parts = margin.trim().split(/\s+/);
-  assert.ok(parts.length >= 2 && parts[1] !== '0', `horizontal margin in "${margin}"`);
+// 01-home.png draws the update as a card in Home, under the status cards,
+// not as a bar across the top of the window.
+test('update cards sit inside Home, under its body', () => {
+  const homeStart = html.indexOf('<div id="home-view"');
+  const homeEnd = html.indexOf('<!-- ============ WIZARD');
+  const body = html.indexOf('<div id="home-body"');
+  for (const id of ['update-banner', 'app-update-banner']) {
+    const at = html.indexOf(`<div id="${id}"`);
+    assert.ok(at > body && at < homeEnd && at > homeStart, `${id} is inside #home-view, after #home-body`);
+  }
+});
+
+// Home's body grows with its content instead of filling the view, so the
+// update cards follow right under the status cards, not at the window's foot.
+test('Home body takes its content height, so the update cards follow it', () => {
+  const rule = css.match(/#home-body\s*\{[^}]*\}/)?.[0] ?? '';
+  assert.match(rule, /flex:\s*0 1 auto/);
 });
 
 // Connections is reached from the sidebar like every other screen, so it
