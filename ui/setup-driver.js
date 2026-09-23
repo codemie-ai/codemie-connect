@@ -275,6 +275,15 @@ export async function cancelSetup() {
 
 // eslint-disable-next-line no-unused-vars -- replay is accepted and intentionally ignored (EPMCDME-14656 implements it later)
 async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
+  // TEMP DEBUG — EPMCDME-14982, remove before commit (Task 7)
+  async function debugLog(tag, payload) {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const line = `[${new Date().toISOString()}] ${tag} ${JSON.stringify(payload)}\n`;
+    fs.appendFileSync(path.join(os.tmpdir(), 'codemie-setup-debug.log'), line);
+  }
+
   const spawnPty = deps.spawnPty ?? (await import('./runner-bridge.js')).pty.spawnPty;
   const input = deps.input ?? (await import('./runner-bridge.js')).pty.input;
   const kill = deps.kill ?? (await import('./runner-bridge.js')).pty.kill;
@@ -303,11 +312,13 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
     rejectRun = reject;
   });
   function settleResolve(value) {
+    debugLog('resolve', { value }); // TEMP DEBUG — EPMCDME-14982, remove before commit (Task 7)
     if (settled) return;
     settled = true;
     resolveRun(value);
   }
   function settleReject(error) {
+    debugLog('reject', { error }); // TEMP DEBUG — EPMCDME-14982, remove before commit (Task 7)
     if (settled) return;
     settled = true;
     rejectRun(error);
@@ -815,14 +826,17 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
   // the queue for the next chunk's parse the moment THIS chunk is parsed,
   // regardless of how long handling it takes.
   async function processChunk(b64) {
+    debugLog('chunk', { b64 }); // TEMP DEBUG — EPMCDME-14982, remove before commit (Task 7)
     if (settled) return;
     const { bytes, text } = decode(b64);
     await writeToTerminal(bytes); // await the real parse before ever reading the screen
     if (settled) return; // the run may have settled while this chunk's write was parsing
     onLog?.(text); // collectModelOptions()'s own screen reads see real, fully-parsed state
     const lines = readScreen();
+    debugLog('screen', { lines }); // TEMP DEBUG — EPMCDME-14982, remove before commit (Task 7)
     onScreen?.(lines);
     const prompt = detectPrompt(lines);
+    debugLog('prompt', { prompt }); // TEMP DEBUG — EPMCDME-14982, remove before commit (Task 7)
 
     // Round-4 review fix (R4-1): the signature is only allowed to be cleared
     // once IDLE_MS has passed since the LAST chunk arrived (signatureEligible-
