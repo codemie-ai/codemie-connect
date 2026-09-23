@@ -86,7 +86,6 @@ const homeView = views.home;
 const wizardView = views.wizard;
 const connectView = views.connect;
 const wizardBack = document.getElementById('wizard-back');
-const connectBack = document.getElementById('connect-back');
 const connectBtn = document.getElementById('connect-btn');
 const restartBtn = document.getElementById('restart-btn');
 const modeLabel = document.getElementById('wizard-mode-label');
@@ -901,7 +900,6 @@ async function boot() {
   });
 
   wizardBack.addEventListener('click', () => showView('home'));
-  connectBack.addEventListener('click', () => showView('home'));
   connectBtn.addEventListener('click', async () => {
     if (await ensureAuthenticated()) {
       runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect', 'Running automatically — no input needed.');

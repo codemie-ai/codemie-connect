@@ -101,3 +101,12 @@ test('top-banner: banners are inset from the window edges', () => {
   const parts = margin.trim().split(/\s+/);
   assert.ok(parts.length >= 2 && parts[1] !== '0', `horizontal margin in "${margin}"`);
 });
+
+// Connections is reached from the sidebar like every other screen, so it
+// carries neither the old launcher's "‹ Home" link nor its copyright footer
+// (Home lost that footer in EPMCDME-15189).
+test('Connections has no back link and no footer of its own', () => {
+  const connect = html.slice(html.indexOf('<div id="connect-view"'), html.indexOf('</div><!-- /#view-container -->'));
+  assert.doesNotMatch(connect, /connect-back|‹ Home/);
+  assert.doesNotMatch(connect, /<footer/);
+});
