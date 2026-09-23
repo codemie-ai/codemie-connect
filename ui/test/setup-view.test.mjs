@@ -2068,6 +2068,35 @@ test('the waiting row says it is waiting on the browser sign-in', async () => {
   assert.ok(!/\d+\s*(s|sec|second)/i.test(row.querySelector('.step-sub').textContent), 'no timer in the copy');
 });
 
+// Measured in a first run on 2026-09-23: the CLI's "Opening browser" line stays
+// on its screen after the sign-in is done, and every later gap (fetching the
+// project list, saving) was titled "Waiting for you to finish signing in"
+// again. The line counts once, when it first appears.
+test('a later gap is not titled as the sign-in wait just because the old line is still on screen', async () => {
+  const container = makeEl('div');
+  let capturedOnScreen;
+  let onPromptFn;
+  const view = createSetupView(container, {
+    startSetup: async ({ onScreen, onPrompt }) => { capturedOnScreen = onScreen; onPromptFn = onPrompt; return new Promise(() => {}); },
+    readConfig: okConfig,
+  });
+  view.start();
+  await Promise.resolve();
+  const screen = Array(30).fill('');
+  screen[10] = 'Opening browser for authentication...';
+  capturedOnScreen(screen);
+  // The sign-in is done: the next question arrives, and is answered.
+  const pending = onPromptFn({ kind: 'list', id: 'codemieProject', message: 'Select your project:', options: ['a', 'b'] });
+  await tick();
+  clickContinue(findRowById(container, 'codemieProject-1'));
+  await pending;
+  // A new gap opens while the old browser line is still on the CLI's screen.
+  capturedOnScreen(screen);
+  const gaps = (container._children ?? []).filter((c) => c.dataset?.id?.startsWith('working-'));
+  const last = gaps[gaps.length - 1];
+  assert.equal(last.querySelector('.step-title').textContent, 'Working…');
+});
+
 // A 41-model list made the setup screen a long page with Continue at its
 // bottom. A long list scrolls inside its own box; Continue stays under it.
 test('a long list scrolls in its own box with Continue outside it; a short one does not', async () => {

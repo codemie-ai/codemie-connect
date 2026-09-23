@@ -302,6 +302,10 @@ export function createSetupView(container, deps = {}) {
   // failure panel shows, so it is not repeated here.
   const BROWSER_OPENED = /Opening browser for authentication/;
   let waitingForSignIn = false;
+  // The browser line stays on the CLI's screen after the sign-in is done, so
+  // it counts once, when it appears, not on every later screen that still
+  // shows it (every later gap was titled "Waiting for you to finish signing in").
+  let signInLineSeen = false;
 
   // Lazy-default wiring per this file's own header comment: never resolved
   // (and never imports the underlying module) until actually invoked.
@@ -411,7 +415,12 @@ export function createSetupView(container, deps = {}) {
 
   // ---- browser sign-in wait ------------------------------------------------
   function noteSignIn(lines) {
-    if (!BROWSER_OPENED.test(lines.join('\n'))) return;
+    if (!BROWSER_OPENED.test(lines.join('\n'))) {
+      signInLineSeen = false;
+      return;
+    }
+    if (signInLineSeen) return;
+    signInLineSeen = true;
     waitingForSignIn = true;
     describeSignInWait();
   }
@@ -841,6 +850,8 @@ export function createSetupView(container, deps = {}) {
     install = null;
     failureOnScreen = null;
     pendingFailure = null;
+    waitingForSignIn = false;
+    signInLineSeen = false;
     // A retry re-answers every prompt from the top, so last run's values must
     // not linger: EPMCDME-14656's replay would otherwise read a mix of two runs.
     answeredValues.clear();
