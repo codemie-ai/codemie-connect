@@ -183,3 +183,11 @@ test('a ticked "Install an agent" says the agents are already installed', () => 
   const s = deriveHome({ config: valid, auth: signedIn, agents: two, health: null });
   assert.equal(s.items[2].subtitle, 'Already installed: Claude Code · OpenCode CLI');
 });
+
+// Measured at launch: until the sign-in read came back, item 1 showed its Sign
+// in button to a user who was signed in all along.
+test('before the sign-in read comes back, item 1 says it is checking', () => {
+  const s = deriveHome({ config: valid, auth: null, agents, health: null });
+  assert.equal(s.items[0].status, StepStatus.ACTIVE);
+  assert.equal(s.items[0].subtitle, 'Checking…');
+});

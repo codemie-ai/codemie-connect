@@ -27,6 +27,8 @@ const clock = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '
 const signedInDetail = (detail) => (detail || '').replace(/^Auth Status\s*[|│]\s*/, '').replace(/^✓\s*/, '').trim() || 'Signed in';
 
 function signInItem(def, auth) {
+  // Not read yet: say so, rather than offer Sign in to someone signed in.
+  if (!auth) return item(def, StepStatus.ACTIVE, 'Checking…');
   const state = auth && auth.state;
   // `unknown` means the provider does not report auth status, not that the
   // user is signed out. The profile is usable, which is what the item asks.

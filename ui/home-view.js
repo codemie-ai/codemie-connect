@@ -54,7 +54,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
     // Item 1 completes in place: there is no sign-in screen to go to.
     const signIn = items.find((i) => i.id === 'sign-in');
     const signInRow = listEl.querySelector('.step-row[data-id="sign-in"]');
-    if (signIn && signIn.status !== StepStatus.COMPLETE && signInRow) {
+    if (signIn && signIn.status === StepStatus.PENDING && signInRow) {
       const control = el('div', 'home-signin');
       const btn = el('button', 'btn btn-accent', 'Sign in');
       btn.onclick = (e) => {
@@ -63,6 +63,32 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       };
       control.append(btn, el('span', 'home-signin-hint', 'opens your browser'));
       signInRow.appendChild(control);
+    }
+
+    // Item 4 runs by itself (the renderer starts the check once the steps
+    // before it are done), so its row is not a link: clicking it took the user
+    // off Home to a screen that looked like the row opening. While it runs it
+    // shows a spinner; if it found problems, the row offers the way to them,
+    // since the sidebar's Health stays locked until the checklist finishes.
+    const health = items.find((i) => i.id === 'health');
+    const healthRow = listEl.querySelector('.step-row[data-id="health"]');
+    if (health && healthRow) {
+      if (health.status === StepStatus.ACTIVE) {
+        const spin = el('span', 'inline-spinner');
+        spin.setAttribute?.('aria-hidden', 'true');
+        const sub = healthRow.querySelector('.step-sub');
+        if (sub && sub.prepend) sub.prepend(spin);
+        else healthRow.appendChild(spin);
+      } else if (health.status === StepStatus.WARNING || health.status === StepStatus.ERROR) {
+        const control = el('div', 'home-signin');
+        const btn = el('button', 'btn btn-ghost', 'Open Health');
+        btn.onclick = (e) => {
+          e?.stopPropagation?.();
+          onItem?.('health');
+        };
+        control.appendChild(btn);
+        healthRow.appendChild(control);
+      }
     }
 
     // Item 3 completes in place too, the same way: the agents that are not
@@ -101,7 +127,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
 
     listEl.onclick = (e) => {
       const row = e?.target?.closest?.('.step-row');
-      if (!row || row.dataset.id === 'sign-in') return;
+      if (!row || row.dataset.id === 'sign-in' || row.dataset.id === 'health') return;
       const id = row.dataset.id;
       // Item 3 opens in place whether it is ticked or not: ticked means one
       // agent is installed, not that there is nothing left to add. The list

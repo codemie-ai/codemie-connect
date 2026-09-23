@@ -260,6 +260,9 @@ body::before {
 .home-check-list .step-row { cursor: pointer; }
 .home-check-list .step-row:hover .step-title { color: var(--violet); }
 .home-check-list .step-row[data-id="sign-in"] { cursor: default; flex-wrap: wrap; }
+/* Health runs by itself and is not a link: no pointer, no hover colour. */
+.home-check-list .step-row[data-id="health"] { cursor: default; flex-wrap: wrap; }
+.home-check-list .step-row[data-id="health"]:hover .step-title { color: inherit; }
 /* Item 3 does the same when it is open: the control belongs under the row,
    not beside its title. overflow stays visible so a long list is not clipped. */
 .home-check-list .step-row[data-id="agent"] { flex-wrap: wrap; overflow: visible; }
@@ -640,6 +643,7 @@ body::before {
 .setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }
 .setup-view-redirect { display: flex; align-items: center; gap: 8px; margin: 6px 12px 0; color: var(--muted); font-size: 12px; }
 .inline-spinner { width: 11px; height: 11px; border: 1.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: cm-spin 0.8s linear infinite; flex: none; }
+.step-sub .inline-spinner { display: inline-block; vertical-align: -1px; margin-right: 6px; }
 
 /* Collapsed rows (COMPLETE, this view only): "label -- value [icon]" on one
    line instead of the default stacked title/subtitle -- never touches the
