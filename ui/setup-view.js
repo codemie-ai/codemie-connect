@@ -516,6 +516,10 @@ export function createSetupView(container, deps = {}) {
     if (prompt.kind === 'list') renderListControl(host, promptWithRowId, submit);
     else if (prompt.kind === 'input') renderInputControl(host, promptWithRowId, submit);
     else if (prompt.kind === 'confirm') renderConfirmControl(host, promptWithRowId, submit);
+    // A question lower down the page (the provider list, the model list under
+    // five answered rows) opened with its Continue below the window. Scroll
+    // just far enough for it to show.
+    host.querySelector('.prompt-submit')?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
   }
 
   function onPrompt(prompt) {

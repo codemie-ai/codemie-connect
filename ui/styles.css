@@ -635,9 +635,6 @@ body::before {
   transition: background 0.18s ease, color 0.18s ease;
 }
 .setup-continue-btn:hover { filter: brightness(1.08); }
-/* Continue stays in view while a list longer than the window scrolls: six
-   providers already pushed it below the fold. */
-.prompt-control .setup-continue-btn { position: sticky; bottom: 12px; z-index: 1; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
 
 /* Closing line under the list once the profile is verified active. */
 .setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }

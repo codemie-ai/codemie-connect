@@ -122,16 +122,9 @@ test('Connections has no back link and no footer of its own', () => {
 });
 
 // Setup's option cards: the Recommended badge sits at the card's right, not
-// under its text, and Continue stays in view however long the list is (six
-// providers already pushed it below the window).
+// under its text.
 test('setup: the Recommended badge sits on the right of its card', () => {
   const rule = css.match(/\.setup-option-badge\s*\{[^}]*\}/)?.[0] ?? '';
   assert.match(rule, /position:\s*absolute/);
   assert.match(rule, /right:\s*\d+px/);
-});
-
-test('setup: Continue stays in view while the options scroll', () => {
-  const rule = css.match(/\.prompt-control \.setup-continue-btn\s*\{[^}]*\}/)?.[0] ?? '';
-  assert.match(rule, /position:\s*sticky/);
-  assert.match(rule, /bottom:\s*\d+px/);
 });

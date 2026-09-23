@@ -2116,3 +2116,33 @@ test('a finished setup goes back to Home by itself; a failed one stays', async (
   assert.equal(failedDone, 0);
   assert.equal(failed._children.find((c) => c.className === 'setup-view-redirect'), undefined);
 });
+
+// A question lower down the page (the model step, under five answered rows)
+// opened with its Continue below the window. Opening a question scrolls just
+// far enough for its Continue to show.
+test('opening a question scrolls its Continue into view', async () => {
+  const scrolled = [];
+  const realCreate = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = realCreate(tag);
+    el.scrollIntoView = (opts) => scrolled.push({ className: el.className, opts });
+    return el;
+  };
+  try {
+    const container = makeEl('div');
+    const fakeStartSetup = async ({ onPrompt }) => {
+      const pending = onPrompt({ kind: 'list', id: 'model', message: 'Choose a model', options: ['a', 'b'] });
+      await tick();
+      clickContinue(findRowById(container, 'model-1'));
+      await pending;
+      return { profileName: 'default' };
+    };
+    const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+    await view.start();
+  } finally {
+    globalThis.document.createElement = realCreate;
+  }
+  const cont = scrolled.find((s) => s.className === 'prompt-submit setup-continue-btn' || s.className.includes('prompt-submit'));
+  assert.ok(cont, 'Continue was scrolled into view');
+  assert.equal(cont.opts.block, 'nearest');
+});
