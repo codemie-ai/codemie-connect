@@ -92,3 +92,12 @@ test('Home status cards share one row height', () => {
   const rule = css.match(/\.home-cards\s*\{[^}]*\}/)?.[0] ?? '';
   assert.match(rule, /grid-auto-rows:\s*1fr/);
 });
+
+// The banners are cards with rounded corners; flush against the window's
+// edges the corners were cut off and they read as bars, not cards.
+test('top-banner: banners are inset from the window edges', () => {
+  const rule = css.match(/\.top-banner\s*\{[^}]*\}/)?.[0] ?? '';
+  const margin = rule.match(/margin:\s*([^;]+);/)?.[1] ?? '';
+  const parts = margin.trim().split(/\s+/);
+  assert.ok(parts.length >= 2 && parts[1] !== '0', `horizontal margin in "${margin}"`);
+});
