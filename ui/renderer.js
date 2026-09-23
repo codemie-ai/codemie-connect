@@ -579,7 +579,7 @@ async function ensureAuthenticated() {
       message:
         `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
       primaryLabel: 'Run setup',
-      primaryAction: () => enterWizard(),
+      primaryAction: () => openGuidedSetup(),
     });
     return false;
   }
