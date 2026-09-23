@@ -19,6 +19,7 @@ pub struct CmdRecord {
 #[derive(Default)]
 pub struct CmdLogStore {
     records: HashMap<String, CmdRecord>,
+    order: Vec<String>,
     next_id: u64,
 }
 
@@ -37,7 +38,19 @@ impl CmdLogStore {
                 raw_output: String::new(),
             },
         );
+        self.order.push(id.clone());
         id
+    }
+
+    fn list(&self) -> Vec<CmdRecord> {
+        self.order
+            .iter()
+            .filter_map(|id| self.records.get(id).cloned())
+            .collect()
+    }
+
+    fn get(&self, id: &str) -> Option<CmdRecord> {
+        self.records.get(id).cloned()
     }
 }
 
@@ -102,6 +115,16 @@ pub fn cmdlog_close(
         .map_err(crate::error::InstallerError::Other)
 }
 
+#[tauri::command]
+pub fn cmdlog_list(state: tauri::State<'_, AppState>) -> CmdResult<Vec<CmdRecord>> {
+    Ok(state.cmdlog.lock().unwrap().list())
+}
+
+#[tauri::command]
+pub fn cmdlog_get(id: String, state: tauri::State<'_, AppState>) -> CmdResult<Option<CmdRecord>> {
+    Ok(state.cmdlog.lock().unwrap().get(&id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +179,35 @@ mod tests {
         let mut store = CmdLogStore::default();
         assert!(store.append("cmd-999", "x").is_err());
         assert!(store.close("cmd-999", 0).is_err());
+    }
+
+    #[test]
+    fn list_returns_records_in_insertion_order() {
+        let mut store = CmdLogStore::default();
+        let first = store.open("echo one".into());
+        let second = store.open("echo two".into());
+        let ids: Vec<String> = store.list().into_iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![first, second]);
+    }
+
+    #[test]
+    fn get_returns_none_for_unknown_id_and_some_for_known_id() {
+        let mut store = CmdLogStore::default();
+        let id = store.open("echo hi".into());
+        assert!(store.get("cmd-999").is_none());
+        assert_eq!(store.get(&id).unwrap().command, "echo hi");
+    }
+
+    #[test]
+    fn overlapping_opens_produce_two_distinct_independently_mutable_records() {
+        let mut store = CmdLogStore::default();
+        let first = store.open("echo one".into());
+        let second = store.open("echo two".into());
+        assert_ne!(first, second);
+        store.append(&first, "one-output").unwrap();
+        store.close(&second, 1).unwrap();
+        assert_eq!(store.get(&first).unwrap().raw_output, "one-output");
+        assert_eq!(store.get(&first).unwrap().exit_code, None);
+        assert_eq!(store.get(&second).unwrap().exit_code, Some(1));
     }
 }
