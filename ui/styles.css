@@ -124,11 +124,11 @@ body::before {
 #app-sidebar {
   display: flex;
   flex-direction: column;
-  flex: 0 0 180px;
-  width: 180px;
+  flex: 0 0 164px;
+  width: 164px;
   background: var(--panel-dark);
   border-right: 1px solid var(--border);
-  padding: 12px;
+  padding: 12px 10px;
   gap: 3px;
   overflow-y: auto;
 }
@@ -169,10 +169,13 @@ body::before {
   background: none;
   border: 1px solid transparent;
   border-radius: var(--radius-lg);
-  padding: 12px 14px;
+  padding: 12px;
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  /* 13px keeps "CLI usage analytics" on one line inside the narrower sidebar
+     with the same padding on both sides; at 14px it ran into the right edge. */
+  font-size: 13px;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
@@ -277,7 +280,7 @@ body::before {
 
 /* ---- Sidebar entries locked during onboarding (ui/shell-nav.js) ---- */
 .sidebar-item.locked { opacity: 0.4; cursor: default; }
-.sidebar-item.locked:hover { background: none; }
+.sidebar-item.locked:hover { background: none; border-color: transparent; }
 
 /* The chevron that says item 3 opens, and which way it is now. */
 .home-row-toggle { color: var(--dim); font-size: 13px; line-height: 1.4; flex: none; align-self: center; }
@@ -859,6 +862,23 @@ body::before {
 /* The same inset the other screens have; without it the title sat on the
    sidebar's edge and the summary ran off the window's right edge. */
 #agents-view { padding: 22px 28px 28px; animation: cm-fade-in 0.2s ease; }
+
+/* ---- The spinner Agents and Health show while their first read runs
+   (ui/screen-loading.js). Only while it is there does the screen stretch to
+   the full height, so the spinner sits in the middle of the page and the
+   loaded screen keeps its own flow. ---- */
+#agents-view:has(> .screen-loading),
+#health-view:has(> .screen-loading) { display: flex; flex-direction: column; flex: 1 0 auto; }
+.screen-loading { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 160px; }
+.screen-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: cm-spin 0.8s linear infinite;
+}
+@keyframes cm-spin { to { transform: rotate(360deg); } }
 /* The rows are step rows, so their look comes from the step list; only the
    header, the note and the per-row action slot are this screen's own. */
 .agents-head {

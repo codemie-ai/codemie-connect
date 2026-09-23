@@ -145,6 +145,14 @@ test('the screen says it is reading before the list arrives', () => {
   assert.match(container._text(), /Agents Reading the agent list/);
 });
 
+// Reading the list takes a few seconds, and a header over an empty screen
+// reads as a screen that failed to draw.
+test('the screen shows a spinner while the list is read', () => {
+  const container = makeEl('div');
+  showLoading(container);
+  assert.ok(container.querySelector('.screen-spinner'));
+});
+
 test('a failed read states what happened and offers the read again, instead of an empty list', () => {
   const container = makeEl('div');
   let retried = 0;
@@ -171,6 +179,28 @@ test('an agent with updateAvailable is WARNING even though it is installed', () 
   renderAgents(makeEl('div'), { agents: withUpdate }, { stepsUi });
   const status = Object.fromEntries(stepsUi.calls.filter((c) => c[0] === 'setStatus').map((c) => [c[1], c[2]]));
   assert.equal(status.claude, 'WARNING');
+});
+
+// The warning icon alone left users guessing what it meant, so the row says it
+// in words and the row's tooltip says what Update will do.
+test('a row with an update says so, and names the version on offer', () => {
+  const withUpdate = agents.map((a) => (a.command === 'claude' ? { ...a, updateAvailable: true, latest: '2.2.0' } : a));
+  const stepsUi = fakeStepsUi();
+  const container = makeEl('div');
+  renderAgents(container, { agents: withUpdate }, { stepsUi });
+  const subs = Object.fromEntries(stepsUi.calls.filter((c) => c[0] === 'setSubtitle').map((c) => [c[1], c[2]]));
+  assert.match(subs.claude, /2\.2\.0 available$/);
+  const row = container.querySelector('.step-row[data-id="claude"]');
+  assert.match(row.title, /Update installs 2\.2\.0/);
+});
+
+test('a row without an update has no update wording or tooltip', () => {
+  const stepsUi = fakeStepsUi();
+  const container = makeEl('div');
+  renderAgents(container, { agents }, { stepsUi });
+  const subs = stepsUi.calls.filter((c) => c[0] === 'setSubtitle').map((c) => c[2]);
+  assert.ok(subs.every((t) => !/available/.test(t)));
+  assert.ok(!container.querySelector('.step-row[data-id="claude"]').title);
 });
 
 test('summarise reports how many agents have an update available', () => {

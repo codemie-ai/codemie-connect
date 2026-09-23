@@ -16,6 +16,7 @@ import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 import { createHealthController } from './health-controller.js';
 import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
+import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
 import { deriveHome } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
@@ -206,12 +207,27 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
   onInstallAgent: (agent, onLine) => agentsController.install(agent, onLine),
 });
 
+// Whether the checklist has ever been finished here, read once at boot.
+// localStorage itself can throw on access, so it is fetched guarded too.
+const homeStorage = (() => {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+})();
+let onboarded = readOnboarded(homeStorage);
+
 function renderHome() {
-  const state = deriveHome(home);
+  const state = deriveHome({ ...home, onboarded });
+  if (state.done && !onboarded) {
+    onboarded = true;
+    rememberOnboarded(homeStorage);
+  }
   homeScreen.render(state);
-  // The other screens stay locked until the checklist is done; Home never is,
-  // so an item that opened Agents or Health always has a way back.
-  applyOnboardingNav(document, { done: state.done });
+  // The other screens stay locked until the checklist is first done; Home
+  // never is, so an item that opened Agents or Health always has a way back.
+  applyOnboardingNav(document, { done: state.unlocked });
   applyHomeHeader(document, { done: state.done });
 }
 

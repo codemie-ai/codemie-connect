@@ -6,6 +6,7 @@
 // app's failure panel (ui/failure-panel.js) rather than a second look of their
 // own: red for a failure, amber for a warning, the action inside the panel.
 import { renderFailurePanel } from './failure-panel.js';
+import { screenSpinner } from './screen-loading.js';
 
 const GROUP_LABELS = { account: 'Your CodeMie account', tools: 'Your tools', codemie: 'CodeMie itself' };
 const GROUP_ORDER = ['account', 'tools', 'codemie'];
@@ -83,6 +84,7 @@ export function showLoading(container) {
   const head = el('div', 'health-head');
   head.append(el('span', 'health-title', 'Health'), el('span', 'health-summary', 'Checking…'));
   container.appendChild(head);
+  container.appendChild(screenSpinner());
 }
 
 // A log that opened makes an earlier "cannot open your log" untrue.

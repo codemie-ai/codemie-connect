@@ -12,6 +12,7 @@
 // EPMCDME-14655; here progress, failures and the CLI's own output belong in the
 // row itself, and never in a modal.
 import { StepStatus, makeStep } from './models.js';
+import { screenSpinner } from './screen-loading.js';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -37,7 +38,10 @@ const statusOf = (agent) => {
 // .ai-run/decisions/2026-09-21-EPMCDME-14514-agent-version-authority.md.
 const subtitleOf = (agent) => {
   if (agent.actionMessage) return agent.actionMessage;
-  return agent.installed && agent.version ? `${agent.description} · ${agent.version}` : agent.description;
+  const base = agent.installed && agent.version ? `${agent.description} · ${agent.version}` : agent.description;
+  // The warning icon alone did not say what it meant.
+  if (agent.updateAvailable) return `${base} · ${agent.latest ? `${agent.latest} available` : 'update available'}`;
+  return base;
 };
 
 export function summarise(agents) {
@@ -69,6 +73,9 @@ export function renderAgents(container, { agents }, handlers = {}) {
     stepsUi.setSubtitle(agent.command, subtitleOf(agent));
     const row = list.querySelector(`.step-row[data-id="${agent.command}"]`);
     if (row) row.appendChild(buildActions(agent, { onInstall, onUpdate, onRemove }));
+    if (row && agent.updateAvailable) {
+      row.title = agent.latest ? `A newer version is out. Update installs ${agent.latest}.` : 'A newer version is out. Update installs it.';
+    }
   }
 }
 
@@ -100,6 +107,7 @@ export function showLoading(container) {
   const head = el('div', 'agents-head');
   head.append(el('span', 'agents-title', 'Agents'), el('span', 'agents-summary', 'Reading the agent list…'));
   container.appendChild(head);
+  container.appendChild(screenSpinner());
 }
 
 // A failed `codemie list` leaves the screen with nothing to show, so it states

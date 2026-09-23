@@ -252,6 +252,12 @@ test('while the checks run the header stays and says so', () => {
   assert.equal(container.querySelector('.health-summary').textContent, 'Checking…');
 });
 
+test('while the checks run a spinner fills the empty screen', () => {
+  const container = makeEl('div');
+  showLoading(container);
+  assert.ok(container.querySelector('.screen-spinner'));
+});
+
 test('showRunError says why and offers the retry', () => {
   const container = makeEl('div');
   let retried = false;

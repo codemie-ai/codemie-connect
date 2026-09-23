@@ -1,9 +1,3 @@
-// SYNTHETIC FIXTURE — not a live capture.
-// Real-verbatim-derived (from update-check.txt): the heading line, the
-// "  {name}" / "    Current: {v}" / "    Latest:  {v} (up to date)" shape,
-// and the trailing summary/tip line shape.
-// Authored (no live capture exists with this case): the "(update available)"
-// line for Claude Code below, per the ticket's own wording of the shape.
 
 📦 Agent Update Status:
 
@@ -13,11 +7,12 @@
 
   Claude Code
     Current: 2.1.269
-    Latest:  2.2.0 (update available)
+    Latest:  2.1.269 (up to date)
 
   OpenCode CLI
     Current: 1.18.31
-    Latest:  1.18.31 (up to date)
+    Latest:  1.18.32 (update available)
 
 1 update available
+
 💡 Run 'codemie update' to install updates

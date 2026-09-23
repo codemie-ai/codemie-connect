@@ -39,3 +39,12 @@ test('join never touches version, description or installed', () => {
   assert.equal(claude.description, 'Claude Code');
   assert.equal(claude.installed, true);
 });
+
+test('an agent with an update carries the version on offer; one without does not', () => {
+  const joined = joinUpdateStatus(agents, [
+    { displayName: 'CodeMie Code', updateAvailable: false, latest: '0.0.47' },
+    { displayName: 'Claude Code', updateAvailable: true, latest: '2.2.0' },
+  ]);
+  assert.equal(joined.find((a) => a.name === 'Claude Code').latest, '2.2.0');
+  assert.equal(joined.find((a) => a.name === 'CodeMie Code').latest, undefined);
+});

@@ -102,3 +102,42 @@ test('a broken profile is a warning on item 2, not an error and not first run', 
   assert.equal(s.items[1].subtitle, 'Your profile is no longer working');
   assert.equal(s.cards[0].badge.text, 'needs attention');
 });
+
+// Once setup has finished on this machine, Home stays on its cards. Health is
+// read fresh each time the app opens, so without this a user who finished
+// setup yesterday was back on the checklist, with the sidebar locked, every
+// morning until they ran the check again.
+test('after setup has finished once, Home opens on the cards before any read comes back', () => {
+  const s = deriveHome({ config: null, auth: null, agents: undefined, health: null, onboarded: true });
+  assert.equal(s.done, true);
+  assert.equal(s.unlocked, true);
+});
+
+test('after setup has finished once, an unchecked health or a missing agent does not bring the checklist back', () => {
+  const builtinOnly = [{ name: 'CodeMie Code', command: 'codemie-code', installed: true, version: '0.0.47', description: '' }];
+  const s = deriveHome({ config: valid, auth: signedIn, agents: builtinOnly, health: null, onboarded: true });
+  assert.equal(s.done, true);
+});
+
+// The checklist's Sign in button is the only one Home has until the
+// broken-profile panel lands (EPMCDME-14658), so a lapsed sign-in still shows
+// it. The sidebar stays open all the same.
+test('after setup has finished once, a lapsed sign-in shows the checklist again but keeps the sidebar open', () => {
+  const s = deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: null, onboarded: true });
+  assert.equal(s.done, false);
+  assert.equal(s.unlocked, true);
+});
+
+test('before setup has ever finished, the sidebar unlocks only with the checklist', () => {
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null }).unlocked, false);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: healthy }).unlocked, true);
+});
+
+// A returning user now sees the cards before the auth read has come back, so
+// the Profile card must not claim they are signed out in the meantime.
+test('the Profile card does not say "not signed in" before the auth read comes back', () => {
+  const s = deriveHome({ config: valid, auth: null, agents: undefined, health: null, onboarded: true });
+  const profile = s.cards.find((c) => c.id === 'profile');
+  assert.notEqual(profile.badge.text, 'not signed in');
+  assert.equal(profile.badge.tone, 'muted');
+});
