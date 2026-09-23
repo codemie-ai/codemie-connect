@@ -918,7 +918,7 @@ test('real stream (windows): the activate confirm is auto-answered after a corre
     'Enter a name for this profile: (codemie-sso)',
     'Enter a name for this profile: default',
   ], 'no third onPrompt call for the activate confirm -- it is auto-answered');
-  assert.deepEqual(writes.slice(-1), ['y\r'], 'the activate confirm is auto-answered');
+  assert.deepEqual(writes, ['default\r', ans('epmcdme-14982-capture-2784'), 'y\r'], 'the activate confirm is auto-answered');
   assert.equal(result.profileName, 'epmcdme-14982-capture-2784');
 });
 
