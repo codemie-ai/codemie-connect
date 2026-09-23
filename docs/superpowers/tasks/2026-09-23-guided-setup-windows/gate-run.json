@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-14982-guided-setup-windows",
+  "head": "7a72198bf474fb928b8ff552f46ede46fd294b83",
+  "runner": "npm",
+  "started_at": "2026-09-23T13:08:49Z",
+  "completed_at": "2026-09-23T13:20:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8449,
+      "command": "npm test",
+      "exit_code": 0
+    },
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3090,
+      "command": "cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 990,
+      "command": "cargo test",
+      "exit_code": 101,
+      "notes": "Sole failure is commands::npm_env::tests::prefixed_path_prepends_bin_dir_and_dedupes, a pre-existing failure attributed to ticket EPMCDME-15180 (Windows PATH separator ';' vs Unix ':' bug in npm_env prefixing), not caused by this ticket's diff (test fixtures + setup-driver.test.mjs only, no Rust code touched). All other 94 Rust tests passed."
+    }
+  ],
+  "failures": {
+    "unit-rust": "thread 'commands::npm_env::tests::prefixed_path_prepends_bin_dir_and_dedupes' (31328) panicked at src\\commands\\npm_env.rs:114:9:\nassertion `left == right` failed\n  left: \"/Users/test/.codemie/agents/bin;/usr/bin:/Users/test/.codemie/agents/bin\"\n right: \"/Users/test/.codemie/agents/bin:/usr/bin\"\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\nfailures:\n    commands::npm_env::tests::prefixed_path_prepends_bin_dir_and_dedupes\n\ntest result: FAILED. 94 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s\nerror: test failed, to rerun pass `--lib`\nPre-existing failure attributed to EPMCDME-15180; out of scope for EPMCDME-14982 (no Rust code changed in this ticket's diff)."
+  }
+}
