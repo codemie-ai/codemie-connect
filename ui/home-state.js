@@ -58,7 +58,7 @@ function agentItem(def, agents) {
   if (agents === null) return item(def, StepStatus.PENDING, 'Could not read the agent list');
   const installed = agents.filter((a) => a.installed && a.command !== BUILTIN_AGENT_COMMAND);
   if (installed.length) {
-    return item(def, StepStatus.COMPLETE, installed.map((a) => a.name).join(' · '));
+    return item(def, StepStatus.COMPLETE, `Already installed: ${installed.map((a) => a.name).join(' · ')}`);
   }
   const available = agents.filter((a) => !a.installed).length;
   return item(def, StepStatus.PENDING, `${available} available`);

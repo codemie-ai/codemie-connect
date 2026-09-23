@@ -173,3 +173,13 @@ test('a running health check shows on its step', () => {
   assert.equal(h.status, StepStatus.ACTIVE);
   assert.equal(h.subtitle, 'Checking…');
 });
+
+// A bare list of names under a ticked step did not say why it was ticked.
+test('a ticked "Install an agent" says the agents are already installed', () => {
+  const two = [
+    { name: 'Claude Code', command: 'claude', installed: true },
+    { name: 'OpenCode CLI', command: 'opencode', installed: true },
+  ];
+  const s = deriveHome({ config: valid, auth: signedIn, agents: two, health: null });
+  assert.equal(s.items[2].subtitle, 'Already installed: Claude Code · OpenCode CLI');
+});
