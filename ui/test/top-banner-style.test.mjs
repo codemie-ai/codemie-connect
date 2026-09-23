@@ -85,3 +85,10 @@ test('every routed screen has padding of its own', () => {
     assert.match(rule[0], /padding:/, `#${id} is padded`);
   }
 });
+
+// Home's three status cards read as one set only when they are one height:
+// the Agents card on the second row sat shorter than the two above it.
+test('Home status cards share one row height', () => {
+  const rule = css.match(/\.home-cards\s*\{[^}]*\}/)?.[0] ?? '';
+  assert.match(rule, /grid-auto-rows:\s*1fr/);
+});

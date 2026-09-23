@@ -17,13 +17,13 @@ import { renderFailurePanel as renderPanel } from './failure-panel.js';
 // The option-card control is shared with Home's checklist; see ui/option-cards.js.
 import { makeCardGroup } from './option-cards.js';
 
-// Ids the real driver answers itself (setup-driver.js's AUTO_LIST/
-// AUTO_CONFIRM tables) and must never be rendered as rows, even if a
-// misbehaving caller (a test fake, a future driver bug) calls onPrompt with
-// one of them anyway. The answers mirror the driver's own fixed policy
-// (storage: first "global" option; activate: yes) so a run that somehow
-// reached here would still end up with the profile active.
-const NEVER_RENDERED_PROMPT_IDS = new Set(['gate', 'activate']);
+// Ids the real driver answers itself (setup-driver.js's AUTO_CONFIRM table)
+// and must never be rendered as rows, even if a misbehaving caller (a test
+// fake, a future driver bug) calls onPrompt with one anyway. The answer
+// mirrors the driver's own fixed policy (activate: yes) so a run that somehow
+// reached here would still end up with the profile active. `gate`, the CLI's
+// add-or-update question, used to be here too; the user answers it now.
+const NEVER_RENDERED_PROMPT_IDS = new Set(['activate']);
 
 // Independently re-declared from ui/setup-driver.js:108's DEFAULT_HINT --
 // this file must not import setup-driver.js at module scope (see header
@@ -99,6 +99,12 @@ export function deriveRowTitle(message) {
 //   COMPLETE (the wireframe's "label -- value" collapsed shape); ids with no
 //   collapsedLabel keep whatever heading/derived title they already show.
 export const PROMPT_COPY = {
+  gate: {
+    heading: 'Add a new profile or update one?',
+    helper: 'Updating changes one of your profiles in place. Adding one leaves the others as they are.',
+    collapsedLabel: 'Profile',
+  },
+  updateProfile: { heading: 'Which profile should be updated?', collapsedLabel: 'Profile to update' },
   provider: {
     heading: 'How should CodeMie reach a model?',
     helper: 'You can change this later.',
@@ -158,6 +164,12 @@ export function renderOptionCards(options, { badgeIndex } = {}) {
   });
 }
 
+// How long a finished setup shows "Setup complete" before going back to Home.
+const DONE_DELAY_MS = 1800;
+
+// More options than this and the list scrolls inside its own box.
+const LONG_LIST = 6;
+
 function makeContinueButton(onClick) {
   const btn = document.createElement('button');
   btn.className = 'prompt-submit';
@@ -175,7 +187,16 @@ function renderListControl(host, prompt, submit) {
   // The CLI's cursor starts on the first entry (the recommended provider,
   // the starred model), so that is what Continue submits untouched. Showing
   // the selection up front keeps what is submitted equal to what is seen.
-  const group = makeCardGroup(control, `${prompt.rowId}-choice`, cards);
+  // A long list (41 models on a CodeMie account) scrolls in its own box so
+  // the page stays short and Continue stays under it, not at the bottom of a
+  // long page.
+  let cardHost = control;
+  if (cards.length > LONG_LIST) {
+    cardHost = document.createElement('div');
+    cardHost.className = 'setup-option-scroll';
+    control.appendChild(cardHost);
+  }
+  const group = makeCardGroup(cardHost, `${prompt.rowId}-choice`, cards);
   control.appendChild(makeContinueButton(() => {
     const index = group.selectedIndex();
     submit(index, cards[index].title);
@@ -589,13 +610,17 @@ export function createSetupView(container, deps = {}) {
     releaseOpenRow();
     // The driver reports the raw answer; the CLI saves it trimmed (setup.js:501).
     const profileName = result && typeof result.profileName === 'string' ? result.profileName.trim() : '';
+    // An update changes a profile in place and does not switch to it
+    // (setup.js skips "Switch to profile" when isUpdate), so the active profile
+    // can be another one. The configuration still has to read back as valid.
+    const updated = !!(result && result.updated);
     let cfg = null;
     try {
       cfg = await readConfig();
     } catch {
       cfg = null;
     }
-    const ok = !!cfg && cfg.state === 'valid' && profileName !== '' && cfg.profile === profileName;
+    const ok = !!cfg && cfg.state === 'valid' && profileName !== '' && (updated || cfg.profile === profileName);
     if (!ok) {
       markError(lastRowId);
       return null;
@@ -604,8 +629,27 @@ export function createSetupView(container, deps = {}) {
     // so the finished flow says what it achieved instead of just going quiet.
     const status = document.createElement('div');
     status.className = 'setup-view-status';
-    status.textContent = `Setup complete. ${profileName} is now the active profile.`;
+    status.textContent = updated
+      ? `Setup complete. ${profileName} is updated.`
+      : `Setup complete. ${profileName} is now the active profile.`;
     container.appendChild(status);
+    // Setup is opened from Home (its checklist, or the Profile card's "Set up
+    // again"), and Home is where the next step is, so a verified run goes back
+    // there by itself -- after a moment, so the line above is seen. A failed
+    // run stays, with its Try again.
+    if (deps.onDone) {
+      const going = document.createElement('div');
+      going.className = 'setup-view-redirect';
+      const spin = document.createElement('span');
+      spin.className = 'inline-spinner';
+      spin.setAttribute?.('aria-hidden', 'true');
+      const text = document.createElement('span');
+      text.textContent = 'Taking you back to Home…';
+      going.appendChild(spin);
+      going.appendChild(text);
+      container.appendChild(going);
+      setTimeout(() => deps.onDone(), deps.doneDelayMs ?? DONE_DELAY_MS);
+    }
     return profileName;
   }
 
@@ -629,11 +673,11 @@ export function createSetupView(container, deps = {}) {
     if (step && occurrenceCounts.has(step)) {
       rowId = latestOccurrenceRowId(step);
       markError(rowId);
-    } else if (step === 'model') {
-      // Rejected from inside collectModelOptions, before the model prompt
-      // ever reached onPrompt: there is no row to mark yet, so add it.
-      rowId = `model-${nextOccurrence('model')}`;
-      stepsUi.insertSubStep(null, { id: rowId, title: PROMPT_COPY.model.collapsedLabel, description: '' });
+    } else if (step === 'model' || step === 'updateProfile') {
+      // Rejected from inside the driver's list walk, before the prompt ever
+      // reached onPrompt: there is no row to mark yet, so add it.
+      rowId = `${step}-${nextOccurrence(step)}`;
+      stepsUi.insertSubStep(null, { id: rowId, title: PROMPT_COPY[step].collapsedLabel, description: '' });
       lastRowId = rowId;
       markError(rowId);
     } else if (activeRowId) {
@@ -725,7 +769,7 @@ export function createSetupView(container, deps = {}) {
       explanation: copy.explanation,
       detail: cliMessage,
       raw,
-      command: 'codemie setup --force',
+      command: 'codemie setup',
       primaryLabel: 'Try again',
       onPrimary: recoverable
         ? (block) => { block.remove(); }
@@ -830,7 +874,11 @@ export function createSetupView(container, deps = {}) {
     if (verified === null) {
       return {
         ok: false,
-        error: { step: null, message: 'the created profile is not the active one', raw: '' },
+        error: {
+          step: null,
+          message: result && result.updated ? 'the configuration did not read back after the update' : 'the created profile is not the active one',
+          raw: '',
+        },
       };
     }
     return { ok: true, profileName: verified };

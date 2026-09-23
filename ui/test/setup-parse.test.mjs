@@ -11,6 +11,7 @@ function fixture(id) {
 
 const CASES = [
   ['gate',          'list',    'What would you like to do?'],
+  ['updateProfile', 'list',    'Select profile to update:'],
   ['storage',       'list',    'Where would you like to store this configuration?'],
   ['provider',      'list',    'Choose your LLM provider:'],
   ['codemieUrl',    'input',   'CodeMie organization URL:'],
@@ -39,6 +40,16 @@ for (const [id, kind, msgSnippet] of CASES) {
 test('gate options and selectedIndex', () => {
   const r = detectPrompt(fixture('gate'));
   assert.deepEqual(r.options, ['Add a new profile', 'Update an existing profile', 'Cancel']);
+  assert.equal(r.selectedIndex, 0);
+});
+
+// Recorded 2026-09-23 from the bundled CLI 0.15.2 run as `codemie setup` from
+// /, answering the gate "Update an existing profile". inquirer shows seven
+// entries at a time and says so on a dimmed line under them (paginator.js:
+// "(Move up and down to reveal more choices)"); that line is not a profile.
+test('updateProfile options are the visible page, without the pagination hint', () => {
+  const r = detectPrompt(fixture('updateProfile'));
+  assert.deepEqual(r.options, ['Mert', 'MertPersonal', 'test', 'test1', 'test2', 'codemie', 'test3']);
   assert.equal(r.selectedIndex, 0);
 });
 

@@ -14,7 +14,7 @@ let hintEl = null;
 let doneBtn = null;
 
 // Setup-driver (EPMCDME-14668) suspends keystroke -> pty_input forwarding while it
-// drives `codemie setup --force` on the same PTY, then restores it when the run
+// drives `codemie setup` on the same PTY, then restores it when the run
 // settles. suspendPtyInput/resumePtyInput are consumed by setup-driver.js as an
 // injected, lazily-defaulted dep — never a static import (this module reads
 // window.__TAURI__ at module scope, which setup-driver.test.mjs never stubs).

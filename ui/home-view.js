@@ -151,7 +151,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       // made this card taller than the one beside it.
       if (card.id === 'profile') {
         const again = el('button', 'btn btn-ghost home-card-action', 'Set up again');
-        again.title = 'Creates a new profile and makes it active. Your existing profiles stay as they are.';
+        again.title = 'Add a new profile, or update one you already have.';
         again.onclick = (e) => {
           e?.stopPropagation?.();
           onSetupAgain?.();
@@ -161,13 +161,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       node.appendChild(head);
       if (card.line) node.appendChild(el('div', 'home-card-line', card.line));
       if (card.note) node.appendChild(el('div', 'home-card-note', card.note));
-      // Guided setup only ever adds a profile (EPMCDME-14350 Out of Scope), so
-      // say so rather than letting the user discover three profiles later.
-      if (card.id === 'profile') {
-        node.appendChild(el('div', 'home-card-note', 'Setting up again adds a new profile and makes it active.'));
-      } else {
-        node.onclick = () => onCard?.(card.id);
-      }
+      if (card.id !== 'profile') node.onclick = () => onCard?.(card.id);
       grid.appendChild(node);
     }
     container.appendChild(grid);

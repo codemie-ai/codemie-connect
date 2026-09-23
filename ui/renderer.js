@@ -261,7 +261,13 @@ async function openGuidedSetup() {
   showView('setup');
   if (!setupView) {
     const { createSetupView } = await import('./setup-view.js');
-    setupView = createSetupView(document.getElementById('setup-view'));
+    // A verified run returns to Home by itself, unless the user has already
+    // gone somewhere else in the meantime.
+    setupView = createSetupView(document.getElementById('setup-view'), {
+      onDone: () => {
+        if (!views.setup.classList.contains('hidden')) showView('home');
+      },
+    });
   }
   try {
     return await setupView.start();
