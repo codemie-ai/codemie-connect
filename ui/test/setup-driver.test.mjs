@@ -899,26 +899,43 @@ test('real stream: the same rejected name entered twice is asked a third time', 
   assert.deepEqual(writes, ['codemie\r', ans('codemie'), ans('fresh')]);
 });
 
-test('real stream (windows): a rejected profile name is re-asked once and the correction is accepted', async () => {
+test('real stream (windows): a rejected profile name is re-asked once, the correction is accepted, and the activate confirm is auto-answered', async () => {
+  // Recorded 2026-09-23 against `cd /; codemie setup` (no --force -- see
+  // SETUP_COMMAND), including the real gate screen: Add a new profile ->
+  // rejected "default" (already exists) -> corrected "epmcdme-14982-add-1" ->
+  // activate confirm (still fixed-policy, auto-answered "y\r").
   const frames = fixture('windows-profile-name-correction');
-  const { seen, writes, result } = await replay(frames, ['default', 'epmcdme-14982-capture-2784']);
+  const { seen, writes, result } = await replay(frames, ['default', 'epmcdme-14982-add-1']);
   assert.deepEqual(seen, [
     'Enter a name for this profile: (codemie-sso)',
     'Enter a name for this profile: default',
-  ], 'the rejected name is asked once; no phantom third ask from the collapsed echo/rejection chunk');
-  assert.deepEqual(writes, ['default\r', ans('epmcdme-14982-capture-2784'), 'y\r']);
-  assert.equal(result.profileName, 'epmcdme-14982-capture-2784');
+  ], 'the rejected name is asked once; no phantom third ask from the collapsed echo/rejection chunk, and no onPrompt call for the fixed-policy activate confirm');
+  assert.deepEqual(writes, ['default\r', ans('epmcdme-14982-add-1'), 'y\r']);
+  assert.equal(result.profileName, 'epmcdme-14982-add-1');
 });
 
-test('real stream (windows): the activate confirm is auto-answered after a corrected profile name', async () => {
-  const frames = fixture('windows-activate-confirm');
-  const { seen, writes, result } = await replay(frames, ['default', 'epmcdme-14982-capture-2784']);
+test('real stream (windows): updating an existing profile walks the profile list, skips the name prompt, and never shows an activate confirm', async () => {
+  // Recorded 2026-09-23 against `cd /; codemie setup`: gate -> Update an
+  // existing profile -> walk the (looping, two-entry) profile list -> pick
+  // "my enthropic acc" -> provider/URL/auth/project (model intentionally
+  // omitted here -- it is a separately paginated list already exercised by
+  // the Add-flow fixture above and by macOS's synthetic pagination tests) ->
+  // straight to "saved to global config", with no profile-name prompt and no
+  // activate confirm -- setup.js gates both behind `!isUpdate`.
+  const frames = fixture('windows-update-profile');
+  const { seen, writes, result } = await replay(frames, [1, 0, '', 0]);
   assert.deepEqual(seen, [
-    'Enter a name for this profile: (codemie-sso)',
-    'Enter a name for this profile: default',
-  ], 'no third onPrompt call for the activate confirm -- it is auto-answered');
-  assert.deepEqual(writes, ['default\r', ans('epmcdme-14982-capture-2784'), 'y\r'], 'the activate confirm is auto-answered');
-  assert.equal(result.profileName, 'epmcdme-14982-capture-2784');
+    'Select profile to update: (Use arrow keys)',
+    'Choose your LLM provider:',
+    'CodeMie organization URL: (https://codemie.lab.epam.com)',
+    'Select your project: (Use arrow keys)',
+  ], 'no onPrompt call for a profile name or an activate confirm -- update skips both');
+  assert.deepEqual(writes, [
+    '\x1b[B', '\x1b[B', '\x1b[A', '\x1b[A', // the looping two-entry walk, then back to the start
+    '\x1b[B\r', // final navigation to the picked profile ("my enthropic acc")
+    '\r', '\r', '\r', '\x1b[B',
+  ]);
+  assert.deepEqual(result, { profileName: 'my enthropic acc', updated: true });
 });
 
 test('real stream: a question-less chunk right after our answer does not make the driver forget the answered question', async (ctx) => {
