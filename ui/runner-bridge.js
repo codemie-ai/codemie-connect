@@ -1,6 +1,8 @@
 // Option B bridge: exposes the same module surface the Electron handlers expected
 // (inspector / runner / installer / pathman / downloader / pty), backed by Tauri
 // `invoke` commands and `engine:*` events instead of Node modules.
+import stripAnsi from './ansi-strip.mjs';
+
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -21,20 +23,41 @@ const started = (cmd) => {
   }
 };
 
+export const cmdlog = {
+  open:   (cmd)       => invoke('cmdlog_open',   { command: cmd }),
+  append: (id, chunk) => invoke('cmdlog_append', { id, chunk }),
+  close:  (id, code)  => invoke('cmdlog_close',  { id, exitCode: code }),
+};
+
 // ---- runner (src/main/runner.js) ----
 export const runner = {
-  runCapture: async (cmd) => {
+  async runCapture(cmd) {
     const finish = started(cmd);
+    const logId = await cmdlog.open(cmd).catch(() => null);
     let res = null;
     try {
       res = await invoke('run_capture', { cmd });
+      if (logId) await cmdlog.append(logId, res).catch(console.warn);
       return res;
     } finally {
       // Also when invoke rejects, or the footer shows the command running forever.
       finish(res && res.code);
+      if (logId) await cmdlog.close(logId, res ? res.code : -1).catch(console.warn);
     }
   },
-  runFreshEnv: (cmd) => invoke('run_fresh_env', { cmd }),
+
+  async runFreshEnv(cmd) {
+    let _code = -1;
+    const logId = await cmdlog.open(cmd).catch(() => null);
+    try {
+      const result = await invoke('run_fresh_env', { cmd });
+      if (logId) await cmdlog.append(logId, result).catch(console.warn);
+      _code = 0;
+      return result;
+    } finally {
+      if (logId) await cmdlog.close(logId, _code).catch(console.warn);
+    }
+  },
 
   // Streams output lines via the engine:cmd-line event (keyed by a call id),
   // resolving { code } when the Rust command returns the exit code.
@@ -42,17 +65,24 @@ export const runner = {
     onLine(`> ${cmd}`, 'prompt');
     const id = nextId('stream');
     const finish = started(cmd);
+    const logId = await cmdlog.open(cmd).catch(() => null);
     const un = await listen('engine:cmd-line', (e) => {
       const p = e.payload;
-      if (p && p.id === id) onLine(p.text, p.tag);
+      if (p && p.id === id) {
+        onLine(p.text, p.tag);
+        if (logId) cmdlog.append(logId, p.text).catch(console.warn);
+      }
     });
     let code = null;
+    let _exitCode = -1;
     try {
       code = await invoke('run_stream', { cmd, streamId: id });
+      _exitCode = code ?? -1;
       return { code };
     } finally {
       un();
       finish(code);
+      if (logId) await cmdlog.close(logId, _exitCode).catch(console.warn);
     }
   },
 };
