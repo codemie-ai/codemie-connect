@@ -11,6 +11,9 @@ import { initLog, appendLine } from './log.js';
 import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeTerminal } from './terminal.js';
 import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
+import { parseProxyStatusDeep } from './proxy-parse.js';
+import { computeRowStatus } from './connections-status.js';
+import { renderConnectionRows, CONNECTION_APPS } from './connections-render.js';
 import { isBlockedState } from './auth-gate.js';
 import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 
@@ -80,8 +83,7 @@ const connectView = views.connect;
 const homeGrid = document.getElementById('home-grid');
 const wizardBack = document.getElementById('wizard-back');
 const connectBack = document.getElementById('connect-back');
-const connectBtn = document.getElementById('connect-btn');
-const restartBtn = document.getElementById('restart-btn');
+const connectRowsEl = document.getElementById('connect-rows');
 const modeLabel = document.getElementById('wizard-mode-label');
 const stepListEl = document.getElementById('step-list');
 
@@ -383,6 +385,91 @@ async function ensureAuthenticated() {
     return false;
   }
   return true;
+}
+
+// Maps each connections-render.js app id to its check_connector_status field.
+const CONFIG_PRESENT_FIELD = {
+  'claude-desktop': 'claudeDesktop',
+  'codex-desktop': 'codexDesktop',
+  'vscode-copilot': 'vscodeCopilot',
+  'vscode-claude-code': 'vscodeClaudeCode',
+};
+
+// Re-reads connector config presence, app-bundle presence, and daemon health
+// live (no cached/stale state) and repaints #connect-rows. Called on entering
+// the Connections view and again after every row action's PTY completes.
+async function refreshConnectionsView() {
+  const [configStatus, daemonCapture] = await Promise.all([
+    bridge.connectors.checkStatus().catch(() => ({})),
+    bridge.runner.runCapture('codemie proxy status --json --deep').catch(() => ({ stdout: '' })),
+  ]);
+  const { healthy: daemonHealthy } = parseProxyStatusDeep(daemonCapture?.stdout ?? '');
+
+  const statusesByApp = {};
+  for (const { app, bundleName } of CONNECTION_APPS) {
+    const appInstalled = await bridge.connectors.appBundleExists(bundleName).catch(() => false);
+    const configPresent = Boolean(configStatus[CONFIG_PRESENT_FIELD[app]]);
+    statusesByApp[app] = { status: computeRowStatus({ appInstalled, configPresent, daemonHealthy }) };
+  }
+
+  const rows = renderConnectionRows(statusesByApp);
+  connectRowsEl.innerHTML = '';
+  for (const row of rows) {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'connection-row';
+    rowEl.dataset.app = row.app;
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'row-name';
+    nameEl.textContent = row.label;
+    rowEl.appendChild(nameEl);
+
+    const statusEl = document.createElement('span');
+    statusEl.className = 'row-status';
+    statusEl.dataset.status = row.status;
+    statusEl.textContent = row.status;
+    rowEl.appendChild(statusEl);
+
+    if (row.note) {
+      const noteEl = document.createElement('span');
+      noteEl.className = 'row-note';
+      noteEl.textContent = row.note;
+      rowEl.appendChild(noteEl);
+    }
+
+    if (row.actionLabel) {
+      const actionEl = document.createElement('button');
+      actionEl.className = 'row-action';
+      actionEl.textContent = row.actionLabel;
+      actionEl.disabled = row.actionDisabled;
+      actionEl.addEventListener('click', () => runConnectionRowAction(row));
+      rowEl.appendChild(actionEl);
+    }
+
+    connectRowsEl.appendChild(rowEl);
+  }
+}
+
+// Runs a row's Connect/Fix/Disconnect action on the app's single PTY slot,
+// disabling every row's action while it is in flight (row-disable is UI-level
+// insurance — spawnPty's single-slot contract already rejects concurrency).
+async function runConnectionRowAction(row) {
+  if (!(await ensureAuthenticated())) return;
+  connectRowsEl.querySelectorAll('.row-action').forEach((btn) => { btn.disabled = true; });
+  const cmd = row.actionLabel === 'Disconnect'
+    ? `codemie proxy disconnect ${row.connectFlag}`
+    : `codemie proxy connect ${row.connectFlag}${row.actionLabel === 'Fix' ? ' --force' : ''}`;
+  openTerminal(`${row.actionLabel} ${row.label}`, {
+    keepOpen: true,
+    onClose: () => { refreshConnectionsView(); },
+  });
+  try {
+    const { code } = await bridge.pty.spawnPty(cmd);
+    writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
+  } catch (e) {
+    writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
+    handlePtyExit();
+  }
 }
 
 // Launches `codemie profile login`, streams output, surfaces any error line via
@@ -727,6 +814,7 @@ async function boot() {
         break;
       case 'connect-desktop':
         showView('connect');
+        refreshConnectionsView();
         break;
       case 'analytics':
         runAnalytics();
@@ -752,18 +840,6 @@ async function boot() {
 
   wizardBack.addEventListener('click', () => showView('home'));
   connectBack.addEventListener('click', () => showView('home'));
-  connectBtn.addEventListener('click', async () => {
-    if (await ensureAuthenticated()) {
-      runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect', 'Running automatically — no input needed.');
-    }
-  });
-  restartBtn.addEventListener('click', async () => {
-    if (await ensureAuthenticated()) {
-      // Stop the running proxy first, then connect again. `;` (not `&&`) so a
-      // no-op stop (nothing running) still proceeds to connect.
-      runAction('Restart Claude Desktop proxy', 'codemie proxy stop; codemie proxy connect desktop', 'connect');
-    }
-  });
   noticeClose.addEventListener('click', hideNotice);
 
   // ---- view routing (smoke/probe go straight to the wizard so their

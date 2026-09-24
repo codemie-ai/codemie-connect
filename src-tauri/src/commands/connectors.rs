@@ -93,7 +93,9 @@ pub fn check_connector_status() -> ConnectorStatus {
         .unwrap_or_default();
 
     let vscode_settings_path = |dir: &str| {
-        Path::new(&home).join(format!("Library/Application Support/{dir}/User/settings.json"))
+        Path::new(&home).join(format!(
+            "Library/Application Support/{dir}/User/settings.json"
+        ))
     };
     let settings_raw = std::fs::read_to_string(vscode_settings_path("Code"))
         .ok()
@@ -107,6 +109,16 @@ pub fn check_connector_status() -> ConnectorStatus {
         vscode_copilot: vscode_copilot_connected(&raw),
         vscode_claude_code: vscode_claude_code_connected(&settings_raw),
     }
+}
+
+/// Best-effort "is this app installed" signal: does `/Applications/<name>.app`
+/// exist? Bundle names are assumed from convention, not confirmed with the
+/// product team — flagged for verification, not a hard blocker.
+#[tauri::command]
+pub fn app_bundle_exists(name: String) -> bool {
+    Path::new("/Applications")
+        .join(format!("{name}.app"))
+        .exists()
 }
 
 #[cfg(test)]
@@ -196,7 +208,8 @@ mod tests {
 
     #[test]
     fn vscode_claude_code_not_connected_when_one_entry_missing() {
-        let raw = r#"{"claudeCode.environmentVariables":[{"name":"ANTHROPIC_BASE_URL","value":"x"}]}"#;
+        let raw =
+            r#"{"claudeCode.environmentVariables":[{"name":"ANTHROPIC_BASE_URL","value":"x"}]}"#;
         assert!(!vscode_claude_code_connected(raw));
     }
 
@@ -204,5 +217,17 @@ mod tests {
     fn vscode_claude_code_not_connected_without_the_key_or_on_malformed_json() {
         assert!(!vscode_claude_code_connected(r#"{"other":"x"}"#));
         assert!(!vscode_claude_code_connected("not json"));
+    }
+
+    #[test]
+    fn app_bundle_exists_true_when_bundle_present() {
+        assert!(app_bundle_exists("Safari".to_string()));
+    }
+
+    #[test]
+    fn app_bundle_exists_false_when_bundle_absent() {
+        assert!(!app_bundle_exists(
+            "Definitely Not A Real App 12345".to_string()
+        ));
     }
 }

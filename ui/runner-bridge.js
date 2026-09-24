@@ -46,6 +46,7 @@ export const inspector = {
 // ---- connectors (src-tauri/src/commands/connectors.rs) ----
 export const connectors = {
   checkStatus: () => invoke('check_connector_status'),
+  appBundleExists: (name) => invoke('app_bundle_exists', { name }),
 };
 
 // ---- codemie config (~/.codemie/codemie-cli.config.json) ----
