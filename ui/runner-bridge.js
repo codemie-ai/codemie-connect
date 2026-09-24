@@ -30,6 +30,8 @@ export const cmdlog = {
   open:   (cmd)       => invoke('cmdlog_open',   { command: cmd }),
   append: (id, chunk) => invoke('cmdlog_append', { id, chunk }),
   close:  (id, code)  => invoke('cmdlog_close',  { id, exitCode: code }),
+  list:   ()          => invoke('cmdlog_list'),
+  get:    (id)        => invoke('cmdlog_get', { id }),
 };
 
 // ---- runner (src/main/runner.js) ----

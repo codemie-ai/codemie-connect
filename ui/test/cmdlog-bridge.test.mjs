@@ -14,7 +14,7 @@ globalThis.window = {
   },
 };
 
-const { runner, pty, updater } = await import('../runner-bridge.js');
+const { runner, pty, updater, cmdlog } = await import('../runner-bridge.js');
 
 // ---- test 1: runStream invoke order ----
 test('runStream: invoke order is cmdlog_open → run_stream, cmdlog_append per line, cmdlog_close with exit code', async () => {
@@ -291,4 +291,20 @@ test('runSelfUpdate rejection path: cmdlog_open before run_self_update; cmdlog_c
   assert.ok(cmds.indexOf('cmdlog_open') < cmds.indexOf('run_self_update'), 'cmdlog_open must precede run_self_update');
   const closeCall = calls.find(c => c.cmd === 'cmdlog_close');
   assert.equal(closeCall?.args?.exitCode, -1, 'cmdlog_close must receive exitCode -1 on failure');
+});
+
+test('cmdlog.list: invokes cmdlog_list', async () => {
+  let calledCmd;
+  invokeImpl = async (cmd) => { calledCmd = cmd; return []; };
+  const result = await cmdlog.list();
+  assert.equal(calledCmd, 'cmdlog_list');
+  assert.deepEqual(result, []);
+});
+
+test('cmdlog.get: invokes cmdlog_get with { id }', async () => {
+  let calledCmd, calledArgs;
+  invokeImpl = async (cmd, args) => { calledCmd = cmd; calledArgs = args; return null; };
+  await cmdlog.get('abc-123');
+  assert.equal(calledCmd, 'cmdlog_get');
+  assert.equal(calledArgs?.id, 'abc-123');
 });
