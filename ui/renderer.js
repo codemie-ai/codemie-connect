@@ -190,7 +190,7 @@ function setInstallRunning(on) {
 // status cards. Everything it shows comes from four sources that already exist:
 // the config reader and auth status (the identity bar's own reads feed them in),
 // `codemie list` through ui/agents-parse.js, and Health's last result.
-const home = { config: null, auth: null, agents: undefined, health: null };
+const home = { config: null, auth: null, agents: undefined, health: null, connection: undefined };
 const homeScreen = createHomeView(document.getElementById('home-body'), {
   stepsUi: stepsUI.createStepsUi(),
   onItem: (id) => {
@@ -199,7 +199,7 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
     else if (id === 'health') showView('health');
   },
   onSignIn: () => (signInAction(home) === 'setup' ? openGuidedSetup() : startSignIn()),
-  onCard: (id) => showView(id),
+  onCard: (id) => showView(id === 'connections' ? 'connect' : id),
   onSetupAgain: () => openGuidedSetup(),
   // Item 3 installs through the Agents controller, which refreshes Home on its
   // own when the action finishes, so the item ticks without a second read here.
@@ -254,6 +254,26 @@ async function refreshAgents() {
   } finally {
     agentsReading = false;
     agentsReadAt = Date.now();
+  }
+  renderHome();
+}
+
+// The Connections card's one read: whether the CLI's local proxy, which Claude
+// Desktop is pointed at, is running.
+let connectionReading = false;
+async function refreshConnection() {
+  if (connectionReading) return;
+  connectionReading = true;
+  try {
+    const res = await bridge.runner.runCapture('codemie proxy status --json');
+    // The CLI can print its migration notes before the JSON on a first run.
+    const out = (res && res.code === 0 && res.stdout) || '';
+    const json = out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1);
+    home.connection = json ? { running: JSON.parse(json).status === 'running' } : null;
+  } catch {
+    home.connection = null;
+  } finally {
+    connectionReading = false;
   }
   renderHome();
 }
@@ -316,7 +336,10 @@ function showView(name) {
     agentsChecked = true;
     agentsController.run();
   }
-  if (name === 'home') refreshAgents();
+  if (name === 'home') {
+    refreshAgents();
+    refreshConnection();
+  }
 }
 
 // (Re)build the engine for a wizard run.
@@ -850,6 +873,7 @@ async function boot() {
     identityReadAt = Date.now();
     refreshIdentityOnComplete();
     refreshAgents();
+    refreshConnection();
   });
 
   const [platformInfo, tmpDir] = await Promise.all([
@@ -910,6 +934,7 @@ async function boot() {
   // above. The command-log footer hears about every command the bridge runs.
   bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
   refreshAgents();
+  refreshConnection();
   document.querySelectorAll('#sidebar-main-group .sidebar-item, #sidebar-about').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation

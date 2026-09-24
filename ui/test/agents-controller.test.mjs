@@ -81,13 +81,15 @@ function fakeStepsUi() {
 // A `codemie update --check` capture with zero records — none of the tests
 // below care about the join outcome, only about the action wiring.
 const upToDateCheck = readFileSync(fileURLToPath(new URL('fixtures/agents/update-check.txt', import.meta.url)), 'utf8');
+// Real output with one update out: OpenCode CLI 1.18.31 -> 1.18.32.
+const openCodeUpdateCheck = readFileSync(fileURLToPath(new URL('fixtures/agents/update-check-available.txt', import.meta.url)), 'utf8');
 
 // runCapture stub that answers `codemie list` and `codemie update --check`
 // distinctly, the way the controller now calls both from load().
-function fakeRunCapture(listStdout = fixture) {
+function fakeRunCapture(listStdout = fixture, checkStdout = upToDateCheck) {
   return async (cmd) => {
     if (cmd === 'codemie list') return { code: 0, stdout: listStdout, stderr: '' };
-    if (cmd === 'codemie update --check') return { code: 0, stdout: upToDateCheck, stderr: '' };
+    if (cmd === 'codemie update --check') return { code: 0, stdout: checkStdout, stderr: '' };
     throw new Error(`unexpected runCapture command: ${cmd}`);
   };
 }
@@ -251,16 +253,15 @@ test('clicking Update on an installed row runs the exact update command; Remove 
   const runStream = fakeRunStream([]);
   await createAgentsController({
     container,
-    runCapture: fakeRunCapture(),
+    runCapture: fakeRunCapture(fixture, openCodeUpdateCheck),
     runStream: runStream.fn,
     stepsUi: fakeStepsUi(),
   }).run();
-  const slot = container.querySelector('.agent-actions[data-id="claude"]');
-  slot._children[0].onclick({ stopPropagation() {} }); // Update
+  container.querySelector('.agent-actions[data-id="opencode"]')._children[0].onclick({ stopPropagation() {} }); // Update
   await new Promise((r) => setImmediate(r));
-  slot._children[1].onclick({ stopPropagation() {} }); // Remove
+  container.querySelector('.agent-actions[data-id="opencode"]')._children[1].onclick({ stopPropagation() {} }); // Remove
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(runStream.calls, ['codemie update claude', 'codemie uninstall claude']);
+  assert.deepEqual(runStream.calls, ['codemie update opencode', 'codemie uninstall opencode']);
 });
 
 test('while an action is in flight the row is ACTIVE with a spinner and the latest streamed line as subtitle, and settling refreshes without ever blanking to the loading text', async () => {
@@ -547,7 +548,7 @@ test('after an Update the row keeps the CLI\'s result line, and the next action 
   let lines = [['- Checking Gemini CLI for updates...', 'stdout'], ['⚠ Could not check Gemini CLI for updates', 'stdout']];
   const c = createAgentsController({
     container,
-    runCapture: fakeRunCapture(),
+    runCapture: fakeRunCapture(fixture, openCodeUpdateCheck),
     runStream: async (cmd, onLine) => {
       for (const [t, tag] of lines) onLine(t, tag);
       return { code: 0 };
@@ -555,15 +556,15 @@ test('after an Update the row keeps the CLI\'s result line, and the next action 
     stepsUi,
   });
   await c.run();
-  container.querySelector('.agent-actions[data-id="claude"]')._children[0].onclick({ stopPropagation() {} });
+  container.querySelector('.agent-actions[data-id="opencode"]')._children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
-  const row = () => c.getLastAgents().find((a) => a.command === 'claude');
+  const row = () => c.getLastAgents().find((a) => a.command === 'opencode');
   assert.equal(row().actionMessage, 'Could not check Gemini CLI for updates');
   assert.notEqual(row().actionStatus, 'error');
   assert.ok(stepsUi.calls.some((x) => x[0] === 'setSubtitle' && x[2] === 'Checking Gemini CLI for updates...'), 'the "- " spinner frame is dropped');
   lines = [];
-  container.querySelector('.agent-actions[data-id="claude"]')._children[0].onclick({ stopPropagation() {} });
+  container.querySelector('.agent-actions[data-id="opencode"]')._children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.equal(row().actionMessage, undefined);

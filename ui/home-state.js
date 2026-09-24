@@ -7,6 +7,8 @@
 //           read, or null when the read failed
 //   health  the Health controller's getLastResult(): { rows, summary,
 //           checkedAt } or null
+//   connection  `codemie proxy status --json` read as { running }, or
+//           undefined while it is being read, or null when the read failed
 //
 // Pure: no DOM, no Tauri. The screen renders what comes back.
 import { StepStatus } from './models.js';
@@ -121,6 +123,16 @@ function agentsCard(agents) {
   };
 }
 
+// Claude Desktop is the one app Connections connects today, through the CLI's
+// local proxy: connected while `codemie proxy status` says it is running.
+function connectionsCard(connection) {
+  if (connection === undefined) return { id: 'connections', title: 'Connections', badge: { text: 'checking', tone: 'muted' }, line: 'Claude Desktop', note: '' };
+  if (connection === null) return { id: 'connections', title: 'Connections', badge: { text: 'unknown', tone: 'muted' }, line: 'Could not read the connection', note: '' };
+  return connection.running
+    ? { id: 'connections', title: 'Connections', badge: { text: '1 connected', tone: 'good' }, line: 'Claude Desktop', note: '' }
+    : { id: 'connections', title: 'Connections', badge: { text: 'not connected', tone: 'muted' }, line: 'Claude Desktop', note: '' };
+}
+
 // Whether Home should start the health check itself: the checklist is up, the
 // steps before the check are done and it has not run. Finishing setup used to
 // leave the user on a checklist that just waited for a click on its last step.
@@ -144,7 +156,7 @@ export function signInAction({ config, auth } = {}) {
 // (the renderer remembers it). Health is read fresh each time the app opens, so
 // without it a user who finished setup yesterday is back on the checklist, with
 // the sidebar locked, until they run the check again.
-export function deriveHome({ config, auth, agents, health, onboarded = false, healthRunning = false } = {}) {
+export function deriveHome({ config, auth, agents, health, connection, onboarded = false, healthRunning = false } = {}) {
   const [signIn, model, agent, healthDef] = HOME_ITEMS;
   const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health, healthRunning)];
   const complete = items.every((i) => i.status === StepStatus.COMPLETE);
@@ -164,6 +176,6 @@ export function deriveHome({ config, auth, agents, health, onboarded = false, he
     // read failed): a picker that turned both into an empty list would tell
     // the user every agent was already installed.
     agents,
-    cards: [profileCard(config, auth), healthCard(health), agentsCard(agents)],
+    cards: [profileCard(config, auth), healthCard(health), agentsCard(agents), connectionsCard(connection)],
   };
 }

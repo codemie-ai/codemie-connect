@@ -125,7 +125,7 @@ test('no action button is drawn while its handler is absent', () => {
   assert.deepEqual(buttons(container), []);
 });
 
-test('an installed agent offers Update and Remove, one that is not offers Install, the built-in one neither', () => {
+test('an installed agent offers Remove, one that is not offers Install, the built-in one neither', () => {
   const container = makeEl('div');
   const seen = [];
   const stepsUi = fakeStepsUi();
@@ -134,7 +134,7 @@ test('an installed agent offers Update and Remove, one that is not offers Instal
     { agents },
     { stepsUi, onInstall: (a) => seen.push(['install', a.command]), onUpdate: (a) => seen.push(['update', a.command]), onRemove: (a) => seen.push(['remove', a.command]) },
   );
-  assert.deepEqual(buttons(container), ['Update', 'Remove', 'Install']);
+  assert.deepEqual(buttons(container), ['Remove', 'Install']);
   const subs = Object.fromEntries(stepsUi.calls.filter((c) => c[0] === 'setSubtitle').map((c) => [c[1], c[2]]));
   assert.match(subs['codemie-code'], /built into the CLI$/);
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
@@ -146,10 +146,9 @@ test('a clicked action disables every button on the screen and says what is runn
   const container = makeEl('div');
   const noop = () => {};
   renderAgents(container, { agents }, { stepsUi: fakeStepsUi(), onInstall: noop, onUpdate: noop, onRemove: noop });
-  const [update, remove] = container.querySelector('.agent-actions[data-id="claude"]')._children;
+  const [remove] = container.querySelector('.agent-actions[data-id="claude"]')._children;
   remove.onclick({ stopPropagation() {} });
   assert.equal(remove.textContent, 'Removing…');
-  assert.equal(update.disabled, true);
   assert.equal(remove.disabled, true);
   const [install] = container.querySelector('.agent-actions[data-id="gemini"]')._children;
   assert.equal(install.disabled, true, 'other rows wait for it too');
@@ -234,4 +233,12 @@ test('the header names the update count only when it is greater than zero', () =
   const withoutUpdates = makeEl('div');
   renderAgents(withoutUpdates, { agents }, { stepsUi: fakeStepsUi() });
   assert.doesNotMatch(withoutUpdates._text(), /update available/);
+});
+
+test('Update is offered only when an update is out', () => {
+  const container = makeEl('div');
+  const noop = () => {};
+  const withUpdate = agents.map((a) => (a.command === 'claude' ? { ...a, updateAvailable: true, latest: '2.2.0' } : a));
+  renderAgents(container, { agents: withUpdate }, { stepsUi: fakeStepsUi(), onInstall: noop, onUpdate: noop, onRemove: noop });
+  assert.deepEqual(buttons(container), ['Update', 'Remove', 'Install']);
 });

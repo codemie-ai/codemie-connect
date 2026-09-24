@@ -372,14 +372,16 @@ body::before {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 18px;
-  margin-top: 12px;
+  padding: 18px 22px;
+  margin-top: 14px;
   background: color-mix(in srgb, var(--violet) 9%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--violet) 55%, transparent);
   border-radius: var(--radius-xl);
 }
 /* Under the status cards, as wide as they are (01-home.png). */
 #home-updates { max-width: 760px; flex: none; }
+/* The two updates stand apart from each other. */
+#home-updates .top-banner:not(.hidden) ~ .top-banner { margin-top: 20px; }
 .top-banner-body { flex: 1 1 auto; min-width: 0; }
 .top-banner-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .top-banner-line { font-size: 13px; color: var(--muted); margin-top: 4px; }

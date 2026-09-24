@@ -109,7 +109,8 @@ function buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons = 
     slot.appendChild(btn);
   };
   if (agent.installed) {
-    add('Update', 'btn-accent', onUpdate);
+    // Update only when `codemie update --check` says one is out.
+    if (agent.updateAvailable) add('Update', 'btn-accent', onUpdate);
     add('Remove', 'btn-ghost', onRemove);
   } else {
     add('Install', 'btn-accent', onInstall);

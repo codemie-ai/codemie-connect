@@ -31,7 +31,7 @@ test('fully configured with a passing check: everything ticks and the cards take
   const s = deriveHome({ config: valid, auth: signedIn, agents, health: healthy });
   assert.deepEqual(statuses(s), ['sign-in:COMPLETE', 'model:COMPLETE', 'agent:COMPLETE', 'health:COMPLETE']);
   assert.equal(s.done, true);
-  assert.deepEqual(s.cards.map((c) => `${c.id} ${c.badge.text}`), ['profile active', 'health 2 of 3', 'agents 1 of 2']);
+  assert.deepEqual(s.cards.map((c) => `${c.id} ${c.badge.text}`), ['profile active', 'health 2 of 3', 'agents 1 of 2', 'connections checking']);
 });
 
 test('unknown auth satisfies the sign-in item and is never rendered as not signed in', () => {
@@ -190,4 +190,16 @@ test('before the sign-in read comes back, item 1 says it is checking', () => {
   const s = deriveHome({ config: valid, auth: null, agents, health: null });
   assert.equal(s.items[0].status, StepStatus.ACTIVE);
   assert.equal(s.items[0].subtitle, 'Checking…');
+});
+
+// 01-home.png draws a fourth card: Connections, read from the CLI's own proxy
+// status, never assumed.
+test('the Connections card says whether Claude Desktop is connected, as the proxy status reports', () => {
+  const card = (connection) => deriveHome({ connection }).cards.find((c) => c.id === 'connections');
+  assert.deepEqual(card({ running: true }).badge, { text: '1 connected', tone: 'good' });
+  assert.equal(card({ running: true }).line, 'Claude Desktop');
+  assert.deepEqual(card({ running: false }).badge, { text: 'not connected', tone: 'muted' });
+  assert.deepEqual(card(null).badge, { text: 'unknown', tone: 'muted' });
+  assert.equal(card(null).line, 'Could not read the connection');
+  assert.deepEqual(card(undefined).badge, { text: 'checking', tone: 'muted' });
 });
