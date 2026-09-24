@@ -40,6 +40,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 base64 = "0.22"
 portable-pty = "0.8"
 jsonc-parser = { version = "0.34.0", features = ["serde", "serde_json"] }
+tauri-plugin-clipboard-manager = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
