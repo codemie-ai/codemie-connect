@@ -351,12 +351,33 @@ function dismissAppUpdateBanner() {
 }
 
 // ---- one-shot command action (proxy connect / analytics) ----
-async function runAction(title, cmd, returnView = 'home', hint) {
-  openTerminal(title, { keepOpen: true, hint, onClose: () => showView(returnView) });
+// `extra.onClose` overrides the default "navigate back to returnView" close
+// handler (used by row actions that should refresh in place instead).
+// `extra.parseError` — when given, PTY stdout is buffered and scanned for a
+// failure line rather than trusting the exit code alone (mirrors
+// findLoginError's stdout-scan convention).
+async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
+  const { onClose, parseError } = extra;
+  openTerminal(title, { keepOpen: true, hint, onClose: onClose || (() => showView(returnView)) });
+  let buf = '';
+  const un = parseError ? await listen('engine:pty-data', (e) => {
+    try {
+      buf += atob(e.payload.data);
+    } catch (err) {
+      console.warn('engine:pty-data: could not decode chunk', err);
+    }
+  }) : null;
   try {
     const { code } = await bridge.pty.spawnPty(cmd);
-    writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
+    un?.();
+    const errorLine = parseError ? parseError(buf.split(/\r?\n/)) : null;
+    if (errorLine) {
+      writeLine(`\r\n\x1b[31m✗ ${errorLine}\x1b[0m Click “‹ Back” to return.\r\n`);
+    } else {
+      writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
+    }
   } catch (e) {
+    un?.();
     writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
     handlePtyExit();
   }
@@ -367,7 +388,7 @@ async function runAction(title, cmd, returnView = 'home', hint) {
 // otherwise shows a blocking notice that points at setup.
 // Gates only on not_signed_in and no_profile; unknown is treated as authenticated
 // so a profile whose provider omits an Auth Status row never blocks the user.
-async function ensureAuthenticated() {
+async function ensureAuthenticated(appLabel = 'this app') {
   let st;
   try {
     st = await bridge.inspector.checkProfileStatus();
@@ -378,7 +399,7 @@ async function ensureAuthenticated() {
     showNotice({
       title: 'CodeMie isn’t signed in',
       message:
-        `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
+        `Connecting ${appLabel} needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
       primaryLabel: 'Run setup',
       primaryAction: () => enterWizard(),
     });
@@ -407,10 +428,19 @@ const CONFIG_PRESENT_FIELD = {
 // live (no cached/stale state) and repaints #connect-rows. Called on entering
 // the Connections view and again after every row action's PTY completes.
 async function refreshConnectionsView() {
+  let ipcFailed = false;
   const [configStatus, daemonCapture] = await Promise.all([
-    bridge.connectors.checkStatus().catch(() => ({})),
-    bridge.runner.runCapture('codemie proxy status --json --deep').catch(() => ({ stdout: '' })),
+    bridge.connectors.checkStatus().catch(() => { ipcFailed = true; return {}; }),
+    bridge.runner.runCapture('codemie proxy status --json --deep').catch(() => { ipcFailed = true; return { stdout: '' }; }),
   ]);
+  if (ipcFailed) {
+    showNotice({
+      title: 'Connections status unavailable',
+      message: 'Could not read connection status right now — the rows below may not reflect the real state. Try again in a moment.',
+      primaryLabel: 'OK',
+      primaryAction: hideNotice,
+    });
+  }
   const { healthy: daemonHealthy } = parseProxyStatusDeep(daemonCapture?.stdout ?? '');
 
   const statusesByApp = {};
@@ -472,36 +502,17 @@ async function refreshConnectionsView() {
 // (row-disable is UI-level insurance — spawnPty's single-slot contract
 // already rejects concurrency).
 async function runConnectionRowAction(row, action) {
-  if (!(await ensureAuthenticated())) return;
+  if (!(await ensureAuthenticated(row.label))) return;
   connectRowsEl.querySelectorAll('.row-action').forEach((btn) => { btn.disabled = true; });
-  const isConnect = action.kind === 'connect' || action.kind === 'reconnect';
   const cmd = action.kind === 'disconnect'
     ? `codemie proxy disconnect ${row.connectFlag}`
     : `codemie proxy connect ${row.connectFlag}${action.kind === 'reconnect' ? ' --force' : ''}`;
-  openTerminal(`${action.label} ${row.label}`, {
-    keepOpen: true,
+  // Spec: parse the CLI's output for success/failure rather than trusting the
+  // exit code alone — applies to connect/reconnect and disconnect alike.
+  await runAction(`${action.label} ${row.label}`, cmd, 'connections', undefined, {
     onClose: () => { refreshConnectionsView(); },
+    parseError: findProxyConnectError,
   });
-  // Spec: parse `codemie proxy connect` output for success/failure rather than
-  // trusting the exit code — mirrors findLoginError's stdout-scan convention.
-  let buf = '';
-  const un = isConnect ? await listen('engine:pty-data', (e) => {
-    try { buf += atob(e.payload.data); } catch { /* ignore */ }
-  }) : null;
-  try {
-    const { code } = await bridge.pty.spawnPty(cmd);
-    un?.();
-    const errorLine = isConnect ? findProxyConnectError(buf.split(/\r?\n/)) : null;
-    if (errorLine) {
-      writeLine(`\r\n\x1b[31m✗ ${errorLine}\x1b[0m Click “‹ Back” to return.\r\n`);
-    } else {
-      writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
-    }
-  } catch (e) {
-    un?.();
-    writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
-    handlePtyExit();
-  }
 }
 
 // Launches `codemie profile login`, streams output, surfaces any error line via

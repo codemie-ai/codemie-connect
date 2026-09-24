@@ -3,9 +3,10 @@
 // whether a CodeMie-managed config is currently applied for that tool — not
 // whether the tool itself is installed.
 use serde::Serialize;
+#[cfg(target_os = "macos")]
 use std::path::Path;
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorStatus {
     pub claude_desktop: bool,
@@ -16,6 +17,7 @@ pub struct ConnectorStatus {
 
 /// Claude Desktop is "connected" when its configLibrary's currently-applied
 /// entry (per `_meta.json`'s `appliedId`) still exists on disk.
+#[cfg(target_os = "macos")]
 fn claude_desktop_connected(base_dir: &Path) -> bool {
     let meta_path = base_dir.join("configLibrary/_meta.json");
     let Ok(raw) = std::fs::read_to_string(&meta_path) else {
@@ -34,6 +36,7 @@ fn claude_desktop_connected(base_dir: &Path) -> bool {
 }
 
 /// Codex Desktop is "connected" when CodeMie's proxy has written its state file.
+#[cfg(target_os = "macos")]
 fn codex_desktop_connected(state_file: &Path) -> bool {
     state_file.exists()
 }
@@ -69,56 +72,92 @@ fn vscode_claude_code_connected(raw: &str) -> bool {
     names.contains(&"ANTHROPIC_BASE_URL") && names.contains(&"ANTHROPIC_AUTH_TOKEN")
 }
 
-fn home_dir() -> String {
+/// Resolves the user's home dir from HOME (or USERPROFILE on Windows). `None`
+/// when neither is set — callers must treat that as "can't check", not build
+/// paths against an empty/root fallback.
+#[cfg(target_os = "macos")]
+fn home_dir() -> Option<String> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default()
+        .ok()
 }
 
+/// macOS-only: all connector config paths live under
+/// `~/Library/Application Support/...`. Returns all-false (via `None` HOME,
+/// or on any other target OS) rather than resolving paths against a bogus
+/// root — connectors.rs has no Windows/Linux path support yet.
 #[tauri::command]
 pub fn check_connector_status() -> ConnectorStatus {
-    let home = home_dir();
-    let claude_base = Path::new(&home).join("Library/Application Support/Claude-3p");
-    let codex_state = Path::new(&home).join(".codemie/proxy/codex-desktop-state.json");
+    #[cfg(target_os = "macos")]
+    {
+        let Some(home) = home_dir() else {
+            return ConnectorStatus::default();
+        };
+        let claude_base = Path::new(&home).join("Library/Application Support/Claude-3p");
+        let codex_state = Path::new(&home).join(".codemie/proxy/codex-desktop-state.json");
 
-    let vscode_chat_models_path = |dir: &str| {
-        Path::new(&home).join(format!(
-            "Library/Application Support/{dir}/User/chatLanguageModels.json"
-        ))
-    };
-    let raw = std::fs::read_to_string(vscode_chat_models_path("Code"))
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::fs::read_to_string(vscode_chat_models_path("Code - Insiders")).ok())
-        .unwrap_or_default();
+        let vscode_chat_models_path = |dir: &str| {
+            Path::new(&home).join(format!(
+                "Library/Application Support/{dir}/User/chatLanguageModels.json"
+            ))
+        };
+        // Read both stable and Insiders variants and OR the parsed result —
+        // gating the Insiders read on the stable file being empty/missing
+        // would skip it whenever a non-matching (but valid) stable file exists.
+        let stable_chat =
+            std::fs::read_to_string(vscode_chat_models_path("Code")).unwrap_or_default();
+        let insiders_chat =
+            std::fs::read_to_string(vscode_chat_models_path("Code - Insiders")).unwrap_or_default();
 
-    let vscode_settings_path = |dir: &str| {
-        Path::new(&home).join(format!(
-            "Library/Application Support/{dir}/User/settings.json"
-        ))
-    };
-    let settings_raw = std::fs::read_to_string(vscode_settings_path("Code"))
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::fs::read_to_string(vscode_settings_path("Code - Insiders")).ok())
-        .unwrap_or_default();
+        let vscode_settings_path = |dir: &str| {
+            Path::new(&home).join(format!(
+                "Library/Application Support/{dir}/User/settings.json"
+            ))
+        };
+        let stable_settings =
+            std::fs::read_to_string(vscode_settings_path("Code")).unwrap_or_default();
+        let insiders_settings =
+            std::fs::read_to_string(vscode_settings_path("Code - Insiders")).unwrap_or_default();
 
-    ConnectorStatus {
-        claude_desktop: claude_desktop_connected(&claude_base),
-        codex_desktop: codex_desktop_connected(&codex_state),
-        vscode_copilot: vscode_copilot_connected(&raw),
-        vscode_claude_code: vscode_claude_code_connected(&settings_raw),
+        ConnectorStatus {
+            claude_desktop: claude_desktop_connected(&claude_base),
+            codex_desktop: codex_desktop_connected(&codex_state),
+            vscode_copilot: vscode_copilot_connected(&stable_chat)
+                || vscode_copilot_connected(&insiders_chat),
+            vscode_claude_code: vscode_claude_code_connected(&stable_settings)
+                || vscode_claude_code_connected(&insiders_settings),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ConnectorStatus::default()
     }
 }
 
 /// Best-effort "is this app installed" signal: does `/Applications/<name>.app`
-/// exist? Bundle names are assumed from convention, not confirmed with the
-/// product team — flagged for verification, not a hard blocker.
+/// or `~/Applications/<name>.app` exist? Bundle names are assumed from
+/// convention, not confirmed with the product team — flagged for
+/// verification, not a hard blocker. macOS-only, like check_connector_status.
 #[tauri::command]
 pub fn app_bundle_exists(name: String) -> bool {
-    Path::new("/Applications")
-        .join(format!("{name}.app"))
-        .exists()
+    #[cfg(target_os = "macos")]
+    {
+        Path::new("/Applications")
+            .join(format!("{name}.app"))
+            .exists()
+            || home_dir()
+                .map(|home| {
+                    Path::new(&home)
+                        .join("Applications")
+                        .join(format!("{name}.app"))
+                        .exists()
+                })
+                .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]

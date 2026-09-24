@@ -11,6 +11,11 @@ test('findProxyConnectError returns null when no error line is present', () => {
   assert.equal(findProxyConnectError(['Connecting…', 'Done.']), null);
 });
 
+test('findProxyConnectError matches mixed-case Failed: prefix', () => {
+  const line = findProxyConnectError(['Connecting…', 'Failed: proxy unreachable']);
+  assert.equal(line, 'Failed: proxy unreachable');
+});
+
 test('parseProxyStatusDeep reports healthy for a running daemon', () => {
   assert.deepEqual(parseProxyStatusDeep('{"status":"running"}'), { healthy: true });
 });
