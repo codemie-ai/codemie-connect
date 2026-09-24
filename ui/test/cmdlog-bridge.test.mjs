@@ -189,6 +189,92 @@ test('runSelfUpdate resolve path: cmdlog_open before run_self_update; cmdlog_clo
   assert.equal(closeCall?.args?.exitCode, 0, 'cmdlog_close must receive exitCode 0 on success');
 });
 
+// ---- test CR-006: null result skipped, non-null coerced to String ----
+test('runCapture: null result skips cmdlog_append; String result is coerced', async () => {
+  // null result — no append expected
+  const calls = [];
+  listenImpl = async () => () => {};
+  invokeImpl = async (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === 'run_capture') return null;
+    if (cmd === 'cmdlog_open') return 'log-cr6a';
+    return null;
+  };
+  await runner.runCapture('ls');
+  assert.ok(!calls.find(c => c.cmd === 'cmdlog_append'), 'no append for null result');
+
+  // numeric result — coerced to String
+  const calls2 = [];
+  invokeImpl = async (cmd, args) => {
+    calls2.push({ cmd, args });
+    if (cmd === 'run_capture') return 42;
+    if (cmd === 'cmdlog_open') return 'log-cr6b';
+    return null;
+  };
+  await runner.runCapture('echo 42');
+  const appendCall = calls2.find(c => c.cmd === 'cmdlog_append');
+  assert.ok(appendCall, 'append must fire for non-null result');
+  assert.equal(typeof appendCall.args.chunk, 'string', 'chunk must be a string');
+  assert.equal(appendCall.args.chunk, '42', 'chunk must be String(result)');
+});
+
+// ---- test CR-007: close waits for in-flight appends ----
+test('runStream: cmdlog_close does not fire until all pending appends resolve', async () => {
+  const order = [];
+  let streamCb;
+  let resolveAppend;
+  const appendP = new Promise(r => { resolveAppend = r; });
+  listenImpl = async (evt, cb) => {
+    if (evt === 'engine:cmd-line') streamCb = cb;
+    return () => {};
+  };
+  invokeImpl = async (cmd, args) => {
+    if (cmd === 'cmdlog_open') return 'log-cr7';
+    if (cmd === 'cmdlog_append') {
+      order.push('append-start');
+      await appendP;
+      order.push('append-done');
+      return null;
+    }
+    if (cmd === 'cmdlog_close') { order.push('close'); return null; }
+    if (cmd === 'run_stream') {
+      streamCb?.({ payload: { id: args.streamId, text: 'line', tag: 'stdout' } });
+      return 0;
+    }
+    return null;
+  };
+  const p = runner.runStream('cmd');
+  await Promise.resolve(); // yield so run_stream starts and append suspends
+  resolveAppend();
+  await p;
+  assert.ok(order.indexOf('append-done') < order.indexOf('close'), 'append-done must precede close');
+});
+
+// ---- test CR-008: pty.kill resolves spawnPty via kill sentinel ----
+test('spawnPty: pty.kill() resolves exitP when engine:pty-exit never fires', async () => {
+  const calls = [];
+  const listeners = {};
+  listenImpl = async (evt, cb) => {
+    (listeners[evt] ??= []).push(cb);
+    return () => {};
+  };
+  invokeImpl = async (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === 'cmdlog_open') return 'log-cr8';
+    if (cmd === 'spawn_pty') return args.runId; // no pty-exit fired
+    return null;
+  };
+
+  const spawnPromise = pty.spawnPty('bash', 80, 24);
+  await Promise.resolve(); // let spawn start and reach await exitP
+  await pty.kill();        // should resolve killP with -1
+  const result = await spawnPromise;
+  assert.equal(result.code, -1, 'kill path must yield exit code -1');
+  const closeCall = calls.find(c => c.cmd === 'cmdlog_close');
+  assert.ok(closeCall, 'cmdlog_close must be called after kill');
+  assert.equal(closeCall.args.exitCode, -1, 'cmdlog_close must receive -1');
+});
+
 test('runSelfUpdate rejection path: cmdlog_open before run_self_update; cmdlog_close(-1)', async () => {
   const calls = [];
   listenImpl = async () => () => {};

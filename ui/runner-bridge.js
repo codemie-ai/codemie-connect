@@ -23,6 +23,9 @@ const started = (cmd) => {
   }
 };
 
+// ponytail: single-PTY sentinel; replace with Map<id,fn> for concurrent PTY support
+let _resolvePtyKill = null;
+
 export const cmdlog = {
   open:   (cmd)       => invoke('cmdlog_open',   { command: cmd }),
   append: (id, chunk) => invoke('cmdlog_append', { id, chunk }),
@@ -37,7 +40,7 @@ export const runner = {
     let res = null;
     try {
       res = await invoke('run_capture', { cmd });
-      if (logId) await cmdlog.append(logId, res).catch(console.warn);
+      if (logId && res != null) await cmdlog.append(logId, String(res)).catch(console.warn);
       return res;
     } finally {
       // Also when invoke rejects, or the footer shows the command running forever.
@@ -51,7 +54,7 @@ export const runner = {
     const logId = await cmdlog.open(cmd).catch(() => null);
     try {
       const result = await invoke('run_fresh_env', { cmd });
-      if (logId) await cmdlog.append(logId, result).catch(console.warn);
+      if (logId && result != null) await cmdlog.append(logId, String(result)).catch(console.warn);
       _code = 0;
       return result;
     } finally {
@@ -66,11 +69,12 @@ export const runner = {
     const id = nextId('stream');
     const finish = started(cmd);
     const logId = await cmdlog.open(cmd).catch(() => null);
+    const pendingAppends = [];
     const un = await listen('engine:cmd-line', (e) => {
       const p = e.payload;
       if (p && p.id === id) {
         onLine(p.text, p.tag);
-        if (logId) cmdlog.append(logId, p.text).catch(console.warn);
+        if (logId) pendingAppends.push(cmdlog.append(logId, p.text).catch(console.warn));
       }
     });
     let code = null;
@@ -82,6 +86,7 @@ export const runner = {
     } finally {
       un();
       finish(code);
+      await Promise.all(pendingAppends);
       if (logId) await cmdlog.close(logId, _exitCode).catch(console.warn);
     }
   },
@@ -223,9 +228,8 @@ export const pty = {
   async spawnPty(cmd, cols = 100, rows = 30, onData) {
     const id = nextId('pty');
     let resolveExit, dataUnlisten, exitUnlisten;
-    const exitP = new Promise((r) => {
-      resolveExit = r;
-    });
+    const exitP = new Promise((r) => { resolveExit = r; });
+    const killP = new Promise((r) => { _resolvePtyKill = r; });
     const logId = await cmdlog.open(cmd).catch(() => null);
     const decoder = new TextDecoder('utf-8', { fatal: false });
     let exitCode;
@@ -251,12 +255,13 @@ export const pty = {
       const finish = started(cmd);
       try {
         await invoke('spawn_pty', { cmd, cols, rows, runId: id });
-        exitCode = await exitP;
+        exitCode = await Promise.race([exitP, killP]);
         return { code: exitCode, id };
       } finally {
         finish(exitCode ?? null);
       }
     } finally {
+      _resolvePtyKill = null;
       exitUnlisten?.();
       dataUnlisten?.();
       if (logId) {
@@ -268,5 +273,5 @@ export const pty = {
   },
   input: (data) => invoke('pty_input', { data }),
   resize: (cols, rows) => invoke('pty_resize', { cols, rows }),
-  kill: () => invoke('pty_kill'),
+  kill: () => { _resolvePtyKill?.(-1); _resolvePtyKill = null; return invoke('pty_kill'); },
 };

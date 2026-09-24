@@ -22,6 +22,11 @@ test('chunk boundary: partial artefact in chunk1, chunk2 processes independently
   assert.equal(s('abc\x1b[3'), 'abc\x1b[3'); // partial preserved
   assert.equal(s('1mXYZ\x1b[0m'), '1mXYZ');  // chunk2: '1m' is plain text; '\x1b[0m' stripped
 });
+test('strips ST-terminated OSC sequence (ESC backslash terminator)', async () => {
+  const { default: s } = await import('../ansi-strip.mjs');
+  // OSC title set terminated by ST (\x1b\) instead of BEL
+  assert.equal(s('\x1b]0;title\x1b\\text'), 'text');
+});
 test('TextDecoder streams multi-byte UTF-8 split across two payloads', () => {
   const dec = new TextDecoder('utf-8', { fatal: false });
   const bytes1 = new Uint8Array([0xE2, 0x82]); // first 2 bytes of U+20AC '€'
