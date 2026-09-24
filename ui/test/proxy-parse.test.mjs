@@ -16,11 +16,12 @@ test('findProxyConnectError matches mixed-case Failed: prefix', () => {
   assert.equal(line, 'Failed: proxy unreachable');
 });
 
-test('parseProxyStatusDeep reports healthy for a running daemon', () => {
-  assert.deepEqual(parseProxyStatusDeep('{"status":"running"}'), { healthy: true });
+test('parseProxyStatusDeep reports healthy for a healthy daemon', () => {
+  assert.deepEqual(parseProxyStatusDeep('{"status":"healthy"}'), { healthy: true });
 });
 
-test('parseProxyStatusDeep reports unhealthy for stopped/malformed output', () => {
+test('parseProxyStatusDeep reports unhealthy for unhealthy/stopped/malformed output', () => {
+  assert.deepEqual(parseProxyStatusDeep('{"status":"unhealthy","reason":"no creds"}'), { healthy: false });
   assert.deepEqual(parseProxyStatusDeep('{"status":"stopped"}'), { healthy: false });
   assert.deepEqual(parseProxyStatusDeep('not json'), { healthy: false });
   assert.deepEqual(parseProxyStatusDeep(''), { healthy: false });

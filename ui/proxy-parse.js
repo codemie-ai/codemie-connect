@@ -7,7 +7,7 @@ export function findProxyConnectError(lines) {
 export function parseProxyStatusDeep(stdout) {
   try {
     const json = JSON.parse(stdout);
-    return { healthy: json && json.status === 'running' };
+    return { healthy: json && json.status === 'healthy' };
   } catch {
     return { healthy: false };
   }
