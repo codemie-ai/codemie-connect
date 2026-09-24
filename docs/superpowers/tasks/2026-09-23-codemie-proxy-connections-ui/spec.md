@@ -84,6 +84,13 @@ review of the running UI against EPMCDME-14350's wireframe:
 - No sidebar reveal — `#app-sidebar` stays hidden; entry point is the existing Home-grid tile.
 - No reimplementation of connector config-parsing logic — only file-presence checks against
   existing path getters, never reading/interpreting file contents.
+  - **Exception (recorded post-implementation, CR-002)**: the two VS Code checks
+    (`vscode_copilot_connected`, `vscode_claude_code_connected` in `connectors.rs`) parse
+    `chatLanguageModels.json`/`settings.json` content instead of doing existence-only checks. This
+    is a deliberate, researched override, not a drift: VS Code's own path getters for these files
+    live only in an unreachable external CLI package, and a pure existence check can't distinguish
+    a CodeMie-managed entry from any other content written to the same file by another extension.
+    Claude Desktop and Codex Desktop checks remain existence-only per the Non-goal as written.
 - No `codemie proxy list` usage (does not exist) and no local-only "last known state" tracking
   that could go stale if the user connects/disconnects from the terminal directly.
 
