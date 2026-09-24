@@ -159,7 +159,22 @@ async function restartApp() {
 
 export const updater = {
   fetchCodemieLatest: () => invoke('fetch_codemie_latest'),
-  runSelfUpdate: () => logged('codemie self-update', () => invoke('run_self_update')),
+  async runSelfUpdate() {
+    const finish = started('codemie self-update');
+    const logId = await cmdlog.open('run_self_update').catch(() => null);
+    let _code = -1;
+    try {
+      const result = await invoke('run_self_update');
+      _code = 0;
+      finish(0);
+      return result;
+    } catch (e) {
+      finish(null);
+      throw e;
+    } finally {
+      if (logId) await cmdlog.close(logId, _code).catch(console.warn);
+    }
+  },
   checkForAppUpdate,
   downloadAndInstall,
   restartApp,

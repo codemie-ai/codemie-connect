@@ -540,6 +540,7 @@ async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
     }
   }) : null;
   try {
+    // cmdlog intent: user-initiated
     const { code } = await bridge.pty.spawnPty(cmd);
     un?.();
     const errorLine = parseError ? parseError(buf.split(/\r?\n/)) : null;
@@ -767,6 +768,7 @@ async function startSignIn() {
   try {
     const lines = [];
     // run_stream takes a command string, not an array — matches all existing callers
+    // cmdlog intent: user-initiated
     await bridge.runner.runStream('codemie profile login', (line) => { lines.push(line); });
     // Exit code is ignored — profile login exits 0 on failure; scan stdout instead.
     const errorLine = findLoginError(lines);
@@ -841,6 +843,7 @@ async function runUpdateCli() {
   cliReplacing = true;
   try {
     try {
+      // cmdlog intent: user-initiated
       await bridge.updater.runSelfUpdate();
     } finally {
       cliReplacing = false;
