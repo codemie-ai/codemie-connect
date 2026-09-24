@@ -107,11 +107,10 @@ mod tests {
 
     #[test]
     fn prefixed_path_prepends_bin_dir_and_dedupes() {
-        let result = prefixed_path_with_bin_dir(
-            "/Users/test/.codemie/agents/bin",
-            "/usr/bin:/Users/test/.codemie/agents/bin",
-        );
-        assert_eq!(result, "/Users/test/.codemie/agents/bin:/usr/bin");
+        // Built with PATH_SEP so the test holds on Windows (`;`) as well.
+        let bin = "/Users/test/.codemie/agents/bin";
+        let result = prefixed_path_with_bin_dir(bin, &format!("/usr/bin{PATH_SEP}{bin}"));
+        assert_eq!(result, format!("{bin}{PATH_SEP}/usr/bin"));
     }
 
     #[test]
