@@ -38,6 +38,18 @@ fn codex_desktop_connected(state_file: &Path) -> bool {
     state_file.exists()
 }
 
+/// VS Code Copilot Chat (BYOK) is "connected" when its chat model provider
+/// list contains a CodeMie-managed custom endpoint entry.
+fn vscode_copilot_connected(raw: &str) -> bool {
+    let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(raw) else {
+        return false;
+    };
+    arr.iter().any(|p| {
+        p.get("vendor").and_then(|v| v.as_str()) == Some("customendpoint")
+            && p.get("name").and_then(|v| v.as_str()) == Some("CodeMie")
+    })
+}
+
 fn home_dir() -> String {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -50,10 +62,21 @@ pub fn check_connector_status() -> ConnectorStatus {
     let claude_base = Path::new(&home).join("Library/Application Support/Claude-3p");
     let codex_state = Path::new(&home).join(".codemie/proxy/codex-desktop-state.json");
 
+    let vscode_chat_models_path = |dir: &str| {
+        Path::new(&home).join(format!(
+            "Library/Application Support/{dir}/User/chatLanguageModels.json"
+        ))
+    };
+    let raw = std::fs::read_to_string(vscode_chat_models_path("Code"))
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::fs::read_to_string(vscode_chat_models_path("Code - Insiders")).ok())
+        .unwrap_or_default();
+
     ConnectorStatus {
         claude_desktop: claude_desktop_connected(&claude_base),
         codex_desktop: codex_desktop_connected(&codex_state),
-        vscode_copilot: false,
+        vscode_copilot: vscode_copilot_connected(&raw),
         vscode_claude_code: false,
     }
 }
@@ -72,7 +95,11 @@ mod tests {
     fn claude_desktop_connected_when_meta_and_applied_file_exist() {
         let tmp = tempdir_for_test("claude-ok");
         fs::create_dir_all(tmp.join("configLibrary")).unwrap();
-        fs::write(tmp.join("configLibrary/_meta.json"), r#"{"appliedId":"abc"}"#).unwrap();
+        fs::write(
+            tmp.join("configLibrary/_meta.json"),
+            r#"{"appliedId":"abc"}"#,
+        )
+        .unwrap();
         fs::write(tmp.join("configLibrary/abc.json"), "{}").unwrap();
         assert!(claude_desktop_connected(&tmp));
     }
@@ -109,5 +136,25 @@ mod tests {
     fn codex_desktop_not_connected_when_state_file_absent() {
         let tmp = tempdir_for_test("codex-missing/state.json");
         assert!(!codex_desktop_connected(&tmp));
+    }
+
+    #[test]
+    fn vscode_copilot_connected_when_codemie_entry_present() {
+        let raw = r#"[{"vendor":"other","name":"X"},
+                      {"vendor":"customendpoint","name":"CodeMie"}]"#;
+        assert!(vscode_copilot_connected(raw));
+    }
+
+    #[test]
+    fn vscode_copilot_not_connected_without_matching_entry() {
+        assert!(!vscode_copilot_connected(
+            r#"[{"vendor":"other","name":"X"}]"#
+        ));
+    }
+
+    #[test]
+    fn vscode_copilot_not_connected_on_malformed_or_missing_json() {
+        assert!(!vscode_copilot_connected("not json"));
+        assert!(!vscode_copilot_connected(""));
     }
 }
