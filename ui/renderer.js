@@ -26,6 +26,7 @@ import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFr
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
 import { semverLt, cliUpdateResult } from './cli-update.js';
+import { initCmdLog } from './cmdlog-ui.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -961,6 +962,7 @@ async function boot() {
     hint: document.getElementById('terminal-hint'),
     done: document.getElementById('terminal-done'),
   });
+  initCmdLog();
 
   // Wire update banner dismiss
   // The banner is shell-level now, so unlike origin/main — where it lived inside
