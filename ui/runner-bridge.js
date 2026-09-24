@@ -211,30 +211,44 @@ export const pty = {
     const exitP = new Promise((r) => {
       resolveExit = r;
     });
+    const logId = await cmdlog.open(cmd).catch(() => null);
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    let exitCode;
     // CR-005: both listeners are registered inside the try block so the finally
     // always runs and always unlistens both, even if the second listen() throws.
     try {
       // Register data listener BEFORE invoke so no early events for this id are missed
-      if (onData) {
-        dataUnlisten = await listen('engine:pty-data', (e) => {
-          if (e.payload.id === id) onData(e.payload.data);
-        });
-      }
+      dataUnlisten = await listen('engine:pty-data', (e) => {
+        if (e.payload.id === id) {
+          if (onData) onData(e.payload.data);
+          if (logId) {
+            try {
+              const raw = Uint8Array.from(atob(e.payload.data), c => c.charCodeAt(0));
+              const stripped = stripAnsi(decoder.decode(raw, { stream: true }));
+              if (stripped) cmdlog.append(logId, stripped).catch(console.warn);
+            } catch { /* invalid base64 or decode error */ }
+          }
+        }
+      });
       exitUnlisten = await listen('engine:pty-exit', (e) => {
         if (e.payload.id === id) resolveExit(e.payload.code);
       });
       const finish = started(cmd);
-      let code = null;
       try {
         await invoke('spawn_pty', { cmd, cols, rows, runId: id });
-        code = await exitP;
+        exitCode = await exitP;
+        return { code: exitCode, id };
       } finally {
-        finish(code);
+        finish(exitCode ?? null);
       }
-      return { code, id };
     } finally {
       exitUnlisten?.();
       dataUnlisten?.();
+      if (logId) {
+        const tail = stripAnsi(decoder.decode(new Uint8Array(0), { stream: false }));
+        if (tail) await cmdlog.append(logId, tail).catch(console.warn);
+        await cmdlog.close(logId, exitCode ?? -1).catch(console.warn);
+      }
     }
   },
   input: (data) => invoke('pty_input', { data }),
