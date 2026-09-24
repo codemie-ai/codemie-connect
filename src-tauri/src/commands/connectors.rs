@@ -50,6 +50,25 @@ fn vscode_copilot_connected(raw: &str) -> bool {
     })
 }
 
+/// VS Code Claude Code extension is "connected" when its settings define both
+/// the CodeMie-managed base URL and auth token env vars.
+fn vscode_claude_code_connected(raw: &str) -> bool {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let Some(vars) = json
+        .get("claudeCode.environmentVariables")
+        .and_then(|v| v.as_array())
+    else {
+        return false;
+    };
+    let names: Vec<&str> = vars
+        .iter()
+        .filter_map(|e| e.get("name").and_then(|n| n.as_str()))
+        .collect();
+    names.contains(&"ANTHROPIC_BASE_URL") && names.contains(&"ANTHROPIC_AUTH_TOKEN")
+}
+
 fn home_dir() -> String {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -73,11 +92,20 @@ pub fn check_connector_status() -> ConnectorStatus {
         .or_else(|| std::fs::read_to_string(vscode_chat_models_path("Code - Insiders")).ok())
         .unwrap_or_default();
 
+    let vscode_settings_path = |dir: &str| {
+        Path::new(&home).join(format!("Library/Application Support/{dir}/User/settings.json"))
+    };
+    let settings_raw = std::fs::read_to_string(vscode_settings_path("Code"))
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::fs::read_to_string(vscode_settings_path("Code - Insiders")).ok())
+        .unwrap_or_default();
+
     ConnectorStatus {
         claude_desktop: claude_desktop_connected(&claude_base),
         codex_desktop: codex_desktop_connected(&codex_state),
         vscode_copilot: vscode_copilot_connected(&raw),
-        vscode_claude_code: false,
+        vscode_claude_code: vscode_claude_code_connected(&settings_raw),
     }
 }
 
@@ -156,5 +184,25 @@ mod tests {
     fn vscode_copilot_not_connected_on_malformed_or_missing_json() {
         assert!(!vscode_copilot_connected("not json"));
         assert!(!vscode_copilot_connected(""));
+    }
+
+    #[test]
+    fn vscode_claude_code_connected_when_both_env_entries_present() {
+        let raw = r#"{"claudeCode.environmentVariables":[
+            {"name":"ANTHROPIC_BASE_URL","value":"x"},
+            {"name":"ANTHROPIC_AUTH_TOKEN","value":"y"}]}"#;
+        assert!(vscode_claude_code_connected(raw));
+    }
+
+    #[test]
+    fn vscode_claude_code_not_connected_when_one_entry_missing() {
+        let raw = r#"{"claudeCode.environmentVariables":[{"name":"ANTHROPIC_BASE_URL","value":"x"}]}"#;
+        assert!(!vscode_claude_code_connected(raw));
+    }
+
+    #[test]
+    fn vscode_claude_code_not_connected_without_the_key_or_on_malformed_json() {
+        assert!(!vscode_claude_code_connected(r#"{"other":"x"}"#));
+        assert!(!vscode_claude_code_connected("not json"));
     }
 }
