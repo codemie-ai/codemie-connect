@@ -22,12 +22,12 @@ function el(tag, className, text) {
 }
 
 // An agent's row state. An in-flight/failed action (agent.actionStatus, set
-// by the controller) takes priority; then an available update (WARNING),
-// even though the agent is installed; otherwise plain installed/not-installed.
+// by the controller) takes priority; otherwise plain installed/not-installed.
+// An available update is not a problem, so it keeps the tick and is said in
+// the subtitle instead.
 const statusOf = (agent) => {
   if (agent.actionStatus === 'error') return StepStatus.ERROR;
   if (agent.actionStatus === 'running') return StepStatus.ACTIVE;
-  if (agent.updateAvailable) return StepStatus.WARNING;
   return agent.installed ? StepStatus.COMPLETE : StepStatus.PENDING;
 };
 
@@ -39,7 +39,6 @@ const statusOf = (agent) => {
 const subtitleOf = (agent) => {
   if (agent.actionMessage) return agent.actionMessage;
   const base = agent.installed && agent.version ? `${agent.description} · ${agent.version}` : agent.description;
-  // The warning icon alone did not say what it meant.
   if (agent.updateAvailable) return `${base} · ${agent.latest ? `${agent.latest} available` : 'update available'}`;
   return base;
 };
@@ -79,18 +78,26 @@ export function renderAgents(container, { agents }, handlers = {}) {
   }
 }
 
+const BUSY_LABEL = { Install: 'Installing…', Update: 'Updating…', Remove: 'Removing…' };
+
 // One action slot per row. A button is drawn only when its handler exists, so
-// this screen never shows a control that does nothing.
+// this screen never shows a control that does nothing. A click disables the
+// row's buttons and says what is running; the refresh after the action draws
+// the row again with fresh buttons.
 function buildActions(agent, { onInstall, onUpdate, onRemove }) {
   const slot = el('div', 'agent-actions');
   slot.dataset.id = agent.command;
+  const buttons = [];
   const add = (label, variant, fn) => {
     if (!fn) return;
     const btn = el('button', `btn ${variant}`, label);
     btn.onclick = (e) => {
       e?.stopPropagation?.();
+      for (const b of buttons) b.disabled = true;
+      btn.textContent = BUSY_LABEL[label];
       fn(agent);
     };
+    buttons.push(btn);
     slot.appendChild(btn);
   };
   if (agent.installed) {

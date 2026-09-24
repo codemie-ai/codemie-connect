@@ -139,6 +139,22 @@ test('an installed agent offers Update and Remove, one that is not offers Instal
   assert.deepEqual(seen, [['install', 'gemini']]);
 });
 
+test('a clicked action disables its row and says what is running', () => {
+  const container = makeEl('div');
+  const noop = () => {};
+  renderAgents(container, { agents }, { stepsUi: fakeStepsUi(), onInstall: noop, onUpdate: noop, onRemove: noop });
+  const [update, remove] = container.querySelector('.agent-actions[data-id="claude"]')._children;
+  remove.onclick({ stopPropagation() {} });
+  assert.equal(remove.textContent, 'Removing…');
+  assert.equal(update.disabled, true);
+  assert.equal(remove.disabled, true);
+  const [install] = container.querySelector('.agent-actions[data-id="gemini"]')._children;
+  assert.ok(!install.disabled, 'other rows stay usable');
+  install.onclick({ stopPropagation() {} });
+  assert.equal(install.textContent, 'Installing…');
+  assert.equal(install.disabled, true);
+});
+
 test('the screen says it is reading before the list arrives', () => {
   const container = makeEl('div');
   showLoading(container);
@@ -173,16 +189,16 @@ test('the screen says agents are run from a terminal, since it cannot launch one
   assert.doesNotMatch(container._text(), /\bLaunch\b|\bRun agent\b/);
 });
 
-test('an agent with updateAvailable is WARNING even though it is installed', () => {
+test('an installed agent with an update keeps its tick, not a warning', () => {
   const withUpdate = agents.map((a) => (a.command === 'claude' ? { ...a, updateAvailable: true } : a));
   const stepsUi = fakeStepsUi();
   renderAgents(makeEl('div'), { agents: withUpdate }, { stepsUi });
   const status = Object.fromEntries(stepsUi.calls.filter((c) => c[0] === 'setStatus').map((c) => [c[1], c[2]]));
-  assert.equal(status.claude, 'WARNING');
+  assert.equal(status.claude, 'COMPLETE');
 });
 
-// The warning icon alone left users guessing what it meant, so the row says it
-// in words and the row's tooltip says what Update will do.
+// The row says in words that an update is out, and its tooltip says what
+// Update will do.
 test('a row with an update says so, and names the version on offer', () => {
   const withUpdate = agents.map((a) => (a.command === 'claude' ? { ...a, updateAvailable: true, latest: '2.2.0' } : a));
   const stepsUi = fakeStepsUi();
