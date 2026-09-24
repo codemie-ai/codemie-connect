@@ -1,0 +1,5 @@
+# Deferred from code review — 2026-09-24-EPMCDME-15232-cmdlog-ui-failure-copy (2026-09-24)
+
+- **_resolvePtyKill singleton overwrite** — `ui/runner-bridge.js` — A second `spawnPty` call before the first exits overwrites `_resolvePtyKill`; `kill()` then only resolves the second PTY's race, leaving the first waiting indefinitely on `exitP` with no kill path. Pre-existing: the module-level singleton design is acknowledged by a `ponytail:` comment at line 12 ("replace with Map<id,fn> for concurrent PTY support"); the pattern predates this feature branch and is outside EPMCDME-15232's scope.
+
+- **pty.kill() resolves with -1 before OS process exits** — `ui/runner-bridge.js:226` — `kill()` resolves `killP` with the sentinel `-1` before `invoke('pty_kill')` completes; callers (including cmdlog.close) see the synthetic exit code before the OS process has actually terminated. Pre-existing: the sentinel-first kill semantic and the `exitCode ?? -1` fallback in the finally block predate cmdlog instrumentation; this change records the `-1` in cmdlog but does not introduce the underlying ordering, which is a known PTY kill design constraint.
