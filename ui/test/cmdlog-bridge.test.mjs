@@ -308,3 +308,62 @@ test('cmdlog.get: invokes cmdlog_get with { id }', async () => {
   assert.equal(calledCmd, 'cmdlog_get');
   assert.equal(calledArgs?.id, 'abc-123');
 });
+
+// ---- CR-010: runStream strips ANSI before appending ----
+test('runStream: cmdlog_append receives ANSI-stripped text', async () => {
+  const calls = [];
+  let streamCb;
+  listenImpl = async (evt, cb) => {
+    if (evt === 'engine:cmd-line') streamCb = cb;
+    return () => {};
+  };
+  invokeImpl = async (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === 'cmdlog_open') return 'log-ansi';
+    if (cmd === 'run_stream') {
+      streamCb?.({ payload: { id: args.streamId, text: '\x1b[31mred\x1b[0m', tag: 'stdout' } });
+      return 0;
+    }
+    return null;
+  };
+  await runner.runStream('echo red');
+  const appendCall = calls.find(c => c.cmd === 'cmdlog_append');
+  assert.ok(appendCall, 'cmdlog_append must be called');
+  assert.equal(appendCall.args.chunk, 'red', 'chunk must have ANSI stripped');
+});
+
+// ---- CR-011: spawnPty close waits for in-flight appends ----
+test('spawnPty: cmdlog_close does not fire until all pending pty appends resolve', async () => {
+  const order = [];
+  const listeners = {};
+  let resolveAppend;
+  const appendP = new Promise(r => { resolveAppend = r; });
+  listenImpl = async (evt, cb) => {
+    (listeners[evt] ??= []).push(cb);
+    return () => {};
+  };
+  invokeImpl = async (cmd, args) => {
+    if (cmd === 'cmdlog_open') return 'log-pty-order';
+    if (cmd === 'cmdlog_append') {
+      order.push('append-start');
+      await appendP;
+      order.push('append-done');
+      return null;
+    }
+    if (cmd === 'cmdlog_close') { order.push('close'); return null; }
+    if (cmd === 'spawn_pty') {
+      const id = args.runId;
+      const raw = 'hi';
+      const b64 = btoa(raw);
+      listeners['engine:pty-data']?.forEach(cb => cb({ payload: { id, data: b64 } }));
+      listeners['engine:pty-exit']?.forEach(cb => cb({ payload: { id, code: 0 } }));
+      return id;
+    }
+    return null;
+  };
+  const p = pty.spawnPty('echo hi', 80, 24);
+  await Promise.resolve();
+  resolveAppend();
+  await p;
+  assert.ok(order.indexOf('append-done') < order.indexOf('close'), 'append-done must precede close');
+});

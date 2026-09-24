@@ -3,6 +3,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import mapFailure from '../cmdlog-failure-map.mjs';
 
+test('null exit_code (in-flight record) returns empty string', () => {
+  assert.equal(
+    mapFailure({ exit_code: null, raw_output: '' }),
+    ''
+  );
+});
+test('null exit_code with partial output returns empty string', () => {
+  assert.equal(
+    mapFailure({ exit_code: null, raw_output: 'ENOTFOUND partial output' }),
+    ''
+  );
+});
 test('non-zero exit with empty output returns plain-language string', () => {
   assert.equal(
     mapFailure({ exit_code: 1, raw_output: '' }),

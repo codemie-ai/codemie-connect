@@ -27,6 +27,18 @@ test('strips ST-terminated OSC sequence (ESC backslash terminator)', async () =>
   // OSC title set terminated by ST (\x1b\) instead of BEL
   assert.equal(s('\x1b]0;title\x1b\\text'), 'text');
 });
+test('strips DEC-private CSI sequence \\x1b[?25h (cursor hide)', async () => {
+  const { default: s } = await import('../ansi-strip.mjs');
+  assert.equal(s('\x1b[?25htext'), 'text');
+});
+test('strips DEC-private CSI sequence \\x1b[>0c', async () => {
+  const { default: s } = await import('../ansi-strip.mjs');
+  assert.equal(s('\x1b[>0ctext'), 'text');
+});
+test('strips DEC-private CSI sequence \\x1b[!p (soft reset)', async () => {
+  const { default: s } = await import('../ansi-strip.mjs');
+  assert.equal(s('\x1b[!ptext'), 'text');
+});
 test('TextDecoder streams multi-byte UTF-8 split across two payloads', () => {
   const dec = new TextDecoder('utf-8', { fatal: false });
   const bytes1 = new Uint8Array([0xE2, 0x82]); // first 2 bytes of U+20AC '€'

@@ -1,4 +1,5 @@
 export default function mapFailure({ exit_code, raw_output }) {
+  if (exit_code === null) return '';
   if (exit_code === 0) return '';
   if (raw_output.trim() === '')
     return `Command exited with code ${exit_code} and produced no output.`;

@@ -76,7 +76,7 @@ export const runner = {
       const p = e.payload;
       if (p && p.id === id) {
         onLine(p.text, p.tag);
-        if (logId) pendingAppends.push(cmdlog.append(logId, p.text).catch(console.warn));
+        if (logId) pendingAppends.push(cmdlog.append(logId, stripAnsi(p.text)).catch(console.warn));
       }
     });
     let code = null;
@@ -234,6 +234,7 @@ export const pty = {
     const killP = new Promise((r) => { _resolvePtyKill = r; });
     const logId = await cmdlog.open(cmd).catch(() => null);
     const decoder = new TextDecoder('utf-8', { fatal: false });
+    const pendingPtyAppends = [];
     let exitCode;
     // CR-005: both listeners are registered inside the try block so the finally
     // always runs and always unlistens both, even if the second listen() throws.
@@ -246,7 +247,7 @@ export const pty = {
             try {
               const raw = Uint8Array.from(atob(e.payload.data), c => c.charCodeAt(0));
               const stripped = stripAnsi(decoder.decode(raw, { stream: true }));
-              if (stripped) cmdlog.append(logId, stripped).catch(console.warn);
+              if (stripped) pendingPtyAppends.push(cmdlog.append(logId, stripped).catch(console.warn));
             } catch { /* invalid base64 or decode error */ }
           }
         }
@@ -268,7 +269,8 @@ export const pty = {
       dataUnlisten?.();
       if (logId) {
         const tail = stripAnsi(decoder.decode(new Uint8Array(0), { stream: false }));
-        if (tail) await cmdlog.append(logId, tail).catch(console.warn);
+        if (tail) pendingPtyAppends.push(cmdlog.append(logId, tail).catch(console.warn));
+        await Promise.all(pendingPtyAppends);
         await cmdlog.close(logId, exitCode ?? -1).catch(console.warn);
       }
     }

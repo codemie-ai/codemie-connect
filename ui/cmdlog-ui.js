@@ -17,7 +17,9 @@ async function _renderRecords() {
 
     const meta = document.createElement('span');
     meta.className = 'log-line log-dim';
-    meta.textContent = `exit ${r.exit_code} · ${(r.duration_ms / 1000).toFixed(1)}s`;
+    meta.textContent = r.exit_code != null
+      ? `exit ${r.exit_code} · ${(r.duration_ms / 1000).toFixed(1)}s`
+      : 'running…';
 
     block.appendChild(cmd);
     block.appendChild(meta);
@@ -47,9 +49,9 @@ export function initCmdLog() {
         [r.command, `exit ${r.exit_code}`, mapFailure(r)].filter(Boolean).join('\n')
       ).join('\n\n');
       if (window.isSecureContext && navigator.clipboard) {
-        navigator.clipboard.writeText(text);
+        navigator.clipboard.writeText(text).catch(console.warn);
       } else {
-        window.__TAURI__.clipboardManager.writeText(text);
+        window.__TAURI__['clipboard-manager'].writeText(text).catch(console.warn);
       }
     });
     footer.querySelector('summary').appendChild(btn);

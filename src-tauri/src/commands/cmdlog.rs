@@ -6,6 +6,8 @@ use serde::Serialize;
 use crate::error::CmdResult;
 use crate::state::AppState;
 
+const MAX_OUTPUT: usize = 1_048_576; // 1 MB per record
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CmdRecord {
     pub id: String,
@@ -63,6 +65,11 @@ impl CmdLogStore {
         if record.exit_code.is_some() {
             return Err(format!("command-log record {id} is already closed"));
         }
+        let combined = record.raw_output.len() + chunk.len();
+        if combined > MAX_OUTPUT {
+            let excess = combined - MAX_OUTPUT;
+            record.raw_output.drain(..excess.min(record.raw_output.len()));
+        }
         record.raw_output.push_str(chunk);
         Ok(())
     }
@@ -84,7 +91,7 @@ impl CmdLogStore {
 
 #[tauri::command]
 pub fn cmdlog_open(command: String, state: tauri::State<'_, AppState>) -> CmdResult<String> {
-    Ok(state.cmdlog.lock().unwrap().open(command))
+    Ok(state.cmdlog.lock().unwrap_or_else(|e| e.into_inner()).open(command))
 }
 
 #[tauri::command]
@@ -96,7 +103,7 @@ pub fn cmdlog_append(
     state
         .cmdlog
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .append(&id, &chunk)
         .map_err(crate::error::InstallerError::Other)
 }
@@ -110,19 +117,19 @@ pub fn cmdlog_close(
     state
         .cmdlog
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .close(&id, exit_code)
         .map_err(crate::error::InstallerError::Other)
 }
 
 #[tauri::command]
 pub fn cmdlog_list(state: tauri::State<'_, AppState>) -> CmdResult<Vec<CmdRecord>> {
-    Ok(state.cmdlog.lock().unwrap().list())
+    Ok(state.cmdlog.lock().unwrap_or_else(|e| e.into_inner()).list())
 }
 
 #[tauri::command]
 pub fn cmdlog_get(id: String, state: tauri::State<'_, AppState>) -> CmdResult<Option<CmdRecord>> {
-    Ok(state.cmdlog.lock().unwrap().get(&id))
+    Ok(state.cmdlog.lock().unwrap_or_else(|e| e.into_inner()).get(&id))
 }
 
 #[cfg(test)]
@@ -196,6 +203,19 @@ mod tests {
         let id = store.open("echo hi".into());
         assert!(store.get("cmd-999").is_none());
         assert_eq!(store.get(&id).unwrap().command, "echo hi");
+    }
+
+    #[test]
+    fn append_trims_oldest_output_when_max_exceeded() {
+        let mut store = CmdLogStore::default();
+        let id = store.open("big-cmd".into());
+        // Fill to MAX_OUTPUT - 10
+        let filler = "x".repeat(MAX_OUTPUT - 10);
+        store.append(&id, &filler).unwrap();
+        // Push 20 more bytes, which would exceed MAX_OUTPUT by 10
+        store.append(&id, &"y".repeat(20)).unwrap();
+        let len = store.records.get(&id).unwrap().raw_output.len();
+        assert!(len <= MAX_OUTPUT, "raw_output must not exceed MAX_OUTPUT, got {len}");
     }
 
     #[test]
