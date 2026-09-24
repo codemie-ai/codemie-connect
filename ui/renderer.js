@@ -11,7 +11,7 @@ import { initLog, appendLine } from './log.js';
 import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeTerminal } from './terminal.js';
 import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
-import { parseProxyStatusDeep } from './proxy-parse.js';
+import { findProxyConnectError, parseProxyStatusDeep } from './proxy-parse.js';
 import { computeRowStatus } from './connections-status.js';
 import { renderConnectionRows, CONNECTION_APPS } from './connections-render.js';
 import { isBlockedState } from './auth-gate.js';
@@ -387,6 +387,14 @@ async function ensureAuthenticated() {
   return true;
 }
 
+// Human-readable subtitle text per connections-render.js status value.
+const ROW_STATUS_LABEL = {
+  'not-installed': 'Not installed',
+  'not-set': 'Not set',
+  'connected': 'Connected',
+  'disconnected': 'Disconnected',
+};
+
 // Maps each connections-render.js app id to its check_connector_status field.
 const CONFIG_PRESENT_FIELD = {
   'claude-desktop': 'claudeDesktop',
@@ -418,55 +426,79 @@ async function refreshConnectionsView() {
     const rowEl = document.createElement('div');
     rowEl.className = 'connection-row';
     rowEl.dataset.app = row.app;
+    rowEl.dataset.status = row.status;
 
-    const nameEl = document.createElement('div');
+    const mainEl = document.createElement('div');
+    mainEl.className = 'row-main';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'row-title';
+    const dotEl = document.createElement('span');
+    dotEl.className = 'row-dot';
+    dotEl.dataset.status = row.status;
+    titleEl.appendChild(dotEl);
+    const nameEl = document.createElement('span');
     nameEl.className = 'row-name';
     nameEl.textContent = row.label;
-    rowEl.appendChild(nameEl);
+    titleEl.appendChild(nameEl);
+    mainEl.appendChild(titleEl);
 
-    const statusEl = document.createElement('span');
-    statusEl.className = 'row-status';
-    statusEl.dataset.status = row.status;
-    statusEl.textContent = row.status;
-    rowEl.appendChild(statusEl);
+    const subtitleEl = document.createElement('div');
+    subtitleEl.className = 'row-subtitle';
+    subtitleEl.textContent = ROW_STATUS_LABEL[row.status];
+    mainEl.appendChild(subtitleEl);
 
-    if (row.note) {
-      const noteEl = document.createElement('span');
-      noteEl.className = 'row-note';
-      noteEl.textContent = row.note;
-      rowEl.appendChild(noteEl);
-    }
+    rowEl.appendChild(mainEl);
 
-    if (row.actionLabel) {
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'row-actions';
+    for (const action of row.actions) {
       const actionEl = document.createElement('button');
       actionEl.className = 'row-action';
-      actionEl.textContent = row.actionLabel;
-      actionEl.disabled = row.actionDisabled;
-      actionEl.addEventListener('click', () => runConnectionRowAction(row));
-      rowEl.appendChild(actionEl);
+      actionEl.textContent = action.label;
+      actionEl.disabled = action.disabled;
+      if (action.note) actionEl.title = action.note;
+      actionEl.addEventListener('click', () => runConnectionRowAction(row, action));
+      actionsEl.appendChild(actionEl);
     }
+    rowEl.appendChild(actionsEl);
 
     connectRowsEl.appendChild(rowEl);
   }
 }
 
-// Runs a row's Connect/Fix/Disconnect action on the app's single PTY slot,
-// disabling every row's action while it is in flight (row-disable is UI-level
-// insurance — spawnPty's single-slot contract already rejects concurrency).
-async function runConnectionRowAction(row) {
+// Runs a row action (Connect/Reconnect/Remove setup/Disconnect) on the app's
+// single PTY slot, disabling every row's actions while it is in flight
+// (row-disable is UI-level insurance — spawnPty's single-slot contract
+// already rejects concurrency).
+async function runConnectionRowAction(row, action) {
   if (!(await ensureAuthenticated())) return;
   connectRowsEl.querySelectorAll('.row-action').forEach((btn) => { btn.disabled = true; });
-  const cmd = row.actionLabel === 'Disconnect'
+  const isConnect = action.kind === 'connect' || action.kind === 'reconnect';
+  const cmd = action.kind === 'disconnect'
     ? `codemie proxy disconnect ${row.connectFlag}`
-    : `codemie proxy connect ${row.connectFlag}${row.actionLabel === 'Fix' ? ' --force' : ''}`;
-  openTerminal(`${row.actionLabel} ${row.label}`, {
+    : `codemie proxy connect ${row.connectFlag}${action.kind === 'reconnect' ? ' --force' : ''}`;
+  openTerminal(`${action.label} ${row.label}`, {
     keepOpen: true,
     onClose: () => { refreshConnectionsView(); },
   });
+  // Spec: parse `codemie proxy connect` output for success/failure rather than
+  // trusting the exit code — mirrors findLoginError's stdout-scan convention.
+  let buf = '';
+  const un = isConnect ? await listen('engine:pty-data', (e) => {
+    try { buf += atob(e.payload.data); } catch { /* ignore */ }
+  }) : null;
   try {
     const { code } = await bridge.pty.spawnPty(cmd);
-    writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
+    un?.();
+    const errorLine = isConnect ? findProxyConnectError(buf.split(/\r?\n/)) : null;
+    if (errorLine) {
+      writeLine(`\r\n\x1b[31m✗ ${errorLine}\x1b[0m Click “‹ Back” to return.\r\n`);
+    } else {
+      writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
+    }
   } catch (e) {
+    un?.();
     writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
     handlePtyExit();
   }
@@ -830,6 +862,7 @@ async function boot() {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
       showView(btn.dataset.view);
+      if (btn.dataset.view === 'connect') refreshConnectionsView();
     });
   });
   showView('home');
