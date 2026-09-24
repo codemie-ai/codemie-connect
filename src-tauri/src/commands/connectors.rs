@@ -35,10 +35,15 @@ fn claude_desktop_connected(base_dir: &Path) -> bool {
         .exists()
 }
 
-/// Codex Desktop is "connected" when CodeMie's proxy has written its state file.
+/// Codex Desktop is "connected" when CodeMie's proxy has written a non-empty
+/// state file. A successful `disconnect` doesn't delete the file — it
+/// overwrites it with an empty string — so `exists()` alone can't tell a live
+/// connection from an already-disconnected one.
 #[cfg(target_os = "macos")]
 fn codex_desktop_connected(state_file: &Path) -> bool {
-    state_file.exists()
+    std::fs::read_to_string(state_file)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// VS Code Copilot Chat (BYOK) is "connected" when its chat model provider
@@ -205,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_desktop_connected_when_state_file_exists() {
+    fn codex_desktop_connected_when_state_file_has_content() {
         let tmp = tempdir_for_test("codex-ok");
         fs::write(&tmp, "{}").unwrap(); // state file path itself, not a dir
         assert!(codex_desktop_connected(&tmp));
@@ -214,6 +219,13 @@ mod tests {
     #[test]
     fn codex_desktop_not_connected_when_state_file_absent() {
         let tmp = tempdir_for_test("codex-missing/state.json");
+        assert!(!codex_desktop_connected(&tmp));
+    }
+
+    #[test]
+    fn codex_desktop_not_connected_when_state_file_emptied_by_disconnect() {
+        let tmp = tempdir_for_test("codex-disconnected");
+        fs::write(&tmp, "").unwrap(); // `disconnect` overwrites with "" rather than deleting
         assert!(!codex_desktop_connected(&tmp));
     }
 
