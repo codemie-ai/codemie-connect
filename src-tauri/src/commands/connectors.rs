@@ -1,0 +1,113 @@
+// Presence checks for external tool connectors (Claude Desktop, Codex Desktop,
+// VS Code extensions) feeding the Connections screen. Each field reports
+// whether a CodeMie-managed config is currently applied for that tool — not
+// whether the tool itself is installed.
+use serde::Serialize;
+use std::path::Path;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorStatus {
+    pub claude_desktop: bool,
+    pub codex_desktop: bool,
+    pub vscode_copilot: bool,
+    pub vscode_claude_code: bool,
+}
+
+/// Claude Desktop is "connected" when its configLibrary's currently-applied
+/// entry (per `_meta.json`'s `appliedId`) still exists on disk.
+fn claude_desktop_connected(base_dir: &Path) -> bool {
+    let meta_path = base_dir.join("configLibrary/_meta.json");
+    let Ok(raw) = std::fs::read_to_string(&meta_path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    let Some(applied_id) = json.get("appliedId").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    base_dir
+        .join("configLibrary")
+        .join(format!("{applied_id}.json"))
+        .exists()
+}
+
+/// Codex Desktop is "connected" when CodeMie's proxy has written its state file.
+fn codex_desktop_connected(state_file: &Path) -> bool {
+    state_file.exists()
+}
+
+fn home_dir() -> String {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn check_connector_status() -> ConnectorStatus {
+    let home = home_dir();
+    let claude_base = Path::new(&home).join("Library/Application Support/Claude-3p");
+    let codex_state = Path::new(&home).join(".codemie/proxy/codex-desktop-state.json");
+
+    ConnectorStatus {
+        claude_desktop: claude_desktop_connected(&claude_base),
+        codex_desktop: codex_desktop_connected(&codex_state),
+        vscode_copilot: false,
+        vscode_claude_code: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn tempdir_for_test(name: &str) -> PathBuf {
+        tempfile::tempdir().unwrap().keep().join(name)
+    }
+
+    #[test]
+    fn claude_desktop_connected_when_meta_and_applied_file_exist() {
+        let tmp = tempdir_for_test("claude-ok");
+        fs::create_dir_all(tmp.join("configLibrary")).unwrap();
+        fs::write(tmp.join("configLibrary/_meta.json"), r#"{"appliedId":"abc"}"#).unwrap();
+        fs::write(tmp.join("configLibrary/abc.json"), "{}").unwrap();
+        assert!(claude_desktop_connected(&tmp));
+    }
+
+    #[test]
+    fn claude_desktop_not_connected_when_applied_file_missing() {
+        let tmp = tempdir_for_test("claude-stale");
+        fs::create_dir_all(tmp.join("configLibrary")).unwrap();
+        fs::write(
+            tmp.join("configLibrary/_meta.json"),
+            r#"{"appliedId":"missing"}"#,
+        )
+        .unwrap();
+        assert!(!claude_desktop_connected(&tmp));
+    }
+
+    #[test]
+    fn claude_desktop_not_connected_when_meta_absent_or_malformed() {
+        let tmp = tempdir_for_test("claude-none");
+        assert!(!claude_desktop_connected(&tmp));
+        fs::create_dir_all(tmp.join("configLibrary")).unwrap();
+        fs::write(tmp.join("configLibrary/_meta.json"), "not json").unwrap();
+        assert!(!claude_desktop_connected(&tmp));
+    }
+
+    #[test]
+    fn codex_desktop_connected_when_state_file_exists() {
+        let tmp = tempdir_for_test("codex-ok");
+        fs::write(&tmp, "{}").unwrap(); // state file path itself, not a dir
+        assert!(codex_desktop_connected(&tmp));
+    }
+
+    #[test]
+    fn codex_desktop_not_connected_when_state_file_absent() {
+        let tmp = tempdir_for_test("codex-missing/state.json");
+        assert!(!codex_desktop_connected(&tmp));
+    }
+}
