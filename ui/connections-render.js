@@ -9,7 +9,7 @@ export const CONNECTION_APPS = [
   { app: 'claude-desktop', label: 'Claude Desktop', bundleName: 'Claude', connectFlag: '--claude-desktop', canDisconnect: false },
   { app: 'vscode-copilot', label: 'VS Code — Copilot Chat (BYOK)', bundleName: 'Visual Studio Code', connectFlag: '--vscode', canDisconnect: false },
   { app: 'vscode-claude-code', label: 'VS Code — Claude Code extension', bundleName: 'Visual Studio Code', connectFlag: '--vscode-claude-code', canDisconnect: false },
-  { app: 'codex-desktop', label: 'Codex desktop app', bundleName: 'Codex', connectFlag: '--codex-desktop', canDisconnect: true },
+  { app: 'codex-desktop', label: 'Codex desktop app', bundleName: 'ChatGPT', connectFlag: '--codex-desktop', canDisconnect: true },
 ];
 
 export function renderConnectionRows(statusesByApp) {
