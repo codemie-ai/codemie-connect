@@ -29,6 +29,7 @@ const SAFE_COMMAND = /^[A-Za-z0-9._-]+$/;
 // it before the row shows it.
 const ERROR_LINE = /^\s*[✗✖×]\s|^\s*(Error|Failed)\b/i;
 const ERROR_GLYPH = /^\s*[✗✖×]\s*/;
+const RESULT_LINE = /^\s*[✔✓⚠]\s*/;
 
 export function createAgentsController({ container, runCapture, runStream, stepsUi, onFailure, onResult } = {}) {
   // A second run() while the first is in flight is a no-op, as on Health: the
@@ -42,9 +43,12 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // command -> the message an action's failure left on that row, merged onto
   // the agent record on every load() so a refresh never drops it.
   const rowErrors = new Map();
-  // agent.command values with an action currently running; a new action
-  // request for one already in this set is ignored rather than racing it.
+  // agent.command values with an action currently running; while any is, a
+  // new action request is refused rather than racing it.
   const inFlight = new Set();
+  // command -> the CLI's result line after an Update ("already up to date",
+  // "could not check"), which otherwise exits 0 and leaves no trace on the row.
+  const rowNotes = new Map();
 
   // silent: true is what a post-action refresh uses — it skips showLoading so
   // the container is never blanked outside the very first load.
@@ -87,7 +91,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
       let agents = joinUpdateStatus(parsed, updateRecords);
       agents = agents.map((a) => {
         const message = rowErrors.get(a.command);
-        return message ? { ...a, actionStatus: 'error', actionMessage: message } : a;
+        if (message) return { ...a, actionStatus: 'error', actionMessage: message };
+        const note = rowNotes.get(a.command);
+        return note ? { ...a, actionMessage: note } : a;
       });
 
       lastAgents = agents;
@@ -110,8 +116,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // result and reads the row's own error; Home's checklist has no row to read,
   // so it is handed back. `onLine` is Home's too: its picker shows the
   // command's output where the install was started from.
-  async function runAction(agent, command, { onLine } = {}) {
-    if (inFlight.has(agent.command)) return { ok: false, message: 'That agent is already being worked on.' };
+  async function runAction(agent, command, { onLine, note } = {}) {
+    // One at a time, see buildActions in agents-ui.js.
+    if (inFlight.size) return { ok: false, message: 'Another agent is still being worked on.' };
     if (!SAFE_COMMAND.test(agent.command)) {
       const message = 'This agent’s command name is not safe to run and was blocked.';
       rowErrors.set(agent.command, message);
@@ -120,6 +127,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
     }
     inFlight.add(agent.command);
     rowErrors.delete(agent.command);
+    rowNotes.delete(agent.command);
     stepsUi.setStatus(agent.command, 'ACTIVE');
     stepsUi.startSpinner(agent.command);
     const lines = [];
@@ -130,12 +138,16 @@ export function createAgentsController({ container, runCapture, runStream, steps
         // (ui/runner-bridge.js); it must never become the fallback error
         // message when a failing command produces no other output.
         if (tag !== 'prompt') lines.push(text);
-        stepsUi.setSubtitle(agent.command, text);
+        // The CLI's progress lines start with a "- " spinner frame.
+        stepsUi.setSubtitle(agent.command, text.replace(/^\s*-\s+/, ''));
         onLine?.(text, tag);
       });
       if (code !== 0) {
         message = messageFor(lines);
         rowErrors.set(agent.command, message);
+      } else if (note) {
+        const result = [...lines].reverse().find((l) => RESULT_LINE.test(l));
+        if (result) rowNotes.set(agent.command, result.replace(RESULT_LINE, '').trim());
       }
     } catch (e) {
       lines.push(String((e && e.message) || e));
@@ -151,6 +163,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
   function messageFor(lines) {
     const accumulated = lines.join('\n');
     if (NO_NETWORK.test(accumulated)) return 'Installing needs a connection.';
+    // The CLI gives up on an install after a fixed time and says so in ms.
+    const timedOut = accumulated.match(/timed out after (\d+)\s*ms/i);
+    if (timedOut) return `Took longer than ${Math.round(Number(timedOut[1]) / 60000)} minutes. Check your connection and try again.`;
     // The CLI does not end on its error. A failed install prints the reason,
     // then the whole list of available agents, then a tip — so the last line
     // is "Tip: Run codemie install to see all agents", which tells the user
@@ -170,7 +185,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // passes no explicit version, which is what the ticket forbids. See
   // .ai-run/decisions/2026-09-21-EPMCDME-14514-install-without-supported.md.
   const onInstall = (agent, opts) => runAction(agent, `codemie install ${agent.command}`, opts);
-  const onUpdate = (agent) => runAction(agent, `codemie update ${agent.command}`);
+  const onUpdate = (agent) => runAction(agent, `codemie update ${agent.command}`, { note: true });
   const onRemove = (agent) => runAction(agent, `codemie uninstall ${agent.command}`);
 
   return {

@@ -401,6 +401,8 @@ test('a second click on the same row while its action is in flight does not fire
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
   slot._children[0].onclick({ stopPropagation() {} });
   slot._children[0].onclick({ stopPropagation() {} });
+  // Another row too: npm installs into one shared folder, so one at a time.
+  container.querySelector('.agent-actions[data-id="claude"]')._children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   release();
   await new Promise((r) => setImmediate(r));
@@ -537,4 +539,51 @@ test('a real registry-unreachable failure reads as a connection problem, and Hom
   const subtitles = stepsUi.calls.filter((c2) => c2[0] === 'setSubtitle' && c2[1] === 'gemini').map((c2) => c2[2]);
   assert.equal(subtitles.at(-1), 'Installing needs a connection.', 'the Agents row settles on the same message');
   assert.ok(!subtitles.at(-1).includes('npm error'), "npm's raw dump never becomes the row's message");
+});
+
+test('after an Update the row keeps the CLI\'s result line, and the next action clears it', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  let lines = [['- Checking Gemini CLI for updates...', 'stdout'], ['⚠ Could not check Gemini CLI for updates', 'stdout']];
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream: async (cmd, onLine) => {
+      for (const [t, tag] of lines) onLine(t, tag);
+      return { code: 0 };
+    },
+    stepsUi,
+  });
+  await c.run();
+  container.querySelector('.agent-actions[data-id="claude"]')._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  const row = () => c.getLastAgents().find((a) => a.command === 'claude');
+  assert.equal(row().actionMessage, 'Could not check Gemini CLI for updates');
+  assert.notEqual(row().actionStatus, 'error');
+  assert.ok(stepsUi.calls.some((x) => x[0] === 'setSubtitle' && x[2] === 'Checking Gemini CLI for updates...'), 'the "- " spinner frame is dropped');
+  lines = [];
+  container.querySelector('.agent-actions[data-id="claude"]')._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(row().actionMessage, undefined);
+});
+
+test('an install that hits the CLI\'s time limit says so in minutes', async () => {
+  const container = makeEl('div');
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream: async (cmd, onLine) => {
+      onLine('✗ Failed to install agent claude: Failed to install: Command timed out after 300000ms', 'stdout');
+      onLine('💡 Tip: Run codemie install to see all agents', 'stdout');
+      return { code: 1 };
+    },
+    stepsUi: fakeStepsUi(),
+  });
+  await c.run();
+  container.querySelector('.agent-actions[data-id="gemini"]')._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(c.getLastAgents().find((a) => a.command === 'gemini').actionMessage, 'Took longer than 5 minutes. Check your connection and try again.');
 });

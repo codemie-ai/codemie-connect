@@ -125,21 +125,24 @@ test('no action button is drawn while its handler is absent', () => {
   assert.deepEqual(buttons(container), []);
 });
 
-test('an installed agent offers Update and Remove, one that is not offers Install', () => {
+test('an installed agent offers Update and Remove, one that is not offers Install, the built-in one neither', () => {
   const container = makeEl('div');
   const seen = [];
+  const stepsUi = fakeStepsUi();
   renderAgents(
     container,
     { agents },
-    { stepsUi: fakeStepsUi(), onInstall: (a) => seen.push(['install', a.command]), onUpdate: (a) => seen.push(['update', a.command]), onRemove: (a) => seen.push(['remove', a.command]) },
+    { stepsUi, onInstall: (a) => seen.push(['install', a.command]), onUpdate: (a) => seen.push(['update', a.command]), onRemove: (a) => seen.push(['remove', a.command]) },
   );
-  assert.deepEqual(buttons(container), ['Update', 'Remove', 'Update', 'Remove', 'Install']);
+  assert.deepEqual(buttons(container), ['Update', 'Remove', 'Install']);
+  const subs = Object.fromEntries(stepsUi.calls.filter((c) => c[0] === 'setSubtitle').map((c) => [c[1], c[2]]));
+  assert.match(subs['codemie-code'], /built into the CLI$/);
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
   slot._children[0].onclick({ stopPropagation() {} });
   assert.deepEqual(seen, [['install', 'gemini']]);
 });
 
-test('a clicked action disables its row and says what is running', () => {
+test('a clicked action disables every button on the screen and says what is running', () => {
   const container = makeEl('div');
   const noop = () => {};
   renderAgents(container, { agents }, { stepsUi: fakeStepsUi(), onInstall: noop, onUpdate: noop, onRemove: noop });
@@ -149,10 +152,7 @@ test('a clicked action disables its row and says what is running', () => {
   assert.equal(update.disabled, true);
   assert.equal(remove.disabled, true);
   const [install] = container.querySelector('.agent-actions[data-id="gemini"]')._children;
-  assert.ok(!install.disabled, 'other rows stay usable');
-  install.onclick({ stopPropagation() {} });
-  assert.equal(install.textContent, 'Installing…');
-  assert.equal(install.disabled, true);
+  assert.equal(install.disabled, true, 'other rows wait for it too');
 });
 
 test('the screen says it is reading before the list arrives', () => {

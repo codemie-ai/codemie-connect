@@ -13,6 +13,7 @@
 // row itself, and never in a modal.
 import { StepStatus, makeStep } from './models.js';
 import { screenSpinner } from './screen-loading.js';
+import { BUILTIN_AGENT_COMMAND } from './home-state.js';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -39,6 +40,7 @@ const statusOf = (agent) => {
 const subtitleOf = (agent) => {
   if (agent.actionMessage) return agent.actionMessage;
   const base = agent.installed && agent.version ? `${agent.description} · ${agent.version}` : agent.description;
+  if (agent.command === BUILTIN_AGENT_COMMAND) return `${base} · built into the CLI`;
   if (agent.updateAvailable) return `${base} · ${agent.latest ? `${agent.latest} available` : 'update available'}`;
   return base;
 };
@@ -67,11 +69,13 @@ export function renderAgents(container, { agents }, handlers = {}) {
   container.appendChild(list);
 
   stepsUi.renderSteps(list, agents.map((a) => makeStep({ id: a.command, title: a.name })));
+  // Every action button on the screen, so one click can disable them all.
+  const screenButtons = [];
   for (const agent of agents) {
     stepsUi.setStatus(agent.command, statusOf(agent));
     stepsUi.setSubtitle(agent.command, subtitleOf(agent));
     const row = list.querySelector(`.step-row[data-id="${agent.command}"]`);
-    if (row) row.appendChild(buildActions(agent, { onInstall, onUpdate, onRemove }));
+    if (row) row.appendChild(buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons));
     if (row && agent.updateAvailable) {
       row.title = agent.latest ? `A newer version is out. Update installs ${agent.latest}.` : 'A newer version is out. Update installs it.';
     }
@@ -81,23 +85,27 @@ export function renderAgents(container, { agents }, handlers = {}) {
 const BUSY_LABEL = { Install: 'Installing…', Update: 'Updating…', Remove: 'Removing…' };
 
 // One action slot per row. A button is drawn only when its handler exists, so
-// this screen never shows a control that does nothing. A click disables the
-// row's buttons and says what is running; the refresh after the action draws
-// the row again with fresh buttons.
-function buildActions(agent, { onInstall, onUpdate, onRemove }) {
+// this screen never shows a control that does nothing. One action runs at a
+// time: npm installs into one shared folder, and a second one started beside
+// the first leaves the list reading a half-done state. A click disables every
+// button on the screen and says what is running; the refresh after the action
+// draws the rows again with fresh buttons.
+function buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons = []) {
   const slot = el('div', 'agent-actions');
   slot.dataset.id = agent.command;
-  const buttons = [];
+  // The built-in agent ships inside the CLI: the CLI refuses to update it and
+  // its uninstall leaves it installed, so neither button would do anything.
+  if (agent.command === BUILTIN_AGENT_COMMAND) return slot;
   const add = (label, variant, fn) => {
     if (!fn) return;
     const btn = el('button', `btn ${variant}`, label);
     btn.onclick = (e) => {
       e?.stopPropagation?.();
-      for (const b of buttons) b.disabled = true;
+      for (const b of screenButtons) b.disabled = true;
       btn.textContent = BUSY_LABEL[label];
       fn(agent);
     };
-    buttons.push(btn);
+    screenButtons.push(btn);
     slot.appendChild(btn);
   };
   if (agent.installed) {
