@@ -259,7 +259,7 @@ test('real doctor output renders grouped, counted and stamped with the injected 
   await controller.run();
   const text = container._innerText();
   const clock = checkedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  assert.ok(text.includes(`5 of 8 fine · checked at ${clock}`));
+  assert.ok(text.includes(`6 of 8 fine · checked at ${clock}`));
   assert.ok(text.includes('Your CodeMie account'));
   assert.ok(text.includes('SSO credentials not found'));
   assert.ok(container._findButton('Sign in again'));

@@ -9,6 +9,7 @@
 //
 // Pure DOM: no Tauri, no window globals. The caller owns the install itself
 // and hands back its result.
+import { BUILTIN_AGENT_COMMAND } from './home-state.js';
 
 // The CLI's own `codemie setup` ends by asking "Would you like to install
 // Claude Code now?", so Claude Code is the CLI's suggestion rather than ours.
@@ -67,7 +68,10 @@ export function renderAgentPicker(host, { agents, busy, error } = {}, { onInstal
       continue;
     }
     if (agent.installed) {
-      const row = agentRow(agent, el('span', 'home-agent-have', agent.version ? `Installed · ${agent.version}` : 'Installed'));
+      // The built-in agent comes with the CLI; "Installed" on the first row read
+      // as the recommended agent being installed already.
+      const have = agent.command === BUILTIN_AGENT_COMMAND ? 'Built into the CLI' : 'Installed';
+      const row = agentRow(agent, el('span', 'home-agent-have', agent.version ? `${have} · ${agent.version}` : have));
       row.className = 'home-agent-row installed';
       list.appendChild(row);
       continue;

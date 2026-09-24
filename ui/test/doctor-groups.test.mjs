@@ -21,13 +21,13 @@ test('signed-in: the real output groups into account, tools and CodeMie itself',
       'tools | pass | AWS CLI',
       'account | pass | Your profile is set up',
       'account | pass | CodeMie can reach the model service',
-      'tools | warn | CodeMie Code 0.0.47',
+      'tools | pass | CodeMie Code 0.0.47',
       'tools | pass | Claude Code 2.1.269',
       'tools | warn | OpenCode CLI 1.18.31',
       'tools | pass | Frameworks',
     ],
   );
-  assert.deepEqual(summary, { passing: 6, total: 8 });
+  assert.deepEqual(summary, { passing: 7, total: 8 });
 });
 
 test('signed-in: the four bundled-runtime checks collapse into one row that names their versions', () => {
@@ -58,6 +58,16 @@ test('signed-in: each installed agent is its own row, and one the CLI has advice
   assert.equal(claude.remedyText, undefined);
 });
 
+// Doctor flags the built-in agent every time, but it comes with the CLI and the
+// Agents screen has nothing that updates it, so "Go to Agents" led nowhere.
+test('the built-in agent is a passing row with no remedy, whatever doctor advises', () => {
+  const { rows } = grouped('signed-in');
+  const builtIn = rows.find((r) => r.label === 'CodeMie Code 0.0.47');
+  assert.equal(builtIn.status, 'pass');
+  assert.equal(builtIn.detail, 'built into the CLI');
+  assert.equal(builtIn.action, undefined);
+});
+
 test('signed-in: a section the CLI only reports on is not a check that passed', () => {
   const labels = grouped('signed-in').rows.map((r) => r.label);
   assert.ok(!labels.some((l) => /JWT|Repository/.test(l)));
@@ -71,7 +81,7 @@ test('sso-expired: the row is named after the error and offers to sign in again'
   assert.equal(row.remedyText, 'Sign in again to restore your CodeMie session.');
   assert.equal(row.remedyDetail, 'Run: codemie profile login');
   assert.deepEqual(row.action, { kind: 'signin', label: 'Sign in again' });
-  assert.deepEqual(summary, { passing: 5, total: 8 });
+  assert.deepEqual(summary, { passing: 6, total: 8 });
 });
 
 test('a problem whose hint is not about signing in keeps the CLI hint and offers a recheck', () => {

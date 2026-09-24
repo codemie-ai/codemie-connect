@@ -112,8 +112,16 @@ function sectionRow(name, items) {
 // Each installed agent is its own check with its own remedy, so each gets a
 // row: "Claude Code (2.1.269)", or "OpenCode CLI (1.18.31) - CodeMie
 // recommends …" when the CLI has something to say about it.
+// The CLI's built-in agent comes with the CLI, so nothing on the Agents screen
+// can update it, yet doctor warns about it every time ("CodeMie recommends
+// vlatest"). Only that warning is dropped; a real failure still shows.
+const BUILTIN_AGENT = /^CodeMie Code\b/;
+
 function agentRow(item) {
   const [title, ...rest] = item.message.split(/\s+-\s+/);
+  if (BUILTIN_AGENT.test(title) && item.status === 'warn') {
+    return { group: 'tools', label: unparen(title), detail: 'built into the CLI', status: 'pass', remedyText: undefined, action: undefined };
+  }
   const status = statusOf([item]);
   const detail = rest.join(' - ') || undefined;
   const row = { group: 'tools', label: unparen(title), detail, status, remedyText: undefined, action: undefined };

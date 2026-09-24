@@ -114,6 +114,17 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       chevron.setAttribute?.('aria-hidden', 'true');
       agentRow.appendChild(chevron);
     }
+    // An install in flight with the list closed: the row says what is being
+    // installed and the CLI's latest line runs under it, like a checklist step.
+    if (busy && expanded !== 'agent' && agentRow) {
+      stepsUi.setStatus('agent', StepStatus.ACTIVE);
+      stepsUi.setSubtitle('agent', `Installing ${busy.name}…`);
+      const status = el('div', 'home-install-status');
+      const spin = el('span', 'inline-spinner');
+      spin.setAttribute?.('aria-hidden', 'true');
+      status.append(spin, el('span', 'home-agent-progress', busy.line));
+      agentRow.appendChild(status);
+    }
     if (expanded === 'agent' && agentRow && agentReady) {
       const picker = renderAgentPicker(
         agentRow,
@@ -151,10 +162,14 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
     if (busy) return;
     busy = { name: agent.name, command: agent.command, line: 'Starting…' };
     failure = null;
+    // The choice is made: the list closes and the row itself shows progress.
+    expanded = null;
     rerender();
     const onLine = (text) => {
       if (!text || !busy) return;
-      busy.line = text;
+      // The CLI's progress lines start with a "- " spinner frame.
+      busy.line = text.replace(/^\s*-\s+/, '');
+      text = busy.line;
       const line = container.querySelector('.home-agent-progress');
       if (line) line.textContent = text;
     };
@@ -166,10 +181,9 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
     }
     busy = null;
     failure = result && result.ok === false ? result.message : null;
-    // A successful install closes the list: the thing the row was opened for
-    // is done, and leaving it open under a ticked item reads as unfinished.
-    // A failure keeps it open, with the reason, so the user can try again.
-    if (!failure) expanded = null;
+    // A failure opens the list again, with the reason, so the user can try
+    // again or pick another agent.
+    if (failure) expanded = 'agent';
     rerender();
   }
 

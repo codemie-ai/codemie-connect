@@ -107,10 +107,14 @@ test("every agent is listed: what is installed first, then the CLI's suggestion,
 
 // The built-in agent ships inside the CLI package: always reported installed,
 // never installable, so it is listed but carries no button.
-test('an installed agent shows its version instead of a button', () => {
+test('an installed agent shows its version instead of a button, the built-in one says it comes with the CLI', () => {
   const host = makeEl('div');
-  renderAgentPicker(host, { agents: [{ name: 'CodeMie Code', command: 'codemie-code', description: 'Built in', installed: true, version: '0.0.47' }] }, {});
-  assert.ok(host._text().includes('Installed · 0.0.47'));
+  renderAgentPicker(host, { agents: [
+    { name: 'CodeMie Code', command: 'codemie-code', description: 'Built in', installed: true, version: '0.0.47' },
+    { name: 'Gemini CLI', command: 'gemini', description: 'Google', installed: true, version: '0.61.0' },
+  ] }, {});
+  assert.ok(host._text().includes('Built into the CLI · 0.0.47'));
+  assert.ok(host._text().includes('Installed · 0.61.0'));
   assert.equal(host._all((n) => n._tag === 'button').length, 0);
 });
 
@@ -218,17 +222,18 @@ test('an expanded row survives a refresh that arrives while it is open', () => {
   assert.ok(container.querySelector('.home-picker'), 'still open after the re-render');
 });
 
-test('the install runs through the caller, streams its output into the row, and the row closes when the item ticks', async () => {
+test('Install closes the list at once, the row shows the streamed output under it, and it opens again on demand', async () => {
   const container = makeEl('div');
   const calls = [];
   // Read inside the install and asserted after it: the view catches whatever
   // the callback throws, so an assertion in there would be swallowed.
-  const seen = { written: null, afterRerender: null };
+  const seen = { written: null, afterRerender: null, pickerOpen: null };
   const view = createHomeView(container, {
     stepsUi: fakeStepsUi(),
     onInstallAgent: async (agent, onLine) => {
       calls.push(agent.command);
-      onLine('Installing @anthropic-ai/claude-code…');
+      seen.pickerOpen = !!container.querySelector('.home-picker');
+      onLine('- Installing @anthropic-ai/claude-code…');
       // Written straight into the open row, without a re-render: streamed
       // output must not rebuild the list on every chunk.
       seen.written = container.querySelector('.home-agent-progress')?.textContent;
@@ -242,16 +247,18 @@ test('the install runs through the caller, streams its output into the row, and 
   await container._all((n) => n._tag === 'button' && n.textContent === 'Install')[0].onclick({ stopPropagation() {} });
 
   assert.deepEqual(calls, ['claude']);
-  assert.equal(seen.written, 'Installing @anthropic-ai/claude-code…', 'the line is written into the open row as output arrives');
+  assert.equal(seen.pickerOpen, false, 'the list closes as soon as Install is clicked');
+  assert.equal(seen.written, 'Installing @anthropic-ai/claude-code…', 'the line is written under the row as output arrives, without the spinner dash');
   assert.equal(seen.afterRerender, 'Installing @anthropic-ai/claude-code…', 'and a refresh mid-install does not lose it');
-  // The list closes itself once the install lands, and the row opens again on
-  // a click if the user wants another agent.
+  // It stays closed once the install lands, and the row opens again on a
+  // click if the user wants another agent.
   assert.equal(container.querySelector('.home-picker'), null, 'closed after a successful install');
+  assert.equal(container.querySelector('.home-install-status'), null, 'and the progress line is gone');
   container.querySelector('.step-row[data-id="agent"]')._click();
   assert.ok(container.querySelector('.home-picker'), 'and opens again on demand');
 });
 
-test('a failed install leaves the row open with the reason, and the item incomplete', async () => {
+test('a failed install opens the list again with the reason, and the item incomplete', async () => {
   const container = makeEl('div');
   const view = createHomeView(container, {
     stepsUi: fakeStepsUi(),
@@ -260,7 +267,7 @@ test('a failed install leaves the row open with the reason, and the item incompl
   view.render(checklist()); // its turn: the list is already open
   await container._all((n) => n._tag === 'button' && n.textContent === 'Install')[0].onclick({ stopPropagation() {} });
 
-  assert.ok(container.querySelector('.home-picker'), 'the row stays open');
+  assert.ok(container.querySelector('.home-picker'), 'the list is open again');
   assert.ok(container._text().includes('Installing needs a connection.'));
 });
 
