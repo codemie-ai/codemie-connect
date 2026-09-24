@@ -337,10 +337,11 @@ body::before {
   border: 1px solid var(--border-2);
   border-radius: var(--radius-xl);
   cursor: pointer;
-  transition: border-color 0.14s ease, transform 0.14s ease;
+  transition: border-color 0.14s ease;
 }
 .home-card[data-card="profile"] { cursor: default; }
-.home-card:not([data-card="profile"]):hover { border-color: var(--accent); transform: translateY(-1px); }
+/* No lift on hover: #home-body scrolls, so a raised card loses its top border to the clip. */
+.home-card:not([data-card="profile"]):hover { border-color: var(--accent); }
 .home-card-good { border-color: rgba(63, 185, 80, 0.45); }
 .home-card-warn { border-color: rgba(210, 153, 34, 0.55); }
 .home-card-bad { border-color: rgba(255, 107, 107, 0.6); }
