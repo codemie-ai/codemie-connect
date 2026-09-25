@@ -166,64 +166,42 @@ where
     })
 }
 
-/// Direct invocation of the bundled node binary + CLI entry-point.
-/// Extracted from `run_self_update` so the invocation logic can be unit-tested
-/// independently of Tauri's managed `State`.
-pub(crate) async fn self_update_direct(
+/// True when the app runs the CLI it ships with. That copy is sealed inside
+/// the app bundle, so `codemie self-update` (an `npm install -g`) cannot change
+/// it: the new version lands in the user's own npm prefix and the app keeps
+/// running the bundled one. The CLI in the bundle updates with the app.
+pub(crate) fn bundled_cli_in_use(
+    existing_cli_detected: bool,
     node_exe: &std::path::Path,
     cli_entry: &std::path::Path,
-) -> CmdResult<String> {
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut node_cmd = tokio::process::Command::new(node_exe);
-    node_cmd.args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")]);
-    #[cfg(windows)]
-    node_cmd.creation_flags(CREATE_NO_WINDOW);
-    let out = tokio::time::timeout(std::time::Duration::from_secs(120), node_cmd.output())
-        .await
-        .map_err(|_| {
-            crate::error::InstallerError::Other("self-update timed out after 120 s".into())
-        })?
-        .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(crate::error::InstallerError::Other(format!(
-            "codemie self-update failed (exit {:?}): {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )))
-    }
+) -> bool {
+    !existing_cli_detected && node_exe.exists() && cli_entry.exists()
 }
 
-/// Run `codemie self-update` silently (captured, not PTY).
-/// Invokes the bundled node + CLI entry absolutely when both paths exist;
-/// falls back to the `codemie` shim on PATH through the platform shell.
+/// Whether the app is running its bundled CLI; the UI offers a CLI update only
+/// when it is not.
+#[tauri::command]
+pub fn cli_is_bundled(state: tauri::State<'_, crate::state::AppState>) -> bool {
+    bundled_cli_in_use(
+        state.existing_cli_detected,
+        &state.node_exe_path,
+        &state.cli_entry_path,
+    )
+}
+
+/// Run `codemie self-update` silently (captured, not PTY) for a CLI the user
+/// installed themselves. Refused for the bundled CLI, see `bundled_cli_in_use`.
 /// Returns stdout on exit 0; serializes as an error string on non-zero exit.
 #[tauri::command]
 pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) -> CmdResult<String> {
-    let node = &state.node_exe_path;
-    let cli = &state.cli_entry_path;
-    if node.exists() && cli.exists() {
-        return self_update_direct(node, cli).await;
-    }
-    // At least one bundled path is absent. When an existing CLI took precedence
-    // (EPMCDME-14581), node_exe_path/cli_entry_path were never populated by
-    // design — that's expected, not a PATH-injection failure, so only warn
-    // when it wasn't.
-    if !state.existing_cli_detected {
-        if !node.exists() {
-            log::warn!(
-                "[run_self_update] node_exe_path not found ({}); falling back to PATH shim",
-                node.display()
-            );
-        }
-        if !cli.exists() {
-            log::warn!(
-                "[run_self_update] cli_entry_path not found ({}); falling back to PATH shim",
-                cli.display()
-            );
-        }
+    if bundled_cli_in_use(
+        state.existing_cli_detected,
+        &state.node_exe_path,
+        &state.cli_entry_path,
+    ) {
+        return Err(crate::error::InstallerError::Other(
+            "The CodeMie CLI comes with this app and updates when the app does.".into(),
+        ));
     }
     let r = capture("codemie self-update", None).await;
     if r.code == 0 {
@@ -309,24 +287,20 @@ mod tests_windows {
 mod tests_self_update {
     use super::*;
 
-    /// `self_update_direct` must surface a spawn failure as `Err`, on both
-    /// platforms: a file that is not a valid executable (Windows: not a PE;
-    /// unix: no execute bit) cannot be run as the bundled node.
-    /// The success path needs the real bundled node and is exercised by
-    /// build-installer's post-build shim smoke.
-    #[tokio::test]
-    async fn self_update_direct_errors_when_node_not_executable() {
+    #[test]
+    fn the_bundled_cli_is_in_use_only_when_no_existing_cli_and_both_files_exist() {
         let dir = tempfile::TempDir::new().unwrap();
-        let fake_node = dir
-            .path()
-            .join(if cfg!(windows) { "node.exe" } else { "node" });
-        let fake_cli = dir.path().join("codemie.js");
-        std::fs::write(&fake_node, b"not an executable").unwrap();
-        std::fs::write(&fake_cli, b"// placeholder").unwrap();
-        let result = self_update_direct(&fake_node, &fake_cli).await;
+        let node = dir.path().join("node");
+        let cli = dir.path().join("codemie.js");
+        std::fs::write(&node, b"").unwrap();
+        std::fs::write(&cli, b"").unwrap();
+        assert!(bundled_cli_in_use(false, &node, &cli));
         assert!(
-            result.is_err(),
-            "self_update_direct must return Err when the node binary cannot be executed"
+            !bundled_cli_in_use(true, &node, &cli),
+            "an existing CLI takes precedence"
         );
+        let missing = dir.path().join("missing");
+        assert!(!bundled_cli_in_use(false, &missing, &cli));
+        assert!(!bundled_cli_in_use(false, &node, &missing));
     }
 }

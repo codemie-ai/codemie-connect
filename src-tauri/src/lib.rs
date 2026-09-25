@@ -36,7 +36,7 @@ pub fn run() {
             // The bundled runtime and CLI entry live under resource_dir(): node/node.exe
             // on Windows (tauri.windows.conf.json), node/bin/node on macOS
             // (tauri.macos.conf.json). Skipped entirely when an existing CLI takes
-            // precedence, so run_self_update falls back to the PATH-resolved `codemie`
+            // precedence, so run_self_update updates the PATH-resolved `codemie`
             // shim instead of a bundled binary that was never installed.
             let (node_exe, cli_entry) = if existing_cli_detected {
                 (std::path::PathBuf::new(), std::path::PathBuf::new())
@@ -94,6 +94,7 @@ pub fn run() {
             commands::runner::run_fresh_env,
             commands::runner::run_stream,
             commands::runner::run_self_update,
+            commands::runner::cli_is_bundled,
             commands::pathman::persist_to_zprofile,
             commands::pathman::augment_path,
             commands::inspector::check_git,

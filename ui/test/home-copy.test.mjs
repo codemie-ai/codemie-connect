@@ -49,3 +49,10 @@ test('renderer: mode label and auth notice use Setup-consistent copy', () => {
   assert.match(renderer, /Run setup \/ sign in first/);
   assert.match(renderer, /primaryLabel: 'Run setup',\n\s*primaryAction: \(\) => openGuidedSetup\(\)/);
 });
+
+// The bundled CLI sits inside the app: `self-update` would install the new
+// version into the user's own npm and the app would keep running the old one
+// ("Updated! → 0.15.2" when 0.15.3 was out). So no CLI update is offered for it.
+test('renderer: no CLI update banner or badge while the app runs its bundled CLI', () => {
+  assert.match(renderer, /invoke\('cli_is_bundled'\),\s*invoke\('check_codemie_version'\),\s*invoke\('fetch_codemie_latest'\),\s*\]\)\.then\(\(\[bundled, installed, latest\]\) => \{\s*if \(bundled\) return;/);
+});

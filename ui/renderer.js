@@ -817,11 +817,16 @@ async function boot() {
     dismissAppUpdateBanner();
   });
 
-  // Check CLI version vs npm latest at startup (non-blocking)
+  // Check CLI version vs npm latest at startup (non-blocking). Only for a CLI
+  // the user installed: the bundled one sits inside the app, `self-update`
+  // installs the new version into the user's own npm instead, and the app keeps
+  // running the old one. The bundled CLI updates with the app.
   Promise.all([
+    invoke('cli_is_bundled'),
     invoke('check_codemie_version'),
     invoke('fetch_codemie_latest'),
-  ]).then(([installed, latest]) => {
+  ]).then(([bundled, installed, latest]) => {
+    if (bundled) return;
     cliVersionState.installed = installed;
     cliVersionState.latest = latest;
     cliVersionState.updateAvailable =
