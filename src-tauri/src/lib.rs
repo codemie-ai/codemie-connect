@@ -21,6 +21,9 @@ pub fn run() {
                 commands::handshake::probe_global_codemie(&pre_injection_path, &|p| p.exists());
 
             let bundled_injected = if existing_cli_detected {
+                // The user's CLI is used, but the tools the app installs still
+                // go to ~/.codemie/agents, which terminals must be able to find.
+                commands::pathman::persist_agents_bin();
                 false
             } else {
                 let injected = commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();

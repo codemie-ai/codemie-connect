@@ -330,6 +330,7 @@ pub(crate) enum PersistOutcome {
     Persisted,
     SkippedDevBuild,
     SkippedLocation,
+    NothingToPersist,
     Failed(String),
 }
 
@@ -372,6 +373,38 @@ pub(crate) fn maybe_persist(
     {
         Ok(_) => PersistOutcome::Persisted,
         Err(e) => PersistOutcome::Failed(e.to_string()),
+    }
+}
+
+/// When the user's own CodeMie CLI takes precedence, the bundled shim is never
+/// injected, so the persist above never runs. The tools the app installs still
+/// land in the npm-agents bin dir, and without this a terminal opened later
+/// cannot find them (seen on Windows: `where claude-code-acp` found nothing).
+/// Only that dir is persisted; the bundled shim stays off PATH.
+pub(crate) fn maybe_persist_agents_bin(
+    agents_bin: &str,
+    dev_build: bool,
+    persist_fn: impl FnOnce(&[String]) -> std::io::Result<String>,
+) -> PersistOutcome {
+    if dev_build {
+        return PersistOutcome::SkippedDevBuild;
+    }
+    let entries = build_persist_entries_with(agents_bin, Vec::new());
+    if entries.is_empty() {
+        return PersistOutcome::NothingToPersist;
+    }
+    match persist_fn(&entries) {
+        Ok(_) => PersistOutcome::Persisted,
+        Err(e) => PersistOutcome::Failed(e.to_string()),
+    }
+}
+
+pub fn persist_agents_bin() {
+    let bin = crate::commands::npm_env::npm_env().bin_dir;
+    if let PersistOutcome::Failed(e) =
+        maybe_persist_agents_bin(&bin, cfg!(debug_assertions), persist)
+    {
+        log::warn!("[persist_agents_bin] PATH persist failed: {e}");
     }
 }
 
@@ -424,6 +457,7 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
         PersistOutcome::SkippedLocation => log::warn!(
             "[inject_bundled_bin_path] not persisting {dir_str}: the app runs from a DMG mount or an App Translocation path; move it to /Applications"
         ),
+        PersistOutcome::NothingToPersist => {}
         PersistOutcome::Failed(e) => {
             log::warn!("[inject_bundled_bin_path] PATH persist failed: {e}")
         }
@@ -558,6 +592,34 @@ mod tests_persist_decision {
             calls.borrow()[0].contains(&crate::commands::npm_env::npm_env().bin_dir),
             "the agents bin dir must be among the persisted entries"
         );
+    }
+
+    // With the user's own CLI in use the bundle dir is never persisted, but
+    // the tools the app installs still need to be on PATH in a new terminal
+    // (Windows: `where claude-code-acp` found nothing).
+    #[test]
+    fn with_an_existing_cli_only_the_agents_bin_dir_is_persisted() {
+        let calls = RefCell::new(Vec::new());
+        let out = maybe_persist_agents_bin("/home/u/.codemie/agents/bin", false, recorder(&calls));
+        assert_eq!(out, PersistOutcome::Persisted);
+        assert_eq!(
+            *calls.borrow(),
+            vec![vec!["/home/u/.codemie/agents/bin".to_string()]]
+        );
+    }
+
+    #[test]
+    fn agents_bin_persist_skips_dev_builds_and_an_unresolved_dir() {
+        let calls = RefCell::new(Vec::new());
+        assert_eq!(
+            maybe_persist_agents_bin("/home/u/.codemie/agents/bin", true, recorder(&calls)),
+            PersistOutcome::SkippedDevBuild
+        );
+        assert_eq!(
+            maybe_persist_agents_bin("", false, recorder(&calls)),
+            PersistOutcome::NothingToPersist
+        );
+        assert!(calls.borrow().is_empty());
     }
 
     #[test]
