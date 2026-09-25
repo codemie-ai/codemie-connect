@@ -2,6 +2,8 @@ import { cmdlog } from './runner-bridge.js';
 import mapFailure from './cmdlog-failure-map.mjs';
 
 let _records = [];
+let _pollTimer = null;
+const POLL_MS = 1000;
 
 function _formatTime(iso) {
   const d = new Date(iso);
@@ -48,11 +50,15 @@ async function _renderRecords() {
   }
 
   _records = [...list].reverse(); // newest-first
+  // Poll ticks rebuild the whole list — remember which rows were expanded so
+  // a mid-read row doesn't snap shut under the user.
+  const expanded = new Set(Array.from(body.children).filter((el) => el.open).map((el) => el.dataset.id));
   body.innerHTML = '';
   for (const r of _records) {
     const row = document.createElement('details');
     row.className = 'log-row';
     row.dataset.id = r.id;
+    row.open = expanded.has(r.id);
 
     const summary = document.createElement('summary');
     summary.className = 'log-row-summary';
@@ -121,7 +127,15 @@ export function initCmdLog() {
     footer.querySelector('summary').appendChild(btn);
   }
 
-  footer.addEventListener('toggle', (e) => { if (e.target.open) _renderRecords(); });
+  footer.addEventListener('toggle', (e) => {
+    if (e.target.open) {
+      _renderRecords();
+      if (!_pollTimer) _pollTimer = setInterval(_renderRecords, POLL_MS);
+    } else {
+      clearInterval(_pollTimer);
+      _pollTimer = null;
+    }
+  });
   _renderRecords();
 }
 

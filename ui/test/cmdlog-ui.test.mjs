@@ -52,6 +52,9 @@ function makeEl(tag) {
     get() { return ''; },
     set() { el._children = []; },
   });
+  Object.defineProperty(el, 'children', {
+    get() { return el._children; },
+  });
   return el;
 }
 
@@ -194,6 +197,67 @@ test('_renderRecords shows an error box when cmdlog.list() rejects', async () =>
   const box = body._children[0];
   assert.ok(box, 'error box must be rendered');
   assert.ok(box.className.includes('log-box-error'), 'error box must carry log-box-error');
+});
+
+// Live update: opening the footer polls cmdlog_list on an interval so new
+// records / streaming output / exit status appear without a manual toggle.
+test('opening the footer polls cmdlog_list on an interval; closing stops it', async (t) => {
+  resetFooter();
+  let listCalls = 0;
+  invokeImpl = async (cmd) => {
+    if (cmd === 'cmdlog_list') { listCalls += 1; return []; }
+    return null;
+  };
+  t.mock.timers.enable({ apis: ['setInterval'] });
+
+  initCmdLog();
+  await Promise.resolve();
+  const beforeOpen = listCalls;
+
+  footer.open = true;
+  footer._listeners['toggle']({ target: footer });
+  await Promise.resolve();
+  assert.ok(listCalls > beforeOpen, 'opening the footer must render immediately');
+
+  const afterOpen = listCalls;
+  await t.mock.timers.tick(1000);
+  await Promise.resolve();
+  assert.ok(listCalls > afterOpen, 'a poll tick while open must call cmdlog_list again');
+
+  footer.open = false;
+  footer._listeners['toggle']({ target: footer });
+  const afterClose = listCalls;
+  await t.mock.timers.tick(5000);
+  await Promise.resolve();
+  assert.equal(listCalls, afterClose, 'no further polling once the footer is closed');
+});
+
+// A poll tick rebuilds every row — an expanded row must stay expanded so a
+// user reading output isn't interrupted mid-read.
+test('a poll tick preserves an expanded row instead of collapsing it', async (t) => {
+  resetFooter();
+  invokeImpl = async (cmd) => {
+    if (cmd === 'cmdlog_list') return [
+      { id: 'cmd-a', command: 'codemie doctor', exit_code: 0, duration_ms: 50, raw_output: 'ok' },
+    ];
+    return null;
+  };
+  t.mock.timers.enable({ apis: ['setInterval'] });
+
+  initCmdLog();
+  footer.open = true;
+  footer._listeners['toggle']({ target: footer });
+  await new Promise((r) => setTimeout(r, 10));
+
+  const row = body._children.find((c) => c.dataset.id === 'cmd-a');
+  assert.ok(row, 'row must be rendered');
+  row.open = true; // user expands it
+
+  await t.mock.timers.tick(1000);
+  await new Promise((r) => setTimeout(r, 10));
+
+  const rowAfter = body._children.find((c) => c.dataset.id === 'cmd-a');
+  assert.ok(rowAfter.open, 'row must stay expanded across a poll-triggered re-render');
 });
 
 // CR-007: copy-all click handler integration
