@@ -47,5 +47,5 @@ test('renderer: install-only dead code and full-installation wording are gone', 
 test('renderer: mode label and auth notice use Setup-consistent copy', () => {
   assert.match(renderer, /modeLabel\.textContent = 'Setup'/);
   assert.match(renderer, /Run setup \/ sign in first/);
-  assert.match(renderer, /primaryLabel: 'Run setup',\n\s*primaryAction: \(\) => openGuidedSetup\(\)/);
+  assert.match(renderer, /primaryLabel: 'Run setup',\r?\n\s*primaryAction: \(\) => openGuidedSetup\(\)/);
 });
