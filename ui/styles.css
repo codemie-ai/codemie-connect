@@ -303,7 +303,6 @@ body::before {
 #home-title { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: 0.2px; }
 #home-subtitle { color: var(--muted); font-size: 13px; margin-top: 2px; }
 
-
 /* ---- Installation group ---- */
 /* ---- Home body (ui/home-view.js): checklist, then status cards ---- */
 #home-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
