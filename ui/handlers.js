@@ -48,10 +48,12 @@ export function makeHandlers(deps) {
     ctx.setSubtitle(stepId, 'Running in external window…');
     try {
       const code = await externalWindow.spawnPs(cmd);
-      ctx.setSubtitle(stepId, '');
-      return code === 0;
+      const okExit = code === 0;
+      ctx.line(`(${ctx.step.title} finished, exit ${code})`, okExit ? 'dim' : 'stderr');
+      ctx.setSubtitle(stepId, okExit ? '' : `${ctx.step.title} failed (exit ${code})`);
+      return okExit;
     } catch (err) {
-      ctx.setSubtitle(stepId, `Failed to open window: ${(err && err.message) || err}`);
+      ctx.setSubtitle(stepId, `${ctx.step.title} failed to open window: ${(err && err.message) || err}`);
       return false;
     }
   }
