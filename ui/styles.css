@@ -186,6 +186,16 @@ body::before {
   max-height: 40vh;
   overflow-y: auto;
 }
+#command-log-footer.expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  max-height: 100vh;
+  border-top: none;
+}
+#command-log-footer.expanded > summary { position: sticky; top: 0; background: var(--panel-dark); }
+#cmdlog-expand { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; }
+#cmdlog-expand:hover { color: var(--text); }
 #command-log-footer > summary {
   padding: 8px 16px;
   cursor: pointer;
@@ -193,13 +203,15 @@ body::before {
   color: var(--muted);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
 }
 #command-log-footer > summary::-webkit-details-marker { display: none; }
 #command-log-footer > summary::before { content: "▸ "; }
 #command-log-footer[open] > summary::before { content: "▾ "; }
-#cmdlog-copy-all { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; }
+#cmdlog-copy-all { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; margin-left: auto; }
 #cmdlog-copy-all:hover { color: var(--text); }
+#cmdlog-copy-all, #cmdlog-expand { display: none; }
+#command-log-footer[open] #cmdlog-copy-all, #command-log-footer[open] #cmdlog-expand { display: inline-block; }
 #command-log-body { padding: 0 16px 10px; }
 .log-row { padding: 6px 0; border-bottom: 1px solid var(--border); }
 .log-row:last-child { border-bottom: none; }
@@ -207,13 +219,13 @@ body::before {
 .log-row > summary::-webkit-details-marker { display: none; }
 .log-row > summary::before { content: "▸ "; }
 .log-row[open] > summary::before { content: "▾ "; }
-.log-row-summary { display: flex; align-items: center; gap: 10px; }
+.log-row-summary { display: flex; align-items: center; gap: 10px; font-family: var(--font-sans); }
 .log-row-detail { padding: 6px 0 0 14px; display: flex; flex-direction: column; gap: 6px; }
 .log-time { flex-shrink: 0; }
 .log-row-summary .log-prompt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-badge-ok { color: var(--green); }
 .log-badge-failed { color: var(--red); }
-.log-box { background: var(--surface-2); border: 1px solid var(--border-2); border-radius: var(--radius-md); padding: 8px 10px; }
+.log-box { background: var(--color-bg-nav); border: 1px solid var(--border-2); border-radius: var(--radius-md); padding: 8px 10px; }
 .log-box-error { border-color: var(--red); }
 .sidebar-item {
   display: block;
@@ -819,7 +831,7 @@ body::before {
 .log-info { color: var(--violet); }
 .log-success { color: var(--color-success-text); }
 .log-dim { color: var(--muted); }
-.log-prompt { color: var(--color-warning-text); }
+.log-prompt { color: #FFFFFF; font-family: var(--font-sans); }
 .log-approved { color: var(--color-success-text); text-align: right; }
 
 /* ---- Footer ---- */

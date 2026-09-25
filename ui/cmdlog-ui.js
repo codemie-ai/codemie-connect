@@ -127,6 +127,18 @@ export function initCmdLog() {
     footer.querySelector('summary').appendChild(btn);
   }
 
+  if (!document.getElementById('cmdlog-expand')) {
+    const expandBtn = document.createElement('button');
+    expandBtn.id = 'cmdlog-expand';
+    expandBtn.textContent = '⤢ Expand';
+    expandBtn.addEventListener('click', (e) => {
+      e.preventDefault(); // don't toggle the <details> open state
+      const on = footer.classList.toggle('expanded');
+      expandBtn.textContent = on ? '⤡ Collapse' : '⤢ Expand';
+    });
+    footer.querySelector('summary').appendChild(expandBtn);
+  }
+
   footer.addEventListener('toggle', (e) => {
     if (e.target.open) {
       _renderRecords();
