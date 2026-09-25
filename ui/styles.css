@@ -201,6 +201,7 @@ body::before {
   cursor: pointer;
   list-style: none;
   color: var(--muted);
+  font-family: var(--font-sans);
   display: flex;
   align-items: center;
   gap: 10px;
