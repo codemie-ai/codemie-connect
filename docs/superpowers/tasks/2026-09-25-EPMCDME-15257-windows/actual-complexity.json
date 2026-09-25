@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-25T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two components touched across two layers: the Rust pty.rs command layer (new spawn_external_ps Tauri command, reusing the existing pty_env_pairs_for helper) and the JS handlers.js dispatch layer (new runExternalWindow path wired into the isWin branch for steps 2.3.3 and 2.3.5). Pattern mirrors the existing runPty sibling closely." },
+    { "dimension": "technical_risk", "reason": "Uses the established portable-pty/tauri command pattern and an already-precedented CREATE_NEW_CONSOLE technique; covered by new unit tests in handlers.test.mjs and a Windows-only integration test (spawn_external_ps_exits_zero_for_noop_command) in pty.rs, so risk stays moderate rather than low." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -1,0 +1,29 @@
+{
+  "decision": "request-changes",
+  "rationale": "AC4 is partial: runExternalWindow now reports the failing step's title and exit code, but the spec's Approach section also names runPty (macOS path for the same 2.3.3/2.3.5 steps, plus its catch branch) as in scope, and it was left untouched, which is ambiguous enough to route to a human decision (CR-001, decision_needed). Deferred 2 pre-existing edge cases in the shared pty_env_pairs_for helper (USERPROFILE and PATH forced to empty-string when the host env var is unset) — both predate this diff, which only adds a second caller. Dismissed 1: externalWindow.spawnPs resolving with a non-numeric/null exit code is unreachable, since spawn_external_ps always returns a typed i32 or rejects. Standards not expected for the compact profile (no audit ran); acceptance and edge-case lenses both ran clean and parseable.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "story-ac", "item": "AC1 — 2.3.3/2.3.5 install into %USERPROFILE%\\.codemie\\agents (same prefix as 2.4)", "status": "pass", "notes": "spawn_external_ps now calls pty_env_pairs_for(home, base_path, true) before spawning, matching shell_cmd_for." },
+    { "kind": "story-ac", "item": "AC2 — 2.4 (codemie doctor) locates codemie.cmd after a fresh wizard-only install", "status": "na", "notes": "Real-Windows runtime verification, explicitly manual per spec AC6." },
+    { "kind": "story-ac", "item": "AC3 — wizard no longer fails with 'CodeMie command shim could not find codemie.cmd' on a clean environment", "status": "na", "notes": "Same as AC2 — manual per spec AC6." },
+    { "kind": "story-ac", "item": "AC4 — non-zero exit shows the step's title and exit code, not a generic/blank failure", "status": "partial", "notes": "runExternalWindow updated; runPty (macOS path, same steps, plus catch branch) still shows a generic title-less message." },
+    { "kind": "story-ac", "item": "AC5 — Rust Windows test + JS handlers test added", "status": "pass", "notes": "Windows-shape pty_env_pairs_for test mirrors the unix test; handlers.test.mjs covers dispatch and title/exit-code naming." },
+    { "kind": "story-ac", "item": "AC6 — real-Windows clean-environment verification remains manual, outside CI", "status": "na", "notes": "Not an automated-test requirement per spec." }
+  ],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "ui/handlers.js",
+      "line": 62,
+      "title": "runPty failure message lacks step title",
+      "problem": "Spec's Approach section names both runExternalWindow and runPty for the failure-message improvement, but only runExternalWindow was updated in this diff; runPty's success/catch branches still emit 'Did not complete (exit N)' / 'Failed to open terminal: ...' with no step title.",
+      "impact": "On the macOS path for 2.3.3/2.3.5 (and runExternalWindow's own analogous catch-adjacent runPty usage), a failed step still gives no indication of which step failed, which is the exact gap AC4 exists to close.",
+      "recommendation": "Confirm with the task owner whether runPty is in scope for this ticket. If yes, prefix runPty's failure messages with ctx.step.title to match runExternalWindow's format; if genuinely out of scope, narrow AC4/spec wording to runExternalWindow only."
+    }
+  ]
+}

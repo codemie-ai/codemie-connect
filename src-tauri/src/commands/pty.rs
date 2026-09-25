@@ -284,9 +284,16 @@ pub async fn pty_kill(state: State<'_, AppState>) -> CmdResult<()> {
 #[tauri::command]
 pub async fn spawn_external_ps(cmd: String) -> CmdResult<i32> {
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    let status = tokio::process::Command::new("powershell.exe")
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let base_path = std::env::var("PATH").unwrap_or_default();
+    let mut command = tokio::process::Command::new("powershell.exe");
+    command
         .args(["-NoProfile", "-Command", &cmd])
-        .creation_flags(CREATE_NEW_CONSOLE)
+        .creation_flags(CREATE_NEW_CONSOLE);
+    for (k, v) in pty_env_pairs_for(&home, &base_path, true) {
+        command.env(k, v);
+    }
+    let status = command
         .status()
         .await
         .map_err(|e| InstallerError::Other(e.to_string()))?;
@@ -308,6 +315,19 @@ mod tests_pty_env {
         assert_eq!(prefix.1, "/Users/test/.codemie/agents");
         let path = pairs.iter().find(|(k, _)| k == "PATH").unwrap();
         assert!(path.1.starts_with("/Users/test/.codemie/agents/bin:"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pty_env_pairs_for_windows_includes_npm_config_prefix_and_prefixed_path() {
+        let pairs = pty_env_pairs_for(r"C:\Users\test", r"C:\Windows", true);
+        let prefix = pairs
+            .iter()
+            .find(|(k, _)| k == "npm_config_prefix")
+            .unwrap();
+        assert_eq!(prefix.1, r"C:\Users\test\.codemie\agents");
+        let path = pairs.iter().find(|(k, _)| k == "PATH").unwrap();
+        assert!(path.1.starts_with(r"C:\Users\test\.codemie\agents;"));
     }
 }
 
