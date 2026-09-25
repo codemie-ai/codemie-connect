@@ -316,6 +316,18 @@ mod tests_pty_env {
         let path = pairs.iter().find(|(k, _)| k == "PATH").unwrap();
         assert!(path.1.starts_with("/Users/test/.codemie/agents/bin:"));
     }
+
+    #[test]
+    fn pty_env_pairs_for_windows_includes_npm_config_prefix_and_prefixed_path() {
+        let pairs = pty_env_pairs_for(r"C:\Users\test", r"C:\Windows", true);
+        let prefix = pairs
+            .iter()
+            .find(|(k, _)| k == "npm_config_prefix")
+            .unwrap();
+        assert_eq!(prefix.1, r"C:\Users\test\.codemie\agents");
+        let path = pairs.iter().find(|(k, _)| k == "PATH").unwrap();
+        assert!(path.1.starts_with(r"C:\Users\test\.codemie\agents;"));
+    }
 }
 
 #[cfg(all(test, windows))]
