@@ -45,7 +45,7 @@ test('runStream: invoke order is cmdlog_open → run_stream, cmdlog_append per l
   const closeCall = calls.find(c => c.cmd === 'cmdlog_close');
   assert.equal(closeCall?.args?.exitCode, 42, 'cmdlog_close must receive stream exit code');
   const appendCall = calls.find(c => c.cmd === 'cmdlog_append');
-  assert.equal(appendCall?.args?.chunk, 'hello', 'cmdlog_append must receive line text');
+  assert.equal(appendCall?.args?.chunk, 'hello\n', 'cmdlog_append must receive line text with a trailing newline');
 });
 
 // ---- test 2: runCapture invoke order ----
@@ -329,7 +329,7 @@ test('runStream: cmdlog_append receives ANSI-stripped text', async () => {
   await runner.runStream('echo red');
   const appendCall = calls.find(c => c.cmd === 'cmdlog_append');
   assert.ok(appendCall, 'cmdlog_append must be called');
-  assert.equal(appendCall.args.chunk, 'red', 'chunk must have ANSI stripped');
+  assert.equal(appendCall.args.chunk, 'red\n', 'chunk must have ANSI stripped, with a trailing newline');
 });
 
 // ---- CR-011: spawnPty close waits for in-flight appends ----

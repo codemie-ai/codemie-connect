@@ -3,35 +3,108 @@ import mapFailure from './cmdlog-failure-map.mjs';
 
 let _records = [];
 
+function _formatTime(iso) {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function _recordText(r) {
+  const state = r.exit_code == null ? 'running…' : `exit ${r.exit_code}`;
+  const duration = r.exit_code != null && r.duration_ms != null ? ` · ${(r.duration_ms / 1000).toFixed(1)}s` : '';
+  const lines = [`[${_formatTime(r.start_time)}] ${r.command} — ${state}${duration}`];
+  if (r.raw_output && r.raw_output.trim() !== '') lines.push(r.raw_output);
+  return lines.join('\n');
+}
+
+function _renderErrorBox(body) {
+  const box = document.createElement('div');
+  box.className = 'log-box log-box-error';
+
+  const title = document.createElement('div');
+  title.className = 'log-prompt';
+  title.textContent = 'CodeMie cannot read the command log';
+
+  const desc = document.createElement('div');
+  desc.className = 'log-dim';
+  desc.textContent = 'The command log could not be loaded. Try reopening this panel.';
+
+  box.appendChild(title);
+  box.appendChild(desc);
+  body.appendChild(box);
+}
+
 async function _renderRecords() {
-  _records = [...(await cmdlog.list())].reverse(); // newest-first
   const body = document.getElementById('command-log-body');
+  let list;
+  try {
+    list = await cmdlog.list();
+  } catch (err) {
+    console.warn(err);
+    _records = [];
+    body.innerHTML = '';
+    _renderErrorBox(body);
+    return;
+  }
+
+  _records = [...list].reverse(); // newest-first
   body.innerHTML = '';
   for (const r of _records) {
-    const block = document.createElement('div');
-    block.dataset.id = r.id;
+    const row = document.createElement('details');
+    row.className = 'log-row';
+    row.dataset.id = r.id;
+
+    const summary = document.createElement('summary');
+    summary.className = 'log-row-summary';
+
+    const time = document.createElement('span');
+    time.className = 'log-dim log-time';
+    time.textContent = _formatTime(r.start_time);
+    summary.appendChild(time);
 
     const cmd = document.createElement('span');
     cmd.className = 'log-line log-prompt';
     cmd.textContent = r.command;
+    summary.appendChild(cmd);
+
+    const status = document.createElement('span');
+    if (r.exit_code == null) {
+      status.className = 'log-dim';
+      status.textContent = 'running…';
+    } else {
+      status.className = r.exit_code === 0 ? 'pill log-badge-ok' : 'pill log-badge-failed';
+      status.textContent = r.exit_code === 0 ? 'ok' : 'failed';
+    }
+    summary.appendChild(status);
+    row.appendChild(summary);
+
+    const detail = document.createElement('div');
+    detail.className = 'log-row-detail';
 
     const meta = document.createElement('span');
     meta.className = 'log-line log-dim';
     meta.textContent = r.exit_code != null
       ? `exit ${r.exit_code} · ${(r.duration_ms / 1000).toFixed(1)}s`
       : 'running…';
+    detail.appendChild(meta);
 
-    block.appendChild(cmd);
-    block.appendChild(meta);
+    if (r.raw_output && r.raw_output.trim() !== '') {
+      const raw = document.createElement('pre');
+      raw.className = 'log-line log-box';
+      raw.textContent = r.raw_output;
+      detail.appendChild(raw);
+    }
 
     const msg = mapFailure(r);
     if (msg) {
-      const info = document.createElement('span');
-      info.className = 'log-line log-info';
-      info.textContent = msg;
-      block.appendChild(info);
+      const shownAs = document.createElement('div');
+      shownAs.className = 'log-line log-info log-box';
+      shownAs.textContent = `Shown to the user as — "${msg}"`;
+      detail.appendChild(shownAs);
     }
-    body.appendChild(block);
+
+    row.appendChild(detail);
+    body.appendChild(row);
   }
 }
 
@@ -45,9 +118,7 @@ export function initCmdLog() {
     btn.textContent = 'Copy all';
     // No await before writeText — user-activation context must be preserved
     btn.addEventListener('click', () => {
-      const text = _records.map(r =>
-        [r.command, `exit ${r.exit_code}`, mapFailure(r)].filter(Boolean).join('\n')
-      ).join('\n\n');
+      const text = _records.map(_recordText).join('\n\n');
       if (window.isSecureContext && navigator.clipboard) {
         navigator.clipboard.writeText(text).catch(console.warn);
       } else {

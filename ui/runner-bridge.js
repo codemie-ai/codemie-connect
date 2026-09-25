@@ -76,7 +76,7 @@ export const runner = {
       const p = e.payload;
       if (p && p.id === id) {
         onLine(p.text, p.tag);
-        if (logId) pendingAppends.push(cmdlog.append(logId, stripAnsi(p.text)).catch(console.warn));
+        if (logId) pendingAppends.push(cmdlog.append(logId, `${stripAnsi(p.text)}\n`).catch(console.warn));
       }
     });
     let code = null;

@@ -68,7 +68,9 @@ impl CmdLogStore {
         let combined = record.raw_output.len() + chunk.len();
         if combined > MAX_OUTPUT {
             let excess = combined - MAX_OUTPUT;
-            record.raw_output.drain(..excess.min(record.raw_output.len()));
+            record
+                .raw_output
+                .drain(..excess.min(record.raw_output.len()));
         }
         record.raw_output.push_str(chunk);
         Ok(())
@@ -91,7 +93,11 @@ impl CmdLogStore {
 
 #[tauri::command]
 pub fn cmdlog_open(command: String, state: tauri::State<'_, AppState>) -> CmdResult<String> {
-    Ok(state.cmdlog.lock().unwrap_or_else(|e| e.into_inner()).open(command))
+    Ok(state
+        .cmdlog
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .open(command))
 }
 
 #[tauri::command]
@@ -124,12 +130,20 @@ pub fn cmdlog_close(
 
 #[tauri::command]
 pub fn cmdlog_list(state: tauri::State<'_, AppState>) -> CmdResult<Vec<CmdRecord>> {
-    Ok(state.cmdlog.lock().unwrap_or_else(|e| e.into_inner()).list())
+    Ok(state
+        .cmdlog
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .list())
 }
 
 #[tauri::command]
 pub fn cmdlog_get(id: String, state: tauri::State<'_, AppState>) -> CmdResult<Option<CmdRecord>> {
-    Ok(state.cmdlog.lock().unwrap_or_else(|e| e.into_inner()).get(&id))
+    Ok(state
+        .cmdlog
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&id))
 }
 
 #[cfg(test)]
@@ -215,7 +229,10 @@ mod tests {
         // Push 20 more bytes, which would exceed MAX_OUTPUT by 10
         store.append(&id, &"y".repeat(20)).unwrap();
         let len = store.records.get(&id).unwrap().raw_output.len();
-        assert!(len <= MAX_OUTPUT, "raw_output must not exceed MAX_OUTPUT, got {len}");
+        assert!(
+            len <= MAX_OUTPUT,
+            "raw_output must not exceed MAX_OUTPUT, got {len}"
+        );
     }
 
     #[test]
