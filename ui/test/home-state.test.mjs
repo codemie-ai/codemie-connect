@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveHome, HOME_ITEMS, signInAction, autoHealthCheck } from '../home-state.js';
+import { deriveHome, HOME_ITEMS, signInAction, autoHealthCheck, signedInDetail } from '../home-state.js';
 import { StepStatus } from '../models.js';
 
 const valid = { state: 'valid', profile: 'demo7', model: 'claude-sonnet-5', project: 'epm-sdai', account: 'me@epam.com' };
@@ -52,6 +52,12 @@ test('the signed-in subtitle keeps the CLI sentence without its "Auth Status |" 
   assert.equal(s.items[0].subtitle, 'Authenticated (expires in 22h 9m)');
   assert.equal(deriveHome({ config: valid, auth: { state: 'signed_in', detail: 'Auth Status | ✓ Authenticated' } }).items[0].subtitle, 'Authenticated');
   assert.equal(deriveHome({ config: valid, auth: { state: 'signed_in', detail: '' } }).items[0].subtitle, 'Signed in');
+});
+
+// EPMCDME-15296: the identity bar needs this same cleaning function the
+// checklist already uses, so it must be importable directly.
+test('signedInDetail is exported for reuse outside deriveHome', () => {
+  assert.equal(signedInDetail('Auth Status │ ✓ Authenticated (expires in 23h 51m)'), 'Authenticated (expires in 23h 51m)');
 });
 
 test('not signed in keeps item 1 open and the profile card says so', () => {

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "head": "b8c3e53df81f2e5a9af6c680434c7c9a15686d35",
+  "feature_id": "identity-bar-narrow-width",
+  "tool": "playwright",
+  "coverage_source": "existing-test",
+  "test_command": "npx playwright test -g \"still one line, text segments truncate\"",
+  "app_url": "http://localhost:8935/index.html",
+  "screenshot_path": "evidence/screenshots/identity-bar-narrow-width.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "notes": "Re-verified at HEAD b8c3e53. Regression fixed: #identity-version-badge now has white-space: nowrap and flex-shrink: 0, so at 520px its text '0.14.2 available' stays on one line and fully unclipped (scrollWidth 105 == clientWidth 105), versus wrapping to two lines and growing the bar to 53px before the fix. Bar height at 520px is now 40px (single row, matches the default-width row height), all five text segment centres align within 3px (no wrap), flex-wrap on the bar is nowrap, and truncation CSS (white-space: nowrap, text-overflow: ellipsis) is active on the shrinking text segments. Badge and theme toggle remain right of the text segments and inside the bar's right edge. Adjusted one assertion threshold in the generated spec (bar height <40 -> <=40) to match the exact fixed single-row height of 40px; this was a test calibration fix only, not a product change."
+}
