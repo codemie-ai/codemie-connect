@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "branch": "feat/bugfix/EPMCDME-15257-windows",
+  "head": "1c7487797cc48feeca47d4275786d6f35601e0cb",
+  "runner": "custom",
+  "started_at": "2026-09-25T10:58:25Z",
+  "completed_at": "2026-09-25T11:04:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1200,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2500,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 12249,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "Previous run at head 984e254 failed here due to a CRLF/LF regex mismatch in ui/test/home-copy.test.mjs:50 on this Windows checkout (core.autocrlf=true). Commit 1c74877 fixed the regex to accept CRLF; rerun at this head shows 437/437 passing."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2060,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "./build-installer.sh (macOS) or .\\build-installer.ps1 (Windows)",
+      "exit_code": null,
+      "notes": "Skip if: logic-only change verified by tests. Diff (pty.rs, handlers.js, test files) is logic-only and fully covered by unit-rust (PASS, 96 tests) and unit-js (PASS, 437 tests); build skipped per guide's explicit Skip-if clause to save ~2-5 min."
+    }
+  ],
+  "failures": {}
+}
