@@ -242,3 +242,8 @@ test('Update is offered only when an update is out', () => {
   renderAgents(container, { agents: withUpdate }, { stepsUi: fakeStepsUi(), onInstall: noop, onUpdate: noop, onRemove: noop });
   assert.deepEqual(buttons(container), ['Update', 'Remove', 'Install']);
 });
+
+test('the built-in agent is not counted as an update, since its row offers none', () => {
+  const withUpdates = agents.map((a) => (a.command === 'codemie-code' || a.command === 'claude' ? { ...a, updateAvailable: true } : a));
+  assert.equal(summarise(withUpdates).updateAvailable, 1);
+});

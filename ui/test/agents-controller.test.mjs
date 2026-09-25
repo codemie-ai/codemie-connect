@@ -588,3 +588,25 @@ test('an install that hits the CLI\'s time limit says so in minutes', async () =
   await new Promise((r) => setImmediate(r));
   assert.equal(c.getLastAgents().find((a) => a.command === 'gemini').actionMessage, 'Took longer than 5 minutes. Check your connection and try again.');
 });
+
+// The echoed command flashed in the row before the CLI's first line.
+test('the echoed command never shows as the row\'s progress text', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream: async (cmd, onLine) => {
+      onLine(`> ${cmd}`, 'prompt');
+      onLine('- Installing Gemini CLI...', 'stdout');
+      return { code: 0 };
+    },
+    stepsUi,
+  });
+  await c.run();
+  container.querySelector('.agent-actions[data-id="gemini"]')._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  const subs = stepsUi.calls.filter((x) => x[0] === 'setSubtitle' && x[1] === 'gemini').map((x) => x[2]);
+  assert.ok(!subs.some((t) => t.startsWith('> ')), `no echoed command in ${JSON.stringify(subs)}`);
+  assert.ok(subs.includes('Installing Gemini CLI...'));
+});

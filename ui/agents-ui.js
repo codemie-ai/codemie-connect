@@ -49,7 +49,8 @@ export function summarise(agents) {
   return {
     installed: agents.filter((a) => a.installed).length,
     total: agents.length,
-    updateAvailable: agents.filter((a) => a.updateAvailable).length,
+    // The built-in agent updates with the CLI and its row offers no Update.
+    updateAvailable: agents.filter((a) => a.updateAvailable && a.command !== BUILTIN_AGENT_COMMAND).length,
   };
 }
 

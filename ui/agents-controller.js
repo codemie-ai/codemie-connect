@@ -137,7 +137,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
         // runStream always emits a leading `('> <command>', 'prompt')` line
         // (ui/runner-bridge.js); it must never become the fallback error
         // message when a failing command produces no other output.
-        if (tag !== 'prompt') lines.push(text);
+        // The echoed command is not progress: the row waits for the CLI's own lines.
+        if (tag === 'prompt') return onLine?.(text, tag);
+        lines.push(text);
         // The CLI's progress lines start with a "- " spinner frame.
         stepsUi.setSubtitle(agent.command, text.replace(/^\s*-\s+/, ''));
         onLine?.(text, tag);
