@@ -46,3 +46,46 @@ test('TextDecoder streams multi-byte UTF-8 split across two payloads', () => {
   assert.equal(dec.decode(bytes1, { stream: true }), '');
   assert.equal(dec.decode(bytes2, { stream: false }), '€');
 });
+test('normalises "\\r\\n" to "\\n" and keeps consecutive newlines (blank lines)', async () => {
+  const { default: s } = await import('../ansi-strip.mjs');
+  assert.equal(s('a\r\n\r\n\r\nb'), 'a\n\n\nb');
+});
+test('converts cursor-next-line escape (\\x1b[nE) to n newlines instead of deleting it', async () => {
+  const { default: s } = await import('../ansi-strip.mjs');
+  assert.equal(s('a\x1b[2Eb'), 'a\n\nb');
+  assert.equal(s('a\x1b[Eb'), 'a\nb'); // omitted param defaults to 1
+});
+test('converts cursor-down escape (\\x1b[nB) to n newlines instead of deleting it', async () => {
+  const { default: s } = await import('../ansi-strip.mjs');
+  assert.equal(s('a\x1b[1Bb'), 'a\nb');
+});
+test('EPMCDME-15232: PTY record with ANSI colour and CRLF endings keeps every blank line and line break', async () => {
+  const { default: s } = await import('../ansi-strip.mjs');
+  // Raw PTY bytes: normal lines end "\r\n" (terminal ONLCR); blank-line gaps
+  // are produced by the CLI's cursor-next-line escape rather than literal "\n".
+  const raw =
+    'Current active profile: "\x1b[32mpersonal-sub\x1b[0m" (provider: anthropic-subscription)\r\n' +
+    '\x1b[2E' +
+    'Next step:\r\n' +
+    '  codemie profile switch <codemie-profile>\r\n' +
+    '  codemie proxy connect --claude-desktop\r\n' +
+    '\x1b[1E' +
+    'Or run once with a specific profile:\r\n' +
+    '  codemie proxy connect --claude-desktop --profile <codemie-profile>\r\n' +
+    '\x1b[1E' +
+    'Profiles to try:\r\n' +
+    '- default\r\n';
+  const expected =
+    'Current active profile: "personal-sub" (provider: anthropic-subscription)\n' +
+    '\n\n' +
+    'Next step:\n' +
+    '  codemie profile switch <codemie-profile>\n' +
+    '  codemie proxy connect --claude-desktop\n' +
+    '\n' +
+    'Or run once with a specific profile:\n' +
+    '  codemie proxy connect --claude-desktop --profile <codemie-profile>\n' +
+    '\n' +
+    'Profiles to try:\n' +
+    '- default\n';
+  assert.equal(s(raw), expected);
+});
