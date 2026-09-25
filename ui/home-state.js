@@ -24,9 +24,9 @@ const item = (def, status, subtitle) => ({ id: def.id, title: def.title, status,
 const clock = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 // The CLI's own line is "Auth Status │ ✓ Authenticated (expires in 22h 9m)",
-// with a box-drawing bar; the identity bar shows it whole, the checklist
-// keeps the part that says something: "Authenticated (expires in 22h 9m)".
-const signedInDetail = (detail) => (detail || '').replace(/^Auth Status\s*[|│]\s*/, '').replace(/^✓\s*/, '').trim() || 'Signed in';
+// with a box-drawing bar; the checklist and the identity bar both keep the
+// part that says something: "Authenticated (expires in 22h 9m)".
+export const signedInDetail = (detail) => (detail || '').replace(/^Auth Status\s*[|│]\s*/, '').replace(/^✓\s*/, '').trim() || 'Signed in';
 
 function signInItem(def, auth) {
   // Not read yet: say so, rather than offer Sign in to someone signed in.

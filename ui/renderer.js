@@ -18,7 +18,7 @@ import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
 import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
-import { deriveHome, signInAction, autoHealthCheck } from './home-state.js';
+import { deriveHome, signInAction, autoHealthCheck, signedInDetail } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
 
@@ -428,7 +428,7 @@ function updateIdentityAuthStatus(st) {
   const el = document.getElementById('identity-auth-status');
   if (!el) return;
   if (st.state === 'signed_in') {
-    el.textContent = st.detail || 'Signed in';
+    el.textContent = signedInDetail(st.detail);
   } else if (st.state === 'unknown') {
     el.textContent = 'Auth status unknown';
   } else if (st.state === 'no_profile') {
