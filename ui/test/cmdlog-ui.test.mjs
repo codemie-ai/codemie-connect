@@ -186,6 +186,23 @@ test('_renderRecords puts raw output and the plain-language line in the row deta
   assert.ok(shownAs.textContent.startsWith('Shown to the user as —'));
 });
 
+test('_renderRecords trims leading/trailing blank lines from raw output but keeps interior blank lines', async () => {
+  resetFooter();
+  invokeImpl = async (cmd) => {
+    if (cmd === 'cmdlog_list') return [
+      { id: 'cmd-gap', command: 'codemie analytics --report', exit_code: 0, duration_ms: 50, raw_output: '\n\n\nreal summary line\n\nsecond line\n\n' },
+    ];
+    return null;
+  };
+  initCmdLog();
+  await new Promise(r => setTimeout(r, 10));
+  const row = body._children[0];
+  const detail = row._children[1];
+  const raw = detail._children.find(c => c._tag === 'pre');
+  assert.ok(raw, 'raw output block must be present');
+  assert.equal(raw.textContent, 'real summary line\n\nsecond line');
+});
+
 test('_renderRecords shows an error box when cmdlog.list() rejects', async () => {
   resetFooter();
   invokeImpl = async (cmd) => {
@@ -306,4 +323,24 @@ test('copy-all copies every record (collapsed or not), full multi-line output in
   assert.ok(text.includes('codemie doctor'), 'text must include the collapsed success record');
   assert.ok(text.includes('npm install'), 'text must include the collapsed failed record');
   assert.ok(text.includes('line1\nline2\nline3'), 'multi-line output must keep its real newlines, not be flattened');
+});
+
+test('copy-all trims leading/trailing blank lines from each record\'s raw output', async () => {
+  resetFooter();
+  clipboardCalls.length = 0;
+  invokeImpl = async (cmd) => {
+    if (cmd === 'cmdlog_list') return [
+      { id: 'cmd-1', command: 'codemie analytics --report', exit_code: 0, duration_ms: 300, raw_output: '\n\nreal output\n\n' },
+    ];
+    return null;
+  };
+  initCmdLog();
+  await new Promise(r => setTimeout(r, 10));
+
+  const btn = summary._children.find(c => c.id === 'cmdlog-copy-all');
+  btn._listeners['click']?.();
+
+  const text = clipboardCalls[0];
+  assert.ok(text.endsWith('real output'), `trailing blank lines must be trimmed, got: ${JSON.stringify(text)}`);
+  assert.ok(!text.includes('\n\nreal'), `leading blank lines must be trimmed, got: ${JSON.stringify(text)}`);
 });

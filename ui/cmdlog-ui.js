@@ -15,7 +15,7 @@ function _recordText(r) {
   const state = r.exit_code == null ? 'running…' : `exit ${r.exit_code}`;
   const duration = r.exit_code != null && r.duration_ms != null ? ` · ${(r.duration_ms / 1000).toFixed(1)}s` : '';
   const lines = [`[${_formatTime(r.start_time)}] ${r.command} — ${state}${duration}`];
-  if (r.raw_output && r.raw_output.trim() !== '') lines.push(r.raw_output);
+  if (r.raw_output && r.raw_output.trim() !== '') lines.push(r.raw_output.trim());
   return lines.join('\n');
 }
 
@@ -90,7 +90,7 @@ async function _renderRecords() {
     if (r.raw_output && r.raw_output.trim() !== '') {
       const raw = document.createElement('pre');
       raw.className = 'log-line log-box';
-      raw.textContent = r.raw_output;
+      raw.textContent = r.raw_output.trim();
       detail.appendChild(raw);
     }
 
