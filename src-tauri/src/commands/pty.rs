@@ -317,6 +317,7 @@ mod tests_pty_env {
         assert!(path.1.starts_with("/Users/test/.codemie/agents/bin:"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn pty_env_pairs_for_windows_includes_npm_config_prefix_and_prefixed_path() {
         let pairs = pty_env_pairs_for(r"C:\Users\test", r"C:\Windows", true);
