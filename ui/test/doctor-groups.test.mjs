@@ -51,15 +51,15 @@ test('signed-in: each installed agent is its own row, and one the CLI has advice
   const { rows } = grouped('signed-in');
   const openCode = rows.find((r) => r.label === 'OpenCode CLI 1.18.31');
   assert.equal(openCode.detail, 'CodeMie recommends vlatest');
-  assert.equal(openCode.remedyText, 'Open the Agents screen to update or reinstall it.');
-  assert.deepEqual(openCode.action, { kind: 'navigate', view: 'agents', label: 'Go to Agents' });
+  assert.equal(openCode.remedyText, 'Open the Tools screen to update or reinstall it.');
+  assert.deepEqual(openCode.action, { kind: 'navigate', view: 'agents', label: 'Go to Tools' });
   const claude = rows.find((r) => r.label === 'Claude Code 2.1.269');
   assert.equal(claude.action, undefined);
   assert.equal(claude.remedyText, undefined);
 });
 
 // Doctor flags the built-in agent every time, but it comes with the CLI and the
-// Agents screen has nothing that updates it, so "Go to Agents" led nowhere.
+// Agents screen has nothing that updates it, so "Go to Tools" led nowhere.
 test('the built-in agent is a passing row with no remedy, whatever doctor advises', () => {
   const { rows } = grouped('signed-in');
   const builtIn = rows.find((r) => r.label === 'CodeMie Code 0.0.47');

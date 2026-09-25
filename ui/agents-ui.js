@@ -60,10 +60,10 @@ export function renderAgents(container, { agents }, handlers = {}) {
   const { installed, total, updateAvailable } = summarise(agents);
   const summaryText = `${installed} of ${total} installed${updateAvailable ? ` · ${updateAvailable} update${updateAvailable === 1 ? '' : 's'} available` : ''}`;
   const head = el('div', 'agents-head');
-  head.append(el('span', 'agents-title', 'Agents'), el('span', 'agents-summary', summaryText));
+  head.append(el('span', 'agents-title', 'Tools'), el('span', 'agents-summary', summaryText));
   container.appendChild(head);
 
-  container.appendChild(el('div', 'agents-note', 'Run an agent from a terminal. This screen only sets them up.'));
+  container.appendChild(el('div', 'agents-note', 'Run a tool from a terminal. This screen only sets them up.'));
 
   const list = el('div', 'agents-list');
   container.appendChild(list);
@@ -121,7 +121,7 @@ function buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons = 
 export function showLoading(container) {
   container.innerHTML = '';
   const head = el('div', 'agents-head');
-  head.append(el('span', 'agents-title', 'Agents'), el('span', 'agents-summary', 'Reading the agent list…'));
+  head.append(el('span', 'agents-title', 'Tools'), el('span', 'agents-summary', 'Reading the tool list…'));
   container.appendChild(head);
   container.appendChild(screenSpinner());
 }
@@ -132,12 +132,12 @@ export function showLoading(container) {
 export function showRunError(container, message, onRetry) {
   container.innerHTML = '';
   const head = el('div', 'agents-head');
-  head.append(el('span', 'agents-title', 'Agents'), el('span', 'agents-summary', ''));
+  head.append(el('span', 'agents-title', 'Tools'), el('span', 'agents-summary', ''));
   container.appendChild(head);
 
   const panel = el('div', 'agents-error');
   panel.append(
-    el('div', 'agents-error-title', 'CodeMie could not read the agent list'),
+    el('div', 'agents-error-title', 'CodeMie could not read the tool list'),
     el('div', 'agents-error-detail', message),
   );
   const retry = el('button', 'btn btn-accent', 'Try again');

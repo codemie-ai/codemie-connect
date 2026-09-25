@@ -89,7 +89,7 @@ test('sources that are not ready render as unknown, never as a made-up value', (
   assert.equal(s.done, false);
   const failed = deriveHome({ config: valid, auth: signedIn, agents: null, health: null });
   assert.equal(failed.items[2].status, StepStatus.PENDING);
-  assert.equal(failed.items[2].subtitle, 'Could not read the agent list');
+  assert.equal(failed.items[2].subtitle, 'Could not read the tool list');
   assert.deepEqual(failed.cards.find((c) => c.id === 'agents').badge, { text: 'unknown', tone: 'muted' });
   assert.deepEqual(failed.cards.find((c) => c.id === 'health').badge, { text: 'unknown', tone: 'muted' });
 });

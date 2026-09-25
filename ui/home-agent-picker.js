@@ -47,7 +47,7 @@ export function renderAgentPicker(host, { agents, busy, error } = {}, { onInstal
   // `undefined` is "not read yet" and `null` is "the read failed" — neither is
   // an empty list, and neither means every agent is installed.
   if (!Array.isArray(agents)) {
-    picker.appendChild(el('div', 'home-picker-line', agents === null ? 'The agent list could not be read.' : 'Reading the agent list…'));
+    picker.appendChild(el('div', 'home-picker-line', agents === null ? 'The tool list could not be read.' : 'Reading the tool list…'));
     host.appendChild(picker);
     return picker;
   }

@@ -72,7 +72,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
       if (parsed.length === 0) {
         // The CLI always lists agents; zero records means the output did not
         // look like a list at all, which must not render as "0 of 0 installed".
-        showRunError(container, 'The agent list came back empty, so nothing can be shown here.', () => load({ silent: false }));
+        showRunError(container, 'The tool list came back empty, so nothing can be shown here.', () => load({ silent: false }));
         lastAgents = null;
         onFailure?.();
         return;
@@ -118,9 +118,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // command's output where the install was started from.
   async function runAction(agent, command, { onLine, note } = {}) {
     // One at a time, see buildActions in agents-ui.js.
-    if (inFlight.size) return { ok: false, message: 'Another agent is still being worked on.' };
+    if (inFlight.size) return { ok: false, message: 'Another tool is still being worked on.' };
     if (!SAFE_COMMAND.test(agent.command)) {
-      const message = 'This agent’s command name is not safe to run and was blocked.';
+      const message = 'This tool’s command name is not safe to run and was blocked.';
       rowErrors.set(agent.command, message);
       await load({ silent: true });
       return { ok: false, message };

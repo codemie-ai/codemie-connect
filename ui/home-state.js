@@ -16,7 +16,7 @@ import { StepStatus } from './models.js';
 export const HOME_ITEMS = Object.freeze([
   { id: 'sign-in', title: 'Sign in with your EPAM account' },
   { id: 'model', title: 'Choose how CodeMie reaches a model' },
-  { id: 'agent', title: 'Install an agent' },
+  { id: 'agent', title: 'Install a tool' },
   { id: 'health', title: 'Verify health' },
 ]);
 
@@ -59,7 +59,7 @@ export const BUILTIN_AGENT_COMMAND = 'codemie-code';
 
 function agentItem(def, agents) {
   if (agents === undefined) return item(def, StepStatus.PENDING, 'Checking…');
-  if (agents === null) return item(def, StepStatus.PENDING, 'Could not read the agent list');
+  if (agents === null) return item(def, StepStatus.PENDING, 'Could not read the tool list');
   const installed = agents.filter((a) => a.installed && a.command !== BUILTIN_AGENT_COMMAND);
   if (installed.length) {
     return item(def, StepStatus.COMPLETE, `Already installed: ${installed.map((a) => a.name).join(' · ')}`);
@@ -111,12 +111,12 @@ function healthCard(health) {
 
 function agentsCard(agents) {
   if (!Array.isArray(agents)) {
-    return { id: 'agents', title: 'Agents', badge: { text: 'unknown', tone: 'muted' }, line: agents === null ? 'Could not read the agent list' : 'Checking…', note: '' };
+    return { id: 'agents', title: 'Tools', badge: { text: 'unknown', tone: 'muted' }, line: agents === null ? 'Could not read the tool list' : 'Checking…', note: '' };
   }
   const installed = agents.filter((a) => a.installed);
   return {
     id: 'agents',
-    title: 'Agents',
+    title: 'Tools',
     badge: { text: `${installed.length} of ${agents.length}`, tone: installed.length ? 'good' : 'warn' },
     line: installed.length ? installed.map((a) => a.name).join(' · ') : 'None installed yet',
     note: '',

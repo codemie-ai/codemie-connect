@@ -157,7 +157,7 @@ test('a clicked action disables every button on the screen and says what is runn
 test('the screen says it is reading before the list arrives', () => {
   const container = makeEl('div');
   showLoading(container);
-  assert.match(container._text(), /Agents Reading the agent list/);
+  assert.match(container._text(), /Tools Reading the tool list/);
 });
 
 // Reading the list takes a few seconds, and a header over an empty screen
@@ -174,7 +174,7 @@ test('a failed read states what happened and offers the read again, instead of a
   showRunError(container, 'spawn codemie ENOENT', () => {
     retried += 1;
   });
-  assert.match(container._text(), /CodeMie could not read the agent list/);
+  assert.match(container._text(), /CodeMie could not read the tool list/);
   assert.match(container._text(), /spawn codemie ENOENT/);
   assert.doesNotMatch(container._text(), /0 of 0 installed/);
   container._all((n) => n._tag === 'button')[0].onclick();
@@ -184,7 +184,7 @@ test('a failed read states what happened and offers the read again, instead of a
 test('the screen says agents are run from a terminal, since it cannot launch one', () => {
   const container = makeEl('div');
   renderAgents(container, { agents }, { stepsUi: fakeStepsUi() });
-  assert.match(container._text(), /Run an agent from a terminal/);
+  assert.match(container._text(), /Run a tool from a terminal/);
   assert.doesNotMatch(container._text(), /\bLaunch\b|\bRun agent\b/);
 });
 

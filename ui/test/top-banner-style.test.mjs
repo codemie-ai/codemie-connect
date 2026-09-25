@@ -24,14 +24,14 @@ test('top-banner: CLI banner keeps the verbatim reassurance line', () => {
     html.indexOf('<div id="update-banner"'),
     html.indexOf('<div id="app-update-banner"')
   );
-  assert.match(cliBanner, /Your profile, settings and agents are kept\./);
+  assert.match(cliBanner, /Your profile, settings and tools are kept\./);
 });
 
 // The app banner says its own thing. With both on screen the same sentence
 // twice reads like a template rather than something written for the user.
 test('top-banner: the app banner does not repeat the CLI banner\'s line', () => {
   const appBanner = html.slice(html.indexOf('<div id="app-update-banner"'));
-  assert.doesNotMatch(appBanner, /Your profile, settings and agents are kept\./);
+  assert.doesNotMatch(appBanner, /Your profile, settings and tools are kept\./);
   assert.match(appBanner, /Everything you set up stays\./);
 });
 

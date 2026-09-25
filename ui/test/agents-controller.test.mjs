@@ -156,7 +156,7 @@ test('a non-zero exit shows the CLI text, keeps no stale list, and releases the 
     },
   });
   await c.run();
-  assert.match(container._text(), /could not read the agent list/);
+  assert.match(container._text(), /could not read the tool list/);
   assert.match(container._text(), /command not found/);
   assert.equal(c.getLastAgents(), null);
   assert.equal(failures, 1);
@@ -173,7 +173,7 @@ test('a rejected call is caught and shown rather than leaving the screen on "Rea
   });
   await c.run();
   assert.match(container._text(), /spawn failed/);
-  assert.doesNotMatch(container._text(), /Reading the agent list/);
+  assert.doesNotMatch(container._text(), /Reading the tool list/);
 });
 
 test('output that parses to nothing is an error, never "0 of 0 installed"', async () => {
@@ -285,7 +285,7 @@ test('while an action is in flight the row is ACTIVE with a spinner and the late
         // A refresh's list read happens after the action starts; capture the
         // container's text at that moment, before this read resolves, so a
         // stray showLoading() call (the loading-blanking path) would show up
-        // here as "Reading the agent list…".
+        // here as "Reading the tool list…".
         textsDuringRefresh.push(container._text());
         return { code: 0, stdout: fixture, stderr: '' };
       }
@@ -308,7 +308,7 @@ test('while an action is in flight the row is ACTIVE with a spinner and the late
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
 
-  assert.equal(textsDuringRefresh.some((t) => /Reading the agent list/.test(t)), false);
+  assert.equal(textsDuringRefresh.some((t) => /Reading the tool list/.test(t)), false);
 });
 
 test('a failing action leaves the row actionMessage equal to the accumulated stderr text after refresh', async () => {
@@ -473,7 +473,7 @@ test('refresh() re-reads and re-renders without going through the loading-blanki
   await c.run();
   seenLoadingText.length = 0;
   await c.refresh();
-  assert.equal(seenLoadingText.some((t) => /Reading the agent list/.test(t)), false);
+  assert.equal(seenLoadingText.some((t) => /Reading the tool list/.test(t)), false);
 });
 
 // Captured from a real failing run of `codemie install claude-acp --supported`.

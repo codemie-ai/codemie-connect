@@ -126,8 +126,8 @@ function agentRow(item) {
   const detail = rest.join(' - ') || undefined;
   const row = { group: 'tools', label: unparen(title), detail, status, remedyText: undefined, action: undefined };
   if (status !== 'pass') {
-    row.remedyText = 'Open the Agents screen to update or reinstall it.';
-    row.action = { kind: 'navigate', view: 'agents', label: 'Go to Agents' };
+    row.remedyText = 'Open the Tools screen to update or reinstall it.';
+    row.action = { kind: 'navigate', view: 'agents', label: 'Go to Tools' };
   }
   return row;
 }

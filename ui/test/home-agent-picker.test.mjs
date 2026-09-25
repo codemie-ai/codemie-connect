@@ -180,7 +180,7 @@ test('item 3 opens by itself when it is the step the user is on, and stays close
 });
 
 // Measured in the app: at launch the step reads "Checking…" until the agent
-// list arrives, and opening it then showed "Reading the agent list…" and stayed
+// list arrives, and opening it then showed "Reading the tool list…" and stayed
 // open once the list said agents were installed after all.
 test('item 3 does not open by itself before the agent list has been read', () => {
   const container = makeEl('div');
@@ -286,7 +286,7 @@ test('an install that throws is reported in the row rather than lost', async () 
 // Treating either as an empty list would tell the user everything was already
 // installed, which is the one thing it must never say.
 test('an unread or failed agent list says so, and offers nothing to install', () => {
-  for (const [agents, expected] of [[undefined, 'Reading the agent list…'], [null, 'The agent list could not be read.']]) {
+  for (const [agents, expected] of [[undefined, 'Reading the tool list…'], [null, 'The tool list could not be read.']]) {
     const host = makeEl('div');
     renderAgentPicker(host, { agents }, {});
     assert.ok(host._text().includes(expected), `${String(agents)} -> ${expected}`);
