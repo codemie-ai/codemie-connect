@@ -81,13 +81,6 @@ async function _renderRecords() {
     const detail = document.createElement('div');
     detail.className = 'log-row-detail';
 
-    const meta = document.createElement('span');
-    meta.className = 'log-line log-dim';
-    meta.textContent = r.exit_code != null
-      ? `exit ${r.exit_code} · ${(r.duration_ms / 1000).toFixed(1)}s`
-      : 'running…';
-    detail.appendChild(meta);
-
     if (r.raw_output && r.raw_output.trim() !== '') {
       const raw = document.createElement('pre');
       raw.className = 'log-line log-box';
