@@ -833,6 +833,9 @@ export function createSetupView(container, deps = {}) {
   function start() {
     if (inFlight) return inFlight;
     inFlight = run().finally(() => { inFlight = null; });
+    // Every run, the first one and each "Try again", so the caller's
+    // bookkeeping follows a retry the same way.
+    deps.onRun?.(inFlight);
     return inFlight;
   }
 

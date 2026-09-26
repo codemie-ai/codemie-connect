@@ -217,7 +217,28 @@ fn persist(entries: &[String]) -> std::io::Result<String> {
         if current.is_empty() { "" } else { ";" },
         missing.join(";")
     );
-    env_key.set_value("PATH", &new_val)?;
+    // Keep the value's type: the user PATH is usually REG_EXPAND_SZ, and a plain
+    // String write stores REG_SZ, after which %USERPROFILE% entries stop expanding.
+    let expand = env_key
+        .get_raw_value("PATH")
+        .map(|v| matches!(v.vtype, REG_EXPAND_SZ))
+        .unwrap_or(false);
+    if expand {
+        let bytes = new_val
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        env_key.set_raw_value(
+            "PATH",
+            &winreg::RegValue {
+                bytes,
+                vtype: REG_EXPAND_SZ,
+            },
+        )?;
+    } else {
+        env_key.set_value("PATH", &new_val)?;
+    }
     broadcast_env_change();
     Ok(r"HKCU\Environment".to_string())
 }

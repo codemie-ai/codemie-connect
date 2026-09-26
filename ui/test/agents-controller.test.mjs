@@ -356,6 +356,22 @@ test('accumulated text matching a connection-error pattern renders as "Installin
   assert.equal(subtitles.at(-1)[2], 'Installing needs a connection.');
 });
 
+test('a Remove that fails for want of a connection says removing, not installing', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  const runStream = async (cmd, onLine) => {
+    onLine('Error: getaddrinfo ENOTFOUND registry.npmjs.org', 'stderr');
+    return { code: 1 };
+  };
+  await createAgentsController({ container, runCapture: fakeRunCapture(), runStream, stepsUi }).run();
+  const slot = container.querySelector('.agent-actions[data-id="opencode"]');
+  slot._children[slot._children.length - 1].onclick({ stopPropagation() {} }); // Remove
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  const subtitles = stepsUi.calls.filter((call) => call[0] === 'setSubtitle' && call[1] === 'opencode');
+  assert.equal(subtitles.at(-1)[2], 'Removing needs a connection.');
+});
+
 test('an agent.command with shell metacharacters is never handed to runStream', async () => {
   const container = makeEl('div');
   const maliciousList = `

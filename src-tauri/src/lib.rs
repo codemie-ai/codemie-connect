@@ -12,8 +12,28 @@ pub fn run() {
         .setup(|app| {
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
-            // Capture PATH before injection so detection searches the pre-bundle PATH.
-            let pre_injection_path = std::env::var("PATH").unwrap_or_default();
+            // Capture PATH before injection so detection searches the pre-bundle PATH,
+            // minus the dirs whose `codemie` the app itself put there: an earlier
+            // launch persisted them, and they are not the user's own CLI.
+            let mut own_dirs: Vec<std::path::PathBuf> = Vec::new();
+            for base in [
+                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())),
+                app.path().resource_dir().ok(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                own_dirs.push(base.join("bin"));
+                own_dirs.push(base);
+            }
+            let agents_bin = commands::npm_env::npm_env().bin_dir;
+            if !agents_bin.is_empty() {
+                own_dirs.push(agents_bin.into());
+            }
+            let pre_injection_path = commands::handshake::without_dirs(
+                &std::env::var("PATH").unwrap_or_default(),
+                &own_dirs,
+            );
 
             // Detect an existing CodeMie CLI before touching PATH ourselves. If found,
             // the bundle must not be installed or registered at all (EPMCDME-14581).

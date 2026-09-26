@@ -35,7 +35,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
   // after that only the user opens or closes it.
   let agentAutoOpened = false;
 
-  function renderChecklist({ items, agents }) {
+  function renderChecklist({ items, agents, signingIn }) {
     const block = el('section', 'home-check');
     block.append(
       el('h2', 'home-check-title', "Welcome — let's get CodeMie working"),
@@ -56,7 +56,9 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
     const signInRow = listEl.querySelector('.step-row[data-id="sign-in"]');
     if (signIn && signIn.status === StepStatus.PENDING && signInRow) {
       const control = el('div', 'home-signin');
-      const btn = el('button', 'btn btn-accent', 'Sign in');
+      // While the browser sign-in is open, a second click would start a second one.
+      const btn = el('button', 'btn btn-accent', signingIn ? 'Waiting for the browser…' : 'Sign in');
+      btn.disabled = !!signingIn;
       btn.onclick = (e) => {
         e?.stopPropagation?.();
         onSignIn?.();

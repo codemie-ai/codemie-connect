@@ -25,9 +25,14 @@ const started = (cmd) => {
 export const runner = {
   runCapture: async (cmd) => {
     const finish = started(cmd);
-    const res = await invoke('run_capture', { cmd });
-    finish(res && res.code);
-    return res;
+    let res = null;
+    try {
+      res = await invoke('run_capture', { cmd });
+      return res;
+    } finally {
+      // Also when invoke rejects, or the footer shows the command running forever.
+      finish(res && res.code);
+    }
   },
   runFreshEnv: (cmd) => invoke('run_fresh_env', { cmd }),
 
@@ -166,9 +171,13 @@ export const pty = {
         if (e.payload.id === id) resolveExit(e.payload.code);
       });
       const finish = started(cmd);
-      await invoke('spawn_pty', { cmd, cols, rows, runId: id });
-      const code = await exitP;
-      finish(code);
+      let code = null;
+      try {
+        await invoke('spawn_pty', { cmd, cols, rows, runId: id });
+        code = await exitP;
+      } finally {
+        finish(code);
+      }
       return { code, id };
     } finally {
       exitUnlisten?.();

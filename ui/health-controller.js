@@ -66,6 +66,7 @@ export function createHealthController({
         // indistinguishable from a genuine all-clear.
         showRunError(container, 'The check produced no output, so nothing can be said about this computer.', run);
         lastResult = null;
+        onFailure?.();
         return;
       }
       const result = { ...groupDoctorResults(records), checkedAt: now() };

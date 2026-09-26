@@ -173,6 +173,16 @@ test('the health check starts by itself once the steps before it are done', () =
   assert.equal(autoHealthCheck(running), false);
 });
 
+// A check that could not finish must not leave the step on "Not checked yet"
+// with nothing to click: the sidebar's Health is still locked then.
+test('a health check that could not finish is an error on its step, and does not start again', () => {
+  const s = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true });
+  const h = s.items.find((i) => i.id === 'health');
+  assert.equal(h.status, StepStatus.ERROR);
+  assert.equal(h.subtitle, 'The check did not finish');
+  assert.equal(autoHealthCheck(s), false);
+});
+
 test('a running health check shows on its step', () => {
   const s = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true });
   const h = s.items.find((i) => i.id === 'health');

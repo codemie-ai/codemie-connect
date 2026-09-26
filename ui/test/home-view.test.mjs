@@ -122,6 +122,15 @@ test('the checklist renders the four items on the injected steps-ui instance, in
   assert.equal(container.querySelector('.home-cards'), null);
 });
 
+test('while the browser sign-in is open, Sign in is disabled and says so', () => {
+  const container = makeEl('div');
+  const view = createHomeView(container, { stepsUi: fakeStepsUi(), onSignIn: () => {} });
+  view.render({ ...checklist, signingIn: true });
+  const btn = container._all((n) => n._tag === 'button' && n.textContent === 'Waiting for the browser…')[0];
+  assert.ok(btn, 'the button says what it waits for');
+  assert.equal(btn.disabled, true);
+});
+
 test('item 1 gets an in-place Sign in control while it is open, and none once complete', () => {
   const container = makeEl('div');
   let signedIn = 0;

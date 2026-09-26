@@ -70,8 +70,11 @@ function agentItem(def, agents) {
 
 // "Passed" is no failing row. A warning (an agent the CLI has advice on) is
 // not a reason to keep the checklist on screen forever.
-function healthItem(def, health, running) {
+function healthItem(def, health, running, failed) {
   if (!health && running) return item(def, StepStatus.ACTIVE, 'Checking…');
+  // A check that could not finish: the row's Open Health leads to the error and
+  // its retry, since the sidebar's Health stays locked until the checklist is done.
+  if (!health && failed) return item(def, StepStatus.ERROR, 'The check did not finish');
   if (!health) return item(def, StepStatus.PENDING, 'Not checked yet');
   const failing = health.rows.filter((r) => r.status === 'fail').length;
   const { passing, total } = health.summary;
@@ -156,9 +159,9 @@ export function signInAction({ config, auth } = {}) {
 // (the renderer remembers it). Health is read fresh each time the app opens, so
 // without it a user who finished setup yesterday is back on the checklist, with
 // the sidebar locked, until they run the check again.
-export function deriveHome({ config, auth, agents, health, connection, onboarded = false, healthRunning = false } = {}) {
+export function deriveHome({ config, auth, agents, health, connection, onboarded = false, healthRunning = false, healthFailed = false } = {}) {
   const [signIn, model, agent, healthDef] = HOME_ITEMS;
-  const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health, healthRunning)];
+  const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health, healthRunning, healthFailed)];
   const complete = items.every((i) => i.status === StepStatus.COMPLETE);
   // Once setup has finished, only a lapsed sign-in brings the checklist back:
   // its Sign in button is the only one Home has until the broken-profile panel

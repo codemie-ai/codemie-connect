@@ -77,6 +77,10 @@ pub async fn capture(cmd: &str, path_override: Option<String>) -> CaptureResult 
     if let Some(p) = path_override {
         command.env("PATH", p);
     }
+    capture_command(command).await
+}
+
+async fn capture_command(mut command: Command) -> CaptureResult {
     match command.output().await {
         Ok(out) => CaptureResult {
             code: out.status.code().unwrap_or(1),
@@ -189,6 +193,14 @@ pub fn cli_is_bundled(state: tauri::State<'_, crate::state::AppState>) -> bool {
     )
 }
 
+/// Not into ~/.codemie/agents: that prefix is for the tools the app installs.
+/// `self-update` is an `npm install -g`, and with the override it would put a
+/// second CLI there and leave the user's own one on the old version.
+fn self_update_command(mut command: Command) -> Command {
+    command.env_remove("npm_config_prefix");
+    command
+}
+
 /// Run `codemie self-update` silently (captured, not PTY) for a CLI the user
 /// installed themselves. Refused for the bundled CLI, see `bundled_cli_in_use`.
 /// Returns stdout on exit 0; serializes as an error string on non-zero exit.
@@ -203,7 +215,7 @@ pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) ->
             "The CodeMie CLI comes with this app and updates when the app does.".into(),
         ));
     }
-    let r = capture("codemie self-update", None).await;
+    let r = capture_command(self_update_command(shell_cmd("codemie self-update"))).await;
     if r.code == 0 {
         Ok(r.stdout)
     } else {
@@ -218,6 +230,26 @@ pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) ->
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_update_leaves_npm_on_the_users_own_prefix() {
+        let c = self_update_command(shell_cmd_for(
+            "codemie self-update",
+            "/Users/test",
+            "/usr/bin",
+            false,
+        ));
+        let prefix = c
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "npm_config_prefix")
+            .map(|(_, v)| v);
+        assert_eq!(
+            prefix,
+            Some(None),
+            "the agents prefix must be removed, not just left unset"
+        );
+    }
 
     #[tokio::test]
     async fn shell_cmd_sets_npm_config_prefix_and_prefixed_path_by_default() {

@@ -153,6 +153,20 @@ test('CR-005: zero stdout records render an explicit could-not-determine state, 
   assert.equal(controller.getLastResult(), null);
 });
 
+// Home's step waits on onResult or onFailure; an empty run that called neither
+// left it on "Checking…" for good.
+test('zero stdout records report a failure to the caller', async () => {
+  let failures = 0;
+  const controller = createHealthController({
+    container: makeEl('div'),
+    runStream: async () => ({ code: 1 }),
+    openLog: async () => {},
+    onFailure: () => (failures += 1),
+  });
+  await controller.run();
+  assert.equal(failures, 1);
+});
+
 // CR-006: a rejected runStream must not leave the screen stuck on
 // "Checking..." forever, and must not permanently consume the caller's
 // one-shot auto-run guard.

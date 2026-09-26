@@ -225,7 +225,7 @@ function renderHome() {
     onboarded = true;
     rememberOnboarded(homeStorage);
   }
-  homeScreen.render(state);
+  homeScreen.render({ ...state, signingIn: home.signingIn });
   // The last step starts by itself once the ones before it are done, instead
   // of leaving the user on a checklist that waits for a click. Once a session:
   // a check that fails leaves its step saying so, and Home does not retry it.
@@ -299,18 +299,19 @@ async function openGuidedSetup() {
       onDone: () => {
         if (!views.setup.classList.contains('hidden')) showView('home');
       },
+      // Called for each run, including a "Try again" started from the view.
+      onRun: (run) => {
+        setupRunning = true;
+        setupSettled = run.then(() => {}, () => {}).finally(() => {
+          setupRunning = false;
+          // A run writes the profile and may sign the user in; Home re-reads both.
+          refreshIdentityOnComplete();
+          refreshAgents();
+        });
+      },
     });
   }
-  const run = setupView.start();
-  setupRunning = true;
-  setupSettled = run.then(() => {}, () => {}).finally(() => { setupRunning = false; });
-  try {
-    return await run;
-  } finally {
-    // A run writes the profile and may sign the user in; Home re-reads both.
-    refreshIdentityOnComplete();
-    refreshAgents();
-  }
+  return setupView.start();
 }
 
 // ---- view routing ----
@@ -546,11 +547,13 @@ const healthController = createHealthController({
   onResult: (result) => {
     home.health = result;
     home.healthRunning = false;
+    home.healthFailed = false;
     renderHome();
   },
   onFailure: () => {
     healthChecked = false;
     home.healthRunning = false;
+    home.healthFailed = true;
     renderHome();
   },
 });
@@ -616,6 +619,10 @@ async function ensureAuthenticated() {
 // Sign-in button UI surface is provided by EPMCDME-14589; startSignIn is defined
 // here so it is available when that ticket wires it.
 async function startSignIn() {
+  // One browser sign-in at a time: each call starts its own `profile login`.
+  if (home.signingIn) return;
+  home.signingIn = true;
+  renderHome();
   hideNotice();
   try {
     const lines = [];
@@ -647,6 +654,7 @@ async function startSignIn() {
   } catch {
     st = { state: 'unknown', detail: '' };
   }
+  home.signingIn = false;
   updateIdentityAuthStatus(st);
 }
 
@@ -874,7 +882,7 @@ async function boot() {
   // spaced out because the auth half runs the CLI.
   let identityReadAt = Date.now();
   window.addEventListener('focus', () => {
-    if (installRunning || Date.now() - identityReadAt < 5000) return;
+    if (installRunning || setupRunning || Date.now() - identityReadAt < 5000) return;
     identityReadAt = Date.now();
     refreshIdentityOnComplete();
     refreshAgents();

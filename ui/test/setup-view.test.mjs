@@ -189,8 +189,12 @@ test('start() inserts a collapsed/COMPLETE storage row before startSetup runs', 
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const runs = [];
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig, onRun: (p) => runs.push(p) });
   await view.start();
+  // The renderer's bookkeeping hangs off onRun, so a retry must report too.
+  await view.start();
+  assert.equal(runs.length, 2, 'onRun hears about every run, not only the first');
 
   assert.ok(sawStorageRowBeforeStart, 'storage row exists and is COMPLETE before startSetup is invoked');
   const storageRow = findRowById(container, 'storage');

@@ -116,7 +116,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // result and reads the row's own error; Home's checklist has no row to read,
   // so it is handed back. `onLine` is Home's too: its picker shows the
   // command's output where the install was started from.
-  async function runAction(agent, command, { onLine, note } = {}) {
+  async function runAction(agent, command, { onLine, note, verb = 'Installing' } = {}) {
     // One at a time, see buildActions in agents-ui.js.
     if (inFlight.size) return { ok: false, message: 'Another tool is still being worked on.' };
     if (!SAFE_COMMAND.test(agent.command)) {
@@ -145,7 +145,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
         onLine?.(text, tag);
       });
       if (code !== 0) {
-        message = messageFor(lines);
+        message = messageFor(lines, verb);
         rowErrors.set(agent.command, message);
       } else if (note) {
         const result = [...lines].reverse().find((l) => RESULT_LINE.test(l));
@@ -153,7 +153,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
       }
     } catch (e) {
       lines.push(String((e && e.message) || e));
-      message = messageFor(lines);
+      message = messageFor(lines, verb);
       rowErrors.set(agent.command, message);
     } finally {
       inFlight.delete(agent.command);
@@ -162,9 +162,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
     return message ? { ok: false, message } : { ok: true };
   }
 
-  function messageFor(lines) {
+  function messageFor(lines, verb) {
     const accumulated = lines.join('\n');
-    if (NO_NETWORK.test(accumulated)) return 'Installing needs a connection.';
+    if (NO_NETWORK.test(accumulated)) return `${verb} needs a connection.`;
     // The CLI gives up on an install after a fixed time and says so in ms.
     const timedOut = accumulated.match(/timed out after (\d+)\s*ms/i);
     if (timedOut) return `Took longer than ${Math.round(Number(timedOut[1]) / 60000)} minutes. Check your connection and try again.`;
@@ -187,8 +187,8 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // passes no explicit version, which is what the ticket forbids. See
   // .ai-run/decisions/2026-09-21-EPMCDME-14514-install-without-supported.md.
   const onInstall = (agent, opts) => runAction(agent, `codemie install ${agent.command}`, opts);
-  const onUpdate = (agent) => runAction(agent, `codemie update ${agent.command}`, { note: true });
-  const onRemove = (agent) => runAction(agent, `codemie uninstall ${agent.command}`);
+  const onUpdate = (agent) => runAction(agent, `codemie update ${agent.command}`, { note: true, verb: 'Updating' });
+  const onRemove = (agent) => runAction(agent, `codemie uninstall ${agent.command}`, { verb: 'Removing' });
 
   return {
     run: () => load({ silent: false }),
