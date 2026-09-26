@@ -126,11 +126,23 @@ function agentsCard(agents) {
   };
 }
 
+// `codemie proxy status --json` says "healthy" or "unhealthy" while the proxy
+// runs and "stopped" when it does not (CLI 0.15.2, cli/commands/proxy); it has
+// no "running". The CLI can print its migration notes before the JSON on a
+// first run. Throws on JSON it cannot parse, which the caller shows as unknown.
+export function connectionFromStatus(stdout) {
+  const json = stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1);
+  if (!json) return null;
+  const { status } = JSON.parse(json);
+  return { running: status === 'healthy' || status === 'unhealthy', healthy: status === 'healthy' };
+}
+
 // Claude Desktop is the one app Connections connects today, through the CLI's
 // local proxy: connected while `codemie proxy status` says it is running.
 function connectionsCard(connection) {
   if (connection === undefined) return { id: 'connections', title: 'Connections', badge: { text: 'checking', tone: 'muted' }, line: 'Claude Desktop', note: '' };
   if (connection === null) return { id: 'connections', title: 'Connections', badge: { text: 'unknown', tone: 'muted' }, line: 'Could not read the connection', note: '' };
+  if (connection.running && connection.healthy === false) return { id: 'connections', title: 'Connections', badge: { text: 'not responding', tone: 'warn' }, line: 'Claude Desktop', note: '' };
   return connection.running
     ? { id: 'connections', title: 'Connections', badge: { text: '1 connected', tone: 'good' }, line: 'Claude Desktop', note: '' }
     : { id: 'connections', title: 'Connections', badge: { text: 'not connected', tone: 'muted' }, line: 'Claude Desktop', note: '' };

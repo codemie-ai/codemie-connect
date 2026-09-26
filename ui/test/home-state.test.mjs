@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveHome, HOME_ITEMS, signInAction, autoHealthCheck, signedInDetail } from '../home-state.js';
+import { deriveHome, HOME_ITEMS, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from '../home-state.js';
 import { StepStatus } from '../models.js';
 
 const valid = { state: 'valid', profile: 'demo7', model: 'claude-sonnet-5', project: 'epm-sdai', account: 'me@epam.com' };
@@ -218,4 +218,16 @@ test('the Connections card says whether Claude Desktop is connected, as the prox
   assert.deepEqual(card(null).badge, { text: 'unknown', tone: 'muted' });
   assert.equal(card(null).line, 'Could not read the connection');
   assert.deepEqual(card(undefined).badge, { text: 'checking', tone: 'muted' });
+});
+
+// Measured with the bundled CLI 0.15.2: a running proxy reports "healthy", never
+// "running", so a check for "running" left the card on "not connected" for good.
+test('the proxy status the CLI really prints maps to the Connections card', () => {
+  const card = (stdout) => deriveHome({ connection: connectionFromStatus(stdout) }).cards.find((c) => c.id === 'connections');
+  const running = '{\n  "status": "healthy",\n  "url": "http://127.0.0.1:4001",\n  "port": 4001\n}';
+  assert.deepEqual(card(running).badge, { text: '1 connected', tone: 'good' });
+  assert.deepEqual(card('Migrating…\n' + running).badge, { text: '1 connected', tone: 'good' });
+  assert.deepEqual(card('{ "status": "unhealthy", "port": 4001 }').badge, { text: 'not responding', tone: 'warn' });
+  assert.deepEqual(card('{\n  "status": "stopped"\n}').badge, { text: 'not connected', tone: 'muted' });
+  assert.deepEqual(card('').badge, { text: 'unknown', tone: 'muted' });
 });

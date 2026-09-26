@@ -126,6 +126,9 @@ export function handlePtyExit(code) {
         : 'Finished. Click “‹ Back” to return.';
     }
     if (doneBtn) doneBtn.classList.remove('hidden');
+    // The button and hint take room the terminal was fitted into; fit it again
+    // or its last rows cover the top of "‹ Back" (EPMCDME-15258).
+    setTimeout(doFit, 0);
   } else {
     closeTerminal();
   }

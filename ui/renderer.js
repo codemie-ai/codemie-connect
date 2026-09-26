@@ -18,7 +18,7 @@ import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
 import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
-import { deriveHome, signInAction, autoHealthCheck, signedInDetail } from './home-state.js';
+import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
 
@@ -266,10 +266,7 @@ async function refreshConnection() {
   connectionReading = true;
   try {
     const res = await bridge.runner.runCapture('codemie proxy status --json');
-    // The CLI can print its migration notes before the JSON on a first run.
-    const out = (res && res.code === 0 && res.stdout) || '';
-    const json = out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1);
-    home.connection = json ? { running: JSON.parse(json).status === 'running' } : null;
+    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '');
   } catch {
     home.connection = null;
   } finally {
