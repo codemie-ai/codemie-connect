@@ -38,7 +38,7 @@
 
 **Status**: configured
 **Adapter**: glab
-**Instructions**: glab is installed at `%LOCALAPPDATA%\Programs\glab\glab.exe` (not on PATH). Invoke as `"$LOCALAPPDATA/Programs/glab/glab.exe"` from Bash or `"$env:LOCALAPPDATA\Programs\glab\glab.exe"` from PowerShell. Authenticated to `gitbud.epam.com` via keyring. Default target branch is `codemie-desktop`.
+**Instructions**: glab is installed at `%LOCALAPPDATA%\Programs\glab\glab.exe` (not on PATH). Invoke as `"$LOCALAPPDATA/Programs/glab/glab.exe"` from Bash or `"$env:LOCALAPPDATA\Programs\glab\glab.exe"` from PowerShell. Authenticated to `gitbud.epam.com` via keyring. Default target branch is `main`; a sub-task branch cut from a group branch targets that group branch instead.
 
 ## Lifecycle Intent Handling
 

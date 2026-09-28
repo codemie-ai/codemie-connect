@@ -21,10 +21,13 @@ $Manifest  = Join-Path $Root "assets\staging-manifest.json"
 
 function Fail([string]$msg) { Write-Error "[stage-runtime] $msg"; exit 1 }
 
-# ── 1. Node runtime ─────────────────────────────────────────────────────────
+# -- 1. Node runtime ---------------------------------------------------------
 if ($Force -and (Test-Path $NodeDir)) { Remove-Item $NodeDir -Recurse -Force }
 
-if (-not (Test-Path $NodeExe)) {
+# npm is staged from the same zip, so a checkout that already has node.exe but
+# no npm.cmd (every checkout made before EPMCDME-15180) must still fetch it -
+# hence the second condition, rather than leaving -Force as the only way out.
+if (-not (Test-Path $NodeExe) -or -not (Test-Path (Join-Path $NodeDir "npm.cmd"))) {
     Write-Host "==> Fetching Node v$($Cfg.nodeVersion) (win-x64)..." -ForegroundColor Cyan
     New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
 
@@ -48,13 +51,31 @@ if (-not (Test-Path $NodeExe)) {
     $src = Join-Path $tmp "node-v$($Cfg.nodeVersion)-win-x64\node.exe"
     if (-not (Test-Path $src)) { Fail "node.exe not found in extracted archive at $src" }
     Copy-Item $src $NodeExe -Force
-    Remove-Item $tmp -Recurse -Force
     Write-Host "    node.exe staged" -ForegroundColor Green
+
+    # npm ships as a sibling of node.exe in the Windows zip layout (node_modules\npm,
+    # not under lib\ as on macOS). EPMCDME-15180: no separate download.
+    $npmSrc = Join-Path $tmp "node-v$($Cfg.nodeVersion)-win-x64\node_modules\npm"
+    if (-not (Test-Path $npmSrc)) { Fail "npm tree not found in Node zip at node_modules\npm - zip layout may have changed" }
+    # Remove first: Copy-Item -Recurse copies *into* an existing destination
+    # directory, which would nest the tree as node_modules\npm\npm.
+    $npmDst = Join-Path $NodeDir "node_modules\npm"
+    if (Test-Path $npmDst) { Remove-Item $npmDst -Recurse -Force }
+    Copy-Item $npmSrc $npmDst -Recurse -Force
+
+    # npm shim: execs the staged node.exe against npm's own CLI entry.
+    @'
+@echo off
+"%~dp0node.exe" "%~dp0node_modules\npm\bin\npm-cli.js" %*
+'@ | Set-Content (Join-Path $NodeDir "npm.cmd") -Encoding ASCII
+    Write-Host "    npm.cmd staged" -ForegroundColor Green
+
+    Remove-Item $tmp -Recurse -Force
 } else {
     Write-Host "==> node.exe already staged (use -Force to refresh)" -ForegroundColor Yellow
 }
 
-# ── 2. CLI tree ─────────────────────────────────────────────────────────────
+# -- 2. CLI tree -------------------------------------------------------------
 $wantSpec = "$($Cfg.cliPackage)@$($Cfg.cliVersion)"
 $installedVersion = $null
 $cliPkgJson = Join-Path $CliModules "$($Cfg.cliPackage)\package.json"
@@ -86,7 +107,7 @@ if ($Force -or ($installedVersion -ne $Cfg.cliVersion)) {
     Write-Host "==> CLI tree already at $wantSpec (use -Force to refresh)" -ForegroundColor Yellow
 }
 
-# ── 3. Prune ────────────────────────────────────────────────────────────────
+# -- 3. Prune ----------------------------------------------------------------
 Write-Host "==> Pruning..." -ForegroundColor Cyan
 $before = (Get-ChildItem $CliModules -Recurse -File -ErrorAction SilentlyContinue).Count
 
@@ -107,25 +128,33 @@ if ($NoBaseline) {
     $bl = Join-Path $CliModules "@codemieai\codemie-opencode-windows-x64-baseline"
     if (Test-Path $bl) {
         Remove-Item $bl -Recurse -Force
-        Write-Warning "Removed codemie-opencode baseline build — codemie-opencode will not run on CPUs without modern SIMD."
+        Write-Warning "Removed codemie-opencode baseline build - codemie-opencode will not run on CPUs without modern SIMD."
     }
 }
 
 $after = (Get-ChildItem $CliModules -Recurse -File).Count
 Write-Host "    files: $before -> $after" -ForegroundColor DarkCyan
 
-# ── 4. Verify (see spec §6 — these are not negotiable) ──────────────────────
+# -- 4. Verify (see spec section 6 - these are not negotiable) ----------------------
 Write-Host "==> Verifying staged artifacts..." -ForegroundColor Cyan
 
 if (-not (Test-Path $NodeExe)) { Fail "missing: $NodeExe" }
 $nodeSize = (Get-Item $NodeExe).Length
-if ($nodeSize -lt 10MB) { Fail "node.exe is only $nodeSize bytes — expected > 10 MB (0-byte placeholder?)" }
+if ($nodeSize -lt 10MB) { Fail "node.exe is only $nodeSize bytes - expected > 10 MB (0-byte placeholder?)" }
 
 $reportedVersion = & $NodeExe --version 2>&1
 if ($LASTEXITCODE -ne 0) { Fail "node.exe --version failed: $reportedVersion" }
 if ($reportedVersion.Trim() -ne "v$($Cfg.nodeVersion)") {
     Fail "node.exe reports $reportedVersion, expected v$($Cfg.nodeVersion)"
 }
+
+if (-not (Test-Path (Join-Path $NodeDir "npm.cmd"))) { Fail "missing: $NodeDir\npm.cmd" }
+$npmCli = Join-Path $NodeDir "node_modules\npm\bin\npm-cli.js"
+if (-not (Test-Path $npmCli)) { Fail "missing: $npmCli" }
+if ((Get-Item $npmCli).Length -eq 0) { Fail "empty: $npmCli" }
+$npmVersion = & (Join-Path $NodeDir "npm.cmd") --version 2>&1
+if ($LASTEXITCODE -ne 0) { Fail "npm.cmd --version failed: $npmVersion" }
+Write-Host "    npm $(($npmVersion | Out-String).Trim())" -ForegroundColor DarkCyan
 
 $required = @(
     "$($Cfg.cliPackage)\bin\codemie.js",
@@ -144,7 +173,7 @@ if ($actualCli -ne $Cfg.cliVersion) {
     Fail "staged CLI is $actualCli but runtime.json pins $($Cfg.cliVersion)"
 }
 
-# ── 5. Manifest ─────────────────────────────────────────────────────────────
+# -- 5. Manifest -------------------------------------------------------------
 $files = Get-ChildItem $CliModules -Recurse -File
 @{
     nodeVersion = $Cfg.nodeVersion

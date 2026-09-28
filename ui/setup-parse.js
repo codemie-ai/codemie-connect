@@ -16,6 +16,7 @@ export const isQ = (l) => l.trimStart().startsWith('?');
 // Ordered: all named anchors first; credential catch-all last.
 const PROMPTS = [
   { id: 'gate',          kind: 'list',    anchor: 'What would you like to do?' },
+  { id: 'updateProfile', kind: 'list',    anchor: 'Select profile to update:' },
   { id: 'storage',       kind: 'list',    anchor: 'Where would you like to store this configuration?' },
   { id: 'provider',      kind: 'list',    anchor: 'Choose your LLM provider:' },
   { id: 'codemieUrl',    kind: 'input',   anchor: 'CodeMie organization URL:' },
@@ -55,6 +56,68 @@ export function detectPrompt(lines) {
   if (spec.kind !== 'list') return { kind: spec.kind, id: spec.id, message };
   const { options, selectedIndex } = parseOptions(lines, idx);
   return options.length ? { kind: 'list', id: spec.id, message, options, selectedIndex } : null;
+}
+
+// EPMCDME-14588. Failures the CLI puts on screen. They are not prompts and so
+// never come back from detectPrompt: the auth timeout is a warning the flow
+// carries on past (setup.js:60), and Ollama's precedes exit 1
+// (ollama.setup-steps.js:49-60). Nothing else in the CLI reports a failure
+// visibly -- its fatal handler logs to file only (logger.js:278 gates the
+// console on CODEMIE_DEBUG) -- so this is the whole set, measured 2026-09-15.
+//
+// Both screens are captured from the real CLI: test/fixtures/setup/authTimeout.json
+// and ollamaNotRunning.json.
+const FAILURES = [
+  {
+    id: 'authTimeout',
+    anchor: 'Could not check for mandatory integrations',
+    // The CLI's own reason is parenthesised on the anchor row. The sentence
+    // around it wraps at the terminal's width; the reason itself does not.
+    // Greedy to the LAST ')': the reason comes from a bare `error.message`
+    // (sso.auth.js's catch-all), so it can carry parentheses of its own, and
+    // stopping at the first ')' would hand back a fragment of it.
+    reason: (line) => line.match(/\((.*)\)/)?.[1] ?? null,
+    // The reason is only guaranteed to start on the anchor row. The sentence
+    // wraps at the terminal's width, and a longer error.message pushes the
+    // closing ')' onto the next row, where a single-row read finds nothing and
+    // falls back to the generic text. Rejoin the wrapped rows before matching.
+    wraps: true,
+    fallback: 'CodeMie could not be reached',
+  },
+  {
+    id: 'ollamaDown',
+    anchor: 'Ollama is not running',
+    reason: () => 'Ollama is not running',
+  },
+];
+
+/**
+ * Classify a visible CLI failure on the current screen.
+ *
+ * Returns `null` or `{ id, message, line }`, where `message` is the CLI's own
+ * words and `line` is the row the anchor was found on.
+ *
+ * The anchor stays on screen after the flow moves on, so this is edge-triggered
+ * by nature: act on an occurrence once, keyed on `line`, rather than on every
+ * chunk that still shows it.
+ */
+// A row that ends exactly at the terminal's width was wrapped, so the sentence
+// continues on the next row with no separator. Two rows is enough for every
+// reason the CLI can print at COLS=100.
+const WRAP_LOOKAHEAD = 2;
+
+function anchorText(lines, idx, wraps) {
+  if (!wraps) return lines[idx];
+  return lines.slice(idx, idx + 1 + WRAP_LOOKAHEAD).join('');
+}
+
+export function detectFailure(lines) {
+  for (const f of FAILURES) {
+    const line = lines.findIndex((l) => l.includes(f.anchor));
+    if (line === -1) continue;
+    return { id: f.id, message: f.reason(anchorText(lines, line, f.wraps)) ?? f.fallback, line };
+  }
+  return null;
 }
 
 function parseOptions(lines, idx) {

@@ -20,15 +20,22 @@ const PATH_SEP: char = ';';
 const PATH_SEP: char = ':';
 
 /// Candidate dirs where git/node/npm live, plus common user npm prefixes.
+/// Includes the npm-agents bin dir (matching the Windows branch below) so
+/// `run_fresh_env` can find a just-installed agent on macOS too.
 #[cfg(not(windows))]
 pub fn candidate_dirs() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    vec![
+    let mut dirs = vec![
         "/opt/homebrew/bin".to_string(),
         "/usr/local/bin".to_string(),
         "/usr/bin".to_string(),
         format!("{home}/.npm-global/bin"),
-    ]
+    ];
+    let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+    if !agents_bin.is_empty() {
+        dirs.push(agents_bin);
+    }
+    dirs
 }
 
 #[cfg(windows)]
@@ -39,7 +46,30 @@ pub fn candidate_dirs() -> Vec<String> {
         r"C:\Program Files\nodejs".to_string(),
         format!(r"{profile}\AppData\Roaming\npm"),
         format!(r"{profile}\AppData\Local\CodeMie\npm-prefix"),
+        format!(r"{profile}\.codemie\agents"),
     ]
+}
+
+/// Always include the npm-agents bin dir in the entries persisted to the
+/// zprofile PATH block, so npm-installed agents run from a fresh terminal
+/// without a separate persist call. Idempotent: doesn't duplicate an entry
+/// the caller already included.
+pub fn build_persist_entries(entries: Vec<String>) -> Vec<String> {
+    build_persist_entries_with(&crate::commands::npm_env::npm_env().bin_dir, entries)
+}
+
+/// Pure: the body of `build_persist_entries` with the agents bin dir supplied,
+/// so the no-home case is testable without mutating the process environment.
+/// An empty `agents_bin` is npm_env's "no override" value, and an empty PATH
+/// entry means the current directory on both platforms, so it is never added.
+pub(crate) fn build_persist_entries_with(
+    agents_bin: &str,
+    mut entries: Vec<String>,
+) -> Vec<String> {
+    if !agents_bin.is_empty() && !entries.iter().any(|e| e == agents_bin) {
+        entries.push(agents_bin.to_string());
+    }
+    entries
 }
 
 /// Dedupe a PATH string, preserving first-occurrence order and dropping empties.
@@ -187,7 +217,28 @@ fn persist(entries: &[String]) -> std::io::Result<String> {
         if current.is_empty() { "" } else { ";" },
         missing.join(";")
     );
-    env_key.set_value("PATH", &new_val)?;
+    // Keep the value's type: the user PATH is usually REG_EXPAND_SZ, and a plain
+    // String write stores REG_SZ, after which %USERPROFILE% entries stop expanding.
+    let expand = env_key
+        .get_raw_value("PATH")
+        .map(|v| matches!(v.vtype, REG_EXPAND_SZ))
+        .unwrap_or(false);
+    if expand {
+        let bytes = new_val
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        env_key.set_raw_value(
+            "PATH",
+            &winreg::RegValue {
+                bytes,
+                vtype: REG_EXPAND_SZ,
+            },
+        )?;
+    } else {
+        env_key.set_value("PATH", &new_val)?;
+    }
     broadcast_env_change();
     Ok(r"HKCU\Environment".to_string())
 }
@@ -231,7 +282,7 @@ fn broadcast_env_change() {
 
 #[tauri::command]
 pub fn persist_to_zprofile(entries: Vec<String>) -> CmdResult<String> {
-    persist(&entries).map_err(Into::into)
+    persist(&build_persist_entries(entries)).map_err(Into::into)
 }
 
 /// Remember freshly-installed tool dirs for subsequent run_fresh_env calls.
@@ -300,6 +351,7 @@ pub(crate) enum PersistOutcome {
     Persisted,
     SkippedDevBuild,
     SkippedLocation,
+    NothingToPersist,
     Failed(String),
 }
 
@@ -332,9 +384,48 @@ pub(crate) fn maybe_persist(
     if !is_install_location(dir) {
         return PersistOutcome::SkippedLocation;
     }
-    match persist_fn(&[dir.to_string_lossy().into_owned()]) {
+    // Through build_persist_entries so the npm-agents bin dir rides along with
+    // the shim dir. This is the only persist that runs in the normal flow —
+    // persist_to_zprofile is reached from the legacy install wizard alone — and
+    // without it an agent installed from the app would not run in a terminal.
+    match persist_fn(&build_persist_entries(vec![dir
+        .to_string_lossy()
+        .into_owned()]))
+    {
         Ok(_) => PersistOutcome::Persisted,
         Err(e) => PersistOutcome::Failed(e.to_string()),
+    }
+}
+
+/// When the user's own CodeMie CLI takes precedence, the bundled shim is never
+/// injected, so the persist above never runs. The tools the app installs still
+/// land in the npm-agents bin dir, and without this a terminal opened later
+/// cannot find them (seen on Windows: `where claude-code-acp` found nothing).
+/// Only that dir is persisted; the bundled shim stays off PATH.
+pub(crate) fn maybe_persist_agents_bin(
+    agents_bin: &str,
+    dev_build: bool,
+    persist_fn: impl FnOnce(&[String]) -> std::io::Result<String>,
+) -> PersistOutcome {
+    if dev_build {
+        return PersistOutcome::SkippedDevBuild;
+    }
+    let entries = build_persist_entries_with(agents_bin, Vec::new());
+    if entries.is_empty() {
+        return PersistOutcome::NothingToPersist;
+    }
+    match persist_fn(&entries) {
+        Ok(_) => PersistOutcome::Persisted,
+        Err(e) => PersistOutcome::Failed(e.to_string()),
+    }
+}
+
+pub fn persist_agents_bin() {
+    let bin = crate::commands::npm_env::npm_env().bin_dir;
+    if let PersistOutcome::Failed(e) =
+        maybe_persist_agents_bin(&bin, cfg!(debug_assertions), persist)
+    {
+        log::warn!("[persist_agents_bin] PATH persist failed: {e}");
     }
 }
 
@@ -387,6 +478,7 @@ pub fn inject_bundled_bin_path(app: &tauri::AppHandle) -> Result<(), String> {
         PersistOutcome::SkippedLocation => log::warn!(
             "[inject_bundled_bin_path] not persisting {dir_str}: the app runs from a DMG mount or an App Translocation path; move it to /Applications"
         ),
+        PersistOutcome::NothingToPersist => {}
         PersistOutcome::Failed(e) => {
             log::warn!("[inject_bundled_bin_path] PATH persist failed: {e}")
         }
@@ -499,17 +591,56 @@ mod tests_persist_decision {
         );
     }
 
+    // The agents bin dir rides along here because this is the only persist the
+    // normal flow reaches: persist_to_zprofile is called from the legacy install
+    // wizard's rememberDirs alone (ui/handlers.js), which a user who never runs
+    // that wizard never triggers. Without it, an agent the app installed would
+    // not be on PATH in the user's own terminal.
     #[test]
-    fn release_build_persists_exactly_the_bundle_dir() {
+    fn release_build_persists_the_bundle_dir_and_the_agents_bin_dir() {
         let calls = RefCell::new(Vec::new());
         let dir = install_dir();
         let out = maybe_persist(&dir, false, recorder(&calls));
         assert_eq!(out, PersistOutcome::Persisted);
         assert_eq!(
             *calls.borrow(),
-            vec![vec![dir.to_string_lossy().into_owned()]],
-            "persist must receive the bundle dir and nothing else"
+            vec![build_persist_entries(vec![dir
+                .to_string_lossy()
+                .into_owned()])],
+            "persist must receive the bundle dir plus the npm-agents bin dir"
         );
+        assert!(
+            calls.borrow()[0].contains(&crate::commands::npm_env::npm_env().bin_dir),
+            "the agents bin dir must be among the persisted entries"
+        );
+    }
+
+    // With the user's own CLI in use the bundle dir is never persisted, but
+    // the tools the app installs still need to be on PATH in a new terminal
+    // (Windows: `where claude-code-acp` found nothing).
+    #[test]
+    fn with_an_existing_cli_only_the_agents_bin_dir_is_persisted() {
+        let calls = RefCell::new(Vec::new());
+        let out = maybe_persist_agents_bin("/home/u/.codemie/agents/bin", false, recorder(&calls));
+        assert_eq!(out, PersistOutcome::Persisted);
+        assert_eq!(
+            *calls.borrow(),
+            vec![vec!["/home/u/.codemie/agents/bin".to_string()]]
+        );
+    }
+
+    #[test]
+    fn agents_bin_persist_skips_dev_builds_and_an_unresolved_dir() {
+        let calls = RefCell::new(Vec::new());
+        assert_eq!(
+            maybe_persist_agents_bin("/home/u/.codemie/agents/bin", true, recorder(&calls)),
+            PersistOutcome::SkippedDevBuild
+        );
+        assert_eq!(
+            maybe_persist_agents_bin("", false, recorder(&calls)),
+            PersistOutcome::NothingToPersist
+        );
+        assert!(calls.borrow().is_empty());
     }
 
     #[test]
@@ -580,6 +711,40 @@ mod tests_macos_probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_persist_entries_appends_agents_bin_dir_once() {
+        let out = build_persist_entries(vec!["/opt/homebrew/bin".to_string()]);
+        let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+        assert_eq!(out, vec!["/opt/homebrew/bin".to_string(), agents_bin]);
+    }
+
+    #[test]
+    fn build_persist_entries_adds_nothing_when_there_is_no_home_dir() {
+        let out = build_persist_entries_with("", vec!["/opt/homebrew/bin".to_string()]);
+        assert_eq!(out, vec!["/opt/homebrew/bin".to_string()]);
+        assert!(
+            !out.iter().any(|e| e.is_empty()),
+            "an empty PATH entry means the current directory; it must never be persisted"
+        );
+    }
+
+    #[test]
+    fn build_persist_entries_does_not_duplicate_if_caller_already_included_it() {
+        let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+        let out = build_persist_entries(vec![agents_bin.clone()]);
+        assert_eq!(out, vec![agents_bin]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn candidate_dirs_includes_the_agents_bin_dir() {
+        let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+        assert!(
+            candidate_dirs().contains(&agents_bin),
+            "candidate_dirs must include the agents bin dir so run_fresh_env can find a just-installed agent"
+        );
+    }
 
     #[cfg(not(windows))]
     #[test]

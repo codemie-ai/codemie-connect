@@ -1,0 +1,85 @@
+{
+  "decision": "request-changes",
+  "rationale": "6 blocking findings (5 edge-case, 1 standards) survived triage; 2 edge-case candidates dismissed as unrealistic/latent-only (pathman.rs trailing-slash dedupe, stage-runtime.ps1 ASCII encoding). No spec/story artifact was passed so acceptance did not run (genuine no-spec, not a lens failure) — business_review is empty and confidence is capped at low per contract. The commit-format standard (git-workflow.md) failed for every commit in range; standards coverage_gap is false (audit completed cleanly, no gap).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires '<type>: <short description>'; all 9 subjects in range use 'EPMCDME-15180 : <subject>' instead" },
+    { "kind": "code-quality", "status": "na", "notes": "no code-quality.md guide in repo and no ArtifactRef passed" },
+    { "kind": "security", "status": "na", "notes": "no security-patterns.md guide in repo; reviewed changed files anyway, no concrete issue found (HTTPS + pinned sha256 download, shared npm-env helper, no injection/credential-logging pattern)" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "build-installer.sh",
+      "line": 65,
+      "title": "Build verification never checks npm's own CLI entry file",
+      "problem": "build-installer.sh (lines 65-68) and build-installer.ps1 (the equivalent npm.cmd block) check only that the npm shim itself exists, is executable and non-empty. Neither checks that lib/node_modules/npm/bin/npm-cli.js (macOS) or node_modules\\npm\\bin\\npm-cli.js (Windows) — the file the shim execs into — exists and is non-empty, even though stage-runtime.sh/.ps1 already perform that exact check during a normal staging run.",
+      "impact": "With --skip-stage / -SkipStage against a stale or partially-copied assets dir (npm-cli.js missing or truncated but the shim file itself intact), build-installer succeeds and bundles a shim that fails at runtime for every npm invocation, silently defeating the ticket's own acceptance criterion that a broken staged npm must fail the build loudly with a named path.",
+      "recommendation": "Add the same '[ -s \".../npm/bin/npm-cli.js\" ] || fail ...' check (and its .ps1 Test-Path/length equivalent) to build-installer.sh/.ps1's own verification step, not only to stage-runtime."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit subjects across the review range",
+      "title": "Commit subjects violate the documented commit-message format",
+      "problem": "git-workflow.md's Commit Message Format section requires Conventional-Commits-style '<type>: <short description>' with no ticket prefix. Every commit in this range instead uses 'EPMCDME-15180 : <subject>' (e.g. 'EPMCDME-15180 : stage npm from the pinned Node tarball on macOS').",
+      "impact": "The documented standard is broken across the entire commit range, not an isolated slip, which is what a squash-merge history check is meant to catch.",
+      "recommendation": "Rewrite the subjects to '<type>: <short description>' per the documented format, or update git-workflow.md if the ticket-prefixed style is the actually-intended convention (source: standards)."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/npm_env.rs",
+      "line": 22,
+      "title": "Empty HOME yields a root-relative npm prefix",
+      "problem": "npm_env() (unix branch, line 22) reads HOME via `std::env::var(\"HOME\").unwrap_or_default()` with no check for unset/empty. When HOME is unset or empty, prefix becomes \"/.codemie/agents\" and bin_dir becomes \"/.codemie/agents/bin\" — both are silently wrong, not caught anywhere downstream.",
+      "impact": "Every spawn path (shell_cmd, spawn_pty) that calls npm_env() in that environment sets npm_config_prefix and PATH to a root-relative location; npm installs there fail or, worse on a machine where that path is writable, install agent packages outside any user-scoped directory.",
+      "recommendation": "Fail fast (return a Result/CmdResult error) when HOME/USERPROFILE is unset or empty, instead of silently defaulting to an empty string."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/npm_env.rs",
+      "line": 29,
+      "title": "Windows npm_env path construction has no test coverage",
+      "problem": "The #[cfg(windows)] branch of npm_env()/prefixed_path (bin_dir has no trailing \\bin, unlike unix) is asserted correct only by the file's own comment; every unit test in this module is #[cfg(not(windows))]. There is no #[cfg(windows)] test verifying bin_dir or PATH_SEP.",
+      "impact": "The Windows PATH/npm_config_prefix construction — a core piece of this ticket's cross-platform scope (npm.cmd, tauri.windows.conf.json, pty.rs's powershell branch) — ships unverified by any automated test on that platform.",
+      "recommendation": "Add a #[cfg(windows)] test mirroring the unix ones, asserting npm_env().bin_dir == prefix (no \\bin suffix) and PATH_SEP == ';'."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/npm_env.rs",
+      "line": 49,
+      "title": "New tests mutate HOME/USERPROFILE without thread synchronization",
+      "problem": "This change introduces std::env::set_var(\"HOME\", ...) / set_var(\"USERPROFILE\", ...) calls in test modules across npm_env.rs (lines 49, 58), runner.rs (line 226) and pty.rs (line 286), none of them existed on main before this branch. cargo test runs multi-threaded by default and none of these tests use serial_test or an equivalent mutex; no such dependency exists in Cargo.toml.",
+      "impact": "Concurrent mutation of process-global HOME/USERPROFILE across test threads can race with any other test reading the same var, producing flaky/nondeterministic failures — including in unrelated tests reading HOME (e.g. resolve_shell_path's test) that this change did not touch.",
+      "recommendation": "Add the serial_test crate (or a shared std::sync::Mutex guard) around every test that mutates HOME/USERPROFILE, across all three files."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/pathman.rs",
+      "line": 24,
+      "title": "macOS candidate_dirs() omits the agents bin dir, unlike Windows",
+      "problem": "candidate_dirs() (unix branch, lines 24-32) lists homebrew/usr/local/usr/bin and ~/.npm-global/bin but not ~/.codemie/agents/bin, while the #[cfg(windows)] branch (lines 34-44) explicitly includes '{profile}\\.codemie\\agents'. fresh_env_path() (used by runner.rs's run_fresh_env, the Tauri command exposed to the frontend as runFreshEnv) builds its PATH from candidate_dirs() plus remembered dirs — the agents bin dir is not in either on macOS.",
+      "impact": "Any future caller of run_fresh_env right after an agent install (the command exists specifically for that purpose — see its doc comment) will not find the newly npm-installed agent binary on macOS, while the identical scenario works on Windows. No current UI caller invokes runFreshEnv yet, so this has not manifested in this app's own screens, but it is a live, exported Tauri command with an asymmetric, reachability-unconfirmed defect between platforms.",
+      "recommendation": "Add ~/.codemie/agents/bin to the (not(windows)) candidate_dirs() vec, matching the Windows branch, ideally by reusing crate::commands::npm_env::npm_env().bin_dir the way build_persist_entries already does."
+    }
+  ]
+}

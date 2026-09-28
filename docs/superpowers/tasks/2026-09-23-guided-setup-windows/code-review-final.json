@@ -1,0 +1,49 @@
+{
+  "decision": "request-changes",
+  "rationale": "standards audit found the 4 EPMCDME-14982 commits use 'EPMCDME-14982 : <desc>' instead of git-workflow.md's '<type>: <desc>' format (CR-001, blocking); the new Windows activate-confirm test asserts only writes.slice(-1) instead of the full writes array like its sibling test, weakening the new regression guard (CR-002, patch/major). The acceptance lens's 'partial' on 'profile ends up active in config file' is reclassified here to pending-stage-7: the write of y\\r is unit-tested and passing, and the remaining piece is external codemie-cli/filesystem behavior identical in kind to the already-pending-stage-7 manual Windows walkthrough, not something any code change in this diff can resolve. 3 edge-case findings dismissed as noise: two ask for additional Windows fixtures the spec never required (and which would need a real, not fabricated, PTY recording), one flags a hypothetical future pad(30) overflow with no current failing fixture. 0 deferred.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "story-ac", "item": "Same decisions, same order, as macOS", "status": "pass", "notes": "no driver/parser changes in the diff; Windows reuses macOS-derived logic unmodified" },
+    { "kind": "story-ac", "item": "A rejected answer is re-asked once and the correction is accepted", "status": "pass", "notes": "setup-driver.test.mjs:903-912, windows-profile-name-correction.json" },
+    { "kind": "story-ac", "item": "Switch to profile ... as active? confirm answered and profile ends up active in config file", "status": "pending-stage-7", "notes": "y\\r write is unit-tested (pass); config-file activation is real-CLI/filesystem behavior, verifiable only by the manual Windows walkthrough -- reclassified from the lens's 'partial', no code-level fix possible in this repo" },
+    { "kind": "story-ac", "item": "No question is ever shown that the CLI isn't actually waiting on", "status": "pass", "notes": "setup-driver.test.mjs:906-909,917-920" },
+    { "kind": "story-ac", "item": "Windows recordings added as tests in the shape of existing 'real stream' tests", "status": "pass", "notes": "two 'real stream (windows): ...' tests added, 903-923" },
+    { "kind": "story-ac", "item": "macOS behavior, recorded frames and suite untouched", "status": "pass", "notes": "diff only adds two fixture files and appends two tests" },
+    { "kind": "story-ac", "item": "Walked end-to-end on a real Windows machine against the real CLI", "status": "pending-stage-7", "notes": "manual DoD verification, not observable from the diff" },
+    { "kind": "story-ac", "item": "All four gates pass after rebuild", "status": "pending-stage-7", "notes": "execution/build evidence, not observable from the frozen diff" },
+    { "kind": "spec", "item": "Fix driver/parser only where the recording proves a divergence", "status": "pass", "notes": "zero changes to driver/parse/view files, matches the spec's permitted no-fix outcome" },
+    { "kind": "spec", "item": "Non-goals: handlers.js, steps-windows.yaml, src-tauri, second MR untouched", "status": "pass", "notes": "diff touches only two fixtures and the test file" },
+    { "kind": "spec", "item": "Strip all temporary phase-1 debug logging before commit", "status": "na", "notes": "no debug logging present; setup-driver.js has no changes in this diff" }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "fail", "notes": "all 4 commits use 'EPMCDME-14982 : <desc>' instead of git-workflow.md's '<type>: <desc>' (no ticket prefix)" },
+    { "kind": "code-quality", "status": "na", "notes": "no code-quality guide found and no ArtifactRef passed" },
+    { "kind": "security", "status": "na", "notes": "no security guide found; reviewed the two fixture JSON files and the test additions, no credentials/secrets/unsafe input handling present" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit history (EPMCDME-14982 range)",
+      "title": "Commit subjects violate conventional-commit format",
+      "problem": "All 4 commits in this range use 'EPMCDME-14982 : <description>' instead of the required '<type>: <short description>' (feat|fix|docs|test|chore|refactor, no ticket prefix).",
+      "impact": "Breaks the documented commit-format standard this repo squash-merges on; the ticket-prefix-with-space-colon pattern is not among the guide's listed exceptions.",
+      "recommendation": "Reword the squash-merge subject to '<type>: <short description>', e.g. 'test: add Windows real-stream tests for profile-name correction and activate confirm', dropping the ticket-number prefix."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/test/setup-driver.test.mjs",
+      "line": 921,
+      "title": "Activate-confirm test checks only the last write",
+      "problem": "The 'real stream (windows): the activate confirm is auto-answered...' test asserts writes.slice(-1) deepEquals ['y\\r'] instead of the full writes array, unlike the sibling profile-name-correction test (line 910) which deepEquals the whole sequence.",
+      "impact": "An extra or duplicate write occurring before the final y\\r (e.g. a double-answered confirm) would pass this test undetected, weakening the regression guard this new Windows coverage exists to add.",
+      "recommendation": "Assert the full writes array: assert.deepEqual(writes, ['default\\r', ans('epmcdme-14982-capture-2784'), 'y\\r'])."
+    }
+  ]
+}

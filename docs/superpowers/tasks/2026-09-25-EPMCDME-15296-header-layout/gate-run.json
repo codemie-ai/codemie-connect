@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "branch": "fix/EPMCDME-15296-header-layout",
+  "head": "b8c3e53df81f2e5a9af6c680434c7c9a15686d35",
+  "runner": "custom",
+  "started_at": "2026-09-25T13:00:00Z",
+  "completed_at": "2026-09-25T13:01:15Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 166,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3670,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 11577,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "451/451 node:test assertions passed"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 26000,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "106 + 2 tests passed across the two test binaries"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "./build-installer.sh",
+      "exit_code": null,
+      "notes": "Guide skip condition: logic-only UI change (ui/styles.css and its test) verified by unit tests; full installer build not run to save ~2-5 min. Not proven by a real build/CI run."
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": null,
+      "exit_code": null,
+      "notes": "Diff touches ui/styles.css (matches ui_globs) but .ai-run/guides/quality-gates.md defines no UI test gate; browser verification is a separate caller decision."
+    }
+  ],
+  "failures": {}
+}

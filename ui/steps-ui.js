@@ -47,6 +47,9 @@ export function createStepsUi() {
     if (!rec) return;
     const meta = STATUS_META[status] || STATUS_META.PENDING;
     rec.el.classList.toggle('active', status === 'ACTIVE');
+    // Exposed so a view can style a row by its state -- guided setup draws the
+    // completed tick as a badge, the way the wireframe does, and only that one.
+    rec.el.dataset.status = status;
     if (status !== 'ACTIVE') stopSpinner(id);
     if (!spinners.has(id)) {
       rec.icon.textContent = meta.icon;

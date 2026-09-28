@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-14588-guided-setup-failure-states",
+  "head": "1332a3abb73848e30f01e97b4d3835cbaecef12c",
+  "runner": "custom",
+  "started_at": "2026-09-15T14:39:25Z",
+  "completed_at": "2026-09-15T14:52:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1202,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4009,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1247,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "Flaky on this checkout: one earlier run of the identical command failed at ui/test/setup-view.test.mjs:1767 ('a second, unrelated failure still opens its own notice after the first was dismissed', noticeCalls.length 1 !== 2 expected); 5 subsequent runs (including the recorded one) all passed 227/227. Timing-sensitive test, not a self-skip and not clear spec drift, but worth a look before relying on green CI."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3410,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "./build-installer.sh",
+      "exit_code": null,
+      "notes": "Guide 'Skip if: logic-only change verified by tests' — diff is UI-only (ui/*.js) and covered by the unit-js gate; full installer build not run to save time."
+    }
+  ],
+  "failures": {}
+}

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Build a new frontend module rendering codemie setup's dynamic list/input/confirm prompt sequence in setup-view, on top of the landed setup-driver.js, verified via the config-reader command.",
+  "generated": "2026-09-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New setup-view module coordinates its own createStepsUi() instance, consumes setup-driver.js/models.js/runner-bridge.js without modifying them, needs new CSS/markup beyond .step-row for radio-list and confirm controls, and must be wired into renderer.js as the first real (non-devtools) caller of startSetup — several components across the frontend-brain layer." },
+    { "dimension": "requirements_clarity", "reason": "Happy-path scope and driver/config-reader contracts are frozen and well documented, but several concrete design questions are unresolved in any artifact: renderSteps (full rebuild) vs insertSubStep (incremental) for the dynamic per-prompt row list, the exact visual for the installClaude yes-default control, whether the wireframe's literal 6-step model or a relaxed 'defaults pre-selected' variant applies, and where showView('setup') is actually triggered from (no sidebar/home entry exists yet)." },
+    { "dimension": "technical_risk", "reason": "No existing code in the repo demonstrates a live multi-kind (list/input/confirm) prompt-answer UI loop — the closest analog (showApproval/stampApproval) serves a different purpose. This ticket is the first production integration of setup-driver.js's startSetup contract, previously exercised only by its own unit tests and a CODEMIE_DEV console hook. No security/performance/migration stakes and rollback is trivial (pure frontend revert), keeping this at L rather than XL." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utilities as the first production caller — setup-driver.js, steps-ui.js (via createStepsUi()), models.js, and runner-bridge.js's codemieConfig.read() are all consumed by a module establishing a brand-new UI convention none of them were previously exercised against outside unit tests/devtools."
+  ],
+  "split_recommendation": null
+}

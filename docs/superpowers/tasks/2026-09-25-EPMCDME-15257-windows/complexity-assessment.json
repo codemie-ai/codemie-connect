@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "task": "Wire npm_config_prefix/PATH env into spawn_external_ps (matching its sibling spawn functions) and improve the Windows install-wizard's failure message so it is actionable.",
+  "generated": "2026-09-25T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two components across two layers: the Rust spawn_external_ps env fix (src-tauri/src/commands/pty.rs) plus a UI-layer failure-message improvement (ui/handlers.js or config/steps-windows.yaml wiring) — pattern for the env fix is copy-adapt from pty_env_pairs_for/shell_cmd_for, but the message change is a separate, less-precedented touch." },
+    { "dimension": "requirements_clarity", "reason": "Core fix (env parity via npm_env_for) is well specified by technical-analysis.md, but the task-context naming mismatch (ticket names ui/setup-view.js; actual affected flow is the legacy install-Wizard in ui/handlers.js/config/steps-windows.yaml) and the exact wording/placement of the 'actionable' failure message are open decisions." },
+    { "dimension": "technical_risk", "reason": "Exact pattern exists twice in-repo (pty_env_pairs_for, shell_cmd_for) to copy and adapt for spawn_external_ps, trivial rollback — kept just above XS because the existing Windows test for spawn_external_ps only checks exit code (no env assertion), so verification requires either a new Rust test or a real Windows run per acceptance criterion 5." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
