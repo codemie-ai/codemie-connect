@@ -16,7 +16,11 @@ pub struct ConnectorStatus {
 }
 
 /// Claude Desktop is "connected" when its configLibrary's currently-applied
-/// entry (per `_meta.json`'s `appliedId`) still exists on disk.
+/// entry (per `_meta.json`'s `appliedId`) exists on disk and still carries
+/// gateway settings. `disconnect` doesn't delete the file or clear
+/// `appliedId` (so a later `connect` can reuse the same config id) — it
+/// strips the managed keys, leaving `{}` when nothing else was in the file.
+/// Mirrors `codex_desktop_connected`'s content check below.
 #[cfg(target_os = "macos")]
 fn claude_desktop_connected(base_dir: &Path) -> bool {
     let meta_path = base_dir.join("configLibrary/_meta.json");
@@ -29,10 +33,20 @@ fn claude_desktop_connected(base_dir: &Path) -> bool {
     let Some(applied_id) = json.get("appliedId").and_then(|v| v.as_str()) else {
         return false;
     };
-    base_dir
+    let applied_path = base_dir
         .join("configLibrary")
-        .join(format!("{applied_id}.json"))
-        .exists()
+        .join(format!("{applied_id}.json"));
+    std::fs::read_to_string(&applied_path)
+        .map(
+            |s| match serde_json::from_str::<serde_json::Value>(s.trim()) {
+                // Only an empty object counts as "stripped" — anything else
+                // (including unparseable content, since disconnect always leaves
+                // valid JSON behind) is treated as still carrying gateway settings.
+                Ok(serde_json::Value::Object(map)) => !map.is_empty(),
+                _ => !s.trim().is_empty(),
+            },
+        )
+        .unwrap_or(false)
 }
 
 /// Codex Desktop is "connected" when CodeMie's proxy has written a non-empty
@@ -48,8 +62,17 @@ fn codex_desktop_connected(state_file: &Path) -> bool {
 
 /// VS Code Copilot Chat (BYOK) is "connected" when its chat model provider
 /// list contains a CodeMie-managed custom endpoint entry.
+///
+/// Parsed as JSONC (comments/trailing commas), not strict JSON: both this
+/// file and `settings.json` below are VS Code user config, which VS Code
+/// itself writes/accepts in JSONC form — a strict parse silently rejects a
+/// file a user hand-edited with a trailing comma, permanently reporting
+/// "not connected" even right after a real connect.
 fn vscode_copilot_connected(raw: &str) -> bool {
-    let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(raw) else {
+    let Ok(arr) = jsonc_parser::parse_to_serde_value::<Vec<serde_json::Value>>(
+        raw,
+        &jsonc_parser::ParseOptions::default(),
+    ) else {
         return false;
     };
     arr.iter().any(|p| {
@@ -59,9 +82,13 @@ fn vscode_copilot_connected(raw: &str) -> bool {
 }
 
 /// VS Code Claude Code extension is "connected" when its settings define both
-/// the CodeMie-managed base URL and auth token env vars.
+/// the CodeMie-managed base URL and auth token env vars. JSONC, see
+/// `vscode_copilot_connected` doc comment above for why.
 fn vscode_claude_code_connected(raw: &str) -> bool {
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
+    let Ok(json) = jsonc_parser::parse_to_serde_value::<serde_json::Value>(
+        raw,
+        &jsonc_parser::ParseOptions::default(),
+    ) else {
         return false;
     };
     let Some(vars) = json
@@ -184,8 +211,38 @@ mod tests {
             r#"{"appliedId":"abc"}"#,
         )
         .unwrap();
-        fs::write(tmp.join("configLibrary/abc.json"), "{}").unwrap();
+        fs::write(
+            tmp.join("configLibrary/abc.json"),
+            r#"{"inferenceProvider":"gateway"}"#,
+        )
+        .unwrap();
         assert!(claude_desktop_connected(&tmp));
+    }
+
+    #[test]
+    fn claude_desktop_not_connected_when_applied_file_emptied_by_disconnect() {
+        let tmp = tempdir_for_test("claude-disconnected");
+        fs::create_dir_all(tmp.join("configLibrary")).unwrap();
+        fs::write(
+            tmp.join("configLibrary/_meta.json"),
+            r#"{"appliedId":"abc"}"#,
+        )
+        .unwrap();
+        fs::write(tmp.join("configLibrary/abc.json"), "{}").unwrap();
+        assert!(!claude_desktop_connected(&tmp));
+    }
+
+    #[test]
+    fn claude_desktop_not_connected_when_applied_file_is_whitespace_variant_empty_object() {
+        let tmp = tempdir_for_test("claude-disconnected-whitespace");
+        fs::create_dir_all(tmp.join("configLibrary")).unwrap();
+        fs::write(
+            tmp.join("configLibrary/_meta.json"),
+            r#"{"appliedId":"abc"}"#,
+        )
+        .unwrap();
+        fs::write(tmp.join("configLibrary/abc.json"), "{ }").unwrap();
+        assert!(!claude_desktop_connected(&tmp));
     }
 
     #[test]
@@ -262,6 +319,30 @@ mod tests {
         let raw =
             r#"{"claudeCode.environmentVariables":[{"name":"ANTHROPIC_BASE_URL","value":"x"}]}"#;
         assert!(!vscode_claude_code_connected(raw));
+    }
+
+    #[test]
+    fn vscode_copilot_connected_with_trailing_comma_jsonc() {
+        // Real VS Code settings/config files are JSONC: users' editors (and VS Code
+        // itself) commonly leave a trailing comma. A strict serde_json parse would
+        // reject this and silently report "not connected" forever.
+        let raw = r#"[{"vendor":"customendpoint","name":"CodeMie"},]"#;
+        assert!(vscode_copilot_connected(raw));
+    }
+
+    #[test]
+    fn vscode_claude_code_connected_with_trailing_comma_and_url_value() {
+        // Mirrors a real captured settings.json: trailing comma after the array,
+        // and a gateway URL value containing `//` — must not be mistaken for a
+        // JSONC line comment by whatever parses this.
+        let raw = r#"{
+            "editor.fontSize": 14,
+            "claudeCode.environmentVariables": [
+                {"name":"ANTHROPIC_BASE_URL","value":"http://127.0.0.1:4001"},
+                {"name":"ANTHROPIC_AUTH_TOKEN","value":"codemie-proxy"}
+            ],
+        }"#;
+        assert!(vscode_claude_code_connected(raw));
     }
 
     #[test]
