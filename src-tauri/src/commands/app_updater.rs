@@ -140,6 +140,64 @@ fn get_base_url_macos() -> String {
     })
 }
 
+#[derive(serde::Deserialize, Clone)]
+pub(crate) struct PlatformEntry {
+    pub(crate) url: String,
+}
+
+#[derive(serde::Deserialize, Clone)]
+pub(crate) struct Manifest {
+    pub(crate) version: String,
+    platforms: std::collections::HashMap<String, PlatformEntry>,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn platform_key() -> &'static str {
+    "windows-x86_64"
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn platform_key() -> &'static str {
+    "darwin-aarch64"
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+fn platform_key() -> &'static str {
+    "darwin-x86_64"
+}
+
+fn get_manifest_url() -> String {
+    format!("{}/manifest.json", get_base_url())
+}
+
+fn get_platform_entry(manifest: &Manifest) -> CmdResult<PlatformEntry> {
+    manifest.platforms.get(platform_key()).cloned().ok_or_else(|| {
+        InstallerError::Other(format!(
+            "No installer available for platform '{}'",
+            platform_key()
+        ))
+    })
+}
+
+async fn fetch_manifest(client: &Client) -> CmdResult<Manifest> {
+    let response = client
+        .get(&get_manifest_url())
+        .send()
+        .await
+        .map_err(|e| InstallerError::Other(format!("Failed to fetch manifest: {e}")))?;
+    let manifest: Manifest = response
+        .json()
+        .await
+        .map_err(|e| InstallerError::Other(format!("Failed to parse manifest: {e}")))?;
+    if !is_valid_version(&manifest.version) {
+        return Err(InstallerError::Other(format!(
+            "Invalid version in manifest: {}",
+            manifest.version
+        )));
+    }
+    Ok(manifest)
+}
+
 /// Get the version.txt URL
 fn get_version_url() -> String {
     format!("{}/version.txt", get_base_url())
@@ -435,6 +493,24 @@ mod tests {
     fn error_serialises_to_string() {
         let e = InstallerError::Other("update failed".to_string());
         assert_eq!(e.to_string(), "update failed");
+    }
+
+    #[test]
+    fn platform_entry_found_for_current_platform() {
+        let json = format!(
+            r#"{{"version":"9.9.9","platforms":{{"{}":{{"url":"https://example.com/x"}}}}}}"#,
+            platform_key()
+        );
+        let manifest: Manifest = serde_json::from_str(&json).unwrap();
+        let entry = get_platform_entry(&manifest).unwrap();
+        assert_eq!(entry.url, "https://example.com/x");
+    }
+
+    #[test]
+    fn platform_entry_missing_returns_error() {
+        let manifest: Manifest =
+            serde_json::from_str(r#"{"version":"9.9.9","platforms":{}}"#).unwrap();
+        assert!(get_platform_entry(&manifest).is_err());
     }
 
     #[cfg(target_os = "macos")]
