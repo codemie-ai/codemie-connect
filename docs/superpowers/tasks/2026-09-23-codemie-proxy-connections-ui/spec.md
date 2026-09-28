@@ -29,11 +29,10 @@ Composite, computed client-side per app, no new Rust command required for status
   `getDesktopConfigPath`, `getCodexDesktopConfigPath`, `getVsCodeLanguageModelsPath`,
   `getVsCodeClaudeCodeSettingsPath`) does not exist. Action: **Connect**.
 - **Connected** — config file present AND `codemie proxy status --deep` currently succeeds.
-  Action: **Disconnect** (see Open Risks for 3 of 4 rows).
+  Action: **Disconnect**, enabled for all 4 rows (see Open Risks — CLI parity resolved).
 - **Disconnected** — config file present but `codemie proxy status --deep` fails (daemon dead,
   machine rebooted). Two actions, matching the parent-story mockup: **Reconnect** (`connect
-  --force`) and **Remove setup** (`disconnect` — subject to the same 3-of-4 CLI gap as the
-  Connected state's Disconnect).
+  --force`) and **Remove setup** (`disconnect`).
 
 No standalone proxy start/stop control. `codemie proxy status --deep` is a daemon-level-only check
 (no per-app info) and is never surfaced as its own toggle — only used as one input to each row's
@@ -49,8 +48,8 @@ review of the running UI against EPMCDME-14350's wireframe:
   not set, blue = not installed).
 - A subtitle line under the app name shows the human-readable status.
 - The card's border color matches the status dot color, for visibility at a glance.
-- Actions stay right-aligned; a disabled action's CLI-gap note (e.g. "CLI support pending",
-  "Install flow coming soon") is a hover tooltip (`title` attribute) rather than inline text.
+- Actions stay right-aligned; a disabled action's note (e.g. "Install flow coming soon") is a
+  hover tooltip (`title` attribute) rather than inline text.
 - Disconnected rows show **two** actions — Reconnect and Remove setup — matching the mockup.
 
 ## How
@@ -90,16 +89,22 @@ review of the running UI against EPMCDME-14350's wireframe:
     is a deliberate, researched override, not a drift: VS Code's own path getters for these files
     live only in an unreachable external CLI package, and a pure existence check can't distinguish
     a CodeMie-managed entry from any other content written to the same file by another extension.
-    Claude Desktop and Codex Desktop checks remain existence-only per the Non-goal as written.
+    Codex Desktop's check is also content-based (non-empty state file, not just existence), for a
+    third reason: `disconnect` overwrites rather than deletes its state file. Claude Desktop's
+    check was existence-only at first release but was later found to have the same gap as Codex
+    (`disconnect` empties its applied config to `{}` rather than deleting it) and was fixed to
+    match — it is now the only one of the four still doing a *generic* content check (empty vs.
+    non-empty / empty-object) rather than key-aware parsing.
 - No `codemie proxy list` usage (does not exist) and no local-only "last known state" tracking
   that could go stale if the user connects/disconnects from the terminal directly.
 
 ## Open Risks
 
-- **Disconnect CLI gap**: the installed CLI's `codemie proxy disconnect` only supports
-  `--codex-desktop` today; no flag exists yet for Claude Desktop or either VS Code row. Spec
-  decision: implement the Disconnect action for all 4 rows in the UI, but disable it with an
-  inline "CLI support pending" note for the 3 rows lacking a flag, rather than calling a
-  nonexistent flag. **This is pending confirmation with the product team** — not a settled
-  decision — and must be re-verified before/during implementation.
+- **Disconnect CLI gap — resolved.** The installed CLI's `codemie proxy disconnect` originally
+  only supported `--codex-desktop`; the other 3 flags were tracked separately as EPMCDME-15246,
+  which the product team approved and which ships alongside this feature. The interim
+  disable-with-"CLI support pending"-note UI this risk originally called for has been removed —
+  Disconnect/Remove setup is now enabled unconditionally for all 4 rows. Bundling the CLI release
+  that includes EPMCDME-15246 (`assets/codemie-cli` currently still pins an older version) is
+  tracked as a release-readiness item, not a UI concern.
 - Exact Rust-vs-JS layer for the config-path-existence check is left to planning (see How).
