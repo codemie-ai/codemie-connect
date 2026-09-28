@@ -23,3 +23,17 @@
   nsExec::Exec 'cmd.exe /d /c rmdir /s /q "$LOCALAPPDATA\CodeMie\runtime"'
   Pop $0
 !macroend
+
+!macro NSIS_HOOK_PREINSTALL
+  ; Silently uninstall a prior install (if any) before proceeding, so nothing
+  ; is left registered to trigger the NSIS "Already Installed" dialog.
+  ; SHCTX resolves to the hive matching this app's installMode ("currentUser"
+  ; -> HKCU). PRODUCTNAME is Tauri's default uninstall registry subkey name;
+  ; confirm the exact key/hive against a real built installer during the
+  ; manual Windows install-then-upgrade smoke verification (no NSIS test
+  ; harness exists in this repo to check it automatically).
+  ReadRegStr $0 SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}" "UninstallString"
+  StrCmp $0 "" done
+  ExecWait '$0 /S'
+  done:
+!macroend
