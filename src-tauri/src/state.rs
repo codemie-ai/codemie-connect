@@ -9,6 +9,7 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
+use crate::commands::app_updater::Manifest;
 use crate::commands::pty::PtyHandle;
 
 #[derive(Default)]
@@ -28,4 +29,8 @@ pub struct AppState {
     /// Timestamp of the last successful app update check. Guards the 24 h throttle in
     /// `commands::app_updater::check_for_update`.
     pub last_update_check: Mutex<Option<Instant>>,
+    /// The manifest fetched by the most recent `check_for_update` that found a
+    /// newer version, cached so `download_and_install` can reuse it instead of
+    /// re-fetching. `None` once no update is pending.
+    pub latest_manifest: Mutex<Option<Manifest>>,
 }

@@ -199,6 +199,7 @@ async fn fetch_manifest(client: &Client) -> CmdResult<Manifest> {
 }
 
 /// Get the version.txt URL
+// TODO(EPMCDME-15055 Task 3): delete once `download_and_install` stops calling it.
 fn get_version_url() -> String {
     format!("{}/version.txt", get_base_url())
 }
@@ -271,47 +272,35 @@ pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<St
         return Ok(None);
     }
 
-    // Fetch latest version from remote repository
-    let version_url = get_version_url();
-    eprintln!("[app-updater] Checking for updates at: {}", version_url);
+    eprintln!(
+        "[app-updater] Checking for updates at: {}",
+        get_manifest_url()
+    );
 
     let client = Client::new();
-    match client.get(&version_url).send().await {
-        Ok(response) => match response.text().await {
-            Ok(version_text) => {
-                let latest_version = version_text.trim();
-                *state.last_update_check.lock().unwrap() = Some(Instant::now());
+    match fetch_manifest(&client).await {
+        Ok(manifest) => {
+            *state.last_update_check.lock().unwrap() = Some(Instant::now());
 
-                // Validate that version is in semantic version format (e.g., "2.1.0")
-                // This prevents HTML 404 pages from being treated as valid versions
-                if !is_valid_version(latest_version) {
-                    eprintln!(
-                        "[app-updater] Invalid version format received: {}",
-                        latest_version
-                    );
-                    return Ok(None);
-                }
+            eprintln!(
+                "[app-updater] Current version: {}, Latest available: {}",
+                APP_VERSION, manifest.version
+            );
 
+            if is_newer_version(APP_VERSION, &manifest.version) {
                 eprintln!(
-                    "[app-updater] Current version: {}, Latest available: {}",
-                    APP_VERSION, latest_version
+                    "[app-updater] Update available: {} -> {}",
+                    APP_VERSION, manifest.version
                 );
-
-                if is_newer_version(APP_VERSION, latest_version) {
-                    eprintln!(
-                        "[app-updater] Update available: {} -> {}",
-                        APP_VERSION, latest_version
-                    );
-                    Ok(Some(latest_version.to_string()))
-                } else {
-                    eprintln!("[app-updater] Already on latest version");
-                    Ok(None)
-                }
+                let version = manifest.version.clone();
+                *state.latest_manifest.lock().unwrap() = Some(manifest);
+                Ok(Some(version))
+            } else {
+                eprintln!("[app-updater] Already on latest version");
+                *state.latest_manifest.lock().unwrap() = None;
+                Ok(None)
             }
-            Err(e) => Err(InstallerError::Other(format!(
-                "Failed to read version: {e}"
-            ))),
-        },
+        }
         Err(_e) => {
             // Silently fail and mark as checked — don't spam errors on network issues
             *state.last_update_check.lock().unwrap() = Some(Instant::now());
