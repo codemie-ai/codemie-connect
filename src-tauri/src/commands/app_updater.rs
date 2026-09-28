@@ -198,33 +198,6 @@ async fn fetch_manifest(client: &Client) -> CmdResult<Manifest> {
     Ok(manifest)
 }
 
-/// Get the version.txt URL
-// TODO(EPMCDME-15055 Task 3): delete once `download_and_install` stops calling it.
-fn get_version_url() -> String {
-    format!("{}/version.txt", get_base_url())
-}
-
-/// Get the installer URL (looks for .exe on Windows, .dmg on macOS)
-fn get_installer_url(version: &str) -> String {
-    #[cfg(target_os = "windows")]
-    {
-        format!(
-            "{}/CodeMie%20Connect_{}_x64-setup.exe",
-            get_base_url(),
-            version
-        )
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        format!(
-            "{}/CodeMie%20Connect_{}_aarch64.dmg",
-            get_base_url(),
-            version
-        )
-    }
-}
-
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn should_check(last: Option<Instant>, interval: Duration) -> bool {
@@ -321,37 +294,20 @@ pub async fn download_and_install(
     let app_clone = app.clone();
     let id_clone = id.clone();
 
-    // First, fetch the latest version to construct the correct installer URL
-    let version_url = get_version_url();
-    eprintln!("[app-updater] Fetching version from: {}", version_url);
-
     let client = Client::new();
-    let version_response = client
-        .get(&version_url)
-        .send()
-        .await
-        .map_err(|e| InstallerError::Other(format!("Failed to fetch version: {e}")))?;
 
-    let version_text = version_response
-        .text()
-        .await
-        .map_err(|e| InstallerError::Other(format!("Failed to read version: {e}")))?;
+    // Reuse the manifest `check_for_update` already fetched, if present; otherwise
+    // (e.g. called without a preceding check) fetch it now.
+    let cached_manifest = state.latest_manifest.lock().unwrap().clone();
+    *state.latest_manifest.lock().unwrap() = None;
+    let manifest = match cached_manifest {
+        Some(manifest) => manifest,
+        None => fetch_manifest(&client).await?,
+    };
 
-    let latest_version = version_text.trim();
+    eprintln!("[app-updater] Latest version available: {}", manifest.version);
 
-    // Validate that version is in semantic version format (e.g., "2.1.0")
-    // This prevents HTML 404 pages from being treated as valid versions
-    if !is_valid_version(latest_version) {
-        return Err(InstallerError::Other(format!(
-            "Invalid version format received: {}",
-            latest_version
-        )));
-    }
-
-    eprintln!("[app-updater] Latest version available: {}", latest_version);
-
-    // Construct the installer URL based on the version
-    let installer_url = get_installer_url(latest_version);
+    let installer_url = get_platform_entry(&manifest)?.url;
     eprintln!(
         "[app-updater] Downloading installer from: {}",
         installer_url
@@ -407,6 +363,10 @@ pub async fn download_and_install(
 
     // Launch the installer (NSIS/DMG will handle uninstall as part of its process)
     let installer_str = installer_path.to_string_lossy().to_string();
+
+    // No checksum/signature verification here yet — deliberate, tracked gap
+    // (no signing infra exists). See EPMCDME-15055 scope decision 1; a future
+    // ticket adds verification of `installer_bytes` at this point, before launch.
     launch_installer(&installer_str)?;
 
     // Give the installer a moment to start
@@ -500,12 +460,6 @@ mod tests {
         let manifest: Manifest =
             serde_json::from_str(r#"{"version":"9.9.9","platforms":{}}"#).unwrap();
         assert!(get_platform_entry(&manifest).is_err());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn installer_url_names_the_arm64_dmg() {
-        assert!(get_installer_url("2.1.1").ends_with("/CodeMie%20Connect_2.1.1_aarch64.dmg"));
     }
 
     #[cfg(target_os = "macos")]
