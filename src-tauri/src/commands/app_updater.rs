@@ -16,6 +16,7 @@ fn launch_installer(installer_path: &str) -> CmdResult<()> {
     eprintln!("[app-updater] Launching installer: {}", installer_path);
 
     Command::new(installer_path)
+        .arg("/S")
         .spawn()
         .map_err(|e| InstallerError::Other(format!("Failed to spawn installer: {e}")))?;
 
