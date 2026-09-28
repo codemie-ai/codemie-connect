@@ -139,6 +139,18 @@ export function initCmdLog() {
     footer.querySelector('summary').appendChild(expandBtn);
   }
 
+  const summaryEl = footer.querySelector('summary');
+  if (!summaryEl.dataset.expandGuard) {
+    summaryEl.dataset.expandGuard = '1';
+    // While in fullscreen mode, clicking the summary bar (outside the action
+    // buttons) must not collapse the <details> out from under the user.
+    summaryEl.addEventListener('click', (e) => {
+      if (footer.classList.contains('expanded') && !e.target.closest('button')) {
+        e.preventDefault();
+      }
+    });
+  }
+
   footer.addEventListener('toggle', (e) => {
     if (e.target.open) {
       _renderRecords();
