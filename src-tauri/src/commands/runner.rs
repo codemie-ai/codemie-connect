@@ -32,7 +32,7 @@ struct CmdLine {
 /// with anything else in the test binary that spawns a real child).
 fn shell_cmd_for(cmd_str: &str, home: &str, base_path: &str, windows: bool) -> Command {
     let env = crate::commands::npm_env::npm_env_for(home, windows);
-    let path = crate::commands::npm_env::prefixed_path_with_bin_dir(&env.bin_dir, base_path);
+    let path = crate::commands::npm_env::path_with_bin_dir_last(&env.bin_dir, base_path);
     #[cfg(not(windows))]
     let mut c = {
         let mut c = Command::new("/bin/zsh");
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shell_cmd_sets_npm_config_prefix_and_prefixed_path_by_default() {
+    async fn shell_cmd_sets_npm_config_prefix_and_agents_path_by_default() {
         let out = shell_cmd_for(
             "echo $npm_config_prefix; echo $PATH",
             "/Users/test",
@@ -269,7 +269,7 @@ mod tests {
         // `path_helper -s` on every login shell, which reorders PATH —
         // system dirs from /etc/paths(.d) first, then the caller's other
         // entries appended in their original order. shell_cmd still sets
-        // PATH with the agents bin dir prepended; path_helper is what
+        // PATH with the agents bin dir appended; path_helper is what
         // moves it, on every real machine, not just this one. Presence is
         // what functionally matters — the dir is found by `npm`/agents
         // installed there regardless of position.

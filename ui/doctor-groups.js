@@ -126,7 +126,7 @@ function agentRow(item) {
   const detail = rest.join(' - ') || undefined;
   const row = { group: 'tools', label: unparen(title), detail, status, remedyText: undefined, action: undefined };
   if (status !== 'pass') {
-    row.remedyText = 'Open the Tools screen to update or reinstall it.';
+    row.remedyText = 'Open the Tools screen to check for an update.';
     row.action = { kind: 'navigate', view: 'agents', label: 'Go to Tools' };
   }
   return row;
@@ -136,7 +136,7 @@ function runtimeRow(items) {
   const status = statusOf(items);
   const row = { group: 'codemie', status, detail: undefined, remedyText: undefined, action: undefined };
   if (status === 'pass') {
-    row.label = 'Everything CodeMie needs to run is included';
+    row.label = 'Everything CodeMie needs to run is in place';
     row.detail = items.map((r) => `${r.name} ${versionOf(r.message)}`).join(' · ');
     return row;
   }

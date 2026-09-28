@@ -62,14 +62,21 @@ pub fn npm_env() -> NpmEnv {
     npm_env_for(&home, cfg!(windows))
 }
 
-/// Pure: prepends `bin_dir` to `existing_path` and dedupes. An empty
-/// `bin_dir` (the "no override" value from `npm_env_for`) leaves
-/// `existing_path` unchanged instead of prefixing an empty entry.
-pub(crate) fn prefixed_path_with_bin_dir(bin_dir: &str, existing_path: &str) -> String {
+/// Pure: appends `bin_dir` to `existing_path` and dedupes. Last, not first:
+/// the CLI's own auto-update installs a second `codemie` into this prefix,
+/// and ahead of the real one it would run instead (it needs a system `node`,
+/// which a clean machine does not have). The tools installed there have their
+/// own names, so they are found wherever the dir sits. An empty `bin_dir`
+/// (the "no override" value from `npm_env_for`) leaves `existing_path` as is.
+pub(crate) fn path_with_bin_dir_last(bin_dir: &str, existing_path: &str) -> String {
     if bin_dir.is_empty() {
         return crate::commands::pathman::dedupe_path(existing_path);
     }
-    let combined = format!("{bin_dir}{PATH_SEP}{existing_path}");
+    let without: Vec<&str> = existing_path
+        .split(PATH_SEP)
+        .filter(|p| *p != bin_dir)
+        .collect();
+    let combined = format!("{}{PATH_SEP}{bin_dir}", without.join(&PATH_SEP.to_string()));
     crate::commands::pathman::dedupe_path(&combined)
 }
 
@@ -106,16 +113,16 @@ mod tests {
     }
 
     #[test]
-    fn prefixed_path_prepends_bin_dir_and_dedupes() {
+    fn bin_dir_goes_last_and_is_not_duplicated() {
         // Built with PATH_SEP so the test holds on Windows (`;`) as well.
         let bin = "/Users/test/.codemie/agents/bin";
-        let result = prefixed_path_with_bin_dir(bin, &format!("/usr/bin{PATH_SEP}{bin}"));
-        assert_eq!(result, format!("{bin}{PATH_SEP}/usr/bin"));
+        let result = path_with_bin_dir_last(bin, &format!("{bin}{PATH_SEP}/usr/bin"));
+        assert_eq!(result, format!("/usr/bin{PATH_SEP}{bin}"));
     }
 
     #[test]
-    fn prefixed_path_with_empty_bin_dir_leaves_path_unchanged() {
-        let result = prefixed_path_with_bin_dir("", "/usr/bin:/usr/local/bin");
+    fn empty_bin_dir_leaves_path_unchanged() {
+        let result = path_with_bin_dir_last("", "/usr/bin:/usr/local/bin");
         assert_eq!(result, "/usr/bin:/usr/local/bin");
     }
 }
