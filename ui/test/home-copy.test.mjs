@@ -54,5 +54,28 @@ test('renderer: mode label and auth notice use Setup-consistent copy', () => {
 // version into the user's own npm and the app would keep running the old one
 // ("Updated! → 0.15.2" when 0.15.3 was out). So no CLI update is offered for it.
 test('renderer: no CLI update banner or badge while the app runs its bundled CLI', () => {
-  assert.match(renderer, /invoke\('cli_is_bundled'\),\s*invoke\('check_codemie_version'\),\s*invoke\('fetch_codemie_latest'\),\s*\]\)\.then\(\(\[bundled, installed, latest\]\) => \{\s*if \(bundled\) return;/);
+  assert.match(renderer, /invoke\('cli_is_bundled'\),\s*bridge\.inspector\.checkCodemieVersion\(\),\s*invoke\('fetch_codemie_latest'\),\s*\]\)\.then\(\(\[bundled, installed, latest\]\) => \{\s*if \(bundled\) return;/);
+});
+
+// The footer must be listening before boot() runs its startup checks, or
+// `codemie --version` and `codemie profile status` never show (seen on Windows).
+test('renderer: the command-log footer is wired before the startup checks run', () => {
+  const boot = renderer.slice(renderer.indexOf('async function boot('));
+  const wired = boot.indexOf('bridge.setCommandListener(');
+  assert.ok(wired > 0, 'boot() wires the footer');
+  assert.ok(wired < boot.indexOf('bridge.inspector.checkCodemieVersion()'), 'before the version check');
+  assert.ok(wired < boot.indexOf('bridge.inspector.checkProfileStatus()'), 'before the profile status check');
+});
+
+// On Windows, Home's reads ran `codemie` while `codemie self-update` replaced
+// it: they failed, Tools and Connections stayed "Could not read", and npm could
+// find its files in use. The reads wait for the update and run after it.
+test('renderer: Home does not run codemie while the CLI update replaces it', () => {
+  const fn = (name) => renderer.slice(renderer.indexOf(`async function ${name}(`)).slice(0, 200);
+  assert.match(fn('refreshAgents'), /if \(cliReplacing \|\|/);
+  assert.match(fn('refreshConnection'), /if \(cliReplacing \|\|/);
+  assert.match(renderer, /window\.addEventListener\('focus'[\s\S]{0,120}cliReplacing/);
+  const update = renderer.slice(renderer.indexOf('async function runUpdateCli('));
+  const body = update.slice(0, update.indexOf('checkCodemieVersion()'));
+  assert.match(body, /cliReplacing = true;[\s\S]*runSelfUpdate\(\);[\s\S]*finally \{[\s\S]*cliReplacing = false;[\s\S]*refreshAgents\(\);[\s\S]*refreshConnection\(\);/);
 });

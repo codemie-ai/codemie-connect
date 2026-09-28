@@ -189,8 +189,13 @@ fn persist(entries: &[String]) -> std::io::Result<String> {
     if to_add.is_empty() {
         return Ok(file);
     }
-    let joined: Vec<String> = to_add.iter().map(|s| s.to_string()).collect();
-    let block = format!("\n{MARKER}\nexport PATH=\"{}:$PATH\"\n", joined.join(":"));
+    // The tools dir goes behind $PATH, see normalize_blocks.
+    let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+    let (after, before): (Vec<String>, Vec<String>) = to_add
+        .iter()
+        .map(|s| s.to_string())
+        .partition(|e| *e == agents_bin);
+    let block = format!("\n{MARKER}\n{}\n", block_line(&before, &after));
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .create(true)
@@ -429,6 +434,96 @@ pub fn persist_agents_bin() {
     }
 }
 
+/// Pure: the dirs before and after `$PATH` in a PATH line this app wrote.
+#[cfg(not(windows))]
+fn parse_block_line(line: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let inner = line.strip_prefix("export PATH=\"")?.strip_suffix('"')?;
+    let parts: Vec<&str> = inner.split(':').collect();
+    let at = parts.iter().position(|p| *p == "$PATH")?;
+    let own = |s: &[&str]| s.iter().map(|d| d.to_string()).collect::<Vec<_>>();
+    Some((own(&parts[..at]), own(&parts[at + 1..])))
+}
+
+#[cfg(not(windows))]
+fn block_line(before: &[String], after: &[String]) -> String {
+    let mut parts: Vec<String> = before.to_vec();
+    parts.push("$PATH".to_string());
+    parts.extend(after.iter().cloned());
+    format!("export PATH=\"{}\"", parts.join(":"))
+}
+
+#[cfg(not(windows))]
+fn is_app_bin(dir: &str) -> bool {
+    dir.trim_end_matches('/')
+        .ends_with(".app/Contents/Resources/bin")
+}
+
+/// Pure: rewrites the PATH lines this app wrote, the line after each MARKER.
+/// The tools dir moves behind `$PATH`: the CLI's auto-update puts a second
+/// `codemie` there, which needs a system `node`, and ahead of the real CLI it
+/// would run instead (older builds wrote it in front). With `drop_app_bin`
+/// the app's own bin dirs go too, for when the user's own CLI is in use and
+/// the bundled one must not shadow it (EPMCDME-15304). A block left with no
+/// dirs goes, marker included. Every other line is kept as it is.
+#[cfg(not(windows))]
+pub(crate) fn normalize_blocks(content: &str, agents_bin: &str, drop_app_bin: bool) -> String {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let parsed = lines.get(i + 1).and_then(|l| parse_block_line(l));
+        match (lines[i] == MARKER, parsed) {
+            (true, Some((before, mut after))) => {
+                let had_agents = !agents_bin.is_empty() && before.iter().any(|d| d == agents_bin);
+                let before: Vec<String> = before
+                    .into_iter()
+                    .filter(|d| d != agents_bin && !(drop_app_bin && is_app_bin(d)))
+                    .collect();
+                if had_agents && !after.iter().any(|d| d == agents_bin) {
+                    after.push(agents_bin.to_string());
+                }
+                if !before.is_empty() || !after.is_empty() {
+                    out.push(MARKER.to_string());
+                    out.push(block_line(&before, &after));
+                }
+                i += 2;
+            }
+            _ => {
+                out.push(lines[i].to_string());
+                i += 1;
+            }
+        }
+    }
+    out.join("\n")
+}
+
+/// Brings the PATH blocks earlier launches wrote to ~/.zprofile in line with
+/// `normalize_blocks`. Commands the app runs go through a login shell that
+/// reads that file, so its order decides which `codemie` they run.
+#[cfg(not(windows))]
+pub fn normalize_persisted_path(drop_app_bin: bool) {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let file = format!("{home}/.zprofile");
+    let Ok(existing) = std::fs::read_to_string(&file) else {
+        return;
+    };
+    let agents_bin = crate::commands::npm_env::npm_env().bin_dir;
+    let cleaned = normalize_blocks(&existing, &agents_bin, drop_app_bin);
+    if cleaned != existing {
+        if let Err(e) = std::fs::write(&file, cleaned) {
+            log::warn!("[normalize_persisted_path] could not rewrite {file}: {e}");
+        }
+    }
+}
+
+/// Windows appends to the user PATH, where the user's own CLI already comes
+/// first, and cmd.exe does not re-read it.
+#[cfg(windows)]
+pub fn normalize_persisted_path(_drop_app_bin: bool) {}
+
 /// Prepend the directory containing the bundled codemie shim to the process
 /// PATH so all login-shell invocations (runner.rs, pty.rs) find it, and persist
 /// it for terminals opened later. Must be called before any plugin is
@@ -559,6 +654,9 @@ mod tests_windows_probe {
 #[cfg(test)]
 mod tests_persist_decision {
     use super::*;
+
+    #[cfg(not(windows))]
+    const AGENTS: &str = "/Users/u/.codemie/agents/bin";
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
 
@@ -652,6 +750,44 @@ mod tests_persist_decision {
     }
 
     #[cfg(not(windows))]
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_drops_the_app_bin_and_moves_the_agents_bin_behind_path() {
+        let before = "export PATH=\"$HOME/.npm-global/bin:$PATH\"\n\n# Added by CodeMie Installer\nexport PATH=\"/Applications/CodeMie Connect.app/Contents/Resources/bin:/Users/u/.codemie/agents/bin:$PATH\"\n";
+        let after = "export PATH=\"$HOME/.npm-global/bin:$PATH\"\n\n# Added by CodeMie Installer\nexport PATH=\"$PATH:/Users/u/.codemie/agents/bin\"\n";
+        assert_eq!(normalize_blocks(before, AGENTS, true), after);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_removes_a_block_that_held_only_the_app_bin() {
+        let before = "a\n\n# Added by CodeMie Installer\nexport PATH=\"/Applications/CodeMie Connect.app/Contents/Resources/bin:$PATH\"\nb\n";
+        assert_eq!(normalize_blocks(before, AGENTS, true), "a\n\nb\n");
+    }
+
+    // An app from before the tools dir was persisted wrote the app bin alone;
+    // the next build appended the tools dir as a block of its own, which put
+    // it ahead of the app's CLI.
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_keeps_the_app_bin_first_after_an_upgrade() {
+        let before = "\n# Added by CodeMie Installer\nexport PATH=\"/Applications/CodeMie Connect.app/Contents/Resources/bin:$PATH\"\n\n# Added by CodeMie Installer\nexport PATH=\"/Users/u/.codemie/agents/bin:$PATH\"\n";
+        let after = "\n# Added by CodeMie Installer\nexport PATH=\"/Applications/CodeMie Connect.app/Contents/Resources/bin:$PATH\"\n\n# Added by CodeMie Installer\nexport PATH=\"$PATH:/Users/u/.codemie/agents/bin\"\n";
+        assert_eq!(normalize_blocks(before, AGENTS, false), after);
+        assert_eq!(
+            normalize_blocks(after, AGENTS, false),
+            after,
+            "a second run changes nothing"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_leaves_lines_the_app_did_not_write() {
+        let before = "export PATH=\"/Applications/Other.app/Contents/Resources/bin:/Users/u/.codemie/agents/bin:$PATH\"\n";
+        assert_eq!(normalize_blocks(before, AGENTS, true), before);
+    }
+
     #[test]
     fn dmg_mount_and_app_translocation_are_not_install_locations() {
         let calls = RefCell::new(Vec::new());

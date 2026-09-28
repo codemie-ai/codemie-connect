@@ -26,6 +26,7 @@ pub fn run() {
                 own_dirs.push(base.join("bin"));
                 own_dirs.push(base);
             }
+            let app_dirs = own_dirs.clone();
             let agents_bin = commands::npm_env::npm_env().bin_dir;
             if !agents_bin.is_empty() {
                 own_dirs.push(agents_bin.into());
@@ -40,7 +41,18 @@ pub fn run() {
             let existing_cli_detected =
                 commands::handshake::probe_global_codemie(&pre_injection_path, &|p| p.exists());
 
+            // Commands run through a login shell, which reads ~/.zprofile again,
+            // so the blocks earlier launches wrote must not put the wrong
+            // `codemie` first.
+            commands::pathman::normalize_persisted_path(existing_cli_detected);
+
             let bundled_injected = if existing_cli_detected {
+                // An earlier launch may have put this app's own bin dir on the
+                // login PATH ahead of the user's CLI. Left there, every command
+                // would still run the bundled CLI (EPMCDME-15304: an update the
+                // user's own 0.15.4 never needed, reported as 0.15.2).
+                let path = std::env::var("PATH").unwrap_or_default();
+                std::env::set_var("PATH", commands::handshake::without_dirs(&path, &app_dirs));
                 // The user's CLI is used, but the tools the app installs still
                 // go to ~/.codemie/agents, which terminals must be able to find.
                 commands::pathman::persist_agents_bin();
@@ -143,6 +155,7 @@ pub fn run() {
             commands::pty::spawn_external_ps,
             commands::logger::log_line,
             commands::logger::open_log,
+            commands::logger::open_cli_debug_log,
             commands::window::set_window_height,
             commands::window::close_app,
             commands::smoke::smoke_mode,

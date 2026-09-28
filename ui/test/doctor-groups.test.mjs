@@ -17,7 +17,7 @@ test('signed-in: the real output groups into account, tools and CodeMie itself',
   assert.deepEqual(
     rows.map((r) => `${r.group} | ${r.status} | ${r.label}`),
     [
-      'codemie | pass | Everything CodeMie needs to run is included',
+      'codemie | pass | Everything CodeMie needs to run is in place',
       'tools | pass | AWS CLI',
       'account | pass | Your profile is set up',
       'account | pass | CodeMie can reach the model service',
@@ -51,7 +51,7 @@ test('signed-in: each installed agent is its own row, and one the CLI has advice
   const { rows } = grouped('signed-in');
   const openCode = rows.find((r) => r.label === 'OpenCode CLI 1.18.31');
   assert.equal(openCode.detail, 'CodeMie recommends vlatest');
-  assert.equal(openCode.remedyText, 'Open the Tools screen to update or reinstall it.');
+  assert.equal(openCode.remedyText, 'Open the Tools screen to check for an update.');
   assert.deepEqual(openCode.action, { kind: 'navigate', view: 'agents', label: 'Go to Tools' });
   const claude = rows.find((r) => r.label === 'Claude Code 2.1.269');
   assert.equal(claude.action, undefined);

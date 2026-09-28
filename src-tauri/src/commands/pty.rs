@@ -47,7 +47,7 @@ const READ_BUF: usize = 4096;
 /// spawns a real child, e.g. `tests::kill_terminates_real_child`).
 fn pty_env_pairs_for(home: &str, existing_path: &str, windows: bool) -> Vec<(String, String)> {
     let env = crate::commands::npm_env::npm_env_for(home, windows);
-    let path = crate::commands::npm_env::prefixed_path_with_bin_dir(&env.bin_dir, existing_path);
+    let path = crate::commands::npm_env::path_with_bin_dir_last(&env.bin_dir, existing_path);
     let home_var = if windows {
         ("USERPROFILE".to_string(), home.to_string())
     } else {
@@ -306,7 +306,7 @@ mod tests_pty_env {
 
     #[cfg(not(windows))]
     #[test]
-    fn pty_env_pairs_includes_npm_config_prefix_and_prefixed_path() {
+    fn pty_env_pairs_includes_npm_config_prefix_and_agents_path_last() {
         let pairs = pty_env_pairs_for("/Users/test", "/usr/bin", false);
         let prefix = pairs
             .iter()
@@ -314,12 +314,12 @@ mod tests_pty_env {
             .unwrap();
         assert_eq!(prefix.1, "/Users/test/.codemie/agents");
         let path = pairs.iter().find(|(k, _)| k == "PATH").unwrap();
-        assert!(path.1.starts_with("/Users/test/.codemie/agents/bin:"));
+        assert_eq!(path.1, "/usr/bin:/Users/test/.codemie/agents/bin");
     }
 
     #[cfg(windows)]
     #[test]
-    fn pty_env_pairs_for_windows_includes_npm_config_prefix_and_prefixed_path() {
+    fn pty_env_pairs_for_windows_includes_npm_config_prefix_and_agents_path_last() {
         let pairs = pty_env_pairs_for(r"C:\Users\test", r"C:\Windows", true);
         let prefix = pairs
             .iter()
@@ -327,7 +327,7 @@ mod tests_pty_env {
             .unwrap();
         assert_eq!(prefix.1, r"C:\Users\test\.codemie\agents");
         let path = pairs.iter().find(|(k, _)| k == "PATH").unwrap();
-        assert!(path.1.starts_with(r"C:\Users\test\.codemie\agents;"));
+        assert!(path.1.ends_with(r";C:\Users\test\.codemie\agents"));
     }
 }
 
