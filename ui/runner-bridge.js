@@ -40,14 +40,16 @@ export const runner = {
     const finish = started(cmd);
     const logId = await cmdlog.open(cmd).catch(() => null);
     let res = null;
+    let _code = -1;
     try {
       res = await invoke('run_capture', { cmd });
       if (logId && res != null) await cmdlog.append(logId, String(res)).catch(console.warn);
+      _code = 0;
       return res;
     } finally {
       // Also when invoke rejects, or the footer shows the command running forever.
       finish(res && res.code);
-      if (logId) await cmdlog.close(logId, res ? res.code : -1).catch(console.warn);
+      if (logId) await cmdlog.close(logId, _code).catch(console.warn);
     }
   },
 

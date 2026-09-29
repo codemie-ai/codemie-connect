@@ -143,6 +143,11 @@ body::before {
 #identity-version-badge {
   margin-left: auto;
   color: var(--amber);
+  /* Excluded from the shared truncation rule's :not() so it always renders at
+     full size — but that means it also needs its own white-space/flex-shrink,
+     or at narrow widths its text wraps to two lines and grows the bar's height. */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 /* The badge is pushed to the far right — it must not carry a leading middot.
    Needs two ids to outrank `#identity-bar > span + span::before` above. */
