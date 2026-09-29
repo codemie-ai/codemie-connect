@@ -187,17 +187,21 @@ fn get_manifest_url() -> String {
 }
 
 fn get_platform_entry(manifest: &Manifest) -> CmdResult<PlatformEntry> {
-    manifest.platforms.get(platform_key()).cloned().ok_or_else(|| {
-        InstallerError::Other(format!(
-            "No installer available for platform '{}'",
-            platform_key()
-        ))
-    })
+    manifest
+        .platforms
+        .get(platform_key())
+        .cloned()
+        .ok_or_else(|| {
+            InstallerError::Other(format!(
+                "No installer available for platform '{}'",
+                platform_key()
+            ))
+        })
 }
 
 async fn fetch_manifest(client: &Client) -> CmdResult<Manifest> {
     let response = client
-        .get(&get_manifest_url())
+        .get(get_manifest_url())
         .send()
         .await
         .map_err(|e| InstallerError::Other(format!("Failed to fetch manifest: {e}")))?;
@@ -323,7 +327,10 @@ pub async fn download_and_install(
         None => fetch_manifest(&client).await?,
     };
 
-    eprintln!("[app-updater] Latest version available: {}", manifest.version);
+    eprintln!(
+        "[app-updater] Latest version available: {}",
+        manifest.version
+    );
 
     let installer_url = get_platform_entry(&manifest)?.url;
     eprintln!(
