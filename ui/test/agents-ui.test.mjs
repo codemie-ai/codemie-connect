@@ -20,6 +20,27 @@ function makeEl(tag) {
     querySelector(sel) {
       return find(el, sel);
     },
+    querySelectorAll(sel) {
+      return el._all((n) => n !== el && matches(n, sel));
+    },
+    remove() {
+      const p = el._parent;
+      if (p) p._children = p._children.filter((c) => c !== el);
+    },
+    classList: {
+      add(c) {
+        if (!el.className.split(' ').includes(c)) el.className = `${el.className} ${c}`.trim();
+      },
+      remove(c) {
+        el.className = el.className.split(' ').filter((x) => x && x !== c).join(' ');
+      },
+      contains: (c) => el.className.split(' ').includes(c),
+      toggle(c, force) {
+        const on = force ?? !el.className.split(' ').includes(c);
+        if (on) el.classList.add(c);
+        else el.classList.remove(c);
+      },
+    },
     _text() {
       return el._children.length ? el._children.map((c) => c._text()).join(' ') : el.textContent;
     },
@@ -79,7 +100,7 @@ function fakeStepsUi() {
   };
 }
 
-const { renderAgents, showLoading, showRunError, summarise } = await import('../agents-ui.js');
+const { renderAgents, renderPane, setSelectedRow, showLoading, showRunError, summarise } = await import('../agents-ui.js');
 
 const agents = [
   { name: 'CodeMie Code', command: 'codemie-code', installed: true, version: '0.0.47', description: 'CodeMie Code - AI coding assistant' },
@@ -246,4 +267,154 @@ test('Update is offered only when an update is out', () => {
 test('the built-in agent is not counted as an update, since its row offers none', () => {
   const withUpdates = agents.map((a) => (a.command === 'codemie-code' || a.command === 'claude' ? { ...a, updateAvailable: true } : a));
   assert.equal(summarise(withUpdates).updateAvailable, 1);
+});
+
+// ---- Detail pane (EPMCDME-14655) ----
+
+const claude = { ...agents[1], launcher: 'codemie-claude' };
+const gemini = { ...agents[2], launcher: 'codemie-gemini' };
+const builtin = { ...agents[0], launcher: 'codemie-code', current: '0.16.0', latest: '0.15.2' };
+const noop = () => {};
+const handlers = { onInstall: noop, onUpdate: noop, onRemove: noop };
+const paneOf = (container) => container.querySelector('.agent-pane');
+const paneButtons = (container) => paneOf(container)._all((n) => n._tag === 'button');
+
+function mountPane(agent, state = {}, extra = {}) {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  renderAgents(container, { agents: [builtin, claude, gemini] }, { stepsUi, ...handlers });
+  const before = stepsUi.calls.length;
+  renderPane(container, agent, state, { ...handlers, ...extra });
+  return { container, stepsUi, before };
+}
+
+test('the list and a fixed pane sit side by side', () => {
+  const container = makeEl('div');
+  renderAgents(container, { agents: [builtin, claude, gemini], selected: 'gemini' }, { stepsUi: fakeStepsUi(), ...handlers });
+  const body = container.querySelector('.agents-body');
+  assert.ok(body.querySelector('.agents-list'));
+  assert.ok(body.querySelector('.agent-pane'));
+  assert.match(paneOf(container)._text(), /Gemini CLI/, 'the selected agent is drawn by renderAgents');
+});
+
+test('the pane shows the derived launcher, never the raw command, and the valid actions', () => {
+  const { container } = mountPane(gemini);
+  const text = paneOf(container)._text();
+  assert.match(text, /Gemini CLI/);
+  assert.match(text, /Google Gemini CLI - AI coding assistant/);
+  assert.match(text, /Not installed/);
+  assert.deepEqual(paneButtons(container).map((b) => b.textContent), ['Install']);
+});
+
+test('an installed agent shows its version and the launcher line', () => {
+  const { container } = mountPane(claude);
+  const text = paneOf(container)._text();
+  assert.match(text, /Installed 2\.1\.269/);
+  assert.match(text, /Run it from a terminal: codemie-claude/);
+  assert.doesNotMatch(text, /Run it from a terminal: claude\b/);
+  assert.deepEqual(paneButtons(container).map((b) => b.textContent), ['Remove']);
+});
+
+test('an agent with an update says which version is on offer and offers Update', () => {
+  const { container } = mountPane({ ...claude, updateAvailable: true, latest: '2.2.0' });
+  assert.match(paneOf(container)._text(), /Update available 2\.2\.0/);
+  assert.deepEqual(paneButtons(container).map((b) => b.textContent), ['Update', 'Remove']);
+});
+
+test('a version above the supported one is kept and said so with both numbers', () => {
+  const { container } = mountPane({ ...claude, current: '2.1.290', latest: '2.1.281', newerThanSupported: true });
+  const text = paneOf(container)._text();
+  assert.match(text, /Newer than CodeMie supports — kept/);
+  assert.match(text, /2\.1\.290/);
+  assert.match(text, /2\.1\.281/);
+  assert.deepEqual(paneButtons(container).map((b) => b.textContent), ['Remove']);
+});
+
+test('the built-in agent shows its launcher and no Current, Latest or buttons', () => {
+  const { container } = mountPane(builtin);
+  const text = paneOf(container)._text();
+  assert.match(text, /built into the CLI/);
+  assert.match(text, /codemie-code/);
+  assert.doesNotMatch(text, /0\.16\.0|0\.15\.2|Current|Latest/);
+  assert.deepEqual(paneButtons(container), []);
+});
+
+test('progress appears in the pane and never in a row subtitle', () => {
+  const { container, stepsUi, before } = mountPane(gemini, { progress: 'Downloading gemini 40%' });
+  assert.match(paneOf(container)._text(), /Downloading gemini 40%/);
+  assert.equal(stepsUi.calls.length, before, 'no stepsUi call');
+  assert.ok(!stepsUi.calls.some((c) => c[0] === 'setSubtitle' && /Downloading/.test(c[2])));
+});
+
+test('a failure is a plain-language failure block with no transcript and no Show details', () => {
+  const { container } = mountPane({ ...gemini, actionStatus: 'error', actionMessage: 'Installing needs a connection.' });
+  const block = paneOf(container).querySelector('.failure-block');
+  assert.ok(block);
+  assert.match(block._text(), /Installing needs a connection\./);
+  assert.ok(!block._all((n) => n._tag === 'button').some((b) => /details/i.test(b.textContent)));
+  assert.equal(block.querySelector('.failure-raw').textContent, '', 'nothing raw is kept');
+});
+
+test('a note left by an update that changed nothing is shown in the pane, not as a failure', () => {
+  const { container } = mountPane({ ...claude, actionMessage: 'Claude Code is already up to date' });
+  assert.match(paneOf(container)._text(), /already up to date/);
+  assert.equal(paneOf(container).querySelector('.failure-block'), null);
+});
+
+test('while an action runs the pane buttons are disabled and name what is running', () => {
+  const { container } = mountPane({ ...claude, updateAvailable: true, latest: '2.2.0' }, { busy: true, action: 'Update' });
+  const buttons = paneButtons(container);
+  assert.ok(buttons.every((b) => b.disabled === true));
+  assert.equal(buttons.find((b) => b.textContent === 'Updating…') !== undefined, true);
+});
+
+test('with no selection, or a selected agent that is gone, the pane shows the empty state', () => {
+  const container = makeEl('div');
+  renderAgents(container, { agents: [claude], selected: 'gone' }, { stepsUi: fakeStepsUi(), ...handlers });
+  assert.match(paneOf(container)._text(), /Select a tool/);
+  assert.doesNotThrow(() => renderPane(container, undefined, {}, handlers));
+  assert.match(paneOf(container)._text(), /Select a tool/);
+});
+
+test('renderPane and setSelectedRow never touch the step list', () => {
+  const { container, stepsUi, before } = mountPane(claude, { progress: 'x', busy: true });
+  setSelectedRow(container, 'claude');
+  renderPane(container, gemini, {}, handlers);
+  assert.equal(stepsUi.calls.length, before);
+});
+
+test('setSelectedRow marks exactly one row, and keeps the running row active', () => {
+  const container = makeEl('div');
+  renderAgents(container, { agents: [builtin, claude, gemini] }, { stepsUi: fakeStepsUi(), ...handlers });
+  const row = (id) => container.querySelector(`.step-row[data-id="${id}"]`);
+  row('claude').className += ' active';
+  setSelectedRow(container, 'claude');
+  setSelectedRow(container, 'gemini');
+  assert.ok(!row('claude').className.split(' ').includes('selected'));
+  assert.ok(row('gemini').className.split(' ').includes('selected'));
+  assert.ok(row('claude').className.split(' ').includes('active'), 'active is a different class');
+});
+
+test('clicking a row selects it, clicking its button does not', () => {
+  const container = makeEl('div');
+  const selected = [];
+  renderAgents(container, { agents: [builtin, claude, gemini] }, { stepsUi: fakeStepsUi(), ...handlers, onSelect: (c) => selected.push(c) });
+  container.querySelector('.step-row[data-id="gemini"]').onclick({});
+  assert.deepEqual(selected, ['gemini']);
+});
+
+test('no Launch or Run button exists anywhere in the pane', () => {
+  for (const a of [builtin, claude, gemini]) {
+    const { container } = mountPane(a);
+    assert.doesNotMatch(paneOf(container)._text(), /\bLaunch\b|\bRun agent\b/);
+    assert.ok(!paneButtons(container).some((b) => /launch|run/i.test(b.textContent)));
+  }
+});
+
+test('a click in the pane disables the row buttons and the pane buttons together', () => {
+  const container = makeEl('div');
+  renderAgents(container, { agents: [claude, gemini], selected: 'claude' }, { stepsUi: fakeStepsUi(), ...handlers });
+  paneButtons(container)[0].onclick({ stopPropagation() {} });
+  const rowButton = container.querySelector('.agent-actions[data-id="gemini"]')._children[0];
+  assert.equal(rowButton.disabled, true);
 });
