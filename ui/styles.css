@@ -224,6 +224,13 @@ body::before {
   color: var(--nav-selected-text);
   font-weight: 600;
 }
+/* The wireframe only draws the dark theme. In light the dark pill read as a
+   dark-theme leftover (EPMCDME-15386): a pale purple fill with deep violet
+   text instead. */
+:root.light .sidebar-item[aria-current="page"] {
+  --nav-selected-bg:   var(--color-purple-bg);
+  --nav-selected-text: #5B21B6;
+}
 
 /* ---- Theme toggle (fixed top-right, above content, below overlays) ---- */
 /* Lives inside #identity-bar as a normal flex child — it used to be
