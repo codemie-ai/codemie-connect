@@ -158,6 +158,7 @@ pub fn run() {
             commands::logger::log_line,
             commands::logger::open_log,
             commands::logger::open_cli_debug_log,
+            commands::logger::open_external,
             commands::window::set_window_height,
             commands::window::close_app,
             commands::smoke::smoke_mode,
