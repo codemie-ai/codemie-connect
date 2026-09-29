@@ -1,0 +1,97 @@
+{
+  "decision": "request-changes",
+  "rationale": "The acceptance lens was skipped because no spec/story ArtifactRef existed, so confidence is low and nothing was graded against the Jira ACs. Blind, edge-case and verification-gap all ran; there are 7 blocking findings (2 runtime defects in About's CLI version handling, 4 test gaps, 1 commit-format violation); 13 findings were dismissed as noise or already handled. 1 was deferred as pre-existing (app and CLI update runs have no cross-guard), recorded in code-review-deferred.md.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires Conventional Commits '<type>: <short description>' with type in feat|fix|docs|test|chore|refactor; all 5 subjects in the range use 'EPMCDME-15342 : <description>' with no type prefix" },
+    { "kind": "code-quality", "status": "na", "notes": ".ai-run/guides/standards/code-quality.md is absent from the repo and no ref was passed; absent standard, not adjudicated" },
+    { "kind": "security", "status": "na", "notes": "security-patterns.md absent; concrete check: open_external (logger.rs:151) gates the OS opener behind an exact-match two-entry allowlist with a test; About DOM built via textContent; no defect found" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commits 608d07a..HEAD",
+      "title": "Commit subjects violate Conventional Commits format",
+      "problem": "git-workflow.md says commit messages must use '<type>: <short description>' (feat|fix|docs|test|chore|refactor). All five commit subjects in the range use 'EPMCDME-15342 : <description>' and have no type.",
+      "impact": "commit-format is a documented blocking standard. Commits that do not follow it break the repo's history convention, and with squash merge the MR title becomes the subject on main.",
+      "recommendation": "Reword the subjects to the documented form, e.g. 'feat: add allowlisted open_external command', or at least make sure the squash-merge commit / MR title uses '<type>: <description>'."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/app_updater.rs",
+      "line": 215,
+      "title": "Force bypass of update throttle untested",
+      "problem": "check_for_update now skips the CHECK_INTERVAL throttle when force == Some(true). The check is written inline in the async command, next to the network call. The existing tests (mod tests) only call should_check directly, and no test covers the gate with force true/false/None (regression gap).",
+      "impact": "Consumers: refreshAbout's forced check (ui/renderer.js:413) and the boot check (ui/renderer.js:1100), which relies on force defaulting to false. If the '!force.unwrap_or(false) &&' clause is dropped or inverted, About stops re-checking inside the 24h window or the boot check stops throttling, and cargo test still passes.",
+      "recommendation": "Move the gate into a pure fn, e.g. fn gate_allows(force: Option<bool>, last: Option<Instant>) -> bool { force.unwrap_or(false) || should_check(last, CHECK_INTERVAL) }. Use it in check_for_update and add inline tests: Some(true) with a just-now check allows; None and Some(false) with a just-now check deny."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 391,
+      "title": "About shows stale CLI version after update",
+      "problem": "renderAboutView passes cliVersion: aboutInfo.cliVersion || cliVersionState.installed. Only refreshAbout writes aboutInfo.cliVersion. runUpdateCli updates cliVersionState.installed after a successful self-update and then calls renderAboutIfShown, but the old aboutInfo.cliVersion is non-empty and wins the || fallback.",
+      "impact": "Confirmed on a live path: when the user updates the CLI from About (or from the banner while About is open), the Version section keeps showing the pre-update CLI version until they leave and come back. The ticket's 'shows installed CodeMie CLI version' requirement is not met right after the update flow About itself offers.",
+      "recommendation": "In runUpdateCli after the re-probe, set aboutInfo.cliVersion = newVersion || '' (or prefer cliVersionState.installed over the cached value once an update has run) before calling renderAboutIfShown."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 412,
+      "title": "About CLI probe can race CLI self-update",
+      "problem": "refreshAbout reads updateCliRunning once, when the Promise.allSettled batch starts, and ignores cliReplacing and installRunning. If the user clicks About's CLI update button (visible on first render from cliVersionState) while that visit's `codemie --version` probe is still running, runSelfUpdate replaces the CLI while codemie is running. The inline comment says this must not happen. When the probe resolves late, it also writes the pre-update version into aboutInfo.cliVersion. The same batch can overlap an install that is replacing the CLI.",
+      "impact": "The path is live, though it depends on timing. The home-copy test documents the consequence on Windows: running codemie during self-update fails, and npm can find its files in use, so the update can fail or the probe errors. The late result also leaves the wrong version on About.",
+      "recommendation": "Skip the probe when updateCliRunning || cliReplacing || installRunning. Also keep the in-flight About probe promise and have runUpdateCli await it before calling runSelfUpdate, or at least drop the cli result when an update started while the probe was running (check updateCliRunning/cliReplacing after the await)."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/runner-bridge.js",
+      "line": 112,
+      "title": "checkForAppUpdate force arg untested",
+      "problem": "checkForAppUpdate(force = false) now sends { force } to check_for_update. ui/test/pty-bridge.test.mjs already mocks invoke and imports updater, but only exercises runSelfUpdate. The only other check is a source-text regex for checkForAppUpdate(true) in home-copy.test.mjs (regression gap).",
+      "impact": "Consumer: refreshAbout feeding appVersionState for the About app-update button. If the key is renamed or the argument dropped, Tauri deserializes force as None, and About silently finds no update inside the throttle window while every test passes.",
+      "recommendation": "In ui/test/pty-bridge.test.mjs, record invocations, call updater.checkForAppUpdate(true) and updater.checkForAppUpdate(), and assert cmd 'check_for_update' with args deepEqual { force: true } and { force: false }."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/test/home-copy.test.mjs",
+      "line": 90,
+      "title": "Known-update merge rule verified only by regex",
+      "problem": "The refreshAbout rule is that a forced re-check returning null or rejecting must not clear an app update that was already found. It is verified only by regexes over the renderer.js source text (fnBody + indexOf), and no test executes refreshAbout (broken-verification gap). A line added after the if-block, such as 'appVersionState.updateAvailable = Boolean(latest);', still passes: indexOf finds the guarded first occurrence.",
+      "impact": "Consumer: the About app-update button rendered from appVersionState. A regression that clears a banner-found update on any throttled or offline About visit breaks the 'update stays available from About after the banner is dismissed' behavior, and the tests stay green.",
+      "recommendation": "Move the merge into a pure helper (e.g. mergeAppUpdateCheck(state, settledResult)) in a module and test it with node:test: fulfilled '2.0.0' sets latest/updateAvailable; fulfilled null and rejected leave a prior { latest: '2.0.0', updateAvailable: true } unchanged."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/test/home-copy.test.mjs",
+      "line": 108,
+      "title": "About progress/error mirroring verified only by regex",
+      "problem": "The About mirroring in the update runs is verified only by a regex check that getElementById('about-cli-update'/'about-app-update') appears in the setUpdateProgress/runUpdateApp bodies (broken-verification gap). The mirroring covers setUpdateProgress onto about-cli-update, runUpdateApp showProgress, aboutErrors.app/cli, and renderAboutIfShown in the error/finally paths. about-view.test.mjs renders only a static model.",
+      "impact": "Consumer: About version rows built by versionRow/updateButton in ui/about-view.js. Removing renderAboutIfShown() from runUpdateApp's finally, or the aboutErrors.cli assignment, would leave the About button stuck disabled on 'Downloading…' or hide the failure. That breaks the approved 'About buttons mirror banner progress/error state' decision without failing a test.",
+      "recommendation": "Add a behavioral test that makes runUpdateApp/runUpdateCli fail with a stub bridge while the About view is rendered, and asserts the about-app-update/about-cli-update text and disabled state plus the .update-error text afterwards. Alternatively, move the About-side state transitions into a testable module."
+    }
+  ]
+}
