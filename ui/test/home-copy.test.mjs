@@ -84,19 +84,13 @@ const fnBody = (name) => {
 };
 
 test('renderer: visiting About refreshes it', () => {
-  assert.match(fnBody('showView'), /if \(name === 'about'\) \{?\s*refreshAbout\(\);/);
+  assert.match(fnBody('showView'), /if \(name === 'about'\) \{?\s*about\.refresh\(\);/);
 });
 
-test('renderer: About forces the app update check and never clears a known update', () => {
-  const body = fnBody('refreshAbout');
-  assert.match(body, /bridge\.updater\.checkForAppUpdate\(true\)/);
-  const assigns = [...body.matchAll(/appVersionState\.(latest|updateAvailable) =/g)];
-  assert.ok(assigns.length > 0, 'refreshAbout records a found update');
-  const guarded = body.slice(body.indexOf('if (latest)'));
-  assert.ok(body.includes('if (latest)'), 'the assignment sits behind if (latest)');
-  for (const m of assigns) assert.ok(body.indexOf(m[0]) > body.indexOf('if (latest)'), `${m[0]} is guarded`);
-  assert.doesNotMatch(guarded, /updateAvailable = false/);
-  assert.doesNotMatch(body, /appVersionState\.latest = null/);
+// About's state transitions are tested in about-controller.test.mjs; renderer.js
+// cannot be imported, so these check that the update runs report to it.
+test('renderer: About sees every CLI busy state', () => {
+  assert.match(renderer, /cliBusy: updateCliRunning \|\| cliReplacing \|\| installRunning/);
 });
 
 test('renderer: About buttons guard installRunning and reuse the banner update runs', () => {
@@ -105,9 +99,17 @@ test('renderer: About buttons guard installRunning and reuse the banner update r
   assert.match(renderer, /onOpenLink: \(url\) => \{\s*if \(installRunning\) return;\s*invoke\('open_external', \{ url \}\)/);
 });
 
-test('renderer: CLI update progress is mirrored onto the About button', () => {
-  assert.match(fnBody('setUpdateProgress'), /getElementById\('about-cli-update'\)/);
-  assert.match(fnBody('runUpdateApp'), /getElementById\('about-app-update'\)/);
+test('renderer: the update runs report progress, results and errors to About', () => {
+  assert.match(fnBody('setUpdateProgress'), /about\.progress\('cli', label,/);
+  const cli = fnBody('runUpdateCli');
+  assert.ok(cli.indexOf("await about.startUpdate('cli')") >= 0, 'waits for the About probe');
+  assert.ok(cli.indexOf("await about.startUpdate('cli')") < cli.indexOf('runSelfUpdate()'), 'before self-update');
+  assert.match(cli, /cliVersionState\.installed = newVersion;\s*about\.cliUpdated\(newVersion\);/);
+  assert.equal(cli.match(/about\.fail\('cli',/g)?.length, 2, 'both failure paths');
+  const app = fnBody('runUpdateApp');
+  assert.match(app, /about\.startUpdate\('app'\)/);
+  assert.match(app, /about\.progress\('app', text, true\)/);
+  assert.match(app, /catch \(err\) \{[\s\S]*about\.fail\('app', String\(err\)\);[\s\S]*finally \{\s*updateAppRunning = false;\s*about\.renderIfShown\(\);/);
 });
 
 // On Windows, Home's reads ran `codemie` while `codemie self-update` replaced
