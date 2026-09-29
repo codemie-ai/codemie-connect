@@ -15,12 +15,27 @@ use std::path::{Path, PathBuf};
 fn launch_installer(installer_path: &str) -> CmdResult<()> {
     eprintln!("[app-updater] Launching installer: {}", installer_path);
 
-    Command::new(installer_path)
+    let mut child = Command::new(installer_path)
         .arg("/S")
         .spawn()
         .map_err(|e| InstallerError::Other(format!("Failed to spawn installer: {e}")))?;
 
-    Ok(())
+    // Give the installer a moment to start, then make sure it didn't die
+    // immediately (corrupt exe, missing dependency, permission issue) — the
+    // app is about to exit and release its file locks, so a launch failure
+    // must be caught here or it goes unnoticed.
+    std::thread::sleep(Duration::from_millis(500));
+    check_not_exited_early(&mut child)
+}
+
+#[cfg(target_os = "windows")]
+fn check_not_exited_early(child: &mut std::process::Child) -> CmdResult<()> {
+    match child.try_wait() {
+        Ok(Some(status)) if !status.success() => Err(InstallerError::Other(format!(
+            "Installer exited immediately with status: {status}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// A DMG cannot be run like the Windows setup exe. Mount it, swap the running
@@ -275,8 +290,10 @@ pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<St
                 Ok(None)
             }
         }
-        Err(_e) => {
-            // Silently fail and mark as checked — don't spam errors on network issues
+        Err(e) => {
+            // Mark as checked so we don't spam retries on network issues, but
+            // still log so field failures can be diagnosed.
+            eprintln!("[app-updater] update check failed: {e}");
             *state.last_update_check.lock().unwrap() = Some(Instant::now());
             Ok(None)
         }
@@ -437,6 +454,25 @@ mod tests {
         assert!(is_newer_version("1.0.0", "1.1.0"));
         assert!(is_newer_version("0.0.1", "1.0.0"));
         assert!(!is_newer_version("2.0.0", "2.0.0"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn detects_installer_that_exited_immediately_with_failure() {
+        let mut child = Command::new("cmd").args(["/C", "exit 1"]).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(check_not_exited_early(&mut child).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn allows_installer_still_running() {
+        let mut child = Command::new("cmd")
+            .args(["/C", "timeout /T 5"])
+            .spawn()
+            .unwrap();
+        assert!(check_not_exited_early(&mut child).is_ok());
+        let _ = child.kill();
     }
 
     #[test]

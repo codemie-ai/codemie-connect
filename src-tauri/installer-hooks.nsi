@@ -34,6 +34,8 @@
   ; harness exists in this repo to check it automatically).
   ReadRegStr $0 SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}" "UninstallString"
   StrCmp $0 "" done
-  ExecWait '$0 /S'
+  ExecWait '$0 /S' $1
+  StrCmp $1 "0" done
+  Abort "Failed to uninstall the previous version (exit code $1). Please uninstall it manually and try again."
   done:
 !macroend
