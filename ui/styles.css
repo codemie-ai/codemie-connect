@@ -688,6 +688,11 @@ body::before {
   transition: background 0.18s ease, color 0.18s ease;
 }
 .setup-continue-btn:hover { filter: brightness(1.08); }
+/* setup-view.js scrolls Continue into view with block: 'nearest', which left
+   it flush against the command-log footer (EPMCDME-15384). The margin is the
+   step's own bottom padding plus the view's, so it lands where a full scroll
+   to the bottom would put it. */
+.setup-continue-btn { scroll-margin-bottom: 34px; }
 
 /* Closing line under the list once the profile is verified active. */
 .setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }
