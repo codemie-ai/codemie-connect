@@ -114,7 +114,9 @@ export function setSelectedRow(container, command) {
 //
 // state: { progress, message, busy, action }. `message` overrides the failure
 // text; otherwise an errored agent shows its own actionMessage. `action` is the
-// label of the button whose action is running ('Install' | 'Update' | 'Remove').
+// label of the button whose action is running ('Install' | 'Update' | 'Remove'),
+// and `runningCommand` the agent it runs on: only that agent's pane shows the
+// busy label, every other agent's buttons are just disabled.
 export function renderPane(container, agent, state = {}, handlers = {}) {
   const pane = container.querySelector('.agent-pane');
   if (!pane) return;
@@ -124,7 +126,7 @@ export function renderPane(container, agent, state = {}, handlers = {}) {
     pane.appendChild(el('div', 'agent-pane-empty', EMPTY_PANE));
     return;
   }
-  const { progress, message, busy, action } = state;
+  const { progress, message, busy, action, runningCommand } = state;
   const builtin = agent.command === BUILTIN_AGENT_COMMAND;
 
   pane.appendChild(el('div', 'agent-pane-name', agent.name));
@@ -137,7 +139,7 @@ export function renderPane(container, agent, state = {}, handlers = {}) {
     pane.appendChild(el('div', 'agent-pane-launcher', `Run it from a terminal: ${agent.launcher}`));
   }
 
-  const slot = buildActions(agent, handlers, paneButtons, { busy, action });
+  const slot = buildActions(agent, handlers, paneButtons, { busy, action: agent.command === runningCommand ? action : undefined });
   if (slot.children.length) pane.appendChild(slot);
   if (progress) pane.appendChild(el('div', 'agent-pane-progress', progress));
 

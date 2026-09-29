@@ -362,7 +362,7 @@ test('a note left by an update that changed nothing is shown in the pane, not as
 });
 
 test('while an action runs the pane buttons are disabled and name what is running', () => {
-  const { container } = mountPane({ ...claude, updateAvailable: true, latest: '2.2.0' }, { busy: true, action: 'Update' });
+  const { container } = mountPane({ ...claude, updateAvailable: true, latest: '2.2.0' }, { busy: true, action: 'Update', runningCommand: 'claude' });
   const buttons = paneButtons(container);
   assert.ok(buttons.every((b) => b.disabled === true));
   assert.equal(buttons.find((b) => b.textContent === 'Updating…') !== undefined, true);

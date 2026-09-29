@@ -57,6 +57,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
   const progress = new Map();
   // The button label ('Install' | 'Update' | 'Remove') of the running action.
   let runningAction = null;
+  let runningCommand = null;
   const handlers = { stepsUi, onInstall: (a, o) => onInstall(a, o), onUpdate: (a) => onUpdate(a), onRemove: (a) => onRemove(a), onSelect: (c) => select(c) };
 
   // Progress and selection redraw the pane alone. renderAgents would rebuild
@@ -64,7 +65,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // buttons, so only load() calls it.
   function redrawPane() {
     const agent = lastAgents?.find((a) => a.command === selected);
-    renderPane(container, agent, { progress: progress.get(selected), busy: inFlight.size > 0, action: runningAction }, handlers);
+    renderPane(container, agent, { progress: progress.get(selected), busy: inFlight.size > 0, action: runningAction, runningCommand }, handlers);
   }
 
   function select(command) {
@@ -157,6 +158,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
     stepsUi.setStatus(agent.command, 'ACTIVE');
     stepsUi.startSpinner(agent.command);
     runningAction = label;
+    runningCommand = agent.command;
     redrawPane();
     const lines = [];
     let message = null;
@@ -188,6 +190,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
       inFlight.delete(agent.command);
       progress.delete(agent.command);
       runningAction = null;
+      runningCommand = null;
       await load({ silent: true });
     }
     return message ? { ok: false, message } : { ok: true };

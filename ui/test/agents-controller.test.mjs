@@ -734,6 +734,19 @@ test('the pane of the running agent is busy: its buttons are disabled', async ()
   await m.settle();
 });
 
+test('only the running agent shows the busy label; another selected agent keeps its own labels, disabled', async () => {
+  const m = await midStream();
+  const buttonsOf = () => m.container.querySelector('.agent-pane')._all((n) => n._tag === 'button');
+  assert.ok(buttonsOf().some((b) => b.textContent === 'Installing…'), 'running agent: busy label');
+  m.c.select('claude-acp');
+  const other = buttonsOf();
+  assert.ok(other.length > 0 && other.every((b) => b.disabled === true), 'other agent: disabled');
+  assert.ok(other.every((b) => !/ing…$/.test(b.textContent)), `other agent: normal labels, got ${other.map((b) => b.textContent)}`);
+  m.c.select('gemini');
+  assert.ok(buttonsOf().some((b) => b.textContent === 'Installing…'), 'back on the running agent: busy label');
+  await m.settle();
+});
+
 test('the selection survives the reload an action ends with', async () => {
   const m = await midStream();
   await m.settle();
