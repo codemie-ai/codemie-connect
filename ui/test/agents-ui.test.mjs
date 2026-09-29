@@ -403,6 +403,13 @@ test('clicking a row selects it, clicking its button does not', () => {
   assert.deepEqual(selected, ['gemini']);
 });
 
+test('a row subtitle is description and version only; a note or failure lives in the pane', () => {
+  const stepsUi = fakeStepsUi();
+  renderAgents(makeEl('div'), { agents: [{ ...claude, actionStatus: 'error', actionMessage: 'Updating needs a connection.' }] }, { stepsUi, ...handlers });
+  const sub = stepsUi.calls.find((c) => c[0] === 'setSubtitle');
+  assert.equal(sub[2], 'Claude Code - official Anthropic CLI tool · 2.1.269');
+});
+
 test('no Launch or Run button exists anywhere in the pane', () => {
   for (const a of [builtin, claude, gemini]) {
     const { container } = mountPane(a);

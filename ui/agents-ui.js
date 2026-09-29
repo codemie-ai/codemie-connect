@@ -40,7 +40,6 @@ const statusOf = (agent) => {
 // so the two are never shown side by side. See
 // .ai-run/decisions/2026-09-21-EPMCDME-14514-agent-version-authority.md.
 const subtitleOf = (agent) => {
-  if (agent.actionMessage) return agent.actionMessage;
   const base = agent.installed && agent.version ? `${agent.description} · ${agent.version}` : agent.description;
   if (agent.command === BUILTIN_AGENT_COMMAND) return `${base} · built into the CLI`;
   if (agent.updateAvailable) return `${base} · ${agent.latest ? `${agent.latest} available` : 'update available'}`;

@@ -12,7 +12,7 @@
 import { parseAgentList } from './agents-parse.js';
 import { parseUpdateStatus } from './agents-update-parse.js';
 import { joinUpdateStatus } from './agents-join.js';
-import { renderAgents, showLoading, showRunError } from './agents-ui.js';
+import { renderAgents, renderPane, setSelectedRow, showLoading, showRunError } from './agents-ui.js';
 
 // Any of these substrings in an action's accumulated streamed text means the
 // failure was a lack of network access, not something the CLI's own error
@@ -28,6 +28,7 @@ const SAFE_COMMAND = /^[A-Za-z0-9._-]+$/;
 // How the CLI marks a line that states a failure, and the glyph to strip off
 // it before the row shows it.
 const ERROR_LINE = /^\s*[✗✖×]\s|^\s*(Error|Failed)\b/i;
+const ACTION_LABEL = { Installing: 'Install', Updating: 'Update', Removing: 'Remove' };
 const ERROR_GLYPH = /^\s*[✗✖×]\s*/;
 const RESULT_LINE = /^\s*[✔✓⚠]\s*/;
 
@@ -49,6 +50,28 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // command -> the CLI's result line after an Update ("already up to date",
   // "could not check"), which otherwise exits 0 and leaves no trace on the row.
   const rowNotes = new Map();
+  // The agent whose detail pane is open (its command), and the CLI's latest
+  // line per agent while an action runs. Both live here, not in the DOM, so the
+  // full render load() ends with keeps them.
+  let selected = null;
+  const progress = new Map();
+  // The button label ('Install' | 'Update' | 'Remove') of the running action.
+  let runningAction = null;
+  const handlers = { stepsUi, onInstall: (a, o) => onInstall(a, o), onUpdate: (a) => onUpdate(a), onRemove: (a) => onRemove(a), onSelect: (c) => select(c) };
+
+  // Progress and selection redraw the pane alone. renderAgents would rebuild
+  // the step list and wipe the running row's spinner, ACTIVE badge and disabled
+  // buttons, so only load() calls it.
+  function redrawPane() {
+    const agent = lastAgents?.find((a) => a.command === selected);
+    renderPane(container, agent, { progress: progress.get(selected), busy: inFlight.size > 0, action: runningAction }, handlers);
+  }
+
+  function select(command) {
+    selected = command;
+    setSelectedRow(container, command);
+    redrawPane();
+  }
 
   // silent: true is what a post-action refresh uses — it skips showLoading so
   // the container is never blanked outside the very first load.
@@ -97,7 +120,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
       });
 
       lastAgents = agents;
-      renderAgents(container, { agents }, { stepsUi, onInstall, onUpdate, onRemove });
+      const progressNow = Object.fromEntries(progress);
+      renderAgents(container, { agents, selected, progress: progressNow }, handlers);
+      if (inFlight.size) redrawPane();
       onResult?.(agents);
     } catch (e) {
       showRunError(container, String((e && e.message) || e), () => load({ silent: false }));
@@ -117,6 +142,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // so it is handed back. `onLine` is Home's too: its picker shows the
   // command's output where the install was started from.
   async function runAction(agent, command, { onLine, note, verb = 'Installing' } = {}) {
+    const label = ACTION_LABEL[verb];
     // One at a time, see buildActions in agents-ui.js.
     if (inFlight.size) return { ok: false, message: 'Another tool is still being worked on.' };
     if (!SAFE_COMMAND.test(agent.command)) {
@@ -130,6 +156,8 @@ export function createAgentsController({ container, runCapture, runStream, steps
     rowNotes.delete(agent.command);
     stepsUi.setStatus(agent.command, 'ACTIVE');
     stepsUi.startSpinner(agent.command);
+    runningAction = label;
+    redrawPane();
     const lines = [];
     let message = null;
     try {
@@ -141,7 +169,8 @@ export function createAgentsController({ container, runCapture, runStream, steps
         if (tag === 'prompt') return onLine?.(text, tag);
         lines.push(text);
         // The CLI's progress lines start with a "- " spinner frame.
-        stepsUi.setSubtitle(agent.command, text.replace(/^\s*-\s+/, ''));
+        progress.set(agent.command, text.replace(/^\s*-\s+/, ''));
+        if (agent.command === selected) redrawPane();
         onLine?.(text, tag);
       });
       if (code !== 0) {
@@ -157,6 +186,8 @@ export function createAgentsController({ container, runCapture, runStream, steps
       rowErrors.set(agent.command, message);
     } finally {
       inFlight.delete(agent.command);
+      progress.delete(agent.command);
+      runningAction = null;
       await load({ silent: true });
     }
     return message ? { ok: false, message } : { ok: true };
@@ -194,6 +225,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
     run: () => load({ silent: false }),
     refresh: () => load({ silent: true }),
     getLastAgents: () => lastAgents,
+    select,
     // Home's checklist installs through the same action the screen's own
     // button runs, so there is one install path and one set of failure
     // messages, not a second copy of the command.
