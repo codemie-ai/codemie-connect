@@ -35,10 +35,14 @@ Neither is wrong, and this is deliberate CLI behaviour rather than a bug to repo
 
 - **The version shown in a row comes from `codemie list`.** It is the agent's own
   `--version` for every agent, with no special cases.
-- **`codemie update --check` is read only for the update-available flag**, never for a
-  version the screen displays. Its `Current:` value is not rendered anywhere.
-- Consequently the screen can never show two contradictory versions for one agent, and the
-  join between the two parsers carries a boolean, not a number.
+- **`codemie update --check` is read for the update-available flag and for `Current` and
+  `Latest`.** A non-built-in agent whose `Current` is above its `Latest` is "newer than
+  CodeMie supports" (the CLI keeps it, no update is offered); the join carries `current`,
+  `latest` and that boolean, and the detail pane shows `Current` for these agents only.
+  Versions that are not plain X.Y.Z are never "newer".
+- **The built-in agent is excluded.** Its `Current` is the CLI package version, not the
+  agent's, so it is never displayed or compared.
+- Consequently the row and the pane can never show two contradictory versions for one agent.
 
 `ui/agents-ui.js` draws the row subtitle as `description · version` from the list record
 alone, covered by `ui/test/agents-ui.test.mjs`.
