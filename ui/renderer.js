@@ -23,6 +23,7 @@ import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFr
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
 import { semverLt, cliUpdateResult } from './cli-update.js';
+import { analyticsCommand } from './analytics-command.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -669,8 +670,6 @@ async function startSignIn() {
 }
 
 async function runAnalytics() {
-  // --report-output is set explicitly: a Finder-launched bundle's CWD is "/",
-  // which is not writable. $HOME is expanded by the pty's login shell.
   const { installed } = cliVersionState;
   if (installed && semverLt(installed, '0.4.1')) {
     showNotice({
@@ -681,9 +680,10 @@ async function runAnalytics() {
     });
     return;
   }
+  const help = await bridge.runner.runCapture('codemie analytics --help').catch(() => null);
   await runAction(
     'Analytics report',
-    'codemie analytics --report --open --report-output "$HOME/codemie-analytics.html"',
+    analyticsCommand(help?.stdout),
     'home',
     'Running automatically — no input needed.'
   );
