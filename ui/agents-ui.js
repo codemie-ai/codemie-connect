@@ -8,10 +8,11 @@
 // are toggled with `hidden` and never unmounted, so every list stays mounted at
 // once; sharing an instance would clear another screen's rows.
 //
-// 03-agents.png draws a list and a detail pane (EPMCDME-14655): the rows say
-// what is installed, the pane on the right says what the selected tool is, how
-// to run it and what its action is doing. Progress and failures live in the
-// pane, never in a modal, and the CLI's own output is not kept.
+// 03-agents.png draws a list and a detail pane (EPMCDME-14655). Here the
+// details open under the selected row instead, like Home's checklist: the
+// version state, how to run the tool and what its action is doing. Progress
+// and failures live there, never in a modal, and the CLI's own output is not
+// kept.
 import { StepStatus, makeStep } from './models.js';
 import { renderFailurePanel } from './failure-panel.js';
 import { screenSpinner } from './screen-loading.js';
@@ -55,13 +56,6 @@ export function summarise(agents) {
   };
 }
 
-// The action buttons currently on screen, so one click can disable them all.
-// The rows' are rebuilt by renderAgents, the pane's by renderPane.
-let rowButtons = [];
-let paneButtons = [];
-
-const EMPTY_PANE = 'Select a tool to see what it is and what you can do with it.';
-
 export function renderAgents(container, { agents, selected = null, progress = {} }, handlers = {}) {
   const { stepsUi, onInstall, onUpdate, onRemove, onSelect } = handlers;
   container.innerHTML = '';
@@ -74,20 +68,18 @@ export function renderAgents(container, { agents, selected = null, progress = {}
 
   container.appendChild(el('div', 'agents-note', 'Run a tool from a terminal. This screen only sets them up.'));
 
-  const body = el('div', 'agents-body');
   const list = el('div', 'agents-list');
-  const pane = el('div', 'agent-pane');
-  body.append(list, pane);
-  container.appendChild(body);
+  container.appendChild(list);
 
   stepsUi.renderSteps(list, agents.map((a) => makeStep({ id: a.command, title: a.name })));
-  rowButtons = [];
+  // Every action button on the screen, so one click can disable them all.
+  const screenButtons = [];
   for (const agent of agents) {
     stepsUi.setStatus(agent.command, statusOf(agent));
     stepsUi.setSubtitle(agent.command, subtitleOf(agent));
     const row = list.querySelector(`.step-row[data-id="${agent.command}"]`);
     if (row) {
-      row.appendChild(buildActions(agent, { onInstall, onUpdate, onRemove }, rowButtons));
+      row.appendChild(buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons));
       row.onclick = () => onSelect?.(agent.command);
       if (agent.command === selected) row.className = `${row.className} selected`.trim();
     }
@@ -95,8 +87,13 @@ export function renderAgents(container, { agents, selected = null, progress = {}
       row.title = agent.latest ? `A newer version is out. Update installs ${agent.latest}.` : 'A newer version is out. Update installs it.';
     }
   }
+  // One details block for the whole list. It opens under the selected row,
+  // the way Home's checklist opens its agent list in place.
+  const pane = el('div', 'agent-pane');
+  pane.hidden = true;
+  list.appendChild(pane);
   const agent = agents.find((a) => a.command === selected);
-  renderPane(container, agent, { progress: agent ? progress[agent.command] : undefined }, handlers);
+  renderPane(container, agent, { progress: agent ? progress[agent.command] : undefined });
 }
 
 // Marks the selected row without rebuilding the list. The class is `selected`,
@@ -108,29 +105,28 @@ export function setSelectedRow(container, command) {
   }
 }
 
-// Redraws only the detail pane. It is called for every streamed line and every
-// selection, so it must not touch the step list: renderSteps would wipe the
-// running row's spinner, its ACTIVE badge and its disabled buttons.
+// Redraws only the details under the selected row. It is called for every
+// streamed line and every selection, so it must not rebuild the step list:
+// renderSteps would wipe the running row's spinner, its ACTIVE badge and its
+// disabled buttons. It only moves the one details block under the right row.
+// The actions stay on the row itself, so the details carry no buttons.
 //
-// state: { progress, message, busy, action }. `message` overrides the failure
-// text; otherwise an errored agent shows its own actionMessage. `action` is the
-// label of the button whose action is running ('Install' | 'Update' | 'Remove'),
-// and `runningCommand` the agent it runs on: only that agent's pane shows the
-// busy label, every other agent's buttons are just disabled.
-export function renderPane(container, agent, state = {}, handlers = {}) {
+// state: { progress, message }. `message` overrides the failure text;
+// otherwise an errored agent shows its own actionMessage.
+export function renderPane(container, agent, state = {}) {
   const pane = container.querySelector('.agent-pane');
   if (!pane) return;
   pane.innerHTML = '';
-  paneButtons = [];
-  if (!agent) {
-    pane.appendChild(el('div', 'agent-pane-empty', EMPTY_PANE));
+  const row = agent ? container.querySelector(`.step-row[data-id="${agent.command}"]`) : null;
+  if (!agent || !row) {
+    pane.hidden = true;
     return;
   }
-  const { progress, message, busy, action, runningCommand } = state;
+  row.parentNode.insertBefore(pane, row.nextSibling);
+  pane.hidden = false;
+  const { progress, message } = state;
   const builtin = agent.command === BUILTIN_AGENT_COMMAND;
 
-  pane.appendChild(el('div', 'agent-pane-name', agent.name));
-  if (agent.description) pane.appendChild(el('div', 'agent-pane-desc', agent.description));
   pane.appendChild(el('div', 'agent-pane-version', versionLine(agent, builtin)));
   if (!builtin && agent.newerThanSupported) {
     pane.appendChild(el('div', 'agent-pane-detail', `Installed ${agent.current}. CodeMie supports ${agent.latest}.`));
@@ -138,9 +134,6 @@ export function renderPane(container, agent, state = {}, handlers = {}) {
   if (agent.installed && agent.launcher) {
     pane.appendChild(el('div', 'agent-pane-launcher', `Run it from a terminal: ${agent.launcher}`));
   }
-
-  const slot = buildActions(agent, handlers, paneButtons, { busy, action: agent.command === runningCommand ? action : undefined });
-  if (slot.children.length) pane.appendChild(slot);
   if (progress) pane.appendChild(el('div', 'agent-pane-progress', progress));
 
   const failure = message ?? (agent.actionStatus === 'error' ? agent.actionMessage : null);
@@ -169,7 +162,7 @@ const BUSY_LABEL = { Install: 'Installing…', Update: 'Updating…', Remove: 'R
 // the first leaves the list reading a half-done state. A click disables every
 // button on the screen and says what is running; the refresh after the action
 // draws the rows again with fresh buttons.
-function buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons = [], { busy = false, action } = {}) {
+function buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons = []) {
   const slot = el('div', 'agent-actions');
   slot.dataset.id = agent.command;
   // The built-in agent ships inside the CLI: the CLI refuses to update it and
@@ -180,14 +173,10 @@ function buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons = 
     const btn = el('button', `btn ${variant}`, label);
     btn.onclick = (e) => {
       e?.stopPropagation?.();
-      for (const b of [...rowButtons, ...paneButtons]) b.disabled = true;
+      for (const b of screenButtons) b.disabled = true;
       btn.textContent = BUSY_LABEL[label];
       fn(agent);
     };
-    if (busy) {
-      btn.disabled = true;
-      if (label === action) btn.textContent = BUSY_LABEL[label];
-    }
     screenButtons.push(btn);
     slot.appendChild(btn);
   };

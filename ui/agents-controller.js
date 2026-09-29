@@ -28,7 +28,6 @@ const SAFE_COMMAND = /^[A-Za-z0-9._-]+$/;
 // How the CLI marks a line that states a failure, and the glyph to strip off
 // it before the row shows it.
 const ERROR_LINE = /^\s*[✗✖×]\s|^\s*(Error|Failed)\b/i;
-const ACTION_LABEL = { Installing: 'Install', Updating: 'Update', Removing: 'Remove' };
 const ERROR_GLYPH = /^\s*[✗✖×]\s*/;
 const RESULT_LINE = /^\s*[✔✓⚠]\s*/;
 
@@ -55,20 +54,22 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // full render load() ends with keeps them.
   let selected = null;
   const progress = new Map();
-  // The button label ('Install' | 'Update' | 'Remove') of the running action.
-  let runningAction = null;
-  let runningCommand = null;
   const handlers = { stepsUi, onInstall: (a, o) => onInstall(a, o), onUpdate: (a) => onUpdate(a), onRemove: (a) => onRemove(a), onSelect: (c) => select(c) };
 
-  // Progress and selection redraw the pane alone. renderAgents would rebuild
+  // Progress and selection redraw the details alone. renderAgents would rebuild
   // the step list and wipe the running row's spinner, ACTIVE badge and disabled
   // buttons, so only load() calls it.
   function redrawPane() {
     const agent = lastAgents?.find((a) => a.command === selected);
-    renderPane(container, agent, { progress: progress.get(selected), busy: inFlight.size > 0, action: runningAction, runningCommand }, handlers);
+    renderPane(container, agent, { progress: progress.get(selected) });
   }
 
+  // The details open under a row like a dropdown: a second click closes them.
   function select(command) {
+    open(selected === command ? null : command);
+  }
+
+  function open(command) {
     selected = command;
     setSelectedRow(container, command);
     redrawPane();
@@ -143,7 +144,6 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // so it is handed back. `onLine` is Home's too: its picker shows the
   // command's output where the install was started from.
   async function runAction(agent, command, { onLine, note, verb = 'Installing' } = {}) {
-    const label = ACTION_LABEL[verb];
     // One at a time, see buildActions in agents-ui.js.
     if (inFlight.size) return { ok: false, message: 'Another tool is still being worked on.' };
     if (!SAFE_COMMAND.test(agent.command)) {
@@ -157,9 +157,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
     rowNotes.delete(agent.command);
     stepsUi.setStatus(agent.command, 'ACTIVE');
     stepsUi.startSpinner(agent.command);
-    runningAction = label;
-    runningCommand = agent.command;
-    redrawPane();
+    // The progress line lives in the details, so the agent being worked on
+    // opens them.
+    open(agent.command);
     const lines = [];
     let message = null;
     try {
@@ -189,8 +189,6 @@ export function createAgentsController({ container, runCapture, runStream, steps
     } finally {
       inFlight.delete(agent.command);
       progress.delete(agent.command);
-      runningAction = null;
-      runningCommand = null;
       await load({ silent: true });
     }
     return message ? { ok: false, message } : { ok: true };

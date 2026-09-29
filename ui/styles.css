@@ -940,29 +940,25 @@ body::before {
 .agents-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .agents-summary { font-size: 12px; color: var(--muted); }
 .agents-note { margin: 10px 0 4px; font-size: 12px; color: var(--dim); }
-.agents-body { display: flex; align-items: flex-start; gap: 20px; margin-top: 4px; }
-.agents-list { flex: 1 1 0; min-width: 0; margin-top: 0; }
+.agents-list { margin-top: 4px; }
 .agents-list .step-row { cursor: pointer; }
 .agents-list .step-row.selected { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent-blue); }
-/* Fixed beside the list: a long list scrolls under it instead of moving it. */
+/* Opens under the selected row, lined up with its title. */
 .agent-pane {
-  flex: 0 0 300px;
-  position: sticky;
-  top: 0;
-  padding: 16px 18px;
+  margin: 2px 12px 8px 38px;
+  padding: 10px 14px;
   border: 1px solid var(--border);
-  border-radius: var(--radius, 8px);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
   font-size: 12px;
   color: var(--muted);
+  animation: cm-rise 0.2s ease;
 }
-.agent-pane-name { font-size: 15px; font-weight: 700; color: var(--text); }
-.agent-pane-desc { margin: 4px 0 10px; }
+.agent-pane[hidden] { display: none; }
 .agent-pane-version { font-size: 13px; color: var(--text); }
 .agent-pane-detail, .agent-pane-launcher, .agent-pane-note { margin-top: 6px; }
 .agent-pane-launcher { font-family: var(--font-mono); font-size: 11px; color: var(--dim); }
 .agent-pane-progress { margin-top: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
-.agent-pane-empty { color: var(--dim); }
-.agent-pane .agent-actions { margin: 12px 0 0; }
 .agent-pane .failure-block { margin: 12px 0 0; }
 .agent-actions { display: flex; gap: 8px; margin: 6px 0 2px 26px; }
 .agent-actions .btn { width: auto; padding: 4px 12px; font-size: 12px; }

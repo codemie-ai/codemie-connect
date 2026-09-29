@@ -13,9 +13,28 @@ function makeEl(tag) {
     textContent: '',
     dataset: {},
     appendChild(c) {
+      c.remove?.();
       c._parent = el;
       el.children.push(c);
       return c;
+    },
+    // Real DOM semantics: moving a node detaches it first, a null reference
+    // appends, and inserting a node before itself leaves it where it is.
+    insertBefore(c, ref) {
+      if (ref === c) ref = c.nextSibling;
+      c.remove?.();
+      c._parent = el;
+      const i = ref ? el.children.indexOf(ref) : -1;
+      if (i < 0) el.children.push(c);
+      else el.children.splice(i, 0, c);
+      return c;
+    },
+    get parentNode() {
+      return el._parent || null;
+    },
+    get nextSibling() {
+      const p = el._parent;
+      return p ? p.children[p.children.indexOf(el) + 1] || null : null;
     },
     append(...cs) {
       cs.forEach((c) => el.appendChild(c));
@@ -670,7 +689,7 @@ test('the echoed command never shows as the progress text', async () => {
 // ---- Selection and per-agent progress (EPMCDME-14655) ----
 
 // An action held open on gemini, so the tests below can act mid-stream.
-async function midStream({ lines = ['- Downloading gemini'], code = 0, stderr = [] } = {}) {
+async function midStream({ lines = ['- Downloading gemini'], code = 0, stderr = [], preselect = true } = {}) {
   const container = makeEl('div');
   const stepsUi = fakeStepsUi();
   let release;
@@ -689,7 +708,7 @@ async function midStream({ lines = ['- Downloading gemini'], code = 0, stderr = 
     stepsUi,
   });
   await c.run();
-  c.select('gemini');
+  if (preselect) c.select('gemini');
   container.querySelector('.agent-actions[data-id="gemini"]').children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   const settle = async () => {
@@ -721,36 +740,34 @@ test('selecting another row mid-stream leaves the running row and its disabled b
   assert.equal(renderSteps(m.stepsUi), renders, 'select does not render the list');
   assert.equal(m.stepsUi.calls.length, before, 'select touches no stepsUi');
   assert.equal(runningButton.disabled, true);
-  assert.match(paneText(m.container), /Claude Code/);
+  assert.match(paneText(m.container), /codemie-claude/);
   assert.equal(m.container.querySelector('.step-row[data-id="claude"]').className.includes('selected'), true);
   assert.doesNotMatch(paneText(m.container), /Downloading gemini/, 'progress belongs to the row it came from');
   await m.settle();
 });
 
-test('the pane of the running agent is busy: its buttons are disabled', async () => {
-  const m = await midStream();
-  const buttons = m.container.querySelector('.agent-pane')._all((n) => n._tag === 'button');
-  assert.ok(buttons.length > 0 && buttons.every((b) => b.disabled === true));
+test('starting an action opens its details under the row, so the progress is seen', async () => {
+  const m = await midStream({ preselect: false });
+  const row = m.container.querySelector('.step-row[data-id="gemini"]');
+  assert.ok(row.nextSibling === m.container.querySelector('.agent-pane'), 'the details sit right under the gemini row');
+  assert.equal(m.container.querySelector('.agent-pane').hidden, false);
+  assert.match(paneText(m.container), /Downloading gemini/);
   await m.settle();
 });
 
-test('only the running agent shows the busy label; another selected agent keeps its own labels, disabled', async () => {
+test('a second click on the open row closes its details', async () => {
   const m = await midStream();
-  const buttonsOf = () => m.container.querySelector('.agent-pane')._all((n) => n._tag === 'button');
-  assert.ok(buttonsOf().some((b) => b.textContent === 'Installing…'), 'running agent: busy label');
-  m.c.select('claude-acp');
-  const other = buttonsOf();
-  assert.ok(other.length > 0 && other.every((b) => b.disabled === true), 'other agent: disabled');
-  assert.ok(other.every((b) => !/ing…$/.test(b.textContent)), `other agent: normal labels, got ${other.map((b) => b.textContent)}`);
-  m.c.select('gemini');
-  assert.ok(buttonsOf().some((b) => b.textContent === 'Installing…'), 'back on the running agent: busy label');
   await m.settle();
+  m.c.select('gemini');
+  assert.equal(m.container.querySelector('.agent-pane').hidden, true);
+  assert.equal(m.container.querySelector('.step-row[data-id="gemini"]').className.includes('selected'), false);
 });
+
 
 test('the selection survives the reload an action ends with', async () => {
   const m = await midStream();
   await m.settle();
-  assert.match(paneText(m.container), /Gemini CLI/);
+  assert.equal(m.container.querySelector('.agent-pane').hidden, false);
   assert.equal(m.container.querySelector('.step-row[data-id="gemini"]').className.includes('selected'), true);
   await m.c.refresh();
   assert.equal(m.container.querySelector('.step-row[data-id="gemini"]').className.includes('selected'), true);
@@ -771,7 +788,7 @@ test('a failed action leaves its plain-language failure in the pane after the si
   assert.match(block._text(), /Installing needs a connection\./);
 });
 
-test('a selected agent that is gone from the reloaded list gives the empty pane, no throw', async () => {
+test('a selected agent that is gone from the reloaded list closes the details, no throw', async () => {
   const container = makeEl('div');
   let list = fixture;
   const c = createAgentsController({
@@ -783,7 +800,7 @@ test('a selected agent that is gone from the reloaded list gives the empty pane,
   c.select('gemini');
   list = fixture.replace(/  Gemini CLI[\s\S]*?\n\n/, '');
   await assert.doesNotReject(c.refresh());
-  assert.match(paneText(container), /Select a tool/);
+  assert.equal(container.querySelector('.agent-pane').hidden, true);
 });
 
 test('Home install still receives every line, echo included', async () => {
