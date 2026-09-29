@@ -8,13 +8,13 @@ import { fileURLToPath } from 'node:url';
 function makeEl(tag) {
   const el = {
     _tag: tag,
-    _children: [],
+    children: [],
     className: '',
     textContent: '',
     dataset: {},
     appendChild(c) {
       c._parent = el;
-      el._children.push(c);
+      el.children.push(c);
       return c;
     },
     append(...cs) {
@@ -26,7 +26,7 @@ function makeEl(tag) {
       let found = null;
       (function walk(n) {
         if (found) return;
-        for (const c of n._children) {
+        for (const c of n.children) {
           if (hit(c)) {
             found = c;
             return;
@@ -40,7 +40,7 @@ function makeEl(tag) {
       const m = sel.match(/^\.([\w-]+)$/);
       const out = [];
       (function walk(n) {
-        for (const c of n._children) {
+        for (const c of n.children) {
           if (m && c.className.split(' ').includes(m[1])) out.push(c);
           walk(c);
         }
@@ -51,13 +51,13 @@ function makeEl(tag) {
       const out = [];
       (function walk(n) {
         if (pred(n)) out.push(n);
-        n._children.forEach(walk);
+        n.children.forEach(walk);
       })(el);
       return out;
     },
     remove() {
       const p = el._parent;
-      if (p) p._children = p._children.filter((c) => c !== el);
+      if (p) p.children = p.children.filter((c) => c !== el);
     },
     classList: {
       add(c) {
@@ -73,13 +73,13 @@ function makeEl(tag) {
       },
     },
     _text() {
-      return el._children.length ? el._children.map((c) => c._text()).join(' ') : el.textContent;
+      return el.children.length ? el.children.map((c) => c._text()).join(' ') : el.textContent;
     },
   };
   Object.defineProperty(el, 'innerHTML', {
     get: () => '',
     set() {
-      el._children = [];
+      el.children = [];
     },
   });
   return el;
@@ -279,7 +279,7 @@ test('clicking Install on a not-installed row runs the exact install command wit
     stepsUi: fakeStepsUi(),
   }).run();
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
-  slot._children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(runStream.calls, ['codemie install gemini']);
 });
@@ -293,9 +293,9 @@ test('clicking Update on an installed row runs the exact update command; Remove 
     runStream: runStream.fn,
     stepsUi: fakeStepsUi(),
   }).run();
-  container.querySelector('.agent-actions[data-id="opencode"]')._children[0].onclick({ stopPropagation() {} }); // Update
+  container.querySelector('.agent-actions[data-id="opencode"]').children[0].onclick({ stopPropagation() {} }); // Update
   await new Promise((r) => setImmediate(r));
-  container.querySelector('.agent-actions[data-id="opencode"]')._children[1].onclick({ stopPropagation() {} }); // Remove
+  container.querySelector('.agent-actions[data-id="opencode"]').children[1].onclick({ stopPropagation() {} }); // Remove
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(runStream.calls, ['codemie update opencode', 'codemie uninstall opencode']);
 });
@@ -333,7 +333,7 @@ test('while an action is in flight the row is ACTIVE with a spinner, and settlin
   await c.run();
   textsDuringRefresh.length = 0;
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
-  slot._children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
 
   assert.equal(stepsUi.calls.some((call) => call[0] === 'setStatus' && call[1] === 'gemini' && call[2] === 'ACTIVE'), true);
@@ -363,7 +363,7 @@ test('a failing action leaves the row actionMessage equal to the accumulated std
   });
   await c.run();
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
-  slot._children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.equal(c.getLastAgents().find((a) => a.command === 'gemini').actionMessage, 'boom: install failed');
@@ -384,7 +384,7 @@ test('accumulated text matching a connection-error pattern renders as "Installin
   });
   await c.run();
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
-  slot._children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.equal(c.getLastAgents().find((a) => a.command === 'gemini').actionMessage, 'Installing needs a connection.');
@@ -400,7 +400,7 @@ test('a Remove that fails for want of a connection says removing, not installing
   const c = createAgentsController({ container, runCapture: fakeRunCapture(), runStream, stepsUi });
   await c.run();
   const slot = container.querySelector('.agent-actions[data-id="opencode"]');
-  slot._children[slot._children.length - 1].onclick({ stopPropagation() {} }); // Remove
+  slot.children[slot.children.length - 1].onclick({ stopPropagation() {} }); // Remove
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.equal(c.getLastAgents().find((a) => a.command === 'opencode').actionMessage, 'Removing needs a connection.');
@@ -425,7 +425,7 @@ test('an agent.command with shell metacharacters is never handed to runStream', 
   });
   await c.run();
   const slot = container.querySelector('.agent-actions[data-id="gemini; rm -rf /"]');
-  slot._children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(runStream.calls, []);
 });
@@ -450,10 +450,10 @@ test('a second click on the same row while its action is in flight does not fire
   });
   await c.run();
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
-  slot._children[0].onclick({ stopPropagation() {} });
-  slot._children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
   // Another row too: npm installs into one shared folder, so one at a time.
-  container.querySelector('.agent-actions[data-id="claude"]')._children[0].onclick({ stopPropagation() {} });
+  container.querySelector('.agent-actions[data-id="claude"]').children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   release();
   await new Promise((r) => setImmediate(r));
@@ -477,7 +477,7 @@ test('a failing action with no real output never shows the echoed command as the
   });
   await c.run();
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
-  slot._children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.doesNotMatch(c.getLastAgents().find((a) => a.command === 'gemini').actionMessage, /^> codemie install/);
@@ -499,7 +499,7 @@ test('ENETUNREACH and EAI_AGAIN also render as "Installing needs a connection."'
     });
     await c.run();
     const slot = container.querySelector('.agent-actions[data-id="gemini"]');
-    slot._children[0].onclick({ stopPropagation() {} });
+    slot.children[0].onclick({ stopPropagation() {} });
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
     assert.equal(c.getLastAgents().find((a) => a.command === 'gemini').actionMessage, 'Installing needs a connection.', `expected ${errCode} to be treated as no-network`);
@@ -552,7 +552,7 @@ test('a failure that keeps printing after its error shows the error, not the tra
   });
   await c.run();
   const slot = container.querySelector('.agent-actions[data-id="claude-acp"]');
-  slot._children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   const row = c.getLastAgents().find((a) => a.command === 'claude-acp');
@@ -609,7 +609,7 @@ test('after an Update the row keeps the CLI\'s result line, and the next action 
   });
   await c.run();
   c.select('opencode');
-  container.querySelector('.agent-actions[data-id="opencode"]')._children[0].onclick({ stopPropagation() {} });
+  container.querySelector('.agent-actions[data-id="opencode"]').children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   const row = () => c.getLastAgents().find((a) => a.command === 'opencode');
@@ -617,7 +617,7 @@ test('after an Update the row keeps the CLI\'s result line, and the next action 
   assert.notEqual(row().actionStatus, 'error');
   assert.ok(seenInPane.some((t) => t.includes('Checking Gemini CLI for updates...') && !t.includes('- Checking')), 'the "- " spinner frame is dropped');
   lines = [];
-  container.querySelector('.agent-actions[data-id="opencode"]')._children[0].onclick({ stopPropagation() {} });
+  container.querySelector('.agent-actions[data-id="opencode"]').children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.equal(row().actionMessage, undefined);
@@ -636,7 +636,7 @@ test('an install that hits the CLI\'s time limit says so in minutes', async () =
     stepsUi: fakeStepsUi(),
   });
   await c.run();
-  container.querySelector('.agent-actions[data-id="gemini"]')._children[0].onclick({ stopPropagation() {} });
+  container.querySelector('.agent-actions[data-id="gemini"]').children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.equal(c.getLastAgents().find((a) => a.command === 'gemini').actionMessage, 'Took longer than 5 minutes. Check your connection and try again.');
@@ -660,7 +660,7 @@ test('the echoed command never shows as the progress text', async () => {
   });
   await c.run();
   c.select('gemini');
-  container.querySelector('.agent-actions[data-id="gemini"]')._children[0].onclick({ stopPropagation() {} });
+  container.querySelector('.agent-actions[data-id="gemini"]').children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   assert.ok(!seen[0].includes('> codemie'), `no echoed command in ${seen[0]}`);
   assert.ok(seen[1].includes('Installing Gemini CLI...'));
@@ -690,7 +690,7 @@ async function midStream({ lines = ['- Downloading gemini'], code = 0, stderr = 
   });
   await c.run();
   c.select('gemini');
-  container.querySelector('.agent-actions[data-id="gemini"]')._children[0].onclick({ stopPropagation() {} });
+  container.querySelector('.agent-actions[data-id="gemini"]').children[0].onclick({ stopPropagation() {} });
   await new Promise((r) => setImmediate(r));
   const settle = async () => {
     release();
@@ -716,7 +716,7 @@ test('selecting another row mid-stream leaves the running row and its disabled b
   const m = await midStream();
   const before = m.stepsUi.calls.length;
   const renders = renderSteps(m.stepsUi);
-  const runningButton = m.container.querySelector('.agent-actions[data-id="gemini"]')._children[0];
+  const runningButton = m.container.querySelector('.agent-actions[data-id="gemini"]').children[0];
   m.c.select('claude');
   assert.equal(renderSteps(m.stepsUi), renders, 'select does not render the list');
   assert.equal(m.stepsUi.calls.length, before, 'select touches no stepsUi');

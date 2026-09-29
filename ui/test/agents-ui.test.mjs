@@ -5,13 +5,13 @@ import assert from 'node:assert/strict';
 function makeEl(tag) {
   const el = {
     _tag: tag,
-    _children: [],
+    children: [],
     className: '',
     textContent: '',
     dataset: {},
     appendChild(c) {
       c._parent = el;
-      el._children.push(c);
+      el.children.push(c);
       return c;
     },
     append(...cs) {
@@ -25,7 +25,7 @@ function makeEl(tag) {
     },
     remove() {
       const p = el._parent;
-      if (p) p._children = p._children.filter((c) => c !== el);
+      if (p) p.children = p.children.filter((c) => c !== el);
     },
     classList: {
       add(c) {
@@ -42,13 +42,13 @@ function makeEl(tag) {
       },
     },
     _text() {
-      return el._children.length ? el._children.map((c) => c._text()).join(' ') : el.textContent;
+      return el.children.length ? el.children.map((c) => c._text()).join(' ') : el.textContent;
     },
     _all(pred) {
       const out = [];
       (function walk(n) {
         if (pred(n)) out.push(n);
-        n._children.forEach(walk);
+        n.children.forEach(walk);
       })(el);
       return out;
     },
@@ -56,7 +56,7 @@ function makeEl(tag) {
   Object.defineProperty(el, 'innerHTML', {
     get: () => '',
     set() {
-      el._children = [];
+      el.children = [];
     },
   });
   return el;
@@ -67,7 +67,7 @@ function matches(n, sel) {
   return n.className.split(' ').includes(m[1]) && (!m[2] || n.dataset.id === m[2]);
 }
 function find(root, sel) {
-  for (const c of root._children) {
+  for (const c of root.children) {
     if (matches(c, sel)) return c;
     const f = find(c, sel);
     if (f) return f;
@@ -159,7 +159,7 @@ test('an installed agent offers Remove, one that is not offers Install, the buil
   const subs = Object.fromEntries(stepsUi.calls.filter((c) => c[0] === 'setSubtitle').map((c) => [c[1], c[2]]));
   assert.match(subs['codemie-code'], /built into the CLI$/);
   const slot = container.querySelector('.agent-actions[data-id="gemini"]');
-  slot._children[0].onclick({ stopPropagation() {} });
+  slot.children[0].onclick({ stopPropagation() {} });
   assert.deepEqual(seen, [['install', 'gemini']]);
 });
 
@@ -167,11 +167,11 @@ test('a clicked action disables every button on the screen and says what is runn
   const container = makeEl('div');
   const noop = () => {};
   renderAgents(container, { agents }, { stepsUi: fakeStepsUi(), onInstall: noop, onUpdate: noop, onRemove: noop });
-  const [remove] = container.querySelector('.agent-actions[data-id="claude"]')._children;
+  const [remove] = container.querySelector('.agent-actions[data-id="claude"]').children;
   remove.onclick({ stopPropagation() {} });
   assert.equal(remove.textContent, 'Removing…');
   assert.equal(remove.disabled, true);
-  const [install] = container.querySelector('.agent-actions[data-id="gemini"]')._children;
+  const [install] = container.querySelector('.agent-actions[data-id="gemini"]').children;
   assert.equal(install.disabled, true, 'other rows wait for it too');
 });
 
@@ -422,6 +422,6 @@ test('a click in the pane disables the row buttons and the pane buttons together
   const container = makeEl('div');
   renderAgents(container, { agents: [claude, gemini], selected: 'claude' }, { stepsUi: fakeStepsUi(), ...handlers });
   paneButtons(container)[0].onclick({ stopPropagation() {} });
-  const rowButton = container.querySelector('.agent-actions[data-id="gemini"]')._children[0];
+  const rowButton = container.querySelector('.agent-actions[data-id="gemini"]').children[0];
   assert.equal(rowButton.disabled, true);
 });

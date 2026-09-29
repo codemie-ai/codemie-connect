@@ -138,7 +138,7 @@ export function renderPane(container, agent, state = {}, handlers = {}) {
   }
 
   const slot = buildActions(agent, handlers, paneButtons, { busy, action });
-  if (slot._children.length) pane.appendChild(slot);
+  if (slot.children.length) pane.appendChild(slot);
   if (progress) pane.appendChild(el('div', 'agent-pane-progress', progress));
 
   const failure = message ?? (agent.actionStatus === 'error' ? agent.actionMessage : null);
