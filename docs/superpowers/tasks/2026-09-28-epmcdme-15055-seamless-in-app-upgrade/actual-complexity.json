@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 3, "label": "M" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 5,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches three components across two layers: the NSIS installer hooks (preinstall silent-uninstall, postuninstall PATH cleanup), the app_updater.rs command module (platform-specific launch_installer for Windows /S silent spawn vs. macOS DMG bundle-swap, manifest/platform-entry resolution), and the shared AppState struct in state.rs (new latest_manifest cache field) — touching a core shared utility struct is what pushes this past a single self-contained component." },
+    { "dimension": "technical_risk", "reason": "Self-update/auto-install surface: the installer silently uninstalls the prior version via a registry-read + ExecWait before install, and download_and_install saves and launches a downloaded binary with no checksum or signature verification — explicitly flagged in-code as a deliberate, tracked gap. Existing rollback logic (staged/old bundle rename with fallback) and unit test coverage (dmg swap, version compare, platform entry) offset some of this, but the missing integrity check on an auto-executed installer is a real security-sensitive gap, so this is scored above the 'well-established pattern' band." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped: touches core shared utility (AppState.latest_manifest in state.rs) alongside the installer-hook and command-module changes.",
+    "Technical Risk bumped: security-sensitive self-update path (silent NSIS uninstall/install, no checksum/signature verification on the downloaded installer binary before execution)."
+  ],
+  "split_recommendation": null
+}

@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-09-28-epmcdme-15055-seamless-in-app-upgrade (2026-09-29)
+
+- **Installer download lacks artifact/host verification** — `src-tauri/src/commands/app_updater.rs:311-370` (download_and_install) — `installer_url` comes verbatim from the fetched manifest with no allow-listed-host/scheme check, and the downloaded bytes are launched via `launch_installer` with the silent `/S` flag and no checksum/signature verification before execution. Pre-existing: explicitly scoped out by the original task ("no artifact verification (deferred, leave a comment marking the hook point)"); the code already carries the marker comment at `app_updater.rs:368-370` pointing at a future ticket.
