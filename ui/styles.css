@@ -681,6 +681,10 @@ body::before {
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: var(--gradient-primary-btn);
+  /* Sized to the border box: by default the gradient fits inside the
+     transparent border and repeats under it, which left a 1px blue edge
+     on the left in dark (EPMCDME-15383). */
+  background-origin: border-box;
   color: var(--color-text-inverse);
   font-size: 13px;
   font-weight: 600;
