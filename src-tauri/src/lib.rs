@@ -12,15 +12,50 @@ pub fn run() {
         .setup(|app| {
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
-            // Capture PATH before injection so detection searches the pre-bundle PATH.
-            let pre_injection_path = std::env::var("PATH").unwrap_or_default();
+            // Capture PATH before injection so detection searches the pre-bundle PATH,
+            // minus the dirs whose `codemie` the app itself put there: an earlier
+            // launch persisted them, and they are not the user's own CLI.
+            let mut own_dirs: Vec<std::path::PathBuf> = Vec::new();
+            for base in [
+                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())),
+                app.path().resource_dir().ok(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                own_dirs.push(base.join("bin"));
+                own_dirs.push(base);
+            }
+            let app_dirs = own_dirs.clone();
+            let agents_bin = commands::npm_env::npm_env().bin_dir;
+            if !agents_bin.is_empty() {
+                own_dirs.push(agents_bin.into());
+            }
+            let pre_injection_path = commands::handshake::without_dirs(
+                &std::env::var("PATH").unwrap_or_default(),
+                &own_dirs,
+            );
 
             // Detect an existing CodeMie CLI before touching PATH ourselves. If found,
             // the bundle must not be installed or registered at all (EPMCDME-14581).
             let existing_cli_detected =
                 commands::handshake::probe_global_codemie(&pre_injection_path, &|p| p.exists());
 
+            // Commands run through a login shell, which reads ~/.zprofile again,
+            // so the blocks earlier launches wrote must not put the wrong
+            // `codemie` first.
+            commands::pathman::normalize_persisted_path(existing_cli_detected);
+
             let bundled_injected = if existing_cli_detected {
+                // An earlier launch may have put this app's own bin dir on the
+                // login PATH ahead of the user's CLI. Left there, every command
+                // would still run the bundled CLI (EPMCDME-15304: an update the
+                // user's own 0.15.4 never needed, reported as 0.15.2).
+                let path = std::env::var("PATH").unwrap_or_default();
+                std::env::set_var("PATH", commands::handshake::without_dirs(&path, &app_dirs));
+                // The user's CLI is used, but the tools the app installs still
+                // go to ~/.codemie/agents, which terminals must be able to find.
+                commands::pathman::persist_agents_bin();
                 false
             } else {
                 let injected = commands::pathman::inject_bundled_bin_path(app.handle()).is_ok();
@@ -36,7 +71,7 @@ pub fn run() {
             // The bundled runtime and CLI entry live under resource_dir(): node/node.exe
             // on Windows (tauri.windows.conf.json), node/bin/node on macOS
             // (tauri.macos.conf.json). Skipped entirely when an existing CLI takes
-            // precedence, so run_self_update falls back to the PATH-resolved `codemie`
+            // precedence, so run_self_update updates the PATH-resolved `codemie`
             // shim instead of a bundled binary that was never installed.
             let (node_exe, cli_entry) = if existing_cli_detected {
                 (std::path::PathBuf::new(), std::path::PathBuf::new())
@@ -94,6 +129,7 @@ pub fn run() {
             commands::runner::run_fresh_env,
             commands::runner::run_stream,
             commands::runner::run_self_update,
+            commands::runner::cli_is_bundled,
             commands::pathman::persist_to_zprofile,
             commands::pathman::augment_path,
             commands::inspector::check_git,
@@ -121,6 +157,7 @@ pub fn run() {
             commands::pty::spawn_external_ps,
             commands::logger::log_line,
             commands::logger::open_log,
+            commands::logger::open_cli_debug_log,
             commands::window::set_window_height,
             commands::window::close_app,
             commands::smoke::smoke_mode,

@@ -1,0 +1,18 @@
+
+📦 Agent Update Status:
+
+  CodeMie Code
+    Current: 0.15.2
+    Latest:  0.15.2 (up to date)
+
+  Claude Code
+    Current: 2.1.269
+    Latest:  2.1.269 (up to date)
+
+  OpenCode CLI
+    Current: 1.18.31
+    Latest:  1.18.32 (update available)
+
+1 update available
+
+💡 Run 'codemie update' to install updates

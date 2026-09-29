@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Make the guided-setup PTY driver work correctly on Windows by recording real Windows CLI PTY behavior, fixing setup-driver.js/setup-parse.js only if divergence from the macOS contract is proven, and adding Windows real-stream tests.",
+  "generated": "2026-09-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "requirements_clarity", "reason": "Task description names the parser module ui/setup-prompt.js, but the real file is ui/setup-parse.js; it also claims six 'real stream' tests where only four are literally titled that way. Fix scope is explicitly conditional ('only if the recording proves divergence'), so the exact deliverable can't be pinned down until the Windows recording exists." },
+    { "dimension": "technical_risk", "reason": "No exact precedent for Windows powershell.exe PTY chunking/echo/redraw timing exists in the codebase (only macOS zsh captures); the driver's dedup/idle-timer logic is dense and timing-sensitive, and any fix must not regress the existing macOS 'real stream' tests/fixtures, which the ticket requires stay untouched." },
+    { "dimension": "file_change_estimate", "reason": "Likely touches setup-driver.js and setup-driver.test.mjs (modified), plus several new Windows fixture JSON files under ui/test/fixtures/setup/ and up to six new 'real stream' test cases, across two directories (ui/, ui/test/fixtures/setup/); setup-parse.js only if divergence is proven." }
+  ],
+  "red_flags_applied": [
+    "Requirements Clarity bumped from M to L: task description contains two factual discrepancies (wrong parser filename, wrong real-stream test count) and the production-code fix scope is explicitly conditional on an artifact that doesn't exist yet (the Windows recording)."
+  ],
+  "split_recommendation": null
+}

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { detectPrompt } from '../setup-parse.js';
+import { detectPrompt, detectFailure } from '../setup-parse.js';
 
 function fixture(id) {
   const p = fileURLToPath(new URL(`fixtures/setup/${id}.json`, import.meta.url));
@@ -11,6 +11,7 @@ function fixture(id) {
 
 const CASES = [
   ['gate',          'list',    'What would you like to do?'],
+  ['updateProfile', 'list',    'Select profile to update:'],
   ['storage',       'list',    'Where would you like to store this configuration?'],
   ['provider',      'list',    'Choose your LLM provider:'],
   ['codemieUrl',    'input',   'CodeMie organization URL:'],
@@ -39,6 +40,16 @@ for (const [id, kind, msgSnippet] of CASES) {
 test('gate options and selectedIndex', () => {
   const r = detectPrompt(fixture('gate'));
   assert.deepEqual(r.options, ['Add a new profile', 'Update an existing profile', 'Cancel']);
+  assert.equal(r.selectedIndex, 0);
+});
+
+// Recorded 2026-09-23 from the bundled CLI 0.15.2 run as `codemie setup` from
+// /, answering the gate "Update an existing profile". inquirer shows seven
+// entries at a time and says so on a dimmed line under them (paginator.js:
+// "(Move up and down to reveal more choices)"); that line is not a profile.
+test('updateProfile options are the visible page, without the pagination hint', () => {
+  const r = detectPrompt(fixture('updateProfile'));
+  assert.deepEqual(r.options, ['Mert', 'MertPersonal', 'test', 'test1', 'test2', 'codemie', 'test3']);
   assert.equal(r.selectedIndex, 0);
 });
 
@@ -209,4 +220,63 @@ test('a list question with no visible options returns null', () => {
   const screen = Array(30).fill('');
   screen[29] = '? Choose your LLM provider: (Use arrow keys)';
   assert.equal(detectPrompt(screen), null);
+});
+
+// EPMCDME-14588. Two failures the CLI reports on screen, both captured from the
+// real CLI (0.14.1) and stored as fixtures. Neither arrives as a prompt: the
+// first is a warning the flow continues past, the second precedes exit 1.
+test('the CodeMie auth timeout is classified, with the CLI\'s own reason', () => {
+  const r = detectFailure(fixture('authTimeout'));
+  assert.equal(r.id, 'authTimeout');
+  assert.equal(r.message, 'Authentication timeout - no response received');
+});
+
+test('Ollama not running is classified', () => {
+  const r = detectFailure(fixture('ollamaNotRunning'));
+  assert.equal(r.id, 'ollamaDown');
+  assert.equal(r.message, 'Ollama is not running');
+});
+
+test('a healthy screen carries no failure', () => {
+  assert.equal(detectFailure(fixture('provider')), null);
+  assert.equal(detectFailure(fixture('codemieUrl')), null);
+});
+
+// The warning wraps at the terminal's width: the reason itself stays on the
+// anchor row, but the sentence does not, so a classifier that reads only whole
+// lines still has to find it.
+test('the wrapped warning line is still classified', () => {
+  const screen = Array(30).fill('');
+  screen[10] = '⚠️  Could not check for mandatory integrations (Authentication timeout - no response received). Conti';
+  screen[11] = 'nuing with normal provider setup.';
+  assert.equal(detectFailure(screen).message, 'Authentication timeout - no response received');
+});
+
+// detectPrompt keeps its own contract: the failure screen's last question is a
+// real prompt and must still be reported as one.
+test('a failure screen still reports its open prompt to detectPrompt', () => {
+  const r = detectPrompt(fixture('authTimeout'));
+  assert.equal(r.id, 'codemieUrl');
+});
+
+// CR-001: the reason is a bare error.message from the CLI's catch-all, so it can
+// carry parentheses of its own. Stopping at the first ')' returned a fragment.
+test('a reason containing parentheses is captured whole', () => {
+  const screen = Array(30).fill('');
+  screen[10] = '⚠️  Could not check for mandatory integrations (connect ECONNREFUSED (127.0.0.1:443)). Continuing';
+  assert.equal(detectFailure(screen).message, 'connect ECONNREFUSED (127.0.0.1:443)');
+});
+
+// The reason is only guaranteed to START on the anchor row. The CLI's message
+// comes from a bare error.message, and a longer one pushes the closing ')' onto
+// the next row, where a single-row read finds nothing and falls back to generic
+// text -- the one thing the acceptance criteria rule out.
+test('a reason whose closing parenthesis wrapped to the next row is still read', () => {
+  const reason = 'connect ETIMEDOUT some.very.long.host.name.example.com:443 after 120000ms';
+  const sentence = `⚠️  Could not check for mandatory integrations (${reason}). Continuing with normal provider setup.`;
+  const screen = Array(30).fill('');
+  screen[10] = sentence.slice(0, 100);   // wrapped exactly as a 100-column terminal does
+  screen[11] = sentence.slice(100);
+  assert.ok(screen[10].indexOf(')') === -1, 'the closing paren really is on the next row');
+  assert.equal(detectFailure(screen).message, reason);
 });

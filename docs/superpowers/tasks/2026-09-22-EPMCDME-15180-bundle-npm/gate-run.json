@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-15180-bundle-npm",
+  "head": "95162679e51048053a1793e180403f46684a28b6",
+  "runner": "npm",
+  "started_at": "2026-09-22T09:44:28Z",
+  "completed_at": "2026-09-22T09:50:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1185,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3780,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2787,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "136/136 node:test assertions pass. Guide's Skip-if (no UI logic changed) applies to this Rust-only diff, but caller explicitly required this gate as an acceptance criterion for EPMCDME-15180, so it was run rather than skipped."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 14918,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "102 passed; 0 failed (full suite, default parallelism). Run twice consecutively at default parallelism per caller instruction to confirm the previously flaking commands::pty::tests::kill_terminates_real_child (root cause: env::set_var(\"HOME\", ...) in test code racing with a real-subprocess test) is fixed; both runs green (10.95s and 10.40s for the lib test binary). No thread-count reduction was applied."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "N/A",
+      "notes": "Out of scope: caller's dispatch listed exactly cargo fmt --check, cargo clippy, cargo test, npm test as the four acceptance-criteria gates; build was not requested."
+    }
+  ],
+  "failures": {}
+}

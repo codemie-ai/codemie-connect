@@ -26,13 +26,51 @@ pub fn format_line(tag: &str, text: &str, iso: Option<&str>) -> String {
     format!("[{ts}] [{tag}] {text}")
 }
 
-fn log_dir() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+#[cfg(not(windows))]
+fn log_dir_with(home: &str) -> String {
     format!("{home}/Library/Logs/CodeMie")
+}
+#[cfg(windows)]
+fn log_dir_with(profile: &str) -> String {
+    format!(r"{profile}\AppData\Local\CodeMie\Logs")
+}
+
+#[cfg(not(windows))]
+fn log_dir() -> String {
+    log_dir_with(&std::env::var("HOME").unwrap_or_default())
+}
+#[cfg(windows)]
+fn log_dir() -> String {
+    log_dir_with(&std::env::var("USERPROFILE").unwrap_or_default())
 }
 
 pub fn log_path() -> String {
     format!("{}/codemie_wizard.log", log_dir())
+}
+
+fn ensure_log_readable(path: &str) -> CmdResult<()> {
+    std::fs::File::open(path)
+        .map(|_| ())
+        .map_err(|_| InstallerError::Other(format!("log file not found or unreadable: {path}")))
+}
+
+#[cfg(not(windows))]
+fn spawn_open(path: &str) -> CmdResult<()> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map_err(InstallerError::Io)?;
+    Ok(())
+}
+#[cfg(windows)]
+fn spawn_open(path: &str) -> CmdResult<()> {
+    // "" is the required window-title arg for `start`, so a spaced path isn't
+    // mistaken for it; this invokes the OS default handler for the file.
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "", path])
+        .spawn()
+        .map_err(InstallerError::Io)?;
+    Ok(())
 }
 
 /// Append a tagged line to the log file. Logging must never crash the app.
@@ -54,18 +92,68 @@ pub fn log_line(text: String, tag: String) {
     write_line(&text, &tag);
 }
 
+/// Pure: the CLI's own debug log for `date`, the file its logger writes:
+/// `<CODEMIE_HOME or home/.codemie>/logs/debug-YYYY-MM-DD.log`, dated in UTC
+/// the way the CLI dates it (`new Date().toISOString()`).
+pub(crate) fn cli_debug_log_path_with(
+    codemie_home: Option<&str>,
+    home: &str,
+    date: &str,
+) -> String {
+    let base = match codemie_home {
+        Some(h) if !h.is_empty() => h.to_string(),
+        _ => std::path::Path::new(home)
+            .join(".codemie")
+            .to_string_lossy()
+            .into_owned(),
+    };
+    std::path::Path::new(&base)
+        .join("logs")
+        .join(format!("debug-{date}.log"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Health's "Open today's log": the CLI's debug log for today, which is what
+/// `codemie doctor` and every other CLI command write to. The app's own
+/// codemie_wizard.log is a different, cumulative file.
+#[tauri::command]
+pub fn open_cli_debug_log() -> CmdResult<()> {
+    #[cfg(not(windows))]
+    let home = std::env::var("HOME").unwrap_or_default();
+    #[cfg(windows)]
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let codemie_home = std::env::var("CODEMIE_HOME").ok();
+    let date = Utc::now().format("%Y-%m-%d").to_string();
+    let path = cli_debug_log_path_with(codemie_home.as_deref(), &home, &date);
+    ensure_log_readable(&path)?;
+    spawn_open(&path)
+}
+
 #[tauri::command]
 pub fn open_log() -> CmdResult<()> {
-    std::process::Command::new("open")
-        .arg(log_path())
-        .spawn()
-        .map_err(InstallerError::Io)?;
-    Ok(())
+    let path = log_path();
+    ensure_log_readable(&path)?;
+    spawn_open(&path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_debug_log_is_the_dated_file_under_codemie_logs() {
+        let p = cli_debug_log_path_with(None, "/Users/u", "2026-09-28");
+        assert_eq!(
+            p,
+            std::path::Path::new("/Users/u/.codemie/logs/debug-2026-09-28.log").to_string_lossy()
+        );
+        let custom = cli_debug_log_path_with(Some("/opt/cm"), "/Users/u", "2026-09-28");
+        assert_eq!(
+            custom,
+            std::path::Path::new("/opt/cm/logs/debug-2026-09-28.log").to_string_lossy()
+        );
+    }
 
     // Ported from test/logger.test.js.
     #[test]
@@ -81,5 +169,36 @@ mod tests {
         assert!(line.starts_with('['));
         assert!(line.ends_with("] [INF] x"));
         assert!(line.contains('T') && line.contains("Z]"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn log_dir_uses_userprofile_appdata_local_codemie_logs() {
+        assert_eq!(
+            log_dir_with(r"C:\Users\alice"),
+            r"C:\Users\alice\AppData\Local\CodeMie\Logs"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn log_dir_uses_home_library_logs_codemie() {
+        assert_eq!(
+            log_dir_with("/Users/alice"),
+            "/Users/alice/Library/Logs/CodeMie"
+        );
+    }
+
+    #[test]
+    fn ensure_log_readable_errors_for_missing_file() {
+        assert!(ensure_log_readable("/definitely/does/not/exist/codemie_wizard.log").is_err());
+    }
+
+    #[test]
+    fn ensure_log_readable_ok_for_existing_file() {
+        let path = std::env::temp_dir().join("codemie_open_log_test.log");
+        std::fs::write(&path, "hi").unwrap();
+        assert!(ensure_log_readable(path.to_str().unwrap()).is_ok());
+        let _ = std::fs::remove_file(&path);
     }
 }

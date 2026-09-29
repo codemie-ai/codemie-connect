@@ -2,7 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { startSetup } from '../setup-driver.js';
+import { startSetup, cancelSetup } from '../setup-driver.js';
+import { detectFailure } from '../setup-parse.js';
+
+// A re-answer after a failed validate is written behind ctrl-U so it replaces
+// the rejected value inquirer put back on the line instead of appending to it.
+// First answers, confirms and lists are written as-is.
+const ans = (text) => `\x15${text}\r`; // a RE-answer: ctrl-U kills the rejected value inquirer put back on the line
 
 // Most tests in this file don't override deps.suspendPtyInput/resumePtyInput,
 // so startSetup lazily default-imports the real ui/terminal.js (Task 13),
@@ -301,7 +307,6 @@ test('generic list (provider): a non-numeric onPrompt answer index rejects inste
 // tested. Using /add a new profile/i here targets the same branch (create-new, never
 // update) that the acceptance criteria and negative constraints describe.
 for (const [id, expectRe, forbidRe] of [
-  ['gate', /add a new profile/i, /update/i],
   ['storage', /global/i, /local/i],
 ]) {
   test(`${id} fixture is auto-answered, never calls onPrompt`, async () => {
@@ -395,6 +400,90 @@ test('an answered installClaude echo is not re-dispatched as a second confirm', 
   assert.deepEqual(fake.writes, ['y\r'], 'and must be answered exactly once');
 });
 
+test('an answered list echo (provider, whose answer renders on the next row) is not re-dispatched or answered twice', async () => {
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  termInstance.__setLines(fixture('provider'));
+  const seen = [];
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt); return 0; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => termInstance });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  // The real screen right after Enter, before the CLI's next question renders.
+  // The provider message ends in "\n" (cli/commands/setup.js:243), so the
+  // answered label sits on the row BELOW the question and parseOptions reads it
+  // as a one-entry option list: rows 24-25 of the real recording
+  // provider-answered-then-next-open.json, without row 26 (the next prompt,
+  // which arrives in a later chunk while the CLI checks LiteLLM enforcement).
+  // Measured in the app on 2026-09-09: without the answered-once mark this
+  // came back to onPrompt as a second provider prompt, and answering it wrote
+  // a stray Enter that accepted the organization URL's default.
+  termInstance.__setLines([
+    '? Choose your LLM provider:',
+    ' CodeMie SSO - Enterprise SSO Authentication with centralized model management',
+    ...Array(28).fill(''),
+  ]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.equal(seen.length, 1, 'provider must reach onPrompt exactly once');
+  assert.deepEqual(fake.writes, ['\r'], 'and must be answered exactly once');
+});
+
+test('an answered model echo is not re-dispatched or answered twice (the list mark in the model branch)', async () => {
+  // Same guard as the provider case, on the paginated model branch. No real
+  // recording shows a non-blank row between the answered model line and the
+  // next question (the profile-name prompt lands with its own "?"), so the
+  // following row here is synthetic: it is the shape the parser needs before
+  // it would read the answered line as a one-entry list again. The mark is
+  // defence in depth, mirroring the provider case measured in the app.
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const baseModel = (opts) => [
+    '? Choose a model (2 available):',
+    ...opts.map((o, i) => `${i === 0 ? '❯ ' : '  '}${o}`),
+  ].concat(Array(30).fill('')).slice(0, 30);
+  const frames = [
+    baseModel(['gpt-4', 'gpt-4o']),
+    baseModel(['gpt-4', 'gpt-4o']), // repeat at once: the walk settles after one step
+  ];
+  termInstance.__setLines(frames[0]);
+  let frameIdx = 0;
+  let answered;
+  const answeredP = new Promise((r) => { answered = r; });
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' && frameIdx < frames.length - 1) {
+      frameIdx += 1;
+      termInstance.__setLines(frames[frameIdx]);
+      fake.feedRaw('REDRAW');
+    }
+    if (d === '\r') answered();
+  };
+  let onPromptCalls = 0;
+  const p = startSetup(
+    { onPrompt: async () => { onPromptCalls += 1; return 0; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  await answeredP;
+  await flushMicrotasks(); // the answer is written and the handler has left its in-flight window
+  // inquirer keeps the '?' prefix and appends the chosen label; the spinner
+  // row below it is what parseOptions would read as a one-entry option list.
+  termInstance.__setLines(['? Choose a model (2 available): gpt-4', '⠋ Saving profile...', ...Array(28).fill('')]);
+  fake.feedRaw('ECHO');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.equal(onPromptCalls, 1, 'model must reach onPrompt exactly once');
+  assert.equal(fake.writes.filter((w) => w === '\r').length, 1, 'and must be answered exactly once');
+  // Without the mark the echo re-enters the model branch, whose pagination walk
+  // starts with an arrow-down before it ever reaches onPrompt -- so the write
+  // log, not the onPrompt count, is what catches it.
+  assert.equal(fake.writes[fake.writes.length - 1], '\r', 'nothing is written after the answer: the echo started no second walk');
+});
+
 test('a non-boolean confirm answer rejects instead of typing it into the CLI', async () => {
   const fake = makeFakePty();
   const termInstance = makeFakeTerminal()();
@@ -458,6 +547,40 @@ test('a masked credential echo is recognised too (the answer is not rendered bac
 // does validate the profile name (setup.js:491 rejects a name that already
 // exists), and suppressing that screen hangs the run with the single-flight
 // lock held. This walks the whole sequence: reject, re-ask, answer, echo.
+test('the bare-question repaint our own ctrl-U causes is not dispatched as a re-ask', async () => {
+  // Clearing the line for a re-answer makes the CLI repaint the question with
+  // nothing after it. Dispatching that as a fresh ask leaves a control open
+  // that nobody answers, and promptInFlight then blocks every later prompt.
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const answers = ['nope', 'https://codemie.lab.epam.com'];
+  const seen = [];
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+
+  // validate rejected it: inquirer puts the rejected value back on the line
+  t.__setLines(['', '? CodeMie organization URL: nope', '>> Please enter a valid URL', ...Array(27).fill('')]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+
+  // our ctrl-U cleared the line: the CLI repaints the bare question
+  t.__setLines(['', '? CodeMie organization URL: ', ...Array(28).fill('')]);
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+
+  fake.exit(0);
+  await p.catch(() => {});
+
+  assert.deepEqual(seen, [
+    'CodeMie organization URL: (https://codemie.lab.epam.com)',
+    'CodeMie organization URL: nope',
+  ], 'the repaint must not reach onPrompt as a third ask');
+  assert.deepEqual(fake.writes, ['nope\r', ans('https://codemie.lab.epam.com')]);
+});
+
 test('a failed validate is re-asked, and the echo after the retry is still suppressed', async () => {
   const fake = makeFakePty();
   const t = makeFakeTerminal()();
@@ -479,7 +602,426 @@ test('a failed validate is re-asked, and the echo after the retry is still suppr
   fake.exit(0);
   await p.catch(() => {});
   assert.deepEqual(seen, ['profileName', 'profileName'], 'the rejection must be re-asked, the echo must not');
-  assert.deepEqual(fake.writes, ['taken\r', 'fresh\r']);
+  // Both answers are written behind ctrl-U. inquirer's validate failure pushes
+  // the rejected text back into readline's buffer (input.js:88-89), so without
+  // the line kill the CLI would receive "takenfresh" and reject it forever.
+  assert.deepEqual(fake.writes, ['taken\r', ans('fresh')]);
+  assert.ok(
+    !fake.writes.some((w) => w.includes('takenfresh')),
+    'the corrected answer never arrives appended to the rejected one',
+  );
+});
+
+// EPMCDME-14588. An unreachable CodeMie service is not an error the CLI reports:
+// the SSO callback times out after 120s, the gate prints a yellow warning
+// (setup.js:60) and the flow CONTINUES, asking the organization URL again. That
+// re-ask carries no '>>' error, so the echo guard above swallowed it and the run
+// hung forever on a single spinner with the CLI still waiting for input
+// (measured 2026-09-15: 3 dispatches, 52 swallows, 0 settles).
+//
+// The screen fed as the third step is the real one, captured from the CLI and
+// stored as fixtures/setup/authTimeout.json. What separates it from the echo and
+// from our own ctrl-U repaint is inquirer's default hint: a fresh prompt renders
+// it, a line that has been touched never does (base.js:157-160).
+test('the org-URL re-ask after the unreachable-service warning reaches onPrompt (real screen)', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const seen = [];
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return 'https://codemie.invalid'; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+
+  // the answered echo: still suppressed, exactly as before
+  t.__setLines(['', '? CodeMie organization URL: https://codemie.invalid', ...Array(28).fill('')]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+
+  // The CLI then goes quiet for its full 120s SSO timeout. Waiting past the
+  // driver's own IDLE_MS reproduces that gap: a re-ask inside it is a cosmetic
+  // redraw of the still-open question, not a new one.
+  await new Promise((r) => { setTimeout(r, 250); });
+
+  // 120s later: the warning, then the same question asked afresh
+  t.__setLines(fixture('authTimeout'));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['codemieUrl', 'codemieUrl'], 'the re-asked URL must reach onPrompt, not hang the run');
+});
+
+// The guard for the rule above: an answer that itself ends in parentheses also
+// makes the echo line end in parentheses, and must not be mistaken for a fresh
+// prompt's default hint. The hint test alone would re-dispatch this one.
+test('an echo whose answer ends in parentheses is still suppressed', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const seen = [];
+  t.__setLines(['', '? Enter a name for this profile: (default) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return 'myprofile (work)'; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  t.__setLines(['', '? Enter a name for this profile: myprofile (work)', ...Array(28).fill('')]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['profileName'], 'the echo must not be re-dispatched as a fresh ask');
+  assert.deepEqual(fake.writes, ['myprofile (work)\r'], 'the answer must reach the CLI exactly once');
+});
+
+// The two conditions the re-ask gate adds, each isolated: a suite that only
+// exercises them together passes with either one stuck true.
+test('a bare re-ask WITHOUT the default hint is not dispatched, however long the gap', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const seen = [];
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return 'https://codemie.invalid'; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  await new Promise((r) => { setTimeout(r, 250); }); // past IDLE_MS, and the screen changes below
+  // The repaint our own ctrl-U causes: same question, no hint, no answer on it.
+  t.__setLines(['', '? CodeMie organization URL: ', '', ...Array(27).fill('')]);
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['codemieUrl'], 'no hint means the line was touched: a repaint, not a fresh ask');
+});
+
+test('an unchanged screen is not a re-ask, however long the gap', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const seen = [];
+  const open = ['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')];
+  t.__setLines(open);
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return 'https://codemie.invalid'; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  await new Promise((r) => { setTimeout(r, 250); });
+  fake.feedRaw('BBBB'); // same screen the answer was written against: the CLI has not caught up
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['codemieUrl'], 'an unchanged screen is the CLI lagging, not a new question');
+});
+
+// A correction can be rejected again. The screens below are what the idle read
+// actually sees: measured against the vendored inquirer in a real PTY, the
+// repaint our ctrl-U causes and the next rejection arrive within ~2 ms of each
+// other, so there is no separate bare-question screen in between.
+const nameScreen = (rest, error) => ['', `? Enter a name for this profile: ${rest}`, ...(error ? [`>> ${error}`] : []), ...Array(error ? 27 : 28).fill('')];
+
+test('a correction rejected a second time is re-asked and re-answered behind ctrl-U again', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const answers = ['taken', 'also-taken', 'fresh'];
+  const seen = [];
+  t.__setLines(nameScreen('(default) '));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('taken', 'A profile with this name already exists'));
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('also-taken', 'A profile with this name already exists'));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('fresh'));
+  fake.feedRaw('DDDD');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, [
+    'Enter a name for this profile: (default)',
+    'Enter a name for this profile: taken',
+    'Enter a name for this profile: also-taken',
+  ], 'the second rejection is a real re-ask, not the repaint of our own ctrl-U');
+  assert.deepEqual(fake.writes, ['taken\r', ans('also-taken'), ans('fresh')]);
+});
+
+test('a correction rejected with only whitespace on its line is re-asked, not taken for our own repaint', async () => {
+  // setup.js:492 rejects a whitespace-only name ("Profile name is required").
+  // inquirer puts the spaces back on the line, so the rejection screen is the
+  // bare question plus an error: the same question text our own repaint would
+  // show. Only the error line tells them apart. Dropping it left the CLI
+  // waiting on a question the app never showed, and the run hung.
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const answers = ['taken', '   ', 'fresh'];
+  const seen = [];
+  t.__setLines(nameScreen('(default) '));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('taken', 'A profile with this name already exists'));
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('   ', 'Profile name is required'));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+  t.__setLines(nameScreen('fresh'));
+  fake.feedRaw('DDDD');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.equal(seen.length, 3, `the whitespace rejection reaches onPrompt as a third ask (saw ${JSON.stringify(seen)})`);
+  // The spaces inquirer put back must be cleared too, or the CLI receives
+  // "   fresh" instead of "fresh".
+  assert.deepEqual(fake.writes, ['taken\r', ans('   '), ans('fresh')]);
+});
+
+test('after a re-answer, the next question under the same catch-all id is dispatched, not dropped as our repaint', async (ctx) => {
+  // bedrock asks three prompts under the one 'credential' id, and validates the
+  // first non-empty (bedrock.setup-steps.js:164-165). A corrected Access Key ID
+  // is accepted at once, so the next screen is already the Secret Access Key
+  // question -- same id, no error, a different question. Only the question
+  // comparison keeps the guard from swallowing it and hanging the run.
+  // The empty first answer's re-ask is the identical question, so it reaches
+  // onPrompt only after the R4-1 idle window: the user's think time in the
+  // app, the mocked clock here.
+  ctx.mock.timers.enable({ apis: ['setTimeout'] });
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  const answers = ['', 'AKIA', 'sk'];
+  const seen = [];
+  t.__setLines(pad(['', '? AWS Access Key ID: ']));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  await ctx.mock.timers.tick(200);
+  t.__setLines(pad(['', '? AWS Access Key ID: ', '>> Access Key ID is required']));
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  await ctx.mock.timers.tick(200);
+  t.__setLines(pad(['', '? AWS Access Key ID: AKIA', '? AWS Secret Access Key: ']));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['AWS Access Key ID:', 'AWS Access Key ID:', 'AWS Secret Access Key:']);
+  assert.deepEqual(fake.writes, ['\r', ans('AKIA'), 'sk\r']);
+});
+
+// The next two tests replay screens recorded chunk by chunk from the real CLI in
+// the app on 2026-09-14 (driver instrumented, `codemie setup`, CodeMie SSO). The
+// driver reads the screen after EVERY chunk, so it sees what no settled screen
+// shows: first the screen it just answered, unchanged; then our ctrl-U's bare
+// repaint; then the answer being typed out one character at a time; and only
+// then the CLI's verdict -- a fresh ">>" error, or the next question.
+const MODELS_DONE = '✔ Found 41 available models';
+const MODEL_ECHO = '? Choose a model (41 available): ⭐ claude-sonnet-5';
+const NAME_Q = '? Enter a name for this profile: ';
+const typedOut = (prefix, text) => [...text].map((_, i) => [MODELS_DONE, MODEL_ECHO, `${NAME_Q}${prefix}${text.slice(0, i + 1)}`]);
+
+async function replay(frames, answers) {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  const seen = [];
+  t.__setLines(pad(frames[0]));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  for (const frame of frames.slice(1)) {
+    t.__setLines(pad(frame));
+    fake.feedRaw('AAAA');
+    await flushMicrotasks();
+  }
+  fake.exit(0);
+  const result = await p.catch((e) => ({ rejected: e }));
+  return { seen, writes: fake.writes, result };
+}
+
+test('real stream: a whitespace correction is re-asked once, and the activate confirm after the fix is still answered', async () => {
+  const rejectTaken = [MODEL_ECHO, `${NAME_Q}codemie`, '>> A profile with this name already exists'];
+  const rejectBlank = [MODEL_ECHO, `${NAME_Q}   `, '>> Profile name is required'];
+  const saved = '✔ Profile "walk-check" saved to global config';
+  const frames = [
+    [MODELS_DONE, MODEL_ECHO, `${NAME_Q}(codemie-sso-1) `],
+    ...typedOut('', 'codemie'),
+    rejectTaken,
+    // after "\x15   \r": the answered screen again, the repaint, the spaces typed out, the verdict
+    rejectTaken,
+    [MODELS_DONE, MODEL_ECHO, NAME_Q],
+    ...typedOut('', '   '),
+    rejectBlank,
+    // after "\x15  walk-check \r"
+    rejectBlank,
+    [MODELS_DONE, MODEL_ECHO, NAME_Q],
+    ...typedOut('', '  walk-check '),
+    [MODEL_ECHO, `${NAME_Q}  walk-check `, '⠋ Saving profile...'],
+    [MODEL_ECHO, `${NAME_Q}  walk-check `, saved],
+    [`${NAME_Q}  walk-check `, saved, '? Switch to profile "walk-check" as active? (Y/n) '],
+  ];
+  const { seen, writes, result } = await replay(frames, ['codemie', '   ', '  walk-check ']);
+  assert.deepEqual(seen, [
+    'Enter a name for this profile: (codemie-sso-1)',
+    'Enter a name for this profile: codemie',
+    'Enter a name for this profile:',
+  ], 'three real questions: no phantom from the answered screen, the repaint or the typing');
+  assert.deepEqual(writes, ['codemie\r', ans('   '), ans('  walk-check '), 'y\r'], 'the activate confirm is answered');
+  assert.equal(result.profileName, '  walk-check ');
+});
+
+test('real stream: the same rejected name entered twice is asked a third time', async () => {
+  const rejectTaken = [MODEL_ECHO, `${NAME_Q}codemie`, '>> A profile with this name already exists'];
+  const frames = [
+    [MODELS_DONE, MODEL_ECHO, `${NAME_Q}(codemie-sso-1) `],
+    ...typedOut('', 'codemie'),
+    rejectTaken,
+    rejectTaken,
+    [MODELS_DONE, MODEL_ECHO, NAME_Q],
+    ...typedOut('', 'codemie'),
+    rejectTaken, // identical to the last question, yet a new rejection
+    rejectTaken,
+    [MODELS_DONE, MODEL_ECHO, NAME_Q],
+    ...typedOut('', 'fresh'),
+  ];
+  const { seen, writes } = await replay(frames, ['codemie', 'codemie', 'fresh']);
+  assert.deepEqual(seen, [
+    'Enter a name for this profile: (codemie-sso-1)',
+    'Enter a name for this profile: codemie',
+    'Enter a name for this profile: codemie',
+  ]);
+  assert.deepEqual(writes, ['codemie\r', ans('codemie'), ans('fresh')]);
+});
+
+test('real stream (windows): a rejected profile name is re-asked once, the correction is accepted, and the activate confirm is auto-answered', async () => {
+  // Recorded 2026-09-23 against `cd /; codemie setup` (no --force -- see
+  // SETUP_COMMAND), including the real gate screen: Add a new profile ->
+  // rejected "default" (already exists) -> corrected "epmcdme-14982-add-1" ->
+  // activate confirm (still fixed-policy, auto-answered "y\r").
+  const frames = fixture('windows-profile-name-correction');
+  const { seen, writes, result } = await replay(frames, ['default', 'epmcdme-14982-add-1']);
+  assert.deepEqual(seen, [
+    'Enter a name for this profile: (codemie-sso)',
+    'Enter a name for this profile: default',
+  ], 'the rejected name is asked once; no phantom third ask from the collapsed echo/rejection chunk, and no onPrompt call for the fixed-policy activate confirm');
+  assert.deepEqual(writes, ['default\r', ans('epmcdme-14982-add-1'), 'y\r']);
+  assert.equal(result.profileName, 'epmcdme-14982-add-1');
+});
+
+test('real stream (windows): updating an existing profile walks the profile list, skips the name prompt, and never shows an activate confirm', async () => {
+  // Recorded 2026-09-23 against `cd /; codemie setup`: gate -> Update an
+  // existing profile -> walk the (looping, two-entry) profile list -> pick
+  // "my enthropic acc" -> provider/URL/auth/project (model intentionally
+  // omitted here -- it is a separately paginated list already exercised by
+  // the Add-flow fixture above and by macOS's synthetic pagination tests) ->
+  // straight to "saved to global config", with no profile-name prompt and no
+  // activate confirm -- setup.js gates both behind `!isUpdate`.
+  const frames = fixture('windows-update-profile');
+  const { seen, writes, result } = await replay(frames, [1, 0, '', 0]);
+  assert.deepEqual(seen, [
+    'Select profile to update: (Use arrow keys)',
+    'Choose your LLM provider:',
+    'CodeMie organization URL: (https://codemie.lab.epam.com)',
+    'Select your project: (Use arrow keys)',
+  ], 'no onPrompt call for a profile name or an activate confirm -- update skips both');
+  assert.deepEqual(writes, [
+    '\x1b[B', '\x1b[B', '\x1b[A', '\x1b[A', // the looping two-entry walk, then back to the start
+    '\x1b[B\r', // final navigation to the picked profile ("my enthropic acc")
+    '\r', '\r', '\r', '\x1b[B',
+  ]);
+  assert.deepEqual(result, { profileName: 'my enthropic acc', updated: true });
+});
+
+test('real stream: a question-less chunk right after our answer does not make the driver forget the answered question', async (ctx) => {
+  // Recorded 2026-09-14: the first chunk after the "codemie" answer carried no
+  // question line (a partial redraw), and it came after the user's think time,
+  // so the CLI looked "quiet". Treating that as "the CLI moved on" dropped the
+  // record of the answered name: the next answer went out without ctrl-U, and
+  // the CLI received "codemie   " instead of "   ".
+  ctx.mock.timers.enable({ apis: ['setTimeout'] });
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  const rejectTaken = [MODEL_ECHO, `${NAME_Q}codemie`, '>> A profile with this name already exists'];
+  const answers = ['codemie', '   ', 'fresh'];
+  const seen = [];
+  t.__setLines(pad([MODELS_DONE, MODEL_ECHO, `${NAME_Q}(codemie-sso-1) `]));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.message); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  const feed = async (frame) => { t.__setLines(pad(frame)); fake.feedRaw('AAAA'); await flushMicrotasks(); };
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  await ctx.mock.timers.tick(200); // the pause before the CLI's first chunk
+  await feed([MODELS_DONE]); // no question line on it
+  for (const frame of typedOut('', 'codemie')) await feed(frame);
+  await feed(rejectTaken);
+  await feed(rejectTaken);
+  await feed([MODELS_DONE, MODEL_ECHO, NAME_Q]);
+  for (const frame of typedOut('', '   ')) await feed(frame);
+  await feed([MODEL_ECHO, `${NAME_Q}   `, '>> Profile name is required']);
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(fake.writes, ['codemie\r', ans('   '), ans('fresh')], 'the second answer still clears the rejected name');
+  assert.equal(seen.length, 3);
+});
+
+test('real stream: an earlier answered line that is the last question again after the next prompt was answered is not a new ask', async () => {
+  // Recorded 2026-09-14: writing the project answer erases the list, and for
+  // one chunk the URL answered two prompts earlier is the last question line on
+  // screen again. Asking it opened a URL control nobody was waiting on, and the
+  // run then ignored every real prompt behind it.
+  const urlAnswered = '? CodeMie organization URL: https://codemie.lab.epam.com';
+  const frames = [
+    ['? Choose your LLM provider:', ' CodeMie SSO - Enterprise SSO Authentication with centralized model management', '? CodeMie organization URL: (https://codemie.lab.epam.com) '],
+    [urlAnswered, 'Opening browser for authentication...'],
+    [urlAnswered, '✓ Authentication successful!', 'Found 2 accessible project(s)'],
+    ['Found 2 accessible project(s)', '? Select your project: (Use arrow keys)', '❯ epm-sdai ', '  mert_efe@epam.com '],
+    [urlAnswered, '✓ Authentication successful!', 'Found 2 accessible project(s)'], // chunk 134
+    ['Found 2 accessible project(s)', '? Select your project: epm-sdai', '✓ Selected project: epm-sdai'],
+  ];
+  const { seen, writes } = await replay(frames, ['https://codemie.lab.epam.com', 0]);
+  assert.deepEqual(seen, [
+    'CodeMie organization URL: (https://codemie.lab.epam.com)',
+    'Select your project: (Use arrow keys)',
+  ], 'the URL is not asked a second time');
+  assert.deepEqual(writes, ['https://codemie.lab.epam.com\r', '\r']);
+});
+
+test('once the CLI moves on to another prompt, a later ask of the answered question is a new ask', async () => {
+  // Screens of the input answered last are filtered until the CLI asks
+  // something else. That filter must end there, not survive into the rest of
+  // the run and swallow a later, genuine ask of the same question.
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  // A list prompt in between leaves lastAnsweredInput on the URL question, which
+  // is exactly when a stale guard would match a later bare ask of it.
+  const answers = ['nope', 'https://codemie.lab.epam.com', 0, 'https://other.example.com'];
+  const seen = [];
+  t.__setLines(pad(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ']));
+  const p = startSetup({ onPrompt: async (prompt) => { seen.push(prompt.id); return answers.shift(); } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  t.__setLines(pad(['', '? CodeMie organization URL: nope', '>> Please enter a valid URL']));
+  fake.feedRaw('BBBB');
+  await flushMicrotasks();
+  t.__setLines(pad(['', '? CodeMie organization URL: https://codemie.lab.epam.com', '? Choose your LLM provider:',
+    '❯ CodeMie SSO - Enterprise SSO Authentication', '  LiteLLM - Universal gateway to 100+ LLM providers']));
+  fake.feedRaw('CCCC');
+  await flushMicrotasks();
+  t.__setLines(pad(['', '? Choose your LLM provider:', 'CodeMie SSO', '? CodeMie organization URL: ']));
+  fake.feedRaw('DDDD');
+  await flushMicrotasks();
+  fake.exit(0);
+  await p.catch(() => {});
+  assert.deepEqual(seen, ['codemieUrl', 'codemieUrl', 'provider', 'codemieUrl'], 'the later ask of the URL is dispatched');
 });
 
 // A password prompt's validate error lands two rows down: screen-manager.js:91
@@ -505,7 +1047,7 @@ test('a password validate failure, with its blank row before the >> marker, is r
   fake.exit(0);
   await p.catch(() => {});
   assert.deepEqual(seen, ['credential', 'credential']);
-  assert.deepEqual(fake.writes, ['\r', 'real-secret\r']);
+  assert.deepEqual(fake.writes, ['\r', ans('real-secret')]);
 });
 
 test('the guard does not suppress a DIFFERENT prompt under the credential catch-all, yet suppresses each of their echoes (bedrock asks three in a row)', async () => {
@@ -919,7 +1461,7 @@ test('data arriving after startSetup has settled is ignored: no further onPrompt
   termInstance.__setLines(fixture('activate'));
   let onPromptCalls = 0;
   let dataCb;
-  const spawnCapture = async (_cmd, _cols, _rows, onData) => { dataCb = onData; return fake.spawnPty('codemie setup --force', 100, 30, onData); };
+  const spawnCapture = async (_cmd, _cols, _rows, onData) => { dataCb = onData; return fake.spawnPty('cd /; codemie setup', 100, 30, onData); };
   const p = startSetup({ onPrompt: async () => { onPromptCalls += 1; return true; } },
     { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: spawnCapture, input: fake.input, kill: fake.kill, Terminal: () => termInstance });
   fake.feedRaw('AAAA');
@@ -989,7 +1531,7 @@ test('successful full run resolves { profileName } on zero exit', async () => {
   fake.feedRaw('AAAA');
   fake.exit(0);
   const result = await p;
-  assert.deepEqual(result, { profileName: 'my-profile' });
+  assert.deepEqual(result, { profileName: 'my-profile', updated: false });
 });
 
 test('non-zero exit rejects with { step, message, raw }', async () => {
@@ -1001,6 +1543,22 @@ test('non-zero exit rejects with { step, message, raw }', async () => {
   fake.feedRaw('AAAA');
   fake.exit(1);
   await assert.rejects(p, (err) => { assert.ok('step' in err); assert.ok(err.message); assert.ok('raw' in err); return true; });
+});
+
+// EPMCDME-14588: `raw` is what the failure UI shows behind "Show details", so an
+// empty one leaves the user with a bare exit code and nothing to look at.
+test('a non-zero exit carries the screen in raw, not an empty string', async () => {
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  termInstance.__setLines(fixture('gate'));
+  const p = startSetup({ onPrompt: async () => 0 },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => termInstance });
+  fake.feedRaw('AAAA');
+  fake.exit(1);
+  await assert.rejects(p, (err) => {
+    assert.match(err.raw, /What would you like to do\?/, 'raw carries the command output that was on screen');
+    return true;
+  });
 });
 
 test('replay parameter accepted and is a documented no-op', async () => {
@@ -1203,4 +1761,369 @@ test('REAL Terminal: the answered storage line, wrapped at COLS, is not re-dispa
   assert.deepEqual(seen, ['provider'], 'the run survived the answered-storage echo and reached the next prompt');
   fake.exit(0);
   await p;
+});
+
+// EPMCDME-14588: Try again has to end the live run first. The unreachable-service
+// failure is one the CLI never exits on -- it re-asks -- so without this the
+// single-flight lock rejects the fresh startSetup, and a second `codemie setup`
+// would race the first over the config file.
+test('cancelSetup ends a live run, kills the child, and frees the lock for a fresh run', async () => {
+  const fake = makeFakePty();
+  let kills = 0;
+  const killSpy = async () => { kills += 1; return fake.kill(); };
+  const t = makeFakeTerminal()();
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup({ onPrompt: async () => 'https://codemie.invalid' },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: killSpy, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+
+  assert.equal(await cancelSetup(), true, 'a live run reports that it was cancelled');
+  await assert.rejects(p, (err) => {
+    assert.equal(err.cancelled, true, 'the UI can tell a cancel from a real failure');
+    assert.match(err.raw, /CodeMie organization URL/, 'the screen at cancel time is still reported');
+    return true;
+  });
+  assert.equal(kills, 1, 'the CLI child is killed, never left running');
+
+  // the lock is free again: a fresh run starts rather than hitting single-flight
+  const fake2 = makeFakePty();
+  const t2 = makeFakeTerminal()();
+  t2.__setLines(fixture('gate'));
+  const p2 = startSetup({ onPrompt: async () => 0 },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake2.spawnPty, input: fake2.input, kill: fake2.kill, Terminal: () => t2 });
+  fake2.exit(0);
+  let err2 = null;
+  await p2.catch((e) => { err2 = e; });
+  assert.ok(!err2 || !/already in progress/i.test(err2.message), 'Try again is not blocked by the cancelled run');
+});
+
+test('cancelSetup with no run in flight is a no-op', async () => {
+  assert.equal(await cancelSetup(), false);
+});
+
+// EPMCDME-14588 Task 3. onScreen(lines) fires once per processed PTY chunk,
+// handed the same settled-screen array (readScreen()'s return value) the
+// driver already computes internally -- ANSI-free, one string per row --
+// so callers (setup-view.js's authTimeout notice) never re-derive it from
+// raw onLog text.
+test('onScreen(lines) fires once per processed chunk, with the settled, parsed screen', async () => {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const recorded = [];
+  const recordScreen = (lines) => recorded.push([...lines]);
+  t.__setLines(['', '? CodeMie organization URL: (https://codemie.lab.epam.com) ', ...Array(28).fill('')]);
+  const p = startSetup(
+    { onPrompt: async () => 'https://codemie.invalid', onScreen: recordScreen },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t },
+  );
+  fake.feedRaw('AAAA'); // chunk 1: the fresh prompt
+  await flushMicrotasks();
+
+  t.__setLines(['', '? CodeMie organization URL: https://codemie.invalid', ...Array(28).fill('')]);
+  fake.feedRaw('BBBB'); // chunk 2: the answered echo
+  await flushMicrotasks();
+
+  t.__setLines(fixture('authTimeout'));
+  fake.feedRaw('CCCC'); // chunk 3: the unreachable-service warning + re-ask
+  await flushMicrotasks();
+
+  fake.exit(0);
+  await p.catch(() => {});
+
+  assert.equal(recorded.length, 3, 'onScreen fired exactly once per processed chunk');
+  const lastLines = recorded[recorded.length - 1];
+  const failure = detectFailure(lastLines);
+  assert.equal(failure?.id, 'authTimeout', 'the callback really received the settled, parsed screen');
+  assert.equal(failure.message, 'Authentication timeout - no response received', "the fixture's own reason text");
+});
+
+// A rejecting kill() sits in the run's finally, so without care its error
+// REPLACES the rejection the run already had -- and the real pty_kill does
+// reject ("pty_kill timed out", src-tauri/src/commands/pty.rs). The caller would
+// then get a bare Error with no step and no raw: the generic failure the UI is
+// not allowed to show.
+test('a failing kill() does not replace the run\'s own rejection', async () => {
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  termInstance.__setLines(fixture('customModel')); // rejects with step:'model'
+  const p = startSetup(
+    { onPrompt: async () => 0 },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input,
+      kill: async () => { throw new Error('pty_kill timed out'); }, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  await assert.rejects(p, (err) => {
+    assert.equal(err.step, 'model', 'the run\'s own reason survives');
+    assert.equal(typeof err.raw, 'string', 'and so does its output');
+    return true;
+  });
+});
+
+
+// ---- Add or update (the CLI's own first question) -------------------------
+// The app used to run `codemie setup --force`, which skips that question and
+// always adds. Now the user answers it, as they would in a terminal.
+
+test('setup runs from / and without --force, so the CLI asks add-or-update itself', async () => {
+  const fake = makeFakePty();
+  let cmd = null;
+  const p = startSetup({ onPrompt: async () => 0 },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, input: fake.input, kill: fake.kill, Terminal: makeFakeTerminal(),
+      spawnPty: (c, cols, rows, onData) => { cmd = c; return fake.spawnPty(c, cols, rows, onData); } });
+  await flushMicrotasks();
+  fake.exit(1);
+  await p.catch(() => {});
+  // From the home directory the CLI reads ~/.codemie/codemie-cli.config.json as
+  // a repository-local config too (config.js hasProjectConfig joins cwd with
+  // .codemie/codemie-cli.config.json), and an update would then save the
+  // profile in the local format over the global file. / has no .codemie.
+  assert.equal(cmd, 'cd /; codemie setup');
+});
+
+test('the add-or-update question goes to the user, without the CLI\'s Cancel', async () => {
+  for (const [answer, expected] of [[0, '\r'], [1, '\x1b[B\r']]) {
+    const fake = makeFakePty();
+    const termInstance = makeFakeTerminal()();
+    termInstance.__setLines(fixture('gate'));
+    let seen = null;
+    const p = startSetup(
+      { onPrompt: async (prompt) => { seen = prompt; return answer; } },
+      { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => termInstance },
+    );
+    fake.feedRaw('AAAA');
+    await flushMicrotasks();
+    fake.exit(1);
+    await p.catch(() => {});
+    assert.equal(seen.id, 'gate');
+    assert.deepEqual(seen.options, ['Add a new profile', 'Update an existing profile']);
+    assert.deepEqual(fake.writes, [expected]);
+  }
+});
+
+// inquirer's list loops by default (list.js: `loop === undefined ? true`) and
+// shows seven rows at a time. This reproduces paginator.js getInfiniteLines for
+// a ten-profile list so every frame the walk sees is one the CLI would draw:
+// the cursor row moves down to the middle of the page, then the page scrolls
+// under it, then wraps round to the first profile.
+function updateProfileFrame(names, active, state) {
+  const pageSize = 7;
+  const middle = Math.floor(pageSize / 2);
+  if (state.pointer === undefined) state.pointer = 0;
+  if (state.pointer < middle && state.last < active && active - state.last < pageSize) {
+    state.pointer = Math.min(middle, state.pointer + active - state.last);
+  }
+  state.last = active;
+  const rows = names.map((n, i) => `${i === active ? '❯ ' : '  '}${n} `);
+  const top = Math.max(0, active + rows.length - state.pointer);
+  const visible = [...rows, ...rows, ...rows].splice(top, pageSize);
+  return [
+    '? What would you like to do? Update an existing profile',
+    '? Select profile to update: ',
+    ...visible,
+    '(Move up and down to reveal more choices)',
+  ].concat(Array(30).fill('')).slice(0, 30);
+}
+
+test('updating walks the whole paged profile list, answers the one picked, and reports it as an update', async () => {
+  const names = Array.from({ length: 10 }, (_, i) => `profile${i}`);
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const state = {};
+  let active = 0;
+  termInstance.__setLines(updateProfileFrame(names, active, state));
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      termInstance.__setLines(updateProfileFrame(names, active, state));
+      fake.feedRaw('REDRAW');
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 8; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 60 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await flushMicrotasks();
+  fake.exit(0);
+  const result = await p;
+  assert.equal(seen.id, 'updateProfile');
+  assert.deepEqual(seen.options, names, 'every profile, in the CLI\'s order, not just the first page');
+  assert.equal(fake.writes[fake.writes.length - 1], '\x1b[B'.repeat(8) + '\r');
+  assert.deepEqual(result, { profileName: 'profile8', updated: true });
+});
+
+// A list shorter than its page is drawn whole, and inquirer's default loop
+// (incrementListIndex.js: down from the last entry goes to the first) means
+// the cursor keeps moving forever: "nothing new and the cursor did not move"
+// never happens. Three profiles is the common case for an update. The walk
+// stops once the highlighted entry is one it has already highlighted.
+test('a short looping list (three profiles) is walked once round, not until the step limit', async () => {
+  const names = ['Mert', 'MertPersonal', 'codemie'];
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  let active = 0;
+  const frame = () => [
+    '? What would you like to do? Update an existing profile',
+    '? Select profile to update: ',
+    ...names.map((n, i) => `${i === active ? '❯ ' : '  '}${n} `),
+  ].concat(Array(30).fill('')).slice(0, 30);
+  termInstance.__setLines(frame());
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      termInstance.__setLines(frame());
+      fake.feedRaw('REDRAW');
+    } else if (d.endsWith('\r')) {
+      // The answer: its arrows move the cursor before the Enter.
+      active = (active + d.split('\x1b[B').length - 1) % names.length;
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 2; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 60 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await flushMicrotasks();
+  fake.exit(0);
+  const result = await p;
+  assert.deepEqual(seen.options, names);
+  assert.equal(fake.writes.filter((w) => w === '\x1b[B').length, 3, 'once round and no further');
+  assert.equal(fake.writes.filter((w) => w === '\x1b[A').length, 3, 'and back to the first entry');
+  assert.equal(active, 2, 'the cursor ends on the profile picked');
+  assert.deepEqual(result, { profileName: 'codemie', updated: true });
+});
+
+// The CLI redraws a list in more than one chunk, and a chunk can land before
+// the row carrying the cursor marker is repainted. detectPrompt then reports
+// the first row as selected (parseOptions' default), which on the first page is
+// the entry the walk started on, so it read as having gone all the way round.
+// Only a row that really carries the marker counts.
+test('a redraw that lands before the cursor row is repainted does not end the walk', async () => {
+  const names = Array.from({ length: 10 }, (_, i) => `profile${i}`);
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const state = {};
+  let active = 0;
+  termInstance.__setLines(updateProfileFrame(names, active, state));
+  let arrows = 0;
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      const frame = updateProfileFrame(names, active, state);
+      arrows += 1;
+      if (arrows === 2) {
+        // The second press: its first chunk has the rows but no marker yet;
+        // the marker row follows in the next one.
+        termInstance.__setLines(frame.map((l) => l.replace('❯', ' ')));
+        fake.feedRaw('PARTIAL');
+        await flushMicrotasks();
+      }
+      termInstance.__setLines(frame);
+      fake.feedRaw('REDRAW');
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 0; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 60 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await flushMicrotasks();
+  fake.exit(0);
+  await p;
+  assert.deepEqual(seen.options, names);
+});
+
+
+// Measured against the real CLI on 2026-09-23: a 41-model list came back with
+// 15. The chunk that followed the first arrow key was the tail of the list's
+// first drawing, marker unmoved, and the walk took it for the answer to the
+// press: nothing changed, so the list must be over. The press is answered by
+// the marker moving, however many chunks that takes.
+test('a chunk that arrives after a press but before its redraw does not end the walk', async () => {
+  const names = Array.from({ length: 10 }, (_, i) => `profile${i}`);
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const state = {};
+  let active = 0;
+  termInstance.__setLines(updateProfileFrame(names, active, state));
+  let arrows = 0;
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      arrows += 1;
+      if (arrows === 1) {
+        // The first drawing's tail: same screen, marker where it was.
+        fake.feedRaw('TAIL');
+        await flushMicrotasks();
+      }
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      termInstance.__setLines(updateProfileFrame(names, active, state));
+      fake.feedRaw('REDRAW');
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 0; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 300 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await new Promise((r) => setTimeout(r, 10));
+  fake.exit(0);
+  await p;
+  assert.deepEqual(seen.options, names, 'every profile, not the first page');
+});
+
+// Measured against the real CLI on 2026-09-23: mid-walk, a chunk can catch the
+// list half erased, with the question above it (answered, "? Select your
+// project: epm-sdai") as the last question line on screen. detectPrompt then
+// reads the lines under that one as its options, and "✓ Selected project" and
+// "✔ Found 41 available models" joined the model list, two places ahead of
+// every model after them: picking one of those sent the CLI two arrows too
+// many. Only a screen showing the list's own question is read.
+test('a chunk showing an earlier question does not add its lines to the list being walked', async () => {
+  const names = Array.from({ length: 10 }, (_, i) => `profile${i}`);
+  const fake = makeFakePty();
+  const termInstance = makeFakeTerminal()();
+  const state = {};
+  let active = 0;
+  termInstance.__setLines(updateProfileFrame(names, active, state));
+  let arrows = 0;
+  const half = [
+    '? What would you like to do? Update an existing profile',
+    '✓ Using the existing organization',
+    '✔ Found 10 profiles',
+  ].concat(Array(30).fill('')).slice(0, 30);
+  const fakeInput = async (d) => {
+    fake.writes.push(d);
+    if (d === '\x1b[B' || d === '\x1b[A') {
+      arrows += 1;
+      if (arrows === 5) {
+        termInstance.__setLines(half);
+        fake.feedRaw('HALF');
+        await flushMicrotasks();
+      }
+      active = (active + (d === '\x1b[B' ? 1 : names.length - 1)) % names.length;
+      termInstance.__setLines(updateProfileFrame(names, active, state));
+      fake.feedRaw('REDRAW');
+    }
+  };
+  let seen = null;
+  const p = startSetup(
+    { onPrompt: async (prompt) => { seen = prompt; return 8; } },
+    { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fakeInput, kill: fake.kill, Terminal: () => termInstance },
+  );
+  fake.feedRaw('AAAA');
+  for (let i = 0; i < 300 && !fake.writes.some((w) => w.endsWith('\r')); i += 1) await new Promise((r) => setTimeout(r, 10));
+  fake.exit(0);
+  const result = await p;
+  assert.deepEqual(seen.options, names);
+  assert.equal(fake.writes[fake.writes.length - 1], '\x1b[B'.repeat(8) + '\r', 'eight arrows for the ninth profile, no more');
+  assert.deepEqual(result, { profileName: 'profile8', updated: true });
 });

@@ -9,6 +9,7 @@ import { initSprite } from './sprite.js';
 import * as stepsUI from './steps-ui.js';
 import { initLog, appendLine } from './log.js';
 import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeTerminal } from './terminal.js';
+import { stopSetupOnLeave } from './setup-leave.js';
 import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
 import { findProxyConnectError, parseProxyStatusDeep } from './proxy-parse.js';
@@ -16,22 +17,19 @@ import { computeRowStatus } from './connections-status.js';
 import { renderConnectionRows, CONNECTION_APPS } from './connections-render.js';
 import { isBlockedState } from './auth-gate.js';
 import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
+import { createHealthController } from './health-controller.js';
+import { createAgentsController } from './agents-controller.js';
+import { applyOnboardingNav } from './shell-nav.js';
+import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
+import { createHomeView, applyHomeHeader } from './home-view.js';
+import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
+import { parseAgentList } from './agents-parse.js';
+import { createCommandLog } from './command-log.js';
+import { semverLt, cliUpdateResult } from './cli-update.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// Compare semver strings. Returns true when a < b. Works for X.Y.Z format.
-function semverLt(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] ?? 0;
-    const nb = pb[i] ?? 0;
-    if (na < nb) return true;
-    if (na > nb) return false;
-  }
-  return false;
-}
 
 // Populated during boot(); consumed by runAnalytics() and runUpdateCli().
 const cliVersionState = { installed: '', latest: '', updateAvailable: false };
@@ -80,13 +78,10 @@ const views = {
 const homeView = views.home;
 const wizardView = views.wizard;
 const connectView = views.connect;
-const homeGrid = document.getElementById('home-grid');
 const wizardBack = document.getElementById('wizard-back');
-const connectBack = document.getElementById('connect-back');
 const connectRowsEl = document.getElementById('connect-rows');
 const modeLabel = document.getElementById('wizard-mode-label');
 const stepListEl = document.getElementById('step-list');
-
 const noticeOverlay = document.getElementById('notice-overlay');
 const noticeTitle = document.getElementById('notice-title');
 const noticeMessage = document.getElementById('notice-message');
@@ -151,6 +146,7 @@ function emit(event, payload) {
       closeBtn.classList.remove('hidden');
       wizardBack.classList.remove('hidden');
       refreshIdentityOnComplete();
+      refreshAgents();
       break;
     default:
       break;
@@ -162,6 +158,12 @@ function emit(event, payload) {
 // close-btn only appears once it ends — and leaving mid-install would let a
 // second Engine be constructed over the step list the first is still mutating.
 let installRunning = false;
+
+// True once the Health screen's own doctor run has fired for this app
+// session — the auto-run-on-first-visit happens exactly once; "Check
+// everything again" is the only way to re-run after that.
+let healthChecked = false;
+let agentsChecked = false;
 
 function setInstallRunning(on) {
   installRunning = on;
@@ -175,8 +177,157 @@ function setInstallRunning(on) {
   });
 }
 
+// ---- Home (EPMCDME-14589) ----
+// One screen, two states: the checklist until nothing is left to tick, then the
+// status cards. Everything it shows comes from four sources that already exist:
+// the config reader and auth status (the identity bar's own reads feed them in),
+// `codemie list` through ui/agents-parse.js, and Health's last result.
+const home = { config: null, auth: null, agents: undefined, health: null, connection: undefined };
+const homeScreen = createHomeView(document.getElementById('home-body'), {
+  stepsUi: stepsUI.createStepsUi(),
+  onItem: (id) => {
+    if (id === 'model') openGuidedSetup();
+    else if (id === 'agent') showView('agents');
+    else if (id === 'health') showView('health');
+  },
+  onSignIn: () => (signInAction(home) === 'setup' ? openGuidedSetup() : startSignIn()),
+  onCard: (id) => showView(id === 'connections' ? 'connect' : id),
+  onSetupAgain: () => openGuidedSetup(),
+  // Item 3 installs through the Agents controller, which refreshes Home on its
+  // own when the action finishes, so the item ticks without a second read here.
+  onInstallAgent: (agent, onLine) => agentsController.install(agent, onLine),
+});
+
+// Whether the checklist has ever been finished here, read once at boot.
+// localStorage itself can throw on access, so it is fetched guarded too.
+const homeStorage = (() => {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return undefined;
+  }
+})();
+let onboarded = readOnboarded(homeStorage);
+
+let autoHealthStarted = false;
+
+function renderHome() {
+  const state = deriveHome({ ...home, onboarded });
+  if (state.done && !onboarded) {
+    onboarded = true;
+    rememberOnboarded(homeStorage);
+  }
+  homeScreen.render({ ...state, signingIn: home.signingIn });
+  // The last step starts by itself once the ones before it are done, instead
+  // of leaving the user on a checklist that waits for a click. Once a session:
+  // a check that fails leaves its step saying so, and Home does not retry it.
+  if (!autoHealthStarted && autoHealthCheck(state)) {
+    autoHealthStarted = true;
+    setTimeout(startHealthInPlace, 0);
+  }
+  // The other screens stay locked until the checklist is first done; Home
+  // never is, so an item that opened Agents or Health always has a way back.
+  applyOnboardingNav(document, { done: state.unlocked });
+  applyHomeHeader(document, { done: state.done });
+}
+
+// `codemie list` is Home's one bounded CLI read (its ticket allows exactly this
+// one). Spaced out: showView('home') and window focus both ask for it.
+let agentsReadAt = 0;
+let agentsReading = false;
+// True while `codemie self-update` replaces the CLI. Running `codemie` then
+// fails (on Windows npm may also find its files in use), so Home's reads wait
+// and run once the update is over.
+let cliReplacing = false;
+async function refreshAgents() {
+  if (cliReplacing || agentsReading || Date.now() - agentsReadAt < 5000) return;
+  agentsReading = true;
+  try {
+    const res = await bridge.runner.runCapture('codemie list');
+    home.agents = res && res.code === 0 ? parseAgentList(res.stdout) : null;
+  } catch {
+    home.agents = null;
+  } finally {
+    agentsReading = false;
+    agentsReadAt = Date.now();
+  }
+  renderHome();
+}
+
+// The Connections card's one read: whether the CLI's local proxy, which Claude
+// Desktop is pointed at, is running.
+let connectionReading = false;
+async function refreshConnection() {
+  if (cliReplacing || connectionReading) return;
+  connectionReading = true;
+  try {
+    const res = await bridge.runner.runCapture('codemie proxy status --json');
+    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '');
+  } catch {
+    home.connection = null;
+  } finally {
+    connectionReading = false;
+  }
+  renderHome();
+}
+
+// One view instance for the one #setup-view container, created lazily and
+// reused. A second instance would mount over the first one's rows and start a
+// second `codemie setup` alongside it (they race over the config file);
+// setup-view's own re-entrancy guard is per instance and cannot see that.
+// start() is safe to call again on a settled instance: it resets itself. The
+// module is imported on first use so the driver stays out of the boot path.
+let setupView = null;
+// True while a guided setup run is open; runAction reads it. setupSettled
+// resolves once that run has fully unwound.
+let setupRunning = false;
+let setupSettled = Promise.resolve();
+// Set while a run left behind by showView is being stopped; the next
+// openGuidedSetup waits for it, or start() would hand back the old run.
+let setupStopping = null;
+async function openGuidedSetup() {
+  showView('setup');
+  if (setupStopping) await setupStopping;
+  if (!setupView) {
+    const { createSetupView } = await import('./setup-view.js');
+    // A verified run returns to Home by itself, unless the user has already
+    // gone somewhere else in the meantime.
+    setupView = createSetupView(document.getElementById('setup-view'), {
+      onDone: () => {
+        if (!views.setup.classList.contains('hidden')) showView('home');
+      },
+      // Called for each run, including a "Try again" started from the view.
+      onRun: (run) => {
+        setupRunning = true;
+        setupSettled = run.then(() => {}, () => {}).finally(() => {
+          setupRunning = false;
+          // A run writes the profile and may sign the user in; Home re-reads both.
+          refreshIdentityOnComplete();
+          refreshAgents();
+        });
+      },
+    });
+  }
+  return setupView.start();
+}
+
 // ---- view routing ----
 function showView(name) {
+  const stopping = stopSetupOnLeave(
+    views.setup.classList.contains('hidden') ? null : 'setup',
+    name,
+    {
+      running: setupRunning,
+      cancel: async () => (await import('./setup-driver.js')).cancelSetup(),
+      settled: () => setupSettled,
+    },
+  );
+  if (stopping) {
+    const wait = stopping.finally(() => {
+      if (setupStopping === wait) setupStopping = null;
+    });
+    setupStopping = wait;
+  }
   Object.entries(views).forEach(([key, el]) => {
     el.classList.toggle('hidden', key !== name);
   });
@@ -187,6 +338,21 @@ function showView(name) {
     if (btn.dataset.view === name) btn.setAttribute('aria-current', 'page');
     else btn.removeAttribute('aria-current');
   });
+  // The first visit runs the checks, however the view was reached: the sidebar,
+  // a deep link from another screen, or the dev hook. After that only "Check
+  // everything again" re-runs them.
+  if (name === 'health' && !healthChecked) {
+    healthChecked = true;
+    healthController.run();
+  }
+  if (name === 'agents' && !agentsChecked) {
+    agentsChecked = true;
+    agentsController.run();
+  }
+  if (name === 'home') {
+    refreshAgents();
+    refreshConnection();
+  }
 }
 
 // (Re)build the engine for a wizard run.
@@ -236,13 +402,15 @@ function renderIdentity(cfg) {
   // No config yet: 01-home.png puts the product name where the identity goes.
   // Anything that is not a resolved config shows the product name rather than an
   // empty bar — that covers no-configuration and the read-failed fallback.
-  set('identity-product', cfg.state === 'valid' || cfg.state === 'broken' ? '' : 'CodeMie Desktop');
+  set('identity-product', cfg.state === 'valid' || cfg.state === 'broken' ? '' : 'CodeMie Connect');
   // null when the config records no userEmail — omit rather than fill in.
   set('identity-account', cfg.account);
   set('identity-profile', cfg.profile);
   // Empty in the broken state, where only the account and profile are readable.
   set('identity-model', cfg.model);
   set('identity-project', cfg.project);
+  home.config = cfg;
+  renderHome();
 }
 
 // Re-reads the identity bar once setup finishes writing what it displays —
@@ -273,7 +441,7 @@ function updateIdentityAuthStatus(st) {
   const el = document.getElementById('identity-auth-status');
   if (!el) return;
   if (st.state === 'signed_in') {
-    el.textContent = st.detail || 'Signed in';
+    el.textContent = signedInDetail(st.detail);
   } else if (st.state === 'unknown') {
     el.textContent = 'Auth status unknown';
   } else if (st.state === 'no_profile') {
@@ -281,25 +449,14 @@ function updateIdentityAuthStatus(st) {
   } else {
     el.textContent = 'Not signed in';
   }
+  home.auth = st;
+  renderHome();
 }
 
 // ---- CLI version banner ----
 // The badge reports whether an update exists; the banner reports whether the
 // user still wants to be told. They are separate, which is why dismissing the
 // banner leaves the badge standing, as 01-home.png draws it in steady state.
-// The home grid was kept, so its update-available cue is carried-forward
-// behaviour and has to keep working: an accent border on the installation group
-// and a highlighted Update CLI tile. Guarded because EPMCDME-14589 removes the
-// grid, after which these lookups return null.
-function setGridUpdateCue(on) {
-  const group = document.getElementById('installation-group');
-  const tile = document.getElementById('update-cli-tile');
-  if (group) group.classList.toggle('update-available', on);
-  if (!tile) return;
-  if (on) tile.dataset.state = 'highlight';
-  else if (tile.dataset.state === 'highlight') delete tile.dataset.state;
-}
-
 function setVersionBadge() {
   document.getElementById('identity-version-badge').textContent =
     cliVersionState.updateAvailable ? `${cliVersionState.latest} available` : '';
@@ -307,10 +464,8 @@ function setVersionBadge() {
 
 function showUpdateBanner() {
   setVersionBadge();
-  setGridUpdateCue(cliVersionState.updateAvailable);
   if (!cliVersionState.updateAvailable) return;
   if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
-  document.getElementById('update-from').textContent = cliVersionState.installed;
   document.getElementById('update-to').textContent = cliVersionState.latest;
   document.getElementById('update-banner').classList.remove('hidden');
 }
@@ -320,7 +475,6 @@ function showUpdateBanner() {
 function hideUpdateBanner() {
   document.getElementById('update-banner').classList.add('hidden');
   setVersionBadge();
-  setGridUpdateCue(cliVersionState.updateAvailable);
 }
 
 function dismissUpdateBanner() {
@@ -330,7 +484,6 @@ function dismissUpdateBanner() {
   // origin/main cleared the grid cue on dismiss. The badge is what survives —
   // it reports that an update exists; the cue and banner report that we are
   // still asking about it, and dismissing answers that.
-  setGridUpdateCue(false);
 }
 
 function showAppUpdateBanner(latestVersion) {
@@ -351,12 +504,31 @@ function dismissAppUpdateBanner() {
 }
 
 // ---- one-shot command action (proxy connect / analytics) ----
+// The app has one terminal (PTY) slot, and guided setup holds it for as long
+// as a run is open -- including while it waits on a question the user walked
+// away from. Anything else that needs the slot (the analytics report, the
+// Claude Desktop connection) asks to stop that run first, instead of failing
+// with the bridge's bare "PTY already active".
 // `extra.onClose` overrides the default "navigate back to returnView" close
 // handler (used by row actions that should refresh in place instead).
 // `extra.parseError` — when given, PTY stdout is buffered and scanned for a
 // failure line rather than trusting the exit code alone (mirrors
 // findLoginError's stdout-scan convention).
 async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
+  if (setupRunning) {
+    showNotice({
+      title: 'Setup is still running',
+      message: 'Guided setup is waiting for an answer, and only one can run at a time. Stop setup to go on; you can start it again from Home.',
+      primaryLabel: 'Stop setup and continue',
+      primaryAction: async () => {
+        const { cancelSetup } = await import('./setup-driver.js');
+        await cancelSetup();
+        await setupSettled;
+        runAction(title, cmd, returnView, hint, extra);
+      },
+    });
+    return;
+  }
   const { onClose, parseError } = extra;
   openTerminal(title, { keepOpen: true, hint, onClose: onClose || (() => showView(returnView)) });
   let buf = '';
@@ -383,6 +555,71 @@ async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
   }
 }
 
+// Health screen's own doctor invocation — independent of wizard step 2.4,
+// which stays exit-code-only. The stdout-filter/parse/group pipeline and the
+// open-log failure path live in health-controller.js, which is unit-tested
+// directly (ui/test/health-controller.test.mjs); onFailure resets
+// healthChecked so a failed run does not permanently consume the one-shot
+// auto-run guard below (CR-006).
+const healthController = createHealthController({
+  container: views.health,
+  // Mirror every line (stdout and stderr) to the on-disk log, same as the
+  // main terminal's emit() sink does — health-controller.js's own onLine
+  // only keeps stdout in memory for parsing, so without this the doctor
+  // run's real output (including a stderr-only failure) was invisible in
+  // codemie_wizard.log.
+  runStream: (cmd, onLine) =>
+    bridge.runner.runStream(cmd, (text, tag) => {
+      invoke('log_line', { text, tag: tag || 'stdout' }).catch(() => {});
+      onLine(text, tag);
+    }),
+  openLog: () => invoke('open_cli_debug_log'),
+  // 'setup' is not a screen to show but a run to start: guided setup.
+  onNavigate: (view) => (view === 'setup' ? openGuidedSetup() : showView(view)),
+  signIn: () => startSignIn(),
+  onResult: (result) => {
+    home.health = result;
+    home.healthRunning = false;
+    home.healthFailed = false;
+    renderHome();
+  },
+  onFailure: () => {
+    healthChecked = false;
+    home.healthRunning = false;
+    home.healthFailed = true;
+    renderHome();
+  },
+});
+
+// Runs the health check from Home, without leaving it: the step shows it
+// running, and its result ticks the step (or names the problems) the same way
+// a check run from the Health screen does.
+function startHealthInPlace() {
+  if (healthChecked) return;
+  healthChecked = true;
+  home.healthRunning = true;
+  renderHome();
+  healthController.run();
+}
+
+// The Agents screen (EPMCDME-14514). Its own steps-ui instance, its own
+// `codemie list` read; onResult hands the same records to Home so the checklist
+// item and the Agents card do not need a second read to agree with the screen.
+// onFailure releases the one-shot guard the way Health's does.
+const agentsController = createAgentsController({
+  container: views.agents,
+  runCapture: (cmd) => bridge.runner.runCapture(cmd),
+  runStream: bridge.runner.runStream,
+  stepsUi: stepsUI.createStepsUi(),
+  onResult: (agents) => {
+    home.agents = agents;
+    renderHome();
+  },
+  onFailure: () => {
+    agentsChecked = false;
+  },
+});
+
 // Verify the active CodeMie profile is signed in via `codemie profile status`
 // (parsed live in Rust — not a hardcoded check). Returns true if authenticated;
 // otherwise shows a blocking notice that points at setup.
@@ -401,7 +638,7 @@ async function ensureAuthenticated(appLabel = 'this app') {
       message:
         `Connecting ${appLabel} needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
       primaryLabel: 'Run setup',
-      primaryAction: () => enterWizard(),
+      primaryAction: () => openGuidedSetup(),
     });
     return false;
   }
@@ -522,6 +759,10 @@ async function runConnectionRowAction(row, action) {
 // Sign-in button UI surface is provided by EPMCDME-14589; startSignIn is defined
 // here so it is available when that ticket wires it.
 async function startSignIn() {
+  // One browser sign-in at a time: each call starts its own `profile login`.
+  if (home.signingIn) return;
+  home.signingIn = true;
+  renderHome();
   hideNotice();
   try {
     const lines = [];
@@ -553,6 +794,7 @@ async function startSignIn() {
   } catch {
     st = { state: 'unknown', detail: '' };
   }
+  home.signingIn = false;
   updateIdentityAuthStatus(st);
 }
 
@@ -590,43 +832,40 @@ function setUpdateProgress(state, label, icon) {
     btn.textContent = label;
     btn.disabled = state === 'updating';
   }
-  // The grid tile animates in place, as it does on the shipped app.
-  const tile = document.getElementById('update-cli-tile');
-  if (!tile) return;
-  if (state) tile.dataset.state = state;
-  else delete tile.dataset.state;
-  const iconEl = document.getElementById('update-cli-icon');
-  const titleEl = document.getElementById('update-cli-title');
-  if (iconEl) iconEl.textContent = icon;
-  if (titleEl) titleEl.textContent = label;
-  // Its siblings are inert while the update runs, so a second install cannot be
-  // started from the same group.
-  document.querySelectorAll('#installation-tiles .sub-tile:not(#update-cli-tile)').forEach((t) => {
-    t.style.pointerEvents = state === 'updating' ? 'none' : '';
-    t.style.opacity = state === 'updating' ? '0.4' : '';
-  });
 }
 
 async function runUpdateCli() {
   if (updateCliRunning) return;
   updateCliRunning = true;
   setUpdateProgress('updating', 'Updating…', '⏳');
+  cliReplacing = true;
   try {
-    await invoke('run_self_update');
+    try {
+      await bridge.updater.runSelfUpdate();
+    } finally {
+      cliReplacing = false;
+      agentsReadAt = 0;
+      refreshAgents();
+      refreshConnection();
+    }
 
     // Re-probe installed version after update
-    const newVersion = await invoke('check_codemie_version');
+    const newVersion = await bridge.inspector.checkCodemieVersion();
     cliVersionState.installed = newVersion;
     cliVersionState.updateAvailable =
       newVersion && cliVersionState.latest
         ? semverLt(newVersion, cliVersionState.latest)
         : false;
 
-    setUpdateProgress('done', newVersion ? `Updated! → ${newVersion}` : 'Updated!', '✅');
-
-    if (!cliVersionState.updateAvailable) {
-      hideUpdateBanner();
+    const result = cliUpdateResult(newVersion, cliVersionState.latest);
+    if (!result.ok) {
+      // The update did not take: say so and leave the banner up to retry.
+      setUpdateProgress('error', result.label, '❌');
+      updateCliRunning = false;
+      return;
     }
+    setUpdateProgress('done', result.label, '✅');
+    if (result.hideBanner) hideUpdateBanner();
 
     setTimeout(() => {
       setUpdateProgress('', 'Update CLI', '🔄');
@@ -662,13 +901,14 @@ async function runUpdateApp() {
     await bridge.updater.restartApp();
   } catch (err) {
     bannerRunBtn.disabled = false;
-    bannerRunBtn.textContent = 'Update app';
+    bannerRunBtn.textContent = 'Update and restart';
     const banner = document.getElementById('app-update-banner');
+    const banBody = banner.querySelector('.top-banner-body');
     let errorEl = banner.querySelector('.update-error');
     if (!errorEl) {
       errorEl = document.createElement('span');
       errorEl.className = 'update-error';
-      banner.appendChild(errorEl);
+      banBody.appendChild(errorEl);
     }
     errorEl.textContent = String(err);
   } finally {
@@ -677,6 +917,10 @@ async function runUpdateApp() {
 }
 
 async function boot() {
+  // The command-log footer hears about every command the bridge runs, so it is
+  // wired first: the startup checks below (codemie --version, profile status)
+  // would otherwise run before it and never show.
+  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
   const flags = await invoke('smoke_mode');
 
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
@@ -691,7 +935,7 @@ async function boot() {
   // of the production boot path.
   if (flags.dev) {
     const { startSetup } = await import('./setup-driver.js');
-    window.__codemie = { showView, startSetup, emit };
+    window.__codemie = { showView, startSetup, emit, startGuidedSetup: openGuidedSetup };
   }
 
   allSteps = await invoke('get_steps');
@@ -737,11 +981,16 @@ async function boot() {
     dismissAppUpdateBanner();
   });
 
-  // Check CLI version vs npm latest at startup (non-blocking)
+  // Check CLI version vs npm latest at startup (non-blocking). Only for a CLI
+  // the user installed: the bundled one sits inside the app, `self-update`
+  // installs the new version into the user's own npm instead, and the app keeps
+  // running the old one. The bundled CLI updates with the app.
   Promise.all([
-    invoke('check_codemie_version'),
+    invoke('cli_is_bundled'),
+    bridge.inspector.checkCodemieVersion(),
     invoke('fetch_codemie_latest'),
-  ]).then(([installed, latest]) => {
+  ]).then(([bundled, installed, latest]) => {
+    if (bundled) return;
     cliVersionState.installed = installed;
     cliVersionState.latest = latest;
     cliVersionState.updateAvailable =
@@ -789,9 +1038,11 @@ async function boot() {
   // spaced out because the auth half runs the CLI.
   let identityReadAt = Date.now();
   window.addEventListener('focus', () => {
-    if (installRunning || Date.now() - identityReadAt < 5000) return;
+    if (installRunning || setupRunning || cliReplacing || Date.now() - identityReadAt < 5000) return;
     identityReadAt = Date.now();
     refreshIdentityOnComplete();
+    refreshAgents();
+    refreshConnection();
   });
 
   const [platformInfo, tmpDir] = await Promise.all([
@@ -847,28 +1098,11 @@ async function boot() {
     showView('home');
   });
 
-  // ---- home / launcher ----
-  homeGrid.addEventListener('click', (e) => {
-    const tile = e.target.closest('.home-tile');
-    if (!tile) return;
-    switch (tile.dataset.action) {
-      case 'full':
-        enterWizard();
-        break;
-      case 'connect-desktop':
-        showView('connect');
-        refreshConnectionsView();
-        break;
-      case 'analytics':
-        runAnalytics();
-        break;
-      case 'update-cli':
-        runUpdateCli();
-        break;
-      default:
-        break;
-    }
-  });
+  // ---- home ----
+  // The Home body is ui/home-view.js; its sources are wired in the Home section
+  // above. The command-log footer is wired at the top of boot().
+  refreshAgents();
+  refreshConnection();
   document.querySelectorAll('#sidebar-main-group .sidebar-item, #sidebar-about').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
@@ -878,14 +1112,12 @@ async function boot() {
   });
   showView('home');
   document.getElementById('sidebar-analytics').addEventListener('click', () => {
-    if (installRunning) return; // hidden today, but restoring it must not restore the gap
+    if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
     runAnalytics();
   });
 
   wizardBack.addEventListener('click', () => showView('home'));
-  connectBack.addEventListener('click', () => showView('home'));
   noticeClose.addEventListener('click', hideNotice);
-
   // ---- view routing (smoke/probe go straight to the wizard so their
   //      .step-row / canvas / bg assertions still hold) ----
   if (flags.probe) {
@@ -896,6 +1128,14 @@ async function boot() {
   if (flags.smoke) {
     showView('wizard');
     await runSmoke(flags);
+    return;
+  }
+  // CODEMIE_SHOT names the view to open at boot. The Rust side has exposed the
+  // flag since the smoke work but nothing read it, so a screen other than Home
+  // could only be reached by clicking — which a background capture cannot do.
+  // Screenshot evidence for a screen's own ticket now needs no temporary hook.
+  if (flags.shot && views[flags.shot]) {
+    showView(flags.shot);
     return;
   }
   showView('home');

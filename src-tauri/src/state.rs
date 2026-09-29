@@ -30,9 +30,9 @@ pub struct AppState {
     pub bundled_injected: bool,
     /// True when an existing CodeMie CLI was found on PATH before the bundled
     /// bin dir would have been injected. When true, `inject_bundled_bin_path`
-    /// is skipped and `node_exe_path`/`cli_entry_path` are left empty so
-    /// `run_self_update` falls back to the PATH-resolved CLI instead of a
-    /// bundled one that was never installed (EPMCDME-14581).
+    /// is skipped and `node_exe_path`/`cli_entry_path` are left empty, and
+    /// `run_self_update` updates that CLI; the bundled one updates with the
+    /// app (EPMCDME-14581).
     pub existing_cli_detected: bool,
     /// Timestamp of the last successful app update check. Guards the 24 h throttle in
     /// `commands::app_updater::check_for_update`.

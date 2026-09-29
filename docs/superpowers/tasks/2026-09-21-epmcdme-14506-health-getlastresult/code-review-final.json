@@ -1,0 +1,145 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance did not run (no extractable spec criteria), which caps confidence at low; the standards audit found 8/17 commit subjects violating the conventional-commit format (blocking). 11 findings kept: doctor-parse.js/doctor-groups.js parsing fragility (unrecognized-icon drop, six-space hint match, AWS-CLI single-item assumption, agent-name split, info-status defaulting to pass), an unreset auto-run guard on the CR-005 empty-output path, an unbounded doctor-run await, a raw-'undefined' error message, and two test-coverage gaps (failure-panel regression detection, untested renderer auto-run wiring); 7 candidates (logger.rs io::Error detail loss, open_log TOCTOU, Windows cmd metacharacters, a failure-panel actions-drop claim disproved by reading the code, an info-only-section drop that is by design, an unreachable ICONS-missing-'info' row status, and a multi-error label-truncation already covered by aggregated remedy hints) were dismissed as unreachable or below the emission floor. No findings were deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "partial", "notes": "git-workflow.md requires '<type>: <short description>'; 8 of 17 subjects use 'EPMCDME-14506 : ...' with no type prefix; later 9 use feat/fix/chore: EPMCDME-14506 style, matching" },
+    { "kind": "code-quality", "status": "na", "notes": "no code-quality.md guide found at .ai-run/guides/standards/code-quality.md and no ArtifactRef was passed" },
+    { "kind": "security", "status": "na", "notes": "no security-patterns.md guide found and no ArtifactRef was passed; manually reviewed logger.rs (fixed, non-user log path, no shell interpolation) and health-controller.js; no concrete issue found" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit messages",
+      "title": "Commit subjects skip conventional type prefix",
+      "problem": "8 of 17 commit subjects in the reviewed range use 'EPMCDME-14506 : <description>' instead of the required '<type>: <short description>' format (e.g. 'EPMCDME-14506 : Track and expose the last health result').",
+      "impact": "Breaks the documented conventional-commit format the repo's squash-merge workflow relies on for a clean, typed history on main.",
+      "recommendation": "Reword the offending subjects (or the squash-merge commit body) to lead with a conventional type, e.g. 'feat: track and expose the last health result'."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/doctor-groups.js",
+      "line": 53,
+      "title": "detailFor('AWS CLI') assumes a fixed single item",
+      "problem": "detailFor unconditionally reads items[0].message to build the AWS CLI row's detail text, assuming the section always has exactly one status line and that it is always first.",
+      "impact": "A CLI version that adds a second informational line ahead of the version line silently produces the wrong detail text with no bounds or format check.",
+      "recommendation": "Find the version line explicitly (e.g. by matching a 'Version' prefix) instead of indexing items[0]."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/doctor-groups.js",
+      "line": 106,
+      "title": "Info-status agent line renders as a healthy check",
+      "problem": "agentRow() calls statusOf([item]), which only maps 'error'->'fail' and 'warn'->'warn', defaulting everything else (including an 'info' status line) to 'pass'.",
+      "impact": "An informational 'Installed Agents' line from the CLI would render as a healthy agent check instead of being excluded or flagged, misrepresenting the section's real status.",
+      "recommendation": "Have statusOf() (or agentRow) treat 'info' status explicitly rather than falling through to 'pass'."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/doctor-groups.js",
+      "line": 107,
+      "title": "agentRow mis-splits names containing ' - '",
+      "problem": "agentRow splits an agent's message on the first ' - ' separator to derive title vs. detail (item.message.split(/\\s+-\\s+/)), assuming that separator never appears inside the name itself.",
+      "impact": "A future agent/tool name that legitimately contains ' - ' would be mis-split, putting part of the name into the detail field with no guard.",
+      "recommendation": "Split on a delimiter that cannot appear in an agent name (or use a documented CLI-provided field) instead of the first ' - '."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/doctor-parse.js",
+      "line": 21,
+      "title": "Unrecognized doctor icon silently drops a check",
+      "problem": "The detail-line regex only matches the five known icons (✓⚠✗○•); a line with any other icon fails to match and its record is dropped entirely rather than surfaced.",
+      "impact": "A codemie CLI change (new icon, or an icon+variation-selector form) would make an entire check silently vanish from the Health screen with no indication anything was skipped.",
+      "recommendation": "Fall back to an 'unknown' record (status + raw text) when the icon isn't recognized, instead of dropping the line."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/doctor-parse.js",
+      "line": 25,
+      "title": "Hint-line regex requires exactly six leading spaces",
+      "problem": "hintMatch requires the following line to start with exactly six spaces (/^\\s{6}(.+)$/) to be attached as a hint.",
+      "impact": "Output whose indentation differs (icon width change, locale-formatted label) causes the hint to be silently treated as a new header/blank instead of attached, with no error raised.",
+      "recommendation": "Match on leading whitespace generically instead of an exact count, alongside the existing blank-line/header checks."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/health-controller.js",
+      "line": 49,
+      "title": "Log-open failure can display literal 'undefined'",
+      "problem": "handleOpenLog's catch calls showLogError(container, String((e && e.message) || e)); when e is falsy (a rejection with no message and no truthy value), String(e) evaluates to the literal text 'undefined'.",
+      "impact": "The user sees the word 'undefined' as the failure explanation instead of a useful message.",
+      "recommendation": "Fall back to a fixed user-facing string when e has no usable message, e.g. e instanceof Error ? e.message : String(e ?? 'unknown error')."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/health-controller.js",
+      "line": 59,
+      "title": "No timeout around the doctor run leaves the screen stuck",
+      "problem": "run() awaits runStream('codemie doctor', ...) with no timeout; if the underlying process hangs, the await never resolves or rejects.",
+      "impact": "running stays true forever, so every future recheck, sign-in retry, and the one-shot auto-run become permanent no-ops until the app is restarted.",
+      "recommendation": "Race runStream against a timeout and treat expiry as a failure through the existing catch/showRunError path."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/health-controller.js",
+      "line": 63,
+      "title": "Empty-output failure doesn't reset the auto-run guard",
+      "problem": "The CR-005-labeled 'zero stdout records' branch shows the run error but never calls onFailure?.(), unlike the catch branch a few lines below which does.",
+      "impact": "renderer.js's one-shot healthChecked guard is not reset on this failure path, so a user who leaves and re-enters the Health screen after an empty-output failure gets no automatic retry, inconsistent with the catch-branch handling and the onFailure doc comment's stated intent.",
+      "recommendation": "Call onFailure?.() in the records.length === 0 branch too, matching the catch block's handling."
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 196,
+      "title": "Auto-run-on-first-visit wiring has no test coverage",
+      "problem": "The healthChecked guard + healthController.run() call inside showView() is exercised by no test in the suite.",
+      "impact": "Breaking or dropping this block would not fail `npm test` (node --test ui/test/*.test.mjs); health-controller.test.mjs only exercises createHealthController() directly, never through renderer.js's showView().",
+      "recommendation": "Add a renderer-level test (or extract the guard logic so it's directly testable) asserting run/runStream fires on first navigation to 'health' and not on a second."
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/test/failure-panel.test.mjs",
+      "line": 10,
+      "title": "Failure-panel test stub can't catch a regression to the pre-fix bug",
+      "problem": "makeEl() gives every stub element a literal _children: [] field; the no-actions test only asserts block.querySelector('.failure-actions') is null, true under both the new `primaryLabel || raw` gate and the old, buggy `actions._children?.length !== 0` gate.",
+      "impact": "Reverting ui/failure-panel.js's render gate back to the pre-fix check would reintroduce the production bug (an empty, margin-taking actions row always appended) while this test keeps passing.",
+      "recommendation": "Assert on the actual DOM-visible effect the fix targets, via a stub that only exposes what real Elements expose rather than an internal _children the production check doesn't use."
+    }
+  ]
+}

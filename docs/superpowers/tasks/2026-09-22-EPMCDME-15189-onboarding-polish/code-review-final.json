@@ -1,0 +1,50 @@
+{
+  "decision": "request-changes",
+  "rationale": "Edge-case lens ran clean and all 3 candidates verified as real, reachable defects in the restyled .top-banner card: the runUpdateApp() error path still appends .update-error as an unstyled flex sibling with no wrap rule, .top-banner-body has no flex-basis/min-width guard against long version strings, and data-busy is set on #update-banner but has no matching CSS so buttons disable functionally without looking disabled. No story/spec artifact exists for this ticket (acceptance lens not dispatched), so business_review is empty and confidence is capped low; standards review was intentionally skipped for the compact profile (no guide/audit applicable). 0 deferred, 0 dismissed.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not applicable for compact profile this round." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not applicable for compact profile this round." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not applicable for compact profile this round." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 652,
+      "title": "Update-app error text overlaps banner row",
+      "problem": "runUpdateApp()'s catch block appends .update-error directly as a 3rd flex child of #app-update-banner (a .top-banner). .top-banner has no flex-wrap and the .update-error rule (display:block; width:100%) only sets flex-basis inside the nowrap row — it does not push onto a new line.",
+      "impact": "When an app update fails, the error text is squeezed into or overlaps the title/line/actions row instead of wrapping below it, on the exact path most likely to be exercised (a failed update).",
+      "recommendation": "Append .update-error inside .top-banner-body (or give .top-banner flex-wrap: wrap and .update-error flex-basis: 100%) so the error line breaks onto its own row."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/styles.css",
+      "line": 362,
+      "title": "Top-banner card has no wrap/min-width guard",
+      "problem": ".top-banner is a nowrap flex row; .top-banner-body has no flex-basis, flex-grow, or min-width:0, and .top-banner-actions is flex:none, so long CLI/app version strings or a narrow window have no defined shrink/wrap behavior for the title/line text.",
+      "impact": "Long version strings (e.g. long semver/build identifiers) or a narrowed app window can overflow or clip the banner title/line, or push the action buttons out of the row, undermining the card layout the ticket asks for.",
+      "recommendation": "Add flex-wrap: wrap to .top-banner and flex: 1 1 auto; min-width: 0 to .top-banner-body so text wraps within the card instead of overflowing."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/styles.css",
+      "line": 375,
+      "title": "Busy update-banner buttons have no visual disabled state",
+      "problem": "setInstallRunning() sets #update-banner's dataset.busy and disables update-banner-run/-dismiss, but styles.css defines a busy rule only for #app-sidebar[data-busy=\"1\"] — there is no #update-banner[data-busy=\"1\"] (or .top-banner[data-busy]) rule, so the buttons carry no dimmed/disabled look while a run is in flight.",
+      "impact": "Directly misses the ticket's stated requirement that buttons \"look disabled while the old wizard runs (data-busy)\" — during an install the CLI-update banner's buttons are inert but visually indistinguishable from active ones.",
+      "recommendation": "Add a CSS rule such as #update-banner[data-busy=\"1\"] .top-banner-action, #update-banner[data-busy=\"1\"] .top-banner-dismiss { opacity: .5; } to match the sidebar's existing busy treatment."
+    }
+  ]
+}

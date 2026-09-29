@@ -207,3 +207,15 @@ test('createStepsUi() is a function and the nine default exports are intact', as
     assert.equal(typeof mod[name], 'function', `${name} must stay exported`);
   }
 });
+
+// A view needs to style a row by its state -- guided setup draws the completed
+// tick as a badge (02-setup.png) and nothing else.
+test('a row carries its status as a data attribute', () => {
+  const container = makeEl('div');
+  const ui = createStepsUi();
+  ui.renderSteps(container, [{ id: 'a', title: 'A', status: 'PENDING' }]);
+  const row = container._children.find((c) => c.dataset?.id === 'a');
+  assert.equal(row.dataset.status, 'PENDING');
+  ui.setStatus('a', 'COMPLETE');
+  assert.equal(row.dataset.status, 'COMPLETE');
+});

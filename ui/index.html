@@ -31,34 +31,16 @@
         </label>
       </div>
 
-      <!-- ============ UPDATE BANNER ============ -->
-      <div id="update-banner" class="top-banner hidden">
-        <span>⬆️ Update available: <span id="update-from"></span> → <span id="update-to"></span>.</span>
-        <button id="update-banner-run">Update CLI</button>
-        <button id="update-banner-dismiss" aria-label="Dismiss">✕</button>
-      </div>
-
-      <!-- ============ APP UPDATE BANNER ============ -->
-      <div id="app-update-banner" class="top-banner hidden">
-        <span>⬆️ CodeMie Connect update available → <span id="app-update-to"></span></span>
-        <button id="app-update-banner-run">Update app</button>
-        <button id="app-update-banner-dismiss" aria-label="Dismiss">✕</button>
-      </div>
-
       <!-- ============ SHELL BODY: sidebar column + view column ============ -->
       <div id="shell-body">
 
       <!-- ============ SIDEBAR ============ -->
-      <!-- Hidden for v1, not deleted. Agents, Connections and Health are Stage 2
-           screens, so shipping the nav now would advertise three entries that
-           lead nowhere. Home is the only view v1 shows, and the home grid is
-           its own navigation. Remove the `hidden` class to bring the shell
-           back; #shell-body is a flex row, so the view column simply takes the
-           full width while this is out. -->
-      <nav id="app-sidebar" class="hidden">
+      <!-- v2: the nav is on. Home, Agents, Connections and Health each have a
+           screen now; About still has no owner and stays hidden below. -->
+      <nav id="app-sidebar">
         <div id="sidebar-main-group">
           <button id="sidebar-home" class="sidebar-item" data-view="home">Home</button>
-          <button id="sidebar-agents" class="sidebar-item" data-view="agents">Agents</button>
+          <button id="sidebar-agents" class="sidebar-item" data-view="agents">Tools</button>
           <button id="sidebar-connections" class="sidebar-item" data-view="connect">Connections</button>
           <button id="sidebar-health" class="sidebar-item" data-view="health">Health</button>
         </div>
@@ -67,11 +49,9 @@
              under it. -->
         <div id="sidebar-divider" class="hidden"></div>
         <div id="sidebar-bottom-group">
-          <!-- Hidden, not deleted. A SIDEBAR entry is a new entry point, which
-               EPMCDME-14350 defers. The carried-forward grid tile below is a
-               different thing and stays. runAnalytics and this button's wiring
-               both still work if the class is removed. -->
-          <button id="sidebar-analytics" class="sidebar-item hidden">CLI usage analytics</button>
+          <!-- The only entry point to the analytics report since Home's grid
+               went: see .ai-run/decisions/2026-09-21-EPMCDME-14589-home-grid-actions.md. -->
+          <button id="sidebar-analytics" class="sidebar-item">CLI usage analytics</button>
           <!-- Hidden, not deleted. No sub-task of EPMCDME-14350 owns About's
                content: 06-summary.png's six screens do not include it, so the
                decomposition never gave it an owner, and 01-home.png draws it as
@@ -91,47 +71,40 @@
           <img id="home-logo" src="codemie-logo.svg" alt="CodeMie" />
           <div class="home-heading">
             <div id="home-title">EPAM AI/Run CodeMie Connect</div>
-            <div id="home-subtitle">What would you like to do?</div>
+            <div id="home-subtitle"></div>
           </div>
         </header>
 
-        <div id="home-grid">
-          <div id="installation-group">
-            <div class="group-label">Installation</div>
-            <div id="installation-tiles">
-              <button class="home-tile sub-tile" data-action="full">
-                <div class="tile-icon">🚀</div>
-                <div class="tile-title">Setup</div>
-                <div class="tile-desc">Run the setup wizard and Claude engine.</div>
-              </button>
-              <button class="home-tile sub-tile" id="update-cli-tile" data-action="update-cli">
-                <div class="tile-icon" id="update-cli-icon">🔄</div>
-                <div class="tile-title" id="update-cli-title">Update CLI</div>
-                <div class="tile-desc">Update the CodeMie CLI to the latest version.</div>
-              </button>
+        <!-- Home body: the onboarding checklist, then the status cards (ui/home-view.js). -->
+        <div id="home-body"></div>
+
+        <!-- Updates are cards under the status cards, as 01-home.png draws them.
+             The identity bar's version badge stays up top. -->
+        <div id="home-updates">
+          <!-- ============ UPDATE BANNER ============ -->
+          <div id="update-banner" class="top-banner hidden">
+            <div class="top-banner-body">
+              <div class="top-banner-title">CodeMie CLI <span id="update-to"></span> is available</div>
+              <div class="top-banner-line">Your profile, settings and tools are kept.</div>
+            </div>
+            <div class="top-banner-actions">
+              <button id="update-banner-run" class="btn btn-accent top-banner-action">Update CLI</button>
+              <button id="update-banner-dismiss" class="top-banner-dismiss" aria-label="Dismiss">✕</button>
             </div>
           </div>
 
-          <button class="home-tile" data-action="connect-desktop">
-            <div class="tile-icon">🖥️</div>
-            <div class="tile-title">Connect Claude Desktop</div>
-            <div class="tile-desc">Point Claude Desktop at the CodeMie proxy gateway.</div>
-          </button>
-
-          <!-- Carried forward from Connect 2.0.1 unchanged. EPMCDME-14350 defers an
-               in-app usage/spend/history SURFACE; this is a CLI passthrough that
-               opens an HTML report in the browser, and its own design comment calls
-               dropping it "a regression for current users" with the decision still
-               open. Kept until that decision is made. The sidebar entry the earlier
-               round added is a different thing and stays hidden. -->
-          <button class="home-tile" data-action="analytics">
-            <div class="tile-icon">📊</div>
-            <div class="tile-title">CLI usage analytics</div>
-            <div class="tile-desc">Build an HTML report of your local AI CLI usage (Claude Code, Codex, …) and open it in the browser.</div>
-          </button>
+          <!-- ============ APP UPDATE BANNER ============ -->
+          <div id="app-update-banner" class="top-banner hidden">
+            <div class="top-banner-body">
+              <div class="top-banner-title">CodeMie <span id="app-update-to"></span> is available</div>
+              <div class="top-banner-line">Takes about a minute. Everything you set up stays.</div>
+            </div>
+            <div class="top-banner-actions">
+              <button id="app-update-banner-run" class="btn btn-accent top-banner-action">Update and restart</button>
+              <button id="app-update-banner-dismiss" class="top-banner-dismiss" aria-label="Dismiss">✕</button>
+            </div>
+          </div>
         </div>
-
-        <footer id="home-footer">EPAM AI/Run CodeMie ©</footer>
       </div>
 
       <!-- ============ WIZARD (install flow) ============ -->
@@ -195,11 +168,6 @@
 
       <!-- ============ CONNECT CLAUDE DESKTOP (intermediate) ============ -->
       <div id="connect-view" class="hidden">
-        <div id="connect-topbar">
-          <button id="connect-back" class="back-link">‹ Home</button>
-          <span class="mode-label">Connections</span>
-        </div>
-
         <div id="connect-body">
           <header id="connect-header">
             <div class="connect-icon">🖥️</div>
@@ -212,17 +180,15 @@
           <div id="connect-rows"></div>
         </div>
 
-        <footer class="view-footer">EPAM AI/Run CodeMie ©</footer>
       </div>
 
       </div><!-- /#view-container -->
       </div><!-- /#shell-body -->
 
       <!-- ============ FOOTER LOG (collapsible slot — populated by a later ticket) ============ -->
-      <!-- Hidden for v1, not deleted: nothing writes to #command-log-body yet,
-           so the disclosure opens on an empty panel. Remove the `hidden` class
-           when the ticket that fills it lands. -->
-      <details id="command-log-footer" class="hidden">
+      <!-- v2: one line per command the app ran this session (ui/command-log.js).
+           Per-row output and "Copy all" are EPMCDME-14512's. -->
+      <details id="command-log-footer">
         <summary>what CodeMie ran</summary>
         <div id="command-log-body"></div>
       </details>

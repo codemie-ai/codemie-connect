@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "head": "3706543b25717d17445ab338e95bb35e13f3da83",
+  "feature_id": "health-open-log-failure",
+  "tool": "playwright",
+  "coverage_source": "generated-test",
+  "test_command": "npx playwright test",
+  "app_url": "http://localhost:8941/index.html",
+  "screenshot_path": "evidence/screenshots/health-open-log-error.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS"
+}

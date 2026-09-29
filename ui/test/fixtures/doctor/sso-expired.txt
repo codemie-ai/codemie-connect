@@ -1,0 +1,79 @@
+
+🔄 Running 7 migration(s)...
+
+[001-config-rename] Rename config.json to codemie-cli.config.json
+⊘ Skipped: no-old-config
+
+[002-consolidate-sessions] Consolidate session storage under ~/.codemie/sessions/
+⊘ Skipped: no-old-sessions
+
+[003-remove-hooks-node] Remove legacy hooks configuration from ~/.gemini/settings.json
+⊘ Skipped: file-not-found
+
+[004-skills-assistants-top-level] Move codemieSkills and codemieAssistants from profile-level to top-level config
+✓ Applied
+
+[005-skill-slug-format] Update skill directory slugs to include project/scope suffix for uniqueness
+⊘ Skipped: undefined
+
+[006-resolve-hook-command-paths] Rewrite installed Claude/Gemini hook commands to the absolute codemie path
+⊘ Skipped: nothing-to-rewrite
+
+[007-decouple-provider-workspace-config] Decouple repo/tooling-context fields from ProviderProfile into a scope-level WorkspaceConfig
+⊘ Skipped: undefined
+
+→ 1 migration(s) applied
+
+
+🔍 CodeMie Code Health Check
+
+Node.js:
+  ✓ Version v22.23.2
+
+npm:
+  ✓ Version 11.5.1
+
+Python:
+  ✓ Version 3.9.6
+
+uv:
+  ✓ Version 0.12.0 (Homebrew 2026-07-28 aarch64-apple-darwin)
+
+AWS CLI:
+  ✓ Version aws-cli/2.36.46 Python/3.14.7 Darwin/25.6.0 source/arm64
+
+Active Profile:
+  ○ Active Profile: demo7
+  ✓ Provider: ai-run-sso
+  ✓ CodeMie URL: https://codemie.lab.epam.com
+  ✓ API Key: sso-prov***ided
+  ✓ Model: claude-sonnet-5
+
+CodeMie SSO Provider:
+  ⚠ SSO Authentication required
+  ✓ CodeMie URL: https://codemie.lab.epam.com
+  ✗ SSO credentials not found
+      Run: codemie profile login
+
+JWT Authentication:
+  ○ Not using JWT authentication (skipped)
+
+Installed Agents:
+  ⚠ CodeMie Code (0.0.47) - CodeMie recommends vlatest
+      codemie install codemie-code --supported
+  ✓ Claude Code (2.1.269)
+  ⚠ OpenCode CLI (1.18.31) - CodeMie recommends vlatest
+      codemie install opencode --supported
+
+Repository & Workflows:
+  ○ Not a git repository
+
+Frameworks:
+  ○ SpecKit - not installed
+  ○ BMAD Method - not installed
+  ○ Codebase Memory MCP - not installed
+  ✓ CodeGraph (1.5.0)
+  ○ Graphify - not installed
+
+⚠ Some issues detected. Please resolve them for optimal performance.
+

@@ -25,24 +25,49 @@ struct CmdLine {
     tag: String,
 }
 
-/// Build a platform-appropriate shell command. Returns a tokio Command ready to
-/// execute `cmd_str` through the OS shell.
-fn shell_cmd(cmd_str: &str) -> Command {
+/// Pure: builds the platform-appropriate shell `Command` for `cmd_str` from
+/// an explicit `home` value, with no environment reads. Always compiled on
+/// every platform so tests can exercise this without mutating the process
+/// environment (`std::env::set_var` on `HOME` is process-global and races
+/// with anything else in the test binary that spawns a real child).
+fn shell_cmd_for(cmd_str: &str, home: &str, base_path: &str, windows: bool) -> Command {
+    let env = crate::commands::npm_env::npm_env_for(home, windows);
+    let path = crate::commands::npm_env::path_with_bin_dir_last(&env.bin_dir, base_path);
     #[cfg(not(windows))]
-    {
+    let mut c = {
         let mut c = Command::new("/bin/zsh");
         c.arg("-lc").arg(cmd_str);
         c
-    }
+    };
     #[cfg(windows)]
-    {
+    let mut c = {
         // Without this flag, spawning a console subprocess from this GUI-subsystem
         // app briefly flashes a visible cmd.exe window on screen.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut c = Command::new("cmd.exe");
         c.args(["/c", cmd_str]).creation_flags(CREATE_NO_WINDOW);
         c
+    };
+    // An empty prefix is npm_env_for()'s "no override" value (home was
+    // unset or empty) — leave npm_config_prefix unset rather than pointing
+    // it at a root-relative path.
+    if !env.prefix.is_empty() {
+        c.env("npm_config_prefix", &env.prefix);
     }
+    c.env("PATH", &path);
+    c
+}
+
+/// Build a platform-appropriate shell command. Returns a tokio Command ready to
+/// execute `cmd_str` through the OS shell. Reads the platform's home-dir env
+/// var and delegates to `shell_cmd_for`.
+fn shell_cmd(cmd_str: &str) -> Command {
+    #[cfg(not(windows))]
+    let home = std::env::var("HOME").unwrap_or_default();
+    #[cfg(windows)]
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let base = std::env::var("PATH").unwrap_or_default();
+    shell_cmd_for(cmd_str, &home, &base, cfg!(windows))
 }
 
 /// Run a command and capture all output. Mirrors runner.runCapture:
@@ -52,6 +77,10 @@ pub async fn capture(cmd: &str, path_override: Option<String>) -> CaptureResult 
     if let Some(p) = path_override {
         command.env("PATH", p);
     }
+    capture_command(command).await
+}
+
+async fn capture_command(mut command: Command) -> CaptureResult {
     match command.output().await {
         Ok(out) => CaptureResult {
             code: out.status.code().unwrap_or(1),
@@ -141,66 +170,52 @@ where
     })
 }
 
-/// Direct invocation of the bundled node binary + CLI entry-point.
-/// Extracted from `run_self_update` so the invocation logic can be unit-tested
-/// independently of Tauri's managed `State`.
-pub(crate) async fn self_update_direct(
+/// True when the app runs the CLI it ships with. That copy is sealed inside
+/// the app bundle, so `codemie self-update` (an `npm install -g`) cannot change
+/// it: the new version lands in the user's own npm prefix and the app keeps
+/// running the bundled one. The CLI in the bundle updates with the app.
+pub(crate) fn bundled_cli_in_use(
+    existing_cli_detected: bool,
     node_exe: &std::path::Path,
     cli_entry: &std::path::Path,
-) -> CmdResult<String> {
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut node_cmd = tokio::process::Command::new(node_exe);
-    node_cmd.args([cli_entry.as_os_str(), std::ffi::OsStr::new("self-update")]);
-    #[cfg(windows)]
-    node_cmd.creation_flags(CREATE_NO_WINDOW);
-    let out = tokio::time::timeout(std::time::Duration::from_secs(120), node_cmd.output())
-        .await
-        .map_err(|_| {
-            crate::error::InstallerError::Other("self-update timed out after 120 s".into())
-        })?
-        .map_err(|e| crate::error::InstallerError::Other(e.to_string()))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(crate::error::InstallerError::Other(format!(
-            "codemie self-update failed (exit {:?}): {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )))
-    }
+) -> bool {
+    !existing_cli_detected && node_exe.exists() && cli_entry.exists()
 }
 
-/// Run `codemie self-update` silently (captured, not PTY).
-/// Invokes the bundled node + CLI entry absolutely when both paths exist;
-/// falls back to the `codemie` shim on PATH through the platform shell.
+/// Whether the app is running its bundled CLI; the UI offers a CLI update only
+/// when it is not.
+#[tauri::command]
+pub fn cli_is_bundled(state: tauri::State<'_, crate::state::AppState>) -> bool {
+    bundled_cli_in_use(
+        state.existing_cli_detected,
+        &state.node_exe_path,
+        &state.cli_entry_path,
+    )
+}
+
+/// Not into ~/.codemie/agents: that prefix is for the tools the app installs.
+/// `self-update` is an `npm install -g`, and with the override it would put a
+/// second CLI there and leave the user's own one on the old version.
+fn self_update_command(mut command: Command) -> Command {
+    command.env_remove("npm_config_prefix");
+    command
+}
+
+/// Run `codemie self-update` silently (captured, not PTY) for a CLI the user
+/// installed themselves. Refused for the bundled CLI, see `bundled_cli_in_use`.
 /// Returns stdout on exit 0; serializes as an error string on non-zero exit.
 #[tauri::command]
 pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) -> CmdResult<String> {
-    let node = &state.node_exe_path;
-    let cli = &state.cli_entry_path;
-    if node.exists() && cli.exists() {
-        return self_update_direct(node, cli).await;
+    if bundled_cli_in_use(
+        state.existing_cli_detected,
+        &state.node_exe_path,
+        &state.cli_entry_path,
+    ) {
+        return Err(crate::error::InstallerError::Other(
+            "The CodeMie CLI comes with this app and updates when the app does.".into(),
+        ));
     }
-    // At least one bundled path is absent. When an existing CLI took precedence
-    // (EPMCDME-14581), node_exe_path/cli_entry_path were never populated by
-    // design — that's expected, not a PATH-injection failure, so only warn
-    // when it wasn't.
-    if !state.existing_cli_detected {
-        if !node.exists() {
-            log::warn!(
-                "[run_self_update] node_exe_path not found ({}); falling back to PATH shim",
-                node.display()
-            );
-        }
-        if !cli.exists() {
-            log::warn!(
-                "[run_self_update] cli_entry_path not found ({}); falling back to PATH shim",
-                cli.display()
-            );
-        }
-    }
-    let r = capture("codemie self-update", None).await;
+    let r = capture_command(self_update_command(shell_cmd("codemie self-update"))).await;
     if r.code == 0 {
         Ok(r.stdout)
     } else {
@@ -215,6 +230,57 @@ pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) ->
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_update_leaves_npm_on_the_users_own_prefix() {
+        let c = self_update_command(shell_cmd_for(
+            "codemie self-update",
+            "/Users/test",
+            "/usr/bin",
+            false,
+        ));
+        let prefix = c
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "npm_config_prefix")
+            .map(|(_, v)| v);
+        assert_eq!(
+            prefix,
+            Some(None),
+            "the agents prefix must be removed, not just left unset"
+        );
+    }
+
+    #[tokio::test]
+    async fn shell_cmd_sets_npm_config_prefix_and_agents_path_by_default() {
+        let out = shell_cmd_for(
+            "echo $npm_config_prefix; echo $PATH",
+            "/Users/test",
+            "",
+            false,
+        )
+        .output()
+        .await
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut lines = stdout.lines();
+        assert_eq!(lines.next().unwrap(), "/Users/test/.codemie/agents");
+        // Not `starts_with`: macOS's system-wide /etc/zprofile runs
+        // `path_helper -s` on every login shell, which reorders PATH —
+        // system dirs from /etc/paths(.d) first, then the caller's other
+        // entries appended in their original order. shell_cmd still sets
+        // PATH with the agents bin dir appended; path_helper is what
+        // moves it, on every real machine, not just this one. Presence is
+        // what functionally matters — the dir is found by `npm`/agents
+        // installed there regardless of position.
+        let path_line = lines.next().unwrap();
+        assert!(
+            path_line
+                .split(':')
+                .any(|p| p == "/Users/test/.codemie/agents/bin"),
+            "PATH must contain the agents bin dir: {path_line}"
+        );
+    }
 
     // Ported from test/runner.test.js — runs against the real login shell.
     #[tokio::test]
@@ -253,24 +319,20 @@ mod tests_windows {
 mod tests_self_update {
     use super::*;
 
-    /// `self_update_direct` must surface a spawn failure as `Err`, on both
-    /// platforms: a file that is not a valid executable (Windows: not a PE;
-    /// unix: no execute bit) cannot be run as the bundled node.
-    /// The success path needs the real bundled node and is exercised by
-    /// build-installer's post-build shim smoke.
-    #[tokio::test]
-    async fn self_update_direct_errors_when_node_not_executable() {
+    #[test]
+    fn the_bundled_cli_is_in_use_only_when_no_existing_cli_and_both_files_exist() {
         let dir = tempfile::TempDir::new().unwrap();
-        let fake_node = dir
-            .path()
-            .join(if cfg!(windows) { "node.exe" } else { "node" });
-        let fake_cli = dir.path().join("codemie.js");
-        std::fs::write(&fake_node, b"not an executable").unwrap();
-        std::fs::write(&fake_cli, b"// placeholder").unwrap();
-        let result = self_update_direct(&fake_node, &fake_cli).await;
+        let node = dir.path().join("node");
+        let cli = dir.path().join("codemie.js");
+        std::fs::write(&node, b"").unwrap();
+        std::fs::write(&cli, b"").unwrap();
+        assert!(bundled_cli_in_use(false, &node, &cli));
         assert!(
-            result.is_err(),
-            "self_update_direct must return Err when the node binary cannot be executed"
+            !bundled_cli_in_use(true, &node, &cli),
+            "an existing CLI takes precedence"
         );
+        let missing = dir.path().join("missing");
+        assert!(!bundled_cli_in_use(false, &missing, &cli));
+        assert!(!bundled_cli_in_use(false, &node, &missing));
     }
 }

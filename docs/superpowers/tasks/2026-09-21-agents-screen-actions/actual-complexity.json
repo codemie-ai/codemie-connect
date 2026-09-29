@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-09-21T18:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 19,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "agents-controller.js interpolates agent.command (parsed unvalidated from `codemie list` stdout) into a shell string run via `/bin/zsh -lc`. No existing reusable sanitization util covered this injection surface, so a bespoke SAFE_COMMAND charset regex was added — floors Technical Risk at L per the injection-prevention rule." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 19 files changed (4 new JS modules — agents-controller.js, agents-join.js, agents-ui.js, agents-update-parse.js — 4 matching test files, 2 fixtures, 3 decision docs, 4 wireframe images, plus renderer.js and styles.css modified), spanning ui/, ui/test/, ui/test/fixtures/agents/, docs/wireframes/ and .ai-run/decisions/; a separate 4-file/124-line fix-up round followed." },
+    { "dimension": "component_scope", "reason": "Four new frontend modules (controller, join, ui, update-parse) plus renderer.js wiring, but the split deliberately mirrors the already-established health-controller.js pattern, keeping the pattern clear within a single frontend tier." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk floored to L: agent.command is shell-interpolated with no pre-existing reusable sanitization util; addressed via a new bespoke SAFE_COMMAND regex rather than an established utility."
+  ],
+  "split_recommendation": null
+}

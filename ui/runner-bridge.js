@@ -7,9 +7,33 @@ const { listen } = window.__TAURI__.event;
 let counter = 0;
 const nextId = (p) => `${p}${++counter}`;
 
+// The command-log footer: told when a command starts, and given the exit code
+// when it is known. A no-op until renderer.js registers the footer.
+let onCommand = null;
+export function setCommandListener(fn) {
+  onCommand = fn;
+}
+const started = (cmd) => {
+  try {
+    return (onCommand && onCommand(cmd)) || (() => {});
+  } catch {
+    return () => {};
+  }
+};
+
 // ---- runner (src/main/runner.js) ----
 export const runner = {
-  runCapture: (cmd) => invoke('run_capture', { cmd }),
+  runCapture: async (cmd) => {
+    const finish = started(cmd);
+    let res = null;
+    try {
+      res = await invoke('run_capture', { cmd });
+      return res;
+    } finally {
+      // Also when invoke rejects, or the footer shows the command running forever.
+      finish(res && res.code);
+    }
+  },
   runFreshEnv: (cmd) => invoke('run_fresh_env', { cmd }),
 
   // Streams output lines via the engine:cmd-line event (keyed by a call id),
@@ -17,17 +41,36 @@ export const runner = {
   async runStream(cmd, onLine = () => {}) {
     onLine(`> ${cmd}`, 'prompt');
     const id = nextId('stream');
+    const finish = started(cmd);
     const un = await listen('engine:cmd-line', (e) => {
       const p = e.payload;
       if (p && p.id === id) onLine(p.text, p.tag);
     });
+    let code = null;
     try {
-      const code = await invoke('run_stream', { cmd, streamId: id });
+      code = await invoke('run_stream', { cmd, streamId: id });
       return { code };
     } finally {
       un();
+      finish(code);
     }
   },
+};
+
+// Commands Rust runs itself are reported to the footer the same way. `codeOf`
+// turns the result into an exit code; a rejection shows as failed.
+const logged = (cmd, run, codeOf = () => 0) => {
+  const finish = started(cmd);
+  return run().then(
+    (res) => {
+      finish(codeOf(res));
+      return res;
+    },
+    (e) => {
+      finish(null);
+      throw e;
+    },
+  );
 };
 
 // ---- inspector (src/main/inspector.js) ----
@@ -36,9 +79,10 @@ export const inspector = {
   checkNode: () => invoke('check_node'),
   checkNpm: () => invoke('check_npm'),
   checkCodemie: () => invoke('check_codemie'),
-  checkCodemieVersion: () => invoke('check_codemie_version'),
+  // An empty version is how the Rust side reports that `codemie --version` failed.
+  checkCodemieVersion: () => logged('codemie --version', () => invoke('check_codemie_version'), (v) => (v ? 0 : 1)),
   checkHandshakeState: () => invoke('check_handshake_state'),
-  checkProfileStatus: () => invoke('check_profile_status'),
+  checkProfileStatus: () => logged('codemie profile status', () => invoke('check_profile_status'), (st) => st?.code ?? 0),
   gitBinaryPath: () => invoke('git_binary_path'),
   nodeBinaryPath: () => invoke('node_binary_path'),
 };
@@ -85,7 +129,7 @@ async function restartApp() {
 
 export const updater = {
   fetchCodemieLatest: () => invoke('fetch_codemie_latest'),
-  runSelfUpdate: () => invoke('run_self_update'),
+  runSelfUpdate: () => logged('codemie self-update', () => invoke('run_self_update')),
   checkForAppUpdate,
   downloadAndInstall,
   restartApp,
@@ -149,8 +193,14 @@ export const pty = {
       exitUnlisten = await listen('engine:pty-exit', (e) => {
         if (e.payload.id === id) resolveExit(e.payload.code);
       });
-      await invoke('spawn_pty', { cmd, cols, rows, runId: id });
-      const code = await exitP;
+      const finish = started(cmd);
+      let code = null;
+      try {
+        await invoke('spawn_pty', { cmd, cols, rows, runId: id });
+        code = await exitP;
+      } finally {
+        finish(code);
+      }
       return { code, id };
     } finally {
       exitUnlisten?.();

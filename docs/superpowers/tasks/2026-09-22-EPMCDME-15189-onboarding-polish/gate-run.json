@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-15189-onboarding-polish",
+  "head": "ce4cbc0b0655fe4cbc90302505e27785bf566429",
+  "runner": "custom",
+  "started_at": "2026-09-22T13:08:33Z",
+  "completed_at": "2026-09-22T13:09:20Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1179,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 16340,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7737,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "384/384 node:test assertions passed, including new ui/test/top-banner-style.test.mjs"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 21585,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "106 + 2 tests passed across lib and bundle_resources integration suite"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "./build-installer.sh",
+      "exit_code": null,
+      "notes": "Guide Skip-if: logic-only change verified by tests. Diff is UI-only (ui/index.html, ui/renderer.js, ui/styles.css, ui/test/top-banner-style.test.mjs); no Rust, bundling, or packaging files touched, and the new behavior is covered by unit-js (top-banner-style.test.mjs). Not run locally; full DMG/notarization proof is a separate feature-verification decision."
+    }
+  ],
+  "failures": {}
+}

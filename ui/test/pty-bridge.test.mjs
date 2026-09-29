@@ -14,7 +14,7 @@ globalThis.window = {
   },
 };
 
-const { pty } = await import('../runner-bridge.js');
+const { pty, inspector, updater, setCommandListener } = await import('../runner-bridge.js');
 
 test('spawnPty resolves only on its own id and onData filters by id', async () => {
   const listeners = {};
@@ -78,4 +78,30 @@ test('CR-005: data listener is cleaned up when exit-listen throws', async () => 
     dataUnlistenCalled,
     'data listener must be unlistened even when the exit-listen call throws',
   );
+});
+
+// Commands Rust runs itself (profile status, --version, self-update) used to
+// skip the "what CodeMie ran" footer, so an Update CLI click left no trace.
+test('commands Rust runs itself reach the command log, with their outcome', async () => {
+  const seen = [];
+  setCommandListener((cmd) => {
+    const entry = { cmd, code: 'running' };
+    seen.push(entry);
+    return (code) => { entry.code = code; };
+  });
+  invokeImpl = async (cmd) => {
+    if (cmd === 'check_profile_status') return { state: 'unknown', detail: '', code: 1 };
+    if (cmd === 'check_codemie_version') return '';
+    if (cmd === 'run_self_update') throw new Error('npm failed');
+    return null;
+  };
+  await inspector.checkProfileStatus();
+  await inspector.checkCodemieVersion();
+  await assert.rejects(updater.runSelfUpdate());
+  assert.deepEqual(seen, [
+    { cmd: 'codemie profile status', code: 1 },
+    { cmd: 'codemie --version', code: 1 },
+    { cmd: 'codemie self-update', code: null },
+  ]);
+  setCommandListener(null);
 });

@@ -183,13 +183,25 @@ fn parse_profile_status(stdout: &str, stderr: &str) -> ProfileStatus {
 /// interactive re-auth prompt cannot hang the capture. On Windows the redirect
 /// is omitted (PowerShell does not support it) and the command exits on its own.
 #[tauri::command]
-pub async fn check_profile_status() -> ProfileStatus {
+pub async fn check_profile_status() -> ProfileStatusRun {
     #[cfg(not(windows))]
     let status_cmd = "codemie profile status < /dev/null";
     #[cfg(windows)]
     let status_cmd = "codemie profile status";
     let r = capture(status_cmd, None).await;
-    parse_profile_status(&r.stdout, &r.stderr)
+    ProfileStatusRun {
+        status: parse_profile_status(&r.stdout, &r.stderr),
+        code: r.code,
+    }
+}
+
+/// The parsed status plus the command's exit code, which the "what CodeMie
+/// ran" footer shows next to the command.
+#[derive(Serialize, Clone)]
+pub struct ProfileStatusRun {
+    #[serde(flatten)]
+    pub status: ProfileStatus,
+    pub code: i32,
 }
 
 /// Find a binary by checking well-known install locations, then falling back to
