@@ -755,6 +755,14 @@ test('starting an action opens its details under the row, so the progress is see
   await m.settle();
 });
 
+test('while its install runs the details say Installing, not the Not installed the list was read with', async () => {
+  const m = await midStream();
+  assert.match(paneText(m.container), /Installing…/);
+  assert.doesNotMatch(paneText(m.container), /Not installed/);
+  await m.settle();
+  assert.doesNotMatch(paneText(m.container), /Installing…/);
+});
+
 test('a second click on the open row closes its details', async () => {
   const m = await midStream();
   await m.settle();

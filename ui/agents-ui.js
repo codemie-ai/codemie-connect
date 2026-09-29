@@ -111,8 +111,10 @@ export function setSelectedRow(container, command) {
 // disabled buttons. It only moves the one details block under the right row.
 // The actions stay on the row itself, so the details carry no buttons.
 //
-// state: { progress, message }. `message` overrides the failure text;
-// otherwise an errored agent shows its own actionMessage.
+// state: { progress, message, working }. `message` overrides the failure text;
+// otherwise an errored agent shows its own actionMessage. `working` is the verb
+// of the action running on this agent: until it ends the state line says that,
+// not the "Not installed" the list was read with.
 export function renderPane(container, agent, state = {}) {
   const pane = container.querySelector('.agent-pane');
   if (!pane) return;
@@ -124,10 +126,10 @@ export function renderPane(container, agent, state = {}) {
   }
   row.parentNode.insertBefore(pane, row.nextSibling);
   pane.hidden = false;
-  const { progress, message } = state;
+  const { progress, message, working } = state;
   const builtin = agent.command === BUILTIN_AGENT_COMMAND;
 
-  pane.appendChild(el('div', 'agent-pane-version', versionLine(agent, builtin)));
+  pane.appendChild(el('div', 'agent-pane-version', working ? `${working}…` : versionLine(agent, builtin)));
   if (!builtin && agent.newerThanSupported) {
     pane.appendChild(el('div', 'agent-pane-detail', `Installed ${agent.current}. CodeMie supports ${agent.latest}.`));
   }

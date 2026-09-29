@@ -54,6 +54,8 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // full render load() ends with keeps them.
   let selected = null;
   const progress = new Map();
+  // command -> 'Installing' | 'Updating' | 'Removing' while its action runs.
+  const working = new Map();
   const handlers = { stepsUi, onInstall: (a, o) => onInstall(a, o), onUpdate: (a) => onUpdate(a), onRemove: (a) => onRemove(a), onSelect: (c) => select(c) };
 
   // Progress and selection redraw the details alone. renderAgents would rebuild
@@ -61,7 +63,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // buttons, so only load() calls it.
   function redrawPane() {
     const agent = lastAgents?.find((a) => a.command === selected);
-    renderPane(container, agent, { progress: progress.get(selected) });
+    renderPane(container, agent, { progress: progress.get(selected), working: working.get(selected) });
   }
 
   // The details open under a row like a dropdown: a second click closes them.
@@ -153,6 +155,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
       return { ok: false, message };
     }
     inFlight.add(agent.command);
+    working.set(agent.command, verb);
     rowErrors.delete(agent.command);
     rowNotes.delete(agent.command);
     stepsUi.setStatus(agent.command, 'ACTIVE');
@@ -189,6 +192,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
     } finally {
       inFlight.delete(agent.command);
       progress.delete(agent.command);
+      working.delete(agent.command);
       await load({ silent: true });
     }
     return message ? { ok: false, message } : { ok: true };

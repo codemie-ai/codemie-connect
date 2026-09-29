@@ -362,6 +362,12 @@ test('progress appears in the pane and never in a row subtitle', () => {
   assert.ok(!stepsUi.calls.some((c) => c[0] === 'setSubtitle' && /Downloading/.test(c[2])));
 });
 
+test('a running action replaces the state line with its verb', () => {
+  const { container } = mountPane(gemini, { working: 'Installing' });
+  assert.match(paneOf(container)._text(), /Installing…/);
+  assert.doesNotMatch(paneOf(container)._text(), /Not installed/);
+});
+
 test('a failure is a plain-language failure block with no transcript and no Show details', () => {
   const { container } = mountPane({ ...gemini, actionStatus: 'error', actionMessage: 'Installing needs a connection.' });
   const block = paneOf(container).querySelector('.failure-block');
