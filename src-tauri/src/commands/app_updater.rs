@@ -207,9 +207,12 @@ fn is_newer_version(current: &str, new: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<String>> {
+pub async fn check_for_update(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> CmdResult<Option<String>> {
     let last = *state.last_update_check.lock().unwrap();
-    if !should_check(last, CHECK_INTERVAL) {
+    if !force.unwrap_or(false) && !should_check(last, CHECK_INTERVAL) {
         return Ok(None);
     }
 

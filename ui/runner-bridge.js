@@ -108,8 +108,8 @@ export const installer = {
 };
 
 // ---- updater ----
-async function checkForAppUpdate() {
-  return invoke('check_for_update');
+async function checkForAppUpdate(force = false) {
+  return invoke('check_for_update', { force });
 }
 
 async function downloadAndInstall(id, onProgress) {
