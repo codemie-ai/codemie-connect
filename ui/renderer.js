@@ -584,7 +584,9 @@ function startHealthInPlace() {
 // `codemie list` read; onResult hands the same records to Home so the checklist
 // item and the Agents card do not need a second read to agree with the screen.
 // onFailure releases the one-shot guard the way Health's does.
+let platformInfoValue = null;
 const agentsController = createAgentsController({
+  getPlatform: () => platformInfoValue,
   container: views.agents,
   runCapture: (cmd) => bridge.runner.runCapture(cmd),
   runStream: bridge.runner.runStream,
@@ -919,6 +921,7 @@ async function boot() {
     invoke('get_platform_info'),
     invoke('temp_dir'),
   ]);
+  platformInfoValue = platformInfo;
 
   handlers = makeHandlers({
     inspector: bridge.inspector,
