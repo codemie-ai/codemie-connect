@@ -105,3 +105,19 @@ test('commands Rust runs itself reach the command log, with their outcome', asyn
   ]);
   setCommandListener(null);
 });
+
+// EPMCDME-15342: About forces the app update check past the 24h throttle; the
+// boot check does not. Tauri reads the `force` key, so its name matters.
+test('checkForAppUpdate sends force to check_for_update, false by default', async () => {
+  const invocations = [];
+  invokeImpl = async (cmd, args) => {
+    invocations.push({ cmd, args });
+    return null;
+  };
+  await updater.checkForAppUpdate(true);
+  await updater.checkForAppUpdate();
+  assert.deepEqual(invocations, [
+    { cmd: 'check_for_update', args: { force: true } },
+    { cmd: 'check_for_update', args: { force: false } },
+  ]);
+});
