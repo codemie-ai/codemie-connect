@@ -197,28 +197,19 @@
       <div id="connect-view" class="hidden">
         <div id="connect-topbar">
           <button id="connect-back" class="back-link">‹ Home</button>
-          <span class="mode-label">Claude Desktop</span>
+          <span class="mode-label">Connections</span>
         </div>
 
         <div id="connect-body">
           <header id="connect-header">
             <div class="connect-icon">🖥️</div>
             <div>
-              <div id="connect-title">Connect Claude Desktop</div>
-              <div id="connect-subtitle">Point Claude Desktop at the CodeMie proxy gateway. Both actions verify your CodeMie sign-in (<code>codemie profile status</code>) first.</div>
+              <div id="connect-title">Connections</div>
+              <div id="connect-subtitle">Point supported apps at the CodeMie proxy gateway. Actions verify your CodeMie sign-in (<code>codemie profile status</code>) first.</div>
             </div>
           </header>
 
-          <div id="connect-actions">
-            <button class="connect-action" id="connect-btn">
-              <div class="ca-title">Connect</div>
-              <div class="ca-desc">Start the proxy and point Claude Desktop at the CodeMie gateway.</div>
-            </button>
-            <button class="connect-action" id="restart-btn">
-              <div class="ca-title">Restart</div>
-              <div class="ca-desc">Stop the running proxy, then connect again — use if Claude Desktop lost the connection.</div>
-            </button>
-          </div>
+          <div id="connect-rows"></div>
         </div>
 
         <footer class="view-footer">EPAM AI/Run CodeMie ©</footer>

@@ -43,6 +43,12 @@ export const inspector = {
   nodeBinaryPath: () => invoke('node_binary_path'),
 };
 
+// ---- connectors (src-tauri/src/commands/connectors.rs) ----
+export const connectors = {
+  checkStatus: () => invoke('check_connector_status'),
+  appBundleExists: (name) => invoke('app_bundle_exists', { name }),
+};
+
 // ---- codemie config (~/.codemie/codemie-cli.config.json) ----
 // read() resolves { state, profile, model, project, account } where state is
 // 'no-configuration' | 'valid' | 'broken'. `account` is null when the config

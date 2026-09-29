@@ -106,6 +106,8 @@ pub fn run() {
             commands::inspector::git_binary_path,
             commands::inspector::node_binary_path,
             commands::codemie_config::read_codemie_config,
+            commands::connectors::check_connector_status,
+            commands::connectors::app_bundle_exists,
             commands::installer::get_platform_info,
             commands::installer::temp_dir,
             commands::installer::latest_lts_node_version,

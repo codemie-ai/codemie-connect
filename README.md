@@ -17,8 +17,26 @@ On launch the app shows a home page (2×2 tile grid) with three actions:
 | Tile | What it does |
 |---|---|
 | **Setup** | Run the setup wizard and Claude engine. |
-| **Connect Claude Desktop** | Opens a **Connect / Restart** screen. Both verify sign-in via `codemie profile status` first, then point Claude Desktop at the CodeMie proxy: **Connect** runs `codemie proxy connect desktop`; **Restart** runs `codemie proxy stop` then connects again. |
+| **Connect Claude Desktop** | Opens the **Connections** screen (same screen as the sidebar's "Connections" item). |
 | **CLI usage analytics** | Runs `codemie analytics --report --open` to build an HTML report of your **local AI CLI usage** (Claude Code, Codex, …) and open it in the browser. |
+
+### Connections screen
+
+Lists connection status for the 4 client apps the CodeMie proxy supports — **Claude Desktop**,
+**VS Code — Copilot Chat (BYOK)**, **VS Code — Claude Code extension**, and the **Codex desktop
+app** — each row showing one of: Not set, Connected, Disconnected, or App not installed. Every
+action first verifies sign-in via `codemie profile status`, then runs the CLI in an embedded
+terminal:
+
+| Action | Command |
+|---|---|
+| **Connect** | `codemie proxy connect <flag>` |
+| **Reconnect** | `codemie proxy connect <flag> --force` |
+| **Disconnect** / **Remove setup** | `codemie proxy disconnect <flag>` |
+
+`<flag>` is one of `--claude-desktop`, `--vscode`, `--vscode-claude-code`, `--codex-desktop`.
+There's no separate proxy start/stop control — an unhealthy row surfaces a
+Fix/Reconnect action instead.
 
 Connect/analytics output streams in an embedded terminal; navigation between views is via the
 "‹ Home" / "‹ Back" links (no page reloads).
