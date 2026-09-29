@@ -75,6 +75,41 @@ test('renderer: the command-log footer is wired before the startup checks run', 
   assert.ok(wired < boot.indexOf('bridge.inspector.checkProfileStatus()'), 'before the profile status check');
 });
 
+// EPMCDME-15342: the About screen.
+const fnBody = (name) => {
+  const start = renderer.search(new RegExp(`(async )?function ${name}\\(`));
+  assert.ok(start >= 0, `${name} exists`);
+  const rest = renderer.slice(start);
+  return rest.slice(0, rest.search(/\r?\n}\r?\n/));
+};
+
+test('renderer: visiting About refreshes it', () => {
+  assert.match(fnBody('showView'), /if \(name === 'about'\) \{?\s*refreshAbout\(\);/);
+});
+
+test('renderer: About forces the app update check and never clears a known update', () => {
+  const body = fnBody('refreshAbout');
+  assert.match(body, /bridge\.updater\.checkForAppUpdate\(true\)/);
+  const assigns = [...body.matchAll(/appVersionState\.(latest|updateAvailable) =/g)];
+  assert.ok(assigns.length > 0, 'refreshAbout records a found update');
+  const guarded = body.slice(body.indexOf('if (latest)'));
+  assert.ok(body.includes('if (latest)'), 'the assignment sits behind if (latest)');
+  for (const m of assigns) assert.ok(body.indexOf(m[0]) > body.indexOf('if (latest)'), `${m[0]} is guarded`);
+  assert.doesNotMatch(guarded, /updateAvailable = false/);
+  assert.doesNotMatch(body, /appVersionState\.latest = null/);
+});
+
+test('renderer: About buttons guard installRunning and reuse the banner update runs', () => {
+  assert.match(renderer, /onUpdateApp: \(\) => \{\s*if \(installRunning\) return;\s*runUpdateApp\(\);/);
+  assert.match(renderer, /onUpdateCli: \(\) => \{\s*if \(installRunning\) return;\s*runUpdateCli\(\);/);
+  assert.match(renderer, /onOpenLink: \(url\) => \{\s*if \(installRunning\) return;\s*invoke\('open_external', \{ url \}\)/);
+});
+
+test('renderer: CLI update progress is mirrored onto the About button', () => {
+  assert.match(fnBody('setUpdateProgress'), /getElementById\('about-cli-update'\)/);
+  assert.match(fnBody('runUpdateApp'), /getElementById\('about-app-update'\)/);
+});
+
 // On Windows, Home's reads ran `codemie` while `codemie self-update` replaced
 // it: they failed, Tools and Connections stayed "Could not read", and npm could
 // find its files in use. The reads wait for the update and run after it.

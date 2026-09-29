@@ -26,6 +26,7 @@ import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFr
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
 import { semverLt, cliUpdateResult } from './cli-update.js';
+import { renderAbout } from './about-view.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -353,6 +354,75 @@ function showView(name) {
     refreshAgents();
     refreshConnection();
   }
+  if (name === 'about') refreshAbout();
+}
+
+// ---- About (ui/about-view.js) ----
+// Installed versions are read on every visit (the bundled CLI's never reaches
+// cliVersionState). Update state is the banners' own, so the buttons stay after
+// a banner is dismissed and a run from either place shows on both.
+const aboutInfo = { appVersion: '', cliVersion: '', cliBundled: false };
+const aboutErrors = { app: '', cli: '' };
+
+const aboutHandlers = {
+  onUpdateApp: () => {
+    if (installRunning) return;
+    runUpdateApp();
+  },
+  onUpdateCli: () => {
+    if (installRunning) return;
+    runUpdateCli();
+  },
+  onOpenLink: (url) => {
+    if (installRunning) return;
+    invoke('open_external', { url }).catch((err) => console.error('[about] open failed:', err));
+  },
+};
+
+function renderAboutView() {
+  renderAbout(
+    views.about,
+    {
+      appVersion: aboutInfo.appVersion,
+      appLatest: appVersionState.latest || '',
+      appUpdateAvailable: appVersionState.updateAvailable,
+      appRunning: updateAppRunning,
+      appError: aboutErrors.app,
+      cliVersion: aboutInfo.cliVersion || cliVersionState.installed,
+      cliBundled: aboutInfo.cliBundled,
+      cliLatest: cliVersionState.latest,
+      cliUpdateAvailable: cliVersionState.updateAvailable,
+      cliRunning: updateCliRunning,
+      cliError: aboutErrors.cli,
+    },
+    aboutHandlers,
+  );
+}
+
+function renderAboutIfShown() {
+  if (!views.about.classList.contains('hidden')) renderAboutView();
+}
+
+async function refreshAbout() {
+  renderAboutView();
+  const [app, bundled, cli, check] = await Promise.allSettled([
+    invoke('get_app_version'),
+    invoke('cli_is_bundled'),
+    // `codemie --version` must not run while self-update replaces the CLI.
+    updateCliRunning ? cliVersionState.installed : bridge.inspector.checkCodemieVersion(),
+    bridge.updater.checkForAppUpdate(true),
+  ]);
+  if (app.status === 'fulfilled') aboutInfo.appVersion = app.value || '';
+  if (bundled.status === 'fulfilled') aboutInfo.cliBundled = Boolean(bundled.value);
+  if (cli.status === 'fulfilled') aboutInfo.cliVersion = cli.value || '';
+  // A throttled, offline or failed re-check returns null or rejects: that says
+  // nothing about an update already found, so only a found version is recorded.
+  const latest = check.status === 'fulfilled' ? check.value : null;
+  if (latest) {
+    appVersionState.latest = latest;
+    appVersionState.updateAvailable = true;
+  }
+  renderAboutIfShown();
 }
 
 // (Re)build the engine for a wizard run.
@@ -832,11 +902,17 @@ function setUpdateProgress(state, label, icon) {
     btn.textContent = label;
     btn.disabled = state === 'updating';
   }
+  const aboutBtn = document.getElementById('about-cli-update');
+  if (aboutBtn) {
+    aboutBtn.textContent = label;
+    aboutBtn.disabled = state === 'updating';
+  }
 }
 
 async function runUpdateCli() {
   if (updateCliRunning) return;
   updateCliRunning = true;
+  aboutErrors.cli = '';
   setUpdateProgress('updating', 'Updating…', '⏳');
   cliReplacing = true;
   try {
@@ -862,6 +938,8 @@ async function runUpdateCli() {
       // The update did not take: say so and leave the banner up to retry.
       setUpdateProgress('error', result.label, '❌');
       updateCliRunning = false;
+      aboutErrors.cli = result.label;
+      renderAboutIfShown();
       return;
     }
     setUpdateProgress('done', result.label, '✅');
@@ -870,10 +948,13 @@ async function runUpdateCli() {
     setTimeout(() => {
       setUpdateProgress('', 'Update CLI', '🔄');
       updateCliRunning = false;
+      renderAboutIfShown();
     }, 3000);
-  } catch {
+  } catch (err) {
     setUpdateProgress('error', 'Failed — retry?', '❌');
     updateCliRunning = false;
+    aboutErrors.cli = String(err);
+    renderAboutIfShown();
   }
 }
 
@@ -882,19 +963,26 @@ let updateAppRunning = false;
 async function runUpdateApp() {
   if (updateAppRunning) return;
   updateAppRunning = true;
+  aboutErrors.app = '';
 
   const bannerRunBtn = document.getElementById('app-update-banner-run');
-  bannerRunBtn.disabled = true;
-  bannerRunBtn.textContent = 'Downloading…';
+  // Progress shows on the banner and, when About is open, on its button too.
+  const showProgress = (text) => {
+    for (const btn of [bannerRunBtn, document.getElementById('about-app-update')]) {
+      if (!btn) continue;
+      btn.disabled = true;
+      btn.textContent = text;
+    }
+  };
+  showProgress('Downloading…');
 
   const id = `app-update-${Date.now()}`;
   try {
     await bridge.updater.downloadAndInstall(id, ({ percent }) => {
-      bannerRunBtn.textContent = `Downloading… ${percent}%`;
+      showProgress(`Downloading… ${percent}%`);
     });
 
-    bannerRunBtn.textContent = 'Installer running…';
-    bannerRunBtn.disabled = true;
+    showProgress('Installer running…');
     // The installer window is now visible and running
     // Wait for Tauri's runtime to clean up gracefully before exiting
     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -911,8 +999,10 @@ async function runUpdateApp() {
       banBody.appendChild(errorEl);
     }
     errorEl.textContent = String(err);
+    aboutErrors.app = String(err);
   } finally {
     updateAppRunning = false;
+    renderAboutIfShown();
   }
 }
 
