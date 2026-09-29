@@ -29,6 +29,7 @@ test('an installed agent carries its version; one that is not has none', () => {
     installed: true,
     version: '2.1.269',
     description: 'Claude Code - official Anthropic CLI tool',
+    launcher: 'codemie-claude',
   });
   const gemini = agents.find((a) => a.command === 'gemini');
   assert.equal(gemini.name, 'Gemini CLI');
@@ -50,4 +51,12 @@ test('the count is whatever the CLI prints', () => {
   assert.equal(parseAgentList(two).length, 2);
   assert.deepEqual(parseAgentList(''), []);
   assert.deepEqual(parseAgentList('nothing like the list'), []);
+});
+
+test('the launcher is codemie- plus the command, unless the command already starts that way', () => {
+  const agents = parseAgentList(fixture);
+  assert.equal(agents.find((a) => a.command === 'gemini').launcher, 'codemie-gemini');
+  assert.equal(agents.find((a) => a.command === 'codemie-code').launcher, 'codemie-code');
+  assert.equal(agents.length, 11);
+  assert.ok(agents.every((a) => a.launcher.startsWith('codemie-')));
 });
