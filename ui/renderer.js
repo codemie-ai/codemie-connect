@@ -780,11 +780,14 @@ async function boot() {
 
   // App self-update check — once per 24 h
   // Use version-based localStorage key so each app version has its own check state
-  const appVersion = await invoke('get_app_version');
+  const [appVersion, updateCheckIntervalMs] = await Promise.all([
+    invoke('get_app_version'),
+    invoke('get_update_check_interval_ms'),
+  ]);
   const lastUpdateCheckKey = `codemie.app.lastUpdateCheck.${appVersion}`;
   const lastAppCheck = localStorage.getItem(lastUpdateCheckKey);
-  
-  if (shouldCheckForAppUpdate(lastAppCheck)) {
+
+  if (shouldCheckForAppUpdate(lastAppCheck, updateCheckIntervalMs)) {
     bridge.updater.checkForAppUpdate().then((latestVersion) => {
       if (latestVersion) {
         appVersionState.latest = latestVersion;

@@ -125,7 +125,14 @@ fn run_tool(cmd: &mut Command) -> CmdResult<()> {
     )))
 }
 
-const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Throttle interval between update checks (configurable via CODEMIE_UPDATE_CHECK_INTERVAL_SECS, dev-only)
+fn check_interval() -> Duration {
+    let secs = std::env::var("CODEMIE_UPDATE_CHECK_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(24 * 60 * 60);
+    Duration::from_secs(secs)
+}
 
 /// Get the installer base URL (configurable via CODEMIE_INSTALLER_BASE_URL)
 fn get_base_url() -> String {
@@ -239,7 +246,7 @@ fn is_newer_version(current: &str, new: &str) -> bool {
 #[tauri::command]
 pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<String>> {
     let last = *state.last_update_check.lock().unwrap();
-    if !should_check(last, CHECK_INTERVAL) {
+    if !should_check(last, check_interval()) {
         return Ok(None);
     }
 
@@ -395,6 +402,12 @@ pub fn restart_app(app: AppHandle) {
 #[tauri::command]
 pub fn get_app_version() -> String {
     APP_VERSION.to_string()
+}
+
+/// Get the update-check throttle interval in ms (for the JS-side localStorage gate)
+#[tauri::command]
+pub fn get_update_check_interval_ms() -> u64 {
+    check_interval().as_millis() as u64
 }
 
 #[cfg(test)]

@@ -133,6 +133,7 @@ pub fn run() {
             commands::app_updater::download_and_install,
             commands::app_updater::restart_app,
             commands::app_updater::get_app_version,
+            commands::app_updater::get_update_check_interval_ms,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
