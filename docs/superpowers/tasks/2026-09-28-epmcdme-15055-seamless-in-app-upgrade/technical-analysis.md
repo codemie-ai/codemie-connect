@@ -49,7 +49,7 @@ RESEARCH GOAL: find and document the current update/installer flow end to end �
 The in-app self-update feature already exists end to end (built under EPMCDME-14507, see git log `028941c`, `db255f2`, `fcd4974`, `d54da6f`, `febb544`, `fdab61c`). This task is a bug-fix/hardening pass on that existing flow, not a greenfield build.
 
 - `src-tauri/src/commands/app_updater.rs` (505 lines incl. tests) — the entire backend update flow:
-  - `get_base_url()` / `get_base_url_windows()` / `get_base_url_macos()` — platform base URL, overridable via `CODEMIE_INSTALLER_BASE_URL_WINDOWS` / `CODEMIE_INSTALLER_BASE_URL_MACOS`, default `https://github.com/codemie-ai/codemie-code/raw/main/install/{windows,macos}`.
+  - `get_base_url()` — shared base URL, overridable via `CODEMIE_INSTALLER_BASE_URL`, default `https://github.com/codemie-ai/codemie-code/raw/main/install`.
   - `get_version_url()` — `{base}/version.txt` (plain-text, one line, the version).
   - `get_installer_url(version)` (lines 149-167) — **the filename-guessing logic named in the research goal**:
     - Windows: `{base}/CodeMie%20Connect_{version}_x64-setup.exe`
@@ -100,10 +100,10 @@ Per `.ai-run/guides/architecture/architecture.md` ("Frontend-brain + thin Rust b
 ### Patterns and Conventions
 
 - All fallible Tauri commands return `CmdResult<T>` (`src-tauri/src/error.rs`), a `thiserror` enum (`InstallerError`) that serializes to a plain string for the frontend — `app_updater.rs` follows this consistently (`InstallerError::Other(...)` for every failure path).
-- `#[cfg(target_os = "...")]` gating is the established way to branch Windows/macOS behavior within one file (see `launch_installer`, `get_base_url`), rather than separate per-platform modules.
+- `#[cfg(target_os = "...")]` gating is the established way to branch Windows/macOS behavior within one file (see `launch_installer`), rather than separate per-platform modules.
 - Inline `#[cfg(test)] mod tests` at the bottom of the same file, per `.ai-run/guides/testing/testing-patterns.md` — `app_updater.rs` already has 11 tests, including two that shell out to real `hdiutil` (macOS-only, `#[cfg(target_os = "macos")]`) to round-trip a real DMG.
 - New Rust commands are registered in `lib.rs`'s `invoke_handler!` list and wrapped in `runner-bridge.js` — both already done for this feature's 4 commands; any new command (e.g. a manifest-based variant) would follow the same two-step registration.
-- Env-var-overridable config follows a `CODEMIE_<NAME>` naming convention (`CODEMIE_INSTALLER_BASE_URL_WINDOWS`, `CODEMIE_INSTALLER_BASE_URL_MACOS`, `CODEMIE_SMOKE`, `CODEMIE_PROBE_SMOKE`) with `unwrap_or_else` fallback to a hardcoded default.
+- Env-var-overridable config follows a `CODEMIE_<NAME>` naming convention (`CODEMIE_INSTALLER_BASE_URL`, `CODEMIE_SMOKE`, `CODEMIE_PROBE_SMOKE`) with `unwrap_or_else` fallback to a hardcoded default.
 
 ---
 
@@ -155,8 +155,7 @@ Per `.ai-run/guides/architecture/architecture.md` ("Frontend-brain + thin Rust b
 
 ### Environment Variables
 
-- `CODEMIE_INSTALLER_BASE_URL_WINDOWS` — overrides the Windows installer base URL; default `https://github.com/codemie-ai/codemie-code/raw/main/install/windows`.
-- `CODEMIE_INSTALLER_BASE_URL_MACOS` — overrides the macOS installer base URL; default `https://github.com/codemie-ai/codemie-code/raw/main/install/macos`.
+- `CODEMIE_INSTALLER_BASE_URL` — overrides the shared installer base URL (both platforms); default `https://github.com/codemie-ai/codemie-code/raw/main/install`.
 - `CODEMIE_SMOKE` / `CODEMIE_PROBE_SMOKE` — unrelated smoke-mode flags for the renderer/PTY wiring (`lib.rs` startup, `commands/smoke.rs`); not specific to the updater but part of the same env-var-config convention.
 
 ### Configuration Files

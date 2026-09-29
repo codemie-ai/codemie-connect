@@ -127,32 +127,10 @@ fn run_tool(cmd: &mut Command) -> CmdResult<()> {
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Get the base URL for installer repository (platform-specific, configurable via env)
+/// Get the installer base URL (configurable via CODEMIE_INSTALLER_BASE_URL)
 fn get_base_url() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        get_base_url_windows()
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        get_base_url_macos()
-    }
-}
-
-/// Get the Windows installer base URL (configurable via CODEMIE_INSTALLER_BASE_URL_WINDOWS)
-#[cfg(target_os = "windows")]
-fn get_base_url_windows() -> String {
-    std::env::var("CODEMIE_INSTALLER_BASE_URL_WINDOWS").unwrap_or_else(|_| {
-        "https://github.com/codemie-ai/codemie-code/raw/main/install/windows".to_string()
-    })
-}
-
-/// Get the macOS installer base URL (configurable via CODEMIE_INSTALLER_BASE_URL_MACOS)
-#[cfg(target_os = "macos")]
-fn get_base_url_macos() -> String {
-    std::env::var("CODEMIE_INSTALLER_BASE_URL_MACOS").unwrap_or_else(|_| {
-        "https://github.com/codemie-ai/codemie-code/raw/main/install/macos".to_string()
+    std::env::var("CODEMIE_INSTALLER_BASE_URL").unwrap_or_else(|_| {
+        "https://github.com/codemie-ai/codemie-code/raw/main/install".to_string()
     })
 }
 
