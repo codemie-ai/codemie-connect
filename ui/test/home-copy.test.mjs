@@ -19,11 +19,19 @@ test('home: install-only stays gone', () => {
 });
 
 // EPMCDME-14589, at the PM's request: the shell nav and the command-log footer
-// are on for v2; About and the analytics entry stay hidden until owned.
-test('shell: the nav and the command-log footer are no longer hidden', () => {
+// are on for v2. EPMCDME-15342: About now has a screen, so it and its divider show.
+test('shell: the nav, the command-log footer and About are no longer hidden', () => {
   assert.match(html, /<nav id="app-sidebar">/);
   assert.match(html, /<details id="command-log-footer">/);
-  assert.match(html, /id="sidebar-about" class="sidebar-item hidden"/);
+  assert.match(html, /id="sidebar-about" class="sidebar-item" data-view="about"/);
+  assert.match(html, /<div id="sidebar-divider"><\/div>/);
+});
+
+// EPMCDME-15342: analytics sits in the main group, directly below Health.
+test('shell: the analytics entry sits directly below Health', () => {
+  const main = html.slice(html.indexOf('<div id="sidebar-main-group">'));
+  const group = main.slice(0, main.indexOf('</div>'));
+  assert.match(group, /id="sidebar-health"[^>]*>Health<\/button>\s*(<!--[\s\S]*?-->\s*)?<button id="sidebar-analytics"/);
 });
 
 test('shell: the analytics sidebar entry is unhidden and wired', () => {

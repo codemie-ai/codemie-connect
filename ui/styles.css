@@ -168,9 +168,8 @@ body::before {
   flex-direction: column;
   gap: 3px;
 }
-/* About + analytics sit at the very bottom of the sidebar column. */
-#sidebar-bottom-group { margin-top: auto; }
-#sidebar-divider { height: 1px; background: var(--border); margin: 6px 4px; }
+/* The divider and About sit at the very bottom of the sidebar column. */
+#sidebar-divider { height: 1px; background: var(--border); margin: auto 4px 6px; }
 
 /* ---- Collapsible command-log footer ("what CodeMie ran") ---- */
 #command-log-footer {
@@ -721,6 +720,7 @@ body::before {
    `codemie doctor` regrouped by who can act on a problem. A problem's remedy is
    the app's failure panel, drawn smaller and dashed so it reads as part of its
    row rather than as the screen's own failure. */
+#about-view,
 #health-view { padding: 22px 28px 28px; max-width: 760px; animation: cm-fade-in 0.2s ease; }
 .health-head {
   display: flex;
@@ -769,6 +769,10 @@ body::before {
 .health-actions .btn { width: auto; padding: 9px 18px; }
 .health-log-slot .failure-block { margin: 14px 0 0; }
 #health-view > .failure-block { margin: 0; }
+/* About (ui/about-view.js) reuses the Health classes; only these differ. */
+#about-view .health-title { margin: 0; }
+#about-view .health-row-main .btn { width: auto; margin-left: auto; padding: 6px 14px; font-size: 13px; }
+#about-view .update-error { margin-top: 6px; font-size: 12px; color: var(--red); }
 
 /* ---- Log bar + panel ---- */
 #log-bar {
