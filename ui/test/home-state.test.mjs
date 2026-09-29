@@ -173,6 +173,26 @@ test('the health check starts by itself once the steps before it are done', () =
   assert.equal(autoHealthCheck(running), false);
 });
 
+// The result is not kept between launches, so after a restart the status cards
+// run the check themselves instead of saying "unknown" (EPMCDME-15388).
+test('on the status cards the health check starts by itself when it has not run this session', () => {
+  const cards = deriveHome({ config: valid, auth: signedIn, agents, health: null, onboarded: true });
+  assert.equal(cards.done, true);
+  assert.equal(autoHealthCheck(cards), true);
+  const signedOut = deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: null, onboarded: true });
+  assert.equal(signedOut.done, false, 'a lapsed sign-in brings the checklist back');
+  assert.equal(autoHealthCheck(signedOut), false, 'and the checklist waits for sign-in, as before');
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: healthy, onboarded: true })), false);
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true, onboarded: true })), false);
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true, onboarded: true })), false);
+});
+
+test('the Health card says checking while the check runs, not unknown', () => {
+  const card = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true, onboarded: true }).cards.find((c) => c.id === 'health');
+  assert.equal(card.badge.text, 'checking');
+  assert.equal(card.line, 'Checking…');
+});
+
 // A check that could not finish must not leave the step on "Not checked yet"
 // with nothing to click: the sidebar's Health is still locked then.
 test('a health check that could not finish is an error on its step, and does not start again', () => {

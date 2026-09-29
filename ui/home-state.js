@@ -99,7 +99,8 @@ function profileCard(config, auth) {
   return { id: 'profile', title: 'Profile', badge, line, note };
 }
 
-function healthCard(health) {
+function healthCard(health, running) {
+  if (!health && running) return { id: 'health', title: 'Health', badge: { text: 'checking', tone: 'muted' }, line: 'Checking…', note: '' };
   if (!health) return { id: 'health', title: 'Health', badge: { text: 'unknown', tone: 'muted' }, line: 'Not checked yet', note: '' };
   const { passing, total } = health.summary;
   const problems = health.rows.filter((r) => r.status !== 'pass').length;
@@ -148,14 +149,18 @@ function connectionsCard(connection) {
     : { id: 'connections', title: 'Connections', badge: { text: 'not connected', tone: 'muted' }, line: 'Claude Desktop', note: '' };
 }
 
-// Whether Home should start the health check itself: the checklist is up, the
-// steps before the check are done and it has not run. Finishing setup used to
-// leave the user on a checklist that just waited for a click on its last step.
+// Whether Home should start the health check itself, when it has not run this
+// session. On the checklist: once the steps before it are done, since finishing
+// setup used to leave the user on a checklist that just waited for a click on
+// its last step. On the status cards: straight away, since the result is not
+// kept between launches and the Health card said "unknown" after every restart
+// (EPMCDME-15388).
 export function autoHealthCheck(state) {
-  if (!state || state.done) return false;
+  if (!state) return false;
   const health = state.items.find((i) => i.id === 'health');
-  const before = state.items.filter((i) => i.id !== 'health');
-  return !!health && health.status === StepStatus.PENDING && before.every((i) => i.status === StepStatus.COMPLETE);
+  if (!health || health.status !== StepStatus.PENDING) return false;
+  if (state.done) return true;
+  return state.items.filter((i) => i.id !== 'health').every((i) => i.status === StepStatus.COMPLETE);
 }
 
 // What Home's Sign in does. `codemie profile login` opens the browser for the
@@ -191,6 +196,6 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
     // read failed): a picker that turned both into an empty list would tell
     // the user every agent was already installed.
     agents,
-    cards: [profileCard(config, auth), healthCard(health), agentsCard(agents), connectionsCard(connection)],
+    cards: [profileCard(config, auth), healthCard(health, healthRunning), agentsCard(agents), connectionsCard(connection)],
   };
 }
