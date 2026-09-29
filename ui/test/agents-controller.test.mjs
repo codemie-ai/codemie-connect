@@ -763,6 +763,36 @@ test('while its install runs the details say Installing, not the Not installed t
   assert.doesNotMatch(paneText(m.container), /Installing…/);
 });
 
+test('once the CLI is done the details say it is being checked until the list is read again', async () => {
+  const container = makeEl('div');
+  let reads = 0;
+  let releaseRead;
+  const readGate = new Promise((r) => {
+    releaseRead = r;
+  });
+  const c = createAgentsController({
+    container,
+    runCapture: async (cmd) => {
+      if (cmd === 'codemie list' && ++reads === 2) await readGate;
+      return fakeRunCapture()(cmd);
+    },
+    runStream: async (cmd, onLine) => {
+      onLine('- Installing Gemini CLI...', 'stdout');
+      return { code: 0 };
+    },
+    stepsUi: fakeStepsUi(),
+  });
+  await c.run();
+  const done = c.install(c.getLastAgents().find((a) => a.command === 'gemini'));
+  await new Promise((r) => setImmediate(r));
+  const text = container.querySelector('.agent-pane')._text();
+  assert.match(text, /Checking it installed…/);
+  assert.doesNotMatch(text, /Installing Gemini CLI/, 'the finished progress line is gone');
+  releaseRead();
+  await done;
+  assert.doesNotMatch(container.querySelector('.agent-pane')._text(), /Checking/);
+});
+
 test('a second click on the open row closes its details', async () => {
   const m = await midStream();
   await m.settle();

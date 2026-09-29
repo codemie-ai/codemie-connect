@@ -29,6 +29,8 @@ const SAFE_COMMAND = /^[A-Za-z0-9._-]+$/;
 // it before the row shows it.
 const ERROR_LINE = /^\s*[✗✖×]\s|^\s*(Error|Failed)\b/i;
 const ERROR_GLYPH = /^\s*[✗✖×]\s*/;
+// What the details say between the CLI finishing and the list being read again.
+const CHECKING = { Installing: 'Checking it installed', Updating: 'Checking the update', Removing: 'Checking it was removed' };
 const RESULT_LINE = /^\s*[✔✓⚠]\s*/;
 
 export function createAgentsController({ container, runCapture, runStream, stepsUi, onFailure, onResult } = {}) {
@@ -54,7 +56,8 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // full render load() ends with keeps them.
   let selected = null;
   const progress = new Map();
-  // command -> 'Installing' | 'Updating' | 'Removing' while its action runs.
+  // command -> what its running action is doing: 'Installing' and the like
+  // while the CLI runs, then a CHECKING line while the list is read again.
   const working = new Map();
   const handlers = { stepsUi, onInstall: (a, o) => onInstall(a, o), onUpdate: (a) => onUpdate(a), onRemove: (a) => onRemove(a), onSelect: (c) => select(c) };
 
@@ -181,7 +184,14 @@ export function createAgentsController({ container, runCapture, runStream, steps
       if (code !== 0) {
         message = messageFor(lines, verb);
         rowErrors.set(agent.command, message);
-      } else if (note) {
+      } else {
+        // The CLI is done, but the list is read again before the row can say
+        // what happened, and `update --check` asks npm, which takes seconds.
+        working.set(agent.command, CHECKING[verb]);
+        progress.delete(agent.command);
+        if (agent.command === selected) redrawPane();
+      }
+      if (code === 0 && note) {
         const result = [...lines].reverse().find((l) => RESULT_LINE.test(l));
         if (result) rowNotes.set(agent.command, result.replace(RESULT_LINE, '').trim());
       }
