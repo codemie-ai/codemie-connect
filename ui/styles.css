@@ -208,7 +208,7 @@ body::before {
 
 /* ---- Theme toggle (fixed top-right, above content, below overlays) ---- */
 /* Lives inside #identity-bar as a normal flex child — it used to be
-   position: fixed, which floated it over the bar and clipped the version badge. */
+   position: fixed, which floated it over the bar. */
 #theme-toggle { flex: 0 0 auto; }
 .theme-ico { font-size: 12px; line-height: 1; opacity: 0.55; transition: opacity var(--transition-base); }
 :root.light .theme-ico-sun  { opacity: 1; }
