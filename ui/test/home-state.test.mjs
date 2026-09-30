@@ -187,6 +187,16 @@ test('on the status cards the health check starts by itself when it has not run 
   assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true, onboarded: true })), false);
 });
 
+// At launch the sign-in status is not read yet, so a returning user briefly
+// counts as done. Starting the check then left a result on the checklist a
+// lapsed sign-in brought back, before its earlier steps were done.
+test('on the status cards the check waits until the sign-in status is known', () => {
+  const booting = deriveHome({ config: valid, agents, health: null, onboarded: true });
+  assert.equal(booting.done, true);
+  assert.equal(autoHealthCheck(booting), false);
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, onboarded: true })), true);
+});
+
 test('the Health card says checking while the check runs, not unknown', () => {
   const card = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true, onboarded: true }).cards.find((c) => c.id === 'health');
   assert.equal(card.badge.text, 'checking');

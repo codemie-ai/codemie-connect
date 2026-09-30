@@ -154,12 +154,14 @@ function connectionsCard(connection) {
 // setup used to leave the user on a checklist that just waited for a click on
 // its last step. On the status cards: straight away, since the result is not
 // kept between launches and the Health card said "unknown" after every restart
-// (EPMCDME-15388).
+// (EPMCDME-15388). Not before the sign-in status is read: until then a
+// returning user counts as done, and a lapsed sign-in would bring the checklist
+// back with a check already run on it.
 export function autoHealthCheck(state) {
   if (!state) return false;
   const health = state.items.find((i) => i.id === 'health');
   if (!health || health.status !== StepStatus.PENDING) return false;
-  if (state.done) return true;
+  if (state.done) return state.authKnown;
   return state.items.filter((i) => i.id !== 'health').every((i) => i.status === StepStatus.COMPLETE);
 }
 
@@ -188,6 +190,7 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
   return {
     items,
     done,
+    authKnown: !!auth,
     // The sidebar locks only for a first setup, never for a user who has
     // finished it once and has merely been signed out since.
     unlocked: done || onboarded,
