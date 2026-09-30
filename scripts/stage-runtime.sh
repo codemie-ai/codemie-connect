@@ -124,6 +124,10 @@ done
 AFTER="$(find "$CLI_MODULES" -type f | wc -l | tr -d ' ')"
 echo "    files: $BEFORE -> $AFTER"
 
+# The CLI reads this file next to its package.json to know it is the copy
+# inside CodeMie Connect, which updates with the app (EPMCDME-15433).
+printf '{ "managedBy": "CodeMie Connect" }\n' > "$CLI_MODULES/$CLI_PACKAGE/codemie-connect.json"
+
 # ── 4. Verify (spec §2 step 4, not negotiable) ──────────────────────────────
 say "Verifying staged artifacts..."
 [ -x "$NODE_BIN" ] || fail "missing or not executable: $NODE_BIN"
@@ -141,6 +145,7 @@ for r in \
   "$CLI_PACKAGE/bin/codemie.js" \
   "$CLI_PACKAGE/dist/cli/index.js" \
   "$CLI_PACKAGE/package.json" \
+  "$CLI_PACKAGE/codemie-connect.json" \
   "keytar/build/Release/keytar.node"; do
   p="$CLI_MODULES/$r"
   [ -f "$p" ] || fail "missing required bundled file: $p"
