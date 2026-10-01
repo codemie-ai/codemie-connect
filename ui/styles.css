@@ -690,6 +690,12 @@ body::before {
 #setup-view .step-row.collapsed .step-sub::before { content: '\2014'; margin-right: 2px; font-weight: 400; color: var(--muted); }
 #setup-view .step-row.collapsed .step-icon { order: 2; margin-left: auto; }
 
+/* An answered row can be clicked to redo that step, but only while the view
+   says so (a prompt is open or the run has failed): the class is on the view. */
+#setup-view.can-revisit .step-row.revisit { cursor: pointer; }
+#setup-view.can-revisit .step-row.revisit:hover .step-title { color: var(--violet); }
+#setup-view.can-revisit .step-row.revisit:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
+
 /* ---- Health (ui/health-ui.js) ----
    `codemie doctor` regrouped by who can act on a problem. A problem's remedy is
    the app's failure panel, drawn smaller and dashed so it reads as part of its

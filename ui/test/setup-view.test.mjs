@@ -2293,3 +2293,166 @@ test('opening a question scrolls its Continue into view', async () => {
   assert.ok(cont, 'Continue was scrolled into view');
   assert.equal(cont.opts.block, 'nearest');
 });
+
+// ── EPMCDME-14656 Task 2: clickable answered rows ──────────────────────────
+
+const URL_PROMPT = { kind: 'input', id: 'codemieUrl', message: 'CodeMie organization URL:' };
+const PROJECT_PROMPT = { kind: 'list', id: 'codemieProject', message: 'Select your project:', options: ['alpha', 'beta'] };
+const MODEL_PROMPT = { kind: 'list', id: 'model', message: 'Select a model:', options: ['m1', 'm2'] };
+const SAVED_SCREEN = ['✔ Profile "x" saved to global config'];
+
+const lastRowOf = (container, id) => [...container.children].reverse().find((c) => (c.dataset.id || '').startsWith(`${id}-`));
+
+// Plays the user and the driver for one prompt: asks it, submits through the
+// real control, and reports the answer the way the driver does.
+async function userAnswers(cb, container, prompt, typed) {
+  const pending = cb.onPrompt(prompt);
+  await tick();
+  const row = lastRowOf(container, prompt.id);
+  if (prompt.kind === 'input') findControl(row)._children.find((c) => c.type === 'text').value = typed;
+  clickContinue(row);
+  const answer = await pending;
+  cb.onAnswer({ id: prompt.id, kind: prompt.kind, answer, ...(prompt.kind === 'list' && { label: prompt.options[answer] }) });
+}
+
+// A first run that has answered provider, the org URL (rejected once, then
+// accepted), and the project, and now waits on the model question. Later runs
+// never settle. The first run settles only through `starts.rejectFirst`.
+function revisitHarness({ script, cancelSetup } = {}) {
+  const container = makeEl('div');
+  const starts = [];
+  const order = [];
+  const view = createSetupView(container, {
+    startSetup: (cb) => {
+      order.push('start');
+      starts.push(cb);
+      if (starts.length > 1) return new Promise(() => {});
+      return new Promise((resolve, reject) => {
+        starts.rejectFirst = reject;
+        (script ?? (async () => {
+          await userAnswers(cb, container, PROVIDER_PROMPT);
+          await userAnswers(cb, container, URL_PROMPT, 'bad');
+          await userAnswers(cb, container, { ...URL_PROMPT, message: 'CodeMie organization URL: bad' }, 'good');
+          await userAnswers(cb, container, PROJECT_PROMPT);
+          cb.onPrompt(MODEL_PROMPT);
+        }))(cb, container, reject);
+      });
+    },
+    readConfig: okConfig,
+    cancelSetup: cancelSetup ?? (async () => { order.push('cancel'); return true; }),
+  });
+  return { container, starts, order, view };
+}
+
+test('clicking an answered row restarts with the answers before it', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  findRowById(h.container, 'codemieProject-1').onclick();
+  await tick(5);
+  assert.deepEqual(h.order, ['start', 'cancel', 'start']);
+  assert.deepEqual(h.starts[1].replay.map((a) => `${a.id}:${a.answer}`), ['provider:0', 'codemieUrl:bad', 'codemieUrl:good']);
+});
+
+test('the storage row has no click handler', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  const storage = findRowById(h.container, 'storage');
+  assert.equal(storage.onclick, undefined);
+  assert.ok(!storage.classList._set.has('revisit'));
+});
+
+test('rows are not clickable while the install spinner or Working gap shows', async () => {
+  const h = revisitHarness({ script: async (cb, container) => { await userAnswers(cb, container, PROVIDER_PROMPT); } });
+  h.view.start();
+  await tick(20);
+  findRowById(h.container, 'provider-1').onclick?.();
+  await tick(5);
+  assert.deepEqual(h.order, ['start'], 'no cancel, no restart in the Working gap');
+});
+
+test('row Enter and Space activate the row like a click', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  const row = findRowById(h.container, 'provider-1');
+  assert.equal(row.tabIndex, 0);
+  const keydown = row._listeners.keydown;
+  assert.equal(typeof keydown, 'function');
+  let prevented = 0;
+  keydown({ key: 'x', preventDefault: () => { prevented += 1; } });
+  await tick(2);
+  assert.deepEqual(h.order, ['start'], 'other keys do nothing');
+  keydown({ key: 'Enter', preventDefault: () => { prevented += 1; } });
+  await tick(5);
+  assert.deepEqual(h.order, ['start', 'cancel', 'start']);
+  assert.equal(prevented, 1);
+  assert.equal(h.starts[1].replay.length, 0);
+});
+
+test('Space also activates a row', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  findRowById(h.container, 'codemieProject-1')._listeners.keydown({ key: ' ', preventDefault() {} });
+  await tick(5);
+  assert.deepEqual(h.order, ['start', 'cancel', 'start']);
+});
+
+test('the profile saved line turns rows off for the rest of the run', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  h.starts[0].onScreen(SAVED_SCREEN);
+  h.starts[0].onScreen(['something else']);
+  findRowById(h.container, 'codemieProject-1').onclick?.();
+  await tick(5);
+  assert.deepEqual(h.order, ['start']);
+});
+
+test('a click during a restart is ignored', async () => {
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const order = [];
+  const h = revisitHarness({ cancelSetup: async () => { order.push('cancel'); await held; return true; } });
+  h.view.start();
+  await tick(20);
+  const row = findRowById(h.container, 'codemieProject-1');
+  row.onclick();
+  row.onclick();
+  findRowById(h.container, 'provider-1').onclick();
+  await tick(2);
+  release();
+  await tick(5);
+  assert.deepEqual(order, ['cancel']);
+  assert.equal(h.starts.length, 2, 'one new run, not three');
+});
+
+test('rows before the failed step stay clickable after a failure', async () => {
+  const h = revisitHarness({
+    script: async (cb, container, reject) => {
+      await userAnswers(cb, container, PROVIDER_PROMPT);
+      await userAnswers(cb, container, PROJECT_PROMPT);
+      cb.onPrompt(MODEL_PROMPT);
+      reject({ step: 'model', message: 'stopped', raw: '' });
+    },
+  });
+  await h.view.start();
+  findRowById(h.container, 'provider-1').onclick();
+  await tick(5);
+  assert.deepEqual(h.order, ['start', 'cancel', 'start']);
+  assert.deepEqual(h.starts[1].replay, []);
+});
+
+test('a cancelled run settling late does not free the slot for a third run', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  findRowById(h.container, 'codemieProject-1').onclick();
+  await tick(5);
+  h.starts.rejectFirst({ step: null, cancelled: true, message: 'setup cancelled', raw: '' });
+  await tick(5);
+  h.view.start();
+  assert.equal(h.starts.length, 2, 'start() joins the new run instead of launching another');
+});

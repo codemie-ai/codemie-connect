@@ -274,6 +274,10 @@ export function createSetupView(container, deps = {}) {
   // the profile name would be resent, the CLI would reject it as taken, and a
   // second profile would be created.
   let profileSaved = false;
+  // True while a prompt is open or after the run failed: the only times an
+  // answered row may be clicked. Not during the install spinner, the "Working"
+  // gap or the sign-in wait, where a restart would cancel work in progress.
+  let revisitOpen = false;
   // The first ask's full message per prompt id, default hint included. A
   // reopened row builds its control from this, not from the re-ask: the re-ask
   // carries the rejected value instead of the hint (inquirer base.js:157-160).
@@ -410,6 +414,46 @@ export function createSetupView(container, deps = {}) {
     }
   }
 
+  // The container carries `can-revisit` exactly while a click on an answered
+  // row would do something; the stylesheet shows the pointer off that class.
+  function syncRevisit() {
+    container.classList?.toggle('can-revisit', revisitOpen && !profileSaved && !restarting);
+  }
+
+  function setRevisitOpen(open) {
+    revisitOpen = open;
+    syncRevisit();
+  }
+
+  function markProfileSaved() {
+    profileSaved = true;
+    syncRevisit();
+  }
+
+  // Click an answered row: restart the run so it asks that step again, with
+  // every earlier answer replayed. restart() itself ignores a click while one is
+  // under way.
+  function revisit(rowId) {
+    if (!revisitOpen || profileSaved) return;
+    restart(replayPrefix(rowId));
+  }
+
+  // Makes a collapsed, answered row clickable and keyboard-operable. Never
+  // called for the storage row, which is a fixed choice and has no step to redo.
+  function makeRevisitable(rowId) {
+    const row = findRow(container, rowId);
+    if (!row) return;
+    row.onclick = () => revisit(rowId);
+    row.tabIndex = 0;
+    row.setAttribute?.('role', 'button');
+    row.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      revisit(rowId);
+    });
+    row.classList.add('revisit');
+  }
+
   function clearControls(host) {
     if (!host) return;
     for (const child of [...host.children]) {
@@ -491,11 +535,12 @@ export function createSetupView(container, deps = {}) {
     stepsUi.setStatus(install.rowId, status);
     stepsUi.setSubtitle(install.rowId, subtitle);
     collapseRow(install.rowId, 'installClaude');
+    makeRevisitable(install.rowId);
     if (activeRowId === install.rowId) activeRowId = null;
   }
 
   function onLog(text) {
-    if (PROFILE_SAVED.test(String(text ?? ''))) profileSaved = true;
+    if (PROFILE_SAVED.test(String(text ?? ''))) markProfileSaved();
     if (!install || install.done) return;
     install.buffer = (install.buffer + String(text ?? '')).slice(-INSTALL_LOG_KEEP);
     const ok = install.buffer.match(INSTALL_OK);
@@ -517,6 +562,7 @@ export function createSetupView(container, deps = {}) {
       clearControls(host);
       removeHelperText(host);
       activeRowId = null;
+      setRevisitOpen(false);
       if (prompt.id === 'installClaude' && value === true) {
         // The install that follows arrives as ordinary CLI output with no
         // further prompt; this row's own spinner covers that gap, so no
@@ -528,6 +574,7 @@ export function createSetupView(container, deps = {}) {
         stepsUi.setStatus(rowId, StepStatus.COMPLETE);
         stepsUi.setSubtitle(rowId, text);
         collapseRow(rowId, prompt.id);
+        makeRevisitable(rowId);
         showTransientSpinner();
       }
       resolve(value);
@@ -590,6 +637,7 @@ export function createSetupView(container, deps = {}) {
     stepsUi.setStatus(rowId, StepStatus.COMPLETE);
     stepsUi.setSubtitle(rowId, subtitleFor(prompt, answer));
     collapseRow(rowId, prompt.id);
+    makeRevisitable(rowId);
     activeRowId = null;
     showTransientSpinner();
   }
@@ -618,6 +666,7 @@ export function createSetupView(container, deps = {}) {
     }
 
     hideTransientSpinner();
+    setRevisitOpen(true);
 
     const storedBase = baseMessageByPromptId.get(prompt.id);
 
@@ -778,6 +827,7 @@ export function createSetupView(container, deps = {}) {
     // A classified failure names its own step, so the row carries the CLI's own
     // words next to markError's terminal state.
     if (failure) stepsUi.setSubtitle(rowId, failure.message);
+    setRevisitOpen(true);
     const retryReplay = replayPrefix(step && occurrenceCounts.has(step) ? latestOccurrenceRowId(step) : null);
     // Every rejection also draws the panel: it carries the explanation, the
     // command's raw output and the way back into the flow. err is the driver's
@@ -862,7 +912,7 @@ export function createSetupView(container, deps = {}) {
   // continues past this warning, so it never reaches onPrompt/handleReject;
   // this is the only path that ever sees it.
   function handleScreen(lines) {
-    if (PROFILE_SAVED.test(lines.join('\n'))) profileSaved = true;
+    if (PROFILE_SAVED.test(lines.join('\n'))) markProfileSaved();
     noteSignIn(lines);
     const failure = detectFailure(lines);
     if (!failure) {
@@ -921,6 +971,7 @@ export function createSetupView(container, deps = {}) {
   async function restart(replay) {
     if (restarting) return;
     restarting = true;
+    syncRevisit();
     try {
       await cancelSetupFn();
     } catch {
@@ -951,6 +1002,8 @@ export function createSetupView(container, deps = {}) {
     answers = [];
     rowAnswerIndex.clear();
     profileSaved = false;
+    revisitOpen = false;
+    syncRevisit();
     stepsUi.renderSteps(container, []);
 
     // renderSteps just cleared `container` via innerHTML = '' -- the header
