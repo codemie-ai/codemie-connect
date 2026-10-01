@@ -123,3 +123,11 @@ test('a secondary action alone still renders the action row', () => {
   const block = renderFailurePanel(container, { title: 'x', secondaryLabel: 'Delete this profile' });
   assert.ok(button(block, 'Delete this profile'));
 });
+
+test('a disabled secondary action cannot be clicked', () => {
+  const container = makeEl('div');
+  const block = renderFailurePanel(container, { title: 'x', secondaryLabel: 'Deleting…', secondaryDisabled: true });
+  assert.equal(button(block, 'Deleting…').disabled, true);
+  const enabled = renderFailurePanel(makeEl('div'), { title: 'x', secondaryLabel: 'Delete' });
+  assert.ok(!button(enabled, 'Delete').disabled);
+});
