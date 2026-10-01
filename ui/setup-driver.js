@@ -638,12 +638,15 @@ async function runSetup({ onPrompt, onLog, replay, onScreen, onReplayed, onAnswe
     // its answer is written) it is the last question line again for a chunk --
     // "CodeMie organization URL: https://codemie.lab.epam.com", recorded
     // 2026-09-14. That line carries its answer, so it is strictly longer than the
-    // question. A bare question is not an answered line and is left alone.
+    // question. A bare question is left alone, except for an input answered
+    // empty: its answered line IS the bare question (LiteLLM's optional API key,
+    // seen 2026-10-01, was asked twice). A fresh ask of it would carry the
+    // default hint, which an answered line never does (base.js:157-160).
     else if (
       validationErrorText(lines) === null
       && answeredInputs.some((a) => a.id === prompt.id
-        && redetected.length > a.message.length
-        && redetected.startsWith(a.message))
+        && redetected.startsWith(a.message)
+        && (redetected.length > a.message.length || (a.empty && !DEFAULT_HINT.test(prompt.message))))
     ) return;
 
     const sig = promptSignature(prompt);
@@ -830,7 +833,12 @@ async function runSetup({ onPrompt, onLog, replay, onScreen, onReplayed, onAnswe
           screenText: lines.join('\n'),
         };
         const { id, message } = lastAnsweredInput;
-        if (!answeredInputs.some((a) => a.id === id && a.message === message)) answeredInputs.push({ id, message });
+        // Blank on screen: inquirer shows nothing for an empty answer, and the
+        // screen read trims trailing spaces.
+        const empty = String(answer).trim() === '';
+        const known = answeredInputs.find((a) => a.id === id && a.message === message);
+        if (known) known.empty = empty;
+        else answeredInputs.push({ id, message, empty });
         return;
       }
 

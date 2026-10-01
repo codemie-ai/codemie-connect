@@ -2250,3 +2250,43 @@ test('replay after cancelSetup: the old child is killed and gone before the new 
   assert.deepEqual(fake2.writes, ['https://codemie.lab.epam.com\r', 'second\r'], 'the URL is replayed, the name is asked');
   assert.deepEqual(asked, ['profileName']);
 });
+
+test('an input answered empty is not asked again when its bare line is the last question after a later answer', async () => {
+  // Seen in the app with LiteLLM (2026-10-01): the optional API key answered
+  // empty leaves its line bare, with nothing after the colon. Once the next
+  // answer erased the model prompt, that bare line was the last question on
+  // screen and was asked a second time, opening a row nothing waited on.
+  const KEY_Q = '? API Key (optional, leave empty if not required): ';
+  const URL_DONE = '? LiteLLM Proxy URL: http://localhost:4000';
+  const MODEL_Q = '? Enter model name manually: ';
+  const frames = [
+    [URL_DONE, KEY_Q],
+    [URL_DONE, KEY_Q], // our empty answer: nothing changes on the line
+    [URL_DONE, KEY_Q, MODEL_Q],
+    [URL_DONE, KEY_Q, `${MODEL_Q}claude-sonnet-4-6`],
+    [URL_DONE, KEY_Q], // the model line erased as the CLI moves on
+    [URL_DONE, KEY_Q, '? Enter a name for this profile: (default) '],
+  ];
+  const { seen, writes } = await replay(frames, ['', 'claude-sonnet-4-6', 'mine']);
+  assert.deepEqual(seen, [
+    'API Key (optional, leave empty if not required):',
+    'Enter model name manually:',
+    'Enter a name for this profile: (default)',
+  ], 'the key is asked once');
+  assert.deepEqual(writes, ['\r', 'claude-sonnet-4-6\r', 'mine\r']);
+});
+
+test('an input answered empty is still asked again when the CLI re-asks it with its default hint', async () => {
+  // A fresh ask carries inquirer's default hint; a line that was answered never
+  // does. So the bare line is the old answer, the hinted one a new question.
+  const URL_EMPTY = '? CodeMie organization URL: ';
+  const frames = [
+    ['? CodeMie organization URL: (https://codemie.lab.epam.com) '],
+    [URL_EMPTY],
+    [URL_EMPTY, '? Enter model name manually: '],
+    [URL_EMPTY, '? Enter model name manually: m'],
+    [URL_EMPTY, '⚠ Could not reach CodeMie', '? CodeMie organization URL: (https://codemie.lab.epam.com) '],
+  ];
+  const { seen } = await replay(frames, ['', 'm', 'https://codemie.lab.epam.com']);
+  assert.equal(seen.length, 3, 'the hinted re-ask reaches the user');
+});
