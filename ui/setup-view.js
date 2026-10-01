@@ -443,15 +443,26 @@ export function createSetupView(container, deps = {}) {
   function makeRevisitable(rowId) {
     const row = findRow(container, rowId);
     if (!row) return;
-    row.onclick = () => revisit(rowId);
     row.tabIndex = 0;
     row.setAttribute?.('role', 'button');
+    row.classList.add('revisit');
+    // Listeners go on once per row: a row answered again (or reopened after a
+    // validation rejection) comes through here every time.
+    if (row._revisitBound) return;
+    row._revisitBound = true;
+    // Only a collapsed row's own surface revisits. A reopened row holds a live
+    // control, and clicks or keys inside it belong to that control.
+    const ignored = (e) => !row.classList.contains('collapsed') || !!e?.target?.closest?.('.prompt-control');
+    row.onclick = (e) => {
+      if (ignored(e)) return;
+      revisit(rowId);
+    };
     row.addEventListener('keydown', (e) => {
+      if (ignored(e)) return;
       if (e.key !== 'Enter' && e.key !== ' ') return;
       e.preventDefault();
       revisit(rowId);
     });
-    row.classList.add('revisit');
   }
 
   function clearControls(host) {
