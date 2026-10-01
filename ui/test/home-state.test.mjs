@@ -239,8 +239,7 @@ const notSignedIn = { state: 'not_signed_in' };
 
 test('brokenKind tells an expired sign-in from a dangling profile name', () => {
   const table = [
-    [{ config: brokenCfg('ghost'), auth: { state: 'unknown' } }, null, 'unknown is never broken'],
-    [{ config: brokenCfg('ghost'), auth: signedIn }, null, 'signed in is never broken'],
+    [{ config: brokenCfg('ghost'), auth: { state: 'unknown' } }, 'dangling', 'the real CLI reports unknown for a dangling name'],
     [{ config: brokenCfg('ghost'), auth: null }, null, 'auth still being read'],
     [{ config: valid, auth: { state: 'unknown' } }, null, 'anthropic-subscription shape'],
     [{ config: valid, auth: noProfile }, null, 'no_profile with a valid config'],
@@ -266,6 +265,13 @@ test('deriveHome: an empty name is the checklist, a lapsed sign-in is the panel'
   assert.equal(expired.broken, 'expired');
   assert.equal(expired.done, false);
   assert.equal(expired.unlocked, true);
+});
+
+test('the model item only warns for a broken config that still names a profile', () => {
+  const model = (config) => deriveHome({ config, auth: noProfile }).items[1];
+  assert.equal(model(brokenCfg('ghost')).status, StepStatus.WARNING);
+  assert.equal(model(brokenCfg('')).status, StepStatus.PENDING);
+  assert.notEqual(model(brokenCfg('')).subtitle, 'Your profile is no longer working');
 });
 
 test('brokenCopy names the profile and offers the actions that fit', () => {

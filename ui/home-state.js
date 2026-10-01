@@ -44,7 +44,7 @@ function modelItem(def, config) {
   if (state === 'valid') {
     return item(def, StepStatus.COMPLETE, [config.profile, config.model].filter(Boolean).join(' · '));
   }
-  if (state === 'broken') return item(def, StepStatus.WARNING, 'Your profile is no longer working');
+  if (state === 'broken' && (config.profile || '').trim()) return item(def, StepStatus.WARNING, 'Your profile is no longer working');
   return item(def, StepStatus.PENDING, 'Sign in with CodeMie, or bring your own key');
 }
 
@@ -175,8 +175,7 @@ const authUsable = (auth) => !!auth && (auth.state === 'signed_in' || auth.state
 // (the CLI leaves activeProfile "" after the last delete): the checklist, not
 // a panel. A read still in flight is never broken.
 export function brokenKind({ config, auth } = {}) {
-  if (!auth || authUsable(auth)) return null;
-  if (!config || !(config.profile || '').trim()) return null;
+  if (!auth || !config || !(config.profile || '').trim()) return null;
   if (config.state === 'broken') return 'dangling';
   if (config.state === 'valid' && auth.state === 'not_signed_in') return 'expired';
   return null;
