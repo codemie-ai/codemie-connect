@@ -1,0 +1,8 @@
+{"schema":1,"branch":"feat/EPMCDME-14658-broken-profile","head":"5c4382d97df21dcd7b6ca308b63cdde4cc5c0b66","runner":"cargo","started_at":"2026-10-01T00:00:00Z","completed_at":"2026-10-01T00:00:00Z","status":"PASSED","drift_detected":false,"gates":[
+{"id":"fmt-rust","source":"guide","status":"PASS","duration_ms":1000,"command":"cd src-tauri && cargo fmt --check","exit_code":0},
+{"id":"lint-rust","source":"guide","status":"PASS","duration_ms":3500,"command":"cd src-tauri && cargo clippy -- -D warnings","exit_code":0},
+{"id":"unit-js","source":"guide","status":"PASS","duration_ms":14000,"command":"npm test","exit_code":0,"notes":"490 pass, 0 fail"},
+{"id":"unit-rust","source":"guide","status":"PASS","duration_ms":14000,"command":"cd src-tauri && cargo test","exit_code":0},
+{"id":"build","source":"guide","status":"SKIPPED","command":"./build-installer.sh","notes":"Guide allows skipping for logic changes verified by tests (2-5 min DMG build); run before release."},
+{"id":"hooks-ci","source":"ci","status":"N/A","command":"","notes":"No .husky, pre-commit, lefthook, or CI pipeline files present."}
+],"failures":{}}

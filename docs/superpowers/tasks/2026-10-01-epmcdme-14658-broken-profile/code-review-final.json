@@ -1,0 +1,25 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec was supplied, so acceptance did not run and confidence is low. The one blocker is the commit-format standard: all 5 commit subjects use the ticket-ID form instead of the documented '<type>: <description>', and the guide or the commits need to change. The 6 edge-case candidates were checked against source; 5 were dismissed as unreachable or below the emission floor, and the auth 'unknown' one is by design. Nothing deferred. A failed deferred-file write is not applicable.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires '<type>: <short description>'; all 5 subjects in range use 'EPMCDME-14658 : <subject>' with no type" },
+    { "kind": "code-quality", "status": "na", "notes": "no code-quality guide in the repo and no ref passed; absent standard, not a gap" },
+    { "kind": "security", "status": "pass", "notes": "profile name reaches the shell only through quote_arg; Windows rejects %, CR/LF, NUL; zsh injection test present" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subjects violate documented format",
+      "problem": "git-workflow.md documents '<type>: <short description>' with type in feat|fix|docs|test|chore|refactor, but every commit in the range (d5a5668..HEAD) uses 'EPMCDME-14658 : <subject>' with no conventional type.",
+      "impact": "commit-format is a documented blocking standard and every commit in the range deviates from it.",
+      "recommendation": "Reword the subjects to the documented format (e.g. 'feat: wire the broken profile panel'), or update .ai-run/guides/standards/git-workflow.md to document the ticket-ID format if that is the intended convention."
+    }
+  ]
+}
