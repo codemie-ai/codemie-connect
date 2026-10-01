@@ -286,14 +286,35 @@ let cancelPending = false;
 // side gives that 5s, so this sits just past it.
 const CANCEL_UNWIND_TIMEOUT_MS = 6000;
 
-export async function startSetup({ onPrompt, onLog, replay, onScreen } = {}, deps = {}) {
+/**
+ * Run `codemie setup`, answering its prompts through onPrompt.
+ *
+ * `replay` (EPMCDME-14656) is a list of answers from an earlier run, in the
+ * order they were given: [{ id, answer, label? }]. The CLI cannot be rewound,
+ * so going back to an answered step, or retrying at the step that failed,
+ * means a new run that is walked to that point without asking the user again.
+ * Each prompt whose id matches the next entry is answered from it and onPrompt
+ * is not called; `onReplayed(prompt, answer)` is told instead, so the screen
+ * can show the step as answered. A list entry with a `label` is answered by
+ * that label, since a list can come back in a different order; a label the
+ * list no longer has ends the replay there. The first prompt that does not
+ * match ends the replay too: the rest of the entries are dropped and that
+ * prompt, and every later one, goes to onPrompt. Replaying a rejected answer
+ * makes the CLI ask again, and the correction after it in the list answers
+ * that.
+ *
+ * `onAnswer({ id, kind, answer, label })` is told every answer given in the
+ * run, from the user or from `replay`, in order -- the list a later replay is
+ * built from. `label` is the chosen option for a list.
+ */
+export async function startSetup({ onPrompt, onLog, replay, onScreen, onReplayed, onAnswer } = {}, deps = {}) {
   if (active) {
     throw { step: null, message: 'startSetup already in progress', raw: '' };
   }
   active = true;
   cancelPending = false;
   try {
-    activeDone = runSetup({ onPrompt, onLog, replay, onScreen }, deps);
+    activeDone = runSetup({ onPrompt, onLog, replay, onScreen, onReplayed, onAnswer }, deps);
     return await activeDone;
   } finally {
     active = false;
@@ -333,8 +354,18 @@ export async function cancelSetup() {
   return true;
 }
 
-// eslint-disable-next-line no-unused-vars -- replay is accepted and intentionally ignored (EPMCDME-14656 implements it later)
-async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
+// The answer a replay entry gives this prompt, or undefined when it gives none
+// (the replay ends there). A list entry with a label is matched by the label.
+function replayedAnswer(entry, prompt) {
+  if (!entry || entry.id !== prompt.id) return undefined;
+  if (prompt.kind === 'list' && entry.label !== undefined) {
+    const i = prompt.options.indexOf(entry.label);
+    return i === -1 ? undefined : i;
+  }
+  return entry.answer;
+}
+
+async function runSetup({ onPrompt, onLog, replay, onScreen, onReplayed, onAnswer }, deps) {
   const spawnPty = deps.spawnPty ?? (await import('./runner-bridge.js')).pty.spawnPty;
   const input = deps.input ?? (await import('./runner-bridge.js')).pty.input;
   const kill = deps.kill ?? (await import('./runner-bridge.js')).pty.kill;
@@ -384,6 +415,26 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
     raw: readScreen().join('\n'),
   });
   if (cancelPending) requestCancel();
+
+  // EPMCDME-14656. Every prompt the caller would answer goes through ask(): the
+  // next replay entry answers it while the entries still match, onPrompt once
+  // they stop. Prompts the driver answers itself (AUTO_LIST, AUTO_CONFIRM) are
+  // not in the list and never reach here, so a replay skips them the same way
+  // the user never saw them.
+  const pending = Array.isArray(replay) ? [...replay] : [];
+  async function ask(prompt) {
+    let answer = replayedAnswer(pending[0], prompt);
+    if (answer !== undefined) {
+      pending.shift();
+      onReplayed?.(prompt, answer);
+    } else {
+      pending.length = 0;
+      answer = await onPrompt(prompt);
+    }
+    const label = prompt.kind === 'list' ? prompt.options?.[answer] : undefined;
+    onAnswer?.({ id: prompt.id, kind: prompt.kind, answer, ...(label !== undefined && { label }) });
+    return answer;
+  }
 
   // Captured from the profileName input prompt's own answer (Task 9's
   // uniform input branch); resolved into the final result on zero exit.
@@ -970,7 +1021,7 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
     // exactly what provokes these redraws.
     if (promptInFlight) return;
     if (prompt) {
-      handleDetectedPrompt(prompt, { onPrompt, deps: { input }, lines }).catch(settleReject);
+      handleDetectedPrompt(prompt, { onPrompt: ask, deps: { input }, lines }).catch(settleReject);
       return;
     }
     scheduleIdleCheck();
