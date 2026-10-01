@@ -105,3 +105,21 @@ test('a warning renders in the warning variant with no actions', () => {
   assert.ok(block.querySelector('.failure-panel').className.includes('warning'));
   assert.equal(block.querySelector('.failure-actions'), null, 'a warning offers no actions');
 });
+
+test('a secondary action renders after the primary and receives the block', () => {
+  const container = makeEl('div');
+  let got = null;
+  const block = renderFailurePanel(container, {
+    title: 'x', raw: 'y', primaryLabel: 'Sign in again', secondaryLabel: 'Delete this profile', onSecondary: (b) => { got = b; },
+  });
+  const labels = block.querySelector('.failure-actions')._children.map((b) => b.textContent);
+  assert.deepEqual(labels, ['Sign in again', 'Delete this profile', 'Show details']);
+  button(block, 'Delete this profile').onclick();
+  assert.equal(got, block);
+});
+
+test('a secondary action alone still renders the action row', () => {
+  const container = makeEl('div');
+  const block = renderFailurePanel(container, { title: 'x', secondaryLabel: 'Delete this profile' });
+  assert.ok(button(block, 'Delete this profile'));
+});
