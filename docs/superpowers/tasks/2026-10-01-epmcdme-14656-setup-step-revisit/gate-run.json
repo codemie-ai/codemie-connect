@@ -1,0 +1,8 @@
+{"schema":1,"branch":"feat/EPMCDME-14656-setup-step-revisit","head":"827293d359ecba8e209651a4f7656626f02be7af","runner":"custom","started_at":"2026-10-01T11:01:48Z","completed_at":"2026-10-01T11:03:09Z","status":"PASSED","drift_detected":false,
+"gates":[
+{"id":"fmt-rust","source":"guide","status":"PASS","duration_ms":1200,"command":"cd src-tauri && cargo fmt --check","exit_code":0},
+{"id":"lint-rust","source":"guide","status":"PASS","duration_ms":17000,"command":"cd src-tauri && cargo clippy -- -D warnings","exit_code":0},
+{"id":"unit-js","source":"guide","status":"PASS","duration_ms":11600,"command":"npm test","exit_code":0,"notes":"494 tests passed"},
+{"id":"unit-rust","source":"guide","status":"PASS","duration_ms":44000,"command":"cd src-tauri && cargo test","exit_code":0,"notes":"118 tests passed"},
+{"id":"build","source":"guide","status":"N/A","command":"./build-installer.sh","notes":"Guide: skip for logic-only change verified by tests; diff is ui JS/CSS only, not requested by caller. No hook or CI config exists in the repo."}],
+"failures":{}}
