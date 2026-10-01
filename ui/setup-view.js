@@ -37,6 +37,9 @@ const DEFAULT_HINT = /\s*\([^()]*\)\s*$/;
 // and a plain match on the raw text is enough.
 const INSTALL_OK = /Claude Code(?:\s+(v\S+))?\s+installed successfully/;
 const INSTALL_FAILED = /Failed to install Claude Code/;
+// The CLI's own line once the profile is written (EPMCDME-14656: after it,
+// nothing replays and no row can be revisited).
+const PROFILE_SAVED = /Profile ".*" saved to global config/;
 // Keep only this much of the accumulated log; every phrase above is far
 // shorter, so a chunk boundary inside one can never fall off the buffer.
 const INSTALL_LOG_KEEP = 4000;
@@ -253,10 +256,24 @@ export function createSetupView(container, deps = {}) {
   // recognized reopen -- only set the first time an id is seen, or when a
   // genuinely different message arrives for that id.
   const baseMessageByPromptId = new Map();
-  // Most recently submitted value per prompt id -- a data-capture point for
-  // EPMCDME-14656 (replay/step-revisit) to build on later. Nothing in this
-  // file reads it; held in memory only, never replayed or persisted here.
-  const answeredValues = new Map();
+  // Every answer the current run has been given, in order, as the driver
+  // reports it through onAnswer (the user's and any replayed ones). It may hold
+  // an API key: memory only, never logged, persisted or exposed. A restart
+  // replays a prefix of it.
+  let answers = [];
+  // Row id -> how many answers existed when that row first opened, so "the
+  // answers before this row" is a position, not an id (an id can repeat when a
+  // prompt is re-asked).
+  const rowAnswerIndex = new Map();
+  // Bumped per run; a callback from a cancelled run compares its own number and
+  // does nothing when it is no longer current.
+  let generation = 0;
+  // A restart is between cancelling the old process and launching the new one.
+  let restarting = false;
+  // The CLI printed its saved line in this run. From then on nothing replays:
+  // the profile name would be resent, the CLI would reject it as taken, and a
+  // second profile would be created.
+  let profileSaved = false;
   // The first ask's full message per prompt id, default hint included. A
   // reopened row builds its control from this, not from the re-ask: the re-ask
   // carries the rejected value instead of the hint (inquirer base.js:157-160).
@@ -478,6 +495,7 @@ export function createSetupView(container, deps = {}) {
   }
 
   function onLog(text) {
+    if (PROFILE_SAVED.test(String(text ?? ''))) profileSaved = true;
     if (!install || install.done) return;
     install.buffer = (install.buffer + String(text ?? '')).slice(-INSTALL_LOG_KEEP);
     const ok = install.buffer.match(INSTALL_OK);
@@ -496,7 +514,6 @@ export function createSetupView(container, deps = {}) {
 
   function renderControl(host, prompt, rowId, resolve) {
     function submit(value, humanText) {
-      answeredValues.set(prompt.id, value);
       clearControls(host);
       removeHelperText(host);
       activeRowId = null;
@@ -531,6 +548,64 @@ export function createSetupView(container, deps = {}) {
     host.querySelector('.prompt-submit')?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
   }
 
+  // A re-ask of a question already on a row (after a validation rejection),
+  // as opposed to a genuinely new occurrence.
+  function isReopenOf(prompt) {
+    const storedBase = baseMessageByPromptId.get(prompt.id);
+    const stripped = stripHint(prompt.message);
+    return storedBase !== undefined && (stripped === storedBase || stripped.startsWith(storedBase));
+  }
+
+  // The lines of a new occurrence: remember its question, insert its row, make
+  // it the active one, and note how many answers came before it. Returns rowId.
+  function beginOccurrence(prompt) {
+    baseMessageByPromptId.set(prompt.id, stripHint(prompt.message));
+    firstAskByPromptId.set(prompt.id, prompt.message);
+    const occurrence = nextOccurrence(prompt.id);
+    const rowId = `${prompt.id}-${occurrence}`;
+    rowAnswerIndex.set(rowId, answers.length);
+
+    stepsUi.insertSubStep(null, { id: rowId, title: headingFor(prompt), description: '' });
+    stepsUi.setStatus(rowId, StepStatus.ACTIVE);
+    activeRowId = rowId;
+    lastRowId = rowId;
+    return rowId;
+  }
+
+  // The same subtitle the three render*Control functions hand to submit().
+  function subtitleFor(prompt, answer) {
+    if (prompt.kind === 'list') return renderOptionCards(prompt.options, {})[answer]?.title ?? '';
+    if (prompt.kind === 'confirm') {
+      if (prompt.id === 'installClaude' && answer === false) return 'Skipped';
+      return answer ? 'Yes' : 'No';
+    }
+    return isSecretPrompt(prompt.message) ? maskSecret(answer) : String(answer ?? '');
+  }
+
+  // The driver answered this prompt from a replay: the row appears already
+  // answered, exactly as if the user had just submitted it.
+  function onReplayed(prompt, answer) {
+    hideTransientSpinner();
+    const rowId = isReopenOf(prompt) ? latestOccurrenceRowId(prompt.id) : beginOccurrence(prompt);
+    stepsUi.setStatus(rowId, StepStatus.COMPLETE);
+    stepsUi.setSubtitle(rowId, subtitleFor(prompt, answer));
+    collapseRow(rowId, prompt.id);
+    activeRowId = null;
+    showTransientSpinner();
+  }
+
+  // The answers a restart replays: everything before `rowId`'s first ask (all
+  // of them for null or an unknown row), cut at the first installClaude so a
+  // replayed yes can never start a real install -- the driver asks that prompt
+  // live and the rows after it are asked again. Nothing after the profile saved.
+  function replayPrefix(rowId) {
+    if (profileSaved) return [];
+    const end = rowId && rowAnswerIndex.has(rowId) ? rowAnswerIndex.get(rowId) : answers.length;
+    const prefix = answers.slice(0, end);
+    const cut = prefix.findIndex((a) => a.id === 'installClaude');
+    return (cut >= 0 ? prefix.slice(0, cut) : prefix).map((a) => ({ ...a }));
+  }
+
   function onPrompt(prompt) {
     if (NEVER_RENDERED_PROMPT_IDS.has(prompt.id)) {
       // The real driver already answers these itself and never calls the
@@ -544,11 +619,9 @@ export function createSetupView(container, deps = {}) {
 
     hideTransientSpinner();
 
-    const stripped = stripHint(prompt.message);
     const storedBase = baseMessageByPromptId.get(prompt.id);
-    const isReopen = storedBase !== undefined && (stripped === storedBase || stripped.startsWith(storedBase));
 
-    if (isReopen) {
+    if (isReopenOf(prompt)) {
       // Same question being re-asked (e.g. after a validation failure):
       // reopen the existing row for this id instead of inserting a new one.
       // storedBase is intentionally left unchanged so a third, fourth, etc.
@@ -583,15 +656,7 @@ export function createSetupView(container, deps = {}) {
 
     // New occurrence: either the first time this id is seen, or a genuinely
     // different re-ask.
-    baseMessageByPromptId.set(prompt.id, stripped);
-    firstAskByPromptId.set(prompt.id, prompt.message);
-    const occurrence = nextOccurrence(prompt.id);
-    const rowId = `${prompt.id}-${occurrence}`;
-
-    stepsUi.insertSubStep(null, { id: rowId, title: headingFor(prompt), description: '' });
-    stepsUi.setStatus(rowId, StepStatus.ACTIVE);
-    activeRowId = rowId;
-    lastRowId = rowId;
+    const rowId = beginOccurrence(prompt);
 
     const host = findControlHost(container, rowId);
     appendHelperText(host, prompt.id);
@@ -713,6 +778,7 @@ export function createSetupView(container, deps = {}) {
     // A classified failure names its own step, so the row carries the CLI's own
     // words next to markError's terminal state.
     if (failure) stepsUi.setSubtitle(rowId, failure.message);
+    const retryReplay = replayPrefix(step && occurrenceCounts.has(step) ? latestOccurrenceRowId(step) : null);
     // Every rejection also draws the panel: it carries the explanation, the
     // command's raw output and the way back into the flow. err is the driver's
     // { step, message, raw } on every path it raises, but an IPC-level throw can
@@ -725,6 +791,7 @@ export function createSetupView(container, deps = {}) {
       // screen can have scrolled past it. Only pendingFailure has `screen`, so
       // this picks the held one when that is where the classification came from.
       raw: (failure?.screen ?? err?.raw) ?? '',
+      replay: retryReplay,
     });
     settleInstallRow();
     activeRowId = null;
@@ -775,7 +842,7 @@ export function createSetupView(container, deps = {}) {
   // that live step, so the panel only steps out of the way; cancelling there
   // would kill a run that was about to work. When the run has ended, it ends the
   // old one -- fully awaited -- and starts a fresh one.
-  function renderFailurePanel({ id, cliMessage, raw, recoverable = false }) {
+  function renderFailurePanel({ id, cliMessage, raw, recoverable = false, replay = [] }) {
     const copy = FAILURE_COPY[id] ?? FAILURE_FALLBACK;
     renderPanel(container, {
       title: copy.title,
@@ -786,7 +853,7 @@ export function createSetupView(container, deps = {}) {
       primaryLabel: 'Try again',
       onPrimary: recoverable
         ? (block) => { block.remove(); }
-        : async (block) => { block.remove(); await cancelSetupFn(); start(); },
+        : async (block) => { block.remove(); await restart(replay); },
     });
   }
 
@@ -795,6 +862,7 @@ export function createSetupView(container, deps = {}) {
   // continues past this warning, so it never reaches onPrompt/handleReject;
   // this is the only path that ever sees it.
   function handleScreen(lines) {
+    if (PROFILE_SAVED.test(lines.join('\n'))) profileSaved = true;
     noteSignIn(lines);
     const failure = detectFailure(lines);
     if (!failure) {
@@ -832,14 +900,37 @@ export function createSetupView(container, deps = {}) {
   let inFlight = null;
   function start() {
     if (inFlight) return inFlight;
-    inFlight = run().finally(() => { inFlight = null; });
-    // Every run, the first one and each "Try again", so the caller's
-    // bookkeeping follows a retry the same way.
-    deps.onRun?.(inFlight);
-    return inFlight;
+    return startRun([]);
   }
 
-  async function run() {
+  // Always launches a run. The finally only clears the slot while it is still
+  // this run's: a cancelled run settling late must not clear the new one's.
+  function startRun(replay) {
+    generation += 1;
+    const p = run(replay, generation).finally(() => { if (inFlight === p) inFlight = null; });
+    inFlight = p;
+    // Every run, the first one and each "Try again", so the caller's
+    // bookkeeping follows a retry the same way.
+    deps.onRun?.(p);
+    return p;
+  }
+
+  // End the current run (fully awaited, so two `codemie setup` processes are
+  // never alive at once), then start one that replays `replay`. A second call
+  // while one is under way is ignored.
+  async function restart(replay) {
+    if (restarting) return;
+    restarting = true;
+    try {
+      await cancelSetupFn();
+    } catch {
+      // A cancel that failed has nothing left to wait for; start anyway.
+    }
+    restarting = false;
+    startRun(replay);
+  }
+
+  async function run(replay, gen) {
     // Every start() is a fresh run (EPMCDME-14588 retries by calling it
     // again): forget the previous run's rows, ids and reopen bases, or the
     // next provider prompt would be taken for a reopen of a row that is gone.
@@ -855,9 +946,11 @@ export function createSetupView(container, deps = {}) {
     pendingFailure = null;
     waitingForSignIn = false;
     signInLineSeen = false;
-    // A retry re-answers every prompt from the top, so last run's values must
-    // not linger: EPMCDME-14656's replay would otherwise read a mix of two runs.
-    answeredValues.clear();
+    // The driver reports the replayed answers again through onAnswer, so the
+    // list starts empty rather than mixing two runs.
+    answers = [];
+    rowAnswerIndex.clear();
+    profileSaved = false;
     stepsUi.renderSteps(container, []);
 
     // renderSteps just cleared `container` via innerHTML = '' -- the header
@@ -883,11 +976,21 @@ export function createSetupView(container, deps = {}) {
 
     let result;
     try {
-      result = await startSetup({ onPrompt, onLog, onScreen: handleScreen });
+      const live = (fn, stale) => (...args) => (gen === generation ? fn(...args) : stale);
+      result = await startSetup({
+        onPrompt: live(onPrompt, new Promise(() => {})),
+        onLog: live(onLog),
+        onScreen: live(handleScreen),
+        onReplayed: live(onReplayed),
+        onAnswer: live((e) => { answers.push({ ...e }); }),
+        replay,
+      });
     } catch (err) {
+      if (gen !== generation) return { ok: false, error: err };
       handleReject(err);
       return { ok: false, error: err };
     }
+    if (gen !== generation) return { ok: false, error: { step: null, message: 'superseded by a newer run', raw: '' } };
     const verified = await handleResolve(result);
     if (verified === null) {
       return {
@@ -902,5 +1005,5 @@ export function createSetupView(container, deps = {}) {
     return { ok: true, profileName: verified };
   }
 
-  return { start, getAnsweredValues: () => new Map(answeredValues) };
+  return { start };
 }
