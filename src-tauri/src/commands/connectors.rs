@@ -3,8 +3,7 @@
 // whether a CodeMie-managed config is currently applied for that tool — not
 // whether the tool itself is installed.
 use serde::Serialize;
-#[cfg(target_os = "macos")]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -15,13 +14,22 @@ pub struct ConnectorStatus {
     pub vscode_claude_code: bool,
 }
 
+/// The keys `codemie proxy connect --claude-desktop` writes into the applied
+/// config and `disconnect` removes (CLI proxy/connectors/desktop.ts,
+/// INFERENCE_KEYS). The user's own settings can share the file, so only these
+/// say whether CodeMie is set up there.
+const CLAUDE_GATEWAY_KEYS: [&str; 4] = [
+    "inferenceProvider",
+    "inferenceGatewayBaseUrl",
+    "inferenceGatewayApiKey",
+    "inferenceGatewayAuthScheme",
+];
+
 /// Claude Desktop is "connected" when its configLibrary's currently-applied
-/// entry (per `_meta.json`'s `appliedId`) exists on disk and still carries
-/// gateway settings. `disconnect` doesn't delete the file or clear
-/// `appliedId` (so a later `connect` can reuse the same config id) — it
-/// strips the managed keys, leaving `{}` when nothing else was in the file.
-/// Mirrors `codex_desktop_connected`'s content check below.
-#[cfg(target_os = "macos")]
+/// entry (per `_meta.json`'s `appliedId`) still carries CodeMie's gateway
+/// keys. `disconnect` keeps the file and `appliedId` (so a later `connect`
+/// reuses the same config id) and strips only CodeMie's keys, so a file left
+/// holding the user's own settings is not a connection.
 fn claude_desktop_connected(base_dir: &Path) -> bool {
     let meta_path = base_dir.join("configLibrary/_meta.json");
     let Ok(raw) = std::fs::read_to_string(&meta_path) else {
@@ -37,23 +45,16 @@ fn claude_desktop_connected(base_dir: &Path) -> bool {
         .join("configLibrary")
         .join(format!("{applied_id}.json"));
     std::fs::read_to_string(&applied_path)
-        .map(
-            |s| match serde_json::from_str::<serde_json::Value>(s.trim()) {
-                // Only an empty object counts as "stripped" — anything else
-                // (including unparseable content, since disconnect always leaves
-                // valid JSON behind) is treated as still carrying gateway settings.
-                Ok(serde_json::Value::Object(map)) => !map.is_empty(),
-                _ => !s.trim().is_empty(),
-            },
-        )
-        .unwrap_or(false)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s.trim()).ok())
+        .and_then(|v| v.as_object().cloned())
+        .is_some_and(|map| CLAUDE_GATEWAY_KEYS.iter().any(|k| map.contains_key(*k)))
 }
 
 /// Codex Desktop is "connected" when CodeMie's proxy has written a non-empty
 /// state file. A successful `disconnect` doesn't delete the file — it
 /// overwrites it with an empty string — so `exists()` alone can't tell a live
 /// connection from an already-disconnected one.
-#[cfg(target_os = "macos")]
 fn codex_desktop_connected(state_file: &Path) -> bool {
     std::fs::read_to_string(state_file)
         .map(|s| !s.trim().is_empty())
@@ -107,89 +108,120 @@ fn vscode_claude_code_connected(raw: &str) -> bool {
 /// Resolves the user's home dir from HOME (or USERPROFILE on Windows). `None`
 /// when neither is set — callers must treat that as "can't check", not build
 /// paths against an empty/root fallback.
-#[cfg(target_os = "macos")]
 fn home_dir() -> Option<String> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
+        .filter(|h| !h.is_empty())
 }
 
-/// macOS-only: all connector config paths live under
-/// `~/Library/Application Support/...`. Returns all-false (via `None` HOME,
-/// or on any other target OS) rather than resolving paths against a bogus
-/// root — connectors.rs has no Windows/Linux path support yet.
-#[tauri::command]
-pub fn check_connector_status() -> ConnectorStatus {
-    #[cfg(target_os = "macos")]
-    {
-        let Some(home) = home_dir() else {
-            return ConnectorStatus::default();
-        };
-        let claude_base = Path::new(&home).join("Library/Application Support/Claude-3p");
-        let codex_state = Path::new(&home).join(".codemie/proxy/codex-desktop-state.json");
+/// Where the CLI writes each connector's config, per OS. Mirrors the CLI's own
+/// resolvers (proxy/connectors/*.ts): Claude Desktop under
+/// `~/Library/Application Support/Claude-3p` on macOS and
+/// `%LOCALAPPDATA%\Claude-3p` on Windows, VS Code's `User` dir under
+/// Application Support on macOS and `%APPDATA%` on Windows, and the Codex
+/// state file under `~/.codemie/proxy` everywhere.
+struct ConnectorPaths {
+    claude_base: PathBuf,
+    codex_state: PathBuf,
+    vscode_user_dirs: Vec<PathBuf>,
+}
 
-        let vscode_chat_models_path = |dir: &str| {
-            Path::new(&home).join(format!(
-                "Library/Application Support/{dir}/User/chatLanguageModels.json"
-            ))
-        };
-        // Read both stable and Insiders variants and OR the parsed result —
-        // gating the Insiders read on the stable file being empty/missing
-        // would skip it whenever a non-matching (but valid) stable file exists.
-        let stable_chat =
-            std::fs::read_to_string(vscode_chat_models_path("Code")).unwrap_or_default();
-        let insiders_chat =
-            std::fs::read_to_string(vscode_chat_models_path("Code - Insiders")).unwrap_or_default();
-
-        let vscode_settings_path = |dir: &str| {
-            Path::new(&home).join(format!(
-                "Library/Application Support/{dir}/User/settings.json"
-            ))
-        };
-        let stable_settings =
-            std::fs::read_to_string(vscode_settings_path("Code")).unwrap_or_default();
-        let insiders_settings =
-            std::fs::read_to_string(vscode_settings_path("Code - Insiders")).unwrap_or_default();
-
-        ConnectorStatus {
-            claude_desktop: claude_desktop_connected(&claude_base),
-            codex_desktop: codex_desktop_connected(&codex_state),
-            vscode_copilot: vscode_copilot_connected(&stable_chat)
-                || vscode_copilot_connected(&insiders_chat),
-            vscode_claude_code: vscode_claude_code_connected(&stable_settings)
-                || vscode_claude_code_connected(&insiders_settings),
+fn connector_paths(
+    windows: bool,
+    home: &Path,
+    appdata: Option<&Path>,
+    local_appdata: Option<&Path>,
+) -> ConnectorPaths {
+    let codex_state = home
+        .join(".codemie")
+        .join("proxy")
+        .join("codex-desktop-state.json");
+    if windows {
+        let local = local_appdata
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.join("AppData").join("Local"));
+        let roaming = appdata
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.join("AppData").join("Roaming"));
+        ConnectorPaths {
+            claude_base: local.join("Claude-3p"),
+            codex_state,
+            vscode_user_dirs: ["Code", "Code - Insiders"]
+                .iter()
+                .map(|d| roaming.join(d).join("User"))
+                .collect(),
+        }
+    } else {
+        let support = home.join("Library").join("Application Support");
+        ConnectorPaths {
+            claude_base: support.join("Claude-3p"),
+            codex_state,
+            vscode_user_dirs: ["Code", "Code - Insiders"]
+                .iter()
+                .map(|d| support.join(d).join("User"))
+                .collect(),
         }
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        ConnectorStatus::default()
+}
+
+fn read_or_empty(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
+/// Whether a CodeMie-managed config is applied for each connector. Every
+/// VS Code edition (stable and Insiders) is read and OR-ed: gating Insiders on
+/// the stable file being empty would skip it whenever a valid but non-matching
+/// stable file exists. Returns all-false when no home dir can be resolved.
+#[tauri::command]
+pub fn check_connector_status() -> ConnectorStatus {
+    let Some(home) = home_dir() else {
+        return ConnectorStatus::default();
+    };
+    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+    let local_appdata = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let paths = connector_paths(
+        cfg!(windows),
+        Path::new(&home),
+        appdata.as_deref(),
+        local_appdata.as_deref(),
+    );
+    let any_vscode = |file: &str, check: fn(&str) -> bool| {
+        paths
+            .vscode_user_dirs
+            .iter()
+            .any(|dir| check(&read_or_empty(&dir.join(file))))
+    };
+    ConnectorStatus {
+        claude_desktop: claude_desktop_connected(&paths.claude_base),
+        codex_desktop: codex_desktop_connected(&paths.codex_state),
+        vscode_copilot: any_vscode("chatLanguageModels.json", vscode_copilot_connected),
+        vscode_claude_code: any_vscode("settings.json", vscode_claude_code_connected),
     }
 }
 
-/// Best-effort "is this app installed" signal: does `/Applications/<name>.app`
-/// or `~/Applications/<name>.app` exist? Bundle names are assumed from
-/// convention, not confirmed with the product team — flagged for
-/// verification, not a hard blocker. macOS-only, like check_connector_status.
+/// Best-effort "is this app installed" signal. On macOS: does
+/// `/Applications/<name>.app` or `~/Applications/<name>.app` exist. Other
+/// platforms have no single install location to check (per-user and
+/// per-machine installers, Store builds), so the answer there is "assume yes":
+/// a wrong "not installed" would hide the only way to connect, while a wrong
+/// "installed" just lets the CLI report the missing app itself.
 #[tauri::command]
 pub fn app_bundle_exists(name: String) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        Path::new("/Applications")
-            .join(format!("{name}.app"))
-            .exists()
-            || home_dir()
-                .map(|home| {
-                    Path::new(&home)
-                        .join("Applications")
-                        .join(format!("{name}.app"))
-                        .exists()
-                })
-                .unwrap_or(false)
+    if !cfg!(target_os = "macos") {
+        return true;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
+    Path::new("/Applications")
+        .join(format!("{name}.app"))
+        .exists()
+        || home_dir()
+            .map(|home| {
+                Path::new(&home)
+                    .join("Applications")
+                    .join(format!("{name}.app"))
+                    .exists()
+            })
+            .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -263,6 +295,25 @@ mod tests {
         assert!(!claude_desktop_connected(&tmp));
         fs::create_dir_all(tmp.join("configLibrary")).unwrap();
         fs::write(tmp.join("configLibrary/_meta.json"), "not json").unwrap();
+        assert!(!claude_desktop_connected(&tmp));
+    }
+
+    // What the CLI's disconnect really leaves when the user had a setting of
+    // their own in the file (measured with PR #580's build, 2026-10-01).
+    #[test]
+    fn claude_desktop_not_connected_when_only_user_settings_are_left() {
+        let tmp = tempdir_for_test("claude-user-left");
+        fs::create_dir_all(tmp.join("configLibrary")).unwrap();
+        fs::write(
+            tmp.join("configLibrary/_meta.json"),
+            r#"{"appliedId":"abc"}"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.join("configLibrary/abc.json"),
+            r#"{"isClaudeCodeForDesktopEnabled":true}"#,
+        )
+        .unwrap();
         assert!(!claude_desktop_connected(&tmp));
     }
 
@@ -351,15 +402,72 @@ mod tests {
         assert!(!vscode_claude_code_connected("not json"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn app_bundle_exists_true_when_bundle_present() {
         assert!(app_bundle_exists("Safari".to_string()));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn app_bundle_exists_false_when_bundle_absent() {
         assert!(!app_bundle_exists(
             "Definitely Not A Real App 12345".to_string()
         ));
+    }
+
+    // Off macOS there is no install location to check, and a wrong "not
+    // installed" would leave the row with no way to connect.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn app_bundle_exists_assumes_installed_off_macos() {
+        assert!(app_bundle_exists(
+            "Definitely Not A Real App 12345".to_string()
+        ));
+    }
+
+    #[test]
+    fn windows_paths_follow_the_cli_appdata_dirs() {
+        let p = connector_paths(
+            true,
+            Path::new("/u"),
+            Some(Path::new("/roam")),
+            Some(Path::new("/local")),
+        );
+        assert_eq!(p.claude_base, Path::new("/local/Claude-3p"));
+        assert_eq!(
+            p.vscode_user_dirs,
+            vec![
+                PathBuf::from("/roam/Code/User"),
+                PathBuf::from("/roam/Code - Insiders/User")
+            ]
+        );
+        assert_eq!(
+            p.codex_state,
+            Path::new("/u/.codemie/proxy/codex-desktop-state.json")
+        );
+    }
+
+    #[test]
+    fn windows_paths_fall_back_to_the_profile_when_appdata_is_unset() {
+        let p = connector_paths(true, Path::new("/u"), None, None);
+        assert_eq!(p.claude_base, Path::new("/u/AppData/Local/Claude-3p"));
+        assert_eq!(
+            p.vscode_user_dirs[0],
+            Path::new("/u/AppData/Roaming/Code/User")
+        );
+    }
+
+    #[test]
+    fn macos_paths_live_under_application_support() {
+        let p = connector_paths(false, Path::new("/u"), Some(Path::new("/ignored")), None);
+        assert_eq!(
+            p.claude_base,
+            Path::new("/u/Library/Application Support/Claude-3p")
+        );
+        assert_eq!(
+            p.vscode_user_dirs[1],
+            Path::new("/u/Library/Application Support/Code - Insiders/User")
+        );
     }
 }

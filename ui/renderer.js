@@ -254,15 +254,18 @@ async function refreshAgents() {
   renderHome();
 }
 
-// The Connections card's one read: whether the CLI's local proxy, which Claude
-// Desktop is pointed at, is running.
+// The Connections card's read: whether the CLI's local proxy is running, and
+// which apps carry a CodeMie config pointing at it.
 let connectionReading = false;
 async function refreshConnection() {
   if (cliReplacing || connectionReading) return;
   connectionReading = true;
   try {
-    const res = await bridge.runner.runCapture('codemie proxy status --json');
-    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '');
+    const [res, configured] = await Promise.all([
+      bridge.runner.runCapture('codemie proxy status --json'),
+      bridge.connectors.checkStatus().catch(() => ({})),
+    ]);
+    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '', configured);
   } catch {
     home.connection = null;
   } finally {

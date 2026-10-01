@@ -26,3 +26,7 @@ test('parseProxyStatusDeep reports unhealthy for unhealthy/stopped/malformed out
   assert.deepEqual(parseProxyStatusDeep('not json'), { healthy: false });
   assert.deepEqual(parseProxyStatusDeep(''), { healthy: false });
 });
+
+test('parseProxyStatusDeep reads the JSON past migration notes the CLI prints first', () => {
+  assert.deepEqual(parseProxyStatusDeep('Migrating config…\n✓ Applied\n{\n  "status": "healthy"\n}\n'), { healthy: true });
+});

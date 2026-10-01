@@ -7,8 +7,9 @@
 //           read, or null when the read failed
 //   health  the Health controller's getLastResult(): { rows, summary,
 //           checkedAt } or null
-//   connection  `codemie proxy status --json` read as { running }, or
-//           undefined while it is being read, or null when the read failed
+//   connection  `codemie proxy status --json` plus the connector config read
+//           as { running, healthy, apps }, or undefined while it is being
+//           read, or null when the read failed
 //
 // Pure: no DOM, no Tauri. The screen renders what comes back.
 import { StepStatus } from './models.js';
@@ -130,22 +131,39 @@ function agentsCard(agents) {
 // runs and "stopped" when it does not (CLI 0.15.2, cli/commands/proxy); it has
 // no "running". The CLI can print its migration notes before the JSON on a
 // first run. Throws on JSON it cannot parse, which the caller shows as unknown.
-export function connectionFromStatus(stdout) {
+//
+// `configured` is check_connector_status's answer: which apps carry a CodeMie
+// config. An app is connected when its config is there and the proxy it points
+// at is healthy -- the same rule the Connections screen uses for its rows.
+export const CONNECTION_LABELS = Object.freeze({
+  claudeDesktop: 'Claude Desktop',
+  vscodeCopilot: 'VS Code Copilot Chat',
+  vscodeClaudeCode: 'VS Code Claude Code',
+  codexDesktop: 'Codex',
+});
+
+export function connectionFromStatus(stdout, configured = {}) {
   const json = stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1);
   if (!json) return null;
   const { status } = JSON.parse(json);
-  return { running: status === 'healthy' || status === 'unhealthy', healthy: status === 'healthy' };
+  const running = status === 'healthy' || status === 'unhealthy';
+  const healthy = status === 'healthy';
+  const set = Object.keys(CONNECTION_LABELS).filter((k) => configured && configured[k]).map((k) => CONNECTION_LABELS[k]);
+  return { running, healthy, set, apps: healthy ? set : [] };
 }
 
-// Claude Desktop is the one app Connections connects today, through the CLI's
-// local proxy: connected while `codemie proxy status` says it is running.
+// One card for the four apps the Connections screen connects: how many are
+// connected and which, or which are set up but not answering.
 function connectionsCard(connection) {
-  if (connection === undefined) return { id: 'connections', title: 'Connections', badge: { text: 'checking', tone: 'muted' }, line: 'Claude Desktop', note: '' };
-  if (connection === null) return { id: 'connections', title: 'Connections', badge: { text: 'unknown', tone: 'muted' }, line: 'Could not read the connection', note: '' };
-  if (connection.running && connection.healthy === false) return { id: 'connections', title: 'Connections', badge: { text: 'not responding', tone: 'warn' }, line: 'Claude Desktop', note: '' };
-  return connection.running
-    ? { id: 'connections', title: 'Connections', badge: { text: '1 connected', tone: 'good' }, line: 'Claude Desktop', note: '' }
-    : { id: 'connections', title: 'Connections', badge: { text: 'not connected', tone: 'muted' }, line: 'Claude Desktop', note: '' };
+  const card = (badge, line) => ({ id: 'connections', title: 'Connections', badge, line, note: '' });
+  const all = 'Claude Desktop · VS Code · Codex';
+  if (connection === undefined) return card({ text: 'checking', tone: 'muted' }, all);
+  if (connection === null) return card({ text: 'unknown', tone: 'muted' }, 'Could not read the connection');
+  const apps = connection.apps ?? [];
+  const set = connection.set ?? [];
+  if (apps.length) return card({ text: `${apps.length} connected`, tone: 'good' }, apps.join(' · '));
+  if (set.length && connection.running && connection.healthy === false) return card({ text: 'not responding', tone: 'warn' }, set.join(' · '));
+  return card({ text: 'not connected', tone: 'muted' }, all);
 }
 
 // Whether Home should start the health check itself: the checklist is up, the
