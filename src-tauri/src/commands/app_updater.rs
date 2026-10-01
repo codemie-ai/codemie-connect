@@ -16,7 +16,9 @@ fn launch_installer(installer_path: &str) -> CmdResult<()> {
     eprintln!("[app-updater] Launching installer: {}", installer_path);
 
     let mut child = Command::new(installer_path)
-        .arg("/S")
+        // /S = silent; /R = relaunch the app afterwards (Tauri's NSIS template
+        // only relaunches in silent mode when /R is passed).
+        .args(["/S", "/R"])
         .spawn()
         .map_err(|e| InstallerError::Other(format!("Failed to spawn installer: {e}")))?;
 
