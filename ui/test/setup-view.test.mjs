@@ -2456,3 +2456,45 @@ test('a cancelled run settling late does not free the slot for a third run', asy
   h.view.start();
   assert.equal(h.starts.length, 2, 'start() joins the new run instead of launching another');
 });
+
+test('a reopened input takes clicks, Enter and Space without restarting the run', async () => {
+  const h = revisitHarness({
+    script: async (cb, container) => {
+      await userAnswers(cb, container, PROVIDER_PROMPT);
+      await userAnswers(cb, container, URL_PROMPT, 'bad');
+      cb.onPrompt({ ...URL_PROMPT, message: 'CodeMie organization URL: bad' });
+    },
+  });
+  h.view.start();
+  await tick(20);
+  const row = findRowById(h.container, 'codemieUrl-1');
+  assert.ok(!row.classList._set.has('collapsed'), 'the row is open again');
+  const inside = { closest: (sel) => (sel === '.prompt-control' ? {} : null) };
+  const keydown = row._listeners.keydown;
+  let prevented = 0;
+  const key = (k, target) => keydown({ key: k, target, preventDefault: () => { prevented += 1; } });
+  row.onclick({ target: inside });
+  key('Enter', inside);
+  key(' ', inside);
+  row.onclick({});
+  key('Enter', {});
+  key(' ', {});
+  await tick(5);
+  assert.deepEqual(h.order, ['start'], 'no cancel, no restart');
+  assert.equal(prevented, 0, 'a space can still be typed into the field');
+});
+
+test('a row answered twice binds its revisit listeners once', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  const row = findRowById(h.container, 'codemieUrl-1');
+  let adds = 0;
+  const add = row.addEventListener;
+  row.addEventListener = (...a) => { adds += 1; return add(...a); };
+  h.starts[0].onPrompt({ ...URL_PROMPT, message: 'CodeMie organization URL: good' });
+  await tick(2);
+  clickContinue(row);
+  await tick(5);
+  assert.equal(adds, 0, 'no second keydown listener on the same row');
+});
