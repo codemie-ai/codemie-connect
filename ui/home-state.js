@@ -170,8 +170,45 @@ export function autoHealthCheck(state) {
 // CodeMie URL configured", measured 2026-09-23) -- so until there is a profile,
 // Sign in opens guided setup, whose own steps sign the user in in the browser.
 export function signInAction({ config, auth } = {}) {
-  const noProfile = (auth && auth.state === 'no_profile') || !config || config.state === 'no-configuration';
+  const noProfile = (auth && auth.state === 'no_profile') || !config || config.state === 'no-configuration' || config.state === 'broken';
   return noProfile ? 'setup' : 'login';
+}
+
+// Signed in, or a provider that reports no sign-in status: nothing to fix.
+const authUsable = (auth) => !!auth && (auth.state === 'signed_in' || auth.state === 'unknown');
+
+// 'expired': the profile resolves but its sign-in lapsed. 'dangling': the
+// config names a profile the CLI no longer has. An empty name is "no profile"
+// (the CLI leaves activeProfile "" after the last delete): the checklist, not
+// a panel. A read still in flight is never broken.
+export function brokenKind({ config, auth } = {}) {
+  if (!auth || authUsable(auth)) return null;
+  if (!config || !(config.profile || '').trim()) return null;
+  if (config.state === 'broken') return 'dangling';
+  if (config.state === 'valid' && auth.state === 'not_signed_in') return 'expired';
+  return null;
+}
+
+export const isBroken = (s) => brokenKind(s) !== null;
+
+const BROKEN_TITLE = 'Your profile is no longer working';
+
+export function brokenCopy({ config, auth } = {}) {
+  const kind = brokenKind({ config, auth });
+  if (!kind) return null;
+  const name = config.profile.trim();
+  if (kind === 'expired') {
+    return {
+      title: BROKEN_TITLE,
+      body: `CodeMie signed you out \u2014 the sign-in for ${name} expired. Sign in again to keep this profile, or delete it and set up a new one.`,
+      actions: ['signin', 'delete'],
+    };
+  }
+  return {
+    title: BROKEN_TITLE,
+    body: `${name} is set as your profile but it no longer exists. Set it up again to keep going.`,
+    actions: ['setup'],
+  };
 }
 
 // `onboarded` is whether the checklist has ever been finished on this machine
@@ -182,14 +219,16 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
   const [signIn, model, agent, healthDef] = HOME_ITEMS;
   const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health, healthRunning, healthFailed)];
   const complete = items.every((i) => i.status === StepStatus.COMPLETE);
-  // Once setup has finished, only a lapsed sign-in brings the checklist back:
-  // its Sign in button is the only one Home has until the broken-profile panel
-  // (EPMCDME-14658). An auth read still in flight is not a lapsed sign-in.
-  const signedOut = !!auth && auth.state !== 'signed_in' && auth.state !== 'unknown';
-  const done = complete || (onboarded && !signedOut);
+  // Once setup has finished, a lapsed sign-in brings the checklist back; a
+  // broken profile shows its panel instead. An auth read still in flight is not
+  // a lapsed sign-in.
+  const signedOut = !!auth && !authUsable(auth);
+  const broken = brokenKind({ config, auth });
+  const done = !broken && (complete || (onboarded && !signedOut));
   return {
     items,
     done,
+    broken,
     authKnown: !!auth,
     // The sidebar locks only for a first setup, never for a user who has
     // finished it once and has merely been signed out since.
