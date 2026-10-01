@@ -34,6 +34,7 @@ export function renderFailurePanel(container, {
   onPrimary,
   secondaryLabel,
   onSecondary,
+  secondaryDisabled = false,
 } = {}) {
   container.querySelector('.failure-block')?.remove();
 
@@ -83,6 +84,7 @@ export function renderFailurePanel(container, {
     const secondary = document.createElement('button');
     secondary.className = 'btn btn-ghost';
     secondary.textContent = secondaryLabel;
+    secondary.disabled = !!secondaryDisabled;
     secondary.onclick = () => onSecondary?.(block);
     actions.appendChild(secondary);
   }
