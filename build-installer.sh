@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # build-installer.sh
-# Stages the bundled Node runtime + CodeMie CLI tree, verifies every artifact,
-# then builds the macOS .app and DMG via Tauri. Mirrors build-installer.ps1.
+# Stages the Node runtime + CodeMie CLI tree, packs them into the archive the
+# app downloads on first launch (the app itself bundles only the shim), verifies
+# every artifact, then builds the macOS .app and DMG via Tauri. Upload
+# dist/codemie-runtime-*.tar.gz to the URL pack-runtime.sh prints before
+# publishing the DMG.
 #
 # Usage: ./build-installer.sh [--skip-stage]
 #
-# --skip-stage   Reuse an already-staged tree. Does NOT skip verification.
+# --skip-stage   Reuse an already-staged tree (and an existing runtime-pack.json).
+#                Does NOT skip verification.
 #
 # There is deliberately no switch to skip verification. Every defect the Windows
 # script guards against was produced by a tool that reported success:
 #   * pkg emitted a warning and exited 0, shipping a snapshot missing a file.
 #   * dist/index.js exits 0 and prints nothing, so the CLI never starts.
 #   * A glob in bundle.resources flattens the tree and reports errors: 0.
+#   * An archive whose checksum is not the one baked into the app would be
+#     rejected by every user's first launch.
 # An exit-code check is not verification. Do not add a bypass.
 set -euo pipefail
 
@@ -29,6 +35,7 @@ NODE_BIN="$ROOT/assets/macos/node/bin/node"
 CLI_MODULES="$ROOT/assets/codemie-cli/node_modules"
 CLI_ENTRY="$CLI_MODULES/@codemieai/code/bin/codemie.js"
 MANIFEST="$ROOT/assets/staging-manifest.json"
+PACK_JSON="$ROOT/assets/macos/runtime-pack.json"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/src-tauri/target}"
 
 fail() { echo; echo "[build] $*" >&2; exit 1; }
@@ -48,8 +55,13 @@ CLI_VERSION="$(cfg cliVersion)"
 if [ "$SKIP_STAGE" = 1 ]; then
   step "[1/5] Skipping staging (--skip-stage); verification still runs"
 else
-  step "[1/5] Staging bundled runtime and CLI tree"
+  step "[1/5] Staging runtime and CLI tree"
   "$ROOT/scripts/stage-runtime.sh" || fail "scripts/stage-runtime.sh failed"
+fi
+# The app embeds runtime-pack.json at compile time, so it must exist before cargo runs.
+if [ "$SKIP_STAGE" = 0 ] || [ ! -f "$PACK_JSON" ]; then
+  step "[1/5] Packing the runtime archive"
+  "$ROOT/scripts/pack-runtime.sh" || fail "scripts/pack-runtime.sh failed"
 fi
 
 # ── 2. Pre-build assertions ─────────────────────────────────────────────────
@@ -105,32 +117,45 @@ step "[5/5] Verifying the produced bundle"
 
 [ -f "$RES/bin/codemie" ] || fail "bundle is missing bin/codemie (looked at $RES/bin/codemie)"
 [ -x "$RES/bin/codemie" ] || fail "bundled shim is not executable: $RES/bin/codemie"
-[ -f "$RES/node/bin/node" ] || fail "bundle is missing node/bin/node (looked at $RES/node/bin/node)"
-[ -x "$RES/node/bin/node" ] || fail "bundled node is not executable: $RES/node/bin/node"
-[ "$(stat -f %z "$RES/node/bin/node")" -gt 10485760 ] || fail "bundled node is smaller than 10 MB: $RES/node/bin/node"
-[ -f "$RES/cli/node_modules/@codemieai/code/bin/codemie.js" ] || fail "bundle is missing cli/node_modules/@codemieai/code/bin/codemie.js. If the tree is present but flat, a glob key crept back into bundle.resources (spec §4)."
+[ -f "$RES/bin/runtime-key" ] || fail "bundle is missing bin/runtime-key: the shim cannot find the downloaded runtime"
+[ ! -e "$RES/node" ] || fail "Node is bundled again: $RES/node (it is downloaded on first launch)"
+[ ! -e "$RES/cli" ] || fail "the CLI is bundled again: $RES/cli (it is downloaded on first launch)"
 
-# A flattened tree still contains every file NAME, so presence checks alone
-# cannot detect it. Assert nesting depth independently.
-DEEP="$(find "$RES/cli/node_modules" -mindepth 4 -type f -print -quit)"
-[ -n "$DEEP" ] || fail "bundled cli/node_modules has no nested files: the tree was FLATTENED. Remove any '*' from the bundle.resources CLI-tree key (spec §4)."
+# The archive on disk has to be the one the app was compiled to accept.
+PACK_KEY="$(node -e "process.stdout.write(require(process.argv[1]).key)" "$PACK_JSON")"
+PACK_SHA="$(node -e "process.stdout.write(require(process.argv[1]).sha256)" "$PACK_JSON")"
+ARCHIVE="$ROOT/dist/codemie-runtime-$PACK_KEY-darwin-arm64.tar.gz"
+[ -f "$ARCHIVE" ] || fail "missing runtime archive: $ARCHIVE (run without --skip-stage)"
+[ "$(shasum -a 256 "$ARCHIVE" | cut -d' ' -f1)" = "$PACK_SHA" ] || fail "runtime-pack.json sha does not match $ARCHIVE; the app would reject the download"
+[ "$(cat "$RES/bin/runtime-key")" = "$PACK_KEY" ] || fail "bundle runtime-key does not match runtime-pack.json"
 
-for scope in bin node cli; do
-  [ -d "$RES/$scope" ] || continue
-  STRAY="$(find "$RES/$scope" -type f -name '*.exe' -print -quit)"
-  [ -z "$STRAY" ] || fail "Windows binary present in the macOS bundle: $STRAY"
+for f in "$RES"/bin/*; do
+  case "$f" in *.exe) fail "Windows binary present in the macOS bundle: $f" ;; esac
 done
 
-# The strongest check: run the shim exactly as an installed user would.
-SHIM_OUT="$("$RES/bin/codemie" --version 2>&1)" || fail "bundled shim exited non-zero: $SHIM_OUT"
+# The strongest check: unpack the archive where the app would, then run the
+# bundled shim exactly as an installed user would, in a clean environment.
+TEST_HOME="$(mktemp -d)"
+trap 'rm -rf "$TEST_HOME"' EXIT
+RT="$TEST_HOME/Library/Application Support/CodeMie/runtime/$PACK_KEY"
+mkdir -p "$RT"
+tar -xzf "$ARCHIVE" -C "$RT" || fail "could not unpack $ARCHIVE"
+printf '%s' "$PACK_KEY" > "$RT/.complete"
+SHIM_OUT="$(env -i HOME="$TEST_HOME" PATH=/usr/bin:/bin "$RES/bin/codemie" --version 2>&1)" || fail "bundled shim exited non-zero: $SHIM_OUT"
 [ -n "$(echo "$SHIM_OUT" | tr -d '[:space:]')" ] || fail "bundled shim produced NO output: $RES/bin/codemie"
 echo "    bundled shim: codemie --version -> $SHIM_OUT"
 
+APP_KB="$(du -sk "$APP" | cut -f1)"
+echo "    app bundle: $(( APP_KB / 1024 )) MB (Node and the CLI are downloaded, not bundled)"
+
 DMG="$(ls -t "$TARGET_DIR/release/bundle/dmg/"*.dmg 2>/dev/null | head -1 || true)"
 [ -n "$DMG" ] || fail "no .dmg produced in $TARGET_DIR/release/bundle/dmg"
+DMG_BYTES="$(stat -f %z "$DMG")"
+[ "$DMG_BYTES" -lt 20971520 ] || fail "DMG is $(( DMG_BYTES / 1048576 )) MB, expected under 20 MB: Node or the CLI is probably bundled again"
 
 echo
 printf '\033[32m==> Done. All assertions passed.\033[0m\n'
 echo "    App:  $APP"
 echo "    DMG:  $DMG"
-echo "    Size: $(( $(stat -f %z "$DMG") / 1048576 )) MB"
+echo "    Size: $(( DMG_BYTES / 1048576 )) MB"
+echo "    Upload: $ARCHIVE"
