@@ -32,7 +32,7 @@ struct CmdLine {
 /// with anything else in the test binary that spawns a real child).
 fn shell_cmd_for(cmd_str: &str, home: &str, base_path: &str, windows: bool) -> Command {
     let env = crate::commands::npm_env::npm_env_for(home, windows);
-    let path = crate::commands::npm_env::prefixed_path_with_bin_dir(&env.bin_dir, base_path);
+    let path = crate::commands::npm_env::path_with_bin_dir_last(&env.bin_dir, base_path);
     #[cfg(not(windows))]
     let mut c = {
         let mut c = Command::new("/bin/zsh");
@@ -77,6 +77,10 @@ pub async fn capture(cmd: &str, path_override: Option<String>) -> CaptureResult 
     if let Some(p) = path_override {
         command.env("PATH", p);
     }
+    capture_command(command).await
+}
+
+async fn capture_command(mut command: Command) -> CaptureResult {
     match command.output().await {
         Ok(out) => CaptureResult {
             code: out.status.code().unwrap_or(1),
@@ -166,61 +170,12 @@ where
     })
 }
 
-/// True when the app runs the CLI it ships with. That copy is sealed inside
-/// the app bundle, so `codemie self-update` (an `npm install -g`) cannot change
-/// it: the new version lands in the user's own npm prefix and the app keeps
-/// running the bundled one. The CLI in the bundle updates with the app.
-pub(crate) fn bundled_cli_in_use(
-    existing_cli_detected: bool,
-    node_exe: &std::path::Path,
-    cli_entry: &std::path::Path,
-) -> bool {
-    !existing_cli_detected && node_exe.exists() && cli_entry.exists()
-}
-
-/// Whether the app is running its bundled CLI; the UI offers a CLI update only
-/// when it is not.
-#[tauri::command]
-pub fn cli_is_bundled(state: tauri::State<'_, crate::state::AppState>) -> bool {
-    bundled_cli_in_use(
-        state.existing_cli_detected,
-        &state.node_exe_path,
-        &state.cli_entry_path,
-    )
-}
-
-/// Run `codemie self-update` silently (captured, not PTY) for a CLI the user
-/// installed themselves. Refused for the bundled CLI, see `bundled_cli_in_use`.
-/// Returns stdout on exit 0; serializes as an error string on non-zero exit.
-#[tauri::command]
-pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) -> CmdResult<String> {
-    if bundled_cli_in_use(
-        state.existing_cli_detected,
-        &state.node_exe_path,
-        &state.cli_entry_path,
-    ) {
-        return Err(crate::error::InstallerError::Other(
-            "The CodeMie CLI comes with this app and updates when the app does.".into(),
-        ));
-    }
-    let r = capture("codemie self-update", None).await;
-    if r.code == 0 {
-        Ok(r.stdout)
-    } else {
-        Err(crate::error::InstallerError::Other(format!(
-            "codemie self-update failed (exit {}): {}",
-            r.code,
-            r.stderr.trim()
-        )))
-    }
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn shell_cmd_sets_npm_config_prefix_and_prefixed_path_by_default() {
+    async fn shell_cmd_sets_npm_config_prefix_and_agents_path_by_default() {
         let out = shell_cmd_for(
             "echo $npm_config_prefix; echo $PATH",
             "/Users/test",
@@ -237,7 +192,7 @@ mod tests {
         // `path_helper -s` on every login shell, which reorders PATH —
         // system dirs from /etc/paths(.d) first, then the caller's other
         // entries appended in their original order. shell_cmd still sets
-        // PATH with the agents bin dir prepended; path_helper is what
+        // PATH with the agents bin dir appended; path_helper is what
         // moves it, on every real machine, not just this one. Presence is
         // what functionally matters — the dir is found by `npm`/agents
         // installed there regardless of position.
@@ -280,27 +235,5 @@ mod tests_windows {
     async fn run_capture_reports_nonzero_exit_windows() {
         let r = capture("exit 3", None).await;
         assert_eq!(r.code, 3);
-    }
-}
-
-#[cfg(test)]
-mod tests_self_update {
-    use super::*;
-
-    #[test]
-    fn the_bundled_cli_is_in_use_only_when_no_existing_cli_and_both_files_exist() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let node = dir.path().join("node");
-        let cli = dir.path().join("codemie.js");
-        std::fs::write(&node, b"").unwrap();
-        std::fs::write(&cli, b"").unwrap();
-        assert!(bundled_cli_in_use(false, &node, &cli));
-        assert!(
-            !bundled_cli_in_use(true, &node, &cli),
-            "an existing CLI takes precedence"
-        );
-        let missing = dir.path().join("missing");
-        assert!(!bundled_cli_in_use(false, &missing, &cli));
-        assert!(!bundled_cli_in_use(false, &node, &missing));
     }
 }

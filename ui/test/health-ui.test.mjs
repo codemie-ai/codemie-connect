@@ -100,7 +100,7 @@ const { renderHealth, showLoading, showLogError, showRunError } = await import('
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-const passRow = { group: 'codemie', label: 'Everything CodeMie needs to run is included', status: 'pass' };
+const passRow = { group: 'codemie', label: 'Everything CodeMie needs to run is in place', status: 'pass' };
 
 test('renders the summary, and a heading only for a group that has rows', () => {
   const container = makeEl('div');
@@ -143,8 +143,8 @@ test('a warning draws its remedy in the amber failure panel, and its action navi
           label: 'OpenCode CLI 1.18.31',
           detail: 'CodeMie recommends vlatest',
           status: 'warn',
-          remedyText: 'Open the Agents screen to update or reinstall it.',
-          action: { kind: 'navigate', view: 'agents', label: 'Go to Agents' },
+          remedyText: 'Open the Tools screen to check for an update.',
+          action: { kind: 'navigate', view: 'agents', label: 'Go to Tools' },
         },
       ],
       summary: { passing: 0, total: 1 },
@@ -153,8 +153,8 @@ test('a warning draws its remedy in the amber failure panel, and its action navi
   );
   assert.equal(container.querySelector('.failure-panel').className, 'failure-panel warning');
   assert.ok(container._innerText().includes('What to do'));
-  assert.ok(container._innerText().includes('Open the Agents screen to update or reinstall it.'));
-  container._findButton('Go to Agents')._click();
+  assert.ok(container._innerText().includes('Open the Tools screen to check for an update.'));
+  container._findButton('Go to Tools')._click();
   assert.equal(navigatedTo, 'agents');
 });
 
@@ -215,7 +215,7 @@ test('two problem rows each keep their own panel', () => {
     label,
     status: 'warn',
     remedyText: `fix ${label}`,
-    action: { kind: 'navigate', view: 'agents', label: 'Go to Agents' },
+    action: { kind: 'navigate', view: 'agents', label: 'Go to Tools' },
   });
   renderHealth(container, { rows: [problem('A 1.0'), problem('B 2.0')], summary: { passing: 0, total: 2 } }, {});
   assert.ok(container._innerText().includes('fix A 1.0'));

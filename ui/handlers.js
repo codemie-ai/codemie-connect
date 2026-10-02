@@ -44,14 +44,19 @@ export function makeHandlers(deps) {
   }
 
   // Open `cmd` in a new external PowerShell window (Windows only) and await exit.
+  // EPMCDME-15257 (Windows-only bugfix): failure messages here carry the step title
+  // + exit code. runPty is the macOS-path sibling and is intentionally untouched —
+  // the spec's non-goals rule out macOS behavior changes for this ticket.
   async function runExternalWindow(ctx, stepId, cmd) {
     ctx.setSubtitle(stepId, 'Running in external window…');
     try {
       const code = await externalWindow.spawnPs(cmd);
-      ctx.setSubtitle(stepId, '');
-      return code === 0;
+      const okExit = code === 0;
+      ctx.line(`(${ctx.step.title} finished, exit ${code})`, okExit ? 'dim' : 'stderr');
+      ctx.setSubtitle(stepId, okExit ? '' : `${ctx.step.title} failed (exit ${code})`);
+      return okExit;
     } catch (err) {
-      ctx.setSubtitle(stepId, `Failed to open window: ${(err && err.message) || err}`);
+      ctx.setSubtitle(stepId, `${ctx.step.title} failed to open window: ${(err && err.message) || err}`);
       return false;
     }
   }

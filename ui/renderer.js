@@ -9,6 +9,7 @@ import { initSprite } from './sprite.js';
 import * as stepsUI from './steps-ui.js';
 import { initLog, appendLine } from './log.js';
 import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeTerminal } from './terminal.js';
+import { stopSetupOnLeave } from './setup-leave.js';
 import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
 import { isBlockedState } from './auth-gate.js';
@@ -18,28 +19,15 @@ import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
 import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
-import { deriveHome, signInAction, autoHealthCheck } from './home-state.js';
+import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
+import { analyticsCommand } from './analytics-command.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// Compare semver strings. Returns true when a < b. Works for X.Y.Z format.
-function semverLt(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] ?? 0;
-    const nb = pb[i] ?? 0;
-    if (na < nb) return true;
-    if (na > nb) return false;
-  }
-  return false;
-}
 
-// Populated during boot(); consumed by runAnalytics() and runUpdateCli().
-const cliVersionState = { installed: '', latest: '', updateAvailable: false };
 const appVersionState = { latest: null, updateAvailable: false };
 
 // Capture boot/runtime errors so the smoke self-test can read them.
@@ -176,13 +164,6 @@ let agentsChecked = false;
 function setInstallRunning(on) {
   installRunning = on;
   document.getElementById('app-sidebar').dataset.busy = on ? '1' : '';
-  // The banner is shell chrome and stays on screen during a run. Its controls
-  // are guarded, but a guard the user cannot see reads as a broken button.
-  document.getElementById('update-banner').dataset.busy = on ? '1' : '';
-  ['update-banner-run', 'update-banner-dismiss'].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = on;
-  });
 }
 
 // ---- Home (EPMCDME-14589) ----
@@ -225,7 +206,7 @@ function renderHome() {
     onboarded = true;
     rememberOnboarded(homeStorage);
   }
-  homeScreen.render(state);
+  homeScreen.render({ ...state, signingIn: home.signingIn });
   // The last step starts by itself once the ones before it are done, instead
   // of leaving the user on a checklist that waits for a click. Once a session:
   // a check that fails leaves its step saying so, and Home does not retry it.
@@ -266,10 +247,7 @@ async function refreshConnection() {
   connectionReading = true;
   try {
     const res = await bridge.runner.runCapture('codemie proxy status --json');
-    // The CLI can print its migration notes before the JSON on a first run.
-    const out = (res && res.code === 0 && res.stdout) || '';
-    const json = out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1);
-    home.connection = json ? { running: JSON.parse(json).status === 'running' } : null;
+    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '');
   } catch {
     home.connection = null;
   } finally {
@@ -289,8 +267,12 @@ let setupView = null;
 // resolves once that run has fully unwound.
 let setupRunning = false;
 let setupSettled = Promise.resolve();
+// Set while a run left behind by showView is being stopped; the next
+// openGuidedSetup waits for it, or start() would hand back the old run.
+let setupStopping = null;
 async function openGuidedSetup() {
   showView('setup');
+  if (setupStopping) await setupStopping;
   if (!setupView) {
     const { createSetupView } = await import('./setup-view.js');
     // A verified run returns to Home by itself, unless the user has already
@@ -299,22 +281,38 @@ async function openGuidedSetup() {
       onDone: () => {
         if (!views.setup.classList.contains('hidden')) showView('home');
       },
+      // Called for each run, including a "Try again" started from the view.
+      onRun: (run) => {
+        setupRunning = true;
+        setupSettled = run.then(() => {}, () => {}).finally(() => {
+          setupRunning = false;
+          // A run writes the profile and may sign the user in; Home re-reads both.
+          refreshIdentityOnComplete();
+          refreshAgents();
+        });
+      },
     });
   }
-  const run = setupView.start();
-  setupRunning = true;
-  setupSettled = run.then(() => {}, () => {}).finally(() => { setupRunning = false; });
-  try {
-    return await run;
-  } finally {
-    // A run writes the profile and may sign the user in; Home re-reads both.
-    refreshIdentityOnComplete();
-    refreshAgents();
-  }
+  return setupView.start();
 }
 
 // ---- view routing ----
 function showView(name) {
+  const stopping = stopSetupOnLeave(
+    views.setup.classList.contains('hidden') ? null : 'setup',
+    name,
+    {
+      running: setupRunning,
+      cancel: async () => (await import('./setup-driver.js')).cancelSetup(),
+      settled: () => setupSettled,
+    },
+  );
+  if (stopping) {
+    const wait = stopping.finally(() => {
+      if (setupStopping === wait) setupStopping = null;
+    });
+    setupStopping = wait;
+  }
   Object.entries(views).forEach(([key, el]) => {
     el.classList.toggle('hidden', key !== name);
   });
@@ -389,7 +387,7 @@ function renderIdentity(cfg) {
   // No config yet: 01-home.png puts the product name where the identity goes.
   // Anything that is not a resolved config shows the product name rather than an
   // empty bar — that covers no-configuration and the read-failed fallback.
-  set('identity-product', cfg.state === 'valid' || cfg.state === 'broken' ? '' : 'CodeMie Desktop');
+  set('identity-product', cfg.state === 'valid' || cfg.state === 'broken' ? '' : 'CodeMie Connect');
   // null when the config records no userEmail — omit rather than fill in.
   set('identity-account', cfg.account);
   set('identity-profile', cfg.profile);
@@ -428,7 +426,7 @@ function updateIdentityAuthStatus(st) {
   const el = document.getElementById('identity-auth-status');
   if (!el) return;
   if (st.state === 'signed_in') {
-    el.textContent = st.detail || 'Signed in';
+    el.textContent = signedInDetail(st.detail);
   } else if (st.state === 'unknown') {
     el.textContent = 'Auth status unknown';
   } else if (st.state === 'no_profile') {
@@ -438,39 +436,6 @@ function updateIdentityAuthStatus(st) {
   }
   home.auth = st;
   renderHome();
-}
-
-// ---- CLI version banner ----
-// The badge reports whether an update exists; the banner reports whether the
-// user still wants to be told. They are separate, which is why dismissing the
-// banner leaves the badge standing, as 01-home.png draws it in steady state.
-function setVersionBadge() {
-  document.getElementById('identity-version-badge').textContent =
-    cliVersionState.updateAvailable ? `${cliVersionState.latest} available` : '';
-}
-
-function showUpdateBanner() {
-  setVersionBadge();
-  if (!cliVersionState.updateAvailable) return;
-  if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
-  document.getElementById('update-to').textContent = cliVersionState.latest;
-  document.getElementById('update-banner').classList.remove('hidden');
-}
-
-// Nothing left to announce — used after a successful update, which is not a
-// dismissal and so must not set the key that suppresses the banner all session.
-function hideUpdateBanner() {
-  document.getElementById('update-banner').classList.add('hidden');
-  setVersionBadge();
-}
-
-function dismissUpdateBanner() {
-  sessionStorage.setItem('update-banner-dismissed', '1');
-  document.getElementById('update-banner').classList.add('hidden');
-  setVersionBadge();
-  // origin/main cleared the grid cue on dismiss. The badge is what survives —
-  // it reports that an update exists; the cue and banner report that we are
-  // still asking about it, and dismissing answers that.
 }
 
 function showAppUpdateBanner(latestVersion) {
@@ -539,18 +504,20 @@ const healthController = createHealthController({
       invoke('log_line', { text, tag: tag || 'stdout' }).catch(() => {});
       onLine(text, tag);
     }),
-  openLog: () => invoke('open_log'),
+  openLog: () => invoke('open_cli_debug_log'),
   // 'setup' is not a screen to show but a run to start: guided setup.
   onNavigate: (view) => (view === 'setup' ? openGuidedSetup() : showView(view)),
   signIn: () => startSignIn(),
   onResult: (result) => {
     home.health = result;
     home.healthRunning = false;
+    home.healthFailed = false;
     renderHome();
   },
   onFailure: () => {
     healthChecked = false;
     home.healthRunning = false;
+    home.healthFailed = true;
     renderHome();
   },
 });
@@ -570,7 +537,9 @@ function startHealthInPlace() {
 // `codemie list` read; onResult hands the same records to Home so the checklist
 // item and the Agents card do not need a second read to agree with the screen.
 // onFailure releases the one-shot guard the way Health's does.
+let platformInfoValue = null;
 const agentsController = createAgentsController({
+  getPlatform: () => platformInfoValue,
   container: views.agents,
   runCapture: (cmd) => bridge.runner.runCapture(cmd),
   runStream: bridge.runner.runStream,
@@ -616,6 +585,10 @@ async function ensureAuthenticated() {
 // Sign-in button UI surface is provided by EPMCDME-14589; startSignIn is defined
 // here so it is available when that ticket wires it.
 async function startSignIn() {
+  // One browser sign-in at a time: each call starts its own `profile login`.
+  if (home.signingIn) return;
+  home.signingIn = true;
+  renderHome();
   hideNotice();
   try {
     const lines = [];
@@ -647,74 +620,18 @@ async function startSignIn() {
   } catch {
     st = { state: 'unknown', detail: '' };
   }
+  home.signingIn = false;
   updateIdentityAuthStatus(st);
 }
 
 async function runAnalytics() {
-  // --report-output is set explicitly: a Finder-launched bundle's CWD is "/",
-  // which is not writable. $HOME is expanded by the pty's login shell.
-  const { installed } = cliVersionState;
-  if (installed && semverLt(installed, '0.4.1')) {
-    showNotice({
-      title: 'CLI update required',
-      message: `Your CodeMie CLI (v${installed}) doesn't support analytics reporting. Use Update CLI to upgrade, then try again.`,
-      primaryLabel: 'Go to Update CLI',
-      primaryAction: () => hideNotice(),
-    });
-    return;
-  }
+  const help = await bridge.runner.runCapture('codemie analytics --help').catch(() => null);
   await runAction(
     'Analytics report',
-    'codemie analytics --report --open --report-output "$HOME/codemie-analytics.html"',
+    analyticsCommand(help?.stdout),
     'home',
     'Running automatically — no input needed.'
   );
-}
-
-// Reachable from two places — the update banner's button and the home grid's
-// Update CLI tile — so progress has to render on both. Showing it only on the
-// banner meant a click from the tile ran a real `npm install -g` with no visible
-// feedback whenever the banner was hidden, and nothing stopped a second click.
-let updateCliRunning = false;
-
-function setUpdateProgress(state, label, icon) {
-  const btn = document.getElementById('update-banner-run');
-  if (btn) {
-    btn.dataset.state = state;
-    btn.textContent = label;
-    btn.disabled = state === 'updating';
-  }
-}
-
-async function runUpdateCli() {
-  if (updateCliRunning) return;
-  updateCliRunning = true;
-  setUpdateProgress('updating', 'Updating…', '⏳');
-  try {
-    await invoke('run_self_update');
-
-    // Re-probe installed version after update
-    const newVersion = await invoke('check_codemie_version');
-    cliVersionState.installed = newVersion;
-    cliVersionState.updateAvailable =
-      newVersion && cliVersionState.latest
-        ? semverLt(newVersion, cliVersionState.latest)
-        : false;
-
-    setUpdateProgress('done', newVersion ? `Updated! → ${newVersion}` : 'Updated!', '✅');
-
-    if (!cliVersionState.updateAvailable) {
-      hideUpdateBanner();
-    }
-
-    setTimeout(() => {
-      setUpdateProgress('', 'Update CLI', '🔄');
-      updateCliRunning = false;
-    }, 3000);
-  } catch {
-    setUpdateProgress('error', 'Failed — retry?', '❌');
-    updateCliRunning = false;
-  }
 }
 
 let updateAppRunning = false;
@@ -757,6 +674,10 @@ async function runUpdateApp() {
 }
 
 async function boot() {
+  // The command-log footer hears about every command the bridge runs, so it is
+  // wired first: the startup checks below (codemie --version, profile status)
+  // would otherwise run before it and never show.
+  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
   const flags = await invoke('smoke_mode');
 
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
@@ -795,19 +716,6 @@ async function boot() {
     done: document.getElementById('terminal-done'),
   });
 
-  // Wire update banner dismiss
-  // The banner is shell-level now, so unlike origin/main — where it lived inside
-  // the home grid and showView('wizard') hid it — it stays on screen during an
-  // install. Both its controls need the same guard the sidebar has, or a
-  // self-update can run concurrently with the engine's own CLI install step.
-  document.getElementById('update-banner-run').addEventListener('click', () => {
-    if (installRunning) return;
-    runUpdateCli();
-  });
-  document.getElementById('update-banner-dismiss').addEventListener('click', () => {
-    if (installRunning) return;
-    dismissUpdateBanner();
-  });
   document.getElementById('app-update-banner-run').addEventListener('click', () => {
     if (installRunning) return;
     runUpdateApp();
@@ -815,25 +723,6 @@ async function boot() {
   document.getElementById('app-update-banner-dismiss').addEventListener('click', () => {
     if (installRunning) return;
     dismissAppUpdateBanner();
-  });
-
-  // Check CLI version vs npm latest at startup (non-blocking). Only for a CLI
-  // the user installed: the bundled one sits inside the app, `self-update`
-  // installs the new version into the user's own npm instead, and the app keeps
-  // running the old one. The bundled CLI updates with the app.
-  Promise.all([
-    invoke('cli_is_bundled'),
-    invoke('check_codemie_version'),
-    invoke('fetch_codemie_latest'),
-  ]).then(([bundled, installed, latest]) => {
-    if (bundled) return;
-    cliVersionState.installed = installed;
-    cliVersionState.latest = latest;
-    cliVersionState.updateAvailable =
-      Boolean(installed) && Boolean(latest) && semverLt(installed, latest);
-    showUpdateBanner();
-  }).catch(() => {
-    // Silently ignore — offline or CLI not installed
   });
 
   // App self-update check — once per 24 h
@@ -874,7 +763,7 @@ async function boot() {
   // spaced out because the auth half runs the CLI.
   let identityReadAt = Date.now();
   window.addEventListener('focus', () => {
-    if (installRunning || Date.now() - identityReadAt < 5000) return;
+    if (installRunning || setupRunning || Date.now() - identityReadAt < 5000) return;
     identityReadAt = Date.now();
     refreshIdentityOnComplete();
     refreshAgents();
@@ -885,6 +774,7 @@ async function boot() {
     invoke('get_platform_info'),
     invoke('temp_dir'),
   ]);
+  platformInfoValue = platformInfo;
 
   handlers = makeHandlers({
     inspector: bridge.inspector,
@@ -936,8 +826,7 @@ async function boot() {
 
   // ---- home ----
   // The Home body is ui/home-view.js; its sources are wired in the Home section
-  // above. The command-log footer hears about every command the bridge runs.
-  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
+  // above. The command-log footer is wired at the top of boot().
   refreshAgents();
   refreshConnection();
   document.querySelectorAll('#sidebar-main-group .sidebar-item, #sidebar-about').forEach((btn) => {

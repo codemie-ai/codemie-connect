@@ -17,7 +17,7 @@ test('signed-in: the real output groups into account, tools and CodeMie itself',
   assert.deepEqual(
     rows.map((r) => `${r.group} | ${r.status} | ${r.label}`),
     [
-      'codemie | pass | Everything CodeMie needs to run is included',
+      'codemie | pass | Everything CodeMie needs to run is in place',
       'tools | pass | AWS CLI',
       'account | pass | Your profile is set up',
       'account | pass | CodeMie can reach the model service',
@@ -51,21 +51,44 @@ test('signed-in: each installed agent is its own row, and one the CLI has advice
   const { rows } = grouped('signed-in');
   const openCode = rows.find((r) => r.label === 'OpenCode CLI 1.18.31');
   assert.equal(openCode.detail, 'CodeMie recommends vlatest');
-  assert.equal(openCode.remedyText, 'Open the Agents screen to update or reinstall it.');
-  assert.deepEqual(openCode.action, { kind: 'navigate', view: 'agents', label: 'Go to Agents' });
+  assert.equal(openCode.remedyText, 'Open the Tools screen to check for an update.');
+  assert.deepEqual(openCode.action, { kind: 'navigate', view: 'agents', label: 'Go to Tools' });
   const claude = rows.find((r) => r.label === 'Claude Code 2.1.269');
   assert.equal(claude.action, undefined);
   assert.equal(claude.remedyText, undefined);
 });
 
 // Doctor flags the built-in agent every time, but it comes with the CLI and the
-// Agents screen has nothing that updates it, so "Go to Agents" led nowhere.
+// Agents screen has nothing that updates it, so "Go to Tools" led nowhere.
 test('the built-in agent is a passing row with no remedy, whatever doctor advises', () => {
   const { rows } = grouped('signed-in');
   const builtIn = rows.find((r) => r.label === 'CodeMie Code 0.0.47');
   assert.equal(builtIn.status, 'pass');
   assert.equal(builtIn.detail, 'built into the CLI');
   assert.equal(builtIn.action, undefined);
+});
+
+// The real signed-in capture with one agent line swapped for the case QA hit
+// (EPMCDME-15393): doctor warns because 1.0.89 is not exactly 1.0.83.
+function withAgentLine(line) {
+  const raw = readFileSync(fileURLToPath(new URL('fixtures/doctor/signed-in.txt', import.meta.url)), 'utf8');
+  return groupDoctorResults(parseDoctorOutput(raw.replace('  ✓ Claude Code (2.1.269)', line)));
+}
+
+test('an agent newer than the version CodeMie recommends is healthy, with no remedy', () => {
+  const { rows } = withAgentLine('  ⚠ GitHub Copilot CLI (1.0.89) - CodeMie recommends v1.0.83');
+  const copilot = rows.find((r) => r.label === 'GitHub Copilot CLI 1.0.89');
+  assert.equal(copilot.status, 'pass');
+  assert.equal(copilot.detail, 'newer than the v1.0.83 CodeMie recommends');
+  assert.equal(copilot.remedyText, undefined);
+  assert.equal(copilot.action, undefined);
+});
+
+test('an agent older than the version CodeMie recommends still links to Tools', () => {
+  const { rows } = withAgentLine('  ⚠ GitHub Copilot CLI (1.0.80) - CodeMie recommends v1.0.83');
+  const copilot = rows.find((r) => r.label === 'GitHub Copilot CLI 1.0.80');
+  assert.notEqual(copilot.status, 'pass');
+  assert.equal(copilot.remedyText, 'Open the Tools screen to check for an update.');
 });
 
 test('signed-in: a section the CLI only reports on is not a check that passed', () => {

@@ -16,38 +16,19 @@ test('top-banner: disabled run/dismiss buttons get a visibly-disabled style', ()
   assert.match(css, /\.top-banner-dismiss:disabled\s*\{/);
 });
 
-// EPMCDME-15189: the reassurance line came from the wireframe verbatim and is
-// an acceptance criterion in its own right — a CSS check alone won't catch
-// someone editing this sentence in the CLI banner's markup.
-test('top-banner: CLI banner keeps the verbatim reassurance line', () => {
-  const cliBanner = html.slice(
-    html.indexOf('<div id="update-banner"'),
-    html.indexOf('<div id="app-update-banner"')
-  );
-  assert.match(cliBanner, /Your profile, settings and agents are kept\./);
-});
-
-// The app banner says its own thing. With both on screen the same sentence
-// twice reads like a template rather than something written for the user.
-test('top-banner: the app banner does not repeat the CLI banner\'s line', () => {
+// The app banner reassures the user that nothing they set up is lost.
+test('top-banner: the app banner keeps its reassurance line', () => {
   const appBanner = html.slice(html.indexOf('<div id="app-update-banner"'));
-  assert.doesNotMatch(appBanner, /Your profile, settings and agents are kept\./);
   assert.match(appBanner, /Everything you set up stays\./);
 });
 
-// EPMCDME-15189: each banner is a title + a line + an actions block, not one
+// EPMCDME-15189: the banner is a title + a line + an actions block, not one
 // flat span. Fails if the card structure ever gets collapsed back down.
-test('top-banner: each banner has a title, a line and an actions block', () => {
-  const cliBanner = html.slice(
-    html.indexOf('<div id="update-banner"'),
-    html.indexOf('<div id="app-update-banner"')
-  );
+test('top-banner: the banner has a title, a line and an actions block', () => {
   const appBanner = html.slice(html.indexOf('<div id="app-update-banner"'));
-  for (const banner of [cliBanner, appBanner]) {
-    assert.match(banner, /class="top-banner-title"/);
-    assert.match(banner, /class="top-banner-line"/);
-    assert.match(banner, /class="top-banner-actions"/);
-  }
+  assert.match(appBanner, /class="top-banner-title"/);
+  assert.match(appBanner, /class="top-banner-line"/);
+  assert.match(appBanner, /class="top-banner-actions"/);
 });
 
 // EPMCDME-15189 code review CR-002: a nowrap row has no defined shrink/wrap
@@ -99,7 +80,7 @@ test('update cards sit inside Home, under its body', () => {
   const homeStart = html.indexOf('<div id="home-view"');
   const homeEnd = html.indexOf('<!-- ============ WIZARD');
   const body = html.indexOf('<div id="home-body"');
-  for (const id of ['update-banner', 'app-update-banner']) {
+  for (const id of ['app-update-banner']) {
     const at = html.indexOf(`<div id="${id}"`);
     assert.ok(at > body && at < homeEnd && at > homeStart, `${id} is inside #home-view, after #home-body`);
   }

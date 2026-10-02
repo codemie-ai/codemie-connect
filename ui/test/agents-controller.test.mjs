@@ -86,12 +86,22 @@ const openCodeUpdateCheck = readFileSync(fileURLToPath(new URL('fixtures/agents/
 
 // runCapture stub that answers `codemie list` and `codemie update --check`
 // distinctly, the way the controller now calls both from load().
-function fakeRunCapture(listStdout = fixture, checkStdout = upToDateCheck) {
-  return async (cmd) => {
+// `lookup` (map or function, command string -> result) answers the where-is
+// lookups a Remove makes; by default `command -v X` finds /usr/local/bin/X.
+// Every command asked is recorded on `.cmds`.
+function fakeRunCapture(listStdout = fixture, checkStdout = upToDateCheck, lookup) {
+  const fn = async (cmd) => {
+    fn.cmds.push(cmd);
     if (cmd === 'codemie list') return { code: 0, stdout: listStdout, stderr: '' };
     if (cmd === 'codemie update --check') return { code: 0, stdout: checkStdout, stderr: '' };
+    const custom = typeof lookup === 'function' ? lookup(cmd) : lookup?.[cmd];
+    if (custom) return custom;
+    const m = cmd.match(/^command -v (\S+)$/);
+    if (m) return { code: 0, stdout: `/usr/local/bin/${m[1]}\n`, stderr: '' };
     throw new Error(`unexpected runCapture command: ${cmd}`);
   };
+  fn.cmds = [];
+  return fn;
 }
 
 const { createAgentsController } = await import('../agents-controller.js');
@@ -156,7 +166,7 @@ test('a non-zero exit shows the CLI text, keeps no stale list, and releases the 
     },
   });
   await c.run();
-  assert.match(container._text(), /could not read the agent list/);
+  assert.match(container._text(), /could not read the tool list/);
   assert.match(container._text(), /command not found/);
   assert.equal(c.getLastAgents(), null);
   assert.equal(failures, 1);
@@ -173,7 +183,7 @@ test('a rejected call is caught and shown rather than leaving the screen on "Rea
   });
   await c.run();
   assert.match(container._text(), /spawn failed/);
-  assert.doesNotMatch(container._text(), /Reading the agent list/);
+  assert.doesNotMatch(container._text(), /Reading the tool list/);
 });
 
 test('output that parses to nothing is an error, never "0 of 0 installed"', async () => {
@@ -285,7 +295,7 @@ test('while an action is in flight the row is ACTIVE with a spinner and the late
         // A refresh's list read happens after the action starts; capture the
         // container's text at that moment, before this read resolves, so a
         // stray showLoading() call (the loading-blanking path) would show up
-        // here as "Reading the agent list…".
+        // here as "Reading the tool list…".
         textsDuringRefresh.push(container._text());
         return { code: 0, stdout: fixture, stderr: '' };
       }
@@ -308,7 +318,7 @@ test('while an action is in flight the row is ACTIVE with a spinner and the late
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
 
-  assert.equal(textsDuringRefresh.some((t) => /Reading the agent list/.test(t)), false);
+  assert.equal(textsDuringRefresh.some((t) => /Reading the tool list/.test(t)), false);
 });
 
 test('a failing action leaves the row actionMessage equal to the accumulated stderr text after refresh', async () => {
@@ -354,6 +364,22 @@ test('accumulated text matching a connection-error pattern renders as "Installin
   await new Promise((r) => setImmediate(r));
   const subtitles = stepsUi.calls.filter((call) => call[0] === 'setSubtitle' && call[1] === 'gemini');
   assert.equal(subtitles.at(-1)[2], 'Installing needs a connection.');
+});
+
+test('a Remove that fails for want of a connection says removing, not installing', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  const runStream = async (cmd, onLine) => {
+    onLine('Error: getaddrinfo ENOTFOUND registry.npmjs.org', 'stderr');
+    return { code: 1 };
+  };
+  await createAgentsController({ container, runCapture: fakeRunCapture(), runStream, stepsUi }).run();
+  const slot = container.querySelector('.agent-actions[data-id="opencode"]');
+  slot._children[slot._children.length - 1].onclick({ stopPropagation() {} }); // Remove
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  const subtitles = stepsUi.calls.filter((call) => call[0] === 'setSubtitle' && call[1] === 'opencode');
+  assert.equal(subtitles.at(-1)[2], 'Removing needs a connection.');
 });
 
 test('an agent.command with shell metacharacters is never handed to runStream', async () => {
@@ -473,7 +499,7 @@ test('refresh() re-reads and re-renders without going through the loading-blanki
   await c.run();
   seenLoadingText.length = 0;
   await c.refresh();
-  assert.equal(seenLoadingText.some((t) => /Reading the agent list/.test(t)), false);
+  assert.equal(seenLoadingText.some((t) => /Reading the tool list/.test(t)), false);
 });
 
 // Captured from a real failing run of `codemie install claude-acp --supported`.
@@ -570,6 +596,89 @@ test('after an Update the row keeps the CLI\'s result line, and the next action 
   assert.equal(row().actionMessage, undefined);
 });
 
+// Remove on the opencode row (installed in the fixture). `listAfter` is what
+// `codemie list` prints once the uninstall has run.
+async function removeOpencode({ listAfter = fixture, lookup, getPlatform, code = 0, check = upToDateCheck } = {}) {
+  const container = makeEl('div');
+  let removed = false;
+  const base = fakeRunCapture(fixture, check, lookup);
+  const runCapture = async (cmd) => (cmd === 'codemie list' && removed
+    ? { code: 0, stdout: listAfter, stderr: '' }
+    : base(cmd));
+  runCapture.cmds = base.cmds;
+  const c = createAgentsController({
+    container,
+    runCapture,
+    runStream: async () => {
+      removed = true;
+      return { code };
+    },
+    stepsUi: fakeStepsUi(),
+    getPlatform,
+  });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="opencode"]');
+  slot._children[slot._children.length - 1].onclick({ stopPropagation() {} }); // Remove
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  return { c, container, cmds: base.cmds, row: () => c.getLastAgents().find((a) => a.command === 'opencode') };
+}
+const opencodeGone = fixture.replace(/(Command: opencode\n\s+Status: )✓ installed/, '$1not installed');
+
+test('Remove exit 0 with the tool still listed shows the "still installed at <path>, outside CodeMie" note, and the next action clears it', async () => {
+  const { c, container, row } = await removeOpencode({ check: openCodeUpdateCheck, lookup: { 'command -v opencode': { code: 0, stdout: '/opt/homebrew/bin/opencode\n', stderr: '' } } });
+  assert.equal(row().actionMessage, "Removed CodeMie's copy. OpenCode CLI is still installed at /opt/homebrew/bin/opencode, outside CodeMie.");
+  assert.equal(row().installed, true, 'the installed state comes from the refreshed list');
+  container.querySelector('.agent-actions[data-id="opencode"]')._children[0].onclick({ stopPropagation() {} }); // Update
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.notEqual(row().actionMessage, "Removed CodeMie's copy. OpenCode CLI is still installed at /opt/homebrew/bin/opencode, outside CodeMie.");
+});
+
+test('Remove exit 0 with the tool gone from the list issues no lookup and leaves no note', async () => {
+  const { cmds, row } = await removeOpencode({ listAfter: opencodeGone });
+  assert.equal(row().installed, false);
+  assert.equal(row().actionMessage, undefined);
+  assert.ok(!cmds.some((x) => x.startsWith('command -v') || x.startsWith('where')));
+});
+
+test('a lookup that finds nothing or rejects still leaves a note, without a path', async () => {
+  const fallback = "Removed CodeMie's copy. OpenCode CLI is still installed elsewhere, outside CodeMie.";
+  const miss = await removeOpencode({ lookup: { 'command -v opencode': { code: 127, stdout: '', stderr: '' } } });
+  assert.equal(miss.row().actionMessage, fallback);
+  const boom = await removeOpencode({ lookup: () => { throw new Error('spawn failed'); } });
+  assert.equal(boom.row().actionMessage, fallback);
+});
+
+test('on Windows the lookup is `where <command>` and the first output line is the path', async () => {
+  const { cmds, row } = await removeOpencode({
+    getPlatform: () => ({ os: 'windows' }),
+    lookup: { 'where opencode': { code: 0, stdout: 'C:\\npm\\opencode.cmd\r\nC:\\other\\opencode.exe\r\n', stderr: '' } },
+  });
+  assert.ok(cmds.includes('where opencode'));
+  assert.match(row().actionMessage, /still installed at C:\\npm\\opencode\.cmd, outside/);
+});
+
+test('an unsafe command name is never handed to a lookup', async () => {
+  const container = makeEl('div');
+  const evil = `
+📦 Available Agents:
+
+  Evil Agent
+    Command: gemini; rm -rf /
+    Status: ✓ installed
+    Not a real agent
+`;
+  const capture = fakeRunCapture(evil);
+  const runStream = fakeRunStream([]);
+  const c = createAgentsController({ container, runCapture: capture, runStream: runStream.fn, stepsUi: fakeStepsUi() });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="gemini; rm -rf /"]');
+  slot._children[slot._children.length - 1].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  assert.ok(!capture.cmds.some((x) => x.includes('command -v') || x.includes('where')));
+});
+
 test('an install that hits the CLI\'s time limit says so in minutes', async () => {
   const container = makeEl('div');
   const c = createAgentsController({
@@ -587,4 +696,26 @@ test('an install that hits the CLI\'s time limit says so in minutes', async () =
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.equal(c.getLastAgents().find((a) => a.command === 'gemini').actionMessage, 'Took longer than 5 minutes. Check your connection and try again.');
+});
+
+// The echoed command flashed in the row before the CLI's first line.
+test('the echoed command never shows as the row\'s progress text', async () => {
+  const container = makeEl('div');
+  const stepsUi = fakeStepsUi();
+  const c = createAgentsController({
+    container,
+    runCapture: fakeRunCapture(),
+    runStream: async (cmd, onLine) => {
+      onLine(`> ${cmd}`, 'prompt');
+      onLine('- Installing Gemini CLI...', 'stdout');
+      return { code: 0 };
+    },
+    stepsUi,
+  });
+  await c.run();
+  container.querySelector('.agent-actions[data-id="gemini"]')._children[0].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  const subs = stepsUi.calls.filter((x) => x[0] === 'setSubtitle' && x[1] === 'gemini').map((x) => x[2]);
+  assert.ok(!subs.some((t) => t.startsWith('> ')), `no echoed command in ${JSON.stringify(subs)}`);
+  assert.ok(subs.includes('Installing Gemini CLI...'));
 });

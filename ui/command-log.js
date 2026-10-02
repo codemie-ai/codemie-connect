@@ -45,7 +45,7 @@ export function createCommandLog(body, { now = () => new Date() } = {}) {
     return function finish(code) {
       const ok = code === 0;
       line.className = `command-log-line ${ok ? 'ok' : 'failed'}`;
-      status.textContent = ok ? 'ok' : `failed (${code})`;
+      status.textContent = ok ? 'ok' : code == null ? 'failed' : `failed (${code})`;
     };
   }
 

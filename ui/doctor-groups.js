@@ -6,6 +6,8 @@
 // `codemie doctor` output (ui/test/fixtures/doctor/). A section this file does
 // not know still renders, under "CodeMie itself" and in the CLI's wording, so a
 // check the CLI adds later is shown rather than dropped.
+import { semverLt } from './cli-update.js';
+
 const RUNTIME = new Set(['Node.js', 'npm', 'Python', 'uv']);
 const AGENTS = 'Installed Agents';
 
@@ -117,6 +119,17 @@ function sectionRow(name, items) {
 // vlatest"). Only that warning is dropped; a real failure still shows.
 const BUILTIN_AGENT = /^CodeMie Code\b/;
 
+// Doctor also warns when the installed version is newer than the one it
+// recommends ("GitHub Copilot CLI (1.0.89) - CodeMie recommends v1.0.83",
+// EPMCDME-15393). Nothing on the Tools screen goes back to an older version, so
+// that is not a problem to send the user anywhere for. Returns the recommended
+// version in that case.
+function newerThanRecommended(title, detail) {
+  const have = title.match(/\((\d+\.\d+\.\d+)\)/)?.[1];
+  const want = detail?.match(/CodeMie recommends v(\d+\.\d+\.\d+)$/)?.[1];
+  return have && want && semverLt(want, have) ? want : null;
+}
+
 function agentRow(item) {
   const [title, ...rest] = item.message.split(/\s+-\s+/);
   if (BUILTIN_AGENT.test(title) && item.status === 'warn') {
@@ -124,10 +137,14 @@ function agentRow(item) {
   }
   const status = statusOf([item]);
   const detail = rest.join(' - ') || undefined;
+  const recommended = item.status === 'warn' ? newerThanRecommended(title, detail) : null;
+  if (recommended) {
+    return { group: 'tools', label: unparen(title), detail: `newer than the v${recommended} CodeMie recommends`, status: 'pass', remedyText: undefined, action: undefined };
+  }
   const row = { group: 'tools', label: unparen(title), detail, status, remedyText: undefined, action: undefined };
   if (status !== 'pass') {
-    row.remedyText = 'Open the Agents screen to update or reinstall it.';
-    row.action = { kind: 'navigate', view: 'agents', label: 'Go to Agents' };
+    row.remedyText = 'Open the Tools screen to check for an update.';
+    row.action = { kind: 'navigate', view: 'agents', label: 'Go to Tools' };
   }
   return row;
 }
@@ -136,7 +153,7 @@ function runtimeRow(items) {
   const status = statusOf(items);
   const row = { group: 'codemie', status, detail: undefined, remedyText: undefined, action: undefined };
   if (status === 'pass') {
-    row.label = 'Everything CodeMie needs to run is included';
+    row.label = 'Everything CodeMie needs to run is in place';
     row.detail = items.map((r) => `${r.name} ${versionOf(r.message)}`).join(' · ');
     return row;
   }

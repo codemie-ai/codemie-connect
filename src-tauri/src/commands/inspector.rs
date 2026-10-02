@@ -67,34 +67,6 @@ pub async fn check_codemie() -> Probe {
     codemie_from(r.code, &r.stdout, &r.stderr)
 }
 
-/// Extract the first X.Y.Z semver token from arbitrary CLI output.
-/// Handles formats: "0.4.1", "codemie 0.4.1", "v0.4.1",
-/// "@codemieai/code/0.4.1 darwin-arm64 …"
-fn parse_codemie_version(stdout: &str) -> String {
-    for token in stdout.split_whitespace() {
-        for part in token.split(|c: char| !c.is_ascii_digit() && c != '.') {
-            let p = part.trim_start_matches('v');
-            let segs: Vec<&str> = p.split('.').collect();
-            if segs.len() >= 3
-                && segs
-                    .iter()
-                    .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
-            {
-                return p.to_string();
-            }
-        }
-    }
-    String::new()
-}
-
-/// Return the installed codemie CLI version string (e.g. "0.4.1"),
-/// or an empty string if not found or version cannot be parsed.
-#[tauri::command]
-pub async fn check_codemie_version() -> String {
-    let r = capture("codemie --version", None).await;
-    parse_codemie_version(&r.stdout)
-}
-
 /// CodeMie profile auth status, parsed from `codemie profile status`.
 #[derive(Serialize, Clone)]
 pub struct ProfileStatus {
@@ -183,13 +155,25 @@ fn parse_profile_status(stdout: &str, stderr: &str) -> ProfileStatus {
 /// interactive re-auth prompt cannot hang the capture. On Windows the redirect
 /// is omitted (PowerShell does not support it) and the command exits on its own.
 #[tauri::command]
-pub async fn check_profile_status() -> ProfileStatus {
+pub async fn check_profile_status() -> ProfileStatusRun {
     #[cfg(not(windows))]
     let status_cmd = "codemie profile status < /dev/null";
     #[cfg(windows)]
     let status_cmd = "codemie profile status";
     let r = capture(status_cmd, None).await;
-    parse_profile_status(&r.stdout, &r.stderr)
+    ProfileStatusRun {
+        status: parse_profile_status(&r.stdout, &r.stderr),
+        code: r.code,
+    }
+}
+
+/// The parsed status plus the command's exit code, which the "what CodeMie
+/// ran" footer shows next to the command.
+#[derive(Serialize, Clone)]
+pub struct ProfileStatusRun {
+    #[serde(flatten)]
+    pub status: ProfileStatus,
+    pub code: i32,
 }
 
 /// Find a binary by checking well-known install locations, then falling back to
@@ -371,46 +355,5 @@ mod tests {
         let stdout = "✗ Token expired\n";
         let r = parse_profile_status(stdout, "");
         assert_eq!(r.state, "not_signed_in");
-    }
-
-    // --- parse_codemie_version ---
-
-    #[test]
-    fn parse_codemie_version_plain_semver() {
-        assert_eq!(parse_codemie_version("0.4.1\n"), "0.4.1");
-    }
-
-    #[test]
-    fn parse_codemie_version_with_name_prefix() {
-        assert_eq!(parse_codemie_version("codemie 0.4.1\n"), "0.4.1");
-    }
-
-    #[test]
-    fn parse_codemie_version_strips_v_prefix() {
-        assert_eq!(parse_codemie_version("v0.4.1"), "0.4.1");
-    }
-
-    #[test]
-    fn parse_codemie_version_handles_slash_path_format() {
-        // e.g. "@codemieai/code/0.4.1 darwin-arm64 node-v20.0.0"
-        assert_eq!(
-            parse_codemie_version("@codemieai/code/0.4.1 darwin-arm64 node-v20.0.0"),
-            "0.4.1"
-        );
-    }
-
-    #[test]
-    fn parse_codemie_version_returns_empty_on_no_version() {
-        assert_eq!(parse_codemie_version(""), "");
-    }
-
-    #[test]
-    fn parse_codemie_version_returns_empty_on_command_not_found() {
-        // Parser robustness: real not-found errors arrive in stderr (not parsed here);
-        // this guards against shell wrappers that forward stderr to stdout.
-        assert_eq!(
-            parse_codemie_version("zsh:1: command not found: codemie"),
-            ""
-        );
     }
 }

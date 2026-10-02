@@ -14,7 +14,7 @@ globalThis.window = {
   },
 };
 
-const { pty } = await import('../runner-bridge.js');
+const { pty, inspector, setCommandListener } = await import('../runner-bridge.js');
 
 test('spawnPty resolves only on its own id and onData filters by id', async () => {
   const listeners = {};
@@ -78,4 +78,24 @@ test('CR-005: data listener is cleaned up when exit-listen throws', async () => 
     dataUnlistenCalled,
     'data listener must be unlistened even when the exit-listen call throws',
   );
+});
+
+// Commands Rust runs itself (profile status) used to skip the "what CodeMie
+// ran" footer. They reach it with their outcome; a rejection shows as failed.
+test('commands Rust runs itself reach the command log, with their outcome', async () => {
+  const seen = [];
+  setCommandListener((cmd) => {
+    const entry = { cmd, code: 'running' };
+    seen.push(entry);
+    return (code) => { entry.code = code; };
+  });
+  invokeImpl = async () => ({ state: 'unknown', detail: '', code: 1 });
+  await inspector.checkProfileStatus();
+  invokeImpl = async () => { throw new Error('ipc failed'); };
+  await assert.rejects(inspector.checkProfileStatus());
+  assert.deepEqual(seen, [
+    { cmd: 'codemie profile status', code: 1 },
+    { cmd: 'codemie profile status', code: null },
+  ]);
+  setCommandListener(null);
 });

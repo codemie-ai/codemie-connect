@@ -16,7 +16,7 @@ import { StepStatus } from './models.js';
 export const HOME_ITEMS = Object.freeze([
   { id: 'sign-in', title: 'Sign in with your EPAM account' },
   { id: 'model', title: 'Choose how CodeMie reaches a model' },
-  { id: 'agent', title: 'Install an agent' },
+  { id: 'agent', title: 'Install a tool' },
   { id: 'health', title: 'Verify health' },
 ]);
 
@@ -24,9 +24,9 @@ const item = (def, status, subtitle) => ({ id: def.id, title: def.title, status,
 const clock = (date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 // The CLI's own line is "Auth Status │ ✓ Authenticated (expires in 22h 9m)",
-// with a box-drawing bar; the identity bar shows it whole, the checklist
-// keeps the part that says something: "Authenticated (expires in 22h 9m)".
-const signedInDetail = (detail) => (detail || '').replace(/^Auth Status\s*[|│]\s*/, '').replace(/^✓\s*/, '').trim() || 'Signed in';
+// with a box-drawing bar; the checklist and the identity bar both keep the
+// part that says something: "Authenticated (expires in 22h 9m)".
+export const signedInDetail = (detail) => (detail || '').replace(/^Auth Status\s*[|│]\s*/, '').replace(/^✓\s*/, '').trim() || 'Signed in';
 
 function signInItem(def, auth) {
   // Not read yet: say so, rather than offer Sign in to someone signed in.
@@ -59,7 +59,7 @@ export const BUILTIN_AGENT_COMMAND = 'codemie-code';
 
 function agentItem(def, agents) {
   if (agents === undefined) return item(def, StepStatus.PENDING, 'Checking…');
-  if (agents === null) return item(def, StepStatus.PENDING, 'Could not read the agent list');
+  if (agents === null) return item(def, StepStatus.PENDING, 'Could not read the tool list');
   const installed = agents.filter((a) => a.installed && a.command !== BUILTIN_AGENT_COMMAND);
   if (installed.length) {
     return item(def, StepStatus.COMPLETE, `Already installed: ${installed.map((a) => a.name).join(' · ')}`);
@@ -70,8 +70,11 @@ function agentItem(def, agents) {
 
 // "Passed" is no failing row. A warning (an agent the CLI has advice on) is
 // not a reason to keep the checklist on screen forever.
-function healthItem(def, health, running) {
+function healthItem(def, health, running, failed) {
   if (!health && running) return item(def, StepStatus.ACTIVE, 'Checking…');
+  // A check that could not finish: the row's Open Health leads to the error and
+  // its retry, since the sidebar's Health stays locked until the checklist is done.
+  if (!health && failed) return item(def, StepStatus.ERROR, 'The check did not finish');
   if (!health) return item(def, StepStatus.PENDING, 'Not checked yet');
   const failing = health.rows.filter((r) => r.status === 'fail').length;
   const { passing, total } = health.summary;
@@ -96,7 +99,8 @@ function profileCard(config, auth) {
   return { id: 'profile', title: 'Profile', badge, line, note };
 }
 
-function healthCard(health) {
+function healthCard(health, running) {
+  if (!health && running) return { id: 'health', title: 'Health', badge: { text: 'checking', tone: 'muted' }, line: 'Checking…', note: '' };
   if (!health) return { id: 'health', title: 'Health', badge: { text: 'unknown', tone: 'muted' }, line: 'Not checked yet', note: '' };
   const { passing, total } = health.summary;
   const problems = health.rows.filter((r) => r.status !== 'pass').length;
@@ -111,16 +115,27 @@ function healthCard(health) {
 
 function agentsCard(agents) {
   if (!Array.isArray(agents)) {
-    return { id: 'agents', title: 'Agents', badge: { text: 'unknown', tone: 'muted' }, line: agents === null ? 'Could not read the agent list' : 'Checking…', note: '' };
+    return { id: 'agents', title: 'Tools', badge: { text: 'unknown', tone: 'muted' }, line: agents === null ? 'Could not read the tool list' : 'Checking…', note: '' };
   }
   const installed = agents.filter((a) => a.installed);
   return {
     id: 'agents',
-    title: 'Agents',
+    title: 'Tools',
     badge: { text: `${installed.length} of ${agents.length}`, tone: installed.length ? 'good' : 'warn' },
     line: installed.length ? installed.map((a) => a.name).join(' · ') : 'None installed yet',
     note: '',
   };
+}
+
+// `codemie proxy status --json` says "healthy" or "unhealthy" while the proxy
+// runs and "stopped" when it does not (CLI 0.15.2, cli/commands/proxy); it has
+// no "running". The CLI can print its migration notes before the JSON on a
+// first run. Throws on JSON it cannot parse, which the caller shows as unknown.
+export function connectionFromStatus(stdout) {
+  const json = stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1);
+  if (!json) return null;
+  const { status } = JSON.parse(json);
+  return { running: status === 'healthy' || status === 'unhealthy', healthy: status === 'healthy' };
 }
 
 // Claude Desktop is the one app Connections connects today, through the CLI's
@@ -128,19 +143,26 @@ function agentsCard(agents) {
 function connectionsCard(connection) {
   if (connection === undefined) return { id: 'connections', title: 'Connections', badge: { text: 'checking', tone: 'muted' }, line: 'Claude Desktop', note: '' };
   if (connection === null) return { id: 'connections', title: 'Connections', badge: { text: 'unknown', tone: 'muted' }, line: 'Could not read the connection', note: '' };
+  if (connection.running && connection.healthy === false) return { id: 'connections', title: 'Connections', badge: { text: 'not responding', tone: 'warn' }, line: 'Claude Desktop', note: '' };
   return connection.running
     ? { id: 'connections', title: 'Connections', badge: { text: '1 connected', tone: 'good' }, line: 'Claude Desktop', note: '' }
     : { id: 'connections', title: 'Connections', badge: { text: 'not connected', tone: 'muted' }, line: 'Claude Desktop', note: '' };
 }
 
-// Whether Home should start the health check itself: the checklist is up, the
-// steps before the check are done and it has not run. Finishing setup used to
-// leave the user on a checklist that just waited for a click on its last step.
+// Whether Home should start the health check itself, when it has not run this
+// session. On the checklist: once the steps before it are done, since finishing
+// setup used to leave the user on a checklist that just waited for a click on
+// its last step. On the status cards: straight away, since the result is not
+// kept between launches and the Health card said "unknown" after every restart
+// (EPMCDME-15388). Not before the sign-in status is read: until then a
+// returning user counts as done, and a lapsed sign-in would bring the checklist
+// back with a check already run on it.
 export function autoHealthCheck(state) {
-  if (!state || state.done) return false;
+  if (!state) return false;
   const health = state.items.find((i) => i.id === 'health');
-  const before = state.items.filter((i) => i.id !== 'health');
-  return !!health && health.status === StepStatus.PENDING && before.every((i) => i.status === StepStatus.COMPLETE);
+  if (!health || health.status !== StepStatus.PENDING) return false;
+  if (state.done) return state.authKnown;
+  return state.items.filter((i) => i.id !== 'health').every((i) => i.status === StepStatus.COMPLETE);
 }
 
 // What Home's Sign in does. `codemie profile login` opens the browser for the
@@ -156,9 +178,9 @@ export function signInAction({ config, auth } = {}) {
 // (the renderer remembers it). Health is read fresh each time the app opens, so
 // without it a user who finished setup yesterday is back on the checklist, with
 // the sidebar locked, until they run the check again.
-export function deriveHome({ config, auth, agents, health, connection, onboarded = false, healthRunning = false } = {}) {
+export function deriveHome({ config, auth, agents, health, connection, onboarded = false, healthRunning = false, healthFailed = false } = {}) {
   const [signIn, model, agent, healthDef] = HOME_ITEMS;
-  const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health, healthRunning)];
+  const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health, healthRunning, healthFailed)];
   const complete = items.every((i) => i.status === StepStatus.COMPLETE);
   // Once setup has finished, only a lapsed sign-in brings the checklist back:
   // its Sign in button is the only one Home has until the broken-profile panel
@@ -168,6 +190,7 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
   return {
     items,
     done,
+    authKnown: !!auth,
     // The sidebar locks only for a first setup, never for a user who has
     // finished it once and has merely been signed out since.
     unlocked: done || onboarded,
@@ -176,6 +199,6 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
     // read failed): a picker that turned both into an empty list would tell
     // the user every agent was already installed.
     agents,
-    cards: [profileCard(config, auth), healthCard(health), agentsCard(agents), connectionsCard(connection)],
+    cards: [profileCard(config, auth), healthCard(health, healthRunning), agentsCard(agents), connectionsCard(connection)],
   };
 }

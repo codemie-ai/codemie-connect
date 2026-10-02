@@ -49,9 +49,15 @@ pub fn log_path() -> String {
 }
 
 fn ensure_log_readable(path: &str) -> CmdResult<()> {
-    std::fs::File::open(path)
-        .map(|_| ())
-        .map_err(|_| InstallerError::Other(format!("log file not found or unreadable: {path}")))
+    // Use is_file() rather than File::open to avoid a sharing violation on
+    // Windows when the CLI still holds an exclusive write lock on the log.
+    if std::path::Path::new(path).is_file() {
+        Ok(())
+    } else {
+        Err(InstallerError::Other(format!(
+            "log file not found or unreadable: {path}"
+        )))
+    }
 }
 
 #[cfg(not(windows))]
@@ -64,13 +70,49 @@ fn spawn_open(path: &str) -> CmdResult<()> {
 }
 #[cfg(windows)]
 fn spawn_open(path: &str) -> CmdResult<()> {
-    // "" is the required window-title arg for `start`, so a spaced path isn't
-    // mistaken for it; this invokes the OS default handler for the file.
-    std::process::Command::new("cmd")
-        .args(["/c", "start", "", path])
-        .spawn()
-        .map_err(InstallerError::Io)?;
-    Ok(())
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    // ShellExecuteW bypasses cmd.exe argument parsing entirely (which can
+    // silently swallow errors or misparse paths with special characters) and
+    // returns an explicit error code rather than fire-and-forget.
+    #[link(name = "Shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut std::ffi::c_void,
+            lp_operation: *const u16,
+            lp_file: *const u16,
+            lp_parameters: *const u16,
+            lp_directory: *const u16,
+            n_show_cmd: i32,
+        ) -> isize;
+    }
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let op = to_wide("open");
+    let file = to_wide(path);
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+
+    // ShellExecuteW returns > 32 on success; ≤ 32 is an SE_ERR_* code.
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(InstallerError::Other(format!(
+            "could not open log (ShellExecuteW error {result}): {path}"
+        )))
+    }
 }
 
 /// Append a tagged line to the log file. Logging must never crash the app.
@@ -92,6 +134,44 @@ pub fn log_line(text: String, tag: String) {
     write_line(&text, &tag);
 }
 
+/// Pure: the CLI's own debug log for `date`, the file its logger writes:
+/// `<CODEMIE_HOME or home/.codemie>/logs/debug-YYYY-MM-DD.log`, dated in UTC
+/// the way the CLI dates it (`new Date().toISOString()`).
+pub(crate) fn cli_debug_log_path_with(
+    codemie_home: Option<&str>,
+    home: &str,
+    date: &str,
+) -> String {
+    let base = match codemie_home {
+        Some(h) if !h.is_empty() => h.to_string(),
+        _ => std::path::Path::new(home)
+            .join(".codemie")
+            .to_string_lossy()
+            .into_owned(),
+    };
+    std::path::Path::new(&base)
+        .join("logs")
+        .join(format!("debug-{date}.log"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Health's "Open today's log": the CLI's debug log for today, which is what
+/// `codemie doctor` and every other CLI command write to. The app's own
+/// codemie_wizard.log is a different, cumulative file.
+#[tauri::command]
+pub fn open_cli_debug_log() -> CmdResult<()> {
+    #[cfg(not(windows))]
+    let home = std::env::var("HOME").unwrap_or_default();
+    #[cfg(windows)]
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let codemie_home = std::env::var("CODEMIE_HOME").ok();
+    let date = Utc::now().format("%Y-%m-%d").to_string();
+    let path = cli_debug_log_path_with(codemie_home.as_deref(), &home, &date);
+    ensure_log_readable(&path)?;
+    spawn_open(&path)
+}
+
 #[tauri::command]
 pub fn open_log() -> CmdResult<()> {
     let path = log_path();
@@ -102,6 +182,20 @@ pub fn open_log() -> CmdResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_debug_log_is_the_dated_file_under_codemie_logs() {
+        let p = cli_debug_log_path_with(None, "/Users/u", "2026-09-28");
+        assert_eq!(
+            p,
+            std::path::Path::new("/Users/u/.codemie/logs/debug-2026-09-28.log").to_string_lossy()
+        );
+        let custom = cli_debug_log_path_with(Some("/opt/cm"), "/Users/u", "2026-09-28");
+        assert_eq!(
+            custom,
+            std::path::Path::new("/opt/cm/logs/debug-2026-09-28.log").to_string_lossy()
+        );
+    }
 
     // Ported from test/logger.test.js.
     #[test]

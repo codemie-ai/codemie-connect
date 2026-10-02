@@ -42,6 +42,9 @@ function makeEl(tag) {
       return i >= 0 ? (p._children[i + 1] ?? null) : null;
     },
     get parentNode() { return el._parent ?? null; },
+    _attrs: {},
+    setAttribute(k, v) { el._attrs[k] = String(v); },
+    getAttribute(k) { return k in el._attrs ? el._attrs[k] : null; },
     querySelector(sel) {
       const cls = sel.replace(/^\./, '');
       return findByClass(el, cls);
@@ -189,8 +192,12 @@ test('start() inserts a collapsed/COMPLETE storage row before startSetup runs', 
     return { profileName: 'default' };
   };
 
-  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
+  const runs = [];
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig, onRun: (p) => runs.push(p) });
   await view.start();
+  // The renderer's bookkeeping hangs off onRun, so a retry must report too.
+  await view.start();
+  assert.equal(runs.length, 2, 'onRun hears about every run, not only the first');
 
   assert.ok(sawStorageRowBeforeStart, 'storage row exists and is COMPLETE before startSetup is invoked');
   const storageRow = findRowById(container, 'storage');
@@ -1503,6 +1510,27 @@ test('a profile name typed with surrounding spaces is verified as the trimmed na
   assert.equal(outcome.profileName, 'demo');
   const status = container._children.find((c) => c.className === 'setup-view-status');
   assert.equal(status.textContent, 'Setup complete. demo is now the active profile.');
+});
+
+// macOS offered "Test" for "test" and Continue accepted it, so profile names
+// came out capitalised (EPMCDME-15385, seen in QA's recording).
+test('a text answer is never capitalised, corrected or spell-checked by the system', async () => {
+  const container = makeEl('div');
+  const fakeStartSetup = async ({ onPrompt }) => {
+    await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile:' });
+    return { profileName: 'x' };
+  };
+  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: configWith('x') });
+  const p = view.start();
+  await tick(0);
+  const row = findRowById(container, 'profileName-1');
+  const input = inputOf(row);
+  assert.equal(input.getAttribute('autocapitalize'), 'off');
+  assert.equal(input.getAttribute('autocorrect'), 'off');
+  assert.equal(input.spellcheck, false);
+  input.value = 'x';
+  clickContinue(row);
+  await p;
 });
 
 test('an input left empty submits the default the CLI would use, not an empty answer', async () => {

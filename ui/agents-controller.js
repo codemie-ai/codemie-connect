@@ -31,7 +31,7 @@ const ERROR_LINE = /^\s*[✗✖×]\s|^\s*(Error|Failed)\b/i;
 const ERROR_GLYPH = /^\s*[✗✖×]\s*/;
 const RESULT_LINE = /^\s*[✔✓⚠]\s*/;
 
-export function createAgentsController({ container, runCapture, runStream, stepsUi, onFailure, onResult } = {}) {
+export function createAgentsController({ container, runCapture, runStream, stepsUi, onFailure, onResult, getPlatform } = {}) {
   // A second run() while the first is in flight is a no-op, as on Health: the
   // read is cheap but re-rendering under a half-finished one loses row state.
   let running = false;
@@ -72,7 +72,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
       if (parsed.length === 0) {
         // The CLI always lists agents; zero records means the output did not
         // look like a list at all, which must not render as "0 of 0 installed".
-        showRunError(container, 'The agent list came back empty, so nothing can be shown here.', () => load({ silent: false }));
+        showRunError(container, 'The tool list came back empty, so nothing can be shown here.', () => load({ silent: false }));
         lastAgents = null;
         onFailure?.();
         return;
@@ -112,15 +112,29 @@ export function createAgentsController({ container, runCapture, runStream, steps
     }
   }
 
+  // Read-only: where the shell finds `command` now, or null. Used after a
+  // Remove to tell the user about a copy CodeMie did not install.
+  async function whereIs(command) {
+    if (!SAFE_COMMAND.test(command)) return null;
+    const lookup = getPlatform?.()?.os === 'windows' ? `where ${command}` : `command -v ${command}`;
+    try {
+      const res = await runCapture(lookup);
+      if (!res || res.code !== 0) return null;
+      return String(res.stdout || '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) || null;
+    } catch {
+      return null;
+    }
+  }
+
   // Returns { ok } or { ok: false, message }. The Agents screen ignores the
   // result and reads the row's own error; Home's checklist has no row to read,
   // so it is handed back. `onLine` is Home's too: its picker shows the
   // command's output where the install was started from.
-  async function runAction(agent, command, { onLine, note } = {}) {
+  async function runAction(agent, command, { onLine, note, removed, verb = 'Installing' } = {}) {
     // One at a time, see buildActions in agents-ui.js.
-    if (inFlight.size) return { ok: false, message: 'Another agent is still being worked on.' };
+    if (inFlight.size) return { ok: false, message: 'Another tool is still being worked on.' };
     if (!SAFE_COMMAND.test(agent.command)) {
-      const message = 'This agent’s command name is not safe to run and was blocked.';
+      const message = 'This tool’s command name is not safe to run and was blocked.';
       rowErrors.set(agent.command, message);
       await load({ silent: true });
       return { ok: false, message };
@@ -137,13 +151,15 @@ export function createAgentsController({ container, runCapture, runStream, steps
         // runStream always emits a leading `('> <command>', 'prompt')` line
         // (ui/runner-bridge.js); it must never become the fallback error
         // message when a failing command produces no other output.
-        if (tag !== 'prompt') lines.push(text);
+        // The echoed command is not progress: the row waits for the CLI's own lines.
+        if (tag === 'prompt') return onLine?.(text, tag);
+        lines.push(text);
         // The CLI's progress lines start with a "- " spinner frame.
         stepsUi.setSubtitle(agent.command, text.replace(/^\s*-\s+/, ''));
         onLine?.(text, tag);
       });
       if (code !== 0) {
-        message = messageFor(lines);
+        message = messageFor(lines, verb);
         rowErrors.set(agent.command, message);
       } else if (note) {
         const result = [...lines].reverse().find((l) => RESULT_LINE.test(l));
@@ -151,18 +167,26 @@ export function createAgentsController({ container, runCapture, runStream, steps
       }
     } catch (e) {
       lines.push(String((e && e.message) || e));
-      message = messageFor(lines);
+      message = messageFor(lines, verb);
       rowErrors.set(agent.command, message);
     } finally {
       inFlight.delete(agent.command);
       await load({ silent: true });
+      // Remove succeeded but the tool is still listed: another copy lives
+      // outside CodeMie. Say where, instead of a row that looks unchanged.
+      if (removed && !message && lastAgents?.find((a) => a.command === agent.command)?.installed) {
+        const path = await whereIs(agent.command);
+        const where = path ? `at ${path}` : 'elsewhere';
+        rowNotes.set(agent.command, `Removed CodeMie's copy. ${agent.name} is still installed ${where}, outside CodeMie.`);
+        await load({ silent: true });
+      }
     }
     return message ? { ok: false, message } : { ok: true };
   }
 
-  function messageFor(lines) {
+  function messageFor(lines, verb) {
     const accumulated = lines.join('\n');
-    if (NO_NETWORK.test(accumulated)) return 'Installing needs a connection.';
+    if (NO_NETWORK.test(accumulated)) return `${verb} needs a connection.`;
     // The CLI gives up on an install after a fixed time and says so in ms.
     const timedOut = accumulated.match(/timed out after (\d+)\s*ms/i);
     if (timedOut) return `Took longer than ${Math.round(Number(timedOut[1]) / 60000)} minutes. Check your connection and try again.`;
@@ -185,8 +209,8 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // passes no explicit version, which is what the ticket forbids. See
   // .ai-run/decisions/2026-09-21-EPMCDME-14514-install-without-supported.md.
   const onInstall = (agent, opts) => runAction(agent, `codemie install ${agent.command}`, opts);
-  const onUpdate = (agent) => runAction(agent, `codemie update ${agent.command}`, { note: true });
-  const onRemove = (agent) => runAction(agent, `codemie uninstall ${agent.command}`);
+  const onUpdate = (agent) => runAction(agent, `codemie update ${agent.command}`, { note: true, verb: 'Updating' });
+  const onRemove = (agent) => runAction(agent, `codemie uninstall ${agent.command}`, { removed: true, verb: 'Removing' });
 
   return {
     run: () => load({ silent: false }),

@@ -21,7 +21,6 @@
         <span id="identity-profile"></span>
         <span id="identity-model"></span>
         <span id="identity-project"></span>
-        <span id="identity-version-badge"></span>
         <!-- Theme toggle — shell chrome, so it is available on every view. checked = dark. -->
         <label id="theme-toggle" class="switch-wrapper" title="Toggle light / dark theme">
           <span class="theme-ico theme-ico-sun" aria-hidden="true">☀</span>
@@ -40,7 +39,7 @@
       <nav id="app-sidebar">
         <div id="sidebar-main-group">
           <button id="sidebar-home" class="sidebar-item" data-view="home">Home</button>
-          <button id="sidebar-agents" class="sidebar-item" data-view="agents">Agents</button>
+          <button id="sidebar-agents" class="sidebar-item" data-view="agents">Tools</button>
           <button id="sidebar-connections" class="sidebar-item" data-view="connect">Connections</button>
           <button id="sidebar-health" class="sidebar-item" data-view="health">Health</button>
         </div>
@@ -78,21 +77,8 @@
         <!-- Home body: the onboarding checklist, then the status cards (ui/home-view.js). -->
         <div id="home-body"></div>
 
-        <!-- Updates are cards under the status cards, as 01-home.png draws them.
-             The identity bar's version badge stays up top. -->
+        <!-- Updates are cards under the status cards, as 01-home.png draws them. -->
         <div id="home-updates">
-          <!-- ============ UPDATE BANNER ============ -->
-          <div id="update-banner" class="top-banner hidden">
-            <div class="top-banner-body">
-              <div class="top-banner-title">CodeMie CLI <span id="update-to"></span> is available</div>
-              <div class="top-banner-line">Your profile, settings and agents are kept.</div>
-            </div>
-            <div class="top-banner-actions">
-              <button id="update-banner-run" class="btn btn-accent top-banner-action">Update CLI</button>
-              <button id="update-banner-dismiss" class="top-banner-dismiss" aria-label="Dismiss">✕</button>
-            </div>
-          </div>
-
           <!-- ============ APP UPDATE BANNER ============ -->
           <div id="app-update-banner" class="top-banner hidden">
             <div class="top-banner-body">

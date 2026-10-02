@@ -99,6 +99,33 @@ pub fn parse_global_version(output: &str) -> Option<String> {
     })
 }
 
+/// Drops `own` from `path_env`: the app's own shim dir and the agents dir hold
+/// a `codemie` the app put there (the first launch writes both into the login
+/// PATH, and a CLI that updates itself from inside the app lands in the agents
+/// dir), so finding one there must not count as the user's own CLI.
+pub fn without_dirs(path_env: &str, own: &[std::path::PathBuf]) -> String {
+    let key = |p: &std::path::Path| {
+        let s = p.to_string_lossy();
+        let s = s.trim_end_matches(['/', '\\']);
+        if cfg!(windows) {
+            s.to_lowercase()
+        } else {
+            s.to_string()
+        }
+    };
+    let own: Vec<String> = own
+        .iter()
+        .map(|p| key(p))
+        .filter(|k| !k.is_empty())
+        .collect();
+    let kept: Vec<std::path::PathBuf> = std::env::split_paths(OsStr::new(path_env))
+        .filter(|dir| !own.contains(&key(dir)))
+        .collect();
+    std::env::join_paths(kept)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path_env.to_string())
+}
+
 /// Returns true when a `codemie` binary exists in any directory of `path_env`.
 /// Windows checks both the npm `.cmd` shim and a plain `.exe`; other platforms
 /// check the extension-less binary name.
@@ -172,6 +199,33 @@ mod tests {
     }
     fn no_version(_: &str) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn without_dirs_drops_the_apps_own_dirs_only() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let path = [
+            "/app/Resources/bin/",
+            "/home/u/.codemie/agents/bin",
+            "/opt/homebrew/bin",
+        ]
+        .join(sep);
+        let own = [
+            std::path::PathBuf::from("/app/Resources/bin"),
+            std::path::PathBuf::from("/home/u/.codemie/agents/bin"),
+        ];
+        assert_eq!(without_dirs(&path, &own), "/opt/homebrew/bin");
+    }
+
+    #[test]
+    fn own_shim_on_path_is_not_the_users_cli() {
+        let shim = std::path::Path::new("/app/Resources/bin/codemie");
+        let only_ours = |p: &std::path::Path| p == shim;
+        let path = without_dirs(
+            "/app/Resources/bin",
+            &[std::path::PathBuf::from("/app/Resources/bin")],
+        );
+        assert!(!probe_global_codemie(&path, &only_ours));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "head": "b8c3e53df81f2e5a9af6c680434c7c9a15686d35",
+  "feature_id": "identity-bar-default-width",
+  "tool": "playwright",
+  "coverage_source": "existing-test",
+  "test_command": "npx playwright test -g \"default width\"",
+  "app_url": "http://localhost:8935/index.html",
+  "screenshot_path": "evidence/screenshots/identity-bar-default-width.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "notes": "Re-verified at HEAD b8c3e53 after the fix-up commit. At 1280px: all five text segments (auth, account, profile, model, project) share one row (centres within 3px), flex-wrap is nowrap, auth-status renders the cleaned string 'Authenticated (expires in 23h 51m)' with no raw CLI markers, badge text '0.14.2 available' is fully unclipped, and badge + toggle sit right of the text segments, pinned to the bar's right edge. No behavior change expected or observed at this width."
+}

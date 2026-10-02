@@ -1,0 +1,4 @@
+# Deferred from code review — 2026-09-25-EPMCDME-15257-windows (2026-09-25)
+
+- **USERPROFILE forced empty on unset host env** — `src-tauri/src/commands/pty.rs:51` — `pty_env_pairs_for` unconditionally pushes the `USERPROFILE`/`HOME` pair even when `home` is empty, overwriting a child process's inherited value with `""` instead of leaving it unset. Pre-existing: the same unconditional push already existed for `spawn_pty`'s call to this helper before this change; `spawn_external_ps` only added a second call site to the same shared function.
+- **PATH forced empty when unreadable** — `src-tauri/src/commands/pty.rs:59` — the `PATH` pair is always included in the returned env pairs even when `existing_path` is empty (host `PATH` unset/unreadable), so the child's `PATH` becomes `""` rather than inheriting whatever the OS provides. Pre-existing: this behavior predates this change in the same shared `pty_env_pairs_for` helper.

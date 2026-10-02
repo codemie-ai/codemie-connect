@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "head": "b8c3e53df81f2e5a9af6c680434c7c9a15686d35",
+  "feature_id": "identity-bar-flex-shrink-priority",
+  "tool": "playwright",
+  "coverage_source": "existing-test",
+  "test_command": "npx playwright test -g \"flex-shrink priority\"",
+  "app_url": "http://localhost:8935/index.html",
+  "screenshot_path": "evidence/screenshots/identity-bar-narrow-width.png",
+  "console_errors": [],
+  "network_failures": [],
+  "result": "PASS",
+  "notes": "Re-verified at HEAD b8c3e53. Regression fixed: the shared rule and the #identity-auth-status/#identity-product override were requalified to '#identity-bar > span#identity-auth-status, #identity-bar > span#identity-product', which ties the shared rule's specificity (2 ids + 1 type) and wins via source order (declared after the shared rule). Computed styles confirm the fix directly: getComputedStyle(#identity-auth-status).flexShrink === '1' and getComputedStyle(#identity-product).flexShrink === '1', while account/profile/model/project all read flexShrink === '3'. This was checked via computed CSSOM values, not source text, so auth-status/product are confirmed to genuinely shrink three times slower than the other segments at narrow width."
+}

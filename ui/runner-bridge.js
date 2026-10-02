@@ -25,9 +25,14 @@ const started = (cmd) => {
 export const runner = {
   runCapture: async (cmd) => {
     const finish = started(cmd);
-    const res = await invoke('run_capture', { cmd });
-    finish(res && res.code);
-    return res;
+    let res = null;
+    try {
+      res = await invoke('run_capture', { cmd });
+      return res;
+    } finally {
+      // Also when invoke rejects, or the footer shows the command running forever.
+      finish(res && res.code);
+    }
   },
   runFreshEnv: (cmd) => invoke('run_fresh_env', { cmd }),
 
@@ -52,15 +57,30 @@ export const runner = {
   },
 };
 
+// Commands Rust runs itself are reported to the footer the same way. `codeOf`
+// turns the result into an exit code; a rejection shows as failed.
+const logged = (cmd, run, codeOf = () => 0) => {
+  const finish = started(cmd);
+  return run().then(
+    (res) => {
+      finish(codeOf(res));
+      return res;
+    },
+    (e) => {
+      finish(null);
+      throw e;
+    },
+  );
+};
+
 // ---- inspector (src/main/inspector.js) ----
 export const inspector = {
   checkGit: () => invoke('check_git'),
   checkNode: () => invoke('check_node'),
   checkNpm: () => invoke('check_npm'),
   checkCodemie: () => invoke('check_codemie'),
-  checkCodemieVersion: () => invoke('check_codemie_version'),
   checkHandshakeState: () => invoke('check_handshake_state'),
-  checkProfileStatus: () => invoke('check_profile_status'),
+  checkProfileStatus: () => logged('codemie profile status', () => invoke('check_profile_status'), (st) => st?.code ?? 0),
   gitBinaryPath: () => invoke('git_binary_path'),
   nodeBinaryPath: () => invoke('node_binary_path'),
 };
@@ -100,8 +120,6 @@ async function restartApp() {
 }
 
 export const updater = {
-  fetchCodemieLatest: () => invoke('fetch_codemie_latest'),
-  runSelfUpdate: () => invoke('run_self_update'),
   checkForAppUpdate,
   downloadAndInstall,
   restartApp,
@@ -166,9 +184,13 @@ export const pty = {
         if (e.payload.id === id) resolveExit(e.payload.code);
       });
       const finish = started(cmd);
-      await invoke('spawn_pty', { cmd, cols, rows, runId: id });
-      const code = await exitP;
-      finish(code);
+      let code = null;
+      try {
+        await invoke('spawn_pty', { cmd, cols, rows, runId: id });
+        code = await exitP;
+      } finally {
+        finish(code);
+      }
       return { code, id };
     } finally {
       exitUnlisten?.();

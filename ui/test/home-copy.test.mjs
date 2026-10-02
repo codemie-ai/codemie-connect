@@ -47,12 +47,26 @@ test('renderer: install-only dead code and full-installation wording are gone', 
 test('renderer: mode label and auth notice use Setup-consistent copy', () => {
   assert.match(renderer, /modeLabel\.textContent = 'Setup'/);
   assert.match(renderer, /Run setup \/ sign in first/);
-  assert.match(renderer, /primaryLabel: 'Run setup',\n\s*primaryAction: \(\) => openGuidedSetup\(\)/);
+  assert.match(renderer, /primaryLabel: 'Run setup',\r?\n\s*primaryAction: \(\) => openGuidedSetup\(\)/);
 });
 
-// The bundled CLI sits inside the app: `self-update` would install the new
-// version into the user's own npm and the app would keep running the old one
-// ("Updated! → 0.15.2" when 0.15.3 was out). So no CLI update is offered for it.
-test('renderer: no CLI update banner or badge while the app runs its bundled CLI', () => {
-  assert.match(renderer, /invoke\('cli_is_bundled'\),\s*invoke\('check_codemie_version'\),\s*invoke\('fetch_codemie_latest'\),\s*\]\)\.then\(\(\[bundled, installed, latest\]\) => \{\s*if \(bundled\) return;/);
+// One update: the app updates itself, and the CLI inside it comes with it.
+// A separate CLI update would install into npm while the app kept running the
+// copy it ships with (EPMCDME-15407).
+test('renderer: the app offers no CLI update of its own', () => {
+  for (const gone of ['runSelfUpdate', 'fetch_codemie_latest', 'cli_is_bundled', "'update-banner", 'identity-version-badge']) {
+    assert.ok(!renderer.includes(gone), `renderer.js still has ${gone}`);
+  }
+  assert.ok(!html.includes('id="update-banner"'), 'index.html still has the CLI update banner');
+  assert.ok(!html.includes('identity-version-badge'), 'index.html still has the CLI version badge');
+  assert.ok(html.includes('id="app-update-banner"'), 'the app update banner stays');
+});
+
+// The footer must be listening before boot() runs its startup checks, or
+// `codemie profile status` never shows (seen on Windows).
+test('renderer: the command-log footer is wired before the startup checks run', () => {
+  const boot = renderer.slice(renderer.indexOf('async function boot('));
+  const wired = boot.indexOf('bridge.setCommandListener(');
+  assert.ok(wired > 0, 'boot() wires the footer');
+  assert.ok(wired < boot.indexOf('bridge.inspector.checkProfileStatus()'), 'before the profile status check');
 });

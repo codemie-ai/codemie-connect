@@ -122,6 +122,15 @@ test('the checklist renders the four items on the injected steps-ui instance, in
   assert.equal(container.querySelector('.home-cards'), null);
 });
 
+test('while the browser sign-in is open, Sign in is disabled and says so', () => {
+  const container = makeEl('div');
+  const view = createHomeView(container, { stepsUi: fakeStepsUi(), onSignIn: () => {} });
+  view.render({ ...checklist, signingIn: true });
+  const btn = container._all((n) => n._tag === 'button' && n.textContent === 'Waiting for the browser…')[0];
+  assert.ok(btn, 'the button says what it waits for');
+  assert.equal(btn.disabled, true);
+});
+
 test('item 1 gets an in-place Sign in control while it is open, and none once complete', () => {
   const container = makeEl('div');
   let signedIn = 0;
@@ -215,16 +224,20 @@ test('the Profile card offers Set up again; the other cards open their screen', 
 test('Home\'s header hides while the checklist is up and shows once setup is done', async () => {
   const { applyHomeHeader } = await import('../home-view.js');
   const classes = new Set();
+  const updateClasses = new Set();
   const header = { classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)) } };
+  const updates = { classList: { toggle: (c, on) => (on ? updateClasses.add(c) : updateClasses.delete(c)) } };
   const sub = { textContent: 'stale' };
-  const root = { getElementById: (id) => ({ 'home-header': header, 'home-subtitle': sub })[id] };
+  const root = { getElementById: (id) => ({ 'home-header': header, 'home-subtitle': sub, 'home-updates': updates })[id] };
 
   applyHomeHeader(root, { done: false });
   assert.equal(classes.has('hidden'), true, 'hidden during onboarding');
+  assert.equal(updateClasses.has('hidden'), true, 'no update cards on the checklist');
   assert.equal(sub.textContent, '');
 
   applyHomeHeader(root, { done: true });
   assert.equal(classes.has('hidden'), false, 'shown once done');
+  assert.equal(updateClasses.has('hidden'), false, 'update cards come back under the status cards');
   assert.equal(sub.textContent, 'Everything is set up. Here is how things stand.');
 });
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveHome, HOME_ITEMS, signInAction, autoHealthCheck } from '../home-state.js';
+import { deriveHome, HOME_ITEMS, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from '../home-state.js';
 import { StepStatus } from '../models.js';
 
 const valid = { state: 'valid', profile: 'demo7', model: 'claude-sonnet-5', project: 'epm-sdai', account: 'me@epam.com' };
@@ -54,6 +54,12 @@ test('the signed-in subtitle keeps the CLI sentence without its "Auth Status |" 
   assert.equal(deriveHome({ config: valid, auth: { state: 'signed_in', detail: '' } }).items[0].subtitle, 'Signed in');
 });
 
+// EPMCDME-15296: the identity bar needs this same cleaning function the
+// checklist already uses, so it must be importable directly.
+test('signedInDetail is exported for reuse outside deriveHome', () => {
+  assert.equal(signedInDetail('Auth Status │ ✓ Authenticated (expires in 23h 51m)'), 'Authenticated (expires in 23h 51m)');
+});
+
 test('not signed in keeps item 1 open and the profile card says so', () => {
   const s = deriveHome({ config: valid, auth: { state: 'not_signed_in', detail: '' }, agents, health: healthy });
   assert.equal(s.items[0].status, StepStatus.PENDING);
@@ -83,7 +89,7 @@ test('sources that are not ready render as unknown, never as a made-up value', (
   assert.equal(s.done, false);
   const failed = deriveHome({ config: valid, auth: signedIn, agents: null, health: null });
   assert.equal(failed.items[2].status, StepStatus.PENDING);
-  assert.equal(failed.items[2].subtitle, 'Could not read the agent list');
+  assert.equal(failed.items[2].subtitle, 'Could not read the tool list');
   assert.deepEqual(failed.cards.find((c) => c.id === 'agents').badge, { text: 'unknown', tone: 'muted' });
   assert.deepEqual(failed.cards.find((c) => c.id === 'health').badge, { text: 'unknown', tone: 'muted' });
 });
@@ -167,6 +173,46 @@ test('the health check starts by itself once the steps before it are done', () =
   assert.equal(autoHealthCheck(running), false);
 });
 
+// The result is not kept between launches, so after a restart the status cards
+// run the check themselves instead of saying "unknown" (EPMCDME-15388).
+test('on the status cards the health check starts by itself when it has not run this session', () => {
+  const cards = deriveHome({ config: valid, auth: signedIn, agents, health: null, onboarded: true });
+  assert.equal(cards.done, true);
+  assert.equal(autoHealthCheck(cards), true);
+  const signedOut = deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: null, onboarded: true });
+  assert.equal(signedOut.done, false, 'a lapsed sign-in brings the checklist back');
+  assert.equal(autoHealthCheck(signedOut), false, 'and the checklist waits for sign-in, as before');
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: healthy, onboarded: true })), false);
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true, onboarded: true })), false);
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true, onboarded: true })), false);
+});
+
+// At launch the sign-in status is not read yet, so a returning user briefly
+// counts as done. Starting the check then left a result on the checklist a
+// lapsed sign-in brought back, before its earlier steps were done.
+test('on the status cards the check waits until the sign-in status is known', () => {
+  const booting = deriveHome({ config: valid, agents, health: null, onboarded: true });
+  assert.equal(booting.done, true);
+  assert.equal(autoHealthCheck(booting), false);
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, onboarded: true })), true);
+});
+
+test('the Health card says checking while the check runs, not unknown', () => {
+  const card = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true, onboarded: true }).cards.find((c) => c.id === 'health');
+  assert.equal(card.badge.text, 'checking');
+  assert.equal(card.line, 'Checking…');
+});
+
+// A check that could not finish must not leave the step on "Not checked yet"
+// with nothing to click: the sidebar's Health is still locked then.
+test('a health check that could not finish is an error on its step, and does not start again', () => {
+  const s = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true });
+  const h = s.items.find((i) => i.id === 'health');
+  assert.equal(h.status, StepStatus.ERROR);
+  assert.equal(h.subtitle, 'The check did not finish');
+  assert.equal(autoHealthCheck(s), false);
+});
+
 test('a running health check shows on its step', () => {
   const s = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true });
   const h = s.items.find((i) => i.id === 'health');
@@ -202,4 +248,16 @@ test('the Connections card says whether Claude Desktop is connected, as the prox
   assert.deepEqual(card(null).badge, { text: 'unknown', tone: 'muted' });
   assert.equal(card(null).line, 'Could not read the connection');
   assert.deepEqual(card(undefined).badge, { text: 'checking', tone: 'muted' });
+});
+
+// Measured with the bundled CLI 0.15.2: a running proxy reports "healthy", never
+// "running", so a check for "running" left the card on "not connected" for good.
+test('the proxy status the CLI really prints maps to the Connections card', () => {
+  const card = (stdout) => deriveHome({ connection: connectionFromStatus(stdout) }).cards.find((c) => c.id === 'connections');
+  const running = '{\n  "status": "healthy",\n  "url": "http://127.0.0.1:4001",\n  "port": 4001\n}';
+  assert.deepEqual(card(running).badge, { text: '1 connected', tone: 'good' });
+  assert.deepEqual(card('Migrating…\n' + running).badge, { text: '1 connected', tone: 'good' });
+  assert.deepEqual(card('{ "status": "unhealthy", "port": 4001 }').badge, { text: 'not responding', tone: 'warn' });
+  assert.deepEqual(card('{\n  "status": "stopped"\n}').badge, { text: 'not connected', tone: 'muted' });
+  assert.deepEqual(card('').badge, { text: 'unknown', tone: 'muted' });
 });

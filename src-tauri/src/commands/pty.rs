@@ -47,7 +47,7 @@ const READ_BUF: usize = 4096;
 /// spawns a real child, e.g. `tests::kill_terminates_real_child`).
 fn pty_env_pairs_for(home: &str, existing_path: &str, windows: bool) -> Vec<(String, String)> {
     let env = crate::commands::npm_env::npm_env_for(home, windows);
-    let path = crate::commands::npm_env::prefixed_path_with_bin_dir(&env.bin_dir, existing_path);
+    let path = crate::commands::npm_env::path_with_bin_dir_last(&env.bin_dir, existing_path);
     let home_var = if windows {
         ("USERPROFILE".to_string(), home.to_string())
     } else {
@@ -284,9 +284,16 @@ pub async fn pty_kill(state: State<'_, AppState>) -> CmdResult<()> {
 #[tauri::command]
 pub async fn spawn_external_ps(cmd: String) -> CmdResult<i32> {
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    let status = tokio::process::Command::new("powershell.exe")
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let base_path = std::env::var("PATH").unwrap_or_default();
+    let mut command = tokio::process::Command::new("powershell.exe");
+    command
         .args(["-NoProfile", "-Command", &cmd])
-        .creation_flags(CREATE_NEW_CONSOLE)
+        .creation_flags(CREATE_NEW_CONSOLE);
+    for (k, v) in pty_env_pairs_for(&home, &base_path, true) {
+        command.env(k, v);
+    }
+    let status = command
         .status()
         .await
         .map_err(|e| InstallerError::Other(e.to_string()))?;
@@ -299,7 +306,7 @@ mod tests_pty_env {
 
     #[cfg(not(windows))]
     #[test]
-    fn pty_env_pairs_includes_npm_config_prefix_and_prefixed_path() {
+    fn pty_env_pairs_includes_npm_config_prefix_and_agents_path_last() {
         let pairs = pty_env_pairs_for("/Users/test", "/usr/bin", false);
         let prefix = pairs
             .iter()
@@ -307,7 +314,20 @@ mod tests_pty_env {
             .unwrap();
         assert_eq!(prefix.1, "/Users/test/.codemie/agents");
         let path = pairs.iter().find(|(k, _)| k == "PATH").unwrap();
-        assert!(path.1.starts_with("/Users/test/.codemie/agents/bin:"));
+        assert_eq!(path.1, "/usr/bin:/Users/test/.codemie/agents/bin");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pty_env_pairs_for_windows_includes_npm_config_prefix_and_agents_path_last() {
+        let pairs = pty_env_pairs_for(r"C:\Users\test", r"C:\Windows", true);
+        let prefix = pairs
+            .iter()
+            .find(|(k, _)| k == "npm_config_prefix")
+            .unwrap();
+        assert_eq!(prefix.1, r"C:\Users\test\.codemie\agents");
+        let path = pairs.iter().find(|(k, _)| k == "PATH").unwrap();
+        assert!(path.1.ends_with(r";C:\Users\test\.codemie\agents"));
     }
 }
 

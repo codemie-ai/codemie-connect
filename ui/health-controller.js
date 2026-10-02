@@ -11,7 +11,8 @@ import { renderHealth, showLoading, showLogError, clearLogError, showRunError } 
 
 // container: the #health-view element.
 // runStream(cmd, onLine): bridge.runner.runStream, injected so tests can stub it.
-// openLog(): invoke('open_log'), injected so tests can stub it.
+// openLog(): invoke('open_cli_debug_log'), the CLI's debug log for today,
+// injected so tests can stub it.
 // onNavigate(view): routes a deep-link action to another view.
 // signIn(): starts the app's sign-in; the checks run again once it settles.
 // now(): the clock, injected so a test can pin "checked at".
@@ -66,6 +67,7 @@ export function createHealthController({
         // indistinguishable from a genuine all-clear.
         showRunError(container, 'The check produced no output, so nothing can be said about this computer.', run);
         lastResult = null;
+        onFailure?.();
         return;
       }
       const result = { ...groupDoctorResults(records), checkedAt: now() };
