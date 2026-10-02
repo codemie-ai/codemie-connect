@@ -396,6 +396,7 @@ mod tests {
         assert_eq!(left, vec!["keep".to_string()]);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_baked_pack_is_complete() {
         let p = pack();
