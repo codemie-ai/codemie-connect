@@ -14,7 +14,7 @@ globalThis.window = {
   },
 };
 
-const { pty, inspector, updater, setCommandListener } = await import('../runner-bridge.js');
+const { pty, inspector, setCommandListener } = await import('../runner-bridge.js');
 
 test('spawnPty resolves only on its own id and onData filters by id', async () => {
   const listeners = {};
@@ -80,8 +80,8 @@ test('CR-005: data listener is cleaned up when exit-listen throws', async () => 
   );
 });
 
-// Commands Rust runs itself (profile status, --version, self-update) used to
-// skip the "what CodeMie ran" footer, so an Update CLI click left no trace.
+// Commands Rust runs itself (profile status) used to skip the "what CodeMie
+// ran" footer. They reach it with their outcome; a rejection shows as failed.
 test('commands Rust runs itself reach the command log, with their outcome', async () => {
   const seen = [];
   setCommandListener((cmd) => {
@@ -89,19 +89,13 @@ test('commands Rust runs itself reach the command log, with their outcome', asyn
     seen.push(entry);
     return (code) => { entry.code = code; };
   });
-  invokeImpl = async (cmd) => {
-    if (cmd === 'check_profile_status') return { state: 'unknown', detail: '', code: 1 };
-    if (cmd === 'check_codemie_version') return '';
-    if (cmd === 'run_self_update') throw new Error('npm failed');
-    return null;
-  };
+  invokeImpl = async () => ({ state: 'unknown', detail: '', code: 1 });
   await inspector.checkProfileStatus();
-  await inspector.checkCodemieVersion();
-  await assert.rejects(updater.runSelfUpdate());
+  invokeImpl = async () => { throw new Error('ipc failed'); };
+  await assert.rejects(inspector.checkProfileStatus());
   assert.deepEqual(seen, [
     { cmd: 'codemie profile status', code: 1 },
-    { cmd: 'codemie --version', code: 1 },
-    { cmd: 'codemie self-update', code: null },
+    { cmd: 'codemie profile status', code: null },
   ]);
   setCommandListener(null);
 });

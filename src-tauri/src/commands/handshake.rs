@@ -34,8 +34,8 @@ pub fn parse_global_version(output: &str) -> Option<String> {
 
 /// Drops `own` from `path_env`: the app's own shim dir and the agents dir hold
 /// a `codemie` the app put there (the first launch writes both into the login
-/// PATH, and a self-update run by the app lands in the agents dir), so finding
-/// one there must not count as the user's own CLI.
+/// PATH, and a CLI that updates itself from inside the app lands in the agents
+/// dir), so finding one there must not count as the user's own CLI.
 pub fn without_dirs(path_env: &str, own: &[std::path::PathBuf]) -> String {
     let key = |p: &std::path::Path| {
         let s = p.to_string_lossy();

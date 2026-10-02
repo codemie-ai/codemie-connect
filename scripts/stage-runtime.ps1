@@ -135,6 +135,10 @@ if ($NoBaseline) {
 $after = (Get-ChildItem $CliModules -Recurse -File).Count
 Write-Host "    files: $before -> $after" -ForegroundColor DarkCyan
 
+# The CLI reads this file next to its package.json to know it is the copy
+# inside CodeMie Connect, which updates with the app (EPMCDME-15433).
+Set-Content -Path (Join-Path $CliModules "$($Cfg.cliPackage)\codemie-connect.json") -Value '{ "managedBy": "CodeMie Connect" }' -Encoding ascii
+
 # -- 4. Verify (see spec section 6 - these are not negotiable) ----------------------
 Write-Host "==> Verifying staged artifacts..." -ForegroundColor Cyan
 
@@ -160,6 +164,7 @@ $required = @(
     "$($Cfg.cliPackage)\bin\codemie.js",
     "$($Cfg.cliPackage)\dist\cli\index.js",
     "$($Cfg.cliPackage)\package.json",
+    "$($Cfg.cliPackage)\codemie-connect.json",
     "keytar\build\Release\keytar.node"
 )
 foreach ($r in $required) {
