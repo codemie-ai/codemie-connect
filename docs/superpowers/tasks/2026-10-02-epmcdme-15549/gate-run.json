@@ -1,0 +1,11 @@
+{"schema":1,"branch":"EPMCDME-15549-win-download-Node.js-and-the-CodeMie-CLI-on-first-launch-instead-of-bundling-them","head":"5fb1a2c28bb1ed98352500dc6ba44fa224a0ab72","runner":"custom","started_at":"2026-10-02T00:00:00Z","completed_at":"2026-10-02T00:15:00Z","status":"BLOCKED","drift_detected":false,
+"gates":[
+{"id":"fmt-rust","source":"guide","status":"PASS","duration_ms":1000,"command":"cd src-tauri && cargo fmt --check","exit_code":0,"notes":"First run failed on logger.rs (not in branch diff); auto-fix cargo fmt applied, rerun passed. logger.rs left modified in working tree."},
+{"id":"lint-rust","source":"guide","status":"PASS","duration_ms":12000,"command":"cd src-tauri && cargo clippy -- -D warnings","exit_code":0},
+{"id":"unit-js","source":"guide","status":"FAIL","duration_ms":16000,"command":"npm test","exit_code":1},
+{"id":"unit-rust","source":"guide","status":"FAIL","duration_ms":40000,"command":"cd src-tauri && cargo test","exit_code":101},
+{"id":"build","source":"guide","status":"FAIL","duration_ms":359000,"command":".\build-installer.ps1","exit_code":1,"notes":"Staging, pack, verify, smoke, release compile all passed; NSIS bundle step failed with timeout: global (likely tool download/network)."}],
+"failures":{
+"unit-js":"491 tests, 490 pass, 1 fail: ui/test/agents-controller.test.mjs:638 'Remove exit 0 with the tool gone from the list issues no lookup and leaves no note' (true !== false at :640). File not in branch diff.",
+"unit-rust":"106 passed, 2 failed: commands::logger::tests::cli_debug_log_is_the_dated_file_under_codemie_logs (left '/Users/u\\.codemie\\logs\\debug-2026-09-28.log' vs right '/Users/u/.codemie/logs/debug-2026-09-28.log'); commands::pathman::tests_persist_decision::dmg_mount_and_app_translocation_are_not_install_locations (pathman.rs:880 panic for /Volumes/CodeMie Connect/...). Both look macOS-path tests failing on Windows.",
+"build":"failed to bundle project: `timeout: global` (tauri NSIS bundling) after release compile succeeded."}}
