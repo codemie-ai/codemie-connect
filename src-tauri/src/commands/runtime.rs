@@ -32,6 +32,7 @@ const COMPLETE_MARKER: &str = ".complete";
 // over to the app (codemie-code #598, CLI 0.15.7 and later).
 const CONNECT_MARKER: &str = "{ \"managedBy\": \"CodeMie Connect\" }\n";
 const REGISTRY_LATEST: &str = "https://registry.npmjs.org/@codemieai/code/latest";
+const NPM_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// The pinned versions from runtime.json.
 #[derive(serde::Deserialize, Clone)]
@@ -254,6 +255,10 @@ async fn check_and_update_cli(existing_cli: bool) -> CmdResult<Option<String>> {
         return Ok(None);
     }
     let base = runtime_base(&home()?);
+    // Every launch: drop what a previous update replaced. ensure_runtime does
+    // the same, but it only runs when something has to be installed.
+    let b = base.clone();
+    let _ = tokio::task::spawn_blocking(move || remove_stale(&b)).await;
     let Some(current) = linked_version(&cli_link(&base), "cli-") else {
         return Ok(None);
     };
@@ -392,7 +397,16 @@ async fn install_cli(base: &Path, version: &str, locked: bool) -> CmdResult<()> 
                 }
             }
         }
-        let out = npm.output().await?;
+        // npm retries on its own and can wait many minutes behind a dead proxy;
+        // past this limit it is stopped and the user gets Try again.
+        npm.kill_on_drop(true);
+        let out = tokio::time::timeout(NPM_TIMEOUT, npm.output())
+            .await
+            .map_err(|_| {
+                InstallerError::Other(
+                    "installing the CodeMie CLI from npm took too long; check the network or proxy".into(),
+                )
+            })??;
         if !out.status.success() || !cli_entry(&staging).is_file() {
             let err = String::from_utf8_lossy(&out.stderr);
             let lines: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).collect();
