@@ -15,10 +15,11 @@ pub fn run() {
             // Capture PATH before injection so detection searches the pre-bundle PATH.
             let pre_injection_path = std::env::var("PATH").unwrap_or_default();
 
-            // Detect an existing CodeMie CLI before touching PATH ourselves. If found,
-            // the bundle must not be installed or registered at all (EPMCDME-14581).
+            // Detect a *working* CodeMie CLI before touching PATH ourselves.
+            // File-existence alone is not enough: the old PowerShell shim can be on
+            // PATH but broken (exits 1). Only a passing --version counts (EPMCDME-15257).
             let existing_cli_detected =
-                commands::handshake::probe_global_codemie(&pre_injection_path, &|p| p.exists());
+                commands::handshake::find_working_global_codemie(&pre_injection_path).is_some();
 
             let bundled_injected = if existing_cli_detected {
                 false
