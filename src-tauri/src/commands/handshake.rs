@@ -225,3 +225,39 @@ mod tests {
         assert_eq!(parse_global_version("vX.Y.Z"), None);
     }
 }
+
+#[cfg(test)]
+#[cfg(not(windows))]
+mod tests_find_working_global {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    #[test]
+    fn broken_binary_returns_none() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("codemie");
+        fs::write(&bin, b"#!/bin/sh\nexit 1").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let path_env = dir.path().to_str().unwrap().to_string();
+        assert!(
+            find_working_global_codemie(&path_env).is_none(),
+            "a binary that exits 1 must not count as a working global CLI"
+        );
+    }
+
+    #[test]
+    fn working_binary_returns_version() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("codemie");
+        fs::write(&bin, b"#!/bin/sh\necho 'codemie 1.2.3'").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let path_env = dir.path().to_str().unwrap().to_string();
+        assert_eq!(
+            find_working_global_codemie(&path_env),
+            Some("1.2.3".to_string()),
+            "a binary that exits 0 and prints a semver must be returned"
+        );
+    }
+}
