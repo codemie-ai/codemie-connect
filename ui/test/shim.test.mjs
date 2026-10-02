@@ -91,6 +91,15 @@ test('the CLI lock file the app installs with pins the CLI runtime.json pins', (
   assert.equal(lock.packages['node_modules/@codemieai/code'].version, rt.cliVersion);
 });
 
+// Below 0.15.7 the CLI asks "Would you like to update now?" on its first run.
+// The app cannot answer it, so every CLI call hangs. From 0.15.7 the
+// codemie-connect.json marker the app writes makes it skip that (codemie-code #598).
+test('runtime.json pins a CLI that skips its own update prompt inside the app (0.15.7 or later)', () => {
+  const rt = JSON.parse(readFileSync('runtime.json', 'utf8'));
+  const [maj, min, patch] = rt.cliVersion.split('.').map(Number);
+  assert.ok(maj > 0 || min > 15 || (min === 15 && patch >= 7), `cliVersion ${rt.cliVersion} is below 0.15.7`);
+});
+
 test('the shared tauri.conf.json declares no resources; each platform has its overlay', () => {
   const conf = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
   assert.equal(conf.bundle.resources, undefined, 'a shared resource forces the other platform to stage it before cargo builds');
