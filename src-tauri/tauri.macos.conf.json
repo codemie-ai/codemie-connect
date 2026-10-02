@@ -2,10 +2,7 @@
   "bundle": {
     "resources": {
       "../assets/macos/bin/codemie": "bin/codemie",
-      "../assets/macos/node/bin/node": "node/bin/node",
-      "../assets/macos/node/bin/npm": "node/bin/npm",
-      "../assets/macos/node/lib/node_modules/npm": "node/lib/node_modules/npm",
-      "../assets/codemie-cli/node_modules": "cli/node_modules"
+      "../assets/macos/bin/runtime-key": "bin/runtime-key"
     }
   }
 }

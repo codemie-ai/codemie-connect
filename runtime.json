@@ -3,5 +3,6 @@
   "nodeWin64Sha256": "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97",
   "nodeMacosArm64Sha256": "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
   "cliPackage": "@codemieai/code",
-  "cliVersion": "0.15.2"
+  "cliVersion": "0.15.2",
+  "runtimeBaseUrlMacos": "https://github.com/codemie-ai/codemie-code/releases/download/runtime-{key}"
 }

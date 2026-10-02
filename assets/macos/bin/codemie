@@ -1,23 +1,17 @@
 #!/bin/sh
-# CodeMie CLI shim. Runs the bundled Node runtime against the bundled CLI tree.
-# $(dirname "$0")/.. is Contents/Resources, so this file is correct wherever the
-# app is installed and needs no update if productName changes.
-RES="$(cd "$(dirname "$0")/.." && pwd)"
-if [ ! -x "$RES/node/bin/node" ]; then
-  echo "error: bundled node runtime not found: $RES/node/bin/node" 1>&2
+# CodeMie CLI shim. Node and the CLI tree are not in the app: the app downloads
+# them on first launch into Application Support (src-tauri/src/commands/runtime.rs),
+# into a folder named by runtime-key, which scripts/pack-runtime.sh writes next
+# to this file.
+KEY="$(cat "$(dirname "$0")/runtime-key" 2>/dev/null)"
+RT="$HOME/Library/Application Support/CodeMie/runtime/$KEY"
+if [ -z "$KEY" ] || [ ! -f "$RT/.complete" ]; then
+  echo "CodeMie is not set up yet. Open CodeMie Connect once to finish setting it up." 1>&2
   exit 1
 fi
-if [ ! -f "$RES/cli/node_modules/@codemieai/code/bin/codemie.js" ]; then
-  echo "error: bundled CLI entry not found: $RES/cli/node_modules/@codemieai/code/bin/codemie.js" 1>&2
-  exit 1
-fi
-# Agent installs and every uninstall shell out to `npm` by name, so the bundled
-# npm has to be findable. It sits next to the bundled node, a directory kept off
-# the user's own PATH on purpose (EPMCDME-14572), so it is added here instead:
-# only for this process tree, and appended, so a user's own npm still wins.
-# ${PATH:+...} keeps an empty PATH from becoming a leading ":", which POSIX
-# reads as the current directory.
-PATH="${PATH:+$PATH:}$RES/node/bin"
+# Agent installs and every uninstall shell out to `npm` by name, so the
+# runtime's npm has to be findable. It is appended, for this process tree
+# only, so a user's own npm still wins (EPMCDME-14572).
+PATH="${PATH:+$PATH:}$RT/node/bin"
 export PATH
-
-exec "$RES/node/bin/node" "$RES/cli/node_modules/@codemieai/code/bin/codemie.js" "$@"
+exec "$RT/node/bin/node" "$RT/cli/node_modules/@codemieai/code/bin/codemie.js" "$@"

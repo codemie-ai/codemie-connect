@@ -43,20 +43,25 @@ test('shim does not reference the removed pkg binary', () => {
 const MAC_SHIM = 'assets/macos/bin/codemie';
 const macShim = readFileSync(MAC_SHIM, 'utf8');
 
-test('macOS shim resolves Contents/Resources with one hop, never two', () => {
-  assert.match(macShim, /\$\(dirname "\$0"\)\/\.\."/, 'must resolve $(dirname "$0")/.. (bin -> Resources)');
-  assert.doesNotMatch(macShim, /\.\.\/\.\./, '../.. lands on Contents/, not Resources/');
-  assert.doesNotMatch(macShim, /CodeMie Connect/, 'must not hardcode the product name');
+test('macOS shim finds the downloaded runtime through runtime-key, never a hardcoded version', () => {
+  assert.match(macShim, /KEY="\$\(cat "\$\(dirname "\$0"\)\/runtime-key"/, 'the key is written by scripts/pack-runtime.sh next to the shim');
+  assert.match(macShim, /RT="\$HOME\/Library\/Application Support\/CodeMie\/runtime\/\$KEY"/, 'same folder as commands/runtime.rs');
+  assert.doesNotMatch(macShim, /CodeMie Connect\.app/, 'must not hardcode the app path');
 });
 
-test('macOS shim execs the bundled node runtime', () => {
-  assert.match(macShim, /exec "\$RES\/node\/bin\/node"/, 'must exec node/bin/node so exit code and signals pass through');
+test('macOS shim refuses a runtime whose download never finished', () => {
+  assert.match(macShim, /\[ ! -f "\$RT\/\.complete" \]/, 'the marker is the last thing ensure_runtime writes');
+  assert.match(macShim, /Open CodeMie Connect once/, 'tells the user how to get it');
 });
 
-test('macOS shim puts the bundled node directory on PATH, appended, before the exec', () => {
-  assert.match(macShim, /PATH="\$\{PATH:\+\$PATH:\}\$RES\/node\/bin"/, 'without this, `npm` is not found and every agent install fails on a clean machine');
+test('macOS shim execs the downloaded node runtime', () => {
+  assert.match(macShim, /exec "\$RT\/node\/bin\/node"/, 'must exec node/bin/node so exit code and signals pass through');
+});
+
+test('macOS shim puts the runtime node directory on PATH, appended, before the exec', () => {
+  assert.match(macShim, /PATH="\$\{PATH:\+\$PATH:\}\$RT\/node\/bin"/, 'without this, `npm` is not found and every agent install fails on a clean machine');
   assert.ok(
-    macShim.indexOf('$RES/node/bin"\nexport PATH') < macShim.indexOf('exec "$RES/node/bin/node"'),
+    macShim.indexOf('$RT/node/bin"\nexport PATH') < macShim.indexOf('exec "$RT/node/bin/node"'),
     'the export has to happen before the exec replaces the process',
   );
 });
@@ -66,27 +71,23 @@ test('macOS shim targets bin/codemie.js, never dist/index.js', () => {
   assert.doesNotMatch(macShim, /dist\/index\.js/, 'dist/index.js is a barrel with no CLI bootstrap');
 });
 
-test('macOS shim names the missing artifact before exiting 1', () => {
-  assert.match(macShim, /\[ ! -x "\$RES\/node\/bin\/node" \]/, 'node guard');
-  assert.match(macShim, /\[ ! -f "\$RES\/cli\/node_modules\/@codemieai\/code\/bin\/codemie\.js" \]/, 'entry guard');
-});
-
 test('runtime.json pins the darwin-arm64 Node checksum', () => {
   const rt = JSON.parse(readFileSync('runtime.json', 'utf8'));
   assert.match(rt.nodeMacosArm64Sha256 ?? '', /^[0-9a-f]{64}$/, 'nodeMacosArm64Sha256 must be a 64-hex SHA-256');
   assert.match(rt.nodeVersion, /^\d+\.\d+\.\d+$/, 'nodeVersion must be a plain semver');
 });
 
-test('tauri.macos.conf.json ships shim, node and the CLI tree with plain directory keys', () => {
+test('tauri.macos.conf.json ships only the shim and its runtime key; Node and the CLI are downloaded', () => {
   const conf = JSON.parse(readFileSync('src-tauri/tauri.macos.conf.json', 'utf8'));
-  const res = conf.bundle.resources;
-  assert.equal(res['../assets/macos/bin/codemie'], 'bin/codemie');
-  assert.equal(res['../assets/macos/node/bin/node'], 'node/bin/node');
-  assert.equal(res['../assets/codemie-cli/node_modules'], 'cli/node_modules');
-  for (const [src, dst] of Object.entries(res)) {
-    assert.doesNotMatch(src + dst, /\*/, `glob keys flatten the tree (spec §4): ${src} -> ${dst}`);
-    assert.doesNotMatch(dst, /\.exe$/, 'no pkg binary in the macOS bundle');
-  }
+  assert.deepEqual(conf.bundle.resources, {
+    '../assets/macos/bin/codemie': 'bin/codemie',
+    '../assets/macos/bin/runtime-key': 'bin/runtime-key',
+  });
+});
+
+test('runtime.json names where the macOS runtime archive is published', () => {
+  const rt = JSON.parse(readFileSync('runtime.json', 'utf8'));
+  assert.match(rt.runtimeBaseUrlMacos ?? '', /^https:\/\/.*\{key\}/, 'pack-runtime.sh fills {key} in');
 });
 
 test('the shared tauri.conf.json declares no resources; each platform has its overlay', () => {
