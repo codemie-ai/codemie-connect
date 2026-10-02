@@ -36,7 +36,7 @@ $NodeExe    = Join-Path $Root "assets\windows\node\node.exe"
 $CliModules = Join-Path $Root "assets\codemie-cli\node_modules"
 $CliEntry   = Join-Path $CliModules "@codemieai\code\bin\codemie.js"
 $Manifest   = Join-Path $Root "assets\staging-manifest.json"
-$PackJson   = Join-Path $Root "assets\windowsuntime-pack.json"
+$PackJson   = Join-Path $Root "assets\windows\runtime-pack.json"
 
 function Fail([string]$msg) { Write-Host ""; Write-Error "[build] $msg"; exit 1 }
 function Step([string]$msg) { Write-Host ""; Write-Host "==> $msg" -ForegroundColor Cyan }
@@ -147,13 +147,11 @@ Step "[5/5] Verifying the produced bundle"
 # Verified in tauri-build-2.6.2/src/lib.rs:88-103 and :536-543.
 if (-not (Test-Path $ReleaseDir)) { Fail "no release directory at $ReleaseDir" }
 
-foreach ($rel in @("bin\codemie.cmd", "binuntime-key")) {
+foreach ($rel in @("bin\codemie.cmd", "bin\runtime-key")) {
     $p = Join-Path $ReleaseDir $rel
     if (-not (Test-Path $p)) { Fail "bundle is missing $rel (looked at $p)" }
 }
-if (Test-Path (Join-Path $ReleaseDir "node
-ode.exe")) { Fail "Node is bundled again: $ReleaseDir
-ode (it is downloaded on first launch)" }
+if (Test-Path (Join-Path $ReleaseDir "node\node.exe")) { Fail "Node is bundled again: $ReleaseDir\node (it is downloaded on first launch)" }
 if (Test-Path (Join-Path $ReleaseDir "cli")) { Fail "the CLI is bundled again: $ReleaseDir\cli (it is downloaded on first launch)" }
 
 $stray = Get-ChildItem (Join-Path $ReleaseDir "bin") -Recurse -File -Filter "codemie*.exe" -ErrorAction SilentlyContinue
@@ -165,14 +163,14 @@ $Archive = Join-Path $Root "dist\codemie-runtime-$($pack.key)-win-x64.tar.gz"
 if (-not (Test-Path $Archive)) { Fail "missing runtime archive: $Archive (run without -SkipStage)" }
 $archiveSha = (Get-FileHash -Path $Archive -Algorithm SHA256).Hash.ToLower()
 if ($archiveSha -ne $pack.sha256) { Fail "runtime-pack.json sha does not match $Archive; the app would reject the download" }
-if ((Get-Content (Join-Path $ReleaseDir "binuntime-key") -Raw).Trim() -ne $pack.key) { Fail "bundle runtime-key does not match runtime-pack.json" }
+if ((Get-Content (Join-Path $ReleaseDir "bin\runtime-key") -Raw).Trim() -ne $pack.key) { Fail "bundle runtime-key does not match runtime-pack.json" }
 
 # The strongest check: unpack the archive where the app would, then run the
 # bundled shim exactly as an installed user would, against a throwaway LOCALAPPDATA.
 $TestLocal = Join-Path ([System.IO.Path]::GetTempPath()) "codemie-verify-$([guid]::NewGuid().ToString('N'))"
 $oldLocal = $env:LOCALAPPDATA
 try {
-    $rt = Join-Path $TestLocal "CodeMieuntime\$($pack.key)"
+    $rt = Join-Path $TestLocal "CodeMie\runtime\$($pack.key)"
     New-Item -ItemType Directory -Force -Path $rt | Out-Null
     & (Join-Path $env:SystemRoot "System32\tar.exe") -xzf $Archive -C $rt
     if ($LASTEXITCODE -ne 0) { Fail "could not unpack $Archive" }

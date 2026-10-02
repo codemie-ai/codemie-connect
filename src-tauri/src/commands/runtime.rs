@@ -249,6 +249,9 @@ async fn fetch(
 /// place. Emits `runtime:progress` with `{ phase, fraction, total }`.
 #[tauri::command]
 pub async fn ensure_runtime(app: AppHandle) -> CmdResult<()> {
+    // One install at a time: the staging and download paths are shared.
+    static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = INSTALL_LOCK.lock().await;
     let dir = runtime_dir()?;
     if is_ready(&dir) {
         return Ok(());

@@ -677,7 +677,6 @@ async function runUpdateApp() {
 // launch (commands/runtime.rs). Nothing else in boot() may run the CLI before
 // this resolves.
 async function ensureRuntime() {
-  if (await invoke('runtime_ready')) return;
   const overlay = document.getElementById('runtime-overlay');
   const title = document.getElementById('runtime-title');
   const detail = document.getElementById('runtime-detail');
@@ -685,6 +684,14 @@ async function ensureRuntime() {
   const retry = document.getElementById('runtime-retry');
   const errorEl = document.getElementById('runtime-error');
   const downloading = 'Downloading the CodeMie CLI. This happens once.';
+  let ready = false;
+  try {
+    ready = await invoke('runtime_ready');
+  } catch (err) {
+    // Fall through to the overlay: ensure_runtime below reports the error with Try again.
+    console.error('runtime_ready failed', err);
+  }
+  if (ready) return;
   overlay.classList.remove('hidden');
   const unlisten = await listen('runtime:progress', (e) => {
     const { phase, fraction, total } = e.payload;
@@ -692,6 +699,7 @@ async function ensureRuntime() {
     if (phase === 'unpack') detail.textContent = 'Unpacking…';
     else if (total) detail.textContent = `Downloading the CodeMie CLI (${Math.round((fraction * total) / 1048576)} of ${Math.round(total / 1048576)} MB). This happens once.`;
   });
+  try {
   for (;;) {
     title.textContent = 'Preparing CodeMie…';
     detail.textContent = downloading;
@@ -710,7 +718,9 @@ async function ensureRuntime() {
       await new Promise((r) => retry.addEventListener('click', r, { once: true }));
     }
   }
-  unlisten();
+  } finally {
+    unlisten();
+  }
   overlay.classList.add('hidden');
 }
 

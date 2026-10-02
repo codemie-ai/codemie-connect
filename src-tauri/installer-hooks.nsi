@@ -16,5 +16,7 @@
      [Environment]::SetEnvironmentVariable($\"PATH$\", $p, $\"User$\")"'
   ; Node and the CLI the app downloaded on first launch. Per-user, no admin.
   ; The user's own CodeMie config folder is not touched.
+  ; Keep it on an in-place update: the download is ~200 MB.
+  StrCmp $UpdateMode 1 +2
   RMDir /r "$LOCALAPPDATA\CodeMie\runtime"
 !macroend
