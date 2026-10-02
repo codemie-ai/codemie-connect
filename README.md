@@ -55,6 +55,7 @@ src-tauri/src/
   commands/installer.rs  Node .pkg URL + LTS lookup + osascript sudo + Xcode CLT
   commands/downloader.rs reqwest streaming download with progress events
   commands/pathman.rs    login-shell PATH resolution + ~/.zprofile persistence
+  commands/runtime.rs    macOS first-launch download of Node + CLI (SHA-256 verified, atomic unpack)
   commands/pty.rs        portable-pty: interactive TUI steps (base64 framing)
   commands/logger.rs window.rs smoke.rs
   steps.rs               embedded config/steps.yaml (serde_yaml) + logo path
@@ -82,13 +83,13 @@ cargo tauri dev
 
 ## Build a shareable DMG
 
-The DMG ships the CodeMie CLI with its own Node runtime (Apple Silicon). Build it with the verifying script:
+The macOS DMG (Apple Silicon) is small: it holds the app and the `codemie` shim only. Node and the CodeMie CLI are one pinned archive that the app downloads on first launch into `~/Library/Application Support/CodeMie/runtime/<version>` (skipped when the machine already has a CodeMie CLI). The Windows installer still bundles them. Build with the verifying script:
 
 ```bash
 ./build-installer.sh
 ```
 
-It downloads the pinned Node (`runtime.json`), installs the CLI tree under `assets/codemie-cli/`, asserts every bundled artifact before and after the Tauri build, and prints the DMG path. The plain commands below skip those checks and, until `scripts/stage-runtime.sh` has run once, fail with `resource path ... doesn't exist`.
+It downloads the pinned Node (`runtime.json`), installs the CLI tree under `assets/codemie-cli/`, packs both into `dist/codemie-runtime-<version>.tar.gz` (`scripts/pack-runtime.sh`), asserts every artifact before and after the Tauri build, and prints the DMG path. Upload the archive to the URL `pack-runtime.sh` prints (`runtime.json` `runtimeBaseUrlMacos`) before publishing the DMG. The plain commands below skip those checks and, until `scripts/stage-runtime.sh` and `scripts/pack-runtime.sh` have run once, fail to compile (`runtime-pack.json`) or with `resource path ... doesn't exist`.
 
 ```bash
 cd src-tauri
