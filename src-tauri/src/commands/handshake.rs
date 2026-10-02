@@ -105,7 +105,11 @@ pub fn detect_handshake_state(
     // probe guards the cheaper version_cmd call; a file that exists but whose
     // --version fails (broken shim) leaves global_found false.
     let file_found = probe_global_codemie(path_env, probe);
-    let global_version = if file_found { version_cmd(path_env) } else { None };
+    let global_version = if file_found {
+        version_cmd(path_env)
+    } else {
+        None
+    };
     let global_found = global_version.is_some();
 
     HandshakeState {
@@ -126,9 +130,7 @@ pub async fn check_handshake_state(app: tauri::AppHandle) -> HandshakeState {
     let bundled_injected = state.bundled_injected;
     tokio::task::spawn_blocking(move || {
         let real_probe = |p: &std::path::Path| p.exists();
-        let real_version_cmd = |path: &str| -> Option<String> {
-            find_working_global_codemie(path)
-        };
+        let real_version_cmd = |path: &str| -> Option<String> { find_working_global_codemie(path) };
         detect_handshake_state(&path_env, bundled_injected, &real_probe, &real_version_cmd)
     })
     .await
@@ -171,7 +173,10 @@ mod tests {
     fn global_not_found_when_file_exists_but_version_fails() {
         // The broken shim case: codemie.cmd exists but --version exits non-zero.
         let s = detect_handshake_state("/usr/local/bin", false, &always, &no_version);
-        assert!(!s.global_found, "broken shim must not count as a working global install");
+        assert!(
+            !s.global_found,
+            "broken shim must not count as a working global install"
+        );
     }
 
     #[test]
