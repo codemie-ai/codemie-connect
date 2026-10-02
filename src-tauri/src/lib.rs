@@ -13,7 +13,21 @@ pub fn run() {
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
             // Capture PATH before injection so detection searches the pre-bundle PATH.
-            let pre_injection_path = std::env::var("PATH").unwrap_or_default();
+            // The bundle's own shim dir is already on the persisted PATH after install;
+            // strip it so it isn't mistaken for an existing CLI (which would skip
+            // injection and let an orphaned shim earlier on PATH win).
+            let bundle_dirs: Vec<std::path::PathBuf> = [
+                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())),
+                app.path().resource_dir().ok(),
+            ]
+            .into_iter()
+            .flatten()
+            .flat_map(|d| [d.join("bin"), d])
+            .collect();
+            let pre_injection_path = commands::handshake::strip_dirs(
+                &std::env::var("PATH").unwrap_or_default(),
+                &bundle_dirs,
+            );
 
             // Detect a *working* CodeMie CLI before touching PATH ourselves.
             // File-existence alone is not enough: the old PowerShell shim can be on
