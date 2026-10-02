@@ -14,4 +14,7 @@
     "$p=[Environment]::GetEnvironmentVariable($\"PATH$\",$\"User$\"); \
      $p=($p.Split($\";\") | Where-Object { $_ -ne $\"$INSTDIR\bin$\" }) -join $\";\"; \
      [Environment]::SetEnvironmentVariable($\"PATH$\", $p, $\"User$\")"'
+  ; Node and the CLI the app downloaded on first launch. Per-user, no admin.
+  ; The user's own CodeMie config folder is not touched.
+  RMDir /r "$LOCALAPPDATA\CodeMie\runtime"
 !macroend
