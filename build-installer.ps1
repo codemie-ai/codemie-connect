@@ -190,8 +190,13 @@ $SetupExe = Get-ChildItem (Join-Path $ReleaseDir "bundle\nsis\*-setup.exe") -Err
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $SetupExe) { Fail "no *-setup.exe produced in $ReleaseDir\bundle\nsis" }
 
+$installerMb = [math]::Round($SetupExe.Length / 1MB, 1)
+if ($SetupExe.Length -gt 40MB) {
+    Fail "installer is $installerMb MB (limit 40 MB) — WebView2 offline installer or the runtime tree was bundled again"
+}
+
 Write-Host ""
 Write-Host "==> Done - all assertions passed." -ForegroundColor Green
 Write-Host "    Installer: $($SetupExe.FullName)"
-Write-Host "    Size:      $([math]::Round($SetupExe.Length / 1MB, 1)) MB (Node and the CLI are downloaded, not bundled)"
+Write-Host "    Size:      $installerMb MB (Node and the CLI are downloaded, not bundled)"
 Write-Host "    Upload:    $Archive"
