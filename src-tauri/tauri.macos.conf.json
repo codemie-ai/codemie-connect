@@ -1,8 +1,7 @@
 {
   "bundle": {
     "resources": {
-      "../assets/macos/bin/codemie": "bin/codemie",
-      "../assets/macos/bin/runtime-key": "bin/runtime-key"
+      "../assets/macos/bin/codemie": "bin/codemie"
     }
   }
 }

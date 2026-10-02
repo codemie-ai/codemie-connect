@@ -1,11 +1,9 @@
 #!/bin/sh
-# CodeMie CLI shim. Node and the CLI tree are not in the app: the app downloads
-# them on first launch into Application Support (src-tauri/src/commands/runtime.rs),
-# into a folder named by runtime-key, which scripts/pack-runtime.sh writes next
-# to this file.
-KEY="$(cat "$(dirname "$0")/runtime-key" 2>/dev/null)"
-RT="$HOME/Library/Application Support/CodeMie/runtime/$KEY"
-if [ -z "$KEY" ] || [ ! -f "$RT/.complete" ]; then
+# CodeMie CLI shim. Node and the CLI tree are not in the app: the app installs
+# them on first launch into Application Support (src-tauri/src/commands/runtime.rs)
+# and keeps the `node` and `cli` links there pointing at the versions in use.
+RT="$HOME/Library/Application Support/CodeMie/runtime"
+if [ ! -x "$RT/node/bin/node" ] || [ ! -f "$RT/cli/.complete" ]; then
   echo "CodeMie is not set up yet. Open CodeMie Connect once to finish setting it up." 1>&2
   exit 1
 fi

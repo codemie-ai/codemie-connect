@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,14 +46,14 @@ test('shim does not reference the removed pkg binary', () => {
 const MAC_SHIM = 'assets/macos/bin/codemie';
 const macShim = readFileSync(MAC_SHIM, 'utf8');
 
-test('macOS shim finds the downloaded runtime through runtime-key, never a hardcoded version', () => {
-  assert.match(macShim, /KEY="\$\(cat "\$\(dirname "\$0"\)\/runtime-key"/, 'the key is written by scripts/pack-runtime.sh next to the shim');
-  assert.match(macShim, /RT="\$HOME\/Library\/Application Support\/CodeMie\/runtime\/\$KEY"/, 'same folder as commands/runtime.rs');
+test('macOS shim runs whatever the runtime links point at, never a hardcoded version', () => {
+  assert.match(macShim, /RT="\$HOME\/Library\/Application Support\/CodeMie\/runtime"/, 'same folder as commands/runtime.rs');
+  assert.doesNotMatch(macShim, /\d+\.\d+\.\d+/, 'a version in the shim would pin it past a CLI update');
   assert.doesNotMatch(macShim, /CodeMie Connect\.app/, 'must not hardcode the app path');
 });
 
-test('macOS shim refuses a runtime whose download never finished', () => {
-  assert.match(macShim, /\[ ! -f "\$RT\/\.complete" \]/, 'the marker is the last thing ensure_runtime writes');
+test('macOS shim refuses a CLI whose install never finished', () => {
+  assert.match(macShim, /\[ ! -f "\$RT\/cli\/\.complete" \]/, 'the marker is the last thing install_cli writes');
   assert.match(macShim, /Open CodeMie Connect once/, 'tells the user how to get it');
 });
 
@@ -80,17 +80,15 @@ test('runtime.json pins the darwin-arm64 Node checksum', () => {
   assert.match(rt.nodeVersion, /^\d+\.\d+\.\d+$/, 'nodeVersion must be a plain semver');
 });
 
-test('tauri.macos.conf.json ships only the shim and its runtime key; Node and the CLI are downloaded', () => {
+test('tauri.macos.conf.json ships only the shim; Node and the CLI are installed on first launch', () => {
   const conf = JSON.parse(readFileSync('src-tauri/tauri.macos.conf.json', 'utf8'));
-  assert.deepEqual(conf.bundle.resources, {
-    '../assets/macos/bin/codemie': 'bin/codemie',
-    '../assets/macos/bin/runtime-key': 'bin/runtime-key',
-  });
+  assert.deepEqual(conf.bundle.resources, { '../assets/macos/bin/codemie': 'bin/codemie' });
 });
 
-test('runtime.json names where the macOS runtime archive is published', () => {
+test('the CLI lock file the app installs with pins the CLI runtime.json pins', () => {
   const rt = JSON.parse(readFileSync('runtime.json', 'utf8'));
-  assert.match(rt.runtimeBaseUrlMacos ?? '', /^https:\/\/.*\{key\}/, 'pack-runtime.sh fills {key} in');
+  const lock = JSON.parse(readFileSync('assets/codemie-cli/package-lock.json', 'utf8'));
+  assert.equal(lock.packages['node_modules/@codemieai/code'].version, rt.cliVersion);
 });
 
 test('the shared tauri.conf.json declares no resources; each platform has its overlay', () => {
@@ -100,12 +98,10 @@ test('the shared tauri.conf.json declares no resources; each platform has its ov
 
 // ---- macOS shim, executed ------------------------------------------------------
 
-// The shim reads runtime-key next to itself; stand in for the generated one.
-function shimWithKey(dir, key) {
+function shimIn(dir) {
   const bin = join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'codemie'), macShim);
-  writeFileSync(join(bin, 'runtime-key'), key);
   return join(bin, 'codemie');
 }
 
@@ -116,36 +112,42 @@ function execShim(shim, home, args = []) {
   });
 }
 
+// Lays the runtime out the way runtime.rs does: versioned dirs plus the
+// `node` and `cli` links the shim follows.
+function runtime(home, { cliComplete = true } = {}) {
+  const rt = join(home, 'Library/Application Support/CodeMie/runtime');
+  mkdirSync(join(rt, 'node-1/bin'), { recursive: true });
+  mkdirSync(join(rt, 'cli-1/node_modules/@codemieai/code/bin'), { recursive: true });
+  writeFileSync(join(rt, 'node-1/.complete'), '1');
+  if (cliComplete) writeFileSync(join(rt, 'cli-1/.complete'), '1');
+  writeFileSync(join(rt, 'node-1/bin/node'), '#!/bin/sh\necho "fake-node $2 $3"\nexit 7\n');
+  chmodSync(join(rt, 'node-1/bin/node'), 0o755);
+  writeFileSync(join(rt, 'cli-1/node_modules/@codemieai/code/bin/codemie.js'), '');
+  symlinkSync('node-1', join(rt, 'node'));
+  symlinkSync('cli-1', join(rt, 'cli'));
+}
+
 test('macOS shim with no runtime in HOME says to open CodeMie Connect once and exits 1', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shim-'));
-  const r = execShim(shimWithKey(dir, 'k1'), join(dir, 'home'));
+  const r = execShim(shimIn(dir), join(dir, 'home'));
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Open CodeMie Connect once/);
 });
 
-test('macOS shim runs the downloaded runtime and passes arguments and exit code through', () => {
+test('macOS shim runs the linked runtime and passes arguments and exit code through', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shim-'));
   const home = join(dir, 'home');
-  const rt = join(home, 'Library/Application Support/CodeMie/runtime/k1');
-  mkdirSync(join(rt, 'node/bin'), { recursive: true });
-  mkdirSync(join(rt, 'cli/node_modules/@codemieai/code/bin'), { recursive: true });
-  writeFileSync(join(rt, '.complete'), 'k1');
-  writeFileSync(join(rt, 'node/bin/node'), '#!/bin/sh\necho "fake-node $2 $3"\nexit 7\n');
-  chmodSync(join(rt, 'node/bin/node'), 0o755);
-  writeFileSync(join(rt, 'cli/node_modules/@codemieai/code/bin/codemie.js'), '');
-  const r = execShim(shimWithKey(dir, 'k1'), home, ['--version']);
+  runtime(home);
+  const r = execShim(shimIn(dir), home, ['--version']);
   assert.equal(r.stdout.trim(), 'fake-node --version');
   assert.equal(r.status, 7);
 });
 
-test('macOS shim does not use a runtime dir without the .complete marker', () => {
+test('macOS shim does not use a CLI dir without the .complete marker', () => {
   const dir = mkdtempSync(join(tmpdir(), 'shim-'));
   const home = join(dir, 'home');
-  const rt = join(home, 'Library/Application Support/CodeMie/runtime/k1');
-  mkdirSync(join(rt, 'node/bin'), { recursive: true });
-  writeFileSync(join(rt, 'node/bin/node'), '#!/bin/sh\necho ran\n');
-  chmodSync(join(rt, 'node/bin/node'), 0o755);
-  const r = execShim(shimWithKey(dir, 'k1'), home);
+  runtime(home, { cliComplete: false });
+  const r = execShim(shimIn(dir), home);
   assert.equal(r.status, 1);
   assert.equal(r.stdout, '');
 });
@@ -172,4 +174,10 @@ test('the runtime overlay says Preparing CodeMie, shows progress and offers Try 
   const fn = renderer.slice(renderer.indexOf('async function ensureRuntime()'), renderer.indexOf('async function boot()'));
   assert.match(fn, /listen\('runtime:progress'/);
   assert.match(fn, /for \(;;\)[\s\S]*invoke\('ensure_runtime'\)[\s\S]*retry\.addEventListener\('click'/, 'a failure waits for the retry click and loops back to ensure_runtime');
+});
+
+test('boot() checks for a newer CLI in the background, after Home is wired', () => {
+  const boot = renderer.slice(renderer.indexOf('async function boot()'));
+  assert.ok(boot.indexOf("invoke('update_cli')") > boot.indexOf('refreshAgents();'), 'the update must not hold up boot');
+  assert.doesNotMatch(boot, /await invoke\('update_cli'\)/, 'never awaited: a slow npm must not block the app');
 });
