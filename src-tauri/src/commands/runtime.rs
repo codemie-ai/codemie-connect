@@ -95,6 +95,75 @@ pub fn runtime_ready(state: tauri::State<'_, crate::state::AppState>) -> CmdResu
     ))
 }
 
+pub fn verify_sha(got_hex: &str, expected: &str) -> CmdResult<()> {
+    if got_hex == expected {
+        return Ok(());
+    }
+    Err(InstallerError::Download(format!(
+        "the downloaded file is damaged (checksum {got_hex}, expected {expected})"
+    )))
+}
+
+/// Unpacks into `staging` and checks Node and the CLI are in it. On any
+/// failure `staging` is removed, so a cut-off archive leaves nothing behind.
+pub fn unpack(archive: &Path, staging: &Path) -> CmdResult<()> {
+    let result = (|| {
+        std::fs::create_dir_all(staging)?;
+        let out = std::process::Command::new("/usr/bin/tar")
+            .arg("-xzf")
+            .arg(archive)
+            .arg("-C")
+            .arg(staging)
+            .output()?;
+        if !out.status.success() {
+            return Err(InstallerError::Other(format!(
+                "unpack failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        if !node_exe(staging).is_file() || !cli_entry(staging).is_file() {
+            return Err(InstallerError::Other(
+                "the downloaded file is missing Node or the CLI".into(),
+            ));
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(staging);
+    }
+    result
+}
+
+/// Moves a verified staging tree into place. The marker is written inside
+/// staging first and an existing `dir` is renamed aside rather than deleted
+/// up front, so a crash never leaves `dir` without a complete runtime.
+pub fn promote(staging: &Path, dir: &Path) -> CmdResult<()> {
+    let key = dir.file_name().unwrap_or_default().to_string_lossy();
+    let aside = dir.with_file_name(format!(".old-{key}"));
+    std::fs::write(staging.join(COMPLETE_MARKER), key.as_bytes())?;
+    let _ = std::fs::remove_dir_all(&aside);
+    if dir.exists() {
+        std::fs::rename(dir, &aside)?;
+    }
+    std::fs::rename(staging, dir)?;
+    let _ = std::fs::remove_dir_all(&aside);
+    Ok(())
+}
+
+/// Removes everything in `base` but the current runtime: older runtimes left
+/// by a previous app version and any download or staging leftovers.
+pub fn remove_stale(base: &Path, keep: &str) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for e in entries.flatten() {
+        if e.file_name().to_string_lossy() != keep {
+            let p = e.path();
+            let _ = std::fs::remove_dir_all(&p).or_else(|_| std::fs::remove_file(&p));
+        }
+    }
+}
+
 /// Downloads, verifies and unpacks the runtime archive unless it is already in
 /// place. Emits `runtime:progress` with `{ phase, fraction, total }`.
 #[tauri::command]
@@ -107,14 +176,29 @@ pub async fn ensure_runtime(app: AppHandle) -> CmdResult<String> {
     let pack = pack();
     let base = runtime_base(&home);
     tokio::fs::create_dir_all(&base).await?;
-
-    // CODEMIE_RUNTIME_URL is for testing against a local server only.
-    let url = std::env::var("CODEMIE_RUNTIME_URL").unwrap_or_else(|_| pack.url.clone());
     let archive = base.join(format!(".download-{}.tar.gz", pack.key));
     let staging = base.join(format!(".staging-{}", pack.key));
+    let result = install(&app, &pack, &base, &dir, &archive, &staging).await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&archive).await;
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+    }
+    result.map(|()| dir.to_string_lossy().into_owned())
+}
+
+async fn install(
+    app: &AppHandle,
+    pack: &Pack,
+    base: &Path,
+    dir: &Path,
+    archive: &Path,
+    staging: &Path,
+) -> CmdResult<()> {
+    // CODEMIE_RUNTIME_URL is for testing against a local server only.
+    let url = std::env::var("CODEMIE_RUNTIME_URL").unwrap_or_else(|_| pack.url.clone());
     // Leftovers of a launch that was quit mid-download or mid-unpack.
-    let _ = tokio::fs::remove_file(&archive).await;
-    let _ = tokio::fs::remove_dir_all(&staging).await;
+    let _ = tokio::fs::remove_file(archive).await;
+    let _ = tokio::fs::remove_dir_all(staging).await;
 
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -133,7 +217,7 @@ pub async fn ensure_runtime(app: AppHandle) -> CmdResult<String> {
         )));
     }
     let total = resp.content_length().unwrap_or(0);
-    let mut file = tokio::fs::File::create(&archive).await?;
+    let mut file = tokio::fs::File::create(archive).await?;
     let mut hasher = Sha256::new();
     let mut done: u64 = 0;
     let mut stream = resp.bytes_stream();
@@ -151,55 +235,29 @@ pub async fn ensure_runtime(app: AppHandle) -> CmdResult<String> {
     }
     file.flush().await?;
     drop(file);
-
-    let got = hex(&hasher.finalize());
-    if got != pack.sha256 {
-        let _ = tokio::fs::remove_file(&archive).await;
-        return Err(InstallerError::Download(format!(
-            "the downloaded file is damaged (checksum {got}, expected {})",
-            pack.sha256
-        )));
-    }
+    verify_sha(&hex(&hasher.finalize()), &pack.sha256)?;
 
     let _ = app.emit(
         "runtime:progress",
         serde_json::json!({ "phase": "unpack", "fraction": 1.0 }),
     );
-    tokio::fs::create_dir_all(&staging).await?;
-    let out = tokio::process::Command::new("/usr/bin/tar")
-        .arg("-xzf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&staging)
-        .output()
-        .await?;
-    let _ = tokio::fs::remove_file(&archive).await;
-    if !out.status.success() {
-        let _ = tokio::fs::remove_dir_all(&staging).await;
-        return Err(InstallerError::Other(format!(
-            "unpack failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    if !node_exe(&staging).is_file() || !cli_entry(&staging).is_file() {
-        let _ = tokio::fs::remove_dir_all(&staging).await;
-        return Err(InstallerError::Other(
-            "the downloaded file is missing Node or the CLI".into(),
-        ));
-    }
-    tokio::fs::write(staging.join(COMPLETE_MARKER), &pack.key).await?;
-    let _ = tokio::fs::remove_dir_all(&dir).await;
-    tokio::fs::rename(&staging, &dir).await?;
-
-    // Older runtimes left by a previous app version.
-    if let Ok(mut entries) = tokio::fs::read_dir(&base).await {
-        while let Ok(Some(e)) = entries.next_entry().await {
-            if e.file_name().to_string_lossy() != pack.key {
-                let _ = tokio::fs::remove_dir_all(e.path()).await;
-            }
-        }
-    }
-    Ok(dir.to_string_lossy().into_owned())
+    let (archive, staging, dir, base, key) = (
+        archive.to_path_buf(),
+        staging.to_path_buf(),
+        dir.to_path_buf(),
+        base.to_path_buf(),
+        pack.key.clone(),
+    );
+    tokio::task::spawn_blocking(move || {
+        let r = unpack(&archive, &staging);
+        let _ = std::fs::remove_file(&archive);
+        r?;
+        promote(&staging, &dir)?;
+        remove_stale(&base, &key);
+        Ok(())
+    })
+    .await
+    .map_err(|e| InstallerError::Other(e.to_string()))?
 }
 
 #[cfg(test)]
@@ -240,6 +298,102 @@ mod tests {
     #[test]
     fn always_ready_off_macos() {
         assert!(ready(false, false, false));
+    }
+
+    /// A tar.gz with the given files (relative paths), built with the system tar.
+    fn make_archive(dir: &Path, files: &[&str]) -> PathBuf {
+        let src = dir.join("src");
+        for f in files {
+            let p = src.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+        let archive = dir.join("a.tar.gz");
+        let st = std::process::Command::new("/usr/bin/tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&src)
+            .arg(".")
+            .status()
+            .unwrap();
+        assert!(st.success());
+        archive
+    }
+
+    const NODE: &str = "node/bin/node";
+    const CLI: &str = "cli/node_modules/@codemieai/code/bin/codemie.js";
+
+    #[test]
+    fn verify_sha_accepts_equal_and_rejects_different() {
+        assert!(verify_sha("abc", "abc").is_ok());
+        assert!(verify_sha("abc", "abd").is_err());
+    }
+
+    #[test]
+    fn unpack_extracts_a_complete_archive() {
+        let t = tempfile::tempdir().unwrap();
+        let archive = make_archive(t.path(), &[NODE, CLI]);
+        let staging = t.path().join("staging");
+        unpack(&archive, &staging).unwrap();
+        assert!(node_exe(&staging).is_file() && cli_entry(&staging).is_file());
+    }
+
+    #[test]
+    fn unpack_without_the_cli_entry_fails_and_leaves_no_staging() {
+        let t = tempfile::tempdir().unwrap();
+        let archive = make_archive(t.path(), &[NODE]);
+        let staging = t.path().join("staging");
+        assert!(unpack(&archive, &staging).is_err());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn unpack_of_a_truncated_archive_fails_and_leaves_no_staging() {
+        let t = tempfile::tempdir().unwrap();
+        let archive = make_archive(t.path(), &[NODE, CLI]);
+        let bytes = std::fs::read(&archive).unwrap();
+        std::fs::write(&archive, &bytes[..bytes.len() / 2]).unwrap();
+        let staging = t.path().join("staging");
+        assert!(unpack(&archive, &staging).is_err());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn promote_makes_the_dir_ready_and_replaces_an_existing_one() {
+        let t = tempfile::tempdir().unwrap();
+        let archive = make_archive(t.path(), &[NODE, CLI]);
+        let staging = t.path().join("staging");
+        unpack(&archive, &staging).unwrap();
+        assert!(!is_ready(&staging));
+        let dir = t.path().join("key");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stale-file"), "old").unwrap();
+        promote(&staging, &dir).unwrap();
+        assert!(is_ready(&dir));
+        assert!(!dir.join("stale-file").exists());
+        assert!(!staging.exists());
+        assert!(!t.path().join(".old-key").exists());
+    }
+
+    #[test]
+    fn remove_stale_deletes_old_runtimes_and_leftovers_but_keeps_the_current_one() {
+        let t = tempfile::tempdir().unwrap();
+        for d in [
+            "keep",
+            "old-key",
+            ".staging-x",
+            ".download-x.tar.gz",
+            ".old-keep",
+        ] {
+            std::fs::create_dir_all(t.path().join(d)).unwrap();
+        }
+        remove_stale(t.path(), "keep");
+        let left: Vec<_> = std::fs::read_dir(t.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, vec!["keep".to_string()]);
     }
 
     #[test]
