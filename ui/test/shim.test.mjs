@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const SHIM = 'assets/windows/bin/codemie.cmd';
 const shim = readFileSync(SHIM, 'utf8');
@@ -93,4 +96,80 @@ test('runtime.json names where the macOS runtime archive is published', () => {
 test('the shared tauri.conf.json declares no resources; each platform has its overlay', () => {
   const conf = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
   assert.equal(conf.bundle.resources, undefined, 'a shared resource forces the other platform to stage it before cargo builds');
+});
+
+// ---- macOS shim, executed ------------------------------------------------------
+
+// The shim reads runtime-key next to itself; stand in for the generated one.
+function shimWithKey(dir, key) {
+  const bin = join(dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'codemie'), macShim);
+  writeFileSync(join(bin, 'runtime-key'), key);
+  return join(bin, 'codemie');
+}
+
+function execShim(shim, home, args = []) {
+  return spawnSync('/bin/sh', [shim, ...args], {
+    env: { HOME: home, PATH: '/usr/bin:/bin' },
+    encoding: 'utf8',
+  });
+}
+
+test('macOS shim with no runtime in HOME says to open CodeMie Connect once and exits 1', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shim-'));
+  const r = execShim(shimWithKey(dir, 'k1'), join(dir, 'home'));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Open CodeMie Connect once/);
+});
+
+test('macOS shim runs the downloaded runtime and passes arguments and exit code through', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shim-'));
+  const home = join(dir, 'home');
+  const rt = join(home, 'Library/Application Support/CodeMie/runtime/k1');
+  mkdirSync(join(rt, 'node/bin'), { recursive: true });
+  mkdirSync(join(rt, 'cli/node_modules/@codemieai/code/bin'), { recursive: true });
+  writeFileSync(join(rt, '.complete'), 'k1');
+  writeFileSync(join(rt, 'node/bin/node'), '#!/bin/sh\necho "fake-node $2 $3"\nexit 7\n');
+  chmodSync(join(rt, 'node/bin/node'), 0o755);
+  writeFileSync(join(rt, 'cli/node_modules/@codemieai/code/bin/codemie.js'), '');
+  const r = execShim(shimWithKey(dir, 'k1'), home, ['--version']);
+  assert.equal(r.stdout.trim(), 'fake-node --version');
+  assert.equal(r.status, 7);
+});
+
+test('macOS shim does not use a runtime dir without the .complete marker', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shim-'));
+  const home = join(dir, 'home');
+  const rt = join(home, 'Library/Application Support/CodeMie/runtime/k1');
+  mkdirSync(join(rt, 'node/bin'), { recursive: true });
+  writeFileSync(join(rt, 'node/bin/node'), '#!/bin/sh\necho ran\n');
+  chmodSync(join(rt, 'node/bin/node'), 0o755);
+  const r = execShim(shimWithKey(dir, 'k1'), home);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+});
+
+// ---- first-launch gate in the renderer ------------------------------------------
+
+const renderer = readFileSync('ui/renderer.js', 'utf8');
+const html = readFileSync('ui/index.html', 'utf8');
+
+test('boot() waits for the runtime before anything else, smoke mode included', () => {
+  const boot = renderer.slice(renderer.indexOf('async function boot()'));
+  assert.ok(boot.indexOf('await ensureRuntime()') > -1, 'boot must call ensureRuntime');
+  assert.ok(
+    boot.indexOf('await ensureRuntime()') < boot.indexOf("invoke('smoke_mode')"),
+    'the runtime has to be there before any step runs the CLI',
+  );
+});
+
+test('the runtime overlay says Preparing CodeMie, shows progress and offers Try again that re-runs ensure_runtime', () => {
+  assert.match(html, /id="runtime-overlay"/);
+  assert.match(html, /Preparing CodeMie…/);
+  assert.match(html, /id="runtime-bar"/);
+  assert.match(html, /id="runtime-retry"[^>]*>Try again</);
+  const fn = renderer.slice(renderer.indexOf('async function ensureRuntime()'), renderer.indexOf('async function boot()'));
+  assert.match(fn, /listen\('runtime:progress'/);
+  assert.match(fn, /for \(;;\)[\s\S]*invoke\('ensure_runtime'\)[\s\S]*retry\.addEventListener\('click'/, 'a failure waits for the retry click and loops back to ensure_runtime');
 });
