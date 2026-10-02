@@ -46,7 +46,7 @@ Rust tests run against the real system (no mocks). Tests that invoke `capture()`
 
 - Runner tests: `src-tauri/src/commands/runner.rs:133` — `#[tokio::test]` for async
 - Logger tests: `src-tauri/src/commands/logger.rs:71` — synchronous `#[test]`
-- Runtime tests: `src-tauri/src/commands/runtime.rs` (`mod tests`) — helpers take explicit paths, so tests use tempdirs and a tiny tar.gz built with `/usr/bin/tar`; no network
+- Runtime tests: `src-tauri/src/commands/runtime.rs` (`mod tests`) — helpers take explicit paths, so tests lay out versioned dirs and links in tempdirs; no network
 
 | ✅ DO | ❌ DON'T |
 |---|---|
@@ -62,7 +62,7 @@ JS tests use the `node:test` built-in runner with `node:assert/strict`. No test 
 
 Engine tests inject a synthetic `emit` function and stub `handlers` to verify orchestration behavior without Tauri — see `ui/test/engine.test.mjs:15`.
 
-The macOS shim (`assets/macos/bin/codemie`) is executed in `ui/test/shim.test.mjs` under a throwaway `HOME` with a fake runtime, never against the real one.
+The macOS shim (`assets/macos/bin/codemie`) is executed in `ui/test/shim.test.mjs` under a throwaway `HOME` with a fake linked runtime, never against the real one.
 
 Approval gate tests (`ignore()` / `approve()`) use a `setTimeout` shim to yield before calling the gate — see `ui/test/engine.test.mjs:61`.
 

@@ -26,7 +26,7 @@ src-tauri/src/              (backend — thin Rust command layer)
     runner.rs               shell execution (capture / stream / fresh_env)
     inspector.rs            git / node / npm / codemie probes
     installer.rs            Node .pkg download + sudo install
-    runtime.rs              macOS first-launch download of Node + CLI into Application Support
+    runtime.rs              macOS first-launch install of Node + CLI into Application Support, CLI updates
     downloader.rs           reqwest streaming download
     pathman.rs              login-shell PATH + ~/.zprofile persistence
     pty.rs                  portable-pty interactive terminal
@@ -49,7 +49,7 @@ src-tauri/src/              (backend — thin Rust command layer)
 | `renderer.js` | View routing (home/wizard/connect), Engine construction | engine.js, runner-bridge.js |
 | `commands/runner.rs` | `run_capture`, `run_stream`, `run_fresh_env` — login-shell exec | tokio, state.rs |
 | `commands/inspector.rs` | `check_git/node/npm/codemie`, `check_profile_status` | runner.rs |
-| `commands/runtime.rs` | `runtime_ready`, `ensure_runtime` — downloads the pinned Node + CLI archive (`assets/macos/runtime-pack.json`, baked in at build by `scripts/pack-runtime.sh`), verifies SHA-256, unpacks to staging, renames into `~/Library/Application Support/CodeMie/runtime/<key>`; `renderer.js` gates `boot()` on it | reqwest, sha2, state.rs |
+| `commands/runtime.rs` | `runtime_ready`, `ensure_runtime`, `update_cli` — Node from nodejs.org (pinned SHA-256 in runtime.json) into `runtime/node-<v>`, the CLI via `npm ci` with the embedded `assets/codemie-cli` lock into `runtime/cli-<v>`, `node`/`cli` links switched atomically; `update_cli` installs a newer npm release in the background; stale dirs removed at launch; `renderer.js` gates `boot()` on it | reqwest, sha2, state.rs |
 | `state.rs` | `AppState` — PTY handle, remembered PATH dirs, `bundled_injected`, `existing_cli_detected` (the user's own CLI: no download) | pty.rs |
 | `error.rs` | `InstallerError` (thiserror) → serializes to String for IPC | — |
 
