@@ -94,28 +94,23 @@ body::before {
 }
 /* Flex items default to min-width: auto, which blocks shrinking below their
    content size. The bar's text segments need to shrink and truncate instead
-   of wrapping or overflowing; the version badge and theme toggle are excluded
-   so they always render at full size. A uniform flex-shrink would scale every
+   of wrapping or overflowing; the theme toggle is not a span, so it always
+   renders at full size. A uniform flex-shrink would scale every
    segment down by roughly the same proportion, so the short auth-status text
    could be ellipsized before a longer, lower-priority segment like project
    gives up any room. flex-shrink: 3 on the bulk of the segments below makes
    them give up space three times as fast as auth-status/product (flex-shrink:
    1, set alongside their existing style rule), so the higher-value segments
    stay readable longer as the bar narrows. */
-#identity-bar > span:not(#identity-version-badge) {
+#identity-bar > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex-shrink: 3;
 }
-/* Qualified with the shared `span` type and repeated as `#identity-bar > span#id`
-   so this rule's specificity (2 ids + 1 type) ties the shared rule above instead
-   of losing to it (a bare `#identity-auth-status` id selector is weaker than
-   `#identity-bar > span:not(#identity-version-badge)`, whose :not() argument
-   still counts as a second id). On a tie the later rule in the cascade wins,
-   and this rule is declared after the shared one, so flex-shrink: 1 actually
-   applies. */
+/* Two ids outrank the shared `#identity-bar > span` rule above, so
+   flex-shrink: 1 actually applies. */
 #identity-bar > span#identity-auth-status,
 #identity-bar > span#identity-product { color: var(--text); font-weight: 600; flex-shrink: 1; }
 /* An empty segment is a real state — an absent account, or no config at all.
@@ -126,29 +121,8 @@ body::before {
   margin-right: 6px;
   color: var(--dim);
 }
-#identity-version-badge {
-  margin-left: auto;
-  color: var(--amber);
-  border: 1px solid var(--amber);
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 11px;
-  font-weight: 600;
-  /* Excluded from the shared truncation rule's :not() so it always renders at
-     full size — but that means it also needs its own white-space/flex-shrink,
-     or at narrow widths its text wraps to two lines and grows the bar's height. */
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-/* The badge is pushed to the far right — it must not carry a leading middot.
-   Needs two ids to outrank `#identity-bar > span + span::before` above. */
-#identity-bar > #identity-version-badge::before { content: none; }
-#identity-version-badge:empty { display: none; }
-/* The theme toggle is the last item in the bar. The badge's `margin-left: auto`
-   already pushes both to the right; when the badge is empty (and so removed from
-   the flex flow) the toggle takes over that job. */
-#identity-bar > #theme-toggle { margin-left: 12px; }
-#identity-version-badge:empty + #theme-toggle { margin-left: auto; }
+/* The theme toggle is the last item in the bar, pushed to the far right. */
+#identity-bar > #theme-toggle { margin-left: auto; }
 
 /* ---- Sidebar nav (main group above, divider, bottom group below) ---- */
 #app-sidebar {
@@ -224,10 +198,17 @@ body::before {
   color: var(--nav-selected-text);
   font-weight: 600;
 }
+/* The wireframe only draws the dark theme. In light the dark pill read as a
+   dark-theme leftover (EPMCDME-15386): a pale purple fill with deep violet
+   text instead. */
+:root.light .sidebar-item[aria-current="page"] {
+  --nav-selected-bg:   var(--color-purple-bg);
+  --nav-selected-text: #5B21B6;
+}
 
 /* ---- Theme toggle (fixed top-right, above content, below overlays) ---- */
 /* Lives inside #identity-bar as a normal flex child — it used to be
-   position: fixed, which floated it over the bar and clipped the version badge. */
+   position: fixed, which floated it over the bar. */
 #theme-toggle { flex: 0 0 auto; }
 .theme-ico { font-size: 12px; line-height: 1; opacity: 0.55; transition: opacity var(--transition-base); }
 :root.light .theme-ico-sun  { opacity: 1; }
@@ -410,8 +391,6 @@ body::before {
 }
 /* Under the status cards, as wide as they are (01-home.png). */
 #home-updates { max-width: 760px; flex: none; }
-/* The two updates stand apart from each other. */
-#home-updates .top-banner:not(.hidden) ~ .top-banner { margin-top: 20px; }
 .top-banner-body { flex: 1 1 auto; min-width: 0; }
 .top-banner-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .top-banner-line { font-size: 13px; color: var(--muted); margin-top: 4px; }
@@ -613,7 +592,17 @@ body::before {
   transition: border-color 0.18s ease, background 0.18s ease;
 }
 .setup-option-card:hover { background: var(--surface-2); }
-.setup-option-card.selected { background: var(--surface-2); border-color: var(--accent-blue); box-shadow: inset 0 0 0 1px var(--accent-blue); }
+.setup-option-card.selected {
+  /* Not --surface-2: that is the open step's own background, so the chosen
+     card disappeared into it (EPMCDME-15394). In dark a tint of the border
+     colour keeps it apart. */
+  background: color-mix(in srgb, var(--accent-blue) 16%, var(--surface));
+  border-color: var(--accent-blue);
+  box-shadow: inset 0 0 0 1px var(--accent-blue);
+}
+/* In light the tint came out almost the open step's own #D5E7FC; the token one
+   step darker keeps it apart there. */
+:root.light .setup-option-card.selected { background: var(--color-bg-quaternary); }
 .setup-option-card input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; pointer-events: none; }
 /* A long list scrolls inside its own box (ui/setup-view.js LONG_LIST). */
 .setup-option-scroll { max-height: 340px; overflow-y: auto; padding-right: 6px; margin-bottom: 8px; }
@@ -664,6 +653,10 @@ body::before {
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: var(--gradient-primary-btn);
+  /* Sized to the border box: by default the gradient fits inside the
+     transparent border and repeats under it, which left a 1px blue edge
+     on the left in dark (EPMCDME-15383). */
+  background-origin: border-box;
   color: var(--color-text-inverse);
   font-size: 13px;
   font-weight: 600;
@@ -671,6 +664,11 @@ body::before {
   transition: background 0.18s ease, color 0.18s ease;
 }
 .setup-continue-btn:hover { filter: brightness(1.08); }
+/* setup-view.js scrolls Continue into view with block: 'nearest', which left
+   it flush against the command-log footer (EPMCDME-15384). The margin is the
+   step's own bottom padding plus the view's, so it lands where a full scroll
+   to the bottom would put it. */
+.setup-continue-btn { scroll-margin-bottom: 34px; }
 
 /* Closing line under the list once the profile is verified active. */
 .setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }
