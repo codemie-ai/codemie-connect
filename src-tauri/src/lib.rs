@@ -98,6 +98,7 @@ pub fn run() {
             commands::runner::run_stream,
             commands::runtime::runtime_ready,
             commands::runtime::ensure_runtime,
+            commands::runtime::update_cli,
             commands::pathman::persist_to_zprofile,
             commands::pathman::augment_path,
             commands::inspector::check_git,

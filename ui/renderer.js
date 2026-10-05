@@ -726,6 +726,7 @@ async function ensureRuntime() {
 
 async function boot() {
   await ensureRuntime();
+  invoke('update_cli').catch(() => {}); // background; errors are non-fatal
   // The command-log footer hears about every command the bridge runs, so it is
   // wired first: the startup checks below (codemie --version, profile status)
   // would otherwise run before it and never show.

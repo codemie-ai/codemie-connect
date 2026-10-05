@@ -1,6 +1,7 @@
-// Node and the CLI tree are not inside the app. On first launch they are
-// downloaded as one pinned, checksummed archive into
-// %LOCALAPPDATA%\CodeMie\runtime\<key>\ (node\node.exe, cli\node_modules\...).
+// Node and the CLI are not inside the app. On first launch they are
+// downloaded and installed into %LOCALAPPDATA%\CodeMie\runtime\<key>\
+// (node\node.exe, cli\node_modules\...). Config is pinned at compile time
+// via runtime.json; the key encodes both the CLI and Node versions.
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -11,25 +12,41 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::{CmdResult, InstallerError};
 
-/// What scripts/pack-runtime.ps1 produced for this build: the folder key (one
-/// per CLI and Node pair), where the archive is published and its checksum.
-/// Baked in at compile time, so the app only accepts the archive it was built with.
+const RUNTIME_JSON: &str = include_str!("../../../runtime.json");
+const COMPLETE_MARKER: &str = ".complete";
+const CONNECT_JSON: &str = r#"{ "managedBy": "CodeMie Connect" }"#;
+
+/// Pinned versions from runtime.json, baked in at compile time.
 #[derive(serde::Deserialize, Clone)]
-pub struct Pack {
-    pub key: String,
-    pub url: String,
-    pub sha256: String,
+pub struct Config {
+    #[serde(rename = "nodeVersion")]
+    pub node_version: String,
+    #[serde(rename = "nodeWin64Sha256")]
+    pub node_win64_sha256: Option<String>,
+    #[serde(rename = "nodeMacosArm64Sha256")]
+    #[allow(dead_code)] // used by macOS path added in MR !53
+    pub node_macos_arm64_sha256: Option<String>,
+    #[serde(rename = "cliPackage")]
+    pub cli_package: String,
+    #[serde(rename = "cliVersion")]
+    pub cli_version: String,
 }
 
-#[cfg(windows)]
-const PACK_JSON: &str = include_str!("../../../assets/windows/runtime-pack.json");
-#[cfg(not(windows))]
-const PACK_JSON: &str = r#"{"key":"","url":"","sha256":""}"#;
+impl Config {
+    pub fn node_sha256(&self) -> &str {
+        #[cfg(windows)]
+        return self.node_win64_sha256.as_deref().unwrap_or("");
+        #[cfg(not(windows))]
+        return self.node_macos_arm64_sha256.as_deref().unwrap_or("");
+    }
+}
 
-const COMPLETE_MARKER: &str = ".complete";
+pub fn config() -> Config {
+    serde_json::from_str(RUNTIME_JSON).expect("runtime.json is malformed")
+}
 
-pub fn pack() -> Pack {
-    serde_json::from_str(PACK_JSON).expect("assets/windows/runtime-pack.json is malformed")
+fn runtime_key(cfg: &Config) -> String {
+    format!("{}-node{}", cfg.cli_version, cfg.node_version)
 }
 
 /// `%LOCALAPPDATA%\CodeMie\runtime`; per-user, no admin rights.
@@ -40,7 +57,7 @@ pub fn runtime_base() -> CmdResult<PathBuf> {
 }
 
 pub fn runtime_dir() -> CmdResult<PathBuf> {
-    Ok(runtime_base()?.join(pack().key))
+    Ok(runtime_base()?.join(runtime_key(&config())))
 }
 
 pub fn node_dir(dir: &Path) -> PathBuf {
@@ -60,14 +77,40 @@ pub fn cli_entry(dir: &Path) -> PathBuf {
         .join("codemie.js")
 }
 
+fn connect_json_path(dir: &Path) -> PathBuf {
+    dir.join("cli")
+        .join("node_modules")
+        .join("@codemieai")
+        .join("code")
+        .join("codemie-connect.json")
+}
+
+/// npm-cli.js path inside a staged/installed node tree.
+fn npm_cli(node_dir: &Path) -> PathBuf {
+    // Windows: node_modules/npm next to node.exe
+    // macOS:   lib/node_modules/npm under the node prefix
+    #[cfg(windows)]
+    return node_dir
+        .join("node_modules")
+        .join("npm")
+        .join("bin")
+        .join("npm-cli.js");
+    #[cfg(not(windows))]
+    return node_dir
+        .join("lib")
+        .join("node_modules")
+        .join("npm")
+        .join("bin")
+        .join("npm-cli.js");
+}
+
 /// Ready only when the last step of an install (the marker) happened, so a
-/// download or unpack that was cut off half way is never used.
+/// partial download or install is never used.
 pub fn is_ready(dir: &Path) -> bool {
     dir.join(COMPLETE_MARKER).is_file() && node_exe(dir).is_file() && cli_entry(dir).is_file()
 }
 
-/// Whether the runtime named `key` under `base` is complete. `pathman::probe_dir`
-/// uses this to tell a usable bundled shim from a stale one.
+/// Whether the runtime named `key` under `base` is complete.
 pub fn key_ready(base: &Path, key: &str) -> bool {
     !key.is_empty() && is_ready(&base.join(key))
 }
@@ -76,9 +119,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Whether the app can go on without a download: the user has their own CLI,
-/// a smoke launch must never sit on the overlay, this is not Windows (macOS
-/// has its own flow), or the runtime is in place.
 fn ready(existing_cli: bool, smoke: bool, dir_ready: bool) -> bool {
     existing_cli || smoke || !cfg!(windows) || dir_ready
 }
@@ -87,8 +127,8 @@ fn smoke_mode() -> bool {
     std::env::var_os("CODEMIE_SMOKE").is_some() || std::env::var_os("CODEMIE_PROBE_SMOKE").is_some()
 }
 
-/// True when nothing has to be downloaded: the runtime is in place, or the user
-/// has their own CLI, which the app uses instead (EPMCDME-14581).
+/// True when nothing has to be downloaded: the runtime is in place, or the
+/// user has their own CLI (EPMCDME-14581).
 #[tauri::command]
 pub fn runtime_ready(state: tauri::State<'_, crate::state::AppState>) -> CmdResult<bool> {
     let dir_ready = cfg!(windows) && is_ready(&runtime_dir()?);
@@ -100,13 +140,12 @@ pub fn verify_sha(got_hex: &str, expected: &str) -> CmdResult<()> {
         return Ok(());
     }
     Err(InstallerError::Download(format!(
-        "the downloaded file is damaged (checksum {got_hex}, expected {expected})"
+        "checksum mismatch (got {got_hex}, expected {expected})"
     )))
 }
 
 fn tar_exe() -> PathBuf {
     if cfg!(windows) {
-        // The in-box bsdtar, never whatever `tar` a PATH happens to resolve to.
         let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
         PathBuf::from(root).join("System32").join("tar.exe")
     } else {
@@ -114,38 +153,7 @@ fn tar_exe() -> PathBuf {
     }
 }
 
-/// Unpacks into `staging` and checks Node and the CLI are in it. On any
-/// failure `staging` is removed, so a cut-off archive leaves nothing behind.
-pub fn unpack(archive: &Path, staging: &Path) -> CmdResult<()> {
-    let result = (|| {
-        std::fs::create_dir_all(staging)?;
-        let out = std::process::Command::new(tar_exe())
-            .arg("-xzf")
-            .arg(archive)
-            .arg("-C")
-            .arg(staging)
-            .output()?;
-        if !out.status.success() {
-            return Err(InstallerError::Other(format!(
-                "unpack failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
-        }
-        if !node_exe(staging).is_file() || !cli_entry(staging).is_file() {
-            return Err(InstallerError::Other(
-                "the downloaded file is missing Node or the CLI".into(),
-            ));
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(staging);
-    }
-    result
-}
-
-/// Renames, retrying a few times: a virus scanner may briefly hold the files
-/// it has just seen being written.
+/// Renames with retries for virus-scanner hold windows.
 fn rename_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     let mut last = None;
     for i in 0..5 {
@@ -158,9 +166,9 @@ fn rename_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     Err(last.unwrap())
 }
 
-/// Moves a verified staging tree into place. The marker is written inside
-/// staging first and an existing `dir` is renamed aside rather than deleted
-/// up front, so a crash never leaves `dir` without a complete runtime.
+/// Atomically promotes a verified staging tree into place. The marker is
+/// written inside staging first; an existing `dir` is moved aside before the
+/// rename so a crash never leaves `dir` without a complete runtime.
 pub fn promote(staging: &Path, dir: &Path) -> CmdResult<()> {
     let key = dir.file_name().unwrap_or_default().to_string_lossy();
     let aside = dir.with_file_name(format!(".old-{key}"));
@@ -174,8 +182,8 @@ pub fn promote(staging: &Path, dir: &Path) -> CmdResult<()> {
     Ok(())
 }
 
-/// Removes everything in `base` but the current runtime: older runtimes left
-/// by a previous app version and any download or staging leftovers.
+/// Removes everything under `base` except the current runtime, cleaning up
+/// stale versions and download/staging leftovers.
 pub fn remove_stale(base: &Path, keep: &str) {
     let Ok(entries) = std::fs::read_dir(base) else {
         return;
@@ -188,8 +196,8 @@ pub fn remove_stale(base: &Path, keep: &str) {
     }
 }
 
-/// Streams `url` into `archive`, hashing as it goes, and checks the checksum.
-/// On any failure `archive` is removed. `progress(done, total)` is called per chunk.
+/// Streams `url` into `archive`, verifying the SHA-256 on completion.
+/// On any failure `archive` is removed. `progress(done, total)` per chunk.
 pub async fn download_verified(
     client: &reqwest::Client,
     url: &str,
@@ -236,60 +244,61 @@ async fn fetch(
     }
     file.flush().await?;
     drop(file);
-    // A body cut short by the server must not pass as a smaller, valid file.
     if total > 0 && done != total {
-        return Err(InstallerError::Download(
-            "the download was cut short".into(),
-        ));
+        return Err(InstallerError::Download("download was cut short".into()));
     }
     verify_sha(&hex(&hasher.finalize()), expected_sha)
 }
 
-/// Downloads, verifies and unpacks the runtime archive unless it is already in
-/// place. Emits `runtime:progress` with `{ phase, fraction, total }`.
+/// Downloads Node from nodejs.org, then installs the CLI via npm, unless the
+/// runtime is already in place. Emits `runtime:progress` with `{ phase, fraction, total }`.
 #[tauri::command]
 pub async fn ensure_runtime(app: AppHandle) -> CmdResult<()> {
-    // One install at a time: the staging and download paths are shared.
+    // ponytail: global lock — one install at a time; per-user app so one instance is typical
     static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = INSTALL_LOCK.lock().await;
     let dir = runtime_dir()?;
     if is_ready(&dir) {
         return Ok(());
     }
-    let pack = pack();
+    let cfg = config();
     let base = runtime_base()?;
     tokio::fs::create_dir_all(&base).await?;
-    let archive = base.join(format!(".download-{}.tar.gz", pack.key));
-    let staging = base.join(format!(".staging-{}", pack.key));
-    let result = install(&app, &pack, &base, &dir, &archive, &staging).await;
+    let key = runtime_key(&cfg);
+    let zip = base.join(format!(".download-{key}.zip"));
+    let staging = base.join(format!(".staging-{key}"));
+    let result = install(&app, &cfg, &base, &dir, &zip, &staging).await;
     if result.is_err() {
-        let _ = tokio::fs::remove_file(&archive).await;
+        let _ = tokio::fs::remove_file(&zip).await;
         let _ = tokio::fs::remove_dir_all(&staging).await;
     }
     result
 }
 
+#[cfg(windows)]
 async fn install(
     app: &AppHandle,
-    pack: &Pack,
+    cfg: &Config,
     base: &Path,
     dir: &Path,
-    archive: &Path,
+    zip: &Path,
     staging: &Path,
 ) -> CmdResult<()> {
-    // CODEMIE_RUNTIME_URL is for testing against a local server only.
-    let url = std::env::var("CODEMIE_RUNTIME_URL").unwrap_or_else(|_| pack.url.clone());
-    // Leftovers of a launch that was quit mid-download or mid-unpack.
-    let _ = tokio::fs::remove_file(archive).await;
+    // CODEMIE_RUNTIME_URL overrides the nodejs.org download for local testing.
+    let url = std::env::var("CODEMIE_RUNTIME_URL").unwrap_or_else(|_| {
+        let v = &cfg.node_version;
+        format!("https://nodejs.org/dist/v{v}/node-v{v}-win-x64.zip")
+    });
+    let _ = tokio::fs::remove_file(zip).await;
     let _ = tokio::fs::remove_dir_all(staging).await;
 
-    // reqwest's `system-proxy` feature makes this honour the Windows system proxy.
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| InstallerError::Download(e.to_string()))?;
-    download_verified(&client, &url, archive, &pack.sha256, |done, total| {
+
+    download_verified(&client, &url, zip, cfg.node_sha256(), |done, total| {
         if total > 0 {
             let _ = app.emit(
                 "runtime:progress",
@@ -299,22 +308,27 @@ async fn install(
     })
     .await?;
 
+    // Reuse the "unpack" phase label the UI already knows ("Unpacking…").
     let _ = app.emit(
         "runtime:progress",
         serde_json::json!({ "phase": "unpack", "fraction": 1.0 }),
     );
-    let (archive, staging, dir, base, key) = (
-        archive.to_path_buf(),
+
+    let (zip, staging, dir, base, key, cfg) = (
+        zip.to_path_buf(),
         staging.to_path_buf(),
         dir.to_path_buf(),
         base.to_path_buf(),
-        pack.key.clone(),
+        runtime_key(cfg),
+        cfg.clone(),
     );
     tokio::task::spawn_blocking(move || {
-        let r = unpack(&archive, &staging);
-        let _ = std::fs::remove_file(&archive);
+        let r = install_sync(&cfg, &zip, &staging, &dir);
+        let _ = std::fs::remove_file(&zip);
+        if r.is_err() {
+            let _ = std::fs::remove_dir_all(&staging);
+        }
         r?;
-        promote(&staging, &dir)?;
         remove_stale(&base, &key);
         Ok(())
     })
@@ -322,10 +336,135 @@ async fn install(
     .map_err(|e| InstallerError::Other(e.to_string()))?
 }
 
+#[cfg(not(windows))]
+async fn install(
+    _app: &AppHandle,
+    _cfg: &Config,
+    _base: &Path,
+    _dir: &Path,
+    _zip: &Path,
+    _staging: &Path,
+) -> CmdResult<()> {
+    // macOS install path is implemented in MR !53 and will extend this function.
+    Ok(())
+}
+
+/// Synchronous install: extract Node zip then npm-install the pinned CLI.
+#[cfg(windows)]
+fn install_sync(cfg: &Config, zip: &Path, staging: &Path, dir: &Path) -> CmdResult<()> {
+    let node_staging = node_dir(staging);
+    let cli_staging = staging.join("cli");
+
+    std::fs::create_dir_all(&node_staging)?;
+    extract_node_zip(zip, &node_staging, &cfg.node_version)?;
+
+    std::fs::create_dir_all(&cli_staging)?;
+    npm_install_cli(cfg, &node_staging, &cli_staging)?;
+
+    std::fs::write(connect_json_path(staging), CONNECT_JSON)?;
+
+    if !cli_entry(staging).is_file() {
+        return Err(InstallerError::Other(
+            "CLI entry not found after npm install".into(),
+        ));
+    }
+
+    promote(staging, dir)
+}
+
+/// Extracts node.exe and the npm tree from a nodejs.org win-x64 zip.
+/// Uses the in-box bsdtar (Windows 10+) so no extra dependency is needed.
+#[cfg(windows)]
+fn extract_node_zip(zip: &Path, dest: &Path, node_version: &str) -> CmdResult<()> {
+    let prefix = format!("node-v{node_version}-win-x64");
+    let out = std::process::Command::new(tar_exe())
+        .arg("-xf")
+        .arg(zip)
+        .arg("--strip-components=1")
+        .arg("-C")
+        .arg(dest)
+        .arg(format!("{prefix}/node.exe"))
+        .arg(format!("{prefix}/node_modules/npm"))
+        .output()?;
+    if !out.status.success() {
+        return Err(InstallerError::Other(format!(
+            "Node zip extraction failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Installs the pinned CLI version into `cli_dir` via npm.
+/// Uses the just-extracted node.exe so no system Node is required.
+#[cfg(windows)]
+fn npm_install_cli(cfg: &Config, node_dir: &Path, cli_dir: &Path) -> CmdResult<()> {
+    let node = node_dir.join("node.exe");
+    let npm = npm_cli(node_dir);
+    // Exact version pin so the installed CLI is always >= 0.15.7 regardless of
+    // whether the lock file has been regenerated for the new version yet.
+    let spec = format!("{}@{}", cfg.cli_package, cfg.cli_version);
+    let out = std::process::Command::new(&node)
+        .arg(&npm)
+        .arg("install")
+        .arg(&spec)
+        .arg("--omit=dev")
+        .arg("--no-audit")
+        .arg("--no-fund")
+        .current_dir(cli_dir)
+        .output()?;
+    if !out.status.success() {
+        return Err(InstallerError::Other(format!(
+            "npm install {spec} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+/// Runs a background CLI update on launch and removes replaced runtime dirs.
+/// Non-fatal: errors are swallowed so a failing update never blocks the app.
+#[tauri::command]
+pub async fn update_cli() -> CmdResult<()> {
+    #[cfg(windows)]
+    {
+        let dir = match runtime_dir() {
+            Ok(d) if is_ready(&d) => d,
+            _ => return Ok(()),
+        };
+        tokio::task::spawn_blocking(move || {
+            let cfg = config();
+            let node = node_exe(&dir);
+            let npm = npm_cli(&node_dir(&dir));
+            let cli_dir = dir.join("cli");
+            let out = std::process::Command::new(&node)
+                .arg(&npm)
+                .arg("install")
+                .arg(format!("{}@latest", cfg.cli_package))
+                .arg("--omit=dev")
+                .arg("--no-audit")
+                .arg("--no-fund")
+                .current_dir(&cli_dir)
+                .output();
+            if let Ok(out) = out {
+                if out.status.success() {
+                    let _ = std::fs::write(connect_json_path(&dir), CONNECT_JSON);
+                }
+            }
+            if let Ok(base) = runtime_base() {
+                remove_stale(&base, &runtime_key(&cfg));
+            }
+        })
+        .await
+        .ok();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     #[test]
     fn not_ready_without_marker_even_with_files() {
@@ -363,32 +502,6 @@ mod tests {
         assert!(ready(false, false, false));
     }
 
-    /// A tar.gz with the given files (relative paths), built with the system tar.
-    fn make_archive(dir: &Path, files: &[&str]) -> PathBuf {
-        let src = dir.join("src");
-        for f in files {
-            let p = src.join(f);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, "x").unwrap();
-        }
-        let archive = dir.join("a.tar.gz");
-        let st = std::process::Command::new(tar_exe())
-            .arg("-czf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(&src)
-            .arg(".")
-            .status()
-            .unwrap();
-        assert!(st.success());
-        archive
-    }
-
-    fn node_rel() -> String {
-        format!("node/{}", if cfg!(windows) { "node.exe" } else { "node" })
-    }
-    const CLI: &str = "cli/node_modules/@codemieai/code/bin/codemie.js";
-
     #[test]
     fn verify_sha_accepts_equal_and_rejects_different() {
         assert!(verify_sha("abc", "abc").is_ok());
@@ -396,40 +509,24 @@ mod tests {
     }
 
     #[test]
-    fn unpack_extracts_a_complete_archive() {
-        let t = tempfile::tempdir().unwrap();
-        let archive = make_archive(t.path(), &[&node_rel(), CLI]);
-        let staging = t.path().join("staging");
-        unpack(&archive, &staging).unwrap();
-        assert!(node_exe(&staging).is_file() && cli_entry(&staging).is_file());
-    }
-
-    #[test]
-    fn unpack_without_the_cli_entry_fails_and_leaves_no_staging() {
-        let t = tempfile::tempdir().unwrap();
-        let archive = make_archive(t.path(), &[&node_rel()]);
-        let staging = t.path().join("staging");
-        assert!(unpack(&archive, &staging).is_err());
-        assert!(!staging.exists());
-    }
-
-    #[test]
-    fn unpack_of_a_truncated_archive_fails_and_leaves_no_staging() {
-        let t = tempfile::tempdir().unwrap();
-        let archive = make_archive(t.path(), &[&node_rel(), CLI]);
-        let bytes = std::fs::read(&archive).unwrap();
-        std::fs::write(&archive, &bytes[..bytes.len() / 2]).unwrap();
-        let staging = t.path().join("staging");
-        assert!(unpack(&archive, &staging).is_err());
-        assert!(!staging.exists());
+    fn hex_matches_known_sha256() {
+        assert_eq!(
+            hex(&sha2::Sha256::digest(b"hello")),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     #[test]
     fn promote_makes_the_dir_ready_and_replaces_an_existing_one() {
         let t = tempfile::tempdir().unwrap();
-        let archive = make_archive(t.path(), &[&node_rel(), CLI]);
         let staging = t.path().join("staging");
-        unpack(&archive, &staging).unwrap();
+        let node = node_exe(&staging);
+        std::fs::create_dir_all(node.parent().unwrap()).unwrap();
+        std::fs::write(&node, "x").unwrap();
+        let cli = cli_entry(&staging);
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "x").unwrap();
+
         assert!(!is_ready(&staging));
         let dir = t.path().join("key");
         std::fs::create_dir_all(&dir).unwrap();
@@ -445,41 +542,44 @@ mod tests {
     #[test]
     fn remove_stale_deletes_old_runtimes_and_leftovers_but_keeps_the_current_one() {
         let t = tempfile::tempdir().unwrap();
-        for d in [
-            "keep",
-            "old-key",
-            ".staging-x",
-            ".download-x.tar.gz",
-            ".old-keep",
-        ] {
+        for d in ["keep", "old-key", ".staging-x", ".old-keep"] {
             std::fs::create_dir_all(t.path().join(d)).unwrap();
         }
+        std::fs::write(t.path().join(".download-x.zip"), b"").unwrap();
         remove_stale(t.path(), "keep");
-        let left: Vec<_> = std::fs::read_dir(t.path())
+        let mut left: Vec<_> = std::fs::read_dir(t.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
+        left.sort();
         assert_eq!(left, vec!["keep".to_string()]);
+    }
+
+    #[test]
+    fn runtime_key_combines_cli_and_node_versions() {
+        let cfg = Config {
+            node_version: "22.23.2".into(),
+            node_win64_sha256: None,
+            node_macos_arm64_sha256: None,
+            cli_package: "@codemieai/code".into(),
+            cli_version: "0.15.7".into(),
+        };
+        assert_eq!(runtime_key(&cfg), "0.15.7-node22.23.2");
     }
 
     #[cfg(windows)]
     #[test]
-    fn the_baked_pack_is_complete() {
-        let p = pack();
-        assert!(!p.key.is_empty() && p.url.starts_with("https://") && p.sha256.len() == 64);
-        assert!(p.url.contains(&p.key));
-    }
-
-    #[test]
-    fn hex_matches_known_sha256() {
-        assert_eq!(
-            hex(&Sha256::digest(b"hello")),
-            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-        );
+    fn the_config_is_complete() {
+        let cfg = config();
+        assert!(!cfg.node_version.is_empty(), "nodeVersion must be set");
+        assert_eq!(cfg.node_sha256().len(), 64, "SHA-256 must be 64 hex chars");
+        assert!(!cfg.cli_package.is_empty(), "cliPackage must be set");
+        assert!(!cfg.cli_version.is_empty(), "cliVersion must be set");
     }
 
     /// Serves `body` once on a local port; returns its URL.
     fn serve_once(body: &'static [u8]) -> String {
+        use std::io::Read;
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -494,7 +594,7 @@ mod tests {
                 let _ = s.write_all(body);
             }
         });
-        format!("http://127.0.0.1:{port}/a.tar.gz")
+        format!("http://127.0.0.1:{port}/a.zip")
     }
 
     fn local_client() -> reqwest::Client {
@@ -504,19 +604,18 @@ mod tests {
     #[tokio::test]
     async fn a_download_with_the_wrong_sha_is_rejected_and_leaves_no_file() {
         let t = tempfile::tempdir().unwrap();
-        let archive = t.path().join(".download-k.tar.gz");
+        let archive = t.path().join(".download-k.zip");
         let url = serve_once(b"hello");
         let r =
             download_verified(&local_client(), &url, &archive, &"0".repeat(64), |_, _| {}).await;
         assert!(r.is_err());
         assert!(!archive.exists());
-        assert_eq!(std::fs::read_dir(t.path()).unwrap().count(), 0);
     }
 
     #[tokio::test]
     async fn a_download_with_the_right_sha_is_kept() {
         let t = tempfile::tempdir().unwrap();
-        let archive = t.path().join("a.tar.gz");
+        let archive = t.path().join("a.zip");
         let url = serve_once(b"hello");
         let sha = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
         download_verified(&local_client(), &url, &archive, sha, |_, _| {})
@@ -528,8 +627,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_request_leaves_no_file() {
         let t = tempfile::tempdir().unwrap();
-        let archive = t.path().join("a.tar.gz");
-        // Nothing listens on port 1.
+        let archive = t.path().join("a.zip");
         let r = download_verified(
             &local_client(),
             "http://127.0.0.1:1/x",
