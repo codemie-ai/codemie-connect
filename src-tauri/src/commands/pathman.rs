@@ -321,24 +321,6 @@ pub fn probe_dir(dir: &std::path::Path) -> bool {
     candidate_bin_names().iter().any(|n| dir.join(n).exists())
 }
 
-/// True when `path` is a `codemie` that works: it exists, and if it is one of
-/// this app's own shims (a `runtime-key` file beside it) its downloaded runtime
-/// is complete. An app shim without one only prints "not set up yet", so a stale
-/// one left on PATH by an earlier install must not pass for the user's own CLI
-/// and suppress the download (EPMCDME-15395).
-#[cfg(windows)]
-pub fn cli_usable(path: &std::path::Path) -> bool {
-    cli_usable_in(
-        path,
-        crate::commands::runtime::runtime_base().ok().as_deref(),
-    )
-}
-
-#[cfg(not(windows))]
-pub fn cli_usable(path: &std::path::Path) -> bool {
-    path.exists()
-}
-
 #[cfg(windows)]
 pub(crate) fn cli_usable_in(path: &std::path::Path, base: Option<&std::path::Path>) -> bool {
     if !path.exists() {

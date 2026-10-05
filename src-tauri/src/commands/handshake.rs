@@ -7,52 +7,70 @@ use tauri::Manager;
 
 use crate::state::AppState;
 
-/// Run `codemie --version` at the exact `path` and return the parsed version.
-/// On Windows `.cmd` files must be invoked via `cmd /C`; direct exec silently fails.
-fn version_at(path: &std::path::Path) -> Option<String> {
-    #[cfg(windows)]
-    let output = {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("cmd")
-            .creation_flags(CREATE_NO_WINDOW)
-            .arg("/C")
-            .arg(path)
-            .arg("--version")
-            .output()
-            .ok()?
-    };
-    #[cfg(not(windows))]
-    let output = std::process::Command::new(path)
-        .arg("--version")
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| parse_global_version(&String::from_utf8_lossy(&output.stdout)))?
+/// True when a working user-owned CodeMie CLI exists on `path_env`.
+///
+/// No subprocess is spawned — the CLI's own update check fires on `--version`
+/// and either runs `npm update` (slow, mutates the user's install) or blocks on
+/// an interactive prompt, so we must not call it at startup.
+///
+/// On Windows: a `codemie.cmd` in `%LOCALAPPDATA%\CodeMie\bin` is trusted only
+/// when `%LOCALAPPDATA%\CodeMie\npm-prefix\codemie.cmd` also exists; that pair
+/// means the user ran `npm install -g @codemieai/code` which wrote both files.
+/// Without the npm-prefix companion the bin-dir entry is our own app shim left
+/// over from an earlier launch — treat it as absent and keep the bundled bin
+/// ahead of it (EPMCDME-15395).
+///
+/// On macOS: file existence is sufficient.
+pub fn find_working_global_codemie(path_env: &str) -> Option<String> {
+    if probe_global_codemie(path_env, &cli_exists) {
+        Some(String::new()) // version unknown — we never run the CLI
+    } else {
+        None
+    }
 }
 
-/// Find the first codemie binary on `path_env` whose `--version` succeeds.
-/// Returns the version string, or `None` if no working CLI is found.
-/// A file that exists but exits non-zero (e.g. the old broken PowerShell shim)
-/// is not returned.
-pub fn find_working_global_codemie(path_env: &str) -> Option<String> {
-    let bin_names: &[&str] = if cfg!(windows) {
-        &["codemie.cmd", "codemie.exe"]
-    } else {
-        &["codemie"]
+/// Filesystem-only probe used by [`find_working_global_codemie`].
+/// On Windows it enforces the npm-prefix corroboration rule.
+fn cli_exists(path: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        let localappdata = std::env::var("LOCALAPPDATA").ok();
+        cli_exists_in(path, localappdata.as_deref().map(std::path::Path::new))
+    }
+    #[cfg(not(windows))]
+    path.exists()
+}
+
+/// Pure inner function for [`cli_exists`] on Windows; injecting `localappdata`
+/// makes it testable without mutating the process environment.
+#[cfg(windows)]
+pub(crate) fn cli_exists_in(
+    path: &std::path::Path,
+    localappdata: Option<&std::path::Path>,
+) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let Some(dir) = path.parent() else {
+        return true;
     };
-    std::env::split_paths(OsStr::new(path_env)).find_map(|dir| {
-        bin_names.iter().find_map(|&name| {
-            let p = dir.join(name);
-            if p.exists() {
-                version_at(&p)
-            } else {
-                None
-            }
-        })
-    })
+    let Some(base) = localappdata else {
+        return true; // no LOCALAPPDATA → can't apply the rule, trust it
+    };
+    let codemie_bin = base.join("CodeMie").join("bin");
+    let norm = |p: &std::path::Path| {
+        p.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    };
+    if norm(dir) == norm(&codemie_bin) {
+        base.join("CodeMie")
+            .join("npm-prefix")
+            .join("codemie.cmd")
+            .exists()
+    } else {
+        true
+    }
 }
 
 /// Drop `exclude` dirs from `path_env` (case-insensitive, trailing separators
@@ -175,7 +193,7 @@ pub async fn check_handshake_state(app: tauri::AppHandle) -> HandshakeState {
     let path_env = state.pre_injection_path.clone();
     let bundled_injected = state.bundled_injected;
     tokio::task::spawn_blocking(move || {
-        let real_probe = |p: &std::path::Path| p.exists();
+        let real_probe = |p: &std::path::Path| cli_exists(p);
         let real_version_cmd = |path: &str| -> Option<String> { find_working_global_codemie(path) };
         detect_handshake_state(&path_env, bundled_injected, &real_probe, &real_version_cmd)
     })
@@ -312,38 +330,55 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-#[cfg(not(windows))]
-mod tests_find_working_global {
+#[cfg(all(test, windows))]
+mod tests_cli_exists_in {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
-    #[test]
-    fn broken_binary_returns_none() {
-        let dir = TempDir::new().unwrap();
-        let bin = dir.path().join("codemie");
-        fs::write(&bin, b"#!/bin/sh\nexit 1").unwrap();
-        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
-        let path_env = dir.path().to_str().unwrap().to_string();
-        assert!(
-            find_working_global_codemie(&path_env).is_none(),
-            "a binary that exits 1 must not count as a working global CLI"
-        );
+    fn make_shim(dir: &std::path::Path) -> std::path::PathBuf {
+        let p = dir.join("codemie.cmd");
+        fs::write(&p, b"@echo off\r\n").unwrap();
+        p
     }
 
     #[test]
-    fn working_binary_returns_version() {
-        let dir = TempDir::new().unwrap();
-        let bin = dir.path().join("codemie");
-        fs::write(&bin, b"#!/bin/sh\necho 'codemie 1.2.3'").unwrap();
-        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
-        let path_env = dir.path().to_str().unwrap().to_string();
-        assert_eq!(
-            find_working_global_codemie(&path_env),
-            Some("1.2.3".to_string()),
-            "a binary that exits 0 and prints a semver must be returned"
-        );
+    fn missing_file_is_false() {
+        let t = TempDir::new().unwrap();
+        assert!(!cli_exists_in(&t.path().join("codemie.cmd"), None));
+    }
+
+    #[test]
+    fn shim_outside_codemie_bin_is_trusted_unconditionally() {
+        let t = TempDir::new().unwrap();
+        let shim = make_shim(t.path());
+        // Any dir other than %LOCALAPPDATA%\CodeMie\bin is trusted without the
+        // npm-prefix check — it's the user's own global install.
+        let localappdata = TempDir::new().unwrap();
+        assert!(cli_exists_in(&shim, Some(localappdata.path())));
+    }
+
+    #[test]
+    fn codemie_bin_shim_without_npm_prefix_is_rejected() {
+        let t = TempDir::new().unwrap();
+        // Create %LOCALAPPDATA%\CodeMie\bin\codemie.cmd
+        let bin_dir = t.path().join("CodeMie").join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let shim = make_shim(&bin_dir);
+        // No npm-prefix\codemie.cmd → our own stale shim, not the user's CLI.
+        assert!(!cli_exists_in(&shim, Some(t.path())));
+    }
+
+    #[test]
+    fn codemie_bin_shim_with_npm_prefix_is_trusted() {
+        let t = TempDir::new().unwrap();
+        let bin_dir = t.path().join("CodeMie").join("bin");
+        let npm_dir = t.path().join("CodeMie").join("npm-prefix");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::create_dir_all(&npm_dir).unwrap();
+        let shim = make_shim(&bin_dir);
+        // Write the npm-prefix companion → user ran npm install -g.
+        fs::write(npm_dir.join("codemie.cmd"), b"@echo off\r\n").unwrap();
+        assert!(cli_exists_in(&shim, Some(t.path())));
     }
 }
