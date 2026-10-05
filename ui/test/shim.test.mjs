@@ -10,10 +10,10 @@ const shim = readFileSync(SHIM, 'utf8');
 const onWindows = process.platform === 'win32';
 
 // Node and the CLI are not in the app: commands/runtime.rs downloads them into
-// %LOCALAPPDATA%\CodeMie\runtime\<key>, and scripts/pack-runtime.ps1 writes the
+// %LOCALAPPDATA%\CodeMie\runtime\<key>, and build-installer.ps1 writes the
 // key next to the shim.
 test('shim finds the downloaded runtime through runtime-key, never a hardcoded version', () => {
-  assert.match(shim, /%~dp0runtime-key/, 'the key is written by scripts/pack-runtime.ps1 next to the shim');
+  assert.match(shim, /%~dp0runtime-key/, 'the key is written by build-installer.ps1 next to the shim');
   assert.match(shim, /%LOCALAPPDATA%\\CodeMie\\runtime\\%KEY%/, 'same folder as commands/runtime.rs');
   assert.doesNotMatch(shim, /CodeMie Connect\\/, 'must not hardcode the install path');
   assert.doesNotMatch(shim, /%~dp0\.\./, 'the bundle no longer holds node or the CLI');
@@ -58,11 +58,6 @@ test('tauri.windows.conf.json ships only the shim and its runtime key; Node and 
     '../assets/windows/bin/codemie.cmd': 'bin/codemie.cmd',
     '../assets/windows/bin/runtime-key': 'bin/runtime-key',
   });
-});
-
-test('runtime.json names where the Windows runtime archive is published', () => {
-  const rt = JSON.parse(readFileSync('runtime.json', 'utf8'));
-  assert.match(rt.runtimeBaseUrlWindows ?? '', /^https:\/\/.*\{key\}/, 'pack-runtime.ps1 fills {key} in');
 });
 
 test('the uninstaller removes the downloaded runtime but never ~/.codemie', () => {
