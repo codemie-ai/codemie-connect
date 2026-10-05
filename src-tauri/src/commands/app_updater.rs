@@ -17,8 +17,10 @@ fn launch_installer(installer_path: &str) -> CmdResult<()> {
 
     let mut child = Command::new(installer_path)
         // /S = silent; /R = relaunch the app afterwards (Tauri's NSIS template
-        // only relaunches in silent mode when /R is passed).
-        .args(["/S", "/R"])
+        // only relaunches in silent mode when /R is passed). /UPDATE marks an
+        // in-place update: the template forwards it to the old uninstaller, whose
+        // hook then keeps the downloaded runtime instead of wiping it.
+        .args(["/S", "/R", "/UPDATE"])
         .spawn()
         .map_err(|e| InstallerError::Other(format!("Failed to spawn installer: {e}")))?;
 
