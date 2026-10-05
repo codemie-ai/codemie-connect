@@ -321,20 +321,6 @@ pub fn probe_dir(dir: &std::path::Path) -> bool {
     candidate_bin_names().iter().any(|n| dir.join(n).exists())
 }
 
-#[cfg(windows)]
-pub(crate) fn cli_usable_in(path: &std::path::Path, base: Option<&std::path::Path>) -> bool {
-    if !path.exists() {
-        return false;
-    }
-    let Some(dir) = path.parent() else {
-        return true;
-    };
-    let Ok(key) = std::fs::read_to_string(dir.join("runtime-key")) else {
-        return true;
-    };
-    base.is_some_and(|b| crate::commands::runtime::key_ready(b, key.trim()))
-}
-
 /// Probe `d` directly, then its `bin/` subdirectory, using `probe_fn`.
 /// Returns the first matching directory or `None`.  Extracted from the inline
 /// closure inside `inject_bundled_bin_path` so tests can call it with any probe.
@@ -651,56 +637,6 @@ mod tests_windows_probe {
             Some(&"codemie.cmd"),
             "the shim must be the first candidate"
         );
-    }
-
-    /// A bundled shim whose runtime was never downloaded only prints "not set up",
-    /// so it must not count as the user's own CLI (EPMCDME-15395); a user's own
-    /// codemie.cmd (no runtime-key beside it) and a shim with a ready runtime do.
-    #[test]
-    fn cli_usable_ignores_an_app_shim_without_a_ready_runtime() {
-        let t = TempDir::new().unwrap();
-        let base = t.path().join("runtime");
-        let bin = t.path().join("bin");
-        fs::create_dir_all(&bin).unwrap();
-        let shim = bin.join("codemie.cmd");
-        fs::write(
-            &shim,
-            "@echo off
-",
-        )
-        .unwrap();
-
-        // The user's own CLI: no runtime-key beside it.
-        assert!(cli_usable_in(&shim, Some(&base)));
-
-        // The app's shim, runtime not downloaded.
-        fs::write(
-            bin.join("runtime-key"),
-            "k1
-",
-        )
-        .unwrap();
-        assert!(!cli_usable_in(&shim, Some(&base)));
-
-        // Half-unpacked: files but no marker.
-        fs::create_dir_all(base.join("k1")).unwrap();
-        assert!(!cli_usable_in(&shim, Some(&base)));
-
-        // Complete.
-        let rt = base.join("k1");
-        fs::create_dir_all(rt.join("node")).unwrap();
-        fs::write(rt.join("node").join("node.exe"), "x").unwrap();
-        let entry = crate::commands::runtime::cli_entry(&rt);
-        fs::create_dir_all(entry.parent().unwrap()).unwrap();
-        fs::write(&entry, "x").unwrap();
-        fs::write(rt.join(".complete"), "k1").unwrap();
-        assert!(cli_usable_in(&shim, Some(&base)));
-    }
-
-    #[test]
-    fn cli_usable_is_false_for_a_missing_file() {
-        let t = TempDir::new().unwrap();
-        assert!(!cli_usable_in(&t.path().join("codemie.cmd"), None));
     }
 
     /// A directory holding only the stale pkg binary must not be treated as

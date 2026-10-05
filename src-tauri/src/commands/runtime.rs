@@ -110,11 +110,6 @@ pub fn is_ready(dir: &Path) -> bool {
     dir.join(COMPLETE_MARKER).is_file() && node_exe(dir).is_file() && cli_entry(dir).is_file()
 }
 
-/// Whether the runtime named `key` under `base` is complete.
-pub fn key_ready(base: &Path, key: &str) -> bool {
-    !key.is_empty() && is_ready(&base.join(key))
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -533,7 +528,6 @@ mod tests {
         std::fs::write(dir.join("stale-file"), "old").unwrap();
         promote(&staging, &dir).unwrap();
         assert!(is_ready(&dir));
-        assert!(key_ready(t.path(), "key"));
         assert!(!dir.join("stale-file").exists());
         assert!(!staging.exists());
         assert!(!t.path().join(".old-key").exists());

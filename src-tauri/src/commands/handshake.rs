@@ -73,48 +73,11 @@ pub(crate) fn cli_exists_in(
     }
 }
 
-/// Drop `exclude` dirs from `path_env` (case-insensitive, trailing separators
-/// ignored). The installer's own bundled shim dir is on the persisted PATH, so
-/// without this the bundle counts as an "existing" CLI and never gets injected
-/// ahead of an orphaned shim left by an uninstalled global CLI.
-pub fn strip_dirs(path_env: &str, exclude: &[std::path::PathBuf]) -> String {
-    let norm = |p: &std::path::Path| {
-        p.to_string_lossy()
-            .trim_end_matches(['\\', '/'])
-            .to_lowercase()
-    };
-    let drop: Vec<String> = exclude.iter().map(|p| norm(p)).collect();
-    let kept: Vec<_> = std::env::split_paths(OsStr::new(path_env))
-        .filter(|d| !drop.contains(&norm(d)))
-        .collect();
-    std::env::join_paths(kept)
-        .map(|j| j.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| path_env.to_string())
-}
-
 #[derive(Serialize)]
 pub struct HandshakeState {
     pub global_found: bool,
     pub global_version: Option<String>,
     pub bundled_takes_precedence: bool,
-}
-
-/// Extract the first X.Y.Z semver token from `output`, stripping a leading `v`
-/// so both "1.2.3" and "v1.2.3" (common npm CLI format) are accepted.
-pub fn parse_global_version(output: &str) -> Option<String> {
-    output.split_whitespace().find_map(|s| {
-        let candidate = s.strip_prefix('v').unwrap_or(s);
-        let parts: Vec<&str> = candidate.split('.').collect();
-        if parts.len() == 3
-            && parts
-                .iter()
-                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-        {
-            Some(candidate.to_string())
-        } else {
-            None
-        }
-    })
 }
 
 /// Drops `own` from `path_env`: the app's own shim dir and the agents dir hold
@@ -271,14 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn strip_dirs_removes_bundle_dir_case_insensitively() {
-        let path = std::env::join_paths(["/a", "/App/Bin/", "/b"]).unwrap();
-        let out = strip_dirs(path.to_str().unwrap(), &["/app/bin".into()]);
-        let expect = std::env::join_paths(["/a", "/b"]).unwrap();
-        assert_eq!(out, expect.to_str().unwrap());
-    }
-
-    #[test]
     fn probe_global_codemie_false_on_empty_path() {
         assert!(!probe_global_codemie("", &never));
     }
@@ -303,31 +258,6 @@ mod tests {
         assert_eq!(s.global_version, Some("2.0.1".to_string()));
     }
 
-    #[test]
-    fn parse_global_version_accepts_bare_semver() {
-        assert_eq!(
-            parse_global_version("codemie 1.2.3"),
-            Some("1.2.3".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_global_version_strips_v_prefix() {
-        // npm CLI binaries commonly output "v1.2.3"; the leading 'v' must be stripped.
-        assert_eq!(parse_global_version("v1.2.3"), Some("1.2.3".to_string()));
-        // Multi-word output: "codemie v2.0.1" — picks the space-separated v-prefixed token.
-        assert_eq!(
-            parse_global_version("codemie v2.0.1"),
-            Some("2.0.1".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_global_version_returns_none_for_non_semver() {
-        assert_eq!(parse_global_version("codemie"), None);
-        assert_eq!(parse_global_version(""), None);
-        assert_eq!(parse_global_version("vX.Y.Z"), None);
-    }
 }
 
 #[cfg(all(test, windows))]
