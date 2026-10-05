@@ -111,59 +111,67 @@ fn run_tool(cmd: &mut Command) -> CmdResult<()> {
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Get the base URL for installer repository (platform-specific, configurable via env)
+/// Where the published installers live (configurable via CODEMIE_INSTALLER_BASE_URL).
 fn get_base_url() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        get_base_url_windows()
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        get_base_url_macos()
-    }
+    std::env::var("CODEMIE_INSTALLER_BASE_URL").unwrap_or_else(|_| {
+        "https://github.com/codemie-ai/codemie-code/raw/main/install".to_string()
+    })
 }
 
-/// Get the Windows installer base URL (configurable via CODEMIE_INSTALLER_BASE_URL_WINDOWS)
+/// One manifest for every platform: the latest version and, per platform,
+/// where its installer is.
+fn get_manifest_url() -> String {
+    format!("{}/manifest.json", get_base_url())
+}
+
+#[derive(serde::Deserialize)]
+struct PlatformEntry {
+    url: String,
+}
+
+#[derive(serde::Deserialize)]
+struct Manifest {
+    version: String,
+    platforms: std::collections::HashMap<String, PlatformEntry>,
+}
+
 #[cfg(target_os = "windows")]
-fn get_base_url_windows() -> String {
-    std::env::var("CODEMIE_INSTALLER_BASE_URL_WINDOWS").unwrap_or_else(|_| {
-        "https://github.com/codemie-ai/codemie-code/raw/main/install/windows".to_string()
-    })
+fn platform_key() -> &'static str {
+    "windows-x86_64"
 }
 
-/// Get the macOS installer base URL (configurable via CODEMIE_INSTALLER_BASE_URL_MACOS)
-#[cfg(target_os = "macos")]
-fn get_base_url_macos() -> String {
-    std::env::var("CODEMIE_INSTALLER_BASE_URL_MACOS").unwrap_or_else(|_| {
-        "https://github.com/codemie-ai/codemie-code/raw/main/install/macos".to_string()
-    })
+#[cfg(not(target_os = "windows"))]
+fn platform_key() -> &'static str {
+    "darwin-aarch64"
 }
 
-/// Get the version.txt URL
-fn get_version_url() -> String {
-    format!("{}/version.txt", get_base_url())
-}
-
-/// Get the installer URL (looks for .exe on Windows, .dmg on macOS)
-fn get_installer_url(version: &str) -> String {
-    #[cfg(target_os = "windows")]
-    {
-        format!(
-            "{}/CodeMie%20Connect_{}_x64-setup.exe",
-            get_base_url(),
-            version
-        )
+/// The latest version and this platform's installer URL. A manifest with a
+/// bad version or no entry for this platform offers no update.
+fn parse_manifest(text: &str, platform: &str) -> CmdResult<(String, String)> {
+    let manifest: Manifest = serde_json::from_str(text)
+        .map_err(|e| InstallerError::Other(format!("Failed to parse manifest: {e}")))?;
+    if !is_valid_version(&manifest.version) {
+        return Err(InstallerError::Other(format!(
+            "Invalid version in manifest: {}",
+            manifest.version
+        )));
     }
+    let entry = manifest.platforms.get(platform).ok_or_else(|| {
+        InstallerError::Other(format!("No installer available for platform '{platform}'"))
+    })?;
+    Ok((manifest.version, entry.url.clone()))
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        format!(
-            "{}/CodeMie%20Connect_{}_aarch64.dmg",
-            get_base_url(),
-            version
-        )
-    }
+async fn fetch_manifest(client: &Client, url: &str) -> CmdResult<(String, String)> {
+    let text = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| InstallerError::Other(format!("Failed to fetch manifest: {e}")))?
+        .text()
+        .await
+        .map_err(|e| InstallerError::Other(format!("Failed to read manifest: {e}")))?;
+    parse_manifest(&text, platform_key())
 }
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -213,49 +221,36 @@ pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<St
         return Ok(None);
     }
 
-    // Fetch latest version from remote repository
-    let version_url = get_version_url();
-    eprintln!("[app-updater] Checking for updates at: {}", version_url);
+    eprintln!(
+        "[app-updater] Checking for updates at: {}",
+        get_manifest_url()
+    );
 
     let client = Client::new();
-    match client.get(&version_url).send().await {
-        Ok(response) => match response.text().await {
-            Ok(version_text) => {
-                let latest_version = version_text.trim();
-                *state.last_update_check.lock().unwrap() = Some(Instant::now());
+    match fetch_manifest(&client, &get_manifest_url()).await {
+        Ok((latest_version, _)) => {
+            *state.last_update_check.lock().unwrap() = Some(Instant::now());
 
-                // Validate that version is in semantic version format (e.g., "2.1.0")
-                // This prevents HTML 404 pages from being treated as valid versions
-                if !is_valid_version(latest_version) {
-                    eprintln!(
-                        "[app-updater] Invalid version format received: {}",
-                        latest_version
-                    );
-                    return Ok(None);
-                }
+            eprintln!(
+                "[app-updater] Current version: {}, Latest available: {}",
+                APP_VERSION, latest_version
+            );
 
+            if is_newer_version(APP_VERSION, &latest_version) {
                 eprintln!(
-                    "[app-updater] Current version: {}, Latest available: {}",
+                    "[app-updater] Update available: {} -> {}",
                     APP_VERSION, latest_version
                 );
-
-                if is_newer_version(APP_VERSION, latest_version) {
-                    eprintln!(
-                        "[app-updater] Update available: {} -> {}",
-                        APP_VERSION, latest_version
-                    );
-                    Ok(Some(latest_version.to_string()))
-                } else {
-                    eprintln!("[app-updater] Already on latest version");
-                    Ok(None)
-                }
+                Ok(Some(latest_version))
+            } else {
+                eprintln!("[app-updater] Already on latest version");
+                Ok(None)
             }
-            Err(e) => Err(InstallerError::Other(format!(
-                "Failed to read version: {e}"
-            ))),
-        },
-        Err(_e) => {
-            // Silently fail and mark as checked — don't spam errors on network issues
+        }
+        Err(e) => {
+            // Mark as checked so a network problem or a bad manifest doesn't
+            // retry on every boot; log it so field failures can be diagnosed.
+            eprintln!("[app-updater] update check failed: {e}");
             *state.last_update_check.lock().unwrap() = Some(Instant::now());
             Ok(None)
         }
@@ -274,37 +269,9 @@ pub async fn download_and_install(
     let app_clone = app.clone();
     let id_clone = id.clone();
 
-    // First, fetch the latest version to construct the correct installer URL
-    let version_url = get_version_url();
-    eprintln!("[app-updater] Fetching version from: {}", version_url);
-
     let client = Client::new();
-    let version_response = client
-        .get(&version_url)
-        .send()
-        .await
-        .map_err(|e| InstallerError::Other(format!("Failed to fetch version: {e}")))?;
-
-    let version_text = version_response
-        .text()
-        .await
-        .map_err(|e| InstallerError::Other(format!("Failed to read version: {e}")))?;
-
-    let latest_version = version_text.trim();
-
-    // Validate that version is in semantic version format (e.g., "2.1.0")
-    // This prevents HTML 404 pages from being treated as valid versions
-    if !is_valid_version(latest_version) {
-        return Err(InstallerError::Other(format!(
-            "Invalid version format received: {}",
-            latest_version
-        )));
-    }
-
+    let (latest_version, installer_url) = fetch_manifest(&client, &get_manifest_url()).await?;
     eprintln!("[app-updater] Latest version available: {}", latest_version);
-
-    // Construct the installer URL based on the version
-    let installer_url = get_installer_url(latest_version);
     eprintln!(
         "[app-updater] Downloading installer from: {}",
         installer_url
@@ -437,10 +404,73 @@ mod tests {
         assert_eq!(e.to_string(), "update failed");
     }
 
+    const MANIFEST: &str = r#"{
+  "version": "2.1.1",
+  "platforms": {
+    "darwin-aarch64": { "url": "https://github.com/codemie-ai/codemie-code/raw/main/install/macos/CodeMie%20Connect_2.1.1_aarch64.dmg" },
+    "windows-x86_64": { "url": "https://github.com/codemie-ai/codemie-code/raw/main/install/windows/CodeMie%20Connect_2.1.1_x64-setup.exe" }
+  }
+}"#;
+
+    #[test]
+    fn manifest_gives_the_version_and_this_platforms_installer() {
+        let (v, url) = parse_manifest(MANIFEST, "darwin-aarch64").unwrap();
+        assert_eq!(v, "2.1.1");
+        assert!(url.ends_with("/macos/CodeMie%20Connect_2.1.1_aarch64.dmg"));
+        let (_, url) = parse_manifest(MANIFEST, "windows-x86_64").unwrap();
+        assert!(url.ends_with("/windows/CodeMie%20Connect_2.1.1_x64-setup.exe"));
+    }
+
+    #[test]
+    fn manifest_without_this_platform_offers_no_update() {
+        assert!(parse_manifest(MANIFEST, "darwin-x86_64").is_err());
+    }
+
+    #[test]
+    fn manifest_with_a_bad_version_or_an_html_page_is_refused() {
+        let bad = MANIFEST.replace("\"2.1.1\"", "\"latest\"");
+        assert!(parse_manifest(&bad, "darwin-aarch64").is_err());
+        assert!(parse_manifest("<!DOCTYPE html><html>404</html>", "darwin-aarch64").is_err());
+    }
+
+    #[test]
+    fn manifest_is_read_from_one_place_for_every_platform() {
+        assert!(get_manifest_url().ends_with("/install/manifest.json"));
+    }
+
+    #[tokio::test]
+    async fn manifest_is_fetched_over_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MANIFEST.len()
+            );
+            s.write_all(head.as_bytes()).await.unwrap();
+            s.write_all(MANIFEST.as_bytes()).await.unwrap();
+        });
+        let url = format!("http://{addr}/install/manifest.json");
+        let (v, installer) = fetch_manifest(&Client::new(), &url).await.unwrap();
+        assert_eq!(v, "2.1.1");
+        assert!(installer.ends_with(&format!(
+            "CodeMie%20Connect_2.1.1_{}",
+            if cfg!(windows) {
+                "x64-setup.exe"
+            } else {
+                "aarch64.dmg"
+            }
+        )));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
-    fn installer_url_names_the_arm64_dmg() {
-        assert!(get_installer_url("2.1.1").ends_with("/CodeMie%20Connect_2.1.1_aarch64.dmg"));
+    fn this_mac_build_reads_the_arm64_entry() {
+        assert_eq!(platform_key(), "darwin-aarch64");
     }
 
     #[cfg(target_os = "macos")]
