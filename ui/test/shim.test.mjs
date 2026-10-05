@@ -62,7 +62,7 @@ test('tauri.windows.conf.json ships only the shim and its runtime key; Node and 
 
 test('the uninstaller removes the downloaded runtime but never ~/.codemie', () => {
   const nsi = readFileSync('src-tauri/installer-hooks.nsi', 'utf8');
-  assert.match(nsi, /RMDir \/r "\$LOCALAPPDATA\\CodeMie\\runtime"/);
+  assert.match(nsi, /rmdir \/s \/q "\$LOCALAPPDATA\\CodeMie\\runtime"/);
   assert.doesNotMatch(nsi, /\.codemie/);
 });
 

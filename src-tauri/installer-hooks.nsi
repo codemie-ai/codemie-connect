@@ -17,6 +17,9 @@
   ; Node and the CLI the app downloaded on first launch. Per-user, no admin.
   ; The user's own CodeMie config folder is not touched.
   ; Keep it on an in-place update: the download is ~200 MB.
-  StrCmp $UpdateMode 1 +2
-  RMDir /r "$LOCALAPPDATA\CodeMie\runtime"
+  ; cmd rmdir, not NSIS RMDir /r: that prints all ~14k files to the details
+  ; list and the uninstaller looks hung (users kill it mid-delete).
+  StrCmp $UpdateMode 1 +3
+  nsExec::Exec 'cmd.exe /d /c rmdir /s /q "$LOCALAPPDATA\CodeMie\runtime"'
+  Pop $0
 !macroend
