@@ -7,6 +7,73 @@ use tauri::Manager;
 
 use crate::state::AppState;
 
+/// Run `codemie --version` at the exact `path` and return the parsed version.
+/// On Windows `.cmd` files must be invoked via `cmd /C`; direct exec silently fails.
+fn version_at(path: &std::path::Path) -> Option<String> {
+    #[cfg(windows)]
+    let output = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("cmd")
+            .creation_flags(CREATE_NO_WINDOW)
+            .arg("/C")
+            .arg(path)
+            .arg("--version")
+            .output()
+            .ok()?
+    };
+    #[cfg(not(windows))]
+    let output = std::process::Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| parse_global_version(&String::from_utf8_lossy(&output.stdout)))?
+}
+
+/// Find the first codemie binary on `path_env` whose `--version` succeeds.
+/// Returns the version string, or `None` if no working CLI is found.
+/// A file that exists but exits non-zero (e.g. the old broken PowerShell shim)
+/// is not returned.
+pub fn find_working_global_codemie(path_env: &str) -> Option<String> {
+    let bin_names: &[&str] = if cfg!(windows) {
+        &["codemie.cmd", "codemie.exe"]
+    } else {
+        &["codemie"]
+    };
+    std::env::split_paths(OsStr::new(path_env)).find_map(|dir| {
+        bin_names.iter().find_map(|&name| {
+            let p = dir.join(name);
+            if p.exists() {
+                version_at(&p)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Drop `exclude` dirs from `path_env` (case-insensitive, trailing separators
+/// ignored). The installer's own bundled shim dir is on the persisted PATH, so
+/// without this the bundle counts as an "existing" CLI and never gets injected
+/// ahead of an orphaned shim left by an uninstalled global CLI.
+pub fn strip_dirs(path_env: &str, exclude: &[std::path::PathBuf]) -> String {
+    let norm = |p: &std::path::Path| {
+        p.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    };
+    let drop: Vec<String> = exclude.iter().map(|p| norm(p)).collect();
+    let kept: Vec<_> = std::env::split_paths(OsStr::new(path_env))
+        .filter(|d| !drop.contains(&norm(d)))
+        .collect();
+    std::env::join_paths(kept)
+        .map(|j| j.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path_env.to_string())
+}
+
 #[derive(Serialize)]
 pub struct HandshakeState {
     pub global_found: bool,
@@ -81,13 +148,15 @@ pub fn detect_handshake_state(
     probe: &dyn Fn(&std::path::Path) -> bool,
     version_cmd: &dyn Fn(&str) -> Option<String>,
 ) -> HandshakeState {
-    let global_found = probe_global_codemie(path_env, probe);
-
-    let global_version = if global_found {
+    // probe guards the cheaper version_cmd call; a file that exists but whose
+    // --version fails (broken shim) leaves global_found false.
+    let file_found = probe_global_codemie(path_env, probe);
+    let global_version = if file_found {
         version_cmd(path_env)
     } else {
         None
     };
+    let global_found = global_version.is_some();
 
     HandshakeState {
         global_found,
@@ -107,15 +176,7 @@ pub async fn check_handshake_state(app: tauri::AppHandle) -> HandshakeState {
     let bundled_injected = state.bundled_injected;
     tokio::task::spawn_blocking(move || {
         let real_probe = |p: &std::path::Path| p.exists();
-        let real_version_cmd = |path: &str| -> Option<String> {
-            std::process::Command::new("codemie")
-                .arg("--version")
-                .env("PATH", path)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| parse_global_version(&String::from_utf8_lossy(&o.stdout)))
-        };
+        let real_version_cmd = |path: &str| -> Option<String> { find_working_global_codemie(path) };
         detect_handshake_state(&path_env, bundled_injected, &real_probe, &real_version_cmd)
     })
     .await
@@ -175,9 +236,28 @@ mod tests {
     }
 
     #[test]
-    fn global_found_when_probe_matches() {
-        let s = detect_handshake_state("/usr/local/bin", false, &always, &no_version);
+    fn global_found_when_probe_matches_and_version_succeeds() {
+        let mock_version = |_: &str| Some("1.0.0".to_string());
+        let s = detect_handshake_state("/usr/local/bin", false, &always, &mock_version);
         assert!(s.global_found);
+    }
+
+    #[test]
+    fn global_not_found_when_file_exists_but_version_fails() {
+        // The broken shim case: codemie.cmd exists but --version exits non-zero.
+        let s = detect_handshake_state("/usr/local/bin", false, &always, &no_version);
+        assert!(
+            !s.global_found,
+            "broken shim must not count as a working global install"
+        );
+    }
+
+    #[test]
+    fn strip_dirs_removes_bundle_dir_case_insensitively() {
+        let path = std::env::join_paths(["/a", "/App/Bin/", "/b"]).unwrap();
+        let out = strip_dirs(path.to_str().unwrap(), &["/app/bin".into()]);
+        let expect = std::env::join_paths(["/a", "/b"]).unwrap();
+        assert_eq!(out, expect.to_str().unwrap());
     }
 
     #[test]
@@ -192,7 +272,8 @@ mod tests {
 
     #[test]
     fn bundled_takes_precedence_when_injected_and_global_found() {
-        let s = detect_handshake_state("/usr/local/bin", true, &always, &no_version);
+        let mock_version = |_: &str| Some("1.0.0".to_string());
+        let s = detect_handshake_state("/usr/local/bin", true, &always, &mock_version);
         assert!(s.bundled_takes_precedence);
     }
 
@@ -228,5 +309,41 @@ mod tests {
         assert_eq!(parse_global_version("codemie"), None);
         assert_eq!(parse_global_version(""), None);
         assert_eq!(parse_global_version("vX.Y.Z"), None);
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(windows))]
+mod tests_find_working_global {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    #[test]
+    fn broken_binary_returns_none() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("codemie");
+        fs::write(&bin, b"#!/bin/sh\nexit 1").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let path_env = dir.path().to_str().unwrap().to_string();
+        assert!(
+            find_working_global_codemie(&path_env).is_none(),
+            "a binary that exits 1 must not count as a working global CLI"
+        );
+    }
+
+    #[test]
+    fn working_binary_returns_version() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("codemie");
+        fs::write(&bin, b"#!/bin/sh\necho 'codemie 1.2.3'").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let path_env = dir.path().to_str().unwrap().to_string();
+        assert_eq!(
+            find_working_global_codemie(&path_env),
+            Some("1.2.3".to_string()),
+            "a binary that exits 0 and prints a semver must be returned"
+        );
     }
 }
