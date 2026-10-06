@@ -24,7 +24,6 @@ import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
 import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
-import { createCommandLog } from './command-log.js';
 import { initCmdLog } from './cmdlog-ui.js';
 import { analyticsCommand } from './analytics-command.js';
 
@@ -810,10 +809,6 @@ async function runUpdateApp() {
 }
 
 async function boot() {
-  // The command-log footer hears about every command the bridge runs, so it is
-  // wired first: the startup checks below (codemie --version, profile status)
-  // would otherwise run before it and never show.
-  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
   const flags = await invoke('smoke_mode');
 
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,

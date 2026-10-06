@@ -14,7 +14,7 @@ globalThis.window = {
   },
 };
 
-const { pty, inspector, setCommandListener } = await import('../runner-bridge.js');
+const { pty, inspector } = await import('../runner-bridge.js');
 
 test('spawnPty resolves only on its own id and onData filters by id', async () => {
   const listeners = {};
@@ -80,22 +80,29 @@ test('CR-005: data listener is cleaned up when exit-listen throws', async () => 
   );
 });
 
-// Commands Rust runs itself (profile status) used to skip the "what CodeMie
-// ran" footer. They reach it with their outcome; a rejection shows as failed.
+// Commands Rust runs itself (profile status) are recorded in the command log
+// with their outcome; a rejection is recorded as failed (-1).
 test('commands Rust runs itself reach the command log, with their outcome', async () => {
-  const seen = [];
-  setCommandListener((cmd) => {
-    const entry = { cmd, code: 'running' };
-    seen.push(entry);
-    return (code) => { entry.code = code; };
-  });
-  invokeImpl = async () => ({ state: 'unknown', detail: '', code: 1 });
+  const calls = [];
+  invokeImpl = async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'cmdlog_open') return 'cmd-1';
+    if (cmd === 'check_profile_status') return { state: 'unknown', detail: '', code: 1 };
+    return null;
+  };
   await inspector.checkProfileStatus();
-  invokeImpl = async () => { throw new Error('ipc failed'); };
+  invokeImpl = async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'cmdlog_open') return 'cmd-2';
+    if (cmd === 'check_profile_status') throw new Error('ipc failed');
+    return null;
+  };
   await assert.rejects(inspector.checkProfileStatus());
-  assert.deepEqual(seen, [
-    { cmd: 'codemie profile status', code: 1 },
-    { cmd: 'codemie profile status', code: null },
+  const log = calls.filter(([c]) => c.startsWith('cmdlog_'));
+  assert.deepEqual(log, [
+    ['cmdlog_open', { command: 'codemie profile status' }],
+    ['cmdlog_close', { id: 'cmd-1', exitCode: 1 }],
+    ['cmdlog_open', { command: 'codemie profile status' }],
+    ['cmdlog_close', { id: 'cmd-2', exitCode: -1 }],
   ]);
-  setCommandListener(null);
 });

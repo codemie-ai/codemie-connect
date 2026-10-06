@@ -7,6 +7,7 @@ use crate::error::CmdResult;
 use crate::state::AppState;
 
 const MAX_OUTPUT: usize = 1_048_576; // 1 MB per record
+const MAX_RECORDS: usize = 200; // oldest records are dropped past this
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CmdRecord {
@@ -41,6 +42,10 @@ impl CmdLogStore {
             },
         );
         self.order.push(id.clone());
+        if self.order.len() > MAX_RECORDS {
+            let oldest = self.order.remove(0);
+            self.records.remove(&oldest);
+        }
         id
     }
 
@@ -200,6 +205,17 @@ mod tests {
         let mut store = CmdLogStore::default();
         assert!(store.append("cmd-999", "x").is_err());
         assert!(store.close("cmd-999", 0).is_err());
+    }
+
+    #[test]
+    fn open_drops_the_oldest_record_past_max_records() {
+        let mut store = CmdLogStore::default();
+        let first = store.open("first".into());
+        for i in 0..MAX_RECORDS {
+            store.open(format!("cmd {i}"));
+        }
+        assert_eq!(store.list().len(), MAX_RECORDS);
+        assert!(store.get(&first).is_none());
     }
 
     #[test]

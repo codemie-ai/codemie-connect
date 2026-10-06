@@ -9,20 +9,6 @@ const { listen } = window.__TAURI__.event;
 let counter = 0;
 const nextId = (p) => `${p}${++counter}`;
 
-// The command-log footer: told when a command starts, and given the exit code
-// when it is known. A no-op until renderer.js registers the footer.
-let onCommand = null;
-export function setCommandListener(fn) {
-  onCommand = fn;
-}
-const started = (cmd) => {
-  try {
-    return (onCommand && onCommand(cmd)) || (() => {});
-  } catch {
-    return () => {};
-  }
-};
-
 // ponytail: single-PTY sentinel; replace with Map<id,fn> for concurrent PTY support
 let _resolvePtyKill = null;
 
@@ -37,7 +23,6 @@ export const cmdlog = {
 // ---- runner (src/main/runner.js) ----
 export const runner = {
   async runCapture(cmd) {
-    const finish = started(cmd);
     const logId = await cmdlog.open(cmd).catch(() => null);
     let res = null;
     let _code = -1;
@@ -47,8 +32,6 @@ export const runner = {
       _code = 0;
       return res;
     } finally {
-      // Also when invoke rejects, or the footer shows the command running forever.
-      finish(res && res.code);
       if (logId) await cmdlog.close(logId, _code).catch(console.warn);
     }
   },
@@ -71,7 +54,6 @@ export const runner = {
   async runStream(cmd, onLine = () => {}) {
     onLine(`> ${cmd}`, 'prompt');
     const id = nextId('stream');
-    const finish = started(cmd);
     const logId = await cmdlog.open(cmd).catch(() => null);
     const pendingAppends = [];
     const un = await listen('engine:cmd-line', (e) => {
@@ -89,36 +71,34 @@ export const runner = {
       return { code };
     } finally {
       un();
-      finish(code);
       await Promise.all(pendingAppends);
       if (logId) await cmdlog.close(logId, _exitCode).catch(console.warn);
     }
   },
 };
 
-// Commands Rust runs itself are reported to the footer the same way. `codeOf`
-// turns the result into an exit code; a rejection shows as failed.
-const logged = (cmd, run, codeOf = () => 0) => {
-  const finish = started(cmd);
-  return run().then(
-    (res) => {
-      finish(codeOf(res));
-      return res;
-    },
-    (e) => {
-      finish(null);
-      throw e;
-    },
-  );
+// Commands Rust runs itself get a command-log record too. `codeOf` turns the
+// result into an exit code; a rejection is recorded as failed (-1).
+const logged = async (cmd, run, codeOf = () => 0) => {
+  const logId = await cmdlog.open(cmd).catch(() => null);
+  let code = -1;
+  try {
+    const res = await run();
+    code = codeOf(res) ?? -1;
+    return res;
+  } finally {
+    if (logId) await cmdlog.close(logId, code).catch(console.warn);
+  }
 };
+const probeCode = (p) => (p?.found ? 0 : 1);
 
 // ---- inspector (src/main/inspector.js) ----
 export const inspector = {
-  checkGit: () => invoke('check_git'),
-  checkNode: () => invoke('check_node'),
-  checkNpm: () => invoke('check_npm'),
-  checkCodemie: () => invoke('check_codemie'),
-  checkHandshakeState: () => invoke('check_handshake_state'),
+  checkGit: () => logged('git --version', () => invoke('check_git'), probeCode),
+  checkNode: () => logged('node --version', () => invoke('check_node'), probeCode),
+  checkNpm: () => logged('npm --version', () => invoke('check_npm'), probeCode),
+  checkCodemie: () => logged('codemie --help', () => invoke('check_codemie'), probeCode),
+  checkHandshakeState: () => logged('codemie --version', () => invoke('check_handshake_state')),
   checkProfileStatus: () => logged('codemie profile status', () => invoke('check_profile_status'), (st) => st?.code ?? 0),
   gitBinaryPath: () => invoke('git_binary_path'),
   nodeBinaryPath: () => invoke('node_binary_path'),
@@ -238,14 +218,9 @@ export const pty = {
       exitUnlisten = await listen('engine:pty-exit', (e) => {
         if (e.payload.id === id) resolveExit(e.payload.code);
       });
-      const finish = started(cmd);
-      try {
         await invoke('spawn_pty', { cmd, cols, rows, runId: id });
-        exitCode = await Promise.race([exitP, killP]);
-        return { code: exitCode, id };
-      } finally {
-        finish(exitCode ?? null);
-      }
+      exitCode = await Promise.race([exitP, killP]);
+      return { code: exitCode, id };
     } finally {
       _resolvePtyKill = null;
       exitUnlisten?.();
