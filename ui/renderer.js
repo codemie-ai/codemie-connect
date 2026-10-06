@@ -24,7 +24,7 @@ import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
 import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
-import { createCommandLog } from './command-log.js';
+import { initCmdLog } from './cmdlog-ui.js';
 import { analyticsCommand } from './analytics-command.js';
 
 const { invoke } = window.__TAURI__.core;
@@ -497,6 +497,7 @@ async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
     }
   }) : null;
   try {
+    // cmdlog intent: user-initiated
     const { code } = await bridge.pty.spawnPty(cmd);
     un?.();
     const errorLine = parseError ? parseError(buf.split(/\r?\n/)) : null;
@@ -726,6 +727,7 @@ async function startSignIn() {
   try {
     const lines = [];
     // run_stream takes a command string, not an array — matches all existing callers
+    // cmdlog intent: user-initiated
     await bridge.runner.runStream('codemie profile login', (line) => { lines.push(line); });
     // Exit code is ignored — profile login exits 0 on failure; scan stdout instead.
     const errorLine = findLoginError(lines);
@@ -807,10 +809,6 @@ async function runUpdateApp() {
 }
 
 async function boot() {
-  // The command-log footer hears about every command the bridge runs, so it is
-  // wired first: the startup checks below (codemie --version, profile status)
-  // would otherwise run before it and never show.
-  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
   const flags = await invoke('smoke_mode');
 
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
@@ -848,6 +846,7 @@ async function boot() {
     hint: document.getElementById('terminal-hint'),
     done: document.getElementById('terminal-done'),
   });
+  initCmdLog();
 
   document.getElementById('app-update-banner-run').addEventListener('click', () => {
     if (installRunning) return;

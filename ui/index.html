@@ -172,10 +172,9 @@
       </div><!-- /#shell-body -->
 
       <!-- ============ FOOTER LOG (collapsible slot — populated by a later ticket) ============ -->
-      <!-- v2: one line per command the app ran this session (ui/command-log.js).
-           Per-row output and "Copy all" are EPMCDME-14512's. -->
+      <!-- One row per command the app ran this session (ui/cmdlog-ui.js). -->
       <details id="command-log-footer">
-        <summary>what CodeMie ran</summary>
+        <summary><span id="cmdlog-title">what CodeMie ran</span></summary>
         <div id="command-log-body"></div>
       </details>
     </div>

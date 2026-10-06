@@ -61,12 +61,3 @@ test('renderer: the app offers no CLI update of its own', () => {
   assert.ok(!html.includes('identity-version-badge'), 'index.html still has the CLI version badge');
   assert.ok(html.includes('id="app-update-banner"'), 'the app update banner stays');
 });
-
-// The footer must be listening before boot() runs its startup checks, or
-// `codemie profile status` never shows (seen on Windows).
-test('renderer: the command-log footer is wired before the startup checks run', () => {
-  const boot = renderer.slice(renderer.indexOf('async function boot('));
-  const wired = boot.indexOf('bridge.setCommandListener(');
-  assert.ok(wired > 0, 'boot() wires the footer');
-  assert.ok(wired < boot.indexOf('bridge.inspector.checkProfileStatus()'), 'before the profile status check');
-});

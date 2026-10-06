@@ -90,6 +90,7 @@ pub fn run() {
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())
         })
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             commands::runner::run_capture,
             commands::runner::run_fresh_env,
@@ -120,6 +121,11 @@ pub fn run() {
             commands::logger::log_line,
             commands::logger::open_log,
             commands::logger::open_cli_debug_log,
+            commands::cmdlog::cmdlog_open,
+            commands::cmdlog::cmdlog_append,
+            commands::cmdlog::cmdlog_close,
+            commands::cmdlog::cmdlog_list,
+            commands::cmdlog::cmdlog_get,
             commands::window::set_window_height,
             commands::window::close_app,
             commands::smoke::smoke_mode,
