@@ -110,6 +110,10 @@ step "[5/5] Verifying the produced bundle"
 
 [ -f "$RES/bin/codemie" ] || fail "bundle is missing bin/codemie (looked at $RES/bin/codemie)"
 [ -x "$RES/bin/codemie" ] || fail "bundled shim is not executable: $RES/bin/codemie"
+# npm would put every command the CLI declares on PATH (codemie-claude, ...).
+for n in $(node -e "process.stdout.write(Object.keys(require(process.argv[1]).packages['node_modules/@codemieai/code'].bin).join(' '))" "$CLI_DIR/package-lock.json"); do
+  [ -x "$RES/bin/$n" ] || fail "bundle is missing the $n command: $RES/bin/$n"
+done
 [ ! -e "$RES/node" ] || fail "Node is bundled again: $RES/node (it is downloaded on first launch)"
 [ ! -e "$RES/cli" ] || fail "the CLI is bundled again: $RES/cli (it is installed on first launch)"
 

@@ -69,8 +69,10 @@ test('macOS shim puts the runtime node directory on PATH, appended, before the e
   );
 });
 
-test('macOS shim targets bin/codemie.js, never dist/index.js', () => {
-  assert.match(macShim, /bin\/codemie\.js/, 'must target the package bin entry');
+test('macOS shim targets the package bin entries, never dist/index.js', () => {
+  assert.match(macShim, /codemie\) ENTRY=codemie\.js/, 'codemie runs bin/codemie.js');
+  assert.match(macShim, /codemie-code\) ENTRY=agent-executor\.js/, 'codemie-code is the one bin not named after itself');
+  assert.match(macShim, /code\/bin\/\$ENTRY"/, 'entries live in the package bin dir');
   assert.doesNotMatch(macShim, /dist\/index\.js/, 'dist/index.js is a barrel with no CLI bootstrap');
 });
 
@@ -80,9 +82,26 @@ test('runtime.json pins the darwin-arm64 Node checksum', () => {
   assert.match(rt.nodeVersion, /^\d+\.\d+\.\d+$/, 'nodeVersion must be a plain semver');
 });
 
-test('tauri.macos.conf.json ships only the shim; Node and the CLI are installed on first launch', () => {
+// Every command the pinned CLI declares, from the lock file the app installs with.
+const cliBins = JSON.parse(readFileSync('assets/codemie-cli/package-lock.json', 'utf8'))
+  .packages['node_modules/@codemieai/code'].bin;
+
+test('tauri.macos.conf.json ships the shim under every CLI command name, nothing else', () => {
+  // npm puts all of these on PATH; without one, e.g. `codemie-claude`, the
+  // command a user runs a tool with is "command not found" in a terminal.
   const conf = JSON.parse(readFileSync('src-tauri/tauri.macos.conf.json', 'utf8'));
-  assert.deepEqual(conf.bundle.resources, { '../assets/macos/bin/codemie': 'bin/codemie' });
+  const want = Object.fromEntries(Object.keys(cliBins).map((n) => [`../assets/macos/bin/${n}`, `bin/${n}`]));
+  assert.deepEqual(conf.bundle.resources, want);
+  for (const n of Object.keys(cliBins)) {
+    assert.equal(readFileSync(`assets/macos/bin/${n}`, 'utf8'), macShim, `assets/macos/bin/${n} must be the shim`);
+  }
+});
+
+test('the shim maps every CLI command to the entry the CLI declares for it', () => {
+  for (const [name, entry] of Object.entries(cliBins)) {
+    const mapped = name === 'codemie' ? 'codemie.js' : name === 'codemie-code' ? 'agent-executor.js' : `${name}.js`;
+    assert.equal(`bin/${mapped}`, entry, `${name}: the shim would run bin/${mapped}`);
+  }
 });
 
 test('the CLI lock file the app installs with pins the CLI runtime.json pins', () => {
@@ -107,11 +126,12 @@ test('the shared tauri.conf.json declares no resources; each platform has its ov
 
 // ---- macOS shim, executed ------------------------------------------------------
 
-function shimIn(dir) {
+function shimIn(dir, name = 'codemie') {
   const bin = join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'codemie'), macShim);
-  return join(bin, 'codemie');
+  if (name !== 'codemie') symlinkSync('codemie', join(bin, name));
+  return join(bin, name);
 }
 
 function execShim(shim, home, args = []) {
@@ -123,15 +143,15 @@ function execShim(shim, home, args = []) {
 
 // Lays the runtime out the way runtime.rs does: versioned dirs plus the
 // `node` and `cli` links the shim follows.
-function runtime(home, { cliComplete = true } = {}) {
+function runtime(home, { cliComplete = true, entries = ['codemie.js'] } = {}) {
   const rt = join(home, 'Library/Application Support/CodeMie/runtime');
   mkdirSync(join(rt, 'node-1/bin'), { recursive: true });
   mkdirSync(join(rt, 'cli-1/node_modules/@codemieai/code/bin'), { recursive: true });
   writeFileSync(join(rt, 'node-1/.complete'), '1');
   if (cliComplete) writeFileSync(join(rt, 'cli-1/.complete'), '1');
-  writeFileSync(join(rt, 'node-1/bin/node'), '#!/bin/sh\necho "fake-node $2 $3"\nexit 7\n');
+  writeFileSync(join(rt, 'node-1/bin/node'), '#!/bin/sh\necho "fake-node $(basename "$1") $2 $3"\nexit 7\n');
   chmodSync(join(rt, 'node-1/bin/node'), 0o755);
-  writeFileSync(join(rt, 'cli-1/node_modules/@codemieai/code/bin/codemie.js'), '');
+  for (const e of entries) writeFileSync(join(rt, 'cli-1/node_modules/@codemieai/code/bin', e), '');
   symlinkSync('node-1', join(rt, 'node'));
   symlinkSync('cli-1', join(rt, 'cli'));
 }
@@ -148,8 +168,26 @@ test('macOS shim runs the linked runtime and passes arguments and exit code thro
   const home = join(dir, 'home');
   runtime(home);
   const r = execShim(shimIn(dir), home, ['--version']);
-  assert.equal(r.stdout.trim(), 'fake-node --version');
+  assert.equal(r.stdout.trim(), 'fake-node codemie.js --version');
   assert.equal(r.status, 7);
+});
+
+test('macOS shim run as another command name runs that command', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shim-'));
+  const home = join(dir, 'home');
+  runtime(home, { entries: ['codemie.js', 'codemie-claude.js', 'agent-executor.js'] });
+  assert.equal(execShim(shimIn(dir, 'codemie-claude'), home, ['--task', 'x']).stdout.trim(), 'fake-node codemie-claude.js --task x');
+  assert.equal(execShim(shimIn(dir, 'codemie-code'), home).stdout.trim(), 'fake-node agent-executor.js');
+});
+
+test('macOS shim run as a command this CLI does not have says so and exits 127', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shim-'));
+  const home = join(dir, 'home');
+  runtime(home);
+  const r = execShim(shimIn(dir, 'codemie-gone'), home);
+  assert.equal(r.status, 127);
+  assert.match(r.stderr, /codemie-gone: this CodeMie CLI has no such command/);
+  assert.equal(r.stdout, '');
 });
 
 test('macOS shim does not use a CLI dir without the .complete marker', () => {

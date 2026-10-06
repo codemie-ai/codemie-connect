@@ -1,7 +1,20 @@
 {
   "bundle": {
     "resources": {
-      "../assets/macos/bin/codemie": "bin/codemie"
+      "../assets/macos/bin/codemie": "bin/codemie",
+      "../assets/macos/bin/codemie-claude": "bin/codemie-claude",
+      "../assets/macos/bin/codemie-claude-acp": "bin/codemie-claude-acp",
+      "../assets/macos/bin/codemie-code": "bin/codemie-code",
+      "../assets/macos/bin/codemie-codex": "bin/codemie-codex",
+      "../assets/macos/bin/codemie-copilot": "bin/codemie-copilot",
+      "../assets/macos/bin/codemie-gemini": "bin/codemie-gemini",
+      "../assets/macos/bin/codemie-kimi": "bin/codemie-kimi",
+      "../assets/macos/bin/codemie-kimi-acp": "bin/codemie-kimi-acp",
+      "../assets/macos/bin/codemie-mcp-proxy": "bin/codemie-mcp-proxy",
+      "../assets/macos/bin/codemie-opencode": "bin/codemie-opencode",
+      "../assets/macos/bin/codemie-openwiki": "bin/codemie-openwiki",
+      "../assets/macos/bin/codemie-pi": "bin/codemie-pi",
+      "../assets/macos/bin/proxy-daemon": "bin/proxy-daemon"
     }
   }
 }

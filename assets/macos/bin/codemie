@@ -2,14 +2,28 @@
 # CodeMie CLI shim. Node and the CLI tree are not in the app: the app installs
 # them on first launch into Application Support (src-tauri/src/commands/runtime.rs)
 # and keeps the `node` and `cli` links there pointing at the versions in use.
+# The app ships this one file under every command name the CLI declares
+# (codemie, codemie-claude, codemie-gemini, ...), the way npm would; the name
+# it runs as picks the CLI entry point.
 RT="$HOME/Library/Application Support/CodeMie/runtime"
 if [ ! -x "$RT/node/bin/node" ] || [ ! -f "$RT/cli/.complete" ]; then
   echo "CodeMie is not set up yet. Open CodeMie Connect once to finish setting it up." 1>&2
   exit 1
+fi
+NAME="$(basename "$0")"
+case "$NAME" in
+  codemie) ENTRY=codemie.js ;;
+  codemie-code) ENTRY=agent-executor.js ;;
+  *) ENTRY="$NAME.js" ;;
+esac
+ENTRY="$RT/cli/node_modules/@codemieai/code/bin/$ENTRY"
+if [ ! -f "$ENTRY" ]; then
+  echo "$NAME: this CodeMie CLI has no such command." 1>&2
+  exit 127
 fi
 # Agent installs and every uninstall shell out to `npm` by name, so the
 # runtime's npm has to be findable. It is appended, for this process tree
 # only, so a user's own npm still wins (EPMCDME-14572).
 PATH="${PATH:+$PATH:}$RT/node/bin"
 export PATH
-exec "$RT/node/bin/node" "$RT/cli/node_modules/@codemieai/code/bin/codemie.js" "$@"
+exec "$RT/node/bin/node" "$ENTRY" "$@"
