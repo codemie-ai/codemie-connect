@@ -23,15 +23,15 @@ test('claude-desktop disconnect is enabled when connected', () => {
   assert.equal(row.actions[0].note, null);
 });
 
-test('not-installed rows show a disabled Install and connect action', () => {
+test('not-installed rows show an enabled Install and connect action', () => {
   const rows = renderConnectionRows({
     'claude-desktop': { status: 'not-installed' }, 'codex-desktop': { status: 'not-set' },
     'vscode-copilot': { status: 'not-set' }, 'vscode-claude-code': { status: 'not-set' },
   });
   const row = rows.find(r => r.app === 'claude-desktop');
   assert.equal(row.actions[0].label, 'Install and connect');
-  assert.equal(row.actions[0].disabled, true);
-  assert.match(row.actions[0].note, /coming soon/);
+  assert.equal(row.actions[0].disabled, false);
+  assert.equal(row.actions[0].note, null);
 });
 
 test('disconnected rows offer Reconnect + Remove setup, not-set rows offer Connect', () => {
