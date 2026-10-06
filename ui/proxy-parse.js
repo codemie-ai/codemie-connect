@@ -24,7 +24,7 @@ export function extractDownloadUrl(lines) {
 // Strips ANSI over the whole buffer first (so split or cursor escapes cannot
 // hide a line), then looks for the ✗ line and the download page.
 export function analyzeProxyOutput(rawBuffer) {
-  const lines = stripAnsi(String(rawBuffer ?? '')).split('\n');
+  const lines = stripAnsi(String(rawBuffer ?? '')).split(/\r\n|\r|\n/);
   return { errorLine: findProxyConnectError(lines), downloadUrl: extractDownloadUrl(lines) };
 }
 

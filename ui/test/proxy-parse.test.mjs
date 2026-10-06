@@ -62,3 +62,9 @@ test('a cursor-down escape before the ✗ line does not hide it', () => {
 test('findProxyConnectError strips ANSI per line', () => {
   assert.equal(findProxyConnectError(['\x1b[31m✗ red\x1b[0m']), '✗ red');
 });
+
+test('analyzeProxyOutput finds the ✗ line and download page after a lone \\r spinner frame', () => {
+  const r = analyzeProxyOutput('⠋ Installing...\r✗ install failed\n⠙ Retrying\rDownload page: https://x/y\n');
+  assert.equal(r.errorLine, '✗ install failed');
+  assert.equal(r.downloadUrl, 'https://x/y');
+});
