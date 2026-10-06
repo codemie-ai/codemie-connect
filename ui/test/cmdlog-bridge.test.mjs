@@ -170,25 +170,6 @@ test('spawnPty without onData: cmdlog_append still receives decoded+stripped tex
   assert.equal(closeCall?.args?.exitCode, 0, 'cmdlog_close must receive exit code 0');
 });
 
-// ---- test 6: runSelfUpdate — cmdlog_open fires before run_self_update; close gets correct code ----
-test('runSelfUpdate resolve path: cmdlog_open before run_self_update; cmdlog_close(0)', async () => {
-  const calls = [];
-  listenImpl = async () => () => {};
-  invokeImpl = async (cmd, args) => {
-    calls.push({ cmd, args });
-    if (cmd === 'cmdlog_open') return 'log-6a';
-    if (cmd === 'run_self_update') return 'v2.0';
-    return null;
-  };
-
-  await updater.runSelfUpdate();
-
-  const cmds = calls.map(c => c.cmd);
-  assert.ok(cmds.indexOf('cmdlog_open') < cmds.indexOf('run_self_update'), 'cmdlog_open must precede run_self_update');
-  const closeCall = calls.find(c => c.cmd === 'cmdlog_close');
-  assert.equal(closeCall?.args?.exitCode, 0, 'cmdlog_close must receive exitCode 0 on success');
-});
-
 // ---- test CR-006: null result skipped, non-null coerced to String ----
 test('runCapture: null result skips cmdlog_append; String result is coerced', async () => {
   // null result — no append expected
@@ -273,24 +254,6 @@ test('spawnPty: pty.kill() resolves exitP when engine:pty-exit never fires', asy
   const closeCall = calls.find(c => c.cmd === 'cmdlog_close');
   assert.ok(closeCall, 'cmdlog_close must be called after kill');
   assert.equal(closeCall.args.exitCode, -1, 'cmdlog_close must receive -1');
-});
-
-test('runSelfUpdate rejection path: cmdlog_open before run_self_update; cmdlog_close(-1)', async () => {
-  const calls = [];
-  listenImpl = async () => () => {};
-  invokeImpl = async (cmd, args) => {
-    calls.push({ cmd, args });
-    if (cmd === 'cmdlog_open') return 'log-6b';
-    if (cmd === 'run_self_update') throw new Error('update failed');
-    return null;
-  };
-
-  await assert.rejects(() => updater.runSelfUpdate(), /update failed/);
-
-  const cmds = calls.map(c => c.cmd);
-  assert.ok(cmds.indexOf('cmdlog_open') < cmds.indexOf('run_self_update'), 'cmdlog_open must precede run_self_update');
-  const closeCall = calls.find(c => c.cmd === 'cmdlog_close');
-  assert.equal(closeCall?.args?.exitCode, -1, 'cmdlog_close must receive exitCode -1 on failure');
 });
 
 test('cmdlog.list: invokes cmdlog_list', async () => {

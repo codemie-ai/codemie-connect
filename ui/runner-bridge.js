@@ -118,8 +118,6 @@ export const inspector = {
   checkNode: () => invoke('check_node'),
   checkNpm: () => invoke('check_npm'),
   checkCodemie: () => invoke('check_codemie'),
-  // An empty version is how the Rust side reports that `codemie --version` failed.
-  checkCodemieVersion: () => logged('codemie --version', () => invoke('check_codemie_version'), (v) => (v ? 0 : 1)),
   checkHandshakeState: () => invoke('check_handshake_state'),
   checkProfileStatus: () => logged('codemie profile status', () => invoke('check_profile_status'), (st) => st?.code ?? 0),
   gitBinaryPath: () => invoke('git_binary_path'),
@@ -167,23 +165,6 @@ async function restartApp() {
 }
 
 export const updater = {
-  fetchCodemieLatest: () => invoke('fetch_codemie_latest'),
-  async runSelfUpdate() {
-    const finish = started('codemie self-update');
-    const logId = await cmdlog.open('run_self_update').catch(() => null);
-    let _code = -1;
-    try {
-      const result = await invoke('run_self_update');
-      _code = 0;
-      finish(0);
-      return result;
-    } catch (e) {
-      finish(null);
-      throw e;
-    } finally {
-      if (logId) await cmdlog.close(logId, _code).catch(console.warn);
-    }
-  },
   checkForAppUpdate,
   downloadAndInstall,
   restartApp,
