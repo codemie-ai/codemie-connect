@@ -512,6 +512,9 @@ body::before {
 .connection-row[data-status="not-set"] { border-color: var(--border-2); }
 .connection-row[data-status="not-installed"] { border-color: #4a86e8; }
 .row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.row-error { color: var(--red); font-size: 12px; line-height: 1.4; }
+.row-note { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.row-download { align-self: flex-start; }
 .row-title { display: flex; align-items: center; gap: 8px; }
 .row-name { font-size: 14px; font-weight: 700; }
 .row-dot {
