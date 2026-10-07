@@ -239,25 +239,40 @@ test('before the sign-in read comes back, item 1 says it is checking', () => {
 });
 
 // 01-home.png draws a fourth card: Connections, read from the CLI's own proxy
-// status, never assumed.
-test('the Connections card says whether Claude Desktop is connected, as the proxy status reports', () => {
+// status and the apps' own configs, never assumed.
+test('the Connections card counts the apps that carry a CodeMie config while the proxy is healthy', () => {
   const card = (connection) => deriveHome({ connection }).cards.find((c) => c.id === 'connections');
-  assert.deepEqual(card({ running: true }).badge, { text: '1 connected', tone: 'good' });
-  assert.equal(card({ running: true }).line, 'Claude Desktop');
-  assert.deepEqual(card({ running: false }).badge, { text: 'not connected', tone: 'muted' });
+  const healthy = '{ "status": "healthy", "port": 4001 }';
+  const two = card(connectionFromStatus(healthy, { claudeDesktop: true, vscodeCopilot: true }));
+  assert.deepEqual(two.badge, { text: '2 connected', tone: 'good' });
+  assert.equal(two.line, 'Claude Desktop · VS Code Copilot Chat');
+  assert.deepEqual(card(connectionFromStatus(healthy, { codexDesktop: true })).badge, { text: '1 connected', tone: 'good' });
+  assert.equal(card(connectionFromStatus(healthy, { codexDesktop: true })).line, 'Codex');
   assert.deepEqual(card(null).badge, { text: 'unknown', tone: 'muted' });
   assert.equal(card(null).line, 'Could not read the connection');
   assert.deepEqual(card(undefined).badge, { text: 'checking', tone: 'muted' });
 });
 
+// A healthy proxy is not a connection by itself: VS Code alone used to make the
+// card read "1 connected · Claude Desktop".
+test('a running proxy with no app set up is not connected', () => {
+  const card = (connection) => deriveHome({ connection }).cards.find((c) => c.id === 'connections');
+  const c = card(connectionFromStatus('{ "status": "healthy" }', {}));
+  assert.deepEqual(c.badge, { text: 'not connected', tone: 'muted' });
+  assert.equal(c.line, 'Claude Desktop · VS Code · Codex');
+});
+
 // Measured with the bundled CLI 0.15.2: a running proxy reports "healthy", never
-// "running", so a check for "running" left the card on "not connected" for good.
+// "running", and a first run prints migration notes before the JSON.
 test('the proxy status the CLI really prints maps to the Connections card', () => {
-  const card = (stdout) => deriveHome({ connection: connectionFromStatus(stdout) }).cards.find((c) => c.id === 'connections');
+  const set = { claudeDesktop: true };
+  const card = (stdout) => deriveHome({ connection: connectionFromStatus(stdout, set) }).cards.find((c) => c.id === 'connections');
   const running = '{\n  "status": "healthy",\n  "url": "http://127.0.0.1:4001",\n  "port": 4001\n}';
   assert.deepEqual(card(running).badge, { text: '1 connected', tone: 'good' });
   assert.deepEqual(card('Migrating…\n' + running).badge, { text: '1 connected', tone: 'good' });
-  assert.deepEqual(card('{ "status": "unhealthy", "port": 4001 }').badge, { text: 'not responding', tone: 'warn' });
+  const down = card('{ "status": "unhealthy", "port": 4001 }');
+  assert.deepEqual(down.badge, { text: 'not responding', tone: 'warn' });
+  assert.equal(down.line, 'Claude Desktop');
   assert.deepEqual(card('{\n  "status": "stopped"\n}').badge, { text: 'not connected', tone: 'muted' });
   assert.deepEqual(card('').badge, { text: 'unknown', tone: 'muted' });
 });

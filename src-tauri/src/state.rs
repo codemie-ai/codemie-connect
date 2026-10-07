@@ -33,4 +33,6 @@ pub struct AppState {
     /// newer version, cached so `download_and_install` can reuse it instead of
     /// re-fetching. `None` once no update is pending.
     pub latest_manifest: Mutex<Option<Manifest>>,
+    /// In-memory command-log record store backing the `cmdlog_*` commands.
+    pub cmdlog: Mutex<crate::commands::cmdlog::CmdLogStore>,
 }

@@ -623,7 +623,7 @@ async function removeOpencode({ listAfter = fixture, lookup, getPlatform, code =
   await new Promise((r) => setImmediate(r));
   return { c, container, cmds: base.cmds, row: () => c.getLastAgents().find((a) => a.command === 'opencode') };
 }
-const opencodeGone = fixture.replace(/(Command: opencode\n\s+Status: )✓ installed/, '$1not installed');
+const opencodeGone = fixture.replace(/(Command: opencode\r?\n\s+Status: )✓ installed/, '$1not installed');
 
 test('Remove exit 0 with the tool still listed shows the "still installed at <path>, outside CodeMie" note, and the next action clears it', async () => {
   const { c, container, row } = await removeOpencode({ check: openCodeUpdateCheck, lookup: { 'command -v opencode': { code: 0, stdout: '/opt/homebrew/bin/opencode\n', stderr: '' } } });
