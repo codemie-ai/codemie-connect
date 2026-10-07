@@ -26,6 +26,7 @@ import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFr
 import { parseAgentList } from './agents-parse.js';
 import { initCmdLog } from './cmdlog-ui.js';
 import { analyticsCommand } from './analytics-command.js';
+import { createAboutController } from './about-controller.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -343,7 +344,29 @@ function showView(name) {
     refreshAgents();
     refreshConnection();
   }
+  if (name === 'about') about.refresh();
 }
+
+// ---- About (ui/about-controller.js, ui/about-view.js) ----
+const aboutHandlers = {
+  onUpdateApp: () => {
+    if (installRunning) return;
+    runUpdateApp();
+  },
+  onOpenLink: (url) => {
+    if (installRunning) return;
+    invoke('open_external', { url }).catch((err) => console.error('[about] open failed:', err));
+  },
+};
+
+const about = createAboutController({
+  view: views.about,
+  handlers: aboutHandlers,
+  invoke,
+  inspector: bridge.inspector,
+  updater: bridge.updater,
+  shared: () => ({ app: appVersionState, appRunning: updateAppRunning }),
+});
 
 // (Re)build the engine for a wizard run.
 function enterWizard() {
@@ -774,19 +797,26 @@ let updateAppRunning = false;
 async function runUpdateApp() {
   if (updateAppRunning) return;
   updateAppRunning = true;
+  about.startUpdate();
 
   const bannerRunBtn = document.getElementById('app-update-banner-run');
-  bannerRunBtn.disabled = true;
-  bannerRunBtn.textContent = 'Downloading…';
+  // Progress shows on the banner and, when About is open, on its button too.
+  const showProgress = (text) => {
+    if (bannerRunBtn) {
+      bannerRunBtn.disabled = true;
+      bannerRunBtn.textContent = text;
+    }
+    about.progress(text, true);
+  };
+  showProgress('Downloading…');
 
   const id = `app-update-${Date.now()}`;
   try {
     await bridge.updater.downloadAndInstall(id, ({ percent }) => {
-      bannerRunBtn.textContent = `Downloading… ${percent}%`;
+      showProgress(`Downloading… ${percent}%`);
     });
 
-    bannerRunBtn.textContent = 'Installer running…';
-    bannerRunBtn.disabled = true;
+    showProgress('Installer running…');
     // The installer window is now visible and running
     // Wait for Tauri's runtime to clean up gracefully before exiting
     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -803,8 +833,10 @@ async function runUpdateApp() {
       banBody.appendChild(errorEl);
     }
     errorEl.textContent = String(err);
+    about.fail(String(err));
   } finally {
     updateAppRunning = false;
+    about.renderIfShown();
   }
 }
 

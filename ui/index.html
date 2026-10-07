@@ -34,30 +34,21 @@
       <div id="shell-body">
 
       <!-- ============ SIDEBAR ============ -->
-      <!-- v2: the nav is on. Home, Agents, Connections and Health each have a
-           screen now; About still has no owner and stays hidden below. -->
+      <!-- v2: the nav is on. Every entry has a screen; About (EPMCDME-15342)
+           sits alone at the bottom, below the divider. -->
       <nav id="app-sidebar">
         <div id="sidebar-main-group">
           <button id="sidebar-home" class="sidebar-item" data-view="home">Home</button>
           <button id="sidebar-agents" class="sidebar-item" data-view="agents">Tools</button>
           <button id="sidebar-connections" class="sidebar-item" data-view="connect">Connections</button>
           <button id="sidebar-health" class="sidebar-item" data-view="health">Health</button>
-        </div>
-        <!-- Hidden alongside About below: the divider's only job is separating the
-             main group from it, so on its own it would draw a line with nothing
-             under it. -->
-        <div id="sidebar-divider" class="hidden"></div>
-        <div id="sidebar-bottom-group">
           <!-- The only entry point to the analytics report since Home's grid
                went: see .ai-run/decisions/2026-09-21-EPMCDME-14589-home-grid-actions.md. -->
           <button id="sidebar-analytics" class="sidebar-item">CLI usage analytics</button>
-          <!-- Hidden, not deleted. No sub-task of EPMCDME-14350 owns About's
-               content: 06-summary.png's six screens do not include it, so the
-               decomposition never gave it an owner, and 01-home.png draws it as
-               sidebar chrome only. An entry that opens a blank view is a worse
-               demo than no entry. about-view and this button's routing are
-               untouched, so whoever owns it restores this by removing one class. -->
-          <button id="sidebar-about" class="sidebar-item hidden" data-view="about">About</button>
+        </div>
+        <div id="sidebar-divider"></div>
+        <div id="sidebar-bottom-group">
+          <button id="sidebar-about" class="sidebar-item" data-view="about">About</button>
         </div>
       </nav>
 

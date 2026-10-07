@@ -179,9 +179,45 @@ pub fn open_log() -> CmdResult<()> {
     spawn_open(&path)
 }
 
+const EXTERNAL_URLS: [&str; 2] = [
+    "https://github.com/codemie-ai/codemie-code#native-bootstrap-installers",
+    "mailto:AskCodeMie@epam.com",
+];
+
+pub(crate) fn is_allowed_external_url(url: &str) -> bool {
+    EXTERNAL_URLS.contains(&url)
+}
+
+/// About page links. Exact-match allowlist: this hands input to the OS opener.
+#[tauri::command]
+pub fn open_external(url: String) -> CmdResult<()> {
+    if !is_allowed_external_url(&url) {
+        return Err(InstallerError::Other(format!("URL not allowed: {url}")));
+    }
+    spawn_open(&url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_allowed_external_url_is_exact_match_only() {
+        assert!(is_allowed_external_url(
+            "https://github.com/codemie-ai/codemie-code#native-bootstrap-installers"
+        ));
+        assert!(is_allowed_external_url("mailto:AskCodeMie@epam.com"));
+        for bad in [
+            "https://github.com/codemie-ai/codemie-code",
+            "https://evil.com",
+            "mailto:someone@x.com",
+            "https://github.com/codemie-ai/codemie-code#native-bootstrap-installers ",
+            "MAILTO:AskCodeMie@epam.com",
+            "",
+        ] {
+            assert!(!is_allowed_external_url(bad), "{bad:?} must be rejected");
+        }
+    }
 
     #[test]
     fn cli_debug_log_is_the_dated_file_under_codemie_logs() {

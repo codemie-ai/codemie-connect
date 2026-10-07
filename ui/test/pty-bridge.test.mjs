@@ -14,7 +14,7 @@ globalThis.window = {
   },
 };
 
-const { pty, inspector } = await import('../runner-bridge.js');
+const { pty, inspector, updater } = await import('../runner-bridge.js');
 
 test('spawnPty resolves only on its own id and onData filters by id', async () => {
   const listeners = {};
@@ -104,5 +104,21 @@ test('commands Rust runs itself reach the command log, with their outcome', asyn
     ['cmdlog_close', { id: 'cmd-1', exitCode: 1 }],
     ['cmdlog_open', { command: 'codemie profile status' }],
     ['cmdlog_close', { id: 'cmd-2', exitCode: -1 }],
+  ]);
+});
+
+// EPMCDME-15342: About forces the app update check past the 24h throttle; the
+// boot check does not. Tauri reads the `force` key, so its name matters.
+test('checkForAppUpdate sends force to check_for_update, false by default', async () => {
+  const invocations = [];
+  invokeImpl = async (cmd, args) => {
+    invocations.push({ cmd, args });
+    return null;
+  };
+  await updater.checkForAppUpdate(true);
+  await updater.checkForAppUpdate();
+  assert.deepEqual(invocations, [
+    { cmd: 'check_for_update', args: { force: true } },
+    { cmd: 'check_for_update', args: { force: false } },
   ]);
 });

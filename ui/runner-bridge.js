@@ -99,6 +99,7 @@ export const inspector = {
   checkNpm: () => logged('npm --version', () => invoke('check_npm'), probeCode),
   checkCodemie: () => logged('codemie --help', () => invoke('check_codemie'), probeCode),
   checkHandshakeState: () => logged('codemie --version', () => invoke('check_handshake_state')),
+  checkCodemieVersion: () => logged('codemie --version', () => invoke('check_codemie_version'), (v) => (v ? 0 : 1)),
   checkProfileStatus: () => logged('codemie profile status', () => invoke('check_profile_status'), (st) => st?.code ?? 0),
   gitBinaryPath: () => invoke('git_binary_path'),
   nodeBinaryPath: () => invoke('node_binary_path'),
@@ -125,8 +126,8 @@ export const installer = {
 };
 
 // ---- updater ----
-async function checkForAppUpdate() {
-  return invoke('check_for_update');
+async function checkForAppUpdate(force = false) {
+  return invoke('check_for_update', { force });
 }
 
 async function downloadAndInstall(id, onProgress) {
