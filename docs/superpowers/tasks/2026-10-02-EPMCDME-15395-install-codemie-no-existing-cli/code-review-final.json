@@ -1,0 +1,98 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec/story attached — acceptance criteria unavailable, confidence low. 7 blocking edge-case findings: one critical (startup hang from missing --version timeout), six major (stderr-only version parsing, pre-release rejection, Windows CMD metacharacter path breakage, extensionless Windows binary not probed, empty-PATH CWD resolution with untrusted-binary risk, TOCTOU between probe and version scan). 0 deferred, 0 dismissed. Standards audit omitted (compact profile, no project guide configured).",
+  "confidence": "low",
+  "risk_flags": ["security", "breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "standards audit omitted — compact profile, no project guide configured" },
+    { "kind": "code-quality", "status": "na", "notes": "standards audit omitted — compact profile, no project guide configured" },
+    { "kind": "security", "status": "na", "notes": "standards audit omitted — compact profile, no project guide configured" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/handshake.rs",
+      "line": 17,
+      "title": "Windows PATH metacharacters break cmd /C invocation",
+      "problem": "version_at passes `path` as a separate arg to `cmd /C`; cmd.exe reassembles the command line and metacharacters in the path directory (&, ^, (, )) can cause cmd to split or misparse the argument, preventing --version from running.",
+      "impact": "A codemie CLI installed in a PATH directory whose name contains cmd metacharacters is silently undetected; reachability unconfirmed — depends on how cmd.exe reassembles argv passed via CreateProcess.",
+      "recommendation": "Wrap the path in escaped quotes before passing to cmd /C (`format!(\"\\\"{}\\\"\" , path.display())`), or switch to a PowerShell -Command invocation for the Windows branch to bypass cmd metacharacter processing entirely."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/handshake.rs",
+      "line": 33,
+      "title": "version_at reads only stdout, silently ignores stderr",
+      "problem": "`version_at` passes only `output.stdout` to `parse_global_version`; CLIs that write their version string to stderr (valid POSIX behaviour for diagnostic output) return None.",
+      "impact": "A working global CLI is treated as absent, causing the bundled CLI to be installed and injected into PATH over a valid installation.",
+      "recommendation": "Combine stdout and stderr before parsing: collect both vecs, concat, then pass to `String::from_utf8_lossy`."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/handshake.rs",
+      "line": 33,
+      "title": "Pre-release version strings rejected by parse_global_version",
+      "problem": "`parse_global_version` requires all three dot-separated parts to consist entirely of ASCII digits; a version like `1.0.0-beta.1` produces parts `[\"1\",\"0\",\"0-beta\"]` where the third part fails the digit check.",
+      "impact": "A working CLI carrying any pre-release or build-metadata suffix is treated as absent; the bundled CLI is unnecessarily installed.",
+      "recommendation": "Before the digit check on parts[2], strip everything from the first `-` or `+` character: `let patch = parts[2].split(&['-', '+']).next().unwrap_or(\"\")`; validate that trimmed patch is non-empty and all digits."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/handshake.rs",
+      "line": 41,
+      "title": "Extensionless Windows binary not in probe list",
+      "problem": "The Windows `bin_names` list contains only `codemie.cmd` and `codemie.exe`; extensionless `codemie` binaries installed via Cygwin, MSYS2, or custom installers are never probed in either `probe_global_codemie` or `find_working_global_codemie`.",
+      "impact": "A working extensionless global CLI on Windows PATH is never detected; the bundled CLI is installed despite a valid installation being present.",
+      "recommendation": "Add `\"codemie\"` to the Windows `bin_names` array after the `.cmd` and `.exe` entries in both probe and find functions."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/handshake.rs",
+      "line": 46,
+      "title": "Empty PATH causes CWD binary resolution on Unix",
+      "problem": "`find_working_global_codemie` calls `split_paths` on an empty string; on Unix this yields a single empty path component, and `dir.join(\"codemie\")` becomes a relative path that `p.exists()` resolves against the current working directory.",
+      "impact": "If PATH is unset (CI, sandboxed environment) and a `codemie` binary exists in the app CWD, it is executed via `version_at`; if it exits 0 with a parseable version it is accepted as a valid global CLI — untrusted-binary execution. lib.rs:16 uses `unwrap_or_default()` so an unset PATH reaches this path directly.",
+      "recommendation": "Add `if path_env.is_empty() { return None; }` at the top of `find_working_global_codemie` before the `split_paths` call."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/handshake.rs",
+      "line": 46,
+      "title": "TOCTOU between probe_global_codemie and find_working_global_codemie",
+      "problem": "`detect_handshake_state` performs two independent PATH scans: `probe_global_codemie` (file-exists) then `find_working_global_codemie` (file-exists + version). A PATH directory that disappears between the two scans can cause the second scan to miss a binary the first found, or vice versa.",
+      "impact": "Spurious `global_found` flip in the IPC command result; reachability of a harmful consequence unconfirmed, but the two-scan design is structurally fragile and unnecessary.",
+      "recommendation": "Remove the `probe_global_codemie` gate from `detect_handshake_state`; call `find_working_global_codemie` (or the injected `version_cmd`) directly and rely on its combined file+version check as the sole authority."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src-tauri/src/lib.rs",
+      "line": 22,
+      "title": "No timeout on --version call blocks app startup",
+      "problem": "`find_working_global_codemie` is called synchronously inside the Tauri `setup` closure; `version_at` uses `std::process::Command::output()` with no timeout. Any binary on PATH that hangs on `--version` blocks the setup closure indefinitely.",
+      "impact": "The application never opens; the user sees a perpetual loading state or a frozen launch with no recoverable error path.",
+      "recommendation": "Spawn the `version_at` call on a thread with a channel-based or `JoinHandle::join` timeout (e.g. 5 seconds), or wrap the entire `find_working_global_codemie` call in `tokio::task::spawn_blocking` with a future timeout before awaiting it."
+    }
+  ]
+}

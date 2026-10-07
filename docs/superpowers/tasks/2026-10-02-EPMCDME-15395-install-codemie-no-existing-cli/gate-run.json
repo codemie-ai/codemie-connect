@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15395----install-codemie-code-when-no-existing-CodeMie-CLI-is-present",
+  "head": "46679f6f891fd6b0ba34a479716399fb6e6fb845",
+  "runner": "npm",
+  "started_at": "2026-10-02T11:20:00+00:00",
+  "completed_at": "2026-10-02T11:40:05+00:00",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8000,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0,
+      "notes": "Failed on first run; auto-fix (cargo fmt) applied and reformatted src/commands/handshake.rs; re-run passed. The formatted changes are unstaged — stage and include them in the commit."
+    },
+    {
+      "id": "lint-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 166000,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "npm test",
+      "exit_code": null,
+      "notes": "Guide skip condition met: changed files are Rust-only (src-tauri/src/commands/handshake.rs, src-tauri/src/lib.rs); no UI logic changed."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8000,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": ".\\build-installer.ps1",
+      "exit_code": null,
+      "notes": "Guide skip condition met: logic-only Rust change verified by unit tests (96 passed, 2 integration passed)."
+    }
+  ],
+  "failures": {}
+}
