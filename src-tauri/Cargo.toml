@@ -36,10 +36,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 futures-util = "0.3"
 sha2 = "0.10"
 thiserror = "2"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 base64 = "0.22"
 portable-pty = "0.8"
 jsonc-parser = { version = "0.34.0", features = ["serde", "serde_json"] }
+tauri-plugin-clipboard-manager = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

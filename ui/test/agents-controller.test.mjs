@@ -86,12 +86,22 @@ const openCodeUpdateCheck = readFileSync(fileURLToPath(new URL('fixtures/agents/
 
 // runCapture stub that answers `codemie list` and `codemie update --check`
 // distinctly, the way the controller now calls both from load().
-function fakeRunCapture(listStdout = fixture, checkStdout = upToDateCheck) {
-  return async (cmd) => {
+// `lookup` (map or function, command string -> result) answers the where-is
+// lookups a Remove makes; by default `command -v X` finds /usr/local/bin/X.
+// Every command asked is recorded on `.cmds`.
+function fakeRunCapture(listStdout = fixture, checkStdout = upToDateCheck, lookup) {
+  const fn = async (cmd) => {
+    fn.cmds.push(cmd);
     if (cmd === 'codemie list') return { code: 0, stdout: listStdout, stderr: '' };
     if (cmd === 'codemie update --check') return { code: 0, stdout: checkStdout, stderr: '' };
+    const custom = typeof lookup === 'function' ? lookup(cmd) : lookup?.[cmd];
+    if (custom) return custom;
+    const m = cmd.match(/^command -v (\S+)$/);
+    if (m) return { code: 0, stdout: `/usr/local/bin/${m[1]}\n`, stderr: '' };
     throw new Error(`unexpected runCapture command: ${cmd}`);
   };
+  fn.cmds = [];
+  return fn;
 }
 
 const { createAgentsController } = await import('../agents-controller.js');
@@ -584,6 +594,89 @@ test('after an Update the row keeps the CLI\'s result line, and the next action 
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.equal(row().actionMessage, undefined);
+});
+
+// Remove on the opencode row (installed in the fixture). `listAfter` is what
+// `codemie list` prints once the uninstall has run.
+async function removeOpencode({ listAfter = fixture, lookup, getPlatform, code = 0, check = upToDateCheck } = {}) {
+  const container = makeEl('div');
+  let removed = false;
+  const base = fakeRunCapture(fixture, check, lookup);
+  const runCapture = async (cmd) => (cmd === 'codemie list' && removed
+    ? { code: 0, stdout: listAfter, stderr: '' }
+    : base(cmd));
+  runCapture.cmds = base.cmds;
+  const c = createAgentsController({
+    container,
+    runCapture,
+    runStream: async () => {
+      removed = true;
+      return { code };
+    },
+    stepsUi: fakeStepsUi(),
+    getPlatform,
+  });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="opencode"]');
+  slot._children[slot._children.length - 1].onclick({ stopPropagation() {} }); // Remove
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  return { c, container, cmds: base.cmds, row: () => c.getLastAgents().find((a) => a.command === 'opencode') };
+}
+const opencodeGone = fixture.replace(/(Command: opencode\r?\n\s+Status: )✓ installed/, '$1not installed');
+
+test('Remove exit 0 with the tool still listed shows the "still installed at <path>, outside CodeMie" note, and the next action clears it', async () => {
+  const { c, container, row } = await removeOpencode({ check: openCodeUpdateCheck, lookup: { 'command -v opencode': { code: 0, stdout: '/opt/homebrew/bin/opencode\n', stderr: '' } } });
+  assert.equal(row().actionMessage, "Removed CodeMie's copy. OpenCode CLI is still installed at /opt/homebrew/bin/opencode, outside CodeMie.");
+  assert.equal(row().installed, true, 'the installed state comes from the refreshed list');
+  container.querySelector('.agent-actions[data-id="opencode"]')._children[0].onclick({ stopPropagation() {} }); // Update
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.notEqual(row().actionMessage, "Removed CodeMie's copy. OpenCode CLI is still installed at /opt/homebrew/bin/opencode, outside CodeMie.");
+});
+
+test('Remove exit 0 with the tool gone from the list issues no lookup and leaves no note', async () => {
+  const { cmds, row } = await removeOpencode({ listAfter: opencodeGone });
+  assert.equal(row().installed, false);
+  assert.equal(row().actionMessage, undefined);
+  assert.ok(!cmds.some((x) => x.startsWith('command -v') || x.startsWith('where')));
+});
+
+test('a lookup that finds nothing or rejects still leaves a note, without a path', async () => {
+  const fallback = "Removed CodeMie's copy. OpenCode CLI is still installed elsewhere, outside CodeMie.";
+  const miss = await removeOpencode({ lookup: { 'command -v opencode': { code: 127, stdout: '', stderr: '' } } });
+  assert.equal(miss.row().actionMessage, fallback);
+  const boom = await removeOpencode({ lookup: () => { throw new Error('spawn failed'); } });
+  assert.equal(boom.row().actionMessage, fallback);
+});
+
+test('on Windows the lookup is `where <command>` and the first output line is the path', async () => {
+  const { cmds, row } = await removeOpencode({
+    getPlatform: () => ({ os: 'windows' }),
+    lookup: { 'where opencode': { code: 0, stdout: 'C:\\npm\\opencode.cmd\r\nC:\\other\\opencode.exe\r\n', stderr: '' } },
+  });
+  assert.ok(cmds.includes('where opencode'));
+  assert.match(row().actionMessage, /still installed at C:\\npm\\opencode\.cmd, outside/);
+});
+
+test('an unsafe command name is never handed to a lookup', async () => {
+  const container = makeEl('div');
+  const evil = `
+📦 Available Agents:
+
+  Evil Agent
+    Command: gemini; rm -rf /
+    Status: ✓ installed
+    Not a real agent
+`;
+  const capture = fakeRunCapture(evil);
+  const runStream = fakeRunStream([]);
+  const c = createAgentsController({ container, runCapture: capture, runStream: runStream.fn, stepsUi: fakeStepsUi() });
+  await c.run();
+  const slot = container.querySelector('.agent-actions[data-id="gemini; rm -rf /"]');
+  slot._children[slot._children.length - 1].onclick({ stopPropagation() {} });
+  await new Promise((r) => setImmediate(r));
+  assert.ok(!capture.cmds.some((x) => x.includes('command -v') || x.includes('where')));
 });
 
 test('an install that hits the CLI\'s time limit says so in minutes', async () => {

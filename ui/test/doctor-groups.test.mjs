@@ -68,6 +68,29 @@ test('the built-in agent is a passing row with no remedy, whatever doctor advise
   assert.equal(builtIn.action, undefined);
 });
 
+// The real signed-in capture with one agent line swapped for the case QA hit
+// (EPMCDME-15393): doctor warns because 1.0.89 is not exactly 1.0.83.
+function withAgentLine(line) {
+  const raw = readFileSync(fileURLToPath(new URL('fixtures/doctor/signed-in.txt', import.meta.url)), 'utf8');
+  return groupDoctorResults(parseDoctorOutput(raw.replace('  ✓ Claude Code (2.1.269)', line)));
+}
+
+test('an agent newer than the version CodeMie recommends is healthy, with no remedy', () => {
+  const { rows } = withAgentLine('  ⚠ GitHub Copilot CLI (1.0.89) - CodeMie recommends v1.0.83');
+  const copilot = rows.find((r) => r.label === 'GitHub Copilot CLI 1.0.89');
+  assert.equal(copilot.status, 'pass');
+  assert.equal(copilot.detail, 'newer than the v1.0.83 CodeMie recommends');
+  assert.equal(copilot.remedyText, undefined);
+  assert.equal(copilot.action, undefined);
+});
+
+test('an agent older than the version CodeMie recommends still links to Tools', () => {
+  const { rows } = withAgentLine('  ⚠ GitHub Copilot CLI (1.0.80) - CodeMie recommends v1.0.83');
+  const copilot = rows.find((r) => r.label === 'GitHub Copilot CLI 1.0.80');
+  assert.notEqual(copilot.status, 'pass');
+  assert.equal(copilot.remedyText, 'Open the Tools screen to check for an update.');
+});
+
 test('signed-in: a section the CLI only reports on is not a check that passed', () => {
   const labels = grouped('signed-in').rows.map((r) => r.label);
   assert.ok(!labels.some((l) => /JWT|Repository/.test(l)));

@@ -24,16 +24,14 @@ import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
 import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
-import { createCommandLog } from './command-log.js';
-import { semverLt, cliUpdateResult } from './cli-update.js';
+import { initCmdLog } from './cmdlog-ui.js';
+import { analyticsCommand } from './analytics-command.js';
 import { createAboutController } from './about-controller.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 
-// Populated during boot(); consumed by runAnalytics() and runUpdateCli().
-const cliVersionState = { installed: '', latest: '', updateAvailable: false };
 const appVersionState = { latest: null, updateAvailable: false };
 
 // Capture boot/runtime errors so the smoke self-test can read them.
@@ -169,13 +167,6 @@ let agentsChecked = false;
 function setInstallRunning(on) {
   installRunning = on;
   document.getElementById('app-sidebar').dataset.busy = on ? '1' : '';
-  // The banner is shell chrome and stays on screen during a run. Its controls
-  // are guarded, but a guard the user cannot see reads as a broken button.
-  document.getElementById('update-banner').dataset.busy = on ? '1' : '';
-  ['update-banner-run', 'update-banner-dismiss'].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = on;
-  });
 }
 
 // ---- Home (EPMCDME-14589) ----
@@ -236,12 +227,8 @@ function renderHome() {
 // one). Spaced out: showView('home') and window focus both ask for it.
 let agentsReadAt = 0;
 let agentsReading = false;
-// True while `codemie self-update` replaces the CLI. Running `codemie` then
-// fails (on Windows npm may also find its files in use), so Home's reads wait
-// and run once the update is over.
-let cliReplacing = false;
 async function refreshAgents() {
-  if (cliReplacing || agentsReading || Date.now() - agentsReadAt < 5000) return;
+  if (agentsReading || Date.now() - agentsReadAt < 5000) return;
   agentsReading = true;
   try {
     const res = await bridge.runner.runCapture('codemie list');
@@ -255,15 +242,18 @@ async function refreshAgents() {
   renderHome();
 }
 
-// The Connections card's one read: whether the CLI's local proxy, which Claude
-// Desktop is pointed at, is running.
+// The Connections card's read: whether the CLI's local proxy is running, and
+// which apps carry a CodeMie config pointing at it.
 let connectionReading = false;
 async function refreshConnection() {
-  if (cliReplacing || connectionReading) return;
+  if (connectionReading) return;
   connectionReading = true;
   try {
-    const res = await bridge.runner.runCapture('codemie proxy status --json');
-    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '');
+    const [res, configured] = await Promise.all([
+      bridge.runner.runCapture('codemie proxy status --json'),
+      bridge.connectors.checkStatus().catch(() => ({})),
+    ]);
+    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '', configured);
   } catch {
     home.connection = null;
   } finally {
@@ -363,10 +353,6 @@ const aboutHandlers = {
     if (installRunning) return;
     runUpdateApp();
   },
-  onUpdateCli: () => {
-    if (installRunning) return;
-    runUpdateCli();
-  },
   onOpenLink: (url) => {
     if (installRunning) return;
     invoke('open_external', { url }).catch((err) => console.error('[about] open failed:', err));
@@ -379,13 +365,7 @@ const about = createAboutController({
   invoke,
   inspector: bridge.inspector,
   updater: bridge.updater,
-  shared: () => ({
-    app: appVersionState,
-    cli: cliVersionState,
-    appRunning: updateAppRunning,
-    cliRunning: updateCliRunning,
-    cliBusy: updateCliRunning || cliReplacing || installRunning,
-  }),
+  shared: () => ({ app: appVersionState, appRunning: updateAppRunning }),
 });
 
 // (Re)build the engine for a wizard run.
@@ -486,39 +466,6 @@ function updateIdentityAuthStatus(st) {
   renderHome();
 }
 
-// ---- CLI version banner ----
-// The badge reports whether an update exists; the banner reports whether the
-// user still wants to be told. They are separate, which is why dismissing the
-// banner leaves the badge standing, as 01-home.png draws it in steady state.
-function setVersionBadge() {
-  document.getElementById('identity-version-badge').textContent =
-    cliVersionState.updateAvailable ? `${cliVersionState.latest} available` : '';
-}
-
-function showUpdateBanner() {
-  setVersionBadge();
-  if (!cliVersionState.updateAvailable) return;
-  if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
-  document.getElementById('update-to').textContent = cliVersionState.latest;
-  document.getElementById('update-banner').classList.remove('hidden');
-}
-
-// Nothing left to announce — used after a successful update, which is not a
-// dismissal and so must not set the key that suppresses the banner all session.
-function hideUpdateBanner() {
-  document.getElementById('update-banner').classList.add('hidden');
-  setVersionBadge();
-}
-
-function dismissUpdateBanner() {
-  sessionStorage.setItem('update-banner-dismissed', '1');
-  document.getElementById('update-banner').classList.add('hidden');
-  setVersionBadge();
-  // origin/main cleared the grid cue on dismiss. The badge is what survives —
-  // it reports that an update exists; the cue and banner report that we are
-  // still asking about it, and dismissing answers that.
-}
-
 function showAppUpdateBanner(latestVersion) {
   // Always show the banner on fresh check — sessionStorage is cleared per session,
   // so dismissed state should not persist across app restarts.
@@ -573,6 +520,7 @@ async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
     }
   }) : null;
   try {
+    // cmdlog intent: user-initiated
     const { code } = await bridge.pty.spawnPty(cmd);
     un?.();
     const errorLine = parseError ? parseError(buf.split(/\r?\n/)) : null;
@@ -639,7 +587,9 @@ function startHealthInPlace() {
 // `codemie list` read; onResult hands the same records to Home so the checklist
 // item and the Agents card do not need a second read to agree with the screen.
 // onFailure releases the one-shot guard the way Health's does.
+let platformInfoValue = null;
 const agentsController = createAgentsController({
+  getPlatform: () => platformInfoValue,
   container: views.agents,
   runCapture: (cmd) => bridge.runner.runCapture(cmd),
   runStream: bridge.runner.runStream,
@@ -800,6 +750,7 @@ async function startSignIn() {
   try {
     const lines = [];
     // run_stream takes a command string, not an array — matches all existing callers
+    // cmdlog intent: user-initiated
     await bridge.runner.runStream('codemie profile login', (line) => { lines.push(line); });
     // Exit code is ignored — profile login exits 0 on failure; scan stdout instead.
     const errorLine = findLoginError(lines);
@@ -832,88 +783,13 @@ async function startSignIn() {
 }
 
 async function runAnalytics() {
-  // --report-output is set explicitly: a Finder-launched bundle's CWD is "/",
-  // which is not writable. $HOME is expanded by the pty's login shell.
-  const { installed } = cliVersionState;
-  if (installed && semverLt(installed, '0.4.1')) {
-    showNotice({
-      title: 'CLI update required',
-      message: `Your CodeMie CLI (v${installed}) doesn't support analytics reporting. Use Update CLI to upgrade, then try again.`,
-      primaryLabel: 'Go to Update CLI',
-      primaryAction: () => hideNotice(),
-    });
-    return;
-  }
+  const help = await bridge.runner.runCapture('codemie analytics --help').catch(() => null);
   await runAction(
     'Analytics report',
-    'codemie analytics --report --open --report-output "$HOME/codemie-analytics.html"',
+    analyticsCommand(help?.stdout),
     'home',
     'Running automatically — no input needed.'
   );
-}
-
-// Reachable from two places — the update banner's button and the home grid's
-// Update CLI tile — so progress has to render on both. Showing it only on the
-// banner meant a click from the tile ran a real `npm install -g` with no visible
-// feedback whenever the banner was hidden, and nothing stopped a second click.
-let updateCliRunning = false;
-
-function setUpdateProgress(state, label, icon) {
-  const btn = document.getElementById('update-banner-run');
-  if (btn) {
-    btn.dataset.state = state;
-    btn.textContent = label;
-    btn.disabled = state === 'updating';
-  }
-  about.progress('cli', label, state === 'updating');
-}
-
-async function runUpdateCli() {
-  if (updateCliRunning) return;
-  updateCliRunning = true;
-  setUpdateProgress('updating', 'Updating…', '⏳');
-  await about.startUpdate('cli'); // lets an About `codemie --version` finish first
-  cliReplacing = true;
-  try {
-    try {
-      await bridge.updater.runSelfUpdate();
-    } finally {
-      cliReplacing = false;
-      agentsReadAt = 0;
-      refreshAgents();
-      refreshConnection();
-    }
-
-    // Re-probe installed version after update
-    const newVersion = await bridge.inspector.checkCodemieVersion();
-    cliVersionState.installed = newVersion;
-    about.cliUpdated(newVersion);
-    cliVersionState.updateAvailable =
-      newVersion && cliVersionState.latest
-        ? semverLt(newVersion, cliVersionState.latest)
-        : false;
-
-    const result = cliUpdateResult(newVersion, cliVersionState.latest);
-    if (!result.ok) {
-      // The update did not take: say so and leave the banner up to retry.
-      setUpdateProgress('error', result.label, '❌');
-      updateCliRunning = false;
-      about.fail('cli', result.label);
-      return;
-    }
-    setUpdateProgress('done', result.label, '✅');
-    if (result.hideBanner) hideUpdateBanner();
-
-    setTimeout(() => {
-      setUpdateProgress('', 'Update CLI', '🔄');
-      updateCliRunning = false;
-      about.renderIfShown();
-    }, 3000);
-  } catch (err) {
-    setUpdateProgress('error', 'Failed — retry?', '❌');
-    updateCliRunning = false;
-    about.fail('cli', String(err));
-  }
 }
 
 let updateAppRunning = false;
@@ -921,7 +797,7 @@ let updateAppRunning = false;
 async function runUpdateApp() {
   if (updateAppRunning) return;
   updateAppRunning = true;
-  about.startUpdate('app');
+  about.startUpdate();
 
   const bannerRunBtn = document.getElementById('app-update-banner-run');
   // Progress shows on the banner and, when About is open, on its button too.
@@ -930,7 +806,7 @@ async function runUpdateApp() {
       bannerRunBtn.disabled = true;
       bannerRunBtn.textContent = text;
     }
-    about.progress('app', text, true);
+    about.progress(text, true);
   };
   showProgress('Downloading…');
 
@@ -957,7 +833,7 @@ async function runUpdateApp() {
       banBody.appendChild(errorEl);
     }
     errorEl.textContent = String(err);
-    about.fail('app', String(err));
+    about.fail(String(err));
   } finally {
     updateAppRunning = false;
     about.renderIfShown();
@@ -965,10 +841,6 @@ async function runUpdateApp() {
 }
 
 async function boot() {
-  // The command-log footer hears about every command the bridge runs, so it is
-  // wired first: the startup checks below (codemie --version, profile status)
-  // would otherwise run before it and never show.
-  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
   const flags = await invoke('smoke_mode');
 
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
@@ -1006,20 +878,8 @@ async function boot() {
     hint: document.getElementById('terminal-hint'),
     done: document.getElementById('terminal-done'),
   });
+  initCmdLog();
 
-  // Wire update banner dismiss
-  // The banner is shell-level now, so unlike origin/main — where it lived inside
-  // the home grid and showView('wizard') hid it — it stays on screen during an
-  // install. Both its controls need the same guard the sidebar has, or a
-  // self-update can run concurrently with the engine's own CLI install step.
-  document.getElementById('update-banner-run').addEventListener('click', () => {
-    if (installRunning) return;
-    runUpdateCli();
-  });
-  document.getElementById('update-banner-dismiss').addEventListener('click', () => {
-    if (installRunning) return;
-    dismissUpdateBanner();
-  });
   document.getElementById('app-update-banner-run').addEventListener('click', () => {
     if (installRunning) return;
     runUpdateApp();
@@ -1027,25 +887,6 @@ async function boot() {
   document.getElementById('app-update-banner-dismiss').addEventListener('click', () => {
     if (installRunning) return;
     dismissAppUpdateBanner();
-  });
-
-  // Check CLI version vs npm latest at startup (non-blocking). Only for a CLI
-  // the user installed: the bundled one sits inside the app, `self-update`
-  // installs the new version into the user's own npm instead, and the app keeps
-  // running the old one. The bundled CLI updates with the app.
-  Promise.all([
-    invoke('cli_is_bundled'),
-    bridge.inspector.checkCodemieVersion(),
-    invoke('fetch_codemie_latest'),
-  ]).then(([bundled, installed, latest]) => {
-    if (bundled) return;
-    cliVersionState.installed = installed;
-    cliVersionState.latest = latest;
-    cliVersionState.updateAvailable =
-      Boolean(installed) && Boolean(latest) && semverLt(installed, latest);
-    showUpdateBanner();
-  }).catch(() => {
-    // Silently ignore — offline or CLI not installed
   });
 
   // App self-update check — once per 24 h
@@ -1086,7 +927,7 @@ async function boot() {
   // spaced out because the auth half runs the CLI.
   let identityReadAt = Date.now();
   window.addEventListener('focus', () => {
-    if (installRunning || setupRunning || cliReplacing || Date.now() - identityReadAt < 5000) return;
+    if (installRunning || setupRunning || Date.now() - identityReadAt < 5000) return;
     identityReadAt = Date.now();
     refreshIdentityOnComplete();
     refreshAgents();
@@ -1097,6 +938,7 @@ async function boot() {
     invoke('get_platform_info'),
     invoke('temp_dir'),
   ]);
+  platformInfoValue = platformInfo;
 
   handlers = makeHandlers({
     inspector: bridge.inspector,

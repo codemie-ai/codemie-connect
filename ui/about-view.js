@@ -40,7 +40,7 @@ function linkSection(container, heading, label, url, onOpenLink) {
 }
 
 export function renderAbout(container, model, handlers = {}) {
-  const { onUpdateApp, onUpdateCli, onOpenLink } = handlers;
+  const { onUpdateApp, onOpenLink } = handlers;
   container.innerHTML = '';
 
   const head = el('div', 'health-head');
@@ -52,14 +52,7 @@ export function renderAbout(container, model, handlers = {}) {
     ? updateButton('about-app-update', `Update to ${model.appLatest}`, model.appRunning, onUpdateApp)
     : null;
   container.appendChild(versionRow('CodeMie Connect', model.appVersion, '', appBtn, model.appError));
-  const cliLabel = model.cliLatest ? `Update to ${model.cliLatest}` : 'Update';
-  const cliBtn =
-    model.cliUpdateAvailable && !model.cliBundled
-      ? updateButton('about-cli-update', cliLabel, model.cliRunning, onUpdateCli)
-      : null;
-  container.appendChild(
-    versionRow('CodeMie CLI', model.cliVersion, model.cliBundled ? 'Updates with the app' : '', cliBtn, model.cliError),
-  );
+  container.appendChild(versionRow('CodeMie CLI', model.cliVersion, '', null, ''));
 
   linkSection(container, 'Resources', 'GitHub Repository', GITHUB_URL, onOpenLink);
   linkSection(container, 'Support', 'Request Help', SUPPORT_MAILTO, onOpenLink);

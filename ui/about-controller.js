@@ -1,8 +1,8 @@
 // About screen state (EPMCDME-15342). Installed versions are read on every
-// visit (the bundled CLI's never reaches cliVersionState). Update state is the
-// banners' own, so the buttons stay after a banner is dismissed; the update runs
-// in renderer.js report their progress and errors here so a run from either
-// place shows on both.
+// visit. The CLI has no update of its own: it comes with the app update, so
+// About offers only that one. App update state is the banner's own, so the
+// button stays after the banner is dismissed; runUpdateApp in renderer.js
+// reports its progress and errors here so a run from either place shows on both.
 import { renderAbout } from './about-view.js';
 
 // A throttled, offline or failed re-check returns null or rejects: that says
@@ -15,15 +15,12 @@ export function mergeAppUpdateCheck(state, settled) {
   }
 }
 
-const BUTTON = { app: 'about-app-update', cli: 'about-cli-update' };
+const APP_BUTTON = 'about-app-update';
 
-// shared() returns { app, cli, appRunning, cliRunning, cliBusy } — renderer
-// state read at render time.
+// shared() returns { app, appRunning } — renderer state read at render time.
 export function createAboutController({ view, handlers, invoke, inspector, updater, shared }) {
-  const info = { appVersion: '', cliVersion: '', cliBundled: false };
-  const errors = { app: '', cli: '' };
-  let probes = Promise.resolve(); // every in-flight `codemie --version`
-  let cliUpdates = 0; // a probe that straddles a CLI update is stale
+  const info = { appVersion: '', cliVersion: '' };
+  let appError = '';
 
   function render() {
     const s = shared();
@@ -34,13 +31,8 @@ export function createAboutController({ view, handlers, invoke, inspector, updat
         appLatest: s.app.latest || '',
         appUpdateAvailable: s.app.updateAvailable,
         appRunning: s.appRunning,
-        appError: errors.app,
-        cliVersion: info.cliVersion || s.cli.installed,
-        cliBundled: info.cliBundled,
-        cliLatest: s.cli.latest,
-        cliUpdateAvailable: s.cli.updateAvailable,
-        cliRunning: s.cliRunning,
-        cliError: errors.cli,
+        appError,
+        cliVersion: info.cliVersion,
       },
       handlers,
     );
@@ -52,49 +44,33 @@ export function createAboutController({ view, handlers, invoke, inspector, updat
 
   async function refresh() {
     render();
-    const gen = cliUpdates;
-    // `codemie --version` must not run while self-update or an install replaces the CLI.
-    const probeCli = !shared().cliBusy;
-    const probe = probeCli ? inspector.checkCodemieVersion() : null;
-    if (probe) probes = Promise.allSettled([probes, probe]);
-    const [app, bundled, cli, check] = await Promise.allSettled([
+    const [app, cli, check] = await Promise.allSettled([
       invoke('get_app_version'),
-      invoke('cli_is_bundled'),
-      probe,
+      inspector.checkCodemieVersion(),
       updater.checkForAppUpdate(true),
     ]);
     if (app.status === 'fulfilled') info.appVersion = app.value || '';
-    if (bundled.status === 'fulfilled') info.cliBundled = Boolean(bundled.value);
-    if (probeCli && cli.status === 'fulfilled' && gen === cliUpdates) info.cliVersion = cli.value || '';
+    if (cli.status === 'fulfilled') info.cliVersion = cli.value || '';
     mergeAppUpdateCheck(shared().app, check);
     renderIfShown();
   }
 
-  // Called as an update run starts. A CLI run waits for About's probe, so
-  // self-update never replaces the CLI while `codemie --version` runs.
-  async function startUpdate(kind) {
-    errors[kind] = '';
-    if (kind === 'cli') {
-      cliUpdates += 1;
-      await probes;
-    }
+  // Called as an app update run starts.
+  function startUpdate() {
+    appError = '';
   }
 
-  function progress(kind, label, disabled) {
-    const btn = document.getElementById(BUTTON[kind]);
+  function progress(label, disabled) {
+    const btn = document.getElementById(APP_BUTTON);
     if (!btn) return;
     btn.textContent = label;
     btn.disabled = disabled;
   }
 
-  function fail(kind, message) {
-    errors[kind] = message;
+  function fail(message) {
+    appError = message;
     renderIfShown();
   }
 
-  function cliUpdated(version) {
-    info.cliVersion = version || '';
-  }
-
-  return { refresh, renderIfShown, startUpdate, progress, fail, cliUpdated };
+  return { refresh, renderIfShown, startUpdate, progress, fail };
 }

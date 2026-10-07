@@ -170,86 +170,9 @@ where
     })
 }
 
-/// True when the app runs the CLI it ships with. That copy is sealed inside
-/// the app bundle, so `codemie self-update` (an `npm install -g`) cannot change
-/// it: the new version lands in the user's own npm prefix and the app keeps
-/// running the bundled one. The CLI in the bundle updates with the app.
-pub(crate) fn bundled_cli_in_use(
-    existing_cli_detected: bool,
-    node_exe: &std::path::Path,
-    cli_entry: &std::path::Path,
-) -> bool {
-    !existing_cli_detected && node_exe.exists() && cli_entry.exists()
-}
-
-/// Whether the app is running its bundled CLI; the UI offers a CLI update only
-/// when it is not.
-#[tauri::command]
-pub fn cli_is_bundled(state: tauri::State<'_, crate::state::AppState>) -> bool {
-    bundled_cli_in_use(
-        state.existing_cli_detected,
-        &state.node_exe_path,
-        &state.cli_entry_path,
-    )
-}
-
-/// Not into ~/.codemie/agents: that prefix is for the tools the app installs.
-/// `self-update` is an `npm install -g`, and with the override it would put a
-/// second CLI there and leave the user's own one on the old version.
-fn self_update_command(mut command: Command) -> Command {
-    command.env_remove("npm_config_prefix");
-    command
-}
-
-/// Run `codemie self-update` silently (captured, not PTY) for a CLI the user
-/// installed themselves. Refused for the bundled CLI, see `bundled_cli_in_use`.
-/// Returns stdout on exit 0; serializes as an error string on non-zero exit.
-#[tauri::command]
-pub async fn run_self_update(state: tauri::State<'_, crate::state::AppState>) -> CmdResult<String> {
-    if bundled_cli_in_use(
-        state.existing_cli_detected,
-        &state.node_exe_path,
-        &state.cli_entry_path,
-    ) {
-        return Err(crate::error::InstallerError::Other(
-            "The CodeMie CLI comes with this app and updates when the app does.".into(),
-        ));
-    }
-    let r = capture_command(self_update_command(shell_cmd("codemie self-update"))).await;
-    if r.code == 0 {
-        Ok(r.stdout)
-    } else {
-        Err(crate::error::InstallerError::Other(format!(
-            "codemie self-update failed (exit {}): {}",
-            r.code,
-            r.stderr.trim()
-        )))
-    }
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn self_update_leaves_npm_on_the_users_own_prefix() {
-        let c = self_update_command(shell_cmd_for(
-            "codemie self-update",
-            "/Users/test",
-            "/usr/bin",
-            false,
-        ));
-        let prefix = c
-            .as_std()
-            .get_envs()
-            .find(|(k, _)| *k == "npm_config_prefix")
-            .map(|(_, v)| v);
-        assert_eq!(
-            prefix,
-            Some(None),
-            "the agents prefix must be removed, not just left unset"
-        );
-    }
 
     #[tokio::test]
     async fn shell_cmd_sets_npm_config_prefix_and_agents_path_by_default() {
@@ -312,27 +235,5 @@ mod tests_windows {
     async fn run_capture_reports_nonzero_exit_windows() {
         let r = capture("exit 3", None).await;
         assert_eq!(r.code, 3);
-    }
-}
-
-#[cfg(test)]
-mod tests_self_update {
-    use super::*;
-
-    #[test]
-    fn the_bundled_cli_is_in_use_only_when_no_existing_cli_and_both_files_exist() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let node = dir.path().join("node");
-        let cli = dir.path().join("codemie.js");
-        std::fs::write(&node, b"").unwrap();
-        std::fs::write(&cli, b"").unwrap();
-        assert!(bundled_cli_in_use(false, &node, &cli));
-        assert!(
-            !bundled_cli_in_use(true, &node, &cli),
-            "an existing CLI takes precedence"
-        );
-        let missing = dir.path().join("missing");
-        assert!(!bundled_cli_in_use(false, &missing, &cli));
-        assert!(!bundled_cli_in_use(false, &node, &missing));
     }
 }

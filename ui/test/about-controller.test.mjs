@@ -65,10 +65,7 @@ function setup({ probe = async () => '1.0.0', check = async () => null, shared =
   view = makeEl('div');
   const s = {
     app: { latest: null, updateAvailable: false },
-    cli: { installed: '', latest: '1.1.0', updateAvailable: true },
     appRunning: false,
-    cliRunning: false,
-    cliBusy: false,
     ...shared,
   };
   const calls = { probe: 0, check: null };
@@ -123,81 +120,41 @@ test('refresh: shows the probed CLI version', async () => {
   assert.deepEqual(calls.check, [true], 'About forces the app update check');
 });
 
-// CR-003: after a CLI update, About showed the pre-update version.
-test('cliUpdated replaces the version About read on its visit', async () => {
-  const { about } = setup();
-  await about.refresh();
-  about.cliUpdated('1.1.0');
-  about.renderIfShown();
-  assert.ok(cliText().includes('1.1.0'));
-  assert.ok(!cliText().includes('1.0.0'));
-});
-
-// CR-004: `codemie --version` must not run while the CLI is replaced.
-test('refresh does not probe the CLI while it is busy, and keeps the known version', async () => {
-  const { about, calls } = setup({ shared: { cliBusy: true, cli: { installed: '0.9.0', latest: '', updateAvailable: false } } });
-  await about.refresh();
-  assert.equal(calls.probe, 0);
-  assert.ok(cliText().includes('0.9.0'));
-});
-
-test('startUpdate(cli) waits for an in-flight probe, and its late result is dropped', async () => {
-  const probe = deferred();
-  const check = deferred();
-  const { about } = setup({ probe: () => probe.promise, check: () => check.promise });
-  const refreshed = about.refresh();
-
-  let started = false;
-  const starting = about.startUpdate('cli').then(() => (started = true));
-  await new Promise((r) => setTimeout(r, 5));
-  assert.equal(started, false, 'the update waits for `codemie --version` to finish');
-
-  probe.resolve('1.0.0');
-  await starting;
-  about.cliUpdated('1.1.0');
-  check.resolve(null);
-  await refreshed;
-  assert.ok(cliText().includes('1.1.0'), 'the pre-update probe result does not win');
-  assert.ok(!cliText().includes('1.0.0'));
-});
-
-// CR-007: About's buttons mirror the banner runs' progress and errors.
-test('CLI update progress and failure show on the About button', async () => {
-  const { about, s } = setup();
-  await about.refresh();
-  about.startUpdate('cli');
-  about.progress('cli', 'Updating…', true);
-  let btn = view._byId('about-cli-update');
-  assert.equal(btn.textContent, 'Updating…');
-  assert.equal(btn.disabled, true);
-
-  s.cliRunning = false;
-  about.fail('cli', 'npm failed');
-  btn = view._byId('about-cli-update');
-  assert.equal(btn.disabled, false);
-  assert.equal(btn.textContent, 'Update to 1.1.0');
-  assert.equal(view._byClass('update-error')[0].textContent, 'npm failed');
-
-  await about.startUpdate('cli');
-  about.renderIfShown();
-  assert.equal(view._byClass('update-error').length, 0, 'a new run clears the old error');
-});
-
+// CR-007: About's button mirrors the banner run's progress and errors.
 test('app update progress and failure show on the About button', async () => {
   const { about, s } = setup({ shared: { app: { latest: '2.2.0', updateAvailable: true } } });
   await about.refresh();
   s.appRunning = true;
-  about.progress('app', 'Downloading… 40%', true);
+  about.progress('Downloading… 40%', true);
   let btn = view._byId('about-app-update');
   assert.equal(btn.textContent, 'Downloading… 40%');
   assert.equal(btn.disabled, true);
 
   s.appRunning = false;
-  about.fail('app', 'download failed');
+  about.fail('download failed');
   btn = view._byId('about-app-update');
   assert.equal(btn.disabled, false);
   assert.equal(btn.textContent, 'Update to 2.2.0');
   assert.equal(view._byClass('update-error')[0].textContent, 'download failed');
+
+  about.startUpdate();
+  about.renderIfShown();
+  assert.equal(view._byClass('update-error').length, 0, 'a new run clears the old error');
+});
+
+test('the CLI row shows its version and no update button: it comes with the app update', async () => {
+  const { about } = setup();
+  await about.refresh();
+  assert.ok(cliText().includes('1.0.0'));
+  assert.equal(view._byId('about-cli-update'), null);
+});
+
+test('an offline visit still shows both installed versions and no update', async () => {
+  const { about, s } = setup({ check: async () => { throw new Error('offline'); } });
+  await about.refresh();
+  assert.ok(cliText().includes('2.1.0') && cliText().includes('1.0.0'));
+  assert.equal(s.app.updateAvailable, false);
+  assert.equal(view._byId('about-app-update'), null);
 });
 
 test('a hidden About view is not re-rendered', async () => {
@@ -205,6 +162,6 @@ test('a hidden About view is not re-rendered', async () => {
   await about.refresh();
   view.className = 'hidden';
   view.innerHTML = '';
-  about.fail('cli', 'npm failed');
+  about.fail('download failed');
   assert.equal(view._children.length, 0);
 });

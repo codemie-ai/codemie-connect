@@ -58,11 +58,6 @@ const base = {
   appRunning: false,
   appError: '',
   cliVersion: '0.9.1',
-  cliBundled: false,
-  cliLatest: '',
-  cliUpdateAvailable: false,
-  cliRunning: false,
-  cliError: '',
 };
 
 function render(model = {}, handlers = {}) {
@@ -98,24 +93,16 @@ test('the app update button exists only when an update is known, and runs it', (
   assert.equal(ran, 1);
 });
 
-test('the CLI update button exists only when an update is known and the CLI is not bundled', () => {
-  assert.equal(render()._byId('about-cli-update'), null);
-  let ran = 0;
-  const c = render({ cliUpdateAvailable: true, cliLatest: '1.0.0' }, { onUpdateCli: () => (ran += 1) });
-  c._byId('about-cli-update')._click();
-  assert.equal(ran, 1);
-  const bundled = render({ cliUpdateAvailable: true, cliLatest: '1.0.0', cliBundled: true });
-  assert.equal(bundled._byId('about-cli-update'), null);
-  assert.ok(bundled._innerText().includes('Updates with the app'));
+test('the CLI row has no update button: the CLI comes with the app update', () => {
+  const c = render({ appUpdateAvailable: true, appLatest: '1.5.0' });
+  assert.equal(c._byId('about-cli-update'), null);
+  assert.equal(c._all().filter((e) => e._tag === 'button' && /Update/.test(e.textContent)).length, 1);
 });
 
 test('a running update shows a disabled "Updating…" button', () => {
   const btn = render({ appUpdateAvailable: true, appLatest: '1.5.0', appRunning: true })._byId('about-app-update');
   assert.equal(btn.textContent, 'Updating…');
   assert.equal(btn.disabled, true);
-  const cli = render({ cliUpdateAvailable: true, cliRunning: true })._byId('about-cli-update');
-  assert.equal(cli.textContent, 'Updating…');
-  assert.equal(cli.disabled, true);
 });
 
 test('an update error is shown in its row', () => {

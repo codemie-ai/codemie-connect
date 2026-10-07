@@ -1,87 +1,105 @@
 // Option B bridge: exposes the same module surface the Electron handlers expected
 // (inspector / runner / installer / pathman / downloader / pty), backed by Tauri
 // `invoke` commands and `engine:*` events instead of Node modules.
+import stripAnsi from './ansi-strip.mjs';
+
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 let counter = 0;
 const nextId = (p) => `${p}${++counter}`;
 
-// The command-log footer: told when a command starts, and given the exit code
-// when it is known. A no-op until renderer.js registers the footer.
-let onCommand = null;
-export function setCommandListener(fn) {
-  onCommand = fn;
-}
-const started = (cmd) => {
-  try {
-    return (onCommand && onCommand(cmd)) || (() => {});
-  } catch {
-    return () => {};
-  }
+// ponytail: single-PTY sentinel; replace with Map<id,fn> for concurrent PTY support
+let _resolvePtyKill = null;
+
+export const cmdlog = {
+  open:   (cmd)       => invoke('cmdlog_open',   { command: cmd }),
+  append: (id, chunk) => invoke('cmdlog_append', { id, chunk }),
+  close:  (id, code)  => invoke('cmdlog_close',  { id, exitCode: code }),
+  list:   ()          => invoke('cmdlog_list'),
+  get:    (id)        => invoke('cmdlog_get', { id }),
 };
 
 // ---- runner (src/main/runner.js) ----
 export const runner = {
-  runCapture: async (cmd) => {
-    const finish = started(cmd);
+  async runCapture(cmd) {
+    const logId = await cmdlog.open(cmd).catch(() => null);
     let res = null;
+    let _code = -1;
     try {
       res = await invoke('run_capture', { cmd });
+      if (logId && res != null) await cmdlog.append(logId, String(res)).catch(console.warn);
+      _code = 0;
       return res;
     } finally {
-      // Also when invoke rejects, or the footer shows the command running forever.
-      finish(res && res.code);
+      if (logId) await cmdlog.close(logId, _code).catch(console.warn);
     }
   },
-  runFreshEnv: (cmd) => invoke('run_fresh_env', { cmd }),
+
+  async runFreshEnv(cmd) {
+    let _code = -1;
+    const logId = await cmdlog.open(cmd).catch(() => null);
+    try {
+      const result = await invoke('run_fresh_env', { cmd });
+      if (logId && result != null) await cmdlog.append(logId, String(result)).catch(console.warn);
+      _code = 0;
+      return result;
+    } finally {
+      if (logId) await cmdlog.close(logId, _code).catch(console.warn);
+    }
+  },
 
   // Streams output lines via the engine:cmd-line event (keyed by a call id),
   // resolving { code } when the Rust command returns the exit code.
   async runStream(cmd, onLine = () => {}) {
     onLine(`> ${cmd}`, 'prompt');
     const id = nextId('stream');
-    const finish = started(cmd);
+    const logId = await cmdlog.open(cmd).catch(() => null);
+    const pendingAppends = [];
     const un = await listen('engine:cmd-line', (e) => {
       const p = e.payload;
-      if (p && p.id === id) onLine(p.text, p.tag);
+      if (p && p.id === id) {
+        onLine(p.text, p.tag);
+        if (logId) pendingAppends.push(cmdlog.append(logId, `${stripAnsi(p.text)}\n`).catch(console.warn));
+      }
     });
     let code = null;
+    let _exitCode = -1;
     try {
       code = await invoke('run_stream', { cmd, streamId: id });
+      _exitCode = code ?? -1;
       return { code };
     } finally {
       un();
-      finish(code);
+      await Promise.all(pendingAppends);
+      if (logId) await cmdlog.close(logId, _exitCode).catch(console.warn);
     }
   },
 };
 
-// Commands Rust runs itself are reported to the footer the same way. `codeOf`
-// turns the result into an exit code; a rejection shows as failed.
-const logged = (cmd, run, codeOf = () => 0) => {
-  const finish = started(cmd);
-  return run().then(
-    (res) => {
-      finish(codeOf(res));
-      return res;
-    },
-    (e) => {
-      finish(null);
-      throw e;
-    },
-  );
+// Commands Rust runs itself get a command-log record too. `codeOf` turns the
+// result into an exit code; a rejection is recorded as failed (-1).
+const logged = async (cmd, run, codeOf = () => 0) => {
+  const logId = await cmdlog.open(cmd).catch(() => null);
+  let code = -1;
+  try {
+    const res = await run();
+    code = codeOf(res) ?? -1;
+    return res;
+  } finally {
+    if (logId) await cmdlog.close(logId, code).catch(console.warn);
+  }
 };
+const probeCode = (p) => (p?.found ? 0 : 1);
 
 // ---- inspector (src/main/inspector.js) ----
 export const inspector = {
-  checkGit: () => invoke('check_git'),
-  checkNode: () => invoke('check_node'),
-  checkNpm: () => invoke('check_npm'),
-  checkCodemie: () => invoke('check_codemie'),
-  // An empty version is how the Rust side reports that `codemie --version` failed.
+  checkGit: () => logged('git --version', () => invoke('check_git'), probeCode),
+  checkNode: () => logged('node --version', () => invoke('check_node'), probeCode),
+  checkNpm: () => logged('npm --version', () => invoke('check_npm'), probeCode),
+  checkCodemie: () => logged('codemie --help', () => invoke('check_codemie'), probeCode),
+  checkHandshakeState: () => logged('codemie --version', () => invoke('check_handshake_state')),
   checkCodemieVersion: () => logged('codemie --version', () => invoke('check_codemie_version'), (v) => (v ? 0 : 1)),
-  checkHandshakeState: () => invoke('check_handshake_state'),
   checkProfileStatus: () => logged('codemie profile status', () => invoke('check_profile_status'), (st) => st?.code ?? 0),
   gitBinaryPath: () => invoke('git_binary_path'),
   nodeBinaryPath: () => invoke('node_binary_path'),
@@ -128,8 +146,6 @@ async function restartApp() {
 }
 
 export const updater = {
-  fetchCodemieLatest: () => invoke('fetch_codemie_latest'),
-  runSelfUpdate: () => logged('codemie self-update', () => invoke('run_self_update')),
   checkForAppUpdate,
   downloadAndInstall,
   restartApp,
@@ -178,36 +194,47 @@ export const pty = {
   async spawnPty(cmd, cols = 100, rows = 30, onData) {
     const id = nextId('pty');
     let resolveExit, dataUnlisten, exitUnlisten;
-    const exitP = new Promise((r) => {
-      resolveExit = r;
-    });
+    const exitP = new Promise((r) => { resolveExit = r; });
+    const killP = new Promise((r) => { _resolvePtyKill = r; });
+    const logId = await cmdlog.open(cmd).catch(() => null);
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    const pendingPtyAppends = [];
+    let exitCode;
     // CR-005: both listeners are registered inside the try block so the finally
     // always runs and always unlistens both, even if the second listen() throws.
     try {
       // Register data listener BEFORE invoke so no early events for this id are missed
-      if (onData) {
-        dataUnlisten = await listen('engine:pty-data', (e) => {
-          if (e.payload.id === id) onData(e.payload.data);
-        });
-      }
+      dataUnlisten = await listen('engine:pty-data', (e) => {
+        if (e.payload.id === id) {
+          if (onData) onData(e.payload.data);
+          if (logId) {
+            try {
+              const raw = Uint8Array.from(atob(e.payload.data), c => c.charCodeAt(0));
+              const stripped = stripAnsi(decoder.decode(raw, { stream: true }));
+              if (stripped) pendingPtyAppends.push(cmdlog.append(logId, stripped).catch(console.warn));
+            } catch { /* invalid base64 or decode error */ }
+          }
+        }
+      });
       exitUnlisten = await listen('engine:pty-exit', (e) => {
         if (e.payload.id === id) resolveExit(e.payload.code);
       });
-      const finish = started(cmd);
-      let code = null;
-      try {
         await invoke('spawn_pty', { cmd, cols, rows, runId: id });
-        code = await exitP;
-      } finally {
-        finish(code);
-      }
-      return { code, id };
+      exitCode = await Promise.race([exitP, killP]);
+      return { code: exitCode, id };
     } finally {
+      _resolvePtyKill = null;
       exitUnlisten?.();
       dataUnlisten?.();
+      if (logId) {
+        const tail = stripAnsi(decoder.decode(new Uint8Array(0), { stream: false }));
+        if (tail) pendingPtyAppends.push(cmdlog.append(logId, tail).catch(console.warn));
+        await Promise.all(pendingPtyAppends);
+        await cmdlog.close(logId, exitCode ?? -1).catch(console.warn);
+      }
     }
   },
   input: (data) => invoke('pty_input', { data }),
   resize: (cols, rows) => invoke('pty_resize', { cols, rows }),
-  kill: () => invoke('pty_kill'),
+  kill: () => { _resolvePtyKill?.(-1); _resolvePtyKill = null; return invoke('pty_kill'); },
 };

@@ -49,9 +49,15 @@ pub fn log_path() -> String {
 }
 
 fn ensure_log_readable(path: &str) -> CmdResult<()> {
-    std::fs::File::open(path)
-        .map(|_| ())
-        .map_err(|_| InstallerError::Other(format!("log file not found or unreadable: {path}")))
+    // Use is_file() rather than File::open to avoid a sharing violation on
+    // Windows when the CLI still holds an exclusive write lock on the log.
+    if std::path::Path::new(path).is_file() {
+        Ok(())
+    } else {
+        Err(InstallerError::Other(format!(
+            "log file not found or unreadable: {path}"
+        )))
+    }
 }
 
 #[cfg(not(windows))]
@@ -64,13 +70,49 @@ fn spawn_open(path: &str) -> CmdResult<()> {
 }
 #[cfg(windows)]
 fn spawn_open(path: &str) -> CmdResult<()> {
-    // "" is the required window-title arg for `start`, so a spaced path isn't
-    // mistaken for it; this invokes the OS default handler for the file.
-    std::process::Command::new("cmd")
-        .args(["/c", "start", "", path])
-        .spawn()
-        .map_err(InstallerError::Io)?;
-    Ok(())
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    // ShellExecuteW bypasses cmd.exe argument parsing entirely (which can
+    // silently swallow errors or misparse paths with special characters) and
+    // returns an explicit error code rather than fire-and-forget.
+    #[link(name = "Shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut std::ffi::c_void,
+            lp_operation: *const u16,
+            lp_file: *const u16,
+            lp_parameters: *const u16,
+            lp_directory: *const u16,
+            n_show_cmd: i32,
+        ) -> isize;
+    }
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let op = to_wide("open");
+    let file = to_wide(path);
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+
+    // ShellExecuteW returns > 32 on success; ≤ 32 is an SE_ERR_* code.
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(InstallerError::Other(format!(
+            "could not open log (ShellExecuteW error {result}): {path}"
+        )))
+    }
 }
 
 /// Append a tagged line to the log file. Logging must never crash the app.
