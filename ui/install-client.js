@@ -31,7 +31,7 @@ export function quoteForShell(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
-export async function openDownloadPage(url, runCapture) {
+export async function openDownloadPage(url, runCapture, isWindows = false) {
   if (typeof url !== 'string') return false;
   let parsed;
   try {
@@ -40,7 +40,9 @@ export async function openDownloadPage(url, runCapture) {
     return false;
   }
   if (parsed.protocol !== 'https:') return false;
-  await runCapture(`open ${quoteForShell(parsed.href)}`);
+  // Windows runs commands through cmd.exe: `start` with an empty title, URL in
+  // double quotes (href already percent-encodes any `"`).
+  await runCapture(isWindows ? `start "" "${parsed.href}"` : `open ${quoteForShell(parsed.href)}`);
   return true;
 }
 

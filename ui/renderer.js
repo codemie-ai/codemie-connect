@@ -724,7 +724,7 @@ async function refreshConnectionsView() {
       openEl.className = 'row-action row-download';
       openEl.textContent = 'Open the download page';
       openEl.addEventListener('click', () => {
-        openDownloadPage(rowState.downloadUrl, (c) => bridge.runner.runCapture(c)).catch(() => {});
+        openDownloadPage(rowState.downloadUrl, (c) => bridge.runner.runCapture(c), platformInfoValue?.os === 'windows').catch(() => {});
       });
       mainEl.appendChild(openEl);
     }

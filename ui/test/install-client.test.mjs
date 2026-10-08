@@ -63,6 +63,12 @@ test('openDownloadPage opens an https url once through runCapture, quoted', asyn
   assert.match(calls[0], /^open '.*'$/);
 });
 
+test('openDownloadPage on Windows uses cmd start with a quoted url', async () => {
+  const calls = [];
+  assert.equal(await openDownloadPage('https://a/b?x=1&y="2"', async (c) => { calls.push(c); }, true), true);
+  assert.deepEqual(calls, ['start "" "https://a/b?x=1&y=%222%22"']);
+});
+
 test('openDownloadPage never opens http, javascript, garbage or non-strings', async () => {
   const calls = [];
   const rc = async (c) => { calls.push(c); };
