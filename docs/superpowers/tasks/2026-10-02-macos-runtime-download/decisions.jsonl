@@ -1,0 +1,2 @@
+{"ts":"2026-10-02T12:17:28Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved plan (5 tasks)","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-02T12:34:36Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved with 3 test-coverage findings (CR-001..003) left unfixed","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

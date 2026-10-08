@@ -55,6 +55,7 @@ src-tauri/src/
   commands/installer.rs  Node .pkg URL + LTS lookup + osascript sudo + Xcode CLT
   commands/downloader.rs reqwest streaming download with progress events
   commands/pathman.rs    login-shell PATH resolution + ~/.zprofile persistence
+  commands/runtime.rs    macOS first-launch install of Node (nodejs.org) + CLI (npm), CLI updates from npm
   commands/pty.rs        portable-pty: interactive TUI steps (base64 framing)
   commands/logger.rs window.rs smoke.rs
   steps.rs               embedded config/steps.yaml (serde_yaml) + logo path
@@ -82,13 +83,13 @@ cargo tauri dev
 
 ## Build a shareable DMG
 
-The DMG ships the CodeMie CLI with its own Node runtime (Apple Silicon). Build it with the verifying script:
+The macOS DMG (Apple Silicon) is small: it holds the app and the `codemie` shim only. On first launch the app downloads the pinned Node.js from nodejs.org (SHA-256 checked) and installs the pinned CLI from npm with the lock file in `assets/codemie-cli/`, into `~/Library/Application Support/CodeMie/runtime`. Later launches install a newer CLI from npm in the background, so a CLI release needs no new installer. All of it is skipped when the machine already has a CodeMie CLI. The Windows installer still bundles Node and the CLI. Build with the verifying script:
 
 ```bash
 ./build-installer.sh
 ```
 
-It downloads the pinned Node (`runtime.json`), installs the CLI tree under `assets/codemie-cli/`, asserts every bundled artifact before and after the Tauri build, and prints the DMG path. The plain commands below skip those checks and, until `scripts/stage-runtime.sh` has run once, fail with `resource path ... doesn't exist`.
+It downloads the pinned Node (`runtime.json`), installs the CLI tree and its lock file under `assets/codemie-cli/`, asserts every artifact before and after the Tauri build, runs the bundled shim against that tree laid out the way the app installs it, and prints the DMG path. There is nothing to upload. The plain commands below skip those checks.
 
 ```bash
 cd src-tauri

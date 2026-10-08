@@ -22,6 +22,10 @@ pub struct AppState {
     /// True when `inject_bundled_bin_path` succeeded during setup.
     /// Used by `check_handshake_state` to determine precedence.
     pub bundled_injected: bool,
+    /// True when the user already has a CodeMie CLI on PATH. Unlike
+    /// `bundled_injected` it does not depend on PATH injection succeeding, so
+    /// the runtime download is skipped whenever their CLI exists.
+    pub existing_cli_detected: bool,
     /// Timestamp of the last successful app update check. Guards the 24 h throttle in
     /// `commands::app_updater::check_for_update`.
     pub last_update_check: Mutex<Option<Instant>>,

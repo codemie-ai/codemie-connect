@@ -32,7 +32,7 @@ log = "0.4"
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "process", "io-util", "time", "fs"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "system-proxy"] }
 futures-util = "0.3"
 sha2 = "0.10"
 thiserror = "2"

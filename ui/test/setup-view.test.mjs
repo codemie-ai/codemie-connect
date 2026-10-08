@@ -1181,7 +1181,7 @@ test('installClaude: success line without a version collapses to "Claude Code �
 test('installClaude: the CLI\'s failure line marks the row ERROR even though the run resolves normally', async () => {
   const { row, before, outcome } = await installYesHarness({ feed: ['\x1b[31m✖ Failed to install Claude Code\x1b[39m\n', 'You can install it manually later using:\n'] });
   assert.equal(before.icon, '✗', 'ERROR from the log line, before the run settles');
-  assert.equal(before.sub, 'Install failed');
+  assert.equal(before.sub, 'Not installed. You can install it from Tools.', 'says what to do next');
   assert.equal(row.querySelector('.step-icon').textContent, '✗', 'resolution does not overwrite it');
   assert.deepEqual(outcome, { ok: true, profileName: 'default' }, 'the profile itself is fine');
 });

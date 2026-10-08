@@ -42,7 +42,7 @@ Gates ordered fastest to slowest. All Rust commands run from `src-tauri/`; JS co
 
 ### Build
 
-**Prerequisite (both platforms)**: the bundled runtime must be staged once per checkout or `tauri-build` aborts every cargo command with `resource path ... doesn't exist`. macOS: `scripts/stage-runtime.sh`. Windows: `scripts\stage-runtime.ps1`. The staged tree is gitignored and survives branch switches; worktrees need their own.
+**Prerequisite (both platforms)**: the bundled runtime must be staged once per checkout or `tauri-build` aborts every cargo command with `resource path ... doesn't exist`. macOS: `scripts/stage-runtime.sh` (it also refreshes the tracked `assets/codemie-cli/package.json` and `package-lock.json`, which the app embeds at compile time). Windows: `scripts\stage-runtime.ps1`. The staged tree is gitignored and survives branch switches; worktrees need their own.
 **Run**: `./build-installer.sh` (macOS) or `.\build-installer.ps1` (Windows). Both stage, assert every artifact, build, then assert the produced bundle. There is no switch to skip verification.
 **Pass**: `Done. All assertions passed.` with the app and DMG (macOS) or the NSIS setup exe (Windows) paths
 **Fail**: the first failing assertion names the missing, empty or non-executable path

@@ -9,5 +9,6 @@ pub mod npm_env;
 pub mod pathman;
 pub mod pty;
 pub mod runner;
+pub mod runtime;
 pub mod smoke;
 pub mod window;
