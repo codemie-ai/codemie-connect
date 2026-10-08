@@ -22,7 +22,7 @@ import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
 import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
-import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
+import { deriveHome, brokenCopy, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { initCmdLog } from './cmdlog-ui.js';
 import { analyticsCommand } from './analytics-command.js';
@@ -185,10 +185,34 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
   onSignIn: () => (signInAction(home) === 'setup' ? openGuidedSetup() : startSignIn()),
   onCard: (id) => showView(id === 'connections' ? 'connect' : id),
   onSetupAgain: () => openGuidedSetup(),
+  onDeleteProfile: deleteActiveProfile,
   // Item 3 installs through the Agents controller, which refreshes Home on its
   // own when the action finishes, so the item ticks without a second read here.
   onInstallAgent: (agent, onLine) => agentsController.install(agent, onLine),
 });
+
+// Deletes the profile Home's panel names. Never throws and never hangs: a CLI
+// error comes back as the message the panel shows. Config and auth are re-read
+// either way, so a newly active profile (or none) is what Home shows next.
+async function deleteActiveProfile() {
+  const name = (home.config && home.config.profile) || '';
+  if (!name.trim()) return { ok: false, message: 'No profile name to delete' };
+  let result;
+  try {
+    const res = await bridge.profile.delete(name);
+    if (res && res.code === 0) {
+      result = { ok: true };
+    } else {
+      const raw = [res?.stdout, res?.stderr].filter(Boolean).join('\n').trim();
+      const last = raw.split('\n').map((l) => l.trim()).filter(Boolean).pop();
+      result = { ok: false, message: last || 'Could not delete the profile', raw };
+    }
+  } catch (e) {
+    result = { ok: false, message: String((e && e.message) || e) };
+  }
+  await refreshIdentityOnComplete();
+  return result;
+}
 
 // Whether the checklist has ever been finished here, read once at boot.
 // localStorage itself can throw on access, so it is fetched guarded too.
@@ -209,7 +233,7 @@ function renderHome() {
     onboarded = true;
     rememberOnboarded(homeStorage);
   }
-  homeScreen.render({ ...state, signingIn: home.signingIn });
+  homeScreen.render({ ...state, brokenCopy: brokenCopy(home), signingIn: home.signingIn });
   // The last step starts by itself once the ones before it are done, instead
   // of leaving the user on a checklist that waits for a click. Once a session:
   // a check that fails leaves its step saying so, and Home does not retry it.
@@ -770,16 +794,11 @@ async function startSignIn() {
       primaryAction: hideNotice,
     });
   }
-  // Always re-read profile status; never assume success from absence of an error line.
-  // Falls back to the safe unknown state if the IPC call itself rejects.
-  let st;
-  try {
-    st = await bridge.inspector.checkProfileStatus();
-  } catch {
-    st = { state: 'unknown', detail: '' };
-  }
+  // Always re-read config and profile status; never assume success from absence
+  // of an error line. Both reads fall back to a safe value if the IPC call rejects.
+  await refreshIdentityOnComplete();
   home.signingIn = false;
-  updateIdentityAuthStatus(st);
+  renderHome();
 }
 
 async function runAnalytics() {

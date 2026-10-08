@@ -120,6 +120,14 @@ export const codemieConfig = {
   read: () => invoke('read_codemie_config'),
 };
 
+// ---- codemie profile ----
+// delete(name) runs `codemie profile delete <name> --yes` from the filesystem
+// root; resolves { code, stdout, stderr }, rejects on a name the shell cannot
+// carry safely.
+export const profile = {
+  delete: (name) => logged('codemie profile delete', () => invoke('delete_profile', { name }), (r) => r?.code ?? 0),
+};
+
 // ---- installer (src/main/installer-macos.js) ----
 export const installer = {
   latestLtsNodeVersion: () => invoke('latest_lts_node_version'),

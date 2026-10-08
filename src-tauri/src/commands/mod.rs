@@ -9,6 +9,7 @@ pub mod installer;
 pub mod logger;
 pub mod npm_env;
 pub mod pathman;
+pub mod profile;
 pub mod pty;
 pub mod runner;
 pub mod smoke;
