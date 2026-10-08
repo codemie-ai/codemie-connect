@@ -89,7 +89,10 @@ fn spawn_open(path: &str) -> CmdResult<()> {
     }
 
     fn to_wide(s: &str) -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     let op = to_wide("open");

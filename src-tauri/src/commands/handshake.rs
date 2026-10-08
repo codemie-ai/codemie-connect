@@ -55,25 +55,6 @@ pub fn find_working_global_codemie(path_env: &str) -> Option<String> {
     })
 }
 
-/// Drop `exclude` dirs from `path_env` (case-insensitive, trailing separators
-/// ignored). The installer's own bundled shim dir is on the persisted PATH, so
-/// without this the bundle counts as an "existing" CLI and never gets injected
-/// ahead of an orphaned shim left by an uninstalled global CLI.
-pub fn strip_dirs(path_env: &str, exclude: &[std::path::PathBuf]) -> String {
-    let norm = |p: &std::path::Path| {
-        p.to_string_lossy()
-            .trim_end_matches(['\\', '/'])
-            .to_lowercase()
-    };
-    let drop: Vec<String> = exclude.iter().map(|p| norm(p)).collect();
-    let kept: Vec<_> = std::env::split_paths(OsStr::new(path_env))
-        .filter(|d| !drop.contains(&norm(d)))
-        .collect();
-    std::env::join_paths(kept)
-        .map(|j| j.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| path_env.to_string())
-}
-
 #[derive(Serialize)]
 pub struct HandshakeState {
     pub global_found: bool,
@@ -250,14 +231,6 @@ mod tests {
             !s.global_found,
             "broken shim must not count as a working global install"
         );
-    }
-
-    #[test]
-    fn strip_dirs_removes_bundle_dir_case_insensitively() {
-        let path = std::env::join_paths(["/a", "/App/Bin/", "/b"]).unwrap();
-        let out = strip_dirs(path.to_str().unwrap(), &["/app/bin".into()]);
-        let expect = std::env::join_paths(["/a", "/b"]).unwrap();
-        assert_eq!(out, expect.to_str().unwrap());
     }
 
     #[test]
