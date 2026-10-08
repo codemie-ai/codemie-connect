@@ -110,18 +110,30 @@ test('an update error is shown in its row', () => {
   assert.equal(c._byClass('update-error')[0].textContent, 'download failed');
 });
 
-test('links have friendly labels and open the exact URLs', () => {
+test('each link is a card with a friendly title, description and button, opening the exact URL', () => {
   const opened = [];
   const c = render({}, { onOpenLink: (u) => opened.push(u) });
-  const links = c._all().filter((e) => e._tag === 'button' && /GitHub Repository|Request Help/.test(e.textContent));
-  assert.deepEqual(links.map((l) => l.textContent), ['GitHub Repository', 'Request Help']);
-  links.forEach((l) => {
-    assert.ok(!/http|@/.test(l.textContent));
-    l._click();
-  });
+  const cards = c._byClass('about-card').filter((k) => k._byClass('about-link').length);
+  assert.deepEqual(cards.map((k) => k._byClass('about-card-title')[0].textContent), ['GitHub Repository', 'Request Help']);
+  const buttons = cards.map((k) => k._byClass('about-link')[0]);
+  assert.deepEqual(buttons.map((b) => b._innerText().trim()), ['Explore', 'Email us']);
+  for (const k of cards) {
+    assert.ok(k._byClass('about-card-desc')[0].textContent.length > 0, 'every card says what the link is for');
+    assert.ok(!/http|@/.test(k._innerText()), 'no raw URL or email as a label');
+  }
+  buttons.forEach((b) => b._click());
   assert.deepEqual(opened, [GITHUB_URL, SUPPORT_MAILTO]);
   assert.equal(GITHUB_URL, 'https://github.com/codemie-ai/codemie-code#native-bootstrap-installers');
   assert.equal(SUPPORT_MAILTO, 'mailto:AskCodeMie@epam.com');
+});
+
+test('the update button sits on the CodeMie Connect card, and its error under that card', () => {
+  const c = render({ appUpdateAvailable: true, appLatest: '1.5.0', appError: 'download failed' });
+  const app = c._byClass('about-card')[0];
+  assert.ok(app._innerText().includes('CodeMie Connect'));
+  assert.ok(app._byId('about-app-update'));
+  assert.equal(app._byClass('update-error')[0].textContent, 'download failed');
+  assert.ok(app._innerText().includes('Version 1.5.0 is available'));
 });
 
 test('no documentation link', () => {
