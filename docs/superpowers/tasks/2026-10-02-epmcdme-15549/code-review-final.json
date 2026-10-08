@@ -1,0 +1,73 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance did not run (no spec), so confidence is low; the other lenses and standards ran. build-installer.ps1 has escape-corrupted path literals that break the build, plus a boot gap, an install race and an update-time runtime wipe; the commit subjects also miss the documented format. 12 findings dismissed or folded as noise or low-severity, 0 deferred.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires '<type>: <short description>'; all 4 subjects use an 'EPMCDME-15549: ...' prefix and no type"},
+    {"kind": "code-quality", "status": "na", "notes": "no .ai-run/guides/standards/code-quality.md in the repo and no ref passed; absent standard"},
+    {"kind": "security", "status": "na", "notes": "no .ai-run/guides/development/security-patterns.md in the repo and no ref passed; absent standard"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "build-installer.ps1",
+      "line": 39,
+      "title": "Escape-corrupted path literals break build",
+      "problem": "Path literals lost their backslash escapes: $PackJson is \"assets\\windowsuntime-pack.json\" (line 39, should be assets\\windows\\runtime-pack.json), \"binuntime-key\" (line 168 and the bundle-asset list, should be bin\\runtime-key), the node\\node.exe 'bundled again' check is split across lines, and the throwaway unpack path is \"CodeMieuntime\\<key>\" (should be CodeMie\\runtime\\<key>). Test-Path $PackJson is always false and Get-Content $PackJson (line 163) fails.",
+      "impact": "Step 5 of the Windows build always aborts or checks nonexistent paths. The Node-bundled-again guard can never fire and the shim smoke test unpacks where the shim never looks. No test covers this script.",
+      "recommendation": "Restore the paths: Join-Path $Root \"assets\\windows\\runtime-pack.json\", Join-Path $ReleaseDir \"bin\\runtime-key\", Join-Path $ReleaseDir \"node\\node.exe\", Join-Path $TestLocal \"CodeMie\\runtime\\$($pack.key)\". Prefer single-quoted strings or escaped separators."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/installer-hooks.nsi",
+      "line": 19,
+      "title": "Uninstall hook wipes runtime on every update",
+      "problem": "RMDir /r \"$LOCALAPPDATA\\CodeMie\\runtime\" runs unconditionally in the uninstall macro, with no update-mode guard.",
+      "impact": "If the old uninstaller runs during an in-place update, each update deletes the roughly 200 MB runtime and forces a re-download. Reachability of the update path was unconfirmed. Under an elevated context it may also resolve to a different user's folder.",
+      "recommendation": "Skip the RMDir when the uninstall is part of an update (check $UpdateMode), and confirm $LOCALAPPDATA resolves to the installing user's profile."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/runtime.rs",
+      "line": 794,
+      "title": "No guard against concurrent runtime installs",
+      "problem": "ensure_runtime and remove_stale use shared .staging-<key> and .download-<key> paths with no lock, and remove_stale deletes every other entry under the runtime dir. The app has no single-instance plugin, so two instances or a double call can run concurrently.",
+      "impact": "One call can delete the other's archive or staging mid-write, giving a spurious download failure or a corrupt unpack. An older app version side by side can delete a newer runtime.",
+      "recommendation": "Serialize with a process-wide async mutex, add the single-instance plugin, and make remove_stale skip entries it does not own."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 680,
+      "title": "runtime_ready rejection aborts boot silently",
+      "problem": "ensureRuntime() awaits invoke('runtime_ready') outside any try/catch, and boot() awaits it first. runtime_ready returns Err when LOCALAPPDATA is unset or the baked pack JSON is bad.",
+      "impact": "boot() rejects, so the app shows no overlay, no Try again and no message. Reachability of the Err path was unconfirmed. The unlisten() leak in the retry loop is a related smaller issue.",
+      "recommendation": "Catch the rejection and show the runtime overlay with the error and a Try again button, and call unlisten() in a finally block."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subjects do not follow documented format",
+      "problem": "Commits 10120a6, 986dc6f, 336aa31 and fe2af2f use an 'EPMCDME-15549: ...' subject where git-workflow.md requires '<type>: <short description>' with type in feat|fix|docs|test|chore|refactor.",
+      "impact": "The commit subjects do not match the format the git workflow guide requires.",
+      "recommendation": "Reword the subjects to the documented form, for example 'feat: download Node and the CLI on first launch (Windows runtime module)'."
+    }
+  ]
+}

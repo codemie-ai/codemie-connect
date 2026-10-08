@@ -859,7 +859,49 @@ async function runUpdateApp() {
   }
 }
 
+// Node and the CLI are not in the app: they are installed once, on first
+// launch (commands/runtime.rs). Nothing else in boot() may run the CLI before
+// this resolves.
+async function ensureRuntime() {
+  if (await invoke('runtime_ready')) return;
+  const overlay = document.getElementById('runtime-overlay');
+  const title = document.getElementById('runtime-title');
+  const detail = document.getElementById('runtime-detail');
+  const bar = document.getElementById('runtime-bar');
+  const retry = document.getElementById('runtime-retry');
+  const errorEl = document.getElementById('runtime-error');
+  const downloading = 'Setting up CodeMie. This happens once.';
+  overlay.classList.remove('hidden');
+  const unlisten = await listen('runtime:progress', (e) => {
+    const { phase, fraction, total } = e.payload;
+    bar.style.width = `${Math.round(fraction * 100)}%`;
+    if (phase === 'cli') detail.textContent = 'Installing the CodeMie CLI. This takes about a minute and happens once.';
+    else if (phase === 'node' && total) detail.textContent = `Downloading Node.js (${Math.round((fraction / 0.3) * (total / 1048576))} of ${Math.round(total / 1048576)} MB). This happens once.`;
+  });
+  for (;;) {
+    title.textContent = 'Preparing CodeMie…';
+    detail.textContent = downloading;
+    retry.classList.add('hidden');
+    errorEl.classList.add('hidden');
+    bar.style.width = '0%';
+    try {
+      await invoke('ensure_runtime');
+      break;
+    } catch (err) {
+      title.textContent = "Couldn't download CodeMie";
+      detail.textContent = 'Check your internet connection or proxy, then try again.';
+      errorEl.textContent = String(err);
+      errorEl.classList.remove('hidden');
+      retry.classList.remove('hidden');
+      await new Promise((r) => retry.addEventListener('click', r, { once: true }));
+    }
+  }
+  unlisten();
+  overlay.classList.add('hidden');
+}
+
 async function boot() {
+  await ensureRuntime();
   const flags = await invoke('smoke_mode');
 
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
@@ -1012,6 +1054,13 @@ async function boot() {
   // above. The command-log footer is wired at the top of boot().
   refreshAgents();
   refreshConnection();
+  // A newer CLI on npm is installed in the background and used from the next
+  // command on, so a CLI release never needs a new installer (runtime.rs).
+  invoke('update_cli')
+    .then((version) => {
+      if (version) refreshAgents();
+    })
+    .catch(() => {});
   document.querySelectorAll('#sidebar-main-group .sidebar-item, #sidebar-about').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation

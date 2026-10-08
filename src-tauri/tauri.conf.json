@@ -42,7 +42,7 @@
     },
     "windows": {
       "webviewInstallMode": {
-        "type": "offlineInstaller"
+        "type": "skip"
       },
       "nsis": {
         "installMode": "currentUser",

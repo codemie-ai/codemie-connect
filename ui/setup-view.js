@@ -565,7 +565,7 @@ export function createSetupView(container, deps = {}) {
       finishInstall(StepStatus.COMPLETE, ok[1] || 'Installed');
       return;
     }
-    if (INSTALL_FAILED.test(install.buffer)) finishInstall(StepStatus.ERROR, 'Install failed');
+    if (INSTALL_FAILED.test(install.buffer)) finishInstall(StepStatus.ERROR, 'Not installed. You can install it from Tools.');
   }
 
   // Safety net: the run settled while the install row was still waiting on

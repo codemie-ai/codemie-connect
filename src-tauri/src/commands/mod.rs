@@ -12,5 +12,6 @@ pub mod pathman;
 pub mod profile;
 pub mod pty;
 pub mod runner;
+pub mod runtime;
 pub mod smoke;
 pub mod window;
