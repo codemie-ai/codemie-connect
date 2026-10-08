@@ -86,3 +86,5 @@ apple_developer
 assets/windows/node/
 assets/macos/node/
 assets/staging-manifest.json
+assets/windows/runtime-pack.json
+assets/windows/bin/runtime-key

@@ -2,10 +2,20 @@
   "bundle": {
     "resources": {
       "../assets/windows/bin/codemie.cmd": "bin/codemie.cmd",
-      "../assets/windows/node/node.exe": "node/node.exe",
-      "../assets/windows/node/npm.cmd": "node/npm.cmd",
-      "../assets/windows/node/node_modules/npm": "node/node_modules/npm",
-      "../assets/codemie-cli/node_modules": "cli/node_modules"
+      "../assets/windows/bin/codemie-claude.cmd": "bin/codemie-claude.cmd",
+      "../assets/windows/bin/codemie-claude-acp.cmd": "bin/codemie-claude-acp.cmd",
+      "../assets/windows/bin/codemie-code.cmd": "bin/codemie-code.cmd",
+      "../assets/windows/bin/codemie-codex.cmd": "bin/codemie-codex.cmd",
+      "../assets/windows/bin/codemie-copilot.cmd": "bin/codemie-copilot.cmd",
+      "../assets/windows/bin/codemie-gemini.cmd": "bin/codemie-gemini.cmd",
+      "../assets/windows/bin/codemie-kimi.cmd": "bin/codemie-kimi.cmd",
+      "../assets/windows/bin/codemie-kimi-acp.cmd": "bin/codemie-kimi-acp.cmd",
+      "../assets/windows/bin/codemie-mcp-proxy.cmd": "bin/codemie-mcp-proxy.cmd",
+      "../assets/windows/bin/codemie-opencode.cmd": "bin/codemie-opencode.cmd",
+      "../assets/windows/bin/codemie-openwiki.cmd": "bin/codemie-openwiki.cmd",
+      "../assets/windows/bin/codemie-pi.cmd": "bin/codemie-pi.cmd",
+      "../assets/windows/bin/proxy-daemon.cmd": "bin/proxy-daemon.cmd",
+      "../assets/windows/bin/runtime-key": "bin/runtime-key"
     }
   }
 }
