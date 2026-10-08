@@ -1,0 +1,135 @@
+{
+  "decision": "request-changes",
+  "rationale": "1 decision_needed (CR-004): Rust src-tauri/ changes appear in a diff scoped to JS-only work — human must confirm whether branch predates the EPMCDME-15230 merge. 8 patch findings include a lock-poisoning crash vector in all five cmdlog Tauri commands, a PTY-hang leaving the cmdlog record permanently open, a close-before-append race in runStream, an incomplete ANSI OSC strip (BEL-only, ST-terminated sequences pass through), and an unbounded-growth cap absent from CmdLogStore. Standards: commit-format fail on 5 of 8 subjects. 1 finding dismissed (u64 next_id overflow unreachable in practice).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "spec", "item": "All five paths call cmdlog_open before execution and cmdlog_close in a finally", "status": "pass", "notes": "All five wrapped in runner-bridge.js with .catch(() => null) / .catch(console.warn) guards throughout." },
+    { "kind": "spec", "item": "spawnPty allocates one TextDecoder per invocation inside the function body", "status": "pass", "notes": "const decoder = new TextDecoder('utf-8', { fatal: false }) declared inside spawnPty body, not at module scope." },
+    { "kind": "spec", "item": "PTY output UTF-8 decoded via { stream: true } before ANSI stripping; onData callers receive original base64 payload unchanged", "status": "pass", "notes": "atob -> Uint8Array -> decoder.decode(raw, { stream: true }) -> stripAnsi path confirmed; onData receives e.payload.data unchanged." },
+    { "kind": "spec", "item": "stripAnsi does not corrupt plain text adjacent to a PTY sequence split across two chunks (boundary-safe, stateless)", "status": "pending-stage-7", "notes": "Regex leaves partial escapes unmatched; test 11 in ansi-strip.test.mjs covers chunk boundary simulation; npm test run outstanding." },
+    { "kind": "spec", "item": "cmdlog_open/append/close failures do not propagate to callers — console.warn, swallow", "status": "pass", "notes": "All cmdlog calls use .catch(() => null) or .catch(console.warn); no rethrow path confirmed." },
+    { "kind": "spec", "item": "runUpdateCli in renderer.js calls bridge.updater.runSelfUpdate(), not invoke('run_self_update')", "status": "pass", "notes": "renderer.js: direct invoke replaced with bridge.updater.runSelfUpdate() call confirmed." },
+    { "kind": "spec", "item": "runAction (passes no onData) records PTY output in cmdlog store", "status": "pass", "notes": "dataUnlisten listener always registered regardless of onData; cmdlog.append path executes when onData is undefined." },
+    { "kind": "spec", "item": "Every active call site (startSignIn, runAction, runUpdateCli) has a // cmdlog intent: comment", "status": "pass", "notes": "// cmdlog intent: user-initiated present at all three renderer.js call sites." },
+    { "kind": "spec", "item": "npm test passes with new tests covering all 12 items in §Test coverage", "status": "pending-stage-7", "notes": "cmdlog-bridge.test.mjs (7 tests) and ansi-strip.test.mjs (6 tests) present; npm test run outstanding." },
+    { "kind": "spec", "item": "No new npm dependencies introduced", "status": "pass", "notes": "No package.json or lockfile changes; only new import is local ./ansi-strip.mjs." },
+    { "kind": "spec", "item": "Non-goal: No changes to src-tauri/ — Rust layer is complete (EPMCDME-15230)", "status": "fail", "notes": "Diff includes new cmdlog.rs (213 lines) and changes to Cargo.toml, commands/mod.rs, lib.rs, state.rs. See CR-004." },
+    { "kind": "spec", "item": "cmdlog bridge export shape: { open, append, close } invoking cmdlog_open/cmdlog_append/cmdlog_close with prescribed argument keys", "status": "pass", "notes": "runner-bridge.js lines 12-16 match spec-prescribed shape exactly including { command }, { id, chunk }, { id, exitCode }." },
+    { "kind": "spec", "item": "spawnPty flushes TextDecoder in finally, strips and appends non-empty tail, then calls cmdlog_close(exitCode ?? -1)", "status": "pass", "notes": "finally: decoder.decode(new Uint8Array(0), { stream: false }), conditional append, close(exitCode ?? -1) confirmed." },
+    { "kind": "spec", "item": "ANSI strip utility: pure ES module default export; no side effects or global state; partial escape at end-of-string intact", "status": "pass", "notes": "ansi-strip.mjs: single stateless regex, no module-level mutable state; partial escape not matched per regex structure." }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "fail", "notes": "5 of 8 subjects non-conforming: four use feat(epmcdme-15231): scope notation (prohibited); one uses ticket-id prefix without valid type prefix." },
+    { "kind": "code-quality", "status": "na", "notes": ".ai-run/guides/standards/code-quality.md does not exist in the repository; no standard to adjudicate against." },
+    { "kind": "security", "status": "na", "notes": ".ai-run/guides/development/security-patterns.md does not exist. No concrete security issues found in changed files." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/cmdlog.rs",
+      "line": 29,
+      "title": "CmdLogStore grows unbounded, no eviction",
+      "problem": "CmdLogStore.open() inserts into the records HashMap and appends to the order Vec without any capacity limit or eviction; raw_output strings accumulate for every command over the session lifetime.",
+      "impact": "OOM possible in long desktop sessions; the HashMap and all accumulated raw_output strings grow linearly with command count and total output volume, with no release path.",
+      "recommendation": "Add a MAX_RECORDS constant and an eviction step inside open(): when records.len() >= MAX_RECORDS, remove the oldest id from both records and order before inserting the new one."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/cmdlog.rs",
+      "line": 45,
+      "title": "cmdlog_list deep-clones all raw_output on every call",
+      "problem": "list() calls .cloned() on every CmdRecord, deep-cloning raw_output strings for all records on every invocation. The Tauri command returns this full Vec<CmdRecord> to the frontend.",
+      "impact": "Peak memory doubles on each cmdlog_list call; a session with many large-output commands amplifies the spike. Callers wanting only metadata pay the full output-cloning cost.",
+      "recommendation": "Return only metadata fields (id, command, exit_code, duration_ms) from list(); expose raw_output exclusively via get(id). Use a CmdRecordMeta struct or #[serde(skip)] on raw_output for the list variant."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/cmdlog.rs",
+      "line": 87,
+      "title": "Mutex .unwrap() propagates lock poisoning to all callers",
+      "problem": "All five Tauri command handlers (cmdlog_open, cmdlog_append, cmdlog_close, cmdlog_list, cmdlog_get) call state.cmdlog.lock().unwrap(); a panic in any thread while the mutex guard is held poisons the mutex and causes every subsequent .unwrap() call to panic.",
+      "impact": "A single thread panic while the lock is held renders all cmdlog_* commands permanently broken for the rest of the session, crashing the Tauri process or making it unresponsive.",
+      "recommendation": "Replace .unwrap() with .unwrap_or_else(|e| e.into_inner()) on each lock() call to recover from a poisoned mutex, or map the poison error to a CmdResult error variant and return it to the caller."
+    },
+    {
+      "id": "CR-004",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src-tauri/src/commands/cmdlog.rs",
+      "title": "Rust src-tauri changes breach spec non-goal",
+      "problem": "The spec declares 'Non-goal: No changes to src-tauri/ — Rust layer is complete (EPMCDME-15230)'. The diff includes a new 213-line cmdlog.rs and modifications to Cargo.toml, commands/mod.rs, lib.rs, and state.rs.",
+      "impact": "If the branch was cut before EPMCDME-15230 merged to the base branch, these Rust files duplicate 15230 work and may have diverged from the canonical 15230 baseline. The correct 15231 diff should contain only JS/UI changes.",
+      "recommendation": "Confirm whether the diff was captured before EPMCDME-15230 merged. If so, re-cut the diff from the post-15230-merge baseline to isolate only the EPMCDME-15231 JS changes."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/ansi-strip.mjs",
+      "line": 3,
+      "title": "ST-terminated OSC sequences not stripped",
+      "problem": "The OSC branch of the regex is \\][^\\x07]*\\x07, which matches only BEL-terminated (\\x07) OSC sequences. OSC sequences terminated by ST (\\x1b\\\\, ESC backslash) are not matched and pass through unstripped.",
+      "impact": "Terminals that emit ST-terminated OSC sequences (window title sets, iTerm2 semantic zones, hyperlink escape codes) store raw escape bytes verbatim in cmdlog raw_output, corrupting the stored output.",
+      "recommendation": "Replace the OSC branch with \\](?:[^\\x07\\x1b]|\\x1b(?!\\\\))*(?:\\x07|\\x1b\\\\) to match both BEL and ST terminators."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/runner-bridge.js",
+      "line": 24,
+      "title": "Null or non-string result passed to cmdlog.append",
+      "problem": "runCapture (line 24) and runFreshEnv (line 38) pass the raw invoke result directly to cmdlog.append without a null or type guard. Tauri deserializes the chunk argument as a Rust String; a null or non-string value causes an IPC rejection.",
+      "impact": "The rejection is swallowed by .catch(console.warn), so no crash occurs, but the command output is silently not recorded for that run, leaving the cmdlog record with an empty raw_output.",
+      "recommendation": "Add a null guard before the append call: if (logId && result != null) await cmdlog.append(logId, String(result)).catch(console.warn);"
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/runner-bridge.js",
+      "line": 56,
+      "title": "runStream cmdlog_close races in-flight fire-and-forget appends",
+      "problem": "Inside the engine:cmd-line listener (line 56), cmdlog.append(logId, p.text) is called without await. When run_stream resolves and the finally block executes, in-flight append promises may not have resolved before cmdlog.close is issued at line 66.",
+      "impact": "Output lines emitted just before run_stream returns are silently dropped from the cmdlog record when close beats the pending appends through the Tauri IPC queue; there is no error, only silent data loss.",
+      "recommendation": "Accumulate append promises (e.g. pendingAppends.push(cmdlog.append(...).catch(console.warn))) and await Promise.all(pendingAppends) in the finally block before calling cmdlog.close."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/runner-bridge.js",
+      "line": 205,
+      "title": "PTY crash before engine:pty-exit leaves cmdlog record permanently open",
+      "problem": "spawnPty awaits exitP at line 205, a Promise that resolves only when engine:pty-exit fires for the matching run id. If the PTY process is killed by the OS or crashes before the exit event is emitted, exitP never resolves, the await hangs indefinitely, and the finally block never executes.",
+      "impact": "The cmdlog record remains permanently open with no exit_code and no duration_ms for the rest of the session. The dataUnlisten and exitUnlisten handles also leak, holding Tauri event listener slots.",
+      "recommendation": "Race exitP against an abort signal or a timeout: exitCode = await Promise.race([exitP, timeoutOrAbortPromise]); ensure the finally executes with exitCode ?? -1 regardless of which branch wins."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subjects violate documented format",
+      "problem": "Four commits use feat(epmcdme-15231): scope notation, which git-workflow.md anti-patterns explicitly prohibits (plain feat: <description> required). One commit 'epmcdme-15230: add planning artifacts' begins with a ticket ID and has no valid type prefix.",
+      "impact": "Non-conforming subjects are propagated to main branch history by the squash-merge workflow and break any CI gate or changelog tooling that parses conventional commit types.",
+      "recommendation": "Rewrite each to plain type: <description> format without scope, e.g. 'feat: add ANSI-strip utility'. Prefix the planning-artifacts commit with a valid type, e.g. 'docs: add planning artifacts for epmcdme-15230'."
+    }
+  ]
+}

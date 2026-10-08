@@ -12,6 +12,9 @@ import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeT
 import { stopSetupOnLeave } from './setup-leave.js';
 import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
+import { findProxyConnectError, parseProxyStatusDeep } from './proxy-parse.js';
+import { computeRowStatus } from './connections-status.js';
+import { renderConnectionRows, CONNECTION_APPS } from './connections-render.js';
 import { isBlockedState } from './auth-gate.js';
 import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 import { createHealthController } from './health-controller.js';
@@ -21,15 +24,14 @@ import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
 import { deriveHome, brokenCopy, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
-import { createCommandLog } from './command-log.js';
-import { semverLt, cliUpdateResult } from './cli-update.js';
+import { initCmdLog } from './cmdlog-ui.js';
+import { analyticsCommand } from './analytics-command.js';
+import { createAboutController } from './about-controller.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 
-// Populated during boot(); consumed by runAnalytics() and runUpdateCli().
-const cliVersionState = { installed: '', latest: '', updateAvailable: false };
 const appVersionState = { latest: null, updateAvailable: false };
 
 // Capture boot/runtime errors so the smoke self-test can read them.
@@ -76,8 +78,7 @@ const homeView = views.home;
 const wizardView = views.wizard;
 const connectView = views.connect;
 const wizardBack = document.getElementById('wizard-back');
-const connectBtn = document.getElementById('connect-btn');
-const restartBtn = document.getElementById('restart-btn');
+const connectRowsEl = document.getElementById('connect-rows');
 const modeLabel = document.getElementById('wizard-mode-label');
 const stepListEl = document.getElementById('step-list');
 const noticeOverlay = document.getElementById('notice-overlay');
@@ -166,13 +167,6 @@ let agentsChecked = false;
 function setInstallRunning(on) {
   installRunning = on;
   document.getElementById('app-sidebar').dataset.busy = on ? '1' : '';
-  // The banner is shell chrome and stays on screen during a run. Its controls
-  // are guarded, but a guard the user cannot see reads as a broken button.
-  document.getElementById('update-banner').dataset.busy = on ? '1' : '';
-  ['update-banner-run', 'update-banner-dismiss'].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = on;
-  });
 }
 
 // ---- Home (EPMCDME-14589) ----
@@ -257,12 +251,8 @@ function renderHome() {
 // one). Spaced out: showView('home') and window focus both ask for it.
 let agentsReadAt = 0;
 let agentsReading = false;
-// True while `codemie self-update` replaces the CLI. Running `codemie` then
-// fails (on Windows npm may also find its files in use), so Home's reads wait
-// and run once the update is over.
-let cliReplacing = false;
 async function refreshAgents() {
-  if (cliReplacing || agentsReading || Date.now() - agentsReadAt < 5000) return;
+  if (agentsReading || Date.now() - agentsReadAt < 5000) return;
   agentsReading = true;
   try {
     const res = await bridge.runner.runCapture('codemie list');
@@ -276,15 +266,18 @@ async function refreshAgents() {
   renderHome();
 }
 
-// The Connections card's one read: whether the CLI's local proxy, which Claude
-// Desktop is pointed at, is running.
+// The Connections card's read: whether the CLI's local proxy is running, and
+// which apps carry a CodeMie config pointing at it.
 let connectionReading = false;
 async function refreshConnection() {
-  if (cliReplacing || connectionReading) return;
+  if (connectionReading) return;
   connectionReading = true;
   try {
-    const res = await bridge.runner.runCapture('codemie proxy status --json');
-    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '');
+    const [res, configured] = await Promise.all([
+      bridge.runner.runCapture('codemie proxy status --json'),
+      bridge.connectors.checkStatus().catch(() => ({})),
+    ]);
+    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '', configured);
   } catch {
     home.connection = null;
   } finally {
@@ -375,7 +368,29 @@ function showView(name) {
     refreshAgents();
     refreshConnection();
   }
+  if (name === 'about') about.refresh();
 }
+
+// ---- About (ui/about-controller.js, ui/about-view.js) ----
+const aboutHandlers = {
+  onUpdateApp: () => {
+    if (installRunning) return;
+    runUpdateApp();
+  },
+  onOpenLink: (url) => {
+    if (installRunning) return;
+    invoke('open_external', { url }).catch((err) => console.error('[about] open failed:', err));
+  },
+};
+
+const about = createAboutController({
+  view: views.about,
+  handlers: aboutHandlers,
+  invoke,
+  inspector: bridge.inspector,
+  updater: bridge.updater,
+  shared: () => ({ app: appVersionState, appRunning: updateAppRunning }),
+});
 
 // (Re)build the engine for a wizard run.
 function enterWizard() {
@@ -475,39 +490,6 @@ function updateIdentityAuthStatus(st) {
   renderHome();
 }
 
-// ---- CLI version banner ----
-// The badge reports whether an update exists; the banner reports whether the
-// user still wants to be told. They are separate, which is why dismissing the
-// banner leaves the badge standing, as 01-home.png draws it in steady state.
-function setVersionBadge() {
-  document.getElementById('identity-version-badge').textContent =
-    cliVersionState.updateAvailable ? `${cliVersionState.latest} available` : '';
-}
-
-function showUpdateBanner() {
-  setVersionBadge();
-  if (!cliVersionState.updateAvailable) return;
-  if (sessionStorage.getItem('update-banner-dismissed') === '1') return;
-  document.getElementById('update-to').textContent = cliVersionState.latest;
-  document.getElementById('update-banner').classList.remove('hidden');
-}
-
-// Nothing left to announce — used after a successful update, which is not a
-// dismissal and so must not set the key that suppresses the banner all session.
-function hideUpdateBanner() {
-  document.getElementById('update-banner').classList.add('hidden');
-  setVersionBadge();
-}
-
-function dismissUpdateBanner() {
-  sessionStorage.setItem('update-banner-dismissed', '1');
-  document.getElementById('update-banner').classList.add('hidden');
-  setVersionBadge();
-  // origin/main cleared the grid cue on dismiss. The badge is what survives —
-  // it reports that an update exists; the cue and banner report that we are
-  // still asking about it, and dismissing answers that.
-}
-
 function showAppUpdateBanner(latestVersion) {
   // Always show the banner on fresh check — sessionStorage is cleared per session,
   // so dismissed state should not persist across app restarts.
@@ -531,7 +513,12 @@ function dismissAppUpdateBanner() {
 // away from. Anything else that needs the slot (the analytics report, the
 // Claude Desktop connection) asks to stop that run first, instead of failing
 // with the bridge's bare "PTY already active".
-async function runAction(title, cmd, returnView = 'home', hint) {
+// `extra.onClose` overrides the default "navigate back to returnView" close
+// handler (used by row actions that should refresh in place instead).
+// `extra.parseError` — when given, PTY stdout is buffered and scanned for a
+// failure line rather than trusting the exit code alone (mirrors
+// findLoginError's stdout-scan convention).
+async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
   if (setupRunning) {
     showNotice({
       title: 'Setup is still running',
@@ -541,16 +528,33 @@ async function runAction(title, cmd, returnView = 'home', hint) {
         const { cancelSetup } = await import('./setup-driver.js');
         await cancelSetup();
         await setupSettled;
-        runAction(title, cmd, returnView, hint);
+        runAction(title, cmd, returnView, hint, extra);
       },
     });
     return;
   }
-  openTerminal(title, { keepOpen: true, hint, onClose: () => showView(returnView) });
+  const { onClose, parseError } = extra;
+  openTerminal(title, { keepOpen: true, hint, onClose: onClose || (() => showView(returnView)) });
+  let buf = '';
+  const un = parseError ? await listen('engine:pty-data', (e) => {
+    try {
+      buf += atob(e.payload.data);
+    } catch (err) {
+      console.warn('engine:pty-data: could not decode chunk', err);
+    }
+  }) : null;
   try {
+    // cmdlog intent: user-initiated
     const { code } = await bridge.pty.spawnPty(cmd);
-    writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
+    un?.();
+    const errorLine = parseError ? parseError(buf.split(/\r?\n/)) : null;
+    if (errorLine) {
+      writeLine(`\r\n\x1b[31m✗ ${errorLine}\x1b[0m Click “‹ Back” to return.\r\n`);
+    } else {
+      writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
+    }
   } catch (e) {
+    un?.();
     writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
     handlePtyExit();
   }
@@ -607,7 +611,9 @@ function startHealthInPlace() {
 // `codemie list` read; onResult hands the same records to Home so the checklist
 // item and the Agents card do not need a second read to agree with the screen.
 // onFailure releases the one-shot guard the way Health's does.
+let platformInfoValue = null;
 const agentsController = createAgentsController({
+  getPlatform: () => platformInfoValue,
   container: views.agents,
   runCapture: (cmd) => bridge.runner.runCapture(cmd),
   runStream: bridge.runner.runStream,
@@ -626,7 +632,7 @@ const agentsController = createAgentsController({
 // otherwise shows a blocking notice that points at setup.
 // Gates only on not_signed_in and no_profile; unknown is treated as authenticated
 // so a profile whose provider omits an Auth Status row never blocks the user.
-async function ensureAuthenticated() {
+async function ensureAuthenticated(appLabel = 'this app') {
   let st;
   try {
     st = await bridge.inspector.checkProfileStatus();
@@ -637,13 +643,120 @@ async function ensureAuthenticated() {
     showNotice({
       title: 'CodeMie isn’t signed in',
       message:
-        `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
+        `Connecting ${appLabel} needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
       primaryLabel: 'Run setup',
       primaryAction: () => openGuidedSetup(),
     });
     return false;
   }
   return true;
+}
+
+// Human-readable subtitle text per connections-render.js status value.
+const ROW_STATUS_LABEL = {
+  'not-installed': 'Not installed',
+  'not-set': 'Not set',
+  'connected': 'Connected',
+  'disconnected': 'Disconnected',
+};
+
+// Maps each connections-render.js app id to its check_connector_status field.
+const CONFIG_PRESENT_FIELD = {
+  'claude-desktop': 'claudeDesktop',
+  'codex-desktop': 'codexDesktop',
+  'vscode-copilot': 'vscodeCopilot',
+  'vscode-claude-code': 'vscodeClaudeCode',
+};
+
+// Re-reads connector config presence, app-bundle presence, and daemon health
+// live (no cached/stale state) and repaints #connect-rows. Called on entering
+// the Connections view and again after every row action's PTY completes.
+async function refreshConnectionsView() {
+  let ipcFailed = false;
+  const [configStatus, daemonCapture] = await Promise.all([
+    bridge.connectors.checkStatus().catch(() => { ipcFailed = true; return {}; }),
+    bridge.runner.runCapture('codemie proxy status --json --deep').catch(() => { ipcFailed = true; return { stdout: '' }; }),
+  ]);
+  if (ipcFailed) {
+    showNotice({
+      title: 'Connections status unavailable',
+      message: 'Could not read connection status right now — the rows below may not reflect the real state. Try again in a moment.',
+      primaryLabel: 'OK',
+      primaryAction: hideNotice,
+    });
+  }
+  const { healthy: daemonHealthy } = parseProxyStatusDeep(daemonCapture?.stdout ?? '');
+
+  const statusesByApp = {};
+  for (const { app, bundleName } of CONNECTION_APPS) {
+    const appInstalled = await bridge.connectors.appBundleExists(bundleName).catch(() => false);
+    const configPresent = Boolean(configStatus[CONFIG_PRESENT_FIELD[app]]);
+    statusesByApp[app] = { status: computeRowStatus({ appInstalled, configPresent, daemonHealthy }) };
+  }
+
+  const rows = renderConnectionRows(statusesByApp);
+  connectRowsEl.innerHTML = '';
+  for (const row of rows) {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'connection-row';
+    rowEl.dataset.app = row.app;
+    rowEl.dataset.status = row.status;
+
+    const mainEl = document.createElement('div');
+    mainEl.className = 'row-main';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'row-title';
+    const dotEl = document.createElement('span');
+    dotEl.className = 'row-dot';
+    dotEl.dataset.status = row.status;
+    titleEl.appendChild(dotEl);
+    const nameEl = document.createElement('span');
+    nameEl.className = 'row-name';
+    nameEl.textContent = row.label;
+    titleEl.appendChild(nameEl);
+    mainEl.appendChild(titleEl);
+
+    const subtitleEl = document.createElement('div');
+    subtitleEl.className = 'row-subtitle';
+    subtitleEl.textContent = ROW_STATUS_LABEL[row.status];
+    mainEl.appendChild(subtitleEl);
+
+    rowEl.appendChild(mainEl);
+
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'row-actions';
+    for (const action of row.actions) {
+      const actionEl = document.createElement('button');
+      actionEl.className = 'row-action';
+      actionEl.textContent = action.label;
+      actionEl.disabled = action.disabled;
+      if (action.note) actionEl.title = action.note;
+      actionEl.addEventListener('click', () => runConnectionRowAction(row, action));
+      actionsEl.appendChild(actionEl);
+    }
+    rowEl.appendChild(actionsEl);
+
+    connectRowsEl.appendChild(rowEl);
+  }
+}
+
+// Runs a row action (Connect/Reconnect/Remove setup/Disconnect) on the app's
+// single PTY slot, disabling every row's actions while it is in flight
+// (row-disable is UI-level insurance — spawnPty's single-slot contract
+// already rejects concurrency).
+async function runConnectionRowAction(row, action) {
+  if (!(await ensureAuthenticated(row.label))) return;
+  connectRowsEl.querySelectorAll('.row-action').forEach((btn) => { btn.disabled = true; });
+  const cmd = action.kind === 'disconnect'
+    ? `codemie proxy disconnect ${row.connectFlag}`
+    : `codemie proxy connect ${row.connectFlag}${action.kind === 'reconnect' ? ' --force' : ''}`;
+  // Spec: parse the CLI's output for success/failure rather than trusting the
+  // exit code alone — applies to connect/reconnect and disconnect alike.
+  await runAction(`${action.label} ${row.label}`, cmd, 'connections', undefined, {
+    onClose: () => { refreshConnectionsView(); },
+    parseError: findProxyConnectError,
+  });
 }
 
 // Launches `codemie profile login`, streams output, surfaces any error line via
@@ -661,6 +774,7 @@ async function startSignIn() {
   try {
     const lines = [];
     // run_stream takes a command string, not an array — matches all existing callers
+    // cmdlog intent: user-initiated
     await bridge.runner.runStream('codemie profile login', (line) => { lines.push(line); });
     // Exit code is ignored — profile login exits 0 on failure; scan stdout instead.
     const errorLine = findLoginError(lines);
@@ -688,82 +802,13 @@ async function startSignIn() {
 }
 
 async function runAnalytics() {
-  // --report-output is set explicitly: a Finder-launched bundle's CWD is "/",
-  // which is not writable. $HOME is expanded by the pty's login shell.
-  const { installed } = cliVersionState;
-  if (installed && semverLt(installed, '0.4.1')) {
-    showNotice({
-      title: 'CLI update required',
-      message: `Your CodeMie CLI (v${installed}) doesn't support analytics reporting. Use Update CLI to upgrade, then try again.`,
-      primaryLabel: 'Go to Update CLI',
-      primaryAction: () => hideNotice(),
-    });
-    return;
-  }
+  const help = await bridge.runner.runCapture('codemie analytics --help').catch(() => null);
   await runAction(
     'Analytics report',
-    'codemie analytics --report --open --report-output "$HOME/codemie-analytics.html"',
+    analyticsCommand(help?.stdout),
     'home',
     'Running automatically — no input needed.'
   );
-}
-
-// Reachable from two places — the update banner's button and the home grid's
-// Update CLI tile — so progress has to render on both. Showing it only on the
-// banner meant a click from the tile ran a real `npm install -g` with no visible
-// feedback whenever the banner was hidden, and nothing stopped a second click.
-let updateCliRunning = false;
-
-function setUpdateProgress(state, label, icon) {
-  const btn = document.getElementById('update-banner-run');
-  if (btn) {
-    btn.dataset.state = state;
-    btn.textContent = label;
-    btn.disabled = state === 'updating';
-  }
-}
-
-async function runUpdateCli() {
-  if (updateCliRunning) return;
-  updateCliRunning = true;
-  setUpdateProgress('updating', 'Updating…', '⏳');
-  cliReplacing = true;
-  try {
-    try {
-      await bridge.updater.runSelfUpdate();
-    } finally {
-      cliReplacing = false;
-      agentsReadAt = 0;
-      refreshAgents();
-      refreshConnection();
-    }
-
-    // Re-probe installed version after update
-    const newVersion = await bridge.inspector.checkCodemieVersion();
-    cliVersionState.installed = newVersion;
-    cliVersionState.updateAvailable =
-      newVersion && cliVersionState.latest
-        ? semverLt(newVersion, cliVersionState.latest)
-        : false;
-
-    const result = cliUpdateResult(newVersion, cliVersionState.latest);
-    if (!result.ok) {
-      // The update did not take: say so and leave the banner up to retry.
-      setUpdateProgress('error', result.label, '❌');
-      updateCliRunning = false;
-      return;
-    }
-    setUpdateProgress('done', result.label, '✅');
-    if (result.hideBanner) hideUpdateBanner();
-
-    setTimeout(() => {
-      setUpdateProgress('', 'Update CLI', '🔄');
-      updateCliRunning = false;
-    }, 3000);
-  } catch {
-    setUpdateProgress('error', 'Failed — retry?', '❌');
-    updateCliRunning = false;
-  }
 }
 
 let updateAppRunning = false;
@@ -771,19 +816,26 @@ let updateAppRunning = false;
 async function runUpdateApp() {
   if (updateAppRunning) return;
   updateAppRunning = true;
+  about.startUpdate();
 
   const bannerRunBtn = document.getElementById('app-update-banner-run');
-  bannerRunBtn.disabled = true;
-  bannerRunBtn.textContent = 'Downloading…';
+  // Progress shows on the banner and, when About is open, on its button too.
+  const showProgress = (text) => {
+    if (bannerRunBtn) {
+      bannerRunBtn.disabled = true;
+      bannerRunBtn.textContent = text;
+    }
+    about.progress(text, true);
+  };
+  showProgress('Downloading…');
 
   const id = `app-update-${Date.now()}`;
   try {
     await bridge.updater.downloadAndInstall(id, ({ percent }) => {
-      bannerRunBtn.textContent = `Downloading… ${percent}%`;
+      showProgress(`Downloading… ${percent}%`);
     });
 
-    bannerRunBtn.textContent = 'Installer running…';
-    bannerRunBtn.disabled = true;
+    showProgress('Installer running…');
     // The installer window is now visible and running
     // Wait for Tauri's runtime to clean up gracefully before exiting
     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -800,16 +852,14 @@ async function runUpdateApp() {
       banBody.appendChild(errorEl);
     }
     errorEl.textContent = String(err);
+    about.fail(String(err));
   } finally {
     updateAppRunning = false;
+    about.renderIfShown();
   }
 }
 
 async function boot() {
-  // The command-log footer hears about every command the bridge runs, so it is
-  // wired first: the startup checks below (codemie --version, profile status)
-  // would otherwise run before it and never show.
-  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
   const flags = await invoke('smoke_mode');
 
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
@@ -847,20 +897,8 @@ async function boot() {
     hint: document.getElementById('terminal-hint'),
     done: document.getElementById('terminal-done'),
   });
+  initCmdLog();
 
-  // Wire update banner dismiss
-  // The banner is shell-level now, so unlike origin/main — where it lived inside
-  // the home grid and showView('wizard') hid it — it stays on screen during an
-  // install. Both its controls need the same guard the sidebar has, or a
-  // self-update can run concurrently with the engine's own CLI install step.
-  document.getElementById('update-banner-run').addEventListener('click', () => {
-    if (installRunning) return;
-    runUpdateCli();
-  });
-  document.getElementById('update-banner-dismiss').addEventListener('click', () => {
-    if (installRunning) return;
-    dismissUpdateBanner();
-  });
   document.getElementById('app-update-banner-run').addEventListener('click', () => {
     if (installRunning) return;
     runUpdateApp();
@@ -868,25 +906,6 @@ async function boot() {
   document.getElementById('app-update-banner-dismiss').addEventListener('click', () => {
     if (installRunning) return;
     dismissAppUpdateBanner();
-  });
-
-  // Check CLI version vs npm latest at startup (non-blocking). Only for a CLI
-  // the user installed: the bundled one sits inside the app, `self-update`
-  // installs the new version into the user's own npm instead, and the app keeps
-  // running the old one. The bundled CLI updates with the app.
-  Promise.all([
-    invoke('cli_is_bundled'),
-    bridge.inspector.checkCodemieVersion(),
-    invoke('fetch_codemie_latest'),
-  ]).then(([bundled, installed, latest]) => {
-    if (bundled) return;
-    cliVersionState.installed = installed;
-    cliVersionState.latest = latest;
-    cliVersionState.updateAvailable =
-      Boolean(installed) && Boolean(latest) && semverLt(installed, latest);
-    showUpdateBanner();
-  }).catch(() => {
-    // Silently ignore — offline or CLI not installed
   });
 
   // App self-update check — once per 24 h
@@ -927,7 +946,7 @@ async function boot() {
   // spaced out because the auth half runs the CLI.
   let identityReadAt = Date.now();
   window.addEventListener('focus', () => {
-    if (installRunning || setupRunning || cliReplacing || Date.now() - identityReadAt < 5000) return;
+    if (installRunning || setupRunning || Date.now() - identityReadAt < 5000) return;
     identityReadAt = Date.now();
     refreshIdentityOnComplete();
     refreshAgents();
@@ -938,6 +957,7 @@ async function boot() {
     invoke('get_platform_info'),
     invoke('temp_dir'),
   ]);
+  platformInfoValue = platformInfo;
 
   handlers = makeHandlers({
     inspector: bridge.inspector,
@@ -996,6 +1016,7 @@ async function boot() {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
       showView(btn.dataset.view);
+      if (btn.dataset.view === 'connect') refreshConnectionsView();
     });
   });
   showView('home');
@@ -1005,18 +1026,6 @@ async function boot() {
   });
 
   wizardBack.addEventListener('click', () => showView('home'));
-  connectBtn.addEventListener('click', async () => {
-    if (await ensureAuthenticated()) {
-      runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect', 'Running automatically — no input needed.');
-    }
-  });
-  restartBtn.addEventListener('click', async () => {
-    if (await ensureAuthenticated()) {
-      // Stop the running proxy first, then connect again. `;` (not `&&`) so a
-      // no-op stop (nothing running) still proceeds to connect.
-      runAction('Restart Claude Desktop proxy', 'codemie proxy stop; codemie proxy connect desktop', 'connect');
-    }
-  });
   noticeClose.addEventListener('click', hideNotice);
   // ---- view routing (smoke/probe go straight to the wizard so their
   //      .step-row / canvas / bg assertions still hold) ----

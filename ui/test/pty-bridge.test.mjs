@@ -14,7 +14,7 @@ globalThis.window = {
   },
 };
 
-const { pty, inspector, updater, setCommandListener } = await import('../runner-bridge.js');
+const { pty, inspector, updater } = await import('../runner-bridge.js');
 
 test('spawnPty resolves only on its own id and onData filters by id', async () => {
   const listeners = {};
@@ -80,28 +80,45 @@ test('CR-005: data listener is cleaned up when exit-listen throws', async () => 
   );
 });
 
-// Commands Rust runs itself (profile status, --version, self-update) used to
-// skip the "what CodeMie ran" footer, so an Update CLI click left no trace.
+// Commands Rust runs itself (profile status) are recorded in the command log
+// with their outcome; a rejection is recorded as failed (-1).
 test('commands Rust runs itself reach the command log, with their outcome', async () => {
-  const seen = [];
-  setCommandListener((cmd) => {
-    const entry = { cmd, code: 'running' };
-    seen.push(entry);
-    return (code) => { entry.code = code; };
-  });
-  invokeImpl = async (cmd) => {
+  const calls = [];
+  invokeImpl = async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'cmdlog_open') return 'cmd-1';
     if (cmd === 'check_profile_status') return { state: 'unknown', detail: '', code: 1 };
-    if (cmd === 'check_codemie_version') return '';
-    if (cmd === 'run_self_update') throw new Error('npm failed');
     return null;
   };
   await inspector.checkProfileStatus();
-  await inspector.checkCodemieVersion();
-  await assert.rejects(updater.runSelfUpdate());
-  assert.deepEqual(seen, [
-    { cmd: 'codemie profile status', code: 1 },
-    { cmd: 'codemie --version', code: 1 },
-    { cmd: 'codemie self-update', code: null },
+  invokeImpl = async (cmd, args) => {
+    calls.push([cmd, args]);
+    if (cmd === 'cmdlog_open') return 'cmd-2';
+    if (cmd === 'check_profile_status') throw new Error('ipc failed');
+    return null;
+  };
+  await assert.rejects(inspector.checkProfileStatus());
+  const log = calls.filter(([c]) => c.startsWith('cmdlog_'));
+  assert.deepEqual(log, [
+    ['cmdlog_open', { command: 'codemie profile status' }],
+    ['cmdlog_close', { id: 'cmd-1', exitCode: 1 }],
+    ['cmdlog_open', { command: 'codemie profile status' }],
+    ['cmdlog_close', { id: 'cmd-2', exitCode: -1 }],
   ]);
-  setCommandListener(null);
+});
+
+// EPMCDME-15342: About forces the app update check past the 24h throttle; the
+// boot check does not. Tauri reads the `force` key, so its name matters.
+test('checkForAppUpdate sends force to check_for_update, false by default', async () => {
+  const invocations = [];
+  invokeImpl = async (cmd, args) => {
+    invocations.push({ cmd, args });
+    return null;
+  };
+  await updater.checkForAppUpdate(true);
+  await updater.checkForAppUpdate();
+  assert.deepEqual(invocations, [
+    { cmd: 'check_for_update', args: { force: true } },
+    { cmd: 'check_for_update', args: { force: false } },
+  ]);
 });

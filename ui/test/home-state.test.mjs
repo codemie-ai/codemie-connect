@@ -174,6 +174,36 @@ test('the health check starts by itself once the steps before it are done', () =
   assert.equal(autoHealthCheck(running), false);
 });
 
+// The result is not kept between launches, so after a restart the status cards
+// run the check themselves instead of saying "unknown" (EPMCDME-15388).
+test('on the status cards the health check starts by itself when it has not run this session', () => {
+  const cards = deriveHome({ config: valid, auth: signedIn, agents, health: null, onboarded: true });
+  assert.equal(cards.done, true);
+  assert.equal(autoHealthCheck(cards), true);
+  const signedOut = deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: null, onboarded: true });
+  assert.equal(signedOut.done, false, 'a lapsed sign-in brings the checklist back');
+  assert.equal(autoHealthCheck(signedOut), false, 'and the checklist waits for sign-in, as before');
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: healthy, onboarded: true })), false);
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true, onboarded: true })), false);
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true, onboarded: true })), false);
+});
+
+// At launch the sign-in status is not read yet, so a returning user briefly
+// counts as done. Starting the check then left a result on the checklist a
+// lapsed sign-in brought back, before its earlier steps were done.
+test('on the status cards the check waits until the sign-in status is known', () => {
+  const booting = deriveHome({ config: valid, agents, health: null, onboarded: true });
+  assert.equal(booting.done, true);
+  assert.equal(autoHealthCheck(booting), false);
+  assert.equal(autoHealthCheck(deriveHome({ config: valid, auth: signedIn, agents, health: null, onboarded: true })), true);
+});
+
+test('the Health card says checking while the check runs, not unknown', () => {
+  const card = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthRunning: true, onboarded: true }).cards.find((c) => c.id === 'health');
+  assert.equal(card.badge.text, 'checking');
+  assert.equal(card.line, 'Checking…');
+});
+
 // A check that could not finish must not leave the step on "Not checked yet"
 // with nothing to click: the sidebar's Health is still locked then.
 test('a health check that could not finish is an error on its step, and does not start again', () => {
@@ -210,25 +240,40 @@ test('before the sign-in read comes back, item 1 says it is checking', () => {
 });
 
 // 01-home.png draws a fourth card: Connections, read from the CLI's own proxy
-// status, never assumed.
-test('the Connections card says whether Claude Desktop is connected, as the proxy status reports', () => {
+// status and the apps' own configs, never assumed.
+test('the Connections card counts the apps that carry a CodeMie config while the proxy is healthy', () => {
   const card = (connection) => deriveHome({ connection }).cards.find((c) => c.id === 'connections');
-  assert.deepEqual(card({ running: true }).badge, { text: '1 connected', tone: 'good' });
-  assert.equal(card({ running: true }).line, 'Claude Desktop');
-  assert.deepEqual(card({ running: false }).badge, { text: 'not connected', tone: 'muted' });
+  const healthy = '{ "status": "healthy", "port": 4001 }';
+  const two = card(connectionFromStatus(healthy, { claudeDesktop: true, vscodeCopilot: true }));
+  assert.deepEqual(two.badge, { text: '2 connected', tone: 'good' });
+  assert.equal(two.line, 'Claude Desktop · VS Code Copilot Chat');
+  assert.deepEqual(card(connectionFromStatus(healthy, { codexDesktop: true })).badge, { text: '1 connected', tone: 'good' });
+  assert.equal(card(connectionFromStatus(healthy, { codexDesktop: true })).line, 'Codex');
   assert.deepEqual(card(null).badge, { text: 'unknown', tone: 'muted' });
   assert.equal(card(null).line, 'Could not read the connection');
   assert.deepEqual(card(undefined).badge, { text: 'checking', tone: 'muted' });
 });
 
+// A healthy proxy is not a connection by itself: VS Code alone used to make the
+// card read "1 connected · Claude Desktop".
+test('a running proxy with no app set up is not connected', () => {
+  const card = (connection) => deriveHome({ connection }).cards.find((c) => c.id === 'connections');
+  const c = card(connectionFromStatus('{ "status": "healthy" }', {}));
+  assert.deepEqual(c.badge, { text: 'not connected', tone: 'muted' });
+  assert.equal(c.line, 'Claude Desktop · VS Code · Codex');
+});
+
 // Measured with the bundled CLI 0.15.2: a running proxy reports "healthy", never
-// "running", so a check for "running" left the card on "not connected" for good.
+// "running", and a first run prints migration notes before the JSON.
 test('the proxy status the CLI really prints maps to the Connections card', () => {
-  const card = (stdout) => deriveHome({ connection: connectionFromStatus(stdout) }).cards.find((c) => c.id === 'connections');
+  const set = { claudeDesktop: true };
+  const card = (stdout) => deriveHome({ connection: connectionFromStatus(stdout, set) }).cards.find((c) => c.id === 'connections');
   const running = '{\n  "status": "healthy",\n  "url": "http://127.0.0.1:4001",\n  "port": 4001\n}';
   assert.deepEqual(card(running).badge, { text: '1 connected', tone: 'good' });
   assert.deepEqual(card('Migrating…\n' + running).badge, { text: '1 connected', tone: 'good' });
-  assert.deepEqual(card('{ "status": "unhealthy", "port": 4001 }').badge, { text: 'not responding', tone: 'warn' });
+  const down = card('{ "status": "unhealthy", "port": 4001 }');
+  assert.deepEqual(down.badge, { text: 'not responding', tone: 'warn' });
+  assert.equal(down.line, 'Claude Desktop');
   assert.deepEqual(card('{\n  "status": "stopped"\n}').badge, { text: 'not connected', tone: 'muted' });
   assert.deepEqual(card('').badge, { text: 'unknown', tone: 'muted' });
 });

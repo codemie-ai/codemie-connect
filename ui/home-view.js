@@ -293,7 +293,7 @@ export function applyHomeHeader(root, { done } = {}) {
   const sub = root?.getElementById?.('home-subtitle');
   if (sub) sub.textContent = done ? 'Everything is set up. Here is how things stand.' : '';
   // Update cards belong under the status cards (01-home.png); on the checklist
-  // they only pull the eye away from the step at hand. The badge stays.
+  // they only pull the eye away from the step at hand.
   const updates = root?.getElementById?.('home-updates');
   if (updates) updates.classList.toggle('hidden', !done);
 }

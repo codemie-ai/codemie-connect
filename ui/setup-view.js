@@ -217,6 +217,12 @@ function renderInputControl(host, prompt, submit) {
   // collapsed line is permanent.
   input.type = secret ? 'password' : 'text';
   input.className = 'prompt-input';
+  // Every answer here is typed for the CLI: a name, a URL, a key. macOS offers
+  // "Test" for "test" and Continue accepted it, so profile names came out
+  // capitalised (EPMCDME-15385). No capitalising, correcting or spell-checking.
+  input.setAttribute('autocapitalize', 'off');
+  input.setAttribute('autocorrect', 'off');
+  input.spellcheck = false;
   if (secret) input.autocomplete = 'off';
   const { defaultValue } = deriveRowTitle(prompt.message);
   if (defaultValue && !secret) input.value = defaultValue;

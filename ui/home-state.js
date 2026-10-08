@@ -7,8 +7,9 @@
 //           read, or null when the read failed
 //   health  the Health controller's getLastResult(): { rows, summary,
 //           checkedAt } or null
-//   connection  `codemie proxy status --json` read as { running }, or
-//           undefined while it is being read, or null when the read failed
+//   connection  `codemie proxy status --json` plus the connector config read
+//           as { running, healthy, apps }, or undefined while it is being
+//           read, or null when the read failed
 //
 // Pure: no DOM, no Tauri. The screen renders what comes back.
 import { StepStatus } from './models.js';
@@ -99,7 +100,8 @@ function profileCard(config, auth) {
   return { id: 'profile', title: 'Profile', badge, line, note };
 }
 
-function healthCard(health) {
+function healthCard(health, running) {
+  if (!health && running) return { id: 'health', title: 'Health', badge: { text: 'checking', tone: 'muted' }, line: 'Checking…', note: '' };
   if (!health) return { id: 'health', title: 'Health', badge: { text: 'unknown', tone: 'muted' }, line: 'Not checked yet', note: '' };
   const { passing, total } = health.summary;
   const problems = health.rows.filter((r) => r.status !== 'pass').length;
@@ -130,32 +132,55 @@ function agentsCard(agents) {
 // runs and "stopped" when it does not (CLI 0.15.2, cli/commands/proxy); it has
 // no "running". The CLI can print its migration notes before the JSON on a
 // first run. Throws on JSON it cannot parse, which the caller shows as unknown.
-export function connectionFromStatus(stdout) {
+//
+// `configured` is check_connector_status's answer: which apps carry a CodeMie
+// config. An app is connected when its config is there and the proxy it points
+// at is healthy -- the same rule the Connections screen uses for its rows.
+export const CONNECTION_LABELS = Object.freeze({
+  claudeDesktop: 'Claude Desktop',
+  vscodeCopilot: 'VS Code Copilot Chat',
+  vscodeClaudeCode: 'VS Code Claude Code',
+  codexDesktop: 'Codex',
+});
+
+export function connectionFromStatus(stdout, configured = {}) {
   const json = stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1);
   if (!json) return null;
   const { status } = JSON.parse(json);
-  return { running: status === 'healthy' || status === 'unhealthy', healthy: status === 'healthy' };
+  const running = status === 'healthy' || status === 'unhealthy';
+  const healthy = status === 'healthy';
+  const set = Object.keys(CONNECTION_LABELS).filter((k) => configured && configured[k]).map((k) => CONNECTION_LABELS[k]);
+  return { running, healthy, set, apps: healthy ? set : [] };
 }
 
-// Claude Desktop is the one app Connections connects today, through the CLI's
-// local proxy: connected while `codemie proxy status` says it is running.
+// One card for the four apps the Connections screen connects: how many are
+// connected and which, or which are set up but not answering.
 function connectionsCard(connection) {
-  if (connection === undefined) return { id: 'connections', title: 'Connections', badge: { text: 'checking', tone: 'muted' }, line: 'Claude Desktop', note: '' };
-  if (connection === null) return { id: 'connections', title: 'Connections', badge: { text: 'unknown', tone: 'muted' }, line: 'Could not read the connection', note: '' };
-  if (connection.running && connection.healthy === false) return { id: 'connections', title: 'Connections', badge: { text: 'not responding', tone: 'warn' }, line: 'Claude Desktop', note: '' };
-  return connection.running
-    ? { id: 'connections', title: 'Connections', badge: { text: '1 connected', tone: 'good' }, line: 'Claude Desktop', note: '' }
-    : { id: 'connections', title: 'Connections', badge: { text: 'not connected', tone: 'muted' }, line: 'Claude Desktop', note: '' };
+  const card = (badge, line) => ({ id: 'connections', title: 'Connections', badge, line, note: '' });
+  const all = 'Claude Desktop · VS Code · Codex';
+  if (connection === undefined) return card({ text: 'checking', tone: 'muted' }, all);
+  if (connection === null) return card({ text: 'unknown', tone: 'muted' }, 'Could not read the connection');
+  const apps = connection.apps ?? [];
+  const set = connection.set ?? [];
+  if (apps.length) return card({ text: `${apps.length} connected`, tone: 'good' }, apps.join(' · '));
+  if (set.length && connection.running && connection.healthy === false) return card({ text: 'not responding', tone: 'warn' }, set.join(' · '));
+  return card({ text: 'not connected', tone: 'muted' }, all);
 }
 
-// Whether Home should start the health check itself: the checklist is up, the
-// steps before the check are done and it has not run. Finishing setup used to
-// leave the user on a checklist that just waited for a click on its last step.
+// Whether Home should start the health check itself, when it has not run this
+// session. On the checklist: once the steps before it are done, since finishing
+// setup used to leave the user on a checklist that just waited for a click on
+// its last step. On the status cards: straight away, since the result is not
+// kept between launches and the Health card said "unknown" after every restart
+// (EPMCDME-15388). Not before the sign-in status is read: until then a
+// returning user counts as done, and a lapsed sign-in would bring the checklist
+// back with a check already run on it.
 export function autoHealthCheck(state) {
-  if (!state || state.done) return false;
+  if (!state) return false;
   const health = state.items.find((i) => i.id === 'health');
-  const before = state.items.filter((i) => i.id !== 'health');
-  return !!health && health.status === StepStatus.PENDING && before.every((i) => i.status === StepStatus.COMPLETE);
+  if (!health || health.status !== StepStatus.PENDING) return false;
+  if (state.done) return state.authKnown;
+  return state.items.filter((i) => i.id !== 'health').every((i) => i.status === StepStatus.COMPLETE);
 }
 
 // What Home's Sign in does. `codemie profile login` opens the browser for the
@@ -221,6 +246,7 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
     items,
     done,
     broken,
+    authKnown: !!auth,
     // The sidebar locks only for a first setup, never for a user who has
     // finished it once and has merely been signed out since.
     unlocked: done || onboarded,
@@ -229,6 +255,6 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
     // read failed): a picker that turned both into an empty list would tell
     // the user every agent was already installed.
     agents,
-    cards: [profileCard(config, auth), healthCard(health), agentsCard(agents), connectionsCard(connection)],
+    cards: [profileCard(config, auth), healthCard(health, healthRunning), agentsCard(agents), connectionsCard(connection)],
   };
 }
