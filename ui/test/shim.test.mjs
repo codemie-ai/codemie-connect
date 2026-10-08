@@ -1,35 +1,52 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const SHIM = 'assets/windows/bin/codemie.cmd';
 const shim = readFileSync(SHIM, 'utf8');
+const onWindows = process.platform === 'win32';
 
-test('shim resolves the bundle root relative to its own location', () => {
-  assert.match(shim, /%~dp0\.\./, 'must use %~dp0.. so the install root is not hardcoded');
-  assert.doesNotMatch(shim, /CodeMie Connect/, 'must not hardcode the product name');
+// Every command the pinned CLI declares, from the lock file the app installs with.
+const cliBins = JSON.parse(readFileSync('assets/codemie-cli/package-lock.json', 'utf8'))
+  .packages['node_modules/@codemieai/code'].bin;
+
+// Node and the CLI are not in the app: commands/runtime.rs downloads them into
+// %LOCALAPPDATA%\CodeMie\runtime\<key>, and build-installer.ps1 writes the
+// key next to the shim.
+test('shim finds the downloaded runtime through runtime-key, never a hardcoded version', () => {
+  assert.match(shim, /%~dp0runtime-key/, 'the key is written by build-installer.ps1 next to the shim');
+  assert.match(shim, /%LOCALAPPDATA%\\CodeMie\\runtime\\%KEY%/, 'same folder as commands/runtime.rs');
+  assert.doesNotMatch(shim, /CodeMie Connect\\/, 'must not hardcode the install path');
+  assert.doesNotMatch(shim, /%~dp0\.\./, 'the bundle no longer holds node or the CLI');
 });
 
-test('shim execs the bundled node runtime', () => {
-  assert.match(shim, /node[\\/]node\.exe/, 'must invoke the bundled node\\node.exe');
+test('shim refuses a runtime whose download never finished', () => {
+  assert.match(shim, /\.complete/, 'the marker is the last thing ensure_runtime writes');
+  assert.match(shim, /Open CodeMie Connect once/, 'tells the user how to get it');
+});
+
+test('shim execs the downloaded node runtime', () => {
+  assert.match(shim, /node[\\/]node\.exe/, 'must invoke the runtime node\\node.exe');
 });
 
 // dist/index.js is a library barrel: it exits 0 and prints nothing, so a build
 // gated on exit code alone would pass while `codemie --version` produced no output.
-test('shim targets bin/codemie.js, never dist/index.js', () => {
-  assert.match(shim, /bin[\\/]codemie\.js/, 'must target the package bin entry');
+test('shim targets the package bin entries, never dist/index.js', () => {
+  assert.match(shim, /"%NAME%"=="codemie" set "ENTRY=codemie\.js"/, 'codemie runs bin/codemie.js');
+  assert.match(shim, /"%NAME%"=="codemie-code" set "ENTRY=agent-executor\.js"/, 'codemie-code is the one bin not named after itself');
+  assert.match(shim, /code\\bin\\%ENTRY%"/, 'entries live in the package bin dir');
   assert.doesNotMatch(shim, /dist[\\/]index\.js/, 'dist/index.js is a barrel with no CLI bootstrap');
 });
 
-// Agent installs and every uninstall shell out to `npm` by name. The bundled npm
-// sits beside the bundled node, a directory deliberately kept off the user's own
-// PATH, so each shim puts it on PATH for its own process tree only — appended, so
-// a user's own npm keeps winning.
-test('shim puts the bundled node directory on PATH, appended', () => {
-  assert.match(shim, /set "PATH=%PATH%;%BUNDLE_DIR%\\node"/, 'without this, `npm` is not found and every agent install fails on a clean machine');
+// Agent installs and every uninstall shell out to `npm` by name. The runtime's npm
+// sits beside its node, a directory deliberately kept off the user's own PATH, so
+// each shim puts it on PATH for its own process tree only, appended, so a user's
+// own npm keeps winning.
+test('shim puts the runtime node directory on PATH, appended', () => {
+  assert.match(shim, /set "PATH=%PATH%;%RT%\\node"/, 'without this, `npm` is not found and every agent install fails on a clean machine');
   assert.match(shim, /if defined PATH/, 'an empty PATH would otherwise gain a leading ";", which is the current directory');
 });
 
@@ -39,6 +56,83 @@ test('shim propagates the CLI exit code', () => {
 
 test('shim does not reference the removed pkg binary', () => {
   assert.doesNotMatch(shim, /codemie\.exe/i, 'the pkg binary is no longer produced');
+});
+
+test('tauri.windows.conf.json ships the shim under every CLI command name and the runtime key; Node and the CLI are downloaded', () => {
+  const conf = JSON.parse(readFileSync('src-tauri/tauri.windows.conf.json', 'utf8'));
+  const want = Object.fromEntries(Object.keys(cliBins).map((n) => [`../assets/windows/bin/${n}.cmd`, `bin/${n}.cmd`]));
+  want['../assets/windows/bin/runtime-key'] = 'bin/runtime-key';
+  assert.deepEqual(conf.bundle.resources, want);
+  for (const n of Object.keys(cliBins)) {
+    assert.equal(readFileSync(`assets/windows/bin/${n}.cmd`, 'utf8'), shim, `assets/windows/bin/${n}.cmd must be the shim`);
+  }
+});
+
+test('the uninstaller removes the downloaded runtime but never ~/.codemie', () => {
+  const nsi = readFileSync('src-tauri/installer-hooks.nsi', 'utf8');
+  assert.match(nsi, /rmdir \/s \/q "\$LOCALAPPDATA\\CodeMie\\runtime"/);
+  assert.doesNotMatch(nsi, /\.codemie/);
+});
+
+// ---- Windows shim, executed ------------------------------------------------------
+
+// The shim reads runtime-key next to itself; stand in for the generated one.
+function shimWithKey(dir, key) {
+  const bin = join(dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'codemie.cmd'), shim);
+  writeFileSync(join(bin, 'runtime-key'), key + '\r\n');
+  return join(bin, 'codemie.cmd');
+}
+
+function execWinShim(shimPath, localAppData, args = []) {
+  const sys = process.env.SystemRoot;
+  return spawnSync('cmd.exe', ['/d', '/c', shimPath, ...args], {
+    env: { LOCALAPPDATA: localAppData, SystemRoot: sys, PATH: sys + '\\System32' },
+    encoding: 'utf8',
+  });
+}
+
+// A real node.exe (this one) stands in for the downloaded runtime, so the shim is
+// run end to end.
+function fakeRuntime(localAppData, key, { complete = true } = {}) {
+  const rt = join(localAppData, 'CodeMie', 'runtime', key);
+  mkdirSync(join(rt, 'node'), { recursive: true });
+  mkdirSync(join(rt, 'cli', 'node_modules', '@codemieai', 'code', 'bin'), { recursive: true });
+  copyFileSync(process.execPath, join(rt, 'node', 'node.exe'));
+  writeFileSync(
+    join(rt, 'cli', 'node_modules', '@codemieai', 'code', 'bin', 'codemie.js'),
+    "console.log('fake ' + process.argv.slice(2).join(' ')); console.log(process.env.PATH); process.exit(7);",
+  );
+  if (complete) writeFileSync(join(rt, '.complete'), key);
+  return rt;
+}
+
+test('Windows shim with no runtime says to open CodeMie Connect once and exits 1', { skip: !onWindows }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shim-'));
+  const r = execWinShim(shimWithKey(dir, 'k1'), join(dir, 'local'));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Open CodeMie Connect once/);
+});
+
+test('Windows shim does not use a runtime dir without the .complete marker', { skip: !onWindows }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shim-'));
+  const local = join(dir, 'local');
+  fakeRuntime(local, 'k1', { complete: false });
+  const r = execWinShim(shimWithKey(dir, 'k1'), local);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+});
+
+test('Windows shim runs the downloaded runtime, passes arguments and exit code, and appends its node dir to PATH', { skip: !onWindows }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'shim-'));
+  const local = join(dir, 'local');
+  const rt = fakeRuntime(local, 'k1');
+  const r = execWinShim(shimWithKey(dir, 'k1'), local, ['--version']);
+  const [first, path] = r.stdout.trim().split(/\r?\n/);
+  assert.equal(first, 'fake --version');
+  assert.ok(path.endsWith(';' + join(rt, 'node')), 'the runtime node dir is appended, not prepended');
+  assert.equal(r.status, 7);
 });
 
 // ---- macOS ----------------------------------------------------------------
@@ -81,10 +175,6 @@ test('runtime.json pins the darwin-arm64 Node checksum', () => {
   assert.match(rt.nodeMacosArm64Sha256 ?? '', /^[0-9a-f]{64}$/, 'nodeMacosArm64Sha256 must be a 64-hex SHA-256');
   assert.match(rt.nodeVersion, /^\d+\.\d+\.\d+$/, 'nodeVersion must be a plain semver');
 });
-
-// Every command the pinned CLI declares, from the lock file the app installs with.
-const cliBins = JSON.parse(readFileSync('assets/codemie-cli/package-lock.json', 'utf8'))
-  .packages['node_modules/@codemieai/code'].bin;
 
 test('tauri.macos.conf.json ships the shim under every CLI command name, nothing else', () => {
   // npm puts all of these on PATH; without one, e.g. `codemie-claude`, the

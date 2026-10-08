@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-10-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 4, "label": "L" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 27,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 21,
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New Rust runtime module plus handshake, pathman, state, lib registration, UI boot gate, NSIS hooks, shim, and build/pack scripts." },
+    { "dimension": "technical_risk", "reason": "First-launch network download of Node and CLI with integrity verification, PATH management and installer hooks; no exact precedent in the repo." },
+    { "dimension": "file_change_estimate", "reason": "21 files changed per diffstat (16+ maps to XXL)." },
+    { "dimension": "dependencies", "reason": "Cargo.toml and Cargo.lock changed; download/hash crates (reqwest, sha2, futures-util) and Windows registry crate involved." },
+    { "dimension": "affected_layers", "reason": "UI, Service (Rust commands), Infrastructure (installer, build scripts, bundle config), External (download endpoints)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: integrity-sensitive download and execution of external runtime",
+    "Component Scope bumped: integration with new external download source"
+  ],
+  "split_recommendation": null
+}

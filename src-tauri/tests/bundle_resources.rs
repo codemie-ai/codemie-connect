@@ -76,3 +76,17 @@ fn bundle_resources_ship_no_pkg_exe() {
         );
     }
 }
+
+/// Node and the CLI tree are downloaded on first launch (commands/runtime.rs);
+/// bundling them again would put ~200 MB back in the installer.
+#[cfg(windows)]
+#[test]
+fn windows_bundle_ships_only_the_shims_and_the_runtime_key() {
+    for (src, target) in &resources_map() {
+        assert!(
+            (target.starts_with("bin/codemie") && target.ends_with(".cmd"))
+                || target == "bin/runtime-key",
+            "unexpected bundled resource {src} -> {target}: Node and the CLI are downloaded"
+        );
+    }
+}
