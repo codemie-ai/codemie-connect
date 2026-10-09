@@ -686,11 +686,19 @@ async function ensureRuntime() {
   const errorEl = document.getElementById('runtime-error');
   const downloading = 'Setting up CodeMie. This happens once.';
   overlay.classList.remove('hidden');
+  // npm reports no progress, so during the CLI step the bar eases on toward 95%
+  // instead of sitting still; it fills to 100% when the install finishes.
+  let creep = null;
+  let installing = false;
+  const stopCreep = () => { clearInterval(creep); creep = null; };
   const unlisten = await listen('runtime:progress', (e) => {
     const { phase, fraction, total } = e.payload;
     bar.style.width = `${Math.round(fraction * 100)}%`;
-    if (phase === 'cli') detail.textContent = 'Installing the CodeMie CLI. This takes about a minute and happens once.';
-    else if (phase === 'node' && total) detail.textContent = `Downloading Node.js (${Math.round((fraction / 0.3) * (total / 1048576))} of ${Math.round(total / 1048576)} MB). This happens once.`;
+    if (phase === 'cli') {
+      detail.textContent = 'Installing the CodeMie CLI. This takes about a minute and happens once.';
+      let width = fraction * 100;
+      if (installing && !creep) creep = setInterval(() => { width += (95 - width) * 0.05; bar.style.width = `${Math.round(width)}%`; }, 1000);
+    } else if (phase === 'node' && total) detail.textContent = `Downloading Node.js (${Math.round((fraction / 0.3) * (total / 1048576))} of ${Math.round(total / 1048576)} MB). This happens once.`;
   });
   for (;;) {
     title.textContent = 'Preparing CodeMie…';
@@ -698,10 +706,17 @@ async function ensureRuntime() {
     retry.classList.add('hidden');
     errorEl.classList.add('hidden');
     bar.style.width = '0%';
+    installing = true;
     try {
       await invoke('ensure_runtime');
+      installing = false;
+      stopCreep();
+      bar.style.width = '100%';
+      await new Promise((r) => setTimeout(r, 400));
       break;
     } catch (err) {
+      installing = false;
+      stopCreep();
       title.textContent = "Couldn't download CodeMie";
       detail.textContent = 'Check your internet connection or proxy, then try again.';
       errorEl.textContent = String(err);
