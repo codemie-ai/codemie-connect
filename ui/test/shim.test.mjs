@@ -313,6 +313,14 @@ test('the runtime overlay says Preparing CodeMie, shows progress and offers Try 
   assert.match(fn, /for \(;;\)[\s\S]*invoke\('ensure_runtime'\)[\s\S]*retry\.addEventListener\('click'/, 'a failure waits for the retry click and loops back to ensure_runtime');
 });
 
+test('the runtime bar keeps moving through the CLI step and fills when it is done', () => {
+  const fn = renderer.slice(renderer.indexOf('async function ensureRuntime()'), renderer.indexOf('async function boot()'));
+  assert.match(fn, /phase === 'cli'[\s\S]*setInterval\(/, 'npm gives no progress, so the bar has to move on its own');
+  assert.match(fn, /invoke\('ensure_runtime'\);\s*installing = false;\s*stopCreep\(\);\s*bar\.style\.width = '100%'/, 'it reaches 100% before the overlay closes');
+  assert.match(fn, /catch \(err\) \{\s*installing = false;\s*stopCreep\(\);/, 'a failure stops it, so Try again starts from a still bar');
+  assert.match(fn, /if \(installing && !creep\)/, 'a progress event arriving after the result never restarts it on the error screen');
+});
+
 test('boot() checks for a newer CLI in the background, after Home is wired', () => {
   const boot = renderer.slice(renderer.indexOf('async function boot()'));
   assert.ok(boot.indexOf("invoke('update_cli')") > boot.indexOf('refreshAgents();'), 'the update must not hold up boot');
