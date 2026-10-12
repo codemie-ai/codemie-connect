@@ -1,6 +1,6 @@
 // Node and the CLI are not inside the app; they are installed on first launch.
 // macOS: ~/Library/Application Support/CodeMie/runtime, `node`/`cli` symlinks
-// into versioned dirs. Windows: %LOCALAPPDATA%\CodeMieuntime\<key>\ (one
+// into versioned dirs. Windows: %LOCALAPPDATA%\CodeMie\runtime\<key>\ (one
 // dir per CLI+Node version, no symlinks, which need Developer Mode or admin).
 // Both download Node from nodejs.org (pinned SHA-256) and install the pinned
 // CLI from npm, and update the CLI in the background on later launches.
@@ -66,6 +66,7 @@ mod mac {
     const CONNECT_MARKER: &str = "{ \"managedBy\": \"CodeMie Connect\" }\n";
     const REGISTRY_LATEST: &str = "https://registry.npmjs.org/@codemieai/code/latest";
     const NPM_TIMEOUT: Duration = Duration::from_secs(600);
+    const CLI_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// The pinned versions from runtime.json.
     #[derive(serde::Deserialize, Clone)]
@@ -105,6 +106,27 @@ mod mac {
 
     fn complete(dir: &Path) -> bool {
         dir.join(COMPLETE_MARKER).is_file()
+    }
+
+    /// A path no other attempt uses. Quitting the app mid-install leaves its npm
+    /// or tar running; with a fixed name the next launch would install into the
+    /// same folder at the same time and could mark a half-written CLI complete.
+    /// remove_stale drops the old attempt's folder at the next launch.
+    fn attempt_path(base: &Path, kind: &str, name: &str, ext: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        base.join(format!(
+            ".{kind}-{name}-{}-{nanos}{ext}",
+            std::process::id()
+        ))
+    }
+
+    /// The last non-empty line of `codemie --version` is the version; a first run
+    /// in a new HOME prints migration notes above it.
+    fn reports_version(stdout: &str, version: &str) -> bool {
+        stdout.lines().rev().map(str::trim).find(|l| !l.is_empty()) == Some(version)
     }
 
     /// The version of the dir a link points at (`cli-0.15.7` -> `0.15.7`), only
@@ -315,8 +337,8 @@ mod mac {
     async fn install_node(app: &AppHandle, base: &Path, pins: &Pins) -> CmdResult<()> {
         let v = &pins.node_version;
         let name = format!("node-{v}");
-        let staging = base.join(format!(".staging-{name}"));
-        let archive = base.join(format!(".download-{name}.tar.gz"));
+        let staging = attempt_path(base, "staging", &name, "");
+        let archive = attempt_path(base, "download", &name, ".tar.gz");
         let result = async {
             let url = format!("https://nodejs.org/dist/v{v}/node-v{v}-darwin-arm64.tar.gz");
             let resp = client()?
@@ -387,10 +409,9 @@ mod mac {
     /// version); a newer version resolves its dependencies from npm.
     async fn install_cli(base: &Path, version: &str, locked: bool) -> CmdResult<()> {
         let name = format!("cli-{version}");
-        let staging = base.join(format!(".staging-{name}"));
+        let staging = attempt_path(base, "staging", &name, "");
         let result = async {
             let node = std::fs::canonicalize(node_link(base))?;
-            let _ = tokio::fs::remove_dir_all(&staging).await;
             tokio::fs::create_dir_all(&staging).await?;
             let args: &[&str] = if locked {
                 tokio::fs::write(staging.join("package.json"), CLI_PACKAGE_JSON).await?;
@@ -449,6 +470,24 @@ mod mac {
             }
             let pkg = cli_entry(&staging).parent().unwrap().parent().unwrap().to_path_buf();
             tokio::fs::write(pkg.join("codemie-connect.json"), CONNECT_MARKER).await?;
+            // npm can report success on a tree that does not run. Start the CLI
+            // once before it is marked complete; the marker above keeps it from
+            // updating itself while doing so.
+            let mut check = tokio::process::Command::new(node.join("bin").join("node"));
+            check
+                .arg(cli_entry(&staging))
+                .arg("--version")
+                .current_dir("/")
+                .kill_on_drop(true);
+            let ran = tokio::time::timeout(CLI_CHECK_TIMEOUT, check.output())
+                .await
+                .map_err(|_| InstallerError::Other("the installed CodeMie CLI did not start".into()))??;
+            if !ran.status.success() || !reports_version(&String::from_utf8_lossy(&ran.stdout), version) {
+                return Err(InstallerError::Other(format!(
+                    "the installed CodeMie CLI does not start: {}",
+                    String::from_utf8_lossy(&ran.stderr).lines().find(|l| l.contains("Error")).unwrap_or("").trim()
+                )));
+            }
             tokio::fs::write(staging.join(COMPLETE_MARKER), version).await?;
             let _ = tokio::fs::remove_dir_all(base.join(&name)).await;
             tokio::fs::rename(&staging, base.join(&name)).await?;
@@ -569,6 +608,46 @@ mod mac {
                 .collect();
             left.sort();
             assert_eq!(left, vec!["cli", "cli-0.15.8", "node", "node-22.23.2"]);
+        }
+
+        #[test]
+        fn every_attempt_gets_its_own_folder() {
+            let b = Path::new("/rt");
+            let first = attempt_path(b, "staging", "cli-0.15.7", "");
+            let second = attempt_path(b, "staging", "cli-0.15.7", "");
+            assert_ne!(
+                first, second,
+                "a quit app's npm must never share the next launch's folder"
+            );
+            let name = first.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with(".staging-cli-0.15.7-"), "{name}");
+            let archive = attempt_path(b, "download", "node-22.23.2", ".tar.gz");
+            assert!(archive.to_string_lossy().ends_with(".tar.gz"));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn remove_stale_drops_a_previous_attempts_folder() {
+            let t = tempfile::tempdir().unwrap();
+            let b = t.path();
+            installed(b, "node-22.23.2", "node");
+            installed(b, "cli-0.15.7", "cli");
+            let old = attempt_path(b, "staging", "cli-0.15.7", "");
+            std::fs::create_dir_all(old.join("node_modules")).unwrap();
+            remove_stale(b);
+            assert!(!old.exists());
+            assert!(is_ready(b, &pins_for("22.23.2", "0.15.7")));
+        }
+
+        #[test]
+        fn reports_version_reads_the_last_line() {
+            assert!(reports_version("0.15.7\n", "0.15.7"));
+            assert!(reports_version(
+                "\n🔄 Running 2 migration(s)...\n[001-config-rename] done\n\n0.15.7\n",
+                "0.15.7"
+            ));
+            assert!(!reports_version("0.15.6\n", "0.15.7"));
+            assert!(!reports_version("", "0.15.7"));
         }
 
         #[test]
