@@ -65,6 +65,40 @@ test('ensureRuntime downloads once, then hides the overlay', async () => {
   assert.ok(document.getElementById('runtime-overlay').classList.has('hidden'));
 });
 
+async function failOnce(message) {
+  let attempts = 0;
+  const { ensureRuntime, document } = gate(async (cmd) => {
+    if (cmd === 'runtime_ready') return false;
+    if (++attempts === 1) throw message; // Tauri rejects with the serialized string
+    return undefined;
+  });
+  const done = ensureRuntime();
+  const retry = document.getElementById('runtime-retry');
+  for (let i = 0; i < 20 && !retry.hasListener(); i++) await new Promise((r) => setTimeout(r, 0));
+  const shown = {
+    title: document.getElementById('runtime-title').textContent,
+    detail: document.getElementById('runtime-detail').textContent,
+    error: document.getElementById('runtime-error').textContent,
+  };
+  retry.click();
+  await done;
+  return shown;
+}
+
+test('a download failure gets the network hint', async () => {
+  const s = await failOnce('download failed: error sending request: dns error');
+  assert.equal(s.title, "Couldn't download CodeMie");
+  assert.match(s.detail, /internet connection or proxy/);
+});
+
+test('a non-download failure names its step and path, with no network hint', async () => {
+  const msg = 'move the runtime into place failed at C:\\a -> C:\\b: The system cannot find the path specified. (os error 3)';
+  const s = await failOnce(msg);
+  assert.equal(s.title, "Couldn't set up CodeMie");
+  assert.doesNotMatch(s.detail, /internet|proxy|network/i);
+  assert.equal(s.error, msg);
+});
+
 test('a failed download shows the error and Try again; clicking it retries and succeeds', async () => {
   let attempts = 0;
   const { ensureRuntime, document } = gate(async (cmd) => {
