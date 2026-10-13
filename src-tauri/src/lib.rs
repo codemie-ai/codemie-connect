@@ -112,6 +112,7 @@ pub fn run() {
             commands::inspector::git_binary_path,
             commands::inspector::node_binary_path,
             commands::codemie_config::read_codemie_config,
+            commands::codemie_config::list_codemie_profiles,
             commands::profile::delete_profile,
             commands::profile::switch_profile,
             commands::profile::rename_profile,
