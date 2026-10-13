@@ -22,6 +22,8 @@ import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
 import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
+import { createProfileListController } from './profile-list-controller.js';
+import { renderProfileList } from './profile-list-view.js';
 import { deriveHome, brokenCopy, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { initCmdLog } from './cmdlog-ui.js';
@@ -175,8 +177,31 @@ function setInstallRunning(on) {
 // the config reader and auth status (the identity bar's own reads feed them in),
 // `codemie list` through ui/agents-parse.js, and Health's last result.
 const home = { config: null, auth: null, agents: undefined, health: null, connection: undefined };
+// Profile list (EPMCDME-14576): the controller runs one CLI action at a time and
+// re-reads the config; the view draws into the slot Home's Profile card offers.
+let profileSlot = null;
+const profileList = createProfileListController({
+  bridge,
+  onChanged: () => refreshIdentityOnComplete(),
+  onAdd: () => openGuidedSetup(),
+});
+const drawProfileList = () => {
+  if (!profileSlot) return;
+  renderProfileList(profileSlot, profileList.state, {
+    onSwitch: (n) => profileList.switchTo(n),
+    onRename: (o, n) => profileList.rename(o, n),
+    onDelete: (n) => profileList.remove(n),
+    onAdd: () => profileList.onAdd(),
+  });
+};
+profileList.subscribe(drawProfileList);
 const homeScreen = createHomeView(document.getElementById('home-body'), {
   stepsUi: stepsUI.createStepsUi(),
+  renderProfileList: (slot) => {
+    profileSlot = slot;
+    drawProfileList();
+    if (!profileList.state.busy) profileList.load();
+  },
   onItem: (id) => {
     if (id === 'model') openGuidedSetup();
     else if (id === 'agent') showView('agents');

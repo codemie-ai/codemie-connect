@@ -419,6 +419,15 @@ body::before {
 /* In the title row, pushed right: under the card it made the Profile card
    taller than the card beside it. */
 .home-card .btn.home-card-action { width: auto; padding: 4px 10px; font-size: 12px; margin-left: auto; }
+.home-card-head .home-card-action + .home-card-action { margin-left: 8px; }
+.home-profiles { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.profile-row { display: flex; align-items: center; gap: 8px; }
+.profile-info { flex: 1; min-width: 0; }
+.profile-name { font-weight: 600; }
+.profile-sub, .profile-confirm, .profile-notice { font-size: 12px; opacity: 0.8; }
+.profile-badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: rgba(46, 160, 67, 0.2); }
+.profile-row .btn, .home-profiles > .btn { width: auto; padding: 4px 10px; font-size: 12px; }
+.profile-rename-input { width: 100%; box-sizing: border-box; }
 
 /* ---- Update banners (EPMCDME-15189) ---- */
 .top-banner {

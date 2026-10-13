@@ -22,7 +22,7 @@ function itemsBefore(items, id) {
   return at === -1 ? [] : items.slice(0, at);
 }
 
-export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, onSetupAgain, onInstallAgent, onDeleteProfile } = {}) {
+export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, onSetupAgain, onInstallAgent, onDeleteProfile, renderProfileList } = {}) {
   let listEl = null;
   // render() rebuilds the whole body, and a refresh can arrive at any moment
   // (an agent read, a health result). These three live outside it so an
@@ -36,6 +36,9 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
   let deleting = false;
   let deleteFailure = null;
   let lastState = null;
+  // Whether the Profile card shows its profile list; outside render() so a
+  // refresh does not close it under the user.
+  let profilesOpen = false;
   // Item 3 opens by itself once, when it becomes the step the user is on;
   // after that only the user opens or closes it.
   let agentAutoOpened = false;
@@ -214,11 +217,22 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
           e?.stopPropagation?.();
           onSetupAgain?.();
         };
-        head.appendChild(again);
+        const manage = el('button', 'btn btn-ghost home-card-action', 'Manage profiles');
+        manage.onclick = (e) => {
+          e?.stopPropagation?.();
+          profilesOpen = !profilesOpen;
+          rerender();
+        };
+        head.append(manage, again);
       }
       node.appendChild(head);
       if (card.line) node.appendChild(el('div', 'home-card-line', card.line));
       if (card.note) node.appendChild(el('div', 'home-card-note', card.note));
+      if (card.id === 'profile' && profilesOpen && renderProfileList) {
+        const slot = el('div', 'home-profiles');
+        node.appendChild(slot);
+        renderProfileList(slot);
+      }
       if (card.id !== 'profile') node.onclick = () => onCard?.(card.id);
       grid.appendChild(node);
     }
