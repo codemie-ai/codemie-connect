@@ -22,7 +22,7 @@ function itemsBefore(items, id) {
   return at === -1 ? [] : items.slice(0, at);
 }
 
-export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, onSetupAgain, onInstallAgent, onDeleteProfile, onManageProfiles } = {}) {
+export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, onInstallAgent, onDeleteProfile, onManageProfiles } = {}) {
   let listEl = null;
   // render() rebuilds the whole body, and a refresh can arrive at any moment
   // (an agent read, a health result). These three live outside it so an
@@ -206,20 +206,15 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       const head = el('div', 'home-card-head');
       head.append(el('span', 'home-card-title', card.title), el('span', `home-card-badge tone-${card.badge.tone}`, card.badge.text));
       // The Profile card's action sits in the title row: under the card it
-      // made this card taller than the one beside it.
+      // made this card taller than the one beside it. Adding or updating a
+      // profile lives on the Profiles screen it opens.
       if (card.id === 'profile') {
-        const again = el('button', 'btn btn-ghost home-card-action', 'Set up again');
-        again.title = 'Add a new profile, or update one you already have.';
-        again.onclick = (e) => {
-          e?.stopPropagation?.();
-          onSetupAgain?.();
-        };
         const manage = el('button', 'btn btn-ghost home-card-action', 'Manage profiles');
         manage.onclick = (e) => {
           e?.stopPropagation?.();
           onManageProfiles?.();
         };
-        head.append(manage, again);
+        head.append(manage);
       }
       node.appendChild(head);
       if (card.line) node.appendChild(el('div', 'home-card-line', card.line));

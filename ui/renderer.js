@@ -220,7 +220,6 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
   },
   onSignIn: () => (signInAction(home) === 'setup' ? openGuidedSetup() : startSignIn()),
   onCard: (id) => showView(id === 'connections' ? 'connect' : id),
-  onSetupAgain: () => openGuidedSetup(),
   onDeleteProfile: deleteActiveProfile,
   // Item 3 installs through the Agents controller, which refreshes Home on its
   // own when the action finishes, so the item ticks without a second read here.
