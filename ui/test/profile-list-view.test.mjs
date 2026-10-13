@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 
 function makeEl(tag) {
   const el = {
-    _tag: tag, _children: [], className: '', textContent: '', dataset: {}, value: '',
+    _tag: tag, _children: [], className: '', textContent: '', dataset: {}, value: '', _attrs: {},
+    setAttribute(k, v) { el._attrs[k] = v; },
     classList: {
       _set: new Set(),
       add(c) { this._set.add(c); },
@@ -109,4 +110,21 @@ test('an empty list draws no empty box', () => {
   const root = makeEl('div');
   renderProfileList(root, state([]));
   assert.equal(root.querySelector('.profile-list'), null);
+});
+
+test('the active profile is listed first, the others keep their order', () => {
+  const root = makeEl('div');
+  renderProfileList(root, state([P('a'), P('b'), P('c', true)]));
+  const names = root._all((n) => n.className === 'profile-name').map((n) => n.textContent);
+  assert.deepEqual(names, ['c', 'a', 'b']);
+});
+
+test('the rename field never auto-capitalises or corrects the name', () => {
+  const root = makeEl('div');
+  renderProfileList(root, state([P('work', true)]));
+  buttons(root, 'Rename')[0].onclick();
+  const input = root.querySelector('.profile-rename-input');
+  assert.equal(input._attrs.autocapitalize, 'off');
+  assert.equal(input._attrs.autocorrect, 'off');
+  assert.equal(input.spellcheck, false);
 });

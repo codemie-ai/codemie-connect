@@ -28,7 +28,9 @@ export function renderProfileList(container, state, handlers = {}) {
   container.innerHTML = '';
 
   const list = el('div', 'profile-list');
-  for (const p of state.profiles) {
+  // The active profile first, the rest in the config's order (alphabetical).
+  const rows = [...state.profiles].sort((a, b) => Number(b.active) - Number(a.active));
+  for (const p of rows) {
     const row = el('div', 'profile-row');
     const info = el('div', 'profile-info');
     const busy = state.busy;
@@ -37,6 +39,11 @@ export function renderProfileList(container, state, handlers = {}) {
       const input = el('input', 'profile-rename-input');
       // The typed name is kept with the row, so a re-read (the window coming
       // back to the front) does not wipe it.
+      // macOS capitalises "work" to "Work" in a plain field, and the CLI then
+      // saves that name (EPMCDME-15385, fixed the same way in setup-view.js).
+      input.setAttribute('autocapitalize', 'off');
+      input.setAttribute('autocorrect', 'off');
+      input.spellcheck = false;
       input.value = ui.draft ?? p.name;
       input.oninput = () => { ui.draft = input.value; };
       info.append(input);

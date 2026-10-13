@@ -96,3 +96,14 @@ test('renaming to a name the list already has runs no command and says the name 
   assert.deepEqual(bridge.calls.map((x) => x[0]), ['list']);
   assert.equal(c.state.failure.message, 'A profile named "b" already exists.');
 });
+
+test('clearMessages drops the last failure and notice, so a later visit starts clean', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  await c.rename('a', 'b');
+  assert.ok(c.state.failure);
+  c.clearMessages();
+  assert.equal(c.state.failure, null);
+  assert.equal(c.state.notice, null);
+});

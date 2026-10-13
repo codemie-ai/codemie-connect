@@ -63,6 +63,11 @@ export function createProfileListController({ bridge, onChanged = () => {} }) {
       const now = state.profiles.find((p) => p.active);
       state.notice = now ? `Active profile now: ${now.name}` : null;
     }),
+    // A message belongs to the action that caused it, not to the next visit.
+    clearMessages: () => {
+      state.failure = null;
+      state.notice = null;
+    },
     subscribe: (fn) => { subscribers.push(fn); },
   };
 }

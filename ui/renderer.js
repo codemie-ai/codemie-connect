@@ -204,6 +204,7 @@ const reloadProfiles = () => {
   if (!profileList.state.busy) profileList.load();
 };
 function openProfiles() {
+  if (!profileList.state.busy) profileList.clearMessages();
   showView('profiles');
   drawProfileList();
   reloadProfiles();
