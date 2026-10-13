@@ -44,6 +44,29 @@ fn delete_command(name: &str, windows: bool) -> Result<String, String> {
     codemie_in_root(&["profile", "delete", &quoted, "--yes"], windows)
 }
 
+fn switch_command(name: &str, windows: bool) -> Result<String, String> {
+    let quoted = quote_arg(name, windows)?;
+    codemie_in_root(&["profile", "switch", &quoted], windows)
+}
+
+fn rename_command(old: &str, new: &str, windows: bool) -> Result<String, String> {
+    let old = quote_arg(old, windows)?;
+    let new = quote_arg(new, windows)?;
+    codemie_in_root(&["profile", "rename", &old, &new], windows)
+}
+
+#[tauri::command]
+pub async fn switch_profile(name: String) -> CmdResult<CaptureResult> {
+    let cmd = switch_command(&name, cfg!(windows)).map_err(InstallerError::Other)?;
+    Ok(capture(&cmd, None).await)
+}
+
+#[tauri::command]
+pub async fn rename_profile(old: String, new: String) -> CmdResult<CaptureResult> {
+    let cmd = rename_command(&old, &new, cfg!(windows)).map_err(InstallerError::Other)?;
+    Ok(capture(&cmd, None).await)
+}
+
 #[tauri::command]
 pub async fn delete_profile(name: String) -> CmdResult<CaptureResult> {
     let cmd = delete_command(&name, cfg!(windows)).map_err(InstallerError::Other)?;
@@ -103,6 +126,32 @@ mod tests {
             "cd /d %SystemDrive%\\ && codemie profile delete \"demo7\" --yes"
         );
         assert!(delete_command("", false).is_err());
+    }
+
+    #[test]
+    fn builds_the_switch_and_rename_commands_per_platform() {
+        assert_eq!(
+            switch_command("demo7", false).unwrap(),
+            "cd / && codemie profile switch 'demo7' < /dev/null"
+        );
+        assert_eq!(
+            switch_command("demo7", true).unwrap(),
+            "cd /d %SystemDrive%\\ && codemie profile switch \"demo7\""
+        );
+        assert_eq!(
+            rename_command("old", "new", false).unwrap(),
+            "cd / && codemie profile rename 'old' 'new' < /dev/null"
+        );
+        assert_eq!(
+            rename_command("old", "new", true).unwrap(),
+            "cd /d %SystemDrive%\\ && codemie profile rename \"old\" \"new\""
+        );
+        assert_eq!(
+            rename_command("old", "a b; rm 'x'", false).unwrap(),
+            "cd / && codemie profile rename 'old' 'a b; rm '\\''x'\\''' < /dev/null"
+        );
+        assert!(switch_command("", false).is_err());
+        assert!(rename_command("old", " ", false).is_err());
     }
 
     #[cfg(not(windows))]

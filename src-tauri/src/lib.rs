@@ -113,6 +113,8 @@ pub fn run() {
             commands::inspector::node_binary_path,
             commands::codemie_config::read_codemie_config,
             commands::profile::delete_profile,
+            commands::profile::switch_profile,
+            commands::profile::rename_profile,
             commands::connectors::check_connector_status,
             commands::connectors::app_bundle_exists,
             commands::installer::get_platform_info,
