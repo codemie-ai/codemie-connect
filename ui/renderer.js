@@ -74,6 +74,7 @@ const views = {
   connect: document.getElementById('connect-view'),
   health: document.getElementById('health-view'),
   about: document.getElementById('about-view'),
+  profiles: document.getElementById('profiles-view'),
   wizard: document.getElementById('wizard-view'),
 };
 const homeView = views.home;
@@ -177,31 +178,41 @@ function setInstallRunning(on) {
 // the config reader and auth status (the identity bar's own reads feed them in),
 // `codemie list` through ui/agents-parse.js, and Health's last result.
 const home = { config: null, auth: null, agents: undefined, health: null, connection: undefined };
-// Profile list (EPMCDME-14576): the controller runs one CLI action at a time and
-// re-reads the config; the view draws into the slot Home's Profile card offers.
-let profileSlot = null;
+// Profiles screen (EPMCDME-14576): the controller runs one CLI action at a time
+// and re-reads the config; the view draws the rows. The screen is its own view,
+// so Home's re-renders never touch an open rename or delete confirmation.
+const profileRows = document.getElementById('profiles-rows');
+const profileAdd = document.getElementById('profiles-add');
 const profileList = createProfileListController({
   bridge,
-  onChanged: () => refreshIdentityOnComplete(),
-  onAdd: () => openGuidedSetup(),
+  onChanged: () => {
+    refreshIdentityOnComplete();
+    // No profile left: Home's setup checklist is where to go next.
+    if (!profileList.state.profiles.length) showView('home');
+  },
 });
 const drawProfileList = () => {
-  if (!profileSlot) return;
-  renderProfileList(profileSlot, profileList.state, {
+  renderProfileList(profileRows, profileList.state, {
     onSwitch: (n) => profileList.switchTo(n),
     onRename: (o, n) => profileList.rename(o, n),
     onDelete: (n) => profileList.remove(n),
-    onAdd: () => profileList.onAdd(),
   });
+  profileAdd.disabled = profileList.state.busy;
 };
 profileList.subscribe(drawProfileList);
+const reloadProfiles = () => {
+  if (!profileList.state.busy) profileList.load();
+};
+function openProfiles() {
+  showView('profiles');
+  drawProfileList();
+  reloadProfiles();
+}
+document.getElementById('profiles-back').onclick = () => showView('home');
+profileAdd.onclick = () => openGuidedSetup();
 const homeScreen = createHomeView(document.getElementById('home-body'), {
   stepsUi: stepsUI.createStepsUi(),
-  renderProfileList: (slot) => {
-    profileSlot = slot;
-    drawProfileList();
-    if (!profileList.state.busy) profileList.load();
-  },
+  onManageProfiles: () => openProfiles(),
   onItem: (id) => {
     if (id === 'model') openGuidedSetup();
     else if (id === 'agent') showView('agents');
@@ -1018,6 +1029,7 @@ async function boot() {
     refreshIdentityOnComplete();
     refreshAgents();
     refreshConnection();
+    if (!views.profiles.classList.contains('hidden')) reloadProfiles();
   });
 
   const [platformInfo, tmpDir] = await Promise.all([

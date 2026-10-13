@@ -37,14 +37,14 @@ test('a failed rename keeps the list and shows the last non-empty line of the CL
   const list = [P('a', true), P('b')];
   const bridge = fakeBridge({
     lists: [list, list],
-    replies: { rename: { code: 1, stdout: '', stderr: 'starting\nProfile "b" already exists\n\n' } },
+    replies: { rename: { code: 1, stdout: '', stderr: 'starting\nCould not write the config\n\n' } },
   });
   const c = createProfileListController({ bridge });
   await c.load();
-  await c.rename('a', 'b');
+  await c.rename('a', 'c');
   assert.deepEqual(c.state.profiles, list);
-  assert.equal(c.state.failure.message, 'Profile "b" already exists');
-  assert.deepEqual(bridge.calls.filter((x) => x[0] === 'rename')[0], ['rename', 'a', 'b']);
+  assert.equal(c.state.failure.message, 'Could not write the config');
+  assert.deepEqual(bridge.calls.filter((x) => x[0] === 'rename')[0], ['rename', 'a', 'c']);
 });
 
 test('remove calls bridge.profile.delete exactly once and names the new active profile', async () => {
@@ -84,4 +84,15 @@ test('subscribers hear about busy and idle states', async () => {
   c.subscribe((s) => seen.push(s.busy));
   await c.switchTo('a');
   assert.deepEqual(seen, [true, false]);
+});
+
+test('renaming to a name the list already has runs no command and says the name is taken', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  await c.rename('a', 'a');
+  assert.equal(c.state.failure, null, 'saving an unchanged name is not a rename and not an error');
+  await c.rename('a', 'b');
+  assert.deepEqual(bridge.calls.map((x) => x[0]), ['list']);
+  assert.equal(c.state.failure.message, 'A profile named "b" already exists.');
 });

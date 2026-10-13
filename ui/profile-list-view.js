@@ -1,4 +1,4 @@
-// Draws the profile list (Home's Profile card, "Manage profiles"). Pure DOM from
+// Draws the rows of the Profiles screen (opened by Home's "Manage profiles"). Pure DOM from
 // the controller's state; the actions are the caller's handlers. Which row is
 // being renamed or is asking for a delete confirmation is the view's own state,
 // kept per container so a redraw from the controller keeps it.
@@ -21,8 +21,8 @@ function button(label, onclick, { disabled = false, ghost = true } = {}) {
 const local = new WeakMap();
 
 export function renderProfileList(container, state, handlers = {}) {
-  const { onSwitch, onRename, onDelete, onAdd } = handlers;
-  const ui = local.get(container) ?? { renaming: null, confirming: null };
+  const { onSwitch, onRename, onDelete } = handlers;
+  const ui = local.get(container) ?? { renaming: null, draft: null, confirming: null };
   local.set(container, ui);
   const redraw = () => renderProfileList(container, state, handlers);
   container.innerHTML = '';
@@ -35,13 +35,17 @@ export function renderProfileList(container, state, handlers = {}) {
 
     if (ui.renaming === p.name) {
       const input = el('input', 'profile-rename-input');
-      input.value = p.name;
+      // The typed name is kept with the row, so a re-read (the window coming
+      // back to the front) does not wipe it.
+      input.value = ui.draft ?? p.name;
+      input.oninput = () => { ui.draft = input.value; };
       info.append(input);
       row.append(info, button('Save', () => {
         ui.renaming = null;
+        ui.draft = null;
         onRename?.(p.name, input.value.trim());
         redraw();
-      }, { disabled: busy, ghost: false }), button('Cancel', () => { ui.renaming = null; redraw(); }));
+      }, { disabled: busy, ghost: false }), button('Cancel', () => { ui.renaming = null; ui.draft = null; redraw(); }));
     } else if (ui.confirming === p.name) {
       const warning = p.active
         ? `Delete ${p.name}? It is the active profile. Another profile becomes active, or setup starts again if none is left.`
@@ -58,13 +62,13 @@ export function renderProfileList(container, state, handlers = {}) {
       if (p.active) row.append(el('span', 'profile-badge', 'Active'));
       else row.append(button('Switch', () => onSwitch?.(p.name), { disabled: busy }));
       row.append(
-        button('Rename', () => { ui.renaming = p.name; ui.confirming = null; redraw(); }, { disabled: busy }),
+        button('Rename', () => { ui.renaming = p.name; ui.draft = null; ui.confirming = null; redraw(); }, { disabled: busy }),
         button('Delete', () => { ui.confirming = p.name; ui.renaming = null; redraw(); }, { disabled: busy }),
       );
     }
     list.append(row);
   }
-  container.append(list);
+  if (state.profiles.length) container.append(list);
 
   if (state.notice) container.append(el('div', 'profile-notice', state.notice));
   if (state.failure) {
@@ -78,5 +82,4 @@ export function renderProfileList(container, state, handlers = {}) {
     });
     container.append(slot);
   }
-  container.append(button('Add a profile', () => onAdd?.(), { disabled: state.busy }));
 }

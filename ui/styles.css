@@ -420,7 +420,6 @@ body::before {
    taller than the card beside it. */
 .home-card .btn.home-card-action { width: auto; padding: 4px 10px; font-size: 12px; margin-left: auto; }
 .home-card-head .home-card-action + .home-card-action { margin-left: 8px; }
-.home-profiles { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .home-card .btn.home-card-action { white-space: nowrap; }
 .profile-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08)); }
 .profile-row:first-child { border-top: 0; }
@@ -428,7 +427,18 @@ body::before {
 .profile-name { font-weight: 600; }
 .profile-sub, .profile-confirm, .profile-notice { font-size: 12px; opacity: 0.8; }
 .profile-badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: rgba(46, 160, 67, 0.2); }
-.profile-row .btn, .home-profiles > .btn { white-space: nowrap; width: auto; padding: 4px 10px; font-size: 12px; }
+.profile-row .btn { white-space: nowrap; width: auto; padding: 4px 10px; font-size: 12px; }
+/* ---- Profiles screen (EPMCDME-14576), laid out like Connections ---- */
+#profiles-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 28px 32px; gap: 18px; }
+#profiles-back { align-self: flex-start; width: auto; padding: 4px 10px; font-size: 12px; }
+#profiles-header { display: flex; align-items: center; gap: 16px; }
+.profiles-heading { flex: 1; min-width: 0; }
+#profiles-title { font-size: 20px; font-weight: 700; color: var(--text); }
+#profiles-subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; line-height: 1.5; max-width: 620px; }
+#profiles-add { width: auto; white-space: nowrap; }
+#profiles-rows .profile-list { border: 1px solid var(--border, rgba(255, 255, 255, 0.08)); border-radius: 12px; padding: 4px 16px; }
+#profiles-rows .profile-row { padding: 12px 0; }
+#profiles-rows .profile-notice, #profiles-rows .profile-failure { margin-top: 12px; }
 .profile-rename-input { width: 100%; box-sizing: border-box; }
 
 /* ---- Update banners (EPMCDME-15189) ---- */

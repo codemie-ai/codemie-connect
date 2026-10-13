@@ -81,12 +81,32 @@ test('Rename shows an input and Save passes old and new names', () => {
   assert.deepEqual(got, [['a', 'z']]);
 });
 
-test('Add a profile calls onAdd; failure and notice are shown', () => {
+test('failure and notice are shown; the list draws no Add button', () => {
   const root = makeEl('div');
-  let added = 0;
-  renderProfileList(root, state([P('a', true)], { failure: { message: 'boom' }, notice: 'Active profile now: a' }), { onAdd: () => { added++; } });
-  buttons(root, 'Add a profile')[0].onclick();
-  assert.equal(added, 1);
+  renderProfileList(root, state([P('a', true)], { failure: { message: 'boom' }, notice: 'Active profile now: a' }));
+  assert.equal(buttons(root, 'Add a profile').length, 0);
   assert.ok(root._text().includes('boom'));
   assert.ok(root._text().includes('Active profile now: a'));
+});
+
+test('an open rename keeps its typed name, and an open delete stays open, when the list is drawn again', () => {
+  const root = makeEl('div');
+  const s1 = state([P('a', true), P('b')]);
+  renderProfileList(root, s1);
+  buttons(root, 'Rename')[0].onclick();
+  const input = root.querySelector('.profile-rename-input');
+  input.value = 'typed';
+  input.oninput();
+  renderProfileList(root, state([P('a', true), P('b')]));
+  assert.equal(root.querySelector('.profile-rename-input').value, 'typed');
+  buttons(root, 'Cancel')[0].onclick();
+  buttons(root, 'Delete')[1].onclick();
+  renderProfileList(root, state([P('a', true), P('b')]));
+  assert.equal(buttons(root, 'Confirm').length, 1);
+});
+
+test('an empty list draws no empty box', () => {
+  const root = makeEl('div');
+  renderProfileList(root, state([]));
+  assert.equal(root.querySelector('.profile-list'), null);
 });

@@ -344,21 +344,14 @@ test('a failed delete shows the CLI sentence inline and the button works again',
   await tick();
 });
 
-test('Manage profiles opens a slot inside the Profile card, a second click closes it, and it survives a re-render', () => {
+test('Manage profiles opens the profiles screen and draws nothing inside the Profile card', () => {
   const container = makeEl('div');
-  const slots = [];
-  const view = createHomeView(container, { stepsUi: fakeStepsUi(), renderProfileList: (slot) => slots.push(slot) });
+  let opened = 0;
+  const view = createHomeView(container, { stepsUi: fakeStepsUi(), onManageProfiles: () => { opened += 1; } });
   view.render(steady);
-  const manage = () => container._all((n) => n._tag === 'button' && n.textContent === 'Manage profiles')[0];
-  assert.equal(slots.length, 0);
-  manage().onclick({ stopPropagation() {} });
-  assert.equal(slots.length, 1);
+  const manage = container._all((n) => n._tag === 'button' && n.textContent === 'Manage profiles')[0];
+  manage.onclick({ stopPropagation() {} });
+  assert.equal(opened, 1);
   const profileCard = container._all((n) => n.dataset && n.dataset.card === 'profile')[0];
-  assert.ok(profileCard._all((n) => n === slots[0]).length === 1, 'the slot sits inside the Profile card');
-  view.render(steady);
-  assert.equal(slots.length, 2, 'a re-render draws the open list again');
-  manage().onclick({ stopPropagation() {} });
-  assert.equal(container._all((n) => n.className === 'home-profiles').length, 0);
-  view.render(steady);
-  assert.equal(slots.length, 2, 'closed stays closed');
+  assert.equal(profileCard._all((n) => n._tag === 'button').length, 2, 'only Manage profiles and Set up again');
 });
