@@ -36,7 +36,7 @@ export function renderProfileList(container, state, handlers = {}) {
     const busy = state.busy;
 
     if (ui.renaming === p.name) {
-      const input = el('input', 'profile-rename-input');
+      const input = el('input', 'prompt-input profile-rename-input');
       // The typed name is kept with the row, so a re-read (the window coming
       // back to the front) does not wipe it.
       // macOS capitalises "work" to "Work" in a plain field, and the CLI then
