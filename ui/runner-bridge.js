@@ -79,12 +79,15 @@ export const runner = {
 
 // Commands Rust runs itself get a command-log record too. `codeOf` turns the
 // result into an exit code; a rejection is recorded as failed (-1).
-const logged = async (cmd, run, codeOf = () => 0) => {
+// `outputOf` turns the result into text for the record, when it has any.
+const logged = async (cmd, run, codeOf = () => 0, outputOf = () => '') => {
   const logId = await cmdlog.open(cmd).catch(() => null);
   let code = -1;
   try {
     const res = await run();
     code = codeOf(res) ?? -1;
+    const text = logId ? outputOf(res) : '';
+    if (text) await cmdlog.append(logId, text).catch(console.warn);
     return res;
   } finally {
     if (logId) await cmdlog.close(logId, code).catch(console.warn);
@@ -118,14 +121,23 @@ export const connectors = {
 // ('no-configuration'). Never rejects; a missing file is a state, not an error.
 export const codemieConfig = {
   read: () => invoke('read_codemie_config'),
+  // [{ name, provider, model, active }] — never carries secrets.
+  listProfiles: () => invoke('list_codemie_profiles'),
 };
 
 // ---- codemie profile ----
 // delete(name) runs `codemie profile delete <name> --yes` from the filesystem
 // root; resolves { code, stdout, stderr }, rejects on a name the shell cannot
 // carry safely.
+// switch(name) and rename(old, new) are the same shape. Each is logged with its
+// real command and the CLI's output.
+const profileCode = (r) => r?.code ?? 0;
+const profileOutput = (r) => `${r?.stdout ?? ''}${r?.stderr ?? ''}`;
 export const profile = {
-  delete: (name) => logged('codemie profile delete', () => invoke('delete_profile', { name }), (r) => r?.code ?? 0),
+  switch: (name) => logged(`codemie profile switch ${name}`, () => invoke('switch_profile', { name }), profileCode, profileOutput),
+  rename: (oldName, newName) =>
+    logged(`codemie profile rename ${oldName} ${newName}`, () => invoke('rename_profile', { old: oldName, new: newName }), profileCode, profileOutput),
+  delete: (name) => logged(`codemie profile delete ${name} --yes`, () => invoke('delete_profile', { name }), profileCode, profileOutput),
 };
 
 // ---- installer (src/main/installer-macos.js) ----
