@@ -190,50 +190,49 @@ jobs:
             fi
           done
 
-      # Notarization steps temporarily commented out:
-      # - name: Notarize and Staple DMG
-      #   id: notarize
-      #   env:
-      #     APPLE_ID: ${{ secrets.APPLEID }}
-      #     APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
-      #     APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
-      #   run: |
-      #     set -eo pipefail
-      #     DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
-      #     echo "Notarizing ${DMG_PATH}..."
-      #     AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
-      #     xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
-      #     UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
-      #     if [[ -n "${UUID}" ]]; then
-      #       echo "Fetching notarization log for ${UUID}..."
-      #       xcrun notarytool log "${UUID}" ${AUTH} || true
-      #     fi
-      #     echo "Stapling ticket to DMG..."
-      #     xcrun stapler staple "${DMG_PATH}"
-      #     xcrun stapler validate "${DMG_PATH}"
-      #   continue-on-error: true
-      #
-      # - name: Notarize and Staple DMG (retry)
-      #   if: steps.notarize.outcome == 'failure'
-      #   env:
-      #     APPLE_ID: ${{ secrets.APPLEID }}
-      #     APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
-      #     APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
-      #   run: |
-      #     set -eo pipefail
-      #     sleep 30
-      #     DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
-      #     echo "Retrying notarization for ${DMG_PATH}..."
-      #     AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
-      #     xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
-      #     UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
-      #     if [[ -n "${UUID}" ]]; then
-      #       echo "Fetching notarization log for ${UUID}..."
-      #       xcrun notarytool log "${UUID}" ${AUTH} || true
-      #     fi
-      #     echo "Stapling ticket to DMG..."
-      #     xcrun stapler staple "${DMG_PATH}"
-      #     xcrun stapler validate "${DMG_PATH}"
+      - name: Notarize and Staple DMG
+        id: notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLEID }}
+          APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
+          APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
+        run: |
+          set -eo pipefail
+          DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
+          echo "Notarizing ${DMG_PATH}..."
+          AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
+          xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
+          UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
+          if [[ -n "${UUID}" ]]; then
+            echo "Fetching notarization log for ${UUID}..."
+            xcrun notarytool log "${UUID}" ${AUTH} || true
+          fi
+          echo "Stapling ticket to DMG..."
+          xcrun stapler staple "${DMG_PATH}"
+          xcrun stapler validate "${DMG_PATH}"
+        continue-on-error: true
+
+      - name: Notarize and Staple DMG (retry)
+        if: steps.notarize.outcome == 'failure'
+        env:
+          APPLE_ID: ${{ secrets.APPLEID }}
+          APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
+          APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
+        run: |
+          set -eo pipefail
+          sleep 30
+          DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
+          echo "Retrying notarization for ${DMG_PATH}..."
+          AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
+          xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
+          UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
+          if [[ -n "${UUID}" ]]; then
+            echo "Fetching notarization log for ${UUID}..."
+            xcrun notarytool log "${UUID}" ${AUTH} || true
+          fi
+          echo "Stapling ticket to DMG..."
+          xcrun stapler staple "${DMG_PATH}"
+          xcrun stapler validate "${DMG_PATH}"
 
       - name: Generate Checksums
         working-directory: src-tauri/target/release/bundle/dmg
