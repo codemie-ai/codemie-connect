@@ -6,11 +6,6 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      target:
-        description: 'Target branch or full commit SHA (default: main)'
-        type: string
-        required: false
-        default: 'main'
       tag:
         description: 'Version or tag (e.g. 2.1.1 or v2.1.1; default: from tauri.conf.json)'
         type: string
@@ -40,7 +35,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate target and prepare release
+      - name: Validate and prepare release
         id: prepare
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -50,16 +45,13 @@ jobs:
           SEMVER_REGEX="^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$"
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TARGET="${{ inputs.target }}"
-            TARGET="${TARGET:-main}"
-
-            echo "Resolving target: ${TARGET}"
-            COMMIT_SHA=$(git rev-parse -q --verify "${TARGET}^{commit}") || {
-              echo "::error::Target '${TARGET}' is not a valid commit SHA, branch, or tag in this repository." >&2
+            if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+              echo "::error::Manual release can only be triggered from the 'main' branch, not '${{ github.ref }}'." >&2
               exit 1
-            }
+            fi
 
-            git checkout "${COMMIT_SHA}"
+            git checkout main
+            COMMIT_SHA=$(git rev-parse HEAD)
 
             INPUT_TAG="${{ inputs.tag }}"
             INPUT_TAG="$(echo "${INPUT_TAG}" | xargs)"
@@ -84,6 +76,13 @@ jobs:
               echo "::error::Git tag '${TAG}' must start with 'v' (e.g. v2.1.0)" >&2
               exit 1
             fi
+
+            git merge-base --is-ancestor "${COMMIT_SHA}" origin/main || {
+              echo "::error::Release tag '${TAG}' (commit ${COMMIT_SHA}) must point to a commit already merged into main." >&2
+              exit 1
+            }
+
+            git checkout "${COMMIT_SHA}"
 
             CONF_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
             if [ "${VERSION}" != "${CONF_VERSION}" ]; then
