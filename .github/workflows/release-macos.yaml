@@ -122,7 +122,7 @@ jobs:
       - make-draft-release
     runs-on: macos-15
     timeout-minutes: 60
-    environment: signing
+    environment: release
 
     steps:
       - name: Checkout repository at target commit
@@ -155,7 +155,7 @@ jobs:
           missing=0
           for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
             if [ -z "${!var}" ]; then
-              echo "::error::Required secret '${var}' is missing or empty in environment 'signing'." >&2
+              echo "::error::Required secret '${var}' is missing or empty in environment 'release'." >&2
               missing=1
             fi
           done
