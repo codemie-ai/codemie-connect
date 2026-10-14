@@ -1,230 +1,124 @@
-# CodeMie Installer (macOS) — Tauri edition
+<div align="center">
 
-A native macOS app that installs, configures, and connects the **CodeMie Claude Code CLI**.
-This is a [Tauri v2](https://tauri.app) rewrite of the original Electron app — same install
-flow and UX, a **~4 MB universal DMG instead of ~550 MB**.
+<img src="assets/codemie-logo.svg" alt="CodeMie" width="96" />
 
-| | Electron build | Tauri build |
-|---|---|---|
-| DMG size | ~550 MB | **~4 MB** universal (~1.9 MB single-arch) |
-| Runtime | bundled Chromium + Node | system WebKit + a tiny Rust binary |
-| Backend | Node.js modules | Rust `#[tauri::command]`s |
+# CodeMie Connect
 
-## Home / launcher
+**Set up CodeMie, your AI coding tools and Claude Desktop on a Mac in a few clicks. No terminal required.**
 
-On launch the app shows a home page (2×2 tile grid) with three actions:
+[![Latest release](https://img.shields.io/github/v/release/codemie-ai/codemie-connect?style=flat-square&label=release&color=2ea44f)](https://github.com/codemie-ai/codemie-connect/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/codemie-ai/codemie-connect/ci.yaml?branch=main&style=flat-square&label=CI)](https://github.com/codemie-ai/codemie-connect/actions/workflows/ci.yaml)
+[![Platform](https://img.shields.io/badge/platform-macOS%2010.15%2B-000000?style=flat-square&logo=apple&logoColor=white)](#requirements)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
+[![Signed and notarized](https://img.shields.io/badge/Apple-signed%20%26%20notarized-555555?style=flat-square&logo=apple&logoColor=white)](#download)
 
-| Tile | What it does |
+<img src="docs/media/demo.gif" alt="CodeMie Connect walkthrough" width="760" />
+
+</div>
+
+## What is it
+
+CodeMie Connect is a small native macOS app that gets you from a fresh Mac to a working
+[CodeMie](https://github.com/codemie-ai/codemie-code) setup. It installs and configures the
+CodeMie CLI, signs you in, installs AI coding tools such as Claude Code, points Claude Desktop
+at the CodeMie gateway, and checks that everything is healthy.
+
+- **Nothing to install first.** The app downloads what it needs (Node.js and the CodeMie CLI) on first launch, into its own folder.
+- **Sign in with your EPAM account**, or bring your own key, or use a local model through Ollama.
+- **Small.** About 4 MB, a Tauri app on the system WebKit instead of a bundled browser.
+- **Transparent.** A "what CodeMie ran" panel lists every command the app executed for you.
+
+## Download
+
+<p>
+  <a href="https://github.com/codemie-ai/codemie-connect/releases/latest">
+    <img src="https://img.shields.io/badge/Download%20for%20macOS-000000?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS" height="48" />
+  </a>
+</p>
+
+The button opens the latest release. Download the `CodeMie-Connect-<version>-aarch64.dmg` asset
+(Apple Silicon). The app is signed, notarized by Apple, and checks for updates itself. The release
+page has the notes and a `.sha256` checksum next to each disk image.
+
+> This repository is private. You need access to `codemie-ai/codemie-connect` to open the link.
+
+## Install
+
+1. Open the downloaded `.dmg`.
+2. Drag **CodeMie Connect** to **Applications**.
+3. Launch it from Applications or Spotlight.
+
+On the first launch the app prepares its runtime (a one-time download of a few tens of MB). If the
+machine already has a CodeMie CLI, this step is skipped.
+
+## Basic usage
+
+The sidebar has four places plus an analytics shortcut.
+
+| Screen | What it is for |
 |---|---|
-| **Setup** | Run the setup wizard and Claude engine. |
-| **Connect Claude Desktop** | Opens a **Connect / Restart** screen. Both verify sign-in via `codemie profile status` first, then point Claude Desktop at the CodeMie proxy: **Connect** runs `codemie proxy connect desktop`; **Restart** runs `codemie proxy stop` then connects again. |
-| **CLI usage analytics** | Runs `codemie analytics --report --open` to build an HTML report of your **local AI CLI usage** (Claude Code, Codex, …) and open it in the browser. |
+| **Home** | A checklist on first run, then status cards: sign-in, installed tools, connections, health. |
+| **Tools** | Install, update and remove AI coding tools (Claude Code and others). Tools run from your terminal; this screen only sets them up. |
+| **Connections** | **Connect Claude Desktop** to the CodeMie gateway, or **Restart** the connection if Claude Desktop lost it. |
+| **Health** | Runs `codemie doctor` and checks your account, grouped and in plain language. |
+| **CLI usage analytics** | Builds an HTML report of your local AI CLI usage and opens it in the browser. |
 
-Connect/analytics output streams in an embedded terminal; navigation between views is via the
-"‹ Home" / "‹ Back" links (no page reloads).
+### First run in four steps
 
-## The install wizard
+1. **Set up CodeMie.** Choose how CodeMie reaches a model: sign in with your EPAM account (opens your browser), or use your own key, or a local model with Ollama. Pick your CodeMie project when asked.
+2. **Install a tool.** Open **Tools** and install Claude Code (or any other listed tool).
+3. **Connect Claude Desktop** (optional). Open **Connections** and press **Connect**.
+4. **Verify.** Open **Health** and run **Check everything again**. Everything should be green.
 
-The **Setup** tile drives a guided wizard that:
+Afterwards, use your tool from a terminal as usual, for example `claude`.
 
-1. Checks for **Git** (offers to install the Xcode Command Line Tools if missing).
-2. Checks for **Node.js & npm** (offers to download + install the official universal `.pkg`).
-3. Installs the **CodeMie CLI** globally via npm (`@codemieai/code`).
-4. Runs **`codemie setup`** interactively (in an embedded terminal).
-5. Installs the **Claude Code engine** via CodeMie (interactive).
-6. Validates with **`codemie doctor`**.
+## Requirements
 
-Steps with system changes pause for approval (or auto-approve in *Unattended mode*).
+- macOS 10.15 or newer
+- Apple Silicon Mac for the current release (`aarch64`)
+- Internet access on the first launch
+- A CodeMie account, or an API key for your own provider
 
-## Architecture (Option B)
+## Troubleshooting
 
-The orchestration "brain" (`engine.js`, `handlers.js`, `models.js`) lives in the frontend as
-vanilla ES modules — reused almost verbatim from the Electron app. Only the system-facing
-operations are Rust commands:
-
-```
-ui/                      frontend (no bundler; loaded as ES modules)
-  index.html             home-view (launcher) + wizard-view + connect-view + overlays
-  renderer.js            view routing, builds the Engine, drives it via Tauri invoke/listen
-  engine.js handlers.js  install plan orchestration + per-step handlers (reused)
-  runner-bridge.js       wraps Rust commands as the module surface handlers expect
-  steps-ui.js sprite.js log.js terminal.js  UI widgets (terminal has a keep-open mode)
-src-tauri/src/
-  commands/runner.rs     run_capture / run_fresh_env / run_stream (login-shell exec)
-  commands/inspector.rs  git / node / npm / codemie probes + profile-status auth check
-  commands/installer.rs  Node .pkg URL + LTS lookup + osascript sudo + Xcode CLT
-  commands/downloader.rs reqwest streaming download with progress events
-  commands/pathman.rs    login-shell PATH resolution + ~/.zprofile persistence
-  commands/runtime.rs    macOS first-launch install of Node (nodejs.org) + CLI (npm), CLI updates from npm
-  commands/pty.rs        portable-pty: interactive TUI steps (base64 framing)
-  commands/logger.rs window.rs smoke.rs
-  steps.rs               embedded config/steps.yaml (serde_yaml) + logo path
-```
-
-- `check_profile_status` runs `codemie profile status` (stdin closed so an expired-creds
-  re-auth prompt can't hang it) and parses the **Auth Status** line — the live gate for the
-  Connect Claude Desktop actions.
-- PTY output is base64-framed across the IPC boundary so multi-byte UTF-8 / ANSI escape
-  sequences split across read boundaries are never corrupted.
-
-## Prerequisites
-
-- macOS 10.15+
-- [Rust toolchain](https://rustup.rs) (stable)
-- Tauri CLI: `cargo install tauri-cli --version "^2" --locked`
-- Node.js (only to run the JS unit tests)
-
-## Develop
-
-```bash
-cd src-tauri
-cargo tauri dev
-```
-
-## Build a shareable DMG
-
-The macOS DMG (Apple Silicon) is small: it holds the app and the `codemie` shim only. On first launch the app downloads the pinned Node.js from nodejs.org (SHA-256 checked) and installs the pinned CLI from npm with the lock file in `assets/codemie-cli/`, into `~/Library/Application Support/CodeMie/runtime`. Later launches install a newer CLI from npm in the background, so a CLI release needs no new installer. All of it is skipped when the machine already has a CodeMie CLI. The Windows installer still bundles Node and the CLI. Build with the verifying script:
-
-```bash
-./build-installer.sh
-```
-
-It downloads the pinned Node (`runtime.json`), installs the CLI tree and its lock file under `assets/codemie-cli/`, asserts every artifact before and after the Tauri build, runs the bundled shim against that tree laid out the way the app installs it, and prints the DMG path. There is nothing to upload. The plain commands below skip those checks.
-
-```bash
-cd src-tauri
-
-# Native architecture (fast iteration):
-CI=true cargo tauri build
-
-# Universal (Intel + Apple Silicon) — for sharing:
-rustup target add x86_64-apple-darwin aarch64-apple-darwin
-CI=true cargo tauri build --target universal-apple-darwin
-```
-
-The DMG lands in `src-tauri/target/<target>/release/bundle/dmg/`.
-
-> **`CI=true` is required** when building outside an interactive desktop session: it tells
-> Tauri's `bundle_dmg.sh` to skip the Finder AppleScript that styles the DMG window
-> (which otherwise fails headless).
-
-The app/Dock icon is generated from `assets/ai-run-codemie-logo-white_bg.svg`:
-
-```bash
-cargo tauri icon assets/ai-run-codemie-logo-white_bg.svg
-```
-
-## Running an unsigned build (Gatekeeper)
-
-The default `cargo tauri build` output is *ad-hoc* signed only, so Gatekeeper will block it
-on other Macs. This is expected for local/dev builds.
-
-**To run it anyway (local / internal testers):**
-
-- **GUI (macOS 13–15):** click **Done** in the block dialog, drag the app to **Applications**,
-  then open **System Settings → Privacy & Security → Open Anyway** and authenticate.
-- **Terminal (most reliable):**
-  ```bash
-  cp -R "/Volumes/CodeMie Installer/CodeMie Installer.app" /Applications/
-  xattr -cr "/Applications/CodeMie Installer.app"
-  open "/Applications/CodeMie Installer.app"
-  ```
-
-## Signing & notarizing for distribution
-
-Signing produces a DMG that Gatekeeper accepts on any Mac without warnings. Requires an
-**Apple Developer Program** account and a **Developer ID Application** certificate.
-
-### Assets (`apple_developer/`)
-
-| File | What it is |
+| Symptom | What to do |
 |---|---|
-| `developerID_application.cer` | Developer ID Application certificate (public) |
-| `DeveloperID.key` | Matching private key — **never commit** |
+| "Could not reach CodeMie" during setup | Check VPN and network, then press **Try again**. |
+| Sign-in expired | Open **Home** or **Health**; the sign-in card offers to sign in again. |
+| Claude Desktop lost the connection | **Connections**, then **Restart**. |
+| Something fails and you need details | Expand **what CodeMie ran** at the bottom of the window, or use **Open Log** in the setup view. |
 
-### One-shot script
-
-`sign-dmg.sh` does the full pipeline:
-
-1. Imports the cert + key into the macOS login keychain (idempotent)
-2. Downloads the Apple Developer ID G2 intermediate CA if missing
-3. Mounts the source DMG, extracts the `.app`, signs it with hardened runtime + secure timestamp
-4. Repacks a fresh DMG from the signed `.app`
-5. Signs the new DMG
-6. (optional) Submits to Apple notarization, waits for `Accepted`, staples the ticket
-
-### Setup
-
-Create `.env.signing` in the project root (it is gitignored):
+## Development
 
 ```bash
-# .env.signing — DO NOT COMMIT
-KEYCHAIN_PASSWORD=your_mac_login_password
+# tests
+npm test                          # frontend unit tests (node:test)
+cargo test --manifest-path src-tauri/Cargo.toml
 
-# Notarization only:
-APPLE_ID=you@example.com
-APPLE_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx   # app-specific password from appleid.apple.com
-APPLE_TEAM_ID=XXXXXXXXXX
+# run the app with hot reload
+cd src-tauri && cargo tauri dev
 ```
 
-Generate an app-specific password at **appleid.apple.com → Security → App-Specific Passwords**.
+Prerequisites: stable [Rust](https://rustup.rs), the Tauri CLI (`cargo install tauri-cli --version "^2" --locked`) and Node.js.
 
-### Run
+How it is built: the install logic lives in the frontend as plain ES modules (`ui/`), and the
+Rust backend (`src-tauri/`) only exposes system operations (running commands, PTY, downloads,
+PATH handling) as Tauri commands. See [AGENTS.md](AGENTS.md) and `.ai-run/guides/` for the
+architecture and conventions.
+
+## Releasing
+
+Bump the version in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, merge to `main`, then push a
+matching tag:
 
 ```bash
-# Build the DMG first
-cd src-tauri && CI=true cargo tauri build && cd ..
-
-# Sign only (internal distribution, your own Mac)
-./sign-dmg.sh
-
-# Sign + notarize + staple (required for distribution to other Macs)
-NOTARIZE=1 ./sign-dmg.sh
+git tag v2.1.1 && git push origin v2.1.1
 ```
 
-The signed (and optionally notarized) DMG is written to:
-```
-src-tauri/target/release/bundle/dmg/CodeMie Installer_2.0.0_aarch64_signed.dmg
-```
+The release workflow builds, signs and notarizes the DMG and publishes it with a checksum.
 
-Verify Gatekeeper acceptance:
-```bash
-spctl --assess --type open --context context:primary-signature -v \
-  "src-tauri/target/release/bundle/dmg/CodeMie Installer_2.0.0_aarch64_signed.dmg"
-# expected: accepted
-```
+---
 
-> **Notarization time:** typically 2–10 minutes. The script blocks with `--wait` and staples
-> automatically on success.
-
-## Tests
-
-```bash
-# Rust unit tests (ported from the Electron app's suite + the auth-status parser)
-cd src-tauri && cargo test
-
-# JS engine/model tests
-npm test           # node --test ui/test/*.test.mjs
-```
-
-## Non-destructive smoke modes
-
-The wizard's real steps modify your system, so two env-gated, **non-destructive** self-tests
-exist for CI / verification (they print to stdout and quit). They boot straight into the wizard
-view, bypassing the home page:
-
-| Env var | Behaviour |
-|---|---|
-| `CODEMIE_PROBE_SMOKE=1` | Runs the detection-only steps (git/node/codemie) unattended; step 1.3 detects without installing. Prints `PROBE_RESULT … / PROBE_DONE`. |
-| `CODEMIE_SMOKE=1` | Verifies the renderer booted (step rows, canvas) and runs a benign PTY echo. Prints `SMOKE_PROBE / SMOKE_PTY / SMOKE_OK`. |
-| `CODEMIE_SMOKE_MS=<n>` | Override the smoke quit delay (default 2500 ms). |
-
-```bash
-CODEMIE_PROBE_SMOKE=1 ./src-tauri/target/release/app
-CODEMIE_SMOKE=1 ./src-tauri/target/release/app
-```
-
-The genuine end-to-end install (npm global install, `codemie setup`, sudo `.pkg` install,
-`~/.zprofile` edits) and the network actions (`proxy connect`, `analytics`) are **never run
-automatically** — exercise them by hand from the home page.
-```
+<div align="center">
+EPAM AI/Run CodeMie
+</div>
