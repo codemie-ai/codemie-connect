@@ -6,8 +6,8 @@
 
 **Set up CodeMie, your AI coding tools and Claude Desktop on macOS or Windows in a few clicks. No terminal required.**
 
-[![Latest release](https://img.shields.io/github/v/release/codemie-ai/codemie-connect?style=flat-square&label=release&color=2ea44f)](https://github.com/codemie-ai/codemie-connect/releases/latest)
-[![CI](https://img.shields.io/github/actions/workflow/status/codemie-ai/codemie-connect/ci.yaml?branch=main&style=flat-square&label=CI)](https://github.com/codemie-ai/codemie-connect/actions/workflows/ci.yaml)
+[![Latest release](https://img.shields.io/github/v/release/codemie-ai/codemie-connect?style=flat-square&label=release&color=2ea44f&cacheSeconds=3600)](https://github.com/codemie-ai/codemie-connect/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/codemie-ai/codemie-connect/ci.yaml?branch=main&style=flat-square&label=CI&cacheSeconds=3600)](https://github.com/codemie-ai/codemie-connect/actions/workflows/ci.yaml)
 [![Platform](https://img.shields.io/badge/platform-macOS%2010.15%2B%20%7C%20Windows-000000?style=flat-square&logo=apple&logoColor=white)](#requirements)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
 [![Signed and notarized](https://img.shields.io/badge/Apple-signed%20%26%20notarized-555555?style=flat-square&logo=apple&logoColor=white)](#download)
@@ -73,7 +73,7 @@ The sidebar has four places plus an analytics shortcut.
 
 ### First run in four steps
 
-1. **Set up CodeMie.** Choose how CodeMie reaches a model: sign in with your CodeMie account (opens your browser), or use your own key, or a local model with Ollama. Pick your CodeMie project when asked.
+1. **Set up [CodeMie Code](https://github.com/codemie-ai/codemie-code).** Choose how CodeMie reaches a model: sign in with your CodeMie account (opens your browser), or use your own key, or a local model with Ollama. Pick your CodeMie project when asked.
 2. **Install a tool.** Open **Tools** and install Claude Code (or any other listed tool).
 3. **Connect Claude Desktop** (optional). Open **Connections** and press **Connect**.
 4. **Verify.** Open **Health** and run **Check everything again**. Everything should be green.
