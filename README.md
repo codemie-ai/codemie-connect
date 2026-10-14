@@ -10,6 +10,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/codemie-ai/codemie-connect/ci.yaml?branch=main&style=flat-square&label=CI)](https://github.com/codemie-ai/codemie-connect/actions/workflows/ci.yaml)
 [![Platform](https://img.shields.io/badge/platform-macOS%2010.15%2B%20%7C%20Windows-000000?style=flat-square&logo=apple&logoColor=white)](#requirements)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE)
 [![Signed and notarized](https://img.shields.io/badge/Apple-signed%20%26%20notarized-555555?style=flat-square&logo=apple&logoColor=white)](#download)
 
 <img src="docs/media/demo.gif" alt="CodeMie Connect walkthrough" width="760" />
@@ -73,7 +74,7 @@ The sidebar has four places plus an analytics shortcut.
 
 ### First run in four steps
 
-1. **Set up CodeMie.** Choose how CodeMie reaches a model: sign in with your CodeMie account (opens your browser), or use your own key, or a local model with Ollama. Pick your CodeMie project when asked.
+1. **Set up [CodeMie Code](https://github.com/codemie-ai/codemie-code).** Choose how CodeMie reaches a model: sign in with your CodeMie account (opens your browser), or use your own key, or a local model with Ollama. Pick your CodeMie project when asked.
 2. **Install a tool.** Open **Tools** and install Claude Code (or any other listed tool).
 3. **Connect Claude Desktop** (optional). Open **Connections** and press **Connect**.
 4. **Verify.** Open **Health** and run **Check everything again**. Everything should be green.
@@ -85,15 +86,6 @@ Afterwards, use your tool from a terminal as usual, for example `claude`.
 - macOS 10.15 or newer (Apple Silicon for the current release), or Windows 10/11 (64-bit)
 - Internet access on the first launch
 - A CodeMie account, or an API key for your own provider
-
-## Troubleshooting
-
-| Symptom | What to do |
-|---|---|
-| "Could not reach CodeMie" during setup | Check VPN and network, then press **Try again**. |
-| Sign-in expired | Open **Home** or **Health**; the sign-in card offers to sign in again. |
-| Claude Desktop lost the connection | **Connections**, then **Restart**. |
-| Something fails and you need details | Expand **what CodeMie ran** at the bottom of the window, or use **Open Log** in the setup view. |
 
 ## Development
 
@@ -123,6 +115,10 @@ git tag v2.1.1 && git push origin v2.1.1
 ```
 
 The release workflow builds, signs and notarizes the DMG and publishes it with a checksum.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE), the same as [CodeMie Code](https://github.com/codemie-ai/codemie-code).
 
 ---
 
