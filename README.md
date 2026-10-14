@@ -10,6 +10,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/codemie-ai/codemie-connect/ci.yaml?branch=main&style=flat-square&label=CI&cacheSeconds=3600)](https://github.com/codemie-ai/codemie-connect/actions/workflows/ci.yaml)
 [![Platform](https://img.shields.io/badge/platform-macOS%2010.15%2B%20%7C%20Windows-000000?style=flat-square&logo=apple&logoColor=white)](#requirements)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE)
 [![Signed and notarized](https://img.shields.io/badge/Apple-signed%20%26%20notarized-555555?style=flat-square&logo=apple&logoColor=white)](#download)
 
 <img src="docs/media/demo.gif" alt="CodeMie Connect walkthrough" width="760" />
@@ -114,6 +115,10 @@ git tag v2.1.1 && git push origin v2.1.1
 ```
 
 The release workflow builds, signs and notarizes the DMG and publishes it with a checksum.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE), the same as [CodeMie Code](https://github.com/codemie-ai/codemie-code).
 
 ---
 
