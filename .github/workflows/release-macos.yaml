@@ -39,6 +39,7 @@ jobs:
         id: prepare
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -eo pipefail
 
@@ -53,7 +54,7 @@ jobs:
             git checkout main
             COMMIT_SHA=$(git rev-parse HEAD)
 
-            INPUT_TAG="${{ inputs.tag }}"
+            INPUT_TAG="${RELEASE_TAG_INPUT}"
             INPUT_TAG="$(echo "${INPUT_TAG}" | xargs)"
 
             if [ -n "${INPUT_TAG}" ]; then
@@ -130,10 +131,11 @@ jobs:
           ref: ${{ needs.make-draft-release.outputs.commit_sha }}
 
       - name: Stamp version
+        env:
+          NEW_VERSION: ${{ needs.make-draft-release.outputs.version }}
         run: |
-          V="${{ needs.make-draft-release.outputs.version }}"
-          jq --arg v "$V" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
-          sed -i '' -E "s/^version = \".*\"/version = \"$V\"/" src-tauri/Cargo.toml
+          jq --arg v "$NEW_VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          sed -i '' -E "s/^version = \".*\"/version = \"$NEW_VERSION\"/" src-tauri/Cargo.toml
 
       - name: Run frontend tests
         run: npm test
@@ -240,13 +242,14 @@ jobs:
           done
 
       - name: Upload artifacts to Draft Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.make-draft-release.outputs.tag }}
         run: |
-          gh release upload "${{ needs.make-draft-release.outputs.tag }}" \
+          gh release upload "${RELEASE_TAG}" \
             src-tauri/target/release/bundle/dmg/*.dmg \
             src-tauri/target/release/bundle/dmg/*.sha256 \
             --clobber
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish-github-release:
     name: Publish GitHub Release
@@ -261,6 +264,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Publish GitHub release
-        run: gh release edit "${{ needs.make-draft-release.outputs.tag }}" --draft=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.make-draft-release.outputs.tag }}
+        run: gh release edit "${RELEASE_TAG}" --draft=false
