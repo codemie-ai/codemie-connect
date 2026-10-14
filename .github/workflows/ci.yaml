@@ -91,6 +91,18 @@ jobs:
           CI: true
         run: tauri build --bundles app dmg --no-sign
 
+      - name: Normalize filenames
+        working-directory: src-tauri/target/release/bundle/dmg
+        run: |
+          for f in *; do
+            [ -f "$f" ] || continue
+            new_name="$(echo "$f" | sed -E 's/[ _]/-/g')"
+            if [ "$f" != "$new_name" ]; then
+              echo "Renaming '$f' to '$new_name'"
+              mv "$f" "$new_name"
+            fi
+          done
+
       - name: Generate DMG checksums
         working-directory: src-tauri/target/release/bundle/dmg
         run: |
