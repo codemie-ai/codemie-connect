@@ -32,7 +32,7 @@ at the CodeMie gateway, and checks that everything is healthy.
 
 <p>
   <a href="https://github.com/codemie-ai/codemie-connect/releases/latest">
-    <img src="https://img.shields.io/badge/Download%20for%20macOS-6D4AFF?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS" height="72" />
+    <img src="assets/download-macos.svg" alt="Download for macOS" width="244" height="56" />
   </a>
 </p>
 
