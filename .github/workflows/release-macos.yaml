@@ -131,6 +131,27 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+      - name: Validate signing and notarization credentials
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLEID }}
+          APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
+          APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
+        run: |
+          missing=0
+          for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Required secret '${var}' is missing or empty in environment 'signing'." >&2
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Refusing to build an unsigned / unnotarized release." >&2
+            exit 1
+          fi
+          echo "All required signing and notarization secrets are present."
+
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli
 
@@ -141,11 +162,7 @@ jobs:
           # Certificates for code signing:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD; do
-            test -n "${!var}" || unset $var
-          done
-          tauri build --bundles dmg
+        run: tauri build --bundles dmg
 
       - name: Normalize filenames
         working-directory: src-tauri/target/release/bundle/dmg
@@ -167,21 +184,19 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
           APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
         run: |
-          if [[ -n "${APPLE_ID}" && -n "${APPLE_PASSWORD}" && -n "${APPLE_TEAM_ID}" ]]; then
-            DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
-            echo "Notarizing ${DMG_PATH}..."
-            AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
-            xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
-            UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
-            if [[ -n "${UUID}" ]]; then
-              echo "Fetching notarization log for ${UUID}..."
-              xcrun notarytool log "${UUID}" ${AUTH} || true
-            fi
-            echo "Stapling ticket to DMG..."
-            xcrun stapler staple "${DMG_PATH}"
-          else
-            echo "Apple notarization credentials not provided, skipping."
+          set -eo pipefail
+          DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
+          echo "Notarizing ${DMG_PATH}..."
+          AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
+          xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
+          UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
+          if [[ -n "${UUID}" ]]; then
+            echo "Fetching notarization log for ${UUID}..."
+            xcrun notarytool log "${UUID}" ${AUTH} || true
           fi
+          echo "Stapling ticket to DMG..."
+          xcrun stapler staple "${DMG_PATH}"
+          xcrun stapler validate "${DMG_PATH}"
         continue-on-error: true
 
       - name: Notarize and Staple DMG (retry)
@@ -191,20 +206,20 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
           APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
         run: |
-          if [[ -n "${APPLE_ID}" && -n "${APPLE_PASSWORD}" && -n "${APPLE_TEAM_ID}" ]]; then
-            sleep 30
-            DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
-            echo "Retrying notarization for ${DMG_PATH}..."
-            AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
-            xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
-            UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
-            if [[ -n "${UUID}" ]]; then
-              echo "Fetching notarization log for ${UUID}..."
-              xcrun notarytool log "${UUID}" ${AUTH} || true
-            fi
-            echo "Stapling ticket to DMG..."
-            xcrun stapler staple "${DMG_PATH}"
+          set -eo pipefail
+          sleep 30
+          DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
+          echo "Retrying notarization for ${DMG_PATH}..."
+          AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
+          xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
+          UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
+          if [[ -n "${UUID}" ]]; then
+            echo "Fetching notarization log for ${UUID}..."
+            xcrun notarytool log "${UUID}" ${AUTH} || true
           fi
+          echo "Stapling ticket to DMG..."
+          xcrun stapler staple "${DMG_PATH}"
+          xcrun stapler validate "${DMG_PATH}"
 
       - name: Generate Checksums
         working-directory: src-tauri/target/release/bundle/dmg
