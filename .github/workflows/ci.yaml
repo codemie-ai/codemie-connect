@@ -82,6 +82,32 @@ jobs:
       - name: Run backend unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.2 --no-audit --no-fund
+
+      - name: Build macOS app and DMG
+        working-directory: src-tauri
+        env:
+          CI: true
+        run: tauri build --bundles app dmg --no-sign
+
+      - name: Generate DMG checksums
+        working-directory: src-tauri/target/release/bundle/dmg
+        run: |
+          for f in *.dmg; do
+            shasum -a 256 "$f" > "$f.sha256"
+          done
+
+      - name: Upload macOS CI artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-dmg
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.sha256
+          if-no-files-found: error
+          retention-days: 3
+
   gitleaks:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
