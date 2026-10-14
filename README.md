@@ -40,8 +40,6 @@ The button opens the latest release. Download the `CodeMie-Connect-<version>-aar
 (Apple Silicon). The app is signed, notarized by Apple, and checks for updates itself. The release
 page has the notes and a `.sha256` checksum next to each disk image.
 
-> This repository is private. You need access to `codemie-ai/codemie-connect` to open the link.
-
 ## Install
 
 1. Open the downloaded `.dmg`.
