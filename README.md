@@ -4,11 +4,11 @@
 
 # CodeMie Connect
 
-**Set up CodeMie, your AI coding tools and Claude Desktop on a Mac in a few clicks. No terminal required.**
+**Set up CodeMie, your AI coding tools and Claude Desktop on macOS or Windows in a few clicks. No terminal required.**
 
 [![Latest release](https://img.shields.io/github/v/release/codemie-ai/codemie-connect?style=flat-square&label=release&color=2ea44f)](https://github.com/codemie-ai/codemie-connect/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/codemie-ai/codemie-connect/ci.yaml?branch=main&style=flat-square&label=CI)](https://github.com/codemie-ai/codemie-connect/actions/workflows/ci.yaml)
-[![Platform](https://img.shields.io/badge/platform-macOS%2010.15%2B-000000?style=flat-square&logo=apple&logoColor=white)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-macOS%2010.15%2B%20%7C%20Windows-000000?style=flat-square&logo=apple&logoColor=white)](#requirements)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
 [![Signed and notarized](https://img.shields.io/badge/Apple-signed%20%26%20notarized-555555?style=flat-square&logo=apple&logoColor=white)](#download)
 
@@ -18,13 +18,13 @@
 
 ## What is it
 
-CodeMie Connect is a small native macOS app that gets you from a fresh Mac to a working
+CodeMie Connect is a small native desktop app for macOS and Windows that gets you from a fresh machine to a working
 [CodeMie](https://github.com/codemie-ai/codemie-code) setup. It installs and configures the
 CodeMie CLI, signs you in, installs AI coding tools such as Claude Code, points Claude Desktop
 at the CodeMie gateway, and checks that everything is healthy.
 
 - **Nothing to install first.** The app downloads what it needs (Node.js and the CodeMie CLI) on first launch, into its own folder.
-- **Sign in with your EPAM account**, or bring your own key, or use a local model through Ollama.
+- **Sign in with your CodeMie account**, or bring your own key, or use a local model through Ollama.
 - **Small.** About 4 MB, a Tauri app on the system WebKit instead of a bundled browser.
 - **Transparent.** A "what CodeMie ran" panel lists every command the app executed for you.
 
@@ -36,15 +36,25 @@ at the CodeMie gateway, and checks that everything is healthy.
   </a>
 </p>
 
-The button opens the latest release. Download the `CodeMie-Connect-<version>-aarch64.dmg` asset
-(Apple Silicon). The app is signed, notarized by Apple, and checks for updates itself. The release
-page has the notes and a `.sha256` checksum next to each disk image.
+The button opens the latest release. Pick the asset for your system:
+
+- **macOS:** `CodeMie-Connect-<version>-aarch64.dmg` (Apple Silicon). Signed, notarized by Apple, with a `.sha256` checksum next to it.
+- **Windows:** the `CodeMie Connect_<version>_x64-setup.exe` installer. It installs per user and needs no administrator rights.
+
+The app checks for updates itself. The release page has the notes.
 
 ## Install
+
+**macOS**
 
 1. Open the downloaded `.dmg`.
 2. Drag **CodeMie Connect** to **Applications**.
 3. Launch it from Applications or Spotlight.
+
+**Windows**
+
+1. Run the downloaded `-setup.exe`.
+2. Launch **CodeMie Connect** from the Start menu.
 
 On the first launch the app prepares its runtime (a one-time download of a few tens of MB). If the
 machine already has a CodeMie CLI, this step is skipped.
@@ -63,7 +73,7 @@ The sidebar has four places plus an analytics shortcut.
 
 ### First run in four steps
 
-1. **Set up CodeMie.** Choose how CodeMie reaches a model: sign in with your EPAM account (opens your browser), or use your own key, or a local model with Ollama. Pick your CodeMie project when asked.
+1. **Set up CodeMie.** Choose how CodeMie reaches a model: sign in with your CodeMie account (opens your browser), or use your own key, or a local model with Ollama. Pick your CodeMie project when asked.
 2. **Install a tool.** Open **Tools** and install Claude Code (or any other listed tool).
 3. **Connect Claude Desktop** (optional). Open **Connections** and press **Connect**.
 4. **Verify.** Open **Health** and run **Check everything again**. Everything should be green.
@@ -72,8 +82,7 @@ Afterwards, use your tool from a terminal as usual, for example `claude`.
 
 ## Requirements
 
-- macOS 10.15 or newer
-- Apple Silicon Mac for the current release (`aarch64`)
+- macOS 10.15 or newer (Apple Silicon for the current release), or Windows 10/11 (64-bit)
 - Internet access on the first launch
 - A CodeMie account, or an API key for your own provider
 
