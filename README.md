@@ -6,8 +6,8 @@
 
 **Set up CodeMie, your AI coding tools and Claude Desktop on macOS or Windows in a few clicks. No terminal required.**
 
-[![Latest release](https://img.shields.io/github/v/release/codemie-ai/codemie-connect?style=flat-square&label=release&color=2ea44f&cacheSeconds=3600)](https://github.com/codemie-ai/codemie-connect/releases/latest)
-[![CI](https://img.shields.io/github/actions/workflow/status/codemie-ai/codemie-connect/ci.yaml?branch=main&style=flat-square&label=CI&cacheSeconds=3600)](https://github.com/codemie-ai/codemie-connect/actions/workflows/ci.yaml)
+[![Latest release](https://img.shields.io/github/v/release/codemie-ai/codemie-connect?style=flat-square&label=release&color=2ea44f)](https://github.com/codemie-ai/codemie-connect/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/codemie-ai/codemie-connect/ci.yaml?branch=main&style=flat-square&label=CI)](https://github.com/codemie-ai/codemie-connect/actions/workflows/ci.yaml)
 [![Platform](https://img.shields.io/badge/platform-macOS%2010.15%2B%20%7C%20Windows-000000?style=flat-square&logo=apple&logoColor=white)](#requirements)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE)
