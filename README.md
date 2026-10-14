@@ -24,7 +24,7 @@ CodeMie CLI, signs you in, installs AI coding tools such as Claude Code, points 
 at the CodeMie gateway, and checks that everything is healthy.
 
 - **Nothing to install first.** The app downloads what it needs (Node.js and the CodeMie CLI) on first launch, into its own folder.
-- **Sign in with your EPAM account**, or bring your own key, or use a local model through Ollama.
+- **Sign in with your CodeMie account**, or bring your own key, or use a local model through Ollama.
 - **Small.** About 4 MB, a Tauri app on the system WebKit instead of a bundled browser.
 - **Transparent.** A "what CodeMie ran" panel lists every command the app executed for you.
 
@@ -73,7 +73,7 @@ The sidebar has four places plus an analytics shortcut.
 
 ### First run in four steps
 
-1. **Set up CodeMie.** Choose how CodeMie reaches a model: sign in with your EPAM account (opens your browser), or use your own key, or a local model with Ollama. Pick your CodeMie project when asked.
+1. **Set up CodeMie.** Choose how CodeMie reaches a model: sign in with your CodeMie account (opens your browser), or use your own key, or a local model with Ollama. Pick your CodeMie project when asked.
 2. **Install a tool.** Open **Tools** and install Claude Code (or any other listed tool).
 3. **Connect Claude Desktop** (optional). Open **Connections** and press **Connect**.
 4. **Verify.** Open **Health** and run **Check everything again**. Everything should be green.
