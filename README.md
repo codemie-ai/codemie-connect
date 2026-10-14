@@ -86,15 +86,6 @@ Afterwards, use your tool from a terminal as usual, for example `claude`.
 - Internet access on the first launch
 - A CodeMie account, or an API key for your own provider
 
-## Troubleshooting
-
-| Symptom | What to do |
-|---|---|
-| "Could not reach CodeMie" during setup | Check VPN and network, then press **Try again**. |
-| Sign-in expired | Open **Home** or **Health**; the sign-in card offers to sign in again. |
-| Claude Desktop lost the connection | **Connections**, then **Restart**. |
-| Something fails and you need details | Expand **what CodeMie ran** at the bottom of the window, or use **Open Log** in the setup view. |
-
 ## Development
 
 ```bash
