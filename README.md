@@ -87,7 +87,6 @@ Afterwards, use your tool from a terminal as usual, for example `claude`.
 | Sign-in expired | Open **Home** or **Health**; the sign-in card offers to sign in again. |
 | Claude Desktop lost the connection | **Connections**, then **Restart**. |
 | Something fails and you need details | Expand **what CodeMie ran** at the bottom of the window, or use **Open Log** in the setup view. |
-| Gatekeeper blocks a locally built app | Release builds are notarized. For your own builds see [docs/building-and-signing.md](docs/building-and-signing.md#running-an-unsigned-build-gatekeeper). |
 
 ## Development
 
@@ -106,10 +105,6 @@ How it is built: the install logic lives in the frontend as plain ES modules (`u
 Rust backend (`src-tauri/`) only exposes system operations (running commands, PTY, downloads,
 PATH handling) as Tauri commands. See [AGENTS.md](AGENTS.md) and `.ai-run/guides/` for the
 architecture and conventions.
-
-More docs:
-
-- [Building, signing and releasing](docs/building-and-signing.md), including notarization and the non-destructive smoke modes
 
 ## Releasing
 
