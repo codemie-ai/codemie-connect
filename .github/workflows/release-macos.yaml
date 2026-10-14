@@ -110,7 +110,7 @@ jobs:
             --target "${COMMIT_SHA}" \
             --draft \
             --title "${TAG}" \
-            --generate-notes
+            --notes ""
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
