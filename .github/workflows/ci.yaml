@@ -56,8 +56,8 @@ jobs:
           PR_TITLE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json title --jq '.title')
           printf '%s\n' "$PR_TITLE" | npx --no-install commitlint --verbose
 
-  test:
-    name: Lint & Tests (macOS)
+  ci-macos:
+    name: Lint, Test & Build (macOS)
     runs-on: macos-15
     timeout-minutes: 20
 
@@ -91,24 +91,9 @@ jobs:
           CI: true
         run: tauri build --bundles app dmg --no-sign
 
-      - name: Normalize filenames
-        working-directory: src-tauri/target/release/bundle/dmg
-        run: |
-          for f in *; do
-            [ -f "$f" ] || continue
-            new_name="$(echo "$f" | sed -E 's/[ _]/-/g')"
-            if [ "$f" != "$new_name" ]; then
-              echo "Renaming '$f' to '$new_name'"
-              mv "$f" "$new_name"
-            fi
-          done
-
-      - name: Generate DMG checksums
-        working-directory: src-tauri/target/release/bundle/dmg
-        run: |
-          for f in *.dmg; do
-            shasum -a 256 "$f" > "$f.sha256"
-          done
+      - name: Prepare macOS artifacts
+        shell: bash
+        run: bash scripts/prepare-artifacts.sh src-tauri/target/release/bundle/dmg macos
 
       - name: Upload macOS CI artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -117,6 +102,70 @@ jobs:
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/dmg/*.sha256
+          if-no-files-found: error
+          retention-days: 3
+
+  ci-windows:
+    name: Lint, Test & Build (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '24'
+
+      - name: Prepare Windows runtime key
+        run: |
+          $runtime = Get-Content runtime.json -Raw | ConvertFrom-Json
+          $key = "$($runtime.cliVersion)-node$($runtime.nodeVersion)"
+          [IO.File]::WriteAllText(
+            (Join-Path $PWD 'assets/windows/bin/runtime-key'),
+            $key,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Lint Rust (clippy)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Run frontend unit tests
+        run: npm test
+
+      - name: Run backend unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.2 --no-audit --no-fund
+
+      - name: Build Windows NSIS installer
+        working-directory: src-tauri
+        env:
+          CI: true
+        run: tauri build --bundles nsis --no-sign
+
+      - name: Prepare Windows artifacts
+        shell: bash
+        run: bash scripts/prepare-artifacts.sh src-tauri/target/release/bundle/nsis windows
+
+      - name: Upload Windows CI artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-nsis
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.sha256
           if-no-files-found: error
           retention-days: 3
 
