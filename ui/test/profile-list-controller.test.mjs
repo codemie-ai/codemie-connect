@@ -107,3 +107,27 @@ test('clearMessages drops the last failure and notice, so a later visit starts c
   assert.equal(c.state.failure, null);
   assert.equal(c.state.notice, null);
 });
+
+test('while an action runs, state.pending names the row and what it will show', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')], [P('a', true), P('z')]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  const seen = [];
+  c.subscribe((s) => seen.push(s.pending && { ...s.pending }));
+  await c.rename('b', 'z');
+  assert.deepEqual(seen, [{ name: 'b', label: 'z', text: 'Renaming…' }, null]);
+  seen.length = 0;
+  await c.switchTo('z');
+  assert.deepEqual(seen[0], { name: 'z', label: 'z', text: 'Switching…' });
+  seen.length = 0;
+  await c.remove('z');
+  assert.deepEqual(seen[0], { name: 'z', label: 'z', text: 'Deleting…' });
+});
+
+test('deleting a profile that was not active names no new active profile', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')], [P('a', true)]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  await c.remove('b');
+  assert.equal(c.state.notice, null);
+});

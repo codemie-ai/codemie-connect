@@ -273,7 +273,7 @@ function renderHome() {
   // The last step starts by itself once the ones before it are done, instead
   // of leaving the user on a checklist that waits for a click. Once a session:
   // a check that fails leaves its step saying so, and Home does not retry it.
-  if (!autoHealthStarted && autoHealthCheck(state)) {
+  if (!autoHealthStarted && autoHealthCheck(state, { setupOpen: setupRunning || !views.setup.classList.contains('hidden') })) {
     autoHealthStarted = true;
     setTimeout(startHealthInPlace, 0);
   }
@@ -332,6 +332,7 @@ let setupView = null;
 // True while a guided setup run is open; runAction reads it. setupSettled
 // resolves once that run has fully unwound.
 let setupRunning = false;
+let setupRun = null;
 let setupSettled = Promise.resolve();
 // Set while a run left behind by showView is being stopped; the next
 // openGuidedSetup waits for it, or start() would hand back the old run.
@@ -349,8 +350,12 @@ async function openGuidedSetup() {
       },
       // Called for each run, including a "Try again" started from the view.
       onRun: (run) => {
+        setupRun = run;
         setupRunning = true;
         setupSettled = run.then(() => {}, () => {}).finally(() => {
+          // A restart can start the next run before this one has unwound;
+          // only the latest run ends setup.
+          if (setupRun !== run) return;
           setupRunning = false;
           // A run writes the profile and may sign the user in; Home re-reads both.
           refreshIdentityOnComplete();
