@@ -419,6 +419,32 @@ body::before {
 /* In the title row, pushed right: under the card it made the Profile card
    taller than the card beside it. */
 .home-card .btn.home-card-action { width: auto; padding: 4px 10px; font-size: 12px; margin-left: auto; }
+.home-card-head .home-card-action + .home-card-action { margin-left: 8px; }
+/* Manage profiles sits a little into the card's right padding, closer to the edge. */
+.home-card[data-card="profile"] .btn.home-card-action { margin-right: -8px; }
+.home-card .btn.home-card-action { white-space: nowrap; }
+.profile-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08)); }
+.profile-row:first-child { border-top: 0; }
+.profile-info { flex: 1; min-width: 0; }
+.profile-name { font-weight: 600; }
+/* Text and buttons match the Tools rows (.step-sub, .agent-actions .btn). */
+.profile-sub, .profile-confirm, .profile-notice { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.profile-row .btn { width: auto; padding: 4px 12px; font-size: 12px; white-space: nowrap; }
+/* The Active marker is Home's green "active" pill, at the buttons' size. */
+.profile-badge { box-sizing: border-box; padding: 4px 12px; font-size: 12px; font-weight: 600; border-radius: var(--radius-lg); color: var(--green); border: 1px solid currentColor; background: rgba(46, 160, 67, 0.14); white-space: nowrap; }
+/* ---- Profiles screen (EPMCDME-14576), laid out like Connections ---- */
+#profiles-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 28px 32px; gap: 18px; }
+#profiles-back { align-self: flex-start; width: auto; padding: 4px 10px; font-size: 12px; }
+#profiles-header { display: flex; align-items: center; gap: 16px; }
+.profiles-heading { flex: 1; min-width: 0; }
+#profiles-title { font-size: 20px; font-weight: 700; color: var(--text); }
+#profiles-subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; line-height: 1.5; max-width: 620px; }
+#profiles-add { width: auto; white-space: nowrap; }
+#profiles-rows .profile-list { border: 1px solid var(--border, rgba(255, 255, 255, 0.08)); border-radius: 12px; padding: 4px 16px; }
+#profiles-rows .profile-row { padding: 12px 0; }
+#profiles-rows .profile-notice, #profiles-rows .profile-failure { margin-top: 12px; }
+/* Setup's input, sized for a name. */
+.prompt-input.profile-rename-input { max-width: 280px; padding: 4px 10px; font-size: 13px; }
 
 /* ---- Update banners (EPMCDME-15189) ---- */
 .top-banner {

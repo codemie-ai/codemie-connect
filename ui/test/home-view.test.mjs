@@ -214,18 +214,19 @@ test('when everything is done the three cards replace the checklist, on the same
   assert.equal(stepsUi.calls.filter((c) => c[0] === 'renderSteps').length, 1, 'cards do not touch the step list');
 });
 
-test('the Profile card offers Set up again; the other cards open their screen', () => {
+test('the Profile card offers only Manage profiles; the other cards open their screen', () => {
   const container = makeEl('div');
   const events = [];
   createHomeView(container, {
     stepsUi: fakeStepsUi(),
-    onSetupAgain: () => events.push('setup-again'),
+    onManageProfiles: () => events.push('profiles'),
     onCard: (id) => events.push(`card:${id}`),
   }).render(steady);
-  container._all((n) => n._tag === 'button' && n.textContent === 'Set up again')[0]._click();
+  assert.equal(container._all((n) => n._tag === 'button' && n.textContent === 'Set up again').length, 0);
+  container._all((n) => n._tag === 'button' && n.textContent === 'Manage profiles')[0]._click();
   container.querySelector('.home-card-warn')._click();
   container._all((n) => n.dataset.card === 'agents')[0]._click();
-  assert.deepEqual(events, ['setup-again', 'card:health', 'card:agents']);
+  assert.deepEqual(events, ['profiles', 'card:health', 'card:agents']);
 });
 
 // The welcome heading already titles the checklist; the header only earns its
@@ -342,4 +343,16 @@ test('a failed delete shows the CLI sentence inline and the button works again',
   del.onclick();
   assert.equal(calls, 2);
   await tick();
+});
+
+test('Manage profiles opens the profiles screen and draws nothing inside the Profile card', () => {
+  const container = makeEl('div');
+  let opened = 0;
+  const view = createHomeView(container, { stepsUi: fakeStepsUi(), onManageProfiles: () => { opened += 1; } });
+  view.render(steady);
+  const manage = container._all((n) => n._tag === 'button' && n.textContent === 'Manage profiles')[0];
+  manage.onclick({ stopPropagation() {} });
+  assert.equal(opened, 1);
+  const profileCard = container._all((n) => n.dataset && n.dataset.card === 'profile')[0];
+  assert.equal(profileCard._all((n) => n._tag === 'button').length, 1, 'only Manage profiles');
 });
