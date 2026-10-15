@@ -1,0 +1,4 @@
+title = "Gitleaks configuration for CodeMie Connect"
+
+[extend]
+useDefault = true
