@@ -17,9 +17,7 @@ export function renderConnectionRows(statusesByApp) {
     let actions = [];
 
     if (status === 'not-installed') {
-      // Install flow is out of scope for this ticket (EPMCDME-14574) — the button
-      // is shown per design but stays disabled until a future ticket wires it up.
-      actions = [{ kind: 'install', label: 'Install and connect', disabled: true, note: 'Install flow coming soon' }];
+      actions = [{ kind: 'install', label: 'Install and connect', disabled: false, note: null }];
     } else if (status === 'not-set') {
       actions = [{ kind: 'connect', label: 'Connect', disabled: false, note: null }];
     } else if (status === 'disconnected') {
