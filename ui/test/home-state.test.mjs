@@ -134,9 +134,22 @@ test('after setup has finished once, a lapsed sign-in shows the checklist again 
   assert.equal(s.unlocked, true);
 });
 
-test('before setup has ever finished, the sidebar unlocks only with the checklist', () => {
-  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null }).unlocked, false);
+test('before setup has ever finished, the sidebar unlocks once sign-in and model are set, whatever tools and health show', () => {
+  const failing = { rows: [{ status: 'fail' }], summary: { passing: 0, total: 1 } };
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null }).done, false);
   assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: healthy }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: failing }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents: [], health: null }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: { state: 'unknown' }, agents, health: null }).unlocked, true);
+});
+
+test('before setup has ever finished, the sidebar stays locked without sign-in or a model', () => {
+  assert.equal(deriveHome({ config: valid, auth: null, agents, health: healthy }).unlocked, false);
+  assert.equal(deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: healthy }).unlocked, false);
+  assert.equal(deriveHome({ config: { state: 'no-configuration' }, auth: signedIn, agents, health: healthy }).unlocked, false);
+  assert.equal(deriveHome({ config: { state: 'broken', profile: 'old', model: '' }, auth: signedIn, agents, health: healthy }).unlocked, false);
 });
 
 // A returning user now sees the cards before the auth read has come back, so
