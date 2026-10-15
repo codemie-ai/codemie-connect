@@ -1,4 +1,4 @@
-name: Release macOS
+name: Release
 
 on:
   push:
@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-macos-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -251,11 +251,164 @@ jobs:
             src-tauri/target/release/bundle/dmg/*.sha256 \
             --clobber
 
+  build-windows:
+    name: Build & Sign NSIS
+    needs:
+      - make-draft-release
+    runs-on: windows-2025
+    timeout-minutes: 60
+    environment: release
+
+    steps:
+      - name: Checkout repository at target commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.make-draft-release.outputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Validate Azure signing configuration
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_ENDPOINT: ${{ vars.AZURE_ENDPOINT }}
+          AZURE_CODE_SIGNING_NAME: ${{ vars.AZURE_CODE_SIGNING_NAME }}
+          AZURE_CERT_PROFILE_NAME: ${{ vars.AZURE_CERT_PROFILE_NAME }}
+        run: |
+          $required = @(
+            'AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET',
+            'AZURE_ENDPOINT', 'AZURE_CODE_SIGNING_NAME', 'AZURE_CERT_PROFILE_NAME'
+          )
+          $missing = @($required | Where-Object {
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_))
+          })
+          if ($missing.Count -gt 0) {
+            throw "Missing signing settings in environment 'release': $($missing -join ', '). Refusing an unsigned release."
+          }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '24'
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.2 --no-audit --no-fund
+
+      - name: Stamp version
+        env:
+          NEW_VERSION: ${{ needs.make-draft-release.outputs.version }}
+        run: |
+          $configPath = Join-Path $PWD 'src-tauri/tauri.conf.json'
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config.version = $env:NEW_VERSION
+          $config | ConvertTo-Json -Depth 100 | Set-Content $configPath -Encoding utf8NoBOM
+
+          $cargoPath = Join-Path $PWD 'src-tauri/Cargo.toml'
+          $cargo = Get-Content $cargoPath -Raw
+          $pattern = [regex]::new('(?m)^version = "[^"]+"')
+          $cargo = $pattern.Replace($cargo, ('version = "' + $env:NEW_VERSION + '"'), 1)
+          [IO.File]::WriteAllText($cargoPath, $cargo, [Text.UTF8Encoding]::new($false))
+
+      - name: Prepare Windows runtime key
+        run: |
+          $runtime = Get-Content runtime.json -Raw | ConvertFrom-Json
+          $key = "$($runtime.cliVersion)-node$($runtime.nodeVersion)"
+          [IO.File]::WriteAllText(
+            (Join-Path $PWD 'assets/windows/bin/runtime-key'),
+            $key,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Run backend tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build Windows app without bundling
+        working-directory: src-tauri
+        env:
+          CI: true
+        run: tauri build --no-bundle --no-sign
+
+      - name: Sign Windows app
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODE_SIGNING_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE_NAME }}
+          files: ${{ github.workspace }}\src-tauri\target\release\app.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Bundle signed Windows app into NSIS
+        working-directory: src-tauri
+        env:
+          CI: true
+        # Patching the executable after signing would invalidate its signature.
+        run: tauri bundle --bundles nsis --no-sign --no-binary-patching
+
+      - name: Sign NSIS installer
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODE_SIGNING_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}\src-tauri\target\release\bundle\nsis
+          files-folder-filter: '*-setup.exe'
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify release signatures
+        run: |
+          $app = Get-Item 'src-tauri/target/release/app.exe'
+          $installers = @(Get-ChildItem 'src-tauri/target/release/bundle/nsis/*-setup.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected one NSIS installer, found $($installers.Count)."
+          }
+          foreach ($file in (@($app) + $installers)) {
+            $signature = Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'Valid' -or $null -eq $signature.TimeStamperCertificate) {
+              throw "Invalid or non-timestamped signature: $($file.Name) ($($signature.Status))."
+            }
+            Write-Host "$($file.Name): signed by $($signature.SignerCertificate.Subject)"
+          }
+
+      - name: Prepare Windows artifacts
+        shell: bash
+        run: bash scripts/prepare-artifacts.sh src-tauri/target/release/bundle/nsis windows
+
+      - name: Upload artifacts to Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.make-draft-release.outputs.tag }}
+        run: |
+          $files = @(Get-ChildItem 'src-tauri/target/release/bundle/nsis' -File |
+            Where-Object {
+              $_.Name -like '*-windows-amd64.exe' -or
+              $_.Name -like '*-windows-amd64.exe.sha256'
+            } |
+            ForEach-Object { $_.FullName })
+          gh release upload $env:RELEASE_TAG @files --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to upload Windows release artifacts."
+          }
+
   publish-github-release:
     name: Publish GitHub Release
     needs:
       - make-draft-release
       - build-macos
+      - build-windows
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
