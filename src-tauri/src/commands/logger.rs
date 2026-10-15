@@ -188,16 +188,20 @@ mod tests {
 
     #[test]
     fn cli_debug_log_is_the_dated_file_under_codemie_logs() {
+        use std::path::Path;
+
         let p = cli_debug_log_path_with(None, "/Users/u", "2026-09-28");
-        assert_eq!(
-            p,
-            std::path::Path::new("/Users/u/.codemie/logs/debug-2026-09-28.log").to_string_lossy()
-        );
+        let expected = Path::new("/Users/u")
+            .join(".codemie")
+            .join("logs")
+            .join("debug-2026-09-28.log");
+        assert_eq!(p, expected.to_string_lossy());
+
         let custom = cli_debug_log_path_with(Some("/opt/cm"), "/Users/u", "2026-09-28");
-        assert_eq!(
-            custom,
-            std::path::Path::new("/opt/cm/logs/debug-2026-09-28.log").to_string_lossy()
-        );
+        let expected_custom = Path::new("/opt/cm")
+            .join("logs")
+            .join("debug-2026-09-28.log");
+        assert_eq!(custom, expected_custom.to_string_lossy());
     }
 
     // Ported from test/logger.test.js.
