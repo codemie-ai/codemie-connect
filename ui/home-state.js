@@ -249,9 +249,9 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
     done,
     broken,
     authKnown: !!auth,
-    // The sidebar locks only for a first setup, never for a user who has
-    // finished it once and has merely been signed out since.
-    unlocked: done || onboarded,
+    // The sidebar opens once sign-in and model are set, or after setup has
+    // finished once; it does not wait for the tools or Health steps.
+    unlocked: onboarded || (items[0].status === StepStatus.COMPLETE && items[1].status === StepStatus.COMPLETE),
     // The records themselves, for the picker item 3 expands into. Passed
     // through unchanged, including `undefined` (not read yet) and `null` (the
     // read failed): a picker that turned both into an empty list would tell
