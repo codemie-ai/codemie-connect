@@ -1098,6 +1098,15 @@ mod win {
         Ok(())
     }
 
+    /// PATH with the runtime's node dir first. Dependency install scripts run
+    /// through cmd.exe and call `node` / `npm` by name (keytar: `prebuild-install
+    /// || npm run build`); without a system Node they are "not recognized".
+    fn path_with(node_dir: &Path) -> std::ffi::OsString {
+        let mut dirs = vec![node_dir.to_path_buf()];
+        dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        std::env::join_paths(dirs).unwrap_or_default()
+    }
+
     /// Installs the pinned CLI version into `cli_dir` via npm.
     /// Uses the just-extracted node.exe so no system Node is required.
     #[cfg(windows)]
@@ -1114,6 +1123,7 @@ mod win {
             .arg("--omit=dev")
             .arg("--no-audit")
             .arg("--no-fund")
+            .env("PATH", path_with(node_dir))
             .current_dir(cli_dir)
             .output()?;
         if !out.status.success() {
@@ -1149,6 +1159,7 @@ mod win {
                     .arg("--omit=dev")
                     .arg("--no-audit")
                     .arg("--no-fund")
+                    .env("PATH", path_with(&node_dir(&dir)))
                     .current_dir(&cli_dir)
                     .output();
                 if let Ok(out) = out {
@@ -1170,6 +1181,13 @@ mod win {
     mod tests {
         use super::*;
         use std::io::Write;
+
+        #[test]
+        fn path_with_puts_the_runtime_node_first() {
+            let p = path_with(Path::new(r"C:\rt\node"));
+            let first = std::env::split_paths(&p).next().unwrap();
+            assert_eq!(first, Path::new(r"C:\rt\node"));
+        }
 
         #[test]
         fn not_ready_without_marker_even_with_files() {
