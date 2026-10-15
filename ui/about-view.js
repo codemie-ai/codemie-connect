@@ -27,16 +27,16 @@ function icon(name, className) {
   return node;
 }
 
-// One card: icon, title (with an optional version), one line of description,
+// One card: icon, title (with an optional version, "Checking…" until it is read), one line of description,
 // an optional action on the right, and an optional error under it.
-function card({ iconName, title, version, desc, action, error }) {
+function card({ iconName, title, version, reading, desc, action, error }) {
   const node = el('div', 'about-card');
   node.appendChild(icon(iconName, 'about-card-icon'));
   const text = el('div', 'about-card-text');
   const head = el('div', 'about-card-title', title);
   if (version !== undefined) {
     head.textContent = '';
-    head.append(el('span', '', title), el('span', 'about-card-version', version || 'Not available'));
+    head.append(el('span', '', title), el('span', 'about-card-version', version || (reading ? 'Checking…' : 'Not available')));
   }
   text.append(head, el('div', 'about-card-desc', desc));
   if (error) text.appendChild(el('div', 'update-error', error));
@@ -82,6 +82,7 @@ export function renderAbout(container, model, handlers = {}) {
       iconName: 'app',
       title: 'CodeMie Connect',
       version: model.appVersion,
+      reading: model.versionsRead === false,
       desc: appUpdate
         ? `Version ${model.appLatest} is available. Takes about a minute, everything you set up stays.`
         : 'The desktop app for the CodeMie CLI.',
@@ -95,6 +96,7 @@ export function renderAbout(container, model, handlers = {}) {
       iconName: 'cli',
       title: 'CodeMie CLI',
       version: model.cliVersion,
+      reading: model.versionsRead === false,
       desc: 'Comes with the app and stays up to date with it.',
     }),
   ]);
