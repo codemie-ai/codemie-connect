@@ -1801,31 +1801,35 @@ test('handleReject\'s fallthrough never re-adds a notice for a cancel-for-retry'
 
 // ── EPMCDME-14588 Task 5: capture each answered value for EPMCDME-14656 ────
 
-test('getAnsweredValues() holds each prompt id\'s most recently submitted value', async () => {
+test('the answers given in a run reach the next run as its replay list', async () => {
   const container = makeEl('div');
-  const fakeStartSetup = async ({ onPrompt }) => {
-    await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x', 'Ollama - y'] });
-    await onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: (sso)' });
-    return { profileName: 'sso' };
-  };
-  const view = createSetupView(container, { startSetup: fakeStartSetup, readConfig: okConfig });
-  const startPromise = view.start();
-  await Promise.resolve();
-  clickContinue(findRowById(container, 'provider-1')); // submits index 0
-  await tick();
-  const row = findRowById(container, 'profileName-1');
-  const control = row.querySelector('.prompt-control');
-  const input = control._children.find((c) => c.type === 'text');
-  input.value = 'my-workspace';
-  clickContinue(row);
-  await startPromise;
-
-  const answered = view.getAnsweredValues();
-  assert.ok(answered instanceof Map);
-  assert.equal(answered.get('provider'), 0);
-  assert.equal(answered.get('profileName'), 'my-workspace');
+  const starts = [];
+  const view = createSetupView(container, {
+    startSetup: async (cb) => {
+      starts.push(cb);
+      if (starts.length > 1) return new Promise(() => {});
+      const pending = cb.onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x', 'Ollama - y'] });
+      await tick();
+      clickContinue(findRowById(container, 'provider-1')); // submits index 0
+      cb.onAnswer({ id: 'provider', kind: 'list', answer: await pending, label: 'CodeMie SSO - x' });
+      const named = cb.onPrompt({ kind: 'input', id: 'profileName', message: 'Enter a name for this profile: (sso)' });
+      await tick();
+      const row = findRowById(container, 'profileName-1');
+      findControl(row)._children.find((c) => c.type === 'text').value = 'my-workspace';
+      clickContinue(row);
+      cb.onAnswer({ id: 'profileName', kind: 'input', answer: await named });
+      throw { step: null, message: 'stopped', raw: '' };
+    },
+    readConfig: okConfig,
+    cancelSetup: async () => true,
+  });
+  await view.start();
+  await panelButton(failureBlocks(container)[0], 'Try again').onclick();
+  assert.deepEqual(starts[1].replay, [
+    { id: 'provider', kind: 'list', answer: 0, label: 'CodeMie SSO - x' },
+    { id: 'profileName', kind: 'input', answer: 'my-workspace' },
+  ]);
 });
-
 
 // The failure panel the wireframes draw: a red block inside the card, with the
 // command's transcript in its own element under it. Replaces the old modal.
@@ -1910,31 +1914,141 @@ test('a rejection that is not an object does not crash the run', async () => {
   assert.ok(allText(failureBlocks(container)[0]).includes('Setup failed'));
 });
 
-test('a restart clears the previous run\'s answered values', async () => {
+test('a plain start() replays nothing', async () => {
   const container = makeEl('div');
-  let runs = 0;
+  const starts = [];
   const view = createSetupView(container, {
-    startSetup: async ({ onPrompt }) => {
-      runs += 1;
-      if (runs === 1) {
-        await onPrompt({ kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x'] });
-        throw { step: null, message: 'stopped', raw: '' };
-      }
-      return new Promise(() => {});
-    },
+    startSetup: async (cb) => { starts.push(cb); throw { step: null, message: 'stopped', raw: '' }; },
     readConfig: okConfig,
     showNotice: () => {},
   });
-  const first = view.start();
-  await Promise.resolve();
-  clickContinue(findRowById(container, 'provider-1'));
-  await first;
-  assert.equal(view.getAnsweredValues().size, 1, 'the first run recorded its answer');
-  view.start();
-  await Promise.resolve();
-  assert.equal(view.getAnsweredValues().size, 0, 'the retry starts from an empty map, not a mix of two runs');
+  await view.start();
+  await view.start();
+  assert.deepEqual(starts.map((c) => c.replay), [[], []]);
 });
 
+// ── EPMCDME-14656 Task 1: replay on Try again ──────────────────────────────
+
+const PROVIDER_PROMPT = { kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: ['CodeMie SSO - x', 'Ollama - y'] };
+const providerAnswer = { id: 'provider', kind: 'list', answer: 0, label: 'CodeMie SSO - x' };
+
+// Runs one failed run that gave `answers`, then clicks Try again and returns
+// the callbacks every startSetup call received.
+async function failThenRetry({ answers, step = null, screen, extraSteps }) {
+  const container = makeEl('div');
+  const starts = [];
+  const view = createSetupView(container, {
+    startSetup: async (cb) => {
+      starts.push(cb);
+      if (starts.length > 1) return new Promise(() => {});
+      for (const a of answers) cb.onAnswer(a);
+      if (screen) cb.onScreen(screen);
+      if (extraSteps) await extraSteps(cb, container);
+      throw { step, message: 'stopped', raw: '' };
+    },
+    readConfig: okConfig,
+    cancelSetup: async () => true,
+  });
+  await view.start();
+  await panelButton(failureBlocks(container)[0], 'Try again').onclick();
+  return { starts, container, view };
+}
+
+test('try again replays answers given before the failed step', async () => {
+  const { starts } = await failThenRetry({
+    answers: [providerAnswer],
+    step: 'codemieProject',
+    extraSteps: async (cb) => {
+      cb.onPrompt({ kind: 'list', id: 'codemieProject', message: 'Select your project:', options: ['a'] });
+    },
+  });
+  assert.deepEqual(starts[1].replay, [providerAnswer]);
+});
+
+test('try again with an unknown step replays every answer', async () => {
+  const second = { id: 'profileName', kind: 'input', answer: 'n' };
+  const { starts } = await failThenRetry({ answers: [providerAnswer, second], step: null });
+  assert.deepEqual(starts[1].replay, [providerAnswer, second]);
+});
+
+test('try again after the profile was saved starts fresh', async () => {
+  const { starts } = await failThenRetry({
+    answers: [providerAnswer],
+    screen: ['\u2714 Profile "x" saved to global config'],
+  });
+  assert.deepEqual(starts[1].replay, []);
+});
+
+test('replay is cut at installClaude', async () => {
+  const install = { id: 'installClaude', kind: 'confirm', answer: true };
+  const { starts } = await failThenRetry({ answers: [providerAnswer, install, { id: 'profileName', kind: 'input', answer: 'n' }] });
+  assert.deepEqual(starts[1].replay, [providerAnswer]);
+});
+
+test('replayed prompt renders an answered row identical to a user-answered one', async () => {
+  const userC = makeEl('div');
+  const userView = createSetupView(userC, {
+    startSetup: async ({ onPrompt }) => {
+      const p = onPrompt(PROVIDER_PROMPT);
+      await tick();
+      const row = findRowById(userC, 'provider-1');
+      const radios = collectAll(row, (n) => (n.className || '').startsWith('setup-option-card'));
+      radios[1].onclick();
+      clickContinue(row);
+      await p;
+      return new Promise(() => {});
+    },
+    readConfig: okConfig,
+  });
+  userView.start();
+  await tick(5);
+
+  const replayC = makeEl('div');
+  const replayView = createSetupView(replayC, {
+    startSetup: async (cb) => {
+      cb.onReplayed(PROVIDER_PROMPT, 1);
+      cb.onAnswer({ id: 'provider', kind: 'list', answer: 1, label: 'Ollama - y' });
+      return new Promise(() => {});
+    },
+    readConfig: okConfig,
+  });
+  replayView.start();
+  await tick(5);
+
+  const a = findRowById(userC, 'provider-1');
+  const b = findRowById(replayC, 'provider-1');
+  assert.ok(b, 'the replayed prompt has a row');
+  assert.ok(b.classList._set.has('collapsed'));
+  assert.equal(b.querySelector('.step-icon').textContent, a.querySelector('.step-icon').textContent);
+  assert.equal(b.querySelector('.step-title').textContent, a.querySelector('.step-title').textContent);
+  assert.equal(b.querySelector('.step-sub').textContent, a.querySelector('.step-sub').textContent);
+  assert.equal(b.querySelector('.step-sub').textContent, 'Ollama');
+});
+
+test('old run\'s late callbacks do not touch the new run', async () => {
+  const container = makeEl('div');
+  const starts = [];
+  const view = createSetupView(container, {
+    startSetup: (cb) => {
+      starts.push(cb);
+      if (starts.length === 1) return Promise.reject({ step: null, message: 'stopped', raw: '' });
+      if (starts.length === 2) return new Promise((_, reject) => { starts.rejectSecond = reject; });
+      return new Promise(() => {});
+    },
+    readConfig: okConfig,
+    cancelSetup: async () => true,
+  });
+  await view.start();
+  await panelButton(failureBlocks(container)[0], 'Try again').onclick();
+  const [old] = starts;
+  old.onPrompt(PROVIDER_PROMPT);
+  old.onAnswer(providerAnswer);
+  assert.equal(findRowById(container, 'provider-1'), null, 'a stale prompt adds no row');
+  starts.rejectSecond({ step: null, message: 'stopped again', raw: '' });
+  await tick(5);
+  await panelButton(failureBlocks(container)[0], 'Try again').onclick();
+  assert.deepEqual(starts[2].replay, [], 'a stale answer is not recorded');
+});
 // Measured against the real CLI 2026-09-15: after "✖ Ollama is not running" the
 // CLI prints its whole install guide, which scrolls the anchor out of the 30-row
 // viewport before it exits 1. Classifying only the rejection's own screen
@@ -2202,4 +2316,209 @@ test('opening a question scrolls its Continue into view', async () => {
   const cont = scrolled.find((s) => s.className === 'prompt-submit setup-continue-btn' || s.className.includes('prompt-submit'));
   assert.ok(cont, 'Continue was scrolled into view');
   assert.equal(cont.opts.block, 'nearest');
+});
+
+// ── EPMCDME-14656 Task 2: clickable answered rows ──────────────────────────
+
+const URL_PROMPT = { kind: 'input', id: 'codemieUrl', message: 'CodeMie organization URL:' };
+const PROJECT_PROMPT = { kind: 'list', id: 'codemieProject', message: 'Select your project:', options: ['alpha', 'beta'] };
+const MODEL_PROMPT = { kind: 'list', id: 'model', message: 'Select a model:', options: ['m1', 'm2'] };
+const SAVED_SCREEN = ['✔ Profile "x" saved to global config'];
+
+const lastRowOf = (container, id) => [...container.children].reverse().find((c) => (c.dataset.id || '').startsWith(`${id}-`));
+
+// Plays the user and the driver for one prompt: asks it, submits through the
+// real control, and reports the answer the way the driver does.
+async function userAnswers(cb, container, prompt, typed) {
+  const pending = cb.onPrompt(prompt);
+  await tick();
+  const row = lastRowOf(container, prompt.id);
+  if (prompt.kind === 'input') findControl(row)._children.find((c) => c.type === 'text').value = typed;
+  clickContinue(row);
+  const answer = await pending;
+  cb.onAnswer({ id: prompt.id, kind: prompt.kind, answer, ...(prompt.kind === 'list' && { label: prompt.options[answer] }) });
+}
+
+// A first run that has answered provider, the org URL (rejected once, then
+// accepted), and the project, and now waits on the model question. Later runs
+// never settle. The first run settles only through `starts.rejectFirst`.
+function revisitHarness({ script, cancelSetup } = {}) {
+  const container = makeEl('div');
+  const starts = [];
+  const order = [];
+  const view = createSetupView(container, {
+    startSetup: (cb) => {
+      order.push('start');
+      starts.push(cb);
+      if (starts.length > 1) return new Promise(() => {});
+      return new Promise((resolve, reject) => {
+        starts.rejectFirst = reject;
+        (script ?? (async () => {
+          await userAnswers(cb, container, PROVIDER_PROMPT);
+          await userAnswers(cb, container, URL_PROMPT, 'bad');
+          await userAnswers(cb, container, { ...URL_PROMPT, message: 'CodeMie organization URL: bad' }, 'good');
+          await userAnswers(cb, container, PROJECT_PROMPT);
+          cb.onPrompt(MODEL_PROMPT);
+        }))(cb, container, reject);
+      });
+    },
+    readConfig: okConfig,
+    cancelSetup: cancelSetup ?? (async () => { order.push('cancel'); return true; }),
+  });
+  return { container, starts, order, view };
+}
+
+test('clicking an answered row restarts with the answers before it', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  findRowById(h.container, 'codemieProject-1').onclick();
+  await tick(5);
+  assert.deepEqual(h.order, ['start', 'cancel', 'start']);
+  assert.deepEqual(h.starts[1].replay.map((a) => `${a.id}:${a.answer}`), ['provider:0', 'codemieUrl:bad', 'codemieUrl:good']);
+});
+
+test('the storage row has no click handler', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  const storage = findRowById(h.container, 'storage');
+  assert.equal(storage.onclick, undefined);
+  assert.ok(!storage.classList._set.has('revisit'));
+});
+
+test('rows are not clickable while the install spinner or Working gap shows', async () => {
+  const h = revisitHarness({ script: async (cb, container) => { await userAnswers(cb, container, PROVIDER_PROMPT); } });
+  h.view.start();
+  await tick(20);
+  findRowById(h.container, 'provider-1').onclick?.();
+  await tick(5);
+  assert.deepEqual(h.order, ['start'], 'no cancel, no restart in the Working gap');
+});
+
+test('row Enter and Space activate the row like a click', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  const row = findRowById(h.container, 'provider-1');
+  assert.equal(row.tabIndex, 0);
+  const keydown = row._listeners.keydown;
+  assert.equal(typeof keydown, 'function');
+  let prevented = 0;
+  keydown({ key: 'x', preventDefault: () => { prevented += 1; } });
+  await tick(2);
+  assert.deepEqual(h.order, ['start'], 'other keys do nothing');
+  keydown({ key: 'Enter', preventDefault: () => { prevented += 1; } });
+  await tick(5);
+  assert.deepEqual(h.order, ['start', 'cancel', 'start']);
+  assert.equal(prevented, 1);
+  assert.equal(h.starts[1].replay.length, 0);
+});
+
+test('Space also activates a row', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  findRowById(h.container, 'codemieProject-1')._listeners.keydown({ key: ' ', preventDefault() {} });
+  await tick(5);
+  assert.deepEqual(h.order, ['start', 'cancel', 'start']);
+});
+
+test('the profile saved line turns rows off for the rest of the run', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  h.starts[0].onScreen(SAVED_SCREEN);
+  h.starts[0].onScreen(['something else']);
+  findRowById(h.container, 'codemieProject-1').onclick?.();
+  await tick(5);
+  assert.deepEqual(h.order, ['start']);
+});
+
+test('a click during a restart is ignored', async () => {
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const order = [];
+  const h = revisitHarness({ cancelSetup: async () => { order.push('cancel'); await held; return true; } });
+  h.view.start();
+  await tick(20);
+  const row = findRowById(h.container, 'codemieProject-1');
+  row.onclick();
+  row.onclick();
+  findRowById(h.container, 'provider-1').onclick();
+  await tick(2);
+  release();
+  await tick(5);
+  assert.deepEqual(order, ['cancel']);
+  assert.equal(h.starts.length, 2, 'one new run, not three');
+});
+
+test('rows before the failed step stay clickable after a failure', async () => {
+  const h = revisitHarness({
+    script: async (cb, container, reject) => {
+      await userAnswers(cb, container, PROVIDER_PROMPT);
+      await userAnswers(cb, container, PROJECT_PROMPT);
+      cb.onPrompt(MODEL_PROMPT);
+      reject({ step: 'model', message: 'stopped', raw: '' });
+    },
+  });
+  await h.view.start();
+  findRowById(h.container, 'provider-1').onclick();
+  await tick(5);
+  assert.deepEqual(h.order, ['start', 'cancel', 'start']);
+  assert.deepEqual(h.starts[1].replay, []);
+});
+
+test('a cancelled run settling late does not free the slot for a third run', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  findRowById(h.container, 'codemieProject-1').onclick();
+  await tick(5);
+  h.starts.rejectFirst({ step: null, cancelled: true, message: 'setup cancelled', raw: '' });
+  await tick(5);
+  h.view.start();
+  assert.equal(h.starts.length, 2, 'start() joins the new run instead of launching another');
+});
+
+test('a reopened input takes clicks, Enter and Space without restarting the run', async () => {
+  const h = revisitHarness({
+    script: async (cb, container) => {
+      await userAnswers(cb, container, PROVIDER_PROMPT);
+      await userAnswers(cb, container, URL_PROMPT, 'bad');
+      cb.onPrompt({ ...URL_PROMPT, message: 'CodeMie organization URL: bad' });
+    },
+  });
+  h.view.start();
+  await tick(20);
+  const row = findRowById(h.container, 'codemieUrl-1');
+  assert.ok(!row.classList._set.has('collapsed'), 'the row is open again');
+  const inside = { closest: (sel) => (sel === '.prompt-control' ? {} : null) };
+  const keydown = row._listeners.keydown;
+  let prevented = 0;
+  const key = (k, target) => keydown({ key: k, target, preventDefault: () => { prevented += 1; } });
+  row.onclick({ target: inside });
+  key('Enter', inside);
+  key(' ', inside);
+  row.onclick({});
+  key('Enter', {});
+  key(' ', {});
+  await tick(5);
+  assert.deepEqual(h.order, ['start'], 'no cancel, no restart');
+  assert.equal(prevented, 0, 'a space can still be typed into the field');
+});
+
+test('a row answered twice binds its revisit listeners once', async () => {
+  const h = revisitHarness();
+  h.view.start();
+  await tick(20);
+  const row = findRowById(h.container, 'codemieUrl-1');
+  let adds = 0;
+  const add = row.addEventListener;
+  row.addEventListener = (...a) => { adds += 1; return add(...a); };
+  h.starts[0].onPrompt({ ...URL_PROMPT, message: 'CodeMie organization URL: good' });
+  await tick(2);
+  clickContinue(row);
+  await tick(5);
+  assert.equal(adds, 0, 'no second keydown listener on the same row');
 });

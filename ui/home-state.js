@@ -7,8 +7,9 @@
 //           read, or null when the read failed
 //   health  the Health controller's getLastResult(): { rows, summary,
 //           checkedAt } or null
-//   connection  `codemie proxy status --json` read as { running }, or
-//           undefined while it is being read, or null when the read failed
+//   connection  `codemie proxy status --json` plus the connector config read
+//           as { running, healthy, apps }, or undefined while it is being
+//           read, or null when the read failed
 //
 // Pure: no DOM, no Tauri. The screen renders what comes back.
 import { StepStatus } from './models.js';
@@ -44,7 +45,7 @@ function modelItem(def, config) {
   if (state === 'valid') {
     return item(def, StepStatus.COMPLETE, [config.profile, config.model].filter(Boolean).join(' · '));
   }
-  if (state === 'broken') return item(def, StepStatus.WARNING, 'Your profile is no longer working');
+  if (state === 'broken' && (config.profile || '').trim()) return item(def, StepStatus.WARNING, 'Your profile is no longer working');
   return item(def, StepStatus.PENDING, 'Sign in with CodeMie, or bring your own key');
 }
 
@@ -131,22 +132,39 @@ function agentsCard(agents) {
 // runs and "stopped" when it does not (CLI 0.15.2, cli/commands/proxy); it has
 // no "running". The CLI can print its migration notes before the JSON on a
 // first run. Throws on JSON it cannot parse, which the caller shows as unknown.
-export function connectionFromStatus(stdout) {
+//
+// `configured` is check_connector_status's answer: which apps carry a CodeMie
+// config. An app is connected when its config is there and the proxy it points
+// at is healthy -- the same rule the Connections screen uses for its rows.
+export const CONNECTION_LABELS = Object.freeze({
+  claudeDesktop: 'Claude Desktop',
+  vscodeCopilot: 'VS Code Copilot Chat',
+  vscodeClaudeCode: 'VS Code Claude Code',
+  codexDesktop: 'Codex',
+});
+
+export function connectionFromStatus(stdout, configured = {}) {
   const json = stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1);
   if (!json) return null;
   const { status } = JSON.parse(json);
-  return { running: status === 'healthy' || status === 'unhealthy', healthy: status === 'healthy' };
+  const running = status === 'healthy' || status === 'unhealthy';
+  const healthy = status === 'healthy';
+  const set = Object.keys(CONNECTION_LABELS).filter((k) => configured && configured[k]).map((k) => CONNECTION_LABELS[k]);
+  return { running, healthy, set, apps: healthy ? set : [] };
 }
 
-// Claude Desktop is the one app Connections connects today, through the CLI's
-// local proxy: connected while `codemie proxy status` says it is running.
+// One card for the four apps the Connections screen connects: how many are
+// connected and which, or which are set up but not answering.
 function connectionsCard(connection) {
-  if (connection === undefined) return { id: 'connections', title: 'Connections', badge: { text: 'checking', tone: 'muted' }, line: 'Claude Desktop', note: '' };
-  if (connection === null) return { id: 'connections', title: 'Connections', badge: { text: 'unknown', tone: 'muted' }, line: 'Could not read the connection', note: '' };
-  if (connection.running && connection.healthy === false) return { id: 'connections', title: 'Connections', badge: { text: 'not responding', tone: 'warn' }, line: 'Claude Desktop', note: '' };
-  return connection.running
-    ? { id: 'connections', title: 'Connections', badge: { text: '1 connected', tone: 'good' }, line: 'Claude Desktop', note: '' }
-    : { id: 'connections', title: 'Connections', badge: { text: 'not connected', tone: 'muted' }, line: 'Claude Desktop', note: '' };
+  const card = (badge, line) => ({ id: 'connections', title: 'Connections', badge, line, note: '' });
+  const all = 'Claude Desktop · VS Code · Codex';
+  if (connection === undefined) return card({ text: 'checking', tone: 'muted' }, all);
+  if (connection === null) return card({ text: 'unknown', tone: 'muted' }, 'Could not read the connection');
+  const apps = connection.apps ?? [];
+  const set = connection.set ?? [];
+  if (apps.length) return card({ text: `${apps.length} connected`, tone: 'good' }, apps.join(' · '));
+  if (set.length && connection.running && connection.healthy === false) return card({ text: 'not responding', tone: 'warn' }, set.join(' · '));
+  return card({ text: 'not connected', tone: 'muted' }, all);
 }
 
 // Whether Home should start the health check itself, when it has not run this
@@ -156,9 +174,11 @@ function connectionsCard(connection) {
 // kept between launches and the Health card said "unknown" after every restart
 // (EPMCDME-15388). Not before the sign-in status is read: until then a
 // returning user counts as done, and a lapsed sign-in would bring the checklist
-// back with a check already run on it.
-export function autoHealthCheck(state) {
-  if (!state) return false;
+// back with a check already run on it. Never while guided setup is open: a
+// restarted run (a revisited step, Try again) re-reads the sign-in before the
+// profile is written, and the check would run on no configuration.
+export function autoHealthCheck(state, { setupOpen = false } = {}) {
+  if (!state || setupOpen) return false;
   const health = state.items.find((i) => i.id === 'health');
   if (!health || health.status !== StepStatus.PENDING) return false;
   if (state.done) return state.authKnown;
@@ -170,8 +190,44 @@ export function autoHealthCheck(state) {
 // CodeMie URL configured", measured 2026-09-23) -- so until there is a profile,
 // Sign in opens guided setup, whose own steps sign the user in in the browser.
 export function signInAction({ config, auth } = {}) {
-  const noProfile = (auth && auth.state === 'no_profile') || !config || config.state === 'no-configuration';
+  const noProfile = (auth && auth.state === 'no_profile') || !config || config.state === 'no-configuration' || config.state === 'broken';
   return noProfile ? 'setup' : 'login';
+}
+
+// Signed in, or a provider that reports no sign-in status: nothing to fix.
+const authUsable = (auth) => !!auth && (auth.state === 'signed_in' || auth.state === 'unknown');
+
+// 'expired': the profile resolves but its sign-in lapsed. 'dangling': the
+// config names a profile the CLI no longer has. An empty name is "no profile"
+// (the CLI leaves activeProfile "" after the last delete): the checklist, not
+// a panel. A read still in flight is never broken.
+export function brokenKind({ config, auth } = {}) {
+  if (!auth || !config || !(config.profile || '').trim()) return null;
+  if (config.state === 'broken') return 'dangling';
+  if (config.state === 'valid' && auth.state === 'not_signed_in') return 'expired';
+  return null;
+}
+
+export const isBroken = (s) => brokenKind(s) !== null;
+
+const BROKEN_TITLE = 'Your profile is no longer working';
+
+export function brokenCopy({ config, auth } = {}) {
+  const kind = brokenKind({ config, auth });
+  if (!kind) return null;
+  const name = config.profile.trim();
+  if (kind === 'expired') {
+    return {
+      title: BROKEN_TITLE,
+      body: `CodeMie signed you out \u2014 the sign-in for ${name} expired. Sign in again to keep this profile, or delete it and set up a new one.`,
+      actions: ['signin', 'delete'],
+    };
+  }
+  return {
+    title: BROKEN_TITLE,
+    body: `${name} is set as your profile but it no longer exists. Set it up again to keep going.`,
+    actions: ['setup'],
+  };
 }
 
 // `onboarded` is whether the checklist has ever been finished on this machine
@@ -182,14 +238,16 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
   const [signIn, model, agent, healthDef] = HOME_ITEMS;
   const items = [signInItem(signIn, auth), modelItem(model, config), agentItem(agent, agents), healthItem(healthDef, health, healthRunning, healthFailed)];
   const complete = items.every((i) => i.status === StepStatus.COMPLETE);
-  // Once setup has finished, only a lapsed sign-in brings the checklist back:
-  // its Sign in button is the only one Home has until the broken-profile panel
-  // (EPMCDME-14658). An auth read still in flight is not a lapsed sign-in.
-  const signedOut = !!auth && auth.state !== 'signed_in' && auth.state !== 'unknown';
-  const done = complete || (onboarded && !signedOut);
+  // Once setup has finished, a lapsed sign-in brings the checklist back; a
+  // broken profile shows its panel instead. An auth read still in flight is not
+  // a lapsed sign-in.
+  const signedOut = !!auth && !authUsable(auth);
+  const broken = brokenKind({ config, auth });
+  const done = !broken && (complete || (onboarded && !signedOut));
   return {
     items,
     done,
+    broken,
     authKnown: !!auth,
     // The sidebar locks only for a first setup, never for a user who has
     // finished it once and has merely been signed out since.

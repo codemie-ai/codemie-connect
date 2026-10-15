@@ -29,4 +29,6 @@ pub struct AppState {
     /// Timestamp of the last successful app update check. Guards the 24 h throttle in
     /// `commands::app_updater::check_for_update`.
     pub last_update_check: Mutex<Option<Instant>>,
+    /// In-memory command-log record store backing the `cmdlog_*` commands.
+    pub cmdlog: Mutex<crate::commands::cmdlog::CmdLogStore>,
 }

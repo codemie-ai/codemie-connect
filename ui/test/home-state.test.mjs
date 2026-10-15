@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveHome, HOME_ITEMS, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from '../home-state.js';
+import { deriveHome, brokenKind, isBroken, brokenCopy, HOME_ITEMS, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from '../home-state.js';
 import { StepStatus } from '../models.js';
 
 const valid = { state: 'valid', profile: 'demo7', model: 'claude-sonnet-5', project: 'epm-sdai', account: 'me@epam.com' };
@@ -125,11 +125,11 @@ test('after setup has finished once, an unchecked health or a missing agent does
   assert.equal(s.done, true);
 });
 
-// The checklist's Sign in button is the only one Home has until the
-// broken-profile panel lands (EPMCDME-14658), so a lapsed sign-in still shows
-// it. The sidebar stays open all the same.
-test('after setup has finished once, a lapsed sign-in shows the checklist again but keeps the sidebar open', () => {
+// A lapsed sign-in is the broken-profile panel, not the checklist
+// (EPMCDME-14658). The sidebar stays open all the same.
+test('after setup has finished once, a lapsed sign-in shows the broken panel and keeps the sidebar open', () => {
   const s = deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: null, onboarded: true });
+  assert.equal(s.broken, 'expired');
   assert.equal(s.done, false);
   assert.equal(s.unlocked, true);
 });
@@ -156,7 +156,8 @@ test('Sign in opens guided setup when there is no profile, and signs in when the
   assert.equal(signInAction({ config: { state: 'no-configuration' }, auth: { state: 'no_profile' } }), 'setup');
   assert.equal(signInAction({ config: null, auth: { state: 'no_profile' } }), 'setup');
   assert.equal(signInAction({ config: valid, auth: { state: 'not_signed_in' } }), 'login');
-  assert.equal(signInAction({ config: { state: 'broken', profile: 'x' }, auth: { state: 'not_signed_in' } }), 'login');
+  // A profile that no longer exists has nothing to sign in to: set it up again.
+  assert.equal(signInAction({ config: { state: 'broken', profile: 'x' }, auth: { state: 'not_signed_in' } }), 'setup');
 });
 
 // Finishing setup returned the user to a checklist that just sat there, the
@@ -239,25 +240,105 @@ test('before the sign-in read comes back, item 1 says it is checking', () => {
 });
 
 // 01-home.png draws a fourth card: Connections, read from the CLI's own proxy
-// status, never assumed.
-test('the Connections card says whether Claude Desktop is connected, as the proxy status reports', () => {
+// status and the apps' own configs, never assumed.
+test('the Connections card counts the apps that carry a CodeMie config while the proxy is healthy', () => {
   const card = (connection) => deriveHome({ connection }).cards.find((c) => c.id === 'connections');
-  assert.deepEqual(card({ running: true }).badge, { text: '1 connected', tone: 'good' });
-  assert.equal(card({ running: true }).line, 'Claude Desktop');
-  assert.deepEqual(card({ running: false }).badge, { text: 'not connected', tone: 'muted' });
+  const healthy = '{ "status": "healthy", "port": 4001 }';
+  const two = card(connectionFromStatus(healthy, { claudeDesktop: true, vscodeCopilot: true }));
+  assert.deepEqual(two.badge, { text: '2 connected', tone: 'good' });
+  assert.equal(two.line, 'Claude Desktop · VS Code Copilot Chat');
+  assert.deepEqual(card(connectionFromStatus(healthy, { codexDesktop: true })).badge, { text: '1 connected', tone: 'good' });
+  assert.equal(card(connectionFromStatus(healthy, { codexDesktop: true })).line, 'Codex');
   assert.deepEqual(card(null).badge, { text: 'unknown', tone: 'muted' });
   assert.equal(card(null).line, 'Could not read the connection');
   assert.deepEqual(card(undefined).badge, { text: 'checking', tone: 'muted' });
 });
 
+// A healthy proxy is not a connection by itself: VS Code alone used to make the
+// card read "1 connected · Claude Desktop".
+test('a running proxy with no app set up is not connected', () => {
+  const card = (connection) => deriveHome({ connection }).cards.find((c) => c.id === 'connections');
+  const c = card(connectionFromStatus('{ "status": "healthy" }', {}));
+  assert.deepEqual(c.badge, { text: 'not connected', tone: 'muted' });
+  assert.equal(c.line, 'Claude Desktop · VS Code · Codex');
+});
+
 // Measured with the bundled CLI 0.15.2: a running proxy reports "healthy", never
-// "running", so a check for "running" left the card on "not connected" for good.
+// "running", and a first run prints migration notes before the JSON.
 test('the proxy status the CLI really prints maps to the Connections card', () => {
-  const card = (stdout) => deriveHome({ connection: connectionFromStatus(stdout) }).cards.find((c) => c.id === 'connections');
+  const set = { claudeDesktop: true };
+  const card = (stdout) => deriveHome({ connection: connectionFromStatus(stdout, set) }).cards.find((c) => c.id === 'connections');
   const running = '{\n  "status": "healthy",\n  "url": "http://127.0.0.1:4001",\n  "port": 4001\n}';
   assert.deepEqual(card(running).badge, { text: '1 connected', tone: 'good' });
   assert.deepEqual(card('Migrating…\n' + running).badge, { text: '1 connected', tone: 'good' });
-  assert.deepEqual(card('{ "status": "unhealthy", "port": 4001 }').badge, { text: 'not responding', tone: 'warn' });
+  const down = card('{ "status": "unhealthy", "port": 4001 }');
+  assert.deepEqual(down.badge, { text: 'not responding', tone: 'warn' });
+  assert.equal(down.line, 'Claude Desktop');
   assert.deepEqual(card('{\n  "status": "stopped"\n}').badge, { text: 'not connected', tone: 'muted' });
   assert.deepEqual(card('').badge, { text: 'unknown', tone: 'muted' });
+});
+
+const brokenCfg = (profile) => ({ state: 'broken', profile });
+const noProfile = { state: 'no_profile' };
+const notSignedIn = { state: 'not_signed_in' };
+
+test('brokenKind tells an expired sign-in from a dangling profile name', () => {
+  const table = [
+    [{ config: brokenCfg('ghost'), auth: { state: 'unknown' } }, 'dangling', 'the real CLI reports unknown for a dangling name'],
+    [{ config: brokenCfg('ghost'), auth: null }, null, 'auth still being read'],
+    [{ config: valid, auth: { state: 'unknown' } }, null, 'anthropic-subscription shape'],
+    [{ config: valid, auth: noProfile }, null, 'no_profile with a valid config'],
+    [{ config: brokenCfg(''), auth: noProfile }, null, 'empty name is no profile'],
+    [{ config: brokenCfg(''), auth: notSignedIn }, null, 'empty name is no profile, not signed in'],
+    [{ config: brokenCfg('  '), auth: noProfile }, null, 'blank name is no profile'],
+    [{ config: { state: 'no-configuration' }, auth: noProfile }, null, 'first run'],
+    [{ config: brokenCfg('ghost'), auth: noProfile }, 'dangling', 'name set, profile gone'],
+    [{ config: brokenCfg('ghost'), auth: notSignedIn }, 'dangling', 'name set, profile gone, not signed in'],
+    [{ config: valid, auth: notSignedIn }, 'expired', 'profile resolves but the sign-in lapsed'],
+  ];
+  for (const [input, want, why] of table) {
+    assert.equal(brokenKind(input), want, why);
+    assert.equal(isBroken(input), want !== null, why);
+  }
+});
+
+test('deriveHome: an empty name is the checklist, a lapsed sign-in is the panel', () => {
+  const empty = deriveHome({ config: brokenCfg(''), auth: noProfile, agents, health: null, onboarded: true });
+  assert.equal(empty.broken, null);
+  assert.equal(empty.done, false, 'checklist');
+  const expired = deriveHome({ config: valid, auth: notSignedIn, agents, health: null, onboarded: true });
+  assert.equal(expired.broken, 'expired');
+  assert.equal(expired.done, false);
+  assert.equal(expired.unlocked, true);
+});
+
+test('the model item only warns for a broken config that still names a profile', () => {
+  const model = (config) => deriveHome({ config, auth: noProfile }).items[1];
+  assert.equal(model(brokenCfg('ghost')).status, StepStatus.WARNING);
+  assert.equal(model(brokenCfg('')).status, StepStatus.PENDING);
+  assert.notEqual(model(brokenCfg('')).subtitle, 'Your profile is no longer working');
+});
+
+test('brokenCopy names the profile and offers the actions that fit', () => {
+  const expired = brokenCopy({ config: valid, auth: notSignedIn });
+  assert.equal(expired.title, 'Your profile is no longer working');
+  assert.ok(expired.body.includes('demo7'));
+  assert.deepEqual(expired.actions, ['signin', 'delete']);
+  const dangling = brokenCopy({ config: brokenCfg('ghost'), auth: noProfile });
+  assert.ok(dangling.body.includes('ghost'));
+  assert.ok(dangling.body.includes('no longer exists'));
+  assert.deepEqual(dangling.actions, ['setup']);
+  assert.equal(brokenCopy({ config: valid, auth: signedIn }), null);
+});
+
+// A revisited step restarts guided setup; the old run's end re-read the
+// sign-in mid-setup and, for a returning user, started the check on a config
+// setup had not written yet ("No configuration found", never re-run). While
+// setup is open the check waits; it starts once the user is back on Home.
+test('the health check never starts by itself while guided setup is open', () => {
+  const returning = deriveHome({ config: { state: 'no-configuration' }, auth: { state: 'unknown' }, agents, health: null, onboarded: true });
+  assert.equal(autoHealthCheck(returning), true, 'precondition: a returning user would get the check straight away');
+  assert.equal(autoHealthCheck(returning, { setupOpen: true }), false);
+  const ready = deriveHome({ config: valid, auth: signedIn, agents, health: null });
+  assert.equal(autoHealthCheck(ready, { setupOpen: false }), true);
 });

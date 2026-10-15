@@ -62,15 +62,16 @@ machine already has a CodeMie CLI, this step is skipped.
 
 ## Basic usage
 
-The sidebar has four places plus an analytics shortcut.
+The sidebar has four places, an analytics shortcut and About.
 
 | Screen | What it is for |
 |---|---|
 | **Home** | A checklist on first run, then status cards: sign-in, installed tools, connections, health. |
 | **Tools** | Install, update and remove AI coding tools (Claude Code and others). Tools run from your terminal; this screen only sets them up. |
-| **Connections** | **Connect Claude Desktop** to the CodeMie gateway, or **Restart** the connection if Claude Desktop lost it. |
+| **Connections** | Connect Claude Desktop, VS Code (Copilot Chat or the Claude Code extension) or the Codex desktop app to the CodeMie gateway, and reconnect or disconnect them. |
 | **Health** | Runs `codemie doctor` and checks your account, grouped and in plain language. |
 | **CLI usage analytics** | Builds an HTML report of your local AI CLI usage and opens it in the browser. |
+| **About** | The app and CLI versions, the GitHub repository and how to get help. |
 
 ### First run in four steps
 

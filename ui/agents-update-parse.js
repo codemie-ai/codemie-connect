@@ -37,10 +37,15 @@ export function parseUpdateStatus(stdout) {
     if (SUMMARY.test(line)) break;
 
     const name = line.match(/^\s{2}(\S.*)$/);
+    const installed = line.match(/^\s{4}Current:\s+(\S+)/);
     const latest = line.match(/^\s{4}Latest:\s+(\S+)/);
     if (name) {
       current = { displayName: name[1].trim(), updateAvailable: false };
       out.push(current);
+      continue;
+    }
+    if (installed && current) {
+      current.current = installed[1];
       continue;
     }
     if (latest && current) {
