@@ -111,7 +111,7 @@ test('a broken profile is a warning on item 2, not an error and not first run', 
 
 // Once setup has finished on this machine, Home stays on its cards. Health is
 // read fresh each time the app opens, so without this a user who finished
-// setup yesterday was back on the checklist, with the sidebar locked, every
+// setup yesterday was back on the checklist, and a returning user must not see a locked sidebar, every
 // morning until they ran the check again.
 test('after setup has finished once, Home opens on the cards before any read comes back', () => {
   const s = deriveHome({ config: null, auth: null, agents: undefined, health: null, onboarded: true });
@@ -218,7 +218,7 @@ test('the Health card says checking while the check runs, not unknown', () => {
 });
 
 // A check that could not finish must not leave the step on "Not checked yet"
-// with nothing to click: the sidebar's Health is still locked then.
+// with nothing to click: the row's Open Health is the way to the error.
 test('a health check that could not finish is an error on its step, and does not start again', () => {
   const s = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true });
   const h = s.items.find((i) => i.id === 'health');
