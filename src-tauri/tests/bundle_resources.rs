@@ -85,6 +85,7 @@ fn windows_bundle_ships_only_the_shims_and_the_runtime_key() {
     for (src, target) in &resources_map() {
         assert!(
             (target.starts_with("bin/codemie") && target.ends_with(".cmd"))
+                || target == "bin/proxy-daemon.cmd"
                 || target == "bin/runtime-key",
             "unexpected bundled resource {src} -> {target}: Node and the CLI are downloaded"
         );
