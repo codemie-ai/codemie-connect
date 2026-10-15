@@ -246,14 +246,14 @@ function runtime(home, { cliComplete = true, entries = ['codemie.js'] } = {}) {
   symlinkSync('cli-1', join(rt, 'cli'));
 }
 
-test('macOS shim with no runtime in HOME says to open CodeMie Connect once and exits 1', () => {
+test('macOS shim with no runtime in HOME says to open CodeMie Connect once and exits 1', { skip: onWindows }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'shim-'));
   const r = execShim(shimIn(dir), join(dir, 'home'));
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Open CodeMie Connect once/);
 });
 
-test('macOS shim runs the linked runtime and passes arguments and exit code through', () => {
+test('macOS shim runs the linked runtime and passes arguments and exit code through', { skip: onWindows }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'shim-'));
   const home = join(dir, 'home');
   runtime(home);
@@ -262,7 +262,7 @@ test('macOS shim runs the linked runtime and passes arguments and exit code thro
   assert.equal(r.status, 7);
 });
 
-test('macOS shim run as another command name runs that command', () => {
+test('macOS shim run as another command name runs that command', { skip: onWindows }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'shim-'));
   const home = join(dir, 'home');
   runtime(home, { entries: ['codemie.js', 'codemie-claude.js', 'agent-executor.js'] });
@@ -270,7 +270,7 @@ test('macOS shim run as another command name runs that command', () => {
   assert.equal(execShim(shimIn(dir, 'codemie-code'), home).stdout.trim(), 'fake-node agent-executor.js');
 });
 
-test('macOS shim run as a command this CLI does not have says so and exits 127', () => {
+test('macOS shim run as a command this CLI does not have says so and exits 127', { skip: onWindows }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'shim-'));
   const home = join(dir, 'home');
   runtime(home);
@@ -280,7 +280,7 @@ test('macOS shim run as a command this CLI does not have says so and exits 127',
   assert.equal(r.stdout, '');
 });
 
-test('macOS shim does not use a CLI dir without the .complete marker', () => {
+test('macOS shim does not use a CLI dir without the .complete marker', { skip: onWindows }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'shim-'));
   const home = join(dir, 'home');
   runtime(home, { cliComplete: false });
