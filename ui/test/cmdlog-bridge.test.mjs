@@ -170,6 +170,20 @@ test('spawnPty without onData: cmdlog_append still receives decoded+stripped tex
   assert.equal(closeCall?.args?.exitCode, 0, 'cmdlog_close must receive exit code 0');
 });
 
+test('runCapture: logs stdout+stderr and the real exit code of a capture result object', async () => {
+  const calls = [];
+  listenImpl = async () => () => {};
+  invokeImpl = async (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === 'run_capture') return { code: 3, stdout: 'out\n', stderr: 'err\n' };
+    if (cmd === 'cmdlog_open') return 'log-obj';
+    return null;
+  };
+  await runner.runCapture('x');
+  assert.equal(calls.find(c => c.cmd === 'cmdlog_append').args.chunk, 'out\nerr\n');
+  assert.equal(calls.find(c => c.cmd === 'cmdlog_close').args.exitCode, 3);
+});
+
 // ---- test CR-006: null result skipped, non-null coerced to String ----
 test('runCapture: null result skips cmdlog_append; String result is coerced', async () => {
   // null result — no append expected

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-06T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 10,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "10 files changed (5 source, 4 test, 1 stylesheet) all under ui/, 293 insertions and 15 deletions." },
+    { "dimension": "technical_risk", "reason": "Install logic fails closed on the CLI help probe, validates https-only download URLs and shell-quotes the open command; streaming UTF-8 PTY decoding is a small new approach. Enumerated edge cases are covered by tests." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -21,6 +21,11 @@ export const cmdlog = {
 };
 
 // ---- runner (src/main/runner.js) ----
+// run_capture / run_fresh_env return { code, stdout, stderr }: log the text and
+// the real exit code, not String(object) and a hard-coded 0.
+const captureText = (r) => (r && typeof r === 'object' ? `${r.stdout ?? ''}${r.stderr ?? ''}` : String(r));
+const captureCode = (r) => (r && typeof r.code === 'number' ? r.code : 0);
+
 export const runner = {
   async runCapture(cmd) {
     const logId = await cmdlog.open(cmd).catch(() => null);
@@ -28,8 +33,8 @@ export const runner = {
     let _code = -1;
     try {
       res = await invoke('run_capture', { cmd });
-      if (logId && res != null) await cmdlog.append(logId, String(res)).catch(console.warn);
-      _code = 0;
+      if (logId && res != null) await cmdlog.append(logId, captureText(res)).catch(console.warn);
+      _code = captureCode(res);
       return res;
     } finally {
       if (logId) await cmdlog.close(logId, _code).catch(console.warn);
@@ -41,8 +46,8 @@ export const runner = {
     const logId = await cmdlog.open(cmd).catch(() => null);
     try {
       const result = await invoke('run_fresh_env', { cmd });
-      if (logId && result != null) await cmdlog.append(logId, String(result)).catch(console.warn);
-      _code = 0;
+      if (logId && result != null) await cmdlog.append(logId, captureText(result)).catch(console.warn);
+      _code = captureCode(result);
       return result;
     } finally {
       if (logId) await cmdlog.close(logId, _code).catch(console.warn);
