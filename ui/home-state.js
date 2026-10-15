@@ -73,7 +73,7 @@ function agentItem(def, agents) {
 function healthItem(def, health, running, failed) {
   if (!health && running) return item(def, StepStatus.ACTIVE, 'Checking…');
   // A check that could not finish: the row's Open Health leads to the error and
-  // its retry, since the sidebar's Health stays locked until the checklist is done.
+  // its retry; the sidebar's Health is open by then, but the row is the direct way.
   if (!health && failed) return item(def, StepStatus.ERROR, 'The check did not finish');
   if (!health) return item(def, StepStatus.PENDING, 'Not checked yet');
   const failing = health.rows.filter((r) => r.status === 'fail').length;
