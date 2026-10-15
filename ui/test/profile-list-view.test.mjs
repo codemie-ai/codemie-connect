@@ -128,3 +128,15 @@ test('the rename field never auto-capitalises or corrects the name', () => {
   assert.equal(input._attrs.autocorrect, 'off');
   assert.equal(input.spellcheck, false);
 });
+
+test('the row an action is running on shows the new name and a spinner, with no buttons', () => {
+  const root = makeEl('div');
+  renderProfileList(root, state([P('a', true), P('b')], { busy: true, pending: { name: 'b', label: 'work', text: 'Renaming…' } }));
+  const names = root._all((n) => n.className === 'profile-name').map((n) => n.textContent);
+  assert.deepEqual(names, ['a', 'work']);
+  assert.equal(root._all((n) => n.className === 'inline-spinner').length, 1);
+  assert.ok(root._text().includes('Renaming…'));
+  assert.equal(buttons(root, 'Switch').length, 0, 'the pending row has no buttons');
+  assert.equal(buttons(root, 'Rename').length, 1, 'the other row keeps its (disabled) buttons');
+  assert.equal(buttons(root, 'Rename')[0].disabled, true);
+});

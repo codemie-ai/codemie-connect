@@ -35,7 +35,14 @@ export function renderProfileList(container, state, handlers = {}) {
     const info = el('div', 'profile-info');
     const busy = state.busy;
 
-    if (ui.renaming === p.name) {
+    if (busy && state.pending?.name === p.name) {
+      // The action on this row is running: the name it will have and what is
+      // happening, with no buttons, until the list is read again.
+      const sub = el('div', 'profile-sub');
+      sub.append(el('span', 'inline-spinner'), el('span', '', state.pending.text));
+      info.append(el('div', 'profile-name', state.pending.label), sub);
+      row.append(info);
+    } else if (ui.renaming === p.name) {
       const input = el('input', 'prompt-input profile-rename-input');
       // The typed name is kept with the row, so a re-read (the window coming
       // back to the front) does not wipe it.

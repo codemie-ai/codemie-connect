@@ -761,7 +761,7 @@ body::before {
 .setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }
 .setup-view-redirect { display: flex; align-items: center; gap: 8px; margin: 6px 12px 0; color: var(--muted); font-size: 12px; }
 .inline-spinner { width: 11px; height: 11px; border: 1.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: cm-spin 0.8s linear infinite; flex: none; }
-.step-sub .inline-spinner { display: inline-block; vertical-align: -1px; margin-right: 6px; }
+.step-sub .inline-spinner, .profile-sub .inline-spinner { display: inline-block; vertical-align: -1px; margin-right: 6px; }
 
 /* Collapsed rows (COMPLETE, this view only): "label -- value [icon]" on one
    line instead of the default stacked title/subtitle -- never touches the
