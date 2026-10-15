@@ -174,9 +174,11 @@ function connectionsCard(connection) {
 // kept between launches and the Health card said "unknown" after every restart
 // (EPMCDME-15388). Not before the sign-in status is read: until then a
 // returning user counts as done, and a lapsed sign-in would bring the checklist
-// back with a check already run on it.
-export function autoHealthCheck(state) {
-  if (!state) return false;
+// back with a check already run on it. Never while guided setup is open: a
+// restarted run (a revisited step, Try again) re-reads the sign-in before the
+// profile is written, and the check would run on no configuration.
+export function autoHealthCheck(state, { setupOpen = false } = {}) {
+  if (!state || setupOpen) return false;
   const health = state.items.find((i) => i.id === 'health');
   if (!health || health.status !== StepStatus.PENDING) return false;
   if (state.done) return state.authKnown;

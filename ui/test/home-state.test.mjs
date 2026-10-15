@@ -330,3 +330,15 @@ test('brokenCopy names the profile and offers the actions that fit', () => {
   assert.deepEqual(dangling.actions, ['setup']);
   assert.equal(brokenCopy({ config: valid, auth: signedIn }), null);
 });
+
+// A revisited step restarts guided setup; the old run's end re-read the
+// sign-in mid-setup and, for a returning user, started the check on a config
+// setup had not written yet ("No configuration found", never re-run). While
+// setup is open the check waits; it starts once the user is back on Home.
+test('the health check never starts by itself while guided setup is open', () => {
+  const returning = deriveHome({ config: { state: 'no-configuration' }, auth: { state: 'unknown' }, agents, health: null, onboarded: true });
+  assert.equal(autoHealthCheck(returning), true, 'precondition: a returning user would get the check straight away');
+  assert.equal(autoHealthCheck(returning, { setupOpen: true }), false);
+  const ready = deriveHome({ config: valid, auth: signedIn, agents, health: null });
+  assert.equal(autoHealthCheck(ready, { setupOpen: false }), true);
+});
