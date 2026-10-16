@@ -1,0 +1,270 @@
+name: Release macOS
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version or tag (e.g. 2.1.1 or v2.1.1; default: from tauri.conf.json)'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  make-draft-release:
+    name: Make Draft Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      version: ${{ steps.prepare.outputs.version }}
+      commit_sha: ${{ steps.prepare.outputs.commit_sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate and prepare release
+        id: prepare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -eo pipefail
+
+          SEMVER_REGEX='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+              echo "::error::Manual release can only be triggered from the 'main' branch, not '${{ github.ref }}'." >&2
+              exit 1
+            fi
+
+            git checkout main
+            COMMIT_SHA=$(git rev-parse HEAD)
+
+            INPUT_TAG="${RELEASE_TAG_INPUT}"
+            INPUT_TAG="$(echo "${INPUT_TAG}" | xargs)"
+
+            if [ -n "${INPUT_TAG}" ]; then
+              VERSION="${INPUT_TAG#v}"
+            else
+              VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+            fi
+            TAG="v${VERSION}"
+
+            if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+              echo "::error::Git tag '${TAG}' already exists in this repository! Refusing to overwrite." >&2
+              exit 1
+            fi
+          else
+            COMMIT_SHA="${GITHUB_SHA}"
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+
+            if [[ "${TAG}" != v* ]]; then
+              echo "::error::Git tag '${TAG}' must start with 'v' (e.g. v2.1.0)" >&2
+              exit 1
+            fi
+
+            git merge-base --is-ancestor "${COMMIT_SHA}" origin/main || {
+              echo "::error::Release tag '${TAG}' (commit ${COMMIT_SHA}) must point to a commit already merged into main." >&2
+              exit 1
+            }
+
+            git checkout "${COMMIT_SHA}"
+
+            CONF_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+            if [ "${VERSION}" != "${CONF_VERSION}" ]; then
+              echo "::error::Tag '${TAG}' version does not match tauri.conf.json version '${CONF_VERSION}'" >&2
+              exit 1
+            fi
+          fi
+
+          if [[ ! "${VERSION}" =~ ${SEMVER_REGEX} ]]; then
+            echo "::error::Invalid version '${VERSION}'. Expected stable X.Y.Z without leading zeros (e.g. 2.1.1)." >&2
+            exit 1
+          fi
+
+          echo "Target commit SHA: ${COMMIT_SHA}"
+          echo "Release tag: ${TAG}"
+          echo "App version: ${VERSION}"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "::error::GitHub Release '${TAG}' already exists! Refusing to overwrite an existing release." >&2
+            exit 1
+          fi
+
+          gh release create "${TAG}" \
+            --target "${COMMIT_SHA}" \
+            --draft \
+            --title "${TAG}" \
+            --notes ""
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    name: Build, Sign & Notarize (macOS)
+    needs:
+      - make-draft-release
+    runs-on: macos-15
+    timeout-minutes: 60
+    environment: release
+
+    steps:
+      - name: Checkout repository at target commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.make-draft-release.outputs.commit_sha }}
+
+      - name: Stamp version
+        env:
+          NEW_VERSION: ${{ needs.make-draft-release.outputs.version }}
+        run: |
+          jq --arg v "$NEW_VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          sed -i '' -E "s/^version = \".*\"/version = \"$NEW_VERSION\"/" src-tauri/Cargo.toml
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Run backend tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Validate signing and notarization credentials
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLEID }}
+          APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
+          APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
+        run: |
+          missing=0
+          for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Required secret '${var}' is missing or empty in environment 'release'." >&2
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Refusing to build an unsigned / unnotarized release." >&2
+            exit 1
+          fi
+          echo "All required signing and notarization secrets are present."
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.2 --no-audit --no-fund
+
+      - name: Build and Sign DMG
+        working-directory: src-tauri
+        env:
+          CI: true
+          # Certificates for code signing:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: tauri build --bundles dmg
+
+      - name: Normalize filenames
+        working-directory: src-tauri/target/release/bundle/dmg
+        run: |
+          for f in *; do
+            [ -f "$f" ] || continue
+            # Replace spaces and underscores with hyphens
+            new_name="$(echo "$f" | sed -E 's/[ _]/-/g')"
+            if [ "$f" != "$new_name" ]; then
+              echo "Renaming '$f' to '$new_name'"
+              mv "$f" "$new_name"
+            fi
+          done
+
+      - name: Notarize and Staple DMG
+        id: notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLEID }}
+          APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
+          APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
+        run: |
+          set -eo pipefail
+          DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
+          echo "Notarizing ${DMG_PATH}..."
+          AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
+          xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
+          UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
+          if [[ -n "${UUID}" ]]; then
+            echo "Fetching notarization log for ${UUID}..."
+            xcrun notarytool log "${UUID}" ${AUTH} || true
+          fi
+          echo "Stapling ticket to DMG..."
+          xcrun stapler staple "${DMG_PATH}"
+          xcrun stapler validate "${DMG_PATH}"
+        continue-on-error: true
+
+      - name: Notarize and Staple DMG (retry)
+        if: steps.notarize.outcome == 'failure'
+        env:
+          APPLE_ID: ${{ secrets.APPLEID }}
+          APPLE_PASSWORD: ${{ secrets.APPLEIDPASS }}
+          APPLE_TEAM_ID: ${{ secrets.APPLETEAMID }}
+        run: |
+          set -eo pipefail
+          sleep 30
+          DMG_PATH=$(ls -1 src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
+          echo "Retrying notarization for ${DMG_PATH}..."
+          AUTH="--apple-id ${APPLE_ID} --password ${APPLE_PASSWORD} --team-id ${APPLE_TEAM_ID}"
+          xcrun notarytool submit "${DMG_PATH}" ${AUTH} --wait 2>&1 | tee notarytool.log
+          UUID=$(awk '/id: / { print $2; exit; }' notarytool.log)
+          if [[ -n "${UUID}" ]]; then
+            echo "Fetching notarization log for ${UUID}..."
+            xcrun notarytool log "${UUID}" ${AUTH} || true
+          fi
+          echo "Stapling ticket to DMG..."
+          xcrun stapler staple "${DMG_PATH}"
+          xcrun stapler validate "${DMG_PATH}"
+
+      - name: Generate Checksums
+        working-directory: src-tauri/target/release/bundle/dmg
+        run: |
+          for f in *.dmg; do
+            shasum -a 256 "$f" > "$f.sha256"
+          done
+
+      - name: Upload artifacts to Draft Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.make-draft-release.outputs.tag }}
+        run: |
+          gh release upload "${RELEASE_TAG}" \
+            src-tauri/target/release/bundle/dmg/*.dmg \
+            src-tauri/target/release/bundle/dmg/*.sha256 \
+            --clobber
+
+  publish-github-release:
+    name: Publish GitHub Release
+    needs:
+      - make-draft-release
+      - build-macos
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.make-draft-release.outputs.tag }}
+        run: gh release edit "${RELEASE_TAG}" --draft=false

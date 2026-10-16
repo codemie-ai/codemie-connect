@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  validate-commits:
+    name: Validate Commits & PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request'
+
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate commit messages
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: npx --no-install commitlint --from "$BASE_SHA" --to HEAD --verbose
+
+      - name: Validate PR title
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_TITLE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json title --jq '.title')
+          printf '%s\n' "$PR_TITLE" | npx --no-install commitlint --verbose
+
+  test:
+    name: Lint & Tests (macOS)
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Lint Rust (clippy)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Run frontend unit tests
+        run: npm test
+
+      - name: Run backend unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.2 --no-audit --no-fund
+
+      - name: Build macOS app and DMG
+        working-directory: src-tauri
+        env:
+          CI: true
+        run: tauri build --bundles app dmg --no-sign
+
+      - name: Normalize filenames
+        working-directory: src-tauri/target/release/bundle/dmg
+        run: |
+          for f in *; do
+            [ -f "$f" ] || continue
+            new_name="$(echo "$f" | sed -E 's/[ _]/-/g')"
+            if [ "$f" != "$new_name" ]; then
+              echo "Renaming '$f' to '$new_name'"
+              mv "$f" "$new_name"
+            fi
+          done
+
+      - name: Generate DMG checksums
+        working-directory: src-tauri/target/release/bundle/dmg
+        run: |
+          for f in *.dmg; do
+            shasum -a 256 "$f" > "$f.sha256"
+          done
+
+      - name: Upload macOS CI artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-dmg
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.sha256
+          if-no-files-found: error
+          retention-days: 3
+
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The gitleaks action lists the commits of a pull request through the API.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_ENABLE_COMMENTS: "false"
