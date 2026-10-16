@@ -1103,7 +1103,9 @@ mod win {
     /// || npm run build`); without a system Node they are "not recognized".
     fn path_with(node_dir: &Path) -> std::ffi::OsString {
         let mut dirs = vec![node_dir.to_path_buf()];
-        dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        dirs.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
         std::env::join_paths(dirs).unwrap_or_default()
     }
 
