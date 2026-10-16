@@ -23,7 +23,11 @@ pub fn runtime_ready(state: tauri::State<'_, crate::state::AppState>) -> CmdResu
 /// is missing. Emits `runtime:progress`.
 #[tauri::command]
 pub async fn ensure_runtime(app: AppHandle) -> CmdResult<()> {
-    imp::ensure_runtime(app).await
+    let result = imp::ensure_runtime(app).await;
+    if let Err(e) = &result {
+        crate::commands::logger::write_line(&format!("runtime install failed: {e}"), "stderr");
+    }
+    result
 }
 
 /// Called after the app is up: installs a newer CLI from npm, if there is one.
@@ -837,6 +841,30 @@ mod win {
         Ok(ready(existing_cli, smoke_mode(), dir_ready))
     }
 
+    /// Names the failing step and path, so a bare OS error ("The system cannot
+    /// find the path specified. (os error 3)") says what was being done where.
+    /// `Other`, not `Download`: the UI shows its network hint only for downloads.
+    fn at<T>(
+        step: &str,
+        target: impl std::fmt::Display,
+        r: Result<T, impl std::fmt::Display>,
+    ) -> CmdResult<T> {
+        r.map_err(|e| InstallerError::Other(format!("{step} failed at {target}: {e}")))
+    }
+
+    /// An error with its causes ("error sending request: ... dns error: no such
+    /// host"); reqwest's own Display stops at the outermost layer.
+    fn chain(e: &dyn std::error::Error) -> String {
+        let mut s = e.to_string();
+        let mut cur = e.source();
+        while let Some(c) = cur {
+            s.push_str(": ");
+            s.push_str(&c.to_string());
+            cur = c.source();
+        }
+        s
+    }
+
     pub fn verify_sha(got_hex: &str, expected: &str) -> CmdResult<()> {
         if got_hex == expected {
             return Ok(());
@@ -874,12 +902,25 @@ mod win {
     pub fn promote(staging: &Path, dir: &Path) -> CmdResult<()> {
         let key = dir.file_name().unwrap_or_default().to_string_lossy();
         let aside = dir.with_file_name(format!(".old-{key}"));
-        std::fs::write(staging.join(COMPLETE_MARKER), key.as_bytes())?;
+        let marker = staging.join(COMPLETE_MARKER);
+        at(
+            "write the completion marker",
+            marker.display(),
+            std::fs::write(&marker, key.as_bytes()),
+        )?;
         let _ = std::fs::remove_dir_all(&aside);
         if dir.exists() {
-            rename_retry(dir, &aside)?;
+            at(
+                "move the old runtime aside",
+                dir.display(),
+                rename_retry(dir, &aside),
+            )?;
         }
-        rename_retry(staging, dir)?;
+        at(
+            "move the runtime into place",
+            format!("{} -> {}", staging.display(), dir.display()),
+            rename_retry(staging, dir),
+        )?;
         let _ = std::fs::remove_dir_all(&aside);
         Ok(())
     }
@@ -925,7 +966,7 @@ mod win {
             .get(url)
             .send()
             .await
-            .map_err(|e| InstallerError::Download(e.to_string()))?;
+            .map_err(|e| InstallerError::Download(chain(&e)))?;
         if !resp.status().is_success() {
             return Err(InstallerError::Download(format!(
                 "HTTP {} for {url}",
@@ -933,18 +974,23 @@ mod win {
             )));
         }
         let total = resp.content_length().unwrap_or(0);
-        let mut file = tokio::fs::File::create(archive).await?;
+        let saving = "save the Node.js download";
+        let mut file = at(
+            saving,
+            archive.display(),
+            tokio::fs::File::create(archive).await,
+        )?;
         let mut hasher = Sha256::new();
         let mut done: u64 = 0;
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| InstallerError::Download(e.to_string()))?;
+            let chunk = chunk.map_err(|e| InstallerError::Download(chain(&e)))?;
             hasher.update(&chunk);
-            file.write_all(&chunk).await?;
+            at(saving, archive.display(), file.write_all(&chunk).await)?;
             done += chunk.len() as u64;
             progress(done, total);
         }
-        file.flush().await?;
+        at(saving, archive.display(), file.flush().await)?;
         drop(file);
         if total > 0 && done != total {
             return Err(InstallerError::Download("download was cut short".into()));
@@ -964,7 +1010,11 @@ mod win {
         }
         let cfg = config();
         let base = runtime_base()?;
-        tokio::fs::create_dir_all(&base).await?;
+        at(
+            "create the runtime folder",
+            base.display(),
+            tokio::fs::create_dir_all(&base).await,
+        )?;
         let key = runtime_key(&cfg);
         let zip = base.join(format!(".download-{key}.zip"));
         let staging = base.join(format!(".staging-{key}"));
@@ -997,7 +1047,7 @@ mod win {
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(60))
             .build()
-            .map_err(|e| InstallerError::Download(e.to_string()))?;
+            .map_err(|e| InstallerError::Download(chain(&e)))?;
 
         download_verified(&client, &url, zip, cfg.node_sha256(), |done, total| {
             if total > 0 {
@@ -1056,19 +1106,36 @@ mod win {
         let node_staging = node_dir(staging);
         let cli_staging = staging.join("cli");
 
-        std::fs::create_dir_all(&node_staging)?;
+        let mk = "create the staging folder";
+        at(
+            mk,
+            node_staging.display(),
+            std::fs::create_dir_all(&node_staging),
+        )?;
         extract_node_zip(zip, &node_staging, &cfg.node_version)?;
 
-        std::fs::create_dir_all(&cli_staging)?;
+        at(
+            mk,
+            cli_staging.display(),
+            std::fs::create_dir_all(&cli_staging),
+        )?;
         npm_install_cli(cfg, &node_staging, &cli_staging)?;
 
-        std::fs::write(connect_json_path(staging), CONNECT_JSON)?;
-
-        if !cli_entry(staging).is_file() {
-            return Err(InstallerError::Other(
-                "CLI entry not found after npm install".into(),
-            ));
+        // Checked before the write below: if npm installed somewhere else, the
+        // package folder is missing and the write would fail with a bare os error 3.
+        let entry = cli_entry(staging);
+        if !entry.is_file() {
+            return Err(InstallerError::Other(format!(
+                "npm install finished but the CLI is missing at {}",
+                entry.display()
+            )));
         }
+        let connect = connect_json_path(staging);
+        at(
+            "write codemie-connect.json",
+            connect.display(),
+            std::fs::write(&connect, CONNECT_JSON),
+        )?;
 
         promote(staging, dir)
     }
@@ -1078,35 +1145,43 @@ mod win {
     #[cfg(windows)]
     fn extract_node_zip(zip: &Path, dest: &Path, node_version: &str) -> CmdResult<()> {
         let prefix = format!("node-v{node_version}-win-x64");
-        let out = std::process::Command::new(tar_exe())
-            .arg("-xf")
-            .arg(zip)
-            .arg("--strip-components=1")
-            .arg("-C")
-            .arg(dest)
-            .arg(format!("{prefix}/node.exe"))
-            .arg(format!("{prefix}/node_modules/npm"))
-            .arg(format!("{prefix}/npm.cmd"))
-            .arg(format!("{prefix}/npx.cmd"))
-            .output()?;
+        let tar = tar_exe();
+        let out = at(
+            "start tar to unpack Node.js",
+            tar.display(),
+            std::process::Command::new(&tar)
+                .arg("-xf")
+                .arg(zip)
+                .arg("--strip-components=1")
+                .arg("-C")
+                .arg(dest)
+                .arg(format!("{prefix}/node.exe"))
+                .arg(format!("{prefix}/node_modules/npm"))
+                .arg(format!("{prefix}/npm.cmd"))
+                .arg(format!("{prefix}/npx.cmd"))
+                .output(),
+        )?;
         if !out.status.success() {
             return Err(InstallerError::Other(format!(
-                "Node zip extraction failed: {}",
+                "unpacking Node.js failed ({}) from {} into {}: {}",
+                out.status,
+                zip.display(),
+                dest.display(),
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
         Ok(())
     }
 
-    /// PATH with the runtime's node dir first. Dependency install scripts run
-    /// through cmd.exe and call `node` / `npm` by name (keytar: `prebuild-install
-    /// || npm run build`); without a system Node they are "not recognized".
+    /// PATH with `node_dir` first, so npm lifecycle scripts (keytar's
+    /// `prebuild-install`) find the bundled node.exe.
+    #[cfg(windows)]
     fn path_with(node_dir: &Path) -> std::ffi::OsString {
-        let mut dirs = vec![node_dir.to_path_buf()];
-        dirs.extend(std::env::split_paths(
+        let mut paths = vec![node_dir.to_path_buf()];
+        paths.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         ));
-        std::env::join_paths(dirs).unwrap_or_default()
+        std::env::join_paths(paths).unwrap_or_default()
     }
 
     /// Installs the pinned CLI version into `cli_dir` via npm.
@@ -1118,19 +1193,42 @@ mod win {
         // Exact version pin so the installed CLI is always >= 0.15.7 regardless of
         // whether the lock file has been regenerated for the new version yet.
         let spec = format!("{}@{}", cfg.cli_package, cfg.cli_version);
-        let out = std::process::Command::new(&node)
-            .arg(&npm)
-            .arg("install")
-            .arg(&spec)
-            .arg("--omit=dev")
-            .arg("--no-audit")
-            .arg("--no-fund")
-            .env("PATH", path_with(node_dir))
-            .current_dir(cli_dir)
-            .output()?;
+        // Without a package.json npm walks up to the nearest node_modules (e.g. a
+        // stray one in the user's home) and installs there instead of here.
+        let pkg = cli_dir.join("package.json");
+        at(
+            "write package.json",
+            pkg.display(),
+            std::fs::write(&pkg, "{}"),
+        )?;
+        let out = at(
+            "start npm",
+            format!("{} (in {})", node.display(), cli_dir.display()),
+            std::process::Command::new(&node)
+                .arg(&npm)
+                .arg("install")
+                .arg(&spec)
+                .arg("--omit=dev")
+                .arg("--no-audit")
+                .arg("--no-fund")
+                .current_dir(cli_dir)
+                .env("PATH", path_with(node_dir))
+                .output(),
+        )?;
         if !out.status.success() {
+            crate::commands::logger::write_line(
+                &format!(
+                    "npm install {spec} exited {}\n{}\n{}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout).trim(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+                "stderr",
+            );
             return Err(InstallerError::Other(format!(
-                "npm install {spec} failed: {}",
+                "npm install {spec} failed ({}) in {}: {}",
+                out.status,
+                cli_dir.display(),
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
@@ -1161,8 +1259,8 @@ mod win {
                     .arg("--omit=dev")
                     .arg("--no-audit")
                     .arg("--no-fund")
-                    .env("PATH", path_with(&node_dir(&dir)))
                     .current_dir(&cli_dir)
+                    .env("PATH", path_with(&node_dir(&dir)))
                     .output();
                 if let Ok(out) = out {
                     if out.status.success() {
@@ -1277,6 +1375,49 @@ mod win {
             assert!(!dir.join("stale-file").exists());
             assert!(!staging.exists());
             assert!(!t.path().join(".old-key").exists());
+        }
+
+        #[test]
+        fn at_names_the_step_and_path_and_is_not_a_download_error() {
+            let e = at::<()>(
+                "write x",
+                r"C:\p",
+                Err(std::io::Error::from_raw_os_error(3)),
+            )
+            .unwrap_err();
+            assert!(matches!(e, InstallerError::Other(_)));
+            let s = e.to_string();
+            assert!(s.starts_with(r"write x failed at C:\p: "), "{s}");
+            assert!(s.contains("os error 3"), "{s}");
+        }
+
+        #[test]
+        fn promote_into_a_missing_staging_names_the_marker_path() {
+            let t = tempfile::tempdir().unwrap();
+            let staging = t.path().join("gone");
+            let s = promote(&staging, &t.path().join("key"))
+                .unwrap_err()
+                .to_string();
+            assert!(s.contains("completion marker"), "{s}");
+            assert!(s.contains("gone"), "{s}");
+        }
+
+        #[test]
+        fn chain_appends_every_cause() {
+            #[derive(Debug)]
+            struct E(&'static str, Option<Box<E>>);
+            impl std::fmt::Display for E {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str(self.0)
+                }
+            }
+            impl std::error::Error for E {
+                fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                    self.1.as_deref().map(|e| e as _)
+                }
+            }
+            let e = E("sending request", Some(Box::new(E("dns error", None))));
+            assert_eq!(chain(&e), "sending request: dns error");
         }
 
         #[test]
