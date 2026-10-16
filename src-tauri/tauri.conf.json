@@ -42,7 +42,7 @@
     },
     "windows": {
       "webviewInstallMode": {
-        "type": "skip"
+        "type": "downloadBootstrapper"
       },
       "nsis": {
         "installMode": "currentUser",
