@@ -1,7 +1,8 @@
 // Which sidebar entries are usable while onboarding is still running.
 //
 // Until sign-in and model are set (or setup has finished once), the other
-// screens are not somewhere to wander into: the checklist itself is what sends the user to them, item by item.
+// screens are not somewhere to wander into: the checklist itself is what sends
+// the user to them, item by item.
 // So they are dimmed and cannot be clicked -- but Home never is, because a
 // checklist item that opens Agents or Health has to leave a way back.
 //

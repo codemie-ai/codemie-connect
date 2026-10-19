@@ -111,8 +111,8 @@ test('a broken profile is a warning on item 2, not an error and not first run', 
 
 // Once setup has finished on this machine, Home stays on its cards. Health is
 // read fresh each time the app opens, so without this a user who finished
-// setup yesterday was back on the checklist, and a returning user must not see a locked sidebar, every
-// morning until they ran the check again.
+// setup yesterday was back on the checklist every morning until they ran the
+// check again.
 test('after setup has finished once, Home opens on the cards before any read comes back', () => {
   const s = deriveHome({ config: null, auth: null, agents: undefined, health: null, onboarded: true });
   assert.equal(s.done, true);

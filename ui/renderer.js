@@ -215,7 +215,8 @@ function renderHome() {
     setTimeout(startHealthInPlace, 0);
   }
   // The other screens stay locked until sign-in and model are set (or setup
-  // has finished once); Home never is, so an item that opened Agents or Health always has a way back.
+  // has finished once); Home never is, so an item that opened Agents or
+  // Health always has a way back.
   applyOnboardingNav(document, { done: state.unlocked });
   applyHomeHeader(document, { done: state.done });
 }
