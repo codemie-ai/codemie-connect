@@ -788,6 +788,7 @@ mod tests_persist_decision {
         assert_eq!(normalize_blocks(before, AGENTS, true), before);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn dmg_mount_and_app_translocation_are_not_install_locations() {
         let calls = RefCell::new(Vec::new());
