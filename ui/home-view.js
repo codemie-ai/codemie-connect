@@ -76,7 +76,7 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
     // before it are done), so its row is not a link: clicking it took the user
     // off Home to a screen that looked like the row opening. While it runs it
     // shows a spinner; if it found problems, the row offers the way to them,
-    // since the sidebar's Health stays locked until the checklist finishes.
+    // the Open Health action being the direct way to the error and its retry.
     const health = items.find((i) => i.id === 'health');
     const healthRow = listEl.querySelector('.step-row[data-id="health"]');
     if (health && healthRow) {
