@@ -200,14 +200,78 @@ pub fn check_connector_status() -> ConnectorStatus {
     }
 }
 
+/// Where the CLI looks for each app on Windows (client-install.ts
+/// `windowsApplicationDirs` + `getCodexDesktopAppCandidates`), as full paths.
+fn windows_app_paths(name: &str, local: &Path, pf: &Path, pf_x86: &Path) -> Vec<PathBuf> {
+    match name {
+        "Visual Studio Code" => vec![
+            pf.join("Microsoft VS Code").join("Code.exe"),
+            pf_x86.join("Microsoft VS Code").join("Code.exe"),
+            local
+                .join("Programs")
+                .join("Microsoft VS Code")
+                .join("Code.exe"),
+        ],
+        "Claude" => vec![local.join("AnthropicClaude").join("claude.exe")],
+        "ChatGPT" => vec![local.join("Programs").join("ChatGPT"), pf.join("ChatGPT")],
+        _ => vec![],
+    }
+}
+
+/// A Microsoft Store (MSIX) ChatGPT has no predictable folder, but the
+/// per-user package registry lists it by name; `reg query` exits 0 on a match.
+#[cfg(windows)]
+fn store_package_installed(name: &str) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages",
+            "/f",
+            name,
+            "/k",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn store_package_installed(_name: &str) -> bool {
+    false
+}
+
+fn windows_app_installed(name: &str) -> bool {
+    let env = |k: &str, d: &str| PathBuf::from(std::env::var(k).unwrap_or_else(|_| d.to_string()));
+    let local = std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(home_dir().unwrap_or_default())
+                .join("AppData")
+                .join("Local")
+        });
+    let paths = windows_app_paths(
+        name,
+        &local,
+        &env("ProgramFiles", r"C:\Program Files"),
+        &env("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    );
+    paths.iter().any(|p| p.exists()) || (name == "ChatGPT" && store_package_installed(name))
+}
+
 /// Best-effort "is this app installed" signal. On macOS: does
-/// `/Applications/<name>.app` or `~/Applications/<name>.app` exist. Other
-/// platforms have no single install location to check (per-user and
-/// per-machine installers, Store builds), so the answer there is "assume yes":
-/// a wrong "not installed" would hide the only way to connect, while a wrong
-/// "installed" just lets the CLI report the missing app itself.
+/// `/Applications/<name>.app` or `~/Applications/<name>.app` exist. On
+/// Windows: the same places the CLI checks, plus a Store install of ChatGPT.
+/// Other platforms have no install location to check, so the answer is
+/// "assume yes": a wrong "not installed" would hide the only way to connect,
+/// while a wrong "installed" just lets the CLI report the missing app itself.
 #[tauri::command]
 pub fn app_bundle_exists(name: String) -> bool {
+    if cfg!(windows) {
+        return windows_app_installed(&name);
+    }
     if !cfg!(target_os = "macos") {
         return true;
     }
@@ -416,9 +480,32 @@ mod tests {
         ));
     }
 
-    // Off macOS there is no install location to check, and a wrong "not
-    // installed" would leave the row with no way to connect.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    #[test]
+    fn app_bundle_exists_false_when_app_absent_on_windows() {
+        assert!(!app_bundle_exists("ChatGPT-Not-Real-12345".to_string()));
+        assert!(!app_bundle_exists(
+            "Definitely Not A Real App 12345".to_string()
+        ));
+    }
+
+    #[test]
+    fn windows_app_paths_match_the_cli_locations() {
+        let (l, pf, x86) = (Path::new("L"), Path::new("PF"), Path::new("PF86"));
+        let vs = windows_app_paths("Visual Studio Code", l, pf, x86);
+        assert_eq!(vs.len(), 3);
+        assert!(
+            vs[2].ends_with("Programs/Microsoft VS Code/Code.exe")
+                || vs[2].ends_with(r"Programs\Microsoft VS Code\Code.exe")
+        );
+        assert!(windows_app_paths("Claude", l, pf, x86)[0].ends_with("claude.exe"));
+        assert_eq!(windows_app_paths("ChatGPT", l, pf, x86).len(), 2);
+        assert!(windows_app_paths("Nope", l, pf, x86).is_empty());
+    }
+
+    // Off macOS and Windows there is no install location to check, and a
+    // wrong "not installed" would leave the row with no way to connect.
+    #[cfg(not(any(target_os = "macos", windows)))]
     #[test]
     fn app_bundle_exists_assumes_installed_off_macos() {
         assert!(app_bundle_exists(

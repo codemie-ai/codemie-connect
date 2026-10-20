@@ -12,7 +12,11 @@ import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeT
 import { stopSetupOnLeave } from './setup-leave.js';
 import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
-import { findProxyConnectError, parseProxyStatusDeep } from './proxy-parse.js';
+import { analyzeProxyOutput, parseProxyStatusDeep } from './proxy-parse.js';
+import { createPtyDecoder } from './pty-decode.js';
+import {
+  checkInstallSupported, interpretInstallResult, openDownloadPage, createRowStateStore, INSTALL_NOTES,
+} from './install-client.js';
 import { computeRowStatus } from './connections-status.js';
 import { renderConnectionRows, CONNECTION_APPS } from './connections-render.js';
 import { isBlockedState } from './auth-gate.js';
@@ -573,14 +577,15 @@ async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
         runAction(title, cmd, returnView, hint, extra);
       },
     });
-    return;
+    return null;
   }
   const { onClose, parseError } = extra;
   openTerminal(title, { keepOpen: true, hint, onClose: onClose || (() => showView(returnView)) });
   let buf = '';
+  const decodeChunk = createPtyDecoder();
   const un = parseError ? await listen('engine:pty-data', (e) => {
     try {
-      buf += atob(e.payload.data);
+      buf += decodeChunk(e.payload.data);
     } catch (err) {
       console.warn('engine:pty-data: could not decode chunk', err);
     }
@@ -595,10 +600,12 @@ async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
     } else {
       writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
     }
+    return { code, rawBuffer: buf };
   } catch (e) {
     un?.();
     writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
     handlePtyExit();
+    return null;
   }
 }
 
@@ -713,6 +720,8 @@ const CONFIG_PRESENT_FIELD = {
 // Re-reads connector config presence, app-bundle presence, and daemon health
 // live (no cached/stale state) and repaints #connect-rows. Called on entering
 // the Connections view and again after every row action's PTY completes.
+const connectionRowState = createRowStateStore();
+
 async function refreshConnectionsView() {
   let ipcFailed = false;
   const [configStatus, daemonCapture] = await Promise.all([
@@ -764,6 +773,28 @@ async function refreshConnectionsView() {
     subtitleEl.textContent = ROW_STATUS_LABEL[row.status];
     mainEl.appendChild(subtitleEl);
 
+    const rowState = connectionRowState.get(row.app);
+    if (rowState?.error) {
+      const errorEl = document.createElement('div');
+      errorEl.className = 'row-error';
+      errorEl.textContent = rowState.error;
+      mainEl.appendChild(errorEl);
+    } else if (rowState?.note) {
+      const noteEl = document.createElement('div');
+      noteEl.className = 'row-note';
+      noteEl.textContent = rowState.note;
+      mainEl.appendChild(noteEl);
+    }
+    if (rowState?.downloadUrl) {
+      const openEl = document.createElement('button');
+      openEl.className = 'row-action row-download';
+      openEl.textContent = 'Open the download page';
+      openEl.addEventListener('click', () => {
+        openDownloadPage(rowState.downloadUrl, (c) => bridge.runner.runCapture(c), platformInfoValue?.os === 'windows').catch(() => {});
+      });
+      mainEl.appendChild(openEl);
+    }
+
     rowEl.appendChild(mainEl);
 
     const actionsEl = document.createElement('div');
@@ -789,16 +820,34 @@ async function refreshConnectionsView() {
 // already rejects concurrency).
 async function runConnectionRowAction(row, action) {
   if (!(await ensureAuthenticated(row.label))) return;
+  connectionRowState.clear(row.app);
+  if (action.kind === 'install') {
+    const support = await checkInstallSupported((c) => bridge.runner.runCapture(c));
+    if (!support.ok) {
+      connectionRowState.set(row.app, { note: INSTALL_NOTES[support.reason] });
+      await refreshConnectionsView();
+      return;
+    }
+  }
   connectRowsEl.querySelectorAll('.row-action').forEach((btn) => { btn.disabled = true; });
-  const cmd = action.kind === 'disconnect'
-    ? `codemie proxy disconnect ${row.connectFlag}`
-    : `codemie proxy connect ${row.connectFlag}${action.kind === 'reconnect' ? ' --force' : ''}`;
+  let cmd;
+  if (action.kind === 'disconnect') cmd = `codemie proxy disconnect ${row.connectFlag}`;
+  else if (action.kind === 'install') cmd = `codemie proxy connect ${row.connectFlag} --install-client`;
+  else cmd = `codemie proxy connect ${row.connectFlag}${action.kind === 'reconnect' ? ' --force' : ''}`;
   // Spec: parse the CLI's output for success/failure rather than trusting the
   // exit code alone — applies to connect/reconnect and disconnect alike.
-  await runAction(`${action.label} ${row.label}`, cmd, 'connections', undefined, {
+  const result = await runAction(`${action.label} ${row.label}`, cmd, 'connections', undefined, {
     onClose: () => { refreshConnectionsView(); },
-    parseError: findProxyConnectError,
+    parseError: (lines) => analyzeProxyOutput(lines.join('\n')).errorLine,
   });
+  if (!result) return;
+  // Kept in a store so the row error survives the row rebuild on terminal close.
+  const { errorLine, downloadUrl } = analyzeProxyOutput(result.rawBuffer);
+  const outcome = action.kind === 'install'
+    ? interpretInstallResult({ code: result.code, errorLine, downloadUrl })
+    : { error: errorLine, downloadUrl: null };
+  if (outcome.error) connectionRowState.set(row.app, outcome);
+  else connectionRowState.clear(row.app);
 }
 
 // Launches `codemie profile login`, streams output, surfaces any error line via
