@@ -116,7 +116,13 @@ const DEFAULT_BASE_URL: &str =
 
 /// Where the update manifest lives (configurable via CODEMIE_INSTALLER_BASE_URL).
 fn get_base_url() -> String {
-    std::env::var("CODEMIE_INSTALLER_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
+    base_url_from(std::env::var("CODEMIE_INSTALLER_BASE_URL").ok())
+}
+
+/// The override when one is set, the latest codemie-connect release otherwise.
+/// Split out so the default is tested without touching the process env.
+fn base_url_from(override_url: Option<String>) -> String {
+    override_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
 }
 
 /// One manifest for every platform: the latest version and, per platform,
@@ -441,8 +447,12 @@ mod tests {
             "https://github.com/codemie-ai/codemie-connect/releases/latest/download"
         );
         assert_eq!(
-            format!("{}/manifest.json", DEFAULT_BASE_URL),
-            "https://github.com/codemie-ai/codemie-connect/releases/latest/download/manifest.json"
+            base_url_from(None),
+            "https://github.com/codemie-ai/codemie-connect/releases/latest/download"
+        );
+        assert_eq!(
+            base_url_from(Some("http://127.0.0.1:9/install".to_string())),
+            "http://127.0.0.1:9/install"
         );
     }
 
