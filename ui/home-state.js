@@ -73,7 +73,7 @@ function agentItem(def, agents) {
 function healthItem(def, health, running, failed) {
   if (!health && running) return item(def, StepStatus.ACTIVE, 'Checking…');
   // A check that could not finish: the row's Open Health leads to the error and
-  // its retry, since the sidebar's Health stays locked until the checklist is done.
+  // its retry; the sidebar's Health is open by then, but the row is the direct way.
   if (!health && failed) return item(def, StepStatus.ERROR, 'The check did not finish');
   if (!health) return item(def, StepStatus.PENDING, 'Not checked yet');
   const failing = health.rows.filter((r) => r.status === 'fail').length;
@@ -191,9 +191,9 @@ export function deriveHome({ config, auth, agents, health, connection, onboarded
     items,
     done,
     authKnown: !!auth,
-    // The sidebar locks only for a first setup, never for a user who has
-    // finished it once and has merely been signed out since.
-    unlocked: done || onboarded,
+    // The sidebar opens once sign-in and model are set, or after setup has
+    // finished once; it does not wait for the tools or Health steps.
+    unlocked: onboarded || (items[0].status === StepStatus.COMPLETE && items[1].status === StepStatus.COMPLETE),
     // The records themselves, for the picker item 3 expands into. Passed
     // through unchanged, including `undefined` (not read yet) and `null` (the
     // read failed): a picker that turned both into an empty list would tell
