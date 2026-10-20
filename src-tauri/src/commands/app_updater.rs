@@ -111,11 +111,12 @@ fn run_tool(cmd: &mut Command) -> CmdResult<()> {
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Where the published installers live (configurable via CODEMIE_INSTALLER_BASE_URL).
+const DEFAULT_BASE_URL: &str =
+    "https://github.com/codemie-ai/codemie-connect/releases/latest/download";
+
+/// Where the update manifest lives (configurable via CODEMIE_INSTALLER_BASE_URL).
 fn get_base_url() -> String {
-    std::env::var("CODEMIE_INSTALLER_BASE_URL").unwrap_or_else(|_| {
-        "https://github.com/codemie-ai/codemie-code/raw/main/install".to_string()
-    })
+    std::env::var("CODEMIE_INSTALLER_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
 }
 
 /// One manifest for every platform: the latest version and, per platform,
@@ -407,8 +408,8 @@ mod tests {
     const MANIFEST: &str = r#"{
   "version": "2.1.1",
   "platforms": {
-    "darwin-aarch64": { "url": "https://github.com/codemie-ai/codemie-code/raw/main/install/macos/CodeMie%20Connect_2.1.1_aarch64.dmg" },
-    "windows-x86_64": { "url": "https://github.com/codemie-ai/codemie-code/raw/main/install/windows/CodeMie%20Connect_2.1.1_x64-setup.exe" }
+    "darwin-aarch64": { "url": "https://github.com/codemie-ai/codemie-connect/releases/download/v2.1.1/CodeMie-Connect-2.1.1-aarch64.dmg" },
+    "windows-x86_64": { "url": "https://github.com/codemie-ai/codemie-connect/releases/download/v2.1.1/CodeMie-Connect-2.1.1-x64-setup.exe" }
   }
 }"#;
 
@@ -416,9 +417,9 @@ mod tests {
     fn manifest_gives_the_version_and_this_platforms_installer() {
         let (v, url) = parse_manifest(MANIFEST, "darwin-aarch64").unwrap();
         assert_eq!(v, "2.1.1");
-        assert!(url.ends_with("/macos/CodeMie%20Connect_2.1.1_aarch64.dmg"));
+        assert!(url.ends_with("/CodeMie-Connect-2.1.1-aarch64.dmg"));
         let (_, url) = parse_manifest(MANIFEST, "windows-x86_64").unwrap();
-        assert!(url.ends_with("/windows/CodeMie%20Connect_2.1.1_x64-setup.exe"));
+        assert!(url.ends_with("/CodeMie-Connect-2.1.1-x64-setup.exe"));
     }
 
     #[test]
@@ -434,8 +435,15 @@ mod tests {
     }
 
     #[test]
-    fn manifest_is_read_from_one_place_for_every_platform() {
-        assert!(get_manifest_url().ends_with("/install/manifest.json"));
+    fn manifest_is_read_from_the_latest_release_for_every_platform() {
+        assert_eq!(
+            DEFAULT_BASE_URL,
+            "https://github.com/codemie-ai/codemie-connect/releases/latest/download"
+        );
+        assert_eq!(
+            format!("{}/manifest.json", DEFAULT_BASE_URL),
+            "https://github.com/codemie-ai/codemie-connect/releases/latest/download/manifest.json"
+        );
     }
 
     #[tokio::test]
@@ -454,11 +462,11 @@ mod tests {
             s.write_all(head.as_bytes()).await.unwrap();
             s.write_all(MANIFEST.as_bytes()).await.unwrap();
         });
-        let url = format!("http://{addr}/install/manifest.json");
+        let url = format!("http://{addr}/manifest.json");
         let (v, installer) = fetch_manifest(&Client::new(), &url).await.unwrap();
         assert_eq!(v, "2.1.1");
         assert!(installer.ends_with(&format!(
-            "CodeMie%20Connect_2.1.1_{}",
+            "CodeMie-Connect-2.1.1-{}",
             if cfg!(windows) {
                 "x64-setup.exe"
             } else {
