@@ -34,5 +34,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   const { assets } = JSON.parse(execFileSync('gh', ['release', 'view', tag, '--json', 'assets'], { encoding: 'utf8' }));
   const manifest = buildManifest({ tag, assetNames: assets.map((a) => a.name) });
+  if (Object.keys(manifest.platforms).length === 0) {
+    console.error(`no installer assets matched any platform for ${tag}; refusing to write ${outFile}`);
+    process.exit(1);
+  }
   writeFileSync(outFile, JSON.stringify(manifest, null, 2) + '\n');
 }

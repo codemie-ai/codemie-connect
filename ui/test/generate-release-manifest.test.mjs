@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -53,4 +53,19 @@ test('CLI reads assets through gh and writes the manifest file', () => {
     version: '2.1.1',
     platforms: { 'darwin-aarch64': { url: `${BASE}/${MAC}` } },
   });
+});
+
+test('CLI fails and writes no manifest when no asset matches any platform', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'manifest-'));
+  const gh = join(dir, 'gh');
+  writeFileSync(gh, `#!/bin/sh\necho '{"assets":[{"name":"notes.txt"},{"name":"${MAC}.sha256"}]}'\n`);
+  chmodSync(gh, 0o755);
+  const out = join(dir, 'out.json');
+  const r = spawnSync('node', ['scripts/generate-release-manifest.mjs', 'v2.1.1', out], {
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+    encoding: 'utf8',
+  });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /no installer assets/i);
+  assert.equal(existsSync(out), false);
 });
