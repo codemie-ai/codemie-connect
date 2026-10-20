@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-14575-client-app-install",
+  "head": "68a063ad45fd85e624cee0af13be432fd316224e",
+  "runner": "custom",
+  "started_at": "2026-10-06T00:00:00Z",
+  "completed_at": "2026-10-06T00:05:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt-rust",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 2000,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 1,
+      "notes": "Pre-existing violation in a file untouched by this branch. Auto-fix (cargo fmt) not run: it would write outside run_dir."
+    },
+    {
+      "id": "lint-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 27000,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 11000,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "559 pass, 0 fail"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 56000,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "136 + 2 tests pass"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "./build-installer.sh",
+      "exit_code": null,
+      "notes": "Diff is ui/ JS and CSS only, no Rust or bundle changes; guide allows skipping to save build time. Run before release."
+    }
+  ],
+  "failures": {
+    "fmt-rust": "Diff in src-tauri/src/commands/logger.rs:89: to_wide body `OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()` would be reformatted onto multiple lines. File last changed in commit 198c7ae (EPMCDME-15247), not on this branch."
+  }
+}

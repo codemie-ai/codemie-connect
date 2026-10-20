@@ -1,0 +1,26 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec supplied, so acceptance was skipped and confidence is low; blind and verification-gap lenses were not part of the compact profile. One finding survived reachability checks (lone carriage returns in the install output can hide the failure line and download URL; live-CLI output was not confirmed). 5 lens candidates were dismissed as noise or below the emission floor; 0 deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of this profile." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/proxy-parse.js",
+      "line": 27,
+      "title": "Lone carriage returns hide failure line and URL",
+      "problem": "analyzeProxyOutput strips ANSI (which only normalises \\r\\n to \\n) and then splits on '\\n' only. A spinner frame joined to the next line by a lone '\\r' (for example '⠋ Installing...\\r✗ reason') leaves the line starting with spinner text, so the anchored /^\\s*(✗|error:|failed:)/ and /^\\s*Download page:/ patterns miss it.",
+      "impact": "On an install failure the row may show only the generic 'Install failed (exit N).' and no 'Open the download page' button, defeating the failure acceptance criterion. Reachability against real CLI output was unconfirmed, so severity is capped at major.",
+      "recommendation": "Split on /\\r\\n|\\r|\\n/ in analyzeProxyOutput (or normalise lone \\r to \\n in stripAnsi) and add a test with a spinner-prefixed ✗ line and Download page line."
+    }
+  ]
+}
