@@ -263,6 +263,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Generate and upload manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.make-draft-release.outputs.tag }}
+        run: |
+          set -eo pipefail
+          node scripts/generate-release-manifest.mjs "${RELEASE_TAG}" manifest.json
+          gh release upload "${RELEASE_TAG}" manifest.json --clobber
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
