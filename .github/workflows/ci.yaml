@@ -126,5 +126,3 @@ jobs:
       contents: read
       pull-requests: read
     uses: codemie-ai/ci-workflows/.github/workflows/reusable-secrets-detection.yml@main
-    with:
-      fetch-depth: ${{ github.event_name == 'pull_request' && github.event.pull_request.commits || 0 }}
