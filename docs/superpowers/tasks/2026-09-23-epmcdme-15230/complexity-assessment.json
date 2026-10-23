@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Add an in-memory command-log record store as a new Rust module (cmdlog.rs) with open/append/close/list/get-by-id commands, wired into AppState and Tauri registration, no frontend wiring in this slice.",
+  "generated": "2026-09-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 12,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two components — the new cmdlog.rs command module and an AppState extension — across the command layer and the state layer, but the pattern is fully established: runner.rs/pty.rs/logger.rs are direct siblings, and the architecture guide's explicit 'Adding New System Commands' checklist covers this exact shape." },
+    { "dimension": "requirements_clarity", "reason": "Record fields (id, command, exit code, start time, duration, raw output) and the five operations (open/append/close/list/get-by-id) are named explicitly; the one open detail is the internal storage shape (Vec vs HashMap, id-generation scheme), a minor implementation choice not an unresolved requirement." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

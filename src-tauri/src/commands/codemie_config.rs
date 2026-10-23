@@ -100,6 +100,39 @@ pub fn parse_config(raw: &str) -> CodemieConfig {
     }
 }
 
+/// One row of the profile list. Only these four fields cross IPC: the profile
+/// object also holds `apiKey` and other secrets that must never leave Rust.
+#[derive(Serialize, Clone, Debug)]
+pub struct ProfileSummary {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+    pub active: bool,
+}
+
+/// List the profiles in the raw config text. The `profiles` map key is the
+/// profile identity (the CLI indexes by it); the `name` field is ignored.
+pub fn parse_profiles(raw: &str) -> Vec<ProfileSummary> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    let active = json
+        .get("activeProfile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let Some(map) = json.get("profiles").and_then(|p| p.as_object()) else {
+        return Vec::new();
+    };
+    map.iter()
+        .map(|(key, p)| ProfileSummary {
+            name: key.clone(),
+            provider: str_field(p, "provider"),
+            model: str_field(p, "model"),
+            active: !active.is_empty() && key == active,
+        })
+        .collect()
+}
+
 /// The app is Finder-launched with cwd `/`, so a repository-local `.codemie/`
 /// never applies — the global file under $HOME is always the right one.
 /// On Windows, HOME is typically unset; fall back to USERPROFILE.
@@ -125,9 +158,58 @@ pub fn read_codemie_config() -> CodemieConfig {
     }
 }
 
+/// List the CLI profiles for Home. A missing or unreadable file is an empty list.
+#[tauri::command]
+pub fn list_codemie_profiles() -> Vec<ProfileSummary> {
+    std::fs::read_to_string(config_path())
+        .map(|raw| parse_profiles(&raw))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TWO: &str = r#"{"activeProfile":"b","profiles":{
+        "a":{"name":"ignored","provider":"ai-run-sso","model":"m1","apiKey":"SECRET-KEY"},
+        "b":{"provider":"litellm","model":"m2"}}}"#;
+
+    #[test]
+    fn profiles_are_listed_with_one_active() {
+        let p = parse_profiles(TWO);
+        assert_eq!(p.len(), 2);
+        assert_eq!(
+            (p[0].name.as_str(), p[0].provider.as_str()),
+            ("a", "ai-run-sso")
+        );
+        assert_eq!(p[0].model, "m1");
+        assert!(!p[0].active);
+        assert_eq!(p[1].name, "b");
+        assert!(p[1].active);
+    }
+
+    #[test]
+    fn profile_list_never_carries_a_secret() {
+        let json = serde_json::to_string(&parse_profiles(TWO)).unwrap();
+        assert!(!json.contains("apiKey"));
+        assert!(!json.contains("SECRET-KEY"));
+    }
+
+    #[test]
+    fn no_profile_is_active_when_active_profile_names_nothing_or_is_empty() {
+        let missing = r#"{"activeProfile":"zzz","profiles":{"a":{"model":"m"}}}"#;
+        let empty = r#"{"activeProfile":"","profiles":{"a":{"model":"m"}}}"#;
+        for raw in [missing, empty] {
+            let p = parse_profiles(raw);
+            assert_eq!(p.len(), 1);
+            assert!(p.iter().all(|x| !x.active));
+        }
+    }
+
+    #[test]
+    fn garbage_gives_an_empty_profile_list() {
+        assert!(parse_profiles("not json").is_empty());
+    }
 
     #[test]
     fn unreadable_file_is_no_configuration() {
