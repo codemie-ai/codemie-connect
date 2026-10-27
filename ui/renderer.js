@@ -12,6 +12,9 @@ import { initTerminal, openTerminal, writeData, writeLine, handlePtyExit, closeT
 import { stopSetupOnLeave } from './setup-leave.js';
 import * as bridge from './runner-bridge.js';
 import { findLoginError } from './signin-parse.js';
+import { findProxyConnectError, parseProxyStatusDeep } from './proxy-parse.js';
+import { computeRowStatus } from './connections-status.js';
+import { renderConnectionRows, CONNECTION_APPS } from './connections-render.js';
 import { isBlockedState } from './auth-gate.js';
 import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
 import { createHealthController } from './health-controller.js';
@@ -19,10 +22,13 @@ import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
 import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
-import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
+import { createProfileListController } from './profile-list-controller.js';
+import { renderProfileList } from './profile-list-view.js';
+import { deriveHome, brokenCopy, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
-import { createCommandLog } from './command-log.js';
+import { initCmdLog } from './cmdlog-ui.js';
 import { analyticsCommand } from './analytics-command.js';
+import { createAboutController } from './about-controller.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -68,14 +74,14 @@ const views = {
   connect: document.getElementById('connect-view'),
   health: document.getElementById('health-view'),
   about: document.getElementById('about-view'),
+  profiles: document.getElementById('profiles-view'),
   wizard: document.getElementById('wizard-view'),
 };
 const homeView = views.home;
 const wizardView = views.wizard;
 const connectView = views.connect;
 const wizardBack = document.getElementById('wizard-back');
-const connectBtn = document.getElementById('connect-btn');
-const restartBtn = document.getElementById('restart-btn');
+const connectRowsEl = document.getElementById('connect-rows');
 const modeLabel = document.getElementById('wizard-mode-label');
 const stepListEl = document.getElementById('step-list');
 const noticeOverlay = document.getElementById('notice-overlay');
@@ -172,8 +178,42 @@ function setInstallRunning(on) {
 // the config reader and auth status (the identity bar's own reads feed them in),
 // `codemie list` through ui/agents-parse.js, and Health's last result.
 const home = { config: null, auth: null, agents: undefined, health: null, connection: undefined };
+// Profiles screen (EPMCDME-14576): the controller runs one CLI action at a time
+// and re-reads the config; the view draws the rows. The screen is its own view,
+// so Home's re-renders never touch an open rename or delete confirmation.
+const profileRows = document.getElementById('profiles-rows');
+const profileAdd = document.getElementById('profiles-add');
+const profileList = createProfileListController({
+  bridge,
+  onChanged: () => {
+    refreshIdentityOnComplete();
+    // No profile left: Home's setup checklist is where to go next.
+    if (!profileList.state.profiles.length) showView('home');
+  },
+});
+const drawProfileList = () => {
+  renderProfileList(profileRows, profileList.state, {
+    onSwitch: (n) => profileList.switchTo(n),
+    onRename: (o, n) => profileList.rename(o, n),
+    onDelete: (n) => profileList.remove(n),
+  });
+  profileAdd.disabled = profileList.state.busy;
+};
+profileList.subscribe(drawProfileList);
+const reloadProfiles = () => {
+  if (!profileList.state.busy) profileList.load();
+};
+function openProfiles() {
+  if (!profileList.state.busy) profileList.clearMessages();
+  showView('profiles');
+  drawProfileList();
+  reloadProfiles();
+}
+document.getElementById('profiles-back').onclick = () => showView('home');
+profileAdd.onclick = () => openGuidedSetup();
 const homeScreen = createHomeView(document.getElementById('home-body'), {
   stepsUi: stepsUI.createStepsUi(),
+  onManageProfiles: () => openProfiles(),
   onItem: (id) => {
     if (id === 'model') openGuidedSetup();
     else if (id === 'agent') showView('agents');
@@ -181,11 +221,34 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
   },
   onSignIn: () => (signInAction(home) === 'setup' ? openGuidedSetup() : startSignIn()),
   onCard: (id) => showView(id === 'connections' ? 'connect' : id),
-  onSetupAgain: () => openGuidedSetup(),
+  onDeleteProfile: deleteActiveProfile,
   // Item 3 installs through the Agents controller, which refreshes Home on its
   // own when the action finishes, so the item ticks without a second read here.
   onInstallAgent: (agent, onLine) => agentsController.install(agent, onLine),
 });
+
+// Deletes the profile Home's panel names. Never throws and never hangs: a CLI
+// error comes back as the message the panel shows. Config and auth are re-read
+// either way, so a newly active profile (or none) is what Home shows next.
+async function deleteActiveProfile() {
+  const name = (home.config && home.config.profile) || '';
+  if (!name.trim()) return { ok: false, message: 'No profile name to delete' };
+  let result;
+  try {
+    const res = await bridge.profile.delete(name);
+    if (res && res.code === 0) {
+      result = { ok: true };
+    } else {
+      const raw = [res?.stdout, res?.stderr].filter(Boolean).join('\n').trim();
+      const last = raw.split('\n').map((l) => l.trim()).filter(Boolean).pop();
+      result = { ok: false, message: last || 'Could not delete the profile', raw };
+    }
+  } catch (e) {
+    result = { ok: false, message: String((e && e.message) || e) };
+  }
+  await refreshIdentityOnComplete();
+  return result;
+}
 
 // Whether the checklist has ever been finished here, read once at boot.
 // localStorage itself can throw on access, so it is fetched guarded too.
@@ -206,11 +269,11 @@ function renderHome() {
     onboarded = true;
     rememberOnboarded(homeStorage);
   }
-  homeScreen.render({ ...state, signingIn: home.signingIn });
+  homeScreen.render({ ...state, brokenCopy: brokenCopy(home), signingIn: home.signingIn });
   // The last step starts by itself once the ones before it are done, instead
   // of leaving the user on a checklist that waits for a click. Once a session:
   // a check that fails leaves its step saying so, and Home does not retry it.
-  if (!autoHealthStarted && autoHealthCheck(state)) {
+  if (!autoHealthStarted && autoHealthCheck(state, { setupOpen: setupRunning || !views.setup.classList.contains('hidden') })) {
     autoHealthStarted = true;
     setTimeout(startHealthInPlace, 0);
   }
@@ -240,15 +303,18 @@ async function refreshAgents() {
   renderHome();
 }
 
-// The Connections card's one read: whether the CLI's local proxy, which Claude
-// Desktop is pointed at, is running.
+// The Connections card's read: whether the CLI's local proxy is running, and
+// which apps carry a CodeMie config pointing at it.
 let connectionReading = false;
 async function refreshConnection() {
   if (connectionReading) return;
   connectionReading = true;
   try {
-    const res = await bridge.runner.runCapture('codemie proxy status --json');
-    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '');
+    const [res, configured] = await Promise.all([
+      bridge.runner.runCapture('codemie proxy status --json'),
+      bridge.connectors.checkStatus().catch(() => ({})),
+    ]);
+    home.connection = connectionFromStatus((res && res.code === 0 && res.stdout) || '', configured);
   } catch {
     home.connection = null;
   } finally {
@@ -267,6 +333,7 @@ let setupView = null;
 // True while a guided setup run is open; runAction reads it. setupSettled
 // resolves once that run has fully unwound.
 let setupRunning = false;
+let setupRun = null;
 let setupSettled = Promise.resolve();
 // Set while a run left behind by showView is being stopped; the next
 // openGuidedSetup waits for it, or start() would hand back the old run.
@@ -284,8 +351,12 @@ async function openGuidedSetup() {
       },
       // Called for each run, including a "Try again" started from the view.
       onRun: (run) => {
+        setupRun = run;
         setupRunning = true;
         setupSettled = run.then(() => {}, () => {}).finally(() => {
+          // A restart can start the next run before this one has unwound;
+          // only the latest run ends setup.
+          if (setupRun !== run) return;
           setupRunning = false;
           // A run writes the profile and may sign the user in; Home re-reads both.
           refreshIdentityOnComplete();
@@ -339,7 +410,29 @@ function showView(name) {
     refreshAgents();
     refreshConnection();
   }
+  if (name === 'about') about.refresh();
 }
+
+// ---- About (ui/about-controller.js, ui/about-view.js) ----
+const aboutHandlers = {
+  onUpdateApp: () => {
+    if (installRunning) return;
+    runUpdateApp();
+  },
+  onOpenLink: (url) => {
+    if (installRunning) return;
+    invoke('open_external', { url }).catch((err) => console.error('[about] open failed:', err));
+  },
+};
+
+const about = createAboutController({
+  view: views.about,
+  handlers: aboutHandlers,
+  invoke,
+  inspector: bridge.inspector,
+  updater: bridge.updater,
+  shared: () => ({ app: appVersionState, appRunning: updateAppRunning }),
+});
 
 // (Re)build the engine for a wizard run.
 function enterWizard() {
@@ -462,7 +555,12 @@ function dismissAppUpdateBanner() {
 // away from. Anything else that needs the slot (the analytics report, the
 // Claude Desktop connection) asks to stop that run first, instead of failing
 // with the bridge's bare "PTY already active".
-async function runAction(title, cmd, returnView = 'home', hint) {
+// `extra.onClose` overrides the default "navigate back to returnView" close
+// handler (used by row actions that should refresh in place instead).
+// `extra.parseError` — when given, PTY stdout is buffered and scanned for a
+// failure line rather than trusting the exit code alone (mirrors
+// findLoginError's stdout-scan convention).
+async function runAction(title, cmd, returnView = 'home', hint, extra = {}) {
   if (setupRunning) {
     showNotice({
       title: 'Setup is still running',
@@ -472,16 +570,33 @@ async function runAction(title, cmd, returnView = 'home', hint) {
         const { cancelSetup } = await import('./setup-driver.js');
         await cancelSetup();
         await setupSettled;
-        runAction(title, cmd, returnView, hint);
+        runAction(title, cmd, returnView, hint, extra);
       },
     });
     return;
   }
-  openTerminal(title, { keepOpen: true, hint, onClose: () => showView(returnView) });
+  const { onClose, parseError } = extra;
+  openTerminal(title, { keepOpen: true, hint, onClose: onClose || (() => showView(returnView)) });
+  let buf = '';
+  const un = parseError ? await listen('engine:pty-data', (e) => {
+    try {
+      buf += atob(e.payload.data);
+    } catch (err) {
+      console.warn('engine:pty-data: could not decode chunk', err);
+    }
+  }) : null;
   try {
+    // cmdlog intent: user-initiated
     const { code } = await bridge.pty.spawnPty(cmd);
-    writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
+    un?.();
+    const errorLine = parseError ? parseError(buf.split(/\r?\n/)) : null;
+    if (errorLine) {
+      writeLine(`\r\n\x1b[31m✗ ${errorLine}\x1b[0m Click “‹ Back” to return.\r\n`);
+    } else {
+      writeLine(`\r\n${code === 0 ? '\x1b[32m✓' : '\x1b[31m✗'} Finished (exit ${code}).\x1b[0m Click “‹ Back” to return.\r\n`);
+    }
   } catch (e) {
+    un?.();
     writeLine(`\r\n\x1b[31m✗ Error: ${(e && e.message) || e}\x1b[0m\r\n`);
     handlePtyExit();
   }
@@ -559,7 +674,7 @@ const agentsController = createAgentsController({
 // otherwise shows a blocking notice that points at setup.
 // Gates only on not_signed_in and no_profile; unknown is treated as authenticated
 // so a profile whose provider omits an Auth Status row never blocks the user.
-async function ensureAuthenticated() {
+async function ensureAuthenticated(appLabel = 'this app') {
   let st;
   try {
     st = await bridge.inspector.checkProfileStatus();
@@ -570,13 +685,120 @@ async function ensureAuthenticated() {
     showNotice({
       title: 'CodeMie isn’t signed in',
       message:
-        `Connecting Claude Desktop needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
+        `Connecting ${appLabel} needs a signed-in CodeMie profile — "codemie profile status" must report Authenticated.${st.detail ? ` It reported: ${st.detail}.` : ''} Run setup / sign in first, then try again.`,
       primaryLabel: 'Run setup',
       primaryAction: () => openGuidedSetup(),
     });
     return false;
   }
   return true;
+}
+
+// Human-readable subtitle text per connections-render.js status value.
+const ROW_STATUS_LABEL = {
+  'not-installed': 'Not installed',
+  'not-set': 'Not set',
+  'connected': 'Connected',
+  'disconnected': 'Disconnected',
+};
+
+// Maps each connections-render.js app id to its check_connector_status field.
+const CONFIG_PRESENT_FIELD = {
+  'claude-desktop': 'claudeDesktop',
+  'codex-desktop': 'codexDesktop',
+  'vscode-copilot': 'vscodeCopilot',
+  'vscode-claude-code': 'vscodeClaudeCode',
+};
+
+// Re-reads connector config presence, app-bundle presence, and daemon health
+// live (no cached/stale state) and repaints #connect-rows. Called on entering
+// the Connections view and again after every row action's PTY completes.
+async function refreshConnectionsView() {
+  let ipcFailed = false;
+  const [configStatus, daemonCapture] = await Promise.all([
+    bridge.connectors.checkStatus().catch(() => { ipcFailed = true; return {}; }),
+    bridge.runner.runCapture('codemie proxy status --json --deep').catch(() => { ipcFailed = true; return { stdout: '' }; }),
+  ]);
+  if (ipcFailed) {
+    showNotice({
+      title: 'Connections status unavailable',
+      message: 'Could not read connection status right now — the rows below may not reflect the real state. Try again in a moment.',
+      primaryLabel: 'OK',
+      primaryAction: hideNotice,
+    });
+  }
+  const { healthy: daemonHealthy } = parseProxyStatusDeep(daemonCapture?.stdout ?? '');
+
+  const statusesByApp = {};
+  for (const { app, bundleName } of CONNECTION_APPS) {
+    const appInstalled = await bridge.connectors.appBundleExists(bundleName).catch(() => false);
+    const configPresent = Boolean(configStatus[CONFIG_PRESENT_FIELD[app]]);
+    statusesByApp[app] = { status: computeRowStatus({ appInstalled, configPresent, daemonHealthy }) };
+  }
+
+  const rows = renderConnectionRows(statusesByApp);
+  connectRowsEl.innerHTML = '';
+  for (const row of rows) {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'connection-row';
+    rowEl.dataset.app = row.app;
+    rowEl.dataset.status = row.status;
+
+    const mainEl = document.createElement('div');
+    mainEl.className = 'row-main';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'row-title';
+    const dotEl = document.createElement('span');
+    dotEl.className = 'row-dot';
+    dotEl.dataset.status = row.status;
+    titleEl.appendChild(dotEl);
+    const nameEl = document.createElement('span');
+    nameEl.className = 'row-name';
+    nameEl.textContent = row.label;
+    titleEl.appendChild(nameEl);
+    mainEl.appendChild(titleEl);
+
+    const subtitleEl = document.createElement('div');
+    subtitleEl.className = 'row-subtitle';
+    subtitleEl.textContent = ROW_STATUS_LABEL[row.status];
+    mainEl.appendChild(subtitleEl);
+
+    rowEl.appendChild(mainEl);
+
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'row-actions';
+    for (const action of row.actions) {
+      const actionEl = document.createElement('button');
+      actionEl.className = 'row-action';
+      actionEl.textContent = action.label;
+      actionEl.disabled = action.disabled;
+      if (action.note) actionEl.title = action.note;
+      actionEl.addEventListener('click', () => runConnectionRowAction(row, action));
+      actionsEl.appendChild(actionEl);
+    }
+    rowEl.appendChild(actionsEl);
+
+    connectRowsEl.appendChild(rowEl);
+  }
+}
+
+// Runs a row action (Connect/Reconnect/Remove setup/Disconnect) on the app's
+// single PTY slot, disabling every row's actions while it is in flight
+// (row-disable is UI-level insurance — spawnPty's single-slot contract
+// already rejects concurrency).
+async function runConnectionRowAction(row, action) {
+  if (!(await ensureAuthenticated(row.label))) return;
+  connectRowsEl.querySelectorAll('.row-action').forEach((btn) => { btn.disabled = true; });
+  const cmd = action.kind === 'disconnect'
+    ? `codemie proxy disconnect ${row.connectFlag}`
+    : `codemie proxy connect ${row.connectFlag}${action.kind === 'reconnect' ? ' --force' : ''}`;
+  // Spec: parse the CLI's output for success/failure rather than trusting the
+  // exit code alone — applies to connect/reconnect and disconnect alike.
+  await runAction(`${action.label} ${row.label}`, cmd, 'connections', undefined, {
+    onClose: () => { refreshConnectionsView(); },
+    parseError: findProxyConnectError,
+  });
 }
 
 // Launches `codemie profile login`, streams output, surfaces any error line via
@@ -594,6 +816,7 @@ async function startSignIn() {
   try {
     const lines = [];
     // run_stream takes a command string, not an array — matches all existing callers
+    // cmdlog intent: user-initiated
     await bridge.runner.runStream('codemie profile login', (line) => { lines.push(line); });
     // Exit code is ignored — profile login exits 0 on failure; scan stdout instead.
     const errorLine = findLoginError(lines);
@@ -613,16 +836,11 @@ async function startSignIn() {
       primaryAction: hideNotice,
     });
   }
-  // Always re-read profile status; never assume success from absence of an error line.
-  // Falls back to the safe unknown state if the IPC call itself rejects.
-  let st;
-  try {
-    st = await bridge.inspector.checkProfileStatus();
-  } catch {
-    st = { state: 'unknown', detail: '' };
-  }
+  // Always re-read config and profile status; never assume success from absence
+  // of an error line. Both reads fall back to a safe value if the IPC call rejects.
+  await refreshIdentityOnComplete();
   home.signingIn = false;
-  updateIdentityAuthStatus(st);
+  renderHome();
 }
 
 async function runAnalytics() {
@@ -640,19 +858,26 @@ let updateAppRunning = false;
 async function runUpdateApp() {
   if (updateAppRunning) return;
   updateAppRunning = true;
+  about.startUpdate();
 
   const bannerRunBtn = document.getElementById('app-update-banner-run');
-  bannerRunBtn.disabled = true;
-  bannerRunBtn.textContent = 'Downloading…';
+  // Progress shows on the banner and, when About is open, on its button too.
+  const showProgress = (text) => {
+    if (bannerRunBtn) {
+      bannerRunBtn.disabled = true;
+      bannerRunBtn.textContent = text;
+    }
+    about.progress(text, true);
+  };
+  showProgress('Downloading…');
 
   const id = `app-update-${Date.now()}`;
   try {
     await bridge.updater.downloadAndInstall(id, ({ percent }) => {
-      bannerRunBtn.textContent = `Downloading… ${percent}%`;
+      showProgress(`Downloading… ${percent}%`);
     });
 
-    bannerRunBtn.textContent = 'Installer running…';
-    bannerRunBtn.disabled = true;
+    showProgress('Installer running…');
     // The installer window is now visible and running
     // Wait for Tauri's runtime to clean up gracefully before exiting
     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -669,8 +894,10 @@ async function runUpdateApp() {
       banBody.appendChild(errorEl);
     }
     errorEl.textContent = String(err);
+    about.fail(String(err));
   } finally {
     updateAppRunning = false;
+    about.renderIfShown();
   }
 }
 
@@ -732,10 +959,6 @@ async function ensureRuntime() {
 
 async function boot() {
   await ensureRuntime();
-  // The command-log footer hears about every command the bridge runs, so it is
-  // wired first: the startup checks below (codemie --version, profile status)
-  // would otherwise run before it and never show.
-  bridge.setCommandListener(createCommandLog(document.getElementById('command-log-body')).start);
   const flags = await invoke('smoke_mode');
 
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
@@ -773,6 +996,7 @@ async function boot() {
     hint: document.getElementById('terminal-hint'),
     done: document.getElementById('terminal-done'),
   });
+  initCmdLog();
 
   document.getElementById('app-update-banner-run').addEventListener('click', () => {
     if (installRunning) return;
@@ -826,6 +1050,7 @@ async function boot() {
     refreshIdentityOnComplete();
     refreshAgents();
     refreshConnection();
+    if (!views.profiles.classList.contains('hidden')) reloadProfiles();
   });
 
   const [platformInfo, tmpDir] = await Promise.all([
@@ -898,6 +1123,7 @@ async function boot() {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
       showView(btn.dataset.view);
+      if (btn.dataset.view === 'connect') refreshConnectionsView();
     });
   });
   showView('home');
@@ -907,18 +1133,6 @@ async function boot() {
   });
 
   wizardBack.addEventListener('click', () => showView('home'));
-  connectBtn.addEventListener('click', async () => {
-    if (await ensureAuthenticated()) {
-      runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect', 'Running automatically — no input needed.');
-    }
-  });
-  restartBtn.addEventListener('click', async () => {
-    if (await ensureAuthenticated()) {
-      // Stop the running proxy first, then connect again. `;` (not `&&`) so a
-      // no-op stop (nothing running) still proceeds to connect.
-      runAction('Restart Claude Desktop proxy', 'codemie proxy stop; codemie proxy connect desktop', 'connect');
-    }
-  });
   noticeClose.addEventListener('click', hideNotice);
   // ---- view routing (smoke/probe go straight to the wizard so their
   //      .step-row / canvas / bg assertions still hold) ----

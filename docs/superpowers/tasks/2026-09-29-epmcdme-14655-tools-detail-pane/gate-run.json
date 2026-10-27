@@ -1,0 +1,8 @@
+{"schema":1,"branch":"feat/EPMCDME-14655-tools-detail-pane","head":"d55d5e78971138bff5aaba3089045ae5551ca420","runner":"custom","started_at":"2026-09-29T11:46:16Z","completed_at":"2026-09-29T11:47:28Z","status":"PASSED","drift_detected":false,
+"gates":[
+{"id":"fmt-rust","source":"guide","status":"PASS","duration_ms":2000,"command":"cd src-tauri && cargo fmt --check","exit_code":0},
+{"id":"lint-rust","source":"guide","status":"PASS","duration_ms":19000,"command":"cd src-tauri && cargo clippy -- -D warnings","exit_code":0},
+{"id":"unit-js","source":"guide","status":"PASS","duration_ms":13000,"command":"npm test","exit_code":0,"notes":"503 pass, 0 fail, 0 skipped"},
+{"id":"unit-rust","source":"guide","status":"PASS","duration_ms":38000,"command":"cd src-tauri && cargo test","exit_code":0,"notes":"116 + 2 passed"},
+{"id":"build","source":"guide","status":"N/A","duration_ms":0,"command":"./build-installer.sh","exit_code":null,"notes":"Not run: caller said do not run cargo tauri build."}],
+"failures":{}}

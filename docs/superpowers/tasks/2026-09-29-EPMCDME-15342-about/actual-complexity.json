@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 13,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New About view module and About controller, a new open_external Tauri command in the logger module, a force flag on the app-updater check, plus sidebar/renderer/runner-bridge wiring. That is 4 components across the UI and Rust command layers, with shared renderer state." },
+    { "dimension": "file_change_estimate", "reason": "The diffstat reports 13 files (710 insertions). About 8 are modified (app_updater.rs, logger.rs, lib.rs, index.html, renderer.js, runner-bridge.js, styles.css, plus existing tests) and about 4 are new (about-controller.js, about-view.js and their tests), spread across src-tauri/ and ui/. This maps to XL on the actual-mode file scale." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is spawn_open for log files, which never handled untrusted input. open_external passes a URL to the OS opener, so an exact-match allowlist and rejection tests had to be added. That security gap bumped the score from S to M. The CLI version probe racing a CLI self-update is handled with a generation counter and by waiting on the probe." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: the closest pattern (spawn_open for logs) did not cover input validation for a URL handed to the OS opener, so an allowlist was added"
+  ],
+  "split_recommendation": null
+}
