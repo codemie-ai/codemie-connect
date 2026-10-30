@@ -111,8 +111,8 @@ test('a broken profile is a warning on item 2, not an error and not first run', 
 
 // Once setup has finished on this machine, Home stays on its cards. Health is
 // read fresh each time the app opens, so without this a user who finished
-// setup yesterday was back on the checklist, with the sidebar locked, every
-// morning until they ran the check again.
+// setup yesterday was back on the checklist every morning until they ran the
+// check again.
 test('after setup has finished once, Home opens on the cards before any read comes back', () => {
   const s = deriveHome({ config: null, auth: null, agents: undefined, health: null, onboarded: true });
   assert.equal(s.done, true);
@@ -134,9 +134,22 @@ test('after setup has finished once, a lapsed sign-in shows the checklist again 
   assert.equal(s.unlocked, true);
 });
 
-test('before setup has ever finished, the sidebar unlocks only with the checklist', () => {
-  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null }).unlocked, false);
+test('before setup has ever finished, the sidebar unlocks once sign-in and model are set, whatever tools and health show', () => {
+  const failing = { rows: [{ status: 'fail' }], summary: { passing: 0, total: 1 } };
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null }).done, false);
   assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: healthy }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: failing }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: signedIn, agents: [], health: null }).unlocked, true);
+  assert.equal(deriveHome({ config: valid, auth: { state: 'unknown' }, agents, health: null }).unlocked, true);
+});
+
+test('before setup has ever finished, the sidebar stays locked without sign-in or a model', () => {
+  assert.equal(deriveHome({ config: valid, auth: null, agents, health: healthy }).unlocked, false);
+  assert.equal(deriveHome({ config: valid, auth: { state: 'not_signed_in' }, agents, health: healthy }).unlocked, false);
+  assert.equal(deriveHome({ config: { state: 'no-configuration' }, auth: signedIn, agents, health: healthy }).unlocked, false);
+  assert.equal(deriveHome({ config: { state: 'broken', profile: 'old', model: '' }, auth: signedIn, agents, health: healthy }).unlocked, false);
 });
 
 // A returning user now sees the cards before the auth read has come back, so
@@ -204,7 +217,7 @@ test('the Health card says checking while the check runs, not unknown', () => {
 });
 
 // A check that could not finish must not leave the step on "Not checked yet"
-// with nothing to click: the sidebar's Health is still locked then.
+// with nothing to click: the row's Open Health is the way to the error.
 test('a health check that could not finish is an error on its step, and does not start again', () => {
   const s = deriveHome({ config: valid, auth: signedIn, agents, health: null, healthFailed: true });
   const h = s.items.find((i) => i.id === 'health');

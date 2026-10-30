@@ -1,0 +1,26 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance did not run (no spec), so confidence is low. One surviving finding: the generator publishes a manifest with empty platforms when no asset matches. 4 candidates dismissed as noise or unreachable (version/tag mismatch, URL encoding, missing HTTP status check on a 404 manifest, late-arriving assets); 0 deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "standards not audited in this profile" },
+    { "kind": "code-quality", "status": "na", "notes": "standards not audited in this profile" },
+    { "kind": "security", "status": "na", "notes": "standards not audited in this profile" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "scripts/generate-release-manifest.mjs",
+      "line": 36,
+      "title": "Empty-platforms manifest gets published",
+      "problem": "When no release asset matches any platform pattern (for example an installer was renamed), buildManifest returns platforms: {} and the script writes and exits 0. The workflow step then uploads it and the next step publishes the release.",
+      "impact": "A published release whose manifest has no platforms makes every client fail with 'No installer available for platform', so updates silently stop. This contradicts the acceptance that a release carries every shipped platform's installer URL. Reachability of a rename was not confirmed.",
+      "recommendation": "After buildManifest, if Object.keys(manifest.platforms).length === 0, print an error and process.exit(1) so the workflow fails before publishing. Keep the check platform-agnostic."
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: Lint & Tests (macOS)
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Lint Rust (clippy)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Run frontend unit tests
+        run: npm test
+
+      - name: Run backend unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.2 --no-audit --no-fund
+
+      - name: Build macOS app and DMG
+        working-directory: src-tauri
+        env:
+          CI: true
+        run: tauri build --bundles app dmg --no-sign
+
+      - name: Normalize filenames
+        working-directory: src-tauri/target/release/bundle/dmg
+        run: |
+          for f in *; do
+            [ -f "$f" ] || continue
+            new_name="$(echo "$f" | sed -E 's/[ _]/-/g')"
+            if [ "$f" != "$new_name" ]; then
+              echo "Renaming '$f' to '$new_name'"
+              mv "$f" "$new_name"
+            fi
+          done
+
+      - name: Generate DMG checksums
+        working-directory: src-tauri/target/release/bundle/dmg
+        run: |
+          for f in *.dmg; do
+            shasum -a 256 "$f" > "$f.sha256"
+          done
+
+      - name: Upload macOS CI artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-dmg
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.sha256
+          if-no-files-found: error
+          retention-days: 3
+
+  secrets-detection:
+    name: Security
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: codemie-ai/ci-workflows/.github/workflows/reusable-secrets-detection.yml@main
