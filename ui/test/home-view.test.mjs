@@ -161,8 +161,8 @@ test('clicking item 2 reports the item; items 1, 3 and 4 do not navigate', () =>
   assert.deepEqual(opened, ['model']);
 });
 
-// A check that found problems keeps the checklist up, and the sidebar's Health
-// is locked until it finishes: the row itself offers the way to the problems.
+// A check that found problems keeps the checklist up: the row itself
+// offers the way to the problems.
 test('a health check with problems offers Open Health in its row; a running one shows a spinner', () => {
   const opened = [];
   const warned = { ...checklist, items: checklist.items.map((i) => (i.id === 'health' ? item('health', 'WARNING', '1 problem to fix') : i)) };
