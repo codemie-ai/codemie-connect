@@ -808,9 +808,13 @@ mod win {
     }
 
     /// Ready only when the last step of an install (the marker) happened, so a
-    /// partial download or install is never used.
+    /// partial download or install is never used. npm.cmd is required so runtimes
+    /// installed before it was extracted get reinstalled once.
     pub fn is_ready(dir: &Path) -> bool {
-        dir.join(COMPLETE_MARKER).is_file() && node_exe(dir).is_file() && cli_entry(dir).is_file()
+        dir.join(COMPLETE_MARKER).is_file()
+            && node_exe(dir).is_file()
+            && node_dir(dir).join("npm.cmd").is_file()
+            && cli_entry(dir).is_file()
     }
 
     fn hex(bytes: &[u8]) -> String {
@@ -1082,6 +1086,8 @@ mod win {
             .arg(dest)
             .arg(format!("{prefix}/node.exe"))
             .arg(format!("{prefix}/node_modules/npm"))
+            .arg(format!("{prefix}/npm.cmd"))
+            .arg(format!("{prefix}/npx.cmd"))
             .output()?;
         if !out.status.success() {
             return Err(InstallerError::Other(format!(
@@ -1090,6 +1096,17 @@ mod win {
             )));
         }
         Ok(())
+    }
+
+    /// PATH with the runtime's node dir first. Dependency install scripts run
+    /// through cmd.exe and call `node` / `npm` by name (keytar: `prebuild-install
+    /// || npm run build`); without a system Node they are "not recognized".
+    fn path_with(node_dir: &Path) -> std::ffi::OsString {
+        let mut dirs = vec![node_dir.to_path_buf()];
+        dirs.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        std::env::join_paths(dirs).unwrap_or_default()
     }
 
     /// Installs the pinned CLI version into `cli_dir` via npm.
@@ -1108,6 +1125,7 @@ mod win {
             .arg("--omit=dev")
             .arg("--no-audit")
             .arg("--no-fund")
+            .env("PATH", path_with(node_dir))
             .current_dir(cli_dir)
             .output()?;
         if !out.status.success() {
@@ -1143,6 +1161,7 @@ mod win {
                     .arg("--omit=dev")
                     .arg("--no-audit")
                     .arg("--no-fund")
+                    .env("PATH", path_with(&node_dir(&dir)))
                     .current_dir(&cli_dir)
                     .output();
                 if let Ok(out) = out {
@@ -1166,6 +1185,13 @@ mod win {
         use std::io::Write;
 
         #[test]
+        fn path_with_puts_the_runtime_node_first() {
+            let p = path_with(Path::new(r"C:\rt\node"));
+            let first = std::env::split_paths(&p).next().unwrap();
+            assert_eq!(first, Path::new(r"C:\rt\node"));
+        }
+
+        #[test]
         fn not_ready_without_marker_even_with_files() {
             let t = tempfile::tempdir().unwrap();
             let d = t.path();
@@ -1173,8 +1199,23 @@ mod win {
             std::fs::write(node_exe(d), "x").unwrap();
             std::fs::create_dir_all(cli_entry(d).parent().unwrap()).unwrap();
             std::fs::write(cli_entry(d), "x").unwrap();
+            std::fs::write(node_dir(d).join("npm.cmd"), "x").unwrap();
             assert!(!is_ready(d));
             std::fs::write(d.join(COMPLETE_MARKER), "k").unwrap();
+            assert!(is_ready(d));
+        }
+
+        #[test]
+        fn not_ready_without_npm_cmd() {
+            let t = tempfile::tempdir().unwrap();
+            let d = t.path();
+            std::fs::create_dir_all(node_exe(d).parent().unwrap()).unwrap();
+            std::fs::write(node_exe(d), "x").unwrap();
+            std::fs::create_dir_all(cli_entry(d).parent().unwrap()).unwrap();
+            std::fs::write(cli_entry(d), "x").unwrap();
+            std::fs::write(d.join(COMPLETE_MARKER), "k").unwrap();
+            assert!(!is_ready(d));
+            std::fs::write(node_dir(d).join("npm.cmd"), "x").unwrap();
             assert!(is_ready(d));
         }
 
@@ -1225,6 +1266,7 @@ mod win {
             let cli = cli_entry(&staging);
             std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
             std::fs::write(&cli, "x").unwrap();
+            std::fs::write(node_dir(&staging).join("npm.cmd"), "x").unwrap();
 
             assert!(!is_ready(&staging));
             let dir = t.path().join("key");
