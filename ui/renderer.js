@@ -718,8 +718,13 @@ async function ensureRuntime() {
     } catch (err) {
       installing = false;
       stopCreep();
-      title.textContent = "Couldn't download CodeMie";
-      detail.textContent = 'Check your internet connection or proxy, then try again.';
+      // Only a failed download is a network problem (error.rs prefixes it
+      // "download failed:"); anything else names its own step and path.
+      const network = /^download failed:/.test(String(err));
+      title.textContent = network ? "Couldn't download CodeMie" : "Couldn't set up CodeMie";
+      detail.textContent = network
+        ? 'Check your internet connection or proxy, then try again.'
+        : 'Setup failed. The details are below and in the CodeMie log. Try again.';
       errorEl.textContent = String(err);
       errorEl.classList.remove('hidden');
       retry.classList.remove('hidden');
