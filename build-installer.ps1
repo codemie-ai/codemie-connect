@@ -33,7 +33,7 @@ try {
 # -- 3. Post-build assertions ------------------------------------------------
 Step "[3/3] Verifying the produced bundle"
 
-$cliBins = (Get-Content (Join-Path $Root "assets\codemie-cli\package-lock.json") -Raw | ConvertFrom-Json).packages."node_modules/@codemieai/code".bin.PSObject.Properties.Name
+$cliBins = (Get-Content (Join-Path $Root "assets\codemie-cli\package-lock.json") -Raw | ConvertFrom-Json -AsHashTable).packages["node_modules/@codemieai/code"].bin.Keys
 foreach ($rel in (@($cliBins | ForEach-Object { "bin\$_.cmd" }) + "bin\runtime-key")) {
     if (-not (Test-Path (Join-Path $ReleaseDir $rel))) { Fail "bundle is missing $rel (looked in $ReleaseDir)" }
 }
