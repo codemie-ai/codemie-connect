@@ -1371,6 +1371,8 @@ mod win {
         if !is_ready(&dir) {
             return Ok(None);
         }
+        // A previous swap can leave `.old-cli` when a running CLI still locked it.
+        let _ = std::fs::remove_dir_all(dir.join(".old-cli"));
         let package_json = dir
             .join("cli")
             .join("node_modules")
