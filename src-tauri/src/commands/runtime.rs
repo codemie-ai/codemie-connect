@@ -725,6 +725,8 @@ mod win {
 
     use crate::error::{CmdResult, InstallerError};
 
+    use super::shared::{newer, reports_version, REGISTRY_LATEST};
+
     const RUNTIME_JSON: &str = include_str!("../../../runtime.json");
     const COMPLETE_MARKER: &str = ".complete";
     const CONNECT_JSON: &str = r#"{ "managedBy": "CodeMie Connect" }"#;
@@ -957,10 +959,7 @@ mod win {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let stage = dir.with_file_name(format!(
-            ".update-{version}-{}-{nanos}",
-            std::process::id()
-        ));
+        let stage = dir.with_file_name(format!(".update-{version}-{}-{nanos}", std::process::id()));
         let result = (|| {
             let (live, new) = (dir.join("cli"), stage.join("cli"));
             let aside = dir.join(".old-cli");
@@ -1297,46 +1296,101 @@ mod win {
         Ok(())
     }
 
-    /// Runs a background CLI update on launch and removes replaced runtime dirs.
-    /// Non-fatal: errors are swallowed so a failing update never blocks the app.
+    /// Called after the app is up: installs a newer CLI from npm into a staging
+    /// dir, checks it runs, then swaps it in. Returns the version it moved to.
+    /// A failed update leaves the current CLI untouched.
     pub async fn update_cli(existing_cli: bool) -> CmdResult<Option<String>> {
-        if existing_cli {
+        let result = check_and_update_cli(existing_cli).await;
+        match &result {
+            Ok(Some(v)) => {
+                crate::commands::logger::write_line(&format!("CodeMie CLI updated to {v}"), "info")
+            }
+            Ok(None) => {}
+            Err(e) => crate::commands::logger::write_line(
+                &format!("CodeMie CLI update failed: {e}"),
+                "warn",
+            ),
+        }
+        result
+    }
+
+    async fn check_and_update_cli(existing_cli: bool) -> CmdResult<Option<String>> {
+        if existing_cli || smoke_mode() {
             return Ok(None);
         }
-        #[cfg(windows)]
-        {
-            let dir = match runtime_dir() {
-                Ok(d) if is_ready(&d) => d,
-                _ => return Ok(None),
-            };
-            tokio::task::spawn_blocking(move || {
-                let cfg = config();
-                let node = node_exe(&dir);
-                let npm = npm_cli(&node_dir(&dir));
-                let cli_dir = dir.join("cli");
-                let out = std::process::Command::new(&node)
-                    .arg(&npm)
-                    .arg("install")
-                    .arg(format!("{}@latest", cfg.cli_package))
-                    .arg("--omit=dev")
-                    .arg("--no-audit")
-                    .arg("--no-fund")
-                    .current_dir(&cli_dir)
-                    .env("PATH", path_with(&node_dir(&dir)))
-                    .output();
-                if let Ok(out) = out {
-                    if out.status.success() {
-                        let _ = std::fs::write(connect_json_path(&dir), CONNECT_JSON);
-                    }
-                }
-                if let Ok(base) = runtime_base() {
-                    remove_stale(&base, &runtime_key(&cfg));
-                }
-            })
-            .await
-            .ok();
+        let dir = runtime_dir()?;
+        if !is_ready(&dir) {
+            return Ok(None);
         }
-        Ok(None)
+        let package_json = dir
+            .join("cli")
+            .join("node_modules")
+            .join("@codemieai")
+            .join("code")
+            .join("package.json");
+        let current = std::fs::read_to_string(package_json)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v["version"].as_str().map(str::to_string));
+        let Some(current) = current else {
+            return Ok(None);
+        };
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|e| InstallerError::Download(chain(&e)))?;
+        let latest: serde_json::Value = client
+            .get(REGISTRY_LATEST)
+            .send()
+            .await
+            .map_err(|e| InstallerError::Download(chain(&e)))?
+            .json()
+            .await
+            .map_err(|e| InstallerError::Download(chain(&e)))?;
+        let Some(latest) = latest["version"].as_str().map(str::to_string) else {
+            return Ok(None);
+        };
+        if !newer(&latest, &current) {
+            return Ok(None);
+        }
+
+        let _guard = INSTALL_LOCK.lock().await;
+        let version = latest.clone();
+        tokio::task::spawn_blocking(move || {
+            let cfg = config();
+            let node = node_exe(&dir);
+            apply_update(
+                &dir,
+                &version,
+                |stage| {
+                    npm_install_cli(&cfg, &node_dir(&dir), &stage.join("cli"), &version)?;
+                    let connect = connect_json_path(stage);
+                    at(
+                        "write codemie-connect.json",
+                        connect.display(),
+                        std::fs::write(&connect, CONNECT_JSON),
+                    )
+                },
+                |stage| {
+                    std::process::Command::new(&node)
+                        .arg(cli_entry(stage))
+                        .arg("--version")
+                        .output()
+                        .is_ok_and(|o| {
+                            o.status.success()
+                                && reports_version(&String::from_utf8_lossy(&o.stdout), &version)
+                        })
+                },
+            )?;
+            if let Ok(base) = runtime_base() {
+                remove_stale(&base, &runtime_key(&cfg));
+            }
+            Ok::<(), InstallerError>(())
+        })
+        .await
+        .map_err(|e| InstallerError::Other(e.to_string()))??;
+        Ok(Some(latest))
     }
 
     #[cfg(test)]
