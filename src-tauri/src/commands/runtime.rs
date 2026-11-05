@@ -945,6 +945,56 @@ mod win {
         }
     }
 
+    /// Installs a new CLI into a staging dir next to `dir`, validates it, then swaps
+    /// only `dir\cli`. Any failure leaves the live CLI as it was.
+    fn apply_update(
+        dir: &Path,
+        version: &str,
+        install: impl FnOnce(&Path) -> CmdResult<()>,
+        validate: impl FnOnce(&Path) -> bool,
+    ) -> CmdResult<()> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let stage = dir.with_file_name(format!(
+            ".update-{version}-{}-{nanos}",
+            std::process::id()
+        ));
+        let result = (|| {
+            let (live, new) = (dir.join("cli"), stage.join("cli"));
+            let aside = dir.join(".old-cli");
+            at(
+                "create the update folder",
+                new.display(),
+                std::fs::create_dir_all(&new),
+            )?;
+            install(&stage)?;
+            if !validate(&stage) {
+                return Err(InstallerError::Other(format!(
+                    "the downloaded CLI {version} does not report that version"
+                )));
+            }
+            let _ = std::fs::remove_dir_all(&aside);
+            at(
+                "move the old CLI aside",
+                live.display(),
+                rename_retry(&live, &aside),
+            )?;
+            if let Err(e) = rename_retry(&new, &live) {
+                let _ = rename_retry(&aside, &live);
+                return Err(InstallerError::Other(format!(
+                    "move the new CLI into place failed at {}: {e}",
+                    live.display()
+                )));
+            }
+            let _ = std::fs::remove_dir_all(&aside);
+            Ok(())
+        })();
+        let _ = std::fs::remove_dir_all(&stage);
+        result
+    }
+
     /// Streams `url` into `archive`, verifying the SHA-256 on completion.
     /// On any failure `archive` is removed. `progress(done, total)` per chunk.
     pub async fn download_verified(
@@ -1004,11 +1054,12 @@ mod win {
         verify_sha(&hex(&hasher.finalize()), expected_sha)
     }
 
+    // ponytail: global lock — one install at a time; per-user app so one instance is typical
+    static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// Downloads Node from nodejs.org, then installs the CLI via npm, unless the
     /// runtime is already in place. Emits `runtime:progress` with `{ phase, fraction, total }`.
     pub async fn ensure_runtime(app: AppHandle) -> CmdResult<()> {
-        // ponytail: global lock — one install at a time; per-user app so one instance is typical
-        static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _guard = INSTALL_LOCK.lock().await;
         let dir = runtime_dir()?;
         if is_ready(&dir) {
@@ -1125,7 +1176,7 @@ mod win {
             cli_staging.display(),
             std::fs::create_dir_all(&cli_staging),
         )?;
-        npm_install_cli(cfg, &node_staging, &cli_staging)?;
+        npm_install_cli(cfg, &node_staging, &cli_staging, &cfg.cli_version)?;
 
         // Checked before the write below: if npm installed somewhere else, the
         // package folder is missing and the write would fail with a bare os error 3.
@@ -1193,12 +1244,17 @@ mod win {
     /// Installs the pinned CLI version into `cli_dir` via npm.
     /// Uses the just-extracted node.exe so no system Node is required.
     #[cfg(windows)]
-    fn npm_install_cli(cfg: &Config, node_dir: &Path, cli_dir: &Path) -> CmdResult<()> {
+    fn npm_install_cli(
+        cfg: &Config,
+        node_dir: &Path,
+        cli_dir: &Path,
+        version: &str,
+    ) -> CmdResult<()> {
         let node = node_dir.join("node.exe");
         let npm = npm_cli(node_dir);
         // Exact version pin so the installed CLI is always >= 0.15.7 regardless of
         // whether the lock file has been regenerated for the new version yet.
-        let spec = format!("{}@{}", cfg.cli_package, cfg.cli_version);
+        let spec = format!("{}@{}", cfg.cli_package, version);
         // Without a package.json npm walks up to the nearest node_modules (e.g. a
         // stray one in the user's home) and installs there instead of here.
         let pkg = cli_dir.join("package.json");
@@ -1381,6 +1437,63 @@ mod win {
             assert!(!dir.join("stale-file").exists());
             assert!(!staging.exists());
             assert!(!t.path().join(".old-key").exists());
+        }
+
+        fn runtime_with_old_cli(t: &Path) -> PathBuf {
+            let dir = t.join("key");
+            std::fs::create_dir_all(dir.join("cli")).unwrap();
+            std::fs::write(dir.join("cli").join("marker.txt"), "old").unwrap();
+            dir
+        }
+
+        fn marker(dir: &Path) -> String {
+            std::fs::read_to_string(dir.join("cli").join("marker.txt")).unwrap()
+        }
+
+        fn only_key_left(t: &Path) {
+            let left: Vec<_> = std::fs::read_dir(t).unwrap().collect();
+            assert_eq!(left.len(), 1, "stage was left behind");
+        }
+
+        #[test]
+        fn apply_update_swaps_in_the_new_cli_and_cleans_up() {
+            let t = tempfile::tempdir().unwrap();
+            let dir = runtime_with_old_cli(t.path());
+            apply_update(
+                &dir,
+                "9.9.9",
+                |s| Ok(std::fs::write(s.join("cli").join("marker.txt"), "new")?),
+                |_| true,
+            )
+            .unwrap();
+            assert_eq!(marker(&dir), "new");
+            assert!(!dir.join(".old-cli").exists());
+            only_key_left(t.path());
+        }
+
+        #[test]
+        fn apply_update_keeps_the_old_cli_when_install_or_validation_fails() {
+            let t = tempfile::tempdir().unwrap();
+            let dir = runtime_with_old_cli(t.path());
+            let r = apply_update(
+                &dir,
+                "9.9.9",
+                |_| Err(InstallerError::Other("npm failed".into())),
+                |_| true,
+            );
+            assert!(r.is_err());
+            assert_eq!(marker(&dir), "old");
+            only_key_left(t.path());
+
+            let r = apply_update(
+                &dir,
+                "9.9.9",
+                |s| Ok(std::fs::write(s.join("cli").join("marker.txt"), "new")?),
+                |_| false,
+            );
+            assert!(r.is_err());
+            assert_eq!(marker(&dir), "old");
+            only_key_left(t.path());
         }
 
         #[test]
