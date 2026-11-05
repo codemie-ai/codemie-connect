@@ -1240,6 +1240,53 @@ mod win {
         std::env::join_paths(paths).unwrap_or_default()
     }
 
+    #[cfg(windows)]
+    const NPM_TIMEOUT: Duration = Duration::from_secs(600);
+    #[cfg(windows)]
+    const CLI_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// `Command::output` that kills the child after `limit` and returns a
+    /// TimedOut error, so a hung child cannot hold INSTALL_LOCK forever.
+    #[cfg(windows)]
+    fn output_timeout(
+        cmd: &mut std::process::Command,
+        limit: Duration,
+    ) -> std::io::Result<std::process::Output> {
+        use std::io::Read;
+        use std::process::Stdio;
+        let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        fn drain<R: Read + Send + 'static>(r: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut r) = r {
+                    let _ = r.read_to_end(&mut buf);
+                }
+                buf
+            })
+        }
+        let (out, err) = (drain(child.stdout.take()), drain(child.stderr.take()));
+        let start = std::time::Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait()? {
+                break s;
+            }
+            if start.elapsed() >= limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("timed out after {}s", limit.as_secs()),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        Ok(std::process::Output {
+            status,
+            stdout: out.join().unwrap_or_default(),
+            stderr: err.join().unwrap_or_default(),
+        })
+    }
+
     /// Installs the pinned CLI version into `cli_dir` via npm.
     /// Uses the just-extracted node.exe so no system Node is required.
     #[cfg(windows)]
@@ -1265,16 +1312,18 @@ mod win {
         let out = at(
             "start npm",
             format!("{} (in {})", node.display(), cli_dir.display()),
-            std::process::Command::new(&node)
-                .arg(&npm)
-                .arg("install")
-                .arg(&spec)
-                .arg("--omit=dev")
-                .arg("--no-audit")
-                .arg("--no-fund")
-                .current_dir(cli_dir)
-                .env("PATH", path_with(node_dir))
-                .output(),
+            output_timeout(
+                std::process::Command::new(&node)
+                    .arg(&npm)
+                    .arg("install")
+                    .arg(&spec)
+                    .arg("--omit=dev")
+                    .arg("--no-audit")
+                    .arg("--no-fund")
+                    .current_dir(cli_dir)
+                    .env("PATH", path_with(node_dir)),
+                NPM_TIMEOUT,
+            ),
         )?;
         if !out.status.success() {
             crate::commands::logger::write_line(
@@ -1373,14 +1422,16 @@ mod win {
                     )
                 },
                 |stage| {
-                    std::process::Command::new(&node)
-                        .arg(cli_entry(stage))
-                        .arg("--version")
-                        .output()
-                        .is_ok_and(|o| {
-                            o.status.success()
-                                && reports_version(&String::from_utf8_lossy(&o.stdout), &version)
-                        })
+                    output_timeout(
+                        std::process::Command::new(&node)
+                            .arg(cli_entry(stage))
+                            .arg("--version"),
+                        CLI_CHECK_TIMEOUT,
+                    )
+                    .is_ok_and(|o| {
+                        o.status.success()
+                            && reports_version(&String::from_utf8_lossy(&o.stdout), &version)
+                    })
                 },
             )?;
             if let Ok(base) = runtime_base() {
@@ -1397,6 +1448,19 @@ mod win {
     mod tests {
         use super::*;
         use std::io::Write;
+
+        #[cfg(windows)]
+        #[test]
+        fn output_timeout_kills_a_hung_child_and_reports_timed_out() {
+            let mut cmd = std::process::Command::new("cmd");
+            cmd.args(["/C", "ping -n 20 127.0.0.1"]);
+            let err = output_timeout(&mut cmd, Duration::from_millis(300)).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+            let mut ok = std::process::Command::new("cmd");
+            ok.args(["/C", "echo hi"]);
+            let out = output_timeout(&mut ok, Duration::from_secs(10)).unwrap();
+            assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("hi"));
+        }
 
         #[test]
         fn path_with_puts_the_runtime_node_first() {
