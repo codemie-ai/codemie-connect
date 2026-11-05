@@ -39,6 +39,24 @@ pub async fn update_cli(
     imp::update_cli(state.existing_cli_detected).await
 }
 
+/// Version helpers both platforms use to decide and verify a CLI update.
+mod shared {
+    pub(super) const REGISTRY_LATEST: &str = "https://registry.npmjs.org/@codemieai/code/latest";
+
+    /// The last non-empty line of `codemie --version` is the version; a first run
+    /// in a new HOME prints migration notes above it.
+    pub(super) fn reports_version(stdout: &str, version: &str) -> bool {
+        stdout.lines().rev().map(str::trim).find(|l| !l.is_empty()) == Some(version)
+    }
+
+    /// `a` is newer than `b`, comparing dot-separated numbers.
+    pub(super) fn newer(a: &str, b: &str) -> bool {
+        let parse =
+            |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+        parse(a) > parse(b)
+    }
+}
+
 #[cfg(not(windows))]
 mod mac {
     use std::path::{Path, PathBuf};
@@ -64,7 +82,8 @@ mod mac {
     // Tells the CLI it is managed by CodeMie Connect, so its own self-update hands
     // over to the app (codemie-code #598, CLI 0.15.7 and later).
     const CONNECT_MARKER: &str = "{ \"managedBy\": \"CodeMie Connect\" }\n";
-    const REGISTRY_LATEST: &str = "https://registry.npmjs.org/@codemieai/code/latest";
+    use super::shared::{newer, reports_version, REGISTRY_LATEST};
+
     const NPM_TIMEOUT: Duration = Duration::from_secs(600);
     const CLI_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -123,12 +142,6 @@ mod mac {
         ))
     }
 
-    /// The last non-empty line of `codemie --version` is the version; a first run
-    /// in a new HOME prints migration notes above it.
-    fn reports_version(stdout: &str, version: &str) -> bool {
-        stdout.lines().rev().map(str::trim).find(|l| !l.is_empty()) == Some(version)
-    }
-
     /// The version of the dir a link points at (`cli-0.15.7` -> `0.15.7`), only
     /// when that dir finished installing.
     fn linked_version(link: &Path, prefix: &str) -> Option<String> {
@@ -136,13 +149,6 @@ mod mac {
         let name = target.file_name()?.to_string_lossy().into_owned();
         let version = name.strip_prefix(prefix)?.to_string();
         complete(&link.parent()?.join(&name)).then_some(version)
-    }
-
-    /// `a` is newer than `b`, comparing dot-separated numbers.
-    pub fn newer(a: &str, b: &str) -> bool {
-        let parse =
-            |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
-        parse(a) > parse(b)
     }
 
     /// Ready when both links point at finished installs, Node is the pinned one
