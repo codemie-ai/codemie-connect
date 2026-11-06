@@ -1373,6 +1373,16 @@ mod win {
         }
         // A previous swap can leave `.old-cli` when a running CLI still locked it.
         let _ = std::fs::remove_dir_all(dir.join(".old-cli"));
+        // A killed mid-update leaves a `.update-*` staging dir that remove_stale never reached.
+        if let Some(base) = dir.parent() {
+            if let Ok(entries) = std::fs::read_dir(base) {
+                for e in entries.flatten() {
+                    if e.file_name().to_string_lossy().starts_with(".update-") {
+                        let _ = std::fs::remove_dir_all(e.path());
+                    }
+                }
+            }
+        }
         let package_json = dir
             .join("cli")
             .join("node_modules")
