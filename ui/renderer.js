@@ -23,6 +23,7 @@ import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFr
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
 import { analyticsCommand } from './analytics-command.js';
+import { parseDisconnect, readDisconnected, markDisconnected, clearDisconnected } from './disconnect.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -76,6 +77,7 @@ const connectView = views.connect;
 const wizardBack = document.getElementById('wizard-back');
 const connectBtn = document.getElementById('connect-btn');
 const restartBtn = document.getElementById('restart-btn');
+const disconnectBtn = document.getElementById('disconnect-btn');
 const modeLabel = document.getElementById('wizard-mode-label');
 const stepListEl = document.getElementById('step-list');
 const noticeOverlay = document.getElementById('notice-overlay');
@@ -207,6 +209,7 @@ function renderHome() {
     rememberOnboarded(homeStorage);
   }
   homeScreen.render({ ...state, signingIn: home.signingIn });
+  disconnectBtn.classList.toggle('hidden', readDisconnected(homeStorage));
   // The last step starts by itself once the ones before it are done, instead
   // of leaving the user on a checklist that waits for a click. Once a session:
   // a check that fails leaves its step saying so, and Home does not retry it.
@@ -252,9 +255,35 @@ async function refreshConnection() {
   } catch {
     home.connection = null;
   } finally {
+    // The local flag wins over the daemon, which the disconnect leaves running.
+    if (readDisconnected(homeStorage)) home.connection = { ...home.connection, disconnected: true };
     connectionReading = false;
   }
   renderHome();
+}
+
+// Disconnect Claude Desktop. runCapture, not the PTY runAction, because the
+// result is parsed from stdout. The CLI leaves the proxy running, so no text
+// here may say it stopped.
+async function runDisconnect() {
+  let result;
+  try {
+    const res = await bridge.runner.runCapture('codemie proxy disconnect --claude-desktop');
+    result = parseDisconnect(res || { code: 1 });
+  } catch (e) {
+    result = { kind: 'failed', message: String((e && e.message) || e) };
+  }
+  if (result.kind === 'disconnected' || result.kind === 'nothing') {
+    markDisconnected(homeStorage);
+    await refreshConnection();
+    showNotice(result.kind === 'disconnected'
+      ? { title: 'Claude Desktop disconnected', message: 'The CodeMie connection was removed from Claude Desktop. The CodeMie proxy keeps running.' }
+      : { title: 'Already disconnected', message: 'Already disconnected — nothing to remove.' });
+  } else if (result.kind === 'failed') {
+    showNotice({ title: 'Disconnect failed', message: `${result.message ? result.message + '\n' : ''}Nothing was changed; fix the issue and try again.` });
+  } else {
+    showNotice({ title: 'Disconnect not confirmed', message: 'The installed CodeMie CLI did not confirm the disconnect. Update the CLI and try again.' });
+  }
 }
 
 // One view instance for the one #setup-view container, created lazily and
@@ -912,8 +941,18 @@ async function boot() {
   });
 
   wizardBack.addEventListener('click', () => showView('home'));
+  disconnectBtn.addEventListener('click', () => {
+    showNotice({
+      title: 'Disconnect Claude Desktop?',
+      message: 'This removes the CodeMie-managed Claude Desktop connection configuration. The CodeMie proxy keeps running. You can reconnect any time with Connect.',
+      primaryLabel: 'Disconnect',
+      primaryAction: runDisconnect,
+    });
+  });
   connectBtn.addEventListener('click', async () => {
     if (await ensureAuthenticated()) {
+      clearDisconnected(homeStorage);
+      refreshConnection();
       runAction('Connect Claude Desktop', 'codemie proxy connect desktop', 'connect', 'Running automatically — no input needed.');
     }
   });
