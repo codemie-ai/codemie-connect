@@ -958,6 +958,8 @@ async function boot() {
   });
   restartBtn.addEventListener('click', async () => {
     if (await ensureAuthenticated()) {
+      clearDisconnected(homeStorage);
+      refreshConnection();
       // Stop the running proxy first, then connect again. `;` (not `&&`) so a
       // no-op stop (nothing running) still proceeds to connect.
       runAction('Restart Claude Desktop proxy', 'codemie proxy stop; codemie proxy connect desktop', 'connect');
