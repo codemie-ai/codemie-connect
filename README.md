@@ -68,7 +68,7 @@ The sidebar has four places plus an analytics shortcut.
 |---|---|
 | **Home** | A checklist on first run, then status cards: sign-in, installed tools, connections, health. |
 | **Tools** | Install, update and remove AI coding tools (Claude Code and others). Tools run from your terminal; this screen only sets them up. |
-| **Connections** | **Connect Claude Desktop** to the CodeMie gateway, or **Restart** the connection if Claude Desktop lost it. |
+| **Connections** | **Connect Claude Desktop** to the CodeMie gateway, or **Restart** the connection if Claude Desktop lost it, or **Disconnect** it (asks to confirm, removes the CodeMie connection from Claude Desktop; the proxy keeps running, and **Connect** reconnects). CLI equivalents: `codemie proxy connect --claude-desktop` and `codemie proxy disconnect --claude-desktop`. |
 | **Health** | Runs `codemie doctor` and checks your account, grouped and in plain language. |
 | **CLI usage analytics** | Builds an HTML report of your local AI CLI usage and opens it in the browser. |
 
