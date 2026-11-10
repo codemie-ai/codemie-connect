@@ -131,6 +131,24 @@ test('an unreachable provider says what to do in our words and keeps the CLI err
   assert.deepEqual(rows[0].action, { kind: 'recheck', label: 'Check again' });
 });
 
+// A 200 Keycloak sign-in page parsed as JSON: the session is gone, not the network.
+for (const [name, hint] of [
+  ['current Node wording', `Failed to fetch models from SSO API: Unexpected token '<', "<!-- Keycl"... is not valid JSON`],
+  ['older Node wording', 'Unexpected token < in JSON at position 0'],
+]) {
+  test(`an HTML sign-in page parsed as JSON offers to sign in again (${name})`, () => {
+    const { rows } = groupDoctorResults([
+      { name: 'CodeMie SSO Provider', status: 'error', message: 'Cannot connect to provider' },
+      { name: 'CodeMie SSO Provider', status: 'error', message: 'Provider unreachable', hint },
+    ]);
+    assert.equal(rows[0].group, 'account');
+    assert.equal(rows[0].remedyText, 'Your CodeMie sign-in has expired or is missing. Sign in again to continue.');
+    assert.doesNotMatch(rows[0].remedyText, /network|VPN/i);
+    assert.equal(rows[0].remedyDetail, hint);
+    assert.deepEqual(rows[0].action, { kind: 'signin', label: 'Sign in again' });
+  });
+}
+
 test('a session about to expire also offers to sign in again', () => {
   const { rows } = groupDoctorResults([
     {
