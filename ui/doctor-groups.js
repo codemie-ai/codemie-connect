@@ -82,6 +82,14 @@ function remedyFor(items) {
       action: { kind: 'signin', label: 'Sign in again' },
     };
   }
+  // A 200 Keycloak sign-in page parsed as JSON means an expired session, not the network.
+  if (hints.some((h) => /(unexpected token\s+'?<'?|<!doctype|<!--)[^]*(not valid json|in json)/i.test(h))) {
+    return {
+      remedyText: 'Your CodeMie sign-in has expired or is missing. Sign in again to continue.',
+      remedyDetail,
+      action: { kind: 'signin', label: 'Sign in again' },
+    };
+  }
   // "Cannot connect to provider" / "Provider unreachable": the CLI's hint here
   // is the raw network error, which says what broke but not what to do.
   if (problems.some((r) => /unreachable|cannot connect/i.test(r.message))) {
