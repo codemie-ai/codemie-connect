@@ -274,3 +274,8 @@ test('the proxy status the CLI really prints maps to the Connections card', () =
   assert.deepEqual(card('{\n  "status": "stopped"\n}').badge, { text: 'not connected', tone: 'muted' });
   assert.deepEqual(card('').badge, { text: 'unknown', tone: 'muted' });
 });
+
+test('the local disconnected flag overrides a running proxy on the Connections card', () => {
+  const card = deriveHome({ connection: { running: true, healthy: true, disconnected: true } }).cards.find((c) => c.id === 'connections');
+  assert.deepEqual(card.badge, { text: 'not connected', tone: 'muted' });
+});

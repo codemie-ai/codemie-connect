@@ -1,0 +1,99 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "request-changes",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Fix-up for CR-001 checked and approved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "CR-001: Restart must clear disconnected flag"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Fix-up for CR-001 checked and approved"
+    }
+  ],
+  "reviewed_head": "0869d41ff25b0ab3124ba8477b0a23c8bd2b70e7",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "Edge-case lens only (compact profile, no spec: acceptance n/a, standards omitted), so confidence is low. One patch: Restart reconnects without clearing the disconnected flag. 1 deferred (stale local flag after out-of-app connect; backlog in code-review-deferred.local.md), 3 dismissed (read-failure masking, double-confirm, connect-clear-before-success judged minor).",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/renderer.js",
+      "line": 959,
+      "title": "Restart leaves disconnected flag set",
+      "problem": "restartBtn handler runs 'codemie proxy stop; codemie proxy connect desktop' but never calls clearDisconnected/refreshConnection, unlike the Connect handler.",
+      "impact": "After Disconnect then Restart, Claude Desktop is reconnected but Home still shows 'not connected' and the Disconnect button stays hidden. Whether Restart is reachable in the disconnected state was not confirmed.",
+      "recommendation": "clearDisconnected(homeStorage); refreshConnection(); in the restartBtn click handler after ensureAuthenticated.",
+      "status": "fixed",
+      "fix": {
+        "change": "Restart handler clears disconnected flag and refreshes connection",
+        "test": "n/a"
+      },
+      "disposition": {
+        "rationale": "fixed in 0869d41",
+        "source": "hitl"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "ui/disconnect.js",
+      "line": 39,
+      "title": "Stale local disconnected flag",
+      "problem": "Flag lives only in localStorage; connecting via CLI outside the app leaves Home showing 'not connected'.",
+      "preexisting": "Local-flag design is the task's stated approach (refreshed state via local disconnected flag)."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "standards audit not part of this profile"
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "standards audit not part of this profile"
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "standards audit not part of this profile"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Edge-case lens only (compact profile, no spec: acceptance n/a, standards omitted), so confidence is low. One patch: Restart reconnects without clearing the disconnected flag. 1 deferred (stale local flag after out-of-app connect; backlog in code-review-deferred.local.md), 3 dismissed (read-failure masking, double-confirm, connect-clear-before-success judged minor).",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}
