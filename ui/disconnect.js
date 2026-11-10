@@ -16,3 +16,29 @@ export function parseDisconnect({ code, stdout = '', stderr = '' }) {
   if (/nothing to disconnect/i.test(out)) return { kind: 'nothing', message: '' };
   return { kind: 'unknown', message: '' };
 }
+
+const KEY = 'codemie.claudeDesktop.disconnected';
+
+export function readDisconnected(storage) {
+  try {
+    return storage?.getItem(KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function markDisconnected(storage) {
+  try {
+    storage?.setItem(KEY, '1');
+  } catch {
+    // Storage unavailable: the flag just does not persist.
+  }
+}
+
+export function clearDisconnected(storage) {
+  try {
+    storage?.removeItem(KEY);
+  } catch {
+    // See markDisconnected.
+  }
+}

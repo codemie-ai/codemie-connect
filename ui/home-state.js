@@ -143,6 +143,7 @@ export function connectionFromStatus(stdout) {
 function connectionsCard(connection) {
   if (connection === undefined) return { id: 'connections', title: 'Connections', badge: { text: 'checking', tone: 'muted' }, line: 'Claude Desktop', note: '' };
   if (connection === null) return { id: 'connections', title: 'Connections', badge: { text: 'unknown', tone: 'muted' }, line: 'Could not read the connection', note: '' };
+  if (connection.disconnected === true) return { id: 'connections', title: 'Connections', badge: { text: 'not connected', tone: 'muted' }, line: 'Claude Desktop', note: '' };
   if (connection.running && connection.healthy === false) return { id: 'connections', title: 'Connections', badge: { text: 'not responding', tone: 'warn' }, line: 'Claude Desktop', note: '' };
   return connection.running
     ? { id: 'connections', title: 'Connections', badge: { text: '1 connected', tone: 'good' }, line: 'Claude Desktop', note: '' }

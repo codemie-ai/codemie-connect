@@ -21,3 +21,24 @@ test('parseDisconnect: failure falls back to stderr, then stdout', () => {
   assert.equal(parseDisconnect({ code: 2, stdout: 'x', stderr: ' boom \n' }).message, 'boom');
   assert.equal(parseDisconnect({ code: 2, stdout: ' out ', stderr: '' }).message, 'out');
 });
+
+import { readDisconnected, markDisconnected, clearDisconnected } from '../disconnect.js';
+
+test('flag round-trips on a fake storage', () => {
+  const m = new Map();
+  const s = { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, v), removeItem: (k) => m.delete(k) };
+  assert.equal(readDisconnected(s), false);
+  markDisconnected(s);
+  assert.equal(readDisconnected(s), true);
+  clearDisconnected(s);
+  assert.equal(readDisconnected(s), false);
+});
+
+test('flag survives missing and throwing storage', () => {
+  const bad = { getItem() { throw new Error('x'); }, setItem() { throw new Error('x'); }, removeItem() { throw new Error('x'); } };
+  for (const s of [undefined, bad]) {
+    assert.equal(readDisconnected(s), false);
+    markDisconnected(s);
+    clearDisconnected(s);
+  }
+});
