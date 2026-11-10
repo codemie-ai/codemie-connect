@@ -277,7 +277,7 @@ async function runDisconnect() {
     markDisconnected(homeStorage);
     await refreshConnection();
     showNotice(result.kind === 'disconnected'
-      ? { title: 'Claude Desktop disconnected', message: 'The CodeMie connection was removed from Claude Desktop. The CodeMie proxy keeps running.' }
+      ? { title: 'Claude Desktop disconnected', message: 'The CodeMie connection was removed from Claude Desktop. The CodeMie proxy keeps running. Quit and reopen Claude Desktop to apply the change.' }
       : { title: 'Already disconnected', message: 'Already disconnected — nothing to remove.' });
   } else if (result.kind === 'failed') {
     showNotice({ title: 'Disconnect failed', message: `${result.message ? result.message + '\n' : ''}Nothing was changed; fix the issue and try again.` });
