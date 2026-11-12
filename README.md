@@ -35,12 +35,17 @@ at the CodeMie gateway, and checks that everything is healthy.
   <a href="https://github.com/codemie-ai/codemie-connect/releases/latest">
     <img src="assets/download-macos.svg" alt="Download for macOS" width="244" height="56" />
   </a>
+  <a href="https://github.com/codemie-ai/codemie-connect/releases/latest">
+    <img src="assets/download-windows.svg" alt="Download for Windows" width="244" height="56" />
+  </a>
 </p>
 
-The button opens the latest release. Pick the asset for your system:
+The buttons open the latest release. Pick the asset for your system:
 
 - **macOS:** `CodeMie-Connect-<version>-aarch64.dmg` (Apple Silicon). Signed, notarized by Apple, with a `.sha256` checksum next to it.
-- **Windows:** the `CodeMie Connect_<version>_x64-setup.exe` installer. It installs per user and needs no administrator rights.
+- **Windows:** `CodeMie-Connect-<version>-x64-setup.exe` (64-bit). Code-signed by EPAM Systems Inc., with a `.sha256` checksum next to it. It installs per user and needs no administrator rights.
+
+To verify a download, compare its SHA-256 with the `.sha256` file: `shasum -a 256 -c <file>.sha256` on macOS, `(Get-FileHash <file>).Hash` on Windows.
 
 The app checks for updates itself. The release page has the notes.
 
@@ -115,6 +120,30 @@ git tag v2.1.1 && git push origin v2.1.1
 ```
 
 The release workflow builds, signs and notarizes the DMG and publishes it with a checksum.
+
+### Windows installer (manual)
+
+Windows signing cannot run in CI yet, so a maintainer adds the installer by hand. The workflow
+generates `manifest.json` from the assets on the release, so the installer must be attached
+**before** the release is published. Do it in this order:
+
+1. **Build and sign** the NSIS installer on a Windows machine with the EPAM code-signing certificate.
+   Rename it to a name `scripts/generate-release-manifest.mjs` recognizes:
+   `CodeMie-Connect-<version>-x64-setup.exe` (or `CodeMie-Connect-<version>-windows-amd64.exe`).
+2. **Verify** the signature (`Get-AuthenticodeSignature <exe>` must report `Valid`, signer
+   `EPAM Systems Inc.`) and write the checksum next to it, in the same format as the DMG's:
+   `shasum -a 256 <exe> > <exe>.sha256` (Git Bash), or `(Get-FileHash <exe>).Hash.ToLower() + "  <exe>"` in PowerShell.
+3. **Upload to the draft release**, after the macOS job has created it and before it is published:
+   `gh release upload v<version> <exe> <exe>.sha256 --clobber --repo codemie-ai/codemie-connect`.
+   If the workflow already published the release, upload anyway and do step 5.
+4. **Publish** the draft (the workflow's last job does this, or `gh release edit v<version> --draft=false`).
+5. **Late upload only:** regenerate and replace the manifest:
+   `node scripts/generate-release-manifest.mjs v<version> manifest.json && gh release upload v<version> manifest.json --clobber`.
+6. **Check** `https://github.com/codemie-ai/codemie-connect/releases/latest/download/manifest.json`
+   has a `windows-x86_64` entry, download its URL, and confirm the SHA-256 matches the `.sha256` file.
+   On a clean Windows machine, check the installer's Digital Signatures tab (publisher
+   `EPAM Systems Inc.`) and note what SmartScreen shows on first run; a valid signature does not
+   guarantee a SmartScreen pass.
 
 ## License
 
