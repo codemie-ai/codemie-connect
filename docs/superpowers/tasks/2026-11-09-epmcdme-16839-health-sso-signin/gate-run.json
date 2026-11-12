@@ -1,0 +1,9 @@
+{"schema":1,"branch":"fix/EPMCDME-16839-health-sso-signin","head":"2c79bfa39e276bb9da2654d048f676d2c678e47f","runner":"custom","started_at":"2026-11-09T12:38:51Z","completed_at":"2026-11-09T12:39:05Z","status":"PASSED","drift_detected":false,
+"gates":[
+{"id":"fmt-rust","source":"guide","status":"PASS","duration_ms":2000,"command":"cd src-tauri && cargo fmt --check","exit_code":0},
+{"id":"clippy-rust","source":"guide","status":"N/A","command":"cd src-tauri && cargo clippy -- -D warnings","notes":"No Rust files changed (diff is ui/doctor-groups.js and its test); CI re-runs it."},
+{"id":"unit-js","source":"guide","status":"PASS","duration_ms":12000,"command":"npm test","exit_code":0,"notes":"514 tests, 511 pass, 0 fail, 3 skipped (pre-existing test-level skips)."},
+{"id":"unit-rust","source":"guide","status":"N/A","command":"cd src-tauri && cargo test","notes":"No Rust files changed; CI re-runs it."},
+{"id":"build","source":"guide","status":"N/A","command":"./build-installer.sh","notes":"Logic-only change verified by tests (guide Skip if)."},
+{"id":"secrets","source":"ci","status":"SKIPPED","command":"reusable-secrets-detection","notes":"Reusable GitHub workflow only runs in CI; no local equivalent invoked."}
+],"failures":{}}

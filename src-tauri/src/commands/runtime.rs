@@ -23,7 +23,11 @@ pub fn runtime_ready(state: tauri::State<'_, crate::state::AppState>) -> CmdResu
 /// is missing. Emits `runtime:progress`.
 #[tauri::command]
 pub async fn ensure_runtime(app: AppHandle) -> CmdResult<()> {
-    imp::ensure_runtime(app).await
+    let result = imp::ensure_runtime(app).await;
+    if let Err(e) = &result {
+        crate::commands::logger::write_line(&format!("runtime install failed: {e}"), "stderr");
+    }
+    result
 }
 
 /// Called after the app is up: installs a newer CLI from npm, if there is one.
@@ -33,6 +37,24 @@ pub async fn update_cli(
     state: tauri::State<'_, crate::state::AppState>,
 ) -> CmdResult<Option<String>> {
     imp::update_cli(state.existing_cli_detected).await
+}
+
+/// Version helpers both platforms use to decide and verify a CLI update.
+mod shared {
+    pub(super) const REGISTRY_LATEST: &str = "https://registry.npmjs.org/@codemieai/code/latest";
+
+    /// The last non-empty line of `codemie --version` is the version; a first run
+    /// in a new HOME prints migration notes above it.
+    pub(super) fn reports_version(stdout: &str, version: &str) -> bool {
+        stdout.lines().rev().map(str::trim).find(|l| !l.is_empty()) == Some(version)
+    }
+
+    /// `a` is newer than `b`, comparing dot-separated numbers.
+    pub(super) fn newer(a: &str, b: &str) -> bool {
+        let parse =
+            |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+        parse(a) > parse(b)
+    }
 }
 
 #[cfg(not(windows))]
@@ -60,7 +82,8 @@ mod mac {
     // Tells the CLI it is managed by CodeMie Connect, so its own self-update hands
     // over to the app (codemie-code #598, CLI 0.15.7 and later).
     const CONNECT_MARKER: &str = "{ \"managedBy\": \"CodeMie Connect\" }\n";
-    const REGISTRY_LATEST: &str = "https://registry.npmjs.org/@codemieai/code/latest";
+    use super::shared::{newer, reports_version, REGISTRY_LATEST};
+
     const NPM_TIMEOUT: Duration = Duration::from_secs(600);
     const CLI_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -119,12 +142,6 @@ mod mac {
         ))
     }
 
-    /// The last non-empty line of `codemie --version` is the version; a first run
-    /// in a new HOME prints migration notes above it.
-    fn reports_version(stdout: &str, version: &str) -> bool {
-        stdout.lines().rev().map(str::trim).find(|l| !l.is_empty()) == Some(version)
-    }
-
     /// The version of the dir a link points at (`cli-0.15.7` -> `0.15.7`), only
     /// when that dir finished installing.
     fn linked_version(link: &Path, prefix: &str) -> Option<String> {
@@ -132,13 +149,6 @@ mod mac {
         let name = target.file_name()?.to_string_lossy().into_owned();
         let version = name.strip_prefix(prefix)?.to_string();
         complete(&link.parent()?.join(&name)).then_some(version)
-    }
-
-    /// `a` is newer than `b`, comparing dot-separated numbers.
-    pub fn newer(a: &str, b: &str) -> bool {
-        let parse =
-            |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
-        parse(a) > parse(b)
     }
 
     /// Ready when both links point at finished installs, Node is the pinned one
@@ -715,6 +725,8 @@ mod win {
 
     use crate::error::{CmdResult, InstallerError};
 
+    use super::shared::{newer, reports_version, REGISTRY_LATEST};
+
     const RUNTIME_JSON: &str = include_str!("../../../runtime.json");
     const COMPLETE_MARKER: &str = ".complete";
     const CONNECT_JSON: &str = r#"{ "managedBy": "CodeMie Connect" }"#;
@@ -808,9 +820,13 @@ mod win {
     }
 
     /// Ready only when the last step of an install (the marker) happened, so a
-    /// partial download or install is never used.
+    /// partial download or install is never used. npm.cmd is required so runtimes
+    /// installed before it was extracted get reinstalled once.
     pub fn is_ready(dir: &Path) -> bool {
-        dir.join(COMPLETE_MARKER).is_file() && node_exe(dir).is_file() && cli_entry(dir).is_file()
+        dir.join(COMPLETE_MARKER).is_file()
+            && node_exe(dir).is_file()
+            && node_dir(dir).join("npm.cmd").is_file()
+            && cli_entry(dir).is_file()
     }
 
     fn hex(bytes: &[u8]) -> String {
@@ -831,6 +847,30 @@ mod win {
     pub fn runtime_ready(existing_cli: bool) -> CmdResult<bool> {
         let dir_ready = cfg!(windows) && is_ready(&runtime_dir()?);
         Ok(ready(existing_cli, smoke_mode(), dir_ready))
+    }
+
+    /// Names the failing step and path, so a bare OS error ("The system cannot
+    /// find the path specified. (os error 3)") says what was being done where.
+    /// `Other`, not `Download`: the UI shows its network hint only for downloads.
+    fn at<T>(
+        step: &str,
+        target: impl std::fmt::Display,
+        r: Result<T, impl std::fmt::Display>,
+    ) -> CmdResult<T> {
+        r.map_err(|e| InstallerError::Other(format!("{step} failed at {target}: {e}")))
+    }
+
+    /// An error with its causes ("error sending request: ... dns error: no such
+    /// host"); reqwest's own Display stops at the outermost layer.
+    fn chain(e: &dyn std::error::Error) -> String {
+        let mut s = e.to_string();
+        let mut cur = e.source();
+        while let Some(c) = cur {
+            s.push_str(": ");
+            s.push_str(&c.to_string());
+            cur = c.source();
+        }
+        s
     }
 
     pub fn verify_sha(got_hex: &str, expected: &str) -> CmdResult<()> {
@@ -870,12 +910,25 @@ mod win {
     pub fn promote(staging: &Path, dir: &Path) -> CmdResult<()> {
         let key = dir.file_name().unwrap_or_default().to_string_lossy();
         let aside = dir.with_file_name(format!(".old-{key}"));
-        std::fs::write(staging.join(COMPLETE_MARKER), key.as_bytes())?;
+        let marker = staging.join(COMPLETE_MARKER);
+        at(
+            "write the completion marker",
+            marker.display(),
+            std::fs::write(&marker, key.as_bytes()),
+        )?;
         let _ = std::fs::remove_dir_all(&aside);
         if dir.exists() {
-            rename_retry(dir, &aside)?;
+            at(
+                "move the old runtime aside",
+                dir.display(),
+                rename_retry(dir, &aside),
+            )?;
         }
-        rename_retry(staging, dir)?;
+        at(
+            "move the runtime into place",
+            format!("{} -> {}", staging.display(), dir.display()),
+            rename_retry(staging, dir),
+        )?;
         let _ = std::fs::remove_dir_all(&aside);
         Ok(())
     }
@@ -892,6 +945,53 @@ mod win {
                 let _ = std::fs::remove_dir_all(&p).or_else(|_| std::fs::remove_file(&p));
             }
         }
+    }
+
+    /// Installs a new CLI into a staging dir next to `dir`, validates it, then swaps
+    /// only `dir\cli`. Any failure leaves the live CLI as it was.
+    fn apply_update(
+        dir: &Path,
+        version: &str,
+        install: impl FnOnce(&Path) -> CmdResult<()>,
+        validate: impl FnOnce(&Path) -> bool,
+    ) -> CmdResult<()> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let stage = dir.with_file_name(format!(".update-{version}-{}-{nanos}", std::process::id()));
+        let result = (|| {
+            let (live, new) = (dir.join("cli"), stage.join("cli"));
+            let aside = dir.join(".old-cli");
+            at(
+                "create the update folder",
+                new.display(),
+                std::fs::create_dir_all(&new),
+            )?;
+            install(&stage)?;
+            if !validate(&stage) {
+                return Err(InstallerError::Other(format!(
+                    "the downloaded CLI {version} does not report that version"
+                )));
+            }
+            let _ = std::fs::remove_dir_all(&aside);
+            at(
+                "move the old CLI aside",
+                live.display(),
+                rename_retry(&live, &aside),
+            )?;
+            if let Err(e) = rename_retry(&new, &live) {
+                let _ = rename_retry(&aside, &live);
+                return Err(InstallerError::Other(format!(
+                    "move the new CLI into place failed at {}: {e}",
+                    live.display()
+                )));
+            }
+            let _ = std::fs::remove_dir_all(&aside);
+            Ok(())
+        })();
+        let _ = std::fs::remove_dir_all(&stage);
+        result
     }
 
     /// Streams `url` into `archive`, verifying the SHA-256 on completion.
@@ -921,7 +1021,7 @@ mod win {
             .get(url)
             .send()
             .await
-            .map_err(|e| InstallerError::Download(e.to_string()))?;
+            .map_err(|e| InstallerError::Download(chain(&e)))?;
         if !resp.status().is_success() {
             return Err(InstallerError::Download(format!(
                 "HTTP {} for {url}",
@@ -929,18 +1029,23 @@ mod win {
             )));
         }
         let total = resp.content_length().unwrap_or(0);
-        let mut file = tokio::fs::File::create(archive).await?;
+        let saving = "save the Node.js download";
+        let mut file = at(
+            saving,
+            archive.display(),
+            tokio::fs::File::create(archive).await,
+        )?;
         let mut hasher = Sha256::new();
         let mut done: u64 = 0;
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| InstallerError::Download(e.to_string()))?;
+            let chunk = chunk.map_err(|e| InstallerError::Download(chain(&e)))?;
             hasher.update(&chunk);
-            file.write_all(&chunk).await?;
+            at(saving, archive.display(), file.write_all(&chunk).await)?;
             done += chunk.len() as u64;
             progress(done, total);
         }
-        file.flush().await?;
+        at(saving, archive.display(), file.flush().await)?;
         drop(file);
         if total > 0 && done != total {
             return Err(InstallerError::Download("download was cut short".into()));
@@ -948,11 +1053,12 @@ mod win {
         verify_sha(&hex(&hasher.finalize()), expected_sha)
     }
 
+    // ponytail: global lock — one install at a time; per-user app so one instance is typical
+    static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// Downloads Node from nodejs.org, then installs the CLI via npm, unless the
     /// runtime is already in place. Emits `runtime:progress` with `{ phase, fraction, total }`.
     pub async fn ensure_runtime(app: AppHandle) -> CmdResult<()> {
-        // ponytail: global lock — one install at a time; per-user app so one instance is typical
-        static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _guard = INSTALL_LOCK.lock().await;
         let dir = runtime_dir()?;
         if is_ready(&dir) {
@@ -960,7 +1066,11 @@ mod win {
         }
         let cfg = config();
         let base = runtime_base()?;
-        tokio::fs::create_dir_all(&base).await?;
+        at(
+            "create the runtime folder",
+            base.display(),
+            tokio::fs::create_dir_all(&base).await,
+        )?;
         let key = runtime_key(&cfg);
         let zip = base.join(format!(".download-{key}.zip"));
         let staging = base.join(format!(".staging-{key}"));
@@ -993,7 +1103,7 @@ mod win {
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(60))
             .build()
-            .map_err(|e| InstallerError::Download(e.to_string()))?;
+            .map_err(|e| InstallerError::Download(chain(&e)))?;
 
         download_verified(&client, &url, zip, cfg.node_sha256(), |done, total| {
             if total > 0 {
@@ -1052,19 +1162,36 @@ mod win {
         let node_staging = node_dir(staging);
         let cli_staging = staging.join("cli");
 
-        std::fs::create_dir_all(&node_staging)?;
+        let mk = "create the staging folder";
+        at(
+            mk,
+            node_staging.display(),
+            std::fs::create_dir_all(&node_staging),
+        )?;
         extract_node_zip(zip, &node_staging, &cfg.node_version)?;
 
-        std::fs::create_dir_all(&cli_staging)?;
-        npm_install_cli(cfg, &node_staging, &cli_staging)?;
+        at(
+            mk,
+            cli_staging.display(),
+            std::fs::create_dir_all(&cli_staging),
+        )?;
+        npm_install_cli(cfg, &node_staging, &cli_staging, &cfg.cli_version)?;
 
-        std::fs::write(connect_json_path(staging), CONNECT_JSON)?;
-
-        if !cli_entry(staging).is_file() {
-            return Err(InstallerError::Other(
-                "CLI entry not found after npm install".into(),
-            ));
+        // Checked before the write below: if npm installed somewhere else, the
+        // package folder is missing and the write would fail with a bare os error 3.
+        let entry = cli_entry(staging);
+        if !entry.is_file() {
+            return Err(InstallerError::Other(format!(
+                "npm install finished but the CLI is missing at {}",
+                entry.display()
+            )));
         }
+        let connect = connect_json_path(staging);
+        at(
+            "write codemie-connect.json",
+            connect.display(),
+            std::fs::write(&connect, CONNECT_JSON),
+        )?;
 
         promote(staging, dir)
     }
@@ -1074,96 +1201,285 @@ mod win {
     #[cfg(windows)]
     fn extract_node_zip(zip: &Path, dest: &Path, node_version: &str) -> CmdResult<()> {
         let prefix = format!("node-v{node_version}-win-x64");
-        let out = std::process::Command::new(tar_exe())
-            .arg("-xf")
-            .arg(zip)
-            .arg("--strip-components=1")
-            .arg("-C")
-            .arg(dest)
-            .arg(format!("{prefix}/node.exe"))
-            .arg(format!("{prefix}/node_modules/npm"))
-            .output()?;
+        let tar = tar_exe();
+        let out = at(
+            "start tar to unpack Node.js",
+            tar.display(),
+            std::process::Command::new(&tar)
+                .arg("-xf")
+                .arg(zip)
+                .arg("--strip-components=1")
+                .arg("-C")
+                .arg(dest)
+                .arg(format!("{prefix}/node.exe"))
+                .arg(format!("{prefix}/node_modules/npm"))
+                .arg(format!("{prefix}/npm.cmd"))
+                .arg(format!("{prefix}/npx.cmd"))
+                .output(),
+        )?;
         if !out.status.success() {
             return Err(InstallerError::Other(format!(
-                "Node zip extraction failed: {}",
+                "unpacking Node.js failed ({}) from {} into {}: {}",
+                out.status,
+                zip.display(),
+                dest.display(),
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
         Ok(())
+    }
+
+    /// PATH with `node_dir` first, so npm lifecycle scripts (keytar's
+    /// `prebuild-install`) find the bundled node.exe.
+    #[cfg(windows)]
+    fn path_with(node_dir: &Path) -> std::ffi::OsString {
+        let mut paths = vec![node_dir.to_path_buf()];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        std::env::join_paths(paths).unwrap_or_default()
+    }
+
+    #[cfg(windows)]
+    const NPM_TIMEOUT: Duration = Duration::from_secs(600);
+    #[cfg(windows)]
+    const CLI_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// `Command::output` that kills the child after `limit` and returns a
+    /// TimedOut error, so a hung child cannot hold INSTALL_LOCK forever.
+    #[cfg(windows)]
+    fn output_timeout(
+        cmd: &mut std::process::Command,
+        limit: Duration,
+    ) -> std::io::Result<std::process::Output> {
+        use std::io::Read;
+        use std::process::Stdio;
+        let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        fn drain<R: Read + Send + 'static>(r: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut r) = r {
+                    let _ = r.read_to_end(&mut buf);
+                }
+                buf
+            })
+        }
+        let (out, err) = (drain(child.stdout.take()), drain(child.stderr.take()));
+        let start = std::time::Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait()? {
+                break s;
+            }
+            if start.elapsed() >= limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("timed out after {}s", limit.as_secs()),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        Ok(std::process::Output {
+            status,
+            stdout: out.join().unwrap_or_default(),
+            stderr: err.join().unwrap_or_default(),
+        })
     }
 
     /// Installs the pinned CLI version into `cli_dir` via npm.
     /// Uses the just-extracted node.exe so no system Node is required.
     #[cfg(windows)]
-    fn npm_install_cli(cfg: &Config, node_dir: &Path, cli_dir: &Path) -> CmdResult<()> {
+    fn npm_install_cli(
+        cfg: &Config,
+        node_dir: &Path,
+        cli_dir: &Path,
+        version: &str,
+    ) -> CmdResult<()> {
         let node = node_dir.join("node.exe");
         let npm = npm_cli(node_dir);
         // Exact version pin so the installed CLI is always >= 0.15.7 regardless of
         // whether the lock file has been regenerated for the new version yet.
-        let spec = format!("{}@{}", cfg.cli_package, cfg.cli_version);
-        let out = std::process::Command::new(&node)
-            .arg(&npm)
-            .arg("install")
-            .arg(&spec)
-            .arg("--omit=dev")
-            .arg("--no-audit")
-            .arg("--no-fund")
-            .current_dir(cli_dir)
-            .output()?;
+        let spec = format!("{}@{}", cfg.cli_package, version);
+        // Without a package.json npm walks up to the nearest node_modules (e.g. a
+        // stray one in the user's home) and installs there instead of here.
+        let pkg = cli_dir.join("package.json");
+        at(
+            "write package.json",
+            pkg.display(),
+            std::fs::write(&pkg, "{}"),
+        )?;
+        let out = at(
+            "start npm",
+            format!("{} (in {})", node.display(), cli_dir.display()),
+            output_timeout(
+                std::process::Command::new(&node)
+                    .arg(&npm)
+                    .arg("install")
+                    .arg(&spec)
+                    .arg("--omit=dev")
+                    .arg("--no-audit")
+                    .arg("--no-fund")
+                    .current_dir(cli_dir)
+                    .env("PATH", path_with(node_dir)),
+                NPM_TIMEOUT,
+            ),
+        )?;
         if !out.status.success() {
+            crate::commands::logger::write_line(
+                &format!(
+                    "npm install {spec} exited {}\n{}\n{}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout).trim(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+                "stderr",
+            );
             return Err(InstallerError::Other(format!(
-                "npm install {spec} failed: {}",
+                "npm install {spec} failed ({}) in {}: {}",
+                out.status,
+                cli_dir.display(),
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
         Ok(())
     }
 
-    /// Runs a background CLI update on launch and removes replaced runtime dirs.
-    /// Non-fatal: errors are swallowed so a failing update never blocks the app.
+    /// Called after the app is up: installs a newer CLI from npm into a staging
+    /// dir, checks it runs, then swaps it in. Returns the version it moved to.
+    /// A failed update leaves the current CLI untouched.
     pub async fn update_cli(existing_cli: bool) -> CmdResult<Option<String>> {
-        if existing_cli {
+        let result = check_and_update_cli(existing_cli).await;
+        match &result {
+            Ok(Some(v)) => {
+                crate::commands::logger::write_line(&format!("CodeMie CLI updated to {v}"), "info")
+            }
+            Ok(None) => {}
+            Err(e) => crate::commands::logger::write_line(
+                &format!("CodeMie CLI update failed: {e}"),
+                "warn",
+            ),
+        }
+        result
+    }
+
+    async fn check_and_update_cli(existing_cli: bool) -> CmdResult<Option<String>> {
+        if existing_cli || smoke_mode() {
             return Ok(None);
         }
-        #[cfg(windows)]
-        {
-            let dir = match runtime_dir() {
-                Ok(d) if is_ready(&d) => d,
-                _ => return Ok(None),
-            };
-            tokio::task::spawn_blocking(move || {
-                let cfg = config();
-                let node = node_exe(&dir);
-                let npm = npm_cli(&node_dir(&dir));
-                let cli_dir = dir.join("cli");
-                let out = std::process::Command::new(&node)
-                    .arg(&npm)
-                    .arg("install")
-                    .arg(format!("{}@latest", cfg.cli_package))
-                    .arg("--omit=dev")
-                    .arg("--no-audit")
-                    .arg("--no-fund")
-                    .current_dir(&cli_dir)
-                    .output();
-                if let Ok(out) = out {
-                    if out.status.success() {
-                        let _ = std::fs::write(connect_json_path(&dir), CONNECT_JSON);
+        let dir = runtime_dir()?;
+        if !is_ready(&dir) {
+            return Ok(None);
+        }
+        // A previous swap can leave `.old-cli` when a running CLI still locked it.
+        let _ = std::fs::remove_dir_all(dir.join(".old-cli"));
+        // A killed mid-update leaves a `.update-*` staging dir that remove_stale never reached.
+        if let Some(base) = dir.parent() {
+            if let Ok(entries) = std::fs::read_dir(base) {
+                for e in entries.flatten() {
+                    if e.file_name().to_string_lossy().starts_with(".update-") {
+                        let _ = std::fs::remove_dir_all(e.path());
                     }
                 }
-                if let Ok(base) = runtime_base() {
-                    remove_stale(&base, &runtime_key(&cfg));
-                }
-            })
-            .await
-            .ok();
+            }
         }
-        Ok(None)
+        let package_json = dir
+            .join("cli")
+            .join("node_modules")
+            .join("@codemieai")
+            .join("code")
+            .join("package.json");
+        let current = std::fs::read_to_string(package_json)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v["version"].as_str().map(str::to_string));
+        let Some(current) = current else {
+            return Ok(None);
+        };
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|e| InstallerError::Download(chain(&e)))?;
+        let latest: serde_json::Value = client
+            .get(REGISTRY_LATEST)
+            .send()
+            .await
+            .map_err(|e| InstallerError::Download(chain(&e)))?
+            .json()
+            .await
+            .map_err(|e| InstallerError::Download(chain(&e)))?;
+        let Some(latest) = latest["version"].as_str().map(str::to_string) else {
+            return Ok(None);
+        };
+        if !newer(&latest, &current) {
+            return Ok(None);
+        }
+
+        let _guard = INSTALL_LOCK.lock().await;
+        let version = latest.clone();
+        tokio::task::spawn_blocking(move || {
+            let cfg = config();
+            let node = node_exe(&dir);
+            apply_update(
+                &dir,
+                &version,
+                |stage| {
+                    npm_install_cli(&cfg, &node_dir(&dir), &stage.join("cli"), &version)?;
+                    let connect = connect_json_path(stage);
+                    at(
+                        "write codemie-connect.json",
+                        connect.display(),
+                        std::fs::write(&connect, CONNECT_JSON),
+                    )
+                },
+                |stage| {
+                    output_timeout(
+                        std::process::Command::new(&node)
+                            .arg(cli_entry(stage))
+                            .arg("--version"),
+                        CLI_CHECK_TIMEOUT,
+                    )
+                    .is_ok_and(|o| {
+                        o.status.success()
+                            && reports_version(&String::from_utf8_lossy(&o.stdout), &version)
+                    })
+                },
+            )?;
+            if let Ok(base) = runtime_base() {
+                remove_stale(&base, &runtime_key(&cfg));
+            }
+            Ok::<(), InstallerError>(())
+        })
+        .await
+        .map_err(|e| InstallerError::Other(e.to_string()))??;
+        Ok(Some(latest))
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
         use std::io::Write;
+
+        #[cfg(windows)]
+        #[test]
+        fn output_timeout_kills_a_hung_child_and_reports_timed_out() {
+            let mut cmd = std::process::Command::new("cmd");
+            cmd.args(["/C", "ping -n 20 127.0.0.1"]);
+            let err = output_timeout(&mut cmd, Duration::from_millis(300)).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+            let mut ok = std::process::Command::new("cmd");
+            ok.args(["/C", "echo hi"]);
+            let out = output_timeout(&mut ok, Duration::from_secs(10)).unwrap();
+            assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("hi"));
+        }
+
+        #[test]
+        fn path_with_puts_the_runtime_node_first() {
+            let p = path_with(Path::new(r"C:\rt\node"));
+            let first = std::env::split_paths(&p).next().unwrap();
+            assert_eq!(first, Path::new(r"C:\rt\node"));
+        }
 
         #[test]
         fn not_ready_without_marker_even_with_files() {
@@ -1173,8 +1489,23 @@ mod win {
             std::fs::write(node_exe(d), "x").unwrap();
             std::fs::create_dir_all(cli_entry(d).parent().unwrap()).unwrap();
             std::fs::write(cli_entry(d), "x").unwrap();
+            std::fs::write(node_dir(d).join("npm.cmd"), "x").unwrap();
             assert!(!is_ready(d));
             std::fs::write(d.join(COMPLETE_MARKER), "k").unwrap();
+            assert!(is_ready(d));
+        }
+
+        #[test]
+        fn not_ready_without_npm_cmd() {
+            let t = tempfile::tempdir().unwrap();
+            let d = t.path();
+            std::fs::create_dir_all(node_exe(d).parent().unwrap()).unwrap();
+            std::fs::write(node_exe(d), "x").unwrap();
+            std::fs::create_dir_all(cli_entry(d).parent().unwrap()).unwrap();
+            std::fs::write(cli_entry(d), "x").unwrap();
+            std::fs::write(d.join(COMPLETE_MARKER), "k").unwrap();
+            assert!(!is_ready(d));
+            std::fs::write(node_dir(d).join("npm.cmd"), "x").unwrap();
             assert!(is_ready(d));
         }
 
@@ -1225,6 +1556,7 @@ mod win {
             let cli = cli_entry(&staging);
             std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
             std::fs::write(&cli, "x").unwrap();
+            std::fs::write(node_dir(&staging).join("npm.cmd"), "x").unwrap();
 
             assert!(!is_ready(&staging));
             let dir = t.path().join("key");
@@ -1235,6 +1567,106 @@ mod win {
             assert!(!dir.join("stale-file").exists());
             assert!(!staging.exists());
             assert!(!t.path().join(".old-key").exists());
+        }
+
+        fn runtime_with_old_cli(t: &Path) -> PathBuf {
+            let dir = t.join("key");
+            std::fs::create_dir_all(dir.join("cli")).unwrap();
+            std::fs::write(dir.join("cli").join("marker.txt"), "old").unwrap();
+            dir
+        }
+
+        fn marker(dir: &Path) -> String {
+            std::fs::read_to_string(dir.join("cli").join("marker.txt")).unwrap()
+        }
+
+        fn only_key_left(t: &Path) {
+            let left: Vec<_> = std::fs::read_dir(t).unwrap().collect();
+            assert_eq!(left.len(), 1, "stage was left behind");
+        }
+
+        #[test]
+        fn apply_update_swaps_in_the_new_cli_and_cleans_up() {
+            let t = tempfile::tempdir().unwrap();
+            let dir = runtime_with_old_cli(t.path());
+            apply_update(
+                &dir,
+                "9.9.9",
+                |s| Ok(std::fs::write(s.join("cli").join("marker.txt"), "new")?),
+                |_| true,
+            )
+            .unwrap();
+            assert_eq!(marker(&dir), "new");
+            assert!(!dir.join(".old-cli").exists());
+            only_key_left(t.path());
+        }
+
+        #[test]
+        fn apply_update_keeps_the_old_cli_when_install_or_validation_fails() {
+            let t = tempfile::tempdir().unwrap();
+            let dir = runtime_with_old_cli(t.path());
+            let r = apply_update(
+                &dir,
+                "9.9.9",
+                |_| Err(InstallerError::Other("npm failed".into())),
+                |_| true,
+            );
+            assert!(r.is_err());
+            assert_eq!(marker(&dir), "old");
+            only_key_left(t.path());
+
+            let r = apply_update(
+                &dir,
+                "9.9.9",
+                |s| Ok(std::fs::write(s.join("cli").join("marker.txt"), "new")?),
+                |_| false,
+            );
+            assert!(r.is_err());
+            assert_eq!(marker(&dir), "old");
+            only_key_left(t.path());
+        }
+
+        #[test]
+        fn at_names_the_step_and_path_and_is_not_a_download_error() {
+            let e = at::<()>(
+                "write x",
+                r"C:\p",
+                Err(std::io::Error::from_raw_os_error(3)),
+            )
+            .unwrap_err();
+            assert!(matches!(e, InstallerError::Other(_)));
+            let s = e.to_string();
+            assert!(s.starts_with(r"write x failed at C:\p: "), "{s}");
+            assert!(s.contains("os error 3"), "{s}");
+        }
+
+        #[test]
+        fn promote_into_a_missing_staging_names_the_marker_path() {
+            let t = tempfile::tempdir().unwrap();
+            let staging = t.path().join("gone");
+            let s = promote(&staging, &t.path().join("key"))
+                .unwrap_err()
+                .to_string();
+            assert!(s.contains("completion marker"), "{s}");
+            assert!(s.contains("gone"), "{s}");
+        }
+
+        #[test]
+        fn chain_appends_every_cause() {
+            #[derive(Debug)]
+            struct E(&'static str, Option<Box<E>>);
+            impl std::fmt::Display for E {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str(self.0)
+                }
+            }
+            impl std::error::Error for E {
+                fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                    self.1.as_deref().map(|e| e as _)
+                }
+            }
+            let e = E("sending request", Some(Box::new(E("dns error", None))));
+            assert_eq!(chain(&e), "sending request: dns error");
         }
 
         #[test]

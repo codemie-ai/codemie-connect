@@ -1,0 +1,85 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "request-changes",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved fix-up for CR-001"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User chose to fix CR-001 (timeouts)"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved fix-up for CR-001"
+    }
+  ],
+  "reviewed_head": "20b4ed83317cb3d9cc9f7777e831e77aba6bd212",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "One major defect: the Windows update's npm install and --version validation have no timeout while INSTALL_LOCK is held. Spec absent and acceptance/blind/verification-gap not in the compact profile, so confidence is low; standards not audited per profile. 4 edge-case candidates dismissed as handled or negligible; 0 deferred.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/runtime.rs",
+      "line": 1376,
+      "title": "Windows update has no timeout under INSTALL_LOCK",
+      "problem": "On Windows, npm_install_cli and the `node <cli> --version` validation use blocking .output() with no timeout, inside apply_update while INSTALL_LOCK is held. The mac module bounds these with NPM_TIMEOUT and CLI_CHECK_TIMEOUT.",
+      "impact": "A hung npm or broken CLI (prompt, antivirus scan, network stall) blocks the update thread forever; ensure_runtime takes the same INSTALL_LOCK, so app launch/runtime install stalls.",
+      "recommendation": "Spawn the children and kill them after a timeout (e.g. 600s for npm, 60s for validation), treating timeout as failure so the live CLI stays and the lock is released.",
+      "status": "fixed",
+      "fix": {
+        "change": "Windows npm install (600s) and node --version validation (60s) run via output_timeout, which kills the child and errors on timeout",
+        "test": "output_timeout_kills_a_hung_child_and_reports_timed_out"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards audit not part of this profile."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards audit not part of this profile."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards audit not part of this profile."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "One major defect: the Windows update's npm install and --version validation have no timeout while INSTALL_LOCK is held. Spec absent and acceptance/blind/verification-gap not in the compact profile, so confidence is low; standards not audited per profile. 4 edge-case candidates dismissed as handled or negligible; 0 deferred.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

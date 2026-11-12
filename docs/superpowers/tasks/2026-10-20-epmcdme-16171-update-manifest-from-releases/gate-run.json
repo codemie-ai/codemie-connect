@@ -1,0 +1,9 @@
+{"schema":1,"branch":"feat/EPMCDME-16171-update-manifest-from-releases","head":"f1c27ff4399ff8261ecbb11d9dde22b4ee8dfc47","runner":"custom","started_at":"2026-10-20T08:04:00Z","completed_at":"2026-10-20T08:05:30Z","status":"PASSED","drift_detected":false,"gates":[
+{"id":"fmt","source":"guide","status":"PASS","duration_ms":1000,"command":"cd src-tauri && cargo fmt --check","exit_code":0},
+{"id":"lint","source":"guide","status":"PASS","duration_ms":7000,"command":"cd src-tauri && cargo clippy -- -D warnings","exit_code":0},
+{"id":"unit-js","source":"guide","status":"PASS","duration_ms":14000,"command":"npm test","exit_code":0,"notes":"507 pass, 0 fail, 3 skipped"},
+{"id":"unit-rust","source":"guide","status":"PASS","duration_ms":21000,"command":"cd src-tauri && cargo test","exit_code":0},
+{"id":"build","source":"guide","status":"SKIPPED","command":"./build-installer.sh","notes":"Guide skip-if: logic-only change verified by tests. CI still runs tauri build --no-sign."},
+{"id":"commitlint","source":"ci","status":"SKIPPED","duration_ms":1000,"command":"npx --no-install commitlint --from 6e4f34f --to HEAD --verbose","exit_code":1,"notes":"npx canceled due to missing packages (commitlint not installed in node_modules). Run npm install to enable locally; CI settles it."},
+{"id":"gitleaks","source":"ci","status":"SKIPPED","command":"gitleaks","notes":"gitleaks binary not installed; only CI can settle it."}
+],"failures":{}}
