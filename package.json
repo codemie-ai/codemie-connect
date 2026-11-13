@@ -2,6 +2,7 @@
   "name": "codemie-installer-macos-tauri",
   "version": "2.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "EPAM AI/Run CodeMie Connect for macOS \u2014 Tauri v2 build.",
   "scripts": {
@@ -9,6 +10,8 @@
     "test:ui": "cd docs/superpowers/tasks/2026-08-31-epmcdme-14511/dynamic-tests && npx playwright test"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3"
   }
 }

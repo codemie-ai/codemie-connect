@@ -1,0 +1,4 @@
+# Link the C runtime into app.exe so a clean Windows (no VC++ redistributable)
+# can start it: no VCRUNTIME140.dll / VCRUNTIME140_1.dll lookup.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

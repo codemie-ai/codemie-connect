@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 3, "label": "M" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 27,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 19,
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New Rust runtime module (download, sha256 verify, unpack, atomic promote), app state and invoke_handler wiring, first-launch gate in the UI, a rewritten macOS shim, and the build/pack scripts, which span several subsystems." },
+    { "dimension": "technical_risk", "reason": "Downloads and executes a remote archive. This needs checksum pinning, atomic install with a completion marker and cleanup after failure. Hosting, system proxy and signing are open. Closest pattern is the existing installer download code, which does not cover verified archive promotion." },
+    { "dimension": "file_change_estimate", "reason": "19 files changed (752 insertions, 79 deletions) across src-tauri, ui, scripts, assets, docs and build config, which maps to XXL by the diffstat rule. Roughly a quarter of the files are guides and docs." },
+    { "dimension": "affected_layers", "reason": "UI overlay, Rust command/service layer, build and packaging infrastructure, and an external download host." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk scored XL: security-sensitive remote download and execution with checksum verification",
+    "Borderline total (26 to 27) leaned higher because Technical Risk is XL"
+  ],
+  "split_recommendation": null
+}

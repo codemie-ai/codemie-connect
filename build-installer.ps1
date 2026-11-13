@@ -33,7 +33,8 @@ try {
 # -- 3. Post-build assertions ------------------------------------------------
 Step "[3/3] Verifying the produced bundle"
 
-foreach ($rel in @("bin\codemie.cmd", "bin\runtime-key")) {
+$cliBins = (Get-Content (Join-Path $Root "assets\codemie-cli\package-lock.json") -Raw | ConvertFrom-Json -AsHashtable).packages["node_modules/@codemieai/code"].bin.Keys
+foreach ($rel in (@($cliBins | ForEach-Object { "bin\$_.cmd" }) + "bin\runtime-key")) {
     if (-not (Test-Path (Join-Path $ReleaseDir $rel))) { Fail "bundle is missing $rel (looked in $ReleaseDir)" }
 }
 if ((Get-Content (Join-Path $ReleaseDir "bin\runtime-key") -Raw).Trim() -ne $Key) { Fail "bundle runtime-key does not match runtime.json ($Key)" }

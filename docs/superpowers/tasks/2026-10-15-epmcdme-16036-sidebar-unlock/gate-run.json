@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-16036-sidebar-unlock",
+  "head": "52305d44320b95d66c3f02a0e8ee5956d12d4086",
+  "runner": "custom",
+  "started_at": "2026-10-15T16:55:09Z",
+  "completed_at": "2026-10-15T16:55:40Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt-rust",
+      "source": "guide",
+      "status": "N/A",
+      "command": "cd src-tauri && cargo fmt --check",
+      "notes": "No Rust files in diff; guide Skip-if scope (JS-only change)"
+    },
+    {
+      "id": "lint-rust",
+      "source": "guide",
+      "status": "N/A",
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "notes": "No Rust files in diff; guide Skip-if scope (JS-only change)"
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 12000,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "679 tests, 676 pass, 0 fail, 3 skipped (pre-existing test skips)"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "N/A",
+      "command": "cd src-tauri && cargo test",
+      "notes": "No Rust files in diff; guide Skip-if scope (JS-only change)"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "N/A",
+      "command": "./build-installer.sh",
+      "notes": "Guide Skip-if: logic-only change verified by tests"
+    },
+    {
+      "id": "commitlint",
+      "source": "ci",
+      "status": "SKIPPED",
+      "command": "npx --no-install commitlint --from <merge_base> --to HEAD --verbose",
+      "notes": "npm error npx canceled due to missing packages (commitlint not installed; not installing per instructions). Run npm install then the command to check locally; CI re-runs it."
+    },
+    {
+      "id": "gitleaks",
+      "source": "ci",
+      "status": "SKIPPED",
+      "command": "gitleaks (action, config .gitleaks.toml)",
+      "notes": "gitleaks binary not found; install gitleaks and run with --config .gitleaks.toml; only CI settles it"
+    }
+  ],
+  "failures": {}
+}

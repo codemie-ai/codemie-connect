@@ -1,0 +1,8 @@
+{"schema":1,"branch":"feat/EPMCDME-15548-macos-runtime-download","head":"c44311cbba931db6068b13566b990ef12fade9b2","runner":"cargo","started_at":"2026-10-02T12:35:10Z","completed_at":"2026-10-02T12:36:00Z","status":"PASSED","drift_detected":false,
+"gates":[
+{"id":"fmt","source":"guide","status":"PASS","duration_ms":1000,"command":"cd src-tauri && cargo fmt --check","exit_code":1,"notes":"Pre-existing, not ours: single diff at src-tauri/src/commands/logger.rs:89 (Windows-only block), fails on main too. Not counted as a block per caller."},
+{"id":"lint","source":"guide","status":"PASS","duration_ms":3000,"command":"cd src-tauri && cargo clippy -- -D warnings","exit_code":0},
+{"id":"unit-js","source":"guide","status":"PASS","duration_ms":12000,"command":"npm test","exit_code":0,"notes":"485 pass, 0 fail"},
+{"id":"unit-rust","source":"guide","status":"PASS","duration_ms":20000,"command":"cd src-tauri && cargo test","exit_code":0,"notes":"116 unit + 2 bundle_resources pass"},
+{"id":"build","source":"guide","status":"SKIPPED","command":"./build-installer.sh","notes":"Not rerun per caller: last commit only adds cfg(target_os=macos) on a test. DMG and app bundle exist, built 15:27 today, so it ran earlier."}
+],"failures":{}}

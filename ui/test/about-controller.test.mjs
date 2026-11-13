@@ -165,3 +165,18 @@ test('a hidden About view is not re-rendered', async () => {
   about.fail('download failed');
   assert.equal(view._children.length, 0);
 });
+
+// The versions waited for the online update check, so About said "Not
+// available" for both until it answered. They show as soon as they are read;
+// until then the cards say "Checking…".
+test('the installed versions show before the online update check answers', async () => {
+  const pending = deferred();
+  const { about } = setup({ check: () => pending.promise });
+  const done = about.refresh();
+  assert.ok(cliText().includes('Checking…'));
+  assert.ok(!cliText().includes('Not available'));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(cliText().includes('2.1.0') && cliText().includes('1.0.0'));
+  pending.resolve(null);
+  await done;
+});

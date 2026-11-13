@@ -1,0 +1,8 @@
+{"schema":1,"branch":"EPMCDME-16840-Windows-automatic-update-the-managed-CLI-to-the-latest-version","head":"20b4ed83317cb3d9cc9f7777e831e77aba6bd212","runner":"cargo+npm","started_at":"2026-11-05T14:03:10Z","completed_at":"2026-11-05T14:03:10Z","status":"FAILED","drift_detected":false,
+"gates":[
+{"id":"fmt","source":"guide","status":"PASS","duration_ms":1122,"command":"cd src-tauri && cargo fmt --check","exit_code":0},
+{"id":"clippy","source":"guide","status":"PASS","duration_ms":12129,"command":"cd src-tauri && cargo clippy -- -D warnings","exit_code":0},
+{"id":"unit-js","source":"guide","status":"FAIL","duration_ms":16579,"command":"npm test","exit_code":1,"notes":"shim.test.mjs macOS shim tests fail with EPERM symlink on Windows (no symlink privilege); environmental"},
+{"id":"unit-rust","source":"guide","status":"FAIL","duration_ms":40816,"command":"cd src-tauri && cargo test","exit_code":101,"notes":"117 passed, 2 failed: logger cli_debug_log_is_the_dated_file (backslash path sep) and pathman dmg_mount_and_app_translocation (macOS /Volumes path); both mac-path tests running on Windows"},
+{"id":"build","source":"guide","status":"SKIPPED","command":".\build-installer.ps1","notes":"not run: slow installer build; CI builds on macOS"}],
+"failures":{"unit-js":"EPERM symlink in ui/test/shim.test.mjs (see npm test output)","unit-rust":"logger.rs:192 path separator mismatch; pathman.rs:798 /Volumes path not treated as non-install location on Windows"}}

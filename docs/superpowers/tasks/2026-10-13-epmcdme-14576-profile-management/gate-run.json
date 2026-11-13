@@ -1,0 +1,8 @@
+{"schema":1,"branch":"feat/EPMCDME-14576-profile-management","head":"c83cb05a34885be528161bccb37c7f576b0ac4fd","runner":"custom","started_at":"2026-10-13T08:48:24Z","completed_at":"2026-10-13T08:50:00Z","status":"PASSED","drift_detected":false,
+"gates":[
+{"id":"fmt","source":"guide","status":"PASS","duration_ms":2000,"command":"cd src-tauri && cargo fmt --check","exit_code":0},
+{"id":"clippy","source":"guide","status":"PASS","duration_ms":12000,"command":"cd src-tauri && cargo clippy -- -D warnings","exit_code":0},
+{"id":"js-unit","source":"guide","status":"PASS","duration_ms":13000,"command":"npm test","exit_code":0,"notes":"661 pass, 0 fail, 3 skipped (test-level skips)"},
+{"id":"rust-unit","source":"guide","status":"PASS","duration_ms":25000,"command":"cd src-tauri && cargo test","exit_code":0,"notes":"174 + 2 passed"},
+{"id":"build","source":"guide","status":"SKIPPED","command":"./build-installer.sh","notes":"Guide allows skipping for changes verified by tests; build stages runtime and rewrites tracked assets/codemie-cli files. Owed to CI/caller. No hooks or CI config found in repo."}
+],"failures":{}}

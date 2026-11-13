@@ -4,9 +4,9 @@ import { readFileSync } from 'node:fs';
 
 // The CLI looks for codemie-connect.json next to its package.json to know it
 // is the copy inside CodeMie Connect, which updates with the app instead of
-// running npm (EPMCDME-15433). Both build scripts write it and refuse to
-// finish without it.
-for (const [script, sep] of [['scripts/stage-runtime.sh', '/'], ['scripts/stage-runtime.ps1', '\\']]) {
+// running npm (EPMCDME-15433). The macOS build script writes it and refuses to
+// finish without it; on Windows the app writes it after the first-launch install.
+for (const [script, sep] of [['scripts/stage-runtime.sh', '/']]) {
   test(`${script} writes and requires the CodeMie Connect marker`, () => {
     const src = readFileSync(script, 'utf8');
     const marker = `${sep}codemie-connect.json`;

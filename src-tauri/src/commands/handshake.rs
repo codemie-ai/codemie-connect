@@ -257,7 +257,6 @@ mod tests {
         assert!(s.global_found);
         assert_eq!(s.global_version, Some("2.0.1".to_string()));
     }
-
 }
 
 #[cfg(all(test, windows))]

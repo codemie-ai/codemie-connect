@@ -96,3 +96,8 @@ test('renderer: the app update run reports progress, results and errors to About
   assert.match(app, /about\.progress\(text, true\)/);
   assert.match(app, /catch \(err\) \{[\s\S]*about\.fail\(String\(err\)\);[\s\S]*finally \{\s*updateAppRunning = false;\s*about\.renderIfShown\(\);/);
 });
+
+test('Home holds its health check while guided setup is open, and only the latest setup run ends setup', () => {
+  assert.ok(renderer.includes("autoHealthCheck(state, { setupOpen: setupRunning || !views.setup.classList.contains('hidden') })"));
+  assert.ok(renderer.includes('if (setupRun !== run) return;'));
+});

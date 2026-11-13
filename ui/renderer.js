@@ -22,7 +22,9 @@ import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
 import { readOnboarded, rememberOnboarded } from './onboarding-memory.js';
 import { createHomeView, applyHomeHeader } from './home-view.js';
-import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
+import { createProfileListController } from './profile-list-controller.js';
+import { renderProfileList } from './profile-list-view.js';
+import { deriveHome, brokenCopy, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { initCmdLog } from './cmdlog-ui.js';
 import { analyticsCommand } from './analytics-command.js';
@@ -72,6 +74,7 @@ const views = {
   connect: document.getElementById('connect-view'),
   health: document.getElementById('health-view'),
   about: document.getElementById('about-view'),
+  profiles: document.getElementById('profiles-view'),
   wizard: document.getElementById('wizard-view'),
 };
 const homeView = views.home;
@@ -175,8 +178,42 @@ function setInstallRunning(on) {
 // the config reader and auth status (the identity bar's own reads feed them in),
 // `codemie list` through ui/agents-parse.js, and Health's last result.
 const home = { config: null, auth: null, agents: undefined, health: null, connection: undefined };
+// Profiles screen (EPMCDME-14576): the controller runs one CLI action at a time
+// and re-reads the config; the view draws the rows. The screen is its own view,
+// so Home's re-renders never touch an open rename or delete confirmation.
+const profileRows = document.getElementById('profiles-rows');
+const profileAdd = document.getElementById('profiles-add');
+const profileList = createProfileListController({
+  bridge,
+  onChanged: () => {
+    refreshIdentityOnComplete();
+    // No profile left: Home's setup checklist is where to go next.
+    if (!profileList.state.profiles.length) showView('home');
+  },
+});
+const drawProfileList = () => {
+  renderProfileList(profileRows, profileList.state, {
+    onSwitch: (n) => profileList.switchTo(n),
+    onRename: (o, n) => profileList.rename(o, n),
+    onDelete: (n) => profileList.remove(n),
+  });
+  profileAdd.disabled = profileList.state.busy;
+};
+profileList.subscribe(drawProfileList);
+const reloadProfiles = () => {
+  if (!profileList.state.busy) profileList.load();
+};
+function openProfiles() {
+  if (!profileList.state.busy) profileList.clearMessages();
+  showView('profiles');
+  drawProfileList();
+  reloadProfiles();
+}
+document.getElementById('profiles-back').onclick = () => showView('home');
+profileAdd.onclick = () => openGuidedSetup();
 const homeScreen = createHomeView(document.getElementById('home-body'), {
   stepsUi: stepsUI.createStepsUi(),
+  onManageProfiles: () => openProfiles(),
   onItem: (id) => {
     if (id === 'model') openGuidedSetup();
     else if (id === 'agent') showView('agents');
@@ -184,11 +221,34 @@ const homeScreen = createHomeView(document.getElementById('home-body'), {
   },
   onSignIn: () => (signInAction(home) === 'setup' ? openGuidedSetup() : startSignIn()),
   onCard: (id) => showView(id === 'connections' ? 'connect' : id),
-  onSetupAgain: () => openGuidedSetup(),
+  onDeleteProfile: deleteActiveProfile,
   // Item 3 installs through the Agents controller, which refreshes Home on its
   // own when the action finishes, so the item ticks without a second read here.
   onInstallAgent: (agent, onLine) => agentsController.install(agent, onLine),
 });
+
+// Deletes the profile Home's panel names. Never throws and never hangs: a CLI
+// error comes back as the message the panel shows. Config and auth are re-read
+// either way, so a newly active profile (or none) is what Home shows next.
+async function deleteActiveProfile() {
+  const name = (home.config && home.config.profile) || '';
+  if (!name.trim()) return { ok: false, message: 'No profile name to delete' };
+  let result;
+  try {
+    const res = await bridge.profile.delete(name);
+    if (res && res.code === 0) {
+      result = { ok: true };
+    } else {
+      const raw = [res?.stdout, res?.stderr].filter(Boolean).join('\n').trim();
+      const last = raw.split('\n').map((l) => l.trim()).filter(Boolean).pop();
+      result = { ok: false, message: last || 'Could not delete the profile', raw };
+    }
+  } catch (e) {
+    result = { ok: false, message: String((e && e.message) || e) };
+  }
+  await refreshIdentityOnComplete();
+  return result;
+}
 
 // Whether the checklist has ever been finished here, read once at boot.
 // localStorage itself can throw on access, so it is fetched guarded too.
@@ -209,16 +269,17 @@ function renderHome() {
     onboarded = true;
     rememberOnboarded(homeStorage);
   }
-  homeScreen.render({ ...state, signingIn: home.signingIn });
+  homeScreen.render({ ...state, brokenCopy: brokenCopy(home), signingIn: home.signingIn });
   // The last step starts by itself once the ones before it are done, instead
   // of leaving the user on a checklist that waits for a click. Once a session:
   // a check that fails leaves its step saying so, and Home does not retry it.
-  if (!autoHealthStarted && autoHealthCheck(state)) {
+  if (!autoHealthStarted && autoHealthCheck(state, { setupOpen: setupRunning || !views.setup.classList.contains('hidden') })) {
     autoHealthStarted = true;
     setTimeout(startHealthInPlace, 0);
   }
-  // The other screens stay locked until the checklist is first done; Home
-  // never is, so an item that opened Agents or Health always has a way back.
+  // The other screens stay locked until sign-in and model are set (or setup
+  // has finished once); Home never is, so an item that opened Agents or
+  // Health always has a way back.
   applyOnboardingNav(document, { done: state.unlocked });
   applyHomeHeader(document, { done: state.done });
 }
@@ -272,6 +333,7 @@ let setupView = null;
 // True while a guided setup run is open; runAction reads it. setupSettled
 // resolves once that run has fully unwound.
 let setupRunning = false;
+let setupRun = null;
 let setupSettled = Promise.resolve();
 // Set while a run left behind by showView is being stopped; the next
 // openGuidedSetup waits for it, or start() would hand back the old run.
@@ -289,8 +351,12 @@ async function openGuidedSetup() {
       },
       // Called for each run, including a "Try again" started from the view.
       onRun: (run) => {
+        setupRun = run;
         setupRunning = true;
         setupSettled = run.then(() => {}, () => {}).finally(() => {
+          // A restart can start the next run before this one has unwound;
+          // only the latest run ends setup.
+          if (setupRun !== run) return;
           setupRunning = false;
           // A run writes the profile and may sign the user in; Home re-reads both.
           refreshIdentityOnComplete();
@@ -770,16 +836,11 @@ async function startSignIn() {
       primaryAction: hideNotice,
     });
   }
-  // Always re-read profile status; never assume success from absence of an error line.
-  // Falls back to the safe unknown state if the IPC call itself rejects.
-  let st;
-  try {
-    st = await bridge.inspector.checkProfileStatus();
-  } catch {
-    st = { state: 'unknown', detail: '' };
-  }
+  // Always re-read config and profile status; never assume success from absence
+  // of an error line. Both reads fall back to a safe value if the IPC call rejects.
+  await refreshIdentityOnComplete();
   home.signingIn = false;
-  updateIdentityAuthStatus(st);
+  renderHome();
 }
 
 async function runAnalytics() {
@@ -840,43 +901,50 @@ async function runUpdateApp() {
   }
 }
 
-// Node and the CLI are not in the app: they are downloaded once, on first
+// Node and the CLI are not in the app: they are installed once, on first
 // launch (commands/runtime.rs). Nothing else in boot() may run the CLI before
 // this resolves.
 async function ensureRuntime() {
+  if (await invoke('runtime_ready')) return;
   const overlay = document.getElementById('runtime-overlay');
   const title = document.getElementById('runtime-title');
   const detail = document.getElementById('runtime-detail');
   const bar = document.getElementById('runtime-bar');
   const retry = document.getElementById('runtime-retry');
   const errorEl = document.getElementById('runtime-error');
-  const downloading = 'Downloading the CodeMie CLI. This happens once.';
-  let ready = false;
-  try {
-    ready = await invoke('runtime_ready');
-  } catch (err) {
-    // Fall through to the overlay: ensure_runtime below reports the error with Try again.
-    console.error('runtime_ready failed', err);
-  }
-  if (ready) return;
+  const downloading = 'Setting up CodeMie. This happens once.';
   overlay.classList.remove('hidden');
+  // npm reports no progress, so during the CLI step the bar eases on toward 95%
+  // instead of sitting still; it fills to 100% when the install finishes.
+  let creep = null;
+  let installing = false;
+  const stopCreep = () => { clearInterval(creep); creep = null; };
   const unlisten = await listen('runtime:progress', (e) => {
     const { phase, fraction, total } = e.payload;
     bar.style.width = `${Math.round(fraction * 100)}%`;
-    if (phase === 'unpack') detail.textContent = 'Unpacking…';
-    else if (total) detail.textContent = `Downloading the CodeMie CLI (${Math.round((fraction * total) / 1048576)} of ${Math.round(total / 1048576)} MB). This happens once.`;
+    if (phase === 'cli') {
+      detail.textContent = 'Installing the CodeMie CLI. This takes about a minute and happens once.';
+      let width = fraction * 100;
+      if (installing && !creep) creep = setInterval(() => { width += (95 - width) * 0.05; bar.style.width = `${Math.round(width)}%`; }, 1000);
+    } else if (phase === 'node' && total) detail.textContent = `Downloading Node.js (${Math.round((fraction / 0.3) * (total / 1048576))} of ${Math.round(total / 1048576)} MB). This happens once.`;
   });
-  try {
   for (;;) {
     title.textContent = 'Preparing CodeMie…';
     detail.textContent = downloading;
     retry.classList.add('hidden');
     errorEl.classList.add('hidden');
     bar.style.width = '0%';
+    installing = true;
     try {
       await invoke('ensure_runtime');
+      installing = false;
+      stopCreep();
+      bar.style.width = '100%';
+      await new Promise((r) => setTimeout(r, 400));
       break;
     } catch (err) {
+      installing = false;
+      stopCreep();
       title.textContent = "Couldn't download CodeMie";
       detail.textContent = 'Check your internet connection or proxy, then try again.';
       errorEl.textContent = String(err);
@@ -885,15 +953,12 @@ async function ensureRuntime() {
       await new Promise((r) => retry.addEventListener('click', r, { once: true }));
     }
   }
-  } finally {
-    unlisten();
-  }
+  unlisten();
   overlay.classList.add('hidden');
 }
 
 async function boot() {
   await ensureRuntime();
-  invoke('update_cli').catch(() => {}); // background; errors are non-fatal
   const flags = await invoke('smoke_mode');
 
   // renderer.js is a module and exports nothing, and Setup has no sidebar entry,
@@ -988,6 +1053,7 @@ async function boot() {
     refreshIdentityOnComplete();
     refreshAgents();
     refreshConnection();
+    if (!views.profiles.classList.contains('hidden')) reloadProfiles();
   });
 
   const [platformInfo, tmpDir] = await Promise.all([
@@ -1049,6 +1115,13 @@ async function boot() {
   // above. The command-log footer is wired at the top of boot().
   refreshAgents();
   refreshConnection();
+  // A newer CLI on npm is installed in the background and used from the next
+  // command on, so a CLI release never needs a new installer (runtime.rs).
+  invoke('update_cli')
+    .then((version) => {
+      if (version) refreshAgents();
+    })
+    .catch(() => {});
   document.querySelectorAll('#sidebar-main-group .sidebar-item, #sidebar-about').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation

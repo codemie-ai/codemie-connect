@@ -8,10 +8,13 @@
 // are toggled with `hidden` and never unmounted, so every list stays mounted at
 // once; sharing an instance would clear another screen's rows.
 //
-// 03-agents.png draws a list and a detail pane. The detail pane is
-// EPMCDME-14655; here progress, failures and the CLI's own output belong in the
-// row itself, and never in a modal.
+// 03-agents.png draws a list and a detail pane (EPMCDME-14655). Here the
+// details open under the selected row instead, like Home's checklist: the
+// version state, how to run the tool and what its action is doing. Progress
+// and failures live there, never in a modal, and the CLI's own output is not
+// kept.
 import { StepStatus, makeStep } from './models.js';
+import { renderFailurePanel } from './failure-panel.js';
 import { screenSpinner } from './screen-loading.js';
 import { BUILTIN_AGENT_COMMAND } from './home-state.js';
 
@@ -38,7 +41,6 @@ const statusOf = (agent) => {
 // so the two are never shown side by side. See
 // .ai-run/decisions/2026-09-21-EPMCDME-14514-agent-version-authority.md.
 const subtitleOf = (agent) => {
-  if (agent.actionMessage) return agent.actionMessage;
   const base = agent.installed && agent.version ? `${agent.description} · ${agent.version}` : agent.description;
   if (agent.command === BUILTIN_AGENT_COMMAND) return `${base} · built into the CLI`;
   if (agent.updateAvailable) return `${base} · ${agent.latest ? `${agent.latest} available` : 'update available'}`;
@@ -54,8 +56,8 @@ export function summarise(agents) {
   };
 }
 
-export function renderAgents(container, { agents }, handlers = {}) {
-  const { stepsUi, onInstall, onUpdate, onRemove } = handlers;
+export function renderAgents(container, { agents, selected = null, progress = {} }, handlers = {}) {
+  const { stepsUi, onInstall, onUpdate, onRemove, onSelect } = handlers;
   container.innerHTML = '';
 
   const { installed, total, updateAvailable } = summarise(agents);
@@ -76,11 +78,82 @@ export function renderAgents(container, { agents }, handlers = {}) {
     stepsUi.setStatus(agent.command, statusOf(agent));
     stepsUi.setSubtitle(agent.command, subtitleOf(agent));
     const row = list.querySelector(`.step-row[data-id="${agent.command}"]`);
-    if (row) row.appendChild(buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons));
+    if (row) {
+      row.appendChild(buildActions(agent, { onInstall, onUpdate, onRemove }, screenButtons));
+      row.onclick = () => onSelect?.(agent.command);
+      if (agent.command === selected) row.className = `${row.className} selected`.trim();
+    }
     if (row && agent.updateAvailable) {
       row.title = agent.latest ? `A newer version is out. Update installs ${agent.latest}.` : 'A newer version is out. Update installs it.';
     }
   }
+  // One details block for the whole list. It opens under the selected row,
+  // the way Home's checklist opens its agent list in place.
+  const pane = el('div', 'agent-pane');
+  pane.hidden = true;
+  list.appendChild(pane);
+  const agent = agents.find((a) => a.command === selected);
+  renderPane(container, agent, { progress: agent ? progress[agent.command] : undefined });
+}
+
+// Marks the selected row without rebuilding the list. The class is `selected`,
+// not `active`: `active` is the running row and is never touched here.
+export function setSelectedRow(container, command) {
+  for (const row of container.querySelectorAll('.step-row')) {
+    const others = row.className.split(' ').filter((c) => c && c !== 'selected');
+    row.className = (row.dataset.id === command ? [...others, 'selected'] : others).join(' ');
+  }
+}
+
+// Redraws only the details under the selected row. It is called for every
+// streamed line and every selection, so it must not rebuild the step list:
+// renderSteps would wipe the running row's spinner, its ACTIVE badge and its
+// disabled buttons. It only moves the one details block under the right row.
+// The actions stay on the row itself, so the details carry no buttons.
+//
+// state: { progress, message, working }. `message` overrides the failure text;
+// otherwise an errored agent shows its own actionMessage. `working` is the verb
+// of the action running on this agent: until it ends the state line says that,
+// not the "Not installed" the list was read with.
+export function renderPane(container, agent, state = {}) {
+  const pane = container.querySelector('.agent-pane');
+  if (!pane) return;
+  pane.innerHTML = '';
+  const row = agent ? container.querySelector(`.step-row[data-id="${agent.command}"]`) : null;
+  if (!agent || !row) {
+    pane.hidden = true;
+    return;
+  }
+  row.parentNode.insertBefore(pane, row.nextSibling);
+  pane.hidden = false;
+  const { progress, message, working } = state;
+  const builtin = agent.command === BUILTIN_AGENT_COMMAND;
+
+  pane.appendChild(el('div', 'agent-pane-version', working ? `${working}…` : versionLine(agent, builtin)));
+  if (!builtin && agent.newerThanSupported) {
+    pane.appendChild(el('div', 'agent-pane-detail', `Installed ${agent.current}. CodeMie supports ${agent.latest}.`));
+  }
+  if (agent.installed && agent.launcher) {
+    pane.appendChild(el('div', 'agent-pane-launcher', `Run it from a terminal: ${agent.launcher}`));
+  }
+  if (progress) pane.appendChild(el('div', 'agent-pane-progress', progress));
+
+  const failure = message ?? (agent.actionStatus === 'error' ? agent.actionMessage : null);
+  if (failure) {
+    const failureSlot = el('div', 'agent-pane-failure');
+    renderFailurePanel(failureSlot, { variant: 'error', title: `Could not finish with ${agent.name}`, explanation: failure });
+    pane.appendChild(failureSlot);
+  } else if (agent.actionMessage) {
+    pane.appendChild(el('div', 'agent-pane-note', agent.actionMessage));
+  }
+}
+
+function versionLine(agent, builtin) {
+  if (builtin) return 'Installed, built into the CLI';
+  if (!agent.installed) return 'Not installed';
+  if (agent.newerThanSupported) return 'Newer than CodeMie supports — kept';
+  if (agent.updateAvailable) return `Update available ${agent.latest || ''}`.trim();
+  return `Installed ${agent.version || ''}`.trim();
 }
 
 const BUSY_LABEL = { Install: 'Installing…', Update: 'Updating…', Remove: 'Removing…' };

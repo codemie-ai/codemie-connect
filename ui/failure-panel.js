@@ -32,6 +32,9 @@ export function renderFailurePanel(container, {
   command,
   primaryLabel,
   onPrimary,
+  secondaryLabel,
+  onSecondary,
+  secondaryDisabled = false,
 } = {}) {
   container.querySelector('.failure-block')?.remove();
 
@@ -77,6 +80,14 @@ export function renderFailurePanel(container, {
     primary.onclick = () => onPrimary?.(block);
     actions.appendChild(primary);
   }
+  if (secondaryLabel) {
+    const secondary = document.createElement('button');
+    secondary.className = 'btn btn-ghost';
+    secondary.textContent = secondaryLabel;
+    secondary.disabled = !!secondaryDisabled;
+    secondary.onclick = () => onSecondary?.(block);
+    actions.appendChild(secondary);
+  }
   if (raw) {
     const details = document.createElement('button');
     details.className = 'btn btn-ghost';
@@ -91,7 +102,7 @@ export function renderFailurePanel(container, {
     actions.appendChild(details);
   }
   // Only when it holds a button: an empty row still takes its top margin.
-  if (primaryLabel || raw) panel.appendChild(actions);
+  if (primaryLabel || secondaryLabel || raw) panel.appendChild(actions);
 
   block.appendChild(panel);
   block.appendChild(rawEl);

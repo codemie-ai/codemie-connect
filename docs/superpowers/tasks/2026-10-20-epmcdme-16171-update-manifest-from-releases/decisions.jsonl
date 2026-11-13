@@ -1,0 +1,2 @@
+{"ts":"2026-10-20T07:56:06Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved plan (4 tasks)","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-20T08:03:55Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved fix for CR-001 (fail on empty platforms)","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

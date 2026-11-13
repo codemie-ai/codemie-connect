@@ -1,0 +1,50 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec was supplied, so confidence is low. Three findings stand: an untested shim/Rust path contract, an untested install() checksum and cleanup flow, and a non-macOS test that fails on Windows. The commit-format row failed against the documented '<type>:' guide, but the task mandates 'EPMCDME-15548 : subject', so that finding was dismissed as a stale guide and the row is passed through. 0 deferred; 21 candidates dismissed (handled, unreachable, or below the emission floor); brief at code-review-brief.md.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "fail", "notes": "git-workflow.md documents '<type>: <short description>'; all 5 subjects use 'EPMCDME-15548 : <subject>' with no type. The guide may be stale versus actual team practice" },
+    { "kind": "code-quality", "status": "na", "notes": "no .ai-run/guides/standards/code-quality.md in the repo and no ref passed; absent standard" },
+    { "kind": "security", "status": "na", "notes": "no security-patterns guide in the repo; spot check of runtime.rs found no concrete issue: https URL, SHA-256 verified before unpack, fixed /usr/bin/tar argv" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/runtime.rs",
+      "line": 36,
+      "title": "Shim and Rust runtime path not tied by a test",
+      "problem": "runtime_base/runtime_dir (Library/Application Support/CodeMie/runtime/<key>, .complete marker) and assets/macos/bin/codemie (same path rebuilt by hand) are two independent definitions of one contract. Shim tests hand-copy the path string and no Rust test references the shim, so both suites stay green if either side changes.",
+      "impact": "The app could report ready and install while the user-facing `codemie` shim exits 1 'not set up yet'.",
+      "recommendation": "Add a test that promotes a fake runtime into runtime_dir(tmp_home) and runs the shim under HOME=tmp_home with a matching runtime-key, expecting the fake node to run."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/runtime.rs",
+      "line": 189,
+      "title": "install() orchestration has no test",
+      "problem": "Only leaf helpers (verify_sha, unpack, promote, remove_stale) are tested. install() and the ensure_runtime failure cleanup are not run by any test. CODEMIE_RUNTIME_URL already allows a local server.",
+      "impact": "Removing or reordering the verify_sha call, hashing wrong bytes, skipping promote, or dropping the failure cleanup would ship tampered-archive acceptance or leftover partial state with all tests green.",
+      "recommendation": "Add a test against a local HTTP server: a wrong-checksum body returns Err and leaves no .download-/.staging- files; a correct body ends with is_ready(dir) true."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/runtime.rs",
+      "line": 400,
+      "title": "Baked-pack test fails on non-macOS",
+      "problem": "the_baked_pack_is_complete is not cfg-gated, but off macOS PACK_JSON is the empty placeholder, so the assertions on a non-empty key, https url and 64-char sha fail.",
+      "impact": "cargo test fails on Windows, which the task says must not regress.",
+      "recommendation": "Add #[cfg(target_os = \"macos\")] to the test."
+    }
+  ]
+}

@@ -16,7 +16,19 @@ if not exist "%RT%\.complete" goto notready
 :: which resolves to the current directory.
 if defined PATH (set "PATH=%PATH%;%RT%\node") else (set "PATH=%RT%\node")
 
-"%RT%\node\node.exe" "%RT%\cli\node_modules\@codemieai\code\bin\codemie.js" %*
+:: The app ships this one file under every command name the CLI declares
+:: (codemie, codemie-claude, ...), the way npm would; the name it runs as picks
+:: the CLI entry point.
+set "NAME=%~n0"
+set "ENTRY=%NAME%.js"
+if /i "%NAME%"=="codemie" set "ENTRY=codemie.js"
+if /i "%NAME%"=="codemie-code" set "ENTRY=agent-executor.js"
+set "ENTRY=%RT%\cli\node_modules\@codemieai\code\bin\%ENTRY%"
+if not exist "%ENTRY%" (
+  echo %NAME%: this CodeMie CLI has no such command. 1>&2
+  exit /b 127
+)
+"%RT%\node\node.exe" "%ENTRY%" %*
 exit /b %ERRORLEVEL%
 
 :notready

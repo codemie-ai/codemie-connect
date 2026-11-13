@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # build-installer.sh
-# Stages the bundled Node runtime + CodeMie CLI tree, verifies every artifact,
-# then builds the macOS .app and DMG via Tauri. Mirrors build-installer.ps1.
+# Stages the Node runtime + CodeMie CLI tree, verifies every artifact, then
+# builds the macOS .app and DMG via Tauri. The app bundles only the shim: on
+# first launch it downloads Node.js from nodejs.org and installs the CLI from
+# npm with the lock file staged here (assets/codemie-cli/package-lock.json),
+# which the app embeds at compile time. Nothing has to be uploaded.
 #
 # Usage: ./build-installer.sh [--skip-stage]
 #
@@ -12,6 +15,7 @@
 #   * pkg emitted a warning and exited 0, shipping a snapshot missing a file.
 #   * dist/index.js exits 0 and prints nothing, so the CLI never starts.
 #   * A glob in bundle.resources flattens the tree and reports errors: 0.
+#   * A lock file for another CLI version would install a CLI nobody tested.
 # An exit-code check is not verification. Do not add a bypass.
 set -euo pipefail
 
@@ -26,7 +30,8 @@ done
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 CFG="$ROOT/runtime.json"
 NODE_BIN="$ROOT/assets/macos/node/bin/node"
-CLI_MODULES="$ROOT/assets/codemie-cli/node_modules"
+CLI_DIR="$ROOT/assets/codemie-cli"
+CLI_MODULES="$CLI_DIR/node_modules"
 CLI_ENTRY="$CLI_MODULES/@codemieai/code/bin/codemie.js"
 MANIFEST="$ROOT/assets/staging-manifest.json"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/src-tauri/target}"
@@ -48,7 +53,7 @@ CLI_VERSION="$(cfg cliVersion)"
 if [ "$SKIP_STAGE" = 1 ]; then
   step "[1/5] Skipping staging (--skip-stage); verification still runs"
 else
-  step "[1/5] Staging bundled runtime and CLI tree"
+  step "[1/5] Staging runtime and CLI tree"
   "$ROOT/scripts/stage-runtime.sh" || fail "scripts/stage-runtime.sh failed"
 fi
 
@@ -105,32 +110,48 @@ step "[5/5] Verifying the produced bundle"
 
 [ -f "$RES/bin/codemie" ] || fail "bundle is missing bin/codemie (looked at $RES/bin/codemie)"
 [ -x "$RES/bin/codemie" ] || fail "bundled shim is not executable: $RES/bin/codemie"
-[ -f "$RES/node/bin/node" ] || fail "bundle is missing node/bin/node (looked at $RES/node/bin/node)"
-[ -x "$RES/node/bin/node" ] || fail "bundled node is not executable: $RES/node/bin/node"
-[ "$(stat -f %z "$RES/node/bin/node")" -gt 10485760 ] || fail "bundled node is smaller than 10 MB: $RES/node/bin/node"
-[ -f "$RES/cli/node_modules/@codemieai/code/bin/codemie.js" ] || fail "bundle is missing cli/node_modules/@codemieai/code/bin/codemie.js. If the tree is present but flat, a glob key crept back into bundle.resources (spec §4)."
+# npm would put every command the CLI declares on PATH (codemie-claude, ...).
+for n in $(node -e "process.stdout.write(Object.keys(require(process.argv[1]).packages['node_modules/@codemieai/code'].bin).join(' '))" "$CLI_DIR/package-lock.json"); do
+  [ -x "$RES/bin/$n" ] || fail "bundle is missing the $n command: $RES/bin/$n"
+done
+[ ! -e "$RES/node" ] || fail "Node is bundled again: $RES/node (it is downloaded on first launch)"
+[ ! -e "$RES/cli" ] || fail "the CLI is bundled again: $RES/cli (it is installed on first launch)"
 
-# A flattened tree still contains every file NAME, so presence checks alone
-# cannot detect it. Assert nesting depth independently.
-DEEP="$(find "$RES/cli/node_modules" -mindepth 4 -type f -print -quit)"
-[ -n "$DEEP" ] || fail "bundled cli/node_modules has no nested files: the tree was FLATTENED. Remove any '*' from the bundle.resources CLI-tree key (spec §4)."
+# The app installs the CLI with the lock file it embeds; it has to pin the same
+# CLI as runtime.json, or first launches would install an untested tree.
+LOCK_CLI="$(node -e "process.stdout.write(require(process.argv[1]).packages['node_modules/@codemieai/code'].version)" "$CLI_DIR/package-lock.json")"
+[ "$LOCK_CLI" = "$CLI_VERSION" ] || fail "assets/codemie-cli/package-lock.json pins CLI $LOCK_CLI, runtime.json pins $CLI_VERSION"
 
-for scope in bin node cli; do
-  [ -d "$RES/$scope" ] || continue
-  STRAY="$(find "$RES/$scope" -type f -name '*.exe' -print -quit)"
-  [ -z "$STRAY" ] || fail "Windows binary present in the macOS bundle: $STRAY"
+for f in "$RES"/bin/*; do
+  case "$f" in *.exe) fail "Windows binary present in the macOS bundle: $f" ;; esac
 done
 
-# The strongest check: run the shim exactly as an installed user would.
-SHIM_OUT="$("$RES/bin/codemie" --version 2>&1)" || fail "bundled shim exited non-zero: $SHIM_OUT"
+# The strongest check: lay the staged runtime out the way the app installs it,
+# then run the bundled shim exactly as an installed user would, in a clean
+# environment.
+TEST_HOME="$(mktemp -d)"
+trap 'rm -rf "$TEST_HOME"' EXIT
+RT="$TEST_HOME/Library/Application Support/CodeMie/runtime"
+mkdir -p "$RT/node-$NODE_VERSION" "$RT/cli-$CLI_VERSION"
+cp -R "$ROOT/assets/macos/node/." "$RT/node-$NODE_VERSION/"
+cp -R "$CLI_MODULES" "$RT/cli-$CLI_VERSION/node_modules"
+touch "$RT/node-$NODE_VERSION/.complete" "$RT/cli-$CLI_VERSION/.complete"
+ln -s "node-$NODE_VERSION" "$RT/node"
+ln -s "cli-$CLI_VERSION" "$RT/cli"
+SHIM_OUT="$(env -i HOME="$TEST_HOME" PATH=/usr/bin:/bin CODEMIE_AUTO_UPDATE=false "$RES/bin/codemie" --version 2>&1)" || fail "bundled shim exited non-zero: $SHIM_OUT"
 [ -n "$(echo "$SHIM_OUT" | tr -d '[:space:]')" ] || fail "bundled shim produced NO output: $RES/bin/codemie"
 echo "    bundled shim: codemie --version -> $SHIM_OUT"
 
+APP_KB="$(du -sk "$APP" | cut -f1)"
+echo "    app bundle: $(( APP_KB / 1024 )) MB (Node and the CLI are installed on first launch, not bundled)"
+
 DMG="$(ls -t "$TARGET_DIR/release/bundle/dmg/"*.dmg 2>/dev/null | head -1 || true)"
 [ -n "$DMG" ] || fail "no .dmg produced in $TARGET_DIR/release/bundle/dmg"
+DMG_BYTES="$(stat -f %z "$DMG")"
+[ "$DMG_BYTES" -lt 20971520 ] || fail "DMG is $(( DMG_BYTES / 1048576 )) MB, expected under 20 MB: Node or the CLI is probably bundled again"
 
 echo
 printf '\033[32m==> Done. All assertions passed.\033[0m\n'
 echo "    App:  $APP"
 echo "    DMG:  $DMG"
-echo "    Size: $(( $(stat -f %z "$DMG") / 1048576 )) MB"
+echo "    Size: $(( DMG_BYTES / 1048576 )) MB"

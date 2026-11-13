@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "generated": "2026-11-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 2,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Staged npm install with validation, swap with restore on failure, and timeouts on hung npm/version checks in runtime.rs; Windows file replacement and process hangs have no exact precedent and need rollback handling." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

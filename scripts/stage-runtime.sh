@@ -2,7 +2,7 @@
 # Sole producer of the bundled macOS runtime artifacts. Idempotent.
 # Usage: scripts/stage-runtime.sh [--force]
 #   --force   Re-download Node and reinstall the CLI tree from scratch.
-# Mirrors scripts/stage-runtime.ps1 (Windows). Apple Silicon only.
+# Apple Silicon only.
 set -euo pipefail
 
 FORCE=0

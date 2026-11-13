@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Only the edge-case lens ran; the acceptance lens did not run (no spec), so confidence is low and the five criteria were not audited. All 3 edge-case candidates were checked against the code and dismissed: leaving setup cancels the run, renderIdentity re-renders Home on every config change, and the health controller's run() ignores a second call while one is in flight. 0 deferred, 3 dismissed.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of this profile." }
+  ],
+  "findings": []
+}

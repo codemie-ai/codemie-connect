@@ -19,7 +19,9 @@ const APP_BUTTON = 'about-app-update';
 
 // shared() returns { app, appRunning } — renderer state read at render time.
 export function createAboutController({ view, handlers, invoke, inspector, updater, shared }) {
-  const info = { appVersion: '', cliVersion: '' };
+  // read: whether the installed versions have been read once, so the cards
+  // say "Checking…" before that rather than "Not available".
+  const info = { appVersion: '', cliVersion: '', read: false };
   let appError = '';
 
   function render() {
@@ -33,6 +35,7 @@ export function createAboutController({ view, handlers, invoke, inspector, updat
         appRunning: s.appRunning,
         appError,
         cliVersion: info.cliVersion,
+        versionsRead: info.read,
       },
       handlers,
     );
@@ -44,13 +47,15 @@ export function createAboutController({ view, handlers, invoke, inspector, updat
 
   async function refresh() {
     render();
-    const [app, cli, check] = await Promise.allSettled([
-      invoke('get_app_version'),
-      inspector.checkCodemieVersion(),
-      updater.checkForAppUpdate(true),
-    ]);
+    // The update check goes online; the installed versions show without
+    // waiting for it.
+    const checked = Promise.allSettled([updater.checkForAppUpdate(true)]);
+    const [app, cli] = await Promise.allSettled([invoke('get_app_version'), inspector.checkCodemieVersion()]);
     if (app.status === 'fulfilled') info.appVersion = app.value || '';
     if (cli.status === 'fulfilled') info.cliVersion = cli.value || '';
+    info.read = true;
+    renderIfShown();
+    const [check] = await checked;
     mergeAppUpdateCheck(shared().app, check);
     renderIfShown();
   }
