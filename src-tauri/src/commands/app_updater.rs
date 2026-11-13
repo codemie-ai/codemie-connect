@@ -190,6 +190,11 @@ fn should_check(last: Option<Instant>, interval: Duration) -> bool {
     }
 }
 
+/// A forced check (About view) skips the 24h throttle; the boot check does not.
+fn gate_allows(force: Option<bool>, last: Option<Instant>) -> bool {
+    force.unwrap_or(false) || should_check(last, CHECK_INTERVAL)
+}
+
 /// Validate that a version string is a valid semantic version (minimum: N.N.N, e.g., 2.1.0)
 /// Also accepts 4+ part versions like N.N.N.N (e.g., 2.1.0.1)
 fn is_valid_version(version: &str) -> bool {
@@ -222,9 +227,12 @@ fn is_newer_version(current: &str, new: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<String>> {
+pub async fn check_for_update(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> CmdResult<Option<String>> {
     let last = *state.last_update_check.lock().unwrap();
-    if !should_check(last, CHECK_INTERVAL) {
+    if !gate_allows(force, last) {
         return Ok(None);
     }
 
@@ -386,6 +394,18 @@ mod tests {
     fn throttle_fires_after_24h() {
         let past = Instant::now() - Duration::from_secs(1);
         assert!(should_check(Some(past), Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn force_bypasses_recent_check() {
+        assert!(gate_allows(Some(true), Some(Instant::now())));
+    }
+
+    #[test]
+    fn unforced_respects_recent_check() {
+        assert!(!gate_allows(None, Some(Instant::now())));
+        assert!(!gate_allows(Some(false), Some(Instant::now())));
+        assert!(gate_allows(None, None));
     }
 
     #[test]

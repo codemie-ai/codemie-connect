@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Build a data-driven Connections screen (list, add, remove, health, proxy start/stop) for connecting Claude Desktop, VS Code and Codex to CodeMie via the existing PTY/CLI plumbing.",
+  "generated": "2026-09-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 5, "label": "XL" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 24,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Generalizes a single hardcoded Connect view into a data-driven list across the frontend view layer (index.html/renderer.js/styles.css), a new pure-JS parser module (mirroring signin-parse.js), the bridge layer (runner-bridge.js), and likely a new Rust command module (mirroring inspector.rs) — 3-4 components across 2-3 layers, reusing runAction/ensureAuthenticated as shared utilities." },
+    { "dimension": "requirements_clarity", "reason": "The task's own stated dependency — CLI-team confirmation of the codemie proxy sub-command interface — is unresolved: only 'proxy connect desktop' and 'proxy stop' exist anywhere in this repo; list/status/disconnect and vscode/codex connect are unverified, so whether a new Rust command is even needed is an open architectural decision." },
+    { "dimension": "technical_risk", "reason": "Closest patterns (findLoginError, parse_profile_status, runAction) cover CLI-output parsing and PTY execution but not: a multi-item list UI (no precedent in this codebase), health polling (running/stopped/unreachable, no existing logic), or output parsing for proxy connect/disconnect (no test scaffold to extend) — the enumerated edge/health/variant cases have no existing defensive-test template, so Technical Risk is bumped per the no-precedent-test-template rule. Single global PTY slot (state.rs) also requires new serialization logic for concurrent connect/disconnect/start/stop." },
+    { "dimension": "file_change_estimate", "reason": "Estimated ~5 modified files (index.html, renderer.js, styles.css, runner-bridge.js, lib.rs) plus ~3-4 new files (proxy-parse.js, possibly commands/proxy.rs, new test files) across 3 directories (ui/, ui/test/, src-tauri/src/commands/)." },
+    { "dimension": "affected_layers", "reason": "Touches UI (frontend view), API/bridge (runner-bridge.js), Service (new Rust command layer), Infrastructure (single-slot PTY state requiring serialization across connect/disconnect/start/stop), and External (codemie CLI process) — full stack plus the integration layer, with cross-cutting PTY-slot coordination added in several layers." }
+  ],
+  "red_flags_applied": [
+    "Requirements Clarity bumped from L to XL: CLI proxy sub-command interface (list/status/disconnect, vscode/codex connect) is explicitly unconfirmed per the task's own stated dependency — architectural decisions (need for a new Rust command) remain unmade.",
+    "Technical Risk bumped from L to XL: acceptance criteria enumerate specific variant/health cases (connect/disconnect success-failure parsing, proxy running/stopped/unreachable) with no existing test template or output-parsing precedent for this CLI surface to extend."
+  ],
+  "split_recommendation": null
+}

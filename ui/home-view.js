@@ -7,6 +7,7 @@
 // so node:test drives it with a recording stand-in.
 import { StepStatus, makeStep } from './models.js';
 import { renderAgentPicker } from './home-agent-picker.js';
+import { renderFailurePanel } from './failure-panel.js';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -21,7 +22,7 @@ function itemsBefore(items, id) {
   return at === -1 ? [] : items.slice(0, at);
 }
 
-export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, onSetupAgain, onInstallAgent } = {}) {
+export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, onInstallAgent, onDeleteProfile, onManageProfiles } = {}) {
   let listEl = null;
   // render() rebuilds the whole body, and a refresh can arrive at any moment
   // (an agent read, a health result). These three live outside it so an
@@ -30,6 +31,10 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
   let expanded = null;
   let busy = null;
   let failure = null;
+  // The broken-profile panel's delete, outside render() for the same reason: a
+  // refresh mid-delete must neither lose the busy state nor allow a second delete.
+  let deleting = false;
+  let deleteFailure = null;
   let lastState = null;
   // Item 3 opens by itself once, when it becomes the step the user is on;
   // after that only the user opens or closes it.
@@ -201,15 +206,15 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       const head = el('div', 'home-card-head');
       head.append(el('span', 'home-card-title', card.title), el('span', `home-card-badge tone-${card.badge.tone}`, card.badge.text));
       // The Profile card's action sits in the title row: under the card it
-      // made this card taller than the one beside it.
+      // made this card taller than the one beside it. Adding or updating a
+      // profile lives on the Profiles screen it opens.
       if (card.id === 'profile') {
-        const again = el('button', 'btn btn-ghost home-card-action', 'Set up again');
-        again.title = 'Add a new profile, or update one you already have.';
-        again.onclick = (e) => {
+        const manage = el('button', 'btn btn-ghost home-card-action', 'Manage profiles');
+        manage.onclick = (e) => {
           e?.stopPropagation?.();
-          onSetupAgain?.();
+          onManageProfiles?.();
         };
-        head.appendChild(again);
+        head.append(manage);
       }
       node.appendChild(head);
       if (card.line) node.appendChild(el('div', 'home-card-line', card.line));
@@ -218,6 +223,42 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       grid.appendChild(node);
     }
     container.appendChild(grid);
+  }
+
+  async function deleteProfile() {
+    if (deleting) return;
+    deleting = true;
+    deleteFailure = null;
+    rerender();
+    try {
+      const result = await onDeleteProfile?.();
+      if (result && result.ok === false) deleteFailure = result;
+    } catch (e) {
+      deleteFailure = { message: String((e && e.message) || e) };
+    } finally {
+      deleting = false;
+    }
+    rerender();
+  }
+
+  function renderBroken({ broken, brokenCopy }) {
+    const section = el('section', 'home-broken');
+    container.appendChild(section);
+    const expired = broken === 'expired';
+    renderFailurePanel(section, {
+      variant: 'error',
+      title: brokenCopy.title,
+      explanation: brokenCopy.body,
+      detail: deleteFailure?.message,
+      raw: deleteFailure?.raw,
+      primaryLabel: expired ? 'Sign in again' : 'Set up again',
+      onPrimary: () => onSignIn?.(),
+      ...(expired && {
+        secondaryLabel: deleting ? 'Deleting…' : 'Delete this profile',
+        secondaryDisabled: deleting,
+        onSecondary: deleteProfile,
+      }),
+    });
   }
 
   function render(state) {
@@ -232,7 +273,9 @@ export function createHomeView(container, { stepsUi, onItem, onSignIn, onCard, o
       expanded = null;
       failure = null;
     }
-    if (state.done) renderCards(state);
+    if (!state.broken) deleteFailure = null;
+    if (state.broken) renderBroken(state);
+    else if (state.done) renderCards(state);
     else renderChecklist(state);
   }
 

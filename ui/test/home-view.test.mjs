@@ -10,6 +10,15 @@ function makeEl(tag) {
     className: '',
     textContent: '',
     dataset: {},
+    classList: {
+      _set: new Set(),
+      add(c) { this._set.add(c); },
+      toggle(c, on) { if (on) this._set.add(c); else this._set.delete(c); },
+      contains(c) { return this._set.has(c); },
+    },
+    remove() {
+      if (el._parent) el._parent._children = el._parent._children.filter((c) => c !== el);
+    },
     appendChild(c) {
       c._parent = el;
       el._children.push(c);
@@ -205,18 +214,19 @@ test('when everything is done the three cards replace the checklist, on the same
   assert.equal(stepsUi.calls.filter((c) => c[0] === 'renderSteps').length, 1, 'cards do not touch the step list');
 });
 
-test('the Profile card offers Set up again; the other cards open their screen', () => {
+test('the Profile card offers only Manage profiles; the other cards open their screen', () => {
   const container = makeEl('div');
   const events = [];
   createHomeView(container, {
     stepsUi: fakeStepsUi(),
-    onSetupAgain: () => events.push('setup-again'),
+    onManageProfiles: () => events.push('profiles'),
     onCard: (id) => events.push(`card:${id}`),
   }).render(steady);
-  container._all((n) => n._tag === 'button' && n.textContent === 'Set up again')[0]._click();
+  assert.equal(container._all((n) => n._tag === 'button' && n.textContent === 'Set up again').length, 0);
+  container._all((n) => n._tag === 'button' && n.textContent === 'Manage profiles')[0]._click();
   container.querySelector('.home-card-warn')._click();
   container._all((n) => n.dataset.card === 'agents')[0]._click();
-  assert.deepEqual(events, ['setup-again', 'card:health', 'card:agents']);
+  assert.deepEqual(events, ['profiles', 'card:health', 'card:agents']);
 });
 
 // The welcome heading already titles the checklist; the header only earns its
@@ -246,4 +256,103 @@ test('no Sign in button while the sign-in read is still out', () => {
   const reading = { ...checklist, items: checklist.items.map((i) => (i.id === 'sign-in' ? item('sign-in', 'ACTIVE', 'Checking…') : i)) };
   createHomeView(container, { stepsUi: fakeStepsUi() }).render(reading);
   assert.equal(container._all((n) => n._tag === 'button' && n.textContent === 'Sign in').length, 0);
+});
+
+const expired = {
+  done: false,
+  broken: 'expired',
+  brokenCopy: { title: 'Your profile is no longer working', body: 'CodeMie signed you out - the sign-in for demo7 expired.', actions: ['signin', 'delete'] },
+  items: checklist.items,
+  cards: [],
+};
+const dangling = {
+  ...expired,
+  broken: 'dangling',
+  brokenCopy: { title: 'Your profile is no longer working', body: 'ghost is set as your profile but it no longer exists.', actions: ['setup'] },
+};
+const buttons = (container) => container._all((n) => n._tag === 'button');
+const labels = (container) => buttons(container).map((b) => b.textContent);
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('an expired sign-in shows the panel with two actions, and no checklist or cards', () => {
+  const container = makeEl('div');
+  createHomeView(container, { stepsUi: fakeStepsUi() }).render(expired);
+  const text = container._text();
+  assert.ok(text.includes('Your profile is no longer working'));
+  assert.ok(text.includes('demo7'));
+  assert.deepEqual(labels(container), ['Sign in again', 'Delete this profile']);
+  assert.equal(container.querySelector('.home-check'), null);
+  assert.equal(container.querySelector('.home-cards'), null);
+});
+
+test('a dangling profile shows one Set up again button and never a Delete', () => {
+  const container = makeEl('div');
+  let deleted = 0;
+  createHomeView(container, { stepsUi: fakeStepsUi(), onDeleteProfile: async () => { deleted += 1; return { ok: true }; } }).render(dangling);
+  assert.deepEqual(labels(container), ['Set up again']);
+  assert.equal(deleted, 0);
+});
+
+test('each primary action calls onSignIn', () => {
+  for (const state of [expired, dangling]) {
+    const container = makeEl('div');
+    let signedIn = 0;
+    createHomeView(container, { stepsUi: fakeStepsUi(), onSignIn: () => (signedIn += 1) }).render(state);
+    buttons(container)[0].onclick();
+    assert.equal(signedIn, 1, state.broken);
+  }
+});
+
+test('Delete runs once however often it is clicked, and a re-render mid-flight still says Deleting', async () => {
+  const container = makeEl('div');
+  let calls = 0;
+  let finish;
+  const view = createHomeView(container, {
+    stepsUi: fakeStepsUi(),
+    onDeleteProfile: () => { calls += 1; return new Promise((r) => { finish = r; }); },
+  });
+  view.render(expired);
+  const del = () => buttons(container).find((b) => b.textContent === 'Delete this profile' || b.textContent === 'Deleting…');
+  del().onclick();
+  del().onclick();
+  assert.equal(calls, 1);
+  assert.equal(del().textContent, 'Deleting…');
+  assert.equal(del().disabled, true);
+  view.render(expired);
+  assert.equal(del().textContent, 'Deleting…', 'a focus-triggered re-render keeps the busy state');
+  del().onclick();
+  assert.equal(calls, 1);
+  finish({ ok: true });
+  await tick();
+});
+
+test('a failed delete shows the CLI sentence inline and the button works again', async () => {
+  const container = makeEl('div');
+  let calls = 0;
+  const view = createHomeView(container, {
+    stepsUi: fakeStepsUi(),
+    onDeleteProfile: async () => { calls += 1; return { ok: false, message: 'permission denied', raw: 'full output' }; },
+  });
+  view.render(expired);
+  buttons(container).find((b) => b.textContent === 'Delete this profile').onclick();
+  await tick();
+  assert.ok(container._text().includes('permission denied'));
+  const del = buttons(container).find((b) => b.textContent === 'Delete this profile');
+  assert.ok(del, 'label is back');
+  assert.ok(!del.disabled);
+  del.onclick();
+  assert.equal(calls, 2);
+  await tick();
+});
+
+test('Manage profiles opens the profiles screen and draws nothing inside the Profile card', () => {
+  const container = makeEl('div');
+  let opened = 0;
+  const view = createHomeView(container, { stepsUi: fakeStepsUi(), onManageProfiles: () => { opened += 1; } });
+  view.render(steady);
+  const manage = container._all((n) => n._tag === 'button' && n.textContent === 'Manage profiles')[0];
+  manage.onclick({ stopPropagation() {} });
+  assert.equal(opened, 1);
+  const profileCard = container._all((n) => n.dataset && n.dataset.card === 'profile')[0];
+  assert.equal(profileCard._all((n) => n._tag === 'button').length, 1, 'only Manage profiles');
 });

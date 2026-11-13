@@ -1,0 +1,259 @@
+{
+  "decision": "request-changes",
+  "rationale": "13 patch findings: Tauri cmdlog Mutex lacks poison recovery, raw_output is unbounded, ANSI strip misses DEC-private sequences, in-flight records render null exit codes and trigger spurious mapFailure messages, clipboard fallback uses wrong Tauri v2 plugin namespace, write errors are swallowed, PTY tail-output races with close, runStream appends without ANSI stripping, and initCmdLog/copy-all integration lack tests. Commit-format standard fails on 6 commits: 4 use prohibited scope syntax, 2 use bare ticket-key prefix. 2 deferred (pre-existing PTY singleton and kill-sentinel; see code-review-deferred.md); 4 dismissed.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "#command-log-footer is visible (no hidden class) after initCmdLog() runs at boot",
+      "status": "pass",
+      "notes": "footer.classList.remove('hidden') in initCmdLog(); initCmdLog() called from boot() in renderer.js:549"
+    },
+    {
+      "kind": "story-ac",
+      "item": "#command-log-body shows one block per CmdRecord, ordered newest-first",
+      "status": "pass",
+      "notes": "_renderRecords spreads and reverses the list before rendering: cmdlog-ui.js:447"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Each block shows .log-prompt, .log-dim, and .log-info when mapFailure non-empty",
+      "status": "pass",
+      "notes": "all three span types built with correct class names in cmdlog-ui.js:455-471"
+    },
+    {
+      "kind": "story-ac",
+      "item": "ui/log.js set_window_height is not invoked by any cmdlog-UI code path",
+      "status": "pass",
+      "notes": "no reference to set_window_height or ui/log.js anywhere in cmdlog-ui.js"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Opening <details> re-fetches and re-renders records (stale records do not persist)",
+      "status": "pass",
+      "notes": "toggle listener calls _renderRecords() when e.target.open: cmdlog-ui.js:498"
+    },
+    {
+      "kind": "story-ac",
+      "item": "openCmdLogRecord(id) expands the panel and scrolls row with data-id into view",
+      "status": "pass",
+      "notes": "sets .open=true, awaits _renderRecords(), then scrollIntoView on [data-id]: cmdlog-ui.js:502-505"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Copy-all button visible in <summary> bar; clicking places all rendered rows text on clipboard",
+      "status": "pass",
+      "notes": "button injected into footer.querySelector('summary') in initCmdLog: cmdlog-ui.js:480-496"
+    },
+    {
+      "kind": "story-ac",
+      "item": "navigator.clipboard.writeText called synchronously inside click handler (no await before the write)",
+      "status": "pass",
+      "notes": "click handler reads _records synchronously, builds text, calls writeText without any await: cmdlog-ui.js:485-493"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Fallback to window.__TAURI__.clipboardManager.writeText when isSecureContext false or navigator.clipboard absent",
+      "status": "pass",
+      "notes": "if (window.isSecureContext && navigator.clipboard) else fallback branch: cmdlog-ui.js:489-492"
+    },
+    {
+      "kind": "story-ac",
+      "item": "mapFailure returns plain-language string for three recognised cases; raw_output verbatim for others; '' for exit 0",
+      "status": "pass",
+      "notes": "all five detection branches implemented in insertion order in cmdlog-failure-map.mjs:1-9"
+    },
+    {
+      "kind": "story-ac",
+      "item": "ui/test/cmdlog-failure-map.test.mjs passes under node --test ui/test/*.test.mjs",
+      "status": "pending-stage-7",
+      "notes": "four required test cases present (cases 2-5); implementation matches; execution result needed"
+    },
+    {
+      "kind": "spec",
+      "item": "cargo build succeeds with tauri-plugin-clipboard-manager = \"2\" in Cargo.toml (three-file atomicity: Cargo.toml + lib.rs + capabilities)",
+      "status": "pending-stage-7",
+      "notes": "all three files updated; AppState derives Default and CmdLogStore derives Default so field init is sound; build result is execution evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "No new ESLint errors, no console.error at runtime for the clipboard capability path",
+      "status": "pending-stage-7",
+      "notes": "capability identifier matches exactly; no console.error on clipboard path in code; lint and runtime verification are execution evidence"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "fail",
+      "notes": "Guide documents `<type>: <short description>` and explicitly marks scope as anti-pattern. 4 commits use `feat(EPMCDME-15232):` scope form (anti-pattern per guide). 2 commits (`epmcdme-15231: add planning artifacts`, `epmcdme-15230: add planning artifacts`) lack a recognized type prefix entirely. 10 of 16 commits conform."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": ".ai-run/guides/standards/code-quality.md does not exist in the repository; no code-quality standard to adjudicate against."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": ".ai-run/guides/development/security-patterns.md does not exist in the repository. No concrete security defect found: cmdlog-ui.js uses textContent throughout, capabilities/default.json adds only the minimal clipboard-manager:allow-write-text permission, IDs in CSS selectors are backend-generated sequential strings."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/cmdlog.rs",
+      "line": 58,
+      "title": "Unbounded raw_output growth per record",
+      "problem": "CmdLogStore.append() has no cap on raw_output length; every chunk extends the String with no size limit or trim.",
+      "impact": "A verbose or long-running PTY or runStream command fills raw_output without bound for the app session lifetime; on a build or install script this can exhaust heap and OOM the Tauri process.",
+      "recommendation": "Add a MAX_OUTPUT constant (e.g. 1 MB) and in append() either reject chunks that would exceed it or trim the head: if record.raw_output.len() + chunk.len() > MAX_OUTPUT { record.raw_output = record.raw_output.split_off(chunk.len()); }"
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/cmdlog.rs",
+      "line": 87,
+      "title": "Poisoned Mutex panics all cmdlog commands",
+      "problem": "All five cmdlog Tauri commands call state.cmdlog.lock().unwrap(). A panic in any code path that holds the Mutex poisons it; every subsequent cmdlog call then also panics.",
+      "impact": "If any thread panics while holding the cmdlog lock, the entire cmdlog subsystem becomes permanently unavailable for the session, crashing each IPC handler that calls a cmdlog command.",
+      "recommendation": "Use state.cmdlog.lock().unwrap_or_else(|e| e.into_inner()) to recover from a poisoned lock, or map the poison error to CmdResult::Err and return it to the frontend."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/ansi-strip.mjs",
+      "line": 3,
+      "title": "DEC-private CSI sequences not stripped",
+      "problem": "The ANSI regex alternation \\[[0-9;]*[A-Za-z] does not match DEC-private CSI sequences such as \\x1b[?25h, \\x1b[>0c, or \\x1b[!p because the intermediate characters ?/>/ precede the numeric parameters.",
+      "impact": "DEC-private escape sequences emitted by interactive PTY applications (cursor-hide, mode-set, terminal-attribute queries) survive into cmdlog raw_output and copy-all text, corrupting the log and potentially interfering with mapFailure pattern matching.",
+      "recommendation": "Extend the CSI alternation: change \\[[0-9;]*[A-Za-z] to \\[[?!>]?[0-9;:]*[A-Za-z] to cover the standard set of DEC-private intermediate characters."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/cmdlog-failure-map.mjs",
+      "line": 2,
+      "title": "mapFailure returns spurious message for in-flight records",
+      "problem": "mapFailure checks exit_code === 0 to return early; when exit_code is null (record still open) that check is false and the function continues. If raw_output is empty it returns 'Command exited with code null and produced no output.'; if partial output matches a network or not-found pattern it returns a spurious failure message.",
+      "impact": "Every in-flight command rendered while running shows a misleading failure message in the UI (cmdlog-ui.js:25) and may include it in the copy-all text (cmdlog-ui.js:47), confusing users before the command finishes.",
+      "recommendation": "Add a null-guard at the top of mapFailure: if (exit_code === null) return ''; and guard both call sites in cmdlog-ui.js before invoking mapFailure on a record with null exit_code."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/cmdlog-ui.js",
+      "line": 20,
+      "title": "In-flight records render 'exit null · 0.0s'",
+      "problem": "meta.textContent = `exit ${r.exit_code} · ${(r.duration_ms / 1000).toFixed(1)}s` runs unconditionally; when a command is still running exit_code is null and duration_ms is null, producing the string 'exit null · 0.0s'.",
+      "impact": "Every open command entry displays a misleading completion status while still running; on a live build the panel shows false data throughout the command's lifetime.",
+      "recommendation": "Guard the meta text: meta.textContent = r.exit_code != null ? `exit ${r.exit_code} · ${(r.duration_ms/1000).toFixed(1)}s` : 'running…';"
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/cmdlog-ui.js",
+      "line": 36,
+      "title": "No tests for initCmdLog DOM wiring",
+      "problem": "initCmdLog() has no test coverage; it removes the hidden class, injects the copy button, and wires the toggle listener. Any regression in DOM element IDs, class names, or wiring logic is invisible to the test suite.",
+      "impact": "If initCmdLog fails silently (wrong element ID, thrown error, missed classList call), the entire command-log panel stays hidden and no records appear at runtime; cmdlog-failure-map.test.mjs and all bridge tests continue to pass regardless.",
+      "recommendation": "Add ui/test/cmdlog-ui.test.mjs using the DOM-stub pattern from steps-ui.test.mjs; minimally assert that initCmdLog() removes 'hidden' from #command-log-footer and appends a button with id='cmdlog-copy-all' to summary."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/cmdlog-ui.js",
+      "line": 45,
+      "title": "Copy-all click handler integration untested",
+      "problem": "The copy-all click handler composes text from _records via mapFailure and calls navigator.clipboard.writeText; no test exercises this path: if mapFailure(r) were replaced by mapFailure(r.id) or the join separator changed, the bug would be undetectable.",
+      "impact": "Regressions in the copy-all composition (wrong field, wrong separator, missing filter) ship silently; cmdlog-failure-map.test.mjs calls mapFailure directly and cannot catch integration errors in the click handler.",
+      "recommendation": "In ui/test/cmdlog-ui.test.mjs, stub cmdlog.list, call _renderRecords, simulate a click on #cmdlog-copy-all, and assert that navigator.clipboard.writeText received the expected formatted string."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/cmdlog-ui.js",
+      "line": 50,
+      "title": "Clipboard write failure silently discarded",
+      "problem": "Neither navigator.clipboard.writeText(text) (line 50) nor the Tauri fallback writeText (line 52) has a .catch() handler; promise rejections (permission denied, API unavailable) are swallowed with no user feedback.",
+      "impact": "On clipboard permission denial or API failure the user sees no error; the copy button appears to work but nothing is placed on the clipboard.",
+      "recommendation": "Attach a .catch() to both branches, e.g. navigator.clipboard.writeText(text).catch(() => { /* show toast or console.warn */ }); and same for the Tauri fallback path."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/cmdlog-ui.js",
+      "line": 52,
+      "title": "Tauri clipboard fallback uses wrong plugin namespace",
+      "problem": "window.__TAURI__.clipboardManager.writeText(text) uses camelCase; the Tauri v2 plugin registers under the hyphenated key window.__TAURI__['clipboard-manager'], so clipboardManager is undefined at runtime.",
+      "impact": "In any context where the secure-context branch does not execute (non-secure context, navigator.clipboard absent), the fallback throws TypeError: Cannot read properties of undefined, and copy silently fails with an unhandled rejection.",
+      "recommendation": "Replace with window.__TAURI__['clipboard-manager'].writeText(text) or import writeText from the plugin's JS module (@tauri-apps/plugin-clipboard-manager)."
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/runner-bridge.js",
+      "line": 62,
+      "title": "runStream appends raw text without ANSI stripping",
+      "problem": "runStream appends p.text from engine:cmd-line events directly to cmdlog with no call to stripAnsi; the PTY path applies stripAnsi but the runStream path does not. Reachability uncertain: depends on whether the Rust run_stream emits ANSI-coloured output.",
+      "impact": "If a command run via runStream emits ANSI colour codes, those sequences land in raw_output, potentially corrupting mapFailure pattern matches and surfacing escape codes verbatim in the copy-all text.",
+      "recommendation": "Import and apply stripAnsi to p.text before appending: if (logId) pendingAppends.push(cmdlog.append(logId, stripAnsi(p.text)).catch(console.warn));"
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/runner-bridge.js",
+      "line": 202,
+      "title": "PTY data appends not awaited before cmdlog.close",
+      "problem": "In spawnPty, cmdlog.append calls inside the engine:pty-data listener are fire-and-forget (not tracked in an array); the finally block calls cmdlog.close before all in-flight appends have resolved.",
+      "impact": "The Rust append function rejects calls on an already-closed record; tail output from the final PTY data events races with close and is silently dropped when close wins, producing truncated raw_output for any command whose final output arrives after process exit.",
+      "recommendation": "Mirror the pendingAppends pattern already used in runStream: push each cmdlog.append(...) promise into an array inside the pty-data listener, and await Promise.all(pendingAppends) in the finally block before calling cmdlog.close."
+    },
+    {
+      "id": "CR-012",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Bare ticket-key commit prefix missing type",
+      "problem": "Commits 'epmcdme-15231: add planning artifacts' and 'epmcdme-15230: add planning artifacts' use a bare Jira key as the prefix; git-workflow.md requires a recognized type token (feat|fix|docs|test|chore|refactor) as the first segment.",
+      "impact": "These commits do not conform to the project's documented commit-format standard, which is blocking; automated tooling that parses commit messages (changelog, release notes, CI gates) may reject or misclassify them.",
+      "recommendation": "Reword to 'chore: add planning artifacts for epmcdme-15231' (and similarly for epmcdme-15230)."
+    },
+    {
+      "id": "CR-013",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit scope syntax prohibited by git-workflow guide",
+      "problem": "Four commits use 'feat(EPMCDME-15232): <description>' scope syntax, which git-workflow.md explicitly marks as anti-pattern, preferring 'feat: <description>' with no scope.",
+      "impact": "Non-conforming commits break the documented commit-format standard, which is listed as blocking in the standards audit; 4 of 16 commits in the branch do not conform.",
+      "recommendation": "Reword to drop the scope, e.g. 'feat: add cmdlog-ui rendering module and wire into boot' (and similarly for the three other scoped commits)."
+    }
+  ]
+}

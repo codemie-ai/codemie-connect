@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-14574-codemie-proxy-connections-ui",
+  "head": "61b289d45010eaec2894e7b8fb0fdda8e5ee858c",
+  "runner": "npm+cargo",
+  "started_at": "2026-09-24T14:03:00Z",
+  "completed_at": "2026-09-24T14:05:05Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 947,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3002,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 874,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "151 tests passed, 0 failed (ui/ files changed so this gate was required, not skipped)"
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 26183,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "106 tests passed across lib, bin and bundle_resources integration suite, 0 failed"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 86000,
+      "command": "./build-installer.sh",
+      "exit_code": 0,
+      "notes": "src-tauri/src/commands/connectors.rs added 272 lines of new Rust logic, so this was not a logic-only change eligible for the guide's build-skip; full staged build ran. Done. All assertions passed."
+    }
+  ],
+  "failures": {}
+}

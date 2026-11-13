@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "task": "Wrap five JS command-execution paths in runner-bridge.js and renderer.js with cmdlog store instrumentation, streaming PTY TextDecoder decode, ANSI stripping, and node:test coverage.",
+  "generated": "2026-09-24T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Four components touched: runner-bridge.js (wrapping 5 paths: runStream, runCapture, runFreshEnv, spawnPty, runSelfUpdate), renderer.js (re-pointing runUpdateCli from direct invoke to bridge.updater.runSelfUpdate), a new ansi-strip utility following the app-updater-utils.mjs precedent, and a new test file. runner-bridge.js is the core shared bridge for all command execution in the app; wrapping it affects every caller (runSmoke, startSignIn, runAction, runUpdateCli). Red flag: touches core shared utilities, bumped from M(3) to L(4)."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Two novel implementation paths with no codebase precedent: (1) streaming TextDecoder({ stream: true }) per spawnPty invocation — the existing base64/PTY path in terminal.js feeds raw bytes to xterm.js, not decoded text, so this pattern does not transfer; (2) ANSI escape sequence stripper that must correctly handle sequences split across engine:pty-data chunk boundaries after TextDecoder decode — a stateless regex applied per-chunk will corrupt split sequences, requiring a stateful approach or a regex tolerant of incomplete escapes at end-of-string. Nearest test precedent (pty-bridge.test.mjs) covers id-filtering and CR-005 cleanup but has no template for chunk-boundary ANSI stripping, triggering the edge-case auto-bump from M(3) to L(4). Streaming PTY TextDecoder decode is a real-time/streaming requirement, triggering the streaming red flag from L(4) to XL(5). Calibration note: M anchor EPMCDME-10202 scored Technical Risk S(2) for a purely pattern-following task; this task's streaming+chunk-boundary novelty justifies the higher score, while lower Affected Layers (S=2) keeps total within M band."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk auto-bumped M(3) → L(4): acceptance criteria enumerate chunk-boundary ANSI stripping and per-invocation TextDecoder edge cases; no existing test template in pty-bridge.test.mjs covers these defensive patterns.",
+    "Technical Risk bumped L(4) → XL(5): streaming PTY TextDecoder decode is a real-time/streaming requirement.",
+    "Component Scope bumped M(3) → L(4): runner-bridge.js is a core shared utility; wrapping it affects all command-execution callers across the app."
+  ],
+  "split_recommendation": null
+}

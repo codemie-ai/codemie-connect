@@ -1,0 +1,133 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createProfileListController } from '../profile-list-controller.js';
+
+const P = (name, active = false) => ({ name, provider: 'p', model: 'm', active });
+
+function fakeBridge({ lists, replies = {} }) {
+  const calls = [];
+  let reads = 0;
+  const reply = (k) => async (...a) => {
+    calls.push([k, ...a]);
+    return replies[k] ?? { code: 0, stdout: 'ok', stderr: '' };
+  };
+  return {
+    calls,
+    codemieConfig: { listProfiles: async () => { calls.push(['list']); return lists[Math.min(reads++, lists.length - 1)]; } },
+    profile: { switch: reply('switch'), rename: reply('rename'), delete: reply('delete') },
+  };
+}
+
+test('switch calls the bridge once, re-reads, and takes state from the re-read, not the reply', async () => {
+  const bridge = fakeBridge({
+    lists: [[P('a', true), P('b')], [P('a'), P('b', true)]],
+    replies: { switch: { code: 0, stdout: 'x', stderr: '' } },
+  });
+  let changed = 0;
+  const c = createProfileListController({ bridge, onChanged: () => { changed++; } });
+  await c.load();
+  await c.switchTo('b');
+  assert.deepEqual(bridge.calls.map((x) => x[0]), ['list', 'switch', 'list']);
+  assert.equal(c.state.profiles.find((p) => p.active).name, 'b');
+  assert.equal(changed, 1);
+  assert.equal(c.state.busy, false);
+});
+
+test('a failed rename keeps the list and shows the last non-empty line of the CLI message', async () => {
+  const list = [P('a', true), P('b')];
+  const bridge = fakeBridge({
+    lists: [list, list],
+    replies: { rename: { code: 1, stdout: '', stderr: 'starting\nCould not write the config\n\n' } },
+  });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  await c.rename('a', 'c');
+  assert.deepEqual(c.state.profiles, list);
+  assert.equal(c.state.failure.message, 'Could not write the config');
+  assert.deepEqual(bridge.calls.filter((x) => x[0] === 'rename')[0], ['rename', 'a', 'c']);
+});
+
+test('remove calls bridge.profile.delete exactly once and names the new active profile', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')], [P('b', true)]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  await c.remove('a');
+  assert.equal(bridge.calls.filter((x) => x[0] === 'delete').length, 1);
+  assert.equal(c.state.notice, 'Active profile now: b');
+  assert.equal(c.state.failure, null);
+});
+
+test('deleting the last profile leaves no notice', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true)], []] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  await c.remove('a');
+  assert.deepEqual(c.state.profiles, []);
+  assert.equal(c.state.notice, null);
+});
+
+test('a second action while busy is ignored', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  const first = c.switchTo('b');
+  const second = c.remove('a');
+  await Promise.all([first, second]);
+  assert.equal(bridge.calls.filter((x) => x[0] === 'delete').length, 0);
+  assert.equal(bridge.calls.filter((x) => x[0] === 'switch').length, 1);
+});
+
+test('subscribers hear about busy and idle states', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true)]] });
+  const c = createProfileListController({ bridge });
+  const seen = [];
+  c.subscribe((s) => seen.push(s.busy));
+  await c.switchTo('a');
+  assert.deepEqual(seen, [true, false]);
+});
+
+test('renaming to a name the list already has runs no command and says the name is taken', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  await c.rename('a', 'a');
+  assert.equal(c.state.failure, null, 'saving an unchanged name is not a rename and not an error');
+  await c.rename('a', 'b');
+  assert.deepEqual(bridge.calls.map((x) => x[0]), ['list']);
+  assert.equal(c.state.failure.message, 'A profile named "b" already exists.');
+});
+
+test('clearMessages drops the last failure and notice, so a later visit starts clean', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  await c.rename('a', 'b');
+  assert.ok(c.state.failure);
+  c.clearMessages();
+  assert.equal(c.state.failure, null);
+  assert.equal(c.state.notice, null);
+});
+
+test('while an action runs, state.pending names the row and what it will show', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')], [P('a', true), P('z')]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  const seen = [];
+  c.subscribe((s) => seen.push(s.pending && { ...s.pending }));
+  await c.rename('b', 'z');
+  assert.deepEqual(seen, [{ name: 'b', label: 'z', text: 'Renaming…' }, null]);
+  seen.length = 0;
+  await c.switchTo('z');
+  assert.deepEqual(seen[0], { name: 'z', label: 'z', text: 'Switching…' });
+  seen.length = 0;
+  await c.remove('z');
+  assert.deepEqual(seen[0], { name: 'z', label: 'z', text: 'Deleting…' });
+});
+
+test('deleting a profile that was not active names no new active profile', async () => {
+  const bridge = fakeBridge({ lists: [[P('a', true), P('b')], [P('a', true)]] });
+  const c = createProfileListController({ bridge });
+  await c.load();
+  await c.remove('b');
+  assert.equal(c.state.notice, null);
+});

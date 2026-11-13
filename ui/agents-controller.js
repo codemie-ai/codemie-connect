@@ -12,7 +12,7 @@
 import { parseAgentList } from './agents-parse.js';
 import { parseUpdateStatus } from './agents-update-parse.js';
 import { joinUpdateStatus } from './agents-join.js';
-import { renderAgents, showLoading, showRunError } from './agents-ui.js';
+import { renderAgents, renderPane, setSelectedRow, showLoading, showRunError } from './agents-ui.js';
 
 // Any of these substrings in an action's accumulated streamed text means the
 // failure was a lack of network access, not something the CLI's own error
@@ -29,6 +29,8 @@ const SAFE_COMMAND = /^[A-Za-z0-9._-]+$/;
 // it before the row shows it.
 const ERROR_LINE = /^\s*[✗✖×]\s|^\s*(Error|Failed)\b/i;
 const ERROR_GLYPH = /^\s*[✗✖×]\s*/;
+// What the details say between the CLI finishing and the list being read again.
+const CHECKING = { Installing: 'Checking it installed', Updating: 'Checking the update', Removing: 'Checking it was removed' };
 const RESULT_LINE = /^\s*[✔✓⚠]\s*/;
 
 export function createAgentsController({ container, runCapture, runStream, stepsUi, onFailure, onResult, getPlatform } = {}) {
@@ -49,6 +51,34 @@ export function createAgentsController({ container, runCapture, runStream, steps
   // command -> the CLI's result line after an Update ("already up to date",
   // "could not check"), which otherwise exits 0 and leaves no trace on the row.
   const rowNotes = new Map();
+  // The agent whose detail pane is open (its command), and the CLI's latest
+  // line per agent while an action runs. Both live here, not in the DOM, so the
+  // full render load() ends with keeps them.
+  let selected = null;
+  const progress = new Map();
+  // command -> what its running action is doing: 'Installing' and the like
+  // while the CLI runs, then a CHECKING line while the list is read again.
+  const working = new Map();
+  const handlers = { stepsUi, onInstall: (a, o) => onInstall(a, o), onUpdate: (a) => onUpdate(a), onRemove: (a) => onRemove(a), onSelect: (c) => select(c) };
+
+  // Progress and selection redraw the details alone. renderAgents would rebuild
+  // the step list and wipe the running row's spinner, ACTIVE badge and disabled
+  // buttons, so only load() calls it.
+  function redrawPane() {
+    const agent = lastAgents?.find((a) => a.command === selected);
+    renderPane(container, agent, { progress: progress.get(selected), working: working.get(selected) });
+  }
+
+  // The details open under a row like a dropdown: a second click closes them.
+  function select(command) {
+    open(selected === command ? null : command);
+  }
+
+  function open(command) {
+    selected = command;
+    setSelectedRow(container, command);
+    redrawPane();
+  }
 
   // silent: true is what a post-action refresh uses — it skips showLoading so
   // the container is never blanked outside the very first load.
@@ -97,7 +127,9 @@ export function createAgentsController({ container, runCapture, runStream, steps
       });
 
       lastAgents = agents;
-      renderAgents(container, { agents }, { stepsUi, onInstall, onUpdate, onRemove });
+      const progressNow = Object.fromEntries(progress);
+      renderAgents(container, { agents, selected, progress: progressNow }, handlers);
+      if (inFlight.size) redrawPane();
       onResult?.(agents);
     } catch (e) {
       showRunError(container, String((e && e.message) || e), () => load({ silent: false }));
@@ -140,10 +172,14 @@ export function createAgentsController({ container, runCapture, runStream, steps
       return { ok: false, message };
     }
     inFlight.add(agent.command);
+    working.set(agent.command, verb);
     rowErrors.delete(agent.command);
     rowNotes.delete(agent.command);
     stepsUi.setStatus(agent.command, 'ACTIVE');
     stepsUi.startSpinner(agent.command);
+    // The progress line lives in the details, so the agent being worked on
+    // opens them.
+    open(agent.command);
     const lines = [];
     let message = null;
     try {
@@ -155,13 +191,21 @@ export function createAgentsController({ container, runCapture, runStream, steps
         if (tag === 'prompt') return onLine?.(text, tag);
         lines.push(text);
         // The CLI's progress lines start with a "- " spinner frame.
-        stepsUi.setSubtitle(agent.command, text.replace(/^\s*-\s+/, ''));
+        progress.set(agent.command, text.replace(/^\s*-\s+/, ''));
+        if (agent.command === selected) redrawPane();
         onLine?.(text, tag);
       });
       if (code !== 0) {
         message = messageFor(lines, verb);
         rowErrors.set(agent.command, message);
-      } else if (note) {
+      } else {
+        // The CLI is done, but the list is read again before the row can say
+        // what happened, and `update --check` asks npm, which takes seconds.
+        working.set(agent.command, CHECKING[verb]);
+        progress.delete(agent.command);
+        if (agent.command === selected) redrawPane();
+      }
+      if (code === 0 && note) {
         const result = [...lines].reverse().find((l) => RESULT_LINE.test(l));
         if (result) rowNotes.set(agent.command, result.replace(RESULT_LINE, '').trim());
       }
@@ -171,6 +215,8 @@ export function createAgentsController({ container, runCapture, runStream, steps
       rowErrors.set(agent.command, message);
     } finally {
       inFlight.delete(agent.command);
+      progress.delete(agent.command);
+      working.delete(agent.command);
       await load({ silent: true });
       // Remove succeeded but the tool is still listed: another copy lives
       // outside CodeMie. Say where, instead of a row that looks unchanged.
@@ -216,6 +262,7 @@ export function createAgentsController({ container, runCapture, runStream, steps
     run: () => load({ silent: false }),
     refresh: () => load({ silent: true }),
     getLastAgents: () => lastAgents,
+    select,
     // Home's checklist installs through the same action the screen's own
     // button runs, so there is one install path and one set of failure
     // messages, not a second copy of the command.

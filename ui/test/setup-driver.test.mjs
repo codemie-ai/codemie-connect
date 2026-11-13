@@ -2127,3 +2127,166 @@ test('a chunk showing an earlier question does not add its lines to the list bei
   assert.equal(fake.writes[fake.writes.length - 1], '\x1b[B'.repeat(8) + '\r', 'eight arrows for the ninth profile, no more');
   assert.deepEqual(result, { profileName: 'profile8', updated: true });
 });
+
+// EPMCDME-14656: replay. Run against the update walk recorded from the real CLI
+// on 2026-09-23 (windows-update-profile): four prompts the user answers --
+// the profile to update, the provider, the organization URL, the project.
+async function recordedRun({ answers = [], replay } = {}) {
+  const fake = makeFakePty();
+  const t = makeFakeTerminal()();
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  const frames = fixture('windows-update-profile');
+  const asked = [];
+  const replayed = [];
+  const answered = [];
+  t.__setLines(pad(frames[0]));
+  const p = startSetup({
+    onPrompt: async (prompt) => { asked.push(prompt.id); return answers.shift(); },
+    onReplayed: (prompt, answer) => { replayed.push([prompt.id, answer]); },
+    onAnswer: (a) => { answered.push(a); },
+    replay,
+  }, { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => t });
+  fake.feedRaw('AAAA');
+  await flushMicrotasks();
+  for (const frame of frames.slice(1)) {
+    t.__setLines(pad(frame));
+    fake.feedRaw('AAAA');
+    await flushMicrotasks();
+  }
+  fake.exit(0);
+  const result = await p.catch((e) => ({ rejected: e }));
+  return { asked, replayed, answered, writes: fake.writes, result };
+}
+
+test('replay: the answers one run records walk a new run through the same prompts without asking the user', async () => {
+  const first = await recordedRun({ answers: [1, 0, '', 0] });
+  assert.deepEqual(first.answered, [
+    { id: 'updateProfile', kind: 'list', answer: 1, label: 'my enthropic acc' },
+    { id: 'provider', kind: 'list', answer: 0, label: first.answered[1].label },
+    { id: 'codemieUrl', kind: 'input', answer: '' },
+    { id: 'codemieProject', kind: 'list', answer: 0, label: first.answered[3].label },
+  ], 'every answer, in order, with the chosen option for a list');
+
+  const second = await recordedRun({ replay: first.answered });
+  assert.deepEqual(second.asked, [], 'onPrompt is never called');
+  assert.deepEqual(second.replayed.map(([id]) => id), ['updateProfile', 'provider', 'codemieUrl', 'codemieProject']);
+  assert.deepEqual(second.writes, first.writes, 'the CLI receives exactly what it received the first time');
+  assert.deepEqual(second.result, first.result);
+  assert.deepEqual(second.answered, first.answered, 'a replayed run records the same list, so it can be replayed again');
+});
+
+test('replay: a partial replay hands control back at the first prompt it does not cover', async () => {
+  const first = await recordedRun({ answers: [1, 0, '', 0] });
+  const second = await recordedRun({ replay: first.answered.slice(0, 2), answers: ['', 0] });
+  assert.deepEqual(second.asked, ['codemieUrl', 'codemieProject'], 'asked from the URL on, never before it');
+  assert.deepEqual(second.writes, first.writes);
+});
+
+test('replay: an entry for a different prompt ends the replay, and every prompt from there goes to onPrompt', async () => {
+  const second = await recordedRun({
+    replay: [{ id: 'provider', answer: 0 }, { id: 'codemieUrl', answer: '' }],
+    answers: [1, 0, '', 0],
+  });
+  assert.deepEqual(second.asked, ['updateProfile', 'provider', 'codemieUrl', 'codemieProject'], 'nothing replayed out of order');
+  assert.deepEqual(second.replayed, []);
+});
+
+test('replay: a list entry is answered by its label, and a label the list no longer has is asked', async () => {
+  const first = await recordedRun({ answers: [1, 0, '', 0] });
+  const byLabel = await recordedRun({ replay: [{ id: 'updateProfile', answer: 0, label: 'my enthropic acc' }], answers: [0, '', 0] });
+  assert.deepEqual(byLabel.replayed, [['updateProfile', 1]], 'the label wins over a stale index');
+  assert.deepEqual(byLabel.writes, first.writes);
+
+  const gone = await recordedRun({ replay: [{ id: 'updateProfile', answer: 1, label: 'deleted meanwhile' }], answers: [1, 0, '', 0] });
+  assert.deepEqual(gone.asked, ['updateProfile', 'provider', 'codemieUrl', 'codemieProject']);
+});
+
+test('replay after cancelSetup: the old child is killed and gone before the new one spawns, and the new run resumes past the replayed answer', async () => {
+  const URL_Q = '? CodeMie organization URL: (https://codemie.lab.epam.com) ';
+  const NAME = '? Enter a name for this profile: (codemie-sso) ';
+  const pad = (rows) => [...rows, ...Array(30 - rows.length).fill('')];
+  let alive = 0;
+  let maxAlive = 0;
+  const tracked = (fake) => ({
+    spawnPty: (...a) => { alive += 1; maxAlive = Math.max(maxAlive, alive); return fake.spawnPty(...a).finally(() => { alive -= 1; }); },
+  });
+
+  const fake1 = makeFakePty();
+  const t1 = makeFakeTerminal()();
+  const answered = [];
+  t1.__setLines(pad([URL_Q]));
+  const run1 = startSetup({
+    onPrompt: (prompt) => (prompt.id === 'codemieUrl' ? Promise.resolve('https://codemie.lab.epam.com') : new Promise(() => {})),
+    onAnswer: (a) => { answered.push(a); },
+  }, { suspendPtyInput: () => {}, resumePtyInput: () => {}, ...tracked(fake1), input: fake1.input, kill: fake1.kill, Terminal: () => t1 });
+  fake1.feedRaw('AAAA');
+  await new Promise((r) => { setTimeout(r, 0); });
+  t1.__setLines(pad(['? CodeMie organization URL: https://codemie.lab.epam.com', NAME]));
+  fake1.feedRaw('AAAA');
+  await new Promise((r) => { setTimeout(r, 0); }); // the name prompt is open, waiting on the user
+
+  assert.equal(await cancelSetup(), true);
+  await run1.catch(() => {});
+  assert.equal(alive, 0, 'the first child has reported its exit before anything else runs');
+
+  const fake2 = makeFakePty();
+  const t2 = makeFakeTerminal()();
+  const asked = [];
+  t2.__setLines(pad([URL_Q]));
+  const run2 = startSetup({
+    onPrompt: async (prompt) => { asked.push(prompt.id); return 'second'; },
+    replay: answered,
+  }, { suspendPtyInput: () => {}, resumePtyInput: () => {}, ...tracked(fake2), input: fake2.input, kill: fake2.kill, Terminal: () => t2 });
+  fake2.feedRaw('AAAA');
+  await new Promise((r) => { setTimeout(r, 0); });
+  t2.__setLines(pad(['? CodeMie organization URL: https://codemie.lab.epam.com', NAME]));
+  fake2.feedRaw('AAAA');
+  await new Promise((r) => { setTimeout(r, 0); });
+  fake2.exit(0);
+  await run2;
+
+  assert.equal(maxAlive, 1, 'never two `codemie setup` children at once');
+  assert.deepEqual(answered, [{ id: 'codemieUrl', kind: 'input', answer: 'https://codemie.lab.epam.com' }]);
+  assert.deepEqual(fake2.writes, ['https://codemie.lab.epam.com\r', 'second\r'], 'the URL is replayed, the name is asked');
+  assert.deepEqual(asked, ['profileName']);
+});
+
+test('an input answered empty is not asked again when its bare line is the last question after a later answer', async () => {
+  // Seen in the app with LiteLLM (2026-10-01): the optional API key answered
+  // empty leaves its line bare, with nothing after the colon. Once the next
+  // answer erased the model prompt, that bare line was the last question on
+  // screen and was asked a second time, opening a row nothing waited on.
+  const KEY_Q = '? API Key (optional, leave empty if not required): ';
+  const URL_DONE = '? LiteLLM Proxy URL: http://localhost:4000';
+  const MODEL_Q = '? Enter model name manually: ';
+  const frames = [
+    [URL_DONE, KEY_Q],
+    [URL_DONE, KEY_Q], // our empty answer: nothing changes on the line
+    [URL_DONE, KEY_Q, MODEL_Q],
+    [URL_DONE, KEY_Q, `${MODEL_Q}claude-sonnet-4-6`],
+    [URL_DONE, KEY_Q], // the model line erased as the CLI moves on
+    [URL_DONE, KEY_Q, '? Enter a name for this profile: (default) '],
+  ];
+  const { seen, writes } = await replay(frames, ['', 'claude-sonnet-4-6', 'mine']);
+  assert.deepEqual(seen, [
+    'API Key (optional, leave empty if not required):',
+    'Enter model name manually:',
+    'Enter a name for this profile: (default)',
+  ], 'the key is asked once');
+  assert.deepEqual(writes, ['\r', 'claude-sonnet-4-6\r', 'mine\r']);
+});
+
+test('an input answered empty is still asked again when the CLI re-asks it with its default hint', async () => {
+  // A fresh ask carries inquirer's default hint; a line that was answered never
+  // does. So the bare line is the old answer, the hinted one a new question.
+  const URL_EMPTY = '? CodeMie organization URL: ';
+  const frames = [
+    ['? CodeMie organization URL: (https://codemie.lab.epam.com) '],
+    [URL_EMPTY],
+    [URL_EMPTY, '? Enter model name manually: '],
+    [URL_EMPTY, '? Enter model name manually: m'],
+    [URL_EMPTY, '⚠ Could not reach CodeMie', '? CodeMie organization URL: (https://codemie.lab.epam.com) '],
+  ];
+  const { seen } = await replay(frames, ['', 'm', 'https://codemie.lab.epam.com']);
+  assert.equal(seen.length, 3, 'the hinted re-ask reaches the user');
+});

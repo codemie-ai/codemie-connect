@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-24T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 15,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New Rust command module (connectors.rs) registered in lib.rs/mod.rs, plus three new pure JS modules (proxy-parse.js, connections-status.js, connections-render.js) and renderer/runner-bridge wiring — 4+ components across the Tauri IPC boundary and the UI render pipeline." },
+    { "dimension": "file_change_estimate", "reason": "15 files changed (732 insertions), spanning src-tauri/src/commands, ui/, and ui/test — 3+ directories with several new files, matching the L band (8-10 modified/new)." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

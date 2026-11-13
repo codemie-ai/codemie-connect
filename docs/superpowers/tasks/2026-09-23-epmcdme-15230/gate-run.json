@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14512-CodeMie-Desktop--Command-log-(What-CodeMie-ran)",
+  "head": "876c65ff83c8b691516359130e9dbbdea7abc65a",
+  "runner": "custom",
+  "started_at": "2026-09-23T16:59:00Z",
+  "completed_at": "2026-09-23T17:00:41Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 475,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5058,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8052,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "91+2 tests passed including new commands::cmdlog::tests::* (8 cases)"
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3479,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "Guide's Skip-if condition (no UI logic changed) applies to this Rust-only diff; run anyway per caller instruction to confirm nothing broke. 136/136 passed."
+    }
+  ],
+  "failures": {}
+}

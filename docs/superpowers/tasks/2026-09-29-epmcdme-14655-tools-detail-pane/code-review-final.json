@@ -1,0 +1,71 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance did not run (no spec), so confidence is low. renderPane reads slot._children, which exists only on test fakes, so it throws on any selection in the real DOM. 17 candidates were dismissed as noise or handled, and none were deferred.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "fail", "notes": "git-workflow.md documents '<type>: <short description>' with types feat|fix|docs|test|chore|refactor; all 4 subjects in the range use 'EPMCDME-14655 : <subject>' with no type prefix" },
+    { "kind": "code-quality", "status": "na", "notes": "no .ai-run/guides/standards/code-quality.md in the repo and no ref passed; absent standard, none invented" },
+    { "kind": "security", "status": "na", "notes": "no .ai-run/guides/development/security-patterns.md in the repo and no ref passed; ad-hoc check found only innerHTML = '' clears, no eval, spawn or credential logging" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/agents-controller.js",
+      "line": 67,
+      "title": "Busy label shown on the wrong agent's pane",
+      "problem": "redrawPane passes busy: inFlight.size > 0 and action: runningAction for whichever agent is selected, with nothing tying runningAction to the agent that owns it. Selecting agent B while agent A installs labels B's Install button 'Installing…'.",
+      "impact": "The pane tells the user something is installing for an agent nothing is happening to.",
+      "recommendation": "Track the in-flight agent's command and pass action only when it equals the selected agent; keep busy true for all so buttons stay disabled."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "ui/agents-ui.js",
+      "line": 141,
+      "title": "renderPane throws in the real DOM",
+      "problem": "renderPane checks slot._children.length. el() returns a real HTMLElement from document.createElement, which has no _children, so this is a TypeError. Only the test fake DOM defines _children.",
+      "impact": "Selecting any agent, or any renderAgents call with a selection, throws and the detail pane never draws. This is the feature's core deliverable.",
+      "recommendation": "Use `if (slot.childElementCount) pane.appendChild(slot);`, or make the test fake expose childElementCount."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/test/agents-controller.test.mjs",
+      "title": "No end-to-end test of the newer-than-supported state",
+      "problem": "update-check-newer.txt is exercised only by the parser test, and the join and UI tests use hand-built records. No controller test runs the fixture through load and asserts the pane text and actions.",
+      "impact": "If the controller stopped passing the parsed records to the join, or the names diverged, the pane would show 'Installed 2.1.290' and drop the notice while every layer's test still passed.",
+      "recommendation": "Add a controller test using fakeRunCapture with update-check-newer.txt that selects Claude Code and asserts 'Newer than CodeMie supports' and only a Remove button."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/test/agents-ui.test.mjs",
+      "title": "stopPropagation on action buttons is untested",
+      "problem": "The test 'clicking a row selects it, clicking its button does not' only clicks the row. Every button-click test passes a no-op stopPropagation stub that asserts nothing.",
+      "impact": "Removing e?.stopPropagation?.() at agents-ui.js:180 would make every Install/Update/Remove click also select the row and redraw the pane, and no test would fail.",
+      "recommendation": "Click a row action button with an event stub that records stopPropagation, and assert it was called and onSelect was not."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subjects lack the documented type prefix",
+      "problem": "git-workflow.md requires '<type>: <short description>' with a type from feat|fix|docs|test|chore|refactor. Commits 9b5bee9, 172b697, c732a84 and 74592b8 use 'EPMCDME-14655 : ...' with no type.",
+      "impact": "Commit subjects do not match the documented commit format that the workflow gate checks.",
+      "recommendation": "Reword the subjects to the documented form, or update git-workflow.md if the ticket-prefixed style is the intended convention."
+    }
+  ]
+}

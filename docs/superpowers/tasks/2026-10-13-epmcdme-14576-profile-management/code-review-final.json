@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Only the edge-case lens ran (compact profile; acceptance skipped, no spec), so confidence is low. All 8 edge-case candidates were verified against the code and dismissed as noise (list read never rejects, exit code is a non-null i32, stale-load race and detached-slot cases are harmless, remaining ones are cosmetic); 0 deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of this review profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of this review profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of this review profile." }
+  ],
+  "findings": []
+}

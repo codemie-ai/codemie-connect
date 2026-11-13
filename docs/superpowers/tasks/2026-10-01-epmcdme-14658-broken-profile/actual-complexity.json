@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-01T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 11,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New Rust delete_profile command plus Home state derivation, Home view, failure panel, renderer wiring and runner bridge; existing failure-panel and home-state patterns reused." },
+    { "dimension": "technical_risk", "reason": "Destructive profile delete via shell with user-controlled profile name; per-platform quoting (POSIX single quotes, cmd.exe rejection of %/newline) is security-sensitive and needed a hostile-name zsh test; closest pattern (runner capture) does not cover argument quoting." },
+    { "dimension": "file_change_estimate", "reason": "11 files changed per diffstat (7 source, 3 test files, 1 Rust module registration), spanning src-tauri and ui." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk at L: injection-surface work (shell argument quoting) with no existing reusable quoting util"
+  ],
+  "split_recommendation": null
+}

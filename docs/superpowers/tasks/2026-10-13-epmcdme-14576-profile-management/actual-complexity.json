@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 13,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Rust profile commands, config reader, IPC bridge, profile list controller and view, Home view and renderer wiring." },
+    { "dimension": "technical_risk", "reason": "New shell-argument quoting for user-supplied profile names (injection surface) on POSIX and Windows with a rejection table; no prior reusable quoting util, edge-case tests added." },
+    { "dimension": "file_change_estimate", "reason": "13 files changed, 578 insertions, mostly additive; several are new controller, view and test files." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk raised to L: sanitization of shell arguments with no existing reusable util"
+  ],
+  "split_recommendation": null
+}
