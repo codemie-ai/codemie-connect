@@ -16,7 +16,7 @@ import { findProxyConnectError, parseProxyStatusDeep } from './proxy-parse.js';
 import { computeRowStatus } from './connections-status.js';
 import { renderConnectionRows, CONNECTION_APPS } from './connections-render.js';
 import { isBlockedState } from './auth-gate.js';
-import { shouldCheckForAppUpdate } from './app-updater-utils.mjs';
+import { shouldCheckForAppUpdate, updateDidNotFinish, PENDING_UPDATE_KEY } from './app-updater-utils.mjs';
 import { createHealthController } from './health-controller.js';
 import { createAgentsController } from './agents-controller.js';
 import { applyOnboardingNav } from './shell-nav.js';
@@ -873,16 +873,20 @@ async function runUpdateApp() {
 
   const id = `app-update-${Date.now()}`;
   try {
+    // The app exits once the installer starts, so a later installer failure can't be
+    // shown here; the next launch reads this marker and reports it.
+    if (appVersionState.latest) localStorage.setItem(PENDING_UPDATE_KEY, appVersionState.latest);
     await bridge.updater.downloadAndInstall(id, ({ percent }) => {
-      showProgress(`Downloading… ${percent}%`);
+      showProgress(percent >= 100 ? 'Installing and restarting…' : `Downloading… ${percent}%`);
     });
 
-    showProgress('Installer running…');
+    showProgress('Installing and restarting…');
     // The installer window is now visible and running
     // Wait for Tauri's runtime to clean up gracefully before exiting
     await new Promise((resolve) => setTimeout(resolve, 2000));
     await bridge.updater.restartApp();
   } catch (err) {
+    localStorage.removeItem(PENDING_UPDATE_KEY);
     bannerRunBtn.disabled = false;
     bannerRunBtn.textContent = 'Update and restart';
     const banner = document.getElementById('app-update-banner');
@@ -1019,6 +1023,18 @@ async function boot() {
     invoke('get_update_check_interval_ms'),
   ]);
   const lastUpdateCheckKey = `codemie.app.lastUpdateCheck.${appVersion}`;
+
+  const pendingUpdate = localStorage.getItem(PENDING_UPDATE_KEY);
+  localStorage.removeItem(PENDING_UPDATE_KEY);
+  if (updateDidNotFinish(pendingUpdate, appVersion)) {
+    // Re-check now so the Update and restart banner comes back for a retry.
+    localStorage.removeItem(lastUpdateCheckKey);
+    showNotice({
+      title: "The update didn't finish",
+      message: `The update to ${pendingUpdate} did not complete. You are still on ${appVersion}, which keeps working, and your profile, settings and agents are unchanged. Use Update and restart to try again.`,
+    });
+  }
+
   const lastAppCheck = localStorage.getItem(lastUpdateCheckKey);
 
   if (shouldCheckForAppUpdate(lastAppCheck, updateCheckIntervalMs)) {
