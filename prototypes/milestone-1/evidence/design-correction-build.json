@@ -1,0 +1,132 @@
+{
+  "generatedAt": "2026-11-16T20:05:56.105773+00:00",
+  "branch": "feat/milestone-1-workspace",
+  "implementationBaseCommit": "40f1c5b",
+  "scope": "CodeMie design correction; backend unchanged",
+  "reference": {
+    "sourceRepository": "/Users/Vadym_Vlasenko/AI/projects/codemie-ui",
+    "access": "read only; no source changes or tests there",
+    "livePreview": "https://codemie-preview.lab.epam.com/",
+    "method": "Chrome extension after refresh; both codemieLight and codemieDark; supplied user screenshots",
+    "originalLightPreferenceRestored": true
+  },
+  "designContracts": {
+    "uiFont": "GeistMono",
+    "readingFont": "Geist",
+    "navigationWidthPx": 196,
+    "navigationLinkHeightPx": 36,
+    "settingsSidebarWidthPx": 308,
+    "compactSettingsSidebarWidthPx": 210,
+    "toolbarHeightPx": 56,
+    "pageTitle": "24px / 32px, weight 600",
+    "primaryButton": "28px; 12px semibold; 8px radius",
+    "primaryDark": {
+      "fill": "#20222E",
+      "outline": [
+        "#993EC7",
+        "#5677C8"
+      ],
+      "text": "#F2F0EF"
+    },
+    "primaryLight": {
+      "fill": "#D5E7FC",
+      "outline": "#007AFF",
+      "text": "#007AFF"
+    },
+    "gradientDark": "gradient.png, 450px auto, bottom-left; black to 15% black navigation overlay",
+    "gradientLight": "gradient-light.png, 600px auto, bottom-left; light translucent secondary sidebar; content-gradient.png on main canvas"
+  },
+  "verification": {
+    "javascript": {
+      "passed": 529,
+      "skippedWindowsOnly": 3,
+      "failed": 0
+    },
+    "browser": {
+      "checks": 150,
+      "errors": 0,
+      "bridge": "explicit mocked IPC; styles rendered from production frontend",
+      "scope": "both themes, 1000/1360/1600 widths, all Settings tabs at 1000x700, computed visual contracts, state/draft/note/schedule regressions, full-height Settings columns and background-refresh scroll preservation"
+    },
+    "native": {
+      "finalPackagedAppOpened": true,
+      "lightVisuallyInspected": "PASS",
+      "darkVisuallyInspected": "PASS",
+      "fullHeightSettingsNoBottomBand": "PASS",
+      "existingInstallationScreenMounted": "PASS",
+      "originalDarkPreferenceRestored": true,
+      "leftOpen": "Settings / Appearance",
+      "credentialPromptsApproved": false,
+      "microsoftWritesPerformed": false
+    },
+    "build": {
+      "command": "./build-installer.sh --skip-stage",
+      "exitCode": 0,
+      "resourceAndShimAssertions": "Done. All assertions passed."
+    },
+    "rust": "not rerun for this UI-only correction; prior implementation results remain in implementation-build.json",
+    "gitDiffCheck": "PASS"
+  },
+  "uiSourceFingerprint": {
+    "files": 129,
+    "sha256": "b1397ee0dfe5edce732c0387501103c3bad3c97601d68981d8f6d02c38726390",
+    "method": "sorted relative paths and file sha256 bytes"
+  },
+  "originalPlatformAssets": [
+    {
+      "name": "content-gradient.png",
+      "sha256": "f80b5de122ae3596b572d959a8fded3294949fa54b7f9ca129a1026e915e3372",
+      "matchesReadOnlyReference": true
+    },
+    {
+      "name": "dark-theme-card.svg",
+      "sha256": "a720f4e1b9413c77a4719c66bc87776b94080c36e86caf5361c1fe68e8878e22",
+      "matchesReadOnlyReference": true
+    },
+    {
+      "name": "gradient-light.png",
+      "sha256": "bc7e8153ff8fe5055cd7c96d1bf4b5cc59e9deb4e49a82e9e7448d7358871191",
+      "matchesReadOnlyReference": true
+    },
+    {
+      "name": "gradient.png",
+      "sha256": "a809e5b01c641bffc60da047f3b259bc56de7b93993f46cd291d1f8c648cda30",
+      "matchesReadOnlyReference": true
+    },
+    {
+      "name": "light-theme-card.svg",
+      "sha256": "c6208f3bd5675c8cdd68fae3c33877b682303fbe1bd403192a2ae518d8b5fac0",
+      "matchesReadOnlyReference": true
+    },
+    {
+      "name": "logo-full-dark.svg",
+      "sha256": "059d4cf4812e20659e0d846ce1ee7be9cfe3212ffd6e6a9fcdc6264c19acef58",
+      "matchesReadOnlyReference": true
+    },
+    {
+      "name": "logo-full-light.svg",
+      "sha256": "e9ab3f7a111093702a019b483ae9241e8e1bb887f8512f4fdb61ef02e9c4ee25",
+      "matchesReadOnlyReference": true
+    }
+  ],
+  "buildArtifacts": [
+    {
+      "path": "src-tauri/target/release/bundle/macos/CodeMie Connect.app/Contents/MacOS/app",
+      "bytes": 7389184,
+      "sha256": "ddb52a8a603fead5766e30236e0e1056dc5ce75e4379d4600b127b3848d867a3"
+    },
+    {
+      "path": "src-tauri/target/release/bundle/dmg/CodeMie Connect_2.1.1_aarch64.dmg",
+      "bytes": 4310294,
+      "sha256": "8862765d89843b6a4b03167fabb947292c3b4f16172a0d5f823a6b8b5ad893d3"
+    }
+  ],
+  "retainedScreenshots": {
+    "data": "synthetic QA fixtures only",
+    "paths": [
+      "output/playwright/design-correction/settings-appearance-light.png",
+      "output/playwright/design-correction/settings-appearance-dark.png"
+    ]
+  },
+  "remainingQualification": "Original Windows, live-write, full notification/AI, upgrade/performance/soak/distribution gates are unchanged; see IMPLEMENTATION-VALIDATION.md"
+}

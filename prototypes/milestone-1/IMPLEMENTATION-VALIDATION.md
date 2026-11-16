@@ -2,6 +2,8 @@
 
 **Branch:** `feat/milestone-1-workspace`. **Qualification:** macOS first, with remaining connected/platform gates explicit. This report does not declare the complete 82-group release bar passed.
 
+The subsequent [CodeMie visual correction](DESIGN-CORRECTION.md) updates the frontend styling and package. Its current package hashes and native check are recorded separately in `evidence/design-correction-build.json`; the original implementation/Graph ledger below remains historical evidence.
+
 ## Implemented scope
 
 | Increment | Delivered behavior | Verification boundary |

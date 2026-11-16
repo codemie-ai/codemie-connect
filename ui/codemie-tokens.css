@@ -11,8 +11,9 @@
    ============================================================ */
 :root {
   /* --- Typography --- */
-  --font-sans: 'Inter', 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-  --font-mono: 'JetBrains Mono', 'GeistMono', 'Fira Code', 'Courier New', monospace;
+  --font-sans: 'Geist', Arial, Helvetica, sans-serif;
+  --font-mono: 'GeistMono', monospace;
+  --font-ui: var(--font-mono);
 
   --text-xs-1:  0.625rem;  /* 10px  */
   --text-xs:    0.75rem;   /* 12px  */
@@ -83,6 +84,7 @@
 :root.dark {
 
   /* --- Surface / Background --- */
+  --color-bg-header:         #1C1C1C;
   --color-bg-page:           #1A1A1A;   /* Main page background         */
   --color-bg-sidebar:        #151515;   /* Sidebar & card backgrounds   */
   --color-bg-card:           #151515;   /* Card surface                 */
@@ -189,6 +191,9 @@
   --status-advanced-border:  #2D1B3D;
 
   /* --- Gradients --- */
+  --gradient-primary-outline: linear-gradient(90deg, #993EC7, #5677C8);
+  --color-primary-action-text: #F2F0EF;
+  --color-nav-active-text:    #FFFFFF;
   --gradient-primary-btn:    linear-gradient(90deg, #672D92, #547CCC);
   --gradient-brand:          linear-gradient(152deg, #0078C2, #0047FF, #8453D2);
   --gradient-magical:        linear-gradient(90deg, #672D92, #5677C8);
@@ -207,6 +212,7 @@
    Apply class="light" to <html> or <body>
    ============================================================ */
 .light {
+  --color-bg-header:         #FFFFFF;
   --color-bg-page:           #F9F9F9;
   --color-bg-sidebar:        #FBFBFB;
   --color-bg-card:           #FFFFFF;
@@ -307,6 +313,9 @@
   --status-advanced-bg:      #F3E8FF;
   --status-advanced-border:  #C084FC;
 
+  --gradient-primary-outline: linear-gradient(#007AFF, #007AFF);
+  --color-primary-action-text: #007AFF;
+  --color-nav-active-text:    #007AFF;
   --gradient-primary-btn:    linear-gradient(90deg, #3676f7, #cc22f2);
   --gradient-magical:        linear-gradient(90deg, #3676f7, #cc22f2);
   --gradient-switch-off:     linear-gradient(to right, #fff, #fff);

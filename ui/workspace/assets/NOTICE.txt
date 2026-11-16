@@ -1,0 +1,9 @@
+CodeMie platform design assets
+Copyright 2026 EPAM Systems, Inc.
+Licensed under the Apache License, Version 2.0; see the repository LICENSE.
+
+Copied unmodified from codemie-ui/src/assets/images/:
+gradient.png, gradient-light.png, content-gradient.png, logo-full-dark.svg,
+logo-full-light.svg, dark-theme-card.svg, light-theme-card.svg.
+
+The CodeMie UI repository is a read-only design reference.

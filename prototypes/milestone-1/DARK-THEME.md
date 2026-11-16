@@ -16,7 +16,7 @@ The previous prototype used `#C5A9FA` as the general accent. In the real `codemi
 | Success / error / warning | #259F4C / #FE3B4C / #F5A534 |
 | Chart data | #06B6D4 and other semantic series colors |
 
-The correction is applied only to `../assets/codemie.css`. Light mode is unchanged. Main app implementation waits for approval. In Task 1, map these roles into the existing `ui/codemie-tokens.css` design system and bundle the local Geist fonts; do not copy the prototype's accumulated CSS overrides into production.
+The prototype correction is applied to `../assets/codemie.css`. The real app now maps these roles through `ui/codemie-tokens.css`, bundles the original Geist fonts, and uses the original theme-specific platform logo and gradient assets. The subsequent [visual correction](DESIGN-CORRECTION.md) documents the source and browser comparison in both themes.
 
 The app title scale can vary by surface: the live Profile h1 is 18 px, while the earlier inspected main catalogue pages used 24 px. Choose 24 px for workspace page titles and 18 px for Settings subsections; both use GeistMono. Use Geist for longer reading.
 

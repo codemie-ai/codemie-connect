@@ -42,11 +42,35 @@ async page => {
     await page.getByRole('button',{name:'Settings',exact:true}).click();
     await page.getByRole('button',{name:'Appearance',exact:true}).click();
     await page.locator(`[data-action="theme"][data-theme="${theme}"]`).click();
+    await page.setViewportSize({width:1360,height:900});
+    await page.getByRole('button',{name:'Today',exact:true}).first().click();
+    await page.evaluate(()=>document.fonts.ready);
+    const styles=await page.evaluate(()=>{
+      const css=selector=>getComputedStyle(document.querySelector(selector));
+      return {uiFont:css('.ws-nav button').fontFamily,readingFont:css('.ws-card p').fontFamily,
+        sidebar:document.querySelector('.ws-sidebar').getBoundingClientRect().width,
+        toolbar:document.querySelector('.ws-topbar').getBoundingClientRect().height,
+        titleSize:css('.ws-page h1').fontSize,titleLine:css('.ws-page h1').lineHeight,
+        page:css('#workspace-app').backgroundColor,nav:css('.ws-sidebar').backgroundImage,railGradient:getComputedStyle(document.querySelector('#workspace-app'),'::before').backgroundImage,contentGradient:css('.ws-main').backgroundImage,
+        selected:css('.ws-nav button[aria-current=page]').backgroundColor,
+        actionText:css('.ws-btn-primary').color,actionOutline:css('.ws-btn-primary').backgroundImage};
+    });
+    await check(styles.uiFont.includes('GeistMono'),'CodeMie UI typography '+theme);
+    await check(styles.readingFont.includes('Geist')&&!styles.readingFont.includes('GeistMono'),'Geist reading typography '+theme);
+    await check(styles.sidebar===196&&styles.toolbar===56,'CodeMie shell geometry '+theme);
+    await check(styles.titleSize==='24px'&&styles.titleLine==='32px','CodeMie title scale '+theme);
+    await check(styles.page===(theme==='light'?'rgb(249, 249, 249)':'rgb(26, 26, 26)'),'CodeMie page surface '+theme);
+    await check(theme==='light'?styles.nav==='none':styles.nav.includes('linear-gradient'),'CodeMie navigation overlay '+theme);
+    await check(styles.railGradient.includes(theme==='light'?'gradient-light.png':'gradient.png'),'CodeMie original rail gradient asset '+theme);
+    await check(theme==='light'?styles.contentGradient.includes('content-gradient.png'):styles.contentGradient==='none','CodeMie theme-specific content background '+theme);
+    await check(styles.selected===(theme==='light'?'rgb(213, 231, 252)':'rgb(33, 34, 36)'),'CodeMie navigation selection '+theme);
+    await check(styles.actionText===(theme==='light'?'rgb(0, 122, 255)':'rgb(242, 240, 239)'),'CodeMie primary action text '+theme);
+    await check(styles.actionOutline.includes(theme==='light'?'rgb(0, 122, 255)':'rgb(153, 62, 199)'),'CodeMie primary action outline '+theme);
     for(const width of [1000,1360,1600]){
       await page.setViewportSize({width,height:900});
       for(const name of ['Today','Calendar','Inbox','Workspaces']){
         await page.getByRole('button',{name,exact:true}).first().click();
-        await check(page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'No horizontal overflow '+theme+width+name);
+        await check(page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth&&document.querySelector('.ws-main').scrollWidth<=document.querySelector('.ws-main').clientWidth+1),'No horizontal overflow '+theme+width+name);
         await check(page.locator('h1').waitFor({state:'visible'}).then(()=>true),'Visible heading '+name);
       }
     }
@@ -123,8 +147,14 @@ async page => {
     await page.setViewportSize({width:1000,height:700});
     for(const name of ['General','Microsoft 365','Appearance','Queues & schedules','Notifications','Data & privacy','Setup & installation','AI tools & profiles','Desktop connection','Health','Activity & jobs','Updates & about','CLI usage analytics']){
       await page.getByRole('button',{name,exact:true}).click();
-      await check(page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Settings does not overflow '+theme+' '+name);
+      await check(page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth&&document.querySelector('.ws-main').scrollWidth<=document.querySelector('.ws-main').clientWidth+1),'Settings does not overflow '+theme+' '+name);
+      await check(page.evaluate(()=>{const h=document.querySelector('.ws-main').clientHeight;const panels=document.querySelector('.ws-settings-panels');return ['.ws-settings-layout','.ws-settings-sidebar','.ws-settings-content'].every(selector=>Math.abs(document.querySelector(selector).getBoundingClientRect().height-h)<=1)&&panels.scrollWidth<=panels.clientWidth+1;}),'Settings columns fill the window without clipping '+theme+' '+name);
     }
+    await page.getByRole('button',{name:'Microsoft 365',exact:true}).click();
+    const settingsScroll=await page.evaluate(()=>{const panels=document.querySelector('.ws-settings-panels');panels.scrollTop=200;return{panels:panels.scrollTop,nav:document.querySelector('.ws-settings-sidebar').scrollTop};});
+    await check(settingsScroll.panels>0,'Long Settings content scrolls independently '+theme);
+    await page.evaluate(()=>window.__workspace.store.refresh());
+    await check(page.evaluate(before=>Math.abs(document.querySelector('.ws-settings-panels').scrollTop-before.panels)<=1&&Math.abs(document.querySelector('.ws-settings-sidebar').scrollTop-before.nav)<=1,settingsScroll),'Snapshot refresh preserves both Settings scroll positions '+theme);
     await page.getByRole('button',{name:'Today',exact:true}).first().click();
     await page.setViewportSize({width:1360,height:900});
     await page.screenshot({path:`output/playwright/milestone-1/today-${theme}.png`});
