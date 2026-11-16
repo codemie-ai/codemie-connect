@@ -14,9 +14,11 @@
       {
         "label": "main",
         "title": "EPAM AI/Run CodeMie Connect",
-        "width": 1000,
-        "height": 660,
-        "resizable": false,
+        "width": 1360,
+        "height": 900,
+        "minWidth": 1000,
+        "minHeight": 700,
+        "resizable": true,
         "fullscreen": false,
         "backgroundColor": "#1A1A1A"
       }

@@ -23,6 +23,7 @@ pub fn runtime_ready(state: tauri::State<'_, crate::state::AppState>) -> CmdResu
 /// is missing. Emits `runtime:progress`.
 #[tauri::command]
 pub async fn ensure_runtime(app: AppHandle) -> CmdResult<()> {
+    let _guard = RUNTIME_OPERATION_LOCK.lock().await;
     let result = imp::ensure_runtime(app).await;
     if let Err(e) = &result {
         crate::commands::logger::write_line(&format!("runtime install failed: {e}"), "stderr");
@@ -36,8 +37,11 @@ pub async fn ensure_runtime(app: AppHandle) -> CmdResult<()> {
 pub async fn update_cli(
     state: tauri::State<'_, crate::state::AppState>,
 ) -> CmdResult<Option<String>> {
+    let _guard = RUNTIME_OPERATION_LOCK.lock().await;
     imp::update_cli(state.existing_cli_detected).await
 }
+
+static RUNTIME_OPERATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Version helpers both platforms use to decide and verify a CLI update.
 mod shared {

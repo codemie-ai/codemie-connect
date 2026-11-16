@@ -316,7 +316,7 @@ test('the runtime overlay says Preparing CodeMie, shows progress and offers Try 
 test('the runtime bar keeps moving through the CLI step and fills when it is done', () => {
   const fn = renderer.slice(renderer.indexOf('async function ensureRuntime()'), renderer.indexOf('async function boot()'));
   assert.match(fn, /phase === 'cli'[\s\S]*setInterval\(/, 'npm gives no progress, so the bar has to move on its own');
-  assert.match(fn, /invoke\('ensure_runtime'\);\s*installing = false;\s*stopCreep\(\);\s*bar\.style\.width = '100%'/, 'it reaches 100% before the overlay closes');
+  assert.match(fn, /invoke\('ensure_runtime'\);\s*installing = false;\s*stopCreep\(\);\s*(?:if \(cancelled\) throw deferred\(\);\s*)?bar\.style\.width = '100%'/, 'it reaches 100% before the overlay closes');
   assert.match(fn, /catch \(err\) \{\s*installing = false;\s*stopCreep\(\);/, 'a failure stops it, so Try again starts from a still bar');
   assert.match(fn, /if \(installing && !creep\)/, 'a progress event arriving after the result never restarts it on the error screen');
 });

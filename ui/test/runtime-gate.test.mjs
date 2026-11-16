@@ -62,6 +62,28 @@ test('ensureRuntime downloads once, then hides the overlay', async () => {
   const { ensureRuntime, document } = gate(async (cmd) => { calls.push(cmd); return cmd === 'runtime_ready' ? false : undefined; });
   await ensureRuntime();
   assert.deepEqual(calls, ['runtime_ready', 'ensure_runtime']);
+  assert.equal(document.getElementById('runtime-bar').style.width, '100%');
+  assert.ok(document.getElementById('runtime-overlay').classList.has('hidden'));
+});
+
+test('returning to workspace hides an active preparation and preserves one native operation', async () => {
+  let finish;
+  const calls=[];
+  const {ensureRuntime,document}=gate(async cmd=>{calls.push(cmd);if(cmd==='runtime_ready')return false;return new Promise(resolve=>{finish=resolve;});});
+  const done=ensureRuntime();
+  for(let i=0;i<20&&!finish;i++)await new Promise(resolve=>setTimeout(resolve,0));
+  document.getElementById('runtime-cancel').onclick();
+  assert.ok(document.getElementById('runtime-overlay').classList.has('hidden'));
+  finish();await assert.rejects(done,error=>error.code==='runtime_deferred');
+  assert.deepEqual(calls,['runtime_ready','ensure_runtime']);
+});
+
+test('returning from a failed runtime gate does not leave the workspace under a retry overlay', async () => {
+  const {ensureRuntime,document}=gate(async cmd=>{if(cmd==='runtime_ready')return false;throw new Error('offline');});
+  const done=ensureRuntime();
+  for(let i=0;i<20&&!document.getElementById('runtime-retry').hasListener();i++)await new Promise(resolve=>setTimeout(resolve,0));
+  document.getElementById('runtime-cancel').onclick();
+  await assert.rejects(done,error=>error.code==='runtime_deferred');
   assert.ok(document.getElementById('runtime-overlay').classList.has('hidden'));
 });
 

@@ -1,10 +1,7 @@
 // Window control. Replaces Electron's win.setContentSize / app.quit IPC.
 use tauri::{AppHandle, LogicalSize, WebviewWindow};
 
-// Must match tauri.conf.json's window width: set_window_height rewrites both
-// dimensions, so a stale value here snaps the window narrow on the first
-// log-panel toggle. The shell's 180px sidebar is why this is not 900.
-const WIN_WIDTH: f64 = 1000.0;
+// Retain the current width when a legacy client requests a height change.
 const MIN_HEIGHT: f64 = 660.0;
 // Must stay above ui/log.js's EXPANDED_H, or opening the log panel silently
 // clamps the window short instead of growing it.
@@ -15,7 +12,13 @@ const MAX_HEIGHT: f64 = 1000.0;
 #[tauri::command]
 pub fn set_window_height(window: WebviewWindow, height: f64) {
     let h = height.clamp(MIN_HEIGHT, MAX_HEIGHT);
-    let _ = window.set_size(LogicalSize::new(WIN_WIDTH, h));
+    let width = window
+        .inner_size()
+        .ok()
+        .zip(window.scale_factor().ok())
+        .map(|(size, scale)| f64::from(size.width) / scale)
+        .unwrap_or(1000.0);
+    let _ = window.set_size(LogicalSize::new(width, h));
 }
 
 #[tauri::command]

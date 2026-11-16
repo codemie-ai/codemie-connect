@@ -2,6 +2,7 @@ mod commands;
 mod error;
 mod state;
 mod steps;
+mod workspace;
 
 use state::AppState;
 use tauri::Manager;
@@ -75,6 +76,25 @@ pub fn run() {
                 existing_cli_detected,
                 ..AppState::default()
             });
+            // Register lifecycle plugins only after all process PATH mutations above.
+            app.handle().plugin(tauri_plugin_single_instance::init(|app, _, _| {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }))?;
+            app.handle().plugin(tauri_plugin_notification::init())?;
+            app.handle().plugin(tauri_plugin_autostart::Builder::new().build())?;
+            let workspace_root = if cfg!(debug_assertions) {
+                std::env::var_os("CODEMIE_WORKSPACE_TEST_DIR").map(std::path::PathBuf::from)
+            } else { None }.unwrap_or(app.path().app_data_dir()?.join("workspace"));
+            let workspace_state = match workspace::Core::open(app.handle().clone(), &workspace_root) {
+                Ok(core) => { core.start(); workspace::WorkspaceState { core: Some(core), error: None } },
+                Err(error) => workspace::WorkspaceState { core: None, error: Some(error.message) },
+            };
+            app.manage(workspace_state);
+            workspace::setup_tray(app)?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -91,6 +111,22 @@ pub fn run() {
             }
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(event,tauri::WindowEvent::Moved(_)|tauri::WindowEvent::Resized(_)) {
+                if let Some(state)=window.try_state::<workspace::WorkspaceState>(){if let Some(core)=&state.core{workspace::geometry::save(window,&core.data_dir);}}
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if let Some(state) = window.try_state::<workspace::WorkspaceState>() {
+                    if let Some(core) = &state.core {
+                        if core.installer_busy.load(std::sync::atomic::Ordering::Relaxed) {
+                            api.prevent_close(); core.emit("workspace:quit-request");
+                        } else if core.repo().ok().and_then(|r| r.settings().ok()).is_some_and(|s| s.background) {
+                            api.prevent_close(); let _ = window.hide();
+                        }
+                    }
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::runner::run_capture,
@@ -133,7 +169,17 @@ pub fn run() {
             commands::app_updater::download_and_install,
             commands::app_updater::restart_app,
             commands::app_updater::get_app_version,
+            workspace::workspace_request,
+            workspace::workspace_installer_busy,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app,event|{
+            if let tauri::RunEvent::ExitRequested{api,..}=event {
+                if let Some(state)=app.try_state::<workspace::WorkspaceState>(){if let Some(core)=&state.core{
+                    if core.installer_busy.load(std::sync::atomic::Ordering::Relaxed){api.prevent_exit();core.emit("workspace:quit-request");if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}}
+                    else{core.stop_background();}
+                }}
+            }
+        });
 }

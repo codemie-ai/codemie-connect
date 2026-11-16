@@ -17,6 +17,18 @@
 
 </div>
 
+## Workspace milestone branch
+
+This branch adds **Today, Calendar, Inbox, Workspaces and Settings** with CodeMie light/dark/system appearance. Local notes, commitments, focus, layouts and schedules work without CodeMie or Claude. Existing installation, profiles, AI tools, Desktop proxy, health, logs and CLI usage are under Settings and prepare their runtime only when requested.
+
+In **Settings → Microsoft 365**, choose read capabilities, sign in with the shared CodeMie public application, explicitly bind a workspace and select its calendars, Outlook or Teams chats. Microsoft authentication is separate from platform sign-in. Keep write permissions off for read-only use. Event creation and replies require a separate native review and confirmation; ambiguous dispatches require checking the provider.
+
+Connect stores workspace state separately in its application-data `workspace` directory, and its own Microsoft session cache in a private file on macOS (folder `0700`, file `0600`), following Echo’s approach. The Microsoft integration never imports Echo/CLI caches or reads Keychain. Windows uses a DPAPI-protected file. Closing the window keeps jobs running only when background mode is enabled; explicit Quit stops them. OS notification display depends on system settings. Privacy export includes user-owned local content only.
+
+Optional source-reading AI uses durable, pinned-profile jobs and currently supports an isolated Claude API-key profile when the installed CLI can enforce tool-free execution. OAuth/CodeMie profiles fail closed for this operation; manual drafts and all core views remain usable. Echo plugin execution is outside this milestone.
+
+Qualification status and outstanding platform/live gates are tracked in [the milestone validation report](prototypes/milestone-1/IMPLEMENTATION-VALIDATION.md). Build this branch with Rust **1.90+**. Existing release downloads below refer to published releases, not this branch.
+
 ## What is it
 
 CodeMie Connect is a small native desktop app for macOS and Windows that gets you from a fresh machine to a working

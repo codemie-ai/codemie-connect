@@ -6,7 +6,7 @@ authors = ["EPAM Systems — People Organization / WPM"]
 license = "Apache-2.0"
 repository = ""
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.90"
 
 [profile.release]
 opt-level = "z"
@@ -29,10 +29,20 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 log = "0.4"
-tauri = { version = "2.11.2", features = [] }
+tauri = { version = "2.11.2", features = ["tray-icon"] }
 tauri-plugin-log = "2"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "process", "io-util", "time", "fs", "sync"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "system-proxy"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2.8.1"
+tauri-plugin-autostart = "2"
+rusqlite = { version = "0.38", features = ["bundled"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rand = "0.8"
+chrono-tz = "0.10"
+windows-timezones = { version = "0.5.1", features = ["chrono-tz"] }
+url = "2"
+fs2 = "0.4"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "process", "io-util", "time", "fs", "sync", "net"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream", "json", "system-proxy"] }
 futures-util = "0.3"
 sha2 = "0.10"
 thiserror = "2"
@@ -42,6 +52,7 @@ portable-pty = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Memory"] }
 
 [dev-dependencies]
 tempfile = "3"

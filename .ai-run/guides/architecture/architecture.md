@@ -1,11 +1,19 @@
 # Architecture
 
 **Project**: CodeMie Installer (macOS)
-**Style**: Frontend-brain + thin Rust backend (Option B)
+**Style**: Frontend installer orchestration (Option B) plus a native workspace service
 **Languages**: Rust (backend) + Vanilla JS ESM (frontend)
-**Framework**: Tauri v2 (2.11.2)
+**Framework**: Tauri v2 (2.12.6)
 
 ---
+
+## Workspace boundary (Milestone 1)
+
+`ui/workspace/` owns Today, Calendar, Inbox, Workspaces and Settings. `workspace_request` accepts a typed operation, workspace ID, expected snapshot revision and unique operation ID; native SQLite remains authoritative. `src-tauri/src/workspace/` owns credential storage, Graph HTTP/PKCE, canonical provider records, policy fencing, reviewed actions and durable sync/reminder/schedule jobs. Provider tokens never enter the renderer. Microsoft sessions use Connect-owned private cache files on macOS, following Echo/CLI browser-PKCE behavior; Windows keeps a DPAPI-protected file. No automatic credential import or Keychain access. This domain intentionally lives natively because it must work while views are hidden and must enforce policy before HTTP dispatch and result commit.
+
+The existing `renderer.js` / Engine / runner / PTY are mounted once, lazily, in Settings. Runtime preparation is requested only for CLI-dependent tools. Preserve the installer contracts and original CLI/profile/PATH ownership. Workspace storage failure leaves existing tools accessible; runtime failure leaves the local workspace usable.
+
+Workspace presentation, source access and pinned-profile revisions are separate. Account-bound sources are canonical; workspace decisions remain local. Background jobs recheck account generation, policy, selected sources, claim attempt and current schedule/rule before acting. Calendar cursors and completed resource rounds commit together. Unknown send/OS outcomes are never blindly retried.
 
 ## Architecture Overview
 
@@ -49,7 +57,7 @@ src-tauri/src/              (backend — thin Rust command layer)
 | `renderer.js` | View routing (home/wizard/connect), Engine construction | engine.js, runner-bridge.js |
 | `commands/runner.rs` | `run_capture`, `run_stream`, `run_fresh_env` — login-shell exec | tokio, state.rs |
 | `commands/inspector.rs` | `check_git/node/npm/codemie`, `check_profile_status` | runner.rs |
-| `commands/runtime.rs` | `runtime_ready`, `ensure_runtime`, `update_cli` — Node from nodejs.org (pinned SHA-256 in runtime.json) into `runtime/node-<v>`, the CLI via `npm ci` with the embedded `assets/codemie-cli` lock into `runtime/cli-<v>`, `node`/`cli` links switched atomically; `update_cli` installs a newer npm release in the background; stale dirs removed at launch; `renderer.js` gates `boot()` on it | reqwest, sha2, state.rs |
+| `commands/runtime.rs` | `runtime_ready`, `ensure_runtime`, `update_cli` — Node from nodejs.org (pinned SHA-256 in runtime.json) into `runtime/node-<v>`, the CLI via `npm ci` with the embedded `assets/codemie-cli` lock into `runtime/cli-<v>`, `node`/`cli` links switched atomically; `update_cli` installs a newer npm release in the background; stale dirs removed at launch; the legacy adapter gates CLI-dependent boot on it | reqwest, sha2, state.rs |
 | `state.rs` | `AppState` — PTY handle, remembered PATH dirs, `bundled_injected`, `existing_cli_detected` (the user's own CLI: no download) | pty.rs |
 | `error.rs` | `InstallerError` (thiserror) → serializes to String for IPC | — |
 
@@ -65,7 +73,7 @@ All commands registered in `src-tauri/src/lib.rs:27–56`.
 | ✅ DO | ❌ DON'T |
 |---|---|
 | Call system ops via `invoke()` in `runner-bridge.js` | Import Node/OS APIs directly in frontend JS |
-| Add new Rust commands to `commands/` + register in `lib.rs` | Add business logic to Rust commands |
+| Add new Rust commands to `commands/` + register in `lib.rs` | Move installer Engine orchestration into Rust |
 | Use `CmdResult<T>` for fallible commands | Return raw `String` errors from commands |
 
 ---

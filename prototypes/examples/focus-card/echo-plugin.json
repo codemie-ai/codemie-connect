@@ -1,0 +1,11 @@
+{
+  "id": "focus-card",
+  "name": "Focus card",
+  "version": "0.1.0",
+  "echo": ">=0.9.9",
+  "summary": "A small local focus card for Today. An original starter package for the workspace proposal.",
+  "main": "main.js",
+  "uses": {},
+  "agent": { "summary": "Provides a static focus card for Today, without accessing files, network or AI services." },
+  "widgets": [{ "id": "focus", "label": "Focus card", "kind": "card", "sizes": ["M"], "refresh": 60 }]
+}

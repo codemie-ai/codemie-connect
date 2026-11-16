@@ -1,8 +1,8 @@
 # Development Practices
 
 **Project**: CodeMie Installer (macOS)
-**Languages**: Rust 2021 (1.77.2+) + Vanilla JS ESM
-**Framework**: Tauri v2 (2.11.2)
+**Languages**: Rust 2021 (1.90+) + Vanilla JS ESM
+**Framework**: Tauri v2 (2.12.6)
 **Linter**: cargo clippy | **Formatter**: cargo fmt (Rust); no JS formatter configured
 
 ---
@@ -35,7 +35,7 @@ Reference: `src-tauri/src/commands/runner.rs:1–13`.
 
 ## Error Handling
 
-All fallible Rust commands use `CmdResult<T>` — defined at `src-tauri/src/error.rs:25`.
+Legacy fallible Rust commands use `CmdResult<T>` — defined at `src-tauri/src/error.rs:25`.
 
 `InstallerError` variants map system error categories to readable strings:
 
@@ -56,6 +56,8 @@ The error serializes to a plain String so the frontend receives a readable messa
 | Let the Tauri IPC layer serialize the error | `unwrap()` in command functions |
 
 ---
+
+Workspace IPC instead uses structured `WorkspaceError { code, message, retryAfter }`; do not flatten it into legacy strings. Its repository guard must never survive a network/process await.
 
 ## Logging
 

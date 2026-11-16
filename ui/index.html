@@ -8,9 +8,11 @@
     <link rel="stylesheet" href="vendor/xterm.css" />
     <link rel="stylesheet" href="codemie-tokens.css" />
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="workspace/workspace.css" />
   </head>
   <body>
-    <div id="app">
+    <div id="workspace-app"></div>
+    <div id="app" class="hidden">
       <!-- ============ IDENTITY BAR ============ -->
       <div id="identity-bar">
         <span id="identity-auth-status">Checking sign-in…</span>
@@ -234,9 +236,10 @@
         </div>
         <div id="runtime-error" class="hidden" style="color:var(--text-3, #888);font-size:11px;margin-bottom:14px;word-break:break-word;"></div>
         <button id="runtime-retry" class="btn btn-accent hidden">Try again</button>
+        <button id="runtime-cancel" class="btn btn-ghost">Continue in workspace</button>
       </div>
     </div>
 
-    <script type="module" src="renderer.js"></script>
+    <script type="module" src="workspace/app.js"></script>
   </body>
 </html>

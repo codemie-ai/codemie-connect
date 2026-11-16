@@ -165,6 +165,7 @@ let agentsChecked = false;
 
 function setInstallRunning(on) {
   installRunning = on;
+  invoke('workspace_installer_busy', { busy: on || setupRunning }).catch(() => {});
   document.getElementById('app-sidebar').dataset.busy = on ? '1' : '';
 }
 
@@ -314,8 +315,10 @@ async function openGuidedSetup() {
       // Called for each run, including a "Try again" started from the view.
       onRun: (run) => {
         setupRunning = true;
+        invoke('workspace_installer_busy', { busy: true }).catch(() => {});
         setupSettled = run.then(() => {}, () => {}).finally(() => {
           setupRunning = false;
+          invoke('workspace_installer_busy', { busy: installRunning }).catch(() => {});
           // A run writes the profile and may sign the user in; Home re-reads both.
           refreshIdentityOnComplete();
           refreshAgents();
@@ -714,6 +717,12 @@ async function ensureRuntime() {
   const bar = document.getElementById('runtime-bar');
   const retry = document.getElementById('runtime-retry');
   const errorEl = document.getElementById('runtime-error');
+  let cancelled = false;
+  let returnToWorkspace;
+  const returned = new Promise(resolve => { returnToWorkspace = resolve; });
+  const back = document.getElementById('runtime-cancel');
+  const deferred = () => Object.assign(new Error('You can keep using the workspace. Open Setup & installation again when you need CodeMie tools.'), { code: 'runtime_deferred' });
+  back.onclick = () => { cancelled = true; overlay.classList.add('hidden'); returnToWorkspace(); };
   const downloading = 'Setting up CodeMie. This happens once.';
   overlay.classList.remove('hidden');
   // npm reports no progress, so during the CLI step the bar eases on toward 95%
@@ -730,7 +739,8 @@ async function ensureRuntime() {
       if (installing && !creep) creep = setInterval(() => { width += (95 - width) * 0.05; bar.style.width = `${Math.round(width)}%`; }, 1000);
     } else if (phase === 'node' && total) detail.textContent = `Downloading Node.js (${Math.round((fraction / 0.3) * (total / 1048576))} of ${Math.round(total / 1048576)} MB). This happens once.`;
   });
-  for (;;) {
+  try { for (;;) {
+    if (cancelled) throw deferred();
     title.textContent = 'Preparing CodeMie…';
     detail.textContent = downloading;
     retry.classList.add('hidden');
@@ -741,12 +751,14 @@ async function ensureRuntime() {
       await invoke('ensure_runtime');
       installing = false;
       stopCreep();
+      if (cancelled) throw deferred();
       bar.style.width = '100%';
       await new Promise((r) => setTimeout(r, 400));
       break;
     } catch (err) {
       installing = false;
       stopCreep();
+      if (cancelled) throw deferred();
       // Only a failed download is a network problem (error.rs prefixes it
       // "download failed:"); anything else names its own step and path.
       const network = /^download failed:/.test(String(err));
@@ -757,11 +769,10 @@ async function ensureRuntime() {
       errorEl.textContent = String(err);
       errorEl.classList.remove('hidden');
       retry.classList.remove('hidden');
-      await new Promise((r) => retry.addEventListener('click', r, { once: true }));
+      await Promise.race([new Promise((r) => retry.addEventListener('click', r, { once: true })), returned]);
     }
   }
-  unlisten();
-  overlay.classList.add('hidden');
+  } finally { unlisten(); stopCreep(); back.onclick = null; overlay.classList.add('hidden'); }
 }
 
 async function boot() {
@@ -991,20 +1002,11 @@ async function boot() {
 
 // Non-destructive detection-only run (CODEMIE_PROBE_SMOKE). Runs only the
 // detection steps so the smoke never runs an actual install.
-async function runProbe(handlers) {
-  unattended = true;
-  const safe = new Set(['2.3.3', '2.3.5', '2.4']);
-  engine.steps = engine.steps.filter((s) => safe.has(s.id));
-  if (engine.steps.length === 0) {
-    await invoke('smoke_emit', { line: 'PROBE_ERR no steps matched the probe filter — safe set out of date' });
-    await invoke('smoke_emit', { line: 'PROBE_DONE' });
-    await invoke('close_app');
-    return;
-  }
+async function runProbe() {
   try {
-    await engine.run();
-    const result = engine.steps.map((s) => `${s.id}:${s.status}`).join(' ');
-    await invoke('smoke_emit', { line: `PROBE_RESULT ${result}` });
+    const { runReadOnlyProbe } = await import('./workspace/safe-probe.js');
+    const result = await runReadOnlyProbe(bridge.inspector);
+    await invoke('smoke_emit', { line: `PROBE_RESULT ${JSON.stringify(result)}` });
   } catch (e) {
     await invoke('smoke_emit', { line: `PROBE_ERR ${(e && e.message) || e}` });
   }
@@ -1071,6 +1073,27 @@ async function runSmoke(flags) {
   }, flags.smoke_ms || 2500);
 }
 
-boot().catch((e) => {
-  window.__bootError = String((e && e.stack) || e);
-});
+let bootPromise;
+export function initLegacyTools() {
+  return bootPromise ||= boot().catch((e) => {
+    if (e.code !== 'runtime_deferred') window.__bootError = String((e && e.stack) || e);
+    bootPromise = null;
+    throw e;
+  });
+}
+export async function openLegacyTools(name = 'home') {
+  await initLegacyTools();
+  if (installRunning || setupRunning) return;
+  if (name === 'analytics') { runAnalytics(); return; }
+  showView(name);
+}
+export const legacyToolsBusy = () => installRunning || setupRunning;
+export async function leaveLegacyTools() {
+  if (installRunning) {
+    showNotice({title:'Installation is running', message:'Finish the active installation before leaving or quitting. Its terminal and approval prompts remain available here.',primaryLabel:'Return to installation',primaryAction:()=>showView('wizard')});
+    return false;
+  }
+  showView('home');
+  if (setupStopping) await setupStopping;
+  return true;
+}

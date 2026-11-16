@@ -1,0 +1,116 @@
+{
+  "generatedAt": "2026-11-16T17:55:20.860087+00:00",
+  "branch": "feat/milestone-1-workspace",
+  "baseCommit": "8be17640b2ed2a4417a5450afef58c505debd358",
+  "qualification": "MACOS_CORE_AND_READS_VALIDATED_NOT_FULL_RELEASE_QUALIFICATION",
+  "sourceFingerprint": {
+    "algorithm": "sha256 of sorted relative paths and file sha256 bytes",
+    "files": 158,
+    "sha256": "87f9b7053015eafabd53f4e9b6208f527966707e96d488ca67c528a2a9c2906c"
+  },
+  "automated": {
+    "javascript": {
+      "passed": 529,
+      "failed": 0,
+      "skippedWindowsOnly": 3,
+      "total": 532
+    },
+    "rust": {
+      "unitPassed": 166,
+      "integrationPassed": 2,
+      "docTests": 0,
+      "failed": 0
+    },
+    "rustFormat": "PASS",
+    "rustClippyWarningsDenied": "PASS",
+    "browser": {
+      "checks": 98,
+      "errors": 0,
+      "bridge": "explicitly mocked IPC; not native Graph or notification proof"
+    },
+    "gitDiffCheck": "PASS"
+  },
+  "native": {
+    "finalReadTransport": "system curl GET via stdin config and bounded body/header pipes",
+    "freshBrowserSignIn": "PASS; existing account; no credential/consent/Keychain prompt",
+    "ownCacheRestart": "PASS; successful sync after final app restart",
+    "finalLaunchEpoch": 1794851468,
+    "lastSyncEpoch": 1794851537,
+    "connectionStatus": "connected",
+    "enabledCapabilities": [
+      "calendar",
+      "chats",
+      "mail"
+    ],
+    "writeCapabilitiesEnabled": false,
+    "outboxActions": 0,
+    "canonicalCounts": {
+      "calendar_window:selected_calendar": 1,
+      "catalog:catalog": 2,
+      "event:selected_calendar": 930,
+      "message:mail:inbox": 74,
+      "message:mail:sentitems": 13,
+      "message:selected_teams_chat": 89
+    },
+    "completedCalendarRange": {
+      "eventCount": 473,
+      "missingTitles": 0
+    },
+    "observedWeekEventButtons": 65,
+    "observedInboxQueues": {
+      "critical": 0,
+      "reply": 2,
+      "waiting": 0,
+      "fyi": 155,
+      "low": 19,
+      "decisions": 0
+    },
+    "unboundWorkspaceProviderRows": 0,
+    "headerFilesAfterFinalQuit": 0,
+    "credentialChecks": "metadata only: one Connect file 0600; folder 0700; token contents never read by tools",
+    "localScheduledBrief": "PASS; native occurrence while another workspace and Settings were active",
+    "singleInstance": "PASS",
+    "benignStreamPtySmoke": "PASS",
+    "detectionOnlyProbe": "PASS",
+    "finalPackagedPrimaryRoutes": "PASS; Today Calendar Inbox Workspaces Settings",
+    "finalPackagedLightDark": "PASS; visually inspected",
+    "finalPackagedPersistedNote": "PASS; survived rebuild/relaunch",
+    "finalPackagedMicrosoftConnectionCount": 0,
+    "finalPackagedQuit": "PASS; exit 0"
+  },
+  "build": {
+    "command": "./build-installer.sh --skip-stage",
+    "exitCode": 0,
+    "assertions": "Done. All assertions passed.",
+    "artifacts": [
+      {
+        "path": "src-tauri/target/release/bundle/macos/CodeMie Connect.app/Contents/MacOS/app",
+        "bytes": 6893824,
+        "sha256": "7f6e0e97b14700c7b33826e80522e6337f96ac735842fa4002bbe084997ee2fb"
+      },
+      {
+        "path": "src-tauri/target/release/bundle/dmg/CodeMie Connect_2.1.1_aarch64.dmg",
+        "bytes": 3807540,
+        "sha256": "002b7c1cf9db5964e0283226c3ec296bae4342a10b07b97fd66379a8d97628f4"
+      }
+    ]
+  },
+  "architectureReview": {
+    "sourceOnly": true,
+    "finalTargetedP0P1Findings": 0,
+    "included": "curl transport, owned-child cancellation, bounded native pipes; previous workspace review fixes documented"
+  },
+  "externalRepos": "Echo and codemie-code read only; no modifications or credential-cache imports",
+  "openGates": {
+    "liveWrites": "BLOCKED by read-only authorization; zero live writes",
+    "secondAccountTenant": "BLOCKED; no dedicated second account",
+    "notifications": "NOT FULLY RUN; OS allow/deny/display/click/DND/background matrix",
+    "liveAiProvider": "NOT RUN; no live source transmission for model QA",
+    "destructiveLegacyUpgradeRollback": "NOT FULLY RUN; disposable OS user/VM needed",
+    "windows": "BLOCKED; missing Windows SDK assert.h on macOS cross-check; macOS-first authorized",
+    "intelAndDisplayScaling": "NOT RUN",
+    "performanceDistributionAndNative10kUi": "NOT RUN",
+    "eightHourSoakSleepWake": "NOT RUN",
+    "distributionSigningNotarizationAndCleanUpgrade": "NOT QUALIFIED"
+  }
+}

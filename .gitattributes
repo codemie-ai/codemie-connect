@@ -1,1 +1,4 @@
 assets/windows/bin/*.cmd -text
+# Preserve upstream font licenses verbatim, including their whitespace.
+ui/workspace/fonts/OFL-Geist.txt -whitespace
+prototypes/assets/fonts/OFL-Geist.txt -whitespace

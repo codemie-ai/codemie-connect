@@ -8,21 +8,23 @@
   function read() {
     try {
       var v = localStorage.getItem(KEY);
-      return v === 'light' || v === 'dark' ? v : 'dark';
+      return v === 'light' || v === 'dark' || v === 'system' ? v : 'system';
     } catch (e) {
-      return 'dark';
+      return 'system';
     }
   }
 
   function apply(theme) {
-    var t = theme === 'light' ? 'light' : 'dark';
-    document.documentElement.className = t;
+    var preference = ['light','dark','system'].includes(theme) ? theme : 'system';
+    var t = preference === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : preference;
+    document.documentElement.classList.remove('light','dark');
+    document.documentElement.classList.add(t);
     try {
-      localStorage.setItem(KEY, t);
+      localStorage.setItem(KEY, preference);
     } catch (e) {
       /* storage unavailable — theme still applies for this session */
     }
-    return t;
+    return preference;
   }
 
   // Pre-paint: set the class immediately from storage (documentElement exists in <head>).
@@ -33,9 +35,10 @@
   function wire() {
     var input = document.getElementById('theme-toggle-input');
     if (!input) return;
-    input.checked = read() === 'dark';
+    input.checked = document.documentElement.classList.contains('dark');
     input.addEventListener('change', function () {
-      apply(input.checked ? 'dark' : 'light');
+      var preference=apply(input.checked ? 'dark' : 'light');
+      window.dispatchEvent(new CustomEvent('cm-theme-change',{detail:preference}));
     });
   }
 

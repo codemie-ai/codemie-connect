@@ -95,7 +95,9 @@ echo "    CLI $MF_CLI: $(node -e "const m=require(process.argv[1]);process.stdou
 # ── 3. Smoke-test the staged tree ───────────────────────────────────────────
 step "[3/5] Smoke-testing the staged CLI"
 # Non-empty stdout is the real assertion. dist/index.js would exit 0 silently.
-SMOKE="$("$NODE_BIN" "$CLI_ENTRY" --version 2>&1)" || fail "staged CLI exited non-zero: $SMOKE"
+CLI_SMOKE_CWD="$(mktemp -d)"
+SMOKE="$(cd "$CLI_SMOKE_CWD" && env -i HOME="$CLI_SMOKE_CWD" PATH=/usr/bin:/bin CODEMIE_AUTO_UPDATE=false "$NODE_BIN" "$CLI_ENTRY" --version 2>&1)" || fail "staged CLI exited non-zero: $SMOKE"
+rm -rf "$CLI_SMOKE_CWD"
 [ -n "$(echo "$SMOKE" | tr -d '[:space:]')" ] || fail "staged CLI produced NO output. The entry point is almost certainly wrong: dist/index.js is a library barrel that exits 0 and prints nothing. Expected bin/codemie.js."
 echo "    codemie --version -> $SMOKE"
 
@@ -138,7 +140,7 @@ cp -R "$CLI_MODULES" "$RT/cli-$CLI_VERSION/node_modules"
 touch "$RT/node-$NODE_VERSION/.complete" "$RT/cli-$CLI_VERSION/.complete"
 ln -s "node-$NODE_VERSION" "$RT/node"
 ln -s "cli-$CLI_VERSION" "$RT/cli"
-SHIM_OUT="$(env -i HOME="$TEST_HOME" PATH=/usr/bin:/bin CODEMIE_AUTO_UPDATE=false "$RES/bin/codemie" --version 2>&1)" || fail "bundled shim exited non-zero: $SHIM_OUT"
+SHIM_OUT="$(cd "$TEST_HOME" && env -i HOME="$TEST_HOME" PATH=/usr/bin:/bin CODEMIE_AUTO_UPDATE=false "$RES/bin/codemie" --version 2>&1)" || fail "bundled shim exited non-zero: $SHIM_OUT"
 [ -n "$(echo "$SHIM_OUT" | tr -d '[:space:]')" ] || fail "bundled shim produced NO output: $RES/bin/codemie"
 echo "    bundled shim: codemie --version -> $SHIM_OUT"
 
