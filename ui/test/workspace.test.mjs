@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStore, escapeHtml } from '../workspace/store.js';
+import { createStore, escapeHtml, REBASE_SAFE } from '../workspace/store.js';
 import { runReadOnlyProbe } from '../workspace/safe-probe.js';
 import {
   calendarDays, calendarWindow, calendarCoverage, calendarIds, calendarColor, eventSpan, eventsOnDay,
@@ -56,6 +56,51 @@ test('a rejected mutation refreshes canonical state before the next write', asyn
   await store.refresh();
   await assert.rejects(store.mutate('first'));
   await store.mutate('second');
+});
+
+test('mutate retries once after stale_view for rebase-safe ops', async () => {
+  let revision = 0;
+  const calls = [];
+  const store = createStore(async (_, { request: r }) => {
+    if (r.op === 'snapshot') return { snapshot: { revision, settings: { activeWorkspace: 'personal' } } };
+    calls.push(r);
+    if (calls.length === 1) { revision = 5; throw { code: 'stale_view' }; }
+    return { saved: true };
+  });
+  await store.refresh();
+  assert.deepEqual(await store.mutate('settings_update', { theme: 'dark' }, 'ws-2'), { saved: true });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].expectedRevision, 0);
+  assert.equal(calls[1].expectedRevision, 5);
+  assert.equal(calls[1].operationId, calls[0].operationId);
+  assert.equal(calls[1].workspaceId, 'ws-2');
+});
+
+test('mutate retries only once when the revision keeps moving', async () => {
+  let revision = 0;
+  let writes = 0;
+  const store = createStore(async (_, { request: r }) => {
+    if (r.op === 'snapshot') return { snapshot: { revision, settings: { activeWorkspace: 'personal' } } };
+    writes++;
+    revision++;
+    throw { code: 'stale_view' };
+  });
+  await store.refresh();
+  await assert.rejects(store.mutate('local_save', {}), { code: 'stale_view' });
+  assert.equal(writes, 2);
+});
+
+test('mutate surfaces stale_view for review ops', async () => {
+  let writes = 0;
+  const store = createStore(async (_, { request: r }) => {
+    if (r.op === 'snapshot') return { snapshot: { revision: 1, settings: { activeWorkspace: 'personal' } } };
+    writes++;
+    throw { code: 'stale_view' };
+  });
+  await store.refresh();
+  assert.ok(!REBASE_SAFE.has('action_prepare'));
+  await assert.rejects(store.mutate('action_prepare', {}), { code: 'stale_view' });
+  assert.equal(writes, 1);
 });
 
 test('untrusted source text is escaped before HTML rendering', () => {

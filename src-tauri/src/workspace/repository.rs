@@ -442,7 +442,7 @@ impl Repository {
         }
         if request.expected_revision != Some(self.revision()?) {
             return Err(WorkspaceError::new(
-                "conflict",
+                "stale_view",
                 "This view changed. Refresh and review the current values before saving.",
             ));
         }
@@ -1805,7 +1805,27 @@ mod tests {
             operation_id: Some(id()),
             data: json!({}),
         };
-        assert_eq!(repo.check_request(&req).unwrap_err().code, "conflict");
+        assert_eq!(repo.check_request(&req).unwrap_err().code, "stale_view");
+    }
+    #[test]
+    fn stale_revision_returns_stale_view_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::open(&dir.path().join("db")).unwrap();
+        let rev = repo.revision().unwrap();
+        let req = |expected| Request {
+            op: Operation::SettingsUpdate,
+            workspace_id: None,
+            expected_revision: Some(expected),
+            operation_id: Some(id()),
+            data: json!({}),
+        };
+        assert_eq!(
+            repo.check_request(&req(rev.wrapping_sub(1)))
+                .unwrap_err()
+                .code,
+            "stale_view"
+        );
+        assert!(repo.check_request(&req(rev)).unwrap());
     }
     #[test]
     fn job_claim_is_unique_and_recovers_only_safe_work() {

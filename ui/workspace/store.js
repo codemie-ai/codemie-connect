@@ -1,5 +1,9 @@
 // Native snapshots are authoritative. Mutations are serialized and always followed by a fresh
 // snapshot, so the UI never renders optimistic state that native storage rejected.
+// Operations whose outcome does not depend on what the user was looking at, so a
+// background sync bumping the revision may safely rebase them onto the fresh snapshot.
+export const REBASE_SAFE = new Set(['settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select']);
+
 export function createStore(invoke) {
   let state = null;
   let latestRead = 0;
@@ -16,19 +20,28 @@ export function createStore(invoke) {
     return state;
   }
 
-  function mutate(op, data = {}, workspaceId) {
+  function mutate(op, data = {}, workspaceId, { retry = REBASE_SAFE.has(op) } = {}) {
     const run = async () => {
       if (!state) await refresh();
+      const operationId = crypto.randomUUID();
+      const send = () => invoke('workspace_request', {
+        request: {
+          op,
+          data,
+          workspaceId: workspaceId ?? state.snapshot.settings.activeWorkspace,
+          expectedRevision: state.snapshot.revision,
+          operationId,
+        },
+      });
       try {
-        return await invoke('workspace_request', {
-          request: {
-            op,
-            data,
-            workspaceId: workspaceId ?? state.snapshot.settings.activeWorkspace,
-            expectedRevision: state.snapshot.revision,
-            operationId: crypto.randomUUID(),
-          },
-        });
+        try {
+          return await send();
+        } catch (error) {
+          if (!retry || error?.code !== 'stale_view') throw error;
+          // A background sync moved the revision. Rebase onto the fresh snapshot, once, with the same operation ID.
+          await refresh();
+          return await send();
+        }
       } finally {
         await refresh();
       }

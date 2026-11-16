@@ -58,6 +58,10 @@ async function mutate(op, data = {}, workspaceId) {
   const scope = workspaceId ?? [...document.querySelectorAll('.ws-modal[open]')].at(-1)?.dataset.workspaceId;
   try {
     return await store.mutate(op, data, scope);
+  } catch (err) {
+    // Surfaces through the shared error toast, including from modal submit handlers.
+    if (err?.code === 'stale_view') err.message = 'Your inbox or calendar updated while this was open. Review the latest details and try again.';
+    throw err;
   } finally {
     if (ready && !modalOpen() && !legacyMounted) await render();
     flushNotification();

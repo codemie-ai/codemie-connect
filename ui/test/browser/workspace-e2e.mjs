@@ -118,6 +118,9 @@ function installBridge({ snapshot, connected }) {
         if (cmd === 'workspace_installer_busy') return null;
         if (cmd !== 'workspace_request') throw new Error(`Unexpected native command ${cmd}`);
         const r = args.request;
+        // Fake background sync: bump the revision once so the next fenced write is stale.
+        if (window.__syncBump && r.op !== 'snapshot') { window.__syncBump = false; s.revision++; }
+        if (r.op !== 'snapshot' && r.expectedRevision !== undefined && r.expectedRevision !== s.revision) throw { code: 'stale_view', message: 'This view changed.' };
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = op(r.data || {}, r.workspaceId);
@@ -325,6 +328,18 @@ for (const theme of ['dark', 'light']) {
     assert(btn[0] === 28 && btn[1] === '12px' && btn[2] === '600' && btn[3] === '8px', `button ${btn}`);
     const font = await page.evaluate(() => getComputedStyle(document.querySelector('#workspace-app')).fontFamily);
     assert(/GeistMono/.test(font), font);
+  });
+
+  await check(`${theme}: settings save during sync succeeds`, async () => {
+    await page.click('.ws-nav button[data-route=settings]');
+    await page.click('.ws-settings-nav button[data-tab=notifications]');
+    const toggle = page.locator('[data-key=criticalRepeat]');
+    const before = await toggle.isChecked();
+    await page.evaluate(() => { window.__syncBump = true; });
+    await page.locator('.ws-switch:has([data-key=criticalRepeat])').click();
+    await page.waitForTimeout(300);
+    assert(await page.locator('.ws-toasts .ws-toast-error').count() === 0, `an error toast appeared: ${await page.locator('.ws-toasts .ws-toast-error').allInnerTexts()}`);
+    assert(await page.locator('[data-key=criticalRepeat]').isChecked() !== before, 'setting did not persist after the sync');
   });
 
   await check(`${theme}: Workspaces create and switch`, async () => {
