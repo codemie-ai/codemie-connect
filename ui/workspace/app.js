@@ -12,7 +12,7 @@ import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
 import { inbox, filteredMessages, snoozeUntil } from './view-inbox.js';
 import { settings, LEGACY_TABS, SETTINGS_TABS } from './view-settings.js';
 import { renderShell } from './shell.js';
-import { bootWorkspace } from './boot.js';
+import { bootWorkspace, notificationWorkspaceToSelect } from './boot.js';
 
 const ROUTES = ['today', 'calendar', 'inbox', 'settings'];
 const root = document.getElementById('workspace-app');
@@ -874,7 +874,8 @@ async function openNotification(payload) {
     return;
   }
   await savePendingNote();
-  if (payload.workspaceId && payload.workspaceId !== snap().settings.activeWorkspace) await mutate('workspace_select', { id: payload.workspaceId });
+  const select = notificationWorkspaceToSelect(payload, snap().settings.activeWorkspace);
+  if (select) await mutate('workspace_select', { id: select });
   await store.refresh();
   if (payload.itemId) {
     const m = getRecord('message', payload.itemId);

@@ -1169,6 +1169,9 @@ impl Core {
     fn deliver_notification(&self, job: &Job) -> Result<String> {
         let mut r = self.repo()?;
         r.check_claim(&job.id, job.attempts)?;
+        if job_paused(job) {
+            return Ok("Skipped: workspaces are hidden".into());
+        }
         r.check_policy(
             job.workspace_id.as_deref(),
             job.connection_id.as_deref(),
@@ -1469,7 +1472,18 @@ pub(crate) const WORKSPACES_HIDDEN: bool = true;
 
 /// Whether a workspace may run background work (schedules, critical alerts).
 fn background_active(w: &Workspace) -> bool {
-    !WORKSPACES_HIDDEN || w.id == "personal"
+    workspace_id_active(&w.id)
+}
+
+fn workspace_id_active(id: &str) -> bool {
+    !WORKSPACES_HIDDEN || id == "personal"
+}
+
+/// Queued jobs of a hidden workspace are not delivered.
+fn job_paused(job: &Job) -> bool {
+    job.workspace_id
+        .as_deref()
+        .is_some_and(|id| !workspace_id_active(id))
 }
 
 fn materialize_due_schedules(r: &mut Repository) -> Result<()> {
@@ -1794,7 +1808,6 @@ mod tests {
             })
             .unwrap();
         }
-        assert!(WORKSPACES_HIDDEN);
         materialize_due_schedules(&mut r).unwrap();
         let keys: Vec<_> = r
             .jobs()
@@ -1809,6 +1822,12 @@ mod tests {
         // Critical alerts follow the same rule.
         assert!(background_active(&r.workspace("personal").unwrap()));
         assert!(!background_active(&r.workspace("atlas").unwrap()));
+        // Already-queued jobs of a hidden workspace are not delivered either.
+        let queued = r.jobs().unwrap().remove(0);
+        assert!(!job_paused(&queued));
+        let mut atlas_job = queued.clone();
+        atlas_job.workspace_id = Some("atlas".into());
+        assert!(job_paused(&atlas_job));
     }
     #[test]
     fn sign_in_defaults_to_read_capabilities_and_keeps_explicit_writes() {

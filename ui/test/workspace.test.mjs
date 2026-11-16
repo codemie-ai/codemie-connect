@@ -15,7 +15,7 @@ import { today, todayModel } from '../workspace/view-today.js';
 import { calendar, periodTitle, eventDetails } from '../workspace/view-calendar.js';
 import { settings } from '../workspace/view-settings.js';
 import { renderShell, NAV } from '../workspace/shell.js';
-import { bootWorkspace } from '../workspace/boot.js';
+import { bootWorkspace, notificationWorkspaceToSelect } from '../workspace/boot.js';
 import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
 
 // ---------------------------------------------------------------- store
@@ -403,4 +403,12 @@ test('boot_does_nothing_when_personal_is_active', async () => {
   const store = { mutate: async (...args) => { calls.push(args); } };
   await bootWorkspace(store, { settings: { activeWorkspace: 'personal' } });
   assert.deepEqual(calls, []);
+});
+
+test('notifications never navigate into a hidden workspace', () => {
+  assert.equal(notificationWorkspaceToSelect({ workspaceId: 'atlas' }, 'personal'), null);
+  assert.equal(notificationWorkspaceToSelect({ workspaceId: 'atlas' }, 'atlas'), null);
+  assert.equal(notificationWorkspaceToSelect({ workspaceId: 'personal' }, 'personal'), null);
+  assert.equal(notificationWorkspaceToSelect({}, 'personal'), null);
+  assert.equal(notificationWorkspaceToSelect({ workspaceId: 'personal' }, 'atlas'), 'personal');
 });
