@@ -28,7 +28,6 @@ pub const REQUIRED_FLAGS: &[&str] = &[
     "--system-prompt",
 ];
 
-#[allow(dead_code)] // used from Task 5, through SystemProbe
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const CACHE_OK: Duration = Duration::from_secs(30);
 const CACHE_FAILED: Duration = Duration::from_secs(10);
@@ -50,7 +49,8 @@ pub enum ProfileState {
     TooOld,
     NeedsLogin,
     NotConfigured,
-    #[allow(dead_code)] // set by the UI layer in Task 5 while a refresh runs
+    /// Reserved for the UI while a refresh runs; detection itself never returns it.
+    #[allow(dead_code)] // the Settings UI (Task 6) shows it
     Checking,
     Error,
 }
@@ -229,7 +229,6 @@ pub trait CommandProbe: Send + Sync {
 }
 
 /// Real probe: no stdin, 15 s timeout, killed if dropped.
-#[allow(dead_code)] // used from Task 5
 pub struct SystemProbe;
 
 impl CommandProbe for SystemProbe {
@@ -270,7 +269,6 @@ pub struct DetectEnv {
 }
 
 impl DetectEnv {
-    #[allow(dead_code)] // used from Task 5
     pub fn system(extra_dirs: Vec<PathBuf>) -> Self {
         Self {
             path_var: std::env::var("PATH").unwrap_or_default(),
@@ -422,6 +420,9 @@ pub struct ProfileCache {
     probe: Arc<dyn CommandProbe>,
     env: DetectEnv,
     cached: Mutex<Option<Cached>>,
+    /// Tests of other modules pin the detected profiles instead of probing.
+    #[cfg(test)]
+    fixed: Option<Vec<AiProfile>>,
 }
 
 impl ProfileCache {
@@ -430,10 +431,18 @@ impl ProfileCache {
             probe,
             env,
             cached: Mutex::new(None),
+            #[cfg(test)]
+            fixed: None,
         }
     }
 
-    #[allow(dead_code)] // used from Task 5
+    #[cfg(test)]
+    pub fn fixed(profiles: Vec<AiProfile>) -> Self {
+        let mut cache = Self::system(Vec::new());
+        cache.fixed = Some(profiles);
+        cache
+    }
+
     pub fn system(extra_dirs: Vec<PathBuf>) -> Self {
         Self::new(Arc::new(SystemProbe), DetectEnv::system(extra_dirs))
     }
@@ -446,8 +455,11 @@ impl ProfileCache {
             .map(|c| c.profiles.clone())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // used from Task 5
     pub async fn profiles(&self) -> Vec<AiProfile> {
+        #[cfg(test)]
+        if let Some(p) = &self.fixed {
+            return p.clone();
+        }
         if let Some(p) = self.fresh() {
             return p;
         }
@@ -463,7 +475,6 @@ impl ProfileCache {
     }
 
     /// Forget the cached result (Settings opened, or Test pressed).
-    #[cfg_attr(not(test), allow(dead_code))] // used from Task 5
     pub fn invalidate(&self) {
         *self.cached.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }

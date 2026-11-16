@@ -11,6 +11,10 @@ pub mod models;
 pub mod repository;
 pub mod schedules;
 
+use crate::ai::{
+    profiles::{DetectEnv, ProfileCache},
+    runner::{ClaudeRunner, CliRunner},
+};
 use models::*;
 use repository::Repository;
 use serde_json::{json, Value};
@@ -24,6 +28,7 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
+use tokio_util::sync::CancellationToken;
 
 pub struct WorkspaceState {
     pub core: Option<Arc<Core>>,
@@ -33,14 +38,18 @@ pub struct Core {
     repository: Mutex<Repository>,
     pub data_dir: PathBuf,
     _owner: File,
-    app: tauri::AppHandle,
+    /// `None` only in unit tests, which have no webview runtime.
+    app: Option<tauri::AppHandle>,
     pub auth_attempt: tokio::sync::Mutex<Option<String>>,
     pub auth_error: tokio::sync::Mutex<Option<String>>,
     pub session: tokio::sync::Mutex<graph::Session>,
     pub sync_lock: tokio::sync::Mutex<()>,
-    pub ai_lock: tokio::sync::Mutex<()>,
-    ai_dispatch: tokio::sync::Mutex<()>,
-    ai_child: Mutex<Option<tokio::process::Child>>,
+    /// Runs Claude for every AI feature (the CLI runner in production).
+    runner: Arc<dyn ClaudeRunner>,
+    /// Detected Claude profiles, cached for 30 s.
+    profiles: ProfileCache,
+    /// Cancelled when the app quits, so no Claude process outlives it.
+    ai_cancel: CancellationToken,
     graph_children: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
     /// `{connectionId}:{calendarId}` -> last full calendarView refresh (unix seconds).
     calendar_refreshed: Mutex<std::collections::HashMap<String, i64>>,
@@ -50,6 +59,26 @@ pub struct Core {
 }
 impl Core {
     pub fn open(app: tauri::AppHandle, root: &Path) -> Result<Arc<Self>> {
+        // The bundled `codemie-claude` shim is searched after the user's own install.
+        let extra_dirs: Vec<PathBuf> = app
+            .path()
+            .resource_dir()
+            .map(|d| vec![d.join("bin")])
+            .unwrap_or_default();
+        let env = DetectEnv::system(extra_dirs.clone());
+        Self::open_with(
+            Some(app),
+            root,
+            Arc::new(CliRunner::new(env)),
+            ProfileCache::system(extra_dirs),
+        )
+    }
+    fn open_with(
+        app: Option<tauri::AppHandle>,
+        root: &Path,
+        runner: Arc<dyn ClaudeRunner>,
+        profiles: ProfileCache,
+    ) -> Result<Arc<Self>> {
         std::fs::create_dir_all(root)?;
         #[cfg(unix)]
         {
@@ -79,9 +108,9 @@ impl Core {
             auth_error: Default::default(),
             session: Default::default(),
             sync_lock: Default::default(),
-            ai_lock: Default::default(),
-            ai_dispatch: Default::default(),
-            ai_child: Default::default(),
+            runner,
+            profiles,
+            ai_cancel: CancellationToken::new(),
             graph_children: Default::default(),
             calendar_refreshed: Default::default(),
             mutations: Default::default(),
@@ -91,7 +120,7 @@ impl Core {
     }
     pub fn stop_background(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        self.cancel_ai_process();
+        self.ai_cancel.cancel();
         if let Ok(mut children) = self.graph_children.lock() {
             for (_, mut child) in children.drain() {
                 let _ = child.start_kill();
@@ -115,12 +144,10 @@ impl Core {
             }
         }
     }
-    fn cancel_ai_process(&self) {
-        if let Ok(mut slot) = self.ai_child.lock() {
-            if let Some(mut child) = slot.take() {
-                let _ = child.start_kill();
-            }
-        }
+    fn app(&self) -> Result<&tauri::AppHandle> {
+        self.app
+            .as_ref()
+            .ok_or_else(|| WorkspaceError::new("io", "This action needs the application window."))
     }
     pub fn repo(&self) -> Result<MutexGuard<'_, Repository>> {
         self.repository.lock().map_err(|_| {
@@ -128,12 +155,15 @@ impl Core {
         })
     }
     pub fn emit(&self, event: &str) {
-        let _ = self.app.emit(event, json!({"changed":true}));
+        if let Some(app) = &self.app {
+            let _ = app.emit(event, json!({"changed":true}));
+        }
     }
     pub fn start(self: &Arc<Self>) {
-        geometry::restore(&self.app, &self.data_dir);
-        let click_app = self.app.clone();
-        let _ = self.app.notification().on_action(move |action| {
+        let Some(app) = self.app.clone() else { return };
+        geometry::restore(&app, &self.data_dir);
+        let click_app = app.clone();
+        let _ = app.notification().on_action(move |action| {
             if action.action_id() == "dismiss" {
                 return;
             }
@@ -189,7 +219,8 @@ impl Core {
                 }
                 let visible = core
                     .app
-                    .get_webview_window("main")
+                    .as_ref()
+                    .and_then(|a| a.get_webview_window("main"))
                     .and_then(|w| w.is_visible().ok())
                     .unwrap_or(false);
                 if now() - last_sync > if visible { 60 } else { 300 } {
@@ -420,6 +451,13 @@ impl Core {
                 json!({"snapshot":snapshot,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
             );
         }
+        // Read-only: no operation id, no revision bump.
+        if req.op == Operation::AiStatus {
+            return self.ai_status(&req).await;
+        }
+        if req.op == Operation::AiUsage {
+            return self.ai_usage(&req);
+        }
         if req.op == Operation::GraphCancel {
             *self.auth_attempt.lock().await = None;
             return Ok(json!({"cancelled":true}));
@@ -458,7 +496,7 @@ impl Core {
                 | Operation::SourcesMore
                 | Operation::ActionPrepare
                 | Operation::ActionConfirm
-                | Operation::AiProbe
+                | Operation::AiTest
                 | Operation::JobCancel
         );
         let _mutation_guard = if synchronous {
@@ -499,7 +537,6 @@ impl Core {
                         "focus".into(),
                     ],
                     widget_widths: json!({}),
-                    ai_profile: None,
                 };
                 r.save_workspace(&w)?;
                 let mut s = r.settings()?;
@@ -562,9 +599,6 @@ impl Core {
                         ));
                     }
                     w.widget_widths = json!(widths);
-                }
-                if let Some(profile) = req.data.get("aiProfile") {
-                    w.ai_profile = profile.as_str().map(String::from);
                 }
                 w.revision += 1;
                 r.save_workspace(&w)?;
@@ -755,11 +789,6 @@ impl Core {
                 json!({"deleted":true})
             }
             Operation::JobCancel | Operation::JobRetry => {
-                let _dispatch = if req.op == Operation::JobCancel {
-                    Some(self.ai_dispatch.lock().await)
-                } else {
-                    None
-                };
                 let (w, _) = self.active_workspace(&req, false)?;
                 let mut r = self.repo()?;
                 let jid = required(&req.data, "id", 200)?;
@@ -771,9 +800,6 @@ impl Core {
                             && (j.workspace_id.as_deref() == Some(&w.id) || j.kind == "sync")
                     })
                     .ok_or_else(|| WorkspaceError::new("not_found", "Job is unavailable."))?;
-                let cancel_running_ai = req.op == Operation::JobCancel
-                    && job.kind == "ai_draft"
-                    && job.state == "running";
                 if req.op == Operation::JobRetry {
                     if matches!(job.kind.as_str(), "notification" | "send" | "reminder") {
                         return Err(WorkspaceError::new(
@@ -797,21 +823,22 @@ impl Core {
                     job.state = "cancelled".into();
                 }
                 r.save_job(&job)?;
-                if cancel_running_ai {
-                    self.cancel_ai_process();
-                }
                 if req.op == Operation::JobCancel {
                     self.cancel_graph_job(&job.id);
                 }
                 json!({"saved":true})
             }
             Operation::NotificationPermission => {
-                let permission = self.app.notification().request_permission().map_err(|_| {
-                    WorkspaceError::new(
-                        "notification",
-                        "Cannot request OS notifications. Open system notification settings.",
-                    )
-                })?;
+                let permission = self
+                    .app()?
+                    .notification()
+                    .request_permission()
+                    .map_err(|_| {
+                        WorkspaceError::new(
+                            "notification",
+                            "Cannot request OS notifications. Open system notification settings.",
+                        )
+                    })?;
                 let mut r = self.repo()?;
                 let mut s = r.settings()?;
                 s.notifications = permission == tauri_plugin_notification::PermissionState::Granted;
@@ -845,7 +872,8 @@ impl Core {
                 ))?;
                 json!({"queued":true})
             }
-            Operation::AiProbe => self.ai_probe().await?,
+            Operation::AiSettingsSave => self.ai_settings_save(&req).await?,
+            Operation::AiTest => self.ai_test(&req).await?,
             Operation::AiDraft => self.queue_ai_draft(&req)?,
             Operation::BriefGenerate => {
                 let (w, _) = self.active_workspace(&req, false)?;
@@ -881,7 +909,7 @@ impl Core {
         }
         if let Some(v) = data["launchAtLogin"].as_bool() {
             use tauri_plugin_autostart::ManagerExt;
-            let launch = self.app.autolaunch();
+            let launch = self.app()?.autolaunch();
             (if v { launch.enable() } else { launch.disable() }).map_err(|_| {
                 WorkspaceError::new(
                     "io",
@@ -1296,7 +1324,7 @@ impl Core {
         submitting.payload["dispatchStartedAt"] = now().into();
         r.save_job(&submitting)?;
         // Keep the repository guard through submission so ack/policy writes cannot overtake dispatch.
-        self.app
+        self.app()?
             .notification()
             .builder()
             .id(nid)
@@ -1728,6 +1756,16 @@ pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::erro
     }
     tray.build(app)?;
     Ok(())
+}
+
+/// A `Core` with no window, a scripted runner and a fixed profile list, for unit tests.
+#[cfg(test)]
+pub(crate) fn test_core(
+    dir: &Path,
+    runner: Arc<dyn ClaudeRunner>,
+    profiles: Vec<crate::ai::profiles::AiProfile>,
+) -> Arc<Core> {
+    Core::open_with(None, dir, runner, ProfileCache::fixed(profiles)).unwrap()
 }
 
 #[cfg(test)]

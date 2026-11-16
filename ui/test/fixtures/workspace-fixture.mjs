@@ -132,8 +132,8 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
       activeConnection: connected ? CID : null, notificationPermission: 'os_managed', focusUntil: null,
     },
     workspaces: [
-      { id: 'personal', name: 'Personal', color: '#2297F6', archived: false, isDefault: true, connectionId: connected ? CID : null, revision: 3, accessRevision: 1, profileRevision: 0, sources: { all: true }, layout: ['brief', 'focus', 'calendar', 'inbox', 'commitments'], widgetWidths: {}, aiProfile: null },
-      { id: 'atlas', name: 'Project Atlas', color: '#7B3FBF', archived: false, isDefault: false, connectionId: connected ? CID : null, revision: 1, accessRevision: 1, profileRevision: 0, sources: { all: true }, layout: ['brief', 'calendar', 'commitments'], widgetWidths: {}, aiProfile: null },
+      { id: 'personal', name: 'Personal', color: '#2297F6', archived: false, isDefault: true, connectionId: connected ? CID : null, revision: 3, accessRevision: 1, profileRevision: 0, sources: { all: true }, layout: ['brief', 'focus', 'calendar', 'inbox', 'commitments'], widgetWidths: {} },
+      { id: 'atlas', name: 'Project Atlas', color: '#7B3FBF', archived: false, isDefault: false, connectionId: connected ? CID : null, revision: 1, accessRevision: 1, profileRevision: 0, sources: { all: true }, layout: ['brief', 'calendar', 'commitments'], widgetWidths: {} },
     ],
     connection,
     records: connected ? [...events, ...messages, calendars, chats, ...windows, ...localRecords] : localRecords,

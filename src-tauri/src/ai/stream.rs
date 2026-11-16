@@ -260,6 +260,7 @@ impl RunOutcome {
 }
 
 /// Whole-output convenience over [`StreamParser`].
+#[cfg(test)]
 pub fn parse_stream<'a>(lines: impl IntoIterator<Item = &'a str>) -> Result<RunOutcome, AiError> {
     let mut p = StreamParser::new();
     for l in lines {

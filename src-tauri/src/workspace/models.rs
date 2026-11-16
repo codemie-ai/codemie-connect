@@ -80,7 +80,10 @@ pub enum Operation {
     NotificationTest,
     OpenSource,
     Export,
-    AiProbe,
+    AiStatus,
+    AiSettingsSave,
+    AiTest,
+    AiUsage,
     AiDraft,
     BriefGenerate,
 }
@@ -103,7 +106,6 @@ pub struct Workspace {
     pub layout: Vec<String>,
     #[serde(default = "empty_object")]
     pub widget_widths: Value,
-    pub ai_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -163,6 +165,7 @@ pub struct Settings {
     pub active_connection: Option<String>,
     pub notification_permission: String,
     pub focus_until: Option<i64>,
+    pub ai: AiSettings,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -183,8 +186,36 @@ impl Default for Settings {
             active_connection: None,
             notification_permission: "not_requested".into(),
             focus_until: None,
+            ai: AiSettings::default(),
         }
     }
+}
+
+/// What a Claude run is for; each purpose can be routed to its own profile and model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Purpose {
+    MailDraft,
+    ChatDraft,
+    Summary,
+    Automation,
+    Plugin,
+}
+/// An empty route uses the default profile.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Route {
+    pub profile: Option<String>,
+    pub model: Option<String>,
+}
+
+/// `settings.ai`. `default_profile` stays `None` until the user chooses one, so no
+/// provider receives message text without an explicit choice.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AiSettings {
+    pub default_profile: Option<String>,
+    pub routes: std::collections::BTreeMap<Purpose, Route>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

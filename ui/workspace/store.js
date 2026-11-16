@@ -2,7 +2,7 @@
 // snapshot, so the UI never renders optimistic state that native storage rejected.
 // Operations whose outcome does not depend on what the user was looking at, so a
 // background sync bumping the revision may safely rebase them onto the fresh snapshot.
-export const REBASE_SAFE = new Set(['settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select']);
+export const REBASE_SAFE = new Set(['settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save']);
 
 export function createStore(invoke) {
   let state = null;

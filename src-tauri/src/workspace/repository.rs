@@ -74,7 +74,6 @@ impl Repository {
                 "commitments".into(),
             ],
             widget_widths: json!({}),
-            ai_profile: None,
         };
         db.execute(
             "INSERT OR IGNORE INTO workspaces VALUES('personal',?1)",
@@ -84,6 +83,10 @@ impl Repository {
         db.execute("UPDATE jobs SET state='failed',lease_until=NULL,body=json_set(body,'$.state','failed','$.leaseUntil',NULL,'$.result','Interrupted OS/network submission; check Activity before creating a new occurrence') WHERE state='running' AND json_extract(body,'$.kind') IN ('notification','reminder','send')",[])?;
         db.execute("UPDATE jobs SET state='queued',lease_until=NULL,body=json_set(body,'$.state','queued','$.leaseUntil',NULL,'$.result','Recovered after app restart') WHERE state='running'",[])?;
         db.execute("UPDATE records SET body=json_set(body,'$.state','unknown_outcome','$.message','Interrupted during dispatch. Check the provider before creating another action.') WHERE kind='action' AND json_extract(body,'$.state')='dispatching'",[])?;
+        // Milestone 2 removed the per-workspace AI pin (`aiProfile`, only ever `claude-api`).
+        // Drop it and cancel drafts that were queued for it; no other data is touched.
+        db.execute("UPDATE workspaces SET body=json_remove(body,'$.aiProfile') WHERE json_type(body,'$.aiProfile') IS NOT NULL",[])?;
+        db.execute("UPDATE jobs SET state='cancelled',lease_until=NULL,body=json_set(body,'$.state','cancelled','$.leaseUntil',NULL,'$.result','AI drafts moved to Claude settings; request the draft again') WHERE state IN ('queued','blocked','running') AND json_extract(body,'$.kind')='ai_draft' AND json_extract(body,'$.payload.profile')='claude-api'",[])?;
         let mut repo = Self { db };
         // Earlier builds required manual binding and source picking. Best effort: never blocks opening.
         let _ = repo.bind_default_to_active();
@@ -330,6 +333,45 @@ impl Repository {
         tx.commit()?;
         Ok(())
     }
+    /// Appends one `ai_run` usage record. It does not bump the revision: a run finishing is
+    /// not a change the open views must reconcile with.
+    pub fn put_ai_run(&mut self, record: &Record) -> Result<()> {
+        let tx = self.db.transaction()?;
+        put_record(&tx, record)?;
+        tx.commit()?;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub fn records_of_kind(&self, kind: &str) -> Result<Vec<Record>> {
+        let mut stmt = self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE kind=?1")?;
+        let rows = stmt
+            .query_map([kind], record_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+    /// Runs and cost of one month (`YYYY-MM`), in total and per profile.
+    pub fn ai_usage(&self, month: &str) -> Result<Value> {
+        let mut stmt = self.db.prepare(
+            "SELECT ifnull(json_extract(body,'$.profile'),''), count(*), ifnull(sum(json_extract(body,'$.costUsd')),0.0) FROM records WHERE kind='ai_run' AND json_extract(body,'$.month')=?1 GROUP BY 1 ORDER BY 1",
+        )?;
+        let rows = stmt
+            .query_map([month], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, f64>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut by_profile = serde_json::Map::new();
+        let (mut runs, mut cost) = (0, 0.0);
+        for (profile, n, c) in rows {
+            runs += n;
+            cost += c;
+            by_profile.insert(profile, json!({"runs":n,"costUsd":c}));
+        }
+        Ok(json!({"month":month,"runs":runs,"costUsd":cost,"byProfile":by_profile}))
+    }
     pub fn settings_update(&mut self, settings: &Settings) -> Result<()> {
         let tx = self.db.transaction()?;
         tx.execute(
@@ -349,12 +391,7 @@ impl Repository {
         let mut saved = ws.clone();
         saved.access_revision =
             previous.as_ref().map(|w| w.access_revision).unwrap_or(0) + i64::from(scope_changed);
-        saved.profile_revision = previous.as_ref().map(|w| w.profile_revision).unwrap_or(0)
-            + i64::from(
-                previous
-                    .as_ref()
-                    .is_some_and(|old| old.ai_profile != ws.ai_profile),
-            );
+        saved.profile_revision = previous.as_ref().map(|w| w.profile_revision).unwrap_or(0);
         let mut connections = Vec::new();
         if scope_changed {
             for cid in previous
@@ -887,6 +924,7 @@ impl Repository {
         }
         Ok(())
     }
+    #[allow(dead_code)] // used from Task 7 (drafts)
     pub fn ai_job_source(&self, job: &Job) -> Result<Record> {
         self.check_claim(&job.id, job.attempts)?;
         self.check_policy(
@@ -904,9 +942,7 @@ impl Repository {
             .ok_or_else(|| WorkspaceError::new("cancelled", "Missing AI account."))?;
         let w = self.workspace(wid)?;
         let c = self.connection(cid)?;
-        if w.profile_revision != job.payload["profileRevision"].as_i64().unwrap_or(-1)
-            || w.ai_profile.as_deref() != job.payload["profile"].as_str()
-        {
+        if w.profile_revision != job.payload["profileRevision"].as_i64().unwrap_or(-1) {
             return Err(WorkspaceError::new(
                 "cancelled",
                 "The queued AI profile changed.",
@@ -1354,7 +1390,6 @@ mod tests {
             sources,
             layout: vec![],
             widget_widths: json!({}),
-            ai_profile: None,
         }
     }
     #[test]
@@ -2126,6 +2161,59 @@ mod tests {
         assert_eq!(rows[1].data["lane"], "waiting");
     }
     #[test]
+    fn open_migrates_claude_api_pin_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        drop(Repository::open(&path).unwrap());
+        {
+            let raw = Sqlite::open(&path).unwrap();
+            raw.execute(
+                "UPDATE workspaces SET body=json_set(body,'$.aiProfile','claude-api','$.name','Mine') WHERE id='personal'",
+                [],
+            )
+            .unwrap();
+            raw.execute(
+                "INSERT INTO workspaces VALUES('atlas',json_set((SELECT body FROM workspaces WHERE id='personal'),'$.id','atlas','$.isDefault',json('false'),'$.aiProfile',json('null')))",
+                [],
+            )
+            .unwrap();
+            let job = Job {
+                id: "j1".into(),
+                kind: "ai_draft".into(),
+                key: "k1".into(),
+                state: "queued".into(),
+                workspace_id: Some("personal".into()),
+                connection_id: None,
+                due_at: now(),
+                lease_until: None,
+                attempts: 0,
+                policy: json!({}),
+                payload: json!({"profile":"claude-api"}),
+                result: None,
+            };
+            raw.execute(
+                "INSERT INTO jobs VALUES('j1','k1','queued',?1,NULL,?2)",
+                params![job.due_at, encode(&job).unwrap()],
+            )
+            .unwrap();
+        }
+        let r = Repository::open(&path).unwrap();
+        for id in ["personal", "atlas"] {
+            let body: String =
+                r.db.query_row("SELECT body FROM workspaces WHERE id=?1", [id], |x| {
+                    x.get(0)
+                })
+                .unwrap();
+            assert!(!body.contains("aiProfile"), "{id}: {body}");
+            assert!(r.workspace(id).is_ok());
+        }
+        assert_eq!(r.workspace("personal").unwrap().name, "Mine");
+        assert_eq!(r.jobs().unwrap()[0].state, "cancelled");
+        // Idempotent.
+        drop(r);
+        assert!(Repository::open(&path).is_ok());
+    }
+    #[test]
     fn one_ai_claim_leaves_capacity_for_due_reminders_and_preserves_queued_profile() {
         let dir = tempfile::tempdir().unwrap();
         let mut r = Repository::open(&dir.path().join("db")).unwrap();
@@ -2184,9 +2272,6 @@ mod tests {
         let mut r = Repository::open(&dir.path().join("db")).unwrap();
         let c = connection("a");
         bind(&mut r, &c);
-        let mut w = r.workspace("personal").unwrap();
-        w.ai_profile = Some("claude-api".into());
-        r.save_workspace(&w).unwrap();
         let w = r.workspace("personal").unwrap();
         r.put_record(&item(
             "a",

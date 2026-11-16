@@ -645,26 +645,6 @@ async function handle(action, el) {
       field.defaultValue = field.value;
       return toast('Draft saved on this device.', 'success');
     }
-    case 'ai-probe': { const r = await mutate('ai_probe'); return toast(r.message); }
-    case 'ai-pin': {
-      const r = await mutate('ai_probe');
-      if (!r.ready) throw new Error(r.message);
-      await mutate('workspace_update', { aiProfile: 'claude-api' });
-      return toast('Claude API profile pinned.', 'success');
-    }
-    case 'ai-draft': await mutate('ai_draft', { sourceId: id }); return toast('AI draft requested. Load it when Activity shows it is ready.');
-    case 'ai-load': {
-      await store.refresh();
-      const threadIds = new Set(conversation(snap(), getRecord('message', id)).map(t => t.id));
-      const candidate = records(snap(), 'draft').filter(r => threadIds.has(r.data.sourceId) && r.data.aiSuggested).sort((a, b) => b.updatedAt - a.updatedAt)[0];
-      if (!candidate) return toast('No AI draft yet. Check Activity for its status.');
-      const field = document.getElementById('reply-body');
-      if (field.value.trim() && field.value !== candidate.data.text) {
-        return confirmModal({ title: 'Replace your text?', text: 'Load the AI draft into the editor. Review it before sending.', confirm: 'Load draft', onConfirm: () => { field.value = candidate.data.text; } });
-      }
-      field.value = candidate.data.text;
-      return;
-    }
     case 'action-detail': {
       const r = getRecord('action', id);
       if (r.data.state === 'prepared') return reviewAction({ actionId: r.id, workspaceId: r.workspaceId, nonce: r.data.nonce, account: r.data.account, review: r.data.review });

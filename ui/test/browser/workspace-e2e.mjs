@@ -104,7 +104,6 @@ function installBridge({ snapshot, connected }) {
     notification_permission: () => ({ permission: 'os_managed' }),
     notification_test: () => ({ queued: true }),
     export: () => ({ version: 1, workspaces: [], records: [] }),
-    ai_probe: () => ({ ready: false, message: 'No isolated Claude API profile is configured.' }),
     action_prepare: () => fail('permission_required', 'Allow replies in Settings first.'),
   };
   window.__bridgeCalls = calls;

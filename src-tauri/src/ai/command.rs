@@ -35,6 +35,8 @@ pub struct RunSpec {
     pub input: Value,
     pub schema: Option<Value>,
     pub timeout: Duration,
+    /// Spend ceiling; callers set it from Task 7 on, and the runner does not enforce it yet.
+    #[allow(dead_code)]
     pub cap_usd: Option<f64>,
     pub staging_root: PathBuf,
 }

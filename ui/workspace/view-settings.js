@@ -2,7 +2,7 @@
 import { escapeHtml as e } from './store.js';
 import { icon, microsoftLogo, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, badge, button, card, emptyState, field, select, settingRow, toggle, textInput, spinner } from './ui.js';
-import { active, records, syncRunning, sourceCounts, chatCatalog, connectionState } from './selectors.js';
+import { records, syncRunning, sourceCounts, chatCatalog, connectionState } from './selectors.js';
 import { calendarCatalog } from './calendar-model.js';
 import { formatDateTime, agoLabel } from './format.js';
 
@@ -64,7 +64,6 @@ export function settings(s, ctx) {
 // ---------------------------------------------------------------- General
 
 function generalPanel(s) {
-  const w = active(s);
   const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [s.settings.timeZone];
   return card({
     title: 'Workspace preferences', iconName: 'settings',
@@ -75,7 +74,7 @@ function generalPanel(s) {
       </form>
       ${settingRow({ title: 'Keep running in the menu bar', text: 'Closing the window keeps Connect syncing and reminding. Quit from the menu bar stops it.', control: toggle({ action: 'setting-toggle', checked: s.settings.background, attrs: { 'data-key': 'background', 'aria-label': 'Keep running in the menu bar' } }) })}
       ${settingRow({ title: 'Launch at login', text: 'Start Connect when you sign in to your computer.', control: toggle({ action: 'setting-toggle', checked: s.settings.launchAtLogin, attrs: { 'data-key': 'launchAtLogin', 'aria-label': 'Launch at login' } }) })}
-      ${settingRow({ title: 'AI reply drafts', text: w.aiProfile ? `Pinned profile: ${w.aiProfile}. Drafts are suggestions you review — AI never sends.` : 'Optional. Pin a verified Claude API profile to draft replies from Inbox messages.', control: `${button('Check', { action: 'ai-probe', variant: 'ghost' })}${button(w.aiProfile ? 'Re-pin' : 'Pin profile', { action: 'ai-pin' })}` })}`,
+      ${settingRow({ title: 'AI reply drafts', text: 'Claude settings arrive with the next update. Until then, write replies by hand; Connect never sends without your review.' })}`,
   });
 }
 

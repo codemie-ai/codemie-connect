@@ -8,14 +8,12 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-#[allow(dead_code)] // used from Task 5 tests
 #[derive(Default)]
 pub struct FakeRunner {
     script: Mutex<VecDeque<Result<RunOutcome, AiError>>>,
     calls: Mutex<Vec<RunSpec>>,
 }
 
-#[allow(dead_code)] // used from Task 5 tests
 impl FakeRunner {
     pub fn new(script: Vec<Result<RunOutcome, AiError>>) -> Self {
         Self {

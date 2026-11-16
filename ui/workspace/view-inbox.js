@@ -3,7 +3,7 @@
 import { escapeHtml as e } from './store.js';
 import { icon, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, badge, button, emptyState, segmented, checkbox, select } from './ui.js';
-import { LANES, laneLabel, visibleMessages, decisions, connectionState, messageTitle, conversation, can, records, active, collapseChats, messageKey } from './selectors.js';
+import { LANES, laneLabel, visibleMessages, decisions, connectionState, messageTitle, conversation, can, records, collapseChats, messageKey } from './selectors.js';
 import { formatDateTime, relativeAge } from './format.js';
 import { listTitle } from './view-today.js';
 
@@ -103,7 +103,6 @@ function reader(s, m, zone) {
   const canSend = can(s, isChat ? 'chat_send' : 'mail_send');
   const recipients = (d.to || []).map(r => r.emailAddress?.name || r.emailAddress?.address).filter(Boolean);
   const laneOptions = LANES.filter(([k]) => k !== 'decisions');
-  const w = active(s);
   return `<article class="ws-read" data-message-id="${e(m.id)}">
     <header class="ws-read-head">
       <div class="ws-read-badges">${badge(laneLabel(d.lane), LANE_TONE[d.lane] || 'neutral')}${badge(isChat ? 'Teams' : 'Outlook', 'neutral')}${d.lifecycle === 'archived' ? badge('Archived', 'neutral', 'archive') : ''}${d.snoozedUntil > Date.now() / 1000 ? badge(`Snoozed until ${formatDateTime(d.snoozedUntil, zone)}`, 'warning', 'snooze') : ''}</div>
@@ -134,7 +133,6 @@ function reader(s, m, zone) {
       <div class="ws-reply-actions">
         <span class="ws-muted ws-hint">${canSend ? 'You review every reply before it is sent.' : `Drafts stay on this device. Send from ${isChat ? 'Teams' : 'Outlook'}, or allow replies in Settings → Microsoft 365.`}</span>
         <span class="ws-actions">
-          ${w.aiProfile ? button('Draft with AI', { action: 'ai-draft', variant: 'magic', iconName: 'spark', attrs: { 'data-id': m.id } }) + button('Load AI draft', { action: 'ai-load', variant: 'ghost', attrs: { 'data-id': m.id } }) : ''}
           ${button('Save draft', { action: 'draft-save', attrs: { 'data-id': m.id } })}
           ${canSend ? button('Review & send', { type: 'submit', variant: 'primary', iconName: 'reply', disabled: unavailable }) : d.url ? button(isChat ? 'Reply in Teams' : 'Reply in Outlook', { action: 'source', iconName: 'external', attrs: { 'data-kind': 'message', 'data-id': m.id } }) : ''}
         </span>
