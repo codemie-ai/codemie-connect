@@ -1,0 +1,2 @@
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}
+{"type":"result","subtype":"success","is_error":false,"result":"fine"}

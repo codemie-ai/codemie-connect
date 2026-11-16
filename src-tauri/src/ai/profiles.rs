@@ -235,11 +235,16 @@ pub struct SystemProbe;
 impl CommandProbe for SystemProbe {
     fn run<'a>(&'a self, program: &'a Path, args: &'a [&'a str]) -> ProbeFuture<'a> {
         Box::pin(async move {
-            let child = tokio::process::Command::new(program)
+            let mut child = tokio::process::Command::new(program);
+            child
                 .args(args)
                 .stdin(std::process::Stdio::null())
-                .kill_on_drop(true)
-                .output();
+                .kill_on_drop(true);
+            // Detection sees the same environment as a run (only the native profile is probed).
+            for k in super::command::NATIVE_ENV_REMOVE {
+                child.env_remove(k);
+            }
+            let child = child.output();
             match tokio::time::timeout(PROBE_TIMEOUT, child).await {
                 Err(_) => Err("timed out".to_string()),
                 Ok(Err(e)) => Err(format!("could not run: {e}")),

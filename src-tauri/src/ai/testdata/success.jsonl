@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","model":"claude-haiku-4-5","claude_code_version":"2.1.322"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour"}}
+{"type":"result","subtype":"success","is_error":false,"result":"done","structured_output":{"draft":"Hello"},"num_turns":1,"duration_ms":2500,"total_cost_usd":0.0123,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":0},"modelUsage":{"claude-haiku-4-5":{"inputTokens":10}}}

@@ -1,0 +1,6 @@
+warning: something printed to stdout
+{"type":"system","subtype":"init","model":"m"}
+not json {
+[1,2,3]
+
+{"type":"result","subtype":"success","is_error":false,"result":"ok"}
