@@ -1,0 +1,61 @@
+{
+  "decision": "request-changes",
+  "rationale": "Edge-case lens ran clean; acceptance was genuine no-spec (no story/spec artifact, never dispatched) which floors confidence at low. 2.3 reachability checks dismissed 3 edge-case candidates as noise (unquoted-UninstallString split confirmed false via tauri-bundler's own quoting, HKLM/HKCU hive mismatch confirmed impossible since installMode has always been currentUser, manifest-cache race is a trivial needless-refetch). 1 finding (installer download/host/artifact verification) is deferred: the original task explicitly scopes it out (\"no artifact verification (deferred, leave a comment marking the hook point)\") and the code already carries that marker comment — see code-review-deferred.md. 4 blocking patch findings remain: commit-format violation on all 5 commits (standards, fail), NSIS uninstall exit code ignored, lost error logging on manifest-fetch failure, and undetected silent-installer launch failure before app exit.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires `<type>: <desc>` (feat|fix|docs|test|chore|refactor); all 5 commits use `EPMCDME-15055: <desc>` instead - none carry a recognized type prefix."},
+    {"kind": "code-quality", "status": "na", "notes": "no .ai-run/guides/standards/code-quality.md in the repo and no code_quality ArtifactRef was passed"},
+    {"kind": "security", "status": "na", "notes": "no .ai-run/guides/development/security-patterns.md in the repo and no security ArtifactRef was passed; a concrete security issue was found anyway and is reported in blocking_findings"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit messages (5 commits in range)",
+      "title": "Commit subjects lack required type prefix",
+      "problem": "All 5 commits in range use `EPMCDME-15055: <description>` instead of git-workflow.md's required `<type>: <short description>` format (type in feat|fix|docs|test|chore|refactor).",
+      "impact": "Violates the documented, blocking commit-format standard; breaks tooling/changelog generation that depends on conventional commit types.",
+      "recommendation": "Reword the commit subjects (or the squashed MR commit) to lead with a documented type, e.g. 'feat: spawn Windows installer silently with /S', keeping the EPMCDME-15055 reference in the body."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/installer-hooks.nsi",
+      "line": 29,
+      "title": "Prior-version uninstall exit code ignored",
+      "problem": "NSIS_HOOK_PREINSTALL reads the prior version's UninstallString and runs `ExecWait '$0 /S'` but never captures or checks the resulting exit code.",
+      "impact": "If the prior silent uninstall fails or hangs (locked files, permission denied), the new install proceeds over a failed/partial uninstall, corrupting install state.",
+      "recommendation": "Capture the ExecWait return value (e.g. `ExecWait '$0 /S' $1`) and Abort or surface a warning when it is non-zero."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/app_updater.rs",
+      "line": 278,
+      "title": "Manifest-fetch failures no longer logged",
+      "problem": "check_for_update's error arm now discards the error entirely (`Err(_e) => { ... }`, no eprintln), so invalid-manifest and network/parse failures are indistinguishable and unrecorded.",
+      "impact": "Update-check failures in the field can no longer be diagnosed from logs.",
+      "recommendation": "Log `_e` (e.g. `eprintln!(\"[app-updater] update check failed: {e}\")`) before discarding it."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src-tauri/src/commands/app_updater.rs",
+      "line": 371,
+      "title": "Silent installer launch failure undetected before app exit",
+      "problem": "launch_installer spawns the installer with /S (fire-and-forget via Command::spawn) and download_and_install sleeps 500ms then unconditionally calls app.exit(0), with no check that the spawned process is still running or exited non-zero.",
+      "impact": "If the silent installer fails immediately after spawn (corrupt exe, missing dependency, permission issue), the app has already exited with no new version installed and no visible error to the user.",
+      "recommendation": "After the wait, use try_wait() on the spawned child (Command::spawn's Child handle) to check for an early non-zero exit and report failure instead of blindly exiting."
+    }
+  ]
+}
