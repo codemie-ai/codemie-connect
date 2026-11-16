@@ -1,14 +1,24 @@
 //! Finding the `claude` and `codemie-claude` programs. Pure search over directories;
 //! nothing here runs a program.
 use std::cmp::Reverse;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// A regular file with an execute bit.
+#[cfg(unix)]
 fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// Windows has no execute bit: an existing `.exe` or `.cmd` file counts.
+#[cfg(not(unix))]
+fn is_executable(p: &Path) -> bool {
+    p.is_file()
+        && p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "exe" | "cmd"))
 }
 
 /// `v22.3.0` -> (22, 3, 0). Anything that is not a version sorts last.
@@ -77,7 +87,7 @@ pub fn find_program(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

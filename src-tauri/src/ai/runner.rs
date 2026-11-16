@@ -1,23 +1,15 @@
 //! The process runner every AI feature uses (DESIGN 6.2): one headless, tool-free
 //! `claude` per call, in its own process group and a throw-away working directory.
-use super::command::{build_command, RunSpec};
+use super::command::RunSpec;
 use super::profiles::{AiProfile, DetectEnv, ProfileKind};
-use super::stream::{AiError, ErrorClass, RunEvent, RunOutcome, StreamParser};
+use super::stream::{AiError, ErrorClass, RunEvent, RunOutcome};
 use futures_util::future::BoxFuture;
-use std::os::unix::fs::DirBuilderExt;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-const STDOUT_CAP: usize = 1024 * 1024;
-const STDERR_CAP: usize = 16 * 1024;
 const MAX_PARALLEL: usize = 2;
-const KILL_GRACE: Duration = Duration::from_secs(3);
-const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 
 /// Runs one Claude call. Object safe: Task 5 holds it as `Arc<dyn ClaudeRunner>`.
 pub trait ClaudeRunner: Send + Sync {
@@ -33,7 +25,9 @@ pub trait ClaudeRunner: Send + Sync {
 type Resolver = Arc<dyn Fn(&ProfileKind) -> Option<PathBuf> + Send + Sync>;
 
 pub struct CliRunner {
+    #[cfg_attr(not(unix), allow(dead_code))]
     permits: Arc<Semaphore>,
+    #[cfg_attr(not(unix), allow(dead_code))]
     resolve: Resolver,
 }
 
@@ -69,103 +63,146 @@ impl ClaudeRunner for CliRunner {
         cancel: CancellationToken,
         on_event: Box<dyn Fn(RunEvent) + Send>,
     ) -> BoxFuture<'a, Result<RunOutcome, AiError>> {
-        Box::pin(self.run_one(spec, profile, cancel, on_event))
-    }
-}
-
-/// Removes the staging directory when dropped, on every path.
-struct Staging(PathBuf);
-
-impl Drop for Staging {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn create_staging(root: &Path) -> std::io::Result<Staging> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(root)?;
-    let dir = root.join(uuid::Uuid::new_v4().to_string());
-    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
-    Ok(Staging(dir))
-}
-
-/// Owns the child's process group. Dropping an armed guard (a dropped run future)
-/// sends TERM now and KILL after the grace period.
-struct GroupGuard {
-    pgid: i32,
-    armed: bool,
-}
-
-impl GroupGuard {
-    fn signal(&self, sig: i32) {
-        // SAFETY: killpg takes plain integers; a stale group only yields ESRCH.
-        unsafe {
-            libc::killpg(self.pgid, sig);
+        #[cfg(unix)]
+        {
+            Box::pin(unix_run::run_one(self, spec, profile, cancel, on_event))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (spec, profile, cancel, on_event);
+            Box::pin(async {
+                Err(AiError {
+                    class: ErrorClass::Failed,
+                    message: "Claude runs are not supported on Windows yet.".to_string(),
+                })
+            })
         }
     }
 }
 
-impl Drop for GroupGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        self.signal(libc::SIGTERM);
-        let pgid = self.pgid;
-        std::thread::spawn(move || {
-            std::thread::sleep(KILL_GRACE);
-            // SAFETY: as above.
-            unsafe {
-                libc::killpg(pgid, libc::SIGKILL);
+#[cfg(unix)]
+mod unix_run {
+    use super::*;
+    use crate::ai::command::build_command;
+    use crate::ai::stream::StreamParser;
+    use std::os::unix::fs::DirBuilderExt;
+    use std::path::Path;
+    use std::process::Stdio;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const STDOUT_CAP: usize = 1024 * 1024;
+    const STDERR_CAP: usize = 16 * 1024;
+    const KILL_GRACE: Duration = Duration::from_secs(3);
+    const PROGRESS_EVERY: Duration = Duration::from_secs(1);
+
+    /// Removes the staging directory when dropped, on every path.
+    struct Staging(PathBuf);
+
+    impl Drop for Staging {
+        fn drop(&mut self) {
+            if let Err(e) = std::fs::remove_dir_all(&self.0) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!("ai: cannot remove staging dir: {e}");
+                }
             }
-        });
-    }
-}
-
-/// TERM the group, wait for the leader up to the grace period, then KILL.
-async fn terminate(child: &mut tokio::process::Child, guard: &mut GroupGuard) {
-    guard.signal(libc::SIGTERM);
-    if tokio::time::timeout(KILL_GRACE, child.wait())
-        .await
-        .is_err()
-    {
-        guard.signal(libc::SIGKILL);
-        let _ = child.wait().await;
-    }
-    guard.signal(libc::SIGKILL); // stragglers that outlived the leader
-    guard.armed = false;
-}
-
-fn lines_from(buf: &mut Vec<u8>, parser: &mut StreamParser, on_event: &dyn Fn(RunEvent)) {
-    while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
-        let line: Vec<u8> = buf.drain(..=pos).collect();
-        if let Some(ev) = parser.feed(&String::from_utf8_lossy(&line)) {
-            on_event(ev);
         }
     }
-}
 
-impl CliRunner {
-    async fn run_one(
-        &self,
+    fn create_staging(root: &Path) -> std::io::Result<Staging> {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(root)?;
+        let dir = root.join(uuid::Uuid::new_v4().to_string());
+        std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        Ok(Staging(dir))
+    }
+
+    /// Owns the child's process group. Dropping an armed guard (a dropped run future)
+    /// sends TERM now and KILL after the grace period.
+    struct GroupGuard {
+        pgid: i32,
+        armed: bool,
+    }
+
+    impl GroupGuard {
+        fn signal(&self, sig: i32) {
+            // SAFETY: killpg takes plain integers; a stale group only yields ESRCH.
+            unsafe {
+                libc::killpg(self.pgid, sig);
+            }
+        }
+
+        fn group_alive(&self) -> bool {
+            // SAFETY: signal 0 only checks that the group exists.
+            unsafe { libc::killpg(self.pgid, 0) == 0 }
+        }
+    }
+
+    impl Drop for GroupGuard {
+        fn drop(&mut self) {
+            if !self.armed {
+                return;
+            }
+            self.signal(libc::SIGTERM);
+            let pgid = self.pgid;
+            std::thread::spawn(move || {
+                std::thread::sleep(KILL_GRACE);
+                // SAFETY: as above.
+                unsafe {
+                    libc::killpg(pgid, libc::SIGKILL);
+                }
+            });
+        }
+    }
+
+    /// TERM the group and give every member (wrapper children included) the grace
+    /// period to leave, then KILL what remains.
+    async fn terminate(child: &mut tokio::process::Child, guard: &mut GroupGuard) {
+        guard.signal(libc::SIGTERM);
+        let all_gone = tokio::time::timeout(KILL_GRACE, async {
+            let _ = child.wait().await;
+            while guard.group_alive() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .is_ok();
+        if !all_gone {
+            guard.signal(libc::SIGKILL);
+            let _ = child.wait().await;
+        }
+        guard.armed = false;
+    }
+
+    fn lines_from(buf: &mut Vec<u8>, parser: &mut StreamParser, on_event: &dyn Fn(RunEvent)) {
+        while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=pos).collect();
+            if let Some(ev) = parser.feed(&String::from_utf8_lossy(&line)) {
+                on_event(ev);
+            }
+        }
+    }
+
+    pub(super) async fn run_one(
+        runner: &CliRunner,
         spec: RunSpec,
         profile: &AiProfile,
         cancel: CancellationToken,
         on_event: Box<dyn Fn(RunEvent) + Send>,
     ) -> Result<RunOutcome, AiError> {
         let err = |c| Err(AiError::new(c));
-        let Some(bin) = (self.resolve)(&profile.kind) else {
+        let Some(bin) = (runner.resolve)(&profile.kind) else {
             return err(ErrorClass::NotInstalled);
         };
         let _permit = tokio::select! {
-            p = self.permits.clone().acquire_owned() => p.map_err(|_| AiError::new(ErrorClass::Failed))?,
+            p = runner.permits.clone().acquire_owned() => p.map_err(|_| AiError::new(ErrorClass::Failed))?,
             _ = cancel.cancelled() => return err(ErrorClass::Cancelled),
         };
         let started = tokio::time::Instant::now();
-        let deadline = started + spec.timeout;
+        let sleep = tokio::time::sleep_until(started + spec.timeout);
+        tokio::pin!(sleep);
 
         let staging = create_staging(&spec.staging_root).map_err(|e| {
             log::warn!("ai: cannot create staging dir: {e}");
@@ -181,8 +218,7 @@ impl CliRunner {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
+            .process_group(0);
         let mut child = cmd.spawn().map_err(|e| {
             log::warn!("ai: cannot start {}: {e}", plan.program.display());
             AiError::new(ErrorClass::Failed)
@@ -195,12 +231,17 @@ impl CliRunner {
             return err(ErrorClass::Failed);
         }
 
-        // Input goes in, then stdin is closed so Claude sees end of input.
-        if let Some(mut stdin) = child.stdin.take() {
-            let input = spec.input.to_string();
-            let _ = stdin.write_all(input.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-        }
+        // Input is written by its own task, so a child that does not read stdin can
+        // never stall cancel or timeout. Stdin closes when the task ends.
+        let mut stdin = child.stdin.take().expect("piped");
+        let input = spec.input.to_string();
+        let stdin_task = tokio::spawn(async move {
+            if let Err(e) = stdin.write_all(input.as_bytes()).await {
+                log::warn!("ai: cannot write run input: {e}");
+            } else if let Err(e) = stdin.shutdown().await {
+                log::warn!("ai: cannot close run input: {e}");
+            }
+        });
         let mut stdout = child.stdout.take().expect("piped");
         let mut stderr = child.stderr.take().expect("piped");
         let stderr_task = tokio::spawn(async move {
@@ -224,8 +265,6 @@ impl CliRunner {
         let mut chunk = vec![0u8; 8192];
         let mut tick = tokio::time::interval(PROGRESS_EVERY);
         tick.tick().await;
-        let sleep = tokio::time::sleep_until(deadline);
-        tokio::pin!(sleep);
 
         loop {
             tokio::select! {
@@ -241,7 +280,11 @@ impl CliRunner {
                     on_event(RunEvent::Progress { elapsed_ms: started.elapsed().as_millis() as u64 });
                 }
                 n = stdout.read(&mut chunk) => match n {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
+                    Err(e) => {
+                        log::warn!("ai: cannot read run output: {e}");
+                        break;
+                    }
                     Ok(n) => {
                         total += n;
                         if total > STDOUT_CAP {
@@ -270,35 +313,31 @@ impl CliRunner {
             }
         }
         guard.armed = false;
+        stdin_task.abort();
         let stderr_text = tokio::time::timeout(Duration::from_secs(1), stderr_task)
             .await
             .ok()
             .and_then(|r| r.ok())
             .unwrap_or_default();
-        let mut outcome = parser.finish(&stderr_text)?;
-        if let Some(schema_wanted) = spec.schema.as_ref() {
-            if outcome.structured.is_none() {
-                // Some versions put the JSON in the text instead.
-                outcome.structured = serde_json::from_str(outcome.text.trim()).ok();
-                if outcome.structured.is_none() {
-                    log::warn!("ai: no structured output for schema {schema_wanted:.40}");
-                    return err(ErrorClass::InvalidOutput);
-                }
-            }
+        let outcome = parser.finish(&stderr_text)?;
+        if spec.schema.is_some() {
+            outcome.require_structured_object()
+        } else {
+            Ok(outcome)
         }
-        drop(staging);
-        Ok(outcome)
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::ai::profiles::{ProfileState, NATIVE_ID};
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::time::Duration;
 
-    fn native() -> AiProfile {
+    pub(super) fn native() -> AiProfile {
         AiProfile {
             id: NATIVE_ID.into(),
             kind: ProfileKind::Native,
@@ -341,6 +380,31 @@ mod tests {
     fn alive(pid: i32) -> bool {
         // SAFETY: signal 0 only checks existence.
         unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// Waits until the script has recorded `<shell pid> <background pid>`.
+    async fn wait_pids(file: &Path) -> Vec<i32> {
+        loop {
+            if let Ok(t) = std::fs::read_to_string(file) {
+                let ids: Vec<i32> = t
+                    .split_whitespace()
+                    .filter_map(|p| p.parse().ok())
+                    .collect();
+                if ids.len() == 2 {
+                    return ids;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    async fn assert_gone_and_clean(pids: &Path, stage: &Path) {
+        let ids = wait_pids(pids).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for id in ids {
+            assert!(!alive(id), "pid {id} still alive");
+        }
+        assert_eq!(std::fs::read_dir(stage).unwrap().count(), 0);
     }
 
     #[tokio::test]
@@ -439,46 +503,47 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::Cancelled);
         assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
-        let text = std::fs::read_to_string(&pids).unwrap();
-        let ids: Vec<i32> = text
-            .split_whitespace()
-            .map(|p| p.parse().unwrap())
-            .collect();
-        assert_eq!(ids.len(), 2);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        for id in ids {
-            assert!(!alive(id), "pid {id} still alive");
-        }
-        assert_eq!(std::fs::read_dir(&stage).unwrap().count(), 0);
+        assert_gone_and_clean(&pids, &stage).await;
     }
 
     #[tokio::test]
-    async fn run_timeout_reports_timeout() {
+    async fn run_timeout_with_unread_stdin_returns_timeout() {
         let dir = tempfile::tempdir().unwrap();
-        let r = script_runner(dir.path(), "sleep 30");
+        let pids = dir.path().join("pids");
+        // Never reads stdin, so a 256 KB input fills the pipe.
+        let r = script_runner(
+            dir.path(),
+            &format!("sleep 30 &\necho $$ $! > '{}'\nwait", pids.display()),
+        );
+        let stage = dir.path().join("s");
+        let mut sp = spec(&stage, Duration::from_millis(800), false);
+        sp.input = json!({"big": "x".repeat(256 * 1024)});
+        let t = std::time::Instant::now();
         let e = r
-            .run(
-                spec(&dir.path().join("s"), Duration::from_millis(300), false),
-                &native(),
-                CancellationToken::new(),
-                noop(),
-            )
+            .run(sp, &native(), CancellationToken::new(), noop())
             .await
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::Timeout);
+        assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
+        assert_gone_and_clean(&pids, &stage).await;
     }
 
     #[tokio::test]
     async fn run_output_cap_discards_oversize() {
         let dir = tempfile::tempdir().unwrap();
+        let pids = dir.path().join("pids");
         let r = script_runner(
             dir.path(),
-            "head -c 2000000 /dev/zero | tr '\\0' 'a'; sleep 30",
+            &format!(
+                "sleep 30 &\necho $$ $! > '{}'\nhead -c 2000000 /dev/zero | tr '\\0' 'a'\nwait",
+                pids.display()
+            ),
         );
+        let stage = dir.path().join("s");
         let t = std::time::Instant::now();
         let e = r
             .run(
-                spec(&dir.path().join("s"), Duration::from_secs(20), false),
+                spec(&stage, Duration::from_secs(20), false),
                 &native(),
                 CancellationToken::new(),
                 noop(),
@@ -487,6 +552,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::InvalidOutput);
         assert!(t.elapsed() < Duration::from_secs(8));
+        assert_gone_and_clean(&pids, &stage).await;
     }
 
     #[tokio::test]
@@ -500,11 +566,15 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         let stage = dir.path().join("s");
         let sp = spec(&stage, Duration::from_secs(60), false);
         let p = native();
-        let fut = r.run(sp, &p, CancellationToken::new(), noop());
-        let _ = tokio::time::timeout(Duration::from_millis(400), fut).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let text = std::fs::read_to_string(&pids).unwrap();
-        for id in text.split_whitespace().map(|p| p.parse::<i32>().unwrap()) {
+        let mut fut = r.run(sp, &p, CancellationToken::new(), noop());
+        let ids = tokio::select! {
+            _ = &mut fut => panic!("run ended early"),
+            ids = wait_pids(&pids) => ids,
+        };
+        assert_eq!(ids.len(), 2);
+        drop(fut);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        for id in ids {
             assert!(!alive(id), "pid {id} still alive");
         }
         assert_eq!(std::fs::read_dir(&stage).unwrap().count(), 0);
@@ -524,75 +594,81 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::NotInstalled);
     }
+}
 
-    /// Real one-word prompts; run by hand with `--ignored` (needs sign-in).
-    mod live {
-        use super::*;
-        use crate::ai::profiles::DetectEnv;
+/// Real one-word prompts; run by hand with `--ignored` (needs sign-in).
+#[cfg(all(test, unix))]
+mod live {
+    use super::tests::native;
+    use super::*;
+    use crate::ai::profiles::DetectEnv;
+    use serde_json::json;
+    use std::time::Duration;
 
-        fn live_spec(profile_id: &str, model: Option<&str>) -> RunSpec {
-            RunSpec {
-                purpose: "live".into(),
-                profile_id: profile_id.into(),
-                model: model.map(str::to_string),
-                system: "Put a one-word greeting in the draft field.".into(),
-                input: json!({"task": "greet"}),
-                schema: Some(json!({
-                    "type": "object",
-                    "properties": {"draft": {"type": "string"}},
-                    "required": ["draft"]
-                })),
-                timeout: Duration::from_secs(120),
-                cap_usd: None,
-                staging_root: std::env::temp_dir().join("codemie-ai-live"),
-            }
+    fn live_spec(profile_id: &str, model: Option<&str>) -> RunSpec {
+        RunSpec {
+            purpose: "live".into(),
+            profile_id: profile_id.into(),
+            model: model.map(str::to_string),
+            system: "Put a one-word greeting in the draft field.".into(),
+            input: json!({"task": "greet"}),
+            schema: Some(json!({
+                "type": "object",
+                "properties": {"draft": {"type": "string"}},
+                "required": ["draft"]
+            })),
+            timeout: Duration::from_secs(120),
+            cap_usd: None,
+            staging_root: std::env::temp_dir().join("codemie-ai-live"),
         }
+    }
 
-        async fn go(profile: AiProfile, model: Option<&str>) {
-            let runner = CliRunner::new(DetectEnv::system(vec![]));
-            let saw = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let s2 = saw.clone();
-            let t = std::time::Instant::now();
-            let out = runner
-                .run(
-                    live_spec(&profile.id, model),
-                    &profile,
-                    CancellationToken::new(),
-                    Box::new(move |e| s2.lock().unwrap().push(format!("{e:?}"))),
-                )
-                .await
-                .unwrap_or_else(|e| panic!("live run failed: {:?}", e.class));
-            println!(
-                "duration={:?} structured_present={} model={:?} events={}",
-                t.elapsed(),
-                out.structured.is_some(),
-                out.model,
-                saw.lock().unwrap().len()
-            );
-            let draft = out
-                .structured
-                .as_ref()
-                .and_then(|s| s.get("draft"))
-                .and_then(|d| d.as_str())
-                .unwrap_or("");
-            assert!(!draft.is_empty());
-        }
+    async fn go(profile: AiProfile, model: Option<&str>) {
+        let runner = CliRunner::new(DetectEnv::system(vec![]));
+        let saw = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s2 = saw.clone();
+        let t = std::time::Instant::now();
+        let out = runner
+            .run(
+                live_spec(&profile.id, model),
+                &profile,
+                CancellationToken::new(),
+                Box::new(move |e| s2.lock().unwrap().push(format!("{e:?}"))),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("live run failed: {:?}", e.class));
+        println!(
+            "duration={:?} structured_output_present={} model={:?} events={}",
+            t.elapsed(),
+            out.structured.is_some(),
+            out.model,
+            saw.lock().unwrap().len()
+        );
+        let draft = out
+            .structured
+            .as_ref()
+            .and_then(|s| s.get("draft"))
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
+        // `structured` is read only from the result's `structured_output` (no text
+        // fallback), so reaching here proves stream-json carried it.
+        assert!(!draft.is_empty());
+    }
 
-        #[tokio::test]
-        #[ignore]
-        async fn live_native_isolated_run() {
-            go(native(), Some("haiku")).await;
-        }
+    #[tokio::test]
+    #[ignore]
+    async fn live_native_isolated_run() {
+        go(native(), Some("haiku")).await;
+    }
 
-        #[tokio::test]
-        #[ignore]
-        async fn live_codemie_isolated_run() {
-            let mut p = native();
-            p.id = "codemie:prod".into();
-            p.kind = ProfileKind::CodeMie {
-                name: "prod".into(),
-            };
-            go(p, None).await;
-        }
+    #[tokio::test]
+    #[ignore]
+    async fn live_codemie_isolated_run() {
+        let mut p = native();
+        p.id = "codemie:prod".into();
+        p.kind = ProfileKind::CodeMie {
+            name: "prod".into(),
+        };
+        go(p, None).await;
     }
 }

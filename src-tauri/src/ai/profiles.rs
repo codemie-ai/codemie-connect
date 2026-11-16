@@ -469,7 +469,7 @@ impl ProfileCache {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

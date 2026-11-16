@@ -102,11 +102,26 @@ pub fn classify_text(text: &str) -> Option<ErrorClass> {
         || has("authentication required")
     {
         Some(ErrorClass::NeedsLogin)
-    } else if has("429") || has("rate limit") || has("rate_limit") {
+    } else if has("rate limit") || has("rate_limit") || has_http_429(&t) {
         Some(ErrorClass::RateLimited)
     } else {
         None
     }
+}
+
+/// A standalone `429` next to HTTP-ish words; digits inside other numbers (a node
+/// warning like `(node:42913)`) do not count.
+fn has_http_429(t: &str) -> bool {
+    let b = t.as_bytes();
+    let standalone = t.match_indices("429").any(|(i, _)| {
+        let before = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+        let after = i + 3 >= b.len() || !b[i + 3].is_ascii_alphanumeric();
+        before && after
+    });
+    standalone
+        && ["status", "http", "error", "too many", "rate"]
+            .iter()
+            .any(|w| t.contains(w))
 }
 
 fn status_blocks(status: &str) -> bool {
@@ -215,11 +230,14 @@ impl StreamParser {
                 cache_creation_tokens: u64_at(u, "cache_creation_input_tokens"),
             })
             .unwrap_or_default();
-        let model = r
-            .get("modelUsage")
-            .and_then(Value::as_object)
-            .and_then(|m| m.keys().next().cloned())
-            .or_else(|| self.model.clone());
+        // The init event names the model; otherwise the one that wrote the most.
+        let model = self.model.clone().or_else(|| {
+            r.get("modelUsage")
+                .and_then(Value::as_object)?
+                .iter()
+                .max_by_key(|(_, u)| u64_at(u, "outputTokens"))
+                .map(|(k, _)| k.clone())
+        });
         Ok(RunOutcome {
             structured: r.get("structured_output").filter(|s| !s.is_null()).cloned(),
             text,
@@ -228,6 +246,16 @@ impl StreamParser {
             duration_ms: u64_at(r, "duration_ms"),
             model,
         })
+    }
+}
+
+impl RunOutcome {
+    /// For runs that asked for a schema: `structured` must be present and an object.
+    pub fn require_structured_object(self) -> Result<Self, AiError> {
+        match &self.structured {
+            Some(Value::Object(_)) => Ok(self),
+            _ => Err(AiError::new(ErrorClass::InvalidOutput)),
+        }
     }
 }
 
@@ -323,6 +351,52 @@ mod tests {
     fn rejected_limit_does_not_fail_a_successful_result() {
         let out = parse_stream(lines(include_str!("testdata/warning.jsonl"))).unwrap();
         assert_eq!(out.text, "fine");
+    }
+
+    #[test]
+    fn node_warning_in_stderr_is_not_a_rate_limit() {
+        let mut p = StreamParser::new();
+        let e = p
+            .finish("(node:42913) Warning: something deprecated")
+            .unwrap_err();
+        assert_eq!(e.class, ErrorClass::Failed);
+        let e = StreamParser::new()
+            .finish("API Error: status 429 Too Many Requests")
+            .unwrap_err();
+        assert_eq!(e.class, ErrorClass::RateLimited);
+        p = StreamParser::new();
+        p.feed("noise");
+        assert_eq!(p.finish("").unwrap_err().class, ErrorClass::Failed);
+    }
+
+    #[test]
+    fn successful_text_mentioning_login_stays_ok() {
+        let line = r#"{"type":"result","subtype":"success","is_error":false,"result":"user is not logged in /login"}"#;
+        assert!(parse_stream([line]).is_ok());
+    }
+
+    #[test]
+    fn schema_requested_needs_a_structured_object() {
+        let missing = r#"{"type":"result","subtype":"success","is_error":false,"result":"{\"draft\":\"x\"}"}"#;
+        let e = parse_stream([missing]).and_then(RunOutcome::require_structured_object);
+        assert_eq!(e.unwrap_err().class, ErrorClass::InvalidOutput);
+        let scalar = r#"{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":"text"}"#;
+        let e = parse_stream([scalar]).and_then(RunOutcome::require_structured_object);
+        assert_eq!(e.unwrap_err().class, ErrorClass::InvalidOutput);
+        let ok = parse_stream(lines(include_str!("testdata/success.jsonl")))
+            .and_then(RunOutcome::require_structured_object);
+        assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn model_comes_from_init_then_busiest_model_usage() {
+        let r = r#"{"type":"result","subtype":"success","is_error":false,"result":"","modelUsage":{"a-small":{"outputTokens":1},"z-big":{"outputTokens":9}}}"#;
+        assert_eq!(parse_stream([r]).unwrap().model.as_deref(), Some("z-big"));
+        let init = r#"{"type":"system","subtype":"init","model":"from-init"}"#;
+        assert_eq!(
+            parse_stream([init, r]).unwrap().model.as_deref(),
+            Some("from-init")
+        );
     }
 
     #[test]
