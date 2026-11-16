@@ -119,6 +119,16 @@ mod unix_run {
         Ok(Staging(dir))
     }
 
+    /// Aborts its task when dropped, so a helper task never outlives the run, on any
+    /// exit path or when the run future itself is dropped.
+    pub(super) struct AbortOnDrop<T>(pub(super) tokio::task::JoinHandle<T>);
+
+    impl<T> Drop for AbortOnDrop<T> {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
     /// Owns the child's process group. Dropping an armed guard (a dropped run future)
     /// sends TERM now and KILL after the grace period.
     struct GroupGuard {
@@ -228,6 +238,8 @@ mod unix_run {
             armed: true,
         };
         if guard.pgid <= 0 {
+            // No pid: the guard must never signal group 0 (our own group).
+            guard.armed = false;
             return err(ErrorClass::Failed);
         }
 
@@ -235,16 +247,16 @@ mod unix_run {
         // never stall cancel or timeout. Stdin closes when the task ends.
         let mut stdin = child.stdin.take().expect("piped");
         let input = spec.input.to_string();
-        let stdin_task = tokio::spawn(async move {
+        let _stdin_task = AbortOnDrop(tokio::spawn(async move {
             if let Err(e) = stdin.write_all(input.as_bytes()).await {
                 log::warn!("ai: cannot write run input: {e}");
             } else if let Err(e) = stdin.shutdown().await {
                 log::warn!("ai: cannot close run input: {e}");
             }
-        });
+        }));
         let mut stdout = child.stdout.take().expect("piped");
         let mut stderr = child.stderr.take().expect("piped");
-        let stderr_task = tokio::spawn(async move {
+        let mut stderr_task = AbortOnDrop(tokio::spawn(async move {
             let mut kept = Vec::new();
             let mut chunk = [0u8; 4096];
             while let Ok(n) = stderr.read(&mut chunk).await {
@@ -257,7 +269,7 @@ mod unix_run {
                 }
             }
             String::from_utf8_lossy(&kept).into_owned()
-        });
+        }));
 
         let mut parser = StreamParser::new();
         let mut buf: Vec<u8> = Vec::new();
@@ -313,8 +325,7 @@ mod unix_run {
             }
         }
         guard.armed = false;
-        stdin_task.abort();
-        let stderr_text = tokio::time::timeout(Duration::from_secs(1), stderr_task)
+        let stderr_text = tokio::time::timeout(Duration::from_secs(1), &mut stderr_task.0)
             .await
             .ok()
             .and_then(|r| r.ok())
@@ -578,6 +589,26 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             assert!(!alive(id), "pid {id} still alive");
         }
         assert_eq!(std::fs::read_dir(&stage).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn abort_on_drop_stops_the_task() {
+        let marker = Arc::new(());
+        let held = marker.clone();
+        let task = unix_run::AbortOnDrop(tokio::spawn(async move {
+            let _held = held;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+        tokio::task::yield_now().await;
+        assert_eq!(Arc::strong_count(&marker), 2);
+        drop(task);
+        for _ in 0..50 {
+            if Arc::strong_count(&marker) == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the task was not aborted");
     }
 
     #[tokio::test]
