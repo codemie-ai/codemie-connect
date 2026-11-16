@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15055-Seamless-in-app-upgrade",
+  "head": "fb62441655b02940ea52da31fc04dc0b647e0921",
+  "runner": "custom",
+  "started_at": "2026-09-29T07:14:59Z",
+  "completed_at": "2026-09-29T07:44:58Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 388,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3955,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0,
+      "notes": "Previous run in this task recorded FAIL for `needless_borrows_for_generic_args` on `.get(&get_manifest_url())` at src-tauri/src/commands/app_updater.rs:204. Working tree now has this manually fixed to `.get(get_manifest_url())` (uncommitted); rerun confirms PASS."
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "npm test",
+      "exit_code": null,
+      "notes": "Guide Skip if: 'no UI logic was changed (Rust-only changes)'. Diff vs merge_base (79fb11d4) touches only src-tauri/src/commands/app_updater.rs, src-tauri/src/state.rs, src-tauri/installer-hooks.nsi, plus an uncommitted package.json devDependency addition (@tauri-apps/cli) — no ui/ or UI-surface files."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 39754,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0,
+      "notes": "89 tests passed (87 lib + 2 bundle_resources integration), 0 failed."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 815156,
+      "command": "pwsh -File ./build-installer.ps1",
+      "exit_code": 0,
+      "notes": "First attempt (480757ms) FAILED with 'failed to bundle project: `timeout: global`' during NSIS/WebView2 asset download inside [4/5]. Working tree previously lacked a local Tauri CLI (npm error 'could not determine executable to run'); package.json now declares @tauri-apps/cli ^2 (uncommitted) and node_modules/package-lock.json are populated, so npx resolves correctly. Retried once after NSIS toolchain (~/AppData/Local/tauri/NSIS) and the release binary were already cached from the failed attempt; retry completed cleanly: 'Done - all assertions passed.' Installer: src-tauri/target/release/bundle/nsis/CodeMie Connect_2.1.0_x64-setup.exe (311.6 MB). Used `pwsh -File` instead of `.\\build-installer.ps1` because Windows PowerShell 5.1 fails to parse the UTF-8 script file; pwsh (PowerShell 7.6.6) matches the script's own internal '& pwsh' re-invocation for stage-runtime.ps1."
+    }
+  ],
+  "failures": {}
+}

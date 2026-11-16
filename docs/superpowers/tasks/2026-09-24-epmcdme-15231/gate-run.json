@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14512-CodeMie-Desktop--Command-log-(What-CodeMie-ran)",
+  "head": "ec7e7dcc467086da3c06be365e538ff9241c1169",
+  "runner": "npm",
+  "started_at": "2026-09-24T11:11:57Z",
+  "completed_at": "2026-09-24T11:12:30Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "format-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1200,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "lint-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6200,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1945,
+      "command": "npm test",
+      "exit_code": 0
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 31000,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": ".\\build-installer.ps1",
+      "exit_code": null,
+      "notes": "Guide skip condition met: logic-only change verified by passing tests. Run build-installer.ps1 to produce the full installer artifact."
+    }
+  ],
+  "failures": {}
+}

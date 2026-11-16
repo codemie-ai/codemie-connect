@@ -15,11 +15,31 @@ use std::path::{Path, PathBuf};
 fn launch_installer(installer_path: &str) -> CmdResult<()> {
     eprintln!("[app-updater] Launching installer: {}", installer_path);
 
-    Command::new(installer_path)
+    let mut child = Command::new(installer_path)
+        // /S = silent; /R = relaunch the app afterwards (Tauri's NSIS template
+        // only relaunches in silent mode when /R is passed). /UPDATE marks an
+        // in-place update: the template forwards it to the old uninstaller, whose
+        // hook then keeps the downloaded runtime instead of wiping it.
+        .args(["/S", "/R", "/UPDATE"])
         .spawn()
         .map_err(|e| InstallerError::Other(format!("Failed to spawn installer: {e}")))?;
 
-    Ok(())
+    // Give the installer a moment to start, then make sure it didn't die
+    // immediately (corrupt exe, missing dependency, permission issue) — the
+    // app is about to exit and release its file locks, so a launch failure
+    // must be caught here or it goes unnoticed.
+    std::thread::sleep(Duration::from_millis(500));
+    check_not_exited_early(&mut child)
+}
+
+#[cfg(target_os = "windows")]
+fn check_not_exited_early(child: &mut std::process::Child) -> CmdResult<()> {
+    match child.try_wait() {
+        Ok(Some(status)) if !status.success() => Err(InstallerError::Other(format!(
+            "Installer exited immediately with status: {status}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// A DMG cannot be run like the Windows setup exe. Mount it, swap the running
@@ -109,7 +129,14 @@ fn run_tool(cmd: &mut Command) -> CmdResult<()> {
     )))
 }
 
-const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Throttle interval between update checks (configurable via CODEMIE_UPDATE_CHECK_INTERVAL_SECS, dev-only)
+fn check_interval() -> Duration {
+    let secs = std::env::var("CODEMIE_UPDATE_CHECK_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(24 * 60 * 60);
+    Duration::from_secs(secs)
+}
 
 const DEFAULT_BASE_URL: &str =
     "https://github.com/codemie-ai/codemie-connect/releases/latest/download";
@@ -131,14 +158,14 @@ fn get_manifest_url() -> String {
     format!("{}/manifest.json", get_base_url())
 }
 
-#[derive(serde::Deserialize)]
-struct PlatformEntry {
-    url: String,
+#[derive(serde::Deserialize, Clone)]
+pub(crate) struct PlatformEntry {
+    pub(crate) url: String,
 }
 
-#[derive(serde::Deserialize)]
-struct Manifest {
-    version: String,
+#[derive(serde::Deserialize, Clone)]
+pub(crate) struct Manifest {
+    pub(crate) version: String,
     platforms: std::collections::HashMap<String, PlatformEntry>,
 }
 
@@ -147,14 +174,21 @@ fn platform_key() -> &'static str {
     "windows-x86_64"
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+fn platform_key() -> &'static str {
+    "darwin-x86_64"
+}
+
+#[cfg(not(any(
+    target_os = "windows",
+    all(target_os = "macos", target_arch = "x86_64")
+)))]
 fn platform_key() -> &'static str {
     "darwin-aarch64"
 }
 
-/// The latest version and this platform's installer URL. A manifest with a
-/// bad version or no entry for this platform offers no update.
-fn parse_manifest(text: &str, platform: &str) -> CmdResult<(String, String)> {
+/// A manifest with a bad version offers no update.
+fn parse_manifest(text: &str) -> CmdResult<Manifest> {
     let manifest: Manifest = serde_json::from_str(text)
         .map_err(|e| InstallerError::Other(format!("Failed to parse manifest: {e}")))?;
     if !is_valid_version(&manifest.version) {
@@ -163,13 +197,16 @@ fn parse_manifest(text: &str, platform: &str) -> CmdResult<(String, String)> {
             manifest.version
         )));
     }
-    let entry = manifest.platforms.get(platform).ok_or_else(|| {
-        InstallerError::Other(format!("No installer available for platform '{platform}'"))
-    })?;
-    Ok((manifest.version, entry.url.clone()))
+    Ok(manifest)
 }
 
-async fn fetch_manifest(client: &Client, url: &str) -> CmdResult<(String, String)> {
+fn get_platform_entry(manifest: &Manifest, platform: &str) -> CmdResult<PlatformEntry> {
+    manifest.platforms.get(platform).cloned().ok_or_else(|| {
+        InstallerError::Other(format!("No installer available for platform '{platform}'"))
+    })
+}
+
+async fn fetch_manifest(client: &Client, url: &str) -> CmdResult<Manifest> {
     let text = client
         .get(url)
         .send()
@@ -178,7 +215,7 @@ async fn fetch_manifest(client: &Client, url: &str) -> CmdResult<(String, String
         .text()
         .await
         .map_err(|e| InstallerError::Other(format!("Failed to read manifest: {e}")))?;
-    parse_manifest(&text, platform_key())
+    parse_manifest(&text)
 }
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -188,6 +225,11 @@ fn should_check(last: Option<Instant>, interval: Duration) -> bool {
         None => true,
         Some(t) => t.elapsed() >= interval,
     }
+}
+
+/// A forced check (About view) skips the 24h throttle; the boot check does not.
+fn gate_allows(force: Option<bool>, last: Option<Instant>) -> bool {
+    force.unwrap_or(false) || should_check(last, check_interval())
 }
 
 /// Validate that a version string is a valid semantic version (minimum: N.N.N, e.g., 2.1.0)
@@ -222,9 +264,12 @@ fn is_newer_version(current: &str, new: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<String>> {
+pub async fn check_for_update(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> CmdResult<Option<String>> {
     let last = *state.last_update_check.lock().unwrap();
-    if !should_check(last, CHECK_INTERVAL) {
+    if !gate_allows(force, last) {
         return Ok(None);
     }
 
@@ -235,22 +280,25 @@ pub async fn check_for_update(state: State<'_, AppState>) -> CmdResult<Option<St
 
     let client = Client::new();
     match fetch_manifest(&client, &get_manifest_url()).await {
-        Ok((latest_version, _)) => {
+        Ok(manifest) => {
             *state.last_update_check.lock().unwrap() = Some(Instant::now());
 
             eprintln!(
                 "[app-updater] Current version: {}, Latest available: {}",
-                APP_VERSION, latest_version
+                APP_VERSION, manifest.version
             );
 
-            if is_newer_version(APP_VERSION, &latest_version) {
+            if is_newer_version(APP_VERSION, &manifest.version) {
                 eprintln!(
                     "[app-updater] Update available: {} -> {}",
-                    APP_VERSION, latest_version
+                    APP_VERSION, manifest.version
                 );
-                Ok(Some(latest_version))
+                let version = manifest.version.clone();
+                *state.latest_manifest.lock().unwrap() = Some(manifest);
+                Ok(Some(version))
             } else {
                 eprintln!("[app-updater] Already on latest version");
+                *state.latest_manifest.lock().unwrap() = None;
                 Ok(None)
             }
         }
@@ -277,8 +325,22 @@ pub async fn download_and_install(
     let id_clone = id.clone();
 
     let client = Client::new();
-    let (latest_version, installer_url) = fetch_manifest(&client, &get_manifest_url()).await?;
-    eprintln!("[app-updater] Latest version available: {}", latest_version);
+
+    // Reuse the manifest `check_for_update` already fetched, if present; otherwise
+    // (e.g. called without a preceding check) fetch it now.
+    let cached_manifest = state.latest_manifest.lock().unwrap().clone();
+    *state.latest_manifest.lock().unwrap() = None;
+    let manifest = match cached_manifest {
+        Some(manifest) => manifest,
+        None => fetch_manifest(&client, &get_manifest_url()).await?,
+    };
+
+    eprintln!(
+        "[app-updater] Latest version available: {}",
+        manifest.version
+    );
+
+    let installer_url = get_platform_entry(&manifest, platform_key())?.url;
     eprintln!(
         "[app-updater] Downloading installer from: {}",
         installer_url
@@ -334,6 +396,10 @@ pub async fn download_and_install(
 
     // Launch the installer (NSIS/DMG will handle uninstall as part of its process)
     let installer_str = installer_path.to_string_lossy().to_string();
+
+    // No checksum/signature verification here yet — deliberate, tracked gap
+    // (no signing infra exists). See EPMCDME-15055 scope decision 1; a future
+    // ticket adds verification of `installer_bytes` at this point, before launch.
     launch_installer(&installer_str)?;
 
     // Give the installer a moment to start
@@ -359,6 +425,12 @@ pub fn restart_app(app: AppHandle) {
 #[tauri::command]
 pub fn get_app_version() -> String {
     APP_VERSION.to_string()
+}
+
+/// Get the update-check throttle interval in ms (for the JS-side localStorage gate)
+#[tauri::command]
+pub fn get_update_check_interval_ms() -> u64 {
+    check_interval().as_millis() as u64
 }
 
 #[cfg(test)]
@@ -389,6 +461,18 @@ mod tests {
     }
 
     #[test]
+    fn force_bypasses_recent_check() {
+        assert!(gate_allows(Some(true), Some(Instant::now())));
+    }
+
+    #[test]
+    fn unforced_respects_recent_check() {
+        assert!(!gate_allows(None, Some(Instant::now())));
+        assert!(!gate_allows(Some(false), Some(Instant::now())));
+        assert!(gate_allows(None, None));
+    }
+
+    #[test]
     fn version_comparison_basic() {
         assert!(is_newer_version("2.0.1", "2.2.1"));
         assert!(is_newer_version("2.0.1", "2.1.0"));
@@ -405,6 +489,25 @@ mod tests {
         assert!(!is_newer_version("2.0.0", "2.0.0"));
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn detects_installer_that_exited_immediately_with_failure() {
+        let mut child = Command::new("cmd").args(["/C", "exit 1"]).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(check_not_exited_early(&mut child).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn allows_installer_still_running() {
+        let mut child = Command::new("cmd")
+            .args(["/C", "timeout /T 5"])
+            .spawn()
+            .unwrap();
+        assert!(check_not_exited_early(&mut child).is_ok());
+        let _ = child.kill();
+    }
+
     #[test]
     fn error_serialises_to_string() {
         let e = InstallerError::Other("update failed".to_string());
@@ -415,29 +518,34 @@ mod tests {
   "version": "2.1.1",
   "platforms": {
     "darwin-aarch64": { "url": "https://github.com/codemie-ai/codemie-connect/releases/download/v2.1.1/CodeMie-Connect-2.1.1-aarch64.dmg" },
+    "darwin-x86_64": { "url": "https://github.com/codemie-ai/codemie-connect/releases/download/v2.1.1/CodeMie-Connect-2.1.1-x86_64.dmg" },
     "windows-x86_64": { "url": "https://github.com/codemie-ai/codemie-connect/releases/download/v2.1.1/CodeMie-Connect-2.1.1-x64-setup.exe" }
   }
 }"#;
 
     #[test]
-    fn manifest_gives_the_version_and_this_platforms_installer() {
-        let (v, url) = parse_manifest(MANIFEST, "darwin-aarch64").unwrap();
-        assert_eq!(v, "2.1.1");
-        assert!(url.ends_with("/CodeMie-Connect-2.1.1-aarch64.dmg"));
-        let (_, url) = parse_manifest(MANIFEST, "windows-x86_64").unwrap();
-        assert!(url.ends_with("/CodeMie-Connect-2.1.1-x64-setup.exe"));
+    fn manifest_gives_the_version_and_each_platforms_installer() {
+        let m = parse_manifest(MANIFEST).unwrap();
+        assert_eq!(m.version, "2.1.1");
+        let url = |p| get_platform_entry(&m, p).unwrap().url;
+        assert!(url("darwin-aarch64").ends_with("/CodeMie-Connect-2.1.1-aarch64.dmg"));
+        assert!(url("darwin-x86_64").ends_with("/CodeMie-Connect-2.1.1-x86_64.dmg"));
+        assert!(url("windows-x86_64").ends_with("/CodeMie-Connect-2.1.1-x64-setup.exe"));
     }
 
     #[test]
     fn manifest_without_this_platform_offers_no_update() {
-        assert!(parse_manifest(MANIFEST, "darwin-x86_64").is_err());
+        let m = parse_manifest(MANIFEST).unwrap();
+        assert!(get_platform_entry(&m, "linux-x86_64").is_err());
+        let empty = parse_manifest(r#"{"version":"9.9.9","platforms":{}}"#).unwrap();
+        assert!(get_platform_entry(&empty, platform_key()).is_err());
     }
 
     #[test]
     fn manifest_with_a_bad_version_or_an_html_page_is_refused() {
         let bad = MANIFEST.replace("\"2.1.1\"", "\"latest\"");
-        assert!(parse_manifest(&bad, "darwin-aarch64").is_err());
-        assert!(parse_manifest("<!DOCTYPE html><html>404</html>", "darwin-aarch64").is_err());
+        assert!(parse_manifest(&bad).is_err());
+        assert!(parse_manifest("<!DOCTYPE html><html>404</html>").is_err());
     }
 
     #[test]
@@ -473,22 +581,26 @@ mod tests {
             s.write_all(MANIFEST.as_bytes()).await.unwrap();
         });
         let url = format!("http://{addr}/manifest.json");
-        let (v, installer) = fetch_manifest(&Client::new(), &url).await.unwrap();
-        assert_eq!(v, "2.1.1");
-        assert!(installer.ends_with(&format!(
-            "CodeMie-Connect-2.1.1-{}",
-            if cfg!(windows) {
-                "x64-setup.exe"
-            } else {
-                "aarch64.dmg"
-            }
-        )));
+        let m = fetch_manifest(&Client::new(), &url).await.unwrap();
+        assert_eq!(m.version, "2.1.1");
+        let installer = get_platform_entry(&m, platform_key()).unwrap().url;
+        assert!(installer.ends_with(match platform_key() {
+            "windows-x86_64" => "x64-setup.exe",
+            "darwin-x86_64" => "x86_64.dmg",
+            _ => "aarch64.dmg",
+        }));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn this_mac_build_reads_the_arm64_entry() {
         assert_eq!(platform_key(), "darwin-aarch64");
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    #[test]
+    fn this_mac_build_reads_the_intel_entry() {
+        assert_eq!(platform_key(), "darwin-x86_64");
     }
 
     #[cfg(target_os = "macos")]

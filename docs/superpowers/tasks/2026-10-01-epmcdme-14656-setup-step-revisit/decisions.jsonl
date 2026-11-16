@@ -1,0 +1,3 @@
+{"ts":"2026-10-01T10:46:30Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved with one change (no replay after profile saved), folded into plan","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-01T10:57:51Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"request-changes","rationale":"CR-001 plus duplicate keydown listeners from makeRevisitable","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-01T11:01:33Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"approve","rationale":"Fix-up 827293d checked by user","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

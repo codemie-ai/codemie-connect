@@ -1,0 +1,26 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec was available, so confidence is low. One blocking defect was confirmed in source: a validation-rejected row reopens while still carrying its revisit handlers. 4 candidates were dismissed as handled, documented, or below the emission floor; nothing was deferred. Blind, verification-gap and standards were not part of the compact profile.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of this profile." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "ui/setup-view.js",
+      "line": 673,
+      "title": "Reopened row still restarts the run on click",
+      "problem": "The isReopenOf branch of onPrompt un-collapses an answered row and renders a fresh control inside it, but never removes the onclick, keydown handler, 'revisit' class or role set by makeRevisitable (lines 443-455). onPrompt has also just called setRevisitOpen(true), so revisit() passes its guard. A click on the reopened input or option cards, or Space or Enter in the input, bubbles to the row and calls restart(replayPrefix(rowId)). The row's keydown handler also calls preventDefault on Space, so a space cannot be typed into the reopened input.",
+      "impact": "After a validation rejection (e.g. a bad CodeMie URL), clicking into the input to correct it cancels the live setup process and replays from the start. The user loses the correction and the reopened prompt.",
+      "recommendation": "On reopen, make the row non-revisitable. Clear row.onclick and the 'revisit' class, remove role and tabIndex, and keep the keydown listener as a named function so it can be removed. Alternatively, have the handlers ignore events whose target is inside .prompt-control or while the row is not collapsed, and call makeRevisitable only once. Add a test that clicking inside a reopened input does not call cancelSetup."
+    }
+  ]
+}

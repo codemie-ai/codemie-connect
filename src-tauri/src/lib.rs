@@ -92,6 +92,7 @@ pub fn run() {
             commands::logger::write_line(&format!("Resolved PATH: {resolved}"), "dim");
             Ok(())
         })
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             commands::runner::run_capture,
             commands::runner::run_fresh_env,
@@ -105,11 +106,18 @@ pub fn run() {
             commands::inspector::check_node,
             commands::inspector::check_npm,
             commands::inspector::check_codemie,
+            commands::inspector::check_codemie_version,
             commands::inspector::check_profile_status,
             commands::handshake::check_handshake_state,
             commands::inspector::git_binary_path,
             commands::inspector::node_binary_path,
             commands::codemie_config::read_codemie_config,
+            commands::codemie_config::list_codemie_profiles,
+            commands::profile::delete_profile,
+            commands::profile::switch_profile,
+            commands::profile::rename_profile,
+            commands::connectors::check_connector_status,
+            commands::connectors::app_bundle_exists,
             commands::installer::get_platform_info,
             commands::installer::temp_dir,
             commands::installer::latest_lts_node_version,
@@ -123,6 +131,12 @@ pub fn run() {
             commands::logger::log_line,
             commands::logger::open_log,
             commands::logger::open_cli_debug_log,
+            commands::logger::open_external,
+            commands::cmdlog::cmdlog_open,
+            commands::cmdlog::cmdlog_append,
+            commands::cmdlog::cmdlog_close,
+            commands::cmdlog::cmdlog_list,
+            commands::cmdlog::cmdlog_get,
             commands::window::set_window_height,
             commands::window::close_app,
             commands::smoke::smoke_mode,
@@ -133,6 +147,7 @@ pub fn run() {
             commands::app_updater::download_and_install,
             commands::app_updater::restart_app,
             commands::app_updater::get_app_version,
+            commands::app_updater::get_update_check_interval_ms,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

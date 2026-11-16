@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "5 files changed (1 new: cmdlog.rs; 4 modified: mod.rs, lib.rs, state.rs, Cargo.toml), all within src-tauri/ — one directory tree, matches M band on the 4-6 file threshold." },
+    { "dimension": "component_scope", "reason": "Single self-contained component: CmdLogStore (open/append/close/list/get) plus 5 tauri::command wrappers, mirroring the existing Mutex-wrapped state pattern already used for pty and last_update_check in AppState. Registration in mod.rs/lib.rs/state.rs is boilerplate wiring, not additional components." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

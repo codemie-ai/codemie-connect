@@ -10,6 +10,7 @@
     "test:ui": "cd docs/superpowers/tasks/2026-08-31-epmcdme-14511/dynamic-tests && npx playwright test"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2",
     "@commitlint/cli": "^21.2.3",
     "@commitlint/config-conventional": "^21.2.3"
   }

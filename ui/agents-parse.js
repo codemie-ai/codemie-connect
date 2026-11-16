@@ -15,6 +15,12 @@
 const AGENTS_HEADING = /Available Agents:/;
 const OTHER_HEADING = /Available Frameworks:|^\s*Next Steps:/;
 
+// The name a user types in a terminal: the CLI installs its agents as
+// codemie-<command>, except the built-in one that already carries the prefix.
+function launcherOf(command) {
+  return command.startsWith('codemie-') ? command : `codemie-${command}`;
+}
+
 export function parseAgentList(stdout) {
   const lines = String(stdout || '').split(/\r?\n/);
   const agents = [];
@@ -45,5 +51,6 @@ export function parseAgentList(stdout) {
     }
     if (!line.trim()) current = null;
   }
+  for (const a of agents) a.launcher = launcherOf(a.command);
   return agents;
 }

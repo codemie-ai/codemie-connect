@@ -1,5 +1,7 @@
 pub mod app_updater;
+pub mod cmdlog;
 pub mod codemie_config;
+pub mod connectors;
 pub mod downloader;
 pub mod handshake;
 pub mod inspector;
@@ -7,6 +9,7 @@ pub mod installer;
 pub mod logger;
 pub mod npm_env;
 pub mod pathman;
+pub mod profile;
 pub mod pty;
 pub mod runner;
 pub mod runtime;

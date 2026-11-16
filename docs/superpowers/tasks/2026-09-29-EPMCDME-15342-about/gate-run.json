@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "branch": "feat/EPMCDME-15342-about",
+  "head": "288c23adede156f2a1726739059625408a7b110d",
+  "runner": "custom",
+  "started_at": "2026-09-29T12:12:30Z",
+  "completed_at": "2026-09-29T12:24:19Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "fmt",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 574,
+      "command": "cd src-tauri && cargo fmt --check",
+      "exit_code": 0
+    },
+    {
+      "id": "clippy",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 27137,
+      "command": "cd src-tauri && cargo clippy -- -D warnings",
+      "exit_code": 101,
+      "notes": "Not runnable to a verdict on this Windows host, NOT passed. All 3 errors are in src/commands/connectors.rs (unchanged since 608d07a; code is #[cfg(target_os = \"macos\")]-gated so on Windows `name` is unused (174:26) and vscode_copilot_connected (71:4) / vscode_claude_code_connected (87:4) are dead). Diagnostic run `cargo clippy -- -D warnings -A dead_code -A unused_variables` exited 0, so no clippy findings in changed files (app_updater.rs, logger.rs, lib.rs). Owed: run the verbatim gate on macOS."
+    },
+    {
+      "id": "unit-js",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 13964,
+      "command": "npm test",
+      "exit_code": 0,
+      "notes": "511 tests, 511 pass, 0 fail, 0 skipped."
+    },
+    {
+      "id": "unit-rust",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 9611,
+      "command": "cd src-tauri && cargo test",
+      "exit_code": 101,
+      "notes": "Not runnable on this Windows host, NOT passed. lib test target fails to compile: 9x E0425 `cannot find function claude_desktop_connected / codex_desktop_connected` in src/commands/connectors.rs tests (219-286), which reference macOS-only functions; file untouched by this branch. No Rust test (incl. new app_updater.rs/logger.rs tests) executed. Owed: run on macOS."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 398354,
+      "command": ".\\build-installer.ps1",
+      "exit_code": 0,
+      "notes": "Ran under pwsh 7: 'Done - all assertions passed.' NSIS setup exe produced (313.4 MB). Windows PowerShell 5.1 first attempt failed before cargo in npx.ps1 ('$MyInvocation.Statement' under Set-StrictMode) - environment issue, not this change. Build touched src-tauri/Cargo.toml (line endings only); restored via git checkout. macOS ./build-installer.sh (DMG) not run on this host."
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "",
+      "notes": "UI surface changed (ui/index.html, ui/styles.css, ui/*.js) but no UI gate in quality-gates.md; package.json test:ui points at another task's Playwright suite (2026-08-31-epmcdme-14511). Browser verification is a separate caller decision."
+    }
+  ],
+  "failures": {}
+}

@@ -15,9 +15,9 @@ const available = readFileSync(fileURLToPath(new URL('fixtures/agents/update-che
 test('parses one record per agent from a real up-to-date capture, none updateAvailable', () => {
   const records = parseUpdateStatus(upToDate);
   assert.deepEqual(records, [
-    { displayName: 'CodeMie Code', updateAvailable: false, latest: '0.15.2' },
-    { displayName: 'Claude Code', updateAvailable: false, latest: '2.1.269' },
-    { displayName: 'OpenCode CLI', updateAvailable: false, latest: '1.18.31' },
+    { displayName: 'CodeMie Code', updateAvailable: false, current: '0.15.2', latest: '0.15.2' },
+    { displayName: 'Claude Code', updateAvailable: false, current: '2.1.269', latest: '2.1.269' },
+    { displayName: 'OpenCode CLI', updateAvailable: false, current: '1.18.31', latest: '1.18.31' },
   ]);
 });
 
@@ -29,9 +29,9 @@ test('does not emit a record for the trailing "All agents are up to date!" summa
 test('flags the agent whose Latest line says "(update available)", with the version it offers', () => {
   const records = parseUpdateStatus(available);
   assert.deepEqual(records, [
-    { displayName: 'CodeMie Code', updateAvailable: false, latest: '0.15.2' },
-    { displayName: 'Claude Code', updateAvailable: false, latest: '2.1.269' },
-    { displayName: 'OpenCode CLI', updateAvailable: true, latest: '1.18.32' },
+    { displayName: 'CodeMie Code', updateAvailable: false, current: '0.15.2', latest: '0.15.2' },
+    { displayName: 'Claude Code', updateAvailable: false, current: '2.1.269', latest: '2.1.269' },
+    { displayName: 'OpenCode CLI', updateAvailable: true, current: '1.18.31', latest: '1.18.32' },
   ]);
 });
 
@@ -60,4 +60,15 @@ test('stops at the real summary wording, singular and plural, and not at a recor
     parseUpdateStatus(everyoneOutdated).map((r) => r.updateAvailable),
     [true, true, true],
   );
+});
+
+// update-check-newer.txt is synthetic: the real update-check.txt capture with
+// only Claude's versions changed (Current 2.1.290 above Latest 2.1.281, still
+// "(up to date)"), the state where the user runs a newer Claude than CodeMie supports.
+test('reads Current next to Latest, so an installed version above the supported one is visible', () => {
+  const newer = readFileSync(fileURLToPath(new URL('fixtures/agents/update-check-newer.txt', import.meta.url)), 'utf8');
+  const claude = parseUpdateStatus(newer).find((r) => r.displayName === 'Claude Code');
+  assert.equal(claude.current, '2.1.290');
+  assert.equal(claude.latest, '2.1.281');
+  assert.equal(claude.updateAvailable, false);
 });

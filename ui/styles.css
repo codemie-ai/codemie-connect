@@ -121,6 +121,20 @@ body::before {
   margin-right: 6px;
   color: var(--dim);
 }
+/* Outlined pill shape, shared by the version badge and the cmdlog ok/failed badge.
+   Color comes from the color property alone — border uses currentColor. */
+.pill {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  /* Excluded from the shared truncation rule's :not() so it always renders at
+     full size — but that means it also needs its own white-space/flex-shrink,
+     or at narrow widths its text wraps to two lines and grows the bar's height. */
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 /* The theme toggle is the last item in the bar, pushed to the far right. */
 #identity-bar > #theme-toggle { margin-left: auto; }
 
@@ -142,9 +156,8 @@ body::before {
   flex-direction: column;
   gap: 3px;
 }
-/* About + analytics sit at the very bottom of the sidebar column. */
-#sidebar-bottom-group { margin-top: auto; }
-#sidebar-divider { height: 1px; background: var(--border); margin: 6px 4px; }
+/* The divider and About sit at the very bottom of the sidebar column. */
+#sidebar-divider { height: 1px; background: var(--border); margin: auto 4px 6px; }
 
 /* ---- Collapsible command-log footer ("what CodeMie ran") ---- */
 #command-log-footer {
@@ -156,16 +169,48 @@ body::before {
   max-height: 40vh;
   overflow-y: auto;
 }
+#command-log-footer.expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  max-height: 100vh;
+  border-top: none;
+}
+#command-log-footer.expanded > summary { position: sticky; top: 0; background: var(--panel-dark); }
+#cmdlog-expand { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; }
+#cmdlog-expand:hover { color: var(--text); }
 #command-log-footer > summary {
   padding: 8px 16px;
   cursor: pointer;
   list-style: none;
   color: var(--muted);
+  font-family: var(--font-sans);
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 #command-log-footer > summary::-webkit-details-marker { display: none; }
 #command-log-footer > summary::before { content: "▸ "; }
 #command-log-footer[open] > summary::before { content: "▾ "; }
+#cmdlog-copy-all { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; margin-left: auto; }
+#cmdlog-copy-all:hover { color: var(--text); }
+#cmdlog-copy-all, #cmdlog-expand { display: none; }
+#command-log-footer[open] #cmdlog-copy-all, #command-log-footer[open] #cmdlog-expand { display: inline-block; }
 #command-log-body { padding: 0 16px 10px; }
+.log-row { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.log-row:last-child { border-bottom: none; }
+.log-row > summary { list-style: none; cursor: pointer; }
+.log-row > summary::-webkit-details-marker { display: none; }
+.log-row > summary::before { content: "▸ "; }
+.log-row[open] > summary::before { content: "▾ "; }
+.log-row-summary { display: flex; align-items: center; gap: 10px; font-family: var(--font-sans); }
+.log-row-detail { padding: 6px 0 0 14px; display: flex; flex-direction: column; gap: 6px; }
+.log-time { flex-shrink: 0; }
+.log-row-summary .log-prompt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-badge-ok { color: var(--green); }
+.log-badge-failed { color: var(--red); }
+.log-box { background: var(--color-bg-nav); border: 1px solid var(--border-2); border-radius: var(--radius-md); padding: 8px 10px; }
+.log-box-error { border-color: var(--red); }
 .sidebar-item {
   display: block;
   width: 100%;
@@ -260,7 +305,6 @@ body::before {
 #home-logo { width: 28px; height: 28px; flex: none; }
 #home-title { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: 0.2px; }
 #home-subtitle { color: var(--muted); font-size: 13px; margin-top: 2px; }
-
 
 /* ---- Installation group ---- */
 /* ---- Home body (ui/home-view.js): checklist, then status cards ---- */
@@ -375,6 +419,32 @@ body::before {
 /* In the title row, pushed right: under the card it made the Profile card
    taller than the card beside it. */
 .home-card .btn.home-card-action { width: auto; padding: 4px 10px; font-size: 12px; margin-left: auto; }
+.home-card-head .home-card-action + .home-card-action { margin-left: 8px; }
+/* Manage profiles sits a little into the card's right padding, closer to the edge. */
+.home-card[data-card="profile"] .btn.home-card-action { margin-right: -8px; }
+.home-card .btn.home-card-action { white-space: nowrap; }
+.profile-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08)); }
+.profile-row:first-child { border-top: 0; }
+.profile-info { flex: 1; min-width: 0; }
+.profile-name { font-weight: 600; }
+/* Text and buttons match the Tools rows (.step-sub, .agent-actions .btn). */
+.profile-sub, .profile-confirm, .profile-notice { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.profile-row .btn { width: auto; padding: 4px 12px; font-size: 12px; white-space: nowrap; }
+/* The Active marker is Home's green "active" pill, at the buttons' size. */
+.profile-badge { box-sizing: border-box; padding: 4px 12px; font-size: 12px; font-weight: 600; border-radius: var(--radius-lg); color: var(--green); border: 1px solid currentColor; background: rgba(46, 160, 67, 0.14); white-space: nowrap; }
+/* ---- Profiles screen (EPMCDME-14576), laid out like Connections ---- */
+#profiles-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 28px 32px; gap: 18px; }
+#profiles-back { align-self: flex-start; width: auto; padding: 4px 10px; font-size: 12px; }
+#profiles-header { display: flex; align-items: center; gap: 16px; }
+.profiles-heading { flex: 1; min-width: 0; }
+#profiles-title { font-size: 20px; font-weight: 700; color: var(--text); }
+#profiles-subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; line-height: 1.5; max-width: 620px; }
+#profiles-add { width: auto; white-space: nowrap; }
+#profiles-rows .profile-list { border: 1px solid var(--border, rgba(255, 255, 255, 0.08)); border-radius: 12px; padding: 4px 16px; }
+#profiles-rows .profile-row { padding: 12px 0; }
+#profiles-rows .profile-notice, #profiles-rows .profile-failure { margin-top: 12px; }
+/* Setup's input, sized for a name. */
+.prompt-input.profile-rename-input { max-width: 280px; padding: 4px 10px; font-size: 13px; }
 
 /* ---- Update banners (EPMCDME-15189) ---- */
 .top-banner {
@@ -420,16 +490,6 @@ body::before {
   color: var(--red);
 }
 
-/* ---- Command-log lines (ui/command-log.js) ---- */
-.command-log-empty { color: var(--dim); padding: 4px 0 2px; }
-.command-log-line { display: flex; gap: 12px; padding: 2px 0; white-space: nowrap; }
-.command-log-when { color: var(--dim); flex: none; }
-.command-log-cmd { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
-.command-log-status { flex: none; margin-left: auto; }
-.command-log-line.ok .command-log-status { color: var(--green); }
-.command-log-line.failed .command-log-status { color: var(--red); }
-.command-log-line.running .command-log-status { color: var(--amber); }
-
 /* ---- Wizard top bar (back to home) ---- */
 #wizard-topbar {
   display: flex;
@@ -460,26 +520,53 @@ body::before {
 #connect-title { font-size: 20px; font-weight: 700; color: var(--text); }
 #connect-subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; line-height: 1.5; max-width: 620px; }
 #connect-subtitle code { font-family: var(--font-mono); font-size: 12px; color: var(--accent-blue); }
-#connect-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.connect-action {
+#connect-rows { display: flex; flex-direction: column; gap: 12px; }
+.connection-row {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  text-align: left;
-  gap: 8px;
-  padding: 20px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
   background: var(--surface);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-xl);
   color: var(--text);
+}
+.connection-row[data-status="connected"] { border-color: #34c759; }
+.connection-row[data-status="disconnected"] { border-color: #ff9500; }
+.connection-row[data-status="not-set"] { border-color: var(--border-2); }
+.connection-row[data-status="not-installed"] { border-color: #4a86e8; }
+.row-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.row-title { display: flex; align-items: center; gap: 8px; }
+.row-name { font-size: 14px; font-weight: 700; }
+.row-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.row-dot[data-status="connected"] { background: #34c759; }
+.row-dot[data-status="disconnected"] { background: #ff9500; }
+.row-dot[data-status="not-set"] { background: var(--muted); }
+.row-dot[data-status="not-installed"] { background: #4a86e8; }
+.row-subtitle { font-size: 12px; color: var(--muted); }
+.row-actions { display: flex; flex: none; gap: 8px; }
+.row-action {
+  flex: none;
+  padding: 8px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-lg);
+  color: var(--text);
   cursor: pointer;
   font: inherit;
-  transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease, box-shadow 0.14s ease;
+  font-weight: 700;
+  transition: background 0.14s ease, border-color 0.14s ease;
 }
-.connect-action:hover { background: var(--surface-2); border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
-.connect-action:active { transform: translateY(0); box-shadow: none; }
-.ca-title { font-size: 15px; font-weight: 700; color: var(--violet); }
-.ca-desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.row-action:hover:not([disabled]) { background: var(--surface-2); border-color: var(--accent); }
+.row-action[disabled] { opacity: 0.5; cursor: not-allowed; }
+.view-footer { background: var(--color-bg-nav); color: var(--muted); font-size: 9px; text-align: center; padding: 6px; }
 
 /* ---- Sprite panel ---- */
 #sprite-panel {
@@ -674,7 +761,7 @@ body::before {
 .setup-view-status { margin: 12px 12px 0; color: var(--green); font-size: 13px; font-weight: 600; }
 .setup-view-redirect { display: flex; align-items: center; gap: 8px; margin: 6px 12px 0; color: var(--muted); font-size: 12px; }
 .inline-spinner { width: 11px; height: 11px; border: 1.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: cm-spin 0.8s linear infinite; flex: none; }
-.step-sub .inline-spinner { display: inline-block; vertical-align: -1px; margin-right: 6px; }
+.step-sub .inline-spinner, .profile-sub .inline-spinner { display: inline-block; vertical-align: -1px; margin-right: 6px; }
 
 /* Collapsed rows (COMPLETE, this view only): "label -- value [icon]" on one
    line instead of the default stacked title/subtitle -- never touches the
@@ -688,10 +775,17 @@ body::before {
 #setup-view .step-row.collapsed .step-sub::before { content: '\2014'; margin-right: 2px; font-weight: 400; color: var(--muted); }
 #setup-view .step-row.collapsed .step-icon { order: 2; margin-left: auto; }
 
+/* An answered row can be clicked to redo that step, but only while the view
+   says so (a prompt is open or the run has failed): the class is on the view. */
+#setup-view.can-revisit .step-row.revisit { cursor: pointer; }
+#setup-view.can-revisit .step-row.revisit:hover .step-title { color: var(--violet); }
+#setup-view.can-revisit .step-row.revisit:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
+
 /* ---- Health (ui/health-ui.js) ----
    `codemie doctor` regrouped by who can act on a problem. A problem's remedy is
    the app's failure panel, drawn smaller and dashed so it reads as part of its
    row rather than as the screen's own failure. */
+#about-view,
 #health-view { padding: 22px 28px 28px; max-width: 760px; animation: cm-fade-in 0.2s ease; }
 .health-head {
   display: flex;
@@ -740,6 +834,34 @@ body::before {
 .health-actions .btn { width: auto; padding: 9px 18px; }
 .health-log-slot .failure-block { margin: 14px 0 0; }
 #health-view > .failure-block { margin: 0; }
+/* About (ui/about-view.js) reuses the Health classes; only these differ. */
+#about-view .health-title { margin: 0; }
+#about-view .health-group-heading { margin-top: 18px; }
+#about-view .update-error { margin-top: 6px; font-size: 12px; color: var(--red); }
+.about-sub { color: var(--muted); font-size: 13px; margin: 4px 0 2px; }
+.about-list { display: flex; flex-direction: column; gap: 10px; }
+.about-card {
+  display: flex; align-items: center; gap: 14px; padding: 14px 16px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md, 8px);
+}
+.about-card-icon {
+  width: 34px; height: 34px; flex: none; border-radius: 50%;
+  display: grid; place-items: center; background: var(--surface-2); color: var(--accent-blue);
+}
+.about-card-icon svg { width: 17px; height: 17px; }
+.about-card-text { flex: 1; min-width: 0; }
+.about-card-title { color: var(--text); font-weight: 600; font-size: 14px; }
+.about-card-version { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.about-card-desc { color: var(--muted); font-size: 12px; margin-top: 3px; }
+#about-view .about-card-action { width: auto; flex: none; padding: 6px 14px; font-size: 13px; }
+.about-link {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12.5px;
+  color: var(--accent-blue); background: transparent; border: 1px solid var(--accent-blue);
+  border-radius: 6px; cursor: pointer;
+}
+.about-link:hover { background: var(--surface-2); }
+.about-link-icon { display: inline-flex; }
+.about-link-icon svg { width: 13px; height: 13px; }
 
 /* ---- Log bar + panel ---- */
 #log-bar {
@@ -768,7 +890,7 @@ body::before {
 .log-info { color: var(--violet); }
 .log-success { color: var(--color-success-text); }
 .log-dim { color: var(--muted); }
-.log-prompt { color: var(--color-warning-text); }
+.log-prompt { color: #FFFFFF; font-family: var(--font-sans); }
 .log-approved { color: var(--color-success-text); text-align: right; }
 
 /* ---- Footer ---- */
@@ -939,6 +1061,25 @@ body::before {
 .agents-summary { font-size: 12px; color: var(--muted); }
 .agents-note { margin: 10px 0 4px; font-size: 12px; color: var(--dim); }
 .agents-list { margin-top: 4px; }
+.agents-list .step-row { cursor: pointer; }
+.agents-list .step-row.selected { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent-blue); }
+/* Opens under the selected row, lined up with its title. */
+.agent-pane {
+  margin: 2px 12px 8px 38px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--muted);
+  animation: cm-rise 0.2s ease;
+}
+.agent-pane[hidden] { display: none; }
+.agent-pane-version { font-size: 13px; color: var(--text); }
+.agent-pane-detail, .agent-pane-launcher, .agent-pane-note { margin-top: 6px; }
+.agent-pane-launcher { font-family: var(--font-mono); font-size: 11px; color: var(--dim); }
+.agent-pane-progress { margin-top: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.agent-pane .failure-block { margin: 12px 0 0; }
 .agent-actions { display: flex; gap: 8px; margin: 6px 0 2px 26px; }
 .agent-actions .btn { width: auto; padding: 4px 12px; font-size: 12px; }
 .agents-error {

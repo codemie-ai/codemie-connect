@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "activeProfile": "epm-cdme",
+  "activeProfile": "personal-sub",
   "profiles": {
     "epm-cdme": {
       "codeMieProject": "epm-cdme",
