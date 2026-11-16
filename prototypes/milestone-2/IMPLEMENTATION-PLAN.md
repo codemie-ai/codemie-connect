@@ -58,8 +58,8 @@ The workspace module gains draft, summary and automation jobs on the runner. The
 
 ## Before Task 1
 
-- [ ] With the owner's OK, commit the uncommitted Milestone 1 polish on `feat/milestone-1-workspace` (see `prototypes/milestone-1/POLISH-VALIDATION.md`). Exclude `Makefile` and `prototypes/validation/`.
-- [ ] Create `feat/milestone-2-claude-plugins` from that commit. All line references below are against that tree.
+- [x] Milestone 1 polish committed on `feat/milestone-1-workspace` (`49b82c3`) and this plan (`d5a70d9`). `Makefile` and `prototypes/validation/` are excluded.
+- [x] The owner chose to continue on `feat/milestone-1-workspace` (2026-11-17), so there is no new branch. All line references below are against `49b82c3`.
 
 ---
 
