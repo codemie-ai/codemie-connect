@@ -84,7 +84,115 @@ impl Repository {
         db.execute("UPDATE jobs SET state='failed',lease_until=NULL,body=json_set(body,'$.state','failed','$.leaseUntil',NULL,'$.result','Interrupted OS/network submission; check Activity before creating a new occurrence') WHERE state='running' AND json_extract(body,'$.kind') IN ('notification','reminder','send')",[])?;
         db.execute("UPDATE jobs SET state='queued',lease_until=NULL,body=json_set(body,'$.state','queued','$.leaseUntil',NULL,'$.result','Recovered after app restart') WHERE state='running'",[])?;
         db.execute("UPDATE records SET body=json_set(body,'$.state','unknown_outcome','$.message','Interrupted during dispatch. Check the provider before creating another action.') WHERE kind='action' AND json_extract(body,'$.state')='dispatching'",[])?;
-        Ok(Self { db })
+        let mut repo = Self { db };
+        // Earlier builds required manual binding and source picking. Best effort: never blocks opening.
+        let _ = repo.bind_default_to_active();
+        // Earlier builds kept every Teams message in the window; keep each chat's newest tail.
+        let _ = repo.prune_chat_messages(None, super::graph::CHAT_KEEP_MESSAGES);
+        Ok(repo)
+    }
+    /// Upgrade on open: earlier builds required manual binding and per-workspace source picking,
+    /// which no longer has any UI. Every workspace on the active connected account switches to
+    /// automatic sources. Idempotent afterwards.
+    pub fn bind_default_to_active(&mut self) -> Result<bool> {
+        let Some(cid) = self.settings()?.active_connection else {
+            return Ok(false);
+        };
+        if !self.connection(&cid).is_ok_and(|c| c.status == "connected") {
+            return Ok(false);
+        }
+        Ok(self.auto_bind(&cid)? > 0)
+    }
+    /// The default workspace always follows the signed-in account; other live workspaces that are
+    /// unbound or already on this account are bound too. All of them use automatic sources.
+    /// Workspaces explicitly bound to another account keep that binding.
+    pub fn auto_bind(&mut self, cid: &str) -> Result<usize> {
+        let mut changed = 0;
+        for mut w in self.workspaces()? {
+            let same = w.connection_id.as_deref() == Some(cid);
+            if same && sources_all(&w.sources) {
+                continue;
+            }
+            let default = w.is_default || w.id == "personal";
+            if !default && (w.archived || !(w.connection_id.is_none() || same)) {
+                continue;
+            }
+            w.connection_id = Some(cid.into());
+            w.sources = json!({"all":true});
+            w.revision += 1;
+            self.save_workspace(&w)?;
+            changed += 1;
+        }
+        Ok(changed)
+    }
+    /// Keeps the newest `keep` messages of one Teams chat (or every chat when `source` is None).
+    /// Messages a person acted on (decision, draft, commitment or prepared action) are kept.
+    pub fn prune_chat_messages(&mut self, source: Option<&str>, keep: i64) -> Result<usize> {
+        let removed = self.db.execute(
+            "DELETE FROM records WHERE rowid IN (
+               SELECT rowid FROM (
+                 SELECT rowid, id, ROW_NUMBER() OVER (PARTITION BY connection_id, source ORDER BY CAST(json_extract(body,'$.at') AS INTEGER) DESC) AS rn
+                 FROM records WHERE kind='message' AND source LIKE 'chat:%' AND (?1 IS NULL OR source=?1))
+               WHERE rn > ?2
+                 AND id NOT IN (SELECT id FROM records WHERE kind='decision')
+                 AND id NOT IN (SELECT ifnull(json_extract(body,'$.sourceId'),'') FROM records WHERE kind IN ('draft','commitment','action')))",
+            params![source, keep],
+        )?;
+        if removed > 0 {
+            self.db
+                .execute("UPDATE meta SET revision=revision+1 WHERE id=1", [])?;
+        }
+        Ok(removed)
+    }
+    /// Whether a workspace may act on a calendar: any catalog calendar for automatic sources.
+    pub fn calendar_selected(&self, w: &Workspace, cid: &str, cal: &str) -> bool {
+        let ids = if sources_all(&w.sources) {
+            self.record("catalog", "calendars", Some(cid), None)
+                .ok()
+                .map(|r| r.data["values"].clone())
+        } else {
+            Some(w.sources["calendars"].clone())
+        };
+        ids.as_ref()
+            .and_then(Value::as_array)
+            .is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|v| v.as_str().or(v["id"].as_str()) == Some(cal))
+            })
+    }
+    /// Calendar ids a workspace reads: every catalog calendar for automatic sources, else the
+    /// legacy explicit selection. Capped at 30.
+    pub fn workspace_calendars(&self, w: &Workspace, cid: &str) -> Vec<String> {
+        let ids: Vec<String> = if sources_all(&w.sources) {
+            self.record("catalog", "calendars", Some(cid), None)
+                .ok()
+                .and_then(|r| {
+                    r.data["values"].as_array().map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|v| v["id"].as_str())
+                            .map(String::from)
+                            .collect()
+                    })
+                })
+                .unwrap_or_default()
+        } else {
+            w.sources["calendars"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut seen = std::collections::HashSet::new();
+        ids.into_iter()
+            .filter(|id| seen.insert(id.clone()))
+            .take(30)
+            .collect()
     }
     pub fn revision(&self) -> Result<i64> {
         Ok(self
@@ -151,7 +259,7 @@ impl Repository {
         let mut raw = local_stmt
             .query_map([&active.id], record_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let mut provider_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id=?1 AND (workspace_id='' OR workspace_id=?2) AND (kind IN ('catalog','incident','action') OR (source LIKE 'mail:%' AND json_extract(?3,'$.mail')=1) OR source IN(SELECT 'chat:'||value FROM json_each(?3,'$.chats')) OR source IN(SELECT 'calendar:'||value FROM json_each(?3,'$.calendars'))) ORDER BY updated_at DESC")?;
+        let mut provider_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id=?1 AND (workspace_id='' OR workspace_id=?2) AND (kind IN ('catalog','incident','action') OR (json_extract(?3,'$.all')=1 AND (source LIKE 'mail:%' OR source LIKE 'chat:%' OR source LIKE 'calendar:%')) OR (source LIKE 'mail:%' AND json_extract(?3,'$.mail')=1) OR source IN(SELECT 'chat:'||value FROM json_each(?3,'$.chats')) OR source IN(SELECT 'calendar:'||value FROM json_each(?3,'$.calendars'))) ORDER BY updated_at DESC")?;
         raw.extend(
             provider_stmt
                 .query_map(
@@ -516,7 +624,7 @@ impl Repository {
             if let Some((start, end)) = range {
                 tx.execute("DELETE FROM records WHERE connection_id=?1 AND source=?2 AND kind='event' AND CAST(strftime('%s',json_extract(body,'$.start')) AS INTEGER) < ?4 AND CAST(strftime('%s',json_extract(body,'$.end')) AS INTEGER) > ?3",params![c.id,resource,start,end])?;
             } else {
-                tx.execute("DELETE FROM records WHERE connection_id=?1 AND source=?2 AND kind IN ('event','message') AND EXISTS(SELECT 1 FROM records d WHERE d.kind='decision' AND d.connection_id=records.connection_id AND d.id=records.id AND json_extract(d.body,'$.lifecycle') IN ('archived','resolved')) AND NOT EXISTS(SELECT 1 FROM workspaces w WHERE json_extract(w.body,'$.connectionId')=records.connection_id AND ((records.source LIKE 'mail:%' AND json_extract(w.body,'$.sources.mail')=1) OR records.source IN(SELECT 'chat:'||value FROM json_each(w.body,'$.sources.chats'))) AND NOT EXISTS(SELECT 1 FROM records own WHERE own.kind='decision' AND own.id=records.id AND own.connection_id=records.connection_id AND own.workspace_id=w.id AND json_extract(own.body,'$.lifecycle') IN ('archived','resolved')))",params![c.id,resource])?;
+                tx.execute("DELETE FROM records WHERE connection_id=?1 AND source=?2 AND kind IN ('event','message') AND EXISTS(SELECT 1 FROM records d WHERE d.kind='decision' AND d.connection_id=records.connection_id AND d.id=records.id AND json_extract(d.body,'$.lifecycle') IN ('archived','resolved')) AND NOT EXISTS(SELECT 1 FROM workspaces w WHERE json_extract(w.body,'$.connectionId')=records.connection_id AND ((json_extract(w.body,'$.sources.all')=1 AND (records.source LIKE 'mail:%' OR records.source LIKE 'chat:%' OR records.source LIKE 'calendar:%')) OR (records.source LIKE 'mail:%' AND json_extract(w.body,'$.sources.mail')=1) OR records.source IN(SELECT 'chat:'||value FROM json_each(w.body,'$.sources.chats'))) AND NOT EXISTS(SELECT 1 FROM records own WHERE own.kind='decision' AND own.id=records.id AND own.connection_id=records.connection_id AND own.workspace_id=w.id AND json_extract(own.body,'$.lifecycle') IN ('archived','resolved')))",params![c.id,resource])?;
             }
         }
         for id in removed {
@@ -559,10 +667,41 @@ impl Repository {
             Some("catalog:chats"),
         )
     }
+    /// Mail delta round whose cursor lives under a versioned key, so a changed `$select` starts a
+    /// fresh delta instead of continuing an old link that omits the new fields.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_keyed_sync(
+        &mut self,
+        c: &Connection,
+        resource: &str,
+        records: &[Record],
+        removed: &[String],
+        cursor: Option<&str>,
+        reconcile: bool,
+        cursor_key: &str,
+    ) -> Result<()> {
+        self.commit_resource(
+            c,
+            resource,
+            records,
+            removed,
+            cursor,
+            reconcile,
+            None,
+            Some(cursor_key),
+        )
+    }
     pub fn clear_cursor(&self, cid: &str, resource: &str) -> Result<()> {
         self.db.execute(
             "DELETE FROM cursors WHERE connection_id=?1 AND resource=?2",
             params![cid, resource],
+        )?;
+        Ok(())
+    }
+    pub fn clear_cursor_prefix(&self, cid: &str, prefix: &str) -> Result<()> {
+        self.db.execute(
+            "DELETE FROM cursors WHERE connection_id=?1 AND substr(resource,1,length(?2))=?2",
+            params![cid, prefix],
         )?;
         Ok(())
     }
@@ -648,7 +787,7 @@ impl Repository {
     }
     pub fn account_workspace_records(&self, cid: &str, wid: &str) -> Result<Vec<Record>> {
         let workspace = self.workspace(wid)?;
-        let mut stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id=?1 AND (workspace_id='' OR workspace_id=?2) AND (kind IN ('catalog','incident','action','decision') OR (source LIKE 'mail:%' AND json_extract(?3,'$.mail')=1) OR source IN(SELECT 'chat:'||value FROM json_each(?3,'$.chats')) OR source IN(SELECT 'calendar:'||value FROM json_each(?3,'$.calendars'))) ORDER BY updated_at DESC")?;
+        let mut stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id=?1 AND (workspace_id='' OR workspace_id=?2) AND (kind IN ('catalog','incident','action','decision') OR (json_extract(?3,'$.all')=1 AND (source LIKE 'mail:%' OR source LIKE 'chat:%' OR source LIKE 'calendar:%')) OR (source LIKE 'mail:%' AND json_extract(?3,'$.mail')=1) OR source IN(SELECT 'chat:'||value FROM json_each(?3,'$.chats')) OR source IN(SELECT 'calendar:'||value FROM json_each(?3,'$.calendars'))) ORDER BY updated_at DESC")?;
         let records = stmt
             .query_map(params![cid, wid, encode(&workspace.sources)?], record_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -863,12 +1002,30 @@ fn record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Record> {
         })?,
     })
 }
+/// Automatic sources (`{"all":true}`): every catalog calendar, Outlook mail and recent Teams chats.
+pub fn sources_all(sources: &Value) -> bool {
+    sources["all"] == true
+}
+/// A legacy explicit selection with nothing ticked (or no selection at all).
+pub fn sources_empty(sources: &Value) -> bool {
+    !sources_all(sources)
+        && sources["calendars"].as_array().is_none_or(|a| a.is_empty())
+        && sources["chats"].as_array().is_none_or(|a| a.is_empty())
+        && sources["mail"] != true
+}
 pub fn record_selected(r: &Record, w: &Workspace) -> bool {
     if r.workspace_id.as_deref() == Some(&w.id) && (r.connection_id.is_none() || r.kind == "action")
     {
         return true;
     }
     if r.kind == "catalog" {
+        return true;
+    }
+    if sources_all(&w.sources)
+        && (r.source.starts_with("calendar:")
+            || r.source.starts_with("chat:")
+            || r.source.starts_with("mail:"))
+    {
         return true;
     }
     if r.source.starts_with("calendar:") {
@@ -1174,11 +1331,231 @@ mod tests {
             ],
             enabled: vec!["calendar".into(), "mail".into(), "chats".into()],
             status: "connected".into(),
-            last_sync: None,
-            sync_error: None,
-            retry_at: None,
-            job_fence: None,
+            ..Default::default()
         }
+    }
+    fn bind_all(r: &mut Repository, c: &Connection) {
+        bind(r, c);
+        let mut w = r.workspace("personal").unwrap();
+        w.sources = json!({"all":true});
+        r.save_workspace(&w).unwrap();
+    }
+    fn workspace_with(sources: Value) -> Workspace {
+        Workspace {
+            id: "w".into(),
+            name: "W".into(),
+            color: "#2297f6".into(),
+            archived: false,
+            is_default: false,
+            connection_id: Some("a".into()),
+            revision: 0,
+            access_revision: 0,
+            profile_revision: 0,
+            sources,
+            layout: vec![],
+            widget_widths: json!({}),
+            ai_profile: None,
+        }
+    }
+    #[test]
+    fn automatic_sources_select_every_provider_source_and_legacy_form_still_works() {
+        let all = workspace_with(json!({"all":true}));
+        let legacy =
+            workspace_with(json!({"calendars":["primary"],"chats":["chat-a"],"mail":false}));
+        for source in ["calendar:any", "chat:any", "mail:inbox", "mail:sentitems"] {
+            let r = item("a", "x", "message", source, json!({}));
+            assert!(record_selected(&r, &all), "{source}");
+        }
+        assert!(record_selected(
+            &item("a", "x", "event", "calendar:primary", json!({})),
+            &legacy
+        ));
+        assert!(!record_selected(
+            &item("a", "x", "event", "calendar:other", json!({})),
+            &legacy
+        ));
+        assert!(!record_selected(
+            &item("a", "x", "message", "mail:inbox", json!({})),
+            &legacy
+        ));
+        assert!(!record_selected(
+            &item("a", "x", "message", "chat:any", json!({})),
+            &workspace_with(json!({"all":false}))
+        ));
+        assert!(sources_empty(
+            &json!({"calendars":[],"mail":false,"chats":[]})
+        ));
+        assert!(sources_empty(&json!({})));
+        assert!(!sources_empty(&json!({"all":true})));
+        assert!(!sources_empty(&json!({"mail":true})));
+    }
+    #[test]
+    fn automatic_sources_include_provider_records_in_snapshot_and_account_queries() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let c = connection("a");
+        bind_all(&mut r, &c);
+        for (rid, kind, source) in [
+            ("m", "message", "mail:inbox"),
+            ("s", "message", "mail:sentitems"),
+            ("t", "message", "chat:never-ticked"),
+            ("e", "event", "calendar:never-ticked"),
+        ] {
+            r.put_record(&item(
+                "a",
+                rid,
+                kind,
+                source,
+                json!({"text":"x","at":now(),"start":"2026-11-16T09:00:00Z","end":"2026-11-16T10:00:00Z"}),
+            ))
+            .unwrap();
+        }
+        let snap = r.snapshot().unwrap();
+        assert!(snap.available);
+        for rid in ["m", "s", "t", "e"] {
+            assert!(snap.records.iter().any(|r| r.id == rid), "snapshot {rid}");
+        }
+        let rows = r.account_workspace_records("a", "personal").unwrap();
+        for rid in ["m", "s", "t", "e"] {
+            assert!(rows.iter().any(|r| r.id == rid), "account {rid}");
+        }
+        // Another account's records stay out even with automatic sources.
+        r.put_record(&item("b", "other", "message", "mail:inbox", json!({})))
+            .unwrap();
+        assert!(!r
+            .account_workspace_records("a", "personal")
+            .unwrap()
+            .iter()
+            .any(|r| r.id == "other"));
+    }
+    #[test]
+    fn automatic_sources_reconcile_keeps_items_another_workspace_still_wants() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let c = connection("a");
+        bind(&mut r, &c);
+        let mut second = r.workspace("personal").unwrap();
+        second.id = "second".into();
+        second.is_default = false;
+        second.sources = json!({"all":true});
+        r.save_workspace(&second).unwrap();
+        let c = r.connection("a").unwrap();
+        r.put_record(&item("a", "kept", "message", "chat:unticked", json!({})))
+            .unwrap();
+        let mut decision = item(
+            "a",
+            "kept",
+            "decision",
+            "chat:unticked",
+            json!({"lifecycle":"archived"}),
+        );
+        decision.workspace_id = Some("personal".into());
+        r.put_record(&decision).unwrap();
+        r.commit_sync(&c, "chat:unticked", &[], &[], None, true)
+            .unwrap();
+        assert!(r.record("message", "kept", Some("a"), None).is_ok());
+    }
+    #[test]
+    fn open_binds_default_workspace_to_active_connection_once() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("db");
+        let mut r = Repository::open(&path).unwrap();
+        let c = connection("a");
+        r.save_connection(&c).unwrap();
+        let mut s = r.settings().unwrap();
+        s.active_connection = Some("a".into());
+        r.settings_update(&s).unwrap();
+        drop(r);
+        let mut r = Repository::open(&path).unwrap();
+        let w = r.workspace("personal").unwrap();
+        assert_eq!(w.connection_id.as_deref(), Some("a"));
+        assert_eq!(w.sources, json!({"all":true}));
+        assert!(!r.bind_default_to_active().unwrap());
+        // A legacy explicit selection (one Teams chat, picked in the old Settings) upgrades too.
+        let mut legacy = w.clone();
+        legacy.sources = json!({"calendars":["primary"],"mail":false,"chats":["one-chat"]});
+        r.save_workspace(&legacy).unwrap();
+        drop(r);
+        let mut r = Repository::open(&path).unwrap();
+        assert_eq!(
+            r.workspace("personal").unwrap().sources,
+            json!({"all":true})
+        );
+        assert!(!r.bind_default_to_active().unwrap());
+    }
+    #[test]
+    fn sign_in_auto_bind_makes_every_same_account_workspace_automatic() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let c = connection("a");
+        bind(&mut r, &c);
+        let base = r.workspace("personal").unwrap();
+        for (wid, cid, sources, archived) in [
+            (
+                "unbound",
+                None,
+                json!({"calendars":[],"mail":false,"chats":[]}),
+                false,
+            ),
+            (
+                "explicit",
+                Some("a"),
+                json!({"calendars":["primary"],"mail":true,"chats":[]}),
+                false,
+            ),
+            (
+                "empty",
+                Some("a"),
+                json!({"calendars":[],"mail":false,"chats":[]}),
+                false,
+            ),
+            ("foreign", Some("b"), json!({"all":true}), false),
+            ("archived", None, json!({}), true),
+        ] {
+            let mut w = base.clone();
+            w.id = wid.into();
+            w.is_default = false;
+            w.connection_id = cid.map(String::from);
+            w.sources = sources;
+            w.archived = archived;
+            r.save_workspace(&w).unwrap();
+        }
+        r.auto_bind("a").unwrap();
+        let get = |id: &str| r.workspace(id).unwrap();
+        assert_eq!(get("personal").sources, json!({"all":true}));
+        assert_eq!(get("unbound").connection_id.as_deref(), Some("a"));
+        assert_eq!(get("unbound").sources, json!({"all":true}));
+        assert_eq!(get("explicit").sources, json!({"all":true}));
+        assert_eq!(get("empty").sources, json!({"all":true}));
+        assert_eq!(get("foreign").connection_id.as_deref(), Some("b"));
+        assert!(get("archived").connection_id.is_none());
+        r.auto_bind("b").unwrap();
+        assert_eq!(
+            r.workspace("personal").unwrap().connection_id.as_deref(),
+            Some("b")
+        );
+    }
+    #[test]
+    fn automatic_calendar_selection_reads_the_catalog() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let c = connection("a");
+        bind_all(&mut r, &c);
+        let values: Vec<Value> = (0..40).map(|n| json!({"id":format!("cal-{n}")})).collect();
+        r.put_record(&item(
+            "a",
+            "calendars",
+            "catalog",
+            "catalog",
+            json!({"values":values}),
+        ))
+        .unwrap();
+        let w = r.workspace("personal").unwrap();
+        let ids = r.workspace_calendars(&w, "a");
+        assert_eq!(ids.len(), 30);
+        assert_eq!(ids[0], "cal-0");
+        let legacy = workspace_with(json!({"calendars":["primary"]}));
+        assert_eq!(r.workspace_calendars(&legacy, "a"), vec!["primary"]);
     }
     fn bind(r: &mut Repository, c: &Connection) {
         r.save_connection(c).unwrap();
@@ -1202,6 +1579,43 @@ mod tests {
             updated_at: now(),
             data,
         }
+    }
+    #[test]
+    fn chat_pruning_keeps_the_newest_tail_and_anything_acted_on() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        for i in 0..30 {
+            r.put_record(&item(
+                "a",
+                &format!("m{i}"),
+                "message",
+                "chat:busy",
+                json!({"at": 1000 + i}),
+            ))
+            .unwrap();
+        }
+        r.put_record(&item("a", "q0", "message", "chat:quiet", json!({"at": 1})))
+            .unwrap();
+        r.put_record(&item(
+            "a",
+            "m0",
+            "decision",
+            "chat:busy",
+            json!({"lane":"reply"}),
+        ))
+        .unwrap();
+        let mut draft = item("a", "manual:m1", "draft", "local", json!({"sourceId":"m1"}));
+        draft.connection_id = None;
+        draft.workspace_id = Some("personal".into());
+        r.put_record(&draft).unwrap();
+        assert_eq!(r.prune_chat_messages(Some("chat:busy"), 25).unwrap(), 3);
+        let kept = |id: &str| r.record("message", id, Some("a"), None).is_ok();
+        assert!(kept("m29") && kept("m5"), "newest 25 stay");
+        assert!(!kept("m2") && !kept("m4"), "older ones go");
+        assert!(kept("m0"), "a message with a decision stays");
+        assert!(kept("m1"), "a message with a draft stays");
+        assert!(kept("q0"), "other chats are untouched");
+        assert_eq!(r.prune_chat_messages(None, 25).unwrap(), 0, "idempotent");
     }
     #[test]
     fn accounts_and_disabled_capabilities_never_share_cached_content() {

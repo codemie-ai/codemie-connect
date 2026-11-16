@@ -17,7 +17,14 @@ src-tauri/src/commands/
 ui/test/
   engine.test.mjs   Engine orchestration (step sequencing, gates, fatal logic)
   models.test.mjs   StepStatus, STATUS_META, makeStep normalization
+  workspace.test.mjs  Workspace store, calendar geometry, formatting, selectors and view rendering
+  fixtures/workspace-fixture.mjs  Synthetic snapshot (invented people, relative times) for unit and browser tests
+  browser/workspace-e2e.mjs       Chromium run of the real ui/ with a MOCKED native bridge
 ```
+
+### Workspace browser end-to-end
+
+`PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node ui/test/browser/workspace-e2e.mjs` serves `ui/` on loopback, injects a mocked `window.__TAURI__`, and drives sign-in, Today, Calendar (all modes), Inbox, Settings, Workspaces and sign-out in both themes at 1000/1440/1680 px. Screenshots land in `output/playwright/workspace-e2e/` (git-ignored). It needs loopback binding (outside the default sandbox) and proves UI behaviour only — never native Graph, storage or notifications.
 
 ### Naming Conventions
 

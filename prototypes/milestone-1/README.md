@@ -1,6 +1,6 @@
 # Milestone 1 · approval package
 
-**Ready for plan review; production implementation has not started.**
+**Implemented on `feat/milestone-1-workspace`.** Latest status: [product polish and validation](POLISH-VALIDATION.md) (automatic Microsoft sources, profile and photo, time-grid Calendar, redesigned Today and Inbox, CodeMie components). Earlier results: [implementation validation](IMPLEMENTATION-VALIDATION.md). Component values: [CODEMIE-DESIGN-SPEC.md](CODEMIE-DESIGN-SPEC.md).
 
 1. **[Implementation plan](IMPLEMENTATION-PLAN.md)** — four incremental tasks, explicit scope, native architecture, Graph contracts, migration and acceptance gates.
 2. **[Test plan](TEST-PLAN.md)** — 66 task scenario groups + 16 legacy groups, with concrete steps and expected results after each task. Native, live tenant, browser and package checks are kept separate.

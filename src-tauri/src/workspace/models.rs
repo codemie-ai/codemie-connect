@@ -106,7 +106,7 @@ pub struct Workspace {
     pub ai_profile: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Connection {
     pub id: String,
@@ -125,6 +125,20 @@ pub struct Connection {
     pub sync_error: Option<String>,
     #[serde(default)]
     pub retry_at: Option<i64>,
+    /// Microsoft profile fields (`/me`), refreshed at sign-in and at most daily during sync.
+    #[serde(default)]
+    pub given_name: Option<String>,
+    #[serde(default)]
+    pub job_title: Option<String>,
+    #[serde(default)]
+    pub department: Option<String>,
+    #[serde(default)]
+    pub office_location: Option<String>,
+    /// `data:image/jpeg;base64,...` (or png) of the 120x120 profile photo; None when absent or over 256 KB.
+    #[serde(default)]
+    pub photo: Option<String>,
+    #[serde(default)]
+    pub profile_at: Option<i64>,
     #[serde(skip)]
     pub job_fence: Option<(String, i64)>,
 }

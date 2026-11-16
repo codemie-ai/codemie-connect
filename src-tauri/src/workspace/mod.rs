@@ -42,6 +42,8 @@ pub struct Core {
     ai_dispatch: tokio::sync::Mutex<()>,
     ai_child: Mutex<Option<tokio::process::Child>>,
     graph_children: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
+    /// `{connectionId}:{calendarId}` -> last full calendarView refresh (unix seconds).
+    calendar_refreshed: Mutex<std::collections::HashMap<String, i64>>,
     mutations: tokio::sync::Mutex<()>,
     pub stop: AtomicBool,
     pub installer_busy: AtomicBool,
@@ -81,6 +83,7 @@ impl Core {
             ai_dispatch: Default::default(),
             ai_child: Default::default(),
             graph_children: Default::default(),
+            calendar_refreshed: Default::default(),
             mutations: Default::default(),
             stop: AtomicBool::new(false),
             installer_busy: AtomicBool::new(false),
@@ -194,7 +197,9 @@ impl Core {
                     let _ = core.queue_sync();
                 }
                 ticks += 1;
-                if ticks % 10 == 0 {
+                // Views keep their own clocks; this only nudges an idle window to pick up
+                // background changes that did not emit an event of their own.
+                if ticks % 60 == 0 {
                     core.emit("workspace:changed");
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -255,6 +260,10 @@ impl Core {
         self.emit("workspace:changed");
     }
     pub fn queue_sync(&self) -> Result<()> {
+        self.queue_sync_with(false)
+    }
+    /// `force` (user refresh, sources change, sign-in) bypasses the per-calendar refresh interval.
+    pub fn queue_sync_with(&self, force: bool) -> Result<()> {
         let mut r = self.repo()?;
         let s = r.settings()?;
         if let Some(cid) = s.active_connection {
@@ -263,24 +272,36 @@ impl Core {
                 return Ok(());
             }
             let current = r.policy(None, Some(&cid))?;
-            if r.jobs()?.iter().any(|j| {
-                j.kind == "sync"
-                    && j.connection_id.as_deref() == Some(&cid)
-                    && j.policy == current
-                    && matches!(j.state.as_str(), "queued" | "running")
-            }) {
+            let jobs = r.jobs()?;
+            let pending = |state: &str| {
+                jobs.iter().find(|j| {
+                    j.kind == "sync"
+                        && j.connection_id.as_deref() == Some(&cid)
+                        && j.policy == current
+                        && j.state == state
+                })
+            };
+            if let Some(queued) = pending("queued") {
+                if force && queued.payload["force"] != true {
+                    let mut queued = queued.clone();
+                    queued.payload["force"] = true.into();
+                    r.save_job(&queued)?;
+                }
+                return Ok(());
+            }
+            // A running round may already be past its calendars; a forced request queues behind it.
+            if pending("running").is_some() && !force {
                 return Ok(());
             }
             let key = format!("sync:{cid}:{}", id());
-            let policy = r.policy(None, Some(&cid))?;
             r.enqueue(&new_job(
                 "sync",
                 key,
                 None,
                 Some(cid),
                 now(),
-                policy,
-                json!({}),
+                current,
+                json!({"force":force}),
             ))?;
         }
         Ok(())
@@ -299,7 +320,7 @@ impl Core {
                     .ok_or_else(|| WorkspaceError::new("validation", "Missing connection."))?;
                 let mut c = self.repo()?.connection(cid)?;
                 c.job_fence = Some((job.id.clone(), job.attempts));
-                self.sync(c).await?;
+                self.sync(c, job.payload["force"] == true).await?;
                 self.refresh_incidents()?;
                 Ok("Sources refreshed".into())
             }
@@ -318,17 +339,32 @@ impl Core {
                     .connection_id
                     .as_deref()
                     .ok_or_else(|| WorkspaceError::new("needs_login", "Connect Microsoft."))?;
-                let w = self.repo()?.workspace(wid)?;
-                let mut c = self.repo()?.connection(cid)?;
+                let (calendars, mut c) = {
+                    let r = self.repo()?;
+                    let w = r.workspace(wid)?;
+                    (r.workspace_calendars(&w, cid), r.connection(cid)?)
+                };
                 c.job_fence = Some((job.id.clone(), job.attempts));
                 let start = job.payload["start"].as_i64().unwrap_or(0);
                 let end = job.payload["end"].as_i64().unwrap_or(0);
-                if let Some(calendars) = w.sources["calendars"].as_array() {
-                    for cal in calendars.iter().filter_map(Value::as_str) {
-                        self.sync_calendar(&c, cal, Some((start, end))).await?;
+                // One shared or removed calendar must not block the others: keep every window that
+                // completed and fail only when none did.
+                let mut failed = Vec::new();
+                for cal in &calendars {
+                    if let Err(error) = self.sync_calendar(&c, cal, Some((start, end))).await {
+                        if error.code == "cancelled" {
+                            return Err(error);
+                        }
+                        failed.push(error);
                     }
                 }
-                Ok("Calendar window refreshed".into())
+                match failed.len() {
+                    0 => Ok("Calendar window refreshed".into()),
+                    n if n == calendars.len() => Err(failed.remove(0)),
+                    n => Ok(format!(
+                        "Calendar window refreshed; {n} calendar(s) unavailable"
+                    )),
+                }
             }
             "ai_draft" => {
                 let req = Request {
@@ -438,17 +474,23 @@ impl Core {
         let response = match req.op {
             Operation::WorkspaceCreate => {
                 let name = required(&req.data, "name", 80)?;
+                let mut r = self.repo()?;
+                // New workspaces follow the signed-in account automatically.
+                let connection_id = r
+                    .settings()?
+                    .active_connection
+                    .filter(|cid| r.connection(cid).is_ok_and(|c| c.status == "connected"));
                 let w = Workspace {
                     id: req.operation_id.clone().unwrap_or_else(id),
                     name: name.into(),
                     color: valid_color(req.data["color"].as_str().unwrap_or("#2297f6"))?,
                     archived: false,
                     is_default: false,
-                    connection_id: None,
+                    connection_id,
                     revision: 0,
                     access_revision: 0,
                     profile_revision: 0,
-                    sources: json!({"calendars":[],"mail":false,"chats":[]}),
+                    sources: json!({"all":true}),
                     layout: vec![
                         "brief".into(),
                         "calendar".into(),
@@ -459,7 +501,6 @@ impl Core {
                     widget_widths: json!({}),
                     ai_profile: None,
                 };
-                let mut r = self.repo()?;
                 r.save_workspace(&w)?;
                 let mut s = r.settings()?;
                 s.active_workspace = w.id.clone();
@@ -593,18 +634,7 @@ impl Core {
                     .delete_local(kind, required(&req.data, "id", 200)?, &w.id)?;
                 json!({"deleted":true})
             }
-            Operation::GraphConnect => {
-                let caps = req.data["capabilities"]
-                    .as_array()
-                    .ok_or_else(|| {
-                        WorkspaceError::new("validation", "Choose Microsoft capabilities.")
-                    })?
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(String::from)
-                    .collect();
-                self.graph_connect(caps).await?
-            }
+            Operation::GraphConnect => self.graph_connect(connect_capabilities(&req.data)?).await?,
             Operation::GraphDisconnect => {
                 *self.auth_attempt.lock().await = None;
                 let cid = self.repo()?.settings()?.active_connection.ok_or_else(|| {
@@ -638,11 +668,15 @@ impl Core {
                 {
                     return Err(WorkspaceError::new("review_required","Reassignment removes previous account source selections. Confirm to continue."));
                 }
-                if w.connection_id.as_deref() != Some(&cid) {
-                    w.sources = json!({"calendars":[],"mail":false,"chats":[]});
+                let rebind = w.connection_id.as_deref() != Some(&cid);
+                if rebind || repository::sources_empty(&w.sources) {
+                    w.sources = json!({"all":true});
                     w.connection_id = Some(cid);
                     w.revision += 1;
                     r.save_workspace(&w)?;
+                    drop(r);
+                    // Binding bumps the account's source revision, fencing any in-flight round.
+                    self.queue_sync()?;
                 }
                 json!({"bound":true})
             }
@@ -657,7 +691,7 @@ impl Core {
                 w.revision += 1;
                 r.save_workspace(&w)?;
                 drop(r);
-                self.queue_sync()?;
+                self.queue_sync_with(true)?;
                 json!({"saved":true})
             }
             Operation::SourcesMore => {
@@ -670,7 +704,7 @@ impl Core {
                 json!({"loaded":true})
             }
             Operation::SyncRequest => {
-                self.queue_sync()?;
+                self.queue_sync_with(true)?;
                 json!({"queued":true})
             }
             Operation::CalendarWindow => {
@@ -871,6 +905,8 @@ impl Core {
                 let mut c = r.connection(cid)?;
                 c.source_revision += 1;
                 r.save_connection(&c)?;
+                // Chat high-water marks were taken for the old window; re-read from the new start.
+                r.clear_cursor_prefix(cid, "chat:")?;
             }
         }
         if let Some(v) = data["notifications"].as_bool() {
@@ -1503,7 +1539,58 @@ fn valid_color(v: &str) -> Result<String> {
         ))
     }
 }
+/// Read capabilities requested when sign-in names none: everything a workspace shows.
+const DEFAULT_CAPABILITIES: &[&str] = &["calendar", "mail", "chats"];
+fn connect_capabilities(data: &Value) -> Result<Vec<String>> {
+    let caps: Vec<String> = match data.get("capabilities") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|v| {
+                v.as_str().map(String::from).ok_or_else(|| {
+                    WorkspaceError::new("validation", "Choose Microsoft capabilities.")
+                })
+            })
+            .collect::<Result<_>>()?,
+        Some(_) => {
+            return Err(WorkspaceError::new(
+                "validation",
+                "Choose Microsoft capabilities.",
+            ))
+        }
+    };
+    let caps = if caps.is_empty() {
+        DEFAULT_CAPABILITIES.iter().map(|s| s.to_string()).collect()
+    } else {
+        caps
+    };
+    if caps.iter().any(|s| graph::scope_for(s).is_none()) {
+        return Err(WorkspaceError::new(
+            "validation",
+            "Unknown Microsoft capability.",
+        ));
+    }
+    Ok(caps)
+}
 fn validate_sources(r: &Repository, c: &Connection, sources: &Value) -> Result<()> {
+    if let Some(all) = sources.get("all") {
+        // Automatic form: `{"all":true}` and nothing else. `"all":false` falls through to legacy.
+        if *all == true {
+            if sources.as_object().is_some_and(|o| o.len() != 1) {
+                return Err(WorkspaceError::new("validation", "Select valid sources."));
+            }
+            if c.status != "connected" {
+                return Err(WorkspaceError::new(
+                    "needs_login",
+                    "Connect Microsoft 365 in Settings.",
+                ));
+            }
+            return Ok(());
+        }
+        if *all != false {
+            return Err(WorkspaceError::new("validation", "Select valid sources."));
+        }
+    }
     for (key, cap) in [("calendars", "calendar"), ("chats", "chats")] {
         let ids = sources[key]
             .as_array()
@@ -1613,4 +1700,85 @@ pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::erro
     }
     tray.build(app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn connected(cid: &str) -> Connection {
+        Connection {
+            id: cid.into(),
+            account_key: cid.into(),
+            display_name: "QA".into(),
+            user_id: cid.into(),
+            generation: 1,
+            policy_revision: 1,
+            scopes: vec![
+                "Calendars.Read".into(),
+                "Mail.Read".into(),
+                "Chat.Read".into(),
+            ],
+            enabled: vec!["calendar".into(), "mail".into(), "chats".into()],
+            status: "connected".into(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn automatic_sources_validate_only_as_the_sole_key_while_connected() {
+        let d = tempfile::tempdir().unwrap();
+        let r = Repository::open(&d.path().join("db")).unwrap();
+        let c = connected("a");
+        assert!(validate_sources(&r, &c, &json!({"all":true})).is_ok());
+        assert_eq!(
+            validate_sources(&r, &c, &json!({"all":true,"mail":true}))
+                .unwrap_err()
+                .code,
+            "validation"
+        );
+        assert_eq!(
+            validate_sources(&r, &c, &json!({"all":"yes"}))
+                .unwrap_err()
+                .code,
+            "validation"
+        );
+        let mut signed_out = c.clone();
+        signed_out.status = "needs_login".into();
+        assert_eq!(
+            validate_sources(&r, &signed_out, &json!({"all":true}))
+                .unwrap_err()
+                .code,
+            "needs_login"
+        );
+        // The legacy explicit form keeps its catalog checks.
+        assert!(validate_sources(
+            &r,
+            &c,
+            &json!({"all":false,"calendars":[],"chats":[],"mail":true})
+        )
+        .is_ok());
+        assert!(validate_sources(&r, &c, &json!({"calendars":["unknown"],"chats":[]})).is_err());
+    }
+    #[test]
+    fn sign_in_defaults_to_read_capabilities_and_keeps_explicit_writes() {
+        let defaults = vec!["calendar", "mail", "chats"];
+        assert_eq!(connect_capabilities(&json!({})).unwrap(), defaults);
+        assert_eq!(
+            connect_capabilities(&json!({"capabilities":null})).unwrap(),
+            defaults
+        );
+        assert_eq!(
+            connect_capabilities(&json!({"capabilities":[]})).unwrap(),
+            defaults
+        );
+        assert_eq!(
+            connect_capabilities(
+                &json!({"capabilities":["calendar","calendar_write","mail_send","chat_send"]})
+            )
+            .unwrap(),
+            vec!["calendar", "calendar_write", "mail_send", "chat_send"]
+        );
+        assert!(connect_capabilities(&json!({"capabilities":["everything"]})).is_err());
+        assert!(connect_capabilities(&json!({"capabilities":[1]})).is_err());
+        assert!(connect_capabilities(&json!({"capabilities":"calendar"})).is_err());
+    }
 }

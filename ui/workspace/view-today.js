@@ -1,0 +1,311 @@
+// Today: what is happening now, what is next, what needs a reply and what you promised.
+import { escapeHtml as e } from './store.js';
+import { icon, microsoftLogo, teamsGlyph, outlookGlyph } from './icons.js';
+import { avatar, button, card, emptyState, badge } from './ui.js';
+import { eventsOnDay, layoutColumns, freeSlots, visibleEvents, calendarColors } from './calendar-model.js';
+import { attentionMessages, records, active, connectionState, messageTitle, decisions } from './selectors.js';
+import { dayKey, addDaysToKey, formatDate, formatTime, durationLabel, countdownLabel, greeting, firstName, zonedParts, relativeAge, hourLabel } from './format.js';
+
+export const WIDGETS = {
+  brief: { title: 'Up next', width: 8, description: 'Your current or next meeting with a one-click join.' },
+  focus: { title: 'Day at a glance', width: 4, description: 'Meetings, free time, replies and a focus timer.' },
+  calendar: { title: 'Schedule', width: 6, description: "Today's timeline with free time between meetings." },
+  inbox: { title: 'Needs your reply', width: 6, description: 'Outlook and Teams messages waiting for you.' },
+  commitments: { title: 'Commitments & notes', width: 12, description: 'Your promises and a scratchpad for this workspace.' },
+};
+export const WIDGET_IDS = Object.keys(WIDGETS);
+
+const WORKDAY_START = 9 * 60;
+const WORKDAY_END = 18 * 60;
+
+/** Everything Today needs, computed once per render. */
+export function todayModel(s, hidden, nowMs = Date.now()) {
+  const zone = s.settings.timeZone;
+  const todayKey = dayKey(nowMs, zone);
+  const tomorrowKey = addDaysToKey(todayKey, 1);
+  const events = visibleEvents(s, hidden).filter(r => r.data.response !== 'declined');
+  const today = eventsOnDay(events, todayKey, zone);
+  const tomorrow = eventsOnDay(events, tomorrowKey, zone);
+  const nowMin = zonedParts(nowMs, zone).hour * 60 + zonedParts(nowMs, zone).minute;
+  const timed = today.timed.map(t => ({ ...t, startMs: new Date(t.record.data.start).getTime(), endMs: new Date(t.record.data.end).getTime() }));
+  const current = timed.filter(t => t.startMs <= nowMs && t.endMs > nowMs && t.record.data.showAs !== 'free');
+  const upcoming = timed.filter(t => t.startMs > nowMs);
+  const remaining = timed.filter(t => t.endMs > nowMs);
+  const busyMinutes = timed.filter(t => t.record.data.showAs !== 'free').reduce((sum, t) => sum + (t.endMin - t.startMin), 0);
+  const free = freeSlots(timed, Math.max(nowMin, WORKDAY_START), WORKDAY_END, 15);
+  const freeMinutes = free.reduce((sum, [a, b]) => sum + (b - a), 0);
+  return {
+    zone, nowMs, nowMin, todayKey, today, timed, current, upcoming, remaining, busyMinutes, freeMinutes,
+    tomorrowFirst: tomorrow.timed[0] || null,
+    attention: attentionMessages(s),
+    commitments: records(s, 'commitment'),
+  };
+}
+
+export function today(s, ctx) {
+  const { auth, hidden, banners } = ctx;
+  const w = active(s);
+  const m = todayModel(s, hidden);
+  const state = connectionState(s, auth);
+  const connected = state === 'connected';
+  const c = s.connection;
+  const name = firstName(c);
+  const hour = zonedParts(m.nowMs, m.zone).hour;
+  const summary = connected ? daySummary(m) : 'Your personal workspace. Connect Microsoft 365 to bring in your calendar, Outlook and Teams.';
+  const widgets = {
+    brief: () => upNextCard(s, m, connected),
+    focus: () => glanceCard(s, m, connected),
+    calendar: () => scheduleCard(s, m, connected),
+    inbox: () => attentionCard(s, m, connected),
+    commitments: () => commitmentsCard(s, m, w),
+  };
+  const layout = w.layout.filter(id => widgets[id]);
+  const grid = layout.map(id => {
+    const width = [4, 6, 8, 12].includes(w.widgetWidths?.[id]) ? w.widgetWidths[id] : WIDGETS[id].width;
+    return widgets[id]().replace('class="ws-card', `class="ws-card ws-span-${width}`);
+  }).join('');
+  return `<div class="ws-today">
+    <header class="ws-today-head">
+      ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 56, className: 'ws-today-avatar' })}
+      <div class="ws-today-title">
+        <p class="ws-eyebrow">${e(formatDate(m.nowMs, m.zone, { weekday: 'long', month: 'long', day: 'numeric' }))}</p>
+        <h1>${e(greeting(hour))}${name ? `, ${e(name)}` : ''}</h1>
+        <p class="ws-description">${e(summary)}</p>
+      </div>
+      <div class="ws-actions">${button('Customize', { action: 'customize', iconName: 'sliders' })}</div>
+    </header>
+    ${banners}
+    ${state === 'none' || state === 'authorizing' ? connectHero(state) : ''}
+    ${layout.length ? `<div class="ws-grid">${grid}</div>` : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want in this workspace.', actions: button('Choose cards', { action: 'customize', variant: 'primary' }) })}
+  </div>`;
+}
+
+function daySummary(m) {
+  const parts = [];
+  const left = m.remaining.length;
+  parts.push(left ? `${left} meeting${left === 1 ? '' : 's'} left today` : m.timed.length ? 'No more meetings today' : 'No meetings today');
+  if (m.freeMinutes >= 15 && m.nowMin < WORKDAY_END) parts.push(`${durationLabel(m.freeMinutes)} free until ${formatTime(endOfWorkday(m), m.zone)}`);
+  const replies = m.attention.length;
+  if (replies) parts.push(`${replies} message${replies === 1 ? '' : 's'} need${replies === 1 ? 's' : ''} you`);
+  return parts.join(' · ');
+}
+
+function endOfWorkday(m) {
+  return m.nowMs + (WORKDAY_END - m.nowMin) * 60_000;
+}
+
+function connectHero(state) {
+  const pending = state === 'authorizing';
+  return `<section class="ws-connect-hero">
+    <div class="ws-connect-copy">
+      <span class="ws-connect-mark">${microsoftLogo}</span>
+      <div>
+        <h2>Bring your day together</h2>
+        <p>Sign in once with Microsoft 365. Connect reads your calendars, Outlook and Teams chats automatically — nothing to configure, nothing is sent on your behalf.</p>
+        <ul class="ws-connect-points">
+          <li>${icon('calendar')} Every calendar with times, rooms and Teams links</li>
+          <li>${outlookGlyph} Outlook messages that need a reply</li>
+          <li>${teamsGlyph} Teams chats and mentions</li>
+        </ul>
+      </div>
+    </div>
+    <div class="ws-connect-cta">
+      ${pending
+    ? `<p class="ws-pending">${icon('refresh', 'ws-spin')} Finish signing in in your browser…</p>${button('Cancel', { action: 'graph-cancel' })}`
+    : button('Sign in with Microsoft', { action: 'graph-connect', variant: 'primary', size: 'lg' })}
+    </div>
+  </section>`;
+}
+
+// ---------------------------------------------------------------- Up next
+
+function eventMeta(ev, zone, withDate = false) {
+  const d = ev.data;
+  const minutes = (new Date(d.end) - new Date(d.start)) / 60000;
+  const where = d.joinUrl ? `${teamsGlyph}<span>Microsoft Teams${d.location && !/teams/i.test(d.location) ? ` · ${e(d.location)}` : ''}</span>` : d.location ? `${icon('pin')}<span>${e(d.location)}</span>` : '';
+  return `<p class="ws-meta"><span>${icon('clock')}<span>${withDate ? `${e(formatDate(d.start, zone, { weekday: 'short', month: 'short', day: 'numeric' }))}, ` : ''}${e(formatTime(d.start, zone))} – ${e(formatTime(d.end, zone))} · ${e(durationLabel(minutes))}</span></span>${where ? `<span>${where}</span>` : ''}</p>`;
+}
+
+function people(ev) {
+  const d = ev.data;
+  const attendees = (d.attendees || []).filter(a => a.type !== 'resource');
+  const organizer = d.organizer?.name || d.organizer?.address;
+  if (!organizer && !attendees.length) return '';
+  const faces = attendees.slice(0, 4).map(a => avatar({ name: a.name || a.address, size: 24, seed: a.address })).join('');
+  const label = [d.isOrganizer ? 'You organize' : organizer ? `Organized by ${organizer}` : '', attendees.length ? `${attendees.length} attendee${attendees.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+  return `<div class="ws-people">${faces ? `<span class="ws-face-stack">${faces}</span>` : ''}<span>${e(label)}</span></div>`;
+}
+
+function eventActions(ev, { compact = false } = {}) {
+  const d = ev.data;
+  return `<div class="ws-actions">${d.joinUrl ? button('Join', { action: 'join', variant: 'primary', iconName: 'video', attrs: { 'data-id': ev.id } }) : ''}${button(compact ? '' : 'Details', { action: 'event', iconName: compact ? 'external' : undefined, title: 'Event details', attrs: { 'data-id': ev.id } })}</div>`;
+}
+
+function upNextCard(s, m, connected) {
+  if (!connected) {
+    return card({ title: 'Up next', iconName: 'calendar-clock', className: 'ws-upnext', body: emptyState({ iconName: 'calendar', title: 'Your next meeting appears here', text: 'With a countdown and a one-click Join for Teams meetings.' }) });
+  }
+  const colors = calendarColors(s);
+  const live = m.current[0];
+  const next = m.upcoming[0];
+  const focus = live || next;
+  if (!focus) {
+    const t = m.tomorrowFirst;
+    return card({
+      title: 'Up next', iconName: 'calendar-clock', className: 'ws-upnext',
+      body: `<div class="ws-upnext-free">${icon('coffee')}<div><h3>${m.timed.length ? "You're done with meetings today" : 'No meetings today'}</h3><p>${t ? `Tomorrow starts with <button type="button" class="ws-link" data-action="event" data-id="${e(t.record.id)}">${e(t.record.data.title || 'an event')}</button> at ${e(formatTime(t.record.data.start, m.zone))}.` : 'Nothing scheduled tomorrow morning either.'}</p></div></div>`,
+    });
+  }
+  const ev = focus.record;
+  const d = ev.data;
+  const color = colors.get(d.calendarId) || 'var(--ws-accent)';
+  const startMs = new Date(d.start).getTime();
+  const endMs = new Date(d.end).getTime();
+  const progress = live ? Math.min(100, Math.max(0, ((m.nowMs - startMs) / (endMs - startMs)) * 100)) : 0;
+  const chip = live
+    ? `<span class="ws-live-chip" data-countdown-end="${endMs}">${icon('activity')}<span>Now · ends ${e(countdownLabel(endMs, m.nowMs))}</span></span>`
+    : `<span class="ws-soon-chip${startMs - m.nowMs < 15 * 60_000 ? ' ws-soon' : ''}" data-countdown-start="${startMs}">${icon('clock')}<span>Starts ${e(countdownLabel(startMs, m.nowMs))}</span></span>`;
+  const later = m.upcoming.filter(t => t.record.id !== ev.id).slice(0, 3);
+  return card({
+    title: live ? 'Happening now' : 'Up next', iconName: 'calendar-clock', className: 'ws-upnext', actions: chip,
+    body: `<div class="ws-upnext-main" style="--event-color:${e(color)}">
+      <div class="ws-upnext-time"><strong>${e(formatTime(d.start, m.zone))}</strong><span>${e(formatTime(d.end, m.zone))}</span></div>
+      <div class="ws-upnext-info">
+        <h3><button type="button" class="ws-link-title" data-action="event" data-id="${e(ev.id)}">${e(d.title || 'Untitled event')}</button></h3>
+        ${eventMeta(ev, m.zone)}
+        ${people(ev)}
+        <div class="ws-actions ws-upnext-actions">
+          ${d.joinUrl ? button('Join Teams meeting', { action: 'join', variant: 'primary', iconName: 'video', attrs: { 'data-id': ev.id } }) : ''}
+          ${d.url ? button('Open in Outlook', { action: 'source', iconName: 'external', attrs: { 'data-kind': 'event', 'data-id': ev.id } }) : ''}
+          ${!live ? button('Remind me', { action: 'event-reminder', iconName: 'bell', variant: 'ghost', attrs: { 'data-id': ev.id } }) : ''}
+        </div>
+      </div>
+    </div>
+    ${live ? `<div class="ws-progress" role="progressbar" aria-label="Meeting progress" aria-valuenow="${Math.round(progress)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${progress.toFixed(1)}%"></span></div>` : ''}`,
+    footer: later.length ? `<span class="ws-later-label">Later today</span>${later.map(t => `<button type="button" class="ws-later" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(t.record.data.calendarId) || 'var(--ws-accent)')}"><span>${e(formatTime(t.record.data.start, m.zone))}</span>${e(t.record.data.title || 'Untitled')}</button>`).join('')}` : '',
+  });
+}
+
+// ---------------------------------------------------------------- Glance
+
+function glanceCard(s, m, connected) {
+  const now = Date.now() / 1000;
+  const focusUntil = s.settings.focusUntil > now ? s.settings.focusUntil : null;
+  const openCommitments = m.commitments.filter(c => !c.data.done).length;
+  const stat = (value, label, iconName, action, attrs = {}) => `<${action ? `button type="button" data-action="${action}"` : 'div'} class="ws-stat" ${Object.entries(attrs).map(([k, v]) => `${k}="${e(v)}"`).join(' ')}><span class="ws-stat-icon">${icon(iconName)}</span><strong>${e(value)}</strong><span>${e(label)}</span></${action ? 'button' : 'div'}>`;
+  const stats = connected
+    ? [
+      stat(`${m.remaining.length}/${m.timed.length}`, 'Meetings left', 'calendar', 'route', { 'data-route': 'calendar' }),
+      stat(durationLabel(m.busyMinutes), 'In meetings', 'users'),
+      stat(m.nowMin >= WORKDAY_END ? '—' : durationLabel(m.freeMinutes), m.nowMin >= WORKDAY_END ? 'Workday over' : 'Free until 18:00', 'coffee'),
+      stat(String(m.attention.length), 'Need reply', 'reply', 'route', { 'data-route': 'inbox', 'data-lane': 'reply' }),
+    ]
+    : [
+      stat(String(openCommitments), 'Open commitments', 'check-circle'),
+      stat(String(decisions(s).length), 'Decisions', 'shield'),
+    ];
+  const focus = focusUntil
+    ? `<div class="ws-focus ws-focus-on"><div><strong data-countdown-end="${focusUntil * 1000}">${e(countdownLabel(focusUntil * 1000).replace('in ', ''))}</strong><span>Focus on · ordinary reminders are quiet</span></div>${button('End', { action: 'focus', attrs: { 'data-minutes': '0' } })}</div>`
+    : `<div class="ws-focus"><div><strong>Focus session</strong><span>Quiet non-critical reminders</span></div><div class="ws-actions">${button('25 min', { action: 'focus', variant: 'primary', iconName: 'target', attrs: { 'data-minutes': '25' } })}${button('50 min', { action: 'focus', attrs: { 'data-minutes': '50' } })}</div></div>`;
+  return card({ title: 'Day at a glance', iconName: 'activity', className: 'ws-glance', body: `<div class="ws-stats">${stats.join('')}</div>${focus}` });
+}
+
+// ---------------------------------------------------------------- Schedule
+
+function scheduleCard(s, m, connected) {
+  if (!connected) {
+    return card({ title: 'Schedule', iconName: 'calendar', className: 'ws-schedule-card', body: emptyState({ iconName: 'calendar', title: 'Your schedule lives here', text: 'Meetings, rooms and free time for today.' }) });
+  }
+  const colors = calendarColors(s);
+  const all = m.timed;
+  const allDay = m.today.allDay;
+  const firstHour = Math.min(8, ...all.map(t => Math.floor(t.startMin / 60)));
+  const lastHour = Math.max(19, ...all.map(t => Math.ceil(t.endMin / 60)));
+  const startHour = Math.max(0, Math.min(firstHour, Math.floor(m.nowMin / 60)));
+  const endHour = Math.min(24, Math.max(lastHour, Math.ceil(m.nowMin / 60) + 1));
+  const hourHeight = 44;
+  const top = minute => ((minute - startHour * 60) / 60) * hourHeight;
+  const laid = layoutColumns(all, 25);
+  const blocks = laid.map(t => {
+    const d = t.record.data;
+    const height = Math.max(20, top(t.endMin) - top(t.startMin) - 2);
+    const past = new Date(d.end).getTime() <= m.nowMs;
+    return `<button type="button" class="ws-tl-event${past ? ' ws-past' : ''}${height < 34 ? ' ws-compact' : ''}${d.showAs === 'tentative' || d.response === 'tentativelyAccepted' ? ' ws-tentative' : ''}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')};top:${top(t.startMin).toFixed(1)}px;height:${height.toFixed(1)}px;left:calc(${(t.col / t.cols) * 100}% + 2px);width:calc(${100 / t.cols}% - 4px)"><strong>${e(d.title || 'Untitled')}</strong><span>${e(formatTime(d.start, m.zone))}${d.joinUrl ? ' · Teams' : d.location ? ` · ${e(d.location)}` : ''}</span></button>`;
+  }).join('');
+  const gaps = freeSlots(all, Math.max(startHour * 60, WORKDAY_START, m.nowMin), Math.min(endHour * 60, WORKDAY_END), 60)
+    .map(([a, b]) => `<div class="ws-tl-free" style="top:${top(a).toFixed(1)}px;height:${(top(b) - top(a)).toFixed(1)}px"><span>Free · ${e(durationLabel(b - a))}</span></div>`).join('');
+  const hours = Array.from({ length: endHour - startHour }, (_, i) => `<div class="ws-tl-hour" style="top:${i * hourHeight}px"><span>${e(hourLabel(startHour + i))}</span></div>`).join('');
+  const nowLine = m.nowMin >= startHour * 60 && m.nowMin <= endHour * 60 ? `<div class="ws-now-line" data-now-line data-start-hour="${startHour}" data-hour-height="${hourHeight}" style="top:${top(m.nowMin).toFixed(1)}px"><span></span></div>` : '';
+  const body = all.length || allDay.length
+    ? `${allDay.length ? `<div class="ws-tl-allday">${allDay.map(r => `<button type="button" class="ws-chip-event" data-action="event" data-id="${e(r.id)}" style="--event-color:${e(colors.get(r.data.calendarId) || 'var(--ws-accent)')}">${e(r.data.title || 'All-day event')}</button>`).join('')}</div>` : ''}
+      <div class="ws-timeline" data-scroll-now style="height:${(endHour - startHour) * hourHeight}px">${hours}<div class="ws-tl-lane">${gaps}${blocks}${nowLine}</div></div>`
+    : emptyState({ iconName: 'coffee', title: 'A clear day', text: 'No meetings on your calendars today.' });
+  return card({
+    title: 'Schedule', iconName: 'calendar', className: 'ws-schedule-card',
+    actions: button('Calendar', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'calendar' } }),
+    body: `<div class="ws-schedule-scroll" data-scroll-to="${Math.max(0, top(Math.max(startHour * 60, m.nowMin - 60))).toFixed(0)}">${body}</div>`,
+  });
+}
+
+// ---------------------------------------------------------------- Attention
+
+function messageRow(s, msg, zone) {
+  const d = msg.data;
+  const glyph = d.channel === 'chat' ? teamsGlyph : outlookGlyph;
+  return `<button type="button" class="ws-msg-row" data-action="open-message" data-id="${e(msg.id)}">
+    <span class="ws-msg-avatar">${avatar({ name: d.from || '?', size: 32, seed: d.fromAddress || d.fromId || d.from })}<span class="ws-msg-glyph">${glyph}</span></span>
+    <span class="ws-msg-main"><span class="ws-msg-top"><strong>${e(d.from || 'Unknown sender')}</strong><time>${e(relativeAge(d.at, zone))}</time></span>
+    <span class="ws-msg-title">${d.lane === 'critical' ? badge('Critical', 'error') : ''}${e(listTitle(msg, s))}</span>
+    <span class="ws-msg-preview">${e(d.text || '')}</span></span>
+  </button>`;
+}
+
+/** 1:1 Teams chats are titled with the other person, so show the channel instead of a repeat. */
+export function listTitle(msg, s) {
+  const title = messageTitle(msg, s);
+  if (msg.data.channel === 'chat' && title === msg.data.from) return 'Teams · direct message';
+  return title;
+}
+
+function attentionCard(s, m, connected) {
+  if (!connected) {
+    return card({ title: 'Needs your reply', iconName: 'reply', className: 'ws-attention', body: emptyState({ iconName: 'inbox', title: 'Replies you owe, in one list', text: 'Direct questions from Outlook and Teams, with the newest first.' }) });
+  }
+  const items = m.attention.slice(0, 6);
+  return card({
+    title: 'Needs your reply', iconName: 'reply', className: 'ws-attention',
+    actions: button(m.attention.length ? `Inbox · ${m.attention.length}` : 'Inbox', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'inbox', 'data-lane': 'reply' } }),
+    body: items.length ? `<div class="ws-msg-list">${items.map(msg => messageRow(s, msg, m.zone)).join('')}</div>` : emptyState({ iconName: 'check-circle', title: "You're all caught up", text: 'Nothing in Outlook or Teams is waiting for your reply.' }),
+  });
+}
+
+// ---------------------------------------------------------------- Commitments & notes
+
+function commitmentsCard(s, m, w) {
+  const open = m.commitments.filter(c => !c.data.done);
+  const done = m.commitments.filter(c => c.data.done).slice(0, 5);
+  const note = records(s, 'note')[0];
+  const row = c => `<div class="ws-todo${c.data.done ? ' ws-done' : ''}">
+    <label class="ws-check"><input type="checkbox" data-action="commitment-toggle" data-id="${e(c.id)}" ${c.data.done ? 'checked' : ''} aria-label="Mark “${e(c.data.text)}” ${c.data.done ? 'open' : 'done'}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
+    <div class="ws-todo-text"><span>${e(c.data.text)}</span>${c.data.due || (c.data.owner && c.data.owner !== 'You') ? `<small>${c.data.due ? `${icon('calendar')}${e(formatDate(`${c.data.due}T12:00:00`, undefined, { month: 'short', day: 'numeric' }))}` : ''}${c.data.owner && c.data.owner !== 'You' ? ` · ${e(c.data.owner)}` : ''}</small>` : ''}</div>
+    ${button('', { action: 'local-delete', iconName: 'trash', variant: 'ghost', title: 'Delete commitment', attrs: { 'data-kind': 'commitment', 'data-id': c.id } })}
+  </div>`;
+  return card({
+    title: 'Commitments & notes', iconName: 'check-circle', className: 'ws-commitments',
+    body: `<div class="ws-two-col">
+      <div class="ws-todo-col">
+        <form class="ws-quick-add" data-form="commitment-add">
+          <input class="ws-input" name="text" maxlength="500" placeholder="Add a commitment… e.g. Send the roadmap to Anna" aria-label="New commitment" autocomplete="off">
+          <input class="ws-input ws-date" name="due" type="date" aria-label="Due date">
+          ${button('Add', { type: 'submit', variant: 'primary', iconName: 'plus' })}
+        </form>
+        <div class="ws-todo-list">${open.map(row).join('') || '<p class="ws-muted ws-hint">No open commitments. Add one above or from any Inbox message.</p>'}</div>
+        ${done.length ? `<details class="ws-done-list"><summary>Completed · ${done.length}</summary>${done.map(row).join('')}</details>` : ''}
+      </div>
+      <div class="ws-note-col">
+        <div class="ws-note-head"><span class="ws-field-label">${icon('note')}Notes</span><span class="ws-note-state" id="note-state">${note ? `Saved ${e(relativeAge(note.updatedAt, m.zone))}` : 'Stored on this device'}</span></div>
+        <textarea id="today-note" class="ws-textarea ws-notes" data-workspace-id="${e(w.id)}" data-record-id="${e(note?.id || '')}" placeholder="A thought, a plan, something to remember…" aria-label="Workspace notes">${e(note?.data.text || '')}</textarea>
+      </div>
+    </div>`,
+  });
+}

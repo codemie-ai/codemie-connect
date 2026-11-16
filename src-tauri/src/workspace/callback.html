@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en" data-state="{{STATE}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<title>{{TITLE}} · CodeMie Connect</title>
+<style nonce="{{NONCE}}">
+:root {
+  color-scheme: dark light;
+  --bg: #111113; --card: #1c1d20; --border: #333436; --text: #ffffff; --muted: #bbbbbb; --faint: #8a8a8a;
+  --ok: #3ccf6e; --ok-bg: rgba(37,159,76,.14); --err: #fe3b4c; --err-bg: rgba(254,59,76,.14);
+  --glow-a: rgba(153,62,199,.38); --glow-b: rgba(86,119,200,.34); --ring: linear-gradient(90deg,#993ec7,#5677c8);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7fb; --card: #ffffff; --border: #e5e5e5; --text: #222327; --muted: #5d6068; --faint: #8b8e96;
+    --ok: #1e8e41; --ok-bg: #e6f7e9; --err: #e5293a; --err-bg: #fbe9ea;
+    --glow-a: rgba(204,34,242,.18); --glow-b: rgba(54,118,247,.20); --ring: linear-gradient(90deg,#3676f7,#cc22f2);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+  background:
+    radial-gradient(40rem 28rem at 12% 110%, var(--glow-a), transparent 70%),
+    radial-gradient(36rem 26rem at 95% -10%, var(--glow-b), transparent 70%),
+    var(--bg);
+  color: var(--text); font: 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased;
+}
+.card {
+  position: relative; width: min(460px, 100%); padding: 40px 36px 30px; border-radius: 16px; text-align: center;
+  border: 1px solid transparent;
+  background: linear-gradient(var(--card), var(--card)) padding-box, var(--ring) border-box;
+  box-shadow: 0 30px 80px rgba(0,0,0,.28);
+  animation: rise .45s cubic-bezier(.2,.8,.2,1) both;
+}
+.brand { display: inline-flex; align-items: center; gap: 10px; margin-bottom: 28px; font: 600 13px/1 var(--mono); letter-spacing: -.2px; color: var(--muted); }
+.brand svg { width: 28px; height: 28px; }
+.brand b { color: var(--text); font-weight: 600; }
+.status { width: 72px; height: 72px; margin: 0 auto 20px; border-radius: 50%; display: grid; place-items: center; }
+[data-state="success"] .status { background: var(--ok-bg); color: var(--ok); }
+[data-state="error"] .status { background: var(--err-bg); color: var(--err); }
+.status svg { width: 36px; height: 36px; }
+.status path { stroke-dasharray: 48; stroke-dashoffset: 48; animation: draw .5s .25s ease-out forwards; }
+[data-state="success"] .icon-error, [data-state="error"] .icon-success { display: none; }
+h1 { margin: 0 0 10px; font: 600 22px/30px var(--mono); letter-spacing: -.6px; }
+p { margin: 0 auto; max-width: 340px; color: var(--muted); }
+.hint { display: inline-flex; align-items: center; gap: 8px; margin-top: 26px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border); color: var(--faint); font: 500 12px/16px var(--mono); }
+.hint svg { width: 14px; height: 14px; }
+[data-state="error"] .hint-success, [data-state="success"] .hint-error { display: none; }
+footer { margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--faint); font: 11px/16px var(--mono); }
+@keyframes rise { from { opacity: 0; transform: translateY(12px) scale(.98); } }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .card, .status path { animation: none; stroke-dashoffset: 0; } }
+</style>
+</head>
+<body>
+<main class="card" role="main">
+  <div class="brand" aria-label="EPAM AI/Run CodeMie Connect">
+    <svg viewBox="0 0 640 640" aria-hidden="true">
+      <circle cx="320" cy="320" r="320" fill="#fff"/>
+      <path d="M97.85 318.293C97.85 195.524 197.374 96 320.143 96C386.293 96 445.727 124.936 486.4 170.733L437.153 214.47C408.45 182.15 366.687 161.865 320.143 161.865C233.75 161.865 163.715 231.9 163.715 318.293C163.715 404.686 233.75 474.722 320.143 474.722C366.687 474.722 408.45 454.436 437.153 422.117L486.4 465.853C445.727 511.651 386.293 540.587 320.143 540.587C197.374 540.587 97.85 441.062 97.85 318.293Z" fill="url(#cm-a)"/>
+      <path d="M221.102 318.611C282.415 322.891 315.519 355.414 320.381 416.242C320.413 416.649 320.974 416.649 321.005 416.242C325.899 355.414 358.971 322.86 420.284 318.611C420.689 318.611 420.689 318.018 420.284 317.987C358.971 313.706 325.868 281.184 321.005 220.355C320.974 219.949 320.413 219.949 320.381 220.355C315.488 281.184 282.415 313.738 221.102 317.987C220.697 317.987 220.697 318.58 221.102 318.611Z" fill="url(#cm-b)"/>
+      <defs>
+        <linearGradient id="cm-a" x1="291.644" y1="-200.391" x2="278.738" y2="692.731" gradientUnits="userSpaceOnUse"><stop stop-color="#3E1866"/><stop offset=".38" stop-color="#C447EB"/><stop offset=".83" stop-color="#8191FF"/></linearGradient>
+        <linearGradient id="cm-b" x1="320.446" y1="89.0525" x2="315.542" y2="483.813" gradientUnits="userSpaceOnUse"><stop stop-color="#3E1866"/><stop offset=".38" stop-color="#C447EB"/><stop offset=".83" stop-color="#8191FF"/></linearGradient>
+      </defs>
+    </svg>
+    <span>EPAM AI/Run <b>CodeMie Connect</b></span>
+  </div>
+  <div class="status" aria-hidden="true">
+    <svg class="icon-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+    <svg class="icon-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M7 7l10 10M17 7L7 17"/></svg>
+  </div>
+  <h1>{{TITLE}}</h1>
+  <p>{{MESSAGE}}</p>
+  <div class="hint hint-success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.4 6.4L3 16M3 21v-5h5M3 12a9 9 0 0 1 15.4-6.4L21 8M21 3v5h-5"/></svg>Your calendar, Outlook and Teams are syncing</div>
+  <div class="hint hint-error"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 8v5M12 16.5h.01"/><circle cx="12" cy="12" r="9.5"/></svg>Nothing was changed in your account</div>
+  <footer>Your sign-in stays on this computer. CodeMie Connect reads only — it never sends on your behalf without your review.</footer>
+</main>
+<script nonce="{{NONCE}}">
+history.replaceState(null, '', '/complete');
+if (document.documentElement.dataset.state === 'success') setTimeout(function () { try { window.close(); } catch (e) {} }, 2500);
+</script>
+</body>
+</html>

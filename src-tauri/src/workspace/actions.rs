@@ -32,10 +32,7 @@ impl Core {
         let (cap, url, body, review) = match kind {
             "event" => {
                 let cal = required(&req.data, "calendarId", 2000)?;
-                if !w.sources["calendars"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(cal)))
-                {
+                if !self.repo()?.calendar_selected(&w, &c.id, cal) {
                     return Err(WorkspaceError::new(
                         "permission_required",
                         "Select this calendar in workspace sources first.",
