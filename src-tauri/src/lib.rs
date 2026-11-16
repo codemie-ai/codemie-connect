@@ -1,3 +1,4 @@
+mod ai;
 mod commands;
 mod error;
 mod state;

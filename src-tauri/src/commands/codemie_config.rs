@@ -100,10 +100,44 @@ pub fn parse_config(raw: &str) -> CodemieConfig {
     }
 }
 
+/// One CodeMie CLI profile as the AI features need it. Names and model ids only:
+/// tokens, API keys and URLs in the file are never copied out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileSummary {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+    pub haiku_model: String,
+    pub sonnet_model: String,
+    pub opus_model: String,
+}
+
+/// Every profile in the parsed config, sorted by name. An entry that is not an
+/// object is skipped; the key is the name when the entry has no `name` of its own.
+pub fn list_profiles(json: &serde_json::Value) -> Vec<ProfileSummary> {
+    let Some(map) = json.get("profiles").and_then(|p| p.as_object()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<ProfileSummary> = map
+        .iter()
+        .filter(|(_, p)| p.is_object())
+        .map(|(key, p)| ProfileSummary {
+            name: key.clone(),
+            provider: str_field(p, "provider"),
+            model: str_field(p, "model"),
+            haiku_model: str_field(p, "haikuModel"),
+            sonnet_model: str_field(p, "sonnetModel"),
+            opus_model: str_field(p, "opusModel"),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// The app is Finder-launched with cwd `/`, so a repository-local `.codemie/`
 /// never applies — the global file under $HOME is always the right one.
 /// On Windows, HOME is typically unset; fall back to USERPROFILE.
-fn config_path() -> String {
+pub fn config_path() -> String {
     config_path_with(
         &std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
