@@ -1,4 +1,4 @@
-// Settings and Workspaces. Microsoft 365 is one sign-in: every source syncs automatically.
+// Settings. Microsoft 365 is one sign-in: every source syncs automatically.
 import { escapeHtml as e } from './store.js';
 import { icon, microsoftLogo, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, badge, button, card, emptyState, field, select, settingRow, toggle, textInput, spinner } from './ui.js';
@@ -256,24 +256,4 @@ function updatesPanel(state) {
       <p class="ws-mono ws-muted">Version ${e(state.appVersion || '…')} · EPAM AI/Run CodeMie</p>
       ${settingRow({ title: 'Application updates', text: state.updateStatus || 'Connect checks for updates once a day.', control: `${button('Check now', { action: 'update-check', disabled: state.updateBusy })}${state.latestVersion ? button(`Install ${state.latestVersion}`, { action: 'update-install', variant: 'primary', disabled: state.updateBusy }) : ''}` })}`,
   });
-}
-
-// ---------------------------------------------------------------- Workspaces
-
-export function workspaces(s) {
-  const c = s.connection;
-  return `<div class="ws-page-heading"><div><h1>Workspaces</h1><p class="ws-description">Separate Today layouts, notes and commitments for each context. Every workspace uses your Microsoft account automatically.</p></div>${button('New workspace', { action: 'workspace-new', variant: 'primary', iconName: 'plus' })}</div>
-  <div class="ws-grid">${s.workspaces.map(w => {
-    const isActive = w.id === s.settings.activeWorkspace;
-    const bound = w.connectionId && w.connectionId === c?.id;
-    const notes = isActive ? records(s, 'commitment').filter(r => !r.data.done).length : null;
-    return `<section class="ws-card ws-span-4 ws-workspace-card${isActive ? ' ws-active' : ''}${w.archived ? ' ws-archived' : ''}" style="--ws-color:${e(w.color)}">
-      <header class="ws-card-header"><h2 class="ws-card-title"><span class="ws-ws-dot"></span>${e(w.name)}</h2>${w.archived ? badge('Archived', 'neutral') : isActive ? badge('Active', 'info') : w.isDefault ? badge('Default', 'neutral') : ''}</header>
-      <div class="ws-card-body">
-        <p class="ws-ws-source">${bound ? `${icon('link')}${e(c.displayName)} · all sources` : w.connectionId ? `${icon('alert')}Another Microsoft account` : `${icon('lock')}Local only`}</p>
-        ${notes !== null ? `<p class="ws-muted ws-hint">${notes} open commitment${notes === 1 ? '' : 's'}</p>` : ''}
-      </div>
-      <footer class="ws-card-footer">${!w.archived && !isActive ? button('Open', { action: 'workspace-open', variant: 'primary', attrs: { 'data-id': w.id } }) : ''}${button('Edit', { action: 'workspace-edit', variant: 'ghost', iconName: 'edit', attrs: { 'data-id': w.id } })}${!w.isDefault ? button(w.archived ? 'Restore' : 'Archive', { action: 'workspace-archive', variant: 'ghost', attrs: { 'data-id': w.id, 'data-archived': String(!w.archived) } }) : ''}</footer>
-    </section>`;
-  }).join('')}</div>`;
 }

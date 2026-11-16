@@ -342,14 +342,17 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('[data-key=criticalRepeat]').isChecked() !== before, 'setting did not persist after the sync');
   });
 
-  await check(`${theme}: Workspaces create and switch`, async () => {
-    await page.click('.ws-nav button[data-route=workspaces]');
-    await page.click('button:has-text("New workspace")');
-    await page.fill('.ws-modal[open] [name=name]', 'Client X');
-    await page.click('.ws-modal[open] button[type=submit]');
-    await page.waitForSelector('.ws-workspace-card:has-text("Client X")');
-    assert(await page.locator('#workspace-select').inputValue() !== 'personal', 'did not switch');
-    await page.selectOption('#workspace-select', 'personal');
+  await check(`${theme}: no workspaces UI`, async () => {
+    await page.click('.ws-nav button[data-route=today]');
+    await page.waitForSelector('.ws-page-today');
+    assert(await page.locator('.ws-nav button[data-route=workspaces]').count() === 0, 'sidebar still has Workspaces');
+    assert(await page.locator('#workspace-select, .ws-workspace-switch, .ws-ws-dot').count() === 0, 'topbar switcher still present');
+    assert(await page.locator('.ws-nav button').allInnerTexts().then(t => t.join(' ').includes('Workspaces')) === false, 'Workspaces text in nav');
+    await page.click('.ws-nav button[data-route=settings]');
+    assert(await page.locator('.ws-settings-nav button:has-text("Workspaces")').count() === 0, 'Settings still has a Workspaces panel');
+    await page.click('.ws-nav button[data-route=today]');
+    await page.waitForSelector('.ws-topbar .ws-sync-pill');
+    await shot(page, `${theme}-no-workspaces-ui`);
   });
 
   await check(`${theme}: sign out removes Microsoft data and keeps notes`, async () => {

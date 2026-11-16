@@ -13,7 +13,9 @@ import { attentionMessages, messageTitle, connectionState, decisions, sourceCoun
 import { snoozeUntil, filteredMessages, inbox } from '../workspace/view-inbox.js';
 import { today, todayModel } from '../workspace/view-today.js';
 import { calendar, periodTitle, eventDetails } from '../workspace/view-calendar.js';
-import { settings, workspaces } from '../workspace/view-settings.js';
+import { settings } from '../workspace/view-settings.js';
+import { renderShell, NAV } from '../workspace/shell.js';
+import { bootWorkspace } from '../workspace/boot.js';
 import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
 
 // ---------------------------------------------------------------- store
@@ -374,5 +376,31 @@ test('Settings shows the account profile and automatic sources, no source picker
   for (const tab of ['general', 'appearance', 'notifications', 'queues', 'privacy', 'activity', 'updates', 'installation']) {
     assert.ok(settings(s, ctx({ settingsTab: tab })).length > 200, tab);
   }
-  assert.match(workspaces(s), /Project Atlas/);
+});
+
+// ---------------------------------------------------------------- hidden workspaces
+
+test('shell_has_no_workspaces_entry_or_switcher', () => {
+  const html = renderShell({ snapshot: buildSnapshot(Date.now()), route: 'today', resolvedDark: false });
+  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'inbox']);
+  assert.doesNotMatch(html, /data-route="workspaces"/);
+  assert.doesNotMatch(html, /workspace-select|ws-workspace-switch|ws-ws-dot|Active workspace/);
+  assert.match(html, /data-route="settings"/);
+  assert.match(html, /data-action="theme-toggle"/);
+  assert.match(html, /ws-bell/);
+  assert.match(html, /ws-sync-pill/);
+});
+
+test('boot_selects_personal_when_another_workspace_is_active', async () => {
+  const calls = [];
+  const store = { mutate: async (...args) => { calls.push(args); } };
+  await bootWorkspace(store, { settings: { activeWorkspace: 'atlas' } });
+  assert.deepEqual(calls, [['workspace_select', { id: 'personal' }]]);
+});
+
+test('boot_does_nothing_when_personal_is_active', async () => {
+  const calls = [];
+  const store = { mutate: async (...args) => { calls.push(args); } };
+  await bootWorkspace(store, { settings: { activeWorkspace: 'personal' } });
+  assert.deepEqual(calls, []);
 });

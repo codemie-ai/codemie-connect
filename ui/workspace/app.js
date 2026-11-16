@@ -3,16 +3,18 @@
 import { createStore, escapeHtml as e } from './store.js';
 import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
-import { avatar, badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, toggle } from './ui.js';
+import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, toggle } from './ui.js';
 import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calendarColors } from './calendar-model.js';
-import { active, attentionMessages, decisions, syncRunning, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation } from './selectors.js';
-import { dayKey, dateFromKey, agoLabel, zonedParts } from './format.js';
+import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation } from './selectors.js';
+import { dayKey, dateFromKey, zonedParts } from './format.js';
 import { today, WIDGETS, WIDGET_IDS } from './view-today.js';
 import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
 import { inbox, filteredMessages, snoozeUntil } from './view-inbox.js';
-import { settings, workspaces, LEGACY_TABS, SETTINGS_TABS } from './view-settings.js';
+import { settings, LEGACY_TABS, SETTINGS_TABS } from './view-settings.js';
+import { renderShell } from './shell.js';
+import { bootWorkspace } from './boot.js';
 
-const ROUTES = ['today', 'calendar', 'inbox', 'workspaces', 'settings'];
+const ROUTES = ['today', 'calendar', 'inbox', 'settings'];
 const root = document.getElementById('workspace-app');
 const legacy = document.getElementById('app');
 const invoke = window.__TAURI__?.core?.invoke;
@@ -79,50 +81,10 @@ function applyTheme(theme) {
 
 // ---------------------------------------------------------------- shell
 
-function syncStatus(s) {
-  const c = s.connection;
-  if (!c || c.status === 'disconnected') return `<button type="button" class="ws-sync-pill" data-action="settings-tab" data-tab="microsoft">${icon('link')}<span>Connect Microsoft 365</span></button>`;
-  if (c.status !== 'connected') return `<button type="button" class="ws-sync-pill ws-warn" data-action="settings-tab" data-tab="microsoft">${icon('alert')}<span>Sign in again</span></button>`;
-  if (syncRunning(s)) return `<span class="ws-sync-pill">${icon('refresh', 'ws-spin')}<span>Syncing…</span></span>`;
-  if (c.syncError) return `<button type="button" class="ws-sync-pill ws-warn" data-action="settings-tab" data-tab="microsoft" title="${e(c.syncError)}">${icon('alert')}<span>Partly synced</span></button>`;
-  return `<span class="ws-sync-pill" title="Microsoft 365">${icon('check-circle')}<span>${c.lastSync ? `Synced ${e(agoLabel(c.lastSync, s.settings.timeZone))}` : 'Connected'}</span></span>`;
-}
-
 function shell() {
-  const s = snap();
-  const w = current();
-  const c = s.connection;
   const route = state.route;
   root.dataset.route = route;
-  const replies = attentionMessages(s).length;
-  const pendingDecisions = decisions(s).length;
-  const nav = [['today', 'Today'], ['calendar', 'Calendar'], ['inbox', 'Inbox'], ['workspaces', 'Workspaces']];
-  const connected = c && c.status !== 'disconnected';
-  const resolvedDark = document.documentElement.classList.contains('dark');
-  root.innerHTML = `<aside class="ws-sidebar">
-      <div class="ws-brand" aria-label="EPAM AI/Run CodeMie Connect"><img class="ws-logo-dark" src="workspace/assets/logo-full-dark.svg" alt=""><img class="ws-logo-light" src="workspace/assets/logo-full-light.svg" alt=""></div>
-      <nav class="ws-nav" aria-label="Main navigation">${nav.map(([id, label]) => `<button type="button" data-action="route" data-route="${id}" ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${id === 'inbox' && replies ? `<small class="ws-count">${replies}</small>` : ''}</button>`).join('')}</nav>
-      <div class="ws-sidebar-bottom">
-        <nav class="ws-nav" aria-label="Application"><button type="button" data-action="route" data-route="settings" ${route === 'settings' ? 'aria-current="page"' : ''}>${icon('settings')}<span>Settings</span>${c && c.status !== 'connected' && c.status !== 'disconnected' ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button></nav>
-        <button type="button" class="ws-user" data-action="settings-tab" data-tab="microsoft" title="${connected ? 'Microsoft 365 account' : 'Connect Microsoft 365'}">
-          ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 32 })}
-          <span class="ws-user-copy"><strong>${e(connected ? c.displayName : 'Personal workspace')}</strong><span>${e(connected ? (c.jobTitle || c.email) : 'Connect Microsoft 365')}</span></span>
-        </button>
-      </div>
-    </aside>
-    <header class="ws-topbar">
-      <div class="ws-topbar-left">
-        <span class="ws-ws-dot" style="--ws-color:${e(w.color)}"></span>
-        <span class="ws-select-wrap ws-workspace-switch"><select id="workspace-select" class="ws-select" aria-label="Active workspace">${s.workspaces.filter(x => !x.archived).map(x => `<option value="${e(x.id)}" ${x.id === w.id ? 'selected' : ''}>${e(x.name)}</option>`).join('')}</select>${icon('chevron-down', 'ws-select-caret')}</span>
-      </div>
-      <div class="ws-topbar-right">
-        ${syncStatus(s)}
-        ${button('', { action: 'sync', iconName: 'refresh', variant: 'ghost', title: 'Sync now', disabled: !c || c.status !== 'connected' })}
-        ${button('', { action: 'theme-toggle', iconName: resolvedDark ? 'sun' : 'moon', variant: 'ghost', title: resolvedDark ? 'Switch to light theme' : 'Switch to dark theme' })}
-        <button type="button" class="ws-btn ws-btn-ghost ws-btn-icon ws-bell" data-action="route" data-route="inbox" data-lane="decisions" aria-label="Decisions${pendingDecisions ? `: ${pendingDecisions}` : ''}" title="Decisions and failed work">${icon('bell')}${pendingDecisions ? `<span class="ws-bell-dot">${pendingDecisions}</span>` : ''}</button>
-      </div>
-    </header>
-    <main class="ws-main" id="workspace-main"><div class="ws-page" id="workspace-page"></div></main>`;
+  root.innerHTML = renderShell({ snapshot: snap(), route, resolvedDark: document.documentElement.classList.contains('dark') });
 }
 
 function banners(s) {
@@ -212,8 +174,7 @@ async function render() {
   page.innerHTML = state.route === 'today' ? today(s, ctx)
     : state.route === 'calendar' ? calendar(s, ctx)
       : state.route === 'inbox' ? inbox(s, ctx)
-        : state.route === 'workspaces' ? `${ctx.banners}${workspaces(s)}`
-          : settings(s, ctx);
+        : settings(s, ctx);
   if (unsavedNote?.workspaceId === current().id) {
     const fresh = document.getElementById('today-note');
     if (fresh) fresh.value = unsavedNote.text;
@@ -327,21 +288,6 @@ function stepCalendar(direction) {
 }
 
 // ---------------------------------------------------------------- dialogs
-
-function workspaceDialog(w) {
-  const colors = ['#2297F6', '#7B3FBF', '#259F4C', '#F5A534', '#E46AA8', '#06B6D4', '#FE3B4C', '#5C6BC0'];
-  const currentColor = w?.color || colors[0];
-  openModal({
-    title: w ? 'Edit workspace' : 'New workspace',
-    subtitle: w ? '' : 'Its own Today layout, notes and commitments. Your Microsoft account is shared automatically.',
-    body: `${field('Name', textInput({ name: 'name', value: w?.name || '', required: true, maxlength: 80, placeholder: 'e.g. Project Atlas' }))}
-      <div class="ws-field"><span class="ws-field-label">Color</span><div class="ws-swatches">${[...new Set([currentColor, ...colors])].map(c => `<label class="ws-swatch" style="--swatch:${e(c)}"><input type="radio" name="color" value="${e(c)}" ${c.toLowerCase() === currentColor.toLowerCase() ? 'checked' : ''} aria-label="${e(c)}"><span></span></label>`).join('')}</div></div>`,
-    submit: w ? 'Save' : 'Create workspace',
-    onSubmit: async f => {
-      await mutate(w ? 'workspace_update' : 'workspace_create', { name: f.get('name'), color: f.get('color') || currentColor }, w?.id);
-    },
-  });
-}
 
 function commitmentDialog(source) {
   openModal({
@@ -666,7 +612,7 @@ async function handle(action, el) {
       const critical = rowMessages(id).some(m => m.data.lane === 'critical');
       const run = () => decideRow(id, { action: 'snooze', until }, m => (m.data.lane === 'critical' ? { confirmGlobal: true } : {}));
       if (critical) {
-        return confirmModal({ title: 'Pause critical reminders?', text: 'This pauses reminders for this incident in every workspace until the chosen time. It does not acknowledge it.', confirm: 'Pause reminders', onConfirm: run });
+        return confirmModal({ title: 'Pause critical reminders?', text: 'This pauses reminders for this incident until the chosen time. It does not acknowledge it.', confirm: 'Pause reminders', onConfirm: run });
       }
       await run();
       return toast('Snoozed.', 'success');
@@ -677,7 +623,7 @@ async function handle(action, el) {
       const run = () => decideRow(id, { action: 'lane', lane }, x => (x.data.lane === 'critical' && lane !== 'critical' ? { acknowledge: true } : {}));
       if (m?.data.lane === 'critical' && lane !== 'critical') {
         el.value = m.data.lane;
-        return confirmModal({ title: 'Acknowledge and move?', text: 'Acknowledging stops this incident’s pending reminders. The move applies to this workspace.', confirm: 'Acknowledge and move', onConfirm: run });
+        return confirmModal({ title: 'Acknowledge and move?', text: 'Acknowledging stops this incident’s pending reminders. The move applies to Connect.', confirm: 'Acknowledge and move', onConfirm: run });
       }
       await run();
       return toast(`Moved to ${LANES.find(([k]) => k === lane)?.[1] || lane}.`, 'success');
@@ -704,7 +650,7 @@ async function handle(action, el) {
       const r = await mutate('ai_probe');
       if (!r.ready) throw new Error(r.message);
       await mutate('workspace_update', { aiProfile: 'claude-api' });
-      return toast('Claude API profile pinned to this workspace.', 'success');
+      return toast('Claude API profile pinned.', 'success');
     }
     case 'ai-draft': await mutate('ai_draft', { sourceId: id }); return toast('AI draft requested. Load it when Activity shows it is ready.');
     case 'ai-load': {
@@ -732,7 +678,7 @@ async function handle(action, el) {
     }
     case 'local-delete': return mutate('local_delete', { kind: el.dataset.kind, id });
 
-    // Workspaces & layout
+    // Layout
     case 'customize': return customizeDialog();
     case 'widget-up': case 'widget-down': {
       const row = el.closest('[data-widget]');
@@ -740,13 +686,6 @@ async function handle(action, el) {
       if (action === 'widget-down' && row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row);
       el.focus();
       return;
-    }
-    case 'workspace-new': return workspaceDialog();
-    case 'workspace-edit': return workspaceDialog(s.workspaces.find(w => w.id === id));
-    case 'workspace-open': await savePendingNote(); await mutate('workspace_select', { id }); return route('today');
-    case 'workspace-archive': {
-      const archive = el.dataset.archived === 'true';
-      return confirmModal({ title: archive ? 'Archive workspace?' : 'Restore workspace?', text: archive ? 'Its schedules pause. Notes and commitments are kept.' : 'Bring this workspace back with its notes and layout.', confirm: archive ? 'Archive' : 'Restore', onConfirm: () => mutate('workspace_update', { archived: archive }, id) });
     }
 
     // Rules, schedules, jobs, notifications, data
@@ -832,15 +771,6 @@ document.addEventListener('click', async ev => {
 document.addEventListener('change', async ev => {
   const el = ev.target;
   try {
-    if (el.id === 'workspace-select') {
-      if (legacyMounted && legacyModule && !(await legacyModule.leaveLegacyTools())) {
-        el.value = snap().settings.activeWorkspace;
-        return;
-      }
-      await savePendingNote();
-      await mutate('workspace_select', { id: el.value });
-      return;
-    }
     if (el.matches('[data-action]') && (el.type === 'checkbox' || el.tagName === 'SELECT') && el.closest('#workspace-app,.ws-modal')) {
       await handle(el.dataset.action, el);
     }
@@ -1006,6 +936,7 @@ async function boot() {
     };
     return;
   }
+  await bootWorkspace(store, snap());
   runtimeReady = await invoke('runtime_ready').catch(() => false);
   state.appVersion = await invoke('get_app_version').catch(() => '');
   if (snap().revision === 0) {

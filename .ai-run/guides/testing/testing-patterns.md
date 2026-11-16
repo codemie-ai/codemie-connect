@@ -24,7 +24,7 @@ ui/test/
 
 ### Workspace browser end-to-end
 
-`PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node ui/test/browser/workspace-e2e.mjs` serves `ui/` on loopback, injects a mocked `window.__TAURI__`, and drives sign-in, Today, Calendar (all modes), Inbox, Settings, Workspaces and sign-out in both themes at 1000/1440/1680 px. Screenshots land in `output/playwright/workspace-e2e/` (git-ignored). It needs loopback binding (outside the default sandbox) and proves UI behaviour only — never native Graph, storage or notifications.
+`PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node ui/test/browser/workspace-e2e.mjs` serves `ui/` on loopback, injects a mocked `window.__TAURI__`, and drives sign-in, Today, Calendar (all modes), Inbox, Settings, the absence of any Workspaces UI, and sign-out in both themes at 1000/1440/1680 px. Screenshots land in `output/playwright/workspace-e2e/` (git-ignored). It needs loopback binding (outside the default sandbox) and proves UI behaviour only — never native Graph, storage or notifications.
 
 ### Naming Conventions
 

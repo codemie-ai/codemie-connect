@@ -11,7 +11,7 @@ export const WIDGETS = {
   focus: { title: 'Day at a glance', width: 4, description: 'Meetings, free time, replies and a focus timer.' },
   calendar: { title: 'Schedule', width: 6, description: "Today's timeline with free time between meetings." },
   inbox: { title: 'Needs your reply', width: 6, description: 'Outlook and Teams messages waiting for you.' },
-  commitments: { title: 'Commitments & notes', width: 12, description: 'Your promises and a scratchpad for this workspace.' },
+  commitments: { title: 'Commitments & notes', width: 12, description: 'Your promises and a scratchpad for Connect.' },
 };
 export const WIDGET_IDS = Object.keys(WIDGETS);
 
@@ -76,7 +76,7 @@ export function today(s, ctx) {
     </header>
     ${banners}
     ${state === 'none' || state === 'authorizing' ? connectHero(state) : ''}
-    ${layout.length ? `<div class="ws-grid">${grid}</div>` : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want in this workspace.', actions: button('Choose cards', { action: 'customize', variant: 'primary' }) })}
+    ${layout.length ? `<div class="ws-grid">${grid}</div>` : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want on Today.', actions: button('Choose cards', { action: 'customize', variant: 'primary' }) })}
   </div>`;
 }
 

@@ -1164,43 +1164,7 @@ impl Core {
         Ok(json!({"nextAt":next}))
     }
     fn materialize_schedules(&self) -> Result<()> {
-        let mut r = self.repo()?;
-        let workspaces = r.workspaces()?;
-        // Each workspace is explicitly queried; scheduling is independent of which view is mounted.
-        for w in workspaces.iter().filter(|w| !w.archived) {
-            let schedules = r.local_records(&w.id, "schedule")?;
-            for mut schedule in schedules {
-                if schedule.data["enabled"].as_bool() != Some(true) {
-                    continue;
-                }
-                let due = schedule.data["nextAt"].as_i64().unwrap_or(i64::MAX);
-                if due > now() {
-                    continue;
-                }
-                let kind = schedule.data["kind"].as_str().unwrap_or("brief");
-                let policy = r.policy(Some(&w.id), None)?;
-                let payload = json!({"scheduleId":schedule.id,"scheduleRevision":schedule.revision,"title":schedule.data["label"],"expiresAt":due+7200});
-                let job = new_job(
-                    kind,
-                    format!("{}:{due}", schedule.id),
-                    Some(w.id.clone()),
-                    None,
-                    due,
-                    policy,
-                    payload,
-                );
-                r.enqueue(&job)?;
-                schedule.data["nextAt"] = schedules::next_occurrence(
-                    schedule.data["timeZone"].as_str().unwrap_or("UTC"),
-                    schedule.data["time"].as_str().unwrap_or("09:00"),
-                    schedule.data["weekdays"].as_bool().unwrap_or(false),
-                    now(),
-                )?
-                .into();
-                r.put_record(&schedule)?;
-            }
-        }
-        Ok(())
+        materialize_due_schedules(&mut *self.repo()?)
     }
     fn deliver_notification(&self, job: &Job) -> Result<String> {
         let mut r = self.repo()?;
@@ -1358,10 +1322,9 @@ impl Core {
         else {
             return Ok(());
         };
-        for w in workspaces
-            .iter()
-            .filter(|w| !w.archived && w.connection_id.as_deref() == Some(&c.id))
-        {
+        for w in workspaces.iter().filter(|w| {
+            !w.archived && background_active(w) && w.connection_id.as_deref() == Some(&c.id)
+        }) {
             let mut messages = r.account_workspace_records(&c.id, &w.id)?;
             inbox::project(&r, w, Some(&c), &mut messages)?;
             messages.sort_by_key(|m| std::cmp::Reverse(m.data["at"].as_i64().unwrap_or(0)));
@@ -1500,6 +1463,57 @@ impl Core {
         }
     }
 }
+/// Workspaces are hidden until they are redesigned (DESIGN.md section 9). While hidden, their
+/// reminders, schedules and critical alerts pause; the data and operations stay intact.
+pub(crate) const WORKSPACES_HIDDEN: bool = true;
+
+/// Whether a workspace may run background work (schedules, critical alerts).
+fn background_active(w: &Workspace) -> bool {
+    !WORKSPACES_HIDDEN || w.id == "personal"
+}
+
+fn materialize_due_schedules(r: &mut Repository) -> Result<()> {
+    let workspaces = r.workspaces()?;
+    // Each workspace is explicitly queried; scheduling is independent of which view is mounted.
+    for w in workspaces
+        .iter()
+        .filter(|w| !w.archived && background_active(w))
+    {
+        let schedules = r.local_records(&w.id, "schedule")?;
+        for mut schedule in schedules {
+            if schedule.data["enabled"].as_bool() != Some(true) {
+                continue;
+            }
+            let due = schedule.data["nextAt"].as_i64().unwrap_or(i64::MAX);
+            if due > now() {
+                continue;
+            }
+            let kind = schedule.data["kind"].as_str().unwrap_or("brief");
+            let policy = r.policy(Some(&w.id), None)?;
+            let payload = json!({"scheduleId":schedule.id,"scheduleRevision":schedule.revision,"title":schedule.data["label"],"expiresAt":due+7200});
+            let job = new_job(
+                kind,
+                format!("{}:{due}", schedule.id),
+                Some(w.id.clone()),
+                None,
+                due,
+                policy,
+                payload,
+            );
+            r.enqueue(&job)?;
+            schedule.data["nextAt"] = schedules::next_occurrence(
+                schedule.data["timeZone"].as_str().unwrap_or("UTC"),
+                schedule.data["time"].as_str().unwrap_or("09:00"),
+                schedule.data["weekdays"].as_bool().unwrap_or(false),
+                now(),
+            )?
+            .into();
+            r.put_record(&schedule)?;
+        }
+    }
+    Ok(())
+}
+
 fn new_job(
     kind: &str,
     key: String,
@@ -1757,6 +1771,44 @@ mod tests {
         )
         .is_ok());
         assert!(validate_sources(&r, &c, &json!({"calendars":["unknown"],"chats":[]})).is_err());
+    }
+    #[test]
+    fn hidden_workspaces_schedules_and_incidents_pause() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let mut atlas = r.workspace("personal").unwrap();
+        atlas.id = "atlas".into();
+        atlas.name = "Project Atlas".into();
+        atlas.is_default = false;
+        r.save_workspace(&atlas).unwrap();
+        for wid in ["personal", "atlas"] {
+            r.put_record(&Record {
+                id: format!("reminder-{wid}"),
+                kind: "schedule".into(),
+                connection_id: None,
+                workspace_id: Some(wid.into()),
+                source: "local".into(),
+                revision: "1".into(),
+                updated_at: 1,
+                data: json!({"kind":"reminder","time":"09:00","timeZone":"UTC","weekdays":false,"enabled":true,"nextAt":1,"label":"Stand-up"}),
+            })
+            .unwrap();
+        }
+        assert!(WORKSPACES_HIDDEN);
+        materialize_due_schedules(&mut r).unwrap();
+        let keys: Vec<_> = r
+            .jobs()
+            .unwrap()
+            .into_iter()
+            .map(|j| j.workspace_id.unwrap_or_default())
+            .collect();
+        assert_eq!(keys, vec!["personal".to_string()]);
+        // The paused reminder is untouched and its data stays.
+        let atlas_reminder = &r.local_records("atlas", "schedule").unwrap()[0];
+        assert_eq!(atlas_reminder.data["nextAt"], 1);
+        // Critical alerts follow the same rule.
+        assert!(background_active(&r.workspace("personal").unwrap()));
+        assert!(!background_active(&r.workspace("atlas").unwrap()));
     }
     #[test]
     fn sign_in_defaults_to_read_capabilities_and_keeps_explicit_writes() {
