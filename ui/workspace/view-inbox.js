@@ -7,7 +7,7 @@ import { LANES, laneLabel, visibleMessages, decisions, connectionState, messageT
 import { formatDateTime, relativeAge } from './format.js';
 import { listTitle } from './view-today.js';
 import {
-  INTENTS, TONES, LENGTHS, MAX_INSTRUCTIONS, replyBox, runningLabel, provenanceLabel, draftError, choicesIn, gapsIn, claudeAvailable, profileName,
+  INTENTS, TONES, LENGTHS, MAX_INSTRUCTIONS, replyBox, runningLabel, provenanceLabel, draftError, draftChoices, draftGaps, claudeAvailable, providerLabel,
 } from './draft-state.js';
 
 const LANE_TONE = { critical: 'error', reply: 'info', waiting: 'warning', fyi: 'neutral', low: 'neutral', decisions: 'purple' };
@@ -77,7 +77,7 @@ function listRow(s, m, zone, isSelected, count = 0, drafting = false) {
     <span class="ws-msg-avatar">${avatar({ name: d.from || '?', size: 36, seed: d.fromAddress || d.fromId || d.from })}<span class="ws-msg-glyph">${d.channel === 'chat' ? teamsGlyph : outlookGlyph}</span></span>
     <span class="ws-msg-main">
       <span class="ws-msg-top"><strong>${e(d.isMine ? 'You' : d.from || 'Unknown sender')}</strong>${count > 1 ? `<span class="ws-thread-count" title="${count} messages in this chat">${count}</span>` : ''}<time title="${e(formatDateTime(d.at, zone))}">${e(relativeAge(d.at, zone))}</time></span>
-      <span class="ws-msg-title">${d.importance === 'high' ? `<span class="ws-imp" title="High importance">!</span>` : ''}${e(listTitle(m, s))}</span>
+      <span class="ws-msg-title">${d.importance === 'high' ? `<span class="ws-imp" title="High importance">!</span>` : ''}<span class="ws-ellipsis">${e(listTitle(m, s))}</span></span>
       <span class="ws-msg-preview">${e(d.text || '')}</span>
       ${flags ? `<span class="ws-msg-flags">${flags}</span>` : ''}
     </span>
@@ -161,16 +161,17 @@ function replyForm(s, m, zone, state) {
         <label class="ws-field-label" for="reply-body">${icon('reply')}Your reply</label>
         ${draftable ? draftTrigger(m, state, { running, unavailable, open: !!popover }) : ''}
       </div>
-      ${running ? runningRow(job, state.ai) : ''}
+      ${running ? runningRow(job) : ''}
       ${failure ? errorRow(job, failure) : ''}
       ${box.confirm ? confirmRow(m, box.confirm) : ''}
       <textarea id="reply-body" class="ws-textarea" name="body" maxlength="20000" placeholder="${isChat ? 'Write a Teams reply…' : 'Write a reply…'}" ${unavailable ? 'disabled' : ''}>${e(box.text)}</textarea>
       ${showAi ? provenanceRow(s, m, ai, ui, zone, running) : ''}
-      ${todoPanel(box.text, showAi ? ai.data.questions : [])}
+      ${todoPanel(box.text, ai?.data.text, showAi ? ai.data.questions : [])}
       <div class="ws-reply-actions">
         <span class="ws-muted ws-hint">${canSend ? 'You review every reply before it is sent.' : `Drafts stay on this device. Send from ${isChat ? 'Teams' : 'Outlook'}, or allow replies in Settings → Microsoft 365.`}</span>
         <span class="ws-actions">
           ${button('Save draft', { action: 'draft-save', attrs: { 'data-id': m.id } })}
+          ${canSend ? '' : button('Copy reply', { action: 'reply-copy', iconName: 'copy', title: `Copy the reply to paste it in ${isChat ? 'Teams' : 'Outlook'}`, attrs: { 'data-id': m.id } })}
           ${canSend ? button('Review & send', { type: 'submit', variant: 'primary', iconName: 'reply', disabled: unavailable }) : d.url ? button(isChat ? 'Reply in Teams' : 'Reply in Outlook', { action: 'source', iconName: 'external', attrs: { 'data-kind': 'message', 'data-id': m.id } }) : ''}
         </span>
       </div>
@@ -196,6 +197,7 @@ function draftPopover(m, state) {
   const pop = state.draftPopover;
   const o = pop.options;
   const profile = state.ai?.settings?.routes?.[m.data.channel === 'chat' ? 'chat_draft' : 'mail_draft']?.profile || state.ai?.settings?.defaultProfile;
+  const provider = providerLabel(profile, state.ai?.profiles);
   const count = (pop.instructions || '').length;
   return `<div class="ws-draft-pop" id="draft-options" role="dialog" aria-labelledby="draft-options-title" data-id="${e(m.id)}">
     <div class="ws-draft-pop-head"><strong id="draft-options-title">${icon('spark')}Draft with AI</strong><span>${m.data.channel === 'chat' ? 'Teams reply' : 'Outlook reply'}</span></div>
@@ -210,16 +212,16 @@ function draftPopover(m, state) {
       ${textArea(pop.instructions || '', { id: 'draft-instructions', maxlength: MAX_INSTRUCTIONS, rows: 2, placeholder: 'e.g. Say I can join on Thursday', 'aria-describedby': 'draft-privacy' })}
     </div>
     <div class="ws-draft-pop-foot">
-      <span class="ws-draft-privacy" id="draft-privacy">${icon('lock')}Only ${e(profile ? profileName(profile) : 'Claude')} reads this conversation.</span>
+      <span class="ws-draft-privacy" id="draft-privacy">${icon('lock')}Sent only to ${e(provider)} to write this draft.</span>
       <span class="ws-actions">${button('Cancel', { action: 'ai-draft-cancel', variant: 'ghost' })}${button('Draft', { action: 'ai-draft', variant: 'magic', iconName: 'spark', title: 'Draft (⌘↵ or Ctrl+Enter)' })}</span>
     </div>
   </div>`;
 }
 
-function runningRow(job, ai = {}) {
+function runningRow(job) {
   const p = job.payload || {};
-  const { label, seconds } = runningLabel(job, { profiles: ai.profiles || [] });
-  return `<div class="ws-draft-running" data-started="${e(p.startedAt || '')}" data-profile="${e(p.profile || '')}" data-model="${e(p.model || '')}" data-state="${e(job.state)}">
+  const { label, seconds } = runningLabel(job);
+  return `<div class="ws-draft-running" data-started="${e(p.startedAt || '')}" data-profile="${e(p.profile || '')}" data-model="${e(p.runModel || p.model || '')}" data-state="${e(job.state)}">
       <span class="ws-draft-pulse" aria-hidden="true">${icon('spark')}</span>
       <span class="ws-draft-running-label" role="status"><span data-draft-label>${e(label)}</span> <span class="ws-draft-seconds" data-draft-seconds aria-hidden="true">${seconds ? `${seconds} s` : ''}</span></span>
       <span class="ws-draft-running-hint">You can keep writing.</span>
@@ -227,18 +229,19 @@ function runningRow(job, ai = {}) {
     </div>`;
 }
 
+// Rows that re-render while the user types are polite status messages, not alerts.
 function errorRow(job, failure) {
-  const { tone, sentence, detail, action } = failure;
-  return `<div class="ws-draft-error ws-draft-tone-${tone}" role="alert">
+  const { tone, sentence, action } = failure;
+  return `<div class="ws-draft-error ws-draft-tone-${tone}" role="status">
       ${icon(tone === 'error' ? 'alert' : tone === 'info' ? 'spark' : 'info')}
-      <p><strong>${e(sentence)}</strong>${detail ? ` <span>${e(detail)}</span>` : ''}</p>
+      <p><strong>${e(sentence)}</strong></p>
       <div class="ws-draft-error-actions">${action ? button(action.label, { action: action.action, iconName: action.iconName, size: 'sm', attrs: action.attrs }) : ''}${button('', { action: 'ai-draft-dismiss', iconName: 'close', variant: 'ghost', size: 'sm', title: 'Dismiss', attrs: { 'data-id': job.id } })}</div>
     </div>`;
 }
 
 function confirmRow(m, draft) {
   const preview = draft.length > 180 ? `${draft.slice(0, 180).trimEnd()}…` : draft;
-  return `<div class="ws-draft-confirm" role="alert">
+  return `<div class="ws-draft-confirm" role="status">
       <span class="ws-draft-pulse" aria-hidden="true">${icon('spark')}</span>
       <div class="ws-draft-confirm-copy"><strong>Replace your text with the draft?</strong><p>${e(preview)}</p></div>
       <div class="ws-draft-confirm-actions">${button('Keep mine', { action: 'ai-draft-keep', size: 'sm', attrs: { 'data-id': m.id } })}${button('Replace', { action: 'ai-draft-replace', variant: 'primary', size: 'sm', attrs: { 'data-id': m.id } })}</div>
@@ -251,34 +254,36 @@ function provenanceRow(s, m, ai, ui, zone, running) {
   const items = used.map(r => (r
     ? `<li>${avatar({ name: r.data.isMine ? (s.connection?.displayName || 'You') : r.data.from || '?', size: 20, seed: r.data.fromAddress || r.data.fromId || r.data.from })}<strong>${e(r.data.isMine ? 'You' : r.data.from || 'Unknown sender')}</strong><time>${e(formatDateTime(r.data.at, zone))}</time></li>`
     : `<li class="ws-muted">${icon('info')}A message no longer in Connect</li>`)).join('');
+  const open = !!ui.contextOpen;
   return `<div class="ws-draft-provenance">
-      <details class="ws-draft-context">
-        <summary><span class="ws-draft-source">${icon('spark')}${e(provenanceLabel(p))}</span> <span class="ws-draft-context-toggle">Context${icon('chevron-down')}</span></summary>
-        <ul>${items}</ul>
-      </details>
-      ${p.partialText ? `<span class="ws-draft-partial" title="Connect could read only the preview of some Outlook messages, so the draft may miss details.">${icon('info')}Preview text only</span>` : ''}
-      <span class="ws-draft-provenance-actions">
-        ${ui.restore ? button('Restore my text', { action: 'ai-draft-restore', variant: 'ghost', size: 'sm', iconName: 'reply', attrs: { 'data-id': m.id, 'data-restore': '' } }) : ''}
-        ${button('Regenerate', { action: 'ai-draft-regenerate', variant: 'ghost', size: 'sm', iconName: 'refresh', title: 'Draft again with the same options', disabled: running, attrs: { 'data-id': m.id } })}
-      </span>
+      <div class="ws-draft-provenance-row">
+        <span class="ws-draft-source">${icon('spark')}<span>${e(provenanceLabel(p))}</span>
+          <button type="button" class="ws-draft-context-toggle" data-action="ai-draft-context" data-key="${e(draftKeyOf(m))}" aria-expanded="${open}" aria-controls="draft-context">Context${icon('chevron-down')}</button></span>
+        ${p.partialText ? `<span class="ws-draft-partial" title="Connect could read only the preview of some Outlook messages, so the draft may miss details.">${icon('info')}Preview text only</span>` : ''}
+        <span class="ws-draft-provenance-actions">
+          ${ui.restore ? `<span class="ws-draft-restore">${button('Restore my text', { action: 'ai-draft-restore', variant: 'ghost', size: 'sm', iconName: 'reply', title: 'Put back the text you had before the draft. Changes you made to the draft are discarded.', attrs: { 'data-id': m.id } })}${button('', { action: 'ai-draft-forget', variant: 'ghost', size: 'sm', iconName: 'close', title: 'Keep the draft and stop offering to restore your text', attrs: { 'data-id': m.id } })}</span>` : ''}
+          ${button('Regenerate', { action: 'ai-draft-regenerate', variant: 'ghost', size: 'sm', iconName: 'refresh', title: 'Draft again with the same options', disabled: running, attrs: { 'data-id': m.id } })}
+        </span>
+      </div>
+      <ul id="draft-context" class="ws-draft-context" aria-label="Messages the draft was written from"${open ? '' : ' hidden'}>${items}</ul>
     </div>`;
 }
 
 /**
- * Bracketed choices and gaps still in the reply (the controller refreshes this part as the
- * user types) with Claude's questions underneath.
+ * The choices and gaps Claude left (`aiText` is its draft) that are still in the reply; the
+ * controller refreshes this part as the user types. The user's own brackets never show here.
  */
-export function draftChecks(text) {
-  const choices = choicesIn(text);
-  const gaps = gapsIn(text);
+export function draftChecks(text, aiText) {
+  const choices = draftChoices(text, aiText);
+  const gaps = draftGaps(text, aiText);
   if (!choices.length && !gaps.length) return '';
   return `${choices.length ? `<p class="ws-draft-todo-title">${icon('alert')}Choose an option in brackets before sending.</p>
     ${choices.map((c, i) => `<div class="ws-draft-choice" role="group" aria-label="Choice ${i + 1}">${c.options.map(option => button(option, { action: 'ai-draft-choice', size: 'sm', attrs: { 'data-index': i, 'data-option': option } })).join('<span class="ws-draft-or">or</span>')}</div>`).join('')}` : ''}
     ${gaps.length ? `<p class="ws-draft-gaps">${icon('edit')}<span>Fill in</span>${gaps.map((g, i) => `<button type="button" class="ws-draft-gap" data-action="ai-draft-gap" data-index="${i}" title="Select it in your reply">${e(g.raw)}</button>`).join('')}</p>` : ''}`;
 }
 
-function todoPanel(text, questions = []) {
-  const checks = draftChecks(text);
+function todoPanel(text, aiText, questions = []) {
+  const checks = draftChecks(text, aiText);
   const asks = (questions || []).filter(Boolean);
   return `<section class="ws-draft-todo" aria-label="Before you send"${checks || asks.length ? '' : ' hidden'}>
       <div data-draft-checks>${checks}</div>
@@ -290,7 +295,7 @@ function decisionList(pending, zone) {
   if (!pending.length) {
     return `<div class="ws-inbox-empty">${emptyState({ iconName: 'shield', title: 'No decisions waiting', text: 'Prepared replies, events and work that needs a retry show up here. Nothing is sent automatically.' })}</div>`;
   }
-  const label = { sync: 'Refresh Microsoft sources', brief: 'Daily brief', reminder: 'Reminder', notification: 'Critical alert', ai_draft: 'AI reply draft', calendar_window: 'Calendar period' };
+  const label = { sync: 'Refresh Microsoft sources', brief: 'Daily brief', reminder: 'Reminder', notification: 'Critical alert', calendar_window: 'Calendar period' };
   return `<div class="ws-inbox-items">${pending.map(r => r.kind === 'action'
     ? `<div class="ws-decision">${badge(r.data.state.replace('_', ' '), r.data.state === 'prepared' ? 'info' : 'warning')}<div><strong>${e(r.data.review?.title || 'Prepared action')}</strong><p>${e(r.data.message || 'Review before it expires.')}</p></div>${button('Review', { action: 'action-detail', variant: 'primary', attrs: { 'data-id': r.id } })}</div>`
     : `<div class="ws-decision">${badge(r.state, r.state === 'failed' ? 'error' : 'warning')}<div><strong>${e(label[r.kind] || r.kind)}</strong><p>${e(r.result || '')}</p><small class="ws-muted">${e(formatDateTime(r.dueAt, zone))}</small></div>${['notification', 'send', 'reminder'].includes(r.kind) ? button('Activity', { action: 'settings-tab', attrs: { 'data-tab': 'activity' } }) : button('Retry', { action: 'job-retry', attrs: { 'data-id': r.id } })}</div>`).join('')}</div>`;

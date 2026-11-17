@@ -35,7 +35,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: draftTemplate, jobFailed: jobTemplate }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate }) {
   const s = snapshot;
   const ai = aiInit;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -158,14 +158,21 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         if (job.state !== 'queued') return;
         job.state = 'running';
         Object.assign(job.payload, { startedAt: now() - (plan.startedAgo || 0), profile, model: route.model || null });
+        // Claude names its model a moment after it starts (`runModel`); CodeMie takes longer.
+        setTimeout(() => {
+          if (job.state !== 'running') return;
+          job.payload.runModel = profile.startsWith('codemie:') ? 'claude-sonnet-4-5' : 'claude-sonnet-4-5-20250929';
+          update();
+        }, profile.startsWith('codemie:') ? 2500 : 400);
       };
       const finish = (result = plan) => {
         start();
         if (job.state !== 'running') return;
         if (result.outcome === 'ok') {
           const thread = s.records.filter(r => r.kind === 'message' && r.data.conversationId === m.data.conversationId).sort((a, b) => a.data.at - b.data.at).slice(-12);
-          const t = clone(draftTemplate);
-          const record = { ...t, id: `ai:${key}`, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, text: result.text || t.data.text, questions: result.questions || t.data.questions, channel: m.data.channel, sourceId: m.id, draftKey: key, conversationKey: key, options: { ...d }, provenance: { ...t.data.provenance, profile, model: job.payload.model || 'claude-sonnet-4-5', messageIds: thread.map(x => x.id), partialText: !!result.partialText } } };
+          // A Teams draft is short with no greeting or sign-off; an Outlook draft is a letter.
+          const t = clone(chat ? chatDraft : mailDraft);
+          const record = { ...t, id: `ai:${key}`, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, text: result.text || t.data.text, questions: result.questions || t.data.questions, channel: m.data.channel, sourceId: m.id, draftKey: key, conversationKey: key, options: { ...d }, provenance: { ...t.data.provenance, profile, model: job.payload.runModel || job.payload.model || t.data.provenance.model, messageIds: thread.map(x => x.id), partialText: !!result.partialText } } };
           s.records = s.records.filter(r => r.id !== record.id).concat(record);
           job.state = 'succeeded';
           job.result = 'AI draft ready for review';
@@ -181,6 +188,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     },
   };
   window.__bridgeCalls = calls;
+  // What detection finds next time (Claude signed in or set up meanwhile).
+  window.__setAiProfiles = profiles => { ai.profiles = profiles; };
   window.__TAURI__ = {
     core: {
       async invoke(cmd, args = {}) {
@@ -236,8 +245,8 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   const connected = buildSnapshot(now, { theme, zone: 'Europe/Kyiv' });
   connected.connection.enabled.push(...enable);
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
-  const { testOk, testFail, draft, jobFailed } = contractFixtures();
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, jobFailed })})`);
+  const { testOk, testFail, draft, draftChat, jobFailed } = contractFixtures();
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed })})`);
   await page.goto(base + hash);
   await page.waitForSelector('.ws-sidebar');
   currentPage = page;
@@ -563,7 +572,7 @@ for (const theme of ['dark', 'light']) {
     assert(call.sourceId === 'c-reply-1' && call.intent === 'propose_times' && call.tone === 'friendly' && call.includeFreeTimes === true && call.instructions === 'Offer Thursday or Friday afternoon', JSON.stringify(call));
     const remembered = await page.evaluate(() => JSON.parse(localStorage.getItem('codemie.draft.options.chat')));
     assert(remembered.intent === 'propose_times' && remembered.tone === 'friendly' && !('instructions' in remembered), JSON.stringify(remembered));
-    await page.waitForSelector('.ws-draft-running:has-text("Drafting with Claude Code")', { timeout: 4000 });
+    await page.waitForSelector('.ws-draft-running:has-text("Drafting with Claude Code · Sonnet 4.5")', { timeout: 4000 });
     await page.waitForTimeout(2100);
     assert(/\d+ s/.test(await text(page, '.ws-draft-running')), 'elapsed seconds');
     assert(!(await page.locator('#reply-body').isDisabled()), 'the reply stays editable');
@@ -571,13 +580,16 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('.ws-inbox-row[data-id="c-reply-1"] .ws-flag-ai').count() === 1, 'the list shows Drafting…');
     await shot(page, `${theme}-draft-running`);
     await page.evaluate(() => window.__finishDraft({ outcome: 'ok' }));
-    await page.waitForFunction(() => document.getElementById('reply-body')?.value.includes('[Yes, I can / Unfortunately, I can'), null, { timeout: 4000 });
+    await page.waitForFunction(() => document.getElementById('reply-body')?.value.startsWith('[Yes, 11:00 works for me / Sorry, I can'), null, { timeout: 4000 });
     await page.waitForSelector('.ws-draft-provenance:has-text("Drafted with Claude Code · Sonnet 4.5")');
-    assert(/from 2 messages/.test(await text(page, '.ws-draft-provenance')), 'message count');
+    assert(/3 s · from 2 messages/.test(await text(page, '.ws-draft-provenance')), 'duration and message count');
     assert(/Choose an option in brackets before sending/.test(await text(page, '.ws-draft-todo')), 'bracket note');
-    assert(/Can you send Ann the Monday version by Friday\?/.test(await text(page, '.ws-draft-todo')), 'questions');
-    await page.click('.ws-draft-context summary');
-    assert(/Jordan Lee/.test(await text(page, '.ws-draft-context ul')), 'context lists senders');
+    assert(/Can you join the call at 11:00\?/.test(await text(page, '.ws-draft-todo')), 'questions');
+    await page.click('[data-action="ai-draft-context"]');
+    assert(await page.locator('[data-action="ai-draft-context"]').getAttribute('aria-expanded') === 'true', 'Context is expanded');
+    assert(/Jordan Lee/.test(await text(page, '#draft-context')), 'context lists senders');
+    const widths = await page.evaluate(() => [document.getElementById('draft-context').getBoundingClientRect().width, document.querySelector('.ws-draft-provenance').getBoundingClientRect().width]);
+    assert(Math.abs(widths[0] - widths[1]) < 1, `Context spans the panel ${widths}`);
     await page.waitForTimeout(250);
     await shot(page, `${theme}-draft-result`);
     await page.click('.ws-reply button[type=submit]');
@@ -586,37 +598,66 @@ for (const theme of ['dark', 'light']) {
     await shot(page, `${theme}-draft-unfinished`);
     await page.click('.ws-modal[open] button:has-text("Edit reply")');
     await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
-    await page.click('[data-action="ai-draft-choice"][data-option="Yes, I can"]');
+    await page.click('[data-action="ai-draft-choice"][data-option="Yes, 11:00 works for me"]');
     const value = await page.locator('#reply-body').inputValue();
-    assert(value.includes('Yes, I can send you the Monday version') && !value.includes('['), value);
+    assert(value.startsWith('Yes, 11:00 works for me. If that changes') && !value.includes('['), value);
     await page.click('.ws-reply button[type=submit]');
     await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
-    assert((await lastCall(page, 'action_prepare')).body.includes('Yes, I can send you'), 'review shows the chosen option');
+    assert((await lastCall(page, 'action_prepare')).body.startsWith('Yes, 11:00 works for me'), 'review shows the chosen option');
     await page.click('.ws-modal[open] button:has-text("Cancel")');
     await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
     assert(!(await page.evaluate(() => window.__bridgeCalls)).some(([op]) => op === 'action_confirm'), 'Cancel sent something');
   });
 
-  await check(`${theme}: a new draft asks before replacing typed text; Restore brings it back`, async () => {
-    await page.fill('#reply-body', 'My own reply to Jordan');
-    await plan(page, { outcome: 'ok', ms: 500, text: 'Hi Jordan, the calendar layout notes are attached.', questions: [] });
+  await check(`${theme}: the user's own brackets send without a warning`, async () => {
+    await page.fill('#reply-body', 'Merged in [EPMCDME-1234], the rest is [WIP]. [Yes / No] for the demo?');
+    await page.click('.ws-reply button[type=submit]');
+    await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
+    assert(await page.locator('.ws-modal[open]:has-text("Finish your reply first?")').count() === 0, 'warned about hand-written brackets');
+    assert(await page.locator('.ws-draft-todo:not([hidden]) .ws-draft-choice').count() === 0, 'hand-written brackets listed as choices');
+    await page.click('.ws-modal[open] button:has-text("Cancel")');
+    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+  });
+
+  await check(`${theme}: a draft arriving while you type asks first, in the same box; Restore survives edits`, async () => {
+    await plan(page, { outcome: 'hold' });
     await page.click('[data-action="ai-draft-regenerate"]');
+    await page.waitForSelector('.ws-draft-running:has-text("Drafting with")', { timeout: 4000 });
+    // Type in the reply box while Claude writes; the box must stay the same element, focused.
+    await page.fill('#reply-body', '');
+    await page.keyboard.type('My own reply to Jordan');
+    await page.evaluate(() => { window.__replyNode = document.getElementById('reply-body'); });
+    await page.evaluate(() => window.__finishDraft({ outcome: 'ok', text: 'Sure, the calendar layout notes are attached.', questions: [] }));
     await page.waitForSelector('.ws-draft-confirm', { timeout: 5000 });
-    assert(await page.locator('#reply-body').inputValue() === 'My own reply to Jordan', 'typed text replaced without asking');
+    const kept = await page.evaluate(() => {
+      const box = document.getElementById('reply-body');
+      return { same: box === window.__replyNode, focused: document.activeElement === box, value: box.value, caret: box.selectionStart };
+    });
+    assert(kept.same && kept.focused && kept.value === 'My own reply to Jordan' && kept.caret === kept.value.length, `reply box recreated or changed ${JSON.stringify(kept)}`);
+    await page.keyboard.type(' today');
+    assert(await page.locator('#reply-body').inputValue() === 'My own reply to Jordan today', 'typing goes on in the same box');
     await page.waitForTimeout(200);
     await shot(page, `${theme}-draft-replace`);
     await page.click('[data-action="ai-draft-keep"]');
     await page.waitForSelector('.ws-draft-confirm', { state: 'detached' });
-    assert(await page.locator('#reply-body').inputValue() === 'My own reply to Jordan', 'Keep mine changed the text');
-    await plan(page, { outcome: 'ok', ms: 500, text: 'Hi Jordan, notes attached. See you at the 1:1.', questions: [] });
+    assert(await page.locator('#reply-body').inputValue() === 'My own reply to Jordan today', 'Keep mine changed the text');
+    await plan(page, { outcome: 'ok', ms: 500, text: 'Notes attached, see you at the 1:1.', questions: [] });
     await openOptions(page);
     await page.click('#draft-options [data-action="ai-draft"]');
     await page.waitForSelector('.ws-draft-confirm', { timeout: 5000 });
     await page.click('[data-action="ai-draft-replace"]');
-    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Hi Jordan, notes attached. See you at the 1:1.');
+    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Notes attached, see you at the 1:1.');
     await page.waitForSelector('[data-action="ai-draft-restore"]');
+    assert(/discarded/.test(await page.locator('[data-action="ai-draft-restore"]').getAttribute('title')), 'Restore says edits are discarded');
+    // Editing the draft keeps the offer: the user's words are not lost on the first keystroke.
+    await page.click('#reply-body');
+    await page.keyboard.press('End');
+    await page.keyboard.type(' Thanks!');
+    await page.waitForTimeout(300);
+    assert(await page.locator('[data-action="ai-draft-restore"]').count() === 1, 'Restore went away after an edit');
+    await shot(page, `${theme}-draft-restore`);
     await page.click('[data-action="ai-draft-restore"]');
-    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'My own reply to Jordan');
+    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'My own reply to Jordan today');
     assert(await page.locator('[data-action="ai-draft-restore"]').count() === 0, 'Restore stays after restoring');
   });
 
@@ -644,6 +685,18 @@ for (const theme of ['dark', 'light']) {
     await page.waitForSelector('.ws-draft-error', { state: 'detached' });
   });
 
+  await check(`${theme}: updates held while the options are open show when they close`, async () => {
+    await openOptions(page);
+    assert(await page.locator('.ws-inbox-row[data-id="m-reply-2"]').count() === 1, 'row missing before');
+    await page.evaluate(() => window.__workspace.store.mutate('inbox_decision', { id: 'm-reply-2', action: 'archive' }));
+    await page.waitForTimeout(400);
+    assert(await page.locator('#draft-options').count() === 1, 'the popover closed on an update');
+    assert(await page.locator('.ws-inbox-row[data-id="m-reply-2"]').count() === 1, 'rendered under the open popover');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.ws-inbox-row[data-id="m-reply-2"]', { state: 'detached', timeout: 3000 });
+    assert(await page.evaluate(() => document.activeElement?.dataset.action === 'ai-draft-options'), 'focus returns to Draft with AI');
+  });
+
   await check(`${theme}: Today Draft reply opens the conversation and starts a draft`, async () => {
     await plan(page, { outcome: 'hold' });
     await page.click('.ws-nav button[data-route=today]');
@@ -653,6 +706,13 @@ for (const theme of ['dark', 'light']) {
     await action.hover();
     await page.waitForTimeout(300);
     assert(await action.evaluate(el => el.querySelector('span').getBoundingClientRect().width > 40), 'label shows on hover');
+    const geo = await action.evaluate(el => {
+      const item = el.closest('.ws-msg-item');
+      const r = sel => item.querySelector(sel).getBoundingClientRect();
+      return { pill: el.getBoundingClientRect().left, text: Math.max(r('.ws-msg-preview').right, r('.ws-msg-title').right), time: r('time').right, card: item.getBoundingClientRect().right };
+    });
+    assert(geo.pill >= geo.text, `the pill covers the preview ${JSON.stringify(geo)}`);
+    assert(geo.card - geo.time <= 12, `the time left the card edge ${JSON.stringify(geo)}`);
     await shot(page, `${theme}-today-draft-reply`);
     await action.click();
     await page.waitForSelector('.ws-read[data-message-id="c-reply-2"] .ws-draft-running');
@@ -679,6 +739,19 @@ for (const theme of ['dark', 'light']) {
     await p.waitForSelector('.ws-draft-running:has-text("Starting CodeMie")', { timeout: 5000 });
     await p.waitForTimeout(2100);
     await shot(p, `${theme}-draft-running-codemie`);
+    // Without permission to reply from Connect, the draft is still usable: Copy reply.
+    await p.evaluate(() => { navigator.clipboard.writeText = async t => { window.__copied = t; }; });
+    await p.evaluate(() => window.__finishDraft({ outcome: 'ok' }));
+    await p.waitForSelector('.ws-draft-provenance:has-text("Drafted with CodeMie")', { timeout: 5000 });
+    assert(await p.locator('.ws-reply button[type=submit]').count() === 0, 'Review & send without permission');
+    await p.click('[data-action="reply-copy"]');
+    await p.waitForSelector('.ws-modal[open]:has-text("Finish your reply first?")');
+    await p.click('.ws-modal[open] button:has-text("Copy anyway")');
+    await p.waitForFunction(() => window.__copied?.startsWith('[Yes, 11:00 works for me'));
+    await p.click('[data-action="ai-draft-choice"][data-option="Yes, 11:00 works for me"]');
+    await p.click('[data-action="reply-copy"]');
+    await p.waitForFunction(() => window.__copied?.startsWith('Yes, 11:00 works for me.'));
+    assert(await p.locator('.ws-modal[open]').count() === 0, 'asked again with nothing left to choose');
     assert(cm.errors.length === 0, cm.errors.join(' | '));
     await cm.context.close().catch(() => {});
     currentPage = null;
@@ -695,7 +768,7 @@ for (const theme of ['dark', 'light']) {
     await plan(p, { outcome: 'ok', ms: 400 });
     await p.click('#draft-options [data-action="ai-draft"]');
     await p.waitForSelector('.ws-draft-provenance', { timeout: 5000 });
-    await p.click('.ws-draft-context summary');
+    await p.click('[data-action="ai-draft-context"]');
     await p.waitForTimeout(250);
     const overflow = await p.evaluate(() => Math.max(document.documentElement.scrollWidth - innerWidth, ...[...document.querySelectorAll('.ws-reader, .ws-reply, .ws-draft-todo, .ws-draft-provenance')].map(el => el.scrollWidth - el.clientWidth)));
     assert(overflow <= 0, `overflow ${overflow}px`);
@@ -705,6 +778,20 @@ for (const theme of ['dark', 'light']) {
     await narrow.context.close().catch(() => {});
     currentPage = null;
   });
+}
+
+// Claude set up while Connect is open: Inbox notices when the window gets focus again.
+{
+  const { page, context, errors } = await open({ theme: 'dark', hash: '#/inbox', ai: 'none' });
+  await check('Set up Claude turns into Draft with AI once Claude is ready', async () => {
+    await page.waitForSelector('.ws-reply-head [data-action="ai-open-settings"]:has-text("Set up Claude")');
+    await page.evaluate(profiles => window.__setAiProfiles(profiles), aiStatus('native').profiles);
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForSelector('.ws-reply-head [data-action="ai-draft-options"]', { timeout: 4000 });
+    assert(errors.length === 0, errors.join(' | '));
+  });
+  await context.close().catch(() => {});
+  currentPage = null;
 }
 
 // Onboarding: start signed out, sign in once, everything appears without choosing sources.

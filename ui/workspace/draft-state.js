@@ -59,6 +59,13 @@ export function draftRequest(message, options, instructions = '') {
 const isCodeMie = profileId => String(profileId || '').startsWith('codemie:');
 export const profileName = profileId => (isCodeMie(profileId) ? 'CodeMie' : 'Claude Code');
 
+/** Who reads the conversation: "Claude Code (Anthropic)" or the CodeMie profile, "CodeMie · prod". */
+export function providerLabel(profileId, profiles = []) {
+  if (!profileId) return 'the Claude you choose';
+  if (!isCodeMie(profileId)) return 'Claude Code (Anthropic)';
+  return profiles.find(p => p.id === profileId)?.label || `CodeMie · ${profileId.slice(8)}`;
+}
+
 /** "claude-sonnet-4-5-20250929" → "Sonnet 4.5"; aliases → "Sonnet"; anything else as given. */
 export function modelLabel(model) {
   const id = String(model || '').trim();
@@ -76,14 +83,16 @@ export function claudeAvailable(ai) {
 
 /**
  * The running row: "Drafting with Claude Code · Sonnet… 6 s", or "Starting CodeMie… 4 s".
- * `label` is the words without the seconds (announced once; the seconds tick silently).
+ * The model is the one Claude reported at start (`runModel`), else the one the route asked
+ * for, else none yet. `label` is the words without the seconds (announced once; the seconds
+ * tick silently).
  */
-export function runningLabel(job, { nowMs = Date.now(), profiles = [] } = {}) {
+export function runningLabel(job, { nowMs = Date.now() } = {}) {
   const p = job?.payload || {};
   if (job?.state !== 'running' || !p.startedAt) return { text: 'Waiting to start…', label: 'Waiting to start…', seconds: null, starting: false };
   const seconds = Math.max(0, Math.floor(nowMs / 1000 - p.startedAt));
   const starting = isCodeMie(p.profile) && seconds < CODEMIE_STARTUP_SECONDS;
-  const model = modelLabel(p.model || profiles.find(x => x.id === p.profile)?.defaultModel);
+  const model = modelLabel(p.runModel || p.model);
   const label = starting ? 'Starting CodeMie…' : `Drafting with ${[profileName(p.profile), model].filter(Boolean).join(' · ')}…`;
   return { text: `${label} ${seconds} s`, label, seconds, starting };
 }
@@ -118,8 +127,8 @@ export function draftError(job, { profiles = [], settings = {} } = {}) {
     case 'needs_choice': return { tone: 'info', sentence: 'Choose which Claude writes for you.', action: { label: 'Choose Claude', action: 'ai-draft-choose', iconName: 'spark', attrs: { 'data-id': job.id } } };
     case 'needs_login':
       return isCodeMie(profileId)
-        ? { tone: 'warning', sentence: `${label} isn't signed in.`, detail: 'Run codemie profile login in Terminal, then draft again.', action: toolsAction }
-        : { tone: 'warning', sentence: "Claude Code isn't signed in.", detail: 'Open Terminal, run claude, then type /login.', action: { label: 'Copy sign-in steps', action: 'ai-copy-login', iconName: 'link' } };
+        ? { tone: 'warning', sentence: `${label} isn't signed in.`, action: toolsAction }
+        : { tone: 'warning', sentence: "Claude Code isn't signed in.", action: { label: 'Copy sign-in steps', action: 'ai-copy-login', iconName: 'link' } };
     case 'not_installed': return { tone: 'warning', sentence: "Claude Code isn't installed on this Mac.", action: settingsAction };
     case 'too_old': return { tone: 'warning', sentence: 'This Claude Code is too old to draft replies.', action: settingsAction };
     case 'not_configured': return { tone: 'warning', sentence: "This CodeMie profile isn't fully set up.", action: toolsAction };
@@ -151,15 +160,30 @@ export function gapsIn(text) {
     .map(({ inner, ...b }) => b);
 }
 
-/** The text with the `index`-th choice replaced by one of its options. */
-export function chooseOption(text, index, option) {
-  const choice = choicesIn(text)[index];
+/**
+ * The choices and gaps Claude left in its draft (`aiText`) that are still in the reply. The
+ * user's own brackets, such as "[EPMCDME-1234]" or "[WIP]", never count; nor does anything
+ * when there is no draft.
+ */
+export function draftChoices(text, aiText) {
+  const fromClaude = new Set(choicesIn(aiText).map(c => c.raw));
+  return choicesIn(text).filter(c => fromClaude.has(c.raw));
+}
+
+export function draftGaps(text, aiText) {
+  const fromClaude = new Set(gapsIn(aiText).map(g => g.raw));
+  return gapsIn(text).filter(g => fromClaude.has(g.raw));
+}
+
+/** The text with Claude's `index`-th choice replaced by one of its options. */
+export function chooseOption(text, index, option, aiText) {
+  const choice = draftChoices(text, aiText)[index];
   return choice ? `${text.slice(0, choice.start)}${option}${text.slice(choice.end)}` : text;
 }
 
-/** Choices and gaps still in a reply, in reading order; Review & send asks before sending them. */
-export function unfinishedParts(text) {
-  return [...choicesIn(text), ...gapsIn(text)].sort((a, b) => a.start - b.start).map(x => x.raw);
+/** Claude's choices and gaps still in a reply, in reading order; Review & send and Copy ask first. */
+export function unfinishedParts(text, aiText) {
+  return [...draftChoices(text, aiText), ...draftGaps(text, aiText)].sort((a, b) => a.start - b.start).map(x => x.raw);
 }
 
 // ---------------------------------------------------------------- the reply box
@@ -173,14 +197,42 @@ export function applyDraftResult({ current, dirty, result }) {
   return { action: !String(current ?? '').trim() || !dirty ? 'fill' : 'confirm', text };
 }
 
-/** The answer to "Replace your text with the draft?": the box text and what Restore brings back. */
-export function resolveConfirm({ current, text }, choice) {
-  return choice === 'replace' ? { text, restore: { previous: current, replaced: text } } : { text: current, restore: null };
-}
-
 /** The user's words from before a replace. */
 export function restoreText(state) {
   return state?.previous ?? '';
+}
+
+/**
+ * A draft that arrived for the open reply box (`live` is the box's current text): fill the box
+ * when it is empty or still holds Claude's earlier text untouched (`ui.baseline`), otherwise
+ * ask. A Restore offered for an earlier replace ends here. Returns the next `ui`, the action,
+ * the box text and the text to save (the saved reply follows a fill), or null when nothing is
+ * new.
+ */
+export function reconcile({ ui = {}, ai, manual, live }) {
+  if (!ai || live == null || [ui.seen, ui.confirm, ui.kept].includes(ai.revision)) return null;
+  const { action, text } = applyDraftResult({ current: live, dirty: live !== (ui.baseline ?? ''), result: ai.data });
+  if (action === 'confirm') return { ui: { ...ui, confirm: ai.revision, restore: null }, action, text: live, save: null };
+  const saved = manual?.data?.text;
+  return { ui: { ...ui, seen: ai.revision, confirm: null, kept: null, restore: null, baseline: text }, action, text, save: saved != null && saved !== text ? text : null };
+}
+
+/**
+ * The user's answer about Claude's draft: `keep` their words, `replace` them with the draft
+ * (Restore can bring them back), `restore` them, or `forget` the Restore offer. Returns the
+ * next `ui`, the box text and the text to save (null: nothing to save).
+ */
+export function answer(ui = {}, ai, choice, current) {
+  const draft = ai?.data?.text ?? '';
+  switch (choice) {
+    case 'keep': return { ui: { ...ui, kept: ai?.revision ?? null, confirm: null, restore: null, baseline: null }, text: current, save: current };
+    case 'replace': return { ui: { ...ui, seen: ai?.revision ?? null, kept: null, confirm: null, restore: { previous: current }, baseline: draft }, text: draft, save: draft };
+    case 'restore': {
+      const previous = restoreText(ui.restore);
+      return { ui: { ...ui, seen: null, kept: ai?.revision ?? null, restore: null, baseline: null }, text: previous, save: previous };
+    }
+    default: return { ui: { ...ui, restore: null }, text: current, save: null };
+  }
 }
 
 /**

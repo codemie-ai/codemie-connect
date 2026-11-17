@@ -4,8 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  applyDraftResult, resolveConfirm, restoreText, replyBox, runningLabel, provenanceLabel, modelLabel,
-  draftError, choicesIn, gapsIn, chooseOption, unfinishedParts, readOptions, pickOption, draftRequest, defaultOptions,
+  applyDraftResult, restoreText, replyBox, runningLabel, provenanceLabel, modelLabel, providerLabel, reconcile, answer,
+  draftError, choicesIn, gapsIn, chooseOption, unfinishedParts, draftChoices, readOptions, pickOption, draftRequest, defaultOptions,
 } from '../workspace/draft-state.js';
 import { draftJob, latestDraft, draftKeyOf, decisions, conversation } from '../workspace/selectors.js';
 import { REBASE_SAFE } from '../workspace/store.js';
@@ -22,9 +22,9 @@ function snapshot() {
 }
 const message = (s, id) => s.records.find(r => r.kind === 'message' && r.id === id);
 
-/** The contract draft record, rebound to a message of the synthetic snapshot. */
+/** The contract draft record (a Teams draft for chats, an Outlook one for mail), rebound to a message of the snapshot. */
 function aiDraftFor(s, id, data = {}, extra = {}) {
-  const tpl = contract('draft-ai');
+  const tpl = contract(message(s, id).data.channel === 'chat' ? 'draft-ai-chat' : 'draft-ai');
   const m = message(s, id);
   const key = draftKeyOf(m);
   const ids = conversation(s, m).map(x => x.id);
@@ -34,9 +34,9 @@ function aiDraftFor(s, id, data = {}, extra = {}) {
   };
 }
 
-/** The contract `ai_draft` job (failed on sign-in), rebound to a message of the snapshot. */
-function jobFor(s, id, fields = {}, payload = {}) {
-  const tpl = contract('job-ai-draft-failed');
+/** A contract `ai_draft` job (failed on sign-in by default), rebound to a message of the snapshot. */
+function jobFor(s, id, fields = {}, payload = {}, name = 'job-ai-draft-failed') {
+  const tpl = contract(name);
   const m = message(s, id);
   const key = draftKeyOf(m);
   return {
@@ -87,6 +87,10 @@ test('reply_box_offers_draft_with_ai_or_set_up_claude', () => {
   assert.match(open, /<input(?=[^>]*id="draft-free-times")(?=[^>]*\bchecked\b)[^>]*>/);
   assert.match(open, /<textarea[^>]*id="draft-instructions"[^>]*maxlength="1000"[^>]*>Keep it short<\/textarea>/);
   assert.match(open, /data-action="ai-draft"/);
+  assert.match(open, /Sent only to Claude Code \(Anthropic\) to write this draft\./);
+  const codemie = view(s, { draftPopover: { key: 'chat:chat:chat-jordan', id: 'c-reply-1', options: opts, instructions: '' }, ai: { status: 'ready', ...aiStatus('both', { defaultProfile: 'codemie:prod' }) } });
+  assert.match(codemie, /Sent only to CodeMie · prod to write this draft\./);
+  assert.equal(providerLabel('codemie:other', []), 'CodeMie · other');
 });
 
 test('remembered_options_are_validated_per_channel', () => {
@@ -103,22 +107,30 @@ test('remembered_options_are_validated_per_channel', () => {
 
 test('running_draft_shows_profile_model_and_stop', () => {
   const s = snapshot();
-  const job = jobFor(s, 'c-reply-1', { state: 'running', errorClass: undefined, errorCode: undefined, result: null }, { startedAt: nowSec - 6, profile: 'claude', model: 'sonnet' });
+  // The contract job while Claude runs: the route left the model to the profile, and Claude
+  // reported it at start (`runModel`).
+  const job = jobFor(s, 'c-reply-1', { leaseUntil: null }, { startedAt: nowSec - 6 }, 'job-ai-draft-running');
+  assert.equal(job.state, 'running');
+  assert.equal(job.payload.model, null);
   s.jobs.unshift(job);
   assert.equal(draftJob(s, 'chat:chat:chat-jordan').id, job.id);
   const html = view(s);
   const row = html.match(/<div class="ws-draft-running"[\s\S]*?<\/button>\s*<\/div>/)?.[0] || '';
-  assert.match(row, /Drafting with Claude Code · Sonnet…/);
+  assert.match(row, /Drafting with Claude Code · Sonnet 4\.5…/);
   assert.match(row, /data-started="\d+"/);
+  assert.match(row, /data-model="claude-sonnet-4-5"/);
   assert.match(row, new RegExp(`data-action="ai-draft-stop"[^>]*data-id="${job.id}"`));
   assert.match(html, /<textarea id="reply-body"(?![^>]*disabled)/, 'the reply stays editable');
   assert.match(html, /data-action="ai-draft-options"[^>]*disabled/, 'one draft per conversation at a time');
 
-  const profiles = aiStatus('both').profiles;
-  const codemie = { ...job, payload: { ...job.payload, profile: 'codemie:prod', model: null, startedAt: nowSec - 3 } };
-  assert.equal(runningLabel(codemie, { nowMs: NOW, profiles }).text, 'Starting CodeMie… 3 s');
+  const unknown = { ...job, payload: { ...job.payload, runModel: undefined } };
+  assert.equal(runningLabel(unknown, { nowMs: NOW }).text, 'Drafting with Claude Code… 6 s', 'no model until Claude names it');
+  assert.equal(runningLabel({ ...unknown, payload: { ...unknown.payload, model: 'sonnet' } }, { nowMs: NOW }).text, 'Drafting with Claude Code · Sonnet… 6 s', 'the model the route asked for');
+  const codemie = { ...job, payload: { ...job.payload, profile: 'codemie:prod', runModel: undefined, startedAt: nowSec - 3 } };
+  assert.equal(runningLabel(codemie, { nowMs: NOW }).text, 'Starting CodeMie… 3 s');
   const later = { ...codemie, payload: { ...codemie.payload, startedAt: nowSec - 20 } };
-  assert.equal(runningLabel(later, { nowMs: NOW, profiles }).text, 'Drafting with CodeMie · Sonnet 4.5… 20 s');
+  assert.equal(runningLabel(later, { nowMs: NOW }).text, 'Drafting with CodeMie… 20 s');
+  assert.equal(runningLabel({ ...later, payload: { ...later.payload, runModel: 'claude-sonnet-4-5' } }, { nowMs: NOW }).text, 'Drafting with CodeMie · Sonnet 4.5… 20 s');
   assert.equal(runningLabel({ ...job, state: 'queued', payload: { ...job.payload, startedAt: undefined } }, { nowMs: NOW }).text, 'Waiting to start…');
   assert.equal(modelLabel('claude-haiku-4-5-20251001'), 'Haiku 4.5');
   assert.equal(modelLabel('opus'), 'Opus');
@@ -135,13 +147,17 @@ test('draft_result_fills_empty_box_and_shows_provenance', () => {
   assert.equal(latestDraft(s, 'chat:chat:chat-jordan').id, draft.id);
   const html = view(s);
   assert.equal(unescape(textarea(html)), draft.data.text);
-  const provenance = html.match(/<div class="ws-draft-provenance"[\s\S]*?<\/details>/)?.[0] || '';
-  assert.match(provenance, /Drafted with Claude Code · Sonnet 4\.5 · 4 s · from 2 messages/);
+  assert.doesNotMatch(draft.data.text, /^Hi |Best regards/, 'a Teams draft has no greeting or sign-off');
+  const provenance = html.match(/<div class="ws-draft-provenance"[\s\S]*?<\/ul>/)?.[0] || '';
+  assert.match(provenance, /Drafted with Claude Code · Sonnet 4\.5 · 3 s · from 2 messages/);
+  assert.match(provenance, /data-action="ai-draft-context"[^>]*aria-expanded="false"[^>]*aria-controls="draft-context"/);
+  assert.match(provenance, /<ul id="draft-context"[^>]*hidden/, 'Context is closed until asked for');
   assert.match(provenance, /Jordan Lee/, 'Context lists the sender of each message used');
+  assert.match(view(s, { drafts: { 'chat:chat:chat-jordan': { contextOpen: true } } }), /<ul id="draft-context"(?![^>]*hidden)/);
   assert.match(html, /data-action="ai-draft-regenerate"/);
-  assert.match(html, /Can you send Ann the Monday version by Friday\?/, 'questions are shown under the box');
+  assert.match(html, /Can you join the call at 11:00\?/, 'questions are shown under the box');
   assert.match(html, /Choose an option in brackets before sending/);
-  assert.match(html, /data-action="ai-draft-choice"[^>]*data-option="Yes, I can"/);
+  assert.match(html, /data-action="ai-draft-choice"[^>]*data-option="Yes, 11:00 works for me"/);
   assert.equal(provenanceLabel({ profile: 'codemie:prod', model: 'claude-haiku-4-5', durationMs: 900, messageIds: ['a'] }), 'Drafted with CodeMie · Haiku 4.5 · 1 s · from 1 message');
 
   const partial = snapshot();
@@ -153,12 +169,25 @@ test('draft_result_asks_before_replacing_typed_text', () => {
   const result = { text: 'Hi Jordan, the notes are attached.' };
   const decision = applyDraftResult({ current: 'My own words', dirty: true, result });
   assert.deepEqual(decision, { action: 'confirm', text: result.text });
-  const kept = resolveConfirm({ current: 'My own words', text: result.text }, 'keep');
+  const ai = { revision: 'r2', data: result };
+  const kept = answer({ confirm: 'r2' }, ai, 'keep', 'My own words');
   assert.equal(kept.text, 'My own words', 'Keep mine leaves the text unchanged');
-  assert.equal(kept.restore, null);
-  const replaced = resolveConfirm({ current: 'My own words', text: result.text }, 'replace');
+  assert.equal(kept.save, 'My own words');
+  assert.equal(kept.ui.kept, 'r2');
+  assert.equal(kept.ui.restore, null);
+  const replaced = answer({ confirm: 'r2' }, ai, 'replace', 'My own words');
   assert.equal(replaced.text, result.text, 'Replace swaps it');
-  assert.equal(restoreText(replaced.restore), 'My own words', 'Restore brings it back');
+  assert.equal(replaced.save, result.text);
+  assert.equal(restoreText(replaced.ui.restore), 'My own words');
+  const restored = answer(replaced.ui, ai, 'restore', `${result.text} Edited after replacing.`);
+  assert.equal(restored.text, 'My own words', 'Restore brings it back, also after the draft was edited');
+  assert.equal(restored.save, 'My own words');
+  assert.equal(restored.ui.restore, null);
+  assert.equal(answer(replaced.ui, ai, 'forget', 'x').ui.restore, null, 'Restore can be dismissed');
+  // The offer lasts until the next draft arrives.
+  const next = reconcile({ ui: replaced.ui, ai: { revision: 'r3', data: { text: 'Newer draft' } }, manual: null, live: result.text });
+  assert.equal(next.action, 'fill');
+  assert.equal(next.ui.restore, null);
 
   // A newer draft over the saved words of the user waits for a decision, also after a reload.
   const s = snapshot();
@@ -178,8 +207,9 @@ test('draft_result_asks_before_replacing_typed_text', () => {
 
   const after = snapshot();
   after.records.push(draft);
-  const restorable = view(after, { drafts: { 'chat:chat:chat-jordan': { restore: { previous: 'My own words', replaced: draft.data.text }, baseline: draft.data.text, seen: draft.revision } } });
-  assert.match(restorable, /data-action="ai-draft-restore"[^>]*>(?:(?!<\/button>).)*Restore my text/);
+  const restorable = view(after, { drafts: { 'chat:chat:chat-jordan': { restore: { previous: 'My own words' }, baseline: draft.data.text, seen: draft.revision } } });
+  assert.match(restorable, /data-action="ai-draft-restore"[^>]*title="[^"]*changes you made to the draft are discarded[^"]*"[^>]*>(?:(?!<\/button>).)*Restore my text/i);
+  assert.match(restorable, /data-action="ai-draft-forget"/);
 });
 
 test('each_error_class_shows_its_sentence_and_action', () => {
@@ -205,6 +235,8 @@ test('each_error_class_shows_its_sentence_and_action', () => {
     if (action) assert.match(row, new RegExp(`data-action="${action}"[^>]*>(?:(?!</button>).)*${label}`), `${fields.errorClass} action`);
     else assert.equal((row.match(/data-action="/g) || []).length, 1, 'only Dismiss when there is nothing to do now');
     assert.match(row, new RegExp(`data-action="ai-draft-dismiss"[^>]*data-id="${job.id}"`));
+    assert.match(row, /^<div class="ws-draft-error[^"]*" role="status"/, 'announced politely; it re-renders');
+    assert.equal(unescape(row.match(/<p>([\s\S]*?)<\/p>/)[1].replace(/<[^>]+>/g, '')).trim(), sentence, 'one sentence, no extra steps');
   }
 
   // The conversation changed while drafting (errorCode, no class) is answered by drafting again.
@@ -249,9 +281,59 @@ test('bracketed_choices_are_listed_resolved_and_block_a_silent_send', () => {
   assert.equal(choices.length, 1);
   assert.deepEqual(choices[0].options, ['Yes, I can', "Unfortunately, I can't"]);
   assert.deepEqual(gapsIn(text).map(g => g.raw), ['[date]']);
-  assert.equal(chooseOption(text, 0, 'Yes, I can').split('\n')[2], 'Yes, I can send you the Monday version by [date].');
-  assert.deepEqual(unfinishedParts(text), ["[Yes, I can / Unfortunately, I can't]", '[date]']);
-  assert.deepEqual(unfinishedParts('All done. [1]'), [], 'numbers in brackets are not gaps');
+  // Claude's draft is the reference: only what it left in brackets counts.
+  assert.equal(chooseOption(text, 0, 'Yes, I can', text).split('\n')[2], 'Yes, I can send you the Monday version by [date].');
+  assert.deepEqual(unfinishedParts(text, text), ["[Yes, I can / Unfortunately, I can't]", '[date]']);
+  assert.deepEqual(unfinishedParts('All done. [1]', 'All done. [1]'), [], 'numbers in brackets are not gaps');
+});
+
+test('only_claudes_brackets_are_flagged_never_the_users_own', () => {
+  const own = 'Fixed in [EPMCDME-1234], still [WIP] / [Draft]. [Yes / No]?';
+  assert.deepEqual(unfinishedParts(own, undefined), [], 'no draft, nothing to finish');
+  assert.deepEqual(unfinishedParts(own, ''), []);
+  const ai = contract('draft-ai-chat').data.text;
+  assert.deepEqual(unfinishedParts(own, ai), [], "the user's brackets are not Claude's");
+  const mixed = `${ai} See [EPMCDME-1234].`;
+  assert.deepEqual(unfinishedParts(mixed, ai), ["[Yes, 11:00 works for me / Sorry, I can't make 11:00]"]);
+  assert.equal(draftChoices(mixed, ai).length, 1);
+
+  // A hand-written reply with Jira keys: no panel; an AI draft with an open choice: the panel.
+  const s = snapshot();
+  s.records.push({ id: 'manual', kind: 'draft', source: 'local', connectionId: null, workspaceId: 'personal', revision: 'm1', updatedAt: nowSec, data: { text: own, sourceId: 'c-reply-1' } });
+  const html = view(s);
+  assert.match(html, /<section class="ws-draft-todo"[^>]*hidden/);
+  assert.doesNotMatch(html, /Choose an option in brackets/);
+  const drafted = snapshot();
+  drafted.records.push(aiDraftFor(drafted, 'c-reply-1'));
+  assert.match(view(drafted), /Choose an option in brackets before sending/);
+});
+
+test('a_draft_that_arrives_while_the_user_types_asks_instead_of_replacing', () => {
+  const s = snapshot();
+  const ai = aiDraftFor(s, 'c-reply-1');
+  // Focus and typed (unsaved) text in #reply-body; no saved reply yet.
+  const typed = reconcile({ ui: {}, ai, manual: null, live: 'Sure, give me a minute' });
+  assert.deepEqual([typed.action, typed.text, typed.save, typed.ui.confirm], ['confirm', 'Sure, give me a minute', null, ai.revision]);
+  assert.equal(reconcile({ ui: typed.ui, ai, manual: null, live: 'Sure, give me a minute' }), null, 'asked once');
+  // An empty box is filled; nothing to save when there is no saved reply.
+  const empty = reconcile({ ui: {}, ai, manual: null, live: '' });
+  assert.deepEqual([empty.action, empty.text, empty.save], ['fill', ai.data.text, null]);
+  // An untouched earlier draft is replaced, and the saved reply follows it.
+  const manual = { kind: 'draft', updatedAt: nowSec - 60, data: { text: 'Earlier draft' } };
+  const again = reconcile({ ui: { baseline: 'Earlier draft', seen: 'old' }, ai, manual, live: 'Earlier draft' });
+  assert.deepEqual([again.action, again.save, again.ui.seen], ['fill', ai.data.text, ai.revision]);
+  assert.equal(reconcile({ ui: {}, ai: null, manual, live: 'x' }), null);
+  assert.equal(reconcile({ ui: {}, ai, manual, live: null }), null, 'nothing to do without an open reply box');
+});
+
+test('without_send_permission_the_reply_can_be_copied', () => {
+  const s = snapshot();
+  const html = view(s);
+  assert.match(html, /data-action="reply-copy"[^>]*>(?:(?!<\/button>).)*Copy reply/);
+  s.connection.enabled.push('chat_send');
+  const allowed = view(s);
+  assert.doesNotMatch(allowed, /data-action="reply-copy"/);
+  assert.match(allowed, /Review &amp; send/);
 });
 
 // ---------------------------------------------------------------- Today
@@ -264,7 +346,7 @@ test('today_draft_reply_opens_inbox_and_starts_draft', () => {
   assert.equal(actions.length, 5, 'one Draft reply per attention row');
   assert.ok(actions.some(a => /data-id="c-reply-1"/.test(a) && /data-key="chat:chat:chat-jordan"/.test(a)), actions.join('\n'));
   assert.ok(actions.some(a => /data-id="m-reply-1"/.test(a) && /data-key="m-reply-1"/.test(a)));
-  assert.match(html, /data-action="draft-reply"[^>]*aria-label="Draft a reply to Jordan Lee"/);
+  assert.match(html, /data-action="draft-reply"[^>]*aria-label="Draft reply to Jordan Lee"/, 'the accessible name contains the visible label');
   assert.equal((today(s, ctx({ status: 'ready', ...aiStatus('none') })).match(/data-action="draft-reply"/g) || []).length, 0, 'not offered when no Claude is ready');
 
   const remembered = readOptions('{"intent":"propose_times","tone":"friendly","length":"short","includeFreeTimes":true}', 'chat');

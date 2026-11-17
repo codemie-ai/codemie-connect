@@ -11,7 +11,7 @@ import { today, WIDGETS, WIDGET_IDS } from './view-today.js';
 import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
 import { inbox, filteredMessages, snoozeUntil, draftChecks } from './view-inbox.js';
 import {
-  optionsKey, readOptions, pickOption, draftRequest, applyDraftResult, resolveConfirm, restoreText, replyBox, runningLabel, chooseOption, choicesIn, gapsIn, unfinishedParts,
+  optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable,
 } from './draft-state.js';
 import { settings, LEGACY_TABS, SETTINGS_TABS } from './view-settings.js';
 import { renderShell } from './shell.js';
@@ -45,9 +45,10 @@ let calendarScrollKey = '';
 let noteTimer;
 let searchTimer;
 const replyInFlight = new Set();
-const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick']);
+const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context']);
 let lastDraftSignature = '';
-let aiQuietTried = false;
+// Updates that arrived while the draft options popover was open; shown once it closes.
+let heldRender = false;
 
 function localPref(key, fallback) {
   try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
@@ -95,10 +96,20 @@ function applyTheme(theme) {
 
 // ---------------------------------------------------------------- shell
 
+/** A selector that finds the focused control again after a render, or null. */
+function focusSelector(el) {
+  if (!el || el === document.body || !root.contains(el)) return null;
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  const action = el.dataset?.action;
+  if (!action) return null;
+  return ['action', 'id', 'key', 'lane', 'route', 'tab'].filter(k => el.dataset[k] != null).map(k => `[data-${k}="${CSS.escape(el.dataset[k])}"]`).join('');
+}
+
+const shellMarkup = () => renderShell({ snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark') });
+
 function shell() {
-  const route = state.route;
-  root.dataset.route = route;
-  root.innerHTML = renderShell({ snapshot: snap(), route, resolvedDark: document.documentElement.classList.contains('dark') });
+  root.dataset.route = state.route;
+  root.innerHTML = shellMarkup();
 }
 
 function banners(s) {
@@ -171,9 +182,13 @@ async function render() {
   const unsavedNote = note && note.value !== note.defaultValue ? { workspaceId: note.dataset.workspaceId, text: note.value } : null;
   const reply = document.getElementById('reply-body');
   const replyKey = reply?.closest('form')?.dataset.key;
-  let unsavedReply = reply && reply.value !== reply.defaultValue ? { key: replyKey, text: reply.value } : null;
-  const replyFocus = reply && document.activeElement === reply ? { key: replyKey, start: reply.selectionStart, end: reply.selectionEnd, scroll: reply.scrollTop } : null;
+  const unsavedReply = reply && reply.value !== reply.defaultValue ? { key: replyKey, text: reply.value } : null;
+  // A reply box the user is in (or has typed in) is kept as it is, not recreated: its focus,
+  // selection, undo history and IME composition survive the re-render around it.
+  const keepReply = reply && (document.activeElement === reply || unsavedReply) ? reply : null;
+  const refocus = focusSelector(document.activeElement);
   const revision = ++rendering;
+  heldRender = false;
   if (legacyMounted) {
     legacy.classList.add('hidden');
     document.body.append(legacy);
@@ -182,37 +197,38 @@ async function render() {
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
-  shell();
   const ctx = { state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s) };
-  const page = document.getElementById('workspace-page');
-  page.className = `ws-page ws-page-${state.route}`;
-  if (state.route === 'inbox') {
-    ensureSelection(s);
-    // A draft that finished under the open reply box fills it, so the typed text is not kept.
-    if (reconcileDraft(s, reply ? { key: replyKey, text: reply.value } : null) === 'fill') unsavedReply = null;
-  }
-  if (['inbox', 'today'].includes(state.route)) loadAiQuiet();
-  page.innerHTML = state.route === 'today' ? today(s, ctx)
+  if (state.route === 'inbox') ensureSelection(s);
+  if (['inbox', 'today'].includes(state.route)) readClaude();
+  const pageClass = `ws-page ws-page-${state.route}`;
+  const html = state.route === 'today' ? today(s, ctx)
     : state.route === 'calendar' ? calendar(s, ctx)
       : state.route === 'inbox' ? inbox(s, ctx)
         : settings(s, ctx);
+  const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
+  if (next) {
+    next.innerHTML = shellMarkup();
+    Object.assign(next.querySelector('#workspace-page'), { className: pageClass, innerHTML: html });
+  }
+  if (next && renderAround(root, next, keepReply)) {
+    root.dataset.route = state.route;
+  } else {
+    shell();
+    const page = document.getElementById('workspace-page');
+    page.className = pageClass;
+    page.innerHTML = html;
+  }
   if (unsavedNote?.workspaceId === current().id) {
     const fresh = document.getElementById('today-note');
     if (fresh) fresh.value = unsavedNote.text;
   }
   const freshReply = document.getElementById('reply-body');
-  const freshKey = freshReply?.closest('form')?.dataset.key;
-  if (unsavedReply && freshKey === unsavedReply.key) freshReply.value = unsavedReply.text;
+  if (freshReply !== keepReply && unsavedReply && freshReply?.closest('form')?.dataset.key === unsavedReply.key) freshReply.value = unsavedReply.text;
   syncReplyBox(freshReply);
   if (state.route === 'inbox') rememberDraftBaseline(s);
   restoreScroll(saved);
-  // Keep typing where you were when a draft or a sync re-renders the reply box.
-  if (replyFocus && freshKey === replyFocus.key && !freshReply.disabled) {
-    const end = freshReply.value.length;
-    freshReply.focus({ preventScroll: true });
-    freshReply.setSelectionRange(Math.min(replyFocus.start, end), Math.min(replyFocus.end, end));
-    freshReply.scrollTop = replyFocus.scroll;
-  }
+  // A background update keeps keyboard focus on the same control.
+  if (refocus && !root.contains(document.activeElement)) root.querySelector(refocus)?.focus({ preventScroll: true });
   placeDraftPopover();
   lastDraftSignature = draftSignature(s);
   if (state.route === 'settings' && document.getElementById('legacy-host')) await mountLegacy(revision);
@@ -383,15 +399,61 @@ export async function withClaudeChoice(run) {
   }
 }
 
-/** Reads which Claude profiles are ready (cached by native) so Inbox and Today can offer drafts. */
-function loadAiQuiet() {
-  if (aiQuietTried || state.ai.status !== 'idle' || !store) return;
-  aiQuietTried = true;
-  store.query('ai_status', {}).then(status => {
-    if (state.ai.status !== 'idle') return;
+let claudeRead = null;
+let claudeReadAt = 0;
+// Set by "Copy sign-in steps": the next time Connect gets focus it detects Claude again.
+let claudeRecheck = false;
+
+/**
+ * Reads which Claude profiles are ready, so Inbox and Today offer drafts or "Set up Claude".
+ * On its own it reads once, then again at most every 15 s while nothing is ready; `now` reads
+ * at once (window focus). `detect` re-runs detection instead of native's 30-second cache.
+ */
+function readClaude({ now = false, detect = false } = {}) {
+  if (!store || claudeRead || state.ai.status === 'loading') return;
+  const noneReady = state.ai.status === 'ready' && !claudeAvailable(state.ai);
+  if (!now && !(state.ai.status === 'idle' || (noneReady && Date.now() - claudeReadAt > 15_000))) return;
+  claudeReadAt = Date.now();
+  claudeRead = store.query('ai_status', { refresh: detect || noneReady }).then(status => {
+    if (state.ai.status === 'loading') return;
+    const changed = JSON.stringify([state.ai.profiles, state.ai.settings]) !== JSON.stringify([status.profiles, status.settings]);
     Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
-    if (['inbox', 'today'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover && !legacyMounted) render();
-  }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ });
+    if (changed && ['inbox', 'today'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover && !legacyMounted) render();
+  }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ }).finally(() => { claudeRead = null; });
+}
+
+/**
+ * Re-renders `container` to match `next` (a detached copy of what it should hold) around the
+ * live `keep` element (the reply box): every node on the way down to it takes the new
+ * attributes and every node beside it is replaced, so the list, the thread and the running,
+ * confirm and provenance rows update while the box itself is never recreated. False (and
+ * nothing changed) when `next` has no reply box for the same conversation.
+ */
+function renderAround(container, next, keep) {
+  const twin = next.querySelector('#reply-body');
+  if (!twin || !container.contains(keep) || twin.closest('form')?.dataset.key !== keep.closest('form')?.dataset.key) return false;
+  const pathNew = [];
+  for (let n = twin; n !== next; n = n.parentNode) pathNew.unshift(n);
+  const pathLive = [];
+  for (let n = keep; n !== container; n = n.parentNode) pathLive.unshift(n);
+  if (pathNew.length !== pathLive.length || pathNew.some((n, i) => n.tagName !== pathLive[i].tagName)) return false;
+  let live = container;
+  let fresh = next;
+  pathNew.forEach((freshChild, i) => {
+    const liveChild = pathLive[i];
+    for (const c of [...live.childNodes]) if (c !== liveChild) c.remove();
+    let before = true;
+    for (const c of [...fresh.childNodes]) {
+      if (c === freshChild) before = false;
+      else if (before) live.insertBefore(c, liveChild);
+      else live.append(c);
+    }
+    for (const a of [...liveChild.attributes]) if (!freshChild.hasAttribute(a.name)) liveChild.removeAttribute(a.name);
+    for (const a of [...freshChild.attributes]) if (liveChild.getAttribute(a.name) !== a.value) liveChild.setAttribute(a.name, a.value);
+    live = liveChild;
+    fresh = freshChild;
+  });
+  return true;
 }
 
 // ---------------------------------------------------------------- reply drafts (DESIGN 6.4)
@@ -406,32 +468,28 @@ function draftSignature(s) {
   if (!m) return '';
   const key = draftKeyOf(m);
   const job = draftJob(s, key);
-  return [key, job?.id, job?.state, job?.payload?.startedAt, latestDraft(s, key)?.revision].join('|');
+  return [key, job?.id, job?.state, job?.payload?.startedAt, job?.payload?.runModel, latestDraft(s, key)?.revision].join('|');
 }
 
 /**
- * A draft finished while its conversation is open (`live` is the reply box being replaced):
- * fill the box when it is empty or holds an untouched draft, otherwise ask before replacing.
- * Returns 'fill', 'confirm' or null when there is nothing new.
+ * A draft that arrived for the conversation whose reply box is open: fill the box or ask
+ * (`reconcile`), and keep a saved reply in step after a fill. Runs on each new snapshot, before
+ * any render. True when something changed.
  */
-function reconcileDraft(s, live) {
+function applyArrivedDraft(s) {
   const m = inboxMessage(s);
-  if (!m || !live || live.key !== draftKeyOf(m)) return null;
+  const field = document.getElementById('reply-body');
+  if (!m || !field || field.closest('form')?.dataset.key !== draftKeyOf(m)) return false;
   const key = draftKeyOf(m);
-  const ai = latestDraft(s, key);
-  const ui = draftUi(key);
-  if (!ai || [ui.seen, ui.confirm, ui.kept].includes(ai.revision)) return null;
-  const dirty = live.text !== (ui.baseline ?? '');
-  const { action, text } = applyDraftResult({ current: live.text, dirty, result: ai.data });
-  if (action === 'confirm') {
-    ui.confirm = ai.revision;
-    return action;
+  const next = reconcile({ ui: draftUi(key), ai: latestDraft(s, key), manual: savedReply(s, m), live: field.value });
+  if (!next) return false;
+  state.drafts[key] = next.ui;
+  if (next.action === 'fill' && field.value !== next.text) {
+    field.value = next.text;
+    syncReplyBox(field);
   }
-  Object.assign(ui, { seen: ai.revision, confirm: null, kept: null, restore: null });
-  // Keep a saved reply in step, so a reload shows the draft rather than asking about old text.
-  const saved = savedReply(s, m);
-  if (saved && saved.data.text !== text) saveReply(m, text).catch(fail);
-  return action;
+  if (next.save != null) saveReply(m, next.save).catch(fail);
+  return true;
 }
 
 /** Remembers which text in the box came from Claude, so editing it later counts as the user's. */
@@ -470,8 +528,8 @@ async function saveReply(m, text) {
 }
 
 /**
- * Keeps the reply box in step with its text: it grows to fit a draft, the bracketed choices
- * are re-read as the user types, and Restore goes once they edit.
+ * Keeps the reply box in step with its text: it grows to fit a draft, and Claude's bracketed
+ * choices still in it are re-read as the user types.
  */
 function syncReplyBox(field) {
   if (!field) return;
@@ -479,14 +537,9 @@ function syncReplyBox(field) {
   field.style.height = `${Math.min(Math.max(field.scrollHeight + 2, 88), 360)}px`;
   const form = field.closest('form');
   const checks = form?.querySelector('[data-draft-checks]');
-  if (!checks) return;
-  checks.innerHTML = draftChecks(field.value);
+  if (!checks || !store?.get()) return;
+  checks.innerHTML = draftChecks(field.value, latestDraft(snap(), form.dataset.key)?.data.text);
   checks.closest('.ws-draft-todo').hidden = !checks.innerHTML.trim() && !form.querySelector('.ws-draft-questions');
-  const ui = state.drafts[form.dataset.key];
-  if (ui?.restore && field.value !== ui.restore.replaced) {
-    ui.restore = null;
-    form.querySelector('[data-restore]')?.remove();
-  }
 }
 
 /** Anchors the options popover to Draft with AI, below it when it fits, else above. */
@@ -512,14 +565,29 @@ async function openDraftPopover(m) {
   document.querySelector('#draft-options [data-action="ai-draft"]')?.focus();
 }
 
-/** Closes the popover in place (no re-render, so a click elsewhere still lands). */
-function closeDraftPopover(focusTrigger = true) {
+/**
+ * Closes the popover in place, so a click elsewhere still lands on what was under the
+ * pointer; updates held while it was open render after that click (or at once from the
+ * keyboard), then focus returns to Draft with AI.
+ */
+async function closeDraftPopover(focusTrigger = true) {
   if (!state.draftPopover) return;
   state.draftPopover = null;
   document.getElementById('draft-options')?.remove();
-  const trigger = root.querySelector('[data-action="ai-draft-options"]');
-  trigger?.setAttribute('aria-expanded', 'false');
-  if (focusTrigger) trigger?.focus();
+  root.querySelector('[data-action="ai-draft-options"]')?.setAttribute('aria-expanded', 'false');
+  if (!focusTrigger) {
+    if (heldRender) document.addEventListener('mouseup', () => setTimeout(flushHeldRender, 0), { once: true, capture: true });
+    return;
+  }
+  if (heldRender) await render();
+  root.querySelector('[data-action="ai-draft-options"]')?.focus();
+}
+
+function flushHeldRender() {
+  if (!heldRender || state.draftPopover || modalOpen() || legacyMounted) return;
+  // Typing somewhere else (search, a note): the next update shows it instead.
+  if (editing() && document.activeElement?.id !== 'reply-body') return;
+  render().catch(fail);
 }
 
 function dismissDraftError(jobId) {
@@ -527,21 +595,32 @@ function dismissDraftError(jobId) {
   setLocalPref('codemie.draft.dismissed', JSON.stringify(state.draftDismissed));
 }
 
-/** Review & send of a reply that still has a bracketed choice or gap asks first. */
-function confirmUnfinished(id, body, parts) {
+/** Review & send (or Copy) of a reply that still has a choice or gap Claude left asks first. */
+function confirmUnfinished(parts, { submit, then }) {
   openModal({
     title: 'Finish your reply first?',
     subtitle: 'Claude left these for you to choose or fill in.',
-    body: `<ul class="ws-draft-open-list">${parts.map(p => `<li><code>${e(p)}</code></li>`).join('')}</ul><p class="ws-muted ws-hint">Pick an option or fill in each one, or review the reply as it is.</p>`,
-    submit: 'Review anyway',
+    body: `<ul class="ws-draft-open-list">${parts.map(p => `<li><code>${e(p)}</code></li>`).join('')}</ul><p class="ws-muted ws-hint">Pick an option or fill in each one, or go on with the reply as it is.</p>`,
+    submit,
     cancel: 'Edit reply',
     size: 'sm',
     onSubmit: async (_form, dialog) => {
       dialog.close();
-      await prepareReply(id, body);
+      await then();
       return false;
     },
   });
+}
+
+/** Copies the reply, for when Connect may not send it (no Microsoft permission to reply). */
+async function copyReply(m, text) {
+  const where = m.data.channel === 'chat' ? 'Teams' : 'Outlook';
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`Reply copied. Paste it in ${where}.`, 'success');
+  } catch {
+    toast('Could not copy. Select the text in the reply box and copy it.', 'error');
+  }
 }
 
 /** Elapsed seconds of running drafts, updated in place (no re-render while the user types). */
@@ -549,7 +628,7 @@ function draftTick() {
   root.querySelectorAll('.ws-draft-running[data-started]').forEach(row => {
     const startedAt = Number(row.dataset.started);
     if (!startedAt) return;
-    const { label, seconds } = runningLabel({ state: row.dataset.state, payload: { startedAt, profile: row.dataset.profile, model: row.dataset.model || null } }, { profiles: state.ai.profiles });
+    const { label, seconds } = runningLabel({ state: row.dataset.state, payload: { startedAt, profile: row.dataset.profile, model: row.dataset.model || null } });
     const text = row.querySelector('[data-draft-label]');
     const time = row.querySelector('[data-draft-seconds]');
     if (text && text.textContent !== label) text.textContent = label;
@@ -649,7 +728,7 @@ function newEventDialog() {
   });
 }
 
-function reviewAction(result) {
+function reviewAction(result, { onSent } = {}) {
   const review = result.review || {};
   const people = review.recipients || review.attendees || [];
   openModal({
@@ -667,6 +746,7 @@ function reviewAction(result) {
     workspaceId: result.workspaceId,
     onSubmit: async () => {
       const r = await mutate('action_confirm', { actionId: result.actionId, nonce: result.nonce });
+      onSent?.();
       toast(r.message || 'Sent for delivery.', 'success');
     },
   });
@@ -803,6 +883,7 @@ async function handle(action, el) {
     case 'ai-default': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: 'default', value: el.value }));
     case 'ai-route': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: el.dataset.field, purpose: el.dataset.route, value: el.value }));
     case 'ai-copy-login':
+      claudeRecheck = true;
       try {
         await navigator.clipboard.writeText(LOGIN_STEPS);
         return toast('Sign-in steps copied.', 'success');
@@ -1015,48 +1096,52 @@ async function handle(action, el) {
       return startDraft(getRecord('message', request.sourceId) || getRecord('message', state.selectedMessage), request, request.instructions);
     }
     case 'ai-draft-dismiss': dismissDraftError(id); return render();
-    case 'ai-draft-keep': case 'ai-draft-replace': {
+    case 'ai-draft-keep': case 'ai-draft-replace': case 'ai-draft-restore': case 'ai-draft-forget': {
       const m = getRecord('message', id);
-      const ai = latestDraft(s, draftKeyOf(m));
+      const key = draftKeyOf(m);
       const field = document.getElementById('reply-body');
-      if (!ai || !field) return render();
-      const choice = action === 'ai-draft-keep' ? 'keep' : 'replace';
-      const { text, restore } = resolveConfirm({ current: field.value, text: ai.data.text }, choice);
-      Object.assign(draftUi(draftKeyOf(m)), choice === 'keep' ? { kept: ai.revision, confirm: null, restore: null } : { seen: ai.revision, kept: null, confirm: null, restore });
-      field.value = text;
-      await saveReply(m, text);
+      const choice = action.slice('ai-draft-'.length);
+      const next = answer(draftUi(key), latestDraft(s, key), choice, field?.value ?? '');
+      state.drafts[key] = next.ui;
+      if (field && field.value !== next.text) field.value = next.text;
+      if (next.save != null) await saveReply(m, next.save);
+      else await render();
       document.getElementById('reply-body')?.focus({ preventScroll: true });
       return;
     }
-    case 'ai-draft-restore': {
-      const m = getRecord('message', id);
-      const ui = draftUi(draftKeyOf(m));
-      const text = restoreText(ui.restore);
-      // Restoring answers "Replace your text?" with Keep mine after all.
-      Object.assign(ui, { restore: null, seen: null, kept: latestDraft(s, draftKeyOf(m))?.revision ?? null });
-      const field = document.getElementById('reply-body');
-      if (field) field.value = text;
-      await saveReply(m, text);
-      document.getElementById('reply-body')?.focus({ preventScroll: true });
+    case 'ai-draft-context': {
+      const ui = draftUi(el.dataset.key);
+      ui.contextOpen = !ui.contextOpen;
+      el.setAttribute('aria-expanded', String(ui.contextOpen));
+      document.getElementById('draft-context')?.toggleAttribute('hidden', !ui.contextOpen);
       return;
     }
     case 'ai-draft-choice': case 'ai-draft-gap': {
       const field = document.getElementById('reply-body');
-      const index = Number(el.dataset.index);
       if (!field) return;
+      const index = Number(el.dataset.index);
+      const aiText = latestDraft(s, field.closest('form').dataset.key)?.data.text;
       if (action === 'ai-draft-gap') {
-        const gap = gapsIn(field.value)[index];
+        const gap = draftGaps(field.value, aiText)[index];
         field.focus();
         if (gap) field.setSelectionRange(gap.start, gap.end);
         return;
       }
-      const choice = choicesIn(field.value)[index];
+      const choice = draftChoices(field.value, aiText)[index];
       if (!choice) return;
-      field.value = chooseOption(field.value, index, el.dataset.option);
+      field.value = chooseOption(field.value, index, el.dataset.option, aiText);
       field.focus();
       field.setSelectionRange(choice.start + el.dataset.option.length, choice.start + el.dataset.option.length);
       syncReplyBox(field);
       return;
+    }
+    case 'reply-copy': {
+      const m = getRecord('message', id);
+      const text = document.getElementById('reply-body')?.value || '';
+      if (!text.trim()) throw new Error('Write a reply first.');
+      const open = unfinishedParts(text, latestDraft(s, draftKeyOf(m))?.data.text);
+      if (open.length) return confirmUnfinished(open, { submit: 'Copy anyway', then: () => copyReply(m, text) });
+      return copyReply(m, text);
     }
     case 'action-detail': {
       const r = getRecord('action', id);
@@ -1124,8 +1209,8 @@ async function submitForm(form) {
       // A re-render can replace the form mid-request; never prepare two sends for one reply.
       if (replyInFlight.has(key)) return undefined;
       const body = String(f.get('body') || '');
-      const open = unfinishedParts(body);
-      if (open.length) return confirmUnfinished(id, body, open);
+      const open = unfinishedParts(body, latestDraft(snap(), key)?.data.text);
+      if (open.length) return confirmUnfinished(open, { submit: 'Review anyway', then: () => prepareReply(id, body) });
       replyInFlight.add(key);
       try {
         return await prepareReply(id, body);
@@ -1142,7 +1227,8 @@ async function prepareReply(id, body) {
   if (!body.trim()) throw new Error('Write a reply first.');
   await mutate('draft_save', { text: body, sourceId: id, sourceRevision: m.revision });
   const result = await mutate('action_prepare', { kind: m.data.channel === 'mail' ? 'mail_reply' : 'chat_reply', sourceId: id, body });
-  return reviewAction(result);
+  // Once the reply is sent there is nothing left to restore.
+  return reviewAction(result, { onSent: () => { if (state.drafts[draftKeyOf(m)]) state.drafts[draftKeyOf(m)].restore = null; } });
 }
 
 // ---------------------------------------------------------------- events
@@ -1387,9 +1473,17 @@ async function boot() {
   });
   store.subscribe(result => {
     applyTheme(result.snapshot.settings.theme);
-    if (!ready || modalOpen() || legacyMounted || state.draftPopover) return;
-    // While the user types a reply, only their own draft (its progress or result) re-renders it.
-    if (editing() && !(document.activeElement?.id === 'reply-body' && draftSignature(result.snapshot) !== lastDraftSignature)) return;
+    if (!ready) return;
+    // A draft that arrived for the open reply box is applied first, whatever is on screen.
+    const arrived = !legacyMounted && applyArrivedDraft(result.snapshot);
+    if (modalOpen() || legacyMounted) return;
+    if (state.draftPopover) {
+      heldRender = true;
+      return;
+    }
+    // While the user types a reply, only their own draft (its progress or result) re-renders
+    // around the box; typing anywhere else waits for the next update.
+    if (editing() && !(document.activeElement?.id === 'reply-body' && (arrived || draftSignature(result.snapshot) !== lastDraftSignature))) return;
     render();
   });
   state.calendarDate = todayDate();
@@ -1415,7 +1509,12 @@ async function boot() {
   });
   await listen('workspace:notification-open', event => openNotification(event.payload || {}).catch(fail));
   await listen('workspace:installer-settled', flushNotification);
-  window.addEventListener('focus', () => store.refresh().catch(() => {}));
+  window.addEventListener('focus', () => {
+    store.refresh().catch(() => {});
+    // Back from Terminal or Settings: Claude may be signed in or set up now.
+    readClaude({ now: true, detect: claudeRecheck || (state.ai.status === 'ready' && !claudeAvailable(state.ai)) });
+    claudeRecheck = false;
+  });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (snap().settings.theme === 'system') {
       applyTheme('system');

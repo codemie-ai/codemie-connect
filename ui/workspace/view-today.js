@@ -255,12 +255,12 @@ function messageRow(s, msg, zone, canDraft) {
   const glyph = d.channel === 'chat' ? teamsGlyph : outlookGlyph;
   // Own Outlook messages cannot be answered through Review & send, so they get no draft.
   const draft = canDraft && (d.channel === 'chat' || !d.isMine)
-    ? `<button type="button" class="ws-row-action" data-action="draft-reply" data-id="${e(msg.id)}" data-key="${e(draftKeyOf(msg))}" aria-label="Draft a reply to ${e(d.from || 'this message')}" title="Draft a reply with Claude">${icon('spark')}<span>Draft reply</span></button>`
+    ? `<button type="button" class="ws-row-action" data-action="draft-reply" data-id="${e(msg.id)}" data-key="${e(draftKeyOf(msg))}" aria-label="Draft reply to ${e(d.from || 'this message')}" title="Draft a reply with Claude">${icon('spark')}<span>Draft reply</span></button>`
     : '';
   return `<div class="ws-msg-item${draft ? ' ws-has-action' : ''}"><button type="button" class="ws-msg-row" data-action="open-message" data-id="${e(msg.id)}">
     <span class="ws-msg-avatar">${avatar({ name: d.from || '?', size: 32, seed: d.fromAddress || d.fromId || d.from })}<span class="ws-msg-glyph">${glyph}</span></span>
     <span class="ws-msg-main"><span class="ws-msg-top"><strong>${e(d.from || 'Unknown sender')}</strong><time>${e(relativeAge(d.at, zone))}</time></span>
-    <span class="ws-msg-title">${d.lane === 'critical' ? badge('Critical', 'error') : ''}${e(listTitle(msg, s))}</span>
+    <span class="ws-msg-title">${d.lane === 'critical' ? badge('Critical', 'error') : ''}<span class="ws-ellipsis">${e(listTitle(msg, s))}</span></span>
     <span class="ws-msg-preview">${e(d.text || '')}</span></span>
   </button>${draft}</div>`;
 }
