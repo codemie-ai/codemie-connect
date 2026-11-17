@@ -218,6 +218,14 @@ impl Repository {
             .take(30)
             .collect()
     }
+    /// Sends that are on their way to Microsoft right now.
+    pub fn dispatching_actions(&self) -> Result<i64> {
+        Ok(self.db.query_row(
+            "SELECT count(*) FROM records WHERE kind='action' AND json_extract(body,'$.state')='dispatching'",
+            [],
+            |r| r.get(0),
+        )?)
+    }
     pub fn revision(&self) -> Result<i64> {
         Ok(self
             .db

@@ -150,6 +150,14 @@ pub fn read_marker(root: &Path) -> Option<Marker> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
+/// Writes the marker atomically at the top of `root`.
+pub fn write_marker(root: &Path, marker: &Marker) -> io::Result<()> {
+    write_atomic(
+        &root.join(MARKER),
+        &serde_json::to_vec_pretty(marker).map_err(io::Error::other)?,
+    )
+}
+
 /// Create and delete a uniquely named file; never leaves anything behind.
 fn probe_writable(dir: &Path) -> bool {
     let p = dir.join(format!(".codemie-probe-{}", uuid::Uuid::new_v4()));
@@ -278,11 +286,10 @@ pub enum TargetIssue {
     NoUnixPermissions(String),
 }
 
+/// No issues means the folder is usable; acknowledging a `NoUnixPermissions` issue is the
+/// caller's decision.
 #[derive(Debug, Clone)]
 pub struct TargetReport {
-    /// True when there are no issues at all (acknowledging a
-    /// `NoUnixPermissions` issue is the caller's decision).
-    pub ok: bool,
     pub issues: Vec<TargetIssue>,
     pub existing_marker: Option<Marker>,
     pub free_bytes: u64,
@@ -290,6 +297,22 @@ pub struct TargetReport {
 }
 
 impl TargetIssue {
+    /// Stable code for the UI.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotAbsolute => "not_absolute",
+            Self::NotADirectory => "not_a_directory",
+            Self::NotWritable => "not_writable",
+            Self::InsideCurrentRoot => "inside_current",
+            Self::InsideDefaultRoot => "inside_private",
+            Self::InsideAppBundle => "inside_app",
+            Self::CloudSynced(_) => "cloud_synced",
+            Self::NetworkVolume(_) => "network_volume",
+            Self::UnsupportedVolume(_) => "unsupported_volume",
+            Self::NoUnixPermissions(_) => "no_permissions",
+        }
+    }
+
     /// User-facing reason.
     pub fn reason(&self) -> String {
         match self {
@@ -317,7 +340,7 @@ impl TargetIssue {
 /// components: each existing prefix is canonicalised (resolving symlinks), so a
 /// following `..` pops the real parent; once a prefix is missing, the rest is
 /// folded lexically (`.` skipped, `..` pops).
-fn canonical(p: &Path) -> PathBuf {
+pub(crate) fn canonical(p: &Path) -> PathBuf {
     let mut base = PathBuf::new();
     for c in p.components() {
         match c {
@@ -356,7 +379,7 @@ fn in_app_bundle(path: &Path, exe: Option<&Path>) -> bool {
 }
 
 /// Component-wise, case-insensitive `starts_with` (APFS is usually case-insensitive).
-fn starts_with_ci(path: &Path, prefix: &Path) -> bool {
+pub(crate) fn starts_with_ci(path: &Path, prefix: &Path) -> bool {
     let lower = |c: Component| c.as_os_str().to_string_lossy().to_lowercase();
     let mut p = path.components();
     prefix
@@ -408,7 +431,6 @@ pub fn check_target(
     let fs_type = vol.fs_type(&canon);
     let free_bytes = vol.free_bytes(&canon);
     let finish = |issues: Vec<TargetIssue>, existing_marker| TargetReport {
-        ok: issues.is_empty(),
         issues,
         existing_marker,
         free_bytes,
@@ -627,14 +649,14 @@ mod tests {
         let plain = d.path().join("plain");
         std::fs::create_dir(&plain).unwrap();
         let ok = ct(&plain, &root, &home, &FakeVol("apfs"));
-        assert!(ok.ok, "{:?}", ok.issues);
+        assert!(ok.issues.is_empty(), "{:?}", ok.issues);
         assert_eq!(ok.free_bytes, 42);
         for fs in ["smbfs", "afpfs", "nfs", "webdav"] {
             let r = ct(&plain, &root, &home, &FakeVol(fs));
-            assert!(!r.ok);
+            assert!(!r.issues.is_empty());
             assert_eq!(r.issues, vec![TargetIssue::NetworkVolume(fs.into())]);
         }
-        assert!(ct(&plain, &root, &home, &FakeVol("hfs")).ok);
+        assert!(ct(&plain, &root, &home, &FakeVol("hfs")).issues.is_empty());
     }
 
     #[test]
@@ -757,10 +779,20 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
         for fs in ["apfs", "hfs"] {
-            assert!(ct(d.path(), &root, d.path(), &FakeVol(fs)).ok, "{fs}");
+            assert!(
+                ct(d.path(), &root, d.path(), &FakeVol(fs))
+                    .issues
+                    .is_empty(),
+                "{fs}"
+            );
         }
         for fs in ["ntfs", "macfuse", "osxfuse", "autofs", "ufs", "cifs", "ftp"] {
-            assert!(!ct(d.path(), &root, d.path(), &FakeVol(fs)).ok, "{fs}");
+            assert!(
+                !ct(d.path(), &root, d.path(), &FakeVol(fs))
+                    .issues
+                    .is_empty(),
+                "{fs}"
+            );
         }
         let r = ct(d.path(), &root, d.path(), &FakeVol("macfuse"));
         assert_eq!(
@@ -775,8 +807,10 @@ mod tests {
         let r = ct(d.path(), &root, d.path(), &FakeVol("cifs"));
         assert_eq!(r.issues, vec![TargetIssue::NetworkVolume("cifs".into())]);
         let unknown = ct(d.path(), &root, d.path(), &FakeVol("unknown"));
-        assert_eq!(unknown.ok, !cfg!(target_os = "macos"));
-        assert!(!ct(d.path(), &root, d.path(), &FakeVol("exfat")).ok);
+        assert_eq!(unknown.issues.is_empty(), !cfg!(target_os = "macos"));
+        assert!(!ct(d.path(), &root, d.path(), &FakeVol("exfat"))
+            .issues
+            .is_empty());
     }
 
     #[test]

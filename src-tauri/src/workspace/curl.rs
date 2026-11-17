@@ -82,7 +82,7 @@ pub(super) async fn get(
     token: &str,
     prefer: &str,
 ) -> Result<Value> {
-    if core.stop.load(std::sync::atomic::Ordering::Relaxed) {
+    if core.stopping() {
         return Err(WorkspaceError::new("cancelled", "Microsoft reads stopped."));
     }
     let url = graph::validate_graph_url(url)?;
@@ -145,7 +145,7 @@ pub(super) async fn get(
         let mut children = core.graph_children.lock().map_err(|_| {
             WorkspaceError::new("offline", "Microsoft transport needs an app restart.")
         })?;
-        if core.stop.load(std::sync::atomic::Ordering::Relaxed) {
+        if core.stopping() {
             return Err(WorkspaceError::new("cancelled", "Microsoft reads stopped."));
         }
         children.insert(key.clone(), child);

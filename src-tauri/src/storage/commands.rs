@@ -1,7 +1,10 @@
-//! Data-folder commands that work with or without an open workspace (DESIGN.md section 8):
-//! what the recovery page shows, switching back to the default folder, and restarting. They are
-//! async and do their file work off the main thread, so a stalled drive can't freeze the window.
+//! Data-folder commands (DESIGN.md section 8): what the recovery page and Settings show,
+//! checking a picked folder, moving to it, adopting or starting empty there, removing the old
+//! copy, switching back to the default folder, and restarting. All but a move work without an
+//! open workspace. They are async and do their file work off the main thread, so a stalled
+//! drive can't freeze the window.
 use crate::storage::location::{self, LocationFile, RootStatus, SystemVolume, VolumeInfo};
+use crate::storage::migrate;
 use crate::workspace::models::{Result, WorkspaceError};
 use crate::workspace::{Core, WorkspaceState};
 use serde::Serialize;
@@ -238,6 +241,237 @@ pub async fn data_location_use_default(
     result
 }
 
+/// Refuses while a restart is under way: the data folder is about to change under it.
+fn not_restarting(state: &WorkspaceState) -> Result<()> {
+    if state.relaunching.load(Ordering::SeqCst) {
+        return Err(WorkspaceError::new("busy", "Connect is restarting."));
+    }
+    Ok(())
+}
+
+/// The folders Settings can show in Finder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    Data,
+    Private,
+    Logs,
+}
+impl Place {
+    pub fn parse(which: &str) -> Result<Self> {
+        match which {
+            "data" => Ok(Self::Data),
+            "private" => Ok(Self::Private),
+            "logs" => Ok(Self::Logs),
+            _ => Err(WorkspaceError::new("validation", "Unknown folder.")),
+        }
+    }
+}
+
+/// `open -R` selects a data folder in its parent's Finder window; the logs folder opens, so its
+/// files are in view.
+pub fn reveal_command(place: Place, path: &Path) -> (PathBuf, Vec<OsString>) {
+    let mut args = Vec::new();
+    if place != Place::Logs {
+        args.push(OsString::from("-R"));
+    }
+    args.push(path.as_os_str().to_owned());
+    (PathBuf::from("/usr/bin/open"), args)
+}
+
+/// `~/Library/Logs/CodeMie`: the folder of the session log.
+pub fn logs_folder(log_file: &Path) -> PathBuf {
+    log_file.parent().unwrap_or(log_file).to_path_buf()
+}
+fn logs_dir() -> PathBuf {
+    logs_folder(Path::new(&crate::commands::logger::log_path()))
+}
+
+/// The user's home folder, for the cloud-sync checks.
+fn home_dir(app: &tauri::AppHandle) -> PathBuf {
+    use tauri::Manager;
+    app.path()
+        .home_dir()
+        .ok()
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .unwrap_or_default()
+}
+
+/// Where the workspace data is now: the open workspace's folder, else the one startup resolved.
+fn current_data_root(state: &WorkspaceState) -> PathBuf {
+    state
+        .core
+        .as_ref()
+        .map(|c| c.paths.data.clone())
+        .unwrap_or_else(|| state.resolved.data_root.clone())
+}
+
+/// Settings → Data location: the data, private and logs folders, the data folder's size and
+/// the old copy a move left behind.
+#[tauri::command]
+pub async fn data_location_get(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<migrate::LocationInfo> {
+    main_window_only(window.label())?;
+    not_restarting(&state)?;
+    let root = state.resolved.private_root.clone();
+    blocking(move || migrate::location_info(&root, &logs_dir())).await
+}
+
+/// What Connect can do with a folder the user picked: move, use the data there, start empty.
+#[tauri::command]
+pub async fn data_location_check(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, WorkspaceState>,
+    path: PathBuf,
+) -> Result<migrate::Check> {
+    main_window_only(window.label())?;
+    not_restarting(&state)?;
+    let (private, data, open) = (
+        state.resolved.private_root.clone(),
+        current_data_root(&state),
+        state.core.is_some(),
+    );
+    let home = home_dir(&app);
+    blocking(move || {
+        let places = migrate::Places {
+            private_root: &private,
+            data_root: &data,
+            home: &home,
+        };
+        migrate::check(&places, &path, open, &SystemVolume)
+    })
+    .await
+}
+
+#[derive(Debug, Serialize)]
+pub struct Restarting {
+    restarting: bool,
+}
+
+/// Moves the data to, adopts or starts empty in the picked folder, then restarts Connect.
+#[tauri::command]
+pub async fn data_location_change(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, WorkspaceState>,
+    path: PathBuf,
+    mode: migrate::Mode,
+    accept_no_permissions: Option<bool>,
+) -> Result<Restarting> {
+    main_window_only(window.label())?;
+    ensure_can_restart(&state)?;
+    if !begin_relaunch(&state.relaunching) {
+        return Err(WorkspaceError::new(
+            "busy",
+            "Connect is already restarting.",
+        ));
+    }
+    let core = state.core.clone();
+    let (private, data) = (
+        state.resolved.private_root.clone(),
+        current_data_root(&state),
+    );
+    let home = home_dir(&app);
+    let worker = core.clone();
+    let changed = blocking(move || {
+        let places = migrate::Places {
+            private_root: &private,
+            data_root: &data,
+            home: &home,
+        };
+        let choice = migrate::Choice {
+            picked: &path,
+            mode,
+            acknowledged: accept_no_permissions.unwrap_or(false),
+        };
+        migrate::change(
+            &places,
+            &choice,
+            worker.as_deref(),
+            &SystemVolume,
+            migrate::QUIESCE_WAIT,
+        )
+    })
+    .await
+    .and_then(|r| r);
+    // Once the pointer is written the next start opens the new folder, so a failed restart
+    // only needs the user to quit and reopen; the old data is still intact.
+    let result = match changed {
+        Ok(_) => relaunch(app, core).await,
+        Err(e) => Err(e),
+    };
+    if result.is_err() {
+        state.relaunching.store(false, Ordering::SeqCst);
+    }
+    result.map(|()| Restarting { restarting: true })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Removed {
+    removed_bytes: u64,
+}
+
+/// Deletes Connect's own files from the old data folder, after the user confirmed.
+#[tauri::command]
+pub async fn data_location_remove_old(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Removed> {
+    main_window_only(window.label())?;
+    not_restarting(&state)?;
+    let root = state.resolved.private_root.clone();
+    let removed_bytes = blocking(move || migrate::remove_old(&root)).await??;
+    Ok(Removed { removed_bytes })
+}
+
+/// Shows the data, private or logs folder in Finder.
+#[tauri::command]
+pub async fn data_location_reveal(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, WorkspaceState>,
+    which: String,
+) -> Result<()> {
+    main_window_only(window.label())?;
+    not_restarting(&state)?;
+    let place = Place::parse(&which)?;
+    let path = match place {
+        Place::Data => location::resolve(&state.resolved.private_root).data_root,
+        Place::Private => state.resolved.private_root.clone(),
+        Place::Logs => logs_dir(),
+    };
+    blocking(move || reveal(place, &path)).await?
+}
+
+#[cfg(target_os = "macos")]
+fn reveal(place: Place, path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Err(WorkspaceError::new(
+            "not_found",
+            "That folder doesn’t exist right now.",
+        ));
+    }
+    let (program, args) = reveal_command(place, path);
+    let shown = std::process::Command::new(program)
+        .args(args)
+        .status()
+        .is_ok_and(|s| s.success());
+    if shown {
+        Ok(())
+    } else {
+        Err(WorkspaceError::new("io", "Connect couldn’t open Finder."))
+    }
+}
+#[cfg(not(target_os = "macos"))]
+fn reveal(_place: Place, _path: &Path) -> Result<()> {
+    Err(WorkspaceError::new(
+        "unsupported",
+        "Showing folders is available on macOS.",
+    ))
+}
+
 /// Releases the workspace and starts Connect again, so the data folder is resolved afresh. A
 /// second call while the first is under way does nothing.
 #[tauri::command]
@@ -449,6 +683,33 @@ mod tests {
         ] {
             assert_eq!(app_bundle(Path::new(exe)), None, "{exe}");
         }
+    }
+
+    #[test]
+    fn reveal_shows_each_folder_in_finder() {
+        let data = Path::new("/Volumes/Drive \"A\"/CodeMie Connect Data");
+        let (program, args) = reveal_command(Place::Data, data);
+        assert_eq!(program, Path::new("/usr/bin/open"));
+        assert_eq!(
+            args,
+            vec![OsString::from("-R"), data.as_os_str().to_owned()]
+        );
+        let (_, args) = reveal_command(Place::Private, Path::new("/Users/u/workspace"));
+        assert_eq!(args[0], "-R");
+        // The logs folder opens, so its files are in view.
+        let logs = Path::new("/Users/u/Library/Logs/CodeMie");
+        let (_, args) = reveal_command(Place::Logs, logs);
+        assert_eq!(args, vec![logs.as_os_str().to_owned()]);
+        assert_eq!(Place::parse("data").unwrap(), Place::Data);
+        assert_eq!(Place::parse("private").unwrap(), Place::Private);
+        assert_eq!(Place::parse("logs").unwrap(), Place::Logs);
+        assert_eq!(Place::parse("credentials").unwrap_err().code, "validation");
+        assert_eq!(
+            logs_folder(Path::new(
+                "/Users/u/Library/Logs/CodeMie/codemie_wizard.log"
+            )),
+            logs
+        );
     }
 
     #[test]

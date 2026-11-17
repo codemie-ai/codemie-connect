@@ -29,9 +29,10 @@ use std::{
     fs::File,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex, MutexGuard,
     },
+    time::{Duration, Instant},
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
@@ -75,6 +76,39 @@ pub struct Core {
     mutations: tokio::sync::Mutex<()>,
     pub stop: AtomicBool,
     pub installer_busy: AtomicBool,
+    /// Set by `quiesce` while the data folder changes: the loop claims nothing and Microsoft
+    /// reads stop. Unlike `stop`, `resume` lifts it.
+    hold: AtomicBool,
+    /// The database is closed for a data-folder change; requests are refused until `resume`.
+    paused: AtomicBool,
+    /// The background loop is in the middle of a round (claiming jobs, queueing a sync).
+    loop_busy: AtomicBool,
+    /// Claimed jobs whose executors have not finished.
+    jobs_in_flight: AtomicUsize,
+}
+
+fn poisoned() -> WorkspaceError {
+    WorkspaceError::new("storage", "Workspace storage needs an application restart.")
+}
+
+/// A data-folder change must not cut off a send on its way to Microsoft: its outcome would
+/// be lost with the closed database.
+fn refuse_while_sending(repo: &Repository) -> Result<()> {
+    if repo.dispatching_actions()? > 0 {
+        return Err(WorkspaceError::new(
+            "busy",
+            "A message is being sent. Wait for it to finish, then try again.",
+        ));
+    }
+    Ok(())
+}
+
+/// Counts a claimed job as running until its executor is done.
+struct InFlight(Arc<Core>);
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.jobs_in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 impl Core {
     pub fn open(app: tauri::AppHandle, paths: &CorePaths) -> Result<Arc<Self>> {
@@ -141,7 +175,77 @@ impl Core {
             mutations: Default::default(),
             stop: AtomicBool::new(false),
             installer_busy: AtomicBool::new(false),
+            hold: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+            loop_busy: AtomicBool::new(false),
+            jobs_in_flight: AtomicUsize::new(0),
         }))
+    }
+    /// Holds the workspace still for a data-folder change: background work stops, running jobs
+    /// finish, then the database is checkpointed and closed. Refused, with everything left
+    /// running, while a send is on its way to Microsoft or work doesn't finish within `wait`.
+    /// Blocking: call it off the async runtime.
+    pub fn quiesce(&self, wait: Duration) -> Result<()> {
+        // Before anything stops, so a refusal here changes nothing.
+        refuse_while_sending(&*self.repo()?)?;
+        self.hold.store(true, Ordering::SeqCst);
+        self.kill_graph_reads();
+        let result = self.close_when_idle(Instant::now() + wait);
+        if result.is_err() {
+            self.hold.store(false, Ordering::SeqCst);
+        }
+        result
+    }
+    fn close_when_idle(&self, deadline: Instant) -> Result<()> {
+        let still_working = || {
+            WorkspaceError::new(
+                "busy",
+                "Connect is still finishing background work, such as a sync or an AI draft. Try again in a minute.",
+            )
+        };
+        // `hold` is set before `loop_busy` is read, and the loop sets `loop_busy` before it reads
+        // `hold`, so once both read idle no new round can claim a job.
+        while self.loop_busy.load(Ordering::SeqCst)
+            || self.jobs_in_flight.load(Ordering::SeqCst) > 0
+        {
+            if Instant::now() >= deadline {
+                return Err(still_working());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        // An edit that is writing finishes first; one that starts later finds the database closed.
+        let _edits = loop {
+            match self.mutations.try_lock() {
+                Ok(guard) => break guard,
+                Err(_) if Instant::now() >= deadline => return Err(still_working()),
+                Err(_) => std::thread::sleep(Duration::from_millis(25)),
+            }
+        };
+        // Checked again under the database lock: a send marks itself `dispatching` under this
+        // lock, so none can start between the check and the close.
+        let mut repo = self.repo()?;
+        refuse_while_sending(&repo)?;
+        repo.close();
+        self.paused.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+    /// Undoes `quiesce` after a data-folder change failed: reopens the database and lets
+    /// background work run again.
+    pub fn resume(&self) -> Result<()> {
+        {
+            let mut repo = self.repository.lock().map_err(|_| poisoned())?;
+            if self.paused.load(Ordering::SeqCst) {
+                *repo = Repository::open(&self.paths.database())?;
+                self.paused.store(false, Ordering::SeqCst);
+            }
+        }
+        self.hold.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+    /// Microsoft reads stop when Connect quits or holds still for a data-folder change.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn stopping(&self) -> bool {
+        self.stop.load(Ordering::Relaxed) || self.hold.load(Ordering::SeqCst)
     }
     /// Before a restart: stops background work, closes the database and lets go of both locks so
     /// the next process can take over at once. Best effort; the OS frees them on exit anyway.
@@ -158,13 +262,16 @@ impl Core {
     pub fn stop_background(&self) {
         self.stop.store(true, Ordering::Relaxed);
         self.ai_cancel.cancel();
+        self.kill_graph_reads();
+        #[cfg(target_os = "macos")]
+        curl::cleanup(&self.paths.private);
+    }
+    fn kill_graph_reads(&self) {
         if let Ok(mut children) = self.graph_children.lock() {
             for (_, mut child) in children.drain() {
                 let _ = child.start_kill();
             }
         }
-        #[cfg(target_os = "macos")]
-        curl::cleanup(&self.paths.private);
     }
     fn cancel_graph_job(&self, jid: &str) {
         if let Ok(mut children) = self.graph_children.lock() {
@@ -187,9 +294,15 @@ impl Core {
             .ok_or_else(|| WorkspaceError::new("io", "This action needs the application window."))
     }
     pub fn repo(&self) -> Result<MutexGuard<'_, Repository>> {
-        self.repository.lock().map_err(|_| {
-            WorkspaceError::new("storage", "Workspace storage needs an application restart.")
-        })
+        let repo = self.repository.lock().map_err(|_| poisoned())?;
+        // Read under the lock, so a request never sees the database `quiesce` just closed.
+        if self.paused.load(Ordering::SeqCst) {
+            return Err(WorkspaceError::new(
+                "busy",
+                "Connect is changing its data folder and will restart in a moment.",
+            ));
+        }
+        Ok(repo)
     }
     pub fn emit(&self, event: &str) {
         if let Some(app) = &self.app {
@@ -225,54 +338,62 @@ impl Core {
             let mut last_sync = 0;
             let mut ticks = 0;
             while !core.stop.load(Ordering::Relaxed) {
-                let _ = core.materialize_schedules();
-                for _ in 0..8 {
-                    let job = {
-                        let Ok(mut repo) = core.repo() else { break };
-                        let jobs = repo.jobs().unwrap_or_default();
-                        if jobs
-                            .iter()
-                            .filter(|j| j.state == "running" && j.lease_until.unwrap_or(0) > now())
-                            .count()
-                            >= 8
-                        {
-                            break;
-                        }
-                        let allow_sync = !jobs.iter().any(|j| {
-                            j.kind == "sync"
-                                && j.state == "running"
-                                && j.lease_until.unwrap_or(0) > now()
-                        });
-                        repo.claim_ready(now(), allow_sync).ok().flatten()
-                    };
-                    if let Some(job) = job {
-                        let executor = core.clone();
-                        tauri::async_runtime::spawn(async move {
-                            executor.run_claimed_job(job).await;
-                        });
-                    } else {
-                        break;
-                    }
+                // Busy before `hold` is read: `quiesce` waits for the round to end.
+                core.loop_busy.store(true, Ordering::SeqCst);
+                if !core.hold.load(Ordering::SeqCst) {
+                    core.background_round(&mut last_sync, &mut ticks);
                 }
-                let visible = core
-                    .app
-                    .as_ref()
-                    .and_then(|a| a.get_webview_window("main"))
-                    .and_then(|w| w.is_visible().ok())
-                    .unwrap_or(false);
-                if now() - last_sync > if visible { 60 } else { 300 } {
-                    last_sync = now();
-                    let _ = core.queue_sync();
-                }
-                ticks += 1;
-                // Views keep their own clocks; this only nudges an idle window to pick up
-                // background changes that did not emit an event of their own.
-                if ticks % 60 == 0 {
-                    core.emit("workspace:changed");
-                }
+                core.loop_busy.store(false, Ordering::SeqCst);
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         });
+    }
+    /// One round of the background loop: due schedules, ready jobs, the periodic sync.
+    fn background_round(self: &Arc<Self>, last_sync: &mut i64, ticks: &mut u64) {
+        let _ = self.materialize_schedules();
+        for _ in 0..8 {
+            let job = {
+                let Ok(mut repo) = self.repo() else { break };
+                let jobs = repo.jobs().unwrap_or_default();
+                if jobs
+                    .iter()
+                    .filter(|j| j.state == "running" && j.lease_until.unwrap_or(0) > now())
+                    .count()
+                    >= 8
+                {
+                    break;
+                }
+                let allow_sync = !jobs.iter().any(|j| {
+                    j.kind == "sync" && j.state == "running" && j.lease_until.unwrap_or(0) > now()
+                });
+                repo.claim_ready(now(), allow_sync).ok().flatten()
+            };
+            let Some(job) = job else { break };
+            // Counted before the executor starts, so `quiesce` waits for it.
+            self.jobs_in_flight.fetch_add(1, Ordering::SeqCst);
+            let running = InFlight(self.clone());
+            let executor = self.clone();
+            tauri::async_runtime::spawn(async move {
+                executor.run_claimed_job(job).await;
+                drop(running);
+            });
+        }
+        let visible = self
+            .app
+            .as_ref()
+            .and_then(|a| a.get_webview_window("main"))
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false);
+        if now() - *last_sync > if visible { 60 } else { 300 } {
+            *last_sync = now();
+            let _ = self.queue_sync();
+        }
+        *ticks += 1;
+        // Views keep their own clocks; this only nudges an idle window to pick up
+        // background changes that did not emit an event of their own.
+        if ticks.is_multiple_of(60) {
+            self.emit("workspace:changed");
+        }
     }
     async fn run_claimed_job(self: Arc<Self>, job: Job) {
         let result = {
@@ -1852,6 +1973,12 @@ fn test_core_with_graph(
     .unwrap()
 }
 
+/// Opens a `Core` on `paths` with no window and a scripted runner, for tests outside this module.
+#[cfg(test)]
+pub(crate) fn open_for_tests(paths: &CorePaths) -> Result<Arc<Core>> {
+    paths::tests::open_test(paths)
+}
+
 #[cfg(test)]
 pub(crate) fn test_core_slow(
     dir: &Path,
@@ -2008,6 +2135,105 @@ mod tests {
         }
         // The database is closed: nothing reads the file any more.
         assert!(core.repo().unwrap().snapshot().is_err());
+    }
+
+    fn quiet_core(dir: &Path) -> Arc<Core> {
+        test_core(
+            dir,
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ready(),
+        )
+    }
+    fn local_note(id: &str) -> Record {
+        Record {
+            id: id.into(),
+            kind: "note".into(),
+            connection_id: None,
+            workspace_id: Some("personal".into()),
+            source: "local".into(),
+            revision: "1".into(),
+            updated_at: 1,
+            data: json!({"text": id}),
+        }
+    }
+    const SHORT: std::time::Duration = std::time::Duration::from_millis(200);
+
+    #[test]
+    fn quiesce_refuses_while_a_send_is_dispatching() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let mut send = local_note("send-1");
+        send.kind = "action".into();
+        send.connection_id = Some("c1".into());
+        send.data = json!({"state":"dispatching"});
+        core.repo().unwrap().put_record(&send).unwrap();
+        let err = core.quiesce(SHORT).unwrap_err();
+        assert_eq!(err.code, "busy");
+        assert!(err.message.contains("being sent"), "{}", err.message);
+        // Nothing was held: background work, Microsoft reads and the database carry on.
+        assert!(!core.hold.load(Ordering::SeqCst));
+        assert!(!core.stopping());
+        core.repo().unwrap().put_record(&local_note("n1")).unwrap();
+    }
+
+    #[test]
+    fn quiesce_gives_up_on_unfinished_work_and_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        // A job that is still running, a loop round that is still claiming, and an edit that
+        // is still writing each keep the database open.
+        core.jobs_in_flight.fetch_add(1, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let err = core.quiesce(SHORT).unwrap_err();
+        assert!(started.elapsed() >= SHORT);
+        assert_eq!(err.code, "busy");
+        assert!(err.message.contains("background work"), "{}", err.message);
+        assert!(
+            !core.hold.load(Ordering::SeqCst),
+            "background work runs again"
+        );
+        core.repo().unwrap().put_record(&local_note("n1")).unwrap();
+        core.jobs_in_flight.fetch_sub(1, Ordering::SeqCst);
+
+        core.loop_busy.store(true, Ordering::SeqCst);
+        assert_eq!(core.quiesce(SHORT).unwrap_err().code, "busy");
+        assert!(!core.hold.load(Ordering::SeqCst));
+        core.loop_busy.store(false, Ordering::SeqCst);
+
+        let edit = core.mutations.try_lock().unwrap();
+        assert_eq!(core.quiesce(SHORT).unwrap_err().code, "busy");
+        assert!(!core.hold.load(Ordering::SeqCst));
+        drop(edit);
+
+        // Once everything has finished, it goes ahead.
+        core.quiesce(SHORT).unwrap();
+        core.resume().unwrap();
+    }
+
+    #[test]
+    fn quiesce_closes_the_database_until_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        core.repo().unwrap().put_record(&local_note("n1")).unwrap();
+        core.quiesce(SHORT).unwrap();
+        // Held: no new jobs, no Microsoft reads, and every request is told why.
+        assert!(core.hold.load(Ordering::SeqCst));
+        assert!(core.stopping());
+        assert!(!core.stop.load(Ordering::Relaxed), "a hold is not a quit");
+        let err = core.repo().err().unwrap();
+        assert_eq!(err.code, "busy");
+        // The database file is checkpointed and free for a copy.
+        let wal = dir.path().join("workspace.sqlite-wal");
+        assert!(!wal.exists() || std::fs::metadata(&wal).unwrap().len() == 0);
+        assert_eq!(core.quiesce(SHORT).unwrap_err().code, "busy");
+
+        core.resume().unwrap();
+        assert!(!core.hold.load(Ordering::SeqCst));
+        assert!(!core.stopping());
+        let repo = core.repo().unwrap();
+        assert_eq!(repo.local_records("personal", "note").unwrap().len(), 1);
+        drop(repo);
+        core.repo().unwrap().put_record(&local_note("n2")).unwrap();
     }
 
     fn connected(cid: &str) -> Connection {

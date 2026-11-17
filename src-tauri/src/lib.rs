@@ -185,6 +185,11 @@ pub fn run() {
             storage::commands::storage_status,
             storage::commands::data_location_use_default,
             storage::commands::app_relaunch,
+            storage::commands::data_location_get,
+            storage::commands::data_location_check,
+            storage::commands::data_location_change,
+            storage::commands::data_location_remove_old,
+            storage::commands::data_location_reveal,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

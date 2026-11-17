@@ -1,8 +1,6 @@
-//! User-chosen data folder: the location pointer, target validation and the commands the
-//! recovery page uses.
-
-// TODO(Tasks 12-13): moves (12) and Settings (13) use the rest of `location`; drop this allow when wired.
-#![allow(dead_code)]
+//! User-chosen data folder: the location pointer, target validation, moving the data and the
+//! commands Settings and the recovery page use.
 
 pub mod commands;
 pub mod location;
+pub mod migrate;
