@@ -3,6 +3,7 @@
 //! copy, switching back to the default folder, and restarting. All but a move work without an
 //! open workspace. They are async and do their file work off the main thread, so a stalled
 //! drive can't freeze the window.
+use crate::plugins::caller::require_main_frame;
 use crate::storage::location::{self, LocationFile, RootStatus, SystemVolume, VolumeInfo};
 use crate::storage::{migrate, old_copy};
 use crate::workspace::models::{Result, WorkspaceError};
@@ -245,9 +246,11 @@ async fn relaunch(app: tauri::AppHandle, core: Option<Arc<Core>>) -> Result<()> 
 #[tauri::command]
 pub async fn storage_status(
     window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<StorageStatus> {
     main_window_only(window.label())?;
+    require_main_frame(&call)?;
     let (root, error, open) = (
         state.resolved.private_root.clone(),
         state.error.clone(),
@@ -261,9 +264,11 @@ pub async fn storage_status(
 pub async fn data_location_use_default(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<()> {
     main_window_only(window.label())?;
+    require_main_frame(&call)?;
     ensure_can_restart(&state)?;
     state
         .folder_guard
@@ -363,9 +368,11 @@ fn current_data_root(state: &WorkspaceState) -> PathBuf {
 #[tauri::command]
 pub async fn data_location_get(
     window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<old_copy::LocationInfo> {
     main_window_only(window.label())?;
+    require_main_frame(&call)?;
     not_restarting(&state)?;
     let root = state.resolved.private_root.clone();
     blocking(move || old_copy::location_info(&root, &logs_dir())).await
@@ -376,10 +383,12 @@ pub async fn data_location_get(
 pub async fn data_location_check(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
     state: tauri::State<'_, WorkspaceState>,
     path: PathBuf,
 ) -> Result<migrate::Check> {
     main_window_only(window.label())?;
+    require_main_frame(&call)?;
     not_restarting(&state)?;
     let (private, data, open) = (
         state.resolved.private_root.clone(),
@@ -417,12 +426,14 @@ fn restart_failed() -> WorkspaceError {
 pub async fn data_location_change(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
     state: tauri::State<'_, WorkspaceState>,
     path: PathBuf,
     mode: migrate::Mode,
     accept_no_permissions: Option<bool>,
 ) -> Result<Restarting> {
     main_window_only(window.label())?;
+    require_main_frame(&call)?;
     ensure_can_restart(&state)?;
     state
         .folder_guard
@@ -480,9 +491,11 @@ pub struct Removed {
 #[tauri::command]
 pub async fn data_location_remove_old(
     window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Removed> {
     main_window_only(window.label())?;
+    require_main_frame(&call)?;
     state
         .folder_guard
         .claim(Holder::Removal)
@@ -499,10 +512,12 @@ pub async fn data_location_remove_old(
 #[tauri::command]
 pub async fn data_location_reveal(
     window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
     state: tauri::State<'_, WorkspaceState>,
     which: String,
 ) -> Result<()> {
     main_window_only(window.label())?;
+    require_main_frame(&call)?;
     not_restarting(&state)?;
     let place = Place::parse(&which)?;
     let private = state.resolved.private_root.clone();
@@ -529,9 +544,11 @@ pub fn place_path(place: Place, private_root: &Path, logs: &Path) -> Result<Path
 pub async fn data_location_pick(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Option<String>> {
     main_window_only(window.label())?;
+    require_main_frame(&call)?;
     not_restarting(&state)?;
     pick_folder(&app, window, home_dir(&app)).await
 }
@@ -605,9 +622,11 @@ fn reveal(_place: Place, _path: &Path) -> Result<()> {
 pub async fn app_relaunch(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<()> {
     main_window_only(window.label())?;
+    require_main_frame(&call)?;
     ensure_can_restart(&state)?;
     match state.folder_guard.claim(Holder::Restart) {
         Ok(()) => {}

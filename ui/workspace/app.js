@@ -1667,6 +1667,10 @@ async function boot() {
   }
   root.innerHTML = `<div class="ws-loading" role="status"><span class="ws-spinner"></span>Opening your workspace…</div>`;
   const flags = await invoke('smoke_mode');
+  if (flags.plugin === 'isolation') {
+    const { runIsolationSmoke } = await import('../plugins/isolation-smoke.js');
+    return runIsolationSmoke(invoke);
+  }
   if (flags.smoke || flags.probe) {
     root.classList.add('hidden');
     legacy.classList.remove('hidden');

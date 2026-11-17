@@ -2,6 +2,7 @@ mod ai;
 mod commands;
 mod error;
 mod navigation;
+mod plugins;
 mod state;
 mod steps;
 mod storage;
@@ -15,7 +16,13 @@ pub fn run() {
     tauri::Builder::default()
         // Every webview stays on Connect's own pages; links open in the browser instead.
         .plugin(navigation::guard())
+        // Plugin UIs, served to sandboxed frames only (DESIGN 7.3).
+        .register_asynchronous_uri_scheme_protocol(
+            plugins::protocol::SCHEME,
+            plugins::protocol::handle,
+        )
         .setup(|app| {
+            plugins::caller::trust_dev_server(app.config());
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
             // Capture PATH before injection so detection searches the pre-bundle PATH,
@@ -142,7 +149,8 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![
+        // No app command runs while the window shows anything but Connect's own page.
+        .invoke_handler(plugins::caller::app_page_only(tauri::generate_handler![
             commands::runner::run_capture,
             commands::runner::run_fresh_env,
             commands::runner::run_stream,
@@ -177,6 +185,7 @@ pub fn run() {
             commands::window::close_app,
             commands::smoke::smoke_mode,
             commands::smoke::smoke_emit,
+            commands::smoke::smoke_plugin_report,
             steps::get_steps,
             steps::get_logo_path,
             commands::app_updater::check_for_update,
@@ -194,7 +203,7 @@ pub fn run() {
             storage::commands::data_location_remove_old,
             storage::commands::data_location_reveal,
             storage::commands::data_location_pick,
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app,event|{

@@ -1909,8 +1909,10 @@ fn validate_sources(r: &Repository, c: &Connection, sources: &Value) -> Result<(
 #[tauri::command]
 pub async fn workspace_request(
     state: tauri::State<'_, WorkspaceState>,
+    call: tauri::ipc::Request<'_>,
     request: Request,
 ) -> Result<Value> {
+    crate::plugins::caller::require_main_frame(&call)?;
     if let Some(core) = &state.core {
         core.request(request).await
     } else {
