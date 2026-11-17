@@ -12,6 +12,7 @@ import { banner, code } from './view-common.js';
 import { overviewPanel, startableAgents } from './view-overview.js';
 import { healthPanel } from './view-health.js';
 import { profilesPanel } from './view-profiles.js';
+import { agentsPanel } from './view-agents.js';
 
 const PREF = {
   introduced: 'codemie.setup.introduced',
@@ -28,7 +29,10 @@ export function createCodemieController(deps) {
   } = deps;
   const cm = service.state;
   // What the person is doing in these tabs; never derived from the CLI.
-  const ui = { tests: {}, showAllAgents: false, expandedRan: null, startAgent: null, healthAutoRan: false, appErrors: {} };
+  const ui = {
+    tests: {}, showAllAgents: false, expandedRan: null, startAgent: null, healthAutoRan: false,
+    agentKind: {}, agentErrors: {}, checkingAgents: false, appBusy: {}, appErrors: {},
+  };
 
   function prefs() {
     return {
@@ -114,6 +118,60 @@ export function createCodemieController(deps) {
     await launch(el?.dataset?.id, folder);
   }
 
+  // ---------------------------------------------------------------- Coding agents
+
+  const agentRow = (command) => (cm.agents || []).find((a) => a.command === command);
+  const JOBS = { install: 'installAgent', update: 'updateAgent', remove: 'removeAgent' };
+
+  /** Install, update or remove one agent. A failure stays on the agent's row, not in a toast. */
+  async function agentJob(command, kind) {
+    const row = agentRow(command);
+    if (!row || ui.agentKind[command]) return;
+    const d = agentDisplay(row);
+    delete ui.agentErrors[command];
+    ui.agentKind[command] = kind;
+    await render();
+    try {
+      await service[JOBS[kind]](command);
+      if (kind === 'remove') toast(`Removed ${d.name}`, 'success');
+      else toast(`${d.name} is ready — start it with ${d.launcher}`, 'success');
+    } catch (err) {
+      // Refused before anything ran (another agent is busy): nothing to show on the row.
+      if (err?.cmd === undefined) toast(err?.message || String(err));
+      else ui.agentErrors[command] = { kind, message: err.message, cmd: err.cmd, output: err.output ?? '' };
+    } finally {
+      delete ui.agentKind[command];
+      await render();
+    }
+  }
+
+  function removeAgent(command) {
+    const row = agentRow(command);
+    if (!row) return undefined;
+    const d = agentDisplay(row);
+    return confirmModal({
+      title: `Remove ${d.name}?`, text: `${d.launcher} stops working on this Mac. Your projects and CodeMie profiles are not touched. You can install it again any time.`,
+      confirm: 'Remove', variant: 'danger', initialFocus: 'cancel', guard: true,
+      onConfirm: () => { agentJob(command, 'remove'); },
+    });
+  }
+
+  async function updateAll() {
+    const rows = (cm.agents || []).filter((a) => a.installed && (a.updateAvailable || a.belowMinimum));
+    for (const row of rows) await agentJob(row.command, 'update');
+  }
+
+  async function checkAgents() {
+    ui.checkingAgents = true;
+    await render();
+    try {
+      await service.load({ force: true });
+    } finally {
+      ui.checkingAgents = false;
+      await render();
+    }
+  }
+
   // ---------------------------------------------------------------- Overview: CLI, Health
 
   async function cliCheck(update) {
@@ -164,6 +222,22 @@ export function createCodemieController(deps) {
       case 'cm-profile-delete': await deleteProfile(id); return true;
       case 'cm-profile-edit': openSheet({ mode: 'edit', profile: id }); return true;
       case 'cm-profile-add': openSheet({ mode: 'add' }); return true;
+      case 'cm-agent-install': await agentJob(id, 'install'); return true;
+      case 'cm-agent-update': await agentJob(id, 'update'); return true;
+      case 'cm-agent-remove': await removeAgent(id); return true;
+      case 'cm-agent-update-all': await updateAll(); return true;
+      case 'cm-agent-check': await checkAgents(); return true;
+      case 'cm-agents-refresh': await checkAgents(); return true;
+      case 'cm-agents-more': ui.showAllAgents = true; await render(); return true;
+      case 'cm-agent-dismiss': delete ui.agentErrors[id]; await render(); return true;
+      case 'cm-agent-copy': {
+        const row = agentRow(id);
+        if (row) {
+          await writeText(agentDisplay(row).launcher);
+          toast('Copied', 'success');
+        }
+        return true;
+      }
       case 'cm-profile-file':
         await writeText('~/.codemie/codemie-cli.config.json');
         toast('Copied the configuration file path', 'success');
@@ -278,6 +352,7 @@ export function createCodemieController(deps) {
   const panels = {
     'cm-overview': () => overviewPanel(cm, prefs(), ui),
     'cm-profiles': () => profilesPanel(cm, ui),
+    'cm-agents': () => agentsPanel(cm, ui, runLog),
     'cm-health': () => {
       // Opening Health checks once per session, as the legacy screen did.
       if (!ui.healthAutoRan && cm.loaded && cm.profiles.length && cm.runtime.state === 'ready' && !cm.health) {

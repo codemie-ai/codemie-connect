@@ -150,6 +150,30 @@ test('rename_checks_name_and_duplicates', async () => {
   assert.deepEqual(service.calls.at(-1), ['renameProfile', 'prod', 'main']);
 });
 
+test('install_failure_without_output_keeps_state', async () => {
+  const service = fakeService({
+    installAgent: async () => { throw Object.assign(new Error('The command stopped without saying why.'), { cmd: 'codemie install gemini', output: '', code: 1 }); },
+  });
+  service.state.agents.push({ name: 'Gemini CLI', command: 'gemini', installed: false, version: null, description: '', updateAvailable: false });
+  const { c, toasts } = controllerHarness({ service });
+  await c.handle('cm-agent-install', el({ id: 'gemini' }));
+  const html = c.panel('cm-agents');
+  const card = html.split('data-agent=').find((x) => x.startsWith('"gemini"'));
+  assert.match(card, /Gemini CLI was not installed/);
+  assert.match(card, /No output was captured\./);
+  assert.match(card, /data-action="cm-agent-install"/, 'Install and Try again stay available');
+  assert.deepEqual(toasts, []);
+  await c.handle('cm-agent-dismiss', el({ id: 'gemini' }));
+  assert.doesNotMatch(c.panel('cm-agents'), /was not installed/);
+});
+
+test('remove_asks_first', async () => {
+  const { c, modals, service } = controllerHarness();
+  await c.handle('cm-agent-remove', el({ id: 'claude' }));
+  assert.match(modals[0].title, /Remove Claude Code\?/);
+  assert.deepEqual(service.calls.at(-1), ['removeAgent', 'claude']);
+});
+
 test('profile_test_uses_the_claude_test', async () => {
   const { c } = controllerHarness();
   await c.handle('cm-profile-test', el({ id: 'prod' }));

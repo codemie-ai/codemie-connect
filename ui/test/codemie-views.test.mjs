@@ -7,6 +7,7 @@ import { createRunLog } from '../workspace/codemie/run-log.js';
 import { overviewPanel } from '../workspace/codemie/view-overview.js';
 import { healthPanel } from '../workspace/codemie/view-health.js';
 import { profilesPanel } from '../workspace/codemie/view-profiles.js';
+import { agentsPanel } from '../workspace/codemie/view-agents.js';
 
 export function cmState(over = {}) {
   const cm = emptyCodemie();
@@ -145,6 +146,44 @@ test('profile_strings_are_escaped', () => {
   const cm = cmState();
   cm.profiles[0].model = '<b>x</b>';
   assert.match(profilesPanel(cm, {}), /&lt;b&gt;x&lt;\/b&gt;/);
+});
+
+// ---------------------------------------------------------------- Coding agents
+
+const agentCardOf = (html, command) => html.split('data-agent=').find((c) => c.startsWith(`"${command}"`));
+
+test('incompatible_agent_cannot_install', () => {
+  const cm = cmState();
+  cm.profiles[0] = { name: 'prod', provider: 'bedrock' };
+  const card = agentCardOf(agentsPanel(cm, {}, createRunLog()), 'gemini');
+  assert.ok(card);
+  assert.doesNotMatch(card, /data-action="cm-agent-install"/);
+  assert.match(card, /Doesn’t work with AWS Bedrock profiles/);
+  assert.match(agentCardOf(agentsPanel(cm, {}, createRunLog()), 'claude'), /data-action="cm-agent-install"/);
+});
+
+test('unknown_cli_agent_still_listed', () => {
+  const cm = cmState();
+  cm.agents.push({ name: 'New Agent', command: 'newagent', installed: false, version: null, description: 'A brand-new agent from a newer CLI', updateAvailable: false });
+  assert.match(agentsPanel(cm, {}, createRunLog()), /Show \d+ more/);
+  const card = agentCardOf(agentsPanel(cm, { showAllAgents: true }, createRunLog()), 'newagent');
+  assert.match(card, /New Agent/);
+  assert.match(card, /A brand-new agent from a newer CLI/);
+});
+
+test('agents_unreadable_offers_retry', () => {
+  const html = agentsPanel(cmState({ agents: null }), {}, createRunLog());
+  assert.match(html, /CodeMie could not list the agents/);
+  assert.match(html, /data-action="cm-agents-refresh"/);
+});
+
+test('installed_agent_offers_update_and_terminal', () => {
+  const cm = cmState();
+  cm.agents[1] = { ...cm.agents[1], installed: true, version: '2.1.200', updateAvailable: true, latest: '2.1.281' };
+  const card = agentCardOf(agentsPanel(cm, {}, createRunLog()), 'claude');
+  assert.match(card, /Update to 2\.1\.281/);
+  assert.match(card, /data-action="cm-open-terminal" data-id="claude"/);
+  assert.match(card, /Start with codemie-claude/);
 });
 
 test('no_profile_offers_sign_in', () => {
