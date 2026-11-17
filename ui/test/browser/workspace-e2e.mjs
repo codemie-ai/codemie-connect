@@ -585,7 +585,7 @@ for (const theme of ['dark', 'light']) {
     await page.click('.ws-account button:has-text("Sync now")');
     await page.waitForSelector('.ws-sync-pill:has-text("Syncing")');
     await page.waitForSelector('.ws-sync-pill:has-text("Synced")', { timeout: 4000 });
-    for (const tab of ['general', 'notifications', 'appearance', 'queues', 'privacy', 'activity', 'updates', 'installation']) {
+    for (const tab of ['general', 'notifications', 'appearance', 'queues', 'privacy', 'activity', 'updates', 'cm-health']) {
       await page.click(`.ws-settings-nav button[data-tab=${tab}]`);
       await page.waitForSelector('.ws-settings-panels .ws-card');
       if (['general', 'notifications', 'appearance'].includes(tab)) await shot(page, `${theme}-settings-${tab}`);

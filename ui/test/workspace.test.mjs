@@ -402,9 +402,16 @@ test('Settings shows the account profile and automatic sources, no source picker
   assert.doesNotMatch(html, /name="chat"/, 'no Teams chat checkboxes');
   const signedOut = settings(buildSnapshot(Date.now(), { connected: false }), ctx({ settingsTab: 'microsoft' }));
   assert.match(signedOut, /Sign in with Microsoft/);
-  for (const tab of ['general', 'appearance', 'notifications', 'queues', 'privacy', 'activity', 'updates', 'installation']) {
+  for (const tab of ['general', 'appearance', 'notifications', 'queues', 'privacy', 'activity', 'updates']) {
     assert.ok(settings(s, ctx({ settingsTab: tab })).length > 200, tab);
   }
+  // The CodeMie tabs render what the CodeMie controller gives them, never the embedded installer.
+  const codemie = { panel: (tab) => `<p data-panel="${tab}">panel</p>`, headerActions: () => '<button data-action="cm-x">Act</button>', tabDots: new Set(['cm-agents']) };
+  const overview = settings(s, { ...ctx({ settingsTab: 'cm-overview' }), codemie });
+  assert.match(overview, /data-panel="cm-overview"/);
+  assert.match(overview, /data-action="cm-x"/);
+  assert.match(overview, /data-tab="cm-agents"[^>]*>.*?ws-dot-alert/s);
+  assert.doesNotMatch(overview, /legacy-host|CLI usage analytics/);
 });
 
 // ---------------------------------------------------------------- hidden workspaces

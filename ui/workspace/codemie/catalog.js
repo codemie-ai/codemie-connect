@@ -99,6 +99,21 @@ export const BUILTIN_INFO = {
 /** The launcher an agent runs as from Terminal. */
 export const launcherFor = (command) => (command === BUILTIN_AGENT ? BUILTIN_AGENT : `codemie-${command}`);
 
+const MONO_COLORS = ['#3F4652', '#0B7FA8', '#8A5A12', '#6E40C9', '#0F8F6A'];
+/**
+ * How a `codemie list` row is shown: Connect's own words when it knows the agent, the CLI's name
+ * and description when it does not (an agent a newer CLI added).
+ */
+export function agentDisplay(row) {
+  const known = row.command === BUILTIN_AGENT ? BUILTIN_INFO : AGENT_INFO[row.command];
+  if (known) return { ...known, launcher: launcherFor(row.command) };
+  const name = row.name || row.command;
+  const words = name.split(/\s+/).filter(Boolean);
+  const mono = (words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2)).toUpperCase();
+  const color = MONO_COLORS[[...row.command].reduce((n, ch) => n + ch.charCodeAt(0), 0) % MONO_COLORS.length];
+  return { name, maker: 'CodeMie', mono, color, short: row.description || '', desc: row.description || '', providers: null, launcher: launcherFor(row.command) };
+}
+
 /** Apps the CodeMie gateway can point at. `disconnectFlag` only where CLI 0.16.3 can undo it. */
 export const APPS = [
   { id: 'claude-desktop', name: 'Claude Desktop', connectFlag: '--claude-desktop', disconnectFlag: null, icon: 'monitor',

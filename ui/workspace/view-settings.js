@@ -16,17 +16,29 @@ export const SETTINGS_TABS = [
   ['', 'notifications', 'Notifications', 'bell'],
   ['', 'queues', 'Rules & schedules', 'sliders'],
   ['', 'privacy', 'Data & privacy', 'shield'],
-  ['CodeMie tools', 'installation', 'Setup & installation', 'download'],
-  ['', 'tools', 'Coding agents', 'tools'],
-  ['', 'desktop', 'Desktop connection', 'monitor'],
-  ['', 'health', 'Health', 'heart'],
-  ['', 'usage', 'CLI usage analytics', 'chart'],
+  ['CodeMie', 'cm-overview', 'Overview', 'spark'],
+  ['', 'cm-profiles', 'Profiles', 'user'],
+  ['', 'cm-agents', 'Coding agents', 'terminal'],
+  ['', 'cm-apps', 'Connected apps', 'plug'],
+  ['', 'cm-health', 'Health', 'heart'],
   ['Application', 'activity', 'Activity', 'activity'],
   ['', 'updates', 'Updates & about', 'update'],
 ];
-export const LEGACY_TABS = { installation: 'home', tools: 'agents', desktop: 'connect', health: 'health', usage: 'analytics' };
+/** Tab ids from before the native CodeMie tabs (bookmarks, notifications, old hash links). */
+export const LEGACY_TAB_REDIRECTS = { installation: 'cm-overview', tools: 'cm-agents', desktop: 'cm-apps', health: 'cm-health', usage: 'cm-overview' };
+
+/** The tab a requested id resolves to: a current tab, a redirected old one, or General. */
+export function settingsTabFor(tab) {
+  const id = LEGACY_TAB_REDIRECTS[tab] || tab;
+  return SETTINGS_TABS.some(([, t]) => t === id) ? id : 'general';
+}
 
 const TAB_DESCRIPTIONS = {
+  'cm-overview': 'Your CodeMie account, coding agents and connected apps at a glance.',
+  'cm-profiles': 'Saved sign-ins, each with the project and model it uses.',
+  'cm-agents': 'Install, update and remove the coding agents CodeMie runs for you.',
+  'cm-apps': 'Let the apps you already use answer with CodeMie models.',
+  'cm-health': 'Checks in plain language with a fix for each problem — and every command CodeMie ran.',
   general: 'Time zone, background behaviour, optional AI and where your data is kept.',
   ai: 'Choose which Claude drafts and summarizes for you, and what it costs.',
   microsoft: 'Your calendar, Outlook and Teams — connected with one sign-in.',
@@ -52,15 +64,20 @@ export function settings(s, ctx) {
     activity: () => activityPanel(s),
     updates: () => updatesPanel(state),
   };
-  const content = LEGACY_TABS[tab] ? '<div id="legacy-host" class="ws-legacy-host"></div>' : (panels[tab] || panels.general)();
+  const codemie = ctx.codemie;
+  const content = tab.startsWith('cm-') ? (codemie?.panel(tab) ?? '') : (panels[tab] || panels.general)();
   const label = SETTINGS_TABS.find(([, id]) => id === tab)?.[2] || 'Settings';
+  const microsoftDot = s.connection?.status && s.connection.status !== 'connected' && s.connection.status !== 'disconnected';
+  const dot = id => (id === 'microsoft' && microsoftDot) || !!codemie?.tabDots?.has(id);
+  // Header actions are markup from the CodeMie views, escaped there.
+  const actions = tab.startsWith('cm-') || tab === 'ai' ? codemie?.headerActions?.(tab) || '' : '';
   return `<div class="ws-settings-layout">
     <aside class="ws-settings-sidebar">
       <div class="ws-settings-heading"><h1>Settings</h1><p>Preferences and connected services.</p></div>
-      <nav class="ws-settings-nav" aria-label="Settings">${SETTINGS_TABS.map(([group, id, text, ico]) => `${group ? `<div class="ws-nav-label">${e(group)}</div>` : ''}<button type="button" data-action="settings-tab" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${icon(ico)}<span>${e(text)}</span>${id === 'microsoft' && s.connection?.status && s.connection.status !== 'connected' && s.connection.status !== 'disconnected' ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button>`).join('')}</nav>
+      <nav class="ws-settings-nav" aria-label="Settings">${SETTINGS_TABS.map(([group, id, text, ico]) => `${group ? `<div class="ws-nav-label">${e(group)}</div>` : ''}<button type="button" data-action="settings-tab" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${icon(ico)}<span>${e(text)}</span>${dot(id) ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button>`).join('')}</nav>
     </aside>
     <section class="ws-settings-content">
-      <header class="ws-settings-header"><h2>${e(label)}</h2>${TAB_DESCRIPTIONS[tab] ? `<p>${e(TAB_DESCRIPTIONS[tab])}</p>` : ''}</header>
+      <header class="ws-settings-header${actions ? ' ws-settings-header-actions' : ''}"><div><h2>${e(label)}</h2>${TAB_DESCRIPTIONS[tab] ? `<p>${e(TAB_DESCRIPTIONS[tab])}</p>` : ''}</div>${actions ? `<div class="ws-actions">${actions}</div>` : ''}</header>
       <div class="ws-settings-panels">${content}</div>
     </section>
   </div>`;
