@@ -950,3 +950,32 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-ai-setup{margin:0;padding-left:20px;display:grid;gap:6px;font-size:13px;line-height:20px;color:var(--ws-text-2)}
 .ws-modal-body .ws-inline-note{margin:0}
 @media (max-width:1100px){.ws-ai-table tbody th span{display:none}.ws-ai-table tbody th{width:28%}}
+
+/* ------------------------------------------------------------------ Thread summary card */
+.ws-summary{display:grid;gap:10px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--ws-purple) 30%,var(--ws-border));border-radius:10px;background:color-mix(in srgb,var(--ws-purple) 5%,var(--ws-card))}
+.ws-summary-pending{padding:0;border:0;background:none}
+.ws-summary-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.ws-summary-head h3{display:flex;align-items:center;gap:7px;margin:0;font-size:13px;line-height:20px;font-weight:600;color:var(--ws-text)}
+.ws-summary-head h3 .ws-icon{width:15px;height:15px;color:var(--ws-purple)}
+.ws-summary-toggle{display:grid;place-items:center;width:26px;height:26px;border:0;border-radius:6px;background:transparent;color:var(--ws-muted);cursor:pointer}
+.ws-summary-toggle:hover{background:var(--ws-hover);color:var(--ws-text)}
+.ws-summary-toggle .ws-icon{width:15px;height:15px;transition:transform .15s ease}
+.ws-summary-toggle[aria-expanded="false"] .ws-icon{transform:rotate(-90deg)}
+.ws-summary-body{display:grid;gap:10px;min-width:0}
+.ws-summary-body[hidden]{display:none}
+.ws-summary-text{margin:0;font-size:14px;line-height:22px;color:var(--ws-text);overflow-wrap:anywhere}
+.ws-summary-asks{display:grid;gap:6px}
+.ws-summary-asks ul{display:grid;gap:6px;margin:0;padding:0;list-style:none}
+.ws-summary-ask{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 6px 6px 10px;border:1px solid var(--ws-border);border-radius:8px;background:var(--ws-card)}
+.ws-summary-ask-text{display:grid;gap:2px;min-width:0;font-size:13px;line-height:18px;color:var(--ws-text);overflow-wrap:anywhere}
+.ws-summary-due{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--ws-muted)}
+.ws-summary-due .ws-icon{width:12px;height:12px}
+.ws-summary-ask .ws-btn{flex-shrink:0}
+.ws-summary-added{display:inline-flex;align-items:center;gap:4px;flex-shrink:0;padding-right:6px;font-size:12px;font-weight:600;color:var(--ws-green)}
+.ws-summary-added .ws-icon{width:14px;height:14px}
+.ws-summary-stale-note{display:flex;align-items:center;gap:8px;margin:0;padding:5px 6px 5px 10px;border-radius:8px;border:1px solid color-mix(in srgb,var(--ws-amber) 40%,transparent);background:color-mix(in srgb,var(--ws-amber-bg) 70%,var(--ws-card));font-size:12px;line-height:18px;color:var(--ws-muted)}
+.ws-summary-stale-note>.ws-icon{width:14px;height:14px;flex-shrink:0;color:var(--ws-amber)}
+.ws-summary-stale-note>span{flex:1;min-width:0}
+.ws-summary-stale-note .ws-btn{flex-shrink:0}
+.ws-summary-foot{font-size:12px;line-height:18px;color:var(--ws-muted)}
+.ws-summary .ws-draft-running-label{flex:0 1 auto}

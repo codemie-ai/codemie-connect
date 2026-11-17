@@ -5,7 +5,8 @@ import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
 import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, toggle, controlSelector, soleMatch } from './ui.js';
 import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calendarColors } from './calendar-model.js';
-import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply } from './selectors.js';
+import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
+import { askCommitment } from './summary-state.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
 import { today, WIDGETS, WIDGET_IDS } from './view-today.js';
 import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
@@ -33,7 +34,7 @@ const state = {
   ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, usage: null, error: '', tests: {}, testModels: {} },
   // Reply drafts: this session's reply-box decisions per draft key (see `replyBox`), the open
   // options popover, and failed drafts the user dismissed.
-  drafts: {}, draftPopover: null, draftDismissed: localJson('codemie.draft.dismissed', []),
+  drafts: {}, summaryUi: {}, draftPopover: null, draftDismissed: localJson('codemie.draft.dismissed', []),
 };
 let legacyModule;
 let legacyMounted = false;
@@ -45,7 +46,7 @@ let calendarScrollKey = '';
 let noteTimer;
 let searchTimer;
 const replyInFlight = new Set();
-const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context']);
+const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle']);
 let lastDraftSignature = '';
 // Updates that arrived while the draft options popover was open; shown once it closes.
 let heldRender = false;
@@ -464,7 +465,10 @@ function draftSignature(s) {
   if (!m) return '';
   const key = draftKeyOf(m);
   const job = draftJob(s, key);
-  return [key, job?.id, job?.state, job?.payload?.startedAt, job?.payload?.runModel, latestDraft(s, key)?.revision].join('|');
+  const summary = summaryFor(s, m);
+  const sJob = summaryJob(s, summaryKeyOf(m));
+  return [key, job?.id, job?.state, job?.payload?.startedAt, job?.payload?.runModel, latestDraft(s, key)?.revision,
+    sJob?.id, sJob?.state, sJob?.payload?.startedAt, sJob?.payload?.runModel, summary?.revision, summary?.data.stale].join('|');
 }
 
 /**
@@ -505,6 +509,17 @@ async function startDraft(m, options, instructions = '') {
     await withClaudeChoice(() => mutate('ai_draft', draftRequest(m, options, instructions)));
   } catch (err) {
     // Closing the chooser is an answer, not an error.
+    if (err?.code === 'needs_choice' || err?.class === 'needs_choice') return;
+    throw err;
+  }
+}
+
+/** Queues a summary of the conversation of `m`; like a draft, the first one may ask which Claude. */
+async function startSummary(m) {
+  if (!m) throw new Error('This conversation is no longer available. Refresh and try again.');
+  try {
+    await withClaudeChoice(() => mutate('ai_summarize', { sourceId: m.id }));
+  } catch (err) {
     if (err?.code === 'needs_choice' || err?.class === 'needs_choice') return;
     throw err;
   }
@@ -624,7 +639,7 @@ function draftTick() {
   root.querySelectorAll('.ws-draft-running[data-started]').forEach(row => {
     const startedAt = Number(row.dataset.started);
     if (!startedAt) return;
-    const { label, seconds } = runningLabel({ state: row.dataset.state, payload: { startedAt, profile: row.dataset.profile, model: row.dataset.model || null } });
+    const { label, seconds } = runningLabel({ state: row.dataset.state, payload: { startedAt, profile: row.dataset.profile, model: row.dataset.model || null } }, { verb: row.dataset.verb || 'Drafting' });
     const text = row.querySelector('[data-draft-label]');
     const time = row.querySelector('[data-draft-seconds]');
     if (text && text.textContent !== label) text.textContent = label;
@@ -1092,6 +1107,28 @@ async function handle(action, el) {
       return startDraft(getRecord('message', request.sourceId) || getRecord('message', state.selectedMessage), request, request.instructions);
     }
     case 'ai-draft-dismiss': dismissDraftError(id); return render();
+    case 'ai-summarize': return startSummary(getRecord('message', id));
+    case 'ai-summarize-retry': case 'ai-summarize-choose': {
+      const job = s.jobs.find(j => j.id === id);
+      if (action === 'ai-summarize-choose' && !(await ensureClaudeChoice())) return;
+      dismissDraftError(id);
+      return startSummary(getRecord('message', job?.payload?.request?.sourceId) || getRecord('message', state.selectedMessage));
+    }
+    case 'summary-toggle': {
+      const ui = (state.summaryUi[el.dataset.key] ||= {});
+      ui.collapsed = !ui.collapsed;
+      el.setAttribute('aria-expanded', String(!ui.collapsed));
+      document.getElementById('summary-body')?.toggleAttribute('hidden', ui.collapsed);
+      return;
+    }
+    case 'summary-ask-commit': {
+      const key = el.dataset.key;
+      const ask = getRecord('summary', key)?.data.asks?.[Number(el.dataset.index)];
+      if (!ask) return toast('This summary changed. Refresh and try again.', 'error');
+      await mutate('local_save', askCommitment(key, ask));
+      toast('Added to your commitments.', 'success');
+      return;
+    }
     case 'ai-draft-keep': case 'ai-draft-replace': case 'ai-draft-restore': case 'ai-draft-forget': {
       const m = getRecord('message', id);
       const key = draftKeyOf(m);

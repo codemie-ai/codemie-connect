@@ -35,7 +35,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate }) {
   const s = snapshot;
   const ai = aiInit;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -186,7 +186,50 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       if (plan.outcome !== 'hold') setTimeout(() => finish(plan), 150 + (plan.ms || 1200));
       return { queued: true, jobId: job.id };
     },
+    // AI summaries: like drafts, `window.__summaryPlan` picks the outcome and `hold` keeps the job
+    // running until `window.__finishSummary(plan)`; `window.__setSummaryStale(true)` is a new message.
+    ai_summarize: d => {
+      calls.push(['ai_summarize', d]);
+      const m = find('message', d.sourceId);
+      const route = ai.settings.routes?.summary || {};
+      const profile = route.profile || ai.settings.defaultProfile;
+      if (!profile) fail('needs_choice', 'Choose which Claude should write for you.', 'needs_choice');
+      const key = m.data.channel === 'chat' ? `chat:${m.data.conversationId || m.source}` : m.data.conversationId ? `mail:${m.data.conversationId}` : m.id;
+      const busy = s.jobs.find(j => j.kind === 'ai_summarize' && j.payload.conversationKey === key && ['queued', 'running'].includes(j.state));
+      if (busy) return { queued: true, jobId: busy.id };
+      const { errorClass, errorCode, ...base } = clone(jobTemplate);
+      const job = { ...base, id: crypto.randomUUID(), key: `ai_summarize:${crypto.randomUUID()}`, kind: 'ai_summarize', state: 'queued', dueAt: now(), connectionId: s.connection.id, result: null, payload: { request: { ...d }, channel: m.data.channel, conversationKey: key, purpose: 'summary' } };
+      s.jobs.unshift(job);
+      const plan = window.__summaryPlan || { outcome: 'ok', ms: 1200 };
+      const update = () => { s.revision++; emit('workspace:changed'); };
+      const start = () => {
+        if (job.state !== 'queued') return;
+        job.state = 'running';
+        Object.assign(job.payload, { startedAt: now() - (plan.startedAgo || 0), profile, model: route.model || null });
+        setTimeout(() => { if (job.state === 'running') { job.payload.runModel = 'claude-haiku-4-5'; update(); } }, 400);
+      };
+      const finish = (result = plan) => {
+        start();
+        if (job.state !== 'running') return;
+        if (result.outcome === 'ok') {
+          const thread = s.records.filter(r => r.kind === 'message' && r.data.conversationId === m.data.conversationId).sort((a, b) => a.data.at - b.data.at);
+          const t = clone(summaryTemplate);
+          const record = { ...t, id: key, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, conversationKey: key, channel: m.data.channel, sourceId: m.id, text: result.text || t.data.text, asks: result.asks || t.data.asks, stale: false, latestMessageId: thread.at(-1).id, provenance: { ...t.data.provenance, profile, model: 'claude-haiku-4-5', messageIds: thread.map(x => x.id), durationMs: 3200, partialText: !!result.partialText } } };
+          s.records = s.records.filter(r => !(r.kind === 'summary' && r.id === key)).concat(record);
+          job.state = 'succeeded';
+          job.result = 'Summary ready';
+        } else {
+          Object.assign(job, { state: result.state || 'failed', errorClass: result.errorClass, errorCode: result.errorCode || result.errorClass, result: 'Claude could not summarize.' });
+        }
+        update();
+      };
+      setTimeout(() => { if (job.state === 'queued') { start(); update(); } }, 150);
+      window.__finishSummary = finish;
+      if (plan.outcome !== 'hold') setTimeout(() => finish(plan), 150 + (plan.ms || 1200));
+      return { queued: true, jobId: job.id };
+    },
   };
+  window.__setSummaryStale = value => { for (const r of s.records) if (r.kind === 'summary') r.data.stale = value; s.revision++; emit('workspace:changed'); };
   window.__bridgeCalls = calls;
   // What detection finds next time (Claude signed in or set up meanwhile).
   window.__setAiProfiles = profiles => { ai.profiles = profiles; };
@@ -234,7 +277,7 @@ const check = async (name, fn) => {
 const assert = (cond, message) => { if (!cond) throw new Error(message); };
 
 const browser = await chromium.launch();
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [] } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -244,9 +287,14 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   const now = Date.now();
   const connected = buildSnapshot(now, { theme, zone: 'Europe/Kyiv' });
   connected.connection.enabled.push(...enable);
+  if (longThread) {
+    // Priya's roadmap thread grows from two messages to five.
+    const first = connected.records.find(r => r.id === 'm-reply-1');
+    ['Thanks. Could you also send Jordan the draft?', 'Also, please book the review room for Thursday.', 'One more thing: the comments are due Friday 20 November.'].forEach((text, i) => connected.records.push({ ...first, id: `m-long-${i}`, revision: `r-long-${i}`, data: { ...first.data, text, at: first.data.at + 120 * (i + 1), lane: 'fyi', isRead: true } }));
+  }
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
-  const { testOk, testFail, draft, draftChat, jobFailed } = contractFixtures();
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed })})`);
+  const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary })})`);
   await page.goto(base + hash);
   await page.waitForSelector('.ws-sidebar');
   currentPage = page;
@@ -782,6 +830,122 @@ for (const theme of ['dark', 'light']) {
     await shot(p, `${theme}-draft-result-${width}`);
     assert(narrow.errors.length === 0, narrow.errors.join(' | '));
     await narrow.context.close().catch(() => {});
+    currentPage = null;
+  });
+}
+
+// Thread summaries (DESIGN 6.5): Summarize on long conversations, progress, the card with its asks,
+// stale and failure.
+const summaryPlan = (page, value) => page.evaluate(v => { window.__summaryPlan = v; }, value);
+const ASKS = [{ text: 'Send Jordan the roadmap draft', due: '2026-11-20' }, { text: 'Book the review room for Thursday' }];
+for (const theme of ['dark', 'light']) {
+  const { page, context, errors } = await open({ theme, hash: '#/inbox', longThread: true });
+
+  await check(`${theme}: summary flow`, async () => {
+    await page.click('.ws-inbox-row[data-id="m-reply-2"]');
+    await page.waitForSelector('.ws-read[data-message-id="m-reply-2"]');
+    assert(await page.locator('[data-action="ai-summarize"]').count() === 0, 'Summarize on a one-message conversation');
+    await page.click('.ws-inbox-row[data-id="m-reply-1"]');
+    await page.waitForSelector('.ws-read[data-message-id="m-reply-1"] .ws-read-actions [data-action="ai-summarize"]');
+    assert(/Summarize/.test(await text(page, '.ws-read-actions [data-action="ai-summarize"]')), 'label');
+    await shot(page, `${theme}-summary-button`);
+    await page.fill('#reply-body', 'Typing while Claude reads');
+    // The route for summaries is CodeMie in this fixture; it started long enough ago to be named.
+    await summaryPlan(page, { outcome: 'hold', startedAgo: 20 });
+    await page.click('[data-action="ai-summarize"]');
+    await page.waitForSelector('.ws-summary .ws-draft-running:has-text("Summarizing with CodeMie · Haiku 4.5")', { timeout: 4000 });
+    assert((await lastCall(page, 'ai_summarize')).sourceId === 'm-reply-1', 'summarize request');
+    assert(await page.locator('[data-action="ai-summarize"]').count() === 0, 'a second Summarize while running');
+    await page.waitForTimeout(1100);
+    assert(/\d+ s/.test(await text(page, '.ws-summary .ws-draft-running')), 'elapsed seconds');
+    assert(await page.locator('.ws-summary .ws-draft-running [data-action="ai-draft-stop"]').count() === 1, 'Stop');
+    await shot(page, `${theme}-summary-running`);
+    await page.evaluate(() => { window.__replyNode = document.getElementById('reply-body'); });
+    await page.evaluate(asks => window.__finishSummary({ outcome: 'ok', text: 'Priya asked for roadmap comments before Thursday. You said you would look today; she has since asked for the draft to go to Jordan and for the review room.', asks }), ASKS);
+    await page.waitForSelector('.ws-summary .ws-summary-text');
+    assert(await page.evaluate(() => document.getElementById('reply-body') === window.__replyNode && document.getElementById('reply-body').value === 'Typing while Claude reads'), 'the reply box was recreated');
+    assert(await page.locator('.ws-summary [data-action="summary-ask-commit"]').count() === 2, 'asks');
+    assert(/Due Fri, Nov 20/.test(await text(page, '.ws-summary')), 'formatted due date');
+    assert(/Summarized with CodeMie · Haiku 4\.5 · 3 s · from 5 messages/.test(await text(page, '.ws-summary')), 'provenance');
+    assert(await page.locator('.ws-read-actions [data-action="ai-summarize"]').count() === 0, 'the button stays after a summary');
+    // The card sits above the thread.
+    assert(await page.evaluate(() => document.querySelector('.ws-summary').compareDocumentPosition(document.querySelector('.ws-thread')) & Node.DOCUMENT_POSITION_FOLLOWING), 'card below the thread');
+    await page.waitForTimeout(250);
+    await shot(page, `${theme}-summary-card`);
+    await page.click('[data-action="summary-ask-commit"][data-index="0"]');
+    await page.waitForSelector('.ws-summary-added');
+    const saved = await page.evaluate(() => window.__workspace.store.get().snapshot.records.find(r => r.kind === 'commitment' && r.id.startsWith('ask:')));
+    assert(saved.data.text === 'Send Jordan the roadmap draft' && saved.data.due === '2026-11-20' && saved.data.owner === 'You', JSON.stringify(saved));
+    assert(await page.locator('.ws-summary [data-action="summary-ask-commit"]').count() === 1, 'the added ask can be added again');
+    await page.click('.ws-nav button[data-route=today]');
+    await page.waitForSelector('.ws-todo:has-text("Send Jordan the roadmap draft")');
+    await page.click('.ws-nav button[data-route=inbox]');
+    await page.waitForSelector('.ws-summary .ws-summary-added');
+    // Collapse and expand.
+    await page.click('[data-action="summary-toggle"]');
+    assert(await page.locator('#summary-body').isHidden(), 'collapsed');
+    await page.click('[data-action="summary-toggle"]');
+    assert(await page.locator('#summary-body').isVisible(), 'expanded');
+  });
+
+  await check(`${theme}: a new message makes the summary stale and Refresh runs again`, async () => {
+    await page.evaluate(() => window.__setSummaryStale(true));
+    await page.waitForSelector('.ws-summary-stale-note');
+    assert(/New messages since this summary/.test(await text(page, '.ws-summary-stale-note')), 'note');
+    await shot(page, `${theme}-summary-stale`);
+    await summaryPlan(page, { outcome: 'hold' });
+    await page.click('.ws-summary-stale-note [data-action="ai-summarize"]');
+    await page.waitForSelector('.ws-summary .ws-draft-running');
+    assert(await page.locator('.ws-summary-text').count() === 1, 'the old summary stays while refreshing');
+    await page.evaluate(asks => window.__finishSummary({ outcome: 'ok', asks }), ASKS);
+    await page.waitForSelector('.ws-summary-stale-note', { state: 'detached' });
+    assert(await page.locator('.ws-summary [data-action="summary-ask-commit"]').count() === 1, 'the added ask is still marked after a refresh');
+    await summaryPlan(page, { outcome: 'error', ms: 300, state: 'blocked', errorClass: 'needs_login', errorCode: 'needs_login' });
+    await page.click('.ws-summary-foot [data-action="ai-summarize"]');
+    await page.waitForSelector('.ws-summary .ws-draft-error:has-text("isn\'t signed in")', { timeout: 5000 });
+    assert(await page.locator('.ws-summary-text').count() === 1, 'a failed refresh keeps the old summary');
+    await shot(page, `${theme}-summary-refresh-failed`);
+  });
+
+  await check(`${theme}: summary no page errors`, async () => assert(errors.length === 0, errors.join(' | ')));
+  await context.close().catch(() => {});
+  currentPage = null;
+
+  await check(`${theme}: a failed first summary says why in the card area, not in decisions`, async () => {
+    const f = await open({ theme, hash: '#/inbox', longThread: true });
+    const p = f.page;
+    await p.click('.ws-inbox-row[data-id="m-reply-1"]');
+    const bell = await p.locator('.ws-bell-dot').count();
+    await summaryPlan(p, { outcome: 'error', ms: 300, state: 'failed', errorClass: 'timeout', errorCode: 'timeout' });
+    await p.click('[data-action="ai-summarize"]');
+    await p.waitForSelector('.ws-summary .ws-draft-error:has-text("Claude took too long to answer.")', { timeout: 5000 });
+    assert(await p.locator('.ws-summary .ws-draft-error [data-action="ai-summarize-retry"]').count() === 1, 'Try again');
+    assert(await p.locator('.ws-bell-dot').count() === bell, 'the failure reached the decisions bell');
+    await shot(p, `${theme}-summary-error`);
+    await summaryPlan(p, { outcome: 'ok', ms: 300 });
+    await p.click('[data-action="ai-summarize-retry"]');
+    await p.waitForSelector('.ws-summary .ws-summary-text', { timeout: 5000 });
+    assert(await p.locator('.ws-draft-error').count() === 0, 'the error stays after the retry worked');
+    assert(f.errors.length === 0, f.errors.join(' | '));
+    await f.context.close().catch(() => {});
+    currentPage = null;
+  });
+
+  await check(`${theme} 1000px: the summary card fits the window`, async () => {
+    const n = await open({ theme, width: 1000, height: 760, hash: '#/inbox', longThread: true });
+    const p = n.page;
+    await p.click('.ws-inbox-row[data-id="m-reply-1"]');
+    await summaryPlan(p, { outcome: 'ok', ms: 300, asks: ASKS, partialText: true });
+    await p.click('[data-action="ai-summarize"]');
+    await p.waitForSelector('.ws-summary .ws-summary-text', { timeout: 5000 });
+    await p.evaluate(() => window.__setSummaryStale(true));
+    await p.waitForSelector('.ws-summary-stale-note');
+    assert(/Preview text only/.test(await text(p, '.ws-summary')), 'partial note');
+    const overflow = await p.evaluate(() => Math.max(document.documentElement.scrollWidth - innerWidth, ...[...document.querySelectorAll('.ws-reader, .ws-summary, .ws-summary *')].map(el => el.scrollWidth - el.clientWidth)));
+    assert(overflow <= 0, `overflow ${overflow}px`);
+    await shot(p, `${theme}-summary-card-1000`);
+    assert(n.errors.length === 0, n.errors.join(' | '));
+    await n.context.close().catch(() => {});
     currentPage = null;
   });
 }

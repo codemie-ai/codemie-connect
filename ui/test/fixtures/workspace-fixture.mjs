@@ -149,7 +149,8 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
 const contract = name => JSON.parse(readFileSync(new URL(`./contract/${name}.json`, import.meta.url), 'utf8'));
 export const contractFixtures = () => ({
   status: contract('ai-status'), usage: contract('ai-usage'), testOk: contract('ai-test-ok'), testFail: contract('ai-test-fail'),
-  draft: contract('draft-ai'), draftChat: contract('draft-ai-chat'),
+  draft: contract('draft-ai'), draftChat: contract('draft-ai-chat'), summary: contract('summary'),
+  jobSummaryFailed: contract('job-ai-summarize-failed'), jobSummaryRunning: contract('job-ai-summarize-running'),
   jobFailed: contract('job-ai-draft-failed'), jobConflict: contract('job-ai-draft-conflict'), jobRunning: contract('job-ai-draft-running'),
 });
 

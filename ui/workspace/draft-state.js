@@ -102,56 +102,59 @@ export function claudeCheck({ status, noneReady, now = false, detect = false, no
  * for, else none yet. `label` is the words without the seconds (announced once; the seconds
  * tick silently).
  */
-export function runningLabel(job, { nowMs = Date.now() } = {}) {
+export function runningLabel(job, { nowMs = Date.now(), verb = 'Drafting' } = {}) {
   const p = job?.payload || {};
   if (job?.state !== 'running' || !p.startedAt) return { text: 'Waiting to start…', label: 'Waiting to start…', seconds: null, starting: false };
   const seconds = Math.max(0, Math.floor(nowMs / 1000 - p.startedAt));
   const starting = isCodeMie(p.profile) && seconds < CODEMIE_STARTUP_SECONDS;
   const model = modelLabel(p.runModel || p.model);
-  const label = starting ? 'Starting CodeMie…' : `Drafting with ${[profileName(p.profile), model].filter(Boolean).join(' · ')}…`;
+  const label = starting ? 'Starting CodeMie…' : `${verb} with ${[profileName(p.profile), model].filter(Boolean).join(' · ')}…`;
   return { text: `${label} ${seconds} s`, label, seconds, starting };
 }
 
-/** "Drafted with Claude Code · Sonnet · 4 s · from 5 messages". */
-export function provenanceLabel(p = {}) {
+/** "Drafted with Claude Code · Sonnet · 4 s · from 5 messages" (`verb` "Summarized" for a summary). */
+export function provenanceLabel(p = {}, verb = 'Drafted') {
   const n = (p.messageIds || []).length;
   const parts = [profileName(p.profile), modelLabel(p.model)];
   if (p.durationMs != null) parts.push(`${Math.max(1, Math.round(p.durationMs / 1000))} s`);
   if (n) parts.push(`from ${n} message${n === 1 ? '' : 's'}`);
-  return `Drafted with ${parts.filter(Boolean).join(' · ')}`;
+  return `${verb} with ${parts.filter(Boolean).join(' · ')}`;
 }
 
 // ---------------------------------------------------------------- errors (DESIGN 6.2)
 
-const retry = (job, label = 'Try again') => ({ label, action: 'ai-draft-retry', iconName: 'refresh', attrs: { 'data-id': job.id } });
+const retry = (job, label = 'Try again', kind = 'draft') => ({ label, action: kind === 'summary' ? 'ai-summarize-retry' : 'ai-draft-retry', iconName: 'refresh', attrs: { 'data-id': job.id } });
 const settingsAction = { label: 'Open Claude settings', action: 'ai-open-settings', iconName: 'settings' };
 const toolsAction = { label: 'Open CodeMie tools', action: 'setup-tools', iconName: 'tools' };
 
 /**
- * One sentence and one action for a failed draft job, keyed on its error class and code (never
- * on its state text). Null for a job that did not fail (stopped, running, done).
+ * One sentence and one action for a failed draft job (or, with `kind: 'summary'`, a failed
+ * summary job), keyed on its error class and code (never on its state text). Null for a job
+ * that did not fail (stopped, running, done).
  */
-export function draftError(job, { profiles = [], settings = {} } = {}) {
+export function draftError(job, { profiles = [], settings = {}, kind = 'draft' } = {}) {
   if (!job || !['failed', 'blocked'].includes(job.state)) return null;
+  const summary = kind === 'summary';
+  const task = summary ? 'summarize conversations' : 'draft replies';
   const code = job.errorCode;
   if (code === 'conflict') return { tone: 'warning', sentence: 'The conversation changed while drafting.', action: retry(job, 'Draft again') };
   const cls = job.errorClass || code;
   const profileId = job.payload?.profile || settings.routes?.[job.payload?.purpose]?.profile || settings.defaultProfile || 'claude';
   const label = profiles.find(p => p.id === profileId)?.label || (isCodeMie(profileId) ? `CodeMie · ${profileId.slice(8)}` : 'Claude Code');
   switch (cls) {
-    case 'needs_choice': return { tone: 'info', sentence: 'Choose which Claude writes for you.', action: { label: 'Choose Claude', action: 'ai-draft-choose', iconName: 'spark', attrs: { 'data-id': job.id } } };
+    case 'needs_choice': return { tone: 'info', sentence: 'Choose which Claude writes for you.', action: { label: 'Choose Claude', action: summary ? 'ai-summarize-choose' : 'ai-draft-choose', iconName: 'spark', attrs: { 'data-id': job.id } } };
     case 'needs_login':
       return isCodeMie(profileId)
         ? { tone: 'warning', sentence: `${label} isn't signed in.`, action: toolsAction }
         : { tone: 'warning', sentence: "Claude Code isn't signed in.", action: { label: 'Copy sign-in steps', action: 'ai-copy-login', iconName: 'link' } };
     case 'not_installed': return { tone: 'warning', sentence: "Claude Code isn't installed on this Mac.", action: settingsAction };
-    case 'too_old': return { tone: 'warning', sentence: 'This Claude Code is too old to draft replies.', action: settingsAction };
+    case 'too_old': return { tone: 'warning', sentence: `This Claude Code is too old to ${task}.`, action: settingsAction };
     case 'not_configured': return { tone: 'warning', sentence: "This CodeMie profile isn't fully set up.", action: toolsAction };
     case 'rate_limited': return { tone: 'warning', sentence: "Claude's usage limit was reached. Try again later.", action: null };
-    case 'permission_required': return { tone: 'warning', sentence: 'This conversation is no longer available to draft from.', action: null };
-    case 'timeout': return { tone: 'error', sentence: 'Claude took too long to answer.', action: retry(job) };
-    case 'invalid_output': return { tone: 'error', sentence: "Claude's answer couldn't be used.", action: retry(job) };
-    default: return { tone: 'error', sentence: "Claude couldn't write this draft.", action: retry(job) };
+    case 'permission_required': return { tone: 'warning', sentence: `This conversation is no longer available to ${summary ? 'summarize' : 'draft from'}.`, action: null };
+    case 'timeout': return { tone: 'error', sentence: 'Claude took too long to answer.', action: retry(job, 'Try again', kind) };
+    case 'invalid_output': return { tone: 'error', sentence: "Claude's answer couldn't be used.", action: retry(job, 'Try again', kind) };
+    default: return { tone: 'error', sentence: summary ? "Claude couldn't summarize this conversation." : "Claude couldn't write this draft.", action: retry(job, 'Try again', kind) };
   }
 }
 

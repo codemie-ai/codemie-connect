@@ -3,12 +3,14 @@
 import { escapeHtml as e } from './store.js';
 import { icon, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, badge, button, emptyState, segmented, checkbox, select, textArea } from './ui.js';
-import { LANES, laneLabel, visibleMessages, decisions, connectionState, messageTitle, conversation, can, collapseChats, draftKeyOf, draftJob, latestDraft, savedReply } from './selectors.js';
+import { LANES, laneLabel, visibleMessages, decisions, connectionState, messageTitle, conversation, can, collapseChats, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryFor, summaryJob, records } from './selectors.js';
 import { formatDateTime, relativeAge } from './format.js';
 import { listTitle } from './view-today.js';
 import {
   INTENTS, TONES, LENGTHS, MAX_INSTRUCTIONS, replyBox, runningLabel, provenanceLabel, draftError, draftChoices, draftGaps, claudeAvailable, providerLabel,
 } from './draft-state.js';
+
+import { summaryOffered, askDue, addedAsks } from './summary-state.js';
 
 const LANE_TONE = { critical: 'error', reply: 'info', waiting: 'warning', fyi: 'neutral', low: 'neutral', decisions: 'purple' };
 
@@ -105,7 +107,8 @@ export function snoozeUntil(preset, nowMs = Date.now()) {
 function reader(s, m, zone, state = {}) {
   const d = m.data;
   const isChat = d.channel === 'chat';
-  const thread = conversation(s, m).slice(-12);
+  const fullThread = conversation(s, m);
+  const thread = fullThread.slice(-12);
   const unavailable = d.unavailable || d.deleted;
   const recipients = (d.to || []).map(r => r.emailAddress?.name || r.emailAddress?.address).filter(Boolean);
   const laneOptions = LANES.filter(([k]) => k !== 'decisions');
@@ -122,6 +125,7 @@ function reader(s, m, zone, state = {}) {
         ${d.url ? button(isChat ? 'Open in Teams' : 'Open in Outlook', { action: 'source', iconName: 'external', variant: 'primary', attrs: { 'data-kind': 'message', 'data-id': m.id } }) : ''}
         ${button(d.lifecycle === 'archived' ? 'Restore' : 'Done', { action: 'message-archive', iconName: d.lifecycle === 'archived' ? 'inbox' : 'check', attrs: { 'data-id': m.id }, title: d.lifecycle === 'archived' ? 'Move back to the Inbox' : 'Archive in Connect' })}
         <details class="ws-menu"><summary class="ws-btn ws-btn-secondary">${icon('snooze')}<span>Snooze</span></summary><div class="ws-menu-panel">${SNOOZE.map(([value, label]) => `<button type="button" class="ws-menu-item" data-action="message-snooze" data-id="${e(m.id)}" data-preset="${value}">${e(label)}</button>`).join('')}</div></details>
+        ${summaryButton(s, m, state, { thread: fullThread, unavailable })}
         <span class="ws-read-lane">${select(laneOptions, d.lane, { 'data-action': 'message-lane', 'data-id': m.id, 'aria-label': 'Move to lane' })}</span>
         ${button('', { action: 'commitment', iconName: 'check-circle', variant: 'ghost', title: 'Add a commitment from this message', attrs: { 'data-id': m.id } })}
         ${d.lane === 'critical' && !d.acknowledgedAt ? button('Acknowledge', { action: 'message-ack', variant: 'danger', iconName: 'bell', attrs: { 'data-id': m.id } }) : ''}
@@ -129,12 +133,75 @@ function reader(s, m, zone, state = {}) {
     </header>
     ${unavailable ? `<p class="ws-inline-note ws-warning">${icon('alert')}This item moved or was deleted in Microsoft 365. The cached text stays for your decisions.</p>` : ''}
     ${d.reason ? `<p class="ws-inline-note">${icon('info')}<span><strong>Why it's here:</strong> ${e(d.reason)}</span></p>` : ''}
+    ${summarySection(s, m, zone, state)}
     <div class="ws-thread">${thread.map(t => `<div class="ws-bubble${t.id === m.id ? ' ws-current' : ''}${t.data.isMine ? ' ws-mine' : ''}">
       <div class="ws-bubble-head">${avatar({ name: t.data.isMine ? (s.connection?.displayName || 'You') : t.data.from || '?', photo: t.data.isMine ? s.connection?.photo : null, size: 24, seed: t.data.fromAddress || t.data.fromId || t.data.from })}<strong>${e(t.data.isMine ? 'You' : t.data.from || 'Unknown')}</strong><time>${e(formatDateTime(t.data.at, zone))}</time></div>
       <div class="ws-bubble-body">${e(t.data.text || '(No preview available — open the original for full content.)')}</div>
     </div>`).join('')}</div>
     ${replyForm(s, m, zone, state)}
   </article>`;
+}
+
+// ---------------------------------------------------------------- thread summary (DESIGN 6.5)
+
+/** What the summary area of a conversation shows: its record, running job and failure. */
+function summaryParts(s, m, state) {
+  const key = summaryKeyOf(m);
+  const summary = summaryFor(s, m);
+  const job = summaryJob(s, key);
+  const running = !!job && ['queued', 'running'].includes(job.state);
+  // A failure older than the summary that followed it is history; a dismissed one stays dismissed.
+  const failure = !running && job && !(state.draftDismissed || []).includes(job.id) && !(summary && (summary.updatedAt || 0) > (job.dueAt || 0))
+    ? draftError(job, { ...(state.ai || {}), kind: 'summary' }) : null;
+  return { key, summary, job, running, failure };
+}
+
+/** Summarize: only on a long conversation with no summary yet (a summary shows its card instead). */
+function summaryButton(s, m, state, { thread, unavailable }) {
+  if (unavailable || !claudeAvailable(state.ai) || !summaryOffered(thread)) return '';
+  const { summary, running, failure } = summaryParts(s, m, state);
+  if (summary || running || failure) return '';
+  return button('Summarize', { action: 'ai-summarize', variant: 'magic', iconName: 'spark', title: 'Summarize this conversation with Claude', attrs: { 'data-id': m.id } });
+}
+
+function summarySection(s, m, zone, state) {
+  const { key, summary, job, running, failure } = summaryParts(s, m, state);
+  if (!summary) {
+    if (running) return `<section class="ws-summary ws-summary-pending" aria-label="Thread summary">${runningRow(job, { verb: 'Summarizing', hint: 'You can keep reading.' })}</section>`;
+    return failure ? `<section class="ws-summary ws-summary-pending" aria-label="Thread summary">${errorRow(job, failure)}</section>` : '';
+  }
+  const d = summary.data;
+  const open = !state.summaryUi?.[key]?.collapsed;
+  const added = addedAsks(key, d.asks, records(s, 'commitment'));
+  const asks = (d.asks || []).map((ask, i) => {
+    const due = askDue(ask.due, zone);
+    return `<li class="ws-summary-ask">
+        <span class="ws-summary-ask-text">${e(ask.text)}${due ? `<span class="ws-summary-due">${icon('clock')}Due ${e(due)}</span>` : ''}</span>
+        ${added[i]
+    ? `<span class="ws-summary-added" role="status">${icon('check')}Added</span>`
+    : button('Add to commitments', { action: 'summary-ask-commit', size: 'sm', iconName: 'check-circle', attrs: { 'data-index': i, 'data-key': key } })}
+      </li>`;
+  }).join('');
+  const p = d.provenance || {};
+  const refresh = (variant) => button('Refresh', { action: 'ai-summarize', variant, size: 'sm', iconName: 'refresh', title: 'Summarize again with the newest messages', disabled: running, attrs: { 'data-id': m.id } });
+  return `<section class="ws-summary${d.stale ? ' ws-summary-stale' : ''}" aria-label="Thread summary" data-key="${e(key)}">
+    <header class="ws-summary-head">
+      <h3>${icon('spark')}Summary</h3>
+      <button type="button" class="ws-summary-toggle" data-action="summary-toggle" data-key="${e(key)}" aria-expanded="${open}" aria-controls="summary-body" aria-label="Summary" title="Collapse or expand the summary">${icon('chevron-down')}</button>
+    </header>
+    <div class="ws-summary-body" id="summary-body"${open ? '' : ' hidden'}>
+      <p class="ws-summary-text">${e(d.text)}</p>
+      ${d.asks?.length ? `<div class="ws-summary-asks"><span class="ws-field-label">Asked of you</span><ul>${asks}</ul></div>` : ''}
+      ${running ? runningRow(job, { verb: 'Summarizing', hint: '' }) : ''}
+      ${failure ? errorRow(job, failure) : ''}
+      ${d.stale && !running ? `<p class="ws-summary-stale-note" role="status">${icon('info')}<span>New messages since this summary.</span>${refresh('secondary')}</p>` : ''}
+      <div class="ws-draft-provenance-row ws-summary-foot">
+        <span class="ws-draft-source">${icon('spark')}<span>${e(provenanceLabel(p, 'Summarized'))}</span></span>
+        ${p.partialText ? `<span class="ws-draft-partial" title="Connect could read only the preview of some Outlook messages, so the summary may miss details.">${icon('info')}Preview text only</span>` : ''}
+        ${d.stale && !running ? '' : `<span class="ws-draft-provenance-actions">${refresh('ghost')}</span>`}
+      </div>
+    </div>
+  </section>`;
 }
 
 // ---------------------------------------------------------------- reply box and drafts (DESIGN 6.4)
@@ -218,13 +285,13 @@ function draftPopover(m, state) {
   </div>`;
 }
 
-function runningRow(job) {
+function runningRow(job, { verb = 'Drafting', hint = 'You can keep writing.' } = {}) {
   const p = job.payload || {};
-  const { label, seconds } = runningLabel(job);
-  return `<div class="ws-draft-running" data-started="${e(p.startedAt || '')}" data-profile="${e(p.profile || '')}" data-model="${e(p.runModel || p.model || '')}" data-state="${e(job.state)}">
+  const { label, seconds } = runningLabel(job, { verb });
+  return `<div class="ws-draft-running" data-verb="${e(verb)}" data-started="${e(p.startedAt || '')}" data-profile="${e(p.profile || '')}" data-model="${e(p.runModel || p.model || '')}" data-state="${e(job.state)}">
       <span class="ws-draft-pulse" aria-hidden="true">${icon('spark')}</span>
       <span class="ws-draft-running-label" role="status"><span data-draft-label>${e(label)}</span> <span class="ws-draft-seconds" data-draft-seconds aria-hidden="true">${seconds ? `${seconds} s` : ''}</span></span>
-      <span class="ws-draft-running-hint">You can keep writing.</span>
+      ${hint ? `<span class="ws-draft-running-hint">${e(hint)}</span>` : ''}
       ${button('Stop', { action: 'ai-draft-stop', variant: 'ghost', size: 'sm', iconName: 'stop', attrs: { 'data-id': job.id } })}
     </div>`;
 }

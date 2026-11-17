@@ -2,9 +2,9 @@
 // snapshot, so the UI never renders optimistic state that native storage rejected.
 // Operations whose outcome does not depend on what the user was looking at, so a
 // background sync bumping the revision may safely rebase them onto the fresh snapshot.
-// An AI draft reads the conversation when it runs (and fails with `conflict` if it changed), and
+// An AI draft or summary reads the conversation when it runs (and fails with `conflict` if it changed), and
 // Stop ends whatever is running, so neither depends on the revision the user saw.
-export const REBASE_SAFE = new Set(['settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'job_cancel']);
+export const REBASE_SAFE = new Set(['settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'ai_summarize', 'job_cancel']);
 
 export function createStore(invoke) {
   let state = null;

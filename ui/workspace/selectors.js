@@ -101,6 +101,23 @@ export function draftJob(s, key) {
   return jobs.find(j => ['queued', 'running'].includes(j.state)) || jobs.sort((a, b) => (b.dueAt || 0) - (a.dueAt || 0))[0] || null;
 }
 
+// ---------------------------------------------------------------- thread summaries (DESIGN 6.5)
+
+/** What one summary covers; matches `conversation_key` in `prompts.rs`. */
+export const summaryKeyOf = m => (m.data.channel === 'chat' ? messageKey(m) : m.data.conversationId ? `mail:${m.data.conversationId}` : m.id);
+
+/** The summary record of a conversation (its `stale` flag is computed in the snapshot). */
+export const summaryFor = (s, m) => {
+  const key = summaryKeyOf(m);
+  return s.records.find(r => r.kind === 'summary' && (r.id === key || r.data.conversationKey === key)) || null;
+};
+
+/** The newest `ai_summarize` job of a conversation; a queued or running one wins. */
+export function summaryJob(s, key) {
+  const jobs = s.jobs.filter(j => j.kind === 'ai_summarize' && j.payload?.conversationKey === key);
+  return jobs.find(j => ['queued', 'running'].includes(j.state)) || jobs.sort((a, b) => (b.dueAt || 0) - (a.dueAt || 0))[0] || null;
+}
+
 /** Claude's draft record for a draft key (`ai:<key>`). */
 export function latestDraft(s, key) {
   return s.records.find(r => r.kind === 'draft' && r.data.aiSuggested && (r.data.draftKey === key || r.id === `ai:${key}`)) || null;
