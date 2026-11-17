@@ -1,0 +1,15 @@
+{
+  "byProfile": {
+    "claude": {
+      "costUsd": 0.0004,
+      "runs": 1
+    },
+    "codemie:prod": {
+      "costUsd": 0.0302,
+      "runs": 1
+    }
+  },
+  "costUsd": 0.030600000000000002,
+  "month": "2026-11",
+  "runs": 2
+}

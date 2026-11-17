@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { aiPanel, nextAiSettings, testResultLabel } from '../workspace/settings-ai.js';
 import { chooserBody } from '../workspace/ai-chooser.js';
-import { aiStatus, aiUsage } from './fixtures/workspace-fixture.mjs';
+import { aiStatus, aiUsage, contractFixtures } from './fixtures/workspace-fixture.mjs';
 
 const loaded = (kind, extra = {}) => ({ status: 'ready', ...aiStatus(kind), usage: aiUsage(), tests: {}, ...extra });
 
@@ -66,7 +66,7 @@ test('ai_panel_escapes_profile_names', () => {
   const status = aiStatus('both');
   status.profiles[1] = { ...status.profiles[1], label: evil, message: evil, models: [{ id: 'm"x', label: evil }] };
   status.profiles[0] = { ...status.profiles[0], account: { plan: evil, email: evil } };
-  const html = aiPanel({ status: 'ready', ...status, usage: { runs: 1, costUsd: 0, byProfile: [{ profile: 'codemie:prod', runs: 1, costUsd: 0 }] }, tests: {} });
+  const html = aiPanel({ status: 'ready', ...status, usage: { runs: 1, costUsd: 0, byProfile: { 'codemie:prod': { runs: 1, costUsd: 0 } } }, tests: {} });
   assert.doesNotMatch(html, /<img src=x/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });
@@ -99,4 +99,36 @@ test('next_ai_settings_resets_models_a_profile_does_not_offer', () => {
   assert.deepEqual(c.routes.plugin, { model: 'claude-haiku-4-5' });
   const d = nextAiSettings(c, profiles, { purpose: 'plugin', field: 'model', value: '' });
   assert.equal(d.routes.plugin, undefined);
+});
+
+test('ai_panel_renders_usage_rows_per_profile', () => {
+  const html = aiPanel(loaded('both'));
+  const usage = html.slice(html.indexOf('id="ai-usage"'));
+  assert.match(usage, /Claude Code · your subscription/);
+  assert.match(usage, /CodeMie · prod/);
+  assert.match(usage, /1 run · Claude Code’s estimate/);
+  assert.match(usage, /\$0\.0302/);
+});
+
+test('ai_panel_explains_a_codemie_profile_that_needs_sign_in_and_hides_routing_when_nothing_is_ready', () => {
+  const both = aiPanel(loaded('both'));
+  assert.match(both, /codemie profile login/);
+  const none = aiPanel(loaded('none'));
+  assert.match(none, /data-ai-routing-off/);
+  assert.doesNotMatch(none, /data-route="/);
+});
+
+test('ui_renderers_accept_the_contract_fixtures_from_the_real_backend', () => {
+  const { status, usage, testOk, testFail } = contractFixtures();
+  assert.equal(testResultLabel(testOk), 'OK · 2.1 s · $0.0004');
+  assert.match(testResultLabel(testFail), /Sign in to this CodeMie profile\./);
+  const html = aiPanel({ status: 'ready', ...status, usage, tests: { claude: testOk, 'codemie:staging': testFail } });
+  assert.match(html, /data-ai-profile="codemie:prod"/);
+  assert.match(html, /claude-sonnet-4-5/, 'default model comes from defaultModel');
+  assert.match(html, /\$0\.0302/);
+  const chooser = chooserBody(status.profiles);
+  assert.match(chooser, /claude-sonnet-4-5/);
+  // Round trip through the settings logic with the real shapes.
+  const next = nextAiSettings(status.settings, status.profiles, { field: 'default', value: 'codemie:prod' });
+  assert.equal(next.defaultProfile, 'codemie:prod');
 });

@@ -79,6 +79,7 @@ pub struct ModelChoice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AiProfile {
     pub id: String,
     pub kind: ProfileKind,

@@ -27,7 +27,7 @@ export const LEGACY_TABS = { installation: 'home', tools: 'agents', desktop: 'co
 
 const TAB_DESCRIPTIONS = {
   general: 'Time zone, background behaviour and optional AI.',
-  ai: 'Choose which Claude drafts and summarises for you, and what it costs.',
+  ai: 'Choose which Claude drafts and summarizes for you, and what it costs.',
   microsoft: 'Your calendar, Outlook and Teams — connected with one sign-in.',
   appearance: 'Choose how CodeMie Connect looks on your desktop.',
   notifications: 'Desktop reminders, critical alerts and quiet hours.',

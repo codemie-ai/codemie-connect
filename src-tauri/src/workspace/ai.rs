@@ -541,8 +541,7 @@ mod tests {
             Err(AiError::new(ErrorClass::NeedsLogin)),
         ]));
         let core = test_core(dir.path(), fake.clone(), ready());
-        let req = mutation(
-            &core,
+        let req = request(
             Operation::AiTest,
             json!({"profileId": "claude", "model": "haiku"}),
         );
@@ -561,11 +560,7 @@ mod tests {
         assert_eq!(spec.staging_root, dir.path().join("ai-staging"));
 
         // A failing run is reported as data and recorded too.
-        let req = mutation(
-            &core,
-            Operation::AiTest,
-            json!({"profileId": "codemie:prod"}),
-        );
+        let req = request(Operation::AiTest, json!({"profileId": "codemie:prod"}));
         let out = core.request(req).await.unwrap();
         assert_eq!(out["ok"], false);
         assert_eq!(out["errorClass"], "needs_login");
@@ -593,9 +588,9 @@ mod tests {
         let fake = Arc::new(FakeRunner::new(vec![]));
         let profiles = vec![profile("claude", ProfileState::NeedsLogin)];
         let core = test_core(dir.path(), fake.clone(), profiles);
-        let req = mutation(&core, Operation::AiTest, json!({"profileId": "codemie:x"}));
+        let req = request(Operation::AiTest, json!({"profileId": "codemie:x"}));
         assert_eq!(core.request(req).await.unwrap_err().code, "validation");
-        let req = mutation(&core, Operation::AiTest, json!({"profileId": "claude"}));
+        let req = request(Operation::AiTest, json!({"profileId": "claude"}));
         let out = core.request(req).await.unwrap();
         assert_eq!(out["errorClass"], "needs_login");
         assert!(
@@ -657,6 +652,128 @@ mod tests {
         assert_eq!(out["byProfile"]["claude"]["runs"], 2);
         assert!((out["byProfile"]["claude"]["costUsd"].as_f64().unwrap() - 0.25).abs() < 1e-9);
         assert_eq!(out["byProfile"]["codemie:prod"]["runs"], 1);
+    }
+
+    /// The JSON the UI reads, written from the real handlers so the UI fixtures cannot drift.
+    /// Regenerate with `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+    #[tokio::test]
+    async fn contract_fixtures_match_the_real_responses() {
+        let models = |ids: &[(&str, &str)]| -> Vec<ModelChoice> {
+            ids.iter()
+                .map(|(id, label)| ModelChoice {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                })
+                .collect()
+        };
+        let native = AiProfile {
+            id: "claude".into(),
+            kind: ProfileKind::Native,
+            label: "Claude Code · your subscription".into(),
+            state: ProfileState::Ready,
+            version: Some("2.1.150".into()),
+            account: Some(AccountInfo {
+                plan: Some("Max".into()),
+                email: Some("taylor@example.com".into()),
+                org: None,
+                method: Some("claude.ai".into()),
+            }),
+            models: models(&[
+                ("", "Account default"),
+                ("haiku", "Haiku"),
+                ("sonnet", "Sonnet"),
+                ("opus", "Opus"),
+            ]),
+            default_model: None,
+            message: None,
+        };
+        let codemie = |name: &str, state, message: Option<&str>| AiProfile {
+            id: format!("codemie:{name}"),
+            kind: ProfileKind::CodeMie { name: name.into() },
+            label: format!("CodeMie · {name}"),
+            state,
+            version: None,
+            account: None,
+            models: models(&[
+                ("claude-sonnet-4-5", "claude-sonnet-4-5"),
+                ("claude-haiku-4-5", "claude-haiku-4-5"),
+            ]),
+            default_model: Some("claude-sonnet-4-5".into()),
+            message: message.map(str::to_string),
+        };
+        let profiles = vec![
+            native,
+            codemie("prod", ProfileState::Ready, None),
+            codemie(
+                "staging",
+                ProfileState::NeedsLogin,
+                Some("Sign in to this CodeMie profile."),
+            ),
+        ];
+        let run = |cost: f64, model: &str| {
+            let mut o = outcome(cost);
+            o.duration_ms = 2100;
+            o.model = Some(model.into());
+            Ok(o)
+        };
+        let fake = Arc::new(FakeRunner::new(vec![
+            run(0.0004, "sonnet"),
+            run(0.0302, "claude-haiku-4-5"),
+        ]));
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), fake, profiles);
+        core.request(mutation(
+            &core,
+            Operation::AiSettingsSave,
+            json!({"defaultProfile": "claude", "routes": {
+                "summary": {"profile": "codemie:prod", "model": "claude-haiku-4-5"},
+                "mail_draft": {"model": "sonnet"}}}),
+        ))
+        .await
+        .unwrap();
+        let status = core
+            .request(request(Operation::AiStatus, json!({})))
+            .await
+            .unwrap();
+        let test = |profile: &str, model: Option<&str>| {
+            request(
+                Operation::AiTest,
+                json!({"profileId": profile, "model": model}),
+            )
+        };
+        let ok = core.request(test("claude", Some("sonnet"))).await.unwrap();
+        core.request(test("codemie:prod", None)).await.unwrap();
+        let fail = core.request(test("codemie:staging", None)).await.unwrap();
+        let month = month_now(&core.repo().unwrap().settings().unwrap().time_zone);
+        let mut usage = core
+            .request(request(Operation::AiUsage, json!({"month": month})))
+            .await
+            .unwrap();
+        usage["month"] = "2026-11".into();
+        assert_eq!(usage["byProfile"].as_object().unwrap().len(), 2);
+
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
+        let update = std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1");
+        for (name, value) in [
+            ("ai-status.json", status),
+            ("ai-usage.json", usage),
+            ("ai-test-ok.json", ok),
+            ("ai-test-fail.json", fail),
+        ] {
+            let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
+            let path = dir.join(name);
+            if update {
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(&path, &text).unwrap();
+            } else {
+                let saved = std::fs::read_to_string(&path).unwrap_or_default();
+                assert_eq!(
+                    saved, text,
+                    "{name} is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
+                );
+            }
+        }
     }
 
     #[tokio::test]

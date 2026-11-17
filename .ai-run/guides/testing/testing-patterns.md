@@ -26,6 +26,10 @@ ui/test/
 
 `PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node ui/test/browser/workspace-e2e.mjs` serves `ui/` on loopback, injects a mocked `window.__TAURI__`, and drives sign-in, Today, Calendar (all modes), Inbox, Settings, the absence of any Workspaces UI, and sign-out in both themes at 1000/1440/1680 px. Screenshots land in `output/playwright/workspace-e2e/` (git-ignored). It needs loopback binding (outside the default sandbox) and proves UI behaviour only — never native Graph, storage or notifications.
 
+### Contract fixtures
+
+`ui/test/fixtures/contract/ai-*.json` are the real `ai_status`, `ai_usage` and `ai_test` responses, written by the Rust test `contract_fixtures_match_the_real_responses`; the UI fixtures, the browser mock and `ai-settings.test.mjs` read them. After changing any of those responses run `cd src-tauri && UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`, then commit the JSON; without the variable the test fails when the files are stale.
+
 ### Naming Conventions
 
 | Element | Pattern | Example |

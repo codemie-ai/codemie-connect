@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, contractFixtures } from '../fixtures/workspace-fixture.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -35,7 +35,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail }) {
   const s = snapshot;
   const ai = aiInit;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -120,8 +120,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage }) {
       await sleep(700);
       const p = ai.profiles.find(x => x.id === d.profileId);
       if (!p) fail('validation', 'Choose one of the listed Claude profiles.');
-      if (p.state !== 'ready') return { ok: false, ms: 0, errorClass: p.state, message: p.message || 'Claude is not signed in.' };
-      return { ok: true, ms: 2100, costUsd: 0.0004, model: d.model || p.defaultModel || 'sonnet' };
+      if (p.state !== 'ready') return { ...testFail, message: p.message || testFail.message };
+      return clone(testOk);
     },
     action_prepare: () => fail('permission_required', 'Allow replies in Settings first.'),
   };
@@ -142,7 +142,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage }) {
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -178,7 +178,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   const now = Date.now();
   const connected = buildSnapshot(now, { theme, zone: 'Europe/Kyiv' });
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage() })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk: contractFixtures().testOk, testFail: contractFixtures().testFail })})`);
   await page.goto(base + hash);
   await page.waitForSelector('.ws-sidebar');
   currentPage = page;

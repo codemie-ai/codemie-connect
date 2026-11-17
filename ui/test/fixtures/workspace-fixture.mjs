@@ -2,6 +2,7 @@
 // address and message below is invented. Times are relative to `nowMs` so Today always has a
 // meeting in progress, a next meeting and free time.
 import { deflateSync, crc32 } from 'node:zlib';
+import { readFileSync } from 'node:fs';
 
 const CID = 'fixture-account';
 
@@ -142,40 +143,35 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
 }
 
 // ---------------------------------------------------------------- Claude (AI) status presets
+// Derived from ui/test/fixtures/contract/*.json, which the Rust test `contract_fixtures_*`
+// writes from the real handlers (UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures).
 
-const NATIVE_MODELS = [{ id: '', label: 'Account default' }, { id: 'haiku', label: 'Haiku' }, { id: 'sonnet', label: 'Sonnet' }, { id: 'opus', label: 'Opus' }];
-const nativeProfile = (state, extra = {}) => ({
-  id: 'claude', kind: { type: 'native' }, label: 'Claude Code · your subscription', state,
-  version: state === 'not_installed' ? null : '2.1.150',
-  account: state === 'ready' ? { plan: 'Max', email: 'taylor@example.com', org: null, method: 'claude.ai' } : null,
-  models: NATIVE_MODELS, defaultModel: null, message: null, ...extra,
-});
-const codemieProfile = (name, state = 'ready', extra = {}) => ({
-  id: `codemie:${name}`, kind: { type: 'code_mie', name }, label: `CodeMie · ${name}`, state, version: null, account: null,
-  models: [{ id: 'claude-sonnet-4-5', label: 'claude-sonnet-4-5' }, { id: 'claude-haiku-4-5', label: 'claude-haiku-4-5' }],
-  defaultModel: 'claude-sonnet-4-5', message: null, ...extra,
-});
+const contract = name => JSON.parse(readFileSync(new URL(`./contract/${name}.json`, import.meta.url), 'utf8'));
+export const contractFixtures = () => ({ status: contract('ai-status'), usage: contract('ai-usage'), testOk: contract('ai-test-ok'), testFail: contract('ai-test-fail') });
 
 /**
  * `ai_status` answers for the browser mock and unit tests. Kinds: none, native,
  * native_needs_login, codemie_only, both. `defaultProfile` overrides the saved default.
  */
 export function aiStatus(kind = 'both', { defaultProfile } = {}) {
+  const { profiles: all, settings } = contract('ai-status');
+  const [native, prod, staging] = all;
+  const notInstalled = { ...native, state: 'not_installed', version: null, account: null, message: 'Claude Code is not installed.' };
+  const needsLogin = { ...native, state: 'needs_login', account: null, message: 'Claude Code is not signed in.' };
   const sets = {
-    none: [nativeProfile('not_installed', { message: 'Claude Code is not installed.' })],
-    native: [nativeProfile('ready')],
-    native_needs_login: [nativeProfile('needs_login', { message: 'Claude Code is not signed in.' })],
-    codemie_only: [nativeProfile('not_installed', { message: 'Claude Code is not installed.' }), codemieProfile('prod')],
-    both: [nativeProfile('ready'), codemieProfile('prod'), codemieProfile('staging', 'needs_login', { message: 'Sign in to this CodeMie profile.' })],
+    none: [notInstalled],
+    native: [native],
+    native_needs_login: [needsLogin],
+    codemie_only: [notInstalled, prod],
+    both: [native, prod, staging],
   };
   const profiles = sets[kind];
   if (!profiles) throw new Error(`Unknown aiStatus kind ${kind}`);
-  const defaults = { none: null, native: 'claude', native_needs_login: null, codemie_only: 'codemie:prod', both: 'claude' };
-  const routes = kind === 'both' ? { summary: { profile: 'codemie:prod', model: 'claude-haiku-4-5' }, mail_draft: { model: 'sonnet' } } : {};
+  const defaults = { none: null, native: 'claude', native_needs_login: null, codemie_only: 'codemie:prod', both: settings.defaultProfile };
   return {
-    profiles,
-    settings: { defaultProfile: defaultProfile === undefined ? defaults[kind] : defaultProfile, routes },
+    profiles: JSON.parse(JSON.stringify(profiles)),
+    settings: { defaultProfile: defaultProfile === undefined ? defaults[kind] : defaultProfile, routes: kind === 'both' ? settings.routes : {} },
   };
 }
 
-export const aiUsage = () => ({ runs: 14, costUsd: 0.2143, byProfile: [{ profile: 'claude', runs: 11, costUsd: 0.1841 }, { profile: 'codemie:prod', runs: 3, costUsd: 0.0302 }] });
+export const aiUsage = () => contract('ai-usage');

@@ -458,6 +458,11 @@ impl Core {
         if req.op == Operation::AiUsage {
             return self.ai_usage(&req);
         }
+        // Read-style: a Test can take a minute and must not queue other edits behind it. It
+        // writes only its own `ai_run` record, so there is no operation id or revision fence.
+        if req.op == Operation::AiTest {
+            return self.ai_test(&req).await;
+        }
         if req.op == Operation::GraphCancel {
             *self.auth_attempt.lock().await = None;
             return Ok(json!({"cancelled":true}));
@@ -503,7 +508,6 @@ impl Core {
                 | Operation::SourcesMore
                 | Operation::ActionPrepare
                 | Operation::ActionConfirm
-                | Operation::AiTest
                 | Operation::JobCancel
         );
         let _mutation_guard = if synchronous {
@@ -880,7 +884,6 @@ impl Core {
                 json!({"queued":true})
             }
             Operation::AiSettingsSave => self.ai_settings_save(&req, &detected)?,
-            Operation::AiTest => self.ai_test(&req).await?,
             Operation::AiDraft => self.queue_ai_draft(&req)?,
             Operation::BriefGenerate => {
                 let (w, _) = self.active_workspace(&req, false)?;

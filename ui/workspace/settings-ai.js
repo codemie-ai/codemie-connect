@@ -24,7 +24,7 @@ const STATE_CHIP = {
   error: ['Error', 'error', 'alert'],
 };
 const STATE_TEXT = {
-  ready: 'Ready to draft and summarise.',
+  ready: 'Ready to draft and summarize.',
   needs_login: 'Sign in before Connect can use this profile.',
   not_installed: 'This profile is not installed on this Mac.',
   too_old: 'This version is too old for AI features.',
@@ -90,7 +90,7 @@ function stateAction(p) {
   if (p.state === 'needs_login' && isNative(p)) {
     return `<div class="ws-ai-steps"><span>Open Terminal and run <code>claude</code>, then type <code>/login</code></span>${button('Copy', { action: 'ai-copy-login', iconName: 'link', size: 'sm' })}</div><div class="ws-actions">${again}</div>`;
   }
-  if (p.state === 'needs_login') return `<div class="ws-actions">${tools}${again}</div>`;
+  if (p.state === 'needs_login') return `<div class="ws-ai-steps"><span>Sign in with <code>codemie profile login</code> in Terminal, or open CodeMie tools.</span></div><div class="ws-actions">${tools}${again}</div>`;
   if (p.state === 'too_old') return `<div class="ws-ai-steps"><span>Update Claude Code: open Terminal, run <code>claude update</code>, then check again.</span></div><div class="ws-actions">${tools}${again}</div>`;
   if (p.state === 'not_installed' || p.state === 'not_configured') return `<div class="ws-actions">${tools}${again}</div>`;
   if (p.state === 'error' || p.state === 'checking') return `<div class="ws-actions">${button('Retry', { action: 'ai-refresh', variant: 'secondary', iconName: 'refresh' })}</div>`;
@@ -129,6 +129,9 @@ function defaultCard(ai) {
   if (current && !ready.some(p => p.id === current)) options.push([current, `${profileLabel(profiles, current)} (not ready)`]);
   if (!current) options.unshift(['', 'Choose…']);
   const control = select(options, current || '', { name: 'ai-default', 'data-action': 'ai-default', 'aria-label': 'Default Claude profile', disabled: !options.length });
+  if (!ready.length) {
+    return card({ title: 'Which Claude writes for you', iconName: 'sliders', body: `<p class="ws-muted ws-hint" data-ai-routing-off>No Claude is ready yet, so there is nothing to choose. Set one up above and check again.</p>` });
+  }
   const rows = PURPOSES.map(([purpose, label, hint]) => {
     const route = settings.routes?.[purpose] || {};
     const effective = profiles.find(p => p.id === (route.profile || current));
@@ -154,7 +157,7 @@ function usageCard(ai) {
   if (!u) body = `<p class="ws-muted ws-hint">Usage is not available yet.</p>`;
   else if (!u.runs) body = `<p class="ws-muted ws-hint">No AI runs yet this month.</p>`;
   else {
-    const rows = (u.byProfile || []).map(r => `<div class="ws-source-row"><div><strong>${e(profileLabel(ai.profiles, r.profile))}</strong><span>${e(r.runs)} run${r.runs === 1 ? '' : 's'}${r.profile === 'claude' ? ' · Claude Code’s estimate' : ''}</span></div><span class="ws-mono">${e(money(r.costUsd))}</span></div>`).join('');
+    const rows = Object.entries(u.byProfile || {}).map(([id, r]) => `<div class="ws-source-row"><div><strong>${e(profileLabel(ai.profiles, id))}</strong><span>${e(r.runs)} run${r.runs === 1 ? '' : 's'}${id === 'claude' ? ' · Claude Code’s estimate' : ''}</span></div><span class="ws-mono">${e(money(r.costUsd))}</span></div>`).join('');
     body = `<div class="ws-ai-totals"><div><strong>${e(u.runs)}</strong><span>runs</span></div><div><strong>${e(money(u.costUsd))}</strong><span>estimated cost</span></div></div><div class="ws-source-list">${rows}</div>
       <p class="ws-muted ws-hint">On a Claude subscription the cost is Claude Code’s own estimate, not a charge.</p>`;
   }

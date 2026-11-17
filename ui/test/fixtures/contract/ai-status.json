@@ -1,0 +1,98 @@
+{
+  "profiles": [
+    {
+      "account": {
+        "email": "taylor@example.com",
+        "method": "claude.ai",
+        "org": null,
+        "plan": "Max"
+      },
+      "defaultModel": null,
+      "id": "claude",
+      "kind": {
+        "type": "native"
+      },
+      "label": "Claude Code · your subscription",
+      "message": null,
+      "models": [
+        {
+          "id": "",
+          "label": "Account default"
+        },
+        {
+          "id": "haiku",
+          "label": "Haiku"
+        },
+        {
+          "id": "sonnet",
+          "label": "Sonnet"
+        },
+        {
+          "id": "opus",
+          "label": "Opus"
+        }
+      ],
+      "state": "ready",
+      "version": "2.1.150"
+    },
+    {
+      "account": null,
+      "defaultModel": "claude-sonnet-4-5",
+      "id": "codemie:prod",
+      "kind": {
+        "name": "prod",
+        "type": "code_mie"
+      },
+      "label": "CodeMie · prod",
+      "message": null,
+      "models": [
+        {
+          "id": "claude-sonnet-4-5",
+          "label": "claude-sonnet-4-5"
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "label": "claude-haiku-4-5"
+        }
+      ],
+      "state": "ready",
+      "version": null
+    },
+    {
+      "account": null,
+      "defaultModel": "claude-sonnet-4-5",
+      "id": "codemie:staging",
+      "kind": {
+        "name": "staging",
+        "type": "code_mie"
+      },
+      "label": "CodeMie · staging",
+      "message": "Sign in to this CodeMie profile.",
+      "models": [
+        {
+          "id": "claude-sonnet-4-5",
+          "label": "claude-sonnet-4-5"
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "label": "claude-haiku-4-5"
+        }
+      ],
+      "state": "needs_login",
+      "version": null
+    }
+  ],
+  "settings": {
+    "defaultProfile": "claude",
+    "routes": {
+      "mail_draft": {
+        "model": "sonnet",
+        "profile": null
+      },
+      "summary": {
+        "model": "claude-haiku-4-5",
+        "profile": "codemie:prod"
+      }
+    }
+  }
+}

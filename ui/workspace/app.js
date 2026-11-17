@@ -299,7 +299,8 @@ async function testAiProfile(profileId) {
   await render();
   try {
     const model = state.ai.testModels[profileId] || undefined;
-    state.ai.tests[profileId] = await store.mutate('ai_test', { profileId, model }, undefined, { retry: true });
+    state.ai.tests[profileId] = await store.query('ai_test', { profileId, model });
+    state.ai.usage = await store.query('ai_usage', {}).catch(() => state.ai.usage);
   } catch (err) {
     state.ai.tests[profileId] = { ok: false, message: err?.message || String(err) };
   }
@@ -310,8 +311,14 @@ async function testAiProfile(profileId) {
  * Asks the owner which Claude writes for them (first use). Resolves to the chosen profile id,
  * or null when they cancel or nothing is ready. Call it when an AI op fails with `needs_choice`.
  */
-export async function ensureClaudeChoice() {
-  if (!store) return null;
+let choiceInFlight = null;
+export function ensureClaudeChoice() {
+  if (!store) return Promise.resolve(null);
+  choiceInFlight ||= askClaudeChoice().finally(() => { choiceInFlight = null; });
+  return choiceInFlight;
+}
+
+async function askClaudeChoice() {
   let status;
   try {
     status = await store.query('ai_status', { refresh: true });
