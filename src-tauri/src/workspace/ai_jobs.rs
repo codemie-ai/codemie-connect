@@ -10,7 +10,7 @@ use super::{
 };
 use crate::ai::command::RunSpec;
 use crate::ai::profiles::AiProfile;
-use crate::ai::stream::{AiError, ErrorClass, RunOutcome};
+use crate::ai::stream::{AiError, ErrorClass, RunEvent, RunOutcome};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -384,9 +384,29 @@ impl Core {
         }
         self.emit("workspace:changed");
         Ok(StartedRun {
+            job_id: job.id.clone(),
             cancel,
             _stop: stop,
         })
+    }
+
+    /// Notes on a running job the model Claude says it runs (`runModel`), so "Drafting with…"
+    /// can name it when the route left the model to the profile.
+    fn note_run_model(&self, job_id: &str, model: &str) {
+        if let Ok(mut r) = self.repo() {
+            let running = r
+                .jobs()
+                .ok()
+                .and_then(|jobs| jobs.into_iter().find(|j| j.id == job_id))
+                .filter(|j| j.state == "running");
+            if let Some(mut job) = running {
+                job.payload["runModel"] = model.into();
+                if r.save_job(&job).is_err() {
+                    return;
+                }
+            }
+        }
+        self.emit("workspace:changed");
     }
 
     /// The full text of each Outlook message in `window`, read from Microsoft now and never
@@ -444,10 +464,24 @@ impl Core {
             return Err(AiError::new(ErrorClass::Cancelled).into());
         }
         let ledger = LedgerEntry::open(self, spec.clone(), ref_id);
-        let result = self
-            .runner
-            .run(spec, profile, run.cancel.clone(), Box::new(|_| {}))
-            .await;
+        let (models, mut reported) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let on_event: Box<dyn Fn(RunEvent) + Send> = Box::new(move |event| {
+            if let RunEvent::Started {
+                model: Some(model), ..
+            } = event
+            {
+                let _ = models.send(model);
+            }
+        });
+        let running = self.runner.run(spec, profile, run.cancel.clone(), on_event);
+        tokio::pin!(running);
+        let result = loop {
+            tokio::select! {
+                biased;
+                Some(model) = reported.recv() => self.note_run_model(&run.job_id, &model),
+                result = &mut running => break result,
+            }
+        };
         let answer = match &result {
             Ok(o) => o
                 .structured
@@ -478,6 +512,7 @@ impl Core {
 
 /// A job whose Claude work has begun: its cancel token, reachable by Stop until dropped.
 struct StartedRun<'a> {
+    job_id: String,
     cancel: CancellationToken,
     _stop: StopHandle<'a>,
 }
@@ -784,6 +819,30 @@ mod tests {
             4200,
             0.0123,
         )
+    }
+
+    /// A Teams reply: one or two short sentences, no greeting or sign-off, the user's choice in
+    /// brackets.
+    fn teams_answer() -> RunOutcome {
+        answer(
+            json!({"draft": "[Yes, 11:00 works for me / Sorry, I can't make 11:00]. If that changes, I'm free Thu 14:00–14:30 or Fri 10:00–10:30.",
+                "questions": ["Can you join the call at 11:00?"]}),
+            "claude-sonnet-4-5",
+            2600,
+            0.004,
+        )
+    }
+
+    /// Polls a job until `ready` says it is; Claude's start is reported while the run goes on.
+    async fn job_when(core: &Core, id: &str, ready: impl Fn(&Job) -> bool) -> Job {
+        for _ in 0..300 {
+            let j = job(core, &json!(id));
+            if ready(&j) {
+                return j;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("job {id} never got there");
     }
 
     fn draft_request(core: &Core, data: Value) -> Request {
@@ -1265,6 +1324,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn running_draft_notes_the_model_claude_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, gate) = FakeRunner::gated(vec![Ok(draft_answer())]);
+        let core = test_core(dir.path(), Arc::new(fake), ready());
+        seed(&core);
+        budget_thread(&core, None);
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        let id = queued["jobId"].as_str().unwrap().to_string();
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        let running = tokio::spawn(core.clone().run_claimed_job(claimed));
+        gate.started.notified().await;
+        let noted = job_when(&core, &id, |j| j.payload["runModel"].is_string()).await;
+        assert_eq!(noted.state, "running");
+        assert_eq!(noted.payload["runModel"], "claude-sonnet-4-5");
+        assert_eq!(
+            noted.payload["model"],
+            Value::Null,
+            "the route left the model to the profile"
+        );
+        gate.release.notify_one();
+        running.await.unwrap();
+        let done = job(&core, &json!(id));
+        assert_eq!(done.state, "succeeded");
+        assert_eq!(done.payload["runModel"], "claude-sonnet-4-5");
+    }
+
+    #[tokio::test]
     async fn abandoned_run_is_still_recorded_as_cancelled() {
         let dir = tempfile::tempdir().unwrap();
         let (fake, gate) = FakeRunner::gated(vec![Ok(draft_answer())]);
@@ -1485,6 +1574,7 @@ mod tests {
             )),
             Err(AiError::new(ErrorClass::NeedsLogin)),
             Ok(draft_answer()),
+            Ok(teams_answer()),
         ]);
         let graph = Arc::new(FakeGraph::default());
         let core = test_core_with_graph(dir.path(), Arc::new(fake), ready(), graph.clone());
@@ -1520,10 +1610,24 @@ mod tests {
             put(&core, teams("t2", BASE + 60, "Or 11?"))
         })
         .await;
+        // A Teams draft of the chat, looked at once while Claude writes it.
+        let chat = core
+            .request(draft_request(
+                &core,
+                json!({"sourceId": "t2", "intent": "propose_times", "tone": "friendly", "length": "short", "includeFreeTimes": true}),
+            ))
+            .await
+            .unwrap();
+        let chat_id = chat["jobId"].as_str().unwrap().to_string();
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        let chat_run = tokio::spawn(core.clone().run_claimed_job(claimed));
+        gate.started.notified().await;
+        let running = job_when(&core, &chat_id, |j| j.payload["runModel"].is_string()).await;
+        gate.release.notify_one();
+        chat_run.await.unwrap();
 
         // Random ids and clock values are pinned so the files only change with the shapes.
-        let pin_record = |kind: &str| {
-            let r = snapshot_record(&core, kind).unwrap();
+        let pin = |r: Record| {
             let mut v = serde_json::to_value(&r).unwrap();
             v["revision"] = "rev-1".into();
             v["updatedAt"] = 1_795_000_500.into();
@@ -1536,19 +1640,31 @@ mod tests {
             v["key"] = format!("ai_draft:op-{n}").into();
             v["dueAt"] = 1_795_000_400.into();
             v["payload"]["startedAt"] = 1_795_000_401.into();
+            if v["leaseUntil"].is_i64() {
+                v["leaseUntil"] = 1_795_000_700.into();
+            }
             v
         };
         assert_eq!(needs_login.error_class.as_deref(), Some("needs_login"));
         assert_eq!(conflict.error_code.as_deref(), Some("conflict"));
+        assert_eq!(running.state, "running");
 
         let dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
         let update = std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1");
         for (name, value) in [
-            ("draft-ai.json", pin_record("draft")),
-            ("summary.json", pin_record("summary")),
+            ("draft-ai.json", pin(draft(&core, "ai:m3").unwrap())),
+            (
+                "draft-ai-chat.json",
+                pin(draft(&core, "ai:chat:chat:19:ops").unwrap()),
+            ),
+            (
+                "summary.json",
+                pin(snapshot_record(&core, "summary").unwrap()),
+            ),
             ("job-ai-draft-failed.json", pin_job(needs_login, 1)),
             ("job-ai-draft-conflict.json", pin_job(conflict, 2)),
+            ("job-ai-draft-running.json", pin_job(running, 3)),
         ] {
             let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
             let path = dir.join(name);

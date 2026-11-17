@@ -1,0 +1,35 @@
+{
+  "attempts": 1,
+  "connectionId": "acct",
+  "dueAt": 1795000400,
+  "id": "job-3",
+  "key": "ai_draft:op-3",
+  "kind": "ai_draft",
+  "leaseUntil": 1795000700,
+  "payload": {
+    "channel": "chat",
+    "conversationKey": "chat:chat:19:ops",
+    "draftKey": "chat:chat:19:ops",
+    "model": null,
+    "profile": "claude",
+    "purpose": "chat_draft",
+    "request": {
+      "includeFreeTimes": true,
+      "intent": "propose_times",
+      "length": "short",
+      "sourceId": "t2",
+      "tone": "friendly"
+    },
+    "runModel": "claude-sonnet-4-5",
+    "startedAt": 1795000401
+  },
+  "policy": {
+    "generation": 1,
+    "policyRevision": 1,
+    "sourceRevision": null,
+    "workspaceRevision": 1
+  },
+  "result": null,
+  "state": "running",
+  "workspaceId": "personal"
+}

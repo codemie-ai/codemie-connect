@@ -60,10 +60,15 @@ impl ClaudeRunner for FakeRunner {
         self.calls.lock().unwrap().push(spec);
         let next = self.script.lock().unwrap().pop_front();
         let gate = self.gate.clone();
+        // Like the CLI, the start event names the model the answer will come from.
+        let model = next
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|o| o.model.clone());
         Box::pin(async move {
             on_event(RunEvent::Started {
                 version: None,
-                model: None,
+                model,
             });
             if let Some(gate) = gate {
                 gate.started.notify_one();

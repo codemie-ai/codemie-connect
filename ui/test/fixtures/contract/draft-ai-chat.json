@@ -1,0 +1,39 @@
+{
+  "connectionId": "acct",
+  "data": {
+    "aiSuggested": true,
+    "channel": "chat",
+    "conversationKey": "chat:chat:19:ops",
+    "draftKey": "chat:chat:19:ops",
+    "options": {
+      "includeFreeTimes": true,
+      "intent": "propose_times",
+      "length": "short",
+      "tone": "friendly"
+    },
+    "provenance": {
+      "at": 1795000500,
+      "costUsd": 0.004,
+      "durationMs": 2600,
+      "messageIds": [
+        "t1",
+        "t2"
+      ],
+      "model": "claude-sonnet-4-5",
+      "partialText": false,
+      "profile": "claude"
+    },
+    "questions": [
+      "Can you join the call at 11:00?"
+    ],
+    "sourceId": "t2",
+    "sourceRevision": "v1",
+    "text": "[Yes, 11:00 works for me / Sorry, I can't make 11:00]. If that changes, I'm free Thu 14:00–14:30 or Fri 10:00–10:30."
+  },
+  "id": "ai:chat:chat:19:ops",
+  "kind": "draft",
+  "revision": "rev-1",
+  "source": "chat:19:ops",
+  "updatedAt": 1795000500,
+  "workspaceId": "personal"
+}

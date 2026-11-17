@@ -21,6 +21,7 @@
       "sourceId": "t1",
       "tone": "neutral"
     },
+    "runModel": "claude-sonnet-4-5",
     "startedAt": 1795000401
   },
   "policy": {
