@@ -3,11 +3,13 @@
 //! caller is Connect's own page rather than a frame inside it (`caller`). `manifest` and `capabilities` read a package's
 //! `echo-plugin.json` and describe what it asks for on the permission sheet. `market` (with
 //! `git`), `install` (with `tree`) and `registry` fetch marketplaces and install, update and
-//! remove plugins from them; `commands` is Settings' `plugins_request`.
+//! remove plugins from them; `commands` is Settings' `plugins_request`. `host` runs each plugin's
+//! host half (`main.js`) in its own sandboxed QuickJS runtime.
 pub mod caller;
 pub mod capabilities;
 pub mod commands;
 pub mod git;
+pub mod host;
 pub mod install;
 pub mod manifest;
 pub mod market;

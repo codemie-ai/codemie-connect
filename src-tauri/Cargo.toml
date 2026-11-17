@@ -55,6 +55,9 @@ semver = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
 portable-pty = "0.8"
+# Plugin host halves (DESIGN 7.2): QuickJS only (no quickjs-libc, so no std/os modules). Promises
+# are QuickJS's own, settled by the host thread, so rquickjs's async executor isn't needed.
+rquickjs = "0.14"
 
 # The data-folder picker (DESIGN 8). Used directly rather than through tauri-plugin-dialog, whose
 # window script replaces window.alert/confirm (ruling R23).
