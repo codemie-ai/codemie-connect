@@ -423,6 +423,8 @@ pub struct ProfileCache {
     /// Tests of other modules pin the detected profiles instead of probing.
     #[cfg(test)]
     fixed: Option<Vec<AiProfile>>,
+    #[cfg(test)]
+    fixed_delay: Duration,
 }
 
 impl ProfileCache {
@@ -433,6 +435,8 @@ impl ProfileCache {
             cached: Mutex::new(None),
             #[cfg(test)]
             fixed: None,
+            #[cfg(test)]
+            fixed_delay: Duration::ZERO,
         }
     }
 
@@ -440,6 +444,14 @@ impl ProfileCache {
     pub fn fixed(profiles: Vec<AiProfile>) -> Self {
         let mut cache = Self::system(Vec::new());
         cache.fixed = Some(profiles);
+        cache
+    }
+
+    /// Like [`fixed`](Self::fixed), but detection takes `delay` (a slow CLI probe).
+    #[cfg(test)]
+    pub fn fixed_slow(profiles: Vec<AiProfile>, delay: Duration) -> Self {
+        let mut cache = Self::fixed(profiles);
+        cache.fixed_delay = delay;
         cache
     }
 
@@ -458,6 +470,7 @@ impl ProfileCache {
     pub async fn profiles(&self) -> Vec<AiProfile> {
         #[cfg(test)]
         if let Some(p) = &self.fixed {
+            tokio::time::sleep(self.fixed_delay).await;
             return p.clone();
         }
         if let Some(p) = self.fresh() {

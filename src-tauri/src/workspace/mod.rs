@@ -489,6 +489,13 @@ impl Core {
                 json!({"version":1,"workspaces":snap.workspaces.iter().map(|w|json!({"id":w.id,"name":w.name,"layout":w.layout})).collect::<Vec<_>>(),"records":snap.records.into_iter().filter(|r|r.connection_id.is_none()&&matches!(r.kind.as_str(),"note"|"commitment"|"draft")).collect::<Vec<_>>()}),
             );
         }
+        // Detection may probe the CLIs for many seconds; it must finish before the
+        // mutation lock is taken so it never blocks other writes.
+        let detected = if req.op == Operation::AiSettingsSave {
+            self.profiles.profiles().await
+        } else {
+            Vec::new()
+        };
         let synchronous = !matches!(
             req.op,
             Operation::GraphConnect
@@ -872,7 +879,7 @@ impl Core {
                 ))?;
                 json!({"queued":true})
             }
-            Operation::AiSettingsSave => self.ai_settings_save(&req).await?,
+            Operation::AiSettingsSave => self.ai_settings_save(&req, &detected)?,
             Operation::AiTest => self.ai_test(&req).await?,
             Operation::AiDraft => self.queue_ai_draft(&req)?,
             Operation::BriefGenerate => {
@@ -1766,6 +1773,16 @@ pub(crate) fn test_core(
     profiles: Vec<crate::ai::profiles::AiProfile>,
 ) -> Arc<Core> {
     Core::open_with(None, dir, runner, ProfileCache::fixed(profiles)).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn test_core_slow(
+    dir: &Path,
+    runner: Arc<dyn ClaudeRunner>,
+    profiles: Vec<crate::ai::profiles::AiProfile>,
+    delay: std::time::Duration,
+) -> Arc<Core> {
+    Core::open_with(None, dir, runner, ProfileCache::fixed_slow(profiles, delay)).unwrap()
 }
 
 #[cfg(test)]

@@ -220,11 +220,11 @@ impl Core {
     }
 
     /// `ai_settings_save {defaultProfile, routes}`.
-    pub(super) async fn ai_settings_save(&self, req: &Request) -> Result<Value> {
+    /// `profiles` were detected by the caller before the mutation lock was taken.
+    pub(super) fn ai_settings_save(&self, req: &Request, profiles: &[AiProfile]) -> Result<Value> {
         let wanted: AiSettings = serde_json::from_value(req.data.clone())
             .map_err(|_| invalid("Those AI settings are not valid."))?;
-        let profiles = self.profiles.profiles().await;
-        let ai = validate_ai_settings(wanted, &profiles)?;
+        let ai = validate_ai_settings(wanted, profiles)?;
         let mut r = self.repo()?;
         let mut s = r.settings()?;
         s.ai = ai.clone();
@@ -481,6 +481,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ai_settings_save_detects_profiles_without_holding_the_mutation_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::workspace::test_core_slow(
+            dir.path(),
+            Arc::new(FakeRunner::new(vec![])),
+            ready(),
+            Duration::from_millis(1500),
+        );
+        let save = mutation(
+            &core,
+            Operation::AiSettingsSave,
+            json!({"defaultProfile": "claude", "routes": {}}),
+        );
+        let saving = tokio::spawn({
+            let core = core.clone();
+            async move { core.request(save).await }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let other = mutation(&core, Operation::SettingsUpdate, json!({"timeZone": "UTC"}));
+        tokio::time::timeout(Duration::from_millis(600), core.request(other))
+            .await
+            .expect("a mutation waited for profile detection")
+            .unwrap();
+        assert!(!saving.is_finished(), "detection should still be running");
+        // The slow save then fails on its stale revision, never writes half-state.
+        assert_eq!(saving.await.unwrap().unwrap_err().code, "stale_view");
+    }
+
+    #[tokio::test]
     async fn ai_status_and_usage_need_no_operation_id() {
         let dir = tempfile::tempdir().unwrap();
         let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
@@ -593,14 +622,27 @@ mod tests {
                 cap_usd: None,
                 staging_root: dir.path().join("s"),
             };
+            let before: Vec<String> = core
+                .repo()
+                .unwrap()
+                .records_of_kind("ai_run")
+                .unwrap()
+                .into_iter()
+                .map(|r| r.id)
+                .collect();
             core.record_ai_run(&spec, &Ok(o), Duration::ZERO, Some("r1"));
-            // Move the record into the wanted month.
+            // The one record that was not there before is the new one.
             let mut r = core.repo().unwrap();
-            let mut rec = r.records_of_kind("ai_run").unwrap();
-            rec.sort_by_key(|x| x.updated_at);
-            let mut last = rec.pop().unwrap();
-            last.data["month"] = month.into();
-            r.put_ai_run(&last).unwrap();
+            let mut new: Vec<Record> = r
+                .records_of_kind("ai_run")
+                .unwrap()
+                .into_iter()
+                .filter(|x| !before.contains(&x.id))
+                .collect();
+            assert_eq!(new.len(), 1);
+            let mut rec = new.remove(0);
+            rec.data["month"] = month.into();
+            r.put_ai_run(&rec).unwrap();
         };
         add("claude", "2026-11", Some(0.25));
         add("claude", "2026-11", None);
