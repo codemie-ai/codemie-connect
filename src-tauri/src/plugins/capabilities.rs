@@ -1,0 +1,492 @@
+//! The capability catalog (DESIGN 7.1, 7.2): every `uses` key Echo defines, how far Connect
+//! supports it, and the permission sheet's line for it. The sheet's words are written here, never
+//! taken from the plugin, so a plugin can't describe itself kindly.
+use super::manifest::{Manifest, ManifestError};
+use serde::Serialize;
+use serde_json::Value;
+
+/// How far Connect supports a capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", content = "limit", rename_all = "snake_case")]
+pub enum Support {
+    Supported,
+    /// Works, with the limit stated.
+    Partial(&'static str),
+    /// Installable with a warning; its calls fail with "unsupported" (DESIGN 7.2).
+    Unsupported,
+    /// The plugin can't be installed; the reason is shown on its sheet.
+    Blocking(&'static str),
+}
+
+/// One line of the permission sheet.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SheetLine {
+    pub key: String,
+    pub text: String,
+    pub support: Support,
+}
+
+/// Every key Echo defines for `uses`, with Connect's status for it.
+pub const CATALOG: &[(&str, Support)] = &[
+    ("knowledge", Support::Blocking("Needs Connect's Knowledge engine (coming later)")),
+    ("claude", Support::Partial("Claude runs without tools in Connect")),
+    ("schedule", Support::Supported),
+    (
+        "deliver",
+        Support::Partial("Teams and mail messages wait for your review in Connect; nothing is sent on its own"),
+    ),
+    ("deliver_provider", Support::Supported),
+    ("network", Support::Supported),
+    ("channel", Support::Unsupported),
+    ("brain_source", Support::Unsupported),
+    ("export", Support::Unsupported),
+    ("sessions", Support::Unsupported),
+    ("folders", Support::Supported),
+    (
+        "echo",
+        Support::Partial("Connect fills this from your mail, chat and calendar; Echo's background jobs don't exist here"),
+    ),
+    (
+        "events",
+        Support::Partial("Only meeting_soon, sources_changed, threads_changed and shared_changed are sent"),
+    ),
+    ("files", Support::Unsupported),
+    ("work", Support::Supported),
+    ("signin", Support::Partial("Only GitHub sign-in is available")),
+    ("scripts", Support::Unsupported),
+    ("ai", Support::Unsupported),
+];
+
+pub fn support_of(key: &str) -> Option<Support> {
+    CATALOG.iter().find(|(k, _)| *k == key).map(|(_, s)| *s)
+}
+
+/// The sheet for a manifest, one line per `uses` key (in key order: the JSON map is sorted). An unknown key, or a value
+/// that can't be read, refuses the whole sheet.
+pub fn sheet(m: &Manifest) -> Result<Vec<SheetLine>, ManifestError> {
+    m.uses
+        .iter()
+        .map(|(key, value)| {
+            let support = support_of(key).ok_or_else(|| ManifestError::UnknownKey(key.clone()))?;
+            let text = describe(key, value).map_err(|why| ManifestError::BadValue {
+                key: key.clone(),
+                why,
+            })?;
+            Ok(SheetLine {
+                key: key.clone(),
+                text,
+                support,
+            })
+        })
+        .collect()
+}
+
+fn strings(v: &Value, key: &str) -> Result<Vec<String>, String> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(vec![]),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_string)
+                    .ok_or(format!("\"{key}\" must list words"))
+            })
+            .collect(),
+        Some(_) => Err(format!("\"{key}\" must be a list")),
+    }
+}
+
+fn flag(v: &Value, key: &str) -> Result<bool, String> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(format!("\"{key}\" is true or false")),
+    }
+}
+
+fn join_words(w: &[String]) -> String {
+    match w {
+        [] => String::new(),
+        [a] => a.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+fn quoted(w: &[String]) -> Vec<String> {
+    w.iter().map(|x| format!("\"{x}\"")).collect()
+}
+
+fn title_case(k: &str) -> String {
+    let mut c = k.chars();
+    c.next()
+        .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+        .unwrap_or_default()
+}
+
+fn need_object(v: &Value) -> Result<(), String> {
+    if v.is_object() {
+        Ok(())
+    } else {
+        Err("it must be an object".into())
+    }
+}
+
+/// What Echo's `echo.read` and `echo.write` names mean, in the sheet's words.
+const ECHO_READS: &[(&str, &str)] = &[
+    ("clients", "the names of your clients"),
+    ("threads", "your threads' names and stages"),
+    ("people", "who the people in your threads are"),
+    ("dictionary", "your dictionary"),
+    ("sources", "your calls, mail and chat"),
+    ("source", "your calls, mail and chat"),
+    ("calls", "your calls' minutes and transcripts"),
+];
+const ECHO_WRITES: &[(&str, &str)] = &[
+    ("dictionary", "Add names to your dictionary"),
+    ("thread_stage", "Change your threads' stage"),
+    ("tasks", "Add and update tasks in your threads"),
+];
+const EVENTS: &[(&str, &str)] = &[
+    ("meeting_soon", "a meeting is about to start"),
+    ("call_started", "a call starts"),
+    ("call_ended", "a call ends"),
+    ("recording_started", "a recording starts"),
+    ("recording_stopped", "a recording stops"),
+    ("transcribed", "a call's transcript is ready"),
+    ("minutes_written", "a call's minutes are written"),
+    ("thread_synced", "a thread's work is updated"),
+    ("sources_changed", "your mail, chat or calendar change"),
+    ("threads_changed", "a thread is renamed, merged or deleted"),
+    ("shared_changed", "a value its plugins share changes"),
+];
+
+fn describe(key: &str, v: &Value) -> Result<String, String> {
+    match key {
+        "knowledge" => Ok("Read and edit your Knowledge vaults".into()),
+        "claude" => Ok("Ask Claude questions on your behalf".into()),
+        "schedule" => Ok("Work on its own on a schedule while Connect is open".into()),
+        "deliver" => {
+            let to = strings(v, "to")?;
+            if to.is_empty() {
+                return Err(
+                    "it names no way to send (teams, mail, today, or one a plugin adds)".into(),
+                );
+            }
+            let words: Vec<String> = to
+                .iter()
+                .map(|t| match t.as_str() {
+                    "teams" => "Teams (a message to yourself)".to_string(),
+                    "today" => "your Today page".to_string(),
+                    "mail" => "mail (to yourself)".to_string(),
+                    k => format!("{} (through the plugin that adds it)", title_case(k)),
+                })
+                .collect();
+            Ok(format!("Send you messages through {}", join_words(&words)))
+        }
+        "deliver_provider" => {
+            let kinds = strings(v, "kinds")?;
+            if kinds.is_empty() {
+                return Err("it names no way to send".into());
+            }
+            let words: Vec<String> = kinds.iter().map(|k| title_case(k)).collect();
+            Ok(format!(
+                "Add a way to send you things: {}",
+                join_words(&words)
+            ))
+        }
+        "network" => {
+            let hosts = strings(v, "hosts")?;
+            let from = strings(v, "hosts_from")?;
+            if hosts.is_empty() && from.is_empty() {
+                return Err("it names no host (hosts, hosts_from)".into());
+            }
+            let mut parts = vec![];
+            if !hosts.is_empty() {
+                parts.push(join_words(&hosts));
+            }
+            if !from.is_empty() {
+                let s = if from.len() == 1 {
+                    "setting"
+                } else {
+                    "settings"
+                };
+                parts.push(format!(
+                    "the addresses you enter in its {s} {}",
+                    join_words(&quoted(&from))
+                ));
+            }
+            Ok(format!("Connect to {}", parts.join(" and to ")))
+        }
+        "channel" => {
+            let p = v.get("plugin").and_then(Value::as_str).unwrap_or("");
+            let name = p.split('@').next().unwrap_or("");
+            if name.is_empty() {
+                return Err("it names no channel plugin".into());
+            }
+            let shown = name
+                .split('-')
+                .map(title_case)
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(format!("Let you reach your Claude session through {shown}"))
+        }
+        "brain_source" => Ok("Add a folder you pick as a source for search".into()),
+        "export" => {
+            let what = strings(v, "what")?;
+            if what.is_empty() {
+                return Err("it names nothing to write (minutes, people)".into());
+            }
+            Ok(format!(
+                "Write copies of your {} into a folder you pick",
+                join_words(&what)
+            ))
+        }
+        "sessions" => {
+            let mut parts = vec![];
+            if flag(v, "skills")? {
+                parts.push("give Claude skills of its own".to_string());
+            }
+            if flag(v, "read")? {
+                parts.push("let Claude read the folders you give it".to_string());
+            }
+            if flag(v, "hints")? {
+                parts.push(
+                    "tell Claude what it knows about the client or thread you have open"
+                        .to_string(),
+                );
+            }
+            let commands = strings(v, "commands")?;
+            if !commands.is_empty() {
+                parts.push(format!(
+                    "let Claude run its commands {} without asking",
+                    join_words(&quoted(&commands))
+                ));
+            }
+            if parts.is_empty() {
+                return Err("it adds nothing (skills, read, hints, commands)".into());
+            }
+            let mut text = parts.join("; ");
+            text[..1].make_ascii_uppercase();
+            Ok(text)
+        }
+        "folders" => {
+            let what = v
+                .get("what")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+                .unwrap_or("folders");
+            Ok(if flag(v, "write")? {
+                format!("Read and write files in the {what} you choose")
+            } else {
+                format!("Read files in the {what} you choose")
+            })
+        }
+        "echo" => {
+            let read = strings(v, "read")?;
+            let write = strings(v, "write")?;
+            let jobs = flag(v, "jobs")?;
+            if read.is_empty() && write.is_empty() && !jobs {
+                return Err("it asks for nothing (read, write, jobs)".into());
+            }
+            let mut lines = vec![];
+            let mut said: Vec<String> = vec![];
+            for k in &read {
+                if let Some((_, w)) = ECHO_READS.iter().find(|(x, _)| x == k) {
+                    if !said.iter().any(|s| s == w) {
+                        said.push((*w).to_string());
+                    }
+                }
+            }
+            if !said.is_empty() {
+                lines.push(format!("Read {} in Connect", join_words(&said)));
+            }
+            for (k, w) in ECHO_WRITES {
+                if write.iter().any(|x| x == k) {
+                    lines.push((*w).to_string());
+                }
+            }
+            if jobs {
+                lines.push("Show and tune background jobs".to_string());
+            }
+            let unknown: Vec<String> = read
+                .iter()
+                .filter(|k| !ECHO_READS.iter().any(|(x, _)| x == k))
+                .chain(
+                    write
+                        .iter()
+                        .filter(|k| !ECHO_WRITES.iter().any(|(x, _)| x == k)),
+                )
+                .cloned()
+                .collect();
+            if !unknown.is_empty() {
+                lines.push(format!(
+                    "Ask for things Connect doesn't have: {}",
+                    unknown.join(", ")
+                ));
+            }
+            Ok(lines.join(". "))
+        }
+        "events" => {
+            let on = strings(v, "on")?;
+            if on.is_empty() {
+                return Err("it hears nothing".into());
+            }
+            let known: Vec<String> = EVENTS
+                .iter()
+                .filter(|(k, _)| on.iter().any(|o| o == k))
+                .map(|(_, w)| (*w).to_string())
+                .collect();
+            let unknown: Vec<String> = on
+                .iter()
+                .filter(|o| !EVENTS.iter().any(|(k, _)| k == o))
+                .cloned()
+                .collect();
+            let mut lines = vec![];
+            if !known.is_empty() {
+                lines.push(format!("Know when {}", join_words(&known)));
+            }
+            if !unknown.is_empty() {
+                lines.push(format!(
+                    "Ask to hear about things Connect doesn't have: {}",
+                    unknown.join(", ")
+                ));
+            }
+            Ok(lines.join(". "))
+        }
+        "files" => {
+            let files = strings(v, "read")?;
+            if files.is_empty() {
+                return Err("it names no file".into());
+            }
+            Ok(format!(
+                "Read these files of other apps on this computer: {}",
+                join_words(&quoted(&files))
+            ))
+        }
+        "work" => {
+            need_object(v)?;
+            Ok("Add its items to your Today page's My work".into())
+        }
+        "signin" => {
+            let hosts = strings(v, "hosts")?;
+            if hosts.is_empty() {
+                return Err("it names no host".into());
+            }
+            let mut text = format!(
+                "Use the sign-in saved on this computer for {} (GitHub CLI or git)",
+                join_words(&hosts)
+            );
+            if flag(v, "keep")? {
+                text.push_str("; it may sign you in itself and keep that sign-in");
+            }
+            Ok(text)
+        }
+        "scripts" => Ok("Run programs from its package on this computer with your rights".into()),
+        "ai" => {
+            let command = v
+                .pointer("/wrapper/command")
+                .and_then(Value::as_str)
+                .filter(|c| !c.is_empty())
+                .ok_or("it offers no wrapper command")?;
+            Ok(format!(
+                "Offer an AI profile that starts {command}, a program you install yourself"
+            ))
+        }
+        _ => unreachable!("support_of vets the key"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::manifest::{parse_manifest, MANIFEST_FILE};
+    use serde_json::json;
+
+    fn manifest_with(uses: Value) -> Manifest {
+        let d = tempfile::tempdir().unwrap();
+        let j = json!({"id": "hello", "name": "Hello", "version": "1.0.0", "uses": uses});
+        std::fs::write(d.path().join(MANIFEST_FILE), j.to_string()).unwrap();
+        parse_manifest(d.path()).unwrap()
+    }
+
+    #[test]
+    fn sheet_marks_partial_unsupported_and_blocking() {
+        let m = manifest_with(json!({
+            "network": {"hosts": ["api.github.com", "github.com"]},
+            "claude": {},
+            "sessions": {"hints": true},
+            "knowledge": {},
+            "folders": {"write": true},
+        }));
+        let lines = sheet(&m).unwrap();
+        let by = |k: &str| lines.iter().find(|l| l.key == k).unwrap().clone();
+        assert_eq!(by("network").support, Support::Supported);
+        assert_eq!(
+            by("network").text,
+            "Connect to api.github.com and github.com"
+        );
+        assert_eq!(
+            by("claude").support,
+            Support::Partial("Claude runs without tools in Connect")
+        );
+        assert_eq!(by("sessions").support, Support::Unsupported);
+        assert_eq!(
+            by("knowledge").support,
+            Support::Blocking("Needs Connect's Knowledge engine (coming later)")
+        );
+        assert_eq!(
+            by("folders").text,
+            "Read and write files in the folders you choose"
+        );
+        // One line per key, in key order.
+        let keys: Vec<&str> = lines.iter().map(|l| l.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["claude", "folders", "knowledge", "network", "sessions"]
+        );
+
+        let e = sheet(&manifest_with(
+            json!({"network": {"hosts": ["a.example.com"]}, "teleport": {}}),
+        ))
+        .unwrap_err();
+        assert_eq!(e.to_string(), "needs teleport, which Connect doesn't know");
+        assert!(matches!(
+            sheet(&manifest_with(json!({"network": {}}))),
+            Err(ManifestError::BadValue { .. })
+        ));
+    }
+
+    #[test]
+    fn every_key_echo_defines_has_a_status_and_a_line() {
+        let samples = json!({
+            "knowledge": {}, "claude": {"skip": true}, "schedule": {},
+            "deliver": {"to": ["teams", "mail", "today", "telegram"]},
+            "deliver_provider": {"kinds": ["telegram"]},
+            "network": {"hosts": ["api.telegram.org"], "hosts_from": ["server"]},
+            "channel": {"plugin": "telegram@claude-plugins-official"},
+            "brain_source": {"kind": "vault"}, "export": {"kind": "vault", "what": ["minutes", "people"]},
+            "sessions": {"skills": true, "read": true, "hints": true, "commands": ["search"]},
+            "folders": {"what": "Obsidian vaults"},
+            "echo": {"read": ["clients", "sources"], "write": ["dictionary", "tasks"], "jobs": true},
+            "events": {"on": ["meeting_soon", "from_the_future"]},
+            "files": {"read": ["~/Library/x.json"]}, "work": {},
+            "signin": {"hosts": ["github.com"], "keep": true},
+            "scripts": {"run": []}, "ai": {"wrapper": {"name": "A", "command": "acme"}},
+        });
+        assert_eq!(samples.as_object().unwrap().len(), CATALOG.len());
+        let lines = sheet(&manifest_with(samples)).unwrap();
+        assert_eq!(lines.len(), CATALOG.len());
+        for l in &lines {
+            assert!(!l.text.is_empty(), "{}", l.key);
+        }
+        let text = |k: &str| lines.iter().find(|l| l.key == k).unwrap().text.clone();
+        assert!(text("deliver").contains("Telegram (through the plugin that adds it)"));
+        assert!(text("network").contains("the addresses you enter in its setting \"server\""));
+        assert!(text("events").contains("doesn't have: from_the_future"));
+        assert_eq!(
+            text("folders"),
+            "Read files in the Obsidian vaults you choose"
+        );
+    }
+}

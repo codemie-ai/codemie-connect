@@ -2,7 +2,7 @@ mod ai;
 mod commands;
 mod error;
 mod navigation;
-mod plugins;
+pub mod plugins;
 mod state;
 mod steps;
 mod storage;

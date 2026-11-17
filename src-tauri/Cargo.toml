@@ -51,6 +51,7 @@ libc = "0.2"
 dunce = "1"
 sha2 = "0.10"
 thiserror = "2"
+semver = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
 portable-pty = "0.8"
