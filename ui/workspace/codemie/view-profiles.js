@@ -60,9 +60,11 @@ function profileCard(cm, p, ui) {
     !signedOut ? button('Test', { action: 'cm-profile-test', variant: 'ghost', iconName: 'play', disabled: test?.busy, attrs: { 'data-id': p.name } }) : '',
     testLine(test),
     '<span class="ws-spacer"></span>',
-    button('Change model…', { action: 'cm-profile-edit', variant: 'ghost', iconName: 'edit', disabled: signedOut || busy, attrs: { 'data-id': p.name } }),
+    // Only a CodeMie SSO profile can be changed here: `codemie setup` re-asks every other
+    // provider's key, which Connect never has.
+    isSso(p) && p.codemieUrl ? button('Change model…', { action: 'cm-profile-edit', variant: 'ghost', iconName: 'edit', disabled: signedOut || busy, attrs: { 'data-id': p.name } }) : '',
     menu(`cm-profile-${p.name}`, `More for ${p.name}`, [
-      ['edit', 'Change project and model…', 'cm-profile-edit', p.name, signedOut || busy],
+      ['edit', 'Change project and model…', 'cm-profile-edit', p.name, signedOut || busy || !isSso(p) || !p.codemieUrl],
       ['note', 'Rename…', 'cm-profile-rename', p.name, busy],
       ['link', 'Sign in again', 'cm-profile-login', p.name, !isSso(p) || !p.codemieUrl || busy],
       ['folder', 'Show configuration file', 'cm-profile-file', p.name],

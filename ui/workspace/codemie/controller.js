@@ -5,10 +5,13 @@ import { escapeHtml as e } from '../store.js';
 import { icon } from '../icons.js';
 import { button, field, textInput } from '../ui.js';
 import { testResultLabel } from '../settings-ai.js';
-import { attention, tabDots as dotsOf } from './model.js';
-import { APPS, agentDisplay } from './catalog.js';
+import { appState, attention, firstStep, setupProgress, shouldAutoOpen, tabDots as dotsOf } from './model.js';
+import { APPS, agentDisplay, providerShort } from './catalog.js';
 import { isSafe } from './cli.js';
-import { banner, code } from './view-common.js';
+import { DEFAULT_CODEMIE_URL, normalizeCodemieUrl } from './url.js';
+import { banner, code, hostOf } from './view-common.js';
+import { sheetMarkup, draftProvider } from './view-sheet.js';
+import { todayCard as todayCardView } from './view-today.js';
 import { overviewPanel, startableAgents } from './view-overview.js';
 import { healthPanel } from './view-health.js';
 import { profilesPanel } from './view-profiles.js';
@@ -59,10 +62,417 @@ export function createCodemieController(deps) {
     }, Math.max(0, RENDER_EVERY_MS - (now() - lastRender)));
   }
 
-  // ---------------------------------------------------------------- setup sheet (Task 4 replaces)
+  // ---------------------------------------------------------------- setup sheet
 
-  function openSheet() {
-    toast('Guided setup arrives in the next task');
+  let sh = null; // the open sheet: { mode, step, profile, saved, pending, d: draft }
+  const URL_ERRORS = {
+    empty: { title: 'Enter your CodeMie address', text: 'It is the address you open CodeMie at in the browser, for example https://codemie.your-company.com.' },
+    invalid: { title: 'That is not a web address', text: 'Check for typos. It looks like https://codemie.your-company.com.' },
+    insecure: { title: 'The address must start with https://', text: 'CodeMie sign-in only works over a secure connection. Ask your administrator for the https:// address.' },
+  };
+
+  function freeName() {
+    const used = new Set(cm.profiles.map((p) => p.name));
+    let name = 'default';
+    for (let i = 2; used.has(name); i++) name = `codemie-${i}`;
+    return name;
+  }
+
+  function newSheet(mode, step, extra = {}) {
+    const apps = {};
+    for (const a of APPS) apps[a.id] = a.id === 'claude-desktop' && appState(cm, a.id) === 'not_set';
+    const hasAgent = (cm.agents || []).some((a) => a.installed && a.command !== 'codemie-code');
+    return {
+      mode, step, profile: null, saved: null, pending: null,
+      d: {
+        choice: 'codemie', sub: 'anthropic-subscription', provider: 'litellm', orgUrl: '', url: cm.org?.codemieUrl || DEFAULT_CODEMIE_URL,
+        endpoint: '', key: '', awsRegion: '', awsAccessKey: '', awsSecret: '',
+        signin: 'idle', browser: false, notice: null, error: null, signedInAs: null,
+        name: freeName(), makeActive: mode === 'setup' || !cm.profiles.length, more: false, pick: null,
+        agents: hasAgent ? [] : ['claude'], showAll: false, install: null, apps, appsRun: null,
+        ...extra,
+      },
+    };
+  }
+
+  const afterAccountStep = () => {
+    const p = setupProgress(cm, prefs());
+    return !p.agent ? 'agents' : !p.apps ? 'apps' : 'done';
+  };
+
+  function openSheet({ mode = 'setup', profile } = {}) {
+    if (sh && session.running()) {
+      render();
+      return;
+    }
+    if (mode === 'add') sh = newSheet('add', 'signin');
+    else if (mode === 'edit') {
+      const p = profileNamed(profile);
+      if (!p) return;
+      if (p.provider !== 'ai-run-sso' || !p.codemieUrl) {
+        toast(`Change ${providerShort(p.provider)} profiles in Terminal with codemie setup.`);
+        return;
+      }
+      sh = newSheet('edit', 'project');
+      sh.profile = p.name;
+      runSetup(sh, { mode: 'update', profile: p.name, provider: p.provider, url: p.codemieUrl });
+    } else {
+      sh = newSheet('setup', firstStep(cm, prefs()));
+      if (!prefs().introduced) setLocalPref(PREF.introduced, '1');
+    }
+    render();
+  }
+
+  function waitForRuntime() {
+    return new Promise((resolve) => {
+      let off = () => {};
+      const check = () => {
+        if (cm.runtime.state === 'ready' || cm.runtime.state === 'failed') {
+          off();
+          resolve();
+          return true;
+        }
+        return false;
+      };
+      if (!check()) off = service.subscribe(check);
+    });
+  }
+
+  function failureNotice(f) {
+    if (f.id === 'ollamaNotRunning') return 'Ollama is not running. Open the Ollama app (it sits in the menu bar), then try again.';
+    return `CodeMie could not check your project’s settings${f.reason ? ` (${f.reason})` : ''}. Setup carries on.`;
+  }
+
+  /** Run `codemie setup` for the open sheet. Lists the CLI sends become the sheet's choice step. */
+  async function runSetup(s, plan) {
+    const d = s.d;
+    const before = cm.config.active;
+    d.signin = 'waiting';
+    d.browser = false;
+    d.notice = null;
+    const ui = {
+      onBrowser: () => { if (sh === s) { d.browser = true; render(); } },
+      onFailure: (f) => { if (sh === s) { d.notice = failureNotice(f); render(); } },
+      choose: (q) => new Promise((resolve) => {
+        if (sh !== s) { resolve(q.recommended ?? 0); return; }
+        if (d.signin === 'waiting') { d.signin = 'idle'; d.signedInAs ||= 'Signed in'; }
+        s.step = 'project';
+        s.pending = { ...q, resolve };
+        d.pick = null;
+        render();
+      }),
+    };
+    // Logged without the screen: a provider's key can be echoed on it.
+    const entry = runLog.start(plan.mode === 'update' ? `codemie setup (update ${plan.profile})` : 'codemie setup');
+    try {
+      const result = await service.hold(() => session.run(plan, ui));
+      entry.append(`Saved profile ${result.profileName}`);
+      entry.finish(0);
+      if (sh !== s) return;
+      s.pending = null;
+      d.signin = 'idle';
+      await service.load({ force: true });
+      if (s.mode === 'add' && !d.makeActive && before && before !== result.profileName) await service.switchProfile(before);
+      s.saved = result.profileName;
+      s.step = s.mode === 'setup' ? afterAccountStep() : 'done';
+      if (s.mode === 'edit') toast(`Saved “${result.profileName}”`, 'success');
+    } catch (err) {
+      entry.append(err?.cancelled ? 'Stopped' : err?.message || String(err));
+      entry.finish(err?.cancelled ? 130 : 1);
+      if (sh !== s) return;
+      s.pending = null;
+      d.signin = 'idle';
+      if (s.mode === 'edit') {
+        sh = null;
+        if (!err?.cancelled) toast(err?.message || String(err), 'error');
+      } else {
+        s.step = 'signin';
+        d.error = err?.cancelled ? null : { title: 'Setup did not finish', text: `${err?.message || String(err)} Nothing was saved.`, cmd: 'codemie setup', output: err?.raw || '' };
+      }
+      service.load({ force: true }).catch(() => {});
+    } finally {
+      render();
+    }
+  }
+
+  async function startSignin() {
+    const s = sh;
+    if (!s) return;
+    const d = s.d;
+    d.error = null;
+    if (s.mode === 'relogin') return relogin(s);
+    if (d.choice === 'codemie') d.url = cm.org?.codemieUrl || DEFAULT_CODEMIE_URL;
+    if (d.choice === 'org') {
+      const checked = normalizeCodemieUrl(d.orgUrl);
+      if (!checked.ok) {
+        d.error = URL_ERRORS[checked.reason];
+        return render();
+      }
+      d.url = checked.url;
+      d.orgUrl = checked.url;
+    }
+    if (cm.runtime.state === 'failed') {
+      d.error = { title: 'CodeMie is not downloaded yet', text: 'Sign-in needs the CodeMie CLI, and its download stopped. Check your connection, then use “Try again” at the bottom left.' };
+      return render();
+    }
+    if (cm.runtime.state !== 'ready') {
+      d.signin = 'queued';
+      await render();
+      await waitForRuntime();
+      if (sh !== s || d.signin !== 'queued') return undefined;
+      if (cm.runtime.state !== 'ready') {
+        d.signin = 'idle';
+        d.error = { title: 'CodeMie is not downloaded yet', text: 'Its download stopped. Check your connection, then use “Try again” at the bottom left.' };
+        return render();
+      }
+    }
+    const provider = draftProvider(d);
+    if (d.choice === 'subscription') {
+      const agent = d.sub === 'moonshot-subscription' ? 'kimi' : 'claude';
+      if (!(cm.agents || []).some((a) => a.command === agent && a.installed)) {
+        d.signin = 'installing';
+        await render();
+        try {
+          await service.installAgent(agent);
+        } catch (err) {
+          if (sh !== s) return undefined;
+          d.signin = 'idle';
+          d.error = { title: `${agent === 'kimi' ? 'Kimi Code' : 'Claude Code'} was not installed`, text: err?.message || String(err), cmd: err?.cmd, output: err?.output };
+          return render();
+        }
+        if (sh !== s) return undefined;
+      }
+    }
+    if (d.choice === 'org') {
+      d.signin = 'checking';
+      await render();
+      const r = await service.checkUrl(d.url);
+      if (sh !== s || d.signin !== 'checking') return undefined;
+      if (r.verdict !== 'codemie') {
+        d.signin = 'idle';
+        const host = hostOf(d.url);
+        d.error = r.verdict === 'not_codemie'
+          ? { title: `${host} is not a CodeMie address`, text: 'It answered, but not like CodeMie. Check the address with your administrator — it is the one you open CodeMie at in the browser. Nothing was saved.', cmd: `Check ${d.url}`, output: r.detail }
+          : r.verdict === 'invalid' ? URL_ERRORS.invalid
+            : { title: `Could not reach ${host}`, text: 'Nothing answered at this address. If CodeMie runs inside your company or client network, connect to their VPN first, then try again. Nothing was saved.', cmd: `Check ${d.url}`, output: r.detail };
+        return render();
+      }
+    }
+    const fields = { endpoint: d.endpoint.trim(), key: d.key, awsRegion: d.awsRegion.trim(), awsAccessKey: d.awsAccessKey.trim(), awsSecret: d.awsSecret };
+    const plan = { mode: 'add', provider, url: provider === 'ai-run-sso' ? d.url : undefined, fields, get name() { return s.d.name.trim(); } };
+    // The run lasts as long as the person takes in the browser and the sheet: never awaited by
+    // the click that started it (that would hold the button disabled for the whole setup).
+    runSetup(s, plan).catch(() => {});
+    return render();
+  }
+
+  async function relogin(s) {
+    const d = s.d;
+    d.signin = 'waiting';
+    d.error = null;
+    await render();
+    try {
+      await service.signIn(d.url);
+      if (sh !== s) return;
+      d.signin = 'done';
+      await render();
+      setTimeout(() => {
+        if (sh !== s) return;
+        sh = null;
+        toast(`Signed in again to “${s.profile}”. Agents and apps using it work again.`, 'success');
+        render();
+      }, 900);
+    } catch (err) {
+      if (sh !== s) return;
+      d.signin = 'idle';
+      d.error = { title: `Could not reach CodeMie at ${hostOf(d.url)}`, text: `${err?.message || String(err)} This is usually the VPN — connect to it and try again. Nothing was changed.`, cmd: err?.cmd, output: err?.output };
+      await render();
+    }
+  }
+
+  async function continuePick() {
+    const s = sh;
+    const pending = s?.pending;
+    if (!pending) return;
+    const d = s.d;
+    if (pending.id === 'model' && s.mode !== 'edit') {
+      const name = d.name.trim();
+      const problem = !isSafe('name', name) ? 'Use letters, numbers, dots or dashes for the profile name.'
+        : cm.profiles.some((p) => p.name === name) ? `A profile called “${name}” already exists. Pick another name.` : '';
+      if (problem) {
+        d.more = true;
+        d.error = { title: 'Choose another profile name', text: problem };
+        return render();
+      }
+    }
+    d.error = null;
+    const index = Number.isInteger(d.pick) ? d.pick : pending.recommended ?? 0;
+    s.pending = null;
+    pending.resolve(index);
+    return render();
+  }
+
+  async function cancelSignin() {
+    const s = sh;
+    if (!s) return;
+    if (s.mode === 'relogin') {
+      sh = null;
+      return render();
+    }
+    if (session.running()) await session.cancel();
+    if (sh !== s) return;
+    s.pending = null;
+    s.d.signin = 'idle';
+    if (s.mode === 'edit') sh = null;
+    else s.step = 'signin';
+    return render();
+  }
+
+  async function closeSheet({ quiet = false } = {}) {
+    const s = sh;
+    if (!s) return;
+    sh = null;
+    if (session.running()) await session.cancel();
+    if (!quiet) {
+      const complete = setupProgress(cm, prefs()).complete;
+      if (s.mode === 'setup' && s.step === 'done') toast('CodeMie is ready.', 'success');
+      else if (s.mode === 'setup' && !complete) toast('Setup paused. Everything so far is saved — continue from Today or Settings → CodeMie.');
+    }
+    await render();
+  }
+
+  async function setupInstall() {
+    const s = sh;
+    const d = s.d;
+    const todo = d.agents.filter((c) => !(cm.agents || []).some((a) => a.command === c && a.installed));
+    if (!todo.length) return;
+    const run = { state: 'running', failed: null, tasks: todo.map((command) => ({ command, label: agentDisplay(agentRow(command) || { command, name: command }).name, state: 'todo', detail: '' })) };
+    d.install = run;
+    await render();
+    for (const t of run.tasks) {
+      t.state = 'running';
+      t.detail = 'installing';
+      await render();
+      try {
+        await service.installAgent(t.command);
+        t.state = 'done';
+        t.detail = `start with ${agentDisplay(agentRow(t.command) || { command: t.command }).launcher}`;
+      } catch (err) {
+        t.state = 'failed';
+        t.detail = 'not installed — nothing left behind';
+        run.failed = { title: `${t.label} was not installed`, text: `${err?.message || String(err)} Try again now, or later from Settings → CodeMie.`, cmd: err?.cmd, output: err?.output };
+      }
+      await render();
+    }
+    d.agents = run.tasks.filter((t) => t.state === 'failed').map((t) => t.command);
+    run.state = run.failed ? 'partial' : 'done';
+    await render();
+  }
+
+  async function setupApps() {
+    const s = sh;
+    const d = s.d;
+    const picked = APPS.filter((a) => d.apps[a.id] && appState(cm, a.id) === 'not_set');
+    if (!picked.length) return;
+    const run = { state: 'running', failed: null, tasks: [{ label: 'Start the CodeMie gateway on this Mac', state: 'running' }, ...picked.map((a) => ({ label: `Point ${a.name} at CodeMie`, state: 'running' }))] };
+    d.appsRun = run;
+    await render();
+    try {
+      await service.connectApps(picked.map((a) => a.id), gatewayProfile());
+      run.tasks.forEach((t) => { t.state = 'done'; });
+      run.state = 'done';
+    } catch (err) {
+      run.tasks.forEach((t) => { t.state = 'failed'; });
+      run.state = 'failed';
+      run.failed = { title: 'Your apps were not connected', text: `${err?.message || String(err)} Nothing in the apps was changed. You can connect them later from Settings → CodeMie.`, cmd: err?.cmd, output: err?.output };
+    }
+    await render();
+  }
+
+  function sheetNext() {
+    if (!sh) return;
+    sh.d.install = null;
+    sh.d.appsRun = null;
+    sh.step = sh.step === 'agents' && !setupProgress(cm, prefs()).apps ? 'apps' : 'done';
+    render();
+  }
+
+  /** Sheet clicks; false when the action is not the sheet's. */
+  async function sheetAction(action, el) {
+    const d = sh?.d;
+    switch (action) {
+      case 'cm-sheet-close': await closeSheet(); return true;
+      case 'cm-sheet-later': await closeSheet({ quiet: true }); toast('You can finish setting up CodeMie from Today or Settings → CodeMie.'); return true;
+      case 'cm-sheet-settings': await closeSheet({ quiet: true }); await route('settings', 'cm-overview'); return true;
+      case 'cm-setup-snooze':
+        setLocalPref(PREF.snoozedUntil, String(now() + 24 * 3600 * 1000));
+        await render();
+        return true;
+      default: break;
+    }
+    if (!sh) return false;
+    switch (action) {
+      case 'cm-sheet-go':
+        if (el.dataset.mode) Object.assign(sh, newSheet(el.dataset.mode, el.dataset.step));
+        else sh.step = el.dataset.step;
+        await render();
+        return true;
+      case 'cm-found-use':
+        sh.step = afterAccountStep();
+        await render();
+        return true;
+      case 'cm-signin-start': await startSignin(); return true;
+      case 'cm-signin-cancel': await cancelSignin(); return true;
+      case 'cm-pick-continue': await continuePick(); return true;
+      case 'cm-org-pick':
+        d.orgUrl = el.dataset.url || '';
+        d.error = null;
+        await render();
+        return true;
+      case 'cm-draft-toggle':
+        d[el.dataset.key] = !d[el.dataset.key];
+        await render();
+        return true;
+      case 'cm-setup-install': await setupInstall(); return true;
+      case 'cm-setup-apps': await setupApps(); return true;
+      case 'cm-apps-skip':
+        setLocalPref(PREF.appsSkipped, '1');
+        sh.step = 'done';
+        await render();
+        return true;
+      case 'cm-sheet-next': sheetNext(); return true;
+      default: return false;
+    }
+  }
+
+  /** Sheet radios, selects and checkboxes; false when the control is not the sheet's. */
+  async function sheetChange(el) {
+    const d = sh?.d;
+    const action = el?.dataset?.action;
+    if (!d || !action) return false;
+    switch (action) {
+      case 'cm-draft-radio':
+      case 'cm-draft-select':
+        d[el.dataset.key] = el.value;
+        d.error = null;
+        break;
+      case 'cm-draft-check':
+        d[el.dataset.key] = !!el.checked;
+        break;
+      case 'cm-pick':
+        d.pick = Number(el.value);
+        break;
+      case 'cm-agent-pick':
+        d.agents = el.checked ? [...new Set([...d.agents, el.value])] : d.agents.filter((c) => c !== el.value);
+        break;
+      case 'cm-app-pick':
+        d.apps[el.dataset.id] = !!el.checked;
+        break;
+      default:
+        return false;
+    }
+    await render();
+    return true;
   }
 
   // ---------------------------------------------------------------- Overview: Start coding
@@ -237,6 +647,7 @@ export function createCodemieController(deps) {
 
   async function handle(action, el) {
     if (!action.startsWith('cm-')) return false;
+    if (await sheetAction(action, el)) return true;
     const id = el?.dataset?.id;
     switch (action) {
       case 'cm-tab': await route('settings', el.dataset.tab); return true;
@@ -301,6 +712,7 @@ export function createCodemieController(deps) {
   async function change(el) {
     const action = el?.dataset?.action;
     if (!action?.startsWith('cm-')) return false;
+    if (await sheetChange(el)) return true;
     switch (action) {
       case 'cm-start-agent':
         ui.startAgent = el.value;
@@ -328,19 +740,20 @@ export function createCodemieController(deps) {
   const profileNamed = (name) => cm.profiles.find((p) => p.name === name);
   const configuredApps = () => (cm.apps || []).filter((a) => a.installed && a.configured);
 
+  /** Sign in again: a compact dialog that starts the browser sign-in at once and closes on success. */
   async function profileLogin(name) {
     const p = profileNamed(name || cm.config.active);
     if (!p?.codemieUrl) {
       toast('This profile does not sign in with a browser.');
       return;
     }
-    toast('Your browser opens to sign in…');
-    try {
-      await service.signIn(p.codemieUrl);
-      toast(`Signed in again to “${p.name}”`, 'success');
-    } catch (err) {
-      toast(err?.message || String(err), 'error');
+    if (session.running()) {
+      toast('Finish or close the setup that is running first.');
+      return;
     }
+    sh = newSheet('relogin', 'signin', { url: p.codemieUrl });
+    sh.profile = p.name;
+    await relogin(sh);
   }
 
   async function testProfile(name) {
@@ -397,8 +810,12 @@ export function createCodemieController(deps) {
     });
   }
 
-  function input() {
-    return false;
+  /** Typing in the sheet goes into its draft without a render, so the field keeps focus. */
+  function input(el) {
+    const key = el?.dataset?.draft;
+    if (!key || !sh || !el.closest?.('#cm-sheet-host')) return false;
+    sh.d[key] = el.value;
+    return true;
   }
 
   // ---------------------------------------------------------------- views
@@ -445,6 +862,12 @@ export function createCodemieController(deps) {
     service.subscribe(scheduleRender);
     runLog.subscribe(scheduleRender);
     await service.boot();
+    // First launch: the sheet opens by itself once, at the step CLI state says comes first.
+    if (!sh && shouldAutoOpen(cm, prefs())) {
+      sh = newSheet('setup', firstStep(cm, prefs()));
+      setLocalPref(PREF.introduced, '1');
+      await render();
+    }
   }
 
   function onFocus() {
@@ -473,10 +896,10 @@ export function createCodemieController(deps) {
     panel,
     headerActions,
     banners,
-    todayCard: () => '',
+    todayCard: (at = now()) => todayCardView(cm, prefs(), at),
     settingsDot: () => tabDots().size > 0,
     tabDots,
-    sheet: () => '',
+    sheet: () => (sh ? sheetMarkup(sh, cm, prefs()) : ''),
     boot,
     onFocus,
     onQuitRequest,

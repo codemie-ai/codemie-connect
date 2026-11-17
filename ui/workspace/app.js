@@ -19,6 +19,8 @@ import { settings, settingsTabFor } from './view-settings.js';
 import { createCodemieService } from './codemie/service.js';
 import { createCodemieController } from './codemie/controller.js';
 import { createRunLog } from './codemie/run-log.js';
+import { createSetupSession } from './codemie/setup-session.js';
+import { startSetup, cancelSetup } from '../setup-driver.js';
 import { automations, AUTOMATION_TABS } from './view-automations.js';
 import { createAutomationsController, notificationTarget } from './automations-controller.js';
 import { renderShell } from './shell.js';
@@ -60,10 +62,18 @@ const state = {
   // Automations: the open tab and the Run log pages read with `automation_runs` (null until read).
   automations: { tab: 'automations', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } },
 };
-// Settings → CodeMie: the CLI state behind it, "What CodeMie ran", and the controller that owns
-// its actions, sheet and banners. The setup session is a stand-in until guided setup lands.
+// Settings → CodeMie: the CLI state behind it, "What CodeMie ran", the guided-setup session
+// (`codemie setup` in a headless PTY) and the controller that owns actions, sheet and banners.
 const codemieRunLog = createRunLog();
-const codemieSetup = { running: () => false, cancel: async () => true };
+const codemieSetup = createSetupSession({
+  // The PTY bridge and xterm load on first use: neither is needed until someone sets up CodeMie.
+  startSetup: async opts => {
+    const [{ pty }, { Terminal }] = await Promise.all([import('../runner-bridge.js'), import('../vendor/xterm.mjs')]);
+    return startSetup(opts, { spawnPty: pty.spawnPty, input: pty.input, kill: pty.kill, Terminal, suspendPtyInput: () => {}, resumePtyInput: () => {} });
+  },
+  cancelSetup,
+  readProfiles: () => invoke('read_codemie_profiles'),
+});
 const codemieService = createCodemieService({
   invoke: (cmd, args) => invoke(cmd, args),
   listen: (event, fn) => window.__TAURI__.event.listen(event, fn),

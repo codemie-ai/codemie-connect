@@ -128,6 +128,16 @@ test('busy_flag_wraps_operations', async () => {
   assert.match(h.runLog.text(), /Gemini CLI installed/);
 });
 
+test('hold_keeps_the_quit_guard_across_nested_operations', async () => {
+  const h = harness({ stream: { 'codemie install claude': { code: 0, lines: [] } } });
+  await h.svc.hold(async () => {
+    await h.svc.installAgent('claude');
+    assert.equal(h.svc.busy(), true, 'still held after the inner install ends');
+  });
+  const busy = h.calls.filter((c) => c.name === 'workspace_installer_busy').map((c) => c.args.busy);
+  assert.deepEqual(busy, [true, false]);
+});
+
 test('install_failure_without_output_keeps_message', async () => {
   const h = harness({ stream: { 'codemie install gemini': { code: 1, lines: [] } } });
   const err = await h.svc.installAgent('gemini').catch((e) => e);

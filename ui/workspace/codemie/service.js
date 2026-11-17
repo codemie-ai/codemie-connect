@@ -403,6 +403,15 @@ export function createCodemieService({ invoke, listen, runLog, platform, now = D
     state: cm,
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     busy: () => guarded > 0 || Object.keys(cm.busy).length > 0,
+    /** Run `fn` (a guided setup) under the quit guard, however many operations it nests. */
+    async hold(fn) {
+      await guard(true);
+      try {
+        return await fn();
+      } finally {
+        await guard(false);
+      }
+    },
     boot,
     load,
     ensureRuntime,
