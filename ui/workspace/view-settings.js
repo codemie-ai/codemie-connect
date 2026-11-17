@@ -238,7 +238,7 @@ function privacyPanel(s) {
 
 // ---------------------------------------------------------------- Activity
 
-const JOB_LABEL = { sync: 'Microsoft sync', brief: 'Daily brief', reminder: 'Reminder', notification: 'Critical alert', ai_draft: 'AI reply draft', calendar_window: 'Calendar period' };
+const JOB_LABEL = { sync: 'Microsoft sync', brief: 'Daily brief', reminder: 'Reminder', notification: 'Critical alert', ai_draft: 'AI reply draft', calendar_window: 'Calendar period', automation_run: 'Automation run' };
 const JOB_TONE = { succeeded: 'success', failed: 'error', blocked: 'warning', cancelled: 'neutral', queued: 'info', running: 'info' };
 
 function activityPanel(s) {

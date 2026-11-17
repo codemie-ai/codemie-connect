@@ -370,7 +370,9 @@ impl Core {
     fn background_round(self: &Arc<Self>, last_sync: &mut i64, ticks: &mut u64) {
         let _ = self.materialize_schedules();
         if ticks.is_multiple_of(automations::ROUND_TICKS) {
-            let _ = self.automations_round();
+            if let Err(e) = self.automations_round() {
+                eprintln!("automations: schedule round failed: {}", e.message);
+            }
         }
         for _ in 0..8 {
             let job = {
@@ -542,7 +544,9 @@ impl Core {
                 self.sync(c, job.payload["force"] == true).await?;
                 self.refresh_incidents()?;
                 // New messages may start automations; a failure here must not fail the sync.
-                let _ = self.automations_after_sync();
+                if let Err(e) = self.automations_after_sync() {
+                    eprintln!("automations: matching new messages failed: {}", e.message);
+                }
                 Ok("Sources refreshed".into())
             }
             "brief" => {
