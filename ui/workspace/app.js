@@ -3,7 +3,7 @@
 import { createStore, escapeHtml as e } from './store.js';
 import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
-import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, toggle } from './ui.js';
+import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, toggle, controlSelector, soleMatch } from './ui.js';
 import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calendarColors } from './calendar-model.js';
 import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply } from './selectors.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
@@ -11,7 +11,7 @@ import { today, WIDGETS, WIDGET_IDS } from './view-today.js';
 import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
 import { inbox, filteredMessages, snoozeUntil, draftChecks } from './view-inbox.js';
 import {
-  optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable,
+  optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
 } from './draft-state.js';
 import { settings, LEGACY_TABS, SETTINGS_TABS } from './view-settings.js';
 import { renderShell } from './shell.js';
@@ -96,15 +96,6 @@ function applyTheme(theme) {
 
 // ---------------------------------------------------------------- shell
 
-/** A selector that finds the focused control again after a render, or null. */
-function focusSelector(el) {
-  if (!el || el === document.body || !root.contains(el)) return null;
-  if (el.id) return `#${CSS.escape(el.id)}`;
-  const action = el.dataset?.action;
-  if (!action) return null;
-  return ['action', 'id', 'key', 'lane', 'route', 'tab'].filter(k => el.dataset[k] != null).map(k => `[data-${k}="${CSS.escape(el.dataset[k])}"]`).join('');
-}
-
 const shellMarkup = () => renderShell({ snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark') });
 
 function shell() {
@@ -186,7 +177,8 @@ async function render() {
   // A reply box the user is in (or has typed in) is kept as it is, not recreated: its focus,
   // selection, undo history and IME composition survive the re-render around it.
   const keepReply = reply && (document.activeElement === reply || unsavedReply) ? reply : null;
-  const refocus = focusSelector(document.activeElement);
+  const focused = document.activeElement;
+  const refocus = focused && focused !== document.body && root.contains(focused) ? controlSelector(focused) : null;
   const revision = ++rendering;
   heldRender = false;
   if (legacyMounted) {
@@ -227,8 +219,9 @@ async function render() {
   syncReplyBox(freshReply);
   if (state.route === 'inbox') rememberDraftBaseline(s);
   restoreScroll(saved);
-  // A background update keeps keyboard focus on the same control.
-  if (refocus && !root.contains(document.activeElement)) root.querySelector(refocus)?.focus({ preventScroll: true });
+  // A background update keeps keyboard focus on the same control, and only on that one: when
+  // the control is gone or no longer told apart from a sibling, focus is left alone.
+  if (refocus && !root.contains(document.activeElement)) soleMatch(root, refocus)?.focus({ preventScroll: true });
   placeDraftPopover();
   lastDraftSignature = draftSignature(s);
   if (state.route === 'settings' && document.getElementById('legacy-host')) await mountLegacy(revision);
@@ -401,25 +394,28 @@ export async function withClaudeChoice(run) {
 
 let claudeRead = null;
 let claudeReadAt = 0;
+let claudeDetectAt = 0;
 // Set by "Copy sign-in steps": the next time Connect gets focus it detects Claude again.
 let claudeRecheck = false;
 
 /**
- * Reads which Claude profiles are ready, so Inbox and Today offer drafts or "Set up Claude".
- * On its own it reads once, then again at most every 15 s while nothing is ready; `now` reads
- * at once (window focus). `detect` re-runs detection instead of native's 30-second cache.
+ * Reads which Claude profiles are ready, so Inbox and Today offer drafts or "Set up Claude"
+ * (when and whether to detect again: `claudeCheck`). True when it re-runs detection.
  */
 function readClaude({ now = false, detect = false } = {}) {
-  if (!store || claudeRead || state.ai.status === 'loading') return;
-  const noneReady = state.ai.status === 'ready' && !claudeAvailable(state.ai);
-  if (!now && !(state.ai.status === 'idle' || (noneReady && Date.now() - claudeReadAt > 15_000))) return;
-  claudeReadAt = Date.now();
-  claudeRead = store.query('ai_status', { refresh: detect || noneReady }).then(status => {
+  if (!store || claudeRead || state.ai.status === 'loading') return false;
+  const nowMs = Date.now();
+  const plan = claudeCheck({ status: state.ai.status, noneReady: state.ai.status === 'ready' && !claudeAvailable(state.ai), now, detect, nowMs, readAt: claudeReadAt, detectAt: claudeDetectAt });
+  if (!plan.read) return false;
+  claudeReadAt = nowMs;
+  if (plan.detect) claudeDetectAt = nowMs;
+  claudeRead = store.query('ai_status', { refresh: plan.detect }).then(status => {
     if (state.ai.status === 'loading') return;
     const changed = JSON.stringify([state.ai.profiles, state.ai.settings]) !== JSON.stringify([status.profiles, status.settings]);
     Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
     if (changed && ['inbox', 'today'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover && !legacyMounted) render();
   }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ }).finally(() => { claudeRead = null; });
+  return plan.detect;
 }
 
 /**
@@ -1512,8 +1508,7 @@ async function boot() {
   window.addEventListener('focus', () => {
     store.refresh().catch(() => {});
     // Back from Terminal or Settings: Claude may be signed in or set up now.
-    readClaude({ now: true, detect: claudeRecheck || (state.ai.status === 'ready' && !claudeAvailable(state.ai)) });
-    claudeRecheck = false;
+    if (readClaude({ now: true, detect: claudeRecheck })) claudeRecheck = false;
   });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (snap().settings.theme === 'system') {

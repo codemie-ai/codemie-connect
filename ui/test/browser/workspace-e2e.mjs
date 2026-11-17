@@ -592,6 +592,12 @@ for (const theme of ['dark', 'light']) {
     assert(Math.abs(widths[0] - widths[1]) < 1, `Context spans the panel ${widths}`);
     await page.waitForTimeout(250);
     await shot(page, `${theme}-draft-result`);
+    // A re-render puts keyboard focus back on the exact control, never on its sibling.
+    await page.focus(`[data-action="ai-draft-choice"][data-option="Sorry, I can't make 11:00"]`);
+    await page.evaluate(() => window.__workspace.render());
+    await page.evaluate(() => window.__workspace.render());
+    const refocused = await page.evaluate(() => ({ option: document.activeElement?.dataset.option, fresh: document.activeElement?.isConnected }));
+    assert(refocused.option === "Sorry, I can't make 11:00" && refocused.fresh, `focus moved to ${JSON.stringify(refocused)}`);
     await page.click('.ws-reply button[type=submit]');
     await page.waitForSelector('.ws-modal[open]:has-text("Finish your reply first?")');
     await page.waitForTimeout(250);

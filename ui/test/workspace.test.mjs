@@ -16,6 +16,7 @@ import { calendar, periodTitle, eventDetails } from '../workspace/view-calendar.
 import { settings } from '../workspace/view-settings.js';
 import { renderShell, NAV } from '../workspace/shell.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from '../workspace/boot.js';
+import { controlSelector, soleMatch } from '../workspace/ui.js';
 import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
 
 // ---------------------------------------------------------------- store
@@ -439,4 +440,36 @@ test('notifications never navigate into a hidden workspace', () => {
   assert.equal(notificationWorkspaceToSelect({ workspaceId: 'personal' }, 'personal'), null);
   assert.equal(notificationWorkspaceToSelect({}, 'personal'), null);
   assert.equal(notificationWorkspaceToSelect({ workspaceId: 'personal' }, 'atlas'), 'personal');
+});
+
+// ---------------------------------------------------------------- focus after a re-render
+
+/** A stand-in for a DOM element: a tag and its attributes, in source order. */
+const control = (tag, attrs) => ({ tagName: tag.toUpperCase(), attributes: Object.entries(attrs).map(([name, value]) => ({ name, value })) });
+
+test('focus_returns_only_to_the_exact_control', () => {
+  // Siblings that differ only by one data-* attribute must get different selectors.
+  const pairs = [
+    [{ 'data-action': 'ai-draft-choice', 'data-index': '0', 'data-option': 'Yes, 11:00 works for me' }, { 'data-action': 'ai-draft-choice', 'data-index': '0', 'data-option': "Sorry, I can't make 11:00" }],
+    [{ role: 'tab', 'data-action': 'channel', 'data-channel': 'mail', 'aria-selected': 'true' }, { role: 'tab', 'data-action': 'channel', 'data-channel': 'chat', 'aria-selected': 'false' }],
+    [{ type: 'checkbox', 'data-action': 'graph-permission', 'data-cap': 'mail_send' }, { type: 'checkbox', 'data-action': 'graph-permission', 'data-cap': 'chat_send' }],
+  ];
+  for (const [a, b] of pairs) {
+    const sa = controlSelector(control('button', a));
+    const sb = controlSelector(control('button', b));
+    assert.ok(sa && sb && sa !== sb, `${sa} vs ${sb}`);
+    assert.doesNotMatch(sa, /aria-|role=/, 'state that changes on render is not part of the identity');
+  }
+  assert.equal(controlSelector(control('button', { 'data-action': 'ai-draft-choice', 'data-option': 'Say "yes" \\ no' })),
+    'button[data-action="ai-draft-choice"][data-option="Say \\"yes\\" \\\\ no"]', 'quotes and backslashes are escaped');
+  assert.equal(controlSelector(control('textarea', { id: 'reply-body', name: 'body', class: 'ws-textarea' })), 'textarea[id="reply-body"][name="body"]');
+  assert.equal(controlSelector(control('button', { class: 'ws-btn', type: 'button' })), null, 'nothing that tells it apart');
+  assert.equal(controlSelector(null), null);
+
+  // Focus goes back only when exactly one control matches.
+  const root = n => ({ querySelectorAll: () => Array.from({ length: n }, (_, i) => ({ i })) });
+  assert.deepEqual(soleMatch(root(1), 'button'), { i: 0 });
+  assert.equal(soleMatch(root(2), 'button'), null, 'two candidates: leave focus alone');
+  assert.equal(soleMatch(root(0), 'button'), null);
+  assert.equal(soleMatch(root(1), null), null);
 });

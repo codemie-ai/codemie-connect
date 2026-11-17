@@ -73,6 +73,32 @@ export function settingRow({ title, text = '', control = '', iconName }) {
 
 export const spinner = (label = 'Loading') => `<span class="ws-spinner" role="status" aria-label="${e(label)}"></span>`;
 
+// ---------------------------------------------------------------- focus after a re-render
+
+const quoted = value => `"${String(value).replace(/["\\]/g, '\\$&').replace(/\n/g, '\\a ')}"`;
+
+/**
+ * A selector that finds the same control after a re-render: its tag with every data-*
+ * attribute, id, name and type (not state such as aria-pressed or class). Null when nothing
+ * tells the control apart. Pure: takes anything with `tagName` and `attributes`.
+ */
+export function controlSelector(el) {
+  if (!el?.tagName) return null;
+  const attrs = [...(el.attributes || [])];
+  const identity = attrs.filter(a => a.name === 'id' || a.name === 'name' || a.name.startsWith('data-'));
+  // `type` alone ("button") tells nothing apart; with an identity it keeps inputs exact.
+  if (!identity.length) return null;
+  const parts = attrs.filter(a => identity.includes(a) || a.name === 'type').map(a => `[${a.name}=${quoted(a.value)}]`);
+  return `${el.tagName.toLowerCase()}${parts.join('')}`;
+}
+
+/** The one element `selector` finds under `root`; null when there are none or several. */
+export function soleMatch(root, selector) {
+  if (!selector) return null;
+  const found = root.querySelectorAll(selector);
+  return found.length === 1 ? found[0] : null;
+}
+
 // ---------------------------------------------------------------- toast
 
 export function toast(message, tone = 'info') {

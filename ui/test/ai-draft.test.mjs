@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  applyDraftResult, restoreText, replyBox, runningLabel, provenanceLabel, modelLabel, providerLabel, reconcile, answer,
+  applyDraftResult, restoreText, claudeCheck, replyBox, runningLabel, provenanceLabel, modelLabel, providerLabel, reconcile, answer,
   draftError, choicesIn, gapsIn, chooseOption, unfinishedParts, draftChoices, readOptions, pickOption, draftRequest, defaultOptions,
 } from '../workspace/draft-state.js';
 import { draftJob, latestDraft, draftKeyOf, decisions, conversation } from '../workspace/selectors.js';
@@ -184,6 +184,8 @@ test('draft_result_asks_before_replacing_typed_text', () => {
   assert.equal(restored.save, 'My own words');
   assert.equal(restored.ui.restore, null);
   assert.equal(answer(replaced.ui, ai, 'forget', 'x').ui.restore, null, 'Restore can be dismissed');
+  const stale = answer({ seen: 'r2' }, ai, 'restore', 'Words in the box');
+  assert.deepEqual([stale.text, stale.save, stale.ui], ['Words in the box', null, { seen: 'r2' }], 'no offer, no change and nothing saved (the saved reply stays)');
   // The offer lasts until the next draft arrives.
   const next = reconcile({ ui: replaced.ui, ai: { revision: 'r3', data: { text: 'Newer draft' } }, manual: null, live: result.text });
   assert.equal(next.action, 'fill');
@@ -256,6 +258,19 @@ test('each_error_class_shows_its_sentence_and_action', () => {
   dismissed.jobs.unshift(failed);
   assert.doesNotMatch(view(dismissed, { draftDismissed: [failed.id] }), /ws-draft-error/);
   assert.equal(draftError({ ...failed, state: 'succeeded', errorClass: undefined, errorCode: undefined }, {}), null);
+});
+
+test('claude_detection_runs_at_most_every_15_s', () => {
+  const at = 1_000_000;
+  const base = { status: 'ready', noneReady: true, nowMs: at, readAt: at - 20_000, detectAt: at - 20_000 };
+  assert.deepEqual(claudeCheck({ ...base }), { read: true, detect: true }, 'nothing ready: read and detect again');
+  assert.deepEqual(claudeCheck({ ...base, readAt: at - 5_000 }), { read: false, detect: false }, 'not on every render');
+  assert.deepEqual(claudeCheck({ ...base, now: true, detectAt: at - 5_000 }), { read: true, detect: false }, 'window focus reads, but detection keeps its 15 s pace');
+  assert.deepEqual(claudeCheck({ ...base, now: true, detect: true, detectAt: at - 5_000 }), { read: true, detect: false }, 'also after Copy sign-in steps');
+  assert.deepEqual(claudeCheck({ ...base, now: true, detect: true }), { read: true, detect: true });
+  assert.deepEqual(claudeCheck({ ...base, status: 'idle', noneReady: false, readAt: 0, detectAt: 0 }), { read: true, detect: false }, 'first use reads the cached status');
+  assert.deepEqual(claudeCheck({ ...base, noneReady: false }), { read: false, detect: false }, 'a ready Claude is not re-read on render');
+  assert.deepEqual(claudeCheck({ ...base, noneReady: false, now: true }), { read: true, detect: false });
 });
 
 test('drafting_and_stop_survive_a_background_sync', () => {

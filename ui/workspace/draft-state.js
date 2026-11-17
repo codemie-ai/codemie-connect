@@ -81,6 +81,21 @@ export function claudeAvailable(ai) {
   return ai.profiles.some(p => p.state === 'ready');
 }
 
+/** Detection runs the Claude CLIs, so it happens at most this often. */
+export const CLAUDE_RECHECK_MS = 15_000;
+
+/**
+ * Whether to read which Claude profiles are ready (`read`), and whether to detect them again
+ * instead of using native's 30-second cache (`detect`). A render reads on first use, then only
+ * while nothing is ready, every 15 s; `now` (window focus) reads at once. Detection, whether
+ * asked for (`detect`, after Copy sign-in steps) or because nothing is ready, keeps its 15 s
+ * pace everywhere.
+ */
+export function claudeCheck({ status, noneReady, now = false, detect = false, nowMs, readAt = 0, detectAt = 0 }) {
+  const read = now || status === 'idle' || (noneReady && nowMs - readAt > CLAUDE_RECHECK_MS);
+  return { read, detect: read && (detect || noneReady) && nowMs - detectAt > CLAUDE_RECHECK_MS };
+}
+
 /**
  * The running row: "Drafting with Claude Code · Sonnet… 6 s", or "Starting CodeMie… 4 s".
  * The model is the one Claude reported at start (`runModel`), else the one the route asked
@@ -228,6 +243,8 @@ export function answer(ui = {}, ai, choice, current) {
     case 'keep': return { ui: { ...ui, kept: ai?.revision ?? null, confirm: null, restore: null, baseline: null }, text: current, save: current };
     case 'replace': return { ui: { ...ui, seen: ai?.revision ?? null, kept: null, confirm: null, restore: { previous: current }, baseline: draft }, text: draft, save: draft };
     case 'restore': {
+      // No offer (already restored, or a stale click): nothing changes and nothing is saved.
+      if (!ui.restore) return { ui, text: current, save: null };
       const previous = restoreText(ui.restore);
       return { ui: { ...ui, seen: null, kept: ai?.revision ?? null, restore: null, baseline: null }, text: previous, save: previous };
     }
