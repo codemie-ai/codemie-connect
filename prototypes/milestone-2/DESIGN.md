@@ -71,7 +71,7 @@ These facts were verified on this Mac or in code on 2026-11-17.
   |---|---|
   | `rquickjs` | Plugin host |
   | `pulldown-cmark` | `ctx.markdown` |
-  | `tauri-plugin-dialog` | Folder picker |
+  | `rfd` | Native folder picker (used directly; `tauri-plugin-dialog` is avoided because its script replaces `window.confirm`) |
   | `tokio-util` | Cancellation |
   | `semver` | Plugin versions |
   | `libc` | `killpg`, `statfs` |

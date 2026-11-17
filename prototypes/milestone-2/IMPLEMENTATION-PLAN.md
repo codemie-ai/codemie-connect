@@ -16,7 +16,7 @@ The workspace module gains draft, summary and automation jobs on the runner. The
 
 **Tech Stack:**
 - Tauri 2.12.6 (lockfile).
-- Rust: tokio, rusqlite, reqwest and fs2. New: rquickjs, pulldown-cmark, tauri-plugin-dialog, tokio-util, semver, libc and dunce, plus the `tauri` `test` feature as a dev-dependency.
+- Rust: tokio, rusqlite, reqwest and fs2. New: rquickjs, pulldown-cmark, rfd (native folder picker), tokio-util, semver, libc and dunce, plus the `tauri` `test` feature as a dev-dependency.
 - Vanilla ES modules.
 - Tests: `node:test`, and playwright-core browser E2E against a mocked bridge.
 - CLIs: Claude Code ≥ 2.1.322, CodeMie CLI `codemie-claude`.
@@ -497,7 +497,7 @@ Expected: both pass.
 ### Task 13: Settings → General → Data location
 
 **Files:**
-- Add dependency: `tauri-plugin-dialog` (with `dialog:allow-open` for the main window only)
+- Folder picker: the Rust command `data_location_pick` using `rfd` directly (ruling R23 replaced `tauri-plugin-dialog`)
 - Create: `ui/workspace/settings-storage.js` (pure `storageCard(info)`, `changeLocationBody(report)`)
 - Modify: `ui/workspace/view-settings.js` (General tab includes the card), `ui/workspace/recovery.js` (Choose another folder), `ui/workspace/app.js` (handlers), `ui/workspace/workspace.css`
 
