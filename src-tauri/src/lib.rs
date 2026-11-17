@@ -179,6 +179,7 @@ pub fn run() {
             commands::codemie_config::read_codemie_profiles,
             commands::codemie_server::codemie_url_check,
             commands::codemie_server::codemie_org_defaults,
+            commands::codemie_apps::codemie_app_states,
             commands::installer::get_platform_info,
             commands::installer::temp_dir,
             commands::installer::latest_lts_node_version,

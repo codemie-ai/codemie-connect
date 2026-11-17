@@ -1,4 +1,5 @@
 pub mod app_updater;
+pub mod codemie_apps;
 pub mod codemie_config;
 pub mod codemie_server;
 pub mod downloader;
