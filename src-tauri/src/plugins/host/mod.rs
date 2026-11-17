@@ -21,7 +21,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -115,8 +115,16 @@ pub struct Limits {
     /// time, host services included. A plugin that runs past it is stopped.
     pub slice: Duration,
     /// A command or provider answers its caller within this, or the caller is told `timeout`
-    /// and the plugin is stopped.
+    /// and the plugin is stopped. Time it spends waiting for its async host calls (a Claude run,
+    /// a fetch) doesn't count: those are bounded by their own timeouts, and by `host_wait`.
     pub call: Duration,
+    /// How much longer than `call` a caller waits in all, while the plugin waits for its host
+    /// calls (a Claude run takes up to 20 min).
+    pub host_wait: Duration,
+    /// A plugin stopped for a fault starts again on its own after this (its timers resume),
+    /// doubling while it keeps faulting, up to `restart_max`.
+    pub restart: Duration,
+    pub restart_max: Duration,
     /// The shortest `ctx.every` interval.
     pub min_every: Duration,
     /// The largest JSON a call's arguments or answer may be, either way across the bridge.
@@ -130,9 +138,21 @@ impl Default for Limits {
             stack: 1024 * 1024,
             slice: Duration::from_secs(5),
             call: Duration::from_secs(30),
+            host_wait: Duration::from_secs(21 * 60),
+            restart: Duration::from_secs(30),
+            restart_max: Duration::from_secs(10 * 60),
             min_every: Duration::from_secs(10),
             max_json: 16 * 1024 * 1024,
         }
+    }
+}
+
+impl Limits {
+    /// The pause before a plugin that faulted again starts again: `restart`, doubled after each
+    /// fault, up to `restart_max`. `last` is the pause before this fault (none after one that
+    /// came long after the last restart).
+    pub fn next_restart(&self, last: Option<Duration>) -> Duration {
+        last.map_or(self.restart, |d| (d * 2).min(self.restart_max))
     }
 }
 
@@ -168,10 +188,16 @@ impl Grants {
 }
 
 /// A loaded plugin: its package, and its thread while it has one (none after it was stopped
-/// for keeping a caller too long, until its next use).
+/// for keeping a caller too long, until its next use or `revive_at`).
 struct Entry {
     package: Arc<Package>,
     worker: Option<Worker>,
+    /// When its current thread started.
+    started: Instant,
+    /// After a stop, when it starts again on its own (`PluginHost::revive_due`), and the pause
+    /// before that.
+    revive_at: Option<Instant>,
+    pause: Option<Duration>,
 }
 
 /// The plugins' host halves: one QuickJS runtime per plugin, each on its own thread, driven by
@@ -219,10 +245,10 @@ impl PluginHost {
         });
         let (reply, answer) = oneshot::channel();
         let worker = self.spawn(&package, Some(reply))?;
-        let loaded = match tokio::time::timeout(self.limits.call, answer).await {
-            Ok(Ok(loaded)) => loaded,
-            Ok(Err(_)) => Err(stopped(id)),
-            Err(_) => Err(HostError::new(
+        let loaded = match self.answer_of(answer, &worker.waiting).await {
+            Some(Ok(loaded)) => loaded,
+            Some(Err(_)) => Err(stopped(id)),
+            None => Err(HostError::new(
                 ErrorCode::Timeout,
                 format!(
                     "apply(ctx) didn't finish within {} s",
@@ -240,6 +266,9 @@ impl PluginHost {
         let entry = Entry {
             package,
             worker: Some(worker),
+            started: Instant::now(),
+            revive_at: None,
+            pause: None,
         };
         if let Some(old) = self.plugins().insert(id.to_string(), entry) {
             if let Some(worker) = old.worker {
@@ -272,7 +301,7 @@ impl PluginHost {
     ) -> Result<Value, HostError> {
         refuse_reentry()?;
         let (reply, answer) = oneshot::channel();
-        let serial = {
+        let (serial, waiting) = {
             let mut plugins = self.plugins();
             let Some(entry) = plugins.get_mut(id) else {
                 return Err(HostError::new(
@@ -287,12 +316,12 @@ impl PluginHost {
                 args,
                 reply,
             });
-            worker.serial
+            (worker.serial, worker.waiting.clone())
         };
-        match tokio::time::timeout(self.limits.call, answer).await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) => Err(stopped(id)),
-            Err(_) => {
+        match self.answer_of(answer, &waiting).await {
+            Some(Ok(outcome)) => outcome,
+            Some(Err(_)) => Err(stopped(id)),
+            None => {
                 let e = HostError::new(
                     ErrorCode::Timeout,
                     format!(
@@ -306,12 +335,51 @@ impl PluginHost {
         }
     }
 
+    /// Waits for a plugin's answer. Only the time while none of its async host calls is in
+    /// flight counts against the call limit: waiting for Claude or the network is the host's
+    /// time, bounded by those services' own timeouts and by `host_wait` in all. `None`: no
+    /// answer in time.
+    async fn answer_of<T>(
+        &self,
+        mut answer: oneshot::Receiver<T>,
+        waiting: &AtomicUsize,
+    ) -> Option<Result<T, oneshot::error::RecvError>> {
+        let tick =
+            (self.limits.call / 20).clamp(Duration::from_millis(5), Duration::from_millis(100));
+        let started = Instant::now();
+        let mut last = started;
+        let mut own = Duration::ZERO;
+        loop {
+            if let Ok(answer) = tokio::time::timeout(tick, &mut answer).await {
+                return Some(answer);
+            }
+            let now = Instant::now();
+            if waiting.load(Ordering::SeqCst) == 0 {
+                own += now - last;
+            }
+            last = now;
+            if own >= self.limits.call || now - started >= self.limits.call + self.limits.host_wait
+            {
+                return None;
+            }
+        }
+    }
+
     /// Tells every plugin granted `event` (`uses.events.on`) that it happened.
     pub fn emit(&self, event: &str, payload: Value) {
+        self.emit_where(event, payload, |_| true);
+    }
+
+    /// Tells the plugins of `ids` granted `event` that it happened.
+    pub fn emit_to(&self, ids: &[String], event: &str, payload: Value) {
+        self.emit_where(event, payload, |id| ids.iter().any(|i| i == id));
+    }
+
+    fn emit_where(&self, event: &str, payload: Value, to: impl Fn(&str) -> bool) {
         let mut plugins = self.plugins();
         let hearing = plugins
             .values_mut()
-            .filter(|e| e.package.grants.events.contains(event));
+            .filter(|e| e.package.grants.events.contains(event) && to(&e.package.id));
         for entry in hearing {
             match self.worker(entry) {
                 Ok(worker) => worker.send(Msg::Emit {
@@ -377,6 +445,8 @@ impl PluginHost {
         }
         if entry.worker.is_none() {
             entry.worker = Some(self.spawn(&entry.package, None)?);
+            entry.started = Instant::now();
+            entry.revive_at = None;
         }
         entry
             .worker
@@ -384,8 +454,26 @@ impl PluginHost {
             .ok_or_else(|| stopped(&entry.package.id))
     }
 
+    /// Starts again the plugins stopped for keeping a caller too long whose pause is over, so
+    /// their timers resume without waiting for a use. The plugin manager calls it on its tick.
+    pub fn revive_due(&self) {
+        let now = Instant::now();
+        let mut plugins = self.plugins();
+        for entry in plugins.values_mut() {
+            if entry.worker.is_none() && entry.revive_at.is_some_and(|at| now >= at) {
+                log::info!(
+                    "[plugin:{}] starting again after it was stopped",
+                    entry.package.id
+                );
+                if let Err(e) = self.worker(entry) {
+                    log::warn!("[plugin:{}] {e}", entry.package.id);
+                }
+            }
+        }
+    }
+
     /// Stops a plugin that kept a caller past the call limit (unless it was already replaced):
-    /// its other callers hear `timeout`, and it starts again on its next use.
+    /// its other callers hear `timeout`, and it starts again on its next use or after a pause.
     fn stop_late(&self, id: &str, serial: u64, why: &HostError) {
         let mut plugins = self.plugins();
         let Some(entry) = plugins.get_mut(id) else {
@@ -400,6 +488,12 @@ impl PluginHost {
                 ErrorCode::Timeout,
                 format!("{id} was stopped: {}", why.message),
             ));
+            let last = entry
+                .pause
+                .filter(|_| entry.started.elapsed() < self.limits.restart_max);
+            let pause = self.limits.next_restart(last);
+            entry.pause = Some(pause);
+            entry.revive_at = Some(Instant::now() + pause);
         }
     }
 }
@@ -535,7 +629,9 @@ mod tests {
             Box::pin(async move {
                 match name.as_str() {
                     "http.fetch" => {
-                        tokio::time::sleep(Duration::from_millis(30)).await;
+                        // "slow": longer than the call limit of `quick()`.
+                        let ms = if args[0] == "slow" { 1500 } else { 30 };
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
                         Ok(json!({"status": 200, "body": format!("{plugin} got {}", args[0])}))
                     }
                     "system.pickFolder" => {
@@ -602,6 +698,9 @@ mod tests {
         assert_eq!(l.memory, 64 * 1024 * 1024);
         assert_eq!(l.slice, Duration::from_secs(5));
         assert_eq!(l.call, Duration::from_secs(30));
+        assert_eq!(l.host_wait, Duration::from_secs(21 * 60));
+        assert_eq!(l.restart, Duration::from_secs(30));
+        assert_eq!(l.restart_max, Duration::from_secs(600));
         assert_eq!(l.min_every, Duration::from_secs(10));
     }
 
@@ -930,7 +1029,7 @@ mod tests {
             "slow",
             r#"
             export function apply(ctx) {
-              ctx.command('wait', () => ctx.claude.run({ prompt: 'hi' }))
+              ctx.command('wait', () => new Promise(() => {}))
               ctx.command('ping', () => 'pong')
             }
             "#,
@@ -953,6 +1052,128 @@ mod tests {
         assert_eq!(
             s.call("slow", "ping", Value::Null).await.unwrap_err().code,
             ErrorCode::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn awaiting_a_host_call_is_not_the_plugins_time() {
+        let s = Setup::new(Limits {
+            host_wait: Duration::from_millis(800),
+            ..quick()
+        });
+        s.load(
+            "waits",
+            r#"
+            let n = 0
+            export function apply(ctx) {
+              // 1.5 s of a host call, then 0.5 s of its own waiting: past the 1 s call limit
+              // only with the host's time counted.
+              ctx.command('fetch', async () => {
+                const r = await ctx.http.fetch('slow')
+                await ctx.http.fetch('quick')
+                n += 1
+                return [r.status, n]
+              })
+              ctx.command('claude', () => ctx.claude.run({ prompt: 'never answered' }))
+              ctx.command('n', () => n)
+            }
+            "#,
+        )
+        .await;
+        let started = Instant::now();
+        assert_eq!(
+            bounded(s.call("waits", "fetch", Value::Null)).await,
+            Ok(json!([200, 1]))
+        );
+        assert!(started.elapsed() >= Duration::from_millis(1500));
+        // Not stopped: its state is still there.
+        assert_eq!(s.call("waits", "n", Value::Null).await, Ok(json!(1)));
+        // A host call that never answers is bounded by the call limit plus `host_wait`.
+        let started = Instant::now();
+        let e = bounded(s.call("waits", "claude", Value::Null))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Timeout, "{e}");
+        assert!(
+            started.elapsed() >= Duration::from_millis(1800),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_faulted_plugin_starts_again_on_its_own_and_its_timers_resume() {
+        let s = Setup::new(Limits {
+            min_every: Duration::from_millis(50),
+            restart: Duration::from_millis(700),
+            restart_max: Duration::from_secs(5),
+            ..quick()
+        });
+        s.load(
+            "ticker",
+            r#"
+            export function apply(ctx) {
+              ctx.every(0.05, () => ctx.store.write('tick', 'x'))
+              ctx.command('spin', () => { for (;;) {} })
+              ctx.command('hang', () => new Promise(() => {}))
+            }
+            "#,
+        )
+        .await;
+        let ticks = || s.services.heard("store.write").len();
+        let ticking = |from: usize| async move {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while ticks() < from + 2 {
+                assert!(Instant::now() < deadline, "the timer didn't resume");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        ticking(0).await;
+        // A fault inside its turn: the runtime is dropped, so its timer stops…
+        let e = bounded(s.call("ticker", "spin", Value::Null))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Timeout, "{e}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let stopped = ticks();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(ticks(), stopped, "no ticks while it is down");
+        // …and it starts again on its own after the pause, with no call to wake it.
+        ticking(stopped).await;
+
+        // Stopped for keeping a caller past the call limit: the host starts it again too.
+        let e = bounded(s.call("ticker", "hang", Value::Null))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Timeout, "{e}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let stopped = ticks();
+        s.host.revive_due();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(ticks(), stopped, "not before its pause is over");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ticks() < stopped + 2 {
+            assert!(Instant::now() < deadline, "the host didn't start it again");
+            s.host.revive_due();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[test]
+    fn restart_pauses_double_up_to_the_most() {
+        let l = Limits::default();
+        assert_eq!(l.next_restart(None), Duration::from_secs(30));
+        assert_eq!(
+            l.next_restart(Some(Duration::from_secs(30))),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            l.next_restart(Some(Duration::from_secs(480))),
+            Duration::from_secs(600)
+        );
+        assert_eq!(
+            l.next_restart(Some(Duration::from_secs(600))),
+            Duration::from_secs(600)
         );
     }
 

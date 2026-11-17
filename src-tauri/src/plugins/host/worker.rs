@@ -2,7 +2,8 @@
 //! by messages on the plugin's own queue, so a busy or stuck plugin holds up no other.
 //!
 //! A turn that runs past its budget faults the plugin: its runtime is dropped, the callers still
-//! waiting hear `timeout`, and it is built again from its package on its next use. The host
+//! waiting hear `timeout`, and it is built again from its package on its next use, or on its own
+//! after a pause (30 s, doubling while it keeps faulting, up to 10 min) so its timers resume. The host
 //! stops a thread (`Worker::stop`) to unload the plugin, or when the plugin kept a caller past
 //! the call limit; a thread stuck in a service ends once the service returns.
 use super::bridge::{Kind, LoadReply, Package, Plugin, Reply, Wiring};
@@ -11,7 +12,7 @@ use serde_json::Value as Json;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -114,6 +115,8 @@ pub(super) struct Worker {
     thread: std::thread::JoinHandle<()>,
     /// Tells this thread from the one started after it.
     pub serial: u64,
+    /// How many of the plugin's async host calls are in flight.
+    pub waiting: Arc<AtomicUsize>,
 }
 
 impl Worker {
@@ -128,8 +131,9 @@ impl Worker {
     ) -> Result<Worker, HostError> {
         let (queue, rx) = mpsc::channel();
         let halt = Arc::new(Halt::default());
+        let waiting = Arc::new(AtomicUsize::new(0));
         let id = package.id.clone();
-        let (own_queue, own_halt) = (queue.clone(), halt.clone());
+        let (own_queue, own_halt, own_waiting) = (queue.clone(), halt.clone(), waiting.clone());
         let run = move || {
             PLUGIN_THREAD.with(|t| t.set(true));
             let mut thread = PluginThread {
@@ -139,10 +143,14 @@ impl Worker {
                     queue: own_queue,
                     halt: own_halt,
                     notes: Rc::new(Notes::default()),
+                    waiting: own_waiting,
                 },
                 package,
                 plugin: None,
                 generation: 0,
+                revive_at: None,
+                pause: None,
+                built_at: Instant::now(),
             };
             thread.run(rx, load);
         };
@@ -161,6 +169,7 @@ impl Worker {
             halt,
             thread,
             serial,
+            waiting,
         })
     }
 
@@ -191,6 +200,12 @@ struct PluginThread {
     plugin: Option<Plugin>,
     /// Numbers each runtime, so an async answer reaches only the runtime that asked.
     generation: u64,
+    /// After a fault, when the plugin starts again on its own (so its timers resume), and the
+    /// pause before that.
+    revive_at: Option<Instant>,
+    pause: Option<Duration>,
+    /// When its runtime was last built.
+    built_at: Instant,
 }
 
 impl PluginThread {
@@ -199,7 +214,10 @@ impl PluginThread {
             log::warn!("[plugin:{}] didn't load: {e}", self.package.id);
         }
         while !self.wiring.halt.is_set() {
-            let wake = self.plugin.as_ref().and_then(Plugin::next_wake);
+            let wake = match &self.plugin {
+                Some(plugin) => plugin.next_wake(),
+                None => self.revive_at,
+            };
             let msg = match wake {
                 Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
                     Ok(msg) => Some(msg),
@@ -218,7 +236,7 @@ impl PluginThread {
                     break;
                 }
                 Some(msg) => self.handle(msg),
-                None => {}
+                None => self.revive_if_due(),
             }
             self.tick();
         }
@@ -317,6 +335,32 @@ impl PluginThread {
         self.finish();
     }
 
+    /// A faulted plugin starts again once its pause is over; one that fails to start waits
+    /// longer before the next try.
+    fn revive_if_due(&mut self) {
+        let due = self.revive_at.is_some_and(|at| Instant::now() >= at);
+        if self.plugin.is_some() || !due {
+            return;
+        }
+        self.revive_at = None;
+        log::info!("[plugin:{}] starting again after a fault", self.package.id);
+        if self.ready().is_err() && self.revive_at.is_none() {
+            self.revive_later();
+        }
+    }
+
+    /// Plans the plugin's restart after a fault: the pause doubles while it keeps faulting
+    /// soon after starting, and starts over once it ran well for `restart_max`.
+    fn revive_later(&mut self) {
+        let limits = &self.wiring.limits;
+        let last = self
+            .pause
+            .filter(|_| self.built_at.elapsed() < limits.restart_max);
+        let pause = limits.next_restart(last);
+        self.pause = Some(pause);
+        self.revive_at = Some(Instant::now() + pause);
+    }
+
     /// The plugin's runtime, built again if a fault dropped it.
     fn ready(&mut self) -> Result<(), HostError> {
         if self.plugin.is_some() {
@@ -333,6 +377,8 @@ impl PluginThread {
     /// finished. Returns why the plugin didn't start, if it didn't.
     fn build(&mut self, load: Option<LoadReply>) -> Result<(), HostError> {
         self.generation += 1;
+        self.revive_at = None;
+        self.built_at = Instant::now();
         let (package, wiring) = (&self.package, &self.wiring);
         // Evaluating main.js and its apply(ctx) share one turn.
         let made = Plugin::new(package, self.generation, wiring).and_then(|mut plugin| {
@@ -383,6 +429,7 @@ impl PluginThread {
         };
         if !self.wiring.halt.is_set() {
             log::warn!("[plugin:{}] {why}", self.package.id);
+            self.revive_later();
         }
         if let Some(plugin) = self.plugin.take() {
             plugin.close(why.clone());

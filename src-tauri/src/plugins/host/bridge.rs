@@ -19,6 +19,7 @@ use serde_json::Value as Json;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -57,6 +58,24 @@ pub(super) struct Wiring {
     pub queue: mpsc::Sender<Msg>,
     pub halt: Arc<Halt>,
     pub notes: Rc<Notes>,
+    /// How many of its async host calls are in flight: while any is, its callers' clocks stop.
+    pub waiting: Arc<AtomicUsize>,
+}
+
+/// Counts one async host call as in flight until it is settled or dropped.
+struct InFlight(Arc<AtomicUsize>);
+
+impl InFlight {
+    fn new(count: &Arc<AtomicUsize>) -> InFlight {
+        count.fetch_add(1, Ordering::SeqCst);
+        InFlight(count.clone())
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// The budget of the turn under way.
@@ -96,6 +115,7 @@ struct Pending {
     name: String,
     resolve: Persistent<Function<'static>>,
     task: tauri::async_runtime::JoinHandle<()>,
+    _in_flight: InFlight,
 }
 
 struct Timer {
@@ -761,6 +781,7 @@ fn bridge<'js>(
     bridge.set("host", Function::new(ctx.clone(), sync_call)?)?;
 
     let (s, services, queue) = (state.clone(), wiring.services.clone(), wiring.queue.clone());
+    let waiting = wiring.waiting.clone();
     let async_call =
         move |ctx: Ctx<'js>, name: String, args: String| -> rquickjs::Result<Promise<'js>> {
             let (promise, resolve, _reject) = Promise::new(&ctx)?;
@@ -803,6 +824,7 @@ fn bridge<'js>(
                     name,
                     resolve,
                     task,
+                    _in_flight: InFlight::new(&waiting),
                 },
             );
             Ok(promise)
