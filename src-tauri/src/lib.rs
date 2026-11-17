@@ -3,6 +3,7 @@ mod commands;
 mod error;
 mod state;
 mod steps;
+mod storage;
 mod workspace;
 
 use state::AppState;
