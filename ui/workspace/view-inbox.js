@@ -10,7 +10,7 @@ import {
   INTENTS, TONES, LENGTHS, MAX_INSTRUCTIONS, replyBox, runningLabel, provenanceLabel, draftError, draftChoices, draftGaps, claudeAvailable, providerLabel,
 } from './draft-state.js';
 
-import { summaryOffered, askDue, addedAsks } from './summary-state.js';
+import { summaryOffered, askDue, addedAsks, askCommitmentId } from './summary-state.js';
 
 const LANE_TONE = { critical: 'error', reply: 'info', waiting: 'warning', fyi: 'neutral', low: 'neutral', decisions: 'purple' };
 
@@ -179,7 +179,7 @@ function summarySection(s, m, zone, state) {
         <span class="ws-summary-ask-text">${e(ask.text)}${due ? `<span class="ws-summary-due">${icon('clock')}Due ${e(due)}</span>` : ''}</span>
         ${added[i]
     ? `<span class="ws-summary-added" role="status">${icon('check')}Added</span>`
-    : button('Add to commitments', { action: 'summary-ask-commit', size: 'sm', iconName: 'check-circle', attrs: { 'data-index': i, 'data-key': key } })}
+    : button('Add to commitments', { action: 'summary-ask-commit', size: 'sm', iconName: 'check-circle', attrs: { 'data-index': i, 'data-key': key, 'data-ask': askCommitmentId(key, ask) } })}
       </li>`;
   }).join('');
   const p = d.provenance || {};
@@ -194,11 +194,11 @@ function summarySection(s, m, zone, state) {
       ${d.asks?.length ? `<div class="ws-summary-asks"><span class="ws-field-label">Asked of you</span><ul>${asks}</ul></div>` : ''}
       ${running ? runningRow(job, { verb: 'Summarizing', hint: '' }) : ''}
       ${failure ? errorRow(job, failure) : ''}
-      ${d.stale && !running ? `<p class="ws-summary-stale-note" role="status">${icon('info')}<span>New messages since this summary.</span>${refresh('secondary')}</p>` : ''}
+      ${d.stale && !running && !failure ? `<p class="ws-summary-stale-note" role="status">${icon('info')}<span>New messages since this summary.</span>${refresh('secondary')}</p>` : ''}
       <div class="ws-draft-provenance-row ws-summary-foot">
         <span class="ws-draft-source">${icon('spark')}<span>${e(provenanceLabel(p, 'Summarized'))}</span></span>
         ${p.partialText ? `<span class="ws-draft-partial" title="Connect could read only the preview of some Outlook messages, so the summary may miss details.">${icon('info')}Preview text only</span>` : ''}
-        ${d.stale && !running ? '' : `<span class="ws-draft-provenance-actions">${refresh('ghost')}</span>`}
+        ${(d.stale && !running) || failure ? '' : `<span class="ws-draft-provenance-actions">${refresh('ghost')}</span>`}
       </div>
     </div>
   </section>`;

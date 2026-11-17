@@ -103,8 +103,8 @@ pub const DRAFT_SYSTEM_MAIL: &str = concat!(
     "- length \"short\": two or three sentences. \"medium\": one or two short paragraphs. \"detailed\": cover every point raised, still without filler.\n\n",
     "Email style:\n",
     "- Write as the user, in the first person, in the language of the marked message unless <instructions> name another language.\n",
-    "- After the greeting, start with the point.\n",
     "- Open with a greeting to the person you are writing to: the sender of the marked message, or for a follow-up the people it went to. Use the first name when the messages show it (in \"Last, First\" the first name follows the comma); otherwise use a neutral greeting.\n",
+    "- After the greeting, start with the point.\n",
     "- Close with a short sign-off line, then the user's given name (\"me.givenName\") on its own line. No job title, company or contact details.\n",
     "- Plain text with blank lines between paragraphs. No subject line, no quoted earlier messages, no markdown.\n",
     draft_output!(),
@@ -388,6 +388,12 @@ fn zone_label(tz: Tz) -> String {
         }
         _ => tz.name().trim_start_matches("Etc/").to_string(),
     }
+}
+
+/// What a message's text costs against [`MAX_CONTEXT_CHARS`]: its sanitised, capped length. The
+/// run's budget and the reads that fill it must count the same way.
+pub fn budget_len(text: &str) -> usize {
+    sanitize_text(text, MAX_MESSAGE_CHARS).chars().count()
 }
 
 /// Outlook text read from Microsoft for one run, by message id. It is never stored; a
@@ -1154,6 +1160,15 @@ mod tests {
         let mut renamed = chat.clone();
         renamed.data["title"] = "Renamed chat".into();
         assert_eq!(fingerprint(&chat), fingerprint(&renamed));
+    }
+
+    #[test]
+    fn a_draft_keeps_at_most_three_questions() {
+        let (_, questions) = parse_draft(&json!({
+            "draft": "Hi", "questions": ["a?", "b?", "c?", "d?", "e?"]
+        }))
+        .unwrap();
+        assert_eq!(questions, vec!["a?", "b?", "c?"]);
     }
 
     #[test]

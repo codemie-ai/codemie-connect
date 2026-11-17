@@ -95,6 +95,7 @@ test('summary_card_lists_asks_and_adds_commitment', () => {
   assert.match(html, /Ann asked for the Q3 budget\./);
   assert.equal(count(html, /data-action="summary-ask-commit"/g), 3);
   assert.match(html, /data-action="summary-ask-commit"[^>]*data-index="0"/);
+  assert.match(html, /data-action="summary-ask-commit"[^>]*data-ask="ask:[^"]+"/, 'asks are told apart by identity');
   assert.match(html, /Send Priya the roadmap comments/);
   assert.match(html, /Due Fri, Nov 20/, 'a date the model fixed is formatted');
   assert.match(html, /Due next week/, 'anything else is shown as written');
@@ -137,11 +138,25 @@ test('due_dates_are_formatted_only_when_parseable', () => {
   assert.equal(askDue('by Friday', 'UTC'), 'by Friday');
   assert.equal(askDue('', 'UTC'), '');
   assert.match(askDue('2026-11-20T09:30:00Z', 'UTC'), /Nov 20/);
+  // A timestamp without a zone is wall-clock time in the workspace zone, not the viewer's.
+  assert.equal(askDue('2026-11-20T09:30:00', 'UTC'), askDue('2026-11-20T09:30:00Z', 'UTC'));
+  assert.match(askDue('2026-11-20T09:30:00', 'Europe/Kyiv'), /09:30/);
+  assert.match(askDue('2026-11-20T09:30:00', 'America/New_York'), /09:30/);
+  assert.match(askDue('2026-11-20T09:30:00Z', 'Asia/Tokyo'), /06:30 PM/);
   assert.equal(askDueDate('2026-11-20'), '2026-11-20');
   assert.equal(askDueDate('next week'), null);
 });
 
 // ---------------------------------------------------------------- stale, running, failed
+
+test('commitment_ids_stay_short_for_long_conversation_ids', () => {
+  const long = `mail:${'AAQkAGI2'.repeat(19)}`;
+  assert.ok(long.length >= 150);
+  const id = askCommitmentId(long, { text: 'Send Jordan the roadmap draft' });
+  assert.ok(id.length < 60, id);
+  assert.equal(id, askCommitmentId(long, { text: ' send jordan the ROADMAP draft ' }));
+  assert.notEqual(id, askCommitmentId(`${long}x`, { text: 'Send Jordan the roadmap draft' }));
+});
 
 test('stale_summary_offers_refresh', () => {
   const s = snapshot(2);
@@ -151,6 +166,14 @@ test('stale_summary_offers_refresh', () => {
   assert.match(html, /New messages since this summary\./);
   assert.equal(count(html, /data-action="ai-summarize"/g), 1, 'one Refresh, in the note');
   assert.match(html, /ws-summary-stale-note[^]*data-action="ai-summarize"[^>]*>(?:(?!<\/button>).)*Refresh/);
+  // A failed refresh shows its own action only: no Refresh beside it.
+  const failedStale = snapshot(2);
+  failedStale.records.push(summaryOf(failedStale, 'm-reply-1', { stale: true }, { updatedAt: nowSec - 100 }));
+  failedStale.jobs.unshift(jobOf(failedStale, 'm-reply-1', 'job-ai-summarize-failed'));
+  const failed = view(failedStale);
+  assert.match(failed, /ws-draft-error/);
+  assert.equal(count(failed, /data-action="ai-summarize"/g), 0);
+  assert.doesNotMatch(failed, /ws-summary-stale-note/);
   // The summary still shows what it said.
   assert.match(html, /Ann asked for the Q3 budget\./);
 });

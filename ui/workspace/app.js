@@ -6,7 +6,7 @@ import { icon } from './icons.js';
 import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, toggle, controlSelector, soleMatch } from './ui.js';
 import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calendarColors } from './calendar-model.js';
 import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
-import { askCommitment } from './summary-state.js';
+import { askCommitment, askCommitmentId } from './summary-state.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
 import { today, WIDGETS, WIDGET_IDS } from './view-today.js';
 import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
@@ -46,6 +46,7 @@ let calendarScrollKey = '';
 let noteTimer;
 let searchTimer;
 const replyInFlight = new Set();
+const asksSaving = new Set();
 const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle']);
 let lastDraftSignature = '';
 // Updates that arrived while the draft options popover was open; shown once it closes.
@@ -1123,9 +1124,17 @@ async function handle(action, el) {
     }
     case 'summary-ask-commit': {
       const key = el.dataset.key;
-      const ask = getRecord('summary', key)?.data.asks?.[Number(el.dataset.index)];
+      const ask = getRecord('summary', key)?.data.asks?.find(x => askCommitmentId(key, x) === el.dataset.ask);
       if (!ask) return toast('This summary changed. Refresh and try again.', 'error');
-      await mutate('local_save', askCommitment(key, ask));
+      const id = askCommitmentId(key, ask);
+      // An ask already added (or being added) is left alone: saving again would rewrite `done`.
+      if (getRecord('commitment', id) || asksSaving.has(id)) return;
+      asksSaving.add(id);
+      try {
+        await mutate('local_save', askCommitment(key, ask));
+      } finally {
+        asksSaving.delete(id);
+      }
       toast('Added to your commitments.', 'success');
       return;
     }

@@ -322,12 +322,17 @@ impl Core {
     /// Runs a queued summary. A message that arrives meanwhile does not discard it; the
     /// snapshot marks it stale instead.
     pub(super) async fn run_ai_summary(&self, job: &Job) -> Result<String> {
+        self.run_ai_summary_within(job, MAIL_READ_DEADLINE).await
+    }
+
+    /// [`Self::run_ai_summary`] with the time its Outlook reads may take.
+    async fn run_ai_summary_within(&self, job: &Job, read_deadline: Duration) -> Result<String> {
         let (w, c, source) = self.repo()?.ai_job_source(job)?;
         let (profile, model) = self.route(Purpose::Summary).await?;
         let run = self.start_run(job, &profile, &model)?;
         let window = prompts::summary_window(&*self.repo()?, &w, &c, &source)?;
         let texts = self
-            .full_mail_texts(&c, &window, &run.cancel, MAIL_READ_DEADLINE)
+            .full_mail_texts(&c, &window, &run.cancel, read_deadline)
             .await?;
         let zone = self.repo()?.settings()?.time_zone;
         let reading = prompts::Reading {
@@ -633,7 +638,7 @@ impl Drop for LedgerEntry<'_> {
 }
 
 /// Whether the newest messages, read so far without a gap, already hold the run's character
-/// budget (each counted up to the per-message cap), so older ones need not be read.
+/// budget (each counted as the prompt counts it: sanitised and capped), so older ones need not be read.
 fn budget_filled(settled: &[Option<Option<String>>]) -> bool {
     let mut used = 0;
     for read in settled {
@@ -641,7 +646,7 @@ fn budget_filled(settled: &[Option<Option<String>>]) -> bool {
             None => return false,
             Some(None) => {}
             Some(Some(text)) => {
-                used += text.chars().count().min(prompts::MAX_MESSAGE_CHARS);
+                used += prompts::budget_len(text);
                 if used >= prompts::MAX_CONTEXT_CHARS {
                     return true;
                 }
@@ -1796,6 +1801,129 @@ mod tests {
         edited.data["title"] = "Ops chat".into();
         put(&core, edited);
         assert_eq!(stale(&core), true, "what the message says still counts");
+    }
+
+    #[tokio::test]
+    async fn the_read_budget_counts_sanitised_text_like_the_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(
+            dir.path(),
+            Arc::new(FakeRunner::new(vec![])),
+            ready(),
+            graph.clone(),
+        );
+        seed(&core);
+        let window: Vec<Record> = (1..=6)
+            .map(|n| long_mail(&format!("m{n}"), BASE + n * 60))
+            .collect();
+        // 5,000 raw characters each, but only 100 once whitespace is trimmed: six messages
+        // together are nowhere near the budget, so every one is still read.
+        let body = format!("{}{}\n\u{7}", "x".repeat(100), " \n".repeat(2_500));
+        for m in &window {
+            graph.answer(
+                &body_url(&m.id),
+                json!({"uniqueBody": {"contentType": "text", "content": body}}),
+            );
+        }
+        let texts = core
+            .full_mail_texts(
+                &connection_of(&core),
+                &window,
+                &CancellationToken::new(),
+                MAIL_READ_DEADLINE,
+            )
+            .await
+            .unwrap();
+        assert_eq!(texts.len(), 6, "reading went on until the budget was full");
+        assert_eq!(prompts::budget_len(&body), 100);
+    }
+
+    /// Queues and runs a summary of `m3` with the reads given `deadline`; returns what Claude
+    /// was sent and the stored summary.
+    async fn summary_run_within(
+        core: &Arc<Core>,
+        fake: &FakeRunner,
+        deadline: Duration,
+    ) -> (Vec<String>, Record) {
+        core.request(mutation(
+            core,
+            Operation::AiSummarize,
+            json!({"sourceId": "m3"}),
+        ))
+        .await
+        .unwrap();
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        core.run_ai_summary_within(&claimed, deadline)
+            .await
+            .unwrap();
+        let blocks = fake.calls().last().unwrap().input["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap().to_string())
+            .collect();
+        (blocks, snapshot_record(core, "summary").unwrap())
+    }
+
+    fn summary_fake() -> Arc<FakeRunner> {
+        let ok = || {
+            Ok(answer(
+                json!({"summary": "Ann wants the budget.", "asks": []}),
+                "claude-haiku-4-5",
+                900,
+                0.001,
+            ))
+        };
+        Arc::new(FakeRunner::new(vec![ok(), ok(), ok()]))
+    }
+
+    #[tokio::test]
+    async fn a_run_drops_reads_still_going_at_the_deadline_and_marks_them_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = summary_fake();
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        budget_thread(&core, Some(&graph));
+        graph.answer(
+            &body_url("m2"),
+            json!({"uniqueBody": {"contentType": "text", "content": "LATE TEXT of m2"}}),
+        );
+        graph.slow(&body_url("m2"), Duration::from_secs(5));
+        let (blocks, summary) = summary_run_within(&core, &fake, Duration::from_millis(300)).await;
+        assert_eq!(blocks.len(), 3);
+        assert!(!blocks.iter().any(|b| b.contains("LATE TEXT")));
+        let partial: Vec<bool> = blocks
+            .iter()
+            .map(|b| b.contains(" partial=\"true\""))
+            .collect();
+        assert_eq!(partial, [false, true, false]);
+        assert!(blocks[1].contains("Sure, which version?"), "the preview");
+        assert!(blocks[0].contains("review the Q3 budget this week?"));
+        assert_eq!(summary.data["provenance"]["partialText"], true);
+    }
+
+    #[tokio::test]
+    async fn a_slow_newest_read_delays_the_run_but_its_text_is_never_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = summary_fake();
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        budget_thread(&core, Some(&graph));
+        graph.slow(&body_url("m3"), Duration::from_millis(400));
+        // Within the deadline the source arrives in full.
+        let (blocks, summary) = summary_run_within(&core, &fake, Duration::from_secs(5)).await;
+        assert!(blocks[2].contains("send it by Friday?") && !blocks[2].contains("partial"));
+        assert_eq!(summary.data["provenance"]["partialText"], false);
+        // Past it, the source is its preview, flagged partial, never absent.
+        graph.slow(&body_url("m3"), Duration::from_secs(5));
+        let (blocks, summary) = summary_run_within(&core, &fake, Duration::from_millis(300)).await;
+        assert_eq!(blocks.len(), 3);
+        assert!(blocks[2].contains("The one from Monday. Can you…"));
+        assert!(blocks[2].contains(" partial=\"true\""));
+        assert_eq!(summary.data["provenance"]["partialText"], true);
     }
 
     /// The draft, summary and failed-job shapes the UI (Tasks 8-9) builds against.

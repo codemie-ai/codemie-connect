@@ -1,6 +1,6 @@
 // Thread summaries (DESIGN 6.5): when Summarize is offered and how the card words its parts.
 // Pure, so every decision is unit tested.
-import { formatDate, formatDateTime } from './format.js';
+import { formatDate, formatDateTime, zonedParts } from './format.js';
 
 /** A conversation is long enough to summarize at this many messages, or more than this much text. */
 export const SUMMARY_MIN_MESSAGES = 4;
@@ -26,8 +26,25 @@ export function askDue(due, zone) {
     if (at.getUTCMonth() === m - 1 && at.getUTCDate() === d) return formatDate(at, 'UTC', { weekday: 'short', month: 'short', day: 'numeric' });
     return text;
   }
-  const stamp = /^\d{4}-\d{2}-\d{2}T/.test(text) ? new Date(text) : null;
+  const stamp = /^\d{4}-\d{2}-\d{2}T/.test(text) ? instantOf(text, zone) : null;
   return stamp && !Number.isNaN(stamp.getTime()) ? formatDateTime(stamp, zone) : text;
+}
+
+const NO_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/;
+
+/** The instant of a timestamp; one without a zone or offset is wall-clock time in `zone`. */
+function instantOf(text, zone) {
+  const m = text.match(NO_ZONE);
+  if (!m) return new Date(text);
+  const [y, mo, d, h, mi, s] = m.slice(1).map(x => Number(x || 0));
+  const wanted = Date.UTC(y, mo - 1, d, h, mi, s);
+  let guess = wanted;
+  // Two passes settle the zone's offset, also across a daylight-saving change.
+  for (let i = 0; i < 2; i++) {
+    const p = zonedParts(new Date(guess), zone);
+    guess += wanted - Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, s);
+  }
+  return new Date(guess);
 }
 
 /** `due` as a commitment's date (YYYY-MM-DD) when it is one, else none. */
@@ -35,9 +52,18 @@ export const askDueDate = due => (DATE_ONLY.test(String(due ?? '').trim()) ? Str
 
 /** The id of the commitment made from an ask: the same ask is the same commitment, so it is added once. */
 export function askCommitmentId(summaryKey, ask) {
-  let h = 5381;
-  for (const ch of String(ask?.text || '').trim().toLowerCase()) h = ((h * 33) ^ ch.codePointAt(0)) >>> 0;
-  return `ask:${summaryKey}:${h.toString(36)}`;
+  return `ask:${hash(summaryKey)}${hash(String(ask?.text || '').trim().toLowerCase())}`;
+}
+
+// Two 32-bit hashes (different seeds) keep ids short however long a conversation id is.
+function hash(text) {
+  let a = 5381;
+  let b = 52711;
+  for (const ch of text) {
+    a = ((a * 33) ^ ch.codePointAt(0)) >>> 0;
+    b = ((b * 31 + ch.codePointAt(0)) ^ (b >>> 15)) >>> 0;
+  }
+  return `${a.toString(36)}${b.toString(36)}-`;
 }
 
 /** The `local_save` request that adds an ask to the commitments. */
