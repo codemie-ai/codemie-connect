@@ -31,6 +31,48 @@ The existing `renderer.js` / Engine / runner / PTY are mounted once, lazily, in 
 
 Workspace presentation, source access and pinned-profile revisions are separate. Account-bound sources are canonical; workspace decisions remain local. Background jobs recheck account generation, policy, selected sources, claim attempt and current schedule/rule before acting. Calendar cursors and completed resource rounds commit together. Unknown send/OS outcomes are never blindly retried.
 
+## Milestone 2 boundaries: `ai/`, `storage/`, `plugins/`
+
+Spec: `prototypes/milestone-2/DESIGN.md`; plugin contract: `prototypes/milestone-2/PLUGIN-ENGINE.md`; evidence: `VALIDATION.md` and `PLUGIN-CONFORMANCE.md` next to them.
+
+| Module | Owns | Does not own |
+|---|---|---|
+| `src-tauri/src/ai/` | Finding Claude Code CLIs (`discover`), reporting which AI profiles are usable (`profiles`: the user's own Claude Code, or a `codemie-claude` profile from `~/.codemie/codemie-cli.config.json`; secrets never read), and running Claude headless and tool-free (`command`, `runner`, `stream`) | What to ask Claude, or what happens to the answer |
+| `src-tauri/src/workspace/` (`prompts`, `automations/`) | Prompts for drafts, summaries and automations, the `ai_draft` / `ai_summarize` / `automation_run` jobs, drafts and summaries as records, automation rules, runs and delivery to Today. Nothing is sent: a draft only fills the reply box | Running the CLI (`ai::runner`) |
+| `src-tauri/src/storage/` | The user-chosen data folder: `location.json` pointer and root resolution, target validation (cloud folders, network volumes, exFAT, free space), move and adopt (`migrate`), the old copy a move leaves (`old_copy`), and the Settings and recovery commands (`commands`) | The workspace schema |
+| `src-tauri/src/plugins/` | Echo-compatible plugins: manifest and permission sheet (`manifest`, `capabilities`), marketplaces over git (`market`, `git`), install, update and remove (`install`, `registry`, `tree`), the QuickJS host (`host/`), Connect's side of `ctx` (`services/`), the manager that loads enabled plugins, the `connect-plugin://` scheme (`protocol`) and caller checks (`caller`); `plugins_request` and `plugin_call` (`commands`) | Plugin UI code, which runs in the frame (`ui/plugins/`) |
+
+Frontend counterparts: `ui/workspace/settings-ai.js`, `draft-state.js`, `summary-state.js`, `view-automations.js` and `automations-controller.js` (pure state and renderers), `settings-storage.js` and `data-location-flow.js`, `settings-plugins.js` and `today-plugins.js`, and `ui/plugins/host.js` (frame management in the window). The Claude chooser (`ai-chooser.js`) is shared by Inbox, Today and Settings.
+
+### Data root and private root
+
+`storage::location` resolves a data root and a private root (DESIGN.md §8). By default both are `~/Library/Application Support/com.epam.codemie.installer/workspace/`; when the user moves the data, the data root is `<picked folder>/CodeMie Connect Data/` (marked by `.codemie-connect.json`, with its own lock so two Macs cannot share one drive) and the private root stays where it was.
+
+| Root | Holds |
+|---|---|
+| Data root (movable) | `workspace.sqlite` (+ WAL/SHM), `ai-staging/`, `plugins/` (packages in `installed/<id>/<version>/`, plugin data, registry) and automation run output |
+| Private root (never moves) | `credentials/` (Microsoft sign-in), plugin secrets (written `0600`), `owner.lock`, `window.json` and `location.json` |
+
+Credentials and plugin secrets therefore never land in a cloud-synced or external folder; target validation also refuses cloud-synced folders, network volumes and exFAT, and checks free space. A move copies and verifies, swaps the pointer, then leaves the old copy for the user to remove. Contract fixtures `location-*.json` and `check-*.json` pin the commands' responses.
+
+### Plugin host and isolation
+
+A plugin has two halves. Its host half (`main.js`) runs in Rust; its client half (`client.js`) runs in the UI.
+
+- **Host half.** One QuickJS runtime on its own OS thread per plugin (`host/worker.rs`), so a stuck plugin holds up no other. Only JSON text crosses the bridge (`host/bridge.rs`, `prelude.js`); bridge functions never throw and never call back into JavaScript. Every entry into JS is a turn with a JS-time and wall-time budget (30 s call limit; awaiting a host call such as `claude.run` does not count). A plugin that overruns is faulted: its runtime is dropped, waiting callers hear `timeout`, and it is rebuilt on next use or after a backoff (30 s, doubling to 10 min) so its timers resume. JSON crossing the boundary is capped at 16 MB (R35).
+- **Services.** `plugins/services/` implements Connect's `ctx`: scoped store and cache, files, `http` (hosts the plugin declared, nothing private), notifications, settings (secrets in the private root), Claude runs (tool-free), deliveries to Today, `echo.read`, events, sign-in (GitHub reads `gh auth token` only after the user presses Sign in). A service checks the plugin's grants on every call.
+- **Client half.** Each plugin UI is an `<iframe sandbox="allow-scripts">` (opaque origin, no `allow-same-origin`) whose `src` is `connect-plugin://<id>/…` (macOS only, R30). Each plugin is its own origin with its own CSP; files come from the plugin's active version only; Connect's shim is served from `__host/`.
+- **Bridge rules.** The frame and the window talk over a `MessageChannel` made afresh on each load; messages are versioned, have exactly the documented fields, and anything else is dropped (`ui/plugins/frame/messages.js`). The window never takes a plugin id from a message: the channel names the frame. A frame can call only its own plugin's host-half commands. Inside a frame `__TAURI__` and `__TAURI_INTERNALS__` are absent, `ipc://` fetches fail and `parent.document` throws; `plugins::caller` also refuses `Origin: null` and non-main-page callers in sensitive commands. This is checked by the isolation smoke, not assumed.
+- **Permission sheets.** Installing or updating reads the manifest's `uses`, and `capabilities` builds a sheet listing every capability with its Connect status (supported, partial with its limit, unsupported). The user agrees to the sheet; the backend recomputes it and compares `sheetHash`, so an install or update that changed since the sheet was shown is refused and shown again. An update that changes what the plugin asks for needs a new agreement.
+
+Plugin ids are lowercase (`valid_id`), because they are also URL hosts.
+
+### Where Milestone 2 differs from Echo
+
+Connect implements plugin engine 1.0 (PLUGIN-ENGINE.md §10). `sessions`, `channel`, `agent`, `scripts`, `threads`, `slots`, `view`, `knowledge` and `claude.hasPlugin/installPlugin` are `undefined`, so plugins feature-detect them; `terminal` is `false`. The manifest's `echo` version is ignored and `engine` is checked. `echo.read('threads')` is `[]`; `threads_changed` is not sent. Claude runs are tool-free. A plugin that calls an Echo-only member without a check fails to load with a clear `unsupported:` message (Telegram today; its fix is in the plugin). Page widgets on Today are text only. Deliveries to mail and Teams are held on Today with Copy; Connect never sends them.
+
+---
+
 ## Architecture Overview
 
 ```

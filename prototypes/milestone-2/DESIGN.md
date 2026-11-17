@@ -24,7 +24,7 @@ These facts were verified on this Mac or in code on 2026-11-17.
 | CodeMie profiles are in `~/.codemie/codemie-cli.config.json` (name, provider, model; tokens are in the Keychain and never read) | Profile listing, secret fields excluded |
 | An Echo plugin is `echo-plugin.json` + `main.js` (host half, QuickJS inside Rust) + `client.js` (ES module in the UI). `uses` declares capabilities, and the user agrees to them on a permission sheet. In Echo, `ctx.claude.run({prompt,title,profile,model,tools,dir,timeout})` returns `{answer, model, usage, actions}`, and only `tools:"none"` runs without tools | Echo `plugin-api.md:123-128`, plugin code |
 | Every published plugin requires `"echo": ">=0.9.9"`. Their `uses` keys: Scheduler `claude, schedule, deliver`; GitHub `signin, network, work, sessions`; Obsidian `folders, claude, echo, sessions`; Telegram `deliver_provider, network, channel` | Local marketplace manifests |
-| Plugins feature-detect some namespaces (`if (ctx.slots)`, `ctx.threads &&`, `ctx.view && ctx.view.hints`, `!ctx.terminal`), which must therefore be `undefined`. Others they call inside error handling (`ctx.sessions.*`, `ctx.agent.set`), which must exist and throw | `github/client.js:201`, `github/main.js:554,565-569`, `obsidian/main.js:284-296`, `telegram/main.js:118-121` |
+| Plugins feature-detect some namespaces (`if (ctx.slots)`, `ctx.threads &&`, `ctx.view && ctx.view.hints`, `!ctx.terminal`), which must therefore be `undefined`. Others they call inside error handling (`ctx.sessions.*`, `ctx.agent.set`). Ruling R38 (PLUGIN-ENGINE.md §10) supersedes the first plan: these are `undefined` too, so a plugin that calls one without a check fails with a TypeError, which Connect words as `unsupported: …` (Telegram) | `github/client.js:201`, `github/main.js:554,565-569`, `obsidian/main.js:284-296`, `telegram/main.js:118-121` |
 | In Tauri 2.12.6 a registered custom scheme counts as a **local** origin. App commands are not checked by origin unless an app ACL manifest exists. A same-origin plugin frame is therefore stopped only by the invoke key the main frame holds | `tauri-2.12.6/src/webview/mod.rs:1961-2080`, `manager/webview.rs:161-168` |
 | Connect writes the workspace to `~/Library/Application Support/com.epam.codemie.installer/workspace/` (DB, credentials, window state), applies 0700 and holds an exclusive lock for the app's lifetime. There is no folder setting | `src-tauri/src/lib.rs:89-91`, `workspace/mod.rs:52-91` |
 | Every mutation sends the snapshot revision. If a sync commit lands in between, it returns `conflict` "This view changed…", so workspace create/switch fails during sync. Switching workspace shows identical data, and reminders and alerts still run for every workspace | `repository.rs:443-447`, `store.js:19-39`, `mod.rs:1166,1353` |
@@ -53,7 +53,7 @@ These facts were verified on this Mac or in code on 2026-11-17.
 - Copying code written by Echo's maintainer (`jshost.rs`, `plugins.rs`, `33-plugins-client.js`, `ai.rs`, `claudejob.rs`, `guard.rs`). Reading it to match behaviour is allowed.
 - Work mail being sent to a personal subscription without the user choosing that.
 - A custom data folder on a cloud-synced or network volume that corrupts SQLite or syncs tokens off the machine.
-- Silent no-ops. The permission sheet states each capability's support before install. Missing features are either `undefined` (where plugins feature-detect) or throw `unsupported: …`. They never pretend to succeed.
+- Silent no-ops. The permission sheet states each capability's support before install. Missing features are `undefined`, so plugins feature-detect them, and a plugin that calls one anyway fails visibly (a TypeError that Connect names as `unsupported: …`). They never pretend to succeed.
 
 ## 4. Constraints
 
@@ -292,14 +292,15 @@ env: remove CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT; for the 
 - Delivery:
   - `deliver.send`: `today` → a Today card. `mail`/`teams` → a Today card plus a message to the user themself, held for the normal review and Confirm and never sent automatically. `telegram` → the provider plugin.
   - `deliver.provide`, `deliver.ready`, `deliver.status`.
-- Workspace data: `echo.read`. `people`, `sources`, `source` and `threads` are mapped from Connect mail, chat and calendar; `clients` and `dictionary` come from a plugin-scoped store. `echo.dictionary.add` adds to that store.
-- Events: `meeting_soon`, `sources_changed`, `threads_changed`, `shared_changed`.
+- Workspace data: `echo.read`. `people`, `sources` and `source` are mapped from Connect mail, chat and calendar, and `threads` is `[]` (R38); `clients` and `dictionary` come from a plugin-scoped store. `echo.dictionary.add` adds to that store.
+- Events: `meeting_soon`, `sources_changed`, `shared_changed` (`threads_changed` is not sent).
 - Sign-in: `signin` for GitHub. It reads `gh auth token` only after the user presses Sign in on the plugin's settings, and keeps the token as a plugin secret.
 
 **Not provided this milestone:**
-- `slots`, `threads`, `view`, `terminal` and `knowledge` are left `undefined`, because plugins feature-detect them. A missing `terminal` correctly tells plugins they run in a windowed host.
-- `sessions`, `channel`, `agent`, `scripts` and `claude.hasPlugin/installPlugin` exist, but each call throws `unsupported: <name> is not available in CodeMie Connect yet`. Plugins call these inside error handling.
-- Task 25 confirms that each published plugin survives both cases.
+- `slots`, `threads`, `view`, `knowledge`, `sessions`, `channel`, `agent`, `scripts` and `claude.hasPlugin/installPlugin` are `undefined` (R38, PLUGIN-ENGINE.md §10), because plugins feature-detect them. `terminal` is `false`, which correctly tells plugins they run in a windowed host.
+- A plugin that calls one of these without a check fails. Connect notes which Echo-only member the plugin touched last and, when a TypeError follows from it, reports `unsupported: CodeMie Connect doesn't have ctx.<name> (only Echo has it), so this plugin needs a change to run here`, in the log and on the plugin's row and page in Settings → Plugins. The other plugins keep loading.
+- The manifest's `echo` version is ignored; `engine` is checked (default `>=1.0`). `echo.read('threads')` returns `[]` and `threads_changed` is not sent.
+- Task 25 confirms the outcome: Scheduler, GitHub and Obsidian load and open; Telegram fails to load with the message above (a plugin change is needed; see PLUGIN-CONFORMANCE.md).
 
 ### 7.3 Client half (`client.js`)
 

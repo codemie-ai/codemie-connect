@@ -426,3 +426,33 @@ trimmed to the window's findings and the verdict:
 ```
 
 The plugin-by-plugin matrix and the conformance tests are in [PLUGIN-CONFORMANCE.md](PLUGIN-CONFORMANCE.md).
+
+## 2026-11-18: Gates (Task 26)
+
+Branch `feat/milestone-1-workspace`, run after the UI polish commit (`fix: polish Today, Inbox and Claude settings copy`).
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cd src-tauri && cargo fmt --check` | clean |
+| Lint | `cd src-tauri && cargo clippy -- -D warnings` | no issues |
+| Rust tests | `cd src-tauri && cargo test` | 517 passed, 2 ignored (the live Claude runs), 5 suites; includes `tests/echo_plugins.rs` against the published plugins |
+| JS tests | `npm test` | 672 tests: 669 passed, 0 failed, 3 skipped |
+| Browser E2E | `PLAYWRIGHT_CORE=… node ui/test/browser/workspace-e2e.mjs` | 183/183 checks passed, both themes at 1000, 1440 and 1680 px (screenshots in `output/playwright/workspace-e2e/`) |
+| Installer build | `./build-installer.sh --skip-stage` | passes (exit 0) |
+
+Native smokes recorded earlier in this file still stand: plugin frame isolation (PASS, re-run after Tasks 17, 20 and 23) and the published plugins in the native app (PASS; Telegram an expected, named failure).
+
+## Live checks (owner present): not done yet
+
+These need the owner at the Mac with a real Claude sign-in and real Microsoft data. They are read-only or reversible; nothing is sent. The controller fills in the results.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Claude page states: profile list, default and per-purpose routes, usage, Test on each ready profile, and the no-Claude state | not done |
+| 2 | One AI draft on a real conversation (not sent): the box fills, Regenerate works, nothing leaves the Mac | not done |
+| 3 | One summary of a real thread, with its asks | not done |
+| 4 | One Morning brief run: the card on Today and the Run log entry | not done |
+| 5 | Data folder move to a temp folder and back: the check page, the restart, the data intact, the old copy, then Use the default folder | not done |
+| 6 | Install the four plugins from the local marketplace and open each (Scheduler, GitHub, Obsidian; Telegram is expected to say it needs a plugin change) | not done |
+
+Open gates: none in code. Other open items are in [README.md](README.md), Known limits.

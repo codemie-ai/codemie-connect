@@ -92,6 +92,32 @@ Approval gate tests (`ignore()` / `approve()`) use a `setTimeout` shim to yield 
 
 ---
 
+## Milestone 2 test patterns
+
+**Live `#[ignore]` tests.** `src-tauri/src/ai/runner.rs` has real one-word Claude prompts (`live_native_isolated_run`, `live_codemie_isolated_run`) that need a signed-in Claude and are never part of `cargo test`. Run them by hand: `cd src-tauri && cargo test live_ -- --ignored`. Nothing else in the suite spends tokens or touches the network.
+
+**Real Echo plugins (`src-tauri/tests/echo_plugins.rs`).** The published plugins are never copied into this repo. The tests read them from `CONNECT_ECHO_PLUGINS_DIR` (a marketplace folder or its `plugins/`; default `$HOME/AI/projects/other/echo-plugins/plugins`) and `CONNECT_KNOWLEDGE_PLUGINS_DIR` (a moving Knowledge worktree, used only for Knowledge's blocked line and the compatibility refusal). Each directory skips on its own, with a message, when it is missing. The conformance tests install the four plugins into a temp data root and load them in the real host with the real services over a real `Core`; only things outside Connect are faked.
+
+**`test-support` feature.** `app_lib::testing` (`FakeRunner` for Claude, `FakeGh`, an offline HTTP client that records requests, a folder picker, `Core`) exists only with `--features test-support`. The crate lists itself as a dev-dependency with that feature, so `cargo test` has it and the app build never does. Integration tests use it; unit tests use `#[cfg(test)]` helpers (`plugins::testkit`, `ai::fake`).
+
+**Smoke modes** (debug builds, run the real native app; the isolation smoke needs `CODEMIE_WORKSPACE_TEST_DIR=$(mktemp -d)/workspace`, the marketplace smoke makes its own temp data root, so the user's data is never touched; each writes a JSON report in `$TMPDIR` and quits with an exit code).
+
+| Mode | What it proves |
+|---|---|
+| `CODEMIE_PLUGIN_SMOKE=isolation ./target/debug/app` | In a real sandboxed `connect-plugin://` frame, `__TAURI__` and `__TAURI_INTERNALS__` are absent, `fetch('ipc://…')` fails, `parent.document` throws. Report: `connect-plugin-isolation.json`. Run it after any change to the frame, CSP, scheme or caller checks |
+| `CODEMIE_PLUGIN_SMOKE=<marketplace folder>` | Installs every plugin the marketplace offers into a fresh temp data root (agreeing to sheets by hash, only in this mode), loads them, opens each page and Settings section and reports what loaded and why the rest did not. Report: `connect-plugin-smoke.json`. Exit 0 pass, 1 fail, 2 window never reported, 3 cannot run. Telegram is an expected, named failure |
+| `CODEMIE_SMOKE=1`, `CODEMIE_PROBE_SMOKE=1` | The installer renderer and PTY wiring, and a detection-only probe (existing) |
+
+The status checks for Claude (`ai_status`, `ai_usage`) are read-only by construction: they list profiles and read this month's usage, never send a prompt. Only `ai_test`, which the user starts, runs Claude.
+
+**Contract fixtures.** The JSON in `ui/test/fixtures/contract/` is written by Rust tests and read by UI tests and the browser mock, so the mock cannot drift from the real responses. After changing a response or record shape run `cd src-tauri && UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`, then commit the JSON; without the variable the tests fail when the files are stale. Sets: `ai-*`, `draft-*`, `summary`, `job-ai-draft-*`, `automation*`, `location-*`, `check-*`, `plugins-*`.
+
+**Pure-module rule.** `ui/workspace/app.js` touches `document` at import, so it cannot be loaded by `node:test`. Logic that needs a test lives in pure modules (`draft-state.js`, `summary-state.js`, `settings-ai.js`, `settings-storage.js`, `data-location-flow.js`, `automations-controller.js`, `settings-plugins.js`, `today-plugins.js`, `view-*.js`, `calendar-model.js`, `selectors.js`) that take state and return values or HTML; `app.js` only wires them to the DOM.
+
+**Browser E2E.** `PLAYWRIGHT_CORE=/Users/Vadym_Vlasenko/.npm/_npx/e41f203b7505f1fb/node_modules/playwright-core node ui/test/browser/workspace-e2e.mjs` (screenshots in `output/playwright/workspace-e2e/`; binds loopback, so run it outside the sandbox). It drives the real `ui/` against a mocked native bridge in both themes at 1000/1440/1680 px: Today, Calendar, Inbox with AI drafts and summaries, Settings (Claude, Storage, Plugins), automations, and the plugin frames. `ui/test/browser/plugins-checks.mjs` holds its plugin checks. It proves UI behaviour only, never native storage, Graph or Claude.
+
+---
+
 ## What Is Not Tested Automatically
 
 The genuine install operations (`install_node`, `codemie setup`, `sudo .pkg`, `~/.zprofile` edits) and network actions (`proxy connect`, analytics) are **never run automatically**. Verify them by hand from the home page. Smoke modes (`CODEMIE_SMOKE=1`, `CODEMIE_PROBE_SMOKE=1`) provide a non-destructive integration check for the renderer and PTY wiring — see `README.md:157`.
