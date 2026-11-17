@@ -28,6 +28,7 @@ export function cliCommands(platform) {
   const name = (v) => assertSafe('name', v);
   const agent = (v) => assertSafe('agent', v);
   return {
+    version: `codemie --version${closed}`,
     list: `codemie list${closed}`,
     updateCheck: `codemie update --check${closed}`,
     install: (n) => `codemie install ${agent(n)}`,
