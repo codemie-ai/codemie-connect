@@ -584,6 +584,9 @@ pub struct Reset {
     pub saved: String,
     /// The plugins taken back, turned off.
     pub adopted: Vec<String>,
+    /// What else is under `installed/` (older versions, copies that no longer pass, stray
+    /// entries), relative to the plugins folder: left as it is, for the UI to offer a clean-up.
+    pub leftovers: Vec<String>,
 }
 
 /// Starts an unreadable registry again: the file is kept as `registry.json.bad-<time>`, the
@@ -609,7 +612,8 @@ pub fn reset_registry(paths: &PluginPaths) -> Result<Reset> {
     fs::rename(paths.registry(), paths.root.join(&saved))
         .map_err(|e| io_error("set the unreadable list of plugins aside", &e))?;
     let mut reg = Registry::load(paths)?;
-    for (id, version, hash) in adoptable(paths) {
+    let (adoptable, leftovers) = adoptable(paths);
+    for (id, version, hash) in adoptable {
         reg.installed.insert(
             id,
             Installed {
@@ -627,43 +631,64 @@ pub fn reset_registry(paths: &PluginPaths) -> Result<Reset> {
     }
     let adopted = reg.installed.keys().cloned().collect();
     Locked::with(lock, paths, reg).save()?;
-    Ok(Reset { saved, adopted })
+    Ok(Reset {
+        saved,
+        adopted,
+        leftovers,
+    })
 }
 
 /// What a reset takes back: in each `installed/<id>/`, the newest version whose tree passes
-/// the checks and whose manifest is that id at that version.
-fn adoptable(paths: &PluginPaths) -> Vec<(String, Version, String)> {
+/// the checks and whose manifest is that id at that version, with its hash. And everything
+/// else under `installed/`, as `installed/<name>[/<name>]` (sorted), which it leaves alone.
+type Adoptable = (Vec<(String, Version, String)>, Vec<String>);
+
+fn adoptable(paths: &PluginPaths) -> Adoptable {
     let Ok(ids) = fs::read_dir(paths.installed()) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let is_dir = |e: &fs::DirEntry| e.file_type().is_ok_and(|t| t.is_dir());
+    let name = |e: &fs::DirEntry| e.file_name().to_string_lossy().into_owned();
     let mut found = Vec::new();
-    for entry in ids.flatten().filter(is_dir) {
-        let Some(id) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
+    let mut leftovers = Vec::new();
+    for entry in ids.flatten() {
+        let id = name(&entry);
+        let versions = match fs::read_dir(entry.path()) {
+            Ok(versions) if is_dir(&entry) && valid_id(&id) => versions,
+            _ => {
+                leftovers.push(format!("installed/{id}"));
+                continue;
+            }
         };
-        if !valid_id(&id) {
-            continue;
-        }
-        let Ok(versions) = fs::read_dir(entry.path()) else {
-            continue;
-        };
-        let newest = versions
-            .flatten()
-            .filter(is_dir)
-            .filter_map(|v| {
-                let version = Version::parse(v.file_name().to_str()?).ok()?;
-                let m = read_package(&v.path(), &id).ok()?;
-                (m.version == version).then_some((version, v.path()))
-            })
-            .max_by(|a, b| a.0.cmp(&b.0));
-        if let Some((version, dir)) = newest {
-            if let Ok(hash) = tree_hash(&dir) {
-                found.push((id, version, hash));
+        // Every version folder that could be taken back: a plain version name, files that pass,
+        // the manifest of this id at that version, a hash.
+        let mut usable = Vec::new();
+        let mut empty = true;
+        for v in versions.flatten() {
+            empty = false;
+            let dir = name(&v);
+            let taken = is_dir(&v)
+                .then(|| Version::parse(&dir).ok())
+                .flatten()
+                .filter(|version| read_package(&v.path(), &id).is_ok_and(|m| &m.version == version))
+                .and_then(|version| Some((version, tree_hash(&v.path()).ok()?)));
+            match taken {
+                Some((version, hash)) => usable.push((version, hash, dir)),
+                None => leftovers.push(format!("installed/{id}/{dir}")),
             }
         }
+        usable.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut usable = usable.into_iter();
+        match usable.next() {
+            Some((version, hash, _)) => found.push((id.clone(), version, hash)),
+            None if empty => leftovers.push(format!("installed/{id}")),
+            None => {}
+        }
+        // Older versions stay where they are.
+        leftovers.extend(usable.map(|(_, _, dir)| format!("installed/{id}/{dir}")));
     }
-    found
+    leftovers.sort();
+    (found, leftovers)
 }
 
 #[cfg(test)]
@@ -1266,12 +1291,17 @@ mod tests {
         testkit::local_market(&env, &[hello("1.0.0"), manifest("plain", "1.0.0")]);
         install_shown(&env, "hello").unwrap();
         install_shown(&env, "plain").unwrap();
-        // A copy whose files no longer pass is not taken back.
+        // A copy whose files no longer pass is not taken back; nor are an older version, a
+        // folder that isn't a version, an empty plugin folder or a stray file.
         fs::write(
             env.paths.installed().join("plain/1.0.0/echo-plugin.json"),
             "{",
         )
         .unwrap();
+        testkit::write_plugin(&env.paths.installed().join("hello/0.9.0"), hello("0.9.0"));
+        fs::create_dir_all(env.paths.installed().join("hello/notes")).unwrap();
+        fs::create_dir_all(env.paths.installed().join("empty")).unwrap();
+        fs::write(env.paths.installed().join("stray.txt"), "x").unwrap();
         // A readable registry is never reset.
         assert_eq!(reset_registry(&env.paths).unwrap_err().code, "invalid");
 
@@ -1291,6 +1321,23 @@ mod tests {
             "{ broken"
         );
         assert_eq!(reset.adopted, ["hello"]);
+        // What it didn't take back is listed, and left alone.
+        assert_eq!(
+            reset.leftovers,
+            [
+                "installed/empty",
+                "installed/hello/0.9.0",
+                "installed/hello/notes",
+                "installed/plain/1.0.0",
+                "installed/stray.txt",
+            ]
+        );
+        for left in &reset.leftovers {
+            assert!(
+                fs::symlink_metadata(env.paths.root.join(left)).is_ok(),
+                "{left}"
+            );
+        }
         let reg = Registry::load(&env.paths).unwrap();
         assert_eq!(reg.markets.len(), 1, "the built-in marketplace only");
         let p = &reg.installed["hello"];

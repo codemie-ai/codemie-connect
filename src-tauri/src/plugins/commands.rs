@@ -15,7 +15,7 @@
 //! | `set_enabled` | `{id, enabled}` | `Installed` |
 //! | `remove` | `{id, deleteData}` | `{removed, deletedData}` (also for the kept data of a removed plugin) |
 //! | `installed` | | `[Installed]` |
-//! | `registry_reset` | | `{saved, adopted}`, only when the list is `registry_unreadable` |
+//! | `registry_reset` | | `{saved, adopted, leftovers}`, only when the list is `registry_unreadable` |
 //!
 //! `agreed` is every key of the sheet the user was shown and `sheetHash` that sheet's hash (from
 //! `inspect` or `needs_consent`): a sheet that changed since is refused as `changed`.
@@ -188,7 +188,9 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
         "installed" => to_json(installed_views(paths)?),
         "registry_reset" => {
             let reset = install::reset_registry(paths)?;
-            Ok(json!({"saved": reset.saved, "adopted": reset.adopted}))
+            Ok(
+                json!({"saved": reset.saved, "adopted": reset.adopted, "leftovers": reset.leftovers}),
+            )
         }
         other => Err(WorkspaceError::new(
             "invalid",
@@ -648,6 +650,7 @@ mod tests {
         );
         let reset = run("registry_reset", Value::Null).unwrap();
         assert_eq!(reset["adopted"], json!([]));
+        assert_eq!(reset["leftovers"], json!([]));
         assert_eq!(
             run("markets", Value::Null)
                 .unwrap()
