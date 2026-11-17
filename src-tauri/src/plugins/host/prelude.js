@@ -23,8 +23,11 @@
   const Num = Number
   const P = Promise
   const WeakMapType = WeakMap
-  const { apply } = Reflect
-  const { defineProperty } = Object
+  const ProxyType = Proxy
+  const TypeErrorProto = TypeError.prototype
+  const { apply, get: reflectGet } = Reflect
+  const { defineProperty, getPrototypeOf } = Object
+  const hasOwn = (o, key) => apply(Object.prototype.hasOwnProperty, o, [key])
   const { parse, stringify } = JSON
   const unbind = (f) => (self, ...args) => apply(f, self, args)
   const then = unbind(P.prototype.then)
@@ -55,17 +58,64 @@
     return parse(wire)
   }
 
+  // What only Echo has (PLUGIN-ENGINE.md §4.5 and §10), with the members each has there. `ctx`
+  // leaves them out (rule 3: `undefined` to every presence test), but notes when the last member
+  // a plugin touched was one of them (`touched`, `ctx.<name>`; any other member clears it). A
+  // TypeError that follows from it, a property read from it or a call of it, is then told as what
+  // it is: an Echo-only API used without a check, so the plugin needs a change to run here.
+  const ECHO_ONLY = {
+    __proto__: null,
+    sessions: ['skills', 'read', 'channel', 'clearChannel'],
+    view: ['hints'],
+    agent: ['set'],
+    scripts: ['run'],
+    threads: ['get', 'set', 'list'],
+    slots: ['list', 'add'],
+    channel: [],
+    knowledge: [],
+  }
+  const ECHO_ONLY_CLAUDE = { __proto__: null, hasPlugin: [], installPlugin: [] }
+  let touched = ''
+  const noting = (target, prefix, absent) =>
+    new ProxyType(target, {
+      get: (t, key, receiver) => {
+        if (typeof key === 'string') touched = key in absent && !hasOwn(t, key) ? prefix + key : ''
+        return reflectGet(t, key, receiver)
+      },
+    })
+  // The Echo-only member to blame for a TypeError, or ''.
+  const blame = (e, message) => {
+    if (!touched || getPrototypeOf(e) !== TypeErrorProto) return ''
+    if (indexOf(message, 'not a function') >= 0) return touched
+    const members = indexOf(touched, 'ctx.claude.') === 0 ? null : ECHO_ONLY[slice(touched, 4)]
+    if (!members || indexOf(message, 'of undefined') < 0) return ''
+    if (members.length === 0) return touched
+    for (let i = 0; i < members.length; i += 1) {
+      if (indexOf(message, `'${members[i]}'`) >= 0) return touched
+    }
+    return ''
+  }
+  const about = Object.freeze(parse(bridge.about))
+  const appName = typeof about.name === 'string' && about.name ? about.name : 'This app'
+
   // A thrown value as the host hears it, `[code, message]`: a host-made error keeps its code;
-  // anything else is the plugin's own failure (code ''), described by a string `message`. It
-  // runs in the plugin's own time, so a getter that never returns is stopped with the turn.
+  // anything else is the plugin's own failure (code ''), described by a string `message`, unless
+  // it came from an Echo-only API (`unsupported`). It runs in the plugin's own time, so a getter
+  // that never returns is stopped with the turn.
   const describe = (e) => {
     try {
       const host = madeGet(made, e)
       if (host !== undefined) return host
       if (typeof e === 'string') return ['', e]
       if (e !== null && (typeof e === 'object' || typeof e === 'function')) {
-        const message = e.message
-        return ['', typeof message === 'string' ? message : '']
+        const raw = e.message
+        const message = typeof raw === 'string' ? raw : ''
+        const echoOnly = blame(e, message)
+        if (echoOnly) {
+          const why = `${appName} doesn't have ${echoOnly} (only Echo has it), so this plugin needs a change to run here`
+          return ['unsupported', message ? `${why}: ${message}` : why]
+        }
+        return ['', message]
       }
       return ['', e === undefined || e === null ? '' : Str(e)]
     } catch {
@@ -110,10 +160,10 @@
 
   // Members Connect doesn't have are left out (PLUGIN-ENGINE.md rule 3): `sessions`,
   // `channel`, `agent`, `scripts`, `threads`, `view`, `slots`, `knowledge` and
-  // `claude.hasPlugin/installPlugin`. Plugins test for them.
-  const ctx = {
+  // `claude.hasPlugin/installPlugin` (`ECHO_ONLY`). Plugins test for them.
+  const ctx = noting({
     id: bridge.id,
-    host: Object.freeze(parse(bridge.about)),
+    host: about,
     terminal: false,
     log: (...parts) => direct('log')(parts.map(text).join(' ')),
 
@@ -161,7 +211,7 @@
     },
     system: { pickFolder: deferred('system.pickFolder'), which: direct('system.which') },
     http: { fetch: deferred('http.fetch') },
-    claude: { run: deferred('claude.run') },
+    claude: noting({ run: deferred('claude.run') }, 'ctx.claude.', ECHO_ONLY_CLAUDE),
     profiles: direct('profiles'),
 
     notify: direct('notify'),
@@ -203,7 +253,7 @@
       forget: direct('signin.forget'),
       sources: direct('signin.sources'),
     },
-  }
+  }, 'ctx.', ECHO_ONLY)
 
   // Runs `work()` and answers the host's call once its value (or promise) is known: the value
   // as JSON text, or the failure.
@@ -244,6 +294,7 @@
   // The host's way in: a command or provider answers through `bridge.answer(call, …)`; an
   // event or a timer tick runs on its own.
   const dispatch = (kind, name, json, call) => {
+    touched = ''
     const args = json === undefined ? undefined : parse(json)
     if (kind === 'command' || kind === 'provider') {
       const target = (kind === 'command' ? commands : providers).get(name)
@@ -264,6 +315,7 @@
   // be async).
   const load = (exports, call) =>
     answerWith(call, () => {
+      touched = ''
       if (typeof exports.apply !== 'function') {
         throw hostError('plugin_error', 'main.js doesn’t export apply(ctx)')
       }

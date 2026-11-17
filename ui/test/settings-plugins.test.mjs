@@ -305,3 +305,24 @@ test('Today draws plugin widgets from their data, escaped, and the From plugins 
   assert.match(page, /ws-plugins-card/);
   assert.ok(escaped(page));
 });
+
+test('a plugin whose host half did not load says why, and can still be turned off', () => {
+  const why = `CodeMie Connect doesn't have ctx.sessions (only Echo has it), so this plugin needs a change to run here: ${HOSTILE}`;
+  const p = { ...contract('plugins-installed')[0], id: 'telegram', name: 'Telegram', update: null, loadError: why };
+  const ui = readyUi({ installed: [p] });
+  const list = pluginsPanel(ui);
+  assert.ok(escaped(list), list);
+  assert.match(list, /Didn’t load/);
+  assert.ok(list.includes('doesn&#39;t have ctx.sessions') || list.includes("doesn't have ctx.sessions"), list);
+  assert.doesNotMatch(list, /data-action="plugin-enable"[^>]*disabled/, 'it can still be turned off');
+  const detail = installedDetail(ui, 'telegram', null);
+  assert.ok(escaped(detail), detail);
+  assert.match(detail, /Its host half didn’t load/);
+  assert.match(detail, /needs a change to run here/);
+  // Turned off, it isn't a problem any more.
+  const off = pluginsPanel(readyUi({ installed: [{ ...p, enabled: false }] }));
+  assert.doesNotMatch(off, /Didn’t load/);
+  // A page that failed after it started says so in those words.
+  const failed = installedDetail(readyUi({ installed: [{ ...p, loadError: null }] }), 'telegram', { error: 'Page “main”: boom', errors: ['Page “main”: boom'] });
+  assert.match(failed, /Its page failed: Page “main”: boom/);
+});

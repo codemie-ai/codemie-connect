@@ -15,6 +15,8 @@ const ITEM_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
 const CLIENT_PATH = /^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_./-]*\.m?js$/;
 const STYLESHEET = /^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_/.-]*\.css$/;
 const MAX_LIST = 40;
+/** The most different page errors a frame reports in one load. */
+const MAX_ERRORS = 20;
 
 /** A `localStorage` stand-in: the Storage interface over `initial`, calling `onChange(all)` after
  *  each change. Over `max` (as JSON) a write throws, as a full browser storage does. */
@@ -64,7 +66,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     shownPanel: null, drawing: false, applied: false, failed: '', unloaded: false,
     owned: { listeners: [], windowListeners: [], styles: [], cleanups: [] },
     calls: new Map(), nextId: 1, sent: '', renderQueued: false, height: -1,
-    pendingItems: null, flushTimer: null,
+    pendingItems: null, flushTimer: null, reported: new Set(), early: [],
   };
   let ctx = null;
   let graph = null;
@@ -72,6 +74,28 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
   const post = m => {
     if (s.port && !s.unloaded) s.port.postMessage({ v: V, id: 0, ...m });
   };
+
+  /** A page error, told to the window once (each different one, 20 at most); one from before the
+   *  channel opened is told when it does. */
+  function pageError(message) {
+    const text = String(message || 'Something went wrong').slice(0, 2000);
+    if (s.reported.has(text) || s.reported.size >= MAX_ERRORS) return;
+    s.reported.add(text);
+    if (s.port) post({ kind: 'event', type: 'error', message: text });
+    else s.early.push(text);
+  }
+
+  // What goes wrong in the frame outside the shim's own calls: the plugin's uncaught errors and
+  // rejections, and what the frame's CSP refused.
+  const scriptPath = file => String(file || '').replace(/^[a-z-]+:\/\/[^/]*\//i, '').replace(/[?#].*$/, '');
+  win.addEventListener?.('error', event => {
+    const at = event.filename ? ` (${scriptPath(event.filename)}${event.lineno ? `:${event.lineno}` : ''})` : '';
+    pageError(`${event.message || errorOf(event.error).message}${at}`);
+  });
+  win.addEventListener?.('unhandledrejection', event => pageError(`Unhandled rejection: ${errorOf(event.reason).message}`));
+  doc.addEventListener?.('securitypolicyviolation', event => {
+    pageError(`CSP blocked ${event.blockedURI || 'inline'} (${event.violatedDirective || event.effectiveDirective || '?'})`);
+  });
 
   function request(body) {
     if (!s.port || s.unloaded) return Promise.reject(new Error('This plugin is off.'));
@@ -97,6 +121,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     s.where = m.where;
     setTheme(m.theme);
     installStorage(m.storage);
+    for (const text of s.early.splice(0)) post({ kind: 'event', type: 'error', message: text });
     ctx = makeCtx();
     boot();
   }
@@ -133,7 +158,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       post({ kind: 'event', type: 'ready' });
     } catch (e) {
       s.failed = errorOf(e).message;
-      post({ kind: 'event', type: 'error', message: s.failed });
+      pageError(s.failed);
     }
     contribute();
     renderSoon();
@@ -286,6 +311,12 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     });
   }
 
+  function viewName(t) {
+    if (t.view === 'activity') return `Page “${t.activity}”`;
+    if (t.view === 'section') return `Section “${t.section}”`;
+    return 'Card';
+  }
+
   function viewOf(t) {
     if (t.view === 'activity') return s.activities.get(t.activity);
     if (t.view === 'section') return s.sections.get(t.section);
@@ -327,6 +358,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       if (view && t.view !== 'card') panel = pickPanel();
     } catch (e) {
       html = `<p class="error">${esc(errorOf(e).message)}</p>`;
+      pageError(`${viewName(t)}: ${errorOf(e).message}`);
     } finally {
       s.drawing = false;
     }
@@ -339,6 +371,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
           side = String(panel.render() ?? '');
         } catch (e) {
           side = `<p class="error">${esc(errorOf(e).message)}</p>`;
+          pageError(`Panel “${panel.id}”: ${errorOf(e).message}`);
         } finally {
           s.drawing = false;
         }
@@ -350,7 +383,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       try {
         view.after(main);
       } catch (e) {
-        post({ kind: 'event', type: 'error', message: errorOf(e).message });
+        pageError(`${viewName(t)}: ${errorOf(e).message}`);
       }
     }
     contribute();

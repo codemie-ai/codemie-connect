@@ -330,3 +330,57 @@ test('the schema takes only the messages it names', () => {
   assert.equal(checkFromWindow({ v: V, id: 0, kind: 'event', type: 'theme', theme: 'neon' }), null);
   assert.ok(checkFromWindow({ v: V, id: 0, kind: 'event', type: 'theme', theme: 'dark' }));
 });
+
+test('page errors reach the window through the bridge, once each', async () => {
+  const w = await helloLoaded();
+  const win = w.fw.win;
+  // An uncaught error and an unhandled rejection in the frame, and a CSP refusal.
+  win.dispatchEvent(Object.assign(new Event('error'), {
+    message: 'TypeError: undefined is not an object', filename: 'connect-plugin://hello/client.js?v=1.0.0', lineno: 12,
+  }));
+  win.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason: new Error('boom') }));
+  win.dispatchEvent(Object.assign(new Event('unhandledrejection'), { reason: new Error('boom') }));
+  w.fw.doc.dispatchEvent(Object.assign(new Event('securitypolicyviolation'), {
+    blockedURI: 'https://evil.example.com/x.css', violatedDirective: 'style-src',
+  }));
+  // A page whose render throws, drawn twice.
+  w.shim.ctx.activities.add({ id: 'broken', label: 'Broken', render: () => { throw new Error('no data yet'); } });
+  w.host.show({ id: 'hello', view: 'activity', activity: 'broken', route: '' });
+  await settle(30);
+  w.shim.ctx.render();
+  await settle(30);
+  assert.match(w.fw.els['cx-main'].innerHTML, /class="error">no data yet/);
+  const status = w.host.status('hello');
+  assert.deepEqual(status.errors, [
+    'TypeError: undefined is not an object (client.js:12)',
+    'Unhandled rejection: boom',
+    'CSP blocked https://evil.example.com/x.css (style-src)',
+    'Page “broken”: no data yet',
+  ]);
+  assert.equal(status.error, 'Page “broken”: no data yet');
+  // A frame that keeps failing reports 20 at most.
+  for (let i = 0; i < 40; i++) win.dispatchEvent(Object.assign(new Event('error'), { message: `error ${i}` }));
+  await settle(30);
+  assert.equal(w.host.status('hello').errors.length, 20);
+});
+
+test('errors before the channel opens are reported once it does', async () => {
+  const fw = frameWindow();
+  const shim = shimOf(fw);
+  fw.win.dispatchEvent(Object.assign(new Event('error'), { message: 'SyntaxError: early' }));
+  const { port1, port2 } = new MessageChannel();
+  const got = [];
+  port1.onmessage = event => got.push(event.data);
+  const connect = { v: V, id: 0, kind: 'event', type: 'connect', plugin: { id: 'hello', client: 'client.js' }, host: { name: 'X' }, theme: 'light', where: { view: '', section: '', route: '' }, storage: {} };
+  shim.onWindowMessage({ source: fw.parent, data: connect, ports: [port2] });
+  await settle(60);
+  assert.ok(got.some(m => m.kind === 'event' && m.type === 'error' && m.message === 'SyntaxError: early'), JSON.stringify(got));
+  port1.close();
+});
+
+test('a plugin whose host half did not load gets no frame', () => {
+  const w = wired();
+  w.host.sync([{ ...HELLO_INSTALLED, loadError: 'CodeMie Connect doesn’t have ctx.sessions (only Echo has it)' }]);
+  assert.equal(w.frames.length, 0);
+  assert.equal(w.host.status('hello'), null);
+});

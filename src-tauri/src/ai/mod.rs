@@ -2,7 +2,7 @@
 //! and running Claude headless and tool-free.
 pub mod command;
 pub mod discover;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub mod fake;
 pub mod profiles;
 pub mod runner;

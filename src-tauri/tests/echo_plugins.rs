@@ -1,9 +1,15 @@
-//! Reads the real Echo plugins' manifests; nothing of those plugins is copied into this repository.
+//! Reads and runs the real Echo plugins; nothing of those plugins is copied into this repository.
 //! Each directory skips on its own, with a message, when it isn't there.
 //!
-//! - `CONNECT_ECHO_PLUGINS_DIR` (default `$HOME/AI/projects/other/echo-plugins/plugins`): the
-//!   published plugins (echo-plugins main). Scheduler, GitHub, Obsidian and Telegram must parse,
-//!   have a sheet with nothing blocking, and fit Connect's plugin engine (their `echo` is ignored).
+//! - `CONNECT_ECHO_PLUGINS_DIR` (default `$HOME/AI/projects/other/echo-plugins/plugins`; the
+//!   marketplace folder above it works too): the published plugins (echo-plugins main).
+//!   Scheduler, GitHub, Obsidian and Telegram must parse, have a sheet with nothing blocking, and
+//!   fit Connect's plugin engine (their `echo` is ignored). Then each one's real `main.js` runs
+//!   (Task 25's conformance): installed from a temp copy of the marketplace into a temp data
+//!   root, loaded by the real `PluginManager` into the real host with Connect's real services
+//!   over a real `Core`, and only what is outside Connect faked: Claude (`FakeRunner`), the
+//!   network (an offline client that records what it was asked to send), the folder picker and
+//!   the GitHub CLI.
 //! - `CONNECT_KNOWLEDGE_PLUGINS_DIR` (default
 //!   `$HOME/.codex/worktrees/knowledge-plugin-0300/echo-plugins/plugins`): a moving worktree, used
 //!   for Knowledge's blocked line and the compatibility refusal only (ruling R31).
@@ -12,17 +18,29 @@
 //! marketplace and installed from, into a temp data root.
 use app_lib::plugins::capabilities::{sheet, Support};
 use app_lib::plugins::git::CliGit;
+use app_lib::plugins::host::{ErrorCode, Limits};
 use app_lib::plugins::install::{self, sheet_hash, Agreement, Outcome};
+use app_lib::plugins::manager::PluginManager;
 use app_lib::plugins::manifest::{check_compat, parse_manifest, ManifestError};
 use app_lib::plugins::market;
 use app_lib::plugins::registry::{Market, PluginPaths, Registry};
+use app_lib::plugins::services::Outside;
 use app_lib::plugins::tree::tree_hash;
+use app_lib::testing::{self, Core, FakeGh, FakeRunner, HttpClient, Picked, Recorded};
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
+const PUBLISHED: [&str; 4] = ["scheduler", "github", "obsidian", "telegram"];
+
+/// A plugins folder named by `var`: a marketplace folder is taken as its `plugins/`.
 fn dir(var: &str, default_under_home: &str) -> Option<PathBuf> {
     let d = std::env::var_os(var)
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(default_under_home)))?;
+    if d.join(market::CATALOG_FILE).is_file() && d.join("plugins").is_dir() {
+        return Some(d.join("plugins"));
+    }
     if d.is_dir() {
         Some(d)
     } else {
@@ -31,15 +49,19 @@ fn dir(var: &str, default_under_home: &str) -> Option<PathBuf> {
     }
 }
 
-#[test]
-fn published_manifests_parse_and_none_is_blocked() {
-    let Some(dir) = dir(
+fn published() -> Option<PathBuf> {
+    dir(
         "CONNECT_ECHO_PLUGINS_DIR",
         "AI/projects/other/echo-plugins/plugins",
-    ) else {
+    )
+}
+
+#[test]
+fn published_manifests_parse_and_none_is_blocked() {
+    let Some(dir) = published() else {
         return;
     };
-    for id in ["scheduler", "github", "obsidian", "telegram"] {
+    for id in PUBLISHED {
         let m = parse_manifest(&dir.join(id)).unwrap_or_else(|e| panic!("{id}: {e}"));
         assert_eq!(m.id, id);
         let lines = sheet(&m).unwrap_or_else(|e| panic!("{id}: {e}"));
@@ -107,10 +129,7 @@ fn local_market(plugins: &Path) -> Option<(tempfile::TempDir, PluginPaths, Marke
 
 #[test]
 fn published_plugins_install_from_their_local_marketplace() {
-    let Some(dir) = dir(
-        "CONNECT_ECHO_PLUGINS_DIR",
-        "AI/projects/other/echo-plugins/plugins",
-    ) else {
+    let Some(dir) = published() else {
         return;
     };
     let Some((_tmp, paths, m)) = local_market(&dir) else {
@@ -118,8 +137,7 @@ fn published_plugins_install_from_their_local_marketplace() {
     };
     // Its catalog is named like the built-in one, so it gets the next free name.
     assert_eq!(m.name, "onetest-2");
-    let ids = ["scheduler", "github", "obsidian", "telegram"];
-    for id in ids {
+    for id in PUBLISHED {
         let offer = install::offer(&paths, &m, id).unwrap();
         assert!(offer.refusal.is_none(), "{id}: {:?}", offer.refusal);
         let agreed: Vec<String> = offer.sheet.iter().map(|l| l.key.clone()).collect();
@@ -140,7 +158,7 @@ fn published_plugins_install_from_their_local_marketplace() {
         assert_eq!(p.agreed, want, "{id}");
         assert!(p.enabled);
     }
-    for id in ids {
+    for id in PUBLISHED {
         install::remove(&paths, id, true).unwrap();
     }
     assert!(Registry::load(&paths).unwrap().installed.is_empty());
@@ -173,4 +191,484 @@ fn knowledge_is_refused_at_install_with_its_sheet_line() {
     assert_eq!(e.code, "blocked");
     assert_eq!(e.message, "Needs Connect's Knowledge engine (coming later)");
     assert!(Registry::load(&paths).unwrap().installed.is_empty());
+}
+
+// ------------------------------------------------------------------ the plugins running (Task 25)
+
+/// Every log line, for what plugins and the host say only there: a plugin's `ctx.log`, and the
+/// host's note of a service Connect answered `unsupported`.
+struct Capture(Mutex<Vec<String>>);
+
+impl log::Log for Capture {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        let line = format!("{} {}", record.level(), record.args());
+        self.0.lock().unwrap().push(line);
+    }
+    fn flush(&self) {}
+}
+
+fn captured() -> &'static Capture {
+    static CAPTURE: OnceLock<&'static Capture> = OnceLock::new();
+    CAPTURE.get_or_init(|| {
+        let capture: &'static Capture = Box::leak(Box::new(Capture(Mutex::default())));
+        log::set_logger(capture).expect("one logger for this test binary");
+        log::set_max_level(log::LevelFilter::Info);
+        capture
+    })
+}
+
+/// The log lines of one plugin (`[plugin:<id>] …`).
+fn lines_of(id: &str) -> Vec<String> {
+    let tag = format!("[plugin:{id}]");
+    let lines = captured().0.lock().unwrap();
+    lines.iter().filter(|l| l.contains(&tag)).cloned().collect()
+}
+
+/// Copies a marketplace folder, leaving out hidden entries (`.git`).
+fn copy_market(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_market(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Connect with the four published plugins installed (every sheet agreed to) and loaded.
+struct Connect {
+    /// The marketplace copy, the data root and anything a test makes (a vault).
+    tmp: tempfile::TempDir,
+    core: Arc<Core>,
+    manager: Arc<PluginManager>,
+    runner: Arc<FakeRunner>,
+    /// What the plugins asked the network for: nothing is ever sent.
+    sent: Recorded,
+    picker: Arc<Picked>,
+    gh: Arc<FakeGh>,
+}
+
+impl Connect {
+    /// Claude answers `answers`, in order.
+    async fn start(plugins: &Path, answers: &[&str]) -> Connect {
+        captured();
+        let tmp = tempfile::tempdir().unwrap();
+        let copy = tmp.path().join("market");
+        copy_market(plugins.parent().unwrap(), &copy);
+        let script = answers.iter().map(|a| testing::answer(a)).collect();
+        let runner = Arc::new(FakeRunner::new(script));
+        let core = testing::core(
+            &tmp.path().join("data"),
+            runner.clone(),
+            vec![testing::claude_profile()],
+        );
+        testing::choose_profile(&core, "claude");
+        let paths = PluginPaths::new(&core.paths.data, &core.paths.private);
+        let m = market::add(&paths, &CliGit::default(), copy.to_str().unwrap()).unwrap();
+        for id in PUBLISHED {
+            let offer = install::offer(&paths, &m, id).unwrap();
+            assert!(offer.refusal.is_none(), "{id}: {:?}", offer.refusal);
+            let keys: Vec<String> = offer.sheet.iter().map(|l| l.key.clone()).collect();
+            let hash = sheet_hash(&offer.sheet);
+            let agreement = Agreement {
+                keys: &keys,
+                sheet_hash: &hash,
+            };
+            install::install(&paths, &m.name, id, agreement).unwrap();
+        }
+        let (http, sent) = HttpClient::offline();
+        let picker = Arc::new(Picked::default());
+        let gh = Arc::new(FakeGh::default());
+        let outside = Outside {
+            picker: picker.clone(),
+            signin: gh.clone(),
+            http,
+        };
+        let manager = PluginManager::new(core.clone(), outside, Limits::default());
+        manager.reload().await;
+        Connect {
+            tmp,
+            core,
+            manager,
+            runner,
+            sent,
+            picker,
+            gh,
+        }
+    }
+
+    async fn call(&self, id: &str, command: &str, args: Value) -> Value {
+        self.manager
+            .call(id, command, args)
+            .await
+            .unwrap_or_else(|e| panic!("{id} {command}: {e}"))
+    }
+
+    /// Today's records of `kind` (`plugin_item`, `plugin_widget`) by id.
+    fn record(&self, kind: &str, id: &str) -> Option<Value> {
+        testing::records(&self.core, kind)
+            .into_iter()
+            .find(|(rid, _)| rid == id)
+            .map(|(_, data)| data)
+    }
+
+    fn sent(&self) -> Vec<String> {
+        self.sent.lock().unwrap().clone()
+    }
+
+    /// The arguments the Claude Code CLI would have got for each run.
+    fn runs(&self) -> Vec<(Value, Vec<String>)> {
+        self.runner
+            .calls()
+            .iter()
+            .map(|spec| (spec.input.clone(), testing::command_args(spec)))
+            .collect()
+    }
+}
+
+/// The value after `--tools` on a Claude command line: "" is a run with no tools.
+fn tools_of(args: &[String]) -> Option<&str> {
+    let at = args.iter().position(|a| a == "--tools")?;
+    args.get(at + 1).map(String::as_str)
+}
+
+#[tokio::test]
+async fn scheduler_routine_runs_claude_tool_free_and_delivers_today() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let c = Connect::start(
+        &dir,
+        &["**Three asks** are open:\n\n- the budget\n- the review"],
+    )
+    .await;
+    let routine = json!({"routine": {
+        "name": "Monday asks", "schedule": "mon 09:00", "tools": "read",
+        "deliver": ["today"], "prompt": "What do I owe people this week?",
+    }});
+    let saved = c.call("scheduler", "save", routine).await;
+    assert_eq!(saved["id"], "monday-asks");
+
+    let run = c
+        .call("scheduler", "run_wait", json!({"id": "monday-asks"}))
+        .await;
+    assert_eq!(run["state"], "done", "{run}");
+    assert_eq!(run["sent"], json!(["today"]));
+    assert_eq!(run["model"], "claude-sonnet-4");
+
+    // One Claude run, with no tools whatever the routine asked for, carrying the user's prompt.
+    let runs = c.runs();
+    assert_eq!(runs.len(), 1);
+    let (input, args) = &runs[0];
+    assert_eq!(tools_of(args), Some(""), "{args:?}");
+    let request = input["request"].as_str().unwrap();
+    assert!(request.contains("“Monday asks”"), "{request}");
+    assert!(
+        request.contains("What do I owe people this week?"),
+        "{request}"
+    );
+    let ai_runs = testing::records(&c.core, "ai_run");
+    assert_eq!(ai_runs.len(), 1);
+    assert_eq!(ai_runs[0].1["plugin"], "scheduler");
+    assert_eq!(ai_runs[0].1["tools"], "read");
+
+    // Its answer is a card on Today, named by the routine.
+    let cards: Vec<Value> = testing::records(&c.core, "plugin_item")
+        .into_iter()
+        .map(|(_, d)| d)
+        .filter(|d| d["type"] == "delivery" && d["plugin"] == "scheduler")
+        .collect();
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert_eq!(cards[0]["to"], "today");
+    assert_eq!(cards[0]["title"], "Monday asks");
+    assert_eq!(cards[0]["about"], "Routine · Monday asks");
+    assert!(cards[0]["markdown"]
+        .as_str()
+        .unwrap()
+        .contains("Three asks"));
+    // The routine's page sees the run, and the answer's copy is in its store.
+    let view = c.call("scheduler", "view", json!({})).await;
+    let mine = &view["routines"][0];
+    assert_eq!(mine["id"], "monday-asks");
+    assert_eq!(mine["last"]["state"], "done");
+    let detail = c
+        .call(
+            "scheduler",
+            "run_detail",
+            json!({"id": "monday-asks", "run": mine["runs"][0]["run"]}),
+        )
+        .await;
+    assert!(detail["answer"].as_str().unwrap().contains("Three asks"));
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
+}
+
+#[tokio::test]
+async fn github_without_signin_shows_prompt_and_makes_no_requests() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let c = Connect::start(&dir, &[]).await;
+    // The GitHub CLI on this computer is signed in, but the user never pressed Sign in.
+    *c.gh.token.lock().unwrap() = Some("gho_synthetic_never_read".into());
+
+    let status = c.call("github", "status", json!({})).await;
+    assert_eq!(status["signedIn"], false, "{status}");
+    assert_eq!(status["echoCanSignIn"], true);
+    assert_eq!(status["sources"], json!({"gh": true, "git": false}));
+
+    // Today's widgets ask the user to sign in.
+    c.manager.tick().await;
+    let prompt = "Sign in to GitHub on this computer (gh auth login), then Refresh";
+    let repos = c.record("plugin_widget", "github:repos").unwrap();
+    assert_eq!(repos["data"]["empty"], prompt, "{repos}");
+    assert_eq!(repos["data"]["items"], json!([]));
+    let ci = c.record("plugin_widget", "github:ci").unwrap();
+    assert_eq!(ci["data"]["state"], "warn");
+    assert_eq!(ci["data"]["text"], prompt);
+    let glance = c.record("plugin_widget", "github:glance").unwrap();
+    assert_eq!(glance["data"]["items"][0]["label"], "Sign in to GitHub");
+    let work = c.record("plugin_widget", "github:work").unwrap();
+    assert_eq!(work["rows"], json!([]));
+
+    // Picking a repo, refreshing and looking for repos to pick: still nothing is asked of
+    // GitHub, and the computer's sign-in is never read without the user's click.
+    let picks = c
+        .call("github", "pick", json!({"entry": "octo-org/hello"}))
+        .await;
+    assert_eq!(picks, json!(["octo-org/hello"]));
+    assert_eq!(c.call("github", "refresh", json!({})).await, json!(true));
+    assert_eq!(
+        c.call("github", "discover", json!({"force": true})).await,
+        Value::Null
+    );
+    assert_eq!(
+        c.call("github", "status", json!({})).await["signedIn"],
+        false
+    );
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
+    assert_eq!(c.gh.read_count(), 0);
+    assert!(c.runner.calls().is_empty());
+}
+
+/// A small vault: a person, a project linking to them, a daily note and Obsidian's settings.
+fn fixture_vault(root: &Path) {
+    let files = [
+        (".obsidian/app.json", r#"{"attachmentFolderPath": "Files"}"#),
+        (".obsidian/daily-notes.json", r#"{"folder": "Daily"}"#),
+        (
+            "People/Ann Lee.md",
+            "---\ntype: person\nrole: Design lead\n---\n# Ann Lee\n\nLeads design on [[Atlas]]. #team/design\n",
+        ),
+        (
+            "Projects/Atlas.md",
+            "---\ntype: project\nstatus: active\n---\n# Atlas\n\nOwner: [[Ann Lee]]. #project\n\n- [ ] Ship the beta\n",
+        ),
+        ("Daily/2026-11-16.md", "# Monday\n\nTalked to [[Ann Lee]].\n"),
+        ("README.md", "# Team wiki\n\nPeople, projects and decisions.\n"),
+    ];
+    for (path, text) in files {
+        let f = root.join(path);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, text).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn obsidian_walks_fixture_vault_sets_inbox_and_survives_unsupported_agent_calls() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let description = json!({
+        "kind": "team",
+        "when": "Questions about the Atlas project and the people on it",
+        "what": "A small team wiki: people and projects.",
+        "where": "People/ and Projects/",
+        "how": "Frontmatter type, wiki links, tags",
+        "can": "Answer and cite notes",
+        "leave": "Daily/",
+        "belongs": [],
+    });
+    let c = Connect::start(&dir, &[&description.to_string()]).await;
+    let vault = c.tmp.path().join("Team Wiki");
+    fixture_vault(&vault);
+    c.picker.next(&vault);
+
+    let added = c.call("obsidian", "add", json!({"wait": true})).await;
+    assert_eq!(added, json!({"id": "team-wiki"}));
+
+    // It walked the vault and described it with one tool-free run that saw the survey.
+    let runs = c.runs();
+    assert_eq!(runs.len(), 1);
+    let (input, args) = &runs[0];
+    assert_eq!(tools_of(args), Some(""), "{args:?}");
+    let request = input["request"].as_str().unwrap();
+    assert!(request.contains("“Team Wiki”"), "{request}");
+    assert!(request.contains(r#""notes":4"#), "{request}");
+    assert!(request.contains("### People/Ann Lee.md"), "{request}");
+    assert!(request.contains(r#""is_vault":true"#), "{request}");
+
+    // The description waits for the user's look: an Inbox item on Today.
+    let item = c
+        .record("plugin_item", "obsidian:inbox:review:team-wiki")
+        .expect("the review item");
+    assert_eq!(
+        item["title"],
+        "Check what Claude will be told about Team Wiki"
+    );
+    let view = c.call("obsidian", "view", json!({})).await;
+    let v = &view["vaults"][0];
+    assert_eq!(v["state"], "review", "{v}");
+    assert_eq!(v["notes"], 4);
+    assert_eq!(v["description"]["when"], description["when"]);
+    assert_eq!(view["threads"], json!([]));
+
+    // Its index answers from the vault: who links to Ann Lee.
+    let back = c
+        .call(
+            "obsidian",
+            "backlinks",
+            json!({"vault": "team-wiki", "note": "People/Ann Lee"}),
+        )
+        .await;
+    let from: Vec<&str> = back["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(from, ["Daily/2026-11-16.md", "Projects/Atlas.md"], "{back}");
+
+    // Confirmed: published again (Echo's sessions, agent and hints are absent here, and each
+    // of those calls fails inside the plugin's own guard), the item goes, the plugin keeps going.
+    assert_eq!(
+        c.call("obsidian", "confirm", json!({"id": "team-wiki"}))
+            .await,
+        json!(true)
+    );
+    assert!(c
+        .record("plugin_item", "obsidian:inbox:review:team-wiki")
+        .is_none());
+    let logged = lines_of("obsidian");
+    for step in ["skill:", "agent:", "folders:", "hints:"] {
+        assert!(
+            logged
+                .iter()
+                .any(|l| l.contains(step) && l.contains("undefined")),
+            "{step} {logged:?}"
+        );
+    }
+    assert_eq!(c.manager.loaded(), ["github", "obsidian", "scheduler"]);
+    let view = c.call("obsidian", "view", json!({})).await;
+    assert_eq!(view["vaults"][0]["state"], "ready");
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
+}
+
+#[tokio::test]
+async fn telegram_fails_to_load_with_a_clear_unsupported_sessions_error() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let c = Connect::start(&dir, &[]).await;
+    let problems = c.manager.problems();
+    assert_eq!(problems.keys().collect::<Vec<_>>(), ["telegram"]);
+    assert_eq!(
+        problems["telegram"],
+        "unsupported: CodeMie Connect doesn't have ctx.sessions (only Echo has it), so this \
+         plugin needs a change to run here: cannot read property 'clearChannel' of undefined"
+    );
+
+    // The host stays healthy: the other three are loaded and answer; Telegram isn't on, and
+    // nothing of it is left behind (its delivery way, its Today items).
+    assert_eq!(c.manager.loaded(), ["github", "obsidian", "scheduler"]);
+    let refused = c
+        .manager
+        .call("telegram", "status", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotFound);
+    let scheduler = c.call("scheduler", "view", json!({})).await;
+    assert_eq!(scheduler["deliver"]["provided"], json!([]), "{scheduler}");
+    assert!(
+        c.call("scheduler", "templates", json!({}))
+            .await
+            .as_array()
+            .unwrap()
+            .len()
+            >= 4
+    );
+    assert_eq!(
+        c.call("github", "status", json!({})).await["signedIn"],
+        false
+    );
+    assert_eq!(
+        c.call("obsidian", "view", json!({})).await["vaults"],
+        json!([])
+    );
+    assert!(testing::records(&c.core, "plugin_item")
+        .iter()
+        .all(|(id, _)| !id.starts_with("telegram:")));
+
+    // Loading again fails the same way, and changes nothing for the others.
+    c.manager.reload().await;
+    assert_eq!(c.manager.problems(), problems);
+    assert_eq!(c.manager.loaded(), ["github", "obsidian", "scheduler"]);
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
+}
+
+#[tokio::test]
+async fn all_four_load_without_unknown_capability_errors() {
+    let Some(dir) = published() else {
+        return;
+    };
+    // Every `uses` key, `echo.read` kind and event they ask for is one Connect knows.
+    for id in PUBLISHED {
+        let m = parse_manifest(&dir.join(id)).unwrap();
+        sheet(&m).unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
+    let c = Connect::start(&dir, &[]).await;
+    assert_eq!(c.manager.loaded(), ["github", "obsidian", "scheduler"]);
+    // Telegram's one problem is the Echo-only API it calls, which needs a change in the plugin
+    // (PLUGIN-ENGINE.md §10): not a capability Connect doesn't know.
+    let problems = c.manager.problems();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems["telegram"].starts_with("unsupported: CodeMie Connect doesn't have ctx.sessions")
+    );
+
+    // Running: Today's providers asked, and each one's page data read.
+    c.manager.tick().await;
+    c.call("scheduler", "view", json!({})).await;
+    c.call("scheduler", "templates", json!({})).await;
+    c.call("github", "status", json!({})).await;
+    c.call("obsidian", "view", json!({"window": true})).await;
+    c.call("obsidian", "knowledge_status", json!({})).await;
+
+    // No service any of them reached was one Connect lacks, and every event was granted.
+    for id in PUBLISHED {
+        let refused: Vec<String> = lines_of(id)
+            .into_iter()
+            .filter(|l| {
+                l.contains("is not available in CodeMie Connect yet")
+                    || l.contains("Connect doesn't share")
+                    || l.contains("ctx.on(")
+            })
+            .collect();
+        assert!(refused.is_empty(), "{id}: {refused:?}");
+    }
+    for id in ["github", "obsidian", "scheduler"] {
+        assert!(c
+            .manager
+            .call(id, "no-such-command", json!({}))
+            .await
+            .is_err());
+    }
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
 }

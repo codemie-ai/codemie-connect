@@ -202,6 +202,28 @@ export async function pluginChecks({ open, check, assert, shot }) {
       assert(await page.locator('.ws-plugin-row[data-plugin-id="hello"] .ws-badge:text("Off")').count() === 1, 'shown as off');
       await settle(page);
       await shot(page, `plugins-${tag}-off`);
+
+      // Turned on again, its host half doesn't load (as Telegram's doesn't, PLUGIN-ENGINE §10):
+      // Settings says why, it can still be turned off, and it gets no frame.
+      await page.evaluate(() => window.__setPluginLoadError('hello', 'CodeMie Connect doesn’t have ctx.sessions (only Echo has it), so this plugin needs a change to run here: cannot read property ‘clearChannel’ of undefined'));
+      await page.locator('.ws-plugin-row[data-plugin-id="hello"] .ws-switch').click();
+      await page.waitForSelector('.ws-plugin-row[data-plugin-id="hello"] .ws-badge:text("Didn’t load")');
+      const row = await page.locator('.ws-plugin-row[data-plugin-id="hello"]').innerText();
+      assert(row.includes('needs a change to run here'), `row: ${row}`);
+      assert(!(await page.locator('.ws-plugin-row[data-plugin-id="hello"] .ws-switch').isDisabled()), 'it can still be turned off');
+      await page.waitForTimeout(300);
+      assert(await page.locator(FRAME).count() === 0, 'no frame for a plugin whose host half didn’t load');
+      assert(await page.locator('.ws-plugin-nav').count() === 0, 'no page in the sidebar');
+      await noOverflow(page, 'Plugins with a load error');
+      await settle(page);
+      await shot(page, `plugins-${tag}-didnt-load`);
+      await page.click('[data-action="plugin-open"][data-plugin-id="hello"]');
+      await page.waitForSelector('.ws-plugin-detail .ws-inline-note.ws-error');
+      const note = await page.locator('.ws-plugin-detail .ws-inline-note.ws-error').innerText();
+      assert(note.includes('Its host half didn’t load, so it isn’t running') && note.includes('ctx.sessions'), `note: ${note}`);
+      await noOverflow(page, 'plugin detail with a load error');
+      await settle(page);
+      await shot(page, `plugins-${tag}-didnt-load-detail`);
     });
 
     await check(`${theme}: plugin frames have no page errors`, async () => assert(errors.length === 0, errors.join(' | ')));

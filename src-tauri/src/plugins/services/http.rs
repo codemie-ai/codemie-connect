@@ -22,7 +22,15 @@ pub struct Client {
     /// Tests only: an allowed `https://` host is reached at a loopback `http://` address
     /// instead, after the grant was checked on the real address.
     test_hosts: HashMap<String, String>,
+    /// Tests only: no request is sent; each one that passed the checks is recorded here as
+    /// `METHOD url`, and fails as if the network were down.
+    #[cfg(any(test, feature = "test-support"))]
+    offline: Option<Recorded>,
 }
+
+/// The requests an offline client was asked to send.
+#[cfg(any(test, feature = "test-support"))]
+pub type Recorded = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
 impl Client {
     pub fn new() -> Client {
@@ -35,7 +43,21 @@ impl Client {
             inner,
             max_bytes: MAX_BYTES,
             test_hosts: HashMap::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            offline: None,
         }
+    }
+
+    /// A client that sends nothing: the requests that pass the checks are recorded, and fail as
+    /// if the network were down.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn offline() -> (Client, Recorded) {
+        let recorded = Recorded::default();
+        let client = Client {
+            offline: Some(recorded.clone()),
+            ..Client::new()
+        };
+        (client, recorded)
     }
 
     /// A client that sends each `host` of `hosts` to its loopback base instead, with a shorter
@@ -55,6 +77,7 @@ impl Client {
                 .iter()
                 .map(|(h, base)| (h.to_string(), base.clone()))
                 .collect(),
+            offline: None,
         }
     }
 
@@ -90,6 +113,17 @@ impl Client {
             return Err(super::unsupported("http.fetch's save"));
         }
         let host = url.host_str().unwrap_or("").to_string();
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(recorded) = &self.offline {
+            let mut sent = recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            sent.push(format!("{method} {url}"));
+            return Err(HostError::new(
+                ErrorCode::PluginError,
+                format!("couldn't reach {host}: offline (a test)"),
+            ));
+        }
         let res = req.send().await.map_err(|e| failed(&host, &e))?;
         let status = res.status().as_u16();
         let mut head = Map::new();
@@ -280,6 +314,29 @@ mod tests {
             std::thread::sleep(Duration::from_secs(3));
         }
         response("200 OK", "X-Seen: yes\r\n", line.as_bytes())
+    }
+
+    #[tokio::test]
+    async fn an_offline_client_records_what_passed_the_checks_and_sends_nothing() {
+        let (client, sent) = Client::offline();
+        let env = Env::with(None, client);
+        env.plugin(
+            "net",
+            json!({"network": {"hosts": ["api.example.com"]}}),
+            json!([]),
+        );
+        let fetch = |url: &'static str| {
+            env.call_async("net", "http.fetch", json!([url, {"method": "POST"}]))
+        };
+        let offline = fetch("https://api.example.com/graphql").await.unwrap_err();
+        assert_eq!(offline.code, ErrorCode::PluginError);
+        assert!(offline.message.contains("offline"), "{offline}");
+        let refused = fetch("https://evil.example.com/").await.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Permission);
+        assert_eq!(
+            *sent.lock().unwrap(),
+            ["POST https://api.example.com/graphql"]
+        );
     }
 
     #[tokio::test]

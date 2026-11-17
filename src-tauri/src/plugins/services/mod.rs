@@ -398,37 +398,8 @@ pub(crate) mod testing {
     //! A plugin's grants and Connect's services over a temp data root, for the services' tests.
     use super::*;
     use crate::plugins::host::HostServices;
+    pub use crate::testing::{FakeGh, Picked};
     use serde_json::json;
-    use std::sync::Mutex;
-
-    /// Answers the folder picker with whatever the test put in it.
-    #[derive(Default)]
-    pub struct Picked(pub Mutex<Option<PathBuf>>);
-
-    impl FolderPicker for Picked {
-        fn pick(&self, _title: String) -> BoxFuture<'static, Option<PathBuf>> {
-            let picked = self.0.lock().unwrap().take();
-            Box::pin(async move { picked })
-        }
-    }
-
-    /// A made-up GitHub CLI: its token, and how often it was read.
-    #[derive(Default)]
-    pub struct FakeGh {
-        pub token: Mutex<Option<String>>,
-        pub reads: std::sync::atomic::AtomicUsize,
-    }
-
-    impl signin::SignInSource for FakeGh {
-        fn gh_token(&self, _host: &str) -> BoxFuture<'static, Result<Option<String>, String>> {
-            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let token = self.token.lock().unwrap().clone();
-            Box::pin(async move { Ok(token) })
-        }
-        fn installed(&self, program: &str) -> bool {
-            program == "gh"
-        }
-    }
 
     pub struct Env {
         pub dir: tempfile::TempDir,

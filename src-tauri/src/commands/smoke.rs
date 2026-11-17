@@ -18,7 +18,8 @@ pub struct SmokeFlags {
     pub dev: bool,
     pub smoke_ms: u64,
     pub shot: Option<String>,
-    /// `CODEMIE_PLUGIN_SMOKE`: the plugin smoke to run (`isolation`, DESIGN 7.3).
+    /// `CODEMIE_PLUGIN_SMOKE`: the plugin smoke to run: `isolation` (DESIGN 7.3), or a plugin
+    /// marketplace folder (`plugin_smoke`, Task 25).
     pub plugin: Option<String>,
     /// This plugin smoke run's id, which the probe frame must echo back.
     pub plugin_run_id: Option<String>,
@@ -73,14 +74,15 @@ pub fn start_plugin_smoke(identifier: &str, version: &str) {
     if std::env::var_os(PLUGIN_SMOKE).is_none() {
         return;
     }
-    let report = isolation_report_path();
-    if let Err(e) = std::fs::remove_file(&report) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            eprintln!(
-                "CODEMIE_PLUGIN_SMOKE: can't remove the old report {}: {e}",
-                report.display()
-            );
-            std::process::exit(3);
+    for report in [isolation_report_path(), super::plugin_smoke::report_path()] {
+        if let Err(e) = std::fs::remove_file(&report) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "CODEMIE_PLUGIN_SMOKE: can't remove the old report {}: {e}",
+                    report.display()
+                );
+                std::process::exit(3);
+            }
         }
     }
     let socket = single_instance_socket(identifier);
@@ -93,12 +95,25 @@ pub fn start_plugin_smoke(identifier: &str, version: &str) {
         );
         std::process::exit(3);
     }
+    let run_id = uuid::Uuid::new_v4().to_string();
+    // Anything but `isolation` names a marketplace folder (`plugin_smoke`).
+    if let Some(value) = std::env::var(PLUGIN_SMOKE)
+        .ok()
+        .filter(|v| v != "isolation")
+    {
+        super::plugin_smoke::prepare(&value, &run_id);
+    }
     let _ = PLUGIN_RUN.set(SmokeRun {
-        run_id: uuid::Uuid::new_v4().to_string(),
+        run_id,
         started_at: chrono::Utc::now().to_rfc3339(),
         pid: std::process::id(),
         version: version.to_string(),
     });
+}
+
+/// This plugin smoke run, once started.
+pub fn run() -> Option<&'static SmokeRun> {
+    PLUGIN_RUN.get()
 }
 
 /// How a forged IPC call from the isolation probe's frame starts its line. If one ever reached a

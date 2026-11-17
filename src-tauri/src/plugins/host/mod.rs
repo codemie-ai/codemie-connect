@@ -10,8 +10,9 @@
 //!
 //! Not in Connect (PLUGIN-ENGINE.md §10): `sessions`, `channel`, `agent`, `scripts`, `slots`,
 //! `threads`, `view`, `knowledge` and `claude.hasPlugin/installPlugin` are `undefined`, and
-//! `terminal` is `false`. A plugin that calls one of them unguarded fails as it would anywhere
-//! (Telegram's `apply` does, so it doesn't load until it checks).
+//! `terminal` is `false`. A plugin that calls one of them unguarded fails as it would anywhere,
+//! and the failure says so (`unsupported`: the Echo-only API, and that the plugin needs a
+//! change). Telegram's `apply` does, so it doesn't load until it checks.
 mod bridge;
 mod worker;
 
@@ -925,7 +926,7 @@ mod tests {
             Ok(json!(false))
         );
         // As Telegram does at start-up, outside any error handling: it doesn't load, and says
-        // why.
+        // why in words a user can act on: the Echo-only API, and that the plugin needs a change.
         let path = s.write(
             "telegram",
             "export function apply(ctx) { ctx.sessions.clearChannel() }",
@@ -935,11 +936,65 @@ mod tests {
             .load("telegram", &path, Grants::default())
             .await
             .unwrap_err();
-        assert_eq!(refused.code, ErrorCode::PluginError, "{refused}");
-        assert!(refused.message.contains("clearChannel"), "{refused}");
+        assert_eq!(refused.code, ErrorCode::Unsupported, "{refused}");
+        assert_eq!(
+            refused.message,
+            "CodeMie Connect doesn't have ctx.sessions (only Echo has it), so this plugin \
+             needs a change to run here: cannot read property 'clearChannel' of undefined"
+        );
         assert!(
             s.services.heard.lock().unwrap().is_empty(),
             "nothing reached the services"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_echo_only_api_is_named_only_when_it_caused_the_failure() {
+        let s = Setup::new(quick());
+        s.load(
+            "compat",
+            r#"
+            export function apply(ctx) {
+              // Telegram's `install`: an Echo-only function called without a check.
+              ctx.command('install', async () => { await ctx.claude.installPlugin('x'); return true })
+              // Absent members stay absent to every presence test.
+              ctx.command('presence', () => [
+                'sessions' in ctx, Object.keys(ctx).includes('sessions'), ctx.view === undefined,
+                'hasPlugin' in ctx.claude, typeof ctx.claude.run,
+              ])
+              // A guarded look, then the plugin's own mistake: not the missing API's fault, even
+              // though the property it reads is one `ctx.view` has in Echo.
+              ctx.command('own', () => {
+                if (ctx.view) ctx.view.hints([])
+                const saved = ctx.store.read('none.json')
+                const o = ({})[saved]
+                return o.hints
+              })
+              ctx.command('thrown', () => { if (!ctx.agent) throw new TypeError('no agent here') })
+            }
+            "#,
+        )
+        .await;
+        let install = s.call("compat", "install", Value::Null).await.unwrap_err();
+        assert_eq!(install.code, ErrorCode::Unsupported, "{install}");
+        assert!(
+            install.message.starts_with(
+                "CodeMie Connect doesn't have ctx.claude.installPlugin (only Echo has it), so \
+                 this plugin needs a change to run here: "
+            ),
+            "{install}"
+        );
+        assert_eq!(
+            s.call("compat", "presence", Value::Null).await,
+            Ok(json!([false, false, true, false, "function"]))
+        );
+        let own = s.call("compat", "own", Value::Null).await.unwrap_err();
+        assert_eq!(own.code, ErrorCode::PluginError, "{own}");
+        assert!(!own.message.contains("Echo"), "{own}");
+        let thrown = s.call("compat", "thrown", Value::Null).await.unwrap_err();
+        assert_eq!(
+            thrown,
+            HostError::new(ErrorCode::PluginError, "no agent here")
         );
     }
 

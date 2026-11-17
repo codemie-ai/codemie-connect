@@ -68,6 +68,13 @@ rfd = { version = "0.17", default-features = false }
 winreg = "0.52"
 windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Memory"] }
 
+[features]
+# Test doubles (a scripted Claude, a `Core` over a temp folder, offline stand-ins) for the tests in
+# `tests/`, which can't see `#[cfg(test)]` items. Only the dev-dependency below turns it on, so the
+# app is never built with it.
+test-support = []
+
 [dev-dependencies]
 tempfile = "3"
 tauri-utils = { version = "2", features = ["resources"] }
+app = { path = ".", features = ["test-support"] }

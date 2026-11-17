@@ -1847,6 +1847,9 @@ async function boot() {
     const { runIsolationSmoke } = await import('../plugins/isolation-smoke.js');
     return runIsolationSmoke(invoke, { runId: flags.plugin_run_id });
   }
+  // CODEMIE_PLUGIN_SMOKE=<marketplace folder>: the app boots as usual on the smoke's own data root,
+  // then runs the marketplace smoke (ui/plugins/market-smoke.js) and quits.
+  const marketSmoke = flags.plugin && flags.plugin !== 'isolation' ? flags.plugin : null;
   if (flags.smoke || flags.probe) {
     root.classList.add('hidden');
     legacy.classList.remove('hidden');
@@ -1881,8 +1884,11 @@ async function boot() {
   const frameUrl = flags.dev && typeof flags.pluginFrameBase === 'string'
     ? (id, path) => `${flags.pluginFrameBase}${pluginUrl(id, path, { macos: true }).slice('connect-plugin://'.length)}`
     : pluginUrl;
+  // The marketplace smoke keeps what the frames ask their host halves, and how it went.
+  const smokeCalls = [];
+  const smoke = marketSmoke ? await import('../plugins/market-smoke.js') : null;
   pluginHost = createPluginHost({
-    invoke,
+    invoke: smoke ? smoke.recordCalls(invoke, smokeCalls) : invoke,
     frameUrl,
     about: () => ({ name: 'CodeMie Connect', version: state.appVersion, engine: '1.0' }),
     theme: () => (document.documentElement.classList.contains('dark') ? 'dark' : 'light'),
@@ -1979,6 +1985,16 @@ async function boot() {
   window.addEventListener('pagehide', () => clearInterval(authTimer), { once: true });
   if (state.route === 'calendar') await ensureCalendarWindow();
   if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice };
+  if (smoke) {
+    const report = await smoke.runMarketSmoke({
+      invoke, market: marketSmoke, runId: flags.plugin_run_id, host: pluginHost, calls: smokeCalls,
+      refreshInstalled: async () => { await pluginsUi.loadInstalled(); return state.installedPlugins; },
+      go: hash => goHash(hash),
+      frameOf: id => document.querySelector(`iframe[data-plugin-frame="${CSS.escape(id)}"]`),
+    });
+    // Rust writes the verdict and quits.
+    return invoke('smoke_plugins_report', { report });
+  }
   if (shouldCheckForAppUpdate(localPref(`codemie.app.lastUpdateCheck.${state.appVersion}`, null))) checkAppUpdate().catch(() => {});
 }
 

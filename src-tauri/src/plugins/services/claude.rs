@@ -98,47 +98,11 @@ pub(crate) mod tests {
     use super::super::testing::Env;
     use super::*;
     use crate::ai::fake::FakeRunner;
-    use crate::ai::profiles::{AccountInfo, AiProfile, ModelChoice, ProfileKind, ProfileState};
-    use crate::ai::stream::{RunOutcome, Usage};
     use crate::workspace::test_core;
     use serde_json::json;
     use std::sync::Arc;
 
-    pub fn claude_profile() -> AiProfile {
-        AiProfile {
-            id: "claude".into(),
-            kind: ProfileKind::Native,
-            label: "Claude Code · your subscription".into(),
-            state: ProfileState::Ready,
-            version: None,
-            account: Some(AccountInfo::default()),
-            models: ["", "haiku", "sonnet"]
-                .iter()
-                .map(|m| ModelChoice {
-                    id: m.to_string(),
-                    label: m.to_string(),
-                })
-                .collect(),
-            default_model: None,
-            message: None,
-        }
-    }
-
-    pub fn answered(text: &str) -> RunOutcome {
-        RunOutcome {
-            structured: None,
-            text: text.into(),
-            usage: Usage {
-                input_tokens: 120,
-                output_tokens: 30,
-                cache_read_tokens: 5,
-                cache_creation_tokens: 0,
-            },
-            cost_usd: Some(0.012),
-            duration_ms: 900,
-            model: Some("claude-sonnet-4".into()),
-        }
-    }
+    pub use crate::testing::{answered, claude_profile};
 
     #[tokio::test]
     async fn claude_run_is_tool_free_returns_answer_and_records_ai_run() {

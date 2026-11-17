@@ -477,7 +477,7 @@ impl Repository {
         tx.commit()?;
         Ok(())
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn records_of_kind(&self, kind: &str) -> Result<Vec<Record>> {
         let mut stmt = self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE kind=?1")?;
         let rows = stmt

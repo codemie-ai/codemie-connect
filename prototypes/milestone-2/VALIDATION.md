@@ -316,3 +316,113 @@ How Task 23 keeps the gate's conditions (see `ui/plugins/host.js`, `ui/plugins/f
   "version": "2.1.1"
 }
 ```
+
+## 2026-11-17 — Published plugins in the native app (Task 25 marketplace smoke): PASS
+
+**Build:** debug, `cargo build` in `src-tauri/` with the Task 25 code (WKWebView, macOS). Run outside the agent
+sandbox. The smoke makes its own fresh data root under `$TMPDIR` (never the owner's data folder, and the
+`location.json` pointer goes there too), so no `CODEMIE_WORKSPACE_TEST_DIR` is needed:
+
+```sh
+CODEMIE_PLUGIN_SMOKE=/Users/Vadym_Vlasenko/AI/projects/other/echo-plugins ./target/debug/app   # exit 0
+```
+
+What it does (`src-tauri/src/commands/plugin_smoke.rs`, `ui/plugins/market-smoke.js`):
+
+1. At start (debug builds only; exit 3 otherwise, or when the folder has no `echo-marketplace.json`) it deletes the
+   previous report, refuses to run beside another Connect (the single-instance socket, as the isolation smoke), and
+   makes `$TMPDIR/connect-plugin-smoke-<run id>/workspace`, which the app opens instead of the user's own.
+2. The app boots as usual. The window adds the folder as a marketplace and installs every plugin it offers, agreeing
+   to each permission sheet by its `sheetHash` (only in this env-gated mode).
+3. It waits for the plugin manager (each plugin loaded, or why not), reloads the installed list so the frames are
+   made, then opens each plugin's pages, Settings sections and card through the app's own routes, 2.5 s each.
+4. It records what each frame reported through the bridge (its page errors: uncaught errors, unhandled rejections,
+   CSP refusals, render failures), whether the frame was shown over its slot, and every host-half command the frame
+   asked for and how it went.
+5. Rust adds the manager's view (`loaded`, `problems`), decides, writes `$TMPDIR/connect-plugin-smoke.json`, prints
+   `PLUGIN_SMOKE {…}` and quits: 0 pass, 1 fail, 2 if the window never reported (300 s watchdog), 3 can't run.
+   Telegram's sessions error is the one known failure (ruling R39); any other load error, page error, failed
+   command, frame not shown or page that didn't start fails the run.
+
+No routine was run (no live Claude) and nothing reached GitHub or Telegram: GitHub has no sign-in in a fresh data
+root, and Telegram doesn't load.
+
+- **Run id:** `fd8017fb-e9fc-4af8-a45a-4561aa571f19`, pid 99273, version 2.1.1, exit 0 (the final code of Task 25).
+- **Started / reported:** `2026-11-17T21:48:30.779862+00:00` / `2026-11-17T21:49:37.736706+00:00`.
+- An earlier run, `ed027317-9a72-428b-b0bf-89713ae0904b` (one line of `prelude.js` before the final code), had the
+  same findings field for field.
+- **Loaded:** github, obsidian, scheduler. **Known failure:** telegram, "needs plugin change: sessions API".
+
+| Plugin | Install | Host half | Frame | Pages opened (shown · ready · page errors · commands) | Verdict |
+|---|---|---|---|---|---|
+| Scheduler 0.4.0 | installed | loaded | ready, 0 errors, `view` ok | section `main` ✓ · ✓ · 0 · —; card ✓ · ✓ · 0 · — | pass |
+| GitHub 0.3.0 | installed | loaded | ready, 0 errors | section `main` ✓ · ✓ · 0 · `status` ok | pass |
+| Obsidian 0.8.0 | installed | loaded | ready, 0 errors, `knowledge_wake` ok | activity `vaults` ✓ · ✓ · 0 · `view` ok; section `main` ✓ · ✓ · 0 · `view` ok; card ✓ · ✓ · 0 · — | pass |
+| Telegram 0.4.0 | installed | didn't load: `unsupported: CodeMie Connect doesn't have ctx.sessions (only Echo has it), so this plugin needs a change to run here: cannot read property 'clearChannel' of undefined` | none (no frame for a plugin whose host half didn't load) | — | known failure |
+
+The first real plugin pages ran in the native frame here (the module import from `connect-plugin://<id>/client.js`,
+the MessagePort handshake into the opaque frame, `echo-compat.css`, GeistMono and the vendored graph libraries under
+the frame CSP): no CSP refusal and no page error in any of them, so nothing on Connect's side needed fixing for the
+frame shim. Obsidian's graph view itself needs a connected vault, which the smoke can't pick (a native dialog).
+
+**Negative checks (same build):**
+
+- A temp copy of the marketplace whose Scheduler `client.js` ends with an unhandled rejection: run
+  `e3d62438-ba54-4dbf-b4e6-e85503adec83`, **exit 1**, `failed: ["scheduler: page error: Unhandled rejection: smoke
+  negative check"]`, Telegram still the known failure. The published folder was never changed.
+- A folder that isn't a marketplace (`…/echo-plugins/plugins`): **exit 3**, `CODEMIE_PLUGIN_SMOKE: … isn't a plugin
+  marketplace folder (no echo-marketplace.json); give 'isolation' or a marketplace folder`.
+- The isolation gate after these changes (`CODEMIE_PLUGIN_SMOKE=isolation`, temp workspace): run
+  `cfb3b80e-940b-4f15-b051-a16ec8b2338f`, PASS, exit 0, `failed: []`, `probeRunId` equals `runId`.
+
+The app removed its single-instance socket after each run. `$TMPDIR/connect-plugin-smoke.json` of the passing run,
+trimmed to the window's findings and the verdict:
+
+```json
+{
+  "runId": "fd8017fb-e9fc-4af8-a45a-4561aa571f19",
+  "windowRunId": "fd8017fb-e9fc-4af8-a45a-4561aa571f19",
+  "pass": true,
+  "failed": [],
+  "knownFailures": [
+    {
+      "id": "telegram",
+      "why": "needs plugin change: sessions API",
+      "problem": "unsupported: CodeMie Connect doesn't have ctx.sessions (only Echo has it), so this plugin needs a change to run here: cannot read property 'clearChannel' of undefined"
+    }
+  ],
+  "loaded": ["github", "obsidian", "scheduler"],
+  "market": { "name": "onetest-2", "source": "/Users/Vadym_Vlasenko/AI/projects/other/echo-plugins" },
+  "plugins": [
+    { "id": "scheduler", "version": "0.4.0", "install": "installed", "loadError": null,
+      "frame": { "ready": true, "error": "", "errors": [], "calls": [{ "command": "view", "ok": true, "error": "" }] },
+      "views": [
+        { "view": "section", "id": "main", "hash": "#/settings/plugins/scheduler/main", "shown": true, "ready": true, "errors": [], "calls": [] },
+        { "view": "card", "id": "", "hash": "#/settings/plugins/scheduler", "shown": true, "ready": true, "errors": [], "calls": [] }
+      ] },
+    { "id": "telegram", "version": "0.4.0", "install": "installed",
+      "loadError": "unsupported: CodeMie Connect doesn't have ctx.sessions (only Echo has it), so this plugin needs a change to run here: cannot read property 'clearChannel' of undefined",
+      "frame": null, "views": [] },
+    { "id": "obsidian", "version": "0.8.0", "install": "installed", "loadError": null,
+      "frame": { "ready": true, "error": "", "errors": [], "calls": [{ "command": "knowledge_wake", "ok": true, "error": "" }] },
+      "views": [
+        { "view": "activity", "id": "vaults", "hash": "#/p/obsidian/vaults", "shown": true, "ready": true, "errors": [], "calls": [{ "command": "view", "ok": true, "error": "" }] },
+        { "view": "section", "id": "main", "hash": "#/settings/plugins/obsidian/main", "shown": true, "ready": true, "errors": [], "calls": [{ "command": "view", "ok": true, "error": "" }] },
+        { "view": "card", "id": "", "hash": "#/settings/plugins/obsidian", "shown": true, "ready": true, "errors": [], "calls": [] }
+      ] },
+    { "id": "github", "version": "0.3.0", "install": "installed", "loadError": null,
+      "frame": { "ready": true, "error": "", "errors": [], "calls": [] },
+      "views": [
+        { "view": "section", "id": "main", "hash": "#/settings/plugins/github/main", "shown": true, "ready": true, "errors": [], "calls": [{ "command": "status", "ok": true, "error": "" }] }
+      ] }
+  ],
+  "verdicts": {
+    "github": { "status": "pass", "why": [] },
+    "obsidian": { "status": "pass", "why": [] },
+    "scheduler": { "status": "pass", "why": [] },
+    "telegram": { "status": "known-failure", "why": ["needs plugin change: sessions API"] }
+  }
+}
+```
+
+The plugin-by-plugin matrix and the conformance tests are in [PLUGIN-CONFORMANCE.md](PLUGIN-CONFORMANCE.md).

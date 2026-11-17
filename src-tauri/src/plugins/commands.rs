@@ -16,7 +16,7 @@
 //! | `set_addresses` | `{id, key, value}` | `Installed`: the addresses the user typed for a `hosts_from` setting |
 //! | `client_storage` | `{id, items?}` | `{items}`: what its client half keeps (read, or replaced with `items`) |
 //! | `remove` | `{id, deleteData}` | `{removed, deletedData}` (also for the kept data of a removed plugin) |
-//! | `installed` | | `[Installed]`, each with its `client`, `widgets`, `signin` and `addresses` (`extras`) |
+//! | `installed` | | `[Installed]`, each with its `client`, `widgets`, `signin` and `addresses` (`extras`), and `loadError` when it is on but its host half didn't load |
 //! | `registry_reset` | | `{saved, adopted, leftovers}`, only when the list is `registry_unreadable` |
 //! | `signin` | `{id, host}` | `{signedIn, host, from}`: the user's Sign in on the plugin's settings |
 //! | `signout` | `{id, host}` | `{signedIn: false, host}` |
@@ -34,7 +34,7 @@ use super::caller::require_main_frame;
 use super::capabilities::SheetLine;
 use super::extras::{self, Extras};
 use super::git::{CliGit, Git};
-use super::host::HostError;
+use super::host::{ErrorCode, HostError};
 use super::install::{self, Agreement, Offer, Outcome};
 use super::manager::PluginManager;
 use super::market;
@@ -46,6 +46,7 @@ use semver::Version;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[tauri::command]
@@ -88,6 +89,7 @@ pub async fn plugins_request(
         op.as_str(),
         "install" | "update" | "set_enabled" | "remove" | "registry_reset"
     );
+    let listing = op == "installed";
     // The count ends with the work itself, even if this future is dropped first.
     let answer = blocking(move || {
         let _running = running;
@@ -99,7 +101,26 @@ pub async fn plugins_request(
             manager.on_registry_change();
         }
     }
-    answer
+    match (listing, manager_of(&window)) {
+        (true, Ok(manager)) => answer.map(|list| with_load_errors(list, &manager.problems())),
+        _ => answer,
+    }
+}
+
+/// The installed list with `loadError` on each plugin that is on but whose host half didn't load:
+/// the manager's reason, without its code.
+fn with_load_errors(mut list: Value, problems: &BTreeMap<String, String>) -> Value {
+    for p in list.as_array_mut().into_iter().flatten() {
+        let Some(problem) = p["id"].as_str().and_then(|id| problems.get(id)) else {
+            continue;
+        };
+        let words = problem
+            .split_once(": ")
+            .filter(|(code, _)| ErrorCode::parse(code).is_some())
+            .map_or(problem.as_str(), |(_, words)| words);
+        p["loadError"] = json!(words);
+    }
+    list
 }
 
 /// `plugin_call(id, command, args)`: runs one of a plugin's host-half commands for Connect's own
@@ -702,6 +723,30 @@ mod tests {
         ] {
             testkit::contract_fixture(name, &pin(value));
         }
+    }
+
+    #[test]
+    fn the_installed_list_says_why_a_host_half_did_not_load() {
+        let list = json!([{"id": "telegram", "enabled": true}, {"id": "github", "enabled": true}]);
+        let problems = std::collections::BTreeMap::from([
+            (
+                "telegram".to_string(),
+                "unsupported: CodeMie Connect doesn't have ctx.sessions (only Echo has it), so \
+                 this plugin needs a change to run here: cannot read property 'clearChannel' of \
+                 undefined"
+                    .to_string(),
+            ),
+            ("gone".to_string(), "its manifest names it “x”".to_string()),
+        ]);
+        let out = with_load_errors(list, &problems);
+        assert_eq!(
+            out[0]["loadError"],
+            "CodeMie Connect doesn't have ctx.sessions (only Echo has it), so this plugin needs \
+             a change to run here: cannot read property 'clearChannel' of undefined"
+        );
+        assert_eq!(out[1].get("loadError"), None);
+        let other = with_load_errors(json!([{"id": "gone"}]), &problems);
+        assert_eq!(other[0]["loadError"], "its manifest names it “x”");
     }
 
     #[test]

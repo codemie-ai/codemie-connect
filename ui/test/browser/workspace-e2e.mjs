@@ -339,9 +339,11 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   // `__pluginCalls` records what reached native, with the plugin id it went out with.
   const pl = {
     markets: clone(pluginInit.markets), installed: [], storage: {}, addresses: {}, signedIn: {},
-    calls: [],
+    calls: [], loadErrors: {},
   };
   window.__pluginCalls = pl.calls;
+  // Why a plugin's host half didn't load, as the manager would say (`installed` answers it).
+  window.__setPluginLoadError = (id, text) => { pl.loadErrors[id] = text; };
   const helloView = () => {
     const m = pluginInit.hello.manifest;
     const p = pl.installed.find(x => x.id === 'hello');
@@ -351,6 +353,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       client: m.client, widgets: m.widgets.map(w => ({ id: w.id, label: w.label, about: w.about || '', kind: w.kind, sizes: w.sizes || [] })),
       signin: [{ host: 'github.com', signedIn: !!pl.signedIn.hello, from: pl.signedIn.hello ? 'gh' : null }],
       addresses: m.settings.map(x => ({ key: x.key, label: x.label, help: x.help || null, value: pl.addresses[x.key] || '' })),
+      ...(pl.loadErrors[m.id] && p.enabled ? { loadError: pl.loadErrors[m.id] } : {}),
     };
   };
   const offerOf = market => {

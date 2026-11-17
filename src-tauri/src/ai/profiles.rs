@@ -422,9 +422,9 @@ pub struct ProfileCache {
     env: DetectEnv,
     cached: Mutex<Option<Cached>>,
     /// Tests of other modules pin the detected profiles instead of probing.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fixed: Option<Vec<AiProfile>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fixed_delay: Duration,
 }
 
@@ -434,14 +434,14 @@ impl ProfileCache {
             probe,
             env,
             cached: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             fixed: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             fixed_delay: Duration::ZERO,
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fixed(profiles: Vec<AiProfile>) -> Self {
         let mut cache = Self::system(Vec::new());
         cache.fixed = Some(profiles);
@@ -469,7 +469,7 @@ impl ProfileCache {
     }
 
     pub async fn profiles(&self) -> Vec<AiProfile> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(p) = &self.fixed {
             tokio::time::sleep(self.fixed_delay).await;
             return p.clone();

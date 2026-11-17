@@ -48,7 +48,7 @@ impl GraphReads for LiveGraph {
 }
 
 /// Answers Graph reads from a map (URL -> JSON); anything else fails like an offline read.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub(crate) struct FakeGraph {
     answers: std::sync::Mutex<std::collections::HashMap<String, Value>>,
@@ -70,7 +70,7 @@ impl FakeGraph {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl GraphReads for FakeGraph {
     fn get<'a>(
         &'a self,

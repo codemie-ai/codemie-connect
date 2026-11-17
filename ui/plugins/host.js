@@ -25,6 +25,8 @@ const PALETTE_GRACE_MS = 3000;
 const EMPTY = Object.freeze({ activities: [], sections: [], card: false, panels: [], palette: [], widgets: [] });
 const PLUGIN_ID = /^[a-z][a-z0-9-]{1,40}$/;
 const ITEM_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
+/** The most page errors kept for one frame. */
+const MAX_ERRORS = 20;
 const TOP_ROUTES = ['today', 'calendar', 'inbox', 'automations'];
 
 /**
@@ -58,7 +60,7 @@ export function createPluginHost({
   theme = () => 'light', whereNow = () => ({ view: 'today', section: '', route: '' }),
   onChange = () => {}, onGo = () => {}, onNotice = () => {}, onCopy = () => {}, now = () => Date.now(),
 }) {
-  /** plugin id → {id, name, version, client, key, el, port, contrib, calls, nextId, height, error, ready, shown, paletteAt} */
+  /** plugin id → {id, name, version, client, key, el, port, contrib, calls, nextId, height, error, errors, ready, shown, paletteAt} */
   const frames = new Map();
   let target = null;
   let layer = null;
@@ -75,10 +77,11 @@ export function createPluginHost({
 
   // ------------------------------------------------------------ frames
 
-  /** Makes one frame per enabled plugin with a client half, and takes away the rest. */
+  /** Makes one frame per enabled plugin with a client half whose host half loaded, and takes away
+   *  the rest. */
   function sync(installed) {
     const want = new Map((installed || [])
-      .filter(p => p && p.enabled && p.client && !p.problem && PLUGIN_ID.test(p.id))
+      .filter(p => p && p.enabled && p.client && !p.problem && !p.loadError && PLUGIN_ID.test(p.id))
       .map(p => [p.id, p]));
     for (const [id, rec] of frames) {
       const p = want.get(id);
@@ -93,7 +96,7 @@ export function createPluginHost({
   function create(p) {
     const rec = {
       id: p.id, name: String(p.name || p.id), version: String(p.version || ''), client: String(p.client), key: keyOf(p),
-      el: null, port: null, contrib: EMPTY, calls: new Map(), nextId: 1, height: 0, error: '', ready: false, shown: false,
+      el: null, port: null, contrib: EMPTY, calls: new Map(), nextId: 1, height: 0, error: '', errors: [], ready: false, shown: false,
       paletteAt: 0, generation: 0,
       storage: Promise.resolve(invoke('plugins_request', { op: 'client_storage', data: { id: p.id } }))
         .then(r => (r && r.items && typeof r.items === 'object' ? r.items : {}), () => ({})),
@@ -213,7 +216,10 @@ export function createPluginHost({
   function event(rec, m) {
     switch (m.type) {
       case 'ready': rec.ready = true; rec.error = ''; return onChange();
-      case 'error': rec.error = m.message; return onChange();
+      case 'error':
+        rec.error = m.message;
+        if (rec.errors.length < MAX_ERRORS && !rec.errors.includes(m.message)) rec.errors.push(m.message);
+        return onChange();
       case 'height':
         rec.height = m.px;
         return placeSoon();
@@ -347,11 +353,12 @@ export function createPluginHost({
     activities: () => list('activities'),
     /** Their Settings sections: [{plugin, pluginName, id, label, badge}]. */
     sections: () => list('sections'),
-    /** What one plugin's frame has: {loaded, ready, error, card, sections, palette, widgets, activities}. */
+    /** What one plugin's frame has: {loaded, ready, error (the last), errors (each page error it
+     *  reported), height, card, sections, palette, widgets, activities}. */
     status(id) {
       const rec = frames.get(id);
       if (!rec) return null;
-      return { loaded: !!rec.el, ready: rec.ready, error: rec.error, ...rec.contrib };
+      return { loaded: !!rec.el, ready: rec.ready, error: rec.error, errors: [...rec.errors], height: rec.height, ...rec.contrib };
     },
     shown: () => target,
   };

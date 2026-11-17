@@ -2028,11 +2028,11 @@ pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::erro
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::path::Path;
 
 /// The default layout: data and private files in one folder.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn test_paths(dir: &Path) -> CorePaths {
     CorePaths {
         data: dir.into(),
@@ -2040,8 +2040,9 @@ fn test_paths(dir: &Path) -> CorePaths {
     }
 }
 
-/// A `Core` with no window, a scripted runner and a fixed profile list, for unit tests.
-#[cfg(test)]
+/// A `Core` with no window, a scripted runner and a fixed profile list, for tests
+/// (`crate::testing::core` for the tests outside the crate).
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn test_core(
     dir: &Path,
     runner: Arc<dyn ClaudeRunner>,
@@ -2056,7 +2057,7 @@ pub(crate) fn test_core(
 }
 
 /// [`test_core`] whose Microsoft reads for AI runs are answered by `graph`.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn test_core_with_graph(
     dir: &Path,
     runner: Arc<dyn ClaudeRunner>,

@@ -96,6 +96,7 @@ function stateBadges(p, status) {
   const out = [];
   if (p.problem) out.push(badge('Problem', 'error', 'alert'));
   else if (!p.enabled) out.push(badge('Off', 'neutral'));
+  if (p.enabled && p.loadError) out.push(badge('Didn’t load', 'error', 'alert'));
   if (p.update) out.push(badge(`Update ${p.update}`, 'info', 'update'));
   if (!p.market) out.push(badge('Taken back', 'warning'));
   if (p.enabled && status?.error) out.push(badge('Page failed', 'warning', 'alert'));
@@ -105,7 +106,7 @@ function stateBadges(p, status) {
 function installedRow(p, status, busy) {
   return `<div class="ws-row ws-plugin-row" data-plugin-id="${e(p.id)}">
     <span class="ws-plugin-icon" aria-hidden="true">${icon('puzzle')}</span>
-    <button type="button" class="ws-row-main ws-plugin-open" data-action="plugin-open" data-plugin-id="${e(p.id)}"><strong>${e(p.name)} <span class="ws-muted">${e(p.version)}</span> ${stateBadges(p, status)}</strong><span class="ws-ellipsis">${e(p.problem || p.summary || '')}</span></button>
+    <button type="button" class="ws-row-main ws-plugin-open" data-action="plugin-open" data-plugin-id="${e(p.id)}"><strong>${e(p.name)} <span class="ws-muted">${e(p.version)}</span> ${stateBadges(p, status)}</strong><span class="ws-ellipsis">${e(p.problem || (p.enabled && p.loadError) || p.summary || '')}</span></button>
     <div class="ws-actions">
       ${p.update ? button(busy[`update:${p.id}`] ? 'Updating…' : 'Update', { action: 'plugin-update', iconName: 'update', disabled: !!busy[`update:${p.id}`], attrs: { 'data-plugin-id': p.id } }) : ''}
       ${toggle({ action: 'plugin-enable', checked: p.enabled, attrs: { 'data-plugin-id': p.id, 'aria-label': `${p.name} on`, disabled: !!p.problem || !!busy[`enable:${p.id}`] } })}
@@ -234,7 +235,8 @@ export function installedDetail(ui, id, status) {
   const notes = [
     p.problem ? `<p class="ws-inline-note ws-error">${icon('alert')}<span>${e(p.problem)}</span></p>` : '',
     !p.market ? `<p class="ws-inline-note ws-warning">${icon('info')}<span>Taken back after its list was reset. Turning it on asks you to agree to its permissions again.</span></p>` : '',
-    p.enabled && status?.error ? `<p class="ws-inline-note ws-warning">${icon('alert')}<span>Its page didn’t load: ${e(status.error)}</span></p>` : '',
+    p.enabled && p.loadError ? `<p class="ws-inline-note ws-error">${icon('alert')}<span>Its host half didn’t load, so it isn’t running: ${e(p.loadError)}</span></p>` : '',
+    p.enabled && status?.error ? `<p class="ws-inline-note ws-warning">${icon('alert')}<span>Its page failed: ${e(status.error)}</span></p>` : '',
   ].join('');
   const signins = (p.signin || []).map(s => {
     const github = String(s.host).toLowerCase() === 'github.com';

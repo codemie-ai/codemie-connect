@@ -9,6 +9,9 @@ pub mod plugins;
 mod state;
 mod steps;
 mod storage;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod testing;
 mod workspace;
 
 use state::AppState;
@@ -108,9 +111,13 @@ pub fn run() {
             app.handle().plugin(tauri_plugin_autostart::Builder::new().build())?;
             // The default folder holds the pointer, sign-in data and the locks; the data itself
             // may live in a user-chosen folder it points at (DESIGN 8).
-            let default_root = if cfg!(debug_assertions) {
+            // A plugin marketplace smoke opens its own fresh data root, never the user's.
+            let default_root = if let Some(root) = commands::plugin_smoke::data_root() {
+                Some(root.to_path_buf())
+            } else if cfg!(debug_assertions) {
                 std::env::var_os("CODEMIE_WORKSPACE_TEST_DIR").map(std::path::PathBuf::from)
             } else { None }.unwrap_or(app.path().app_data_dir()?.join("workspace"));
+            commands::plugin_smoke::arm_watchdog(app.handle());
             let handle = app.handle().clone();
             let workspace_state = workspace::startup(&default_root, |paths| workspace::Core::open(handle, paths));
             let core = workspace_state.core.clone();
@@ -199,6 +206,8 @@ pub fn run() {
             commands::smoke::smoke_mode,
             commands::smoke::smoke_emit,
             commands::smoke::smoke_plugin_report,
+            commands::plugin_smoke::smoke_plugins_state,
+            commands::plugin_smoke::smoke_plugins_report,
             steps::get_steps,
             steps::get_logo_path,
             commands::app_updater::check_for_update,
