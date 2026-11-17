@@ -147,6 +147,12 @@ pub enum Due {
 pub(super) fn invalid(message: impl Into<String>) -> WorkspaceError {
     WorkspaceError::new("validation", message)
 }
+/// A validation sentence about one field of the editor (`name`, `days`, `senders`, ...).
+pub(super) fn invalid_at(field: &str, message: impl Into<String>) -> WorkspaceError {
+    let mut e = invalid(message);
+    e.field = Some(field.into());
+    e
+}
 
 impl Automation {
     /// Trims and de-duplicates what the editor sends so matching and validation see clean values.
@@ -210,27 +216,43 @@ fn valid_sender(entry: &str, allow_name: bool) -> bool {
 pub fn validate(a: &Automation) -> Result<()> {
     let name = a.name.trim();
     if name.is_empty() || name.chars().count() > NAME_MAX || name.contains('\0') {
-        return Err(invalid(format!(
-            "Give the automation a name (up to {NAME_MAX} characters)."
-        )));
+        return Err(invalid_at(
+            "name",
+            format!("Give the automation a name (up to {NAME_MAX} characters)."),
+        ));
     }
     let prompt = a.prompt.trim();
     if prompt.is_empty() {
-        return Err(invalid("Write the instructions for the automation."));
+        return Err(invalid_at(
+            "prompt",
+            "Write the instructions for the automation.",
+        ));
     }
     if prompt.chars().count() > PROMPT_MAX || prompt.contains('\0') {
-        return Err(invalid("Instructions can be up to 4,000 characters."));
+        return Err(invalid_at(
+            "prompt",
+            "Instructions can be up to 4,000 characters.",
+        ));
     }
     match &a.trigger {
         Trigger::Schedule { days, time } => {
             if days.is_empty() {
-                return Err(invalid("Choose at least one day for the schedule."));
+                return Err(invalid_at(
+                    "days",
+                    "Choose at least one day for the schedule.",
+                ));
             }
             if days.iter().any(|d| !(1..=7).contains(d)) {
-                return Err(invalid("Days run from Monday (1) to Sunday (7)."));
+                return Err(invalid_at(
+                    "days",
+                    "Days run from Monday (1) to Sunday (7).",
+                ));
             }
             if !valid_time(time) {
-                return Err(invalid("Enter the time as HH:MM, for example 08:45."));
+                return Err(invalid_at(
+                    "time",
+                    "Enter the time as HH:MM, for example 08:45.",
+                ));
             }
         }
         Trigger::Event {
@@ -240,40 +262,50 @@ pub fn validate(a: &Automation) -> Result<()> {
         } => {
             let from_people = matches!(event, EventKind::MailFrom | EventKind::ChatFrom);
             if from_people && senders.is_empty() {
-                return Err(invalid(
+                return Err(invalid_at(
+                    "senders",
                     "Add at least one sender or domain for this trigger.",
                 ));
             }
             if senders.len() > 50 {
-                return Err(invalid("Use up to 50 senders."));
+                return Err(invalid_at("senders", "Use up to 50 senders."));
             }
             if *event != EventKind::MeetingEnded {
                 for s in senders {
                     if !valid_sender(s, *event == EventKind::ChatFrom) {
-                        return Err(invalid(format!(
-                            "\"{s}\" is not an email address or a domain such as epam.com."
-                        )));
+                        return Err(invalid_at(
+                            "senders",
+                            format!(
+                                "\"{s}\" is not an email address or a domain such as epam.com."
+                            ),
+                        ));
                     }
                 }
             }
             if keywords.len() > 20 || keywords.iter().any(|k| k.chars().count() > 60) {
-                return Err(invalid("Use up to 20 keywords of at most 60 characters."));
+                return Err(invalid_at(
+                    "keywords",
+                    "Use up to 20 keywords of at most 60 characters.",
+                ));
             }
         }
     }
     if a.deliver.draft_reply && !a.replies_to_message() {
-        return Err(invalid(
+        return Err(invalid_at(
+            "deliver",
             "Reply drafts are only available when the trigger is an email or a chat message.",
         ));
     }
     if a.read.mail_from_sender_days > 30 {
-        return Err(invalid(
+        return Err(invalid_at(
+            "read",
             "Read the sender's mail from the last 1 to 30 days.",
         ));
     }
     if let Some(cap) = a.cap_usd {
         if !(0.01..=100.0).contains(&cap) {
-            return Err(invalid(
+            return Err(invalid_at(
+                "capUsd",
                 "The cost cap must be between 0.01 and 100 US dollars.",
             ));
         }

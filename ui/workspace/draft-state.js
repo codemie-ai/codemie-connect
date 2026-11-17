@@ -148,7 +148,9 @@ export function draftError(job, { profiles = [], settings = {}, kind = 'draft' }
   const automation = kind === 'automation';
   const task = summary ? 'summarize conversations' : automation ? 'run automations' : 'draft replies';
   const code = job.errorCode;
-  if (code === 'conflict') return { tone: 'warning', sentence: 'The conversation changed while drafting.', action: retry(job, 'Draft again') };
+  // A run of an automation has no conversation of its own: its class (or the default) says why.
+  if (code === 'conflict' && summary) return { tone: 'warning', sentence: 'The conversation changed while summarizing.', action: retry(job, 'Summarize again', 'summary') };
+  if (code === 'conflict' && !automation) return { tone: 'warning', sentence: 'The conversation changed while drafting.', action: retry(job, 'Draft again') };
   const cls = job.errorClass || code;
   const profileId = job.payload?.profile || settings.routes?.[job.payload?.purpose]?.profile || settings.defaultProfile || 'claude';
   const label = profiles.find(p => p.id === profileId)?.label || (isCodeMie(profileId) ? `CodeMie · ${profileId.slice(8)}` : 'Claude Code');

@@ -80,7 +80,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     },
     local_delete: d => { s.records = s.records.filter(r => !(r.kind === d.kind && r.id === d.id)); return { deleted: true }; },
     draft_save: (d, wid) => ops.local_save({ ...d, kind: 'draft', id: `manual:${d.sourceId}` }, wid),
-    layout_save: (d, wid) => { const w = active(wid); w.layout = d.layout; w.widgetWidths = d.widgetWidths; return { saved: true }; },
+    layout_save: (d, wid) => { const w = active(wid); w.layout = [...new Set(d.layout)]; w.widgetWidths = d.widgetWidths; return { saved: true }; },
     workspace_create: d => { const id = crypto.randomUUID(); s.workspaces.push({ id, name: d.name, color: d.color, archived: false, isDefault: false, connectionId: s.connection?.id || null, sources: { all: true }, layout: ['brief', 'calendar', 'inbox', 'commitments', 'focus'], widgetWidths: {} }); s.settings.activeWorkspace = id; return { id }; },
     workspace_update: (d, wid) => { Object.assign(active(wid), d); if (d.archived && s.settings.activeWorkspace === wid) s.settings.activeWorkspace = 'personal'; return { saved: true }; },
     workspace_select: d => { s.settings.activeWorkspace = d.id; return { selected: true }; },
@@ -250,14 +250,20 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   Object.assign(ops, {
     automation_save: d => {
       calls.push(['automation_save', d]);
-      if (!String(d.name || '').trim()) fail('validation', 'Give the automation a name (up to 80 characters).');
-      if (!String(d.prompt || '').trim()) fail('validation', 'Write the instructions for the automation.');
-      if (d.trigger?.kind === 'schedule' && !(d.trigger.days || []).length) fail('validation', 'Choose at least one day for the schedule.');
-      if (['mail_from', 'chat_from'].includes(d.trigger?.event) && !(d.trigger.senders || []).length) fail('validation', 'Add at least one sender or domain for this trigger.');
+      const invalid = (field, message) => { throw { code: 'validation', field, message }; };
+      if (!String(d.name || '').trim()) invalid('name', 'Give the automation a name (up to 80 characters).');
+      if (!String(d.prompt || '').trim()) invalid('prompt', 'Write the instructions for the automation.');
+      if (d.trigger?.kind === 'schedule' && !(d.trigger.days || []).length) invalid('days', 'Choose at least one day for the schedule.');
+      if (['mail_from', 'chat_from'].includes(d.trigger?.event) && !(d.trigger.senders || []).length) invalid('senders', 'Add at least one sender or domain for this trigger.');
       const id = d.id || crypto.randomUUID();
+      const before = find('automation', id);
       const record = { id, kind: 'automation', source: 'local', connectionId: null, workspaceId: 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { ...d, id, name: d.name.trim() } };
       s.records = s.records.filter(r => !(r.kind === 'automation' && r.id === id)).concat(record);
-      return { record };
+      // As native: turning Today delivery on puts the card on Today in the same save.
+      const w = active('personal');
+      const todayCard = !!d.deliver?.today && before?.data.deliver?.today !== true && !w.layout.includes('automations') && w.layout.length < 16;
+      if (todayCard) w.layout = [...w.layout, 'automations'];
+      return { record, todayCard };
     },
     automation_toggle: d => {
       calls.push(['automation_toggle', d]);
@@ -301,6 +307,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       return { runs: page, next };
     },
   });
+  // A native event, as when the user clicks a notification.
+  window.__emitNative = (name, payload) => (listeners[name] || []).forEach(fn => fn({ payload }));
   window.__setSummaryStale = value => { for (const r of s.records) if (r.kind === 'summary') r.data.stale = value; s.revision++; emit('workspace:changed'); };
   window.__bridgeCalls = calls;
   // What detection finds next time (Claude signed in or set up meanwhile).
@@ -1563,6 +1571,19 @@ const noOverflow = async (page, what) => {
   const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-modal[open] .ws-modal-body')].map(el => el.scrollWidth - el.clientWidth)));
   assert(overflow <= 0, `${what} overflows by ${overflow}px`);
 };
+const noToasts = page => page.evaluate(() => document.querySelectorAll('.ws-toast').forEach(t => t.remove()));
+/** A screenshot of one element; a background refresh may replace it mid-capture, so try again. */
+const elementShot = async (page, selector, name) => {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await noToasts(page);
+      return await page.locator(selector).screenshot({ path: join(OUT, name) });
+    } catch (error) {
+      if (attempt >= 3 || !/not attached|detached/i.test(error.message)) throw error;
+      await page.waitForTimeout(400);
+    }
+  }
+};
 const editorOpen = async page => {
   await page.waitForSelector('.ws-modal[open] #automation-editor');
   await page.waitForTimeout(250);
@@ -1575,6 +1596,7 @@ for (const theme of ['dark', 'light']) {
     await check(`${tag}: automations create from Morning brief, run, show on Today and turn off`, async () => {
       await page.waitForSelector('.ws-page-automations .ws-auto-empty');
       assert(await page.locator('.ws-nav button[data-route=automations][aria-current=page]').count() === 1, 'sidebar entry not current');
+      assert(await page.locator('[data-action="automation-new"]').count() === 1, 'New automation offered twice');
       await noOverflow(page, 'empty list');
       await shot(page, `${tag}-automations-empty`);
       await page.click('[data-action="automations-tab"][data-tab="templates"]');
@@ -1595,13 +1617,18 @@ for (const theme of ['dark', 'light']) {
       await shot(page, `${tag}-automation-editor-schedule-bottom`);
       await page.click('.ws-modal[open] button[type=submit]');
       await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
-      await page.click('[data-action="automations-tab"][data-tab="automations"]');
-      await page.waitForSelector('.ws-auto-row');
-      assert((await text(page, '.ws-auto-row')).includes('Weekdays at 08:45'), 'trigger summary');
+      // Created: back on the list with the new row picked out.
+      await page.waitForSelector('[data-tab="automations"][aria-selected="true"]');
+      await page.waitForSelector('.ws-auto-row.ws-auto-highlight');
+      await shot(page, `${tag}-automations-created`);
+      const row = await text(page, '.ws-auto-row');
+      assert(row.includes('Weekdays at 08:45') && /Next: (Today|Tomorrow|Mon|Tue|Wed|Thu|Fri) 08:45/.test(row), row);
+      await page.waitForSelector('.ws-auto-row:not(.ws-auto-highlight)', { timeout: 6000 });
       const saved = (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === 'automation_save').at(-1)[1];
       assert(saved.trigger.time === '08:45' && saved.deliver.today && saved.read.calendarToday && !saved.deliver.draftReply, JSON.stringify(saved));
       const layout = await page.evaluate(() => window.__workspace.store.get().snapshot.workspaces[0].layout);
       assert(layout.includes('automations'), `Today card added: ${layout}`);
+      assert(!(await page.evaluate(() => window.__bridgeCalls)).some(([op]) => op === 'layout_save'), 'the card is added by the save itself');
 
       const id = saved.id || await page.locator('.ws-auto-row').getAttribute('data-automation');
       await page.click(`.ws-auto-row [data-action="automation-run"]`);
@@ -1616,7 +1643,7 @@ for (const theme of ['dark', 'light']) {
       assert(await page.locator('.ws-auto-card [data-action="automation-open-run"]').count() === 1, 'Open run');
       await page.locator('.ws-auto-card').scrollIntoViewIfNeeded();
       await noOverflow(page, 'Today');
-      await page.locator('.ws-auto-card').screenshot({ path: join(OUT, `${tag}-today-automation-results.png`) });
+      await elementShot(page, '.ws-auto-card', `${tag}-today-automation-results.png`);
       await page.click('.ws-auto-card [data-action="automation-open-run"]');
       await page.waitForSelector('.ws-run.ws-open .ws-run-output');
 
@@ -1633,6 +1660,7 @@ for (const theme of ['dark', 'light']) {
       await page.click('[data-action="automations-tab"][data-tab="templates"]');
       await page.click('[data-action="automation-template"][data-id="draft-replies"]');
       await editorOpen(page);
+      assert(await page.evaluate(() => document.activeElement?.id) === 'auto-senders', 'senders first');
       const conversation = page.locator('[data-read="triggerConversation"]');
       assert(await conversation.isChecked() && await conversation.isDisabled(), 'triggering conversation not locked');
       assert(await page.locator('select[name="auto-event"]').inputValue() === 'mail_from', 'event');
@@ -1670,14 +1698,15 @@ for (const theme of ['dark', 'light']) {
       const output = await text(p, '.ws-run.ws-open .ws-run-detail');
       assert(output.includes('2 replies owed') && output.includes('Answer Ann about the Q3 budget') && output.includes('Send the roadmap'), output);
       assert(await p.locator('.ws-run.ws-open .ws-run-summary-text strong').innerText() === 'Q3 budget', 'bold');
+      assert(await p.locator('.ws-run-detail a[href]').count() === 0, 'a link the window could follow');
       await p.click('.ws-run.ws-open [data-action="run-link"]');
       await p.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'open_source' && d.kind === 'automation_run' && d.link === 0));
       await noOverflow(p, 'run log');
-      await p.locator('.ws-run.ws-open').screenshot({ path: join(OUT, `${tag}-automation-runlog-ok.png`) });
+      await elementShot(p, '.ws-run.ws-open', `${tag}-automation-runlog-ok.png`);
       await p.click('.ws-run-row:has(.ws-badge-error)');
       await p.waitForSelector('.ws-run.ws-open .ws-run-error');
       assert((await text(p, '.ws-run.ws-open .ws-run-error')).includes('signed in'), 'failure sentence');
-      await p.locator('.ws-run.ws-open:has(.ws-run-error)').screenshot({ path: join(OUT, `${tag}-automation-runlog-failed.png`) });
+      await elementShot(p, '.ws-run.ws-open:has(.ws-run-error)', `${tag}-automation-runlog-failed.png`);
       await shot(p, `${tag}-automation-runlog`);
       // The filter shows one automation's runs.
       await p.selectOption('select[name="auto-runs-filter"]', 'auto-reply');
@@ -1692,6 +1721,10 @@ for (const theme of ['dark', 'light']) {
       await p.waitForSelector('.ws-page-inbox .ws-read[data-message-id="m0"]');
       // Without automations' failures in the decisions bell.
       assert(await p.locator('.ws-bell-dot').count() === 0, 'failed runs became decisions');
+      // A click on the run's notification opens that run in the Run log.
+      await p.evaluate(() => window.__emitNative('workspace:notification-open', { workspaceId: 'personal', runId: 'run-2', automationId: 'auto-brief' }));
+      await p.waitForSelector('.ws-page-automations .ws-run.ws-open .ws-run-error');
+      assert(await p.locator('select[name="auto-runs-filter"]').inputValue() === 'auto-brief', 'filtered to its automation');
     });
     await check(`${tag}: the list and Today show both automations' latest results`, async () => {
       const p = logged.page;
@@ -1703,20 +1736,36 @@ for (const theme of ['dark', 'light']) {
       await shot(p, `${tag}-automations-list-populated`);
       await p.locator('.ws-auto-row[data-automation="auto-brief"] summary').click();
       await p.waitForSelector('.ws-auto-row[data-automation="auto-brief"] .ws-menu[open] [data-action="automation-delete"]');
+      // An update (the minute tick, a sync) doesn't close it.
+      await p.evaluate(() => window.__workspace.render());
+      assert(await p.locator('.ws-auto-row[data-automation="auto-brief"] .ws-menu[open]').count() === 1, 'menu closed by a render');
       await shot(p, `${tag}-automations-menu`);
-      await p.keyboard.press('Escape');
-      await p.locator('.ws-auto-row[data-automation="auto-brief"] summary').click();
+      // Duplicate: a copy that is off.
+      await p.click('.ws-auto-row[data-automation="auto-brief"] [data-action="automation-duplicate"]');
+      await p.waitForSelector('.ws-auto-row.ws-off:has-text("Copy of Morning brief")');
+      // Delete asks first, then removes it.
+      const copy = p.locator('.ws-auto-row:has-text("Copy of Morning brief")');
+      await copy.locator('summary').click();
+      await copy.locator('[data-action="automation-delete"]').click();
+      await p.waitForSelector('.ws-modal[open]:has-text("Delete “Copy of Morning brief”?")');
+      await p.waitForTimeout(450);
+      await p.click('.ws-modal[open] button[type=submit]');
+      await p.waitForSelector('.ws-auto-row:has-text("Copy of Morning brief")', { state: 'detached' });
+      assert(await p.locator('.ws-auto-row').count() === 2, 'two automations left');
+      // The fixture's automations were stored without a save; put their card on Today if it isn't yet.
       await p.evaluate(async () => {
         const w = window.__workspace.store.get().snapshot.workspaces[0];
-        await window.__workspace.store.mutate('layout_save', { layout: [...w.layout, 'automations'], widgetWidths: w.widgetWidths });
+        if (!w.layout.includes('automations')) await window.__workspace.store.mutate('layout_save', { layout: [...w.layout, 'automations'], widgetWidths: w.widgetWidths });
       });
       await p.click('.ws-nav button[data-route=today]');
       await p.waitForSelector('.ws-auto-card .ws-auto-result >> nth=1');
       const card = await text(p, '.ws-auto-card');
-      assert(card.indexOf('Reply drafted for Ann') < card.indexOf('2 replies owed'), 'newest first');
+      assert(/Latest run failed 5 min ago: Claude Code isn.t signed in\./.test(card), card);
+      // Newest first: Morning brief's failure 5 minutes ago (above its older result), then Ann's reply.
+      assert(card.indexOf('Latest run failed') < card.indexOf('2 replies owed') && card.indexOf('2 replies owed') < card.indexOf('Reply drafted for Ann'), card);
       await p.locator('.ws-auto-card').scrollIntoViewIfNeeded();
       await noOverflow(p, 'Today');
-      await p.locator('.ws-auto-card').screenshot({ path: join(OUT, `${tag}-today-automation-results-two.png`) });
+      await elementShot(p, '.ws-auto-card', `${tag}-today-automation-results-two.png`);
     });
     await check(`${tag}: run log no page errors`, async () => assert(logged.errors.length === 0, logged.errors.join(' | ')));
     await logged.context.close().catch(() => {});

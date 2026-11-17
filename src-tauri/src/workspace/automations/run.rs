@@ -365,17 +365,39 @@ impl Core {
     }
 
     /// Stores a `failed` run: the error's class, code and sentence, and no output. A run of an
-    /// automation deleted meanwhile is discarded with it.
+    /// automation deleted meanwhile is discarded with it. A run nobody started by hand (a
+    /// schedule, a catch-up or an event) of an automation that notifies also queues a
+    /// notification that it didn't run; quiet hours and focus hold it back like any other.
     fn record_failure(&self, log: &RunLog, e: &WorkspaceError) {
         let record = log.record(
             "failed",
             json!({"error": {"class": e.class, "code": e.code, "message": e.message}}),
         );
         let stored = self.repo().and_then(|mut r| {
-            match r.record("automation", &log.automation_id, None, Some(PERSONAL)) {
-                Ok(_) => r.put_automation_run(&record),
-                Err(_) => Ok(()),
-            }
+            let automation = match r.record("automation", &log.automation_id, None, Some(PERSONAL))
+            {
+                Ok(a) => a,
+                Err(_) => return Ok(()),
+            };
+            let notify = log.trigger["kind"] != "manual"
+                && automation.data["deliver"]["notify"] == true
+                && r.settings()?.notifications;
+            let notification = if notify {
+                Some(new_job(
+                    "notification",
+                    format!("automation:{}:notify", log.id),
+                    Some(PERSONAL.into()),
+                    None,
+                    now(),
+                    r.policy(Some(PERSONAL), None)?,
+                    json!({"title": format!("{} didn't run", log.name), "body": e.message,
+                        "automationId": log.automation_id, "runId": log.id,
+                        "expiresAt": now() + NOTIFY_FOR_SECS}),
+                ))
+            } else {
+                None
+            };
+            r.put_automation_run(&record, notification.as_ref())
         });
         if let Err(e) = stored {
             log::warn!("automations: cannot record a failed run: {}", e.code);
@@ -940,6 +962,57 @@ mod tests {
         assert!(jobs_of(&core, "send").is_empty());
     }
 
+    /// Queues a run of `id` the way the schedule does at `slot`.
+    fn queue_scheduled(core: &Core, id: &str, slot: i64) -> String {
+        let mut r = core.repo().unwrap();
+        let policy = r.policy(Some("personal"), None).unwrap();
+        let job = crate::workspace::new_job(
+            "automation_run",
+            format!("automation:{id}:{slot}"),
+            Some("personal".into()),
+            None,
+            now(),
+            policy,
+            json!({"automationId": id, "title": "Morning brief", "trigger": {"kind": "schedule", "scheduledAt": slot}}),
+        );
+        r.enqueue(&job).unwrap();
+        job.id
+    }
+
+    #[tokio::test]
+    async fn a_failed_background_run_notifies_when_its_automation_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Err(AiError::new(ErrorClass::NeedsLogin)),
+            Err(AiError::new(ErrorClass::NeedsLogin)),
+            Err(AiError::new(ErrorClass::NeedsLogin)),
+        ]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        save(&core, morning_brief(json!({"commitmentsNotes": true}))).await;
+        // Nobody watched the 08:45 run fail, so the automation's notification says so.
+        let jid = queue_scheduled(&core, "auto-brief", BASE);
+        run_next(&core).await;
+        let notes = jobs_of(&core, "notification");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].key, format!("automation:{jid}:notify"));
+        assert_eq!(notes[0].payload["title"], "Morning brief didn't run");
+        assert_eq!(notes[0].payload["body"], "Claude is not signed in.");
+        assert_eq!(notes[0].payload["runId"], jid.as_str());
+        assert_eq!(notes[0].payload["automationId"], "auto-brief");
+        // A run started with Run now fails in front of the user: no notification.
+        run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        assert_eq!(jobs_of(&core, "notification").len(), 1);
+        // An automation without notifications stays quiet.
+        let mut quiet = morning_brief(json!({"commitmentsNotes": true}));
+        quiet["deliver"]["notify"] = false.into();
+        save(&core, quiet).await;
+        queue_scheduled(&core, "auto-brief", BASE + 86_400);
+        run_next(&core).await;
+        assert_eq!(jobs_of(&core, "notification").len(), 1);
+    }
+
     #[tokio::test]
     async fn failed_run_records_error_class_and_no_output() {
         let dir = tempfile::tempdir().unwrap();
@@ -1439,7 +1512,7 @@ mod tests {
             for (id, mut value, started) in runs {
                 r.delete_local("automation_run", id, "personal").unwrap();
                 value["data"]["startedAt"] = started.into();
-                r.put_automation_run(&serde_json::from_value(value).unwrap())
+                r.put_automation_run(&serde_json::from_value(value).unwrap(), None)
                     .unwrap();
             }
         }

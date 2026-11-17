@@ -638,11 +638,18 @@ impl Repository {
         )?;
         Ok(())
     }
-    /// Stores one finished automation run without ending a job (a failed run), keeping at most
-    /// [`AUTOMATION_RUNS_KEPT`] runs of its automation.
-    pub fn put_automation_run(&mut self, run: &Record) -> Result<()> {
+    /// Stores one finished automation run without ending a job (a failed run) and the
+    /// notification that reports it, keeping at most [`AUTOMATION_RUNS_KEPT`] runs of its
+    /// automation.
+    pub fn put_automation_run(&mut self, run: &Record, notification: Option<&Job>) -> Result<()> {
         let tx = self.db.transaction()?;
         put_record(&tx, run)?;
+        if let Some(n) = notification {
+            tx.execute(
+                "INSERT OR IGNORE INTO jobs VALUES(?1,?2,?3,?4,?5,?6)",
+                params![n.id, n.key, n.state, n.due_at, n.lease_until, encode(n)?],
+            )?;
+        }
         prune_automation_runs(&tx, run.data["automationId"].as_str())?;
         bump(&tx)?;
         tx.commit()?;
@@ -680,6 +687,22 @@ impl Repository {
             params![job.id, encode(&done)?],
         )?;
         prune_automation_runs(&tx, run.data["automationId"].as_str())?;
+        bump(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Saves an automation and, when given, the workspace whose Today layout gains the
+    /// Automation results card, as one change.
+    pub fn save_automation(&mut self, record: &Record, today: Option<&Workspace>) -> Result<()> {
+        let tx = self.db.transaction()?;
+        put_record(&tx, record)?;
+        if let Some(w) = today {
+            // Only the layout changes, so the access revision and sources stay as they are.
+            tx.execute(
+                "UPDATE workspaces SET body=?2 WHERE id=?1",
+                params![w.id, encode(w)?],
+            )?;
+        }
         bump(&tx)?;
         tx.commit()?;
         Ok(())
@@ -2235,7 +2258,7 @@ mod tests {
         let mut r = r;
         let mut stored = automation_run("busy", 500, now());
         stored.id = "busy-run-new".into();
-        r.put_automation_run(&stored).unwrap();
+        r.put_automation_run(&stored, None).unwrap();
         let busy = r
             .local_records("personal", "automation_run")
             .unwrap()

@@ -61,7 +61,7 @@ export function today(s, ctx) {
     calendar: () => scheduleCard(s, m, connected),
     inbox: () => attentionCard(s, m, connected, ctx.state?.ai),
     commitments: () => commitmentsCard(s, m, w),
-    automations: () => automationResultsCard(s),
+    automations: () => automationResultsCard(s, ctx.state?.ai),
   };
   const layout = w.layout.filter(id => widgets[id]);
   const grid = layout.map(id => {

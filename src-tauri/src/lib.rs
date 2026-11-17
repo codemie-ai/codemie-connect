@@ -1,6 +1,7 @@
 mod ai;
 mod commands;
 mod error;
+mod navigation;
 mod state;
 mod steps;
 mod storage;
@@ -12,6 +13,8 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Every webview stays on Connect's own pages; links open in the browser instead.
+        .plugin(navigation::guard())
         .setup(|app| {
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();

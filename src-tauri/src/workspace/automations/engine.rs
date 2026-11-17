@@ -4,7 +4,7 @@ use crate::workspace::models::*;
 use crate::workspace::{
     inbox, new_job,
     repository::{record_selected, source_available, source_permitted, Repository},
-    workspace_id_active, Core,
+    workspace_id_active, Core, MAX_WIDGETS,
 };
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -303,19 +303,38 @@ impl Core {
                 } else if a.id.chars().count() > 200 {
                     return Err(invalid_form());
                 }
-                let exists = match r.record("automation", &a.id, None, Some(PERSONAL)) {
-                    Ok(_) => true,
-                    Err(e) if e.code == "not_found" => false,
+                let previous = match r.record("automation", &a.id, None, Some(PERSONAL)) {
+                    Ok(rec) => Some(rec),
+                    Err(e) if e.code == "not_found" => None,
                     Err(e) => return Err(e),
                 };
-                if !exists && r.local_records(PERSONAL, "automation")?.len() >= MAX_AUTOMATIONS {
+                if previous.is_none()
+                    && r.local_records(PERSONAL, "automation")?.len() >= MAX_AUTOMATIONS
+                {
                     return Err(invalid(
                         "You can keep up to 50 automations. Delete one first.",
                     ));
                 }
+                // Turning Today delivery on (or creating with it) puts the Automation results
+                // card on Today, unless it is there or the layout is full. A card the user
+                // removed stays removed while delivery stays on.
+                let was_on = previous
+                    .as_ref()
+                    .is_some_and(|p| p.data["deliver"]["today"] == true);
+                let mut card = None;
+                if a.deliver.today && !was_on {
+                    let mut w = r.workspace(PERSONAL)?;
+                    if !w.layout.iter().any(|id| id == "automations")
+                        && w.layout.len() < MAX_WIDGETS
+                    {
+                        w.layout.push("automations".into());
+                        w.revision += 1;
+                        card = Some(w);
+                    }
+                }
                 let record = automation_record(&a)?;
-                r.put_record(&record)?;
-                Ok(json!({"record": record}))
+                r.save_automation(&record, card.as_ref())?;
+                Ok(json!({"record": record, "todayCard": card.is_some()}))
             }
             Operation::AutomationDelete => {
                 let aid = required(&req.data, "id", 200)?;
@@ -772,6 +791,93 @@ mod engine_tests {
         assert_eq!(keys, vec!["automation:auto-event:event:b4"]);
     }
 
+    #[tokio::test]
+    async fn validation_sentences_name_their_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        let mut cases = Vec::new();
+        let mut no_senders = event_json();
+        no_senders["trigger"]["senders"] = json!([]);
+        cases.push((no_senders, "senders"));
+        let mut no_days = schedule_json();
+        no_days["trigger"]["days"] = json!([]);
+        cases.push((no_days, "days"));
+        let mut bad_time = schedule_json();
+        bad_time["trigger"]["time"] = "8:45".into();
+        cases.push((bad_time, "time"));
+        let mut no_name = schedule_json();
+        no_name["name"] = " ".into();
+        cases.push((no_name, "name"));
+        let mut cap = schedule_json();
+        cap["capUsd"] = json!(500);
+        cases.push((cap, "capUsd"));
+        let mut draft = schedule_json();
+        draft["deliver"]["draftReply"] = true.into();
+        cases.push((draft, "deliver"));
+        for (data, field) in cases {
+            let err = core
+                .request(mutation(&core, Operation::AutomationSave, data))
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, "validation");
+            assert_eq!(err.field.as_deref(), Some(field), "{}", err.message);
+        }
+    }
+
+    #[tokio::test]
+    async fn saving_an_automation_that_delivers_to_today_adds_the_card_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        let layout = |core: &Core| core.repo().unwrap().workspace(PERSONAL).unwrap().layout;
+        let set_layout = |core: &Core, ids: Vec<String>| {
+            let mut r = core.repo().unwrap();
+            let mut w = r.workspace(PERSONAL).unwrap();
+            w.layout = ids;
+            r.save_workspace(&w).unwrap();
+        };
+        set_layout(&core, vec!["brief".into(), "inbox".into()]);
+        // A new automation that delivers to Today brings the card, in the same save.
+        let saved = core
+            .request(mutation(&core, Operation::AutomationSave, schedule_json()))
+            .await
+            .unwrap();
+        assert_eq!(saved["todayCard"], true);
+        assert_eq!(layout(&core), vec!["brief", "inbox", "automations"]);
+        // Removed by the user, it stays removed while Today delivery stays on.
+        set_layout(&core, vec!["brief".into()]);
+        core.request(mutation(&core, Operation::AutomationSave, schedule_json()))
+            .await
+            .unwrap();
+        assert_eq!(layout(&core), vec!["brief"]);
+        // Turning Today delivery on again brings it back.
+        let mut off = schedule_json();
+        off["deliver"]["today"] = false.into();
+        core.request(mutation(&core, Operation::AutomationSave, off))
+            .await
+            .unwrap();
+        assert_eq!(layout(&core), vec!["brief"]);
+        core.request(mutation(&core, Operation::AutomationSave, schedule_json()))
+            .await
+            .unwrap();
+        assert_eq!(layout(&core), vec!["brief", "automations"]);
+        // A full layout (16 cards) is left alone and the automation is still saved.
+        let full: Vec<String> = (0..16).map(|n| format!("plugin:plugin-{n}:w")).collect();
+        set_layout(&core, full.clone());
+        let mut other = event_json();
+        other["id"] = "auto-new".into();
+        let saved = core
+            .request(mutation(&core, Operation::AutomationSave, other))
+            .await
+            .unwrap();
+        assert_eq!(saved["todayCard"], false);
+        assert_eq!(layout(&core), full);
+        assert!(core
+            .repo()
+            .unwrap()
+            .record("automation", "auto-new", None, Some(PERSONAL))
+            .is_ok());
+    }
+
     /// A stored run of `automation` that started at `started`; `today` delivers it to Today.
     fn stored_run(id: &str, automation: &str, started: i64, today: bool, account: Value) -> Record {
         Record {
@@ -824,7 +930,7 @@ mod engine_tests {
                 stored_run("e-other", "auto-event", 120, true, json!("acct-2")),
                 stored_run("e-today", "auto-event", 110, true, json!("acct")),
             ] {
-                r.put_automation_run(&run).unwrap();
+                r.put_automation_run(&run, None).unwrap();
             }
         }
         // The snapshot carries each automation's latest run and its latest run on Today.
@@ -896,8 +1002,8 @@ mod engine_tests {
         hidden.data["connectionId"] = "acct-2".into();
         {
             let mut r = core.repo().unwrap();
-            r.put_automation_run(&run).unwrap();
-            r.put_automation_run(&hidden).unwrap();
+            r.put_automation_run(&run, None).unwrap();
+            r.put_automation_run(&hidden, None).unwrap();
         }
         let link = |id: &str, n: i64| core.automation_run_link(id, n);
         assert_eq!(link("run-1", 0).unwrap(), "https://example.test/plan");

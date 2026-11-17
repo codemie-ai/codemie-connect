@@ -4,8 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   automations, automationEditor, draftFromAutomation, editorDraft, toAutomation, fieldForError, runLog, outputText,
-  triggerSummary, newAutomationDraft, duplicateDraft, TEMPLATES,
+  triggerSummary, newAutomationDraft, duplicateDraft, nextRunLabel, deliveriesSentence, errorTarget, needsSenders, TEMPLATES,
 } from '../workspace/view-automations.js';
+import { draftError } from '../workspace/draft-state.js';
 import { today, WIDGETS, WIDGET_IDS } from '../workspace/view-today.js';
 import { inbox } from '../workspace/view-inbox.js';
 import { decisions, INLINE_AI_JOBS } from '../workspace/selectors.js';
@@ -71,6 +72,29 @@ test('automations_list_shows_trigger_summary_last_run_and_cost', () => {
   assert.match(none, /No automations yet/);
   assert.ok(tagWith(none, 'data-action="automations-tab"[^>]*data-tab="templates"'));
   assert.match(none, /Start from a template/);
+  // One primary action (the template), one secondary (New automation); the heading adds none.
+  assert.equal(count(none, /data-action="automation-new"/g), 1);
+  assert.match(tagWith(none, 'data-action="automation-new"'), /ws-btn-secondary/);
+  assert.match(tagWith(none.slice(none.indexOf('ws-empty')), 'data-tab="templates"'), /ws-btn-primary/);
+});
+
+test('schedule rows say when they run next, in the workspace zone', () => {
+  // Tuesday 17 November 2026, 10:00 UTC.
+  const now = Date.parse('2026-11-17T10:00:00Z');
+  const at = (days, time) => nextRunLabel({ trigger: { kind: 'schedule', days, time } }, 'UTC', now);
+  assert.equal(at([1, 2, 3, 4, 5], '08:45'), 'Tomorrow 08:45');
+  assert.equal(at([1, 2, 3, 4, 5], '17:30'), 'Today 17:30');
+  assert.equal(at([5], '16:00'), 'Fri 16:00');
+  assert.equal(at([2], '09:00'), 'Tue 09:00');
+  // 20:00 UTC on Tuesday is 05:00 on Wednesday in Tokyo.
+  const late = Date.parse('2026-11-17T20:00:00Z');
+  assert.equal(nextRunLabel({ trigger: { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:45' } }, 'UTC', late), 'Tomorrow 08:45');
+  assert.equal(nextRunLabel({ trigger: { kind: 'schedule', days: [1, 2, 3, 4, 5], time: '08:45' } }, 'Asia/Tokyo', late), 'Today 08:45');
+  assert.equal(nextRunLabel({ trigger: { kind: 'event', event: 'critical' } }, 'UTC', now), '');
+  const s = snapshot();
+  assert.match(page(s), /Next: (Today|Tomorrow|Mon|Tue|Wed|Thu|Fri) 08:45/);
+  record(s, 'automation', 'auto-brief').data.enabled = false;
+  assert.doesNotMatch(page(s), /Next:/, 'an automation that is off never runs next');
 });
 
 test('trigger summaries read like sentences', () => {
@@ -157,6 +181,21 @@ test('editor_validates_and_hides_draft_reply_for_schedules', () => {
   assert.equal(fieldForError('Enter the time as HH:MM, for example 08:45.'), 'auto-time');
   assert.equal(fieldForError('The cost cap must be between 0.01 and 100 US dollars.'), 'auto-cap');
   assert.equal(fieldForError('You can keep up to 50 automations. Delete one first.'), null);
+  // Native names the field; a field the trigger doesn't show never holds an error.
+  assert.deepEqual(errorTarget({ code: 'validation', field: 'senders', message: 'Use up to 50 senders.' }, event), { field: 'auto-senders', message: 'Use up to 50 senders.' });
+  assert.equal(errorTarget({ code: 'validation', field: 'senders', message: 'Use up to 50 senders.' }, { ...event, kind: 'schedule' }), null);
+  assert.equal(errorTarget({ code: 'validation', field: 'time', message: 'Enter the time as HH:MM, for example 08:45.' }, event), null);
+  assert.equal(errorTarget({ code: 'stale_view', message: 'Your inbox changed.' }, event), null);
+  // The cap is off (and holds no error) when the run uses Claude Code.
+  const nativeCap = { ...event, profile: 'claude', cap: '' };
+  assert.equal(errorTarget({ code: 'validation', field: 'capUsd', message: 'The cost cap must be between 0.01 and 100 US dollars.' }, nativeCap, AI), null);
+  assert.equal(errorTarget({ code: 'validation', field: 'capUsd', message: 'The cost cap must be between 0.01 and 100 US dollars.' }, { ...event, profile: 'codemie:prod' }, AI).field, 'auto-cap');
+  assert.match(tagWith(automationEditor(nativeCap, ctx), 'id="auto-cap"'), /\bdisabled\b/);
+  assert.doesNotMatch(tagWith(automationEditor({ ...event, profile: 'codemie:prod' }, ctx), 'id="auto-cap"'), /\bdisabled\b/);
+  assert.ok(needsSenders(draftFromAutomation(TEMPLATES[1].automation)));
+  assert.ok(!needsSenders(event));
+  // An automation run never offers "Draft again".
+  assert.notEqual(draftError({ id: 'r', state: 'failed', errorCode: 'conflict', payload: { automationId: 'a' } }, { kind: 'automation' }).action?.label, 'Draft again');
   const invalid = automationEditor({ ...event, senders: '' }, { ...ctx, error: { field: 'auto-senders', message: 'Add at least one sender or domain for this trigger.' } });
   assert.match(invalid, /id="auto-senders"[^>]*aria-invalid="true"/);
   assert.match(invalid, /class="ws-field-error"[^>]*>Add at least one sender or domain for this trigger\./);
@@ -185,6 +224,9 @@ test('template_prefills_editor', () => {
   const cards = page(snapshot(), { tab: 'templates' });
   for (const t of TEMPLATES) assert.ok(tagWith(cards, `data-action="automation-template"[^>]*data-id="${t.id}"`), t.id);
   assert.match(cards, /Use template/);
+  assert.match(cards, /Delivers to Today and a notification\./);
+  assert.equal(deliveriesSentence({ today: true, draftReply: true }), 'Delivers to Today and a reply draft.');
+  assert.equal(deliveriesSentence({ today: true, notify: true, draftReply: true }), 'Delivers to Today, a notification and a reply draft.');
 
   const brief = draftFromAutomation(TEMPLATES[0].automation);
   const html = automationEditor(brief, { zone: 'UTC', ai: AI });
@@ -230,7 +272,9 @@ test('run_log_expands_output_sources_and_error', () => {
   assert.match(ok, /2 replies owed/);
   assert.match(ok, /<h4[^>]*>Replies<\/h4>/);
   assert.match(ok, /<strong>Q3 budget<\/strong>/);
-  assert.match(tagWith(ok, 'href="https://example\\.test/plan"'), /data-action="run-link"[^>]*data-id="run-1"[^>]*data-link="0"/);
+  assert.match(tagWith(ok, 'title="https://example\\.test/plan"'), /<button[^>]*data-action="run-link"[^>]*data-id="run-1"[^>]*data-link="0"/);
+  // No address the app window could follow: a link is a button that opens through native.
+  assert.doesNotMatch(html, /href=/);
   assert.match(ok, /Answer Ann about the Q3 budget[\s\S]*?data-action="open-message" data-id="m0"/);
   assert.match(ok, /Invented source/);
   assert.match(ok, /Send the roadmap/);
@@ -281,11 +325,24 @@ test('today_automation_card_shows_latest_results_with_sources', () => {
   // Morning brief's latest run failed, so its latest result on Today is the earlier one.
   assert.match(cardHtml, /2 replies owed/);
   assert.match(cardHtml, /Reply drafted for Ann/);
-  assert.ok(cardHtml.indexOf('Reply drafted for Ann') < cardHtml.indexOf('2 replies owed'), 'newest first');
+  // Newest first: Morning brief's failure 5 minutes ago, then Ann's reply 20 minutes ago.
+  assert.ok(cardHtml.indexOf('2 replies owed') < cardHtml.indexOf('Reply drafted for Ann'), 'newest first');
   assert.match(cardHtml, /Answer Ann about the Q3 budget[\s\S]*?data-action="open-message" data-id="m0"/);
   assert.ok(tagWith(cardHtml, 'data-action="automation-open-run"[^>]*data-id="run-1"'));
   assert.ok(tagWith(cardHtml, 'data-action="automation-open-run"[^>]*data-id="run-3"'));
-  assert.doesNotMatch(cardHtml, /data-id="run-2"/);
+  // Its latest run failed after that result: one line says so, with what to do.
+  const brief = cardHtml.slice(cardHtml.indexOf('Morning brief'), cardHtml.indexOf('Draft replies to Ann'));
+  assert.match(brief, /Latest run failed 5 min ago:<\/strong> Claude Code isn(’|'|&#39;)t signed in\./);
+  assert.ok(tagWith(brief, 'data-action="ai-copy-login"'));
+  assert.ok(brief.indexOf('Latest run failed') < brief.indexOf('2 replies owed'), 'the failure is above the older result');
+  assert.doesNotMatch(cardHtml.slice(cardHtml.indexOf('Draft replies to Ann')), /Latest run/, 'Ann’s latest run is fine');
+  // With no result on Today yet, the failure alone keeps the automation on the card.
+  const failedOnly = snapshot();
+  failedOnly.workspaces[0].layout = ['automations'];
+  failedOnly.records = failedOnly.records.filter(r => r.id !== 'run-1');
+  const alone = today(failedOnly, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' });
+  assert.match(alone, /Morning brief[\s\S]*Latest run failed 5 min ago/);
+  assert.ok(tagWith(alone, 'data-action="automation-open-run"[^>]*data-id="run-2"'));
   // A run whose automation is gone is not shown.
   s.records = s.records.filter(r => !(r.kind === 'automation' && r.id === 'auto-reply'));
   assert.doesNotMatch(today(s, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' }), /Reply drafted for Ann/);

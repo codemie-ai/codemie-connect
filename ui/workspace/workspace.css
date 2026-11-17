@@ -252,6 +252,8 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .light .ws-input[type=date],.light .ws-input[type=time],.light .ws-input[type=datetime-local]{color-scheme:light}
 .ws-select-wrap{position:relative;display:inline-flex;min-width:0}
 .ws-select{appearance:none;-webkit-appearance:none;padding-right:30px;cursor:pointer;font-size:13px}
+.ws-select:disabled{opacity:.5;cursor:not-allowed}
+.ws-select-wrap:has(.ws-select:disabled) .ws-select-caret{opacity:.5}
 .ws-select-caret{position:absolute;right:9px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--ws-muted);width:14px!important;height:14px!important}
 .ws-form-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .ws-inline-form{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;padding:4px 0 16px}
@@ -1104,6 +1106,11 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-auto-last-run{display:inline-flex;align-items:center;gap:8px;padding:4px 6px;border:0;border-radius:6px;background:none;color:var(--ws-muted);font-size:12px;line-height:16px}
 .ws-auto-last-run:hover{background:var(--ws-hover);color:var(--ws-text)}
 .ws-auto-actions{display:flex;align-items:center;gap:4px}
+.ws-auto-next{display:inline-flex;align-items:center;white-space:nowrap}
+.ws-auto-row.ws-auto-highlight{background:color-mix(in srgb,var(--ws-accent) 10%,transparent);box-shadow:inset 3px 0 0 var(--ws-accent)}
+.ws-auto-list .ws-auto-row:first-child{border-radius:var(--ws-radius-lg) var(--ws-radius-lg) 0 0}
+.ws-auto-list .ws-auto-row:last-child{border-radius:0 0 var(--ws-radius-lg) var(--ws-radius-lg)}
+.ws-auto-list .ws-auto-row:only-child{border-radius:var(--ws-radius-lg)}
 .ws-auto-empty .ws-empty{padding:40px 16px}
 
 /* Run log */
@@ -1133,7 +1140,8 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-run-summary-text p,.ws-run-summary-text ul{margin:0}
 .ws-run-heading{margin:4px 0 0;font-family:var(--font-ui);font-size:13px;line-height:18px;font-weight:600;color:var(--ws-text)}
 .ws-run-bullets{padding-left:20px;display:grid;gap:2px}
-.ws-run-link{color:var(--ws-link);text-decoration:none}
+/* A link in a run's output is a button that opens through native, never an <a href>. */
+.ws-run-link{display:inline;padding:0;border:0;background:none;color:var(--ws-link);font:inherit;line-height:inherit;letter-spacing:inherit;text-align:inherit;cursor:pointer}
 .ws-run-link:hover{text-decoration:underline}
 .ws-run-items{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .ws-run-items li{display:flex;align-items:flex-start;flex-wrap:wrap;gap:6px 10px;padding:8px 10px;border:1px solid var(--ws-border);border-radius:8px;background:var(--ws-card-2)}
@@ -1166,6 +1174,9 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .ws-auto-result h3{font-size:14px;line-height:20px}
 .ws-auto-result .ws-run-items li{background:var(--ws-card)}
 .ws-auto-result-foot{display:flex;align-items:center;gap:8px}
+.ws-auto-problem{align-items:flex-start}
+.ws-auto-problem>.ws-icon{margin-top:1px}
+.ws-auto-problem p strong{font-weight:600}
 
 /* editor */
 .ws-auto-modal .ws-modal-body{gap:0}

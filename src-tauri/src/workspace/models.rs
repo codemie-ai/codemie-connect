@@ -14,6 +14,10 @@ pub struct WorkspaceError {
     /// sign-in problem is never mistaken for a Microsoft one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
+    /// The form field a validation sentence is about (`name`, `days`, `senders`, ...), so an
+    /// editor can show it there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
 }
 
 impl WorkspaceError {
@@ -23,6 +27,7 @@ impl WorkspaceError {
             message: message.into(),
             retry_after: None,
             class: None,
+            field: None,
         }
     }
 }

@@ -342,7 +342,7 @@ impl Core {
                     if state.core.is_some() {
                         let _ = click_app.emit(
                             "workspace:notification-open",
-                            json!({"workspaceId":extra.get("workspaceId"),"itemId":extra.get("itemId"),"eventId":extra.get("eventId")}),
+                            notification_open_payload(extra),
                         );
                     }
                 }
@@ -1528,17 +1528,11 @@ impl Core {
         submitting.payload["dispatchStartedAt"] = now().into();
         r.save_job(&submitting)?;
         // Keep the repository guard through submission so ack/policy writes cannot overtake dispatch.
-        let shown = self
-            .app()?
-            .notification()
-            .builder()
-            .id(nid)
-            .extra("workspaceId", job.workspace_id.clone())
-            .extra("itemId", job.payload["itemId"].clone())
-            .extra("eventId", job.payload["eventId"].clone())
-            .title(title)
-            .body(body)
-            .show();
+        let mut builder = self.app()?.notification().builder().id(nid);
+        for (key, value) in notification_extras(job) {
+            builder = builder.extra(key, value);
+        }
+        let shown = builder.title(title).body(body).show();
         if shown.is_err() {
             let message = "OS notification submission failed. The reminder remains in Activity.";
             note_run_notification(&mut r, job, "failed", message);
@@ -1703,6 +1697,24 @@ fn note_run_notification(r: &mut Repository, job: &Job, state: &str, message: &s
     }
 }
 
+/// What a shown notification carries, so a click opens what it is about: its message, its
+/// calendar event or the automation run it reports.
+fn notification_extras(job: &Job) -> Vec<(&'static str, Value)> {
+    vec![
+        ("workspaceId", json!(job.workspace_id)),
+        ("itemId", job.payload["itemId"].clone()),
+        ("eventId", job.payload["eventId"].clone()),
+        ("runId", job.payload["runId"].clone()),
+        ("automationId", job.payload["automationId"].clone()),
+    ]
+}
+/// The `workspace:notification-open` payload for the extras of a clicked notification.
+fn notification_open_payload(extra: &std::collections::HashMap<String, Value>) -> Value {
+    let get = |key: &str| extra.get(key).cloned().unwrap_or(Value::Null);
+    json!({"workspaceId": get("workspaceId"), "itemId": get("itemId"), "eventId": get("eventId"),
+        "runId": get("runId"), "automationId": get("automationId")})
+}
+
 /// A notification's title and body: what the job names (an automation's name and result
 /// title) when previews are on, otherwise words that say nothing about the content.
 fn notification_text(s: &Settings, payload: &Value) -> (String, String) {
@@ -1760,7 +1772,7 @@ pub const WIDGET_IDS: &[&str] = &[
     "automations",
 ];
 /// The most cards a Today layout holds.
-const MAX_WIDGETS: usize = 16;
+pub(in crate::workspace) const MAX_WIDGETS: usize = 16;
 /// Remembered card widths, kept also for cards that are hidden.
 const MAX_WIDGET_WIDTHS: usize = 64;
 
@@ -2468,6 +2480,39 @@ mod tests {
             ("Stand-up".to_string(), generic.to_string())
         );
     }
+    #[test]
+    fn notifications_carry_their_run_and_a_click_forwards_it() {
+        let job = new_job(
+            "notification",
+            "automation:run-1:notify".into(),
+            Some("personal".into()),
+            None,
+            now(),
+            json!({}),
+            json!({"title": "Morning brief", "body": "2 replies owed", "automationId": "auto-brief", "runId": "run-1"}),
+        );
+        let extra: std::collections::HashMap<String, Value> = notification_extras(&job)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        assert_eq!(extra["runId"], "run-1");
+        assert_eq!(extra["automationId"], "auto-brief");
+        assert_eq!(extra["workspaceId"], "personal");
+        assert_eq!(
+            notification_open_payload(&extra),
+            json!({"workspaceId": "personal", "itemId": null, "eventId": null, "runId": "run-1", "automationId": "auto-brief"})
+        );
+        // A critical alert still opens its message.
+        let mut critical = job.clone();
+        critical.payload = json!({"itemId": "m-1", "critical": true});
+        let extra: std::collections::HashMap<String, Value> = notification_extras(&critical)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        assert_eq!(notification_open_payload(&extra)["itemId"], "m-1");
+        assert_eq!(notification_open_payload(&extra)["runId"], Value::Null);
+    }
+
     #[test]
     fn sign_in_defaults_to_read_capabilities_and_keeps_explicit_writes() {
         let defaults = vec!["calendar", "mail", "chats"];
