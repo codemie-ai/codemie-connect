@@ -5,16 +5,18 @@ import { avatar, badge, button, card, emptyState, field, select, settingRow, tog
 import { records, syncRunning, sourceCounts, chatCatalog, connectionState } from './selectors.js';
 import { calendarCatalog } from './calendar-model.js';
 import { formatDateTime, agoLabel } from './format.js';
+import { aiPanel } from './settings-ai.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
+  ['', 'ai', 'Claude', 'spark'],
   ['', 'microsoft', 'Microsoft 365', 'link'],
   ['', 'appearance', 'Appearance', 'palette'],
   ['', 'notifications', 'Notifications', 'bell'],
   ['', 'queues', 'Rules & schedules', 'sliders'],
   ['', 'privacy', 'Data & privacy', 'shield'],
   ['CodeMie tools', 'installation', 'Setup & installation', 'download'],
-  ['', 'tools', 'AI tools & profiles', 'tools'],
+  ['', 'tools', 'Coding agents', 'tools'],
   ['', 'desktop', 'Desktop connection', 'monitor'],
   ['', 'health', 'Health', 'heart'],
   ['', 'usage', 'CLI usage analytics', 'chart'],
@@ -25,6 +27,7 @@ export const LEGACY_TABS = { installation: 'home', tools: 'agents', desktop: 'co
 
 const TAB_DESCRIPTIONS = {
   general: 'Time zone, background behaviour and optional AI.',
+  ai: 'Choose which Claude drafts and summarises for you, and what it costs.',
   microsoft: 'Your calendar, Outlook and Teams — connected with one sign-in.',
   appearance: 'Choose how CodeMie Connect looks on your desktop.',
   notifications: 'Desktop reminders, critical alerts and quiet hours.',
@@ -39,6 +42,7 @@ export function settings(s, ctx) {
   const tab = state.settingsTab;
   const panels = {
     general: () => generalPanel(s),
+    ai: () => aiPanel(state.ai),
     microsoft: () => microsoftPanel(s, auth),
     appearance: () => appearancePanel(s),
     notifications: () => notificationsPanel(s),
@@ -74,7 +78,7 @@ function generalPanel(s) {
       </form>
       ${settingRow({ title: 'Keep running in the menu bar', text: 'Closing the window keeps Connect syncing and reminding. Quit from the menu bar stops it.', control: toggle({ action: 'setting-toggle', checked: s.settings.background, attrs: { 'data-key': 'background', 'aria-label': 'Keep running in the menu bar' } }) })}
       ${settingRow({ title: 'Launch at login', text: 'Start Connect when you sign in to your computer.', control: toggle({ action: 'setting-toggle', checked: s.settings.launchAtLogin, attrs: { 'data-key': 'launchAtLogin', 'aria-label': 'Launch at login' } }) })}
-      ${settingRow({ title: 'AI reply drafts', text: 'Claude settings arrive with the next update. Until then, write replies by hand; Connect never sends without your review.' })}`,
+      ${settingRow({ title: 'AI reply drafts', text: 'Choose Claude Code or a CodeMie profile for drafts and summaries. Connect never sends without your review.', control: button('Claude settings', { action: 'settings-tab', iconName: 'spark', attrs: { 'data-tab': 'ai' } }) })}`,
   });
 }
 

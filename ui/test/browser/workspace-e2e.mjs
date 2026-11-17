@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage } from '../fixtures/workspace-fixture.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -35,8 +35,10 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage }) {
   const s = snapshot;
+  const ai = aiInit;
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   let authPending = false;
   const calls = [];
   const listeners = {};
@@ -104,6 +106,23 @@ function installBridge({ snapshot, connected }) {
     notification_permission: () => ({ permission: 'os_managed' }),
     notification_test: () => ({ queued: true }),
     export: () => ({ version: 1, workspaces: [], records: [] }),
+    ai_status: () => ({ profiles: clone(ai.profiles), settings: clone(ai.settings) }),
+    ai_usage: () => clone(usage),
+    ai_settings_save: d => {
+      calls.push(['ai_settings_save', d]);
+      const known = id => ai.profiles.some(p => p.id === id);
+      if (d.defaultProfile && !known(d.defaultProfile)) fail('validation', 'Choose one of the listed Claude profiles.');
+      ai.settings = { defaultProfile: d.defaultProfile || null, routes: d.routes || {} };
+      return { settings: clone(ai.settings) };
+    },
+    ai_test: async d => {
+      calls.push(['ai_test', d]);
+      await sleep(700);
+      const p = ai.profiles.find(x => x.id === d.profileId);
+      if (!p) fail('validation', 'Choose one of the listed Claude profiles.');
+      if (p.state !== 'ready') return { ok: false, ms: 0, errorClass: p.state, message: p.message || 'Claude is not signed in.' };
+      return { ok: true, ms: 2100, costUsd: 0.0004, model: d.model || p.defaultModel || 'sonnet' };
+    },
     action_prepare: () => fail('permission_required', 'Allow replies in Settings first.'),
   };
   window.__bridgeCalls = calls;
@@ -122,8 +141,8 @@ function installBridge({ snapshot, connected }) {
         if (r.op !== 'snapshot' && r.expectedRevision !== undefined && r.expectedRevision !== s.revision) throw { code: 'stale_view', message: 'This view changed.' };
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
-        const result = op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot') { s.revision++; emit('workspace:changed'); }
+        const result = await op(r.data || {}, r.workspaceId);
+        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -149,7 +168,7 @@ const check = async (name, fn) => {
 const assert = (cond, message) => { if (!cond) throw new Error(message); };
 
 const browser = await chromium.launch();
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today' } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -159,13 +178,16 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   const now = Date.now();
   const connected = buildSnapshot(now, { theme, zone: 'Europe/Kyiv' });
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage() })})`);
   await page.goto(base + hash);
   await page.waitForSelector('.ws-sidebar');
   currentPage = page;
   return { page, context, errors };
 }
-const shot = (page, name) => page.screenshot({ path: join(OUT, `${name}.png`) });
+const shot = async (page, name) => {
+  await page.evaluate(() => document.querySelectorAll('.ws-toast').forEach(t => t.remove()));
+  return page.screenshot({ path: join(OUT, `${name}.png`) });
+};
 const text = (page, selector) => page.locator(selector).first().innerText();
 
 for (const theme of ['dark', 'light']) {
@@ -341,6 +363,74 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('[data-key=criticalRepeat]').isChecked() !== before, 'setting did not persist after the sync');
   });
 
+  await check(`${theme}: settings claude page`, async () => {
+    await page.click('.ws-nav button[data-route=settings]');
+    await page.click('.ws-settings-nav button[data-tab=ai]');
+    await page.waitForSelector('[data-ai-profile="claude"]');
+    assert(await page.locator('[data-ai-profile]').count() === 3, 'profile cards');
+    const native = await text(page, '[data-ai-profile="claude"]');
+    assert(/Ready/i.test(native) && /Max/.test(native) && /taylor@example\.com/.test(native) && /2\.1\.150/.test(native), native);
+    assert(/Needs sign-in/i.test(await text(page, '[data-ai-profile="codemie:staging"]')), 'needs sign-in chip');
+    assert(await page.locator('[data-ai-route-row]').count() === 5, 'route rows');
+    assert(/runs/.test(await text(page, '#ai-usage')) && /estimate/i.test(await text(page, '#ai-usage')), 'usage');
+    await shot(page, `${theme}-settings-claude-both`);
+    await page.locator('.ws-settings-panels').evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await shot(page, `${theme}-settings-claude-both-bottom`);
+    await page.locator('.ws-settings-panels').evaluate(el => { el.scrollTop = 0; });
+    await page.locator('[data-action="ai-test"][data-profile="claude"]').click();
+    await page.waitForSelector('[data-ai-profile="claude"] .ws-spinner');
+    await page.waitForSelector('[data-ai-profile="claude"] [data-ai-test-result]');
+    assert(/OK · 2\.1 s · \$0\.0004/.test(await text(page, '[data-ai-profile="claude"] [data-ai-test-result]')), 'test result text');
+    await shot(page, `${theme}-settings-claude-test`);
+    await page.locator('select[name="ai-default"]').selectOption('codemie:prod');
+    await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'ai_settings_save' && d.defaultProfile === 'codemie:prod'));
+    await page.locator('select[data-route="plugin"][data-field="profile"]').selectOption('claude');
+    await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'ai_settings_save' && d.routes.plugin?.profile === 'claude'));
+    assert(await page.locator('select[name="ai-default"]').inputValue() === 'codemie:prod', 'default did not persist');
+    assert(await page.locator('.ws-toasts .ws-toast-error').count() === 0, 'error toast');
+    const failing = page.locator('[data-action="ai-test"][data-profile="codemie:staging"]');
+    await failing.click();
+    await page.waitForSelector('[data-ai-profile="codemie:staging"] [data-ai-test-result].ws-ai-bad');
+    await page.click('.ws-settings-nav button[data-tab=general]');
+    await page.click('.ws-settings-panels [data-action=settings-tab][data-tab=ai]');
+    await page.waitForSelector('[data-ai-profile="claude"]');
+  });
+
+  await check(`${theme}: first-use chooser saves the default and explains an empty setup`, async () => {
+    const chosen = await open({ theme, ai: 'both', aiDefault: null });
+    const p = chosen.page;
+    await p.evaluate(() => { window.__workspace.ensureClaudeChoice().then(v => { window.__chosen = v; }); });
+    await p.waitForSelector('.ws-modal[open] [data-action="ai-choose"]');
+    assert(await p.locator('.ws-modal[open] [data-action="ai-choose"]').count() === 2, 'only ready profiles');
+    assert(/The message text you draft from is sent to this provider\./.test(await text(p, '.ws-modal[open]')), 'privacy note');
+    await p.click('.ws-modal[open] button[type=submit]');
+    assert(/Select a Claude/.test(await text(p, '.ws-modal[open] .ws-modal-error')), 'must choose first');
+    await p.click('.ws-modal[open] [data-profile="codemie:prod"]');
+    await p.waitForTimeout(150);
+    await shot(p, `${theme}-claude-chooser`);
+    await p.click('.ws-modal[open] button[type=submit]');
+    await p.waitForSelector('.ws-modal[open]', { state: 'detached' });
+    await p.waitForFunction(() => window.__chosen === 'codemie:prod');
+    const calls = await p.evaluate(() => window.__bridgeCalls);
+    assert(calls.some(([op, d]) => op === 'ai_settings_save' && d.defaultProfile === 'codemie:prod'), JSON.stringify(calls));
+    await chosen.context.close().catch(() => {});
+
+    const empty = await open({ theme, ai: 'none' });
+    await empty.page.evaluate(() => { window.__workspace.ensureClaudeChoice().then(v => { window.__chosen = v; }); });
+    await empty.page.waitForSelector('.ws-modal[open] [data-action="ai-open-settings"]');
+    assert(await empty.page.locator('.ws-modal[open] [data-action="ai-choose"]').count() === 0, 'no choices');
+    await empty.page.waitForTimeout(300);
+    await shot(empty.page, `${theme}-claude-chooser-empty`);
+    await empty.page.click('.ws-modal[open] [data-action="ai-open-settings"]');
+    await empty.page.waitForSelector('[data-ai-profile="claude"]');
+    assert(/Not installed/i.test(await text(empty.page, '[data-ai-profile="claude"]')), 'not installed chip');
+    await empty.page.waitForFunction(() => window.__chosen === null);
+    await shot(empty.page, `${theme}-settings-claude-none`);
+    assert(empty.errors.length === 0 && chosen.errors.length === 0, [...empty.errors, ...chosen.errors].join(' | '));
+    await empty.context.close().catch(() => {});
+    currentPage = page;
+  });
+
   await check(`${theme}: no workspaces UI`, async () => {
     await page.click('.ws-nav button[data-route=today]');
     await page.waitForSelector('.ws-page-today');
@@ -401,6 +491,11 @@ for (const width of [1000, 1680]) {
       assert(overflow <= 0, `${route} overflows by ${overflow}px`);
       await shot(page, `light-${route}-${width}`);
     }
+    await page.click('.ws-settings-nav button[data-tab=ai]');
+    await page.waitForSelector('[data-ai-profile="claude"]');
+    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-settings-panels, .ws-ai-table-wrap')].map(e => e.scrollWidth - e.clientWidth)));
+    assert(overflow <= 0, `claude settings overflow by ${overflow}px`);
+    await shot(page, `light-settings-claude-${width}`);
   });
   await context.close().catch(() => {});
 }

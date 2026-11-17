@@ -792,3 +792,55 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
   .ws-glance .ws-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ws-sync-pill span{display:none}
 }
+
+/* ------------------------------------------------------------------ Settings → Claude */
+.ws-ai-card .ws-card-body{display:grid;gap:12px}
+.ws-ai-message{font-size:13px;line-height:20px;color:var(--ws-text-2)}
+.ws-ai-facts{display:flex;flex-wrap:wrap;gap:8px 28px;margin:0}
+.ws-ai-facts div{display:grid;gap:2px;min-width:0}
+.ws-ai-facts dt{font-size:11px;line-height:14px;font-weight:600;color:var(--ws-muted);text-transform:uppercase;letter-spacing:.4px}
+.ws-ai-facts dd{margin:0;font-size:13px;line-height:20px;overflow-wrap:anywhere}
+.ws-ai-steps{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:10px 12px;border:1px solid var(--ws-border);border-radius:8px;background:var(--ws-card-2);font-size:13px;line-height:20px}
+.ws-ai-steps span{flex:1;min-width:200px}
+.ws-ai-steps code,.ws-ai-setup code{font-family:var(--font-mono);font-size:12px;padding:1px 6px;border-radius:4px;background:var(--ws-raised);color:var(--ws-text)}
+.ws-ai-controls{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 16px;padding-top:12px;border-top:1px solid var(--ws-border)}
+.ws-ai-model{display:grid;gap:4px}
+.ws-ai-model .ws-select-wrap{min-width:180px}
+.ws-ai-test{display:flex;align-items:center;gap:12px;min-height:32px}
+.ws-ai-result{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--ws-muted)}
+.ws-ai-result .ws-icon{width:15px;height:15px;flex-shrink:0}
+.ws-ai-result .ws-spinner{width:14px;height:14px}
+.ws-ai-ok{color:var(--ws-green)}
+.ws-ai-bad{color:var(--ws-red)}
+.dark .ws-ai-ok,:root:not(.light) .ws-ai-ok{color:#5DD58A}
+.dark .ws-ai-bad,:root:not(.light) .ws-ai-bad{color:#FF7A85}
+.ws-ai-loading{display:flex;align-items:center;justify-content:center;gap:12px;padding:32px 0;color:var(--ws-muted);font-size:13px}
+.ws-ai-table-wrap{margin:4px 0 14px;overflow-x:auto}
+.ws-ai-table{width:100%;border-collapse:collapse;table-layout:fixed}
+.ws-ai-caption{caption-side:top;text-align:left;padding:14px 0 8px;font-size:14px;font-weight:600;border-top:1px solid var(--ws-border)}
+.ws-ai-table th,.ws-ai-table td{padding:8px 10px 8px 0;text-align:left;vertical-align:middle;border-top:1px solid var(--ws-border)}
+.ws-ai-table thead th{border-top:0;padding-top:0;font-size:11px;line-height:14px;font-weight:600;color:var(--ws-muted);text-transform:uppercase;letter-spacing:.4px}
+.ws-ai-table tbody th{width:34%}
+.ws-ai-table tbody th strong{display:block;font-size:13px;font-weight:600}
+.ws-ai-table tbody th span{display:block;font-size:12px;line-height:16px;font-weight:400;color:var(--ws-muted)}
+.ws-ai-table .ws-select-wrap{display:flex;width:100%}
+.ws-ai-table .ws-select{width:100%;text-overflow:ellipsis}
+.ws-ai-table .ws-select:disabled{opacity:.5;cursor:not-allowed}
+.ws-ai-totals{display:flex;gap:32px;margin-bottom:14px}
+.ws-ai-totals div{display:grid;gap:2px}
+.ws-ai-totals strong{font-size:22px;line-height:28px;font-weight:600}
+.ws-ai-totals span{font-size:12px;color:var(--ws-muted)}
+.ws-source-row>.ws-mono{flex:0 0 auto;font-size:13px}
+.ws-ai-choices{display:grid;gap:10px}
+.ws-ai-choice{display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);color:var(--ws-text);text-align:left;cursor:pointer;font:inherit}
+.ws-ai-choice:hover{border-color:var(--ws-border-strong)}
+.ws-ai-choice:focus-visible{outline:2px solid var(--ws-focus);outline-offset:2px}
+.ws-ai-choice[aria-pressed=true]{border-color:transparent;background:linear-gradient(var(--ws-card-2),var(--ws-card-2)) padding-box,var(--ws-primary-border) border-box}
+.ws-ai-choice[aria-pressed=true] .ws-radio-dot{border-color:var(--ws-accent);box-shadow:inset 0 0 0 2px var(--ws-card-2),inset 0 0 0 6px var(--ws-accent)}
+.ws-ai-choice .ws-radio-dot{flex:0 0 14px}
+.ws-ai-choice-copy{display:grid;gap:2px;min-width:0}
+.ws-ai-choice-copy strong{font-size:14px;font-weight:600}
+.ws-ai-choice-copy span{font-size:12px;color:var(--ws-muted);overflow-wrap:anywhere}
+.ws-ai-setup{margin:0;padding-left:20px;display:grid;gap:6px;font-size:13px;line-height:20px;color:var(--ws-text-2)}
+.ws-modal-body .ws-inline-note{margin:0}
+@media (max-width:1100px){.ws-ai-table tbody th span{display:none}.ws-ai-table tbody th{width:28%}}

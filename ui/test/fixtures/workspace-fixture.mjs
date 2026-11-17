@@ -140,3 +140,42 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
     jobs: connected ? [{ id: 'job-sync-1', workspaceId: null, connectionId: CID, kind: 'sync', key: 'sync:1', state: 'succeeded', dueAt: now - 95, leaseUntil: null, attempts: 1, policy: {}, payload: { force: false }, result: 'Sources refreshed' }] : [],
   };
 }
+
+// ---------------------------------------------------------------- Claude (AI) status presets
+
+const NATIVE_MODELS = [{ id: '', label: 'Account default' }, { id: 'haiku', label: 'Haiku' }, { id: 'sonnet', label: 'Sonnet' }, { id: 'opus', label: 'Opus' }];
+const nativeProfile = (state, extra = {}) => ({
+  id: 'claude', kind: { type: 'native' }, label: 'Claude Code · your subscription', state,
+  version: state === 'not_installed' ? null : '2.1.150',
+  account: state === 'ready' ? { plan: 'Max', email: 'taylor@example.com', org: null, method: 'claude.ai' } : null,
+  models: NATIVE_MODELS, defaultModel: null, message: null, ...extra,
+});
+const codemieProfile = (name, state = 'ready', extra = {}) => ({
+  id: `codemie:${name}`, kind: { type: 'code_mie', name }, label: `CodeMie · ${name}`, state, version: null, account: null,
+  models: [{ id: 'claude-sonnet-4-5', label: 'claude-sonnet-4-5' }, { id: 'claude-haiku-4-5', label: 'claude-haiku-4-5' }],
+  defaultModel: 'claude-sonnet-4-5', message: null, ...extra,
+});
+
+/**
+ * `ai_status` answers for the browser mock and unit tests. Kinds: none, native,
+ * native_needs_login, codemie_only, both. `defaultProfile` overrides the saved default.
+ */
+export function aiStatus(kind = 'both', { defaultProfile } = {}) {
+  const sets = {
+    none: [nativeProfile('not_installed', { message: 'Claude Code is not installed.' })],
+    native: [nativeProfile('ready')],
+    native_needs_login: [nativeProfile('needs_login', { message: 'Claude Code is not signed in.' })],
+    codemie_only: [nativeProfile('not_installed', { message: 'Claude Code is not installed.' }), codemieProfile('prod')],
+    both: [nativeProfile('ready'), codemieProfile('prod'), codemieProfile('staging', 'needs_login', { message: 'Sign in to this CodeMie profile.' })],
+  };
+  const profiles = sets[kind];
+  if (!profiles) throw new Error(`Unknown aiStatus kind ${kind}`);
+  const defaults = { none: null, native: 'claude', native_needs_login: null, codemie_only: 'codemie:prod', both: 'claude' };
+  const routes = kind === 'both' ? { summary: { profile: 'codemie:prod', model: 'claude-haiku-4-5' }, mail_draft: { model: 'sonnet' } } : {};
+  return {
+    profiles,
+    settings: { defaultProfile: defaultProfile === undefined ? defaults[kind] : defaultProfile, routes },
+  };
+}
+
+export const aiUsage = () => ({ runs: 14, costUsd: 0.2143, byProfile: [{ profile: 'claude', runs: 11, costUsd: 0.1841 }, { profile: 'codemie:prod', runs: 3, costUsd: 0.0302 }] });

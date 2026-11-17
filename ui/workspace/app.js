@@ -12,6 +12,8 @@ import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
 import { inbox, filteredMessages, snoozeUntil } from './view-inbox.js';
 import { settings, LEGACY_TABS, SETTINGS_TABS } from './view-settings.js';
 import { renderShell } from './shell.js';
+import { nextAiSettings, LOGIN_STEPS } from './settings-ai.js';
+import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from './boot.js';
 
 const ROUTES = ['today', 'calendar', 'inbox', 'settings'];
@@ -25,6 +27,7 @@ const state = {
   calendarMode: localPref('codemie.calendar.mode', 'week'), calendarDate: new Date(), calendarSidebar: localPref('codemie.calendar.sidebar', 'true') !== 'false',
   lane: 'reply', channel: 'all', search: '', showArchived: false, showSnoozed: false, inboxLimit: 200, selectedMessage: null, selectedKey: null,
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
+  ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, usage: null, error: '', tests: {}, testModels: {} },
 };
 let legacyModule;
 let legacyMounted = false;
@@ -256,6 +259,93 @@ async function route(name, tab) {
   heading?.setAttribute('tabindex', '-1');
   heading?.focus({ preventScroll: true });
   if (state.route === 'calendar') await ensureCalendarWindow();
+  if (state.route === 'settings' && state.settingsTab === 'ai') loadAi().catch(fail);
+}
+
+// ---------------------------------------------------------------- Claude (AI)
+
+let aiLoads = 0;
+const aiTabOpen = () => state.route === 'settings' && state.settingsTab === 'ai';
+
+/** Detects the Claude profiles and reads this month's usage; the page shows a spinner on first load. */
+async function loadAi() {
+  const load = ++aiLoads;
+  if (state.ai.status !== 'ready') state.ai.status = 'loading';
+  if (aiTabOpen() && !modalOpen()) await render();
+  try {
+    const [status, usage] = await Promise.all([store.query('ai_status', { refresh: true }), store.query('ai_usage', {}).catch(() => null)]);
+    if (load !== aiLoads) return;
+    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, usage, error: '' });
+  } catch (err) {
+    if (load !== aiLoads) return;
+    Object.assign(state.ai, { status: 'error', error: err?.message || String(err) });
+  }
+  if (aiTabOpen() && !modalOpen()) await render();
+}
+
+async function saveAiSettings(next) {
+  try {
+    const result = await store.mutate('ai_settings_save', next);
+    state.ai.settings = result.settings;
+  } catch (err) {
+    loadAi().catch(() => {});
+    throw err;
+  }
+  if (!modalOpen()) await render();
+}
+
+async function testAiProfile(profileId) {
+  state.ai.tests[profileId] = { busy: true };
+  await render();
+  try {
+    const model = state.ai.testModels[profileId] || undefined;
+    state.ai.tests[profileId] = await store.mutate('ai_test', { profileId, model }, undefined, { retry: true });
+  } catch (err) {
+    state.ai.tests[profileId] = { ok: false, message: err?.message || String(err) };
+  }
+  await render();
+}
+
+/**
+ * Asks the owner which Claude writes for them (first use). Resolves to the chosen profile id,
+ * or null when they cancel or nothing is ready. Call it when an AI op fails with `needs_choice`.
+ */
+export async function ensureClaudeChoice() {
+  if (!store) return null;
+  let status;
+  try {
+    status = await store.query('ai_status', { refresh: true });
+  } catch (err) {
+    fail(err);
+    return null;
+  }
+  Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
+  const anyReady = status.profiles.some(p => p.state === 'ready');
+  return new Promise(resolve => {
+    let chosen = null;
+    openModal({
+      title: CHOOSER_TITLE, subtitle: anyReady ? 'Connect asks once. You can change it in Settings → Claude.' : '',
+      body: chooserBody(status.profiles), submit: anyReady ? 'Choose' : null, cancel: anyReady ? 'Cancel' : 'Close', size: 'md',
+      onSubmit: async (_form, dialog) => {
+        const id = dialog.dataset.choice;
+        if (!id) throw new Error('Select a Claude to continue.');
+        await saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: 'default', value: id }));
+        chosen = id;
+      },
+      onClose: () => resolve(chosen),
+    });
+  });
+}
+
+/** Runs an AI operation; when no Claude is chosen yet, asks once and retries. */
+export async function withClaudeChoice(run) {
+  try {
+    return await run();
+  } catch (err) {
+    if (err?.code !== 'needs_choice' && err?.class !== 'needs_choice') throw err;
+    if (!(await ensureClaudeChoice())) throw err;
+    return run();
+  }
 }
 
 async function ensureCalendarWindow(force = false) {
@@ -498,6 +588,28 @@ async function handle(action, el) {
       return route(el.dataset.route || 'today');
     case 'settings-tab': return route('settings', el.dataset.tab);
     case 'setup-tools': return route('settings', 'installation');
+    case 'ai-refresh': return loadAi();
+    case 'ai-test': return testAiProfile(el.dataset.profile);
+    case 'ai-test-model': state.ai.testModels[el.dataset.profile] = el.value; return;
+    case 'ai-default': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: 'default', value: el.value }));
+    case 'ai-route': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: el.dataset.field, purpose: el.dataset.route, value: el.value }));
+    case 'ai-copy-login':
+      try {
+        await navigator.clipboard.writeText(LOGIN_STEPS);
+        return toast('Sign-in steps copied.', 'success');
+      } catch {
+        return toast(`Could not copy. ${LOGIN_STEPS}.`, 'error');
+      }
+    case 'ai-choose': {
+      const dialog = el.closest('.ws-modal');
+      dialog.dataset.choice = el.dataset.profile;
+      dialog.querySelector('.ws-modal-error').textContent = '';
+      dialog.querySelectorAll('[data-action="ai-choose"]').forEach(b => b.setAttribute('aria-pressed', String(b === el)));
+      return;
+    }
+    case 'ai-open-settings':
+      document.querySelectorAll('.ws-modal[open]').forEach(d => d.close());
+      return route('settings', 'ai');
     case 'setup-dismiss': setLocalPref('codemie.setupBanner.dismissed', '1'); return render();
     case 'update-dismiss': try { sessionStorage.setItem('app-update-banner-dismissed', '1'); } catch { /* ignore */ } return render();
     case 'update-check': return checkAppUpdate();
@@ -937,6 +1049,7 @@ async function boot() {
   state.calendarDate = todayDate();
   ready = true;
   await render();
+  if (aiTabOpen()) loadAi().catch(fail);
   const listen = window.__TAURI__.event.listen;
   // A sync round emits one change per Graph request; reload the snapshot at most ~once a second.
   let refreshTimer = null;
@@ -969,7 +1082,7 @@ async function boot() {
   scheduleMinuteRender();
   window.addEventListener('pagehide', () => clearInterval(authTimer), { once: true });
   if (state.route === 'calendar') await ensureCalendarWindow();
-  if (flags.dev) window.__workspace = { store, state, route, render };
+  if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice };
   if (shouldCheckForAppUpdate(localPref(`codemie.app.lastUpdateCheck.${state.appVersion}`, null))) checkAppUpdate().catch(() => {});
 }
 
