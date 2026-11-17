@@ -27,6 +27,11 @@ const PROMPTS = [
   { id: 'profileName',   kind: 'input',   anchor: 'Enter a name for this profile:' },
   { id: 'activate',      kind: 'confirm', anchor: 'Switch to profile' },
   { id: 'installClaude', kind: 'confirm', anchor: 'Would you like to install Claude Code now?' },
+  // Lists some providers ask after sign-in (sso.setup-steps.js, bedrock.setup-steps.js). Without
+  // their own anchors they fell through to the credential catch-all below.
+  { id: 'integration',   kind: 'list',    anchor: 'Select LiteLLM integration' },
+  { id: 'bedrockAuth',   kind: 'list',    anchor: 'Authentication method:' },
+  { id: 'awsProfile',    kind: 'list',    anchor: 'Select AWS profile:' },
   // credential: provider-specific message; detected when no other anchor appears on the open line.
   { id: 'credential',    kind: 'input',   anchor: null },
 ];
