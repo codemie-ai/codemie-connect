@@ -3,7 +3,7 @@
 //! pointer is written only once the new folder is complete, so a failure at any earlier step
 //! leaves Connect where it was, running. The old copy a move leaves is handled in `old_copy`.
 
-use super::folders::{self, failed, flush, flush_file, DATABASE, MOVING_FOLDERS};
+use super::folders::{self, failed, flush, flush_dir, flush_file, DATABASE, MOVING_FOLDERS};
 use crate::storage::location::{
     self, LocationFile, Marker, TargetIssue, VolumeInfo, DATA_DIR_NAME,
 };
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// A safety net for background work that ignores cancellation; running jobs normally stop
 /// within moments of `quiesce`.
@@ -24,6 +24,8 @@ pub const QUIESCE_WAIT: Duration = Duration::from_secs(15);
 const HEADROOM: u64 = 64 * 1024 * 1024;
 /// A new data folder is built under this name beside its final place, then renamed.
 const STAGING_PREFIX: &str = ".codemie-connect-incoming-";
+/// A staging folder nothing has changed for this long was left by a crash, not a move.
+const STALE_STAGING: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -317,7 +319,7 @@ fn build(target: &Path, source: Option<&Path>) -> Result<Marker> {
             return Err(e);
         }
     };
-    if let Err(e) = flush(parent) {
+    if let Err(e) = flush_dir(parent) {
         // Renamed but maybe not on disk yet: this is the copy just built, so it goes.
         let _ = folders::remove_tree(target);
         return Err(failed("Connect couldn’t finish the new data folder", e));
@@ -333,24 +335,55 @@ fn fill(staging: &Path, source: Option<&Path>) -> Result<Marker> {
     }
     let marker = new_marker();
     location::write_marker(staging, &marker)
-        .and_then(|()| flush(staging))
+        .and_then(|()| flush_dir(staging))
         .map_err(|e| failed("Connect couldn’t mark the new data folder", e))?;
     Ok(marker)
 }
 
-/// Removes staging folders a crash or power loss left behind. Each only ever holds a copy;
-/// one another Connect is still building fails its rename and rolls back cleanly.
+/// Removes staging folders a crash or power loss left behind. Only a real folder (never a
+/// symlink) of the staging name that holds nothing but what staging holds, and that nothing
+/// has changed for an hour, goes: one another Connect is still filling, or anything with the
+/// user's files in it, stays.
 fn sweep_staging(parent: &Path) {
     for entry in fs::read_dir(parent).into_iter().flatten().flatten() {
-        let stale = entry
+        let named = entry
             .file_name()
             .to_string_lossy()
-            .starts_with(STAGING_PREFIX)
-            && entry.file_type().is_ok_and(|t| t.is_dir());
-        if stale {
+            .starts_with(STAGING_PREFIX);
+        if named && stale_staging(&entry.path()) {
             let _ = folders::remove_tree(&entry.path());
         }
     }
+}
+fn stale_staging(dir: &Path) -> bool {
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return false;
+    };
+    let old = meta
+        .modified()
+        .ok()
+        .and_then(|changed| SystemTime::now().duration_since(changed).ok())
+        .is_some_and(|age| age > STALE_STAGING);
+    meta.is_dir()
+        && old
+        && fs::read_dir(dir).is_ok_and(|mut entries| {
+            entries.all(|e| e.is_ok_and(|e| staging_entry(&e.file_name().to_string_lossy())))
+        })
+}
+/// What a staging folder holds: the database copy, plugins, automations and the marker, with
+/// the temporary file `write_marker` renames into place.
+fn staging_entry(name: &str) -> bool {
+    matches!(
+        name,
+        "workspace.sqlite"
+            | "workspace.sqlite-wal"
+            | "workspace.sqlite-shm"
+            | "plugins"
+            | "automations"
+            | location::MARKER
+    ) || name
+        .strip_prefix(location::MARKER)
+        .is_some_and(|rest| rest.starts_with('.') && rest.ends_with(".tmp"))
 }
 
 /// Copies what moves: a verified copy of the database, then plugins and automation output
@@ -451,7 +484,7 @@ fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
             let entry = entry?;
             copy_entry(&entry.path(), &to.join(entry.file_name()))?;
         }
-        flush(to)?;
+        flush_dir(to)?;
         fs::set_permissions(to, meta.permissions())
     } else if kind.is_file() {
         let mut source = fs::File::open(from)?;
@@ -741,6 +774,31 @@ pub(crate) mod tests {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
     }
+    /// Makes a folder look untouched for two hours.
+    fn backdate(dir: &Path) {
+        let then = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        fs::File::open(dir).unwrap().set_modified(then).unwrap();
+    }
+    /// [`backdate`] for a symlink itself, not what it points at.
+    #[cfg(unix)]
+    fn backdate_link(link: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(link.as_os_str().as_bytes()).unwrap();
+        let then = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        let secs = then
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let time = libc::timeval {
+            tv_sec: secs as libc::time_t,
+            tv_usec: 0,
+        };
+        // SAFETY: a NUL-terminated path and two valid timevals for the duration of the call.
+        assert_eq!(
+            unsafe { libc::lutimes(path.as_ptr(), [time, time].as_ptr()) },
+            0
+        );
+    }
 
     // ------------------------------------------------------------ failpoints
 
@@ -810,6 +868,7 @@ pub(crate) mod tests {
         fs::create_dir_all(stale.join("plugins/locked")).unwrap();
         #[cfg(unix)]
         chmod(&stale.join("plugins/locked"), 0o555);
+        backdate(&stale);
 
         let target = f.change(Mode::Move).unwrap();
         assert_eq!(target, location::canonical(&f.picked).join(DATA_DIR_NAME));
@@ -957,6 +1016,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_move_that_cannot_flush_any_part_rolls_back() {
         let f = Fixture::new();
         f.core
@@ -968,16 +1028,18 @@ pub(crate) mod tests {
         fs::write(f.default.join("plugins/echo/main.js"), "x").unwrap();
         fs::create_dir_all(f.default.join("automations")).unwrap();
         fs::write(f.default.join("automations/run.json"), "{}").unwrap();
-        // Fail the first flush, then the second, and so on until the move gets through.
+        // The disk fails the first flush, then the second, and so on until the move gets
+        // through.
+        let lost = io::Error::from_raw_os_error(libc::EIO).to_string();
         let mut failed_at = 0;
         loop {
-            folders::FLUSHES_LEFT.with(|x| x.set(Some(failed_at)));
+            folders::FLUSH_FAILURE.with(|x| x.set(Some((failed_at, libc::EIO))));
             let result = f.change(Mode::Move);
-            folders::FLUSHES_LEFT.with(|x| x.set(None));
+            folders::FLUSH_FAILURE.with(|x| x.set(None));
             let Err(err) = result else { break };
             assert_eq!(err.code, "io", "flush {failed_at}");
             assert!(
-                err.message.contains("injected flush failure"),
+                err.message.contains(&lost),
                 "flush {failed_at}: {}",
                 err.message
             );
@@ -997,6 +1059,93 @@ pub(crate) mod tests {
         assert_eq!(failed_at, 8);
         let core = f.restart(&f.core);
         assert_eq!(notes(&core), ["Keep me"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_folder_flush_the_volume_cannot_do_is_skipped_but_a_file_flush_is_not() {
+        // Each flush point in turn fails as on a volume without that kind of flush. Only the
+        // files must reach the disk: the database copy, main.js and run.json.
+        let mut fatal = Vec::new();
+        for point in 0..8 {
+            let f = Fixture::new();
+            fs::create_dir_all(f.default.join("plugins/echo")).unwrap();
+            fs::write(f.default.join("plugins/echo/main.js"), "x").unwrap();
+            fs::create_dir_all(f.default.join("automations")).unwrap();
+            fs::write(f.default.join("automations/run.json"), "{}").unwrap();
+            folders::FLUSH_FAILURE.with(|x| x.set(Some((point, libc::ENOTSUP))));
+            let result = f.change(Mode::Move);
+            folders::FLUSH_FAILURE.with(|x| x.set(None));
+            match result {
+                Ok(target) => {
+                    assert_eq!(location::resolve(&f.default).status, RootStatus::Ready);
+                    assert!(target.join(DATABASE).is_file());
+                }
+                Err(err) => {
+                    assert_eq!(err.code, "io");
+                    assert!(names(&f.picked).is_empty(), "point {point}: nothing left");
+                    assert!(!f.core.is_held());
+                    fatal.push(point);
+                }
+            }
+        }
+        // The database copy; main.js (echo/ and plugins/ are folders); run.json (automations/,
+        // the finished folder and its parent are folders).
+        assert_eq!(fatal, [0, 1, 4]);
+    }
+
+    #[test]
+    fn sweep_removes_only_old_staging_folders_holding_only_staging_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path();
+        let staging = |name: &str, extra: Option<&str>, old: bool| {
+            let folder = parent.join(format!("{STAGING_PREFIX}{name}"));
+            fs::create_dir_all(folder.join("plugins/echo")).unwrap();
+            fs::write(folder.join("plugins/echo/main.js"), "x").unwrap();
+            fs::write(folder.join(DATABASE), "copy").unwrap();
+            fs::write(folder.join(format!("{MARKER}.1234.tmp")), "{}").unwrap();
+            if let Some(extra) = extra {
+                fs::write(folder.join(extra), "the user's").unwrap();
+            }
+            if old {
+                backdate(&folder);
+            }
+            folder
+        };
+        let crashed = staging("crashed", None, true);
+        let filling = staging("filling", None, false);
+        let foreign = staging("foreign", Some("notes.txt"), true);
+        // The same contents under another name are not staging.
+        let other = parent.join("Other");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join(DATABASE), "theirs").unwrap();
+        backdate(&other);
+        // A symlink with the staging name is never followed.
+        let elsewhere = parent.join("Elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::write(elsewhere.join(DATABASE), "keep").unwrap();
+        backdate(&elsewhere);
+        let link = parent.join(format!("{STAGING_PREFIX}link"));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+            backdate_link(&link);
+        }
+
+        sweep_staging(parent);
+        assert!(!crashed.exists(), "an old staging folder is swept");
+        assert!(
+            filling.join(DATABASE).is_file(),
+            "a recent one may still be filling"
+        );
+        assert!(
+            foreign.join("notes.txt").is_file(),
+            "anything unexpected keeps it"
+        );
+        assert!(other.join(DATABASE).is_file());
+        assert!(elsewhere.join(DATABASE).is_file());
+        #[cfg(unix)]
+        assert!(fs::symlink_metadata(&link).is_ok(), "the link itself stays");
     }
 
     #[test]

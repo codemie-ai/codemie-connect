@@ -36,19 +36,19 @@ pub(super) fn tree_size(path: &Path) -> u64 {
 
 #[cfg(test)]
 thread_local! {
-    /// Test failpoint: `Some(n)` lets `n` more flushes on this thread succeed and fails the one
-    /// after, so a test can fail each flush point in turn.
-    pub(super) static FLUSHES_LEFT: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    /// Test failpoint: `Some((n, errno))` lets `n` more flushes on this thread succeed and fails
+    /// the one after with that OS error, so a test can fail each flush point in turn.
+    pub(super) static FLUSH_FAILURE: std::cell::Cell<Option<(u32, i32)>> = const { std::cell::Cell::new(None) };
 }
 
 /// Flushes an open file or folder to disk and reports a failure. Where the full flush isn't
 /// supported (some non-APFS volumes), falls back to a plain `fsync`, as SQLite does.
 pub(super) fn flush_file(file: &fs::File) -> io::Result<()> {
     #[cfg(test)]
-    if let Some(left) = FLUSHES_LEFT.with(|f| f.get()) {
-        FLUSHES_LEFT.with(|f| f.set(left.checked_sub(1)));
+    if let Some((left, errno)) = FLUSH_FAILURE.with(|f| f.get()) {
+        FLUSH_FAILURE.with(|f| f.set(left.checked_sub(1).map(|left| (left, errno))));
         if left == 0 {
-            return Err(io::Error::other("injected flush failure"));
+            return Err(io::Error::from_raw_os_error(errno));
         }
     }
     match file.sync_all() {
@@ -72,9 +72,33 @@ pub(super) fn flush_file(file: &fs::File) -> io::Result<()> {
     }
 }
 
-/// [`flush_file`] for a path: a file, or a folder whose entries were just created.
+/// [`flush_file`] for the file at `path`. Any failure is reported: the bytes may not be on disk.
 pub(super) fn flush(path: &Path) -> io::Result<()> {
     flush_file(&fs::File::open(path)?)
+}
+
+/// Flushes a folder's entries (new files, a rename) to disk. Only a failure that means the
+/// disk lost or refused the write (EIO, ENOSPC) is reported. Any other is logged and skipped,
+/// as SQLite does for its folder flushes, because some volumes and platforms can't flush a
+/// folder at all (exFAT and FAT are to be checked by hand; Windows can't open a folder as a
+/// file). The files themselves are always flushed with [`flush_file`].
+pub(super) fn flush_dir(dir: &Path) -> io::Result<()> {
+    match fs::File::open(dir).and_then(|d| flush_file(&d)) {
+        Ok(()) => Ok(()),
+        Err(e) if write_lost(&e) => Err(e),
+        Err(e) => {
+            log::warn!("Skipped flushing the folder {}: {e}", dir.display());
+            Ok(())
+        }
+    }
+}
+#[cfg(unix)]
+fn write_lost(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::EIO | libc::ENOSPC))
+}
+#[cfg(not(unix))]
+fn write_lost(_e: &io::Error) -> bool {
+    false
 }
 
 /// Removes a file or a whole folder without following symlinks, first giving its owner write

@@ -44,8 +44,8 @@ pub struct WorkspaceState {
     pub error: Option<String>,
     /// Where startup looked for the data and what it found (DESIGN 8).
     pub resolved: Resolved,
-    /// Set once a restart is under way, so a second Retry does nothing.
-    pub relaunching: AtomicBool,
+    /// Held by one restart, data-folder change or old-copy removal at a time.
+    pub folder_guard: crate::storage::commands::FolderGuard,
 }
 
 pub struct Core {

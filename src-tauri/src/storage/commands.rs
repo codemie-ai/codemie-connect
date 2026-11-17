@@ -10,7 +10,7 @@ use crate::workspace::{Core, WorkspaceState};
 use serde::Serialize;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 /// What the recovery page (and later Settings) shows about the data folder.
@@ -104,9 +104,58 @@ pub fn app_bundle(exe: &Path) -> Option<PathBuf> {
         .then(|| bundle.to_path_buf())
 }
 
-/// True for the first caller only; once a restart is under way, later ones do nothing.
-fn begin_relaunch(flag: &AtomicBool) -> bool {
-    !flag.swap(true, Ordering::SeqCst)
+/// What holds the data-folder guard: one restart, data-folder change or old-copy removal at a
+/// time, so none of them reads or writes the pointer under another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Holder {
+    Restart = 1,
+    Change = 2,
+    Removal = 3,
+}
+impl Holder {
+    /// What a request that finds the guard taken is told.
+    fn busy(self) -> WorkspaceError {
+        let message = match self {
+            Self::Restart => "Connect is already restarting.",
+            Self::Change => "Connect is changing its data folder and will restart in a moment.",
+            Self::Removal => {
+                "Connect is removing the old copy of your data. Try again in a moment."
+            }
+        };
+        WorkspaceError::new("busy", message)
+    }
+}
+
+/// The data-folder guard in [`WorkspaceState`], and who holds it.
+#[derive(Debug, Default)]
+pub struct FolderGuard(AtomicU8);
+impl FolderGuard {
+    /// Takes the guard for `holder`, or says who has it.
+    pub fn claim(&self, holder: Holder) -> std::result::Result<(), Holder> {
+        self.0
+            .compare_exchange(0, holder as u8, Ordering::SeqCst, Ordering::SeqCst)
+            .map(drop)
+            .map_err(Holder::from_u8)
+    }
+    pub fn release(&self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+    pub fn holder(&self) -> Option<Holder> {
+        match self.0.load(Ordering::SeqCst) {
+            0 => None,
+            held => Some(Holder::from_u8(held)),
+        }
+    }
+}
+impl Holder {
+    fn from_u8(held: u8) -> Self {
+        match held {
+            1 => Self::Restart,
+            2 => Self::Change,
+            _ => Self::Removal,
+        }
+    }
 }
 
 fn main_window_only(label: &str) -> Result<()> {
@@ -216,12 +265,10 @@ pub async fn data_location_use_default(
 ) -> Result<()> {
     main_window_only(window.label())?;
     ensure_can_restart(&state)?;
-    if !begin_relaunch(&state.relaunching) {
-        return Err(WorkspaceError::new(
-            "busy",
-            "Connect is already restarting.",
-        ));
-    }
+    state
+        .folder_guard
+        .claim(Holder::Change)
+        .map_err(Holder::busy)?;
     let root = state.resolved.private_root.clone();
     let switched = blocking(move || use_default_location(&root))
         .await
@@ -238,24 +285,18 @@ pub async fn data_location_use_default(
         Err(e) => Err(e),
     };
     if result.is_err() {
-        state.relaunching.store(false, Ordering::SeqCst);
+        state.folder_guard.release();
     }
     result
 }
 
-/// Refuses while the data folder is changing: a restart, a change or Remove old copy holds
-/// the `relaunching` guard.
+/// Refuses while a restart, a data-folder change or Remove old copy holds the guard, saying
+/// which.
 fn not_restarting(state: &WorkspaceState) -> Result<()> {
-    if state.relaunching.load(Ordering::SeqCst) {
-        return Err(changing());
+    match state.folder_guard.holder() {
+        Some(holder) => Err(holder.busy()),
+        None => Ok(()),
     }
-    Ok(())
-}
-fn changing() -> WorkspaceError {
-    WorkspaceError::new(
-        "busy",
-        "Connect is changing its data folder. Try again in a moment.",
-    )
 }
 
 /// The folders Settings can show in Finder.
@@ -371,12 +412,10 @@ pub async fn data_location_change(
 ) -> Result<Restarting> {
     main_window_only(window.label())?;
     ensure_can_restart(&state)?;
-    if !begin_relaunch(&state.relaunching) {
-        return Err(WorkspaceError::new(
-            "busy",
-            "Connect is already restarting.",
-        ));
-    }
+    state
+        .folder_guard
+        .claim(Holder::Change)
+        .map_err(Holder::busy)?;
     let core = state.core.clone();
     let (private, data) = (
         state.resolved.private_root.clone(),
@@ -412,7 +451,7 @@ pub async fn data_location_change(
         Err(e) => Err(e),
     };
     if result.is_err() {
-        state.relaunching.store(false, Ordering::SeqCst);
+        state.folder_guard.release();
     }
     result.map(|()| Restarting { restarting: true })
 }
@@ -424,20 +463,21 @@ pub struct Removed {
 }
 
 /// Deletes Connect's own files from the old data folder, after the user confirmed. Holds the
-/// restart guard while it reads and rewrites the pointer, so a change or "Use the default
-/// folder" can't run at the same time and have its pointer overwritten.
+/// data-folder guard while it reads and rewrites the pointer, so a change, "Use the default
+/// folder" or a restart can't run at the same time and have its pointer overwritten.
 #[tauri::command]
 pub async fn data_location_remove_old(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Removed> {
     main_window_only(window.label())?;
-    if !begin_relaunch(&state.relaunching) {
-        return Err(changing());
-    }
+    state
+        .folder_guard
+        .claim(Holder::Removal)
+        .map_err(Holder::busy)?;
     let root = state.resolved.private_root.clone();
     let removed = blocking(move || old_copy::remove_old(&root)).await;
-    state.relaunching.store(false, Ordering::SeqCst);
+    state.folder_guard.release();
     Ok(Removed {
         removed_bytes: removed??,
     })
@@ -489,7 +529,8 @@ fn reveal(_place: Place, _path: &Path) -> Result<()> {
 }
 
 /// Releases the workspace and starts Connect again, so the data folder is resolved afresh. A
-/// second call while the first is under way does nothing.
+/// second call while the first is under way does nothing; during a data-folder change or a
+/// removal it is refused with the reason.
 #[tauri::command]
 pub async fn app_relaunch(
     app: tauri::AppHandle,
@@ -498,12 +539,14 @@ pub async fn app_relaunch(
 ) -> Result<()> {
     main_window_only(window.label())?;
     ensure_can_restart(&state)?;
-    if !begin_relaunch(&state.relaunching) {
-        return Ok(());
+    match state.folder_guard.claim(Holder::Restart) {
+        Ok(()) => {}
+        Err(Holder::Restart) => return Ok(()),
+        Err(other) => return Err(other.busy()),
     }
     let result = relaunch(app, state.core.clone()).await;
     if result.is_err() {
-        state.relaunching.store(false, Ordering::SeqCst);
+        state.folder_guard.release();
     }
     result
 }
@@ -655,11 +698,35 @@ mod tests {
     }
 
     #[test]
-    fn a_second_relaunch_request_is_a_no_op() {
-        let flag = AtomicBool::new(false);
-        assert!(begin_relaunch(&flag));
-        assert!(!begin_relaunch(&flag));
-        assert!(!begin_relaunch(&flag));
+    fn the_data_folder_guard_has_one_holder_and_names_it() {
+        let guard = FolderGuard::default();
+        assert_eq!(guard.holder(), None);
+        assert_eq!(guard.claim(Holder::Removal), Ok(()));
+        // Everything else is refused while the old copy is removed, and told so.
+        for other in [Holder::Restart, Holder::Change, Holder::Removal] {
+            assert_eq!(guard.claim(other), Err(Holder::Removal));
+        }
+        assert_eq!(guard.holder(), Some(Holder::Removal));
+        assert!(Holder::Removal.busy().message.contains("old copy"));
+        guard.release();
+        assert_eq!(guard.claim(Holder::Change), Ok(()));
+        assert_eq!(guard.claim(Holder::Restart), Err(Holder::Change));
+        assert!(Holder::Change
+            .busy()
+            .message
+            .contains("changing its data folder"));
+        guard.release();
+        // A second restart request finds the first one holding the guard.
+        assert_eq!(guard.claim(Holder::Restart), Ok(()));
+        assert_eq!(guard.claim(Holder::Restart), Err(Holder::Restart));
+        assert_eq!(
+            Holder::Restart.busy().message,
+            "Connect is already restarting."
+        );
+        for holder in [Holder::Restart, Holder::Change, Holder::Removal] {
+            assert_eq!(Holder::from_u8(holder as u8), holder);
+            assert_eq!(holder.busy().code, "busy");
+        }
     }
 
     #[test]

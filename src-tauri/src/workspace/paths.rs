@@ -6,7 +6,7 @@ use std::{
     fs::File,
     io,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, Arc},
+    sync::Arc,
     time::Duration,
 };
 
@@ -134,7 +134,7 @@ pub fn startup(
         core,
         error,
         resolved,
-        relaunching: AtomicBool::new(false),
+        folder_guard: Default::default(),
     }
 }
 
