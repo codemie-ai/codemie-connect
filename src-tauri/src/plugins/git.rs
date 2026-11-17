@@ -1,6 +1,8 @@
 //! Fetching a marketplace with the `git` command line, apart from everything of the user's.
 //!
-//! git runs with an empty environment except `PATH` and the locale, a throwaway `HOME` and
+//! git runs with an empty environment except `PATH`, the locale and the system proxy variables
+//! (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, either case: environment, not git
+//! config, and corporate networks need them; ruling R33), a throwaway `HOME` and
 //! `XDG_CONFIG_HOME`, and no system or global config (`GIT_CONFIG_NOSYSTEM`,
 //! `GIT_CONFIG_GLOBAL=/dev/null`): none of the user's `insteadOf` rewrites, extra headers,
 //! credential helpers, proxies-by-config or hooks apply, and no `GIT_*` variable reaches it.
@@ -30,6 +32,8 @@ pub trait Git: Send + Sync {
 pub struct CliGit {
     pub program: PathBuf,
     pub timeout: Duration,
+    /// Where the variables git may have (`PASSED`) are read: Connect's own environment.
+    pub read_env: fn(&str) -> Option<OsString>,
 }
 
 impl Default for CliGit {
@@ -37,9 +41,32 @@ impl Default for CliGit {
         Self {
             program: PathBuf::from("git"),
             timeout: GIT_TIMEOUT,
+            read_env: process_env,
         }
     }
 }
+
+fn process_env(key: &str) -> Option<OsString> {
+    std::env::var_os(key)
+}
+
+/// The only variables of Connect's environment git gets: the program search path, the locale
+/// and the system proxy.
+const PASSED: &[&str] = &[
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+/// What git for Windows needs besides.
+const PASSED_ON_WINDOWS: &[&str] = &["SystemRoot", "TEMP", "TMP"];
 
 #[cfg(windows)]
 const NULL_DEVICE: &str = "NUL";
@@ -110,13 +137,13 @@ impl CliGit {
     fn command(&self, args: &[OsString], cwd: &Path, home: &Path) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(args).current_dir(cwd).env_clear();
-        let passed: &[&str] = if cfg!(windows) {
-            &["PATH", "LANG", "LC_ALL", "SystemRoot", "TEMP", "TMP"]
+        let windows: &[&str] = if cfg!(windows) {
+            PASSED_ON_WINDOWS
         } else {
-            &["PATH", "LANG", "LC_ALL"]
+            &[]
         };
-        for key in passed {
-            if let Some(value) = std::env::var_os(key) {
+        for key in PASSED.iter().chain(windows) {
+            if let Some(value) = (self.read_env)(key) {
                 cmd.env(key, value);
             }
         }
@@ -291,6 +318,7 @@ mod tests {
         let git = CliGit {
             program: "git".into(),
             timeout: Duration::from_secs(20),
+            ..CliGit::default()
         };
         for (url, transport) in [
             (format!("file://{}", bare.display()), "file"),
@@ -354,9 +382,19 @@ mod tests {
         );
         // Something of the user's that must not reach git (a unique name: tests run in parallel).
         std::env::set_var("CONNECT_GIT_LEAK_PROBE", "owner-secret");
+        // The system proxy, as Connect's environment would give it (set here, not in the test
+        // process, where it would reach other tests' HTTP clients).
+        fn with_proxy(key: &str) -> Option<OsString> {
+            if key.to_ascii_lowercase().ends_with("_proxy") {
+                Some(format!("http://proxy.example:3128/{key}").into())
+            } else {
+                std::env::var_os(key)
+            }
+        }
         let git = CliGit {
             program: fake,
             timeout: Duration::from_secs(20),
+            read_env: with_proxy,
         };
         let dest = dir.path().join("tmp/clone");
         std::fs::create_dir_all(dir.path().join("tmp")).unwrap();
@@ -367,6 +405,17 @@ mod tests {
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(!text.contains("owner-secret"), "{text}");
         let home = dir.path().join("tmp/git-home");
+        let proxies = [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ];
+        let mut seen_proxies = Vec::new();
         let allowed = [
             "PATH",
             "LANG",
@@ -392,6 +441,11 @@ mod tests {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
+            if proxies.contains(&key) {
+                assert_eq!(value, format!("http://proxy.example:3128/{key}"));
+                seen_proxies.push(key);
+                continue;
+            }
             assert!(allowed.contains(&key), "{key} reached git");
             match key {
                 "HOME" | "XDG_CONFIG_HOME" => assert_eq!(Path::new(value), home),
@@ -402,6 +456,14 @@ mod tests {
             }
         }
         assert_eq!(calls, 2, "clone, then rev-parse");
+        // Each proxy variable reached both calls.
+        for key in proxies {
+            assert_eq!(
+                seen_proxies.iter().filter(|k| **k == key).count(),
+                2,
+                "{key}"
+            );
+        }
         assert!(text.contains("ARGS -c core.hooksPath=/dev/null"), "{text}");
         assert!(text.contains("http.sslVerify=true"), "{text}");
 
@@ -413,6 +475,7 @@ mod tests {
         let git = CliGit {
             program: "git".into(),
             timeout: Duration::from_secs(20),
+            ..CliGit::default()
         };
         let mut args = hardening();
         args.extend(["config", "--list", "--show-origin"].map(OsString::from));
@@ -437,6 +500,7 @@ mod tests {
         let git = CliGit {
             program: slow,
             timeout: Duration::from_secs(2),
+            ..CliGit::default()
         };
         let started = Instant::now();
         let why = git
