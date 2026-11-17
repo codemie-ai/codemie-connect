@@ -29,19 +29,30 @@ fn decode<T: DeserializeOwned>(s: String) -> Result<T> {
 
 /// `ai_run` records older than this are removed when the repository opens.
 const AI_RUN_RETENTION_DAYS: i64 = 400;
+/// The database `user_version` this build writes; a newer one is refused, never downgraded.
+pub const SCHEMA_VERSION: i64 = 1;
 
 impl Repository {
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Sqlite::open(path)?;
+        Self::init(Sqlite::open(path)?)
+    }
+    /// Opens a database that must already exist: a missing file reads as
+    /// `storage_unavailable` instead of becoming an empty workspace.
+    pub fn open_existing(path: &Path) -> Result<Self> {
+        let flags =
+            rusqlite::OpenFlags::default().difference(rusqlite::OpenFlags::SQLITE_OPEN_CREATE);
+        Self::init(Sqlite::open_with_flags(path, flags)?)
+    }
+    fn init(db: Sqlite) -> Result<Self> {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 1 {
+        if version > SCHEMA_VERSION {
             return Err(WorkspaceError::new("newer_schema", "This workspace was opened by a newer Connect version. Open that version to recover it."));
         }
-        db.execute_batch("BEGIN IMMEDIATE;
+        db.execute_batch(&format!("BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS meta (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, settings TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS connections (id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -53,7 +64,7 @@ impl Repository {
             CREATE TABLE IF NOT EXISTS reservations (id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, result TEXT);
             CREATE TABLE IF NOT EXISTS reservation_scopes (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL, scope TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cursors (connection_id TEXT NOT NULL, resource TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(connection_id,resource));
-            PRAGMA user_version=1; COMMIT;")?;
+            PRAGMA user_version={SCHEMA_VERSION}; COMMIT;"))?;
         db.execute(
             "INSERT OR IGNORE INTO meta VALUES(1,0,?1)",
             [encode(&Settings::default())?],

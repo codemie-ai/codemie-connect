@@ -4,7 +4,7 @@
 //! open workspace. They are async and do their file work off the main thread, so a stalled
 //! drive can't freeze the window.
 use crate::storage::location::{self, LocationFile, RootStatus, SystemVolume, VolumeInfo};
-use crate::storage::migrate;
+use crate::storage::{migrate, old_copy};
 use crate::workspace::models::{Result, WorkspaceError};
 use crate::workspace::{Core, WorkspaceState};
 use serde::Serialize;
@@ -58,12 +58,14 @@ pub fn storage_status_of(
 }
 
 /// Points Connect back at its default folder. Only the pointer changes: nothing moves, no
-/// workspace needs to be open, and the folder it pointed at is kept as `previous`.
+/// workspace needs to be open, and the folder it pointed at is kept as `previous`. That folder
+/// is not a copy of the default one (it may hold newer data), so it can't be removed as one.
 pub fn use_default_location(default_root: &Path) -> std::io::Result<LocationFile> {
     let current = location::try_read_location(default_root).unwrap_or_default();
     let next = LocationFile {
         data_dir: None,
         marker_id: None,
+        previous_copied: current.data_dir.is_none() && current.previous_copied,
         previous: current.data_dir.or(current.previous),
         ..Default::default()
     };
@@ -241,12 +243,19 @@ pub async fn data_location_use_default(
     result
 }
 
-/// Refuses while a restart is under way: the data folder is about to change under it.
+/// Refuses while the data folder is changing: a restart, a change or Remove old copy holds
+/// the `relaunching` guard.
 fn not_restarting(state: &WorkspaceState) -> Result<()> {
     if state.relaunching.load(Ordering::SeqCst) {
-        return Err(WorkspaceError::new("busy", "Connect is restarting."));
+        return Err(changing());
     }
     Ok(())
+}
+fn changing() -> WorkspaceError {
+    WorkspaceError::new(
+        "busy",
+        "Connect is changing its data folder. Try again in a moment.",
+    )
 }
 
 /// The folders Settings can show in Finder.
@@ -311,11 +320,11 @@ fn current_data_root(state: &WorkspaceState) -> PathBuf {
 pub async fn data_location_get(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, WorkspaceState>,
-) -> Result<migrate::LocationInfo> {
+) -> Result<old_copy::LocationInfo> {
     main_window_only(window.label())?;
     not_restarting(&state)?;
     let root = state.resolved.private_root.clone();
-    blocking(move || migrate::location_info(&root, &logs_dir())).await
+    blocking(move || old_copy::location_info(&root, &logs_dir())).await
 }
 
 /// What Connect can do with a folder the user picked: move, use the data there, start empty.
@@ -414,17 +423,24 @@ pub struct Removed {
     removed_bytes: u64,
 }
 
-/// Deletes Connect's own files from the old data folder, after the user confirmed.
+/// Deletes Connect's own files from the old data folder, after the user confirmed. Holds the
+/// restart guard while it reads and rewrites the pointer, so a change or "Use the default
+/// folder" can't run at the same time and have its pointer overwritten.
 #[tauri::command]
 pub async fn data_location_remove_old(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Removed> {
     main_window_only(window.label())?;
-    not_restarting(&state)?;
+    if !begin_relaunch(&state.relaunching) {
+        return Err(changing());
+    }
     let root = state.resolved.private_root.clone();
-    let removed_bytes = blocking(move || migrate::remove_old(&root)).await??;
-    Ok(Removed { removed_bytes })
+    let removed = blocking(move || old_copy::remove_old(&root)).await;
+    state.relaunching.store(false, Ordering::SeqCst);
+    Ok(Removed {
+        removed_bytes: removed??,
+    })
 }
 
 /// Shows the data, private or logs folder in Finder.
@@ -519,6 +535,9 @@ mod tests {
             &LocationFile {
                 data_dir: Some(custom.clone()),
                 marker_id: Some("m-1".into()),
+                // An earlier move left a copy of the default folder.
+                previous: Some(default.clone()),
+                previous_copied: true,
                 ..Default::default()
             },
         )
@@ -529,6 +548,10 @@ mod tests {
         assert_eq!(loc.data_dir, None);
         assert_eq!(loc.marker_id, None);
         assert_eq!(loc.previous, Some(custom.clone()));
+        assert!(
+            !loc.previous_copied,
+            "the custom folder may hold newer data: it is not a copy"
+        );
         assert!(!custom.exists());
         assert_eq!(
             location::resolve(&default).status,

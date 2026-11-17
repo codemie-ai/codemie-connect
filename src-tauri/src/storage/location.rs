@@ -18,6 +18,11 @@ pub struct LocationFile {
     pub data_dir: Option<PathBuf>,
     pub marker_id: Option<String>,
     pub previous: Option<PathBuf>,
+    /// `previous` is a complete copy of the data in use: only a finished move sets it. After
+    /// "Use the default folder", adopting or starting empty, `previous` may hold newer data,
+    /// so Remove old copy refuses. Missing in older pointers, which reads as false.
+    #[serde(default)]
+    pub previous_copied: bool,
 }
 
 impl Default for LocationFile {
@@ -27,6 +32,7 @@ impl Default for LocationFile {
             data_dir: None,
             marker_id: None,
             previous: None,
+            previous_copied: false,
         }
     }
 }
@@ -563,6 +569,7 @@ mod tests {
                 data_dir: Some(data.clone()),
                 marker_id: Some("A".into()),
                 previous: None,
+                previous_copied: false,
             },
         )
         .unwrap();
@@ -745,11 +752,20 @@ mod tests {
             data_dir: Some("/a/CodeMie Connect Data".into()),
             marker_id: Some("m".into()),
             previous: Some("/old".into()),
+            previous_copied: true,
         };
         write_location(d.path(), &a).unwrap();
         assert_eq!(read_location(d.path()), a);
         let raw = std::fs::read_to_string(d.path().join("location.json")).unwrap();
         assert!(raw.contains("\"dataDir\"") && raw.contains("\"markerId\""));
+        assert!(raw.contains("\"previousCopied\": true"));
+        // Pointers written before `previousCopied` existed read as "not a copy".
+        std::fs::write(
+            d.path().join("location.json"),
+            r#"{"version":1,"dataDir":null,"markerId":null,"previous":"/old"}"#,
+        )
+        .unwrap();
+        assert!(!try_read_location(d.path()).unwrap().previous_copied);
         write_location(d.path(), &LocationFile::default()).unwrap();
         assert_eq!(read_location(d.path()), LocationFile::default());
         let names: Vec<_> = std::fs::read_dir(d.path())

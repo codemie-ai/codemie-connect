@@ -1411,6 +1411,41 @@ mod tests {
         assert!(snapshot_record(&core, "draft").is_none());
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quiesce_cancels_a_running_draft_and_waits_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, gate) = FakeRunner::gated(vec![Ok(draft_answer())]);
+        let core = test_core(dir.path(), Arc::new(fake), ready());
+        seed(&core);
+        budget_thread(&core, None);
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        core.spawn_claimed(claimed);
+        gate.started.notified().await;
+        // A data-folder change doesn't wait for Claude: the draft is stopped, then the
+        // database closes once its job has recorded the outcome.
+        let holder = core.clone();
+        let held = tokio::task::spawn_blocking(move || holder.quiesce(Duration::from_secs(30)));
+        tokio::time::timeout(Duration::from_secs(5), held)
+            .await
+            .expect("the draft stops at once")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            core.jobs_in_flight
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(core.ai_jobs.lock().unwrap().is_empty());
+        core.resume().unwrap();
+        assert_eq!(job(&core, &queued["jobId"]).state, "cancelled");
+        assert_eq!(ai_runs(&core)[0].data["status"], "cancelled");
+        assert!(snapshot_record(&core, "draft").is_none());
+    }
+
     #[tokio::test]
     async fn running_draft_notes_the_model_claude_reports() {
         let dir = tempfile::tempdir().unwrap();

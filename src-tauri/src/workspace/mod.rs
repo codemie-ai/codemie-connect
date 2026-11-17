@@ -181,12 +181,13 @@ impl Core {
             jobs_in_flight: AtomicUsize::new(0),
         }))
     }
-    /// Holds the workspace still for a data-folder change: background work stops, running jobs
-    /// finish, then the database is checkpointed and closed. Refused, with everything left
-    /// running, while a send is on its way to Microsoft or work doesn't finish within `wait`.
-    /// Blocking: call it off the async runtime.
+    /// Holds the workspace still for a data-folder change: the loop stops claiming jobs,
+    /// Microsoft reads and running AI jobs are cancelled (drafts and summaries can be asked for
+    /// again), the remaining jobs finish, then the database is checkpointed and closed. Only a
+    /// send on its way to Microsoft refuses it; `wait` is a safety net for work that ignores
+    /// cancellation. A refusal leaves everything running. Blocking: call it off the async runtime.
     pub fn quiesce(&self, wait: Duration) -> Result<()> {
-        // Before anything stops, so a refusal here changes nothing.
+        // The decision comes first: nothing is stopped or cancelled while a send is under way.
         refuse_while_sending(&*self.repo()?)?;
         self.hold.store(true, Ordering::SeqCst);
         self.kill_graph_reads();
@@ -200,7 +201,7 @@ impl Core {
         let still_working = || {
             WorkspaceError::new(
                 "busy",
-                "Connect is still finishing background work, such as a sync or an AI draft. Try again in a minute.",
+                "Connect couldn’t stop its background work. Try again in a minute.",
             )
         };
         // `hold` is set before `loop_busy` is read, and the loop sets `loop_busy` before it reads
@@ -208,6 +209,8 @@ impl Core {
         while self.loop_busy.load(Ordering::SeqCst)
             || self.jobs_in_flight.load(Ordering::SeqCst) > 0
         {
+            // On every pass: a draft that registers its Claude run late is stopped too.
+            self.cancel_ai_runs();
             if Instant::now() >= deadline {
                 return Err(still_working());
             }
@@ -229,18 +232,32 @@ impl Core {
         self.paused.store(true, Ordering::SeqCst);
         Ok(())
     }
+    /// Stops every running Claude run of a job; each job then ends as `cancelled`.
+    fn cancel_ai_runs(&self) {
+        if let Ok(runs) = self.ai_jobs.lock() {
+            for cancel in runs.values() {
+                cancel.cancel();
+            }
+        }
+    }
     /// Undoes `quiesce` after a data-folder change failed: reopens the database and lets
-    /// background work run again.
+    /// background work run again. A database that has gone away is never recreated empty: that
+    /// reads as `storage_unavailable` and the workspace stays held.
     pub fn resume(&self) -> Result<()> {
         {
             let mut repo = self.repository.lock().map_err(|_| poisoned())?;
             if self.paused.load(Ordering::SeqCst) {
-                *repo = Repository::open(&self.paths.database())?;
+                *repo = Repository::open_existing(&self.paths.database())?;
                 self.paused.store(false, Ordering::SeqCst);
             }
         }
         self.hold.store(false, Ordering::SeqCst);
         Ok(())
+    }
+    /// Whether a data-folder change holds the workspace (`quiesce` without `resume`).
+    #[cfg(test)]
+    pub(crate) fn is_held(&self) -> bool {
+        self.hold.load(Ordering::SeqCst) || self.paused.load(Ordering::SeqCst)
     }
     /// Microsoft reads stop when Connect quits or holds still for a data-folder change.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -369,14 +386,7 @@ impl Core {
                 repo.claim_ready(now(), allow_sync).ok().flatten()
             };
             let Some(job) = job else { break };
-            // Counted before the executor starts, so `quiesce` waits for it.
-            self.jobs_in_flight.fetch_add(1, Ordering::SeqCst);
-            let running = InFlight(self.clone());
-            let executor = self.clone();
-            tauri::async_runtime::spawn(async move {
-                executor.run_claimed_job(job).await;
-                drop(running);
-            });
+            self.spawn_claimed(job);
         }
         let visible = self
             .app
@@ -394,6 +404,17 @@ impl Core {
         if ticks.is_multiple_of(60) {
             self.emit("workspace:changed");
         }
+    }
+    /// Runs a claimed job in the background, counted until its executor is done so `quiesce`
+    /// waits for it.
+    fn spawn_claimed(self: &Arc<Self>, job: Job) {
+        self.jobs_in_flight.fetch_add(1, Ordering::SeqCst);
+        let running = InFlight(self.clone());
+        let executor = self.clone();
+        tauri::async_runtime::spawn(async move {
+            executor.run_claimed_job(job).await;
+            drop(running);
+        });
     }
     async fn run_claimed_job(self: Arc<Self>, job: Job) {
         let result = {
@@ -2177,11 +2198,11 @@ mod tests {
     }
 
     #[test]
-    fn quiesce_gives_up_on_unfinished_work_and_resumes() {
+    fn quiesce_safety_net_gives_up_on_work_that_never_stops_and_resumes() {
         let dir = tempfile::tempdir().unwrap();
         let core = quiet_core(dir.path());
-        // A job that is still running, a loop round that is still claiming, and an edit that
-        // is still writing each keep the database open.
+        // A job that ignores cancellation, a loop round that never ends and an edit that never
+        // finishes each keep the database open; past the deadline everything runs again.
         core.jobs_in_flight.fetch_add(1, Ordering::SeqCst);
         let started = std::time::Instant::now();
         let err = core.quiesce(SHORT).unwrap_err();
@@ -2197,12 +2218,12 @@ mod tests {
 
         core.loop_busy.store(true, Ordering::SeqCst);
         assert_eq!(core.quiesce(SHORT).unwrap_err().code, "busy");
-        assert!(!core.hold.load(Ordering::SeqCst));
+        assert!(!core.is_held());
         core.loop_busy.store(false, Ordering::SeqCst);
 
         let edit = core.mutations.try_lock().unwrap();
         assert_eq!(core.quiesce(SHORT).unwrap_err().code, "busy");
-        assert!(!core.hold.load(Ordering::SeqCst));
+        assert!(!core.is_held());
         drop(edit);
 
         // Once everything has finished, it goes ahead.
@@ -2234,6 +2255,19 @@ mod tests {
         assert_eq!(repo.local_records("personal", "note").unwrap().len(), 1);
         drop(repo);
         core.repo().unwrap().put_record(&local_note("n2")).unwrap();
+    }
+
+    #[test]
+    fn resume_never_recreates_a_database_that_went_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        core.quiesce(SHORT).unwrap();
+        let database = dir.path().join("workspace.sqlite");
+        std::fs::remove_file(&database).unwrap();
+        assert_eq!(core.resume().unwrap_err().code, "storage_unavailable");
+        assert!(!database.exists(), "no empty workspace appears");
+        assert!(core.is_held(), "nothing runs on a missing database");
+        assert_eq!(core.repo().err().unwrap().code, "busy");
     }
 
     fn connected(cid: &str) -> Connection {

@@ -1,40 +1,29 @@
 //! Changing where Connect keeps its data (DESIGN.md section 8): move a copy of it to a folder
-//! the user chooses, use the Connect data already in a folder, or start empty there; later,
-//! remove the old copy. The pointer is written only once the new folder is complete, so a
-//! failure at any earlier step leaves Connect where it was, running.
+//! the user chooses, use the Connect data already in a folder, or start empty there. The
+//! pointer is written only once the new folder is complete, so a failure at any earlier step
+//! leaves Connect where it was, running. The old copy a move leaves is handled in `old_copy`.
 
+use super::folders::{self, failed, flush, flush_file, DATABASE, MOVING_FOLDERS};
 use crate::storage::location::{
-    self, LocationFile, Marker, TargetIssue, VolumeInfo, DATA_DIR_NAME, MARKER,
+    self, LocationFile, Marker, TargetIssue, VolumeInfo, DATA_DIR_NAME,
 };
 use crate::workspace::models::{Result, WorkspaceError};
+use crate::workspace::repository::SCHEMA_VERSION;
 use crate::workspace::Core;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// How long a change waits for background work (a sync round, an AI draft) to finish.
+/// A safety net for background work that ignores cancellation; running jobs normally stop
+/// within moments of `quiesce`.
 pub const QUIESCE_WAIT: Duration = Duration::from_secs(15);
 /// Room a move leaves free on the target disk beyond the copy itself.
 const HEADROOM: u64 = 64 * 1024 * 1024;
-const DATABASE: &str = "workspace.sqlite";
-/// Folders that move with the database. `ai-staging/` is transient: it starts empty.
-const MOVING_FOLDERS: [&str; 2] = ["plugins", "automations"];
-const AI_STAGING: &str = "ai-staging";
-/// What Remove old copy deletes, in this order: the marker (custom folders only) goes last,
-/// so an interrupted removal is still recognised as Connect's and can be retried.
-const OLD_COPY: [&str; 6] = [
-    "plugins",
-    "automations",
-    AI_STAGING,
-    "workspace.sqlite-wal",
-    "workspace.sqlite-shm",
-    DATABASE,
-];
-const OLD_CUSTOM_COPY: [&str; 2] = ["connect.lock", MARKER];
+/// A new data folder is built under this name beside its final place, then renamed.
+const STAGING_PREFIX: &str = ".codemie-connect-incoming-";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -87,7 +76,8 @@ impl From<&TargetIssue> for Issue {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Check {
-    /// `<picked>/CodeMie Connect Data`: the folder Connect would use.
+    /// The data folder Connect would use: `<picked>/CodeMie Connect Data`, or the picked folder
+    /// itself when it already is a marked Connect data folder.
     pub target: PathBuf,
     /// The choices this folder allows; empty when Connect can't use it at all.
     pub modes: Vec<Mode>,
@@ -112,20 +102,30 @@ pub fn check(places: &Places, picked: &Path, workspace_open: bool, vol: &dyn Vol
         places.home,
         vol,
     );
-    let target = location::canonical(picked).join(DATA_DIR_NAME);
+    let base = location::canonical(picked);
+    // The user may pick the `CodeMie Connect Data` folder itself rather than the one around it.
+    let picked_is_data = base
+        .file_name()
+        .is_some_and(|n| n == DATA_DIR_NAME)
+        .then(|| location::read_marker(&base))
+        .flatten();
+    let (target, existing) = match picked_is_data {
+        Some(marker) => (base, Some(marker)),
+        None => (base.join(DATA_DIR_NAME), report.existing_marker),
+    };
     let acknowledgeable = |i: &TargetIssue| matches!(i, TargetIssue::NoUnixPermissions(_));
     let mut issues: Vec<Issue> = report.issues.iter().map(Issue::from).collect();
     let blocked = report.issues.iter().any(|i| !acknowledgeable(i));
-    let required_bytes = movable_bytes(places.data_root);
+    let required_bytes = folders::movable_bytes(places.data_root);
     let mut modes = Vec::new();
     if blocked {
         // The reasons are already in `issues`.
-    } else if same_folder(&target, places.data_root) {
+    } else if folders::same_folder(&target, places.data_root) {
         issues.push(Issue::new(
             "current_folder",
             "That folder already holds your data.",
         ));
-    } else if report.existing_marker.is_some() {
+    } else if existing.is_some() {
         modes.push(Mode::Adopt);
     } else if fs::symlink_metadata(&target).is_ok() {
         issues.push(Issue::new(
@@ -150,7 +150,7 @@ pub fn check(places: &Places, picked: &Path, workspace_open: bool, vol: &dyn Vol
         modes,
         issues,
         needs_acknowledgement: report.issues.iter().any(acknowledgeable),
-        existing: report.existing_marker,
+        existing,
         free_bytes: report.free_bytes,
         required_bytes,
         fs_type: report.fs_type,
@@ -187,22 +187,50 @@ pub fn change(
         Mode::Fresh => Plan::Empty,
         Mode::Adopt => Plan::Adopt(adoptable(&check.target)?),
     };
-    if let Some(core) = core {
-        core.quiesce(wait)?;
-    }
-    let result = switch(places, &check.target, plan);
-    if let (Err(error), Some(core)) = (&result, core) {
-        if core.resume().is_err() {
-            return Err(WorkspaceError::new(
+    let held = Held::hold(core, wait)?;
+    match switch(places, &check.target, plan) {
+        Ok(target) => {
+            held.commit();
+            Ok(target)
+        }
+        Err(error) => match held.release() {
+            Ok(()) => Err(error),
+            Err(_) => Err(WorkspaceError::new(
                 &error.code,
                 format!(
                     "{} Restart Connect to open your workspace again.",
                     error.message
                 ),
-            ));
+            )),
+        },
+    }
+}
+
+/// The workspace held still for a change. Committed once the pointer names the new folder;
+/// dropped any other way (an early return, a panic), it lets the workspace run again.
+struct Held<'a>(Option<&'a Core>);
+impl<'a> Held<'a> {
+    fn hold(core: Option<&'a Core>, wait: Duration) -> Result<Self> {
+        if let Some(core) = core {
+            core.quiesce(wait)?;
+        }
+        Ok(Self(core))
+    }
+    /// The restart takes over: the workspace stays held until the process exits.
+    fn commit(mut self) {
+        self.0 = None;
+    }
+    /// Lets the workspace run again and says whether it could.
+    fn release(mut self) -> Result<()> {
+        self.0.take().map_or(Ok(()), |core| core.resume())
+    }
+}
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        if let Some(core) = self.0.take() {
+            let _ = core.resume();
         }
     }
-    result
 }
 
 /// Why a choice the folder doesn't allow was refused.
@@ -231,8 +259,10 @@ enum Plan {
 }
 
 /// Builds or takes over `target` and points Connect at it. Once the pointer is written, the
-/// next start opens `target`; the old data root is remembered as `previous`.
+/// next start opens `target`; the old data root is remembered as `previous`, and as a copy
+/// only after a move.
 fn switch(places: &Places, target: &Path, plan: Plan) -> Result<PathBuf> {
+    let copied = matches!(plan, Plan::Copy);
     let (marker, created) = match plan {
         Plan::Copy => (build(target, Some(places.data_root))?, true),
         Plan::Empty => (build(target, None)?, true),
@@ -242,12 +272,13 @@ fn switch(places: &Places, target: &Path, plan: Plan) -> Result<PathBuf> {
         data_dir: Some(target.to_path_buf()),
         marker_id: Some(marker.id),
         previous: Some(places.data_root.to_path_buf()),
+        previous_copied: copied,
         ..Default::default()
     };
     if let Err(e) = location::write_location(places.private_root, &pointer) {
         if created {
             // Only the folder this call just built.
-            let _ = remove_tree(target);
+            let _ = folders::remove_tree(target);
         }
         return Err(failed("Connect couldn’t save where your data now lives", e));
     }
@@ -257,26 +288,15 @@ fn switch(places: &Places, target: &Path, plan: Plan) -> Result<PathBuf> {
 // ------------------------------------------------------------- the new folder
 
 /// Builds the new data folder in a hidden staging folder beside `target` and renames it into
-/// place once complete, so `target` never exists half-built. Copies the data from `source`
-/// when given. Returns the new folder's marker; on failure the staging folder is removed.
+/// place once complete and on disk, so `target` never exists half-built. Copies the data from
+/// `source` when given. Returns the new folder's marker; on failure nothing is left behind.
 fn build(target: &Path, source: Option<&Path>) -> Result<Marker> {
     let parent = target.parent().ok_or_else(|| {
         WorkspaceError::new("validation", "Choose a folder to keep your data in.")
     })?;
-    let staging = parent.join(format!(
-        ".codemie-connect-incoming-{}",
-        uuid::Uuid::new_v4()
-    ));
-    let result = (|| {
-        create_private_dir(&staging)
-            .map_err(|e| failed("Connect couldn’t create a folder there", e))?;
-        if let Some(source) = source {
-            copy_data(source, &staging)?;
-        }
-        let marker = new_marker();
-        location::write_marker(&staging, &marker)
-            .map_err(|e| failed("Connect couldn’t mark the new data folder", e))?;
-        sync_dir(&staging);
+    sweep_staging(parent);
+    let staging = parent.join(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4()));
+    let built = fill(&staging, source).and_then(|marker| {
         // `rename` would quietly replace an empty folder that appeared meanwhile.
         if fs::symlink_metadata(target).is_ok() {
             return Err(WorkspaceError::new(
@@ -288,13 +308,49 @@ fn build(target: &Path, source: Option<&Path>) -> Result<Marker> {
         }
         fs::rename(&staging, target)
             .map_err(|e| failed("Connect couldn’t finish the new data folder", e))?;
-        sync_dir(parent);
         Ok(marker)
-    })();
-    if result.is_err() {
-        let _ = remove_tree(&staging);
+    });
+    let marker = match built {
+        Ok(marker) => marker,
+        Err(e) => {
+            let _ = folders::remove_tree(&staging);
+            return Err(e);
+        }
+    };
+    if let Err(e) = flush(parent) {
+        // Renamed but maybe not on disk yet: this is the copy just built, so it goes.
+        let _ = folders::remove_tree(target);
+        return Err(failed("Connect couldn’t finish the new data folder", e));
     }
-    result
+    Ok(marker)
+}
+
+/// Fills a new staging folder: the copied data (if any), then the marker, all on disk.
+fn fill(staging: &Path, source: Option<&Path>) -> Result<Marker> {
+    create_private_dir(staging).map_err(|e| failed("Connect couldn’t create a folder there", e))?;
+    if let Some(source) = source {
+        copy_data(source, staging)?;
+    }
+    let marker = new_marker();
+    location::write_marker(staging, &marker)
+        .and_then(|()| flush(staging))
+        .map_err(|e| failed("Connect couldn’t mark the new data folder", e))?;
+    Ok(marker)
+}
+
+/// Removes staging folders a crash or power loss left behind. Each only ever holds a copy;
+/// one another Connect is still building fails its rename and rolls back cleanly.
+fn sweep_staging(parent: &Path) {
+    for entry in fs::read_dir(parent).into_iter().flatten().flatten() {
+        let stale = entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(STAGING_PREFIX)
+            && entry.file_type().is_ok_and(|t| t.is_dir());
+        if stale {
+            let _ = folders::remove_tree(&entry.path());
+        }
+    }
 }
 
 /// Copies what moves: a verified copy of the database, then plugins and automation output
@@ -312,8 +368,8 @@ fn copy_data(source: &Path, staging: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `VACUUM INTO` a consistent copy of the (quiesced) database, then proves it: it opens
-/// read-only, passes `integrity_check`, and has the source's revision and record count.
+/// `VACUUM INTO` a consistent copy of the (quiesced) database, puts it on disk, then proves it
+/// with [`verify_copy`].
 fn copy_database(source: &Path, copy: &Path) -> Result<()> {
     let db_failed = |e: rusqlite::Error| failed("Connect couldn’t copy your workspace database", e);
     // Never creates a database: the source must be the one Connect just closed.
@@ -342,10 +398,16 @@ fn copy_database(source: &Path, copy: &Path) -> Result<()> {
     db.execute("VACUUM INTO ?1", [into]).map_err(db_failed)?;
     db.close().map_err(|(_, e)| db_failed(e))?;
     // SQLite doesn't flush the file `VACUUM INTO` writes.
-    fs::File::open(copy)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| failed("Connect couldn’t save the copy of your workspace", e))?;
+    flush(copy).map_err(|e| failed("Connect couldn’t save the copy of your workspace", e))?;
+    #[cfg(test)]
+    let original = tests::sabotage(copy, original);
+    verify_copy(copy, original)
+}
 
+/// Proves a copy of the workspace database: it opens read-only, passes `integrity_check`, and
+/// has the original's revision and record count (`expected`).
+fn verify_copy(copy: &Path, expected: (i64, i64)) -> Result<()> {
+    let db_failed = |e: rusqlite::Error| failed("The copy of your workspace can’t be read", e);
     let copied = Connection::open_with_flags(
         copy,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -360,7 +422,7 @@ fn copy_database(source: &Path, copy: &Path) -> Result<()> {
             verdict,
         ));
     }
-    if tally(&copied).map_err(db_failed)? != original {
+    if tally(&copied).map_err(db_failed)? != expected {
         return Err(WorkspaceError::new(
             "io",
             "The copy of your workspace doesn’t match the original, so Connect kept using the original.",
@@ -377,8 +439,9 @@ fn tally(db: &Connection) -> rusqlite::Result<(i64, i64)> {
     ))
 }
 
-/// Copies a file, folder or symlink without following symlinks. Files keep their permission
-/// bits; folders get theirs last, so a read-only folder can still be filled.
+/// Copies a file, folder or symlink without following symlinks, and puts it on disk. Files
+/// and folders keep their permission bits, applied last so read-only ones can still be
+/// written and flushed.
 fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(from)?;
     let kind = meta.file_type();
@@ -388,13 +451,22 @@ fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
             let entry = entry?;
             copy_entry(&entry.path(), &to.join(entry.file_name()))?;
         }
+        flush(to)?;
         fs::set_permissions(to, meta.permissions())
     } else if kind.is_file() {
-        fs::copy(from, to)?;
-        if let Ok(file) = fs::File::open(to) {
-            let _ = file.sync_all();
+        let mut source = fs::File::open(from)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
-        Ok(())
+        let mut copy = options.open(to)?;
+        io::copy(&mut source, &mut copy)?;
+        flush_file(&copy)?;
+        drop(copy);
+        fs::set_permissions(to, meta.permissions())
     } else if kind.is_symlink() {
         copy_symlink(from, to)
     } else {
@@ -430,13 +502,6 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
     builder.create(dir)
 }
 
-/// Best effort: flushes a folder's entries (a rename, a new file) to disk.
-fn sync_dir(dir: &Path) {
-    if let Ok(d) = fs::File::open(dir) {
-        let _ = d.sync_all();
-    }
-}
-
 // --------------------------------------------------------------------- adopt
 
 /// Read-only checks of Connect data already in a folder: it is marked, no other Connect is
@@ -448,8 +513,8 @@ fn adoptable(root: &Path) -> Result<Marker> {
         .ok_or_else(|| {
             WorkspaceError::new("validation", "There is no Connect data in that folder.")
         })?;
-    if in_use_elsewhere(root) {
-        return Err(in_use());
+    if folders::in_use_elsewhere(root) {
+        return Err(folders::in_use());
     }
     let database = root.join(DATABASE);
     if fs::symlink_metadata(&database).is_ok() {
@@ -477,7 +542,7 @@ fn verify_database(path: &Path) -> Result<()> {
     let version: i64 = db
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(|_| damaged())?;
-    if version > 1 {
+    if version > SCHEMA_VERSION {
         return Err(WorkspaceError::new(
             "newer_schema",
             "That data was used by a newer version of Connect. Update Connect, then try again.",
@@ -514,251 +579,19 @@ fn file_uri(path: &Path, query: &str) -> String {
     uri
 }
 
-/// Whether another Connect holds the folder's `connect.lock` right now. A missing lock file
-/// means no one; any error other than contention is left for startup to report.
-fn in_use_elsewhere(root: &Path) -> bool {
-    let Ok(file) = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(root.join("connect.lock"))
-    else {
-        return false;
-    };
-    match fs2::FileExt::try_lock_exclusive(&file) {
-        Ok(()) => {
-            let _ = fs2::FileExt::unlock(&file);
-            false
-        }
-        Err(e) => {
-            e.raw_os_error().is_some()
-                && e.raw_os_error() == fs2::lock_contended_error().raw_os_error()
-        }
-    }
-}
-
-fn in_use() -> WorkspaceError {
-    WorkspaceError::new(
-        "in_use",
-        "That data folder is in use by Connect on another Mac or another account.",
-    )
-}
-
-// ------------------------------------------------------------ the old copy
-
-/// Deletes Connect's own files from the old data folder (`previous` in the pointer), then
-/// forgets it. Every other file stays. In the default folder, which also holds sign-in data,
-/// `owner.lock`, `window.json` and the pointer, only the workspace files go. Returns the
-/// bytes removed.
-pub fn remove_old(private_root: &Path) -> Result<u64> {
-    let pointer = location::try_read_location(private_root).map_err(
-        |location::LocationError::Unreadable(reason)| {
-            WorkspaceError::new(
-                "pointer_unreadable",
-                format!("Connect couldn’t read where your data is kept ({reason}), so nothing was removed."),
-            )
-        },
-    )?;
-    let previous = pointer
-        .previous
-        .clone()
-        .ok_or_else(|| WorkspaceError::new("not_found", "There is no old copy to remove."))?;
-    let current = pointer.data_dir.as_deref().unwrap_or(private_root);
-    let entries = old_copy(&previous, current, private_root)?;
-    let mut removed = 0;
-    for entry in &entries {
-        let size = tree_size(entry);
-        remove_tree(entry).map_err(|e| failed("Connect couldn’t remove the old copy", e))?;
-        removed += size;
-    }
-    if !same_folder(&previous, private_root) {
-        // Only if nothing of the user's is left in it.
-        let _ = fs::remove_dir(&previous);
-    }
-    location::write_location(
-        private_root,
-        &LocationFile {
-            previous: None,
-            ..pointer
-        },
-    )
-    .map_err(|e| {
-        failed(
-            "Connect removed the old copy but couldn’t update its records",
-            e,
-        )
-    })?;
-    Ok(removed)
-}
-
-/// The entries Remove old copy would delete inside `previous`, or why it deletes nothing:
-/// the folder is gone, overlaps the folder in use, or doesn't look like Connect's own.
-fn old_copy(previous: &Path, current: &Path, private_root: &Path) -> Result<Vec<PathBuf>> {
-    if !previous.is_dir() {
-        return Err(WorkspaceError::new(
-            "not_found",
-            "The old copy is no longer there.",
-        ));
-    }
-    let default = same_folder(previous, private_root);
-    if !default {
-        // Anything but the default folder must be a marked Connect data folder outside it.
-        let connects = previous.file_name().is_some_and(|n| n == DATA_DIR_NAME)
-            && location::read_marker(previous).is_some()
-            && !inside(previous, private_root);
-        if !connects {
-            return Err(WorkspaceError::new(
-                "not_connect",
-                "That folder doesn’t look like Connect’s data folder, so nothing was removed.",
-            ));
-        }
-    }
-    if inside(previous, current) || inside(current, previous) {
-        return Err(WorkspaceError::new(
-            "current_folder",
-            "That folder holds the data Connect uses now, so nothing was removed.",
-        ));
-    }
-    if !default && in_use_elsewhere(previous) {
-        return Err(in_use());
-    }
-    let names = OLD_COPY.iter().chain(if default {
-        &[][..]
-    } else {
-        &OLD_CUSTOM_COPY[..]
-    });
-    Ok(names
-        .map(|name| previous.join(name))
-        .filter(|p| fs::symlink_metadata(p).is_ok())
-        .collect())
-}
-
-// ---------------------------------------------------------------- settings
-
-/// What Settings shows about where Connect keeps things.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LocationInfo {
-    pub data_root: PathBuf,
-    pub private_root: PathBuf,
-    pub logs: PathBuf,
-    pub custom: bool,
-    /// The data folder's size, without the transient AI staging folder.
-    pub size_bytes: u64,
-    pub previous: Option<PathBuf>,
-    /// The old copy is still there and Remove old copy would delete something.
-    pub previous_exists: bool,
-    /// What Remove old copy would free.
-    pub previous_size_bytes: u64,
-}
-
-pub fn location_info(private_root: &Path, logs: &Path) -> LocationInfo {
-    let live = location::resolve(private_root);
-    let previous = location::read_location(private_root).previous;
-    let old = previous
-        .as_deref()
-        .and_then(|p| old_copy(p, &live.data_root, private_root).ok())
-        .unwrap_or_default();
-    LocationInfo {
-        size_bytes: folder_size(&live.data_root, &[AI_STAGING]),
-        data_root: live.data_root,
-        private_root: live.private_root,
-        logs: logs.to_path_buf(),
-        custom: live.custom,
-        previous,
-        previous_exists: !old.is_empty(),
-        previous_size_bytes: old.iter().map(|p| tree_size(p)).sum(),
-    }
-}
-
-// ------------------------------------------------------------------ helpers
-
-/// What a move copies out of a data folder.
-fn movable_bytes(data_root: &Path) -> u64 {
-    [DATABASE, "workspace.sqlite-wal"]
-        .iter()
-        .chain(MOVING_FOLDERS.iter())
-        .map(|name| tree_size(&data_root.join(name)))
-        .sum()
-}
-
-/// The size of a folder's contents, leaving out the named top-level entries.
-fn folder_size(dir: &Path, except: &[&str]) -> u64 {
-    fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| !except.iter().any(|x| e.file_name() == *x))
-                .map(|e| tree_size(&e.path()))
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
-/// The bytes of the files at or under `path`; symlinks are not followed.
-fn tree_size(path: &Path) -> u64 {
-    match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_dir() => folder_size(path, &[]),
-        Ok(meta) if meta.is_file() => meta.len(),
-        _ => 0,
-    }
-}
-
-/// Removes a file or a whole folder without following symlinks, first giving its owner write
-/// access to every folder inside, so read-only plugin folders don't stop it half way.
-fn remove_tree(path: &Path) -> io::Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    if meta.is_dir() {
-        open_up(path);
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    }
-}
-#[cfg(unix)]
-fn open_up(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let Ok(meta) = fs::symlink_metadata(dir) else {
-        return;
-    };
-    if !meta.is_dir() {
-        return;
-    }
-    let mode = meta.permissions().mode();
-    if mode & 0o700 != 0o700 {
-        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(mode | 0o700));
-    }
-    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
-        open_up(&entry.path());
-    }
-}
-#[cfg(not(unix))]
-fn open_up(_dir: &Path) {}
-
-/// Component-wise and case-insensitive (APFS usually is), after resolving symlinks.
-fn inside(path: &Path, folder: &Path) -> bool {
-    location::starts_with_ci(&location::canonical(path), &location::canonical(folder))
-}
-fn same_folder(a: &Path, b: &Path) -> bool {
-    inside(a, b) && inside(b, a)
-}
-
-fn failed(what: &str, reason: impl Display) -> WorkspaceError {
-    WorkspaceError::new("io", format!("{what}: {reason}."))
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::storage::location::{try_read_location, write_location, RootStatus};
+    use crate::storage::location::{try_read_location, write_location, RootStatus, MARKER};
     use crate::workspace::models::Record;
     use crate::workspace::repository::Repository;
     use crate::workspace::{open_for_tests, startup};
     use serde_json::json;
-    use std::sync::atomic::Ordering;
+    use std::cell::Cell;
     use std::sync::Arc;
 
     /// A volume of one filesystem type with a fixed amount of free space.
-    struct Vol(&'static str, u64);
+    pub(crate) struct Vol(pub &'static str, pub u64);
     impl VolumeInfo for Vol {
         fn fs_type(&self, _: &Path) -> String {
             self.0.into()
@@ -767,19 +600,19 @@ mod tests {
             self.1
         }
     }
-    const ROOMY: Vol = Vol("apfs", 1 << 40);
-    const WAIT: Duration = Duration::from_millis(500);
+    pub(crate) const ROOMY: Vol = Vol("apfs", 1 << 40);
+    pub(crate) const WAIT: Duration = Duration::from_millis(500);
 
     /// A running workspace in the default layout, a home folder and an empty folder to move to.
-    struct Fixture {
-        dir: tempfile::TempDir,
-        default: PathBuf,
-        home: PathBuf,
-        picked: PathBuf,
-        core: Arc<Core>,
+    pub(crate) struct Fixture {
+        pub dir: tempfile::TempDir,
+        pub default: PathBuf,
+        pub home: PathBuf,
+        pub picked: PathBuf,
+        pub core: Arc<Core>,
     }
     impl Fixture {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
             let default = dir.path().join("workspace");
             let home = dir.path().join("home");
@@ -795,30 +628,45 @@ mod tests {
                 core,
             }
         }
-        fn places(&self) -> Places<'_> {
+        pub(crate) fn places(&self) -> Places<'_> {
             places(&self.default, &self.core, &self.home)
         }
-        fn change(&self, mode: Mode) -> Result<PathBuf> {
+        pub(crate) fn change(&self, mode: Mode) -> Result<PathBuf> {
             self.change_to(&self.picked, mode)
         }
-        fn change_to(&self, picked: &Path, mode: Mode) -> Result<PathBuf> {
-            let choice = Choice {
-                picked,
-                mode,
-                acknowledged: false,
-            };
-            change(&self.places(), &choice, Some(&self.core), &ROOMY, WAIT)
+        pub(crate) fn change_to(&self, picked: &Path, mode: Mode) -> Result<PathBuf> {
+            change_with(&self.places(), picked, mode, &self.core)
+        }
+        /// What the relaunch does: let go of this workspace and start again from the pointer.
+        pub(crate) fn restart(&self, core: &Core) -> Arc<Core> {
+            core.release_for_restart();
+            startup(&self.default, open_for_tests)
+                .core
+                .expect("the folder opens")
         }
     }
-    fn places<'a>(default: &'a Path, core: &'a Core, home: &'a Path) -> Places<'a> {
+    pub(crate) fn places<'a>(default: &'a Path, core: &'a Core, home: &'a Path) -> Places<'a> {
         Places {
             private_root: default,
             data_root: &core.paths.data,
             home,
         }
     }
+    pub(crate) fn change_with(
+        places: &Places,
+        picked: &Path,
+        mode: Mode,
+        core: &Core,
+    ) -> Result<PathBuf> {
+        let choice = Choice {
+            picked,
+            mode,
+            acknowledged: false,
+        };
+        change(places, &choice, Some(core), &ROOMY, WAIT)
+    }
 
-    fn note(id: &str, text: &str) -> Record {
+    pub(crate) fn note(id: &str, text: &str) -> Record {
         Record {
             id: id.into(),
             kind: "note".into(),
@@ -830,7 +678,7 @@ mod tests {
             data: json!({ "text": text }),
         }
     }
-    fn notes(core: &Core) -> Vec<String> {
+    pub(crate) fn notes(core: &Core) -> Vec<String> {
         core.repo()
             .unwrap()
             .local_records("personal", "note")
@@ -840,7 +688,7 @@ mod tests {
             .collect()
     }
     /// The sorted names in a folder.
-    fn names(dir: &Path) -> Vec<String> {
+    pub(crate) fn names(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(dir)
             .map(|d| {
                 d.flatten()
@@ -852,7 +700,7 @@ mod tests {
         names
     }
     /// Every file under `dir` with its bytes, to prove a folder was left exactly as it was.
-    fn contents(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    pub(crate) fn contents(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
         let mut all = Vec::new();
         for entry in fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
@@ -865,7 +713,7 @@ mod tests {
         all.sort();
         all
     }
-    fn marked_root(parent: &Path, id: &str) -> PathBuf {
+    pub(crate) fn marked_root(parent: &Path, id: &str) -> PathBuf {
         let root = parent.join(DATA_DIR_NAME);
         fs::create_dir_all(&root).unwrap();
         let marker = Marker {
@@ -876,19 +724,57 @@ mod tests {
         location::write_marker(&root, &marker).unwrap();
         root
     }
+    /// A marked data folder holding a workspace with one note.
+    pub(crate) fn connect_data(parent: &Path, id: &str, text: &str) -> PathBuf {
+        let root = marked_root(parent, id);
+        let mut r = Repository::open(&root.join(DATABASE)).unwrap();
+        r.put_record(&note("n9", text)).unwrap();
+        root
+    }
     #[cfg(unix)]
-    fn mode(p: &Path) -> u32 {
+    pub(crate) fn mode(p: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
         fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777
     }
     #[cfg(unix)]
-    fn chmod(p: &Path, mode: u32) {
+    pub(crate) fn chmod(p: &Path, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
     }
-    fn logs(f: &Fixture) -> PathBuf {
-        f.dir.path().join("Logs")
+
+    // ------------------------------------------------------------ failpoints
+
+    /// Ways to spoil a database copy between `VACUUM INTO` and its verification.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) enum Sabotage {
+        CorruptCopy,
+        WrongTally,
     }
+    thread_local! {
+        static SABOTAGE: Cell<Option<Sabotage>> = const { Cell::new(None) };
+    }
+    /// Test failpoint in `copy_database`.
+    pub(super) fn sabotage(copy: &Path, tally: (i64, i64)) -> (i64, i64) {
+        match SABOTAGE.with(|s| s.get()) {
+            Some(Sabotage::CorruptCopy) => {
+                corrupt(copy);
+                tally
+            }
+            Some(Sabotage::WrongTally) => (tally.0 + 1, tally.1),
+            None => tally,
+        }
+    }
+    /// Overwrites every page after the first, as a failing disk would.
+    fn corrupt(db: &Path) {
+        let mut bytes = fs::read(db).unwrap();
+        assert!(bytes.len() > 4096, "the database has more than one page");
+        for b in &mut bytes[4096..] {
+            *b = 0xA5;
+        }
+        fs::write(db, bytes).unwrap();
+    }
+
+    // ----------------------------------------------------------------- move
 
     #[test]
     fn move_copies_db_and_folders_then_points_to_target() {
@@ -909,7 +795,7 @@ mod tests {
         #[cfg(unix)]
         {
             chmod(&plugins.join("echo/bin/run"), 0o755);
-            chmod(&plugins.join("echo/manifest.json"), 0o600);
+            chmod(&plugins.join("echo/manifest.json"), 0o400);
             chmod(&plugins.join("echo/bin"), 0o555);
             std::os::unix::fs::symlink("manifest.json", plugins.join("echo/link")).unwrap();
         }
@@ -919,16 +805,22 @@ mod tests {
         fs::create_dir_all(f.default.join("credentials")).unwrap();
         fs::write(f.default.join("credentials/graph-a.json"), "secret").unwrap();
         fs::write(f.default.join("window.json"), "{}").unwrap();
+        // A staging folder an earlier crash left behind is swept away.
+        let stale = f.picked.join(format!("{STAGING_PREFIX}crashed"));
+        fs::create_dir_all(stale.join("plugins/locked")).unwrap();
+        #[cfg(unix)]
+        chmod(&stale.join("plugins/locked"), 0o555);
 
         let target = f.change(Mode::Move).unwrap();
         assert_eq!(target, location::canonical(&f.picked).join(DATA_DIR_NAME));
 
-        // The pointer names the new folder and its marker, and remembers the old one.
+        // The pointer names the new folder and its marker, and remembers the old one as a copy.
         let pointer = try_read_location(&f.default).unwrap();
         let marker = location::read_marker(&target).unwrap();
         assert_eq!(pointer.data_dir.as_deref(), Some(target.as_path()));
         assert_eq!(pointer.marker_id.as_deref(), Some(marker.id.as_str()));
         assert_eq!(pointer.previous.as_deref(), Some(f.default.as_path()));
+        assert!(pointer.previous_copied);
         assert_eq!(marker.app_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(location::resolve(&f.default).status, RootStatus::Ready);
 
@@ -946,7 +838,11 @@ mod tests {
         {
             let moved = target.join("plugins");
             assert_eq!(mode(&moved.join("echo/bin/run")), 0o755);
-            assert_eq!(mode(&moved.join("echo/manifest.json")), 0o600);
+            assert_eq!(mode(&moved.join("echo/manifest.json")), 0o400);
+            assert_eq!(
+                fs::read_to_string(moved.join("echo/manifest.json")).unwrap(),
+                "{}"
+            );
             assert_eq!(mode(&moved.join("echo/bin")), 0o555);
             assert_eq!(
                 fs::read_link(moved.join("echo/link")).unwrap(),
@@ -965,9 +861,7 @@ mod tests {
         assert!(!target.join("credentials").exists());
 
         // After the restart Connect opens the copy, with every record.
-        f.core.release_for_restart();
-        let state = startup(&f.default, open_for_tests);
-        let core = state.core.expect("the new folder opens");
+        let core = f.restart(&f.core);
         assert_eq!(core.paths.data, target);
         assert_eq!(core.paths.private, f.default);
         assert_eq!(core.repo().unwrap().revision().unwrap(), revision);
@@ -1012,8 +906,8 @@ mod tests {
             assert!(err.message.contains("copy"), "{}", err.message);
             assert!(names(&f.picked).is_empty(), "the staging folder is removed");
             assert_eq!(fs::read(f.default.join("location.json")).unwrap(), pointer);
-            // Connect carries on where it was: the database is open and background work runs.
-            assert!(!f.core.stop.load(Ordering::Relaxed));
+            // Connect carries on where it was: nothing is held and the database is open.
+            assert!(!f.core.is_held());
             f.core
                 .repo()
                 .unwrap()
@@ -1029,12 +923,100 @@ mod tests {
         assert_eq!(err.code, "io");
         assert!(names(&f.picked).is_empty(), "the new folder is removed");
         assert!(f.default.join("location.json").join("keep").is_dir());
+        assert!(!f.core.is_held());
         f.core
             .repo()
             .unwrap()
             .put_record(&note("n3", "Still running"))
             .unwrap();
         assert!(notes(&f.core).contains(&"Keep me".to_string()));
+    }
+
+    #[test]
+    fn move_rolls_back_when_the_copy_fails_its_checks() {
+        let f = Fixture::new();
+        f.core
+            .repo()
+            .unwrap()
+            .put_record(&note("n1", "Keep me"))
+            .unwrap();
+        fs::create_dir_all(f.default.join("plugins/echo")).unwrap();
+        fs::write(f.default.join("plugins/echo/main.js"), "x").unwrap();
+        for sabotage in [Sabotage::CorruptCopy, Sabotage::WrongTally] {
+            SABOTAGE.with(|s| s.set(Some(sabotage)));
+            let err = f.change(Mode::Move).unwrap_err();
+            SABOTAGE.with(|s| s.set(None));
+            assert_eq!(err.code, "io", "{sabotage:?}");
+            assert!(names(&f.picked).is_empty(), "{sabotage:?}: staging removed");
+            assert!(!f.default.join("location.json").exists(), "{sabotage:?}");
+            assert!(!f.core.is_held(), "{sabotage:?}");
+        }
+        assert_eq!(notes(&f.core), ["Keep me"]);
+        // Nothing wrong: the same move goes ahead.
+        f.change(Mode::Move).unwrap();
+    }
+
+    #[test]
+    fn a_move_that_cannot_flush_any_part_rolls_back() {
+        let f = Fixture::new();
+        f.core
+            .repo()
+            .unwrap()
+            .put_record(&note("n1", "Keep me"))
+            .unwrap();
+        fs::create_dir_all(f.default.join("plugins/echo")).unwrap();
+        fs::write(f.default.join("plugins/echo/main.js"), "x").unwrap();
+        fs::create_dir_all(f.default.join("automations")).unwrap();
+        fs::write(f.default.join("automations/run.json"), "{}").unwrap();
+        // Fail the first flush, then the second, and so on until the move gets through.
+        let mut failed_at = 0;
+        loop {
+            folders::FLUSHES_LEFT.with(|x| x.set(Some(failed_at)));
+            let result = f.change(Mode::Move);
+            folders::FLUSHES_LEFT.with(|x| x.set(None));
+            let Err(err) = result else { break };
+            assert_eq!(err.code, "io", "flush {failed_at}");
+            assert!(
+                err.message.contains("injected flush failure"),
+                "flush {failed_at}: {}",
+                err.message
+            );
+            assert!(
+                names(&f.picked).is_empty(),
+                "flush {failed_at}: nothing left"
+            );
+            assert!(
+                !f.default.join("location.json").exists(),
+                "flush {failed_at}"
+            );
+            assert!(!f.core.is_held(), "flush {failed_at}");
+            failed_at += 1;
+        }
+        // The database copy; main.js, echo/ and plugins/; run.json and automations/; the
+        // finished folder; and its parent after the rename.
+        assert_eq!(failed_at, 8);
+        let core = f.restart(&f.core);
+        assert_eq!(notes(&core), ["Keep me"]);
+    }
+
+    #[test]
+    fn verify_copy_rejects_a_damaged_or_different_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.sqlite");
+        {
+            let mut r = Repository::open(&source).unwrap();
+            r.put_record(&note("n1", "x")).unwrap();
+        }
+        let db = Connection::open(&source).unwrap();
+        let expected = tally(&db).unwrap();
+        let copy = dir.path().join("copy.sqlite");
+        db.execute("VACUUM INTO ?1", [copy.to_str().unwrap()])
+            .unwrap();
+        verify_copy(&copy, expected).unwrap();
+        let err = verify_copy(&copy, (expected.0, expected.1 + 1)).unwrap_err();
+        assert!(err.message.contains("doesn’t match"), "{}", err.message);
+        corrupt(&copy);
+        assert_eq!(verify_copy(&copy, expected).unwrap_err().code, "io");
     }
 
     #[test]
@@ -1057,8 +1039,8 @@ mod tests {
         assert!(err.message.contains("being sent"), "{}", err.message);
         assert!(names(&f.picked).is_empty());
         assert!(!f.default.join("location.json").exists());
-        // Nothing was stopped: the send records its outcome in the open database.
-        assert!(!f.core.stop.load(Ordering::Relaxed));
+        // Nothing was held: the send records its outcome in the open database.
+        assert!(!f.core.is_held());
         send.data = json!({ "state": "succeeded" });
         f.core.repo().unwrap().put_record(&send).unwrap();
 
@@ -1069,6 +1051,40 @@ mod tests {
             Some(target)
         );
     }
+
+    #[test]
+    fn move_handles_quotes_and_spaces_in_the_path() {
+        let f = Fixture::new();
+        f.core
+            .repo()
+            .unwrap()
+            .put_record(&note("n1", "Quoted"))
+            .unwrap();
+        let picked = f.dir.path().join("Drive 'A' \"B\" & C");
+        fs::create_dir(&picked).unwrap();
+        let target = f.change_to(&picked, Mode::Move).unwrap();
+        assert!(target.starts_with(location::canonical(&picked)));
+        let core = f.restart(&f.core);
+        assert_eq!(core.paths.data, target);
+        assert_eq!(notes(&core), ["Quoted"]);
+    }
+
+    #[test]
+    fn a_dropped_hold_lets_the_workspace_run_again() {
+        let f = Fixture::new();
+        {
+            let _held = Held::hold(Some(&f.core), WAIT).unwrap();
+            assert!(f.core.is_held());
+            // Leaving here without `commit` (an early return, or a panic unwinding).
+        }
+        assert!(!f.core.is_held());
+        f.core.repo().unwrap().put_record(&note("n1", "x")).unwrap();
+        // Committed, it stays held for the restart.
+        Held::hold(Some(&f.core), WAIT).unwrap().commit();
+        assert!(f.core.is_held());
+    }
+
+    // ---------------------------------------------------------- adopt, fresh
 
     #[test]
     fn adopt_requires_existing_marker() {
@@ -1095,8 +1111,9 @@ mod tests {
         let newer = f.dir.path().join("Newer");
         let root = marked_root(&newer, "newer");
         {
-            let db = rusqlite::Connection::open(root.join("workspace.sqlite")).unwrap();
-            db.execute_batch("PRAGMA user_version=7").unwrap();
+            let db = Connection::open(root.join("workspace.sqlite")).unwrap();
+            db.execute_batch(&format!("PRAGMA user_version={}", SCHEMA_VERSION + 1))
+                .unwrap();
         }
         assert_eq!(
             f.change_to(&newer, Mode::Adopt).unwrap_err().code,
@@ -1110,14 +1127,11 @@ mod tests {
         assert_eq!(f.change_to(&busy, Mode::Adopt).unwrap_err().code, "in_use");
         drop(held);
         assert!(!f.default.join("location.json").exists());
+        assert!(!f.core.is_held());
 
         // Connect data from another Mac: marked, with an intact database.
         let other = f.dir.path().join("Other Mac");
-        let root = marked_root(&other, "other-mac");
-        {
-            let mut r = Repository::open(&root.join("workspace.sqlite")).unwrap();
-            r.put_record(&note("n9", "From the other Mac")).unwrap();
-        }
+        let root = connect_data(&other, "other-mac", "From the other Mac");
         let before = contents(&root);
         let target = f.change_to(&other, Mode::Adopt).unwrap();
         assert_eq!(contents(&root), before, "adopted data is never modified");
@@ -1126,11 +1140,30 @@ mod tests {
         assert_eq!(pointer.data_dir, Some(target.clone()));
         assert_eq!(pointer.marker_id.as_deref(), Some("other-mac"));
         assert_eq!(pointer.previous, Some(f.default.clone()));
+        assert!(
+            !pointer.previous_copied,
+            "the old folder is not a copy of it"
+        );
 
-        f.core.release_for_restart();
-        let core = startup(&f.default, open_for_tests).core.unwrap();
+        let core = f.restart(&f.core);
         assert_eq!(core.paths.data, target);
         assert_eq!(notes(&core), ["From the other Mac"]);
+    }
+
+    #[test]
+    fn picking_the_data_folder_itself_offers_to_use_it() {
+        let f = Fixture::new();
+        let root = connect_data(&f.dir.path().join("Other Mac"), "other-mac", "Theirs");
+        let check = check(&f.places(), &root, true, &ROOMY);
+        assert_eq!(check.modes, [Mode::Adopt]);
+        assert_eq!(check.target, location::canonical(&root));
+        assert_eq!(check.existing.map(|m| m.id).as_deref(), Some("other-mac"));
+
+        let target = f.change_to(&root, Mode::Adopt).unwrap();
+        assert_eq!(target, location::canonical(&root));
+        assert!(!root.join(DATA_DIR_NAME).exists(), "nothing nested is made");
+        let core = f.restart(&f.core);
+        assert_eq!(notes(&core), ["Theirs"]);
     }
 
     #[test]
@@ -1163,9 +1196,9 @@ mod tests {
             location::read_marker(&target).map(|m| m.id)
         );
         assert_eq!(pointer.previous, Some(f.default.clone()));
+        assert!(!pointer.previous_copied);
 
-        f.core.release_for_restart();
-        let core = startup(&f.default, open_for_tests).core.unwrap();
+        let core = f.restart(&f.core);
         assert_eq!(core.paths.data, target);
         assert!(target.join("workspace.sqlite").is_file());
         assert!(notes(&core).is_empty());
@@ -1173,139 +1206,7 @@ mod tests {
         assert!(f.default.join("workspace.sqlite").is_file());
     }
 
-    #[test]
-    fn remove_old_deletes_only_connect_files() {
-        let f = Fixture::new();
-        for dir in [
-            "plugins/echo",
-            "automations",
-            "ai-staging/run",
-            "credentials",
-        ] {
-            fs::create_dir_all(f.default.join(dir)).unwrap();
-        }
-        fs::write(f.default.join("plugins/echo/main.js"), "x".repeat(1000)).unwrap();
-        fs::write(f.default.join("automations/run.json"), "{}").unwrap();
-        fs::write(f.default.join("ai-staging/run/prompt"), "p").unwrap();
-        fs::write(f.default.join("credentials/graph-a.json"), "secret").unwrap();
-        fs::write(f.default.join("window.json"), "{}").unwrap();
-        fs::write(f.default.join("notes.txt"), "the user's own file").unwrap();
-        let target = f.change(Mode::Move).unwrap();
-        f.core.release_for_restart();
-        let core = startup(&f.default, open_for_tests).core.unwrap();
-
-        // The old copy is the default folder: its private files stay.
-        let info = location_info(&f.default, &logs(&f));
-        assert!(info.previous_exists);
-        assert!(info.previous_size_bytes > 1000);
-        let removed = remove_old(&f.default).unwrap();
-        assert_eq!(removed, info.previous_size_bytes);
-        assert_eq!(
-            names(&f.default),
-            [
-                "credentials",
-                "location.json",
-                "notes.txt",
-                "owner.lock",
-                "window.json"
-            ]
-        );
-        assert_eq!(names(&f.default.join("credentials")), ["graph-a.json"]);
-        let pointer = try_read_location(&f.default).unwrap();
-        assert_eq!(pointer.previous, None);
-        assert_eq!(pointer.data_dir, Some(target.clone()));
-        assert_eq!(remove_old(&f.default).unwrap_err().code, "not_found");
-        assert!(!location_info(&f.default, &logs(&f)).previous_exists);
-        // The current data is untouched and still open.
-        core.repo().unwrap().put_record(&note("n1", "x")).unwrap();
-
-        // Move on to a second drive; the old copy is now a custom folder with a user file in it.
-        fs::write(target.join("my-notes.txt"), "mine").unwrap();
-        let second = f.dir.path().join("Drive 2");
-        fs::create_dir(&second).unwrap();
-        let choice = Choice {
-            picked: &second,
-            mode: Mode::Move,
-            acknowledged: false,
-        };
-        let places = places(&f.default, &core, &f.home);
-        let newest = change(&places, &choice, Some(&core), &ROOMY, WAIT).unwrap();
-        core.release_for_restart();
-        let core = startup(&f.default, open_for_tests).core.unwrap();
-        assert_eq!(core.paths.data, newest);
-        assert!(target.join("connect.lock").is_file());
-        assert!(remove_old(&f.default).unwrap() > 0);
-        // Its marker and lock go too, but the user's file stays.
-        assert_eq!(names(&target), ["my-notes.txt"]);
-        assert_eq!(notes(&core), ["x"]);
-
-        // An old folder holding nothing but Connect's files goes altogether.
-        let gone = marked_root(&f.dir.path().join("Drive 3"), "gone");
-        fs::create_dir_all(gone.join("plugins")).unwrap();
-        fs::write(gone.join("workspace.sqlite"), "old").unwrap();
-        write_location(
-            &f.default,
-            &LocationFile {
-                previous: Some(gone.clone()),
-                ..try_read_location(&f.default).unwrap()
-            },
-        )
-        .unwrap();
-        let marker_bytes = fs::metadata(gone.join(MARKER)).unwrap().len();
-        assert_eq!(remove_old(&f.default).unwrap(), 3 + marker_bytes);
-        assert!(!gone.exists());
-        assert!(f.dir.path().join("Drive 3").is_dir());
-    }
-
-    #[test]
-    fn remove_old_never_touches_a_folder_that_is_not_connects() {
-        let f = Fixture::new();
-        let point = |previous: &Path| {
-            write_location(
-                &f.default,
-                &LocationFile {
-                    previous: Some(previous.to_path_buf()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        };
-        // Any other folder, even with Connect-like names inside.
-        let projects = f.dir.path().join("projects");
-        fs::create_dir_all(projects.join("plugins")).unwrap();
-        fs::write(projects.join("workspace.sqlite"), "theirs").unwrap();
-        point(&projects);
-        assert_eq!(remove_old(&f.default).unwrap_err().code, "not_connect");
-        assert!(!location_info(&f.default, &logs(&f)).previous_exists);
-        // The right name without a marker.
-        let unmarked = f.dir.path().join("Stick").join(DATA_DIR_NAME);
-        fs::create_dir_all(unmarked.join("plugins")).unwrap();
-        point(&unmarked);
-        assert_eq!(remove_old(&f.default).unwrap_err().code, "not_connect");
-        // A marked folder inside the private folder.
-        let inside = marked_root(&f.default.join("credentials"), "inside");
-        fs::create_dir_all(inside.join("plugins")).unwrap();
-        point(&inside);
-        assert_eq!(remove_old(&f.default).unwrap_err().code, "not_connect");
-        // The folder in use now.
-        point(&f.default);
-        assert_eq!(remove_old(&f.default).unwrap_err().code, "current_folder");
-        // A pointer Connect can't read says why, and nothing is removed.
-        fs::write(f.default.join("location.json"), "{broken").unwrap();
-        let err = remove_old(&f.default).unwrap_err();
-        assert_eq!(err.code, "pointer_unreadable");
-        assert!(
-            err.message.contains("key must be a string"),
-            "{}",
-            err.message
-        );
-        assert!(projects.join("plugins").is_dir());
-        assert!(projects.join("workspace.sqlite").is_file());
-        assert!(unmarked.join("plugins").is_dir());
-        assert!(inside.join("plugins").is_dir());
-        assert!(f.default.join("workspace.sqlite").is_file());
-        assert_eq!(notes(&f.core).len(), 0);
-    }
+    // ---------------------------------------------------------------- check
 
     #[test]
     fn check_offers_the_modes_the_folder_allows() {
@@ -1366,37 +1267,6 @@ mod tests {
         let same = check(&current, &marked, true, &ROOMY);
         assert!(same.modes.is_empty());
         assert_eq!(same.issues[0].code, "current_folder");
-    }
-
-    #[test]
-    fn location_info_measures_the_data_folder_without_ai_staging() {
-        let f = Fixture::new();
-        let empty = location_info(&f.default, &logs(&f));
-        fs::create_dir_all(f.default.join("ai-staging")).unwrap();
-        fs::write(f.default.join("ai-staging/big"), "x".repeat(50_000)).unwrap();
-        fs::create_dir_all(f.default.join("plugins")).unwrap();
-        fs::write(f.default.join("plugins/main.js"), "x".repeat(3000)).unwrap();
-        let info = location_info(&f.default, &logs(&f));
-        assert_eq!(info.size_bytes, empty.size_bytes + 3000);
-        assert_eq!(info.data_root, f.default);
-        assert_eq!(info.private_root, f.default);
-        assert_eq!(info.logs, logs(&f));
-        assert!(!info.custom);
-        assert_eq!(info.previous, None);
-        assert!(!info.previous_exists);
-        let json = serde_json::to_value(&info).unwrap();
-        for key in [
-            "dataRoot",
-            "privateRoot",
-            "logs",
-            "custom",
-            "sizeBytes",
-            "previous",
-            "previousExists",
-            "previousSizeBytes",
-        ] {
-            assert!(json.get(key).is_some(), "{key}");
-        }
     }
 
     #[test]
