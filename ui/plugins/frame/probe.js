@@ -1,16 +1,18 @@
 // Isolation probe (smoke only, CODEMIE_PLUGIN_SMOKE=isolation; DESIGN 7.3). It runs where plugin
 // code will run, in a sandboxed connect-plugin frame, tries everything plugin code must not be
-// able to do, and reports what it saw to the main window. Outside a frame opened with ?probe=1 it
-// does nothing.
+// able to do, and reports what it saw to the main window, echoing the run id it was opened with.
+// Outside a frame opened with ?probe=1 it does nothing. Keep it: the gate must stay re-runnable.
 
 // The start of the line a forged call would print through smoke_emit; Rust watches for it.
 const FORGED = 'PLUGIN_FRAME_FORGED_IPC';
 const GUESSED_KEY = 'forged-by-plugin-frame';
 
-if (window.parent !== window && new URLSearchParams(location.search).get('probe') === '1') {
+const params = new URLSearchParams(location.search);
+if (window.parent !== window && params.get('probe') === '1') {
+  const runId = params.get('run');
   run().then(
-    (report) => parent.postMessage({ kind: 'connect-plugin-isolation', report }, '*'),
-    (e) => parent.postMessage({ kind: 'connect-plugin-isolation', report: { error: describeError(e) } }, '*'),
+    (report) => parent.postMessage({ kind: 'connect-plugin-isolation', report: { runId, ...report } }, '*'),
+    (e) => parent.postMessage({ kind: 'connect-plugin-isolation', report: { runId, error: describeError(e) } }, '*'),
   );
 }
 
@@ -56,6 +58,29 @@ async function forgeFetch(url) {
   }
 }
 
+// Ways out of the frame the sandbox must close. Each aims the main window at the shim page, which
+// the navigation guard would allow, so only the sandbox stands in the way. If one worked, the main
+// window would leave Connect's page and the smoke would never write its report.
+function escapes() {
+  const shim = location.href;
+  return {
+    topNavigation: attempt(() => {
+      top.location.href = shim;
+      return 'assigned';
+    }),
+    windowOpen: attempt(() => window.open(shim)),
+    formTargetTop: attempt(() => {
+      const form = document.createElement('form');
+      form.method = 'get';
+      form.action = shim;
+      form.target = '_top';
+      document.body.append(form);
+      form.submit();
+      return 'submit() returned';
+    }),
+  };
+}
+
 // The same call through the native message handler, with a forged Origin header as well: only
 // Tauri's invoke key (which frames never get) stands in the way on this path.
 function forgePostMessage() {
@@ -97,6 +122,7 @@ async function run() {
   observed.localStorage = attempt(() => window.localStorage.length);
   observed.sessionStorage = attempt(() => window.sessionStorage.length);
   observed.cookie = attempt(() => document.cookie);
+  observed.escapes = escapes();
 
   return {
     tauriGlobal: observed.tauriGlobal !== 'undefined',

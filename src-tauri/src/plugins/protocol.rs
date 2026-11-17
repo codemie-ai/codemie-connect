@@ -1,10 +1,12 @@
 //! The `connect-plugin` scheme (DESIGN 7.3): plugin UIs and Connect's frame shim, served to the
 //! sandboxed frames inside the main window.
 //!
-//! URLs. macOS and Linux: `connect-plugin://<id>/<path>`. Windows, where WebView2 serves custom
-//! schemes over http: `http://connect-plugin.localhost/<id>/<path>`. On macOS each plugin is its
-//! own origin, so its CSP (`frame_csp`) admits that plugin's files and the shim served under it,
-//! not another plugin's.
+//! URLs: `connect-plugin://<id>/<path>`. Each plugin is its own origin, so its CSP (`frame_csp`)
+//! admits that plugin's files and the shim served under it, not another plugin's.
+//!
+//! Not on Windows: wry injects its init scripts, the invoke key among them, into subframes there,
+//! and WebView2 guards only top-level navigation and messages, so a plugin frame would hold the
+//! key. Every request is refused there (`PLUGIN_FRAMES_SUPPORTED`).
 //! - `__host/<file>` is the bundled shim, `ui/plugins/frame/<file>`. It is Connect's own code and
 //!   the same for every plugin, so any well-formed id serves it.
 //! - Any other path is a file of the plugin's active version,
@@ -24,8 +26,8 @@ use tauri::http::{Method, Request, Response, StatusCode, Uri};
 use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 pub const SCHEME: &str = "connect-plugin";
-/// The host WebView2 gives the scheme on Windows.
-pub const WINDOWS_HOST: &str = "connect-plugin.localhost";
+/// Whether plugin frames can be isolated on this platform (see the module comment).
+pub const PLUGIN_FRAMES_SUPPORTED: bool = !cfg!(windows);
 /// The path prefix of the bundled shim under every plugin.
 pub const HOST_DIR: &str = "__host";
 /// The policy of every refusal.
@@ -94,22 +96,19 @@ fn target(uri: &Uri) -> Option<Target> {
     if authority.as_str() != authority.host() {
         return None;
     }
-    let mut segments = uri.path().strip_prefix('/')?.split('/');
-    let scheme = uri.scheme_str()?;
-    let (id, origin) = match scheme {
-        SCHEME => (authority.host(), format!("{SCHEME}://{}", authority.host())),
-        "http" | "https" if authority.host() == WINDOWS_HOST => {
-            (segments.next()?, format!("{scheme}://{WINDOWS_HOST}"))
-        }
-        _ => return None,
-    };
-    if !super::valid_id(id) {
+    let id = authority.host();
+    if uri.scheme_str()? != SCHEME || !super::valid_id(id) {
         return None;
     }
-    let path = segments.map(decode_segment).collect::<Option<Vec<_>>>()?;
+    let path = uri
+        .path()
+        .strip_prefix('/')?
+        .split('/')
+        .map(decode_segment)
+        .collect::<Option<Vec<_>>>()?;
     Some(Target {
         id: id.to_string(),
-        origin,
+        origin: format!("{SCHEME}://{id}"),
         path,
     })
 }
@@ -223,28 +222,54 @@ pub fn handle<R: Runtime>(
 ) {
     let app = ctx.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        responder.respond(serve(&req, &app_roots(&app)));
+        let roots = app_roots(&app);
+        responder.respond(answer(&req, roots.as_ref(), PLUGIN_FRAMES_SUPPORTED));
     });
 }
 
-fn app_roots<R: Runtime>(app: &AppHandle<R>) -> PluginRoots {
+/// `serve`, unless plugin frames aren't supported here (404) or the data folder wasn't resolved
+/// (503).
+fn answer(
+    req: &Request<Vec<u8>>,
+    roots: Option<&PluginRoots>,
+    supported: bool,
+) -> Response<Vec<u8>> {
+    match (supported, roots) {
+        (false, _) => refuse(StatusCode::NOT_FOUND),
+        (true, None) => refuse(StatusCode::SERVICE_UNAVAILABLE),
+        (true, Some(roots)) => serve(req, roots),
+    }
+}
+
+/// A file of the bundled shim by its exact asset key. Tauri's resolver falls back to
+/// `<path>.html`, `<path>/index.html` and finally `index.html` (`manager/mod.rs` `get_asset`), so
+/// the key is checked first: a missing shim file must never come back as Connect's own page.
+fn bundled_frame_file(
+    rel: &str,
+    has_key: impl Fn(&str) -> bool,
+    get: impl FnOnce(String) -> Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    let key = format!("/plugins/frame/{rel}");
+    has_key(&key).then(|| get(key)).flatten()
+}
+
+/// The app's roots, or `None` when there is no workspace state to resolve the data folder from.
+fn app_roots<R: Runtime>(app: &AppHandle<R>) -> Option<PluginRoots> {
+    let state = app.try_state::<WorkspaceState>()?;
     let resolver = app.asset_resolver();
-    PluginRoots {
-        installed: app
-            .try_state::<WorkspaceState>()
-            .map(|s| s.resolved.data_root.join("plugins").join("installed"))
-            .unwrap_or_default(),
+    Some(PluginRoots {
+        installed: state.resolved.data_root.join("plugins").join("installed"),
         host_file: Box::new(move |rel| {
-            // The resolver falls back to `<path>.html`, `<path>/index.html` and finally
-            // `index.html`; only an exact bundled file may be served, never Connect's own page.
-            let key = format!("/plugins/frame/{rel}");
-            let exists = resolver.iter().any(|(k, _)| k == key.as_str());
-            exists.then(|| resolver.get(key)).flatten().map(|a| a.bytes)
+            bundled_frame_file(
+                rel,
+                |key| resolver.iter().any(|(k, _)| k == key),
+                |key| resolver.get(key).map(|a| a.bytes),
+            )
         }),
         // The plugin registry arrives with installs (Task 19, `<data root>/plugins/registry.json`);
         // until then nothing is installed and only the shim is served.
         active_version: Box::new(|_id| None),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -316,8 +341,6 @@ mod tests {
             "connect-plugin://hello/sub/page.js",
             "connect-plugin://hello/__host/frame.html",
             "connect-plugin://not-installed/__host/frame.html?probe=1",
-            "http://connect-plugin.localhost/hello/client.js",
-            "https://connect-plugin.localhost/hello/__host/probe.js",
         ] {
             assert_eq!(get(&f.roots, ok).status(), 200, "{ok}");
         }
@@ -333,11 +356,6 @@ mod tests {
             ("connect-plugin://hello/..%5csecret.txt", 404),
             ("connect-plugin://hello/__host/..%2fprobe.js", 404),
             ("connect-plugin://hello/__host/../../secret.txt", 404),
-            ("http://connect-plugin.localhost/hello/..%2fsecret.txt", 404),
-            (
-                "http://connect-plugin.localhost/hello/%2e%2e/secret.txt",
-                404,
-            ),
             // Absolute paths, a NUL, a drive letter and a dotfile.
             ("connect-plugin://hello//etc/passwd", 404),
             ("connect-plugin://hello/%2fetc%2fpasswd", 404),
@@ -360,8 +378,14 @@ mod tests {
             ("connect-plugin://hello:80/client.js", 404),
             ("connect-plugin://user@hello/client.js", 404),
             ("http://evil.localhost/hello/client.js", 404),
-            ("http://connect-plugin.localhost/", 404),
             ("tauri://localhost/index.html", 404),
+            // WebView2's form of the scheme: plugin frames aren't served on Windows at all.
+            ("http://connect-plugin.localhost/hello/client.js", 404),
+            (
+                "https://connect-plugin.localhost/hello/__host/frame.html",
+                404,
+            ),
+            ("http://connect-plugin.localhost/", 404),
         ] {
             let res = get(&f.roots, uri);
             assert_eq!(res.status(), status, "{uri}");
@@ -418,8 +442,8 @@ mod tests {
                 &[0, 1, 2],
             ),
             (
-                "http://connect-plugin.localhost/hello/__host/probe.js",
-                "http://connect-plugin.localhost",
+                "connect-plugin://hello/__host/probe.js",
+                mac,
                 "text/javascript; charset=utf-8",
                 b"export {}",
             ),
@@ -478,9 +502,73 @@ mod tests {
                 "style-src 'self' 'unsafe-inline'",
                 "script-src 'self'",
                 "connect-src 'self' ipc: http://ipc.localhost",
-                // macOS, then Windows (WebView2 serves custom schemes over http).
-                &format!("frame-src {SCHEME}: http://{WINDOWS_HOST}"),
+                &format!("frame-src {SCHEME}:"),
             ]
         );
+    }
+
+    #[test]
+    fn plugin_frames_are_refused_on_windows() {
+        // wry injects its init scripts into subframes on Windows, so a plugin frame there would get
+        // the invoke key; until that is solved nothing is served there.
+        assert_eq!(PLUGIN_FRAMES_SUPPORTED, !cfg!(windows));
+        let f = fixture();
+        for uri in [
+            "connect-plugin://hello/client.js",
+            "connect-plugin://hello/__host/frame.html",
+        ] {
+            let req = Request::get(uri).body(Vec::new()).unwrap();
+            let res = answer(&req, Some(&f.roots), false);
+            assert_eq!(res.status(), 404, "{uri}");
+            assert!(res.body().starts_with(b"Not Found"), "{uri}");
+            assert_eq!(answer(&req, Some(&f.roots), true).status(), 200, "{uri}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_served_without_a_resolved_data_folder() {
+        let req = Request::get("connect-plugin://hello/__host/frame.html")
+            .body(Vec::new())
+            .unwrap();
+        let res = answer(&req, None, true);
+        assert_eq!(res.status(), 503);
+        assert_eq!(header(&res, "access-control-allow-origin"), None);
+    }
+
+    #[test]
+    fn bundled_frame_files_are_exact_keys_only() {
+        // Tauri's resolver falls back to `<path>.html`, `<path>/index.html` and then
+        // `index.html` (manager/mod.rs `get_asset`); `get` here does the same.
+        let keys = [
+            "/index.html",
+            "/plugins/frame/frame.html",
+            "/plugins/frame/probe.js",
+        ];
+        let has_key = |k: &str| keys.contains(&k);
+        let get = |k: String| -> Option<Vec<u8>> {
+            Some(match k.as_str() {
+                "/plugins/frame/frame.html" => b"frame".to_vec(),
+                "/plugins/frame/probe.js" => b"probe".to_vec(),
+                _ => b"<html>Connect's own page</html>".to_vec(),
+            })
+        };
+        assert_eq!(
+            bundled_frame_file("frame.html", has_key, get),
+            Some(b"frame".to_vec())
+        );
+        assert_eq!(
+            bundled_frame_file("probe.js", has_key, get),
+            Some(b"probe".to_vec())
+        );
+        for missing in [
+            "missing.js",
+            "frame",
+            "",
+            "../index.html",
+            "../../index.html",
+            "index.html",
+        ] {
+            assert_eq!(bundled_frame_file(missing, has_key, get), None, "{missing}");
+        }
     }
 }

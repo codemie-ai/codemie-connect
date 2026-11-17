@@ -12,19 +12,15 @@ use tauri::{plugin::TauriPlugin, Runtime, Url};
 /// allowed, never a plugin's own HTML or SVG: the shim is Connect's code and runs a plugin only
 /// inside a frame, and `plugins::caller` refuses commands while the window shows anything but
 /// Connect's page. `about:srcdoc` stays refused, so plugin frames are always loaded by `src`.
+/// Where plugin frames aren't supported (Windows), the shim is refused too; WebView2's
+/// `http://connect-plugin.localhost` form never counts.
 pub fn allowed(url: &Url) -> bool {
-    use crate::plugins::protocol::{HOST_DIR, SCHEME, WINDOWS_HOST};
-    let shim = format!("/{HOST_DIR}/frame.html");
+    use crate::plugins::protocol::{HOST_DIR, PLUGIN_FRAMES_SUPPORTED, SCHEME};
     match url.scheme() {
         s if s == SCHEME => {
-            url.host_str().is_some_and(crate::plugins::valid_id) && url.path() == shim
-        }
-        "http" | "https" if url.host_str() == Some(WINDOWS_HOST) => {
-            url.path().strip_prefix('/').is_some_and(|p| {
-                p.split_once('/').is_some_and(|(id, rest)| {
-                    crate::plugins::valid_id(id) && format!("/{rest}") == shim
-                })
-            })
+            PLUGIN_FRAMES_SUPPORTED
+                && url.host_str().is_some_and(crate::plugins::valid_id)
+                && url.path() == format!("/{HOST_DIR}/frame.html")
         }
         "about" => url.path() == "blank",
         _ => crate::plugins::caller::is_app_page(url),
@@ -55,16 +51,24 @@ mod tests {
     #[test]
     fn navigation_stays_inside_the_app() {
         let ok = |u: &str| allowed(&Url::parse(u).unwrap());
-        for inside in [
+        // Connect's page is `tauri://localhost` on macOS and `http(s)://tauri.localhost` on Windows.
+        let mac = [
             "tauri://localhost/index.html",
             "tauri://localhost/index.html#/automations/runs",
+        ];
+        let windows = [
             "http://tauri.localhost/index.html",
             "https://tauri.localhost/index.html",
-            "about:blank",
-        ] {
+        ];
+        let (own, other) = if cfg!(windows) {
+            (windows, mac)
+        } else {
+            (mac, windows)
+        };
+        for inside in own.into_iter().chain(["about:blank"]) {
             assert!(ok(inside), "{inside}");
         }
-        for outside in [
+        for outside in other.into_iter().chain([
             "https://example.test/plan",
             "http://example.test/old",
             "https://tauri.localhost.evil.test/",
@@ -73,7 +77,7 @@ mod tests {
             "javascript:alert(1)",
             "data:text/html,<p>x</p>",
             "about:srcdoc",
-        ] {
+        ]) {
             assert!(!ok(outside), "{outside}");
         }
     }
@@ -84,10 +88,10 @@ mod tests {
         for shim in [
             "connect-plugin://github/__host/frame.html",
             "connect-plugin://isolation-probe/__host/frame.html?probe=1",
-            "http://connect-plugin.localhost/github/__host/frame.html",
-            "https://connect-plugin.localhost/github/__host/frame.html#x",
+            "connect-plugin://github/__host/frame.html#x",
         ] {
-            assert!(ok(shim), "{shim}");
+            let supported = crate::plugins::protocol::PLUGIN_FRAMES_SUPPORTED;
+            assert_eq!(ok(shim), supported, "{shim}");
         }
         // A plugin's own documents (HTML, SVG, XML) would run its code as a page; only the shim,
         // Connect's code, may be one. Its scripts and images load as subresources.
@@ -100,8 +104,10 @@ mod tests {
             "connect-plugin://github/sub/__host/frame.html",
             "connect-plugin://Github/__host/frame.html",
             "connect-plugin://__host/frame.html",
+            // WebView2's form of the scheme: plugin frames aren't served on Windows yet.
+            "http://connect-plugin.localhost/github/__host/frame.html",
+            "https://connect-plugin.localhost/github/__host/frame.html",
             "http://connect-plugin.localhost/github/page.html",
-            "http://connect-plugin.localhost/__host/frame.html",
             "http://evil.localhost/github/__host/frame.html",
         ] {
             assert!(!ok(refused), "{refused}");

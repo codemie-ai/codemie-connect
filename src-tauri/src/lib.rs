@@ -23,6 +23,11 @@ pub fn run() {
         )
         .setup(|app| {
             plugins::caller::trust_dev_server(app.config());
+            // Before single-instance, which would hand a smoke launch to a running Connect.
+            commands::smoke::start_plugin_smoke(
+                &app.config().identifier,
+                &app.package_info().version.to_string(),
+            );
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
             // Capture PATH before injection so detection searches the pre-bundle PATH,

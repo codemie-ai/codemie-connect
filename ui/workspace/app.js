@@ -24,11 +24,13 @@ import { bootWorkspace, notificationWorkspaceToSelect } from './boot.js';
 import { recoveryPage, firstReport, USE_DEFAULT_WARNING } from './recovery.js';
 import { formatBytes, removeOldBody, useDefaultBody } from './settings-storage.js';
 import { createDataLocationFlow } from './data-location-flow.js';
+import { withAppOrigin } from './app-invoke.js';
 
 const ROUTES = ['today', 'calendar', 'inbox', 'automations', 'settings'];
 const root = document.getElementById('workspace-app');
 const legacy = document.getElementById('app');
-const invoke = window.__TAURI__?.core?.invoke;
+const rawInvoke = window.__TAURI__?.core?.invoke;
+const invoke = rawInvoke && withAppOrigin(rawInvoke, location.origin);
 // Any workspace call that finds the data folder unusable switches to the recovery page.
 const watched = invoke && (async (cmd, args) => {
   try {
@@ -1669,7 +1671,7 @@ async function boot() {
   const flags = await invoke('smoke_mode');
   if (flags.plugin === 'isolation') {
     const { runIsolationSmoke } = await import('../plugins/isolation-smoke.js');
-    return runIsolationSmoke(invoke);
+    return runIsolationSmoke(invoke, { runId: flags.plugin_run_id });
   }
   if (flags.smoke || flags.probe) {
     root.classList.add('hidden');

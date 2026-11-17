@@ -7,10 +7,10 @@ const PROBE_ID = 'isolation-probe';
 const REPORT_TIMEOUT_MS = 15000;
 const NAVIGATION_SETTLE_MS = 1500;
 
-export async function runIsolationSmoke(invoke, doc = document) {
+export async function runIsolationSmoke(invoke, { runId, doc = document } = {}) {
   let report;
   try {
-    report = await probe(invoke, doc);
+    report = await probe(invoke, doc, runId);
   } catch (e) {
     report = { error: String((e && e.message) || e) };
   }
@@ -24,10 +24,13 @@ export async function runIsolationSmoke(invoke, doc = document) {
   await invoke('close_app');
 }
 
-async function probe(invoke, doc) {
+const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function probe(invoke, doc, runId) {
+  const startPage = location.href;
   const frame = doc.createElement('iframe');
   frame.setAttribute('sandbox', 'allow-scripts');
-  frame.src = pluginUrl(PROBE_ID, '__host/frame.html?probe=1');
+  frame.src = pluginUrl(PROBE_ID, `__host/frame.html?probe=1&run=${encodeURIComponent(runId || '')}`);
   const reported = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('the probe frame did not report')), REPORT_TIMEOUT_MS);
     window.addEventListener('message', function onMessage(event) {
@@ -40,15 +43,21 @@ async function probe(invoke, doc) {
   doc.body.append(frame);
   const event = await reported;
   const report = { ...event.data.report };
+  // The probe tried to take the main window to the shim page; it must still be on Connect's.
+  await settle(NAVIGATION_SETTLE_MS);
   report.observed = {
     ...report.observed,
     frameSrc: frame.src,
     frameSandbox: frame.getAttribute('sandbox'),
     messageOrigin: event.origin,
+    mainPageStayed: location.href === startPage,
+    mainFrameLocationOrigin: location.origin,
     // Connect's own page still gets through the caller checks on guarded commands.
     mainFrameStorageStatus: await mainFrameCall(invoke, 'storage_status'),
     mainFrameWorkspaceSnapshot: await mainFrameCall(invoke, 'workspace_request', { request: { op: 'snapshot' } }),
     nonShimDocumentRefused: await nonShimDocumentRefused(doc),
+    // Last, because it switches this page to Tauri's postMessage IPC for good.
+    postMessageFallback: await postMessageFallback(invoke),
   };
   return report;
 }
@@ -63,7 +72,7 @@ async function nonShimDocumentRefused(doc) {
   const frame = doc.createElement('iframe');
   frame.src = pluginUrl(PROBE_ID, '__host/probe-import.js');
   doc.body.append(frame);
-  await new Promise((resolve) => setTimeout(resolve, NAVIGATION_SETTLE_MS));
+  await settle(NAVIGATION_SETTLE_MS);
   let url;
   try {
     url = frame.contentDocument ? frame.contentDocument.URL : 'cross-origin';
@@ -72,4 +81,23 @@ async function nonShimDocumentRefused(doc) {
   }
   frame.remove();
   return url === 'about:blank';
+}
+
+// Makes Tauri's ipc: fetch fail once, as a blocked custom protocol would, so Tauri switches to
+// postMessage. There the browser sets no Origin: Connect's invoke still gets through because it
+// sends the page origin, and a bare call without one is refused.
+async function postMessageFallback(invoke) {
+  const realFetch = window.fetch;
+  window.fetch = (input, init) =>
+    String(input?.url || input).startsWith('ipc:')
+      ? Promise.reject(new TypeError('ipc: blocked for the fallback check'))
+      : realFetch(input, init);
+  try {
+    return {
+      withAppOrigin: await mainFrameCall(invoke, 'storage_status'),
+      withoutOrigin: await mainFrameCall(window.__TAURI__.core.invoke, 'storage_status'),
+    };
+  } finally {
+    window.fetch = realFetch;
+  }
 }

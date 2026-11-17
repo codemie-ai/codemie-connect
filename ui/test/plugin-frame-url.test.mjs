@@ -2,19 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pluginUrl } from '../plugins/frame-url.js';
 
-const mac = { windows: false, protocol: 'tauri:' };
+const mac = { windows: false };
 
 test('plugin frames use one connect-plugin host per plugin on macOS', () => {
   assert.equal(pluginUrl('github', '__host/frame.html', mac), 'connect-plugin://github/__host/frame.html');
   assert.equal(pluginUrl('isolation-probe', '/__host/frame.html?probe=1', mac), 'connect-plugin://isolation-probe/__host/frame.html?probe=1');
-  // Under `cargo tauri dev` the page comes from the CLI's http server; the scheme is unchanged.
-  assert.equal(pluginUrl('github', 'client.js', { windows: false, protocol: 'http:' }), 'connect-plugin://github/client.js');
 });
 
-test('plugin frames use the host WebView2 gives the scheme on Windows', () => {
-  assert.equal(pluginUrl('github', '__host/frame.html', { windows: true, protocol: 'http:' }), 'http://connect-plugin.localhost/github/__host/frame.html');
-  // With useHttpsScheme the page and the scheme are both https.
-  assert.equal(pluginUrl('github', 'client.js', { windows: true, protocol: 'https:' }), 'https://connect-plugin.localhost/github/client.js');
+test('plugin frames are refused on Windows', () => {
+  // wry injects its init scripts into subframes there, so a frame would get the invoke key.
+  assert.throws(() => pluginUrl('github', '__host/frame.html', { windows: true }), /Plugins aren't available on Windows yet\./);
 });
 
 test('a malformed plugin id never becomes a frame URL', () => {
