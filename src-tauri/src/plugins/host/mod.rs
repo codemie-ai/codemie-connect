@@ -365,6 +365,13 @@ impl PluginHost {
         }
     }
 
+    /// Whether any loaded plugin is granted `event`.
+    pub fn anyone_hears(&self, event: &str) -> bool {
+        self.plugins()
+            .values()
+            .any(|e| e.package.grants.events.contains(event))
+    }
+
     /// Tells every plugin granted `event` (`uses.events.on`) that it happened.
     pub fn emit(&self, event: &str, payload: Value) {
         self.emit_where(event, payload, |_| true);

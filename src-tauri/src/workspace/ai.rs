@@ -32,7 +32,7 @@ impl From<AiError> for WorkspaceError {
 }
 
 /// The error that explains an unready profile, `None` when it can run.
-fn unready_error(profile: &AiProfile) -> Option<AiError> {
+pub(super) fn unready_error(profile: &AiProfile) -> Option<AiError> {
     let class = match profile.state {
         ProfileState::Ready => return None,
         ProfileState::NotInstalled => ErrorClass::NotInstalled,
@@ -186,6 +186,26 @@ impl Core {
         elapsed: Duration,
         ref_id: Option<&str>,
     ) {
+        let record = self.ai_run_record(spec, outcome, error, elapsed, ref_id);
+        self.put_ai_run(&record);
+    }
+
+    /// Writes an `ai_run` record; a ledger problem is only logged.
+    pub(super) fn put_ai_run(&self, record: &Record) {
+        if let Err(e) = self.repo().and_then(|mut r| r.put_ai_run(record)) {
+            log::warn!("ai: cannot record usage: {}", e.code);
+        }
+    }
+
+    /// The `ai_run` record of one run (see [`Core::record_run`]).
+    pub(super) fn ai_run_record(
+        &self,
+        spec: &RunSpec,
+        outcome: Option<&RunOutcome>,
+        error: Option<&AiError>,
+        elapsed: Duration,
+        ref_id: Option<&str>,
+    ) -> Record {
         let status = error.map_or_else(|| "ok".to_string(), |e| wire_name(e.class));
         let model = outcome
             .and_then(|o| o.model.clone())
@@ -206,7 +226,7 @@ impl Core {
             .and_then(|r| r.settings())
             .map(|s| s.time_zone)
             .unwrap_or_default();
-        let record = Record {
+        Record {
             id: id(),
             kind: "ai_run".into(),
             connection_id: None,
@@ -226,9 +246,6 @@ impl Core {
                 "month": month_now(&zone),
                 "at": at,
             }),
-        };
-        if let Err(e) = self.repo().and_then(|mut r| r.put_ai_run(&record)) {
-            log::warn!("ai: cannot record usage: {}", e.code);
         }
     }
 

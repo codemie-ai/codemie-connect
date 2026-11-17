@@ -7,18 +7,27 @@
 //! - `<data>/plugins/data/<id>/store/`: its store (`store`).
 //! - `<data>/plugins/data/<id>/`: Connect's own files about it, outside the store so the plugin
 //!   can't write them: `settings.json`, `folders.json` (the folders it was given).
-//! - `<private>/credentials/plugins/<id>/`: its `secret` settings, 0600 in a 0700 folder.
+//! - `<private>/credentials/plugins/<id>/`: its `secret` settings and sign-ins, 0600 in a 0700
+//!   folder.
+//! - `<data>/plugins/shared/<namespace>.json`: values a marketplace's plugins share.
 //!
 //! The services: `store` (with `package`), `settings`, `fs` (with `system`), `http`, `notify`
-//! (with `log`) and `markdown`.
+//! (with `log`), `markdown`; `claude` (with `profiles`), `deliver`, `today` (inbox, widgets,
+//! work rows), `echo_read`, `events` (shared values) and `signin`.
+pub mod claude;
+pub mod deliver;
+pub mod echo_read;
+pub mod events;
 pub mod fs;
 pub mod http;
 pub mod markdown;
 pub mod notify;
 pub mod settings;
+pub mod signin;
 pub mod store;
+pub mod today;
 
-use super::host::{ErrorCode, HostError, HostServices};
+use super::host::{ErrorCode, HostError, HostServices, PluginHost};
 use super::manifest::{parse_manifest, SettingDef, WidgetDef};
 use super::registry::{Installed, PluginPaths};
 use crate::workspace::Core;
@@ -26,7 +35,7 @@ use futures_util::future::BoxFuture;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, PoisonError, RwLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 /// What one loaded plugin may do: its installed package and the `uses` keys the user agreed to.
 #[derive(Debug, Clone)]
@@ -42,6 +51,9 @@ pub struct Granted {
     pub uses: Map<String, Value>,
     pub settings: Vec<SettingDef>,
     pub widgets: Vec<WidgetDef>,
+    /// The namespace of the values it shares with its marketplace's plugins: the marketplace's
+    /// name, lowercase.
+    pub namespace: String,
 }
 
 impl Granted {
@@ -67,6 +79,7 @@ impl Granted {
             uses,
             settings: m.settings,
             widgets: m.widgets,
+            namespace: installed.market.to_lowercase(),
         })
     }
 
@@ -109,6 +122,13 @@ pub trait FolderPicker: Send + Sync {
     fn pick(&self, title: String) -> BoxFuture<'static, Option<PathBuf>>;
 }
 
+/// What the services reach outside Connect: the native ones in the app, stand-ins in tests.
+pub struct Outside {
+    pub picker: Arc<dyn FolderPicker>,
+    pub signin: Arc<dyn signin::SignInSource>,
+    pub http: http::Client,
+}
+
 /// Connect's services for every loaded plugin.
 pub struct Services {
     me: Weak<Services>,
@@ -117,33 +137,65 @@ pub struct Services {
     /// that don't use it.
     core: Option<Arc<Core>>,
     plugins: RwLock<HashMap<String, Arc<Granted>>>,
-    http: http::Client,
-    picker: Arc<dyn FolderPicker>,
+    outside: Outside,
+    /// The host the plugins run in, for deliveries to another plugin and `shared_changed`.
+    host: OnceLock<Weak<PluginHost>>,
+    /// The delivery ways plugins add (`deliver.provide`), by kind.
+    providers: Mutex<std::collections::BTreeMap<String, deliver::Provider>>,
+    /// The widgets and work rows plugins give by `provide`, and which changed.
+    today: Mutex<today::Provided>,
+    /// `ctx.profiles()`, refreshed by the plugin manager (detection is too slow for a turn).
+    profiles: RwLock<Value>,
 }
 
 impl Services {
-    pub fn new(
-        paths: PluginPaths,
-        core: Option<Arc<Core>>,
-        picker: Arc<dyn FolderPicker>,
-    ) -> Arc<Services> {
-        Services::with_http(paths, core, picker, http::Client::new())
-    }
-
-    pub fn with_http(
-        paths: PluginPaths,
-        core: Option<Arc<Core>>,
-        picker: Arc<dyn FolderPicker>,
-        http: http::Client,
-    ) -> Arc<Services> {
+    pub fn new(paths: PluginPaths, core: Option<Arc<Core>>, outside: Outside) -> Arc<Services> {
         Arc::new_cyclic(|me| Services {
             me: me.clone(),
             paths,
             core,
             plugins: RwLock::new(HashMap::new()),
-            http,
-            picker,
+            outside,
+            host: OnceLock::new(),
+            providers: Mutex::default(),
+            today: Mutex::default(),
+            profiles: RwLock::new(serde_json::json!({"default": null, "profiles": []})),
         })
+    }
+
+    /// The host the plugins run in.
+    pub fn set_host(&self, host: &Arc<PluginHost>) {
+        let _ = self.host.set(Arc::downgrade(host));
+    }
+
+    fn host(&self) -> Result<Arc<PluginHost>, HostError> {
+        self.host
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| HostError::new(ErrorCode::NotFound, "Connect's plugins have stopped"))
+    }
+
+    /// Keeps what `ctx.profiles()` answers.
+    pub fn set_profiles(&self, profiles: Value) {
+        *self
+            .profiles
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = profiles;
+    }
+
+    /// The providers plugins registered, for the plugin manager to ask.
+    pub(crate) fn today(&self) -> &Mutex<today::Provided> {
+        &self.today
+    }
+
+    /// Every loaded plugin's grants.
+    pub fn loaded(&self) -> Vec<Arc<Granted>> {
+        self.plugins
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Lets the plugin use its services (it is being loaded).
@@ -154,12 +206,14 @@ impl Services {
             .insert(granted.id.clone(), Arc::new(granted));
     }
 
-    /// Ends the plugin's services (it was unloaded).
+    /// Ends the plugin's services (it was unloaded): its delivery ways and providers go too.
     pub fn forget(&self, id: &str) {
         self.plugins
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id);
+        lock(&self.providers).retain(|_, p| p.plugin != id);
+        lock(&self.today).forget(id);
     }
 
     /// The grants of a loaded plugin.
@@ -219,6 +273,22 @@ impl HostServices for Services {
             }
             "system.which" => fs::which(text(&args, 0, "a program's name")?),
             n if n.starts_with("fs.") => fs::call(self, &p, n, &args),
+            "profiles" => Ok(self
+                .profiles
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()),
+            n if n.starts_with("inbox.") || n.starts_with("widgets.") || n.starts_with("work.") => {
+                today::call(self, &p, n, &args)
+            }
+            n if n.starts_with("deliver.") => deliver::call(self, &p, n, &args),
+            "echo.read" => echo_read::read(self, &p, &args),
+            "echo.dictionary.add" => echo_read::dictionary_add(self, &p, at(&args, 0)),
+            "shared.get" => events::shared_get(self, text(&args, 0, "a shared key")?),
+            "shared.set" => {
+                events::shared_set(self, &p, text(&args, 0, "a shared key")?, at(&args, 1))
+            }
+            n if n.starts_with("signin.") => signin::call(self, &p, n, &args),
             _ => Err(unsupported(name)),
         }
     }
@@ -242,8 +312,14 @@ impl HostServices for Services {
                 "http.fetch" => {
                     let url = text(&args, 0, "an address")?.to_string();
                     let listed = settings::listed_addresses(&me, &p);
-                    me.http.fetch(&p, &listed, &url, at(&args, 1)).await
+                    me.outside.http.fetch(&p, &listed, &url, at(&args, 1)).await
                 }
+                "claude.run" => claude::run(&me, &p, at(&args, 0)).await,
+                "deliver.send" => {
+                    let kind = text(&args, 0, "a way to send")?.to_string();
+                    deliver::send(&me, &p, &kind, at(&args, 1)).await
+                }
+                "signin.get" => signin::get(&me, &p, &args).await,
                 _ => Err(unsupported(&name)),
             }
         })
@@ -251,6 +327,11 @@ impl HostServices for Services {
 }
 
 // ------------------------------------------------------------------ shared helpers
+
+/// A lock whose holder panicked is still usable: the state is plain data.
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// The `i`th argument (missing ones are `null`).
 pub(crate) fn at(args: &Value, i: usize) -> &Value {
@@ -326,10 +407,29 @@ pub(crate) mod testing {
         }
     }
 
+    /// A made-up GitHub CLI: its token, and how often it was read.
+    #[derive(Default)]
+    pub struct FakeGh {
+        pub token: Mutex<Option<String>>,
+        pub reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl signin::SignInSource for FakeGh {
+        fn gh_token(&self, _host: &str) -> BoxFuture<'static, Result<Option<String>, String>> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let token = self.token.lock().unwrap().clone();
+            Box::pin(async move { Ok(token) })
+        }
+        fn installed(&self, program: &str) -> bool {
+            program == "gh"
+        }
+    }
+
     pub struct Env {
         pub dir: tempfile::TempDir,
         pub services: Arc<Services>,
         pub picker: Arc<Picked>,
+        pub gh: Arc<FakeGh>,
     }
 
     impl Env {
@@ -343,11 +443,18 @@ pub(crate) mod testing {
             std::fs::create_dir_all(&data).unwrap();
             let paths = PluginPaths::new(&data, &dir.path().join("private"));
             let picker = Arc::new(Picked::default());
-            let services = Services::with_http(paths, core, picker.clone(), http);
+            let gh = Arc::new(FakeGh::default());
+            let outside = Outside {
+                picker: picker.clone(),
+                signin: gh.clone(),
+                http,
+            };
+            let services = Services::new(paths, core, outside);
             Env {
                 dir,
                 services,
                 picker,
+                gh,
             }
         }
 
@@ -381,6 +488,7 @@ pub(crate) mod testing {
                 uses: serde_json::from_value(uses).unwrap(),
                 settings: serde_json::from_value(settings).unwrap(),
                 widgets: serde_json::from_value(widgets).unwrap(),
+                namespace: "acme".into(),
             });
             self.services.granted(id).unwrap()
         }

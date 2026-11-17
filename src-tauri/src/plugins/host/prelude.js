@@ -10,6 +10,7 @@
 //   answer(call, wire)      how a command, provider or apply(ctx) answers the host
 //   report(text)            an error from the plugin's own code, for the app log
 //   id                      the plugin's id
+//   about                   Connect's `{name, version, engine}` (`ctx.host`), as JSON text
 // It returns `{ dispatch, load, failure }`. Nothing is left on `globalThis`: plugin code reaches
 // the host only through `ctx`, and the host names the plugin itself on every call.
 ;(bridge) => {
@@ -112,6 +113,7 @@
   // `claude.hasPlugin/installPlugin`. Plugins test for them.
   const ctx = {
     id: bridge.id,
+    host: Object.freeze(parse(bridge.about)),
     terminal: false,
     log: (...parts) => direct('log')(parts.map(text).join(' ')),
 
@@ -144,6 +146,7 @@
       path: direct('store.path'),
     },
     settings: { get: direct('settings.get'), set: direct('settings.set') },
+    shared: { get: direct('shared.get'), set: direct('shared.set') },
     package: { read: direct('package.read'), list: direct('package.list') },
     fs: {
       folders: direct('fs.folders'),

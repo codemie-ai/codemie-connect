@@ -316,7 +316,7 @@ impl Repository {
             .and_then(|s| self.connection(s).ok());
         let visible = shown_account(connection.as_ref(), active);
         let cid = visible.map(|c| c.id.as_str()).unwrap_or("__unavailable__");
-        let mut local_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND workspace_id=?1 AND kind<>'automation_run' ORDER BY updated_at DESC")?;
+        let mut local_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND (workspace_id=?1 OR (workspace_id='' AND kind IN ('plugin_item','plugin_widget'))) AND kind<>'automation_run' ORDER BY updated_at DESC")?;
         let mut raw = local_stmt
             .query_map([&active.id], record_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -428,6 +428,46 @@ impl Repository {
         put_record(&tx, record)?;
         tx.commit()?;
         Ok(())
+    }
+    /// Deletes plugin records (`plugin_item`, `plugin_widget`): those of `kind` (any when
+    /// `None`) whose id is `id`, or starts with it when `prefix`. Returns how many went.
+    pub fn delete_plugin_records(
+        &mut self,
+        kind: Option<&str>,
+        id: &str,
+        prefix: bool,
+    ) -> Result<usize> {
+        let tx = self.db.transaction()?;
+        let gone = tx.execute(
+            "DELETE FROM records WHERE connection_id='' AND workspace_id='' AND kind IN ('plugin_item','plugin_widget') AND (?1 IS NULL OR kind=?1) AND (CASE WHEN ?3 THEN substr(id,1,length(?2))=?2 ELSE id=?2 END)",
+            params![kind, id, prefix],
+        )?;
+        if gone > 0 {
+            bump(&tx)?;
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
+    /// Deletes the plugin records of every plugin but `keep` (by their `plugin` field).
+    pub fn delete_plugin_records_except(&mut self, keep: &[String]) -> Result<usize> {
+        let tx = self.db.transaction()?;
+        let gone = tx.execute(
+            "DELETE FROM records WHERE connection_id='' AND workspace_id='' AND kind IN ('plugin_item','plugin_widget') AND ifnull(json_extract(body,'$.plugin'),'') NOT IN (SELECT value FROM json_each(?1))",
+            params![encode(&serde_json::json!(keep))?],
+        )?;
+        if gone > 0 {
+            bump(&tx)?;
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
+    /// The plugin records of `kind`.
+    pub fn plugin_records(&self, kind: &str) -> Result<Vec<Record>> {
+        let mut stmt = self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE kind=?1 AND connection_id='' AND workspace_id='' ORDER BY updated_at DESC")?;
+        let rows = stmt
+            .query_map([kind], record_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
     /// Appends one `ai_run` usage record. It does not bump the revision: a run finishing is
     /// not a change the open views must reconcile with.

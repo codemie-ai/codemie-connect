@@ -16,16 +16,23 @@
 //! | `remove` | `{id, deleteData}` | `{removed, deletedData}` (also for the kept data of a removed plugin) |
 //! | `installed` | | `[Installed]` |
 //! | `registry_reset` | | `{saved, adopted, leftovers}`, only when the list is `registry_unreadable` |
+//! | `signin` | `{id, host}` | `{signedIn, host, from}`: the user's Sign in on the plugin's settings |
+//! | `signout` | `{id, host}` | `{signedIn: false, host}` |
 //!
 //! `agreed` is every key of the sheet the user was shown and `sheetHash` that sheet's hash (from
 //! `inspect` or `needs_consent`): a sheet that changed since is refused as `changed`.
+//!
+//! A request that changes what is installed or turned on reloads the plugins (`PluginManager`).
+//! `plugin_call(id, command, args)` runs a loaded plugin's command.
 //!
 //! Requests are counted while they run, so a data-folder move waits for them (`Core::quiesce`);
 //! one that arrives during a move is refused with the move's own message.
 use super::caller::require_main_frame;
 use super::capabilities::SheetLine;
 use super::git::{CliGit, Git};
+use super::host::HostError;
 use super::install::{self, Agreement, Offer, Outcome};
+use super::manager::PluginManager;
 use super::market;
 use super::registry::{Market, PluginPaths, Registry, Source};
 use crate::storage::commands::{blocking, main_window_only, not_restarting};
@@ -35,6 +42,7 @@ use semver::Version;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 #[tauri::command]
 pub async fn plugins_request(
@@ -60,15 +68,76 @@ pub async fn plugins_request(
     let counted = core.begin_plugin_op();
     not_restarting(&state)?;
     let running = counted?;
+    if matches!(op.as_str(), "signin" | "signout") {
+        let a: SigninArg = arg(data.unwrap_or(Value::Null))?;
+        return manager_of(&window)?
+            .sign_in(&a.id, &a.host, op == "signin")
+            .await
+            .map_err(host_error);
+    }
     let paths = PluginPaths::new(&core.paths.data, &core.paths.private);
+    let changes = matches!(
+        op.as_str(),
+        "install" | "update" | "set_enabled" | "remove" | "registry_reset"
+    );
     // The count ends with the work itself, even if this future is dropped first.
-    blocking(move || {
+    let answer = blocking(move || {
         let _running = running;
         dispatch(&paths, &CliGit::default(), &op, data.unwrap_or(Value::Null))
     })
-    .await?
+    .await?;
+    if changes && answer.is_ok() {
+        if let Ok(manager) = manager_of(&window) {
+            manager.on_registry_change();
+        }
+    }
+    answer
 }
 
+/// `plugin_call(id, command, args)`: runs one of a plugin's host-half commands for Connect's own
+/// page (its client half's `ctx.call`, a widget's or an Inbox item's button). A plugin's frame
+/// reaches it only through the main window's bridge, which checks the frame (DESIGN 7.3).
+#[tauri::command]
+pub async fn plugin_call(
+    window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
+    id: String,
+    command: String,
+    args: Option<Value>,
+) -> Result<Value> {
+    require_main_frame(&call)?;
+    main_window_only(window.label())?;
+    manager_of(&window)?
+        .call(&id, &command, args.unwrap_or(Value::Null))
+        .await
+        .map_err(host_error)
+}
+
+/// The plugin manager, which runs while the data folder is open.
+fn manager_of(window: &tauri::WebviewWindow) -> Result<Arc<PluginManager>> {
+    use tauri::Manager;
+    window
+        .app_handle()
+        .try_state::<Arc<PluginManager>>()
+        .map(|m| m.inner().clone())
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "storage_unavailable",
+                "Your data folder isn’t open, so plugins aren’t running.",
+            )
+        })
+}
+
+/// A plugin's failure as the window hears it: its code (`permission`, `timeout`, …) and words.
+fn host_error(e: HostError) -> WorkspaceError {
+    WorkspaceError::new(e.code.as_str(), e.message)
+}
+
+#[derive(Deserialize)]
+struct SigninArg {
+    id: String,
+    host: String,
+}
 #[derive(Deserialize)]
 struct SourceArg {
     source: String,

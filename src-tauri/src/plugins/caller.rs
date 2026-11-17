@@ -65,9 +65,9 @@ fn dev_origin() -> Option<&'static str> {
 
 /// Checks that a command call comes from Connect's own page, not a plugin frame.
 ///
-/// Applied to `workspace_request`, `plugins_request` and the data-folder commands
+/// Applied to `workspace_request`, `plugins_request`, `plugin_call` and the data-folder commands
 /// (`storage_status`, `data_location_*`, `app_relaunch`). Every command that reaches plugins or
-/// plugin data must call it too: `plugin_call` (Task 22) when it is added (ruling R4).
+/// plugin data must call it first (ruling R4).
 pub fn require_main_frame(call: &tauri::ipc::Request<'_>) -> Result<()> {
     check_origin(call.headers(), dev_origin())
 }
@@ -334,10 +334,13 @@ mod tests {
         );
         // Every plugin command reaches plugins or plugin data (ruling R4).
         let plugins = include_str!("commands.rs");
-        assert_eq!(command_names(plugins), ["plugins_request"]);
-        assert_eq!(
-            first_statement(plugins, "plugins_request"),
-            "require_main_frame(&call)?;"
-        );
+        assert_eq!(command_names(plugins), ["plugins_request", "plugin_call"]);
+        for name in ["plugins_request", "plugin_call"] {
+            assert_eq!(
+                first_statement(plugins, name),
+                "require_main_frame(&call)?;",
+                "{name}"
+            );
+        }
     }
 }

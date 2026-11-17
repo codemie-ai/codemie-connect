@@ -12,7 +12,7 @@ mod inbox;
 pub(crate) mod markdown;
 pub mod models;
 mod paths;
-mod plugin_data;
+pub(crate) mod plugin_data;
 mod prompts;
 pub mod repository;
 pub mod schedules;
@@ -26,6 +26,7 @@ use crate::storage::location::Resolved;
 use models::*;
 use paths::{acquire_lock, Lock, LOCK_WAIT};
 pub use paths::{startup, CorePaths};
+pub use plugin_data::EventSink;
 use repository::Repository;
 use serde_json::{json, Value};
 use std::{
@@ -90,6 +91,10 @@ pub struct Core {
     jobs_in_flight: AtomicUsize,
     /// `plugins_request` calls running (installs write into the data folder).
     plugin_ops: AtomicUsize,
+    /// Where plugins hear what happened (`plugin_data`), once the plugin manager has started.
+    events: std::sync::OnceLock<Arc<dyn EventSink>>,
+    /// The meetings plugins were told of (`meeting_soon`), with their start.
+    meetings_told: Mutex<std::collections::HashMap<String, i64>>,
 }
 
 fn poisoned() -> WorkspaceError {
@@ -193,6 +198,8 @@ impl Core {
             loop_busy: AtomicBool::new(false),
             jobs_in_flight: AtomicUsize::new(0),
             plugin_ops: AtomicUsize::new(0),
+            events: std::sync::OnceLock::new(),
+            meetings_told: Default::default(),
         }))
     }
     /// Counts a plugin request as running, or refuses it while the workspace is held for a
@@ -441,6 +448,9 @@ impl Core {
             *last_sync = now();
             let _ = self.queue_sync();
         }
+        if ticks.is_multiple_of(30) {
+            self.announce_meetings(now());
+        }
         *ticks += 1;
         // Views keep their own clocks; this only nudges an idle window to pick up
         // background changes that did not emit an event of their own.
@@ -578,8 +588,11 @@ impl Core {
                     .ok_or_else(|| WorkspaceError::new("validation", "Missing connection."))?;
                 let mut c = self.repo()?.connection(cid)?;
                 c.job_fence = Some((job.id.clone(), job.attempts));
+                let started = now();
                 self.sync(c, job.payload["force"] == true).await?;
                 self.refresh_incidents()?;
+                // Plugins hear once per round which sources changed.
+                self.after_sync_round(started);
                 // New messages may start automations; a failure here must not fail the sync.
                 if let Err(e) = self.automations_after_sync() {
                     eprintln!("automations: matching new messages failed: {}", e.message);

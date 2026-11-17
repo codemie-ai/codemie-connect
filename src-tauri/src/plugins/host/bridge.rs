@@ -762,6 +762,12 @@ fn bridge<'js>(
 ) -> rquickjs::Result<Object<'js>> {
     let bridge = Object::new(ctx.clone())?;
     bridge.set("id", state.plugin.as_str())?;
+    let host = serde_json::json!({
+        "name": "CodeMie Connect",
+        "version": env!("CARGO_PKG_VERSION"),
+        "engine": crate::plugins::manifest::ENGINE,
+    });
+    bridge.set("about", host.to_string())?;
 
     let (s, services) = (state.clone(), wiring.services.clone());
     let sync_call = move |name: String, args: String| -> String {

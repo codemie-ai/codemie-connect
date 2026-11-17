@@ -298,7 +298,7 @@ pub async fn pick_folder(s: &Services, p: &Granted, args: &Value) -> Result<Valu
     p.needs("folders", "read folders you pick")?;
     let prompt = at(args, 0).as_str().unwrap_or("Choose a folder");
     let title: String = format!("{} — {prompt}", p.name).chars().take(200).collect();
-    match s.picker.pick(title).await {
+    match s.outside.picker.pick(title).await {
         Some(dir) => Ok(json!(grant(s, &p.id, &dir)?)),
         None => Ok(Value::Null),
     }

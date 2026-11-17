@@ -113,6 +113,7 @@ pub fn run() {
             } else { None }.unwrap_or(app.path().app_data_dir()?.join("workspace"));
             let handle = app.handle().clone();
             let workspace_state = workspace::startup(&default_root, |paths| workspace::Core::open(handle, paths));
+            let core = workspace_state.core.clone();
             let storage_note = workspace_state.core.is_none().then(|| format!(
                 "Workspace not opened: data folder {:?} at {} {}",
                 workspace_state.resolved.status,
@@ -120,6 +121,10 @@ pub fn run() {
                 workspace_state.error.as_deref().unwrap_or(""),
             ));
             app.manage(workspace_state);
+            // Plugins start after Core, with the data folder it opened (DESIGN 7.2).
+            if let Some(core) = &core {
+                app.manage(plugins::manager::PluginManager::start(app.handle(), core));
+            }
             workspace::setup_tray(app)?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -212,6 +217,7 @@ pub fn run() {
             storage::commands::data_location_reveal,
             storage::commands::data_location_pick,
             plugins::commands::plugins_request,
+            plugins::commands::plugin_call,
         ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
