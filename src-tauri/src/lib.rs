@@ -2,6 +2,9 @@ mod ai;
 mod commands;
 mod error;
 mod navigation;
+// Public for the integration tests only. Whatever serves a plugin's files must check containment
+// again at serve time (`plugins::protocol` does); parsing a manifest is not that check.
+#[doc(hidden)]
 pub mod plugins;
 mod state;
 mod steps;

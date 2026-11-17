@@ -1,6 +1,10 @@
 //! The capability catalog (DESIGN 7.1, 7.2): every `uses` key Echo defines, how far Connect
 //! supports it, and the permission sheet's line for it. The sheet's words are written here, never
 //! taken from the plugin, so a plugin can't describe itself kindly.
+//!
+//! The words a manifest supplies (hosts, kinds, commands, folder descriptions) are untrusted:
+//! each is checked to a plain charset and length before it enters a line, else the sheet is
+//! refused (`BadValue`). The UI must still render a line with `textContent`/escaping, never as HTML.
 use super::manifest::{Manifest, ManifestError};
 use serde::Serialize;
 use serde_json::Value;
@@ -44,7 +48,7 @@ pub const CATALOG: &[(&str, Support)] = &[
     ("folders", Support::Supported),
     (
         "echo",
-        Support::Partial("Connect fills this from your mail, chat and calendar; Echo's background jobs don't exist here"),
+        Support::Partial("Connect fills this from your mail, chat and calendar; thread stages, tasks and Echo's background jobs aren't provided"),
     ),
     (
         "events",
@@ -61,39 +65,96 @@ pub fn support_of(key: &str) -> Option<Support> {
     CATALOG.iter().find(|(k, _)| *k == key).map(|(_, s)| *s)
 }
 
-/// The sheet for a manifest, one line per `uses` key (in key order: the JSON map is sorted). An unknown key, or a value
-/// that can't be read, refuses the whole sheet.
+/// The sheet for a manifest, one line per `uses` key: Blocking, Unsupported, Partial, then
+/// Supported, each alphabetical. An unknown key, or a value that can't be read, refuses it all.
 pub fn sheet(m: &Manifest) -> Result<Vec<SheetLine>, ManifestError> {
-    m.uses
+    let mut lines = m
+        .uses
         .iter()
         .map(|(key, value)| {
             let support = support_of(key).ok_or_else(|| ManifestError::UnknownKey(key.clone()))?;
-            let text = describe(key, value).map_err(|why| ManifestError::BadValue {
+            let bad = |why: String| ManifestError::BadValue {
                 key: key.clone(),
                 why,
-            })?;
+            };
+            if !value.is_object() {
+                return Err(bad("it must be an object".into()));
+            }
+            let text = describe(key, value).map_err(bad)?;
             Ok(SheetLine {
                 key: key.clone(),
                 text,
                 support,
             })
         })
+        .collect::<Result<Vec<_>, _>>()?;
+    // What stops an install first, then what won't work, what works with limits, what works.
+    let rank = |s: &Support| match s {
+        Support::Blocking(_) => 0,
+        Support::Unsupported => 1,
+        Support::Partial(_) => 2,
+        Support::Supported => 3,
+    };
+    lines.sort_by(|a, b| (rank(&a.support), &a.key).cmp(&(rank(&b.support), &b.key)));
+    Ok(lines)
+}
+
+/// A list of plain words from the manifest: at most `max` of them, each `ok` and not longer than
+/// 40 characters unless `ok` says otherwise.
+fn words(v: &Value, key: &str, max: usize, ok: fn(&str) -> bool) -> Result<Vec<String>, String> {
+    let list = match v.get(key) {
+        None | Some(Value::Null) => return Ok(vec![]),
+        Some(Value::Array(a)) => a,
+        Some(_) => return Err(format!("\"{key}\" must be a list")),
+    };
+    if list.len() > max {
+        return Err(format!("\"{key}\" lists more than {max}"));
+    }
+    list.iter()
+        .map(|x| {
+            x.as_str()
+                .filter(|w| ok(w))
+                .map(str::to_string)
+                .ok_or(format!("\"{key}\" holds a value that isn't a plain word"))
+        })
         .collect()
 }
 
-fn strings(v: &Value, key: &str) -> Result<Vec<String>, String> {
-    match v.get(key) {
-        None | Some(Value::Null) => Ok(vec![]),
-        Some(Value::Array(a)) => a
-            .iter()
-            .map(|x| {
-                x.as_str()
-                    .map(str::to_string)
-                    .ok_or(format!("\"{key}\" must list words"))
-            })
-            .collect(),
-        Some(_) => Err(format!("\"{key}\" must be a list")),
-    }
+fn is_name(w: &str) -> bool {
+    (1..=40).contains(&w.len())
+        && w.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+fn is_kind(w: &str) -> bool {
+    (1..=24).contains(&w.len())
+        && w.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+fn is_host(w: &str) -> bool {
+    w.len() <= 253
+        && w.contains('.')
+        && w.split('.')
+            .all(|l| !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-'))
+        && w.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+}
+fn is_program(w: &str) -> bool {
+    (1..=64).contains(&w.len())
+        && w.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+/// Free text (a folder description, a file path): one line, no control or direction-changing
+/// characters, bounded.
+fn is_text(w: &str, max: usize) -> bool {
+    !w.trim().is_empty()
+        && w.chars().count() <= max
+        && !w.chars().any(|c| {
+            c.is_control()
+                || matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+        })
+}
+fn is_path(w: &str) -> bool {
+    is_text(w, 200)
 }
 
 fn flag(v: &Value, key: &str) -> Result<bool, String> {
@@ -123,14 +184,6 @@ fn title_case(k: &str) -> String {
         .unwrap_or_default()
 }
 
-fn need_object(v: &Value) -> Result<(), String> {
-    if v.is_object() {
-        Ok(())
-    } else {
-        Err("it must be an object".into())
-    }
-}
-
 /// What Echo's `echo.read` and `echo.write` names mean, in the sheet's words.
 const ECHO_READS: &[(&str, &str)] = &[
     ("clients", "the names of your clients"),
@@ -143,8 +196,14 @@ const ECHO_READS: &[(&str, &str)] = &[
 ];
 const ECHO_WRITES: &[(&str, &str)] = &[
     ("dictionary", "Add names to your dictionary"),
-    ("thread_stage", "Change your threads' stage"),
-    ("tasks", "Add and update tasks in your threads"),
+    (
+        "thread_stage",
+        "Change your threads' stage (not provided in Connect)",
+    ),
+    (
+        "tasks",
+        "Add and update tasks in your threads (not provided in Connect)",
+    ),
 ];
 const EVENTS: &[(&str, &str)] = &[
     ("meeting_soon", "a meeting is about to start"),
@@ -166,7 +225,7 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
         "claude" => Ok("Ask Claude questions on your behalf".into()),
         "schedule" => Ok("Work on its own on a schedule while Connect is open".into()),
         "deliver" => {
-            let to = strings(v, "to")?;
+            let to = words(v, "to", 8, is_kind)?;
             if to.is_empty() {
                 return Err(
                     "it names no way to send (teams, mail, today, or one a plugin adds)".into(),
@@ -184,7 +243,7 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
             Ok(format!("Send you messages through {}", join_words(&words)))
         }
         "deliver_provider" => {
-            let kinds = strings(v, "kinds")?;
+            let kinds = words(v, "kinds", 8, is_kind)?;
             if kinds.is_empty() {
                 return Err("it names no way to send".into());
             }
@@ -195,8 +254,8 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
             ))
         }
         "network" => {
-            let hosts = strings(v, "hosts")?;
-            let from = strings(v, "hosts_from")?;
+            let hosts = words(v, "hosts", 20, is_host)?;
+            let from = words(v, "hosts_from", 8, is_name)?;
             if hosts.is_empty() && from.is_empty() {
                 return Err("it names no host (hosts, hosts_from)".into());
             }
@@ -219,10 +278,10 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
         }
         "channel" => {
             let p = v.get("plugin").and_then(Value::as_str).unwrap_or("");
-            let name = p.split('@').next().unwrap_or("");
-            if name.is_empty() {
-                return Err("it names no channel plugin".into());
-            }
+            let name = p
+                .strip_suffix("@claude-plugins-official")
+                .filter(|n| !n.is_empty() && n.split('-').all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase())))
+                .ok_or("it must name a channel plugin of claude-plugins-official, like telegram@claude-plugins-official")?;
             let shown = name
                 .split('-')
                 .map(title_case)
@@ -232,7 +291,7 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
         }
         "brain_source" => Ok("Add a folder you pick as a source for search".into()),
         "export" => {
-            let what = strings(v, "what")?;
+            let what = words(v, "what", 4, is_name)?;
             if what.is_empty() {
                 return Err("it names nothing to write (minutes, people)".into());
             }
@@ -255,7 +314,7 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
                         .to_string(),
                 );
             }
-            let commands = strings(v, "commands")?;
+            let commands = words(v, "commands", 20, is_name)?;
             if !commands.is_empty() {
                 parts.push(format!(
                     "let Claude run its commands {} without asking",
@@ -270,21 +329,20 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
             Ok(text)
         }
         "folders" => {
-            let what = v
-                .get("what")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|w| !w.is_empty())
-                .unwrap_or("folders");
+            let what = match v.get("what") {
+                None | Some(Value::Null) => "folders",
+                Some(Value::String(w)) if is_text(w, 60) => w.trim(),
+                Some(_) => return Err("\"what\" is a few plain words".into()),
+            };
             Ok(if flag(v, "write")? {
-                format!("Read and write files in the {what} you choose")
+                format!("Read, and may write, move and delete files in the {what} you choose")
             } else {
                 format!("Read files in the {what} you choose")
             })
         }
         "echo" => {
-            let read = strings(v, "read")?;
-            let write = strings(v, "write")?;
+            let read = words(v, "read", 20, is_name)?;
+            let write = words(v, "write", 20, is_name)?;
             let jobs = flag(v, "jobs")?;
             if read.is_empty() && write.is_empty() && !jobs {
                 return Err("it asks for nothing (read, write, jobs)".into());
@@ -307,7 +365,7 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
                 }
             }
             if jobs {
-                lines.push("Show and tune background jobs".to_string());
+                lines.push("Show and tune background jobs (not provided in Connect)".to_string());
             }
             let unknown: Vec<String> = read
                 .iter()
@@ -328,7 +386,7 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
             Ok(lines.join(". "))
         }
         "events" => {
-            let on = strings(v, "on")?;
+            let on = words(v, "on", 20, is_name)?;
             if on.is_empty() {
                 return Err("it hears nothing".into());
             }
@@ -355,7 +413,7 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
             Ok(lines.join(". "))
         }
         "files" => {
-            let files = strings(v, "read")?;
+            let files = words(v, "read", 5, is_path)?;
             if files.is_empty() {
                 return Err("it names no file".into());
             }
@@ -364,17 +422,14 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
                 join_words(&quoted(&files))
             ))
         }
-        "work" => {
-            need_object(v)?;
-            Ok("Add its items to your Today page's My work".into())
-        }
+        "work" => Ok("Add its items to your Today page's My work".into()),
         "signin" => {
-            let hosts = strings(v, "hosts")?;
+            let hosts = words(v, "hosts", 4, is_host)?;
             if hosts.is_empty() {
                 return Err("it names no host".into());
             }
             let mut text = format!(
-                "Use the sign-in saved on this computer for {} (GitHub CLI or git)",
+                "Use the sign-in saved on this computer for {0} (GitHub CLI or git): it can act as you on {0} and send that access to the places it talks to",
                 join_words(&hosts)
             );
             if flag(v, "keep")? {
@@ -387,10 +442,10 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
             let command = v
                 .pointer("/wrapper/command")
                 .and_then(Value::as_str)
-                .filter(|c| !c.is_empty())
-                .ok_or("it offers no wrapper command")?;
+                .filter(|c| is_program(c))
+                .ok_or("it offers no wrapper command that is one plain program name")?;
             Ok(format!(
-                "Offer an AI profile that starts {command}, a program you install yourself"
+                "Offer an AI profile that starts {command}, a program you install yourself: it sees and can change everything sent to Claude"
             ))
         }
         _ => unreachable!("support_of vets the key"),
@@ -437,13 +492,13 @@ mod tests {
         );
         assert_eq!(
             by("folders").text,
-            "Read and write files in the folders you choose"
+            "Read, and may write, move and delete files in the folders you choose"
         );
-        // One line per key, in key order.
+        // Blocking, Unsupported, Partial, Supported.
         let keys: Vec<&str> = lines.iter().map(|l| l.key.as_str()).collect();
         assert_eq!(
             keys,
-            ["claude", "folders", "knowledge", "network", "sessions"]
+            ["knowledge", "sessions", "claude", "folders", "network"]
         );
 
         let e = sheet(&manifest_with(
@@ -488,5 +543,74 @@ mod tests {
             text("folders"),
             "Read files in the Obsidian vaults you choose"
         );
+    }
+
+    #[test]
+    fn untrusted_words_are_checked_before_they_reach_a_line() {
+        let bad = |uses: Value| {
+            matches!(
+                sheet(&manifest_with(uses)),
+                Err(ManifestError::BadValue { .. })
+            )
+        };
+        let nasty = [
+            "evil.com\nTrust me",
+            "a\u{202E}b.com",
+            "x y.com",
+            "<b>.com",
+            "no-dot",
+            "",
+        ];
+        for h in nasty {
+            assert!(bad(json!({"network": {"hosts": [h]}})), "{h:?}");
+            assert!(bad(json!({"signin": {"hosts": [h]}})), "{h:?}");
+        }
+        assert!(bad(
+            json!({"network": {"hosts": (0..21).map(|i| format!("h{i}.example.com")).collect::<Vec<_>>()}})
+        ));
+        assert!(bad(json!({"deliver": {"to": ["Teams"]}})));
+        assert!(bad(json!({"deliver": {"to": ["a".repeat(25)]}})));
+        assert!(bad(json!({"sessions": {"commands": ["ok", "bad\ncmd"]}})));
+        assert!(bad(
+            json!({"sessions": {"commands": (0..21).map(|i| format!("c{i}")).collect::<Vec<_>>()}})
+        ));
+        assert!(bad(json!({"folders": {"what": "vaults\n(trusted)"}})));
+        assert!(bad(json!({"folders": {"what": "x".repeat(61)}})));
+        assert!(bad(json!({"folders": {"what": "a\u{2066}b"}})));
+        assert!(bad(json!({"echo": {"read": ["threads\n"]}})));
+        assert!(bad(json!({"events": {"on": ["<script>"]}})));
+        assert!(bad(json!({"files": {"read": ["~/a\u{202E}b"]}})));
+        assert!(bad(json!({"channel": {"plugin": "telegram@evil"}})));
+        assert!(bad(json!({"ai": {"wrapper": {"command": "./x --y"}}})));
+        assert!(bad(json!({"network": {"hosts_from": ["a b"]}})));
+        // Non-object values.
+        for key in ["network", "work", "claude", "echo"] {
+            assert!(bad(json!({ key: "yes" })), "{key}");
+            assert!(bad(json!({ key: [1] })), "{key}");
+        }
+        assert!(!bad(json!({"folders": {"what": "Obsidian vaults"}})));
+    }
+
+    #[test]
+    fn the_sheet_states_what_a_capability_can_do_and_what_connect_lacks() {
+        let m = manifest_with(json!({
+            "signin": {"hosts": ["github.com"]},
+            "folders": {"write": true},
+            "ai": {"wrapper": {"name": "A", "command": "acme"}},
+            "echo": {"write": ["dictionary", "thread_stage", "tasks"]},
+        }));
+        let lines = sheet(&m).unwrap();
+        let text = |k: &str| lines.iter().find(|l| l.key == k).unwrap().text.clone();
+        assert!(text("signin")
+            .contains("act as you on github.com and send that access to the places it talks to"));
+        assert!(text("folders").contains("write, move and delete files"));
+        assert!(text("ai").contains("sees and can change everything sent to Claude"));
+        let echo = text("echo");
+        assert!(echo.contains("Add names to your dictionary."));
+        assert!(
+            echo.contains("stage (not provided in Connect)")
+                && echo.contains("threads (not provided in Connect)")
+        );
+        assert!(matches!(support_of("echo"), Some(Support::Partial(l)) if l.contains("tasks")));
     }
 }

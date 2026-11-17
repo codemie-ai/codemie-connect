@@ -1587,19 +1587,21 @@ const elementShot = async (page, selector, name) => {
 };
 /** Wait until the page stops re-rendering (no DOM mutation for 200 ms), so a following query
  * isn't answered by an element a background refresh is about to replace. */
-const renderSettled = page => page.evaluate(() => new Promise(resolve => {
+const renderSettled = (page, limit = 3000) => page.evaluate(limit => new Promise((resolve, reject) => {
   let timer;
-  const done = () => { observer.disconnect(); resolve(); };
-  const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, 200); });
+  const finish = (fn, arg) => { observer.disconnect(); clearTimeout(timer); clearTimeout(cap); fn(arg); };
+  const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => finish(resolve), 200); });
+  const cap = setTimeout(() => finish(reject, new Error(`the page was still re-rendering after ${limit} ms`)), limit);
   observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-  timer = setTimeout(done, 200);
-}));
+  timer = setTimeout(() => finish(resolve), 200);
+}), limit);
 /** Open a row's actions menu and wait for it to show; a render between the click and the check
- * closes it, so try again with a fresh query. */
+ * closes it, so try again with a fresh query. A menu that is already open is left alone (a second
+ * click on its summary would close it). */
 const openRowMenu = async (page, row, wanted) => {
   for (let attempt = 0; ; attempt++) {
     await renderSettled(page);
-    await row.locator('summary').click();
+    if (await row.locator('.ws-menu[open]').count() === 0) await row.locator('summary').click();
     try { return await row.locator(wanted).waitFor({ state: 'visible', timeout: 3000 }); }
     catch (error) { if (attempt >= 3) throw error; }
   }

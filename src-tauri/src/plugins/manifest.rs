@@ -11,6 +11,7 @@ use std::path::{Component, Path};
 pub const MANIFEST_FILE: &str = "echo-plugin.json";
 /// The Echo plugin API Connect reports to plugins (DESIGN 7.1).
 pub const ECHO_COMPAT: &str = "0.9.11";
+const SETTING_KINDS: [&str; 4] = ["string", "bool", "folder", "secret"];
 /// The kinds of widget Echo draws (and Connect's Today draws) for a plugin.
 pub const WIDGET_KINDS: [&str; 8] = [
     "stat", "stats", "chart", "list", "status", "card", "table", "page",
@@ -128,8 +129,17 @@ struct Raw {
 /// Echo writes `>=0.9.9`, or a bare `0.9.9` meaning the same; anything else is a semver range.
 fn parse_echo_req(text: &str) -> Result<VersionReq, ManifestError> {
     let t = text.trim();
-    let bare = t.strip_prefix(">=").unwrap_or(t).trim();
-    if let Ok(v) = Version::parse(bare) {
+    let mut bare = t.strip_prefix(">=").unwrap_or(t).trim().to_string();
+    // A bare "0.9" or "1" is a minimum too, not semver's caret range.
+    if !bare.is_empty()
+        && bare.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && bare.matches('.').count() < 2
+    {
+        for _ in bare.matches('.').count()..2 {
+            bare.push_str(".0");
+        }
+    }
+    if let Ok(v) = Version::parse(&bare) {
         return Ok(VersionReq {
             comparators: vec![semver::Comparator {
                 op: semver::Op::GreaterEq,
@@ -143,25 +153,40 @@ fn parse_echo_req(text: &str) -> Result<VersionReq, ManifestError> {
     VersionReq::parse(t).map_err(|e| ManifestError::Invalid(format!("echo \"{text}\": {e}")))
 }
 
-/// A path the manifest names (`main`, `client`, `icon`): relative, inside the plugin folder (no
-/// `..`, no symlink out) and an existing file.
-fn inside_plugin(dir: &Path, rel: &str) -> Result<(), ManifestError> {
+/// What a manifest path must be.
+#[derive(Clone, Copy, PartialEq)]
+enum Entry {
+    File,
+    Folder,
+}
+
+/// A path the manifest names (`main`, `client`, `icon`, a skill): relative, inside the plugin
+/// folder (no `..`, no symlink out) and an existing file or folder as asked.
+fn inside_plugin(dir: &Path, rel: &str, want: Entry) -> Result<(), ManifestError> {
     let missing = || ManifestError::MissingFile(rel.to_string());
-    let p = Path::new(rel.trim_start_matches("./"));
+    let p = Path::new(rel.trim_start_matches("./").trim_end_matches('/'));
     if rel.is_empty()
+        || p.as_os_str().is_empty()
         || p.is_absolute()
         || p.components().any(|c| !matches!(c, Component::Normal(_)))
     {
         return Err(missing());
     }
     let root = std::fs::canonicalize(dir).map_err(|_| missing())?;
-    let file = std::fs::canonicalize(dir.join(p)).map_err(|_| missing())?;
-    if file.starts_with(&root) && file.is_file() {
+    let found = std::fs::canonicalize(dir.join(p)).map_err(|_| missing())?;
+    let right_kind = match want {
+        Entry::File => found.is_file(),
+        Entry::Folder => found.is_dir(),
+    };
+    if found.starts_with(&root) && right_kind {
         Ok(())
     } else {
         Err(missing())
     }
 }
+
+/// The most skills a plugin may ship (Echo's `MAX_SKILLS`).
+const MAX_SKILLS: usize = 10;
 
 /// Read and check `<dir>/echo-plugin.json`.
 pub fn parse_manifest(dir: &Path) -> Result<Manifest, ManifestError> {
@@ -192,8 +217,25 @@ pub fn parse_manifest(dir: &Path) -> Result<Manifest, ManifestError> {
             });
         }
     }
+    for s in &raw.settings {
+        if !SETTING_KINDS.contains(&s.kind.as_str()) {
+            return Err(ManifestError::Invalid(format!(
+                "setting \"{}\" has a type Connect doesn't know ({})",
+                s.key,
+                SETTING_KINDS.join(", ")
+            )));
+        }
+    }
+    if raw.skills.len() > MAX_SKILLS {
+        return Err(ManifestError::Invalid(format!(
+            "it ships more than {MAX_SKILLS} skills"
+        )));
+    }
     for f in raw.main.iter().chain(&raw.client).chain(&raw.icon) {
-        inside_plugin(dir, f)?;
+        inside_plugin(dir, f, Entry::File)?;
+    }
+    for f in &raw.skills {
+        inside_plugin(dir, f, Entry::Folder)?;
     }
     Ok(Manifest {
         id: raw.id,
@@ -249,6 +291,7 @@ mod tests {
         for f in ["main.js", "client.js", "icon.svg"] {
             std::fs::write(d.path().join(f), "").unwrap();
         }
+        std::fs::create_dir_all(d.path().join("skills/a")).unwrap();
         write(d.path(), manifest);
         d
     }
@@ -320,6 +363,84 @@ mod tests {
             parse_manifest(package(j).path()),
             Err(ManifestError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn entries_skills_settings_and_versions_are_checked() {
+        // `./main.js` is fine; a folder is not a file; skills are folders inside the plugin.
+        let mut j = base();
+        j["main"] = json!("./main.js");
+        assert!(parse_manifest(package(j).path()).is_ok());
+        let mut j = base();
+        j["main"] = json!("skills");
+        let d = package(j);
+        assert_eq!(
+            parse_manifest(d.path()).unwrap_err(),
+            ManifestError::MissingFile("skills".into())
+        );
+        let mut j = base();
+        j["skills"] = json!(["skills/a"]);
+        let d = package(j);
+        assert!(parse_manifest(d.path()).is_ok());
+        std::fs::remove_dir(d.path().join("skills/a")).unwrap();
+        assert_eq!(
+            parse_manifest(d.path()).unwrap_err(),
+            ManifestError::MissingFile("skills/a".into())
+        );
+        for bad in ["../x", "/etc", "skills/../../x", "main.js"] {
+            let mut j = base();
+            j["skills"] = json!([bad]);
+            let d = package(j);
+            assert_eq!(
+                parse_manifest(d.path()).unwrap_err(),
+                ManifestError::MissingFile(bad.into()),
+                "{bad}"
+            );
+        }
+        let mut j = base();
+        j["skills"] = json!((0..11).map(|i| format!("s{i}")).collect::<Vec<_>>());
+        assert!(matches!(
+            parse_manifest(package(j).path()),
+            Err(ManifestError::Invalid(_))
+        ));
+        // A skill folder that is a symlink out of the plugin.
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            let mut j = base();
+            j["skills"] = json!(["skills/a"]);
+            let d = package(j);
+            std::fs::remove_dir(d.path().join("skills/a")).unwrap();
+            std::os::unix::fs::symlink(outside.path(), d.path().join("skills/a")).unwrap();
+            assert_eq!(
+                parse_manifest(d.path()).unwrap_err(),
+                ManifestError::MissingFile("skills/a".into())
+            );
+        }
+        // Setting types.
+        for kind in ["string", "bool", "folder", "secret"] {
+            let mut j = base();
+            j["settings"] = json!([{"key": "k", "label": "K", "type": kind}]);
+            assert!(parse_manifest(package(j).path()).is_ok(), "{kind}");
+        }
+        let mut j = base();
+        j["settings"] = json!([{"key": "k", "label": "K", "type": "color"}]);
+        assert!(matches!(
+            parse_manifest(package(j).path()),
+            Err(ManifestError::Invalid(_))
+        ));
+        // A bare version is a minimum, whatever its length.
+        for (text, shown) in [
+            ("0.9", ">=0.9.0"),
+            ("1", ">=1.0.0"),
+            ("0.9.9", ">=0.9.9"),
+            (">=0.9", ">=0.9.0"),
+        ] {
+            assert_eq!(parse_echo_req(text).unwrap().to_string(), shown, "{text}");
+        }
+        assert!(parse_echo_req("0.10")
+            .unwrap()
+            .matches(&Version::parse("0.11.0").unwrap()));
     }
 
     #[test]
