@@ -142,6 +142,11 @@ function shell() {
   root.innerHTML = shellMarkup();
 }
 
+/** A Claude profile that can be used already brings AI tools to this Mac, so the setup banner is not needed. */
+function claudeProfileReady() {
+  return state.ai.status === 'ready' && Array.isArray(state.ai.profiles) && state.ai.profiles.some(p => p.state === 'ready');
+}
+
 function banners(s) {
   const out = [];
   const conn = connectionState(s, auth());
@@ -151,7 +156,7 @@ function banners(s) {
   if (conn === 'other_account') {
     out.push(`<div class="ws-banner">${icon('info')}<div><strong>This workspace belongs to another Microsoft account</strong><p>Its notes and commitments are available. Use it with the signed-in account instead?</p></div><div class="ws-actions">${button('Use current account', { action: 'graph-bind', variant: 'primary' })}</div></div>`);
   }
-  if (state.route === 'today' && !runtimeReady && localPref('codemie.setupBanner.dismissed', '') !== '1') {
+  if (state.route === 'today' && !runtimeReady && !claudeProfileReady() && localPref('codemie.setupBanner.dismissed', '') !== '1') {
     out.push(`<div class="ws-banner">${icon('spark')}<div><strong>Bring your AI coding tools here too</strong><p>Set up CodeMie, Claude Code or Claude Desktop whenever you’re ready.</p></div><div class="ws-actions">${button('Set up AI tools', { action: 'setup-tools', variant: 'primary' })}${button('', { action: 'setup-dismiss', iconName: 'close', variant: 'ghost', title: 'Dismiss' })}</div></div>`);
   }
   if (state.latestVersion && sessionPref('app-update-banner-dismissed') !== '1' && !(state.route === 'settings' && state.settingsTab === 'updates')) {

@@ -60,7 +60,7 @@
       "enabled": true,
       "id": "auto-schedule",
       "name": "Morning brief",
-      "prompt": "Summarise my day and what needs a reply.",
+      "prompt": "Summarize my day and what needs a reply.",
       "read": {
         "calendarToday": true,
         "commitmentsNotes": true,

@@ -481,8 +481,11 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-tl-event.ws-tentative,.ws-ev.ws-tentative{background:repeating-linear-gradient(-45deg,color-mix(in srgb,var(--event-color) var(--ws-event-mix),var(--ws-card)) 0 6px,color-mix(in srgb,var(--event-color) 8%,var(--ws-card)) 6px 12px)}
 .ws-tl-free{position:absolute;left:0;right:0;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px dashed color-mix(in srgb,var(--ws-green) 45%,transparent);background:color-mix(in srgb,var(--ws-green) 6%,transparent);pointer-events:none}
 .ws-tl-free span{font-size:11px;color:var(--ws-green);font-weight:600}
-.ws-now-line{position:absolute;left:-5px;right:0;height:0;border-top:1.5px solid var(--ws-now);z-index:6;pointer-events:none}
-.ws-now-line span{position:absolute;left:0;top:-5px;width:9px;height:9px;border-radius:50%;background:var(--ws-now)}
+/* The line runs under event blocks (so it never reads as a strike-through of their text); only its dot stays on top. */
+.ws-now-line{position:absolute;left:-5px;right:0;height:0;pointer-events:none}
+.ws-now-line::before{content:"";position:absolute;left:0;right:0;top:0;border-top:1.5px solid var(--ws-now);z-index:1}
+.ws-now-line span{position:absolute;left:0;top:-5px;width:9px;height:9px;border-radius:50%;background:var(--ws-now);z-index:7}
+.ws-tl-event,.ws-ev{z-index:2}
 .ws-chip-event{display:block;max-width:100%;box-sizing:border-box;height:22px;padding:0 8px;border:0;border-radius:4px;background:color-mix(in srgb,var(--event-color) 70%,var(--ws-card));color:#fff;font-size:12px;font-weight:600;line-height:22px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .light .ws-chip-event{background:color-mix(in srgb,var(--event-color) 85%,#fff)}
 
@@ -707,6 +710,7 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-read-from span{font-size:12px;color:var(--ws-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ws-read-from time{font-size:12px;color:var(--ws-muted);white-space:nowrap}
 .ws-read-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 0;border-top:1px solid var(--ws-border);border-bottom:1px solid var(--ws-border)}
+.ws-read-lane{display:inline-flex;align-items:center;gap:8px;flex-wrap:nowrap}
 .ws-read-lane .ws-select{height:28px;font-size:12px;font-weight:600;width:150px}
 .ws-thread{display:grid;gap:10px}
 .ws-bubble{padding:12px 14px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card)}

@@ -573,6 +573,42 @@ for (const theme of ['dark', 'light']) {
     await shot(page, `${theme}-today`);
   });
 
+  // Polish checks (Today and Inbox), both widths: the now line stays under event text, the Day at a
+  // glance labels fit, the AI tools banner hides when a Claude is ready, the reader's action bar keeps
+  // its commitment button beside the lane picker.
+  for (const [width, height] of [[1000, 760], [1440, 900]]) await check(`${theme} ${width}px: Today and Inbox polish`, async () => {
+    const n = await open({ theme, width, height });
+    const p = n.page;
+    await p.waitForTimeout(500);
+    assert(await p.locator('.ws-banner:has-text("Bring your AI coding tools")').count() === 0, 'setup banner shows although a Claude is ready');
+    const cut = await p.evaluate(() => [...document.querySelectorAll('.ws-stat strong, .ws-stat > span:last-child')].filter(el => el.scrollWidth > el.clientWidth + 1).map(el => el.textContent));
+    assert(!cut.length, `Day at a glance text is cut: ${cut}`);
+    const z = await p.evaluate(() => {
+      const line = document.querySelector('.ws-timeline .ws-now-line');
+      const event = document.querySelector('.ws-timeline .ws-tl-event');
+      return { line: getComputedStyle(line, '::before').zIndex, dot: getComputedStyle(line.querySelector('span')).zIndex, event: getComputedStyle(event).zIndex };
+    });
+    assert(Number(z.line) < Number(z.event) && Number(z.dot) > Number(z.event), `now line is not under event text: ${JSON.stringify(z)}`);
+    await shot(p, `${theme}-today-polish-${width}`);
+    await p.click('.ws-nav button[data-route=inbox]');
+    await p.waitForSelector('.ws-read-actions');
+    const rows = await p.evaluate(() => {
+      const bar = document.querySelector('.ws-read-actions');
+      const tops = [...bar.querySelectorAll(':scope > *, .ws-read-lane > *')].map(el => Math.round(el.getBoundingClientRect().top));
+      const lane = bar.querySelector('.ws-read-lane').getBoundingClientRect();
+      const btn = bar.querySelector('[data-action="commitment"]').getBoundingClientRect();
+      return { sameRow: btn.top >= lane.top - 1 && btn.bottom <= lane.bottom + 1, tops };
+    });
+    assert(rows.sameRow, `the commitment button wrapped away from the lane picker: ${JSON.stringify(rows)}`);
+    await shot(p, `${theme}-inbox-actions-${width}`);
+    await n.context.close().catch(() => {});
+    const none = await open({ theme, width, height, ai: 'none' });
+    await none.page.waitForTimeout(500);
+    assert(await none.page.locator('.ws-banner:has-text("Bring your AI coding tools")').count() === 1, 'setup banner is missing when no Claude is ready');
+    await none.context.close().catch(() => {});
+    currentPage = null;
+  });
+
   await check(`${theme}: Join opens only the meeting link through native`, async () => {
     await page.locator('.ws-upnext button:has-text("Join Teams meeting")').click();
     await page.waitForTimeout(150);
@@ -889,6 +925,8 @@ for (const theme of ['dark', 'light']) {
     assert(/Jordan Lee/.test(await text(page, '#draft-context')), 'context lists senders');
     const widths = await page.evaluate(() => [document.getElementById('draft-context').getBoundingClientRect().width, document.querySelector('.ws-draft-provenance').getBoundingClientRect().width]);
     assert(Math.abs(widths[0] - widths[1]) < 1, `Context spans the panel ${widths}`);
+    // A Teams draft is chat text: no greeting, no sign-off (the Outlook fixture is the letter).
+    assert(!/^\s*(Hi|Hello|Dear) |Best regards|Kind regards/i.test(await page.locator('#reply-body').inputValue()), 'a Teams draft reads like a letter');
     await page.waitForTimeout(250);
     await shot(page, `${theme}-draft-result`);
     // A re-render puts keyboard focus back on the exact control, never on its sibling.

@@ -526,7 +526,7 @@ mod engine_tests {
         json!({"id":"auto-schedule","name":"Morning brief","enabled":true,
             "trigger":{"kind":"schedule","days":[1,2,3,4,5],"time":"08:45"},
             "read":{"calendarToday":true,"needsReply":true,"commitmentsNotes":true},
-            "prompt":"Summarise my day and what needs a reply.",
+            "prompt":"Summarize my day and what needs a reply.",
             "ai":{"profile":"claude","model":"claude-haiku-4-5"},"capUsd":0.5,
             "deliver":{"today":true,"notify":true},"catchUp":true})
     }
