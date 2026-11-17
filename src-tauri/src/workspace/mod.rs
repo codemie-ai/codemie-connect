@@ -549,13 +549,6 @@ impl Core {
                 }
                 Ok("Sources refreshed".into())
             }
-            "brief" => {
-                if now() - job.due_at > 7200 {
-                    return Ok("Skipped: missed brief is older than two hours".into());
-                }
-                self.generate_brief(job.workspace_id.as_deref().unwrap_or("personal"), Some(job))?;
-                Ok("Daily brief updated".into())
-            }
             "calendar_window" => {
                 let wid = job.workspace_id.as_deref().ok_or_else(|| {
                     WorkspaceError::new("cancelled", "Calendar workspace is unavailable.")
@@ -594,9 +587,7 @@ impl Core {
             "ai_draft" => self.run_ai_draft(job).await,
             "ai_summarize" => self.run_ai_summary(job).await,
             "reminder" | "notification" => self.deliver_notification(job),
-            // Task 14 queues the runs; Task 15 executes them. Until then a due run finishes
-            // as a no-op, so queued jobs never pile up.
-            "automation_run" => Ok("Skipped: Automation runs arrive in Task 15".into()),
+            "automation_run" => self.run_automation(job).await,
             _ => Err(WorkspaceError::new("validation", "Unsupported job type.")),
         }
     }
@@ -1081,11 +1072,6 @@ impl Core {
             | Operation::AutomationDelete
             | Operation::AutomationToggle
             | Operation::AutomationRunNow => self.automation_op(&req)?,
-            Operation::BriefGenerate => {
-                let (w, _) = self.active_workspace(&req, false)?;
-                self.generate_brief(&w.id, None)?;
-                json!({"generated":true})
-            }
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
         self.repo()?
@@ -1374,7 +1360,8 @@ impl Core {
             r.enqueue(&job)?;
             return Ok(json!({"saved":true}));
         }
-        if !matches!(kind, "brief" | "reminder") {
+        // The morning brief is an automation now (DESIGN 6.6); schedules only remind.
+        if kind != "reminder" {
             return Err(WorkspaceError::new("validation", "Unsupported schedule."));
         }
         let time = required(&req.data, "time", 5)?;
@@ -1518,13 +1505,7 @@ impl Core {
         {
             return Ok("Suppressed by app quiet/focus settings; visible in Activity".into());
         }
-        let title = if s.notification_preview {
-            job.payload["title"]
-                .as_str()
-                .unwrap_or("Workspace reminder")
-        } else {
-            "CodeMie Connect"
-        };
+        let (title, body) = notification_text(&s, &job.payload);
         let nid = (u32::from_le_bytes(sha256_prefix(&job.key)) & 0x7fffffff) as i32;
         let mut submitting = job.clone();
         submitting.payload["dispatchStartedAt"] = now().into();
@@ -1538,7 +1519,7 @@ impl Core {
             .extra("itemId", job.payload["itemId"].clone())
             .extra("eventId", job.payload["eventId"].clone())
             .title(title)
-            .body("A workspace item needs your attention. Open CodeMie Connect to review it.")
+            .body(body)
             .show()
             .map_err(|_| {
                 WorkspaceError::new(
@@ -1615,90 +1596,6 @@ impl Core {
         }
         Ok(())
     }
-    fn generate_brief(&self, wid: &str, job: Option<&Job>) -> Result<()> {
-        let mut r = self.repo()?;
-        if let Some(job) = job {
-            r.check_claim(&job.id, job.attempts)?;
-            r.check_policy(
-                job.workspace_id.as_deref(),
-                job.connection_id.as_deref(),
-                &job.policy,
-            )?;
-            if let Some(sid) = job.payload["scheduleId"].as_str() {
-                let schedule = r.record("schedule", sid, None, Some(wid))?;
-                if schedule.data["enabled"] != true
-                    || schedule.revision != job.payload["scheduleRevision"].as_str().unwrap_or("")
-                {
-                    return Err(WorkspaceError::new("cancelled", "Schedule changed."));
-                }
-            }
-        }
-        let w = r.workspace(wid)?;
-        if w.archived {
-            return Err(WorkspaceError::new("archived", "Workspace is archived."));
-        }
-        let s = r.settings()?;
-        let mut citations = Vec::new();
-        let mut events = Vec::new();
-        let mut messages = Vec::new();
-        if let Some(cid) = w
-            .connection_id
-            .as_deref()
-            .filter(|cid| s.active_connection.as_deref() == Some(cid))
-        {
-            for item in r.provider_records(cid, "event")?.into_iter().filter(|e| {
-                repository::record_selected(e, &w)
-                    && r.connection(cid).is_ok_and(|c| {
-                        c.status == "connected" && repository::source_permitted(e, &c)
-                    })
-                    && e.data["cancelled"] != true
-            }) {
-                let start = graph::timestamp(item.data["start"].as_str().unwrap_or(""));
-                if start >= now() && start <= now() + 86400 {
-                    events.push(item);
-                }
-            }
-            messages = r
-                .provider_records(cid, "message")?
-                .into_iter()
-                .filter(|m| {
-                    repository::record_selected(m, &w)
-                        && r.connection(cid).is_ok_and(|c| {
-                            c.status == "connected" && repository::source_permitted(m, &c)
-                        })
-                        && m.data["isMine"] != true
-                        && m.data["at"].as_i64().unwrap_or(0) > now() - 86400
-                })
-                .collect();
-        }
-        events.sort_by_key(|e| graph::timestamp(e.data["start"].as_str().unwrap_or("")));
-        for e in events.iter().take(5) {
-            citations.push(json!({"kind":"event","id":e.id,"title":e.data["title"],"quote":e.data["preview"],"revision":e.revision}));
-        }
-        for m in messages.iter().take(5) {
-            citations.push(json!({"kind":"message","id":m.id,"title":m.data["title"],"quote":m.data["text"],"revision":m.revision}));
-        }
-        let commitments = r
-            .local_records(wid, "commitment")?
-            .into_iter()
-            .filter(|c| c.data["done"] != true)
-            .count();
-        let brief = Record {
-            id: "daily".into(),
-            kind: "brief".into(),
-            connection_id: None,
-            workspace_id: Some(wid.into()),
-            source: "deterministic".into(),
-            revision: id(),
-            updated_at: now(),
-            data: json!({"text":format!("{} upcoming events in the next 24 hours. {} messages received in the last day. {} open commitments.",events.len(),messages.len(),commitments),"citations":citations,"policy":r.policy(Some(wid),w.connection_id.as_deref())?,"connectionId":w.connection_id,"source":"Selected Microsoft sources and local commitments"}),
-        };
-        if let Some(job) = job {
-            r.commit_job_record(job, &brief)
-        } else {
-            r.put_record(&brief)
-        }
-    }
 }
 /// Workspaces are hidden until they are redesigned (DESIGN.md section 9). While hidden, their
 /// reminders, schedules and critical alerts pause; the data and operations stay intact.
@@ -1736,7 +1633,7 @@ fn materialize_due_schedules(r: &mut Repository) -> Result<()> {
             if due > now() {
                 continue;
             }
-            let kind = schedule.data["kind"].as_str().unwrap_or("brief");
+            let kind = schedule.data["kind"].as_str().unwrap_or("reminder");
             let policy = r.policy(Some(&w.id), None)?;
             let payload = json!({"scheduleId":schedule.id,"scheduleRevision":schedule.revision,"title":schedule.data["label"],"expiresAt":due+7200});
             let job = new_job(
@@ -1760,6 +1657,22 @@ fn materialize_due_schedules(r: &mut Repository) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A notification's title and body: what the job names (an automation's name and result
+/// title) when previews are on, otherwise words that say nothing about the content.
+fn notification_text(s: &Settings, payload: &Value) -> (String, String) {
+    const GENERIC: &str =
+        "A workspace item needs your attention. Open CodeMie Connect to review it.";
+    if !s.notification_preview {
+        return ("CodeMie Connect".into(), GENERIC.into());
+    }
+    let title = payload["title"].as_str().unwrap_or("Workspace reminder");
+    let body = payload["body"]
+        .as_str()
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or(GENERIC);
+    (title.into(), body.into())
 }
 
 fn new_job(
@@ -2382,6 +2295,29 @@ mod tests {
         let mut atlas_job = queued.clone();
         atlas_job.workspace_id = Some("atlas".into());
         assert!(job_paused(&atlas_job));
+    }
+    #[test]
+    fn notification_text_shows_content_only_with_previews() {
+        let mut s = Settings::default();
+        let automation = json!({"title": "Morning brief", "body": "3 meetings, 2 replies owed"});
+        let generic = "A workspace item needs your attention. Open CodeMie Connect to review it.";
+        assert_eq!(
+            notification_text(&s, &automation),
+            ("CodeMie Connect".to_string(), generic.to_string())
+        );
+        s.notification_preview = true;
+        assert_eq!(
+            notification_text(&s, &automation),
+            (
+                "Morning brief".to_string(),
+                "3 meetings, 2 replies owed".to_string()
+            )
+        );
+        // A reminder names only its title.
+        assert_eq!(
+            notification_text(&s, &json!({"title": "Stand-up"})),
+            ("Stand-up".to_string(), generic.to_string())
+        );
     }
     #[test]
     fn sign_in_defaults_to_read_capabilities_and_keeps_explicit_writes() {

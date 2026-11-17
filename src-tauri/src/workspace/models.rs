@@ -112,7 +112,6 @@ pub enum Operation {
     AiUsage,
     AiDraft,
     AiSummarize,
-    BriefGenerate,
     AutomationSave,
     AutomationDelete,
     AutomationToggle,

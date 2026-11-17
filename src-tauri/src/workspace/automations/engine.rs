@@ -238,6 +238,7 @@ impl Core {
             .collect();
         let jobs = r.jobs()?;
         let mut state = load_state(&r, &jobs);
+        state.follow_account(&c.id);
         // "Seen" is every message in the cache, not what this view shows, so a message that leaves
         // the view (source change, outage) and returns is never new again. Ids are dropped only
         // when the record leaves the cache.
@@ -319,17 +320,21 @@ impl Core {
             Operation::AutomationDelete => {
                 let aid = required(&req.data, "id", 200)?;
                 r.delete_local("automation", aid, PERSONAL)?;
+                r.delete_automation_runs(aid)?;
+                // A queued run never starts; a running one is stopped, and as its claim is gone
+                // its result is discarded.
                 for mut job in r.jobs()? {
                     if job.kind == "automation_run"
-                        && job.state == "queued"
+                        && matches!(job.state.as_str(), "queued" | "running")
                         && job.payload["automationId"] == aid
                     {
                         job.state = "cancelled".into();
+                        job.lease_until = None;
                         job.result = Some("Automation deleted".into());
                         r.save_job(&job)?;
+                        self.cancel_ai_job(&job.id);
                     }
                 }
-                // TODO(Task 15): a run that is already executing is stopped by the runner.
                 let jobs = r.jobs()?;
                 let mut state = load_state(&r, &jobs);
                 state.forget(aid);
@@ -381,7 +386,8 @@ impl Core {
     }
 }
 
-fn stored(r: &Repository, id: &str) -> Result<Automation> {
+/// The saved automation `id`.
+pub(super) fn stored(r: &Repository, id: &str) -> Result<Automation> {
     let rec = r.record("automation", id, None, Some(PERSONAL))?;
     let mut a: Automation = serde_json::from_value(rec.data).map_err(|_| invalid_form())?;
     a.id = rec.id;
@@ -637,6 +643,53 @@ mod engine_tests {
         let before = core.repo().unwrap().revision().unwrap();
         core.automations_after_sync().unwrap();
         assert_eq!(core.repo().unwrap().revision().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn a_new_account_is_a_baseline_not_a_backlog() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        seed(&core);
+        core.request(mutation(&core, Operation::AutomationSave, event_json()))
+            .await
+            .unwrap();
+        core.repo()
+            .unwrap()
+            .put_record(&mail("old", "ann@epam.com", false))
+            .unwrap();
+        core.automations_after_sync().unwrap();
+        // Signing in to another account: its first sync fills the cache with mail Connect has
+        // never seen, which must not start a run per matching message.
+        {
+            let mut r = core.repo().unwrap();
+            let mut other = r.connection("acct").unwrap();
+            other.id = "acct-2".into();
+            other.account_key = "acct-2".into();
+            r.save_connection(&other).unwrap();
+            let mut s = r.settings().unwrap();
+            s.active_connection = Some("acct-2".into());
+            r.settings_update(&s).unwrap();
+            let mut w = r.workspace("personal").unwrap();
+            w.connection_id = Some("acct-2".into());
+            r.save_workspace(&w).unwrap();
+            for id in ["b1", "b2", "b3"] {
+                let mut m = mail(id, "pat@epam.com", false);
+                m.connection_id = Some("acct-2".into());
+                r.put_record(&m).unwrap();
+            }
+        }
+        core.automations_after_sync().unwrap();
+        assert!(
+            jobs_of(&core).is_empty(),
+            "the new account's backlog must not fire"
+        );
+        // Mail that arrives after that baseline does.
+        let mut fresh = mail("b4", "pat@epam.com", false);
+        fresh.connection_id = Some("acct-2".into());
+        core.repo().unwrap().put_record(&fresh).unwrap();
+        core.automations_after_sync().unwrap();
+        let keys: Vec<String> = jobs_of(&core).into_iter().map(|j| j.key).collect();
+        assert_eq!(keys, vec!["automation:auto-event:event:b4"]);
     }
 
     #[tokio::test]

@@ -1,0 +1,34 @@
+{
+  "connectionId": "acct",
+  "data": {
+    "aiSuggested": true,
+    "channel": "mail",
+    "conversationKey": "mail:conv-1",
+    "draftKey": "m1",
+    "options": null,
+    "provenance": {
+      "at": 1795000500,
+      "automationId": "auto-reply",
+      "costUsd": 0.012,
+      "durationMs": 4200,
+      "messageIds": [
+        "m0",
+        "m1"
+      ],
+      "model": "claude-sonnet-4-5",
+      "partialText": true,
+      "profile": "claude",
+      "runId": "run-3"
+    },
+    "questions": [],
+    "sourceId": "m1",
+    "sourceRevision": "v1",
+    "text": "Hi Ann,\n\n[Yes, I can / Unfortunately, I can't] send the Q3 numbers by Friday.\n\nBest regards,\nTaylor"
+  },
+  "id": "ai:m1",
+  "kind": "draft",
+  "revision": "rev-1",
+  "source": "mail:inbox",
+  "updatedAt": 1795000500,
+  "workspaceId": "personal"
+}

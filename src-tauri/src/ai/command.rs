@@ -35,8 +35,7 @@ pub struct RunSpec {
     pub input: Value,
     pub schema: Option<Value>,
     pub timeout: Duration,
-    /// Spend ceiling; callers set it from Task 7 on, and the runner does not enforce it yet.
-    #[allow(dead_code)]
+    /// Spend ceiling in US dollars, passed as `--max-budget-usd` for CodeMie profiles only.
     pub cap_usd: Option<f64>,
     pub staging_root: PathBuf,
 }
@@ -86,6 +85,11 @@ pub fn build_command(spec: &RunSpec, profile: &AiProfile, bin: &Path, cwd: &Path
         "--verbose",
     ] {
         args.push(a.to_string());
+    }
+    // A CodeMie profile bills per call, so a run can carry a spend ceiling. A subscription
+    // run has no per-call bill and never takes one.
+    if let (ProfileKind::CodeMie { .. }, Some(cap)) = (&profile.kind, spec.cap_usd) {
+        args.extend(["--max-budget-usd".to_string(), cap.to_string()]);
     }
     if let Some(schema) = &spec.schema {
         args.extend(["--json-schema".to_string(), schema.to_string()]);
@@ -221,6 +225,41 @@ mod tests {
             &plan.args[..4],
             &v(&["--profile", "prod", "--safe-mode", "--print"])[..]
         );
+    }
+
+    #[test]
+    fn cap_usd_passes_max_budget_for_codemie_only() {
+        let codemie = profile(ProfileKind::CodeMie {
+            name: "prod".into(),
+        });
+        let mut capped = spec(None, Some(json!({"type": "object"})));
+        capped.cap_usd = Some(0.5);
+        let plan = build_command(&capped, &codemie, Path::new("/b"), Path::new("/s"));
+        let mut want = v(&["--profile", "prod", "--safe-mode", "--print"]);
+        want.extend(v(TAIL));
+        want.extend(v(&["--max-budget-usd", "0.5"]));
+        want.extend(v(&["--json-schema", r#"{"type":"object"}"#]));
+        want.extend(v(&["--system-prompt", "SYS"]));
+        assert_eq!(plan.args, want);
+        // A whole number of dollars is written plainly.
+        capped.cap_usd = Some(2.0);
+        let plan = build_command(&capped, &codemie, Path::new("/b"), Path::new("/s"));
+        assert!(plan.args.windows(2).any(|w| w == ["--max-budget-usd", "2"]));
+        // A subscription run never takes a budget, and no cap means no flag.
+        let plan = build_command(
+            &capped,
+            &profile(ProfileKind::Native),
+            Path::new("/b"),
+            Path::new("/s"),
+        );
+        assert!(!plan.args.iter().any(|a| a == "--max-budget-usd"));
+        let plan = build_command(
+            &spec(None, None),
+            &codemie,
+            Path::new("/b"),
+            Path::new("/s"),
+        );
+        assert!(!plan.args.iter().any(|a| a == "--max-budget-usd"));
     }
 
     #[test]

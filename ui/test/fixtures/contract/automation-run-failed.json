@@ -1,0 +1,44 @@
+{
+  "connectionId": null,
+  "data": {
+    "automationId": "auto-brief",
+    "automationName": "Morning brief",
+    "connectionId": "acct",
+    "costUsd": null,
+    "delivered": [],
+    "durationMs": 900,
+    "error": {
+      "class": "needs_login",
+      "code": "needs_login",
+      "message": "Claude is not signed in."
+    },
+    "model": null,
+    "profile": "claude",
+    "sources": [
+      {
+        "at": 1794996400,
+        "channel": "mail",
+        "id": "m0",
+        "kind": "message",
+        "title": "Q3 budget"
+      },
+      {
+        "at": 1795000000,
+        "id": "c1",
+        "kind": "commitment",
+        "title": "Send the roadmap"
+      }
+    ],
+    "startedAt": 1795000480,
+    "status": "failed",
+    "trigger": {
+      "kind": "manual"
+    }
+  },
+  "id": "run-2",
+  "kind": "automation_run",
+  "revision": "rev-1",
+  "source": "automation",
+  "updatedAt": 1795000500,
+  "workspaceId": "personal"
+}

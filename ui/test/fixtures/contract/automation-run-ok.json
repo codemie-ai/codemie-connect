@@ -1,0 +1,55 @@
+{
+  "connectionId": null,
+  "data": {
+    "automationId": "auto-brief",
+    "automationName": "Morning brief",
+    "connectionId": "acct",
+    "costUsd": 0.021,
+    "delivered": [
+      "today",
+      "notification"
+    ],
+    "durationMs": 3100,
+    "model": "claude-haiku-4-5",
+    "output": {
+      "items": [
+        {
+          "sourceId": "m0",
+          "text": "Answer Ann about the Q3 budget"
+        },
+        {
+          "text": "Invented source"
+        }
+      ],
+      "summaryMarkdown": "## Replies\n- Ann asked about the **Q3 budget** p\n- See [the plan](https://example.test/plan)",
+      "title": "2 replies owed"
+    },
+    "profile": "claude",
+    "sources": [
+      {
+        "at": 1794996400,
+        "channel": "mail",
+        "id": "m0",
+        "kind": "message",
+        "title": "Q3 budget"
+      },
+      {
+        "at": 1795000000,
+        "id": "c1",
+        "kind": "commitment",
+        "title": "Send the roadmap"
+      }
+    ],
+    "startedAt": 1795000480,
+    "status": "ok",
+    "trigger": {
+      "kind": "manual"
+    }
+  },
+  "id": "run-1",
+  "kind": "automation_run",
+  "revision": "rev-1",
+  "source": "automation",
+  "updatedAt": 1795000500,
+  "workspaceId": "personal"
+}

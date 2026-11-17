@@ -122,7 +122,7 @@ impl AiJob {
 
 /// What one draft answers, shared with the UI: an Outlook draft replies to one message (its
 /// id, as Review & send does), a Teams draft to the chat (its conversation key).
-fn draft_key(source: &Record) -> String {
+pub(super) fn draft_key(source: &Record) -> String {
     match Channel::of(source) {
         Some(Channel::Mail) => source.id.clone(),
         _ => prompts::conversation_key(source),
@@ -133,7 +133,7 @@ fn draft_key(source: &Record) -> String {
 const MAIL_READS_AT_ONCE: usize = 4;
 /// All of a run's Outlook reads together may take this long; what is not read by then is
 /// given to Claude as the stored preview.
-const MAIL_READ_DEADLINE: Duration = Duration::from_secs(12);
+pub(super) const MAIL_READ_DEADLINE: Duration = Duration::from_secs(12);
 
 /// `GET /me/messages/{id}?$select=uniqueBody`: the message's own text, without the quoted
 /// thread (which the run reads as separate messages).
@@ -391,7 +391,7 @@ impl Core {
     /// Makes a claimed job stoppable, then notes its profile, model and start time on it (for
     /// the "Drafting with…" row). Registering first means a Stop between the two still lands;
     /// noting re-checks the claim, so a Stop before it ends the job here.
-    fn start_run(
+    pub(super) fn start_run(
         &self,
         job: &Job,
         profile: &AiProfile,
@@ -440,7 +440,7 @@ impl Core {
     /// character budget; reads still going after `deadline` are dropped. A message that was not
     /// read (failed, late or beyond the budget) is left out: the run uses its preview and
     /// flags the block as partial. Stop ends the reads.
-    async fn full_mail_texts(
+    pub(super) async fn full_mail_texts(
         &self,
         c: &Connection,
         window: &[Record],
@@ -501,7 +501,7 @@ impl Core {
 
     /// One Claude run for a started job, recorded in the ledger under `ref_id` however it
     /// ends, and its answer read with `parse` (an answer `parse` rejects is `invalid_output`).
-    async fn run_claude<T>(
+    pub(super) async fn run_claude<T>(
         &self,
         run: &StartedRun<'_>,
         spec: RunSpec,
@@ -560,9 +560,9 @@ impl Core {
 }
 
 /// A job whose Claude work has begun: its cancel token, reachable by Stop until dropped.
-struct StartedRun<'a> {
+pub(super) struct StartedRun<'a> {
     job_id: String,
-    cancel: CancellationToken,
+    pub(super) cancel: CancellationToken,
     _stop: StopHandle<'a>,
 }
 
@@ -659,7 +659,7 @@ fn budget_filled(settled: &[Option<Option<String>>]) -> bool {
 /// Whether what a draft was written from is still what the conversation says: the same
 /// newest message, and every message Claude read with the same content. Read state, flags
 /// and reactions change revisions, not fingerprints, so they never count as a change.
-fn unchanged(ctx: &prompts::PromptInput, window: &[Record]) -> bool {
+pub(super) fn unchanged(ctx: &prompts::PromptInput, window: &[Record]) -> bool {
     let current: std::collections::HashMap<&str, String> = window
         .iter()
         .map(|m| (m.id.as_str(), prompts::fingerprint(m)))
@@ -673,7 +673,7 @@ fn unchanged(ctx: &prompts::PromptInput, window: &[Record]) -> bool {
 }
 
 /// The stored copy of a claimed job (it may carry progress saved since the claim).
-fn stored_job(r: &repository::Repository, job: &Job) -> Result<Job> {
+pub(super) fn stored_job(r: &repository::Repository, job: &Job) -> Result<Job> {
     r.jobs()?
         .into_iter()
         .find(|j| j.id == job.id)
@@ -683,7 +683,7 @@ fn stored_job(r: &repository::Repository, job: &Job) -> Result<Job> {
 /// Where a draft or summary came from: "Drafted with Claude Code · Sonnet · 4 s · from 5
 /// messages", the Context disclosure (the message ids), and whether some Outlook text was
 /// only its preview (`partialText`).
-fn provenance(
+pub(super) fn provenance(
     profile: &AiProfile,
     outcome: &RunOutcome,
     requested_model: Option<String>,

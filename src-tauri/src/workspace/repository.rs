@@ -29,6 +29,9 @@ fn decode<T: DeserializeOwned>(s: String) -> Result<T> {
 
 /// `ai_run` records older than this are removed when the repository opens.
 const AI_RUN_RETENTION_DAYS: i64 = 400;
+/// The automation run log keeps 90 days and at most 200 runs per automation (DESIGN 6.6).
+const AUTOMATION_RUN_RETENTION_DAYS: i64 = 90;
+const AUTOMATION_RUNS_KEPT: i64 = 200;
 /// The database `user_version` this build writes; a newer one is refused, never downgraded.
 pub const SCHEMA_VERSION: i64 = 1;
 
@@ -106,6 +109,22 @@ impl Repository {
             "DELETE FROM records WHERE kind='ai_run' AND updated_at<?1",
             [now() - AI_RUN_RETENTION_DAYS * 86400],
         )?;
+        // Milestone 2 replaced the deterministic morning brief with the Morning brief automation:
+        // its jobs, its schedules and the brief it wrote go.
+        db.execute(
+            "DELETE FROM jobs WHERE json_extract(body,'$.kind')='brief'",
+            [],
+        )?;
+        db.execute(
+            "DELETE FROM records WHERE kind='schedule' AND json_extract(body,'$.kind')='brief'",
+            [],
+        )?;
+        db.execute("DELETE FROM records WHERE kind='brief'", [])?;
+        db.execute(
+            "DELETE FROM records WHERE kind='automation_run' AND updated_at<?1",
+            [now() - AUTOMATION_RUN_RETENTION_DAYS * 86400],
+        )?;
+        prune_automation_runs(&db, None)?;
         let mut repo = Self { db };
         // Earlier builds required manual binding and source picking. Best effort: never blocks opening.
         let _ = repo.bind_default_to_active();
@@ -313,17 +332,8 @@ impl Repository {
         );
         let mut records = Vec::new();
         for r in raw {
-            if r.kind == "brief"
-                && r.data.get("policy").is_some_and(|p| {
-                    self.policy(Some(&active.id), active.connection_id.as_deref())
-                        .ok()
-                        .as_ref()
-                        != Some(p)
-                })
-            {
-                continue;
-            }
-            if r.kind == "brief"
+            // A run that read an account's mail and calendar shows only while that account does.
+            if r.kind == "automation_run"
                 && r.data["connectionId"]
                     .as_str()
                     .is_some_and(|id| Some(id) != visible.map(|c| c.id.as_str()))
@@ -590,6 +600,63 @@ impl Repository {
         )?;
         Ok(())
     }
+    /// Stores one finished automation run without ending a job (a failed run), keeping at most
+    /// [`AUTOMATION_RUNS_KEPT`] runs of its automation.
+    pub fn put_automation_run(&mut self, run: &Record) -> Result<()> {
+        let tx = self.db.transaction()?;
+        put_record(&tx, run)?;
+        prune_automation_runs(&tx, run.data["automationId"].as_str())?;
+        bump(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Ends a claimed automation run as one unit: the run, the reply draft it prepared, the
+    /// notification it queued and the job's success. A lost claim (Stop, delete, restart)
+    /// stores nothing.
+    pub fn commit_automation_run(
+        &mut self,
+        job: &Job,
+        run: &Record,
+        draft: Option<&Record>,
+        notification: Option<&Job>,
+        result: &str,
+    ) -> Result<()> {
+        self.check_claim(&job.id, job.attempts)?;
+        let mut done = job.clone();
+        done.state = "succeeded".into();
+        done.lease_until = None;
+        done.result = Some(result.into());
+        let tx = self.db.transaction()?;
+        put_record(&tx, run)?;
+        if let Some(draft) = draft {
+            put_record(&tx, draft)?;
+        }
+        if let Some(n) = notification {
+            tx.execute(
+                "INSERT OR IGNORE INTO jobs VALUES(?1,?2,?3,?4,?5,?6)",
+                params![n.id, n.key, n.state, n.due_at, n.lease_until, encode(n)?],
+            )?;
+        }
+        tx.execute(
+            "UPDATE jobs SET state='succeeded',lease_until=NULL,body=?2 WHERE id=?1",
+            params![job.id, encode(&done)?],
+        )?;
+        prune_automation_runs(&tx, run.data["automationId"].as_str())?;
+        bump(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Removes the run log of a deleted automation.
+    pub fn delete_automation_runs(&mut self, automation_id: &str) -> Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "DELETE FROM records WHERE kind='automation_run' AND json_extract(body,'$.automationId')=?1",
+            [automation_id],
+        )?;
+        bump(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn delete_local(&mut self, kind: &str, id: &str, wid: &str) -> Result<()> {
         let tx = self.db.transaction()?;
         tx.execute(
@@ -801,7 +868,7 @@ impl Repository {
         if !retain {
             tx.execute("DELETE FROM records WHERE connection_id=?1", [cid])?;
             tx.execute(
-                "DELETE FROM records WHERE kind='brief' AND json_extract(body,'$.connectionId')=?1",
+                "DELETE FROM records WHERE kind='automation_run' AND json_extract(body,'$.connectionId')=?1",
                 [cid],
             )?;
         }
@@ -897,7 +964,7 @@ impl Repository {
             match record.kind.as_str() {
                 "draft" => "AI draft ready for review",
                 "summary" => "Summary ready",
-                _ => "Daily brief updated",
+                _ => "Saved",
             }
             .into(),
         );
@@ -922,7 +989,7 @@ impl Repository {
         tx.execute("UPDATE jobs SET state='queued',body=json_set(body,'$.state','queued','$.leaseUntil',NULL) WHERE state='running' AND lease_until<?1",[at])?;
         let raw: Option<String> = tx
             .query_row(
-                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize'))<2) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 ELSE 1 END,due_at LIMIT 1",
+                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize','automation_run') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize','automation_run'))<2) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 ELSE 1 END,due_at LIMIT 1",
                 params![at,allow_sync],
                 |r| r.get(0),
             )
@@ -1059,6 +1126,14 @@ impl Repository {
         }
         Ok(())
     }
+}
+/// Keeps the newest [`AUTOMATION_RUNS_KEPT`] runs of one automation, or of every automation.
+fn prune_automation_runs(db: &Sqlite, automation_id: Option<&str>) -> Result<()> {
+    db.execute(
+        "DELETE FROM records WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER (PARTITION BY json_extract(body,'$.automationId') ORDER BY updated_at DESC, id DESC) AS n FROM records WHERE kind='automation_run' AND (?1 IS NULL OR json_extract(body,'$.automationId')=?1)) WHERE n>?2)",
+        params![automation_id, AUTOMATION_RUNS_KEPT],
+    )?;
+    Ok(())
 }
 fn bump(tx: &Transaction<'_>) -> Result<()> {
     tx.execute("UPDATE meta SET revision=revision+1 WHERE id=1", [])?;
@@ -2018,7 +2093,7 @@ mod tests {
                 id: sid.into(),
                 workspace_id: Some("personal".into()),
                 connection_id: None,
-                kind: "brief".into(),
+                kind: "reminder".into(),
                 key: sid.into(),
                 state: "queued".into(),
                 due_at: now() - 1,
@@ -2042,42 +2117,160 @@ mod tests {
         );
         assert!(r.claim(now()).unwrap().is_some());
     }
-    #[test]
-    fn brief_result_and_job_completion_commit_together_and_reject_cancelled_claim() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut r = Repository::open(&dir.path().join("db")).unwrap();
-        let job = Job {
+    fn job_of(kind: &str, key: &str, state: &str, payload: Value) -> Job {
+        Job {
             id: id(),
             workspace_id: Some("personal".into()),
             connection_id: None,
-            kind: "brief".into(),
-            key: id(),
-            state: "queued".into(),
+            kind: kind.into(),
+            key: key.into(),
+            state: state.into(),
             due_at: now() - 1,
             lease_until: None,
             attempts: 0,
-            policy: r.policy(Some("personal"), None).unwrap(),
-            payload: json!({}),
+            policy: json!({}),
+            payload,
             result: None,
             error_class: None,
             error_code: None,
+        }
+    }
+    fn automation_run(automation: &str, n: usize, at: i64) -> Record {
+        Record {
+            id: format!("{automation}-run-{n}"),
+            kind: "automation_run".into(),
+            connection_id: None,
+            workspace_id: Some("personal".into()),
+            source: "automation".into(),
+            revision: "v1".into(),
+            updated_at: at,
+            data: json!({"automationId": automation, "status": "ok"}),
+        }
+    }
+    #[test]
+    fn retention_prunes_old_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let mut r = Repository::open(&path).unwrap();
+        // 205 recent runs of one automation, one 91 days old, and three of another.
+        for n in 0..205 {
+            r.put_record(&automation_run("busy", n, now() - 1_000 + n as i64))
+                .unwrap();
+        }
+        r.put_record(&automation_run("busy", 999, now() - 91 * 86_400))
+            .unwrap();
+        for n in 0..3 {
+            r.put_record(&automation_run("quiet", n, now() - 89 * 86_400))
+                .unwrap();
+        }
+        r.put_record(&automation_run("quiet", 9, now() - 91 * 86_400))
+            .unwrap();
+        drop(r);
+        let r = Repository::open(&path).unwrap();
+        let runs = r.local_records("personal", "automation_run").unwrap();
+        let of = |a: &str| {
+            runs.iter()
+                .filter(|x| x.data["automationId"] == a)
+                .map(|x| x.id.clone())
+                .collect::<Vec<_>>()
         };
+        let busy = of("busy");
+        assert_eq!(busy.len(), 200, "at most 200 runs per automation");
+        assert!(
+            busy.contains(&"busy-run-204".to_string()),
+            "the newest stay"
+        );
+        assert!(!busy.contains(&"busy-run-4".to_string()), "the oldest go");
+        assert!(!busy.contains(&"busy-run-999".to_string()));
+        assert_eq!(of("quiet").len(), 3, "older than 90 days goes");
+        // A run kept by the same automation's cap is pruned as it is stored, too.
+        let mut r = r;
+        let mut stored = automation_run("busy", 500, now());
+        stored.id = "busy-run-new".into();
+        r.put_automation_run(&stored).unwrap();
+        let busy = r
+            .local_records("personal", "automation_run")
+            .unwrap()
+            .into_iter()
+            .filter(|x| x.data["automationId"] == "busy")
+            .count();
+        assert_eq!(busy, 200);
+    }
+    #[test]
+    fn open_removes_brief_jobs_and_schedules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let mut r = Repository::open(&path).unwrap();
+        for (n, state) in ["queued", "running", "failed", "succeeded"]
+            .iter()
+            .enumerate()
+        {
+            r.enqueue(&job_of("brief", &format!("brief-{n}"), state, json!({})))
+                .unwrap();
+        }
+        r.enqueue(&job_of("reminder", "reminder-1", "queued", json!({})))
+            .unwrap();
+        for (sid, kind) in [("morning", "brief"), ("standup", "reminder")] {
+            r.put_record(&Record {
+                id: sid.into(),
+                kind: "schedule".into(),
+                connection_id: None,
+                workspace_id: Some("personal".into()),
+                source: "local".into(),
+                revision: "v1".into(),
+                updated_at: 1,
+                data: json!({"kind": kind, "time": "08:45", "timeZone": "UTC", "enabled": true, "nextAt": 1}),
+            })
+            .unwrap();
+        }
+        r.put_record(&Record {
+            id: "daily".into(),
+            kind: "brief".into(),
+            connection_id: None,
+            workspace_id: Some("personal".into()),
+            source: "deterministic".into(),
+            revision: "v1".into(),
+            updated_at: 1,
+            data: json!({"text": "2 upcoming events"}),
+        })
+        .unwrap();
+        drop(r);
+        let r = Repository::open(&path).unwrap();
+        let kinds: Vec<String> = r.jobs().unwrap().into_iter().map(|j| j.kind).collect();
+        assert_eq!(kinds, ["reminder"]);
+        let schedules: Vec<String> = r
+            .local_records("personal", "schedule")
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(schedules, ["standup"]);
+        assert!(r.local_records("personal", "brief").unwrap().is_empty());
+    }
+    #[test]
+    fn job_result_and_completion_commit_together_and_reject_cancelled_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&dir.path().join("db")).unwrap();
+        let mut job = job_of("ai_summarize", &id(), "queued", json!({}));
+        job.policy = r.policy(Some("personal"), None).unwrap();
         r.enqueue(&job).unwrap();
         let mut claimed = r.claim(now()).unwrap().unwrap();
         let record = Record {
-            id: "daily".into(),
-            kind: "brief".into(),
+            id: "mail:conv-1".into(),
+            kind: "summary".into(),
             workspace_id: Some("personal".into()),
             connection_id: None,
-            source: "deterministic".into(),
+            source: "mail:inbox".into(),
             revision: id(),
             updated_at: now(),
             data: json!({"text":"confirmed"}),
         };
         r.commit_job_record(&claimed, &record).unwrap();
-        assert_eq!(r.jobs().unwrap()[0].state, "succeeded");
+        let done = r.jobs().unwrap().remove(0);
+        assert_eq!(done.state, "succeeded");
+        assert_eq!(done.result.as_deref(), Some("Summary ready"));
         assert_eq!(
-            r.record("brief", "daily", None, Some("personal"))
+            r.record("summary", "mail:conv-1", None, Some("personal"))
                 .unwrap()
                 .data["text"],
             "confirmed"

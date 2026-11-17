@@ -1,6 +1,5 @@
 //! Automations (DESIGN 6.6): the model, its validation, when a run is due and which new
-//! messages or ended meetings start one. Runs themselves arrive with Task 15; here a due
-//! run is queued as an `automation_run` job and the executor is a stub.
+//! messages or ended meetings start one. A due run is queued as an `automation_run` job.
 use crate::workspace::models::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -109,6 +108,8 @@ pub struct Skip {
 pub struct State {
     /// False until the first sync round has been taken as the baseline.
     pub initialized: bool,
+    /// The account whose cache `seen_messages` describes; another account starts a new baseline.
+    pub connection_id: Option<String>,
     pub seen_messages: Vec<String>,
     pub last_meeting_check: Option<i64>,
     /// The latest scheduled time each schedule automation has been handled for.
@@ -324,6 +325,15 @@ pub fn due(a: &Automation, last_run: i64, now: i64, zone: &str, app_started_at: 
 }
 
 impl State {
+    /// Takes `connection_id` as the account the cache belongs to. A different account's cache
+    /// is all new to Connect, so it becomes the baseline again instead of a backlog of runs.
+    pub fn follow_account(&mut self, connection_id: &str) {
+        if self.connection_id.as_deref() != Some(connection_id) {
+            self.initialized = false;
+            self.seen_messages.clear();
+            self.connection_id = Some(connection_id.into());
+        }
+    }
     /// Why a run must not start now, if it must not.
     pub fn refusal(&self, id: &str, event: bool, now: i64) -> Option<&'static str> {
         if self.in_progress.contains(id) {
