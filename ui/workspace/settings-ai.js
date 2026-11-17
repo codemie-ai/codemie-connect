@@ -85,14 +85,18 @@ function testResult(t) {
 }
 
 function stateAction(p) {
-  const tools = button('Open CodeMie tools', { action: 'setup-tools', variant: 'secondary', iconName: 'download' });
+  const setup = button('Set up CodeMie', { action: 'cm-setup-open', variant: 'secondary', iconName: 'download' });
   const again = button('Check again', { action: 'ai-refresh', variant: 'ghost', iconName: 'refresh' });
   if (p.state === 'needs_login' && isNative(p)) {
     return `<div class="ws-ai-steps"><span>Open Terminal and run <code>claude</code>, then type <code>/login</code></span>${button('Copy', { action: 'ai-copy-login', iconName: 'link', size: 'sm' })}</div><div class="ws-actions">${again}</div>`;
   }
-  if (p.state === 'needs_login') return `<div class="ws-ai-steps"><span>Sign in with <code>codemie profile login</code> in Terminal, or open CodeMie tools.</span></div><div class="ws-actions">${tools}${again}</div>`;
-  if (p.state === 'too_old') return `<div class="ws-ai-steps"><span>Update Claude Code: open Terminal, run <code>claude update</code>, then check again.</span></div><div class="ws-actions">${tools}${again}</div>`;
-  if (p.state === 'not_installed' || p.state === 'not_configured') return `<div class="ws-actions">${tools}${again}</div>`;
+  // A CodeMie profile signs in again in the browser, from here (Settings → CodeMie's sign-in dialog).
+  if (p.state === 'needs_login') {
+    const name = String(p.id || '').replace(/^codemie:/, '');
+    return `<div class="ws-actions">${button('Sign in', { action: 'cm-profile-login', variant: 'primary', iconName: 'link', attrs: { 'data-id': name } })}${button('Manage profiles', { action: 'cm-tab', variant: 'ghost', attrs: { 'data-tab': 'cm-profiles' } })}${again}</div>`;
+  }
+  if (p.state === 'too_old') return `<div class="ws-ai-steps"><span>Update Claude Code: open Terminal, run <code>claude update</code>, then check again.</span></div><div class="ws-actions">${isNative(p) ? '' : setup}${again}</div>`;
+  if (p.state === 'not_installed' || p.state === 'not_configured') return `<div class="ws-actions">${setup}${again}</div>`;
   if (p.state === 'error' || p.state === 'checking') return `<div class="ws-actions">${button('Retry', { action: 'ai-refresh', variant: 'secondary', iconName: 'refresh' })}</div>`;
   return '';
 }

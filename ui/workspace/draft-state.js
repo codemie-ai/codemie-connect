@@ -134,7 +134,8 @@ const retry = (job, label = 'Try again', kind = 'draft') => ({
 });
 const CHOOSE = { draft: 'ai-draft-choose', summary: 'ai-summarize-choose', automation: 'automation-choose' };
 const settingsAction = { label: 'Open Claude settings', action: 'ai-open-settings', iconName: 'settings' };
-const toolsAction = { label: 'Open CodeMie tools', action: 'setup-tools', iconName: 'tools' };
+const setupAction = { label: 'Set up CodeMie', action: 'cm-setup-open', iconName: 'download' };
+const signInAction = (profileId) => ({ label: 'Sign in', action: 'cm-profile-login', iconName: 'link', attrs: { 'data-id': profileId.slice('codemie:'.length) } });
 
 /**
  * One sentence and one action for a failed draft job (or, with `kind: 'summary'`, a failed
@@ -158,11 +159,11 @@ export function draftError(job, { profiles = [], settings = {}, kind = 'draft' }
     case 'needs_choice': return { tone: 'info', sentence: 'Choose which Claude writes for you.', action: { label: 'Choose Claude', action: CHOOSE[kind] || CHOOSE.draft, iconName: 'spark', attrs: { 'data-id': automation ? job.payload?.automationId : job.id } } };
     case 'needs_login':
       return isCodeMie(profileId)
-        ? { tone: 'warning', sentence: `${label} isn't signed in.`, action: toolsAction }
+        ? { tone: 'warning', sentence: `${label} isn't signed in.`, action: signInAction(profileId) }
         : { tone: 'warning', sentence: "Claude Code isn't signed in.", action: { label: 'Copy sign-in steps', action: 'ai-copy-login', iconName: 'link' } };
     case 'not_installed': return { tone: 'warning', sentence: "Claude Code isn't installed on this Mac.", action: settingsAction };
     case 'too_old': return { tone: 'warning', sentence: `This Claude Code is too old to ${task}.`, action: settingsAction };
-    case 'not_configured': return { tone: 'warning', sentence: "This CodeMie profile isn't fully set up.", action: toolsAction };
+    case 'not_configured': return { tone: 'warning', sentence: "This CodeMie profile isn't fully set up.", action: setupAction };
     case 'rate_limited': return { tone: 'warning', sentence: "Claude's usage limit was reached. Try again later.", action: null };
     case 'permission_required': return { tone: 'warning', sentence: automation ? 'Connect may no longer read what this automation needs.' : `This conversation is no longer available to ${summary ? 'summarize' : 'draft from'}.`, action: null };
     case 'timeout': return { tone: 'error', sentence: 'Claude took too long to answer.', action: retry(job, 'Try again', kind) };
