@@ -52,6 +52,7 @@ impl GraphReads for LiveGraph {
 #[derive(Default)]
 pub(crate) struct FakeGraph {
     answers: std::sync::Mutex<std::collections::HashMap<String, Value>>,
+    delays: std::sync::Mutex<std::collections::HashMap<String, Duration>>,
     calls: std::sync::Mutex<Vec<String>>,
 }
 
@@ -59,6 +60,10 @@ pub(crate) struct FakeGraph {
 impl FakeGraph {
     pub(crate) fn answer(&self, url: &str, value: Value) {
         self.answers.lock().unwrap().insert(url.into(), value);
+    }
+    /// Makes the read of `url` take `delay` before it answers.
+    pub(crate) fn slow(&self, url: &str, delay: Duration) {
+        self.delays.lock().unwrap().insert(url.into(), delay);
     }
     pub(crate) fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
@@ -75,7 +80,11 @@ impl GraphReads for FakeGraph {
     ) -> BoxFuture<'a, Result<Value>> {
         self.calls.lock().unwrap().push(url.into());
         let answer = self.answers.lock().unwrap().get(url).cloned();
+        let delay = self.delays.lock().unwrap().get(url).copied();
         Box::pin(async move {
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
             answer.ok_or_else(|| WorkspaceError::new("offline", "No synthetic answer."))
         })
     }
@@ -122,6 +131,9 @@ fn draft_key(source: &Record) -> String {
 
 /// Graph reads of Outlook text made at once for one run.
 const MAIL_READS_AT_ONCE: usize = 4;
+/// All of a run's Outlook reads together may take this long; what is not read by then is
+/// given to Claude as the stored preview.
+const MAIL_READ_DEADLINE: Duration = Duration::from_secs(12);
 
 /// `GET /me/messages/{id}?$select=uniqueBody`: the message's own text, without the quoted
 /// thread (which the run reads as separate messages).
@@ -180,6 +192,11 @@ impl Core {
         }
         let channel = Channel::of(&source)
             .ok_or_else(|| invalid("Choose an Outlook message or a Teams chat."))?;
+        // Review & send cannot answer your own Outlook message; a Teams message of your own is
+        // followed up (DESIGN 6.4).
+        if what == AiJob::Draft && channel == Channel::Mail && source.data["isMine"] == true {
+            return Err(invalid("Choose a message someone sent you."));
+        }
         let purpose = what.purpose(channel);
         if chosen_profile(&r.settings()?.ai, purpose).is_none() {
             return Err(AiError::new(ErrorClass::NeedsChoice).into());
@@ -231,7 +248,9 @@ impl Core {
         let draft_id = format!("ai:{}", draft_key(&source));
         let run = self.start_run(job, &profile, &model)?;
         let window = prompts::draft_window(&*self.repo()?, &w, &c, &source)?;
-        let texts = self.full_mail_texts(&c, &window, &run.cancel).await?;
+        let texts = self
+            .full_mail_texts(&c, &window, &run.cancel, MAIL_READ_DEADLINE)
+            .await?;
         let zone = self.repo()?.settings()?.time_zone;
         let reading = prompts::Reading {
             now: now(),
@@ -307,7 +326,9 @@ impl Core {
         let (profile, model) = self.route(Purpose::Summary).await?;
         let run = self.start_run(job, &profile, &model)?;
         let window = prompts::summary_window(&*self.repo()?, &w, &c, &source)?;
-        let texts = self.full_mail_texts(&c, &window, &run.cancel).await?;
+        let texts = self
+            .full_mail_texts(&c, &window, &run.cancel, MAIL_READ_DEADLINE)
+            .await?;
         let zone = self.repo()?.settings()?.time_zone;
         let reading = prompts::Reading {
             now: now(),
@@ -409,45 +430,68 @@ impl Core {
         self.emit("workspace:changed");
     }
 
-    /// The full text of each Outlook message in `window`, read from Microsoft now and never
-    /// stored. A message that cannot be read is left out (the run uses its preview and says
-    /// so in provenance). Stop ends the reads.
+    /// The full text of the Outlook messages in `window`, read from Microsoft now and never
+    /// stored. Newest first, four at a time, until the newest messages fill the run's
+    /// character budget; reads still going after `deadline` are dropped. A message that was not
+    /// read (failed, late or beyond the budget) is left out: the run uses its preview and
+    /// flags the block as partial. Stop ends the reads.
     async fn full_mail_texts(
         &self,
         c: &Connection,
         window: &[Record],
         cancel: &CancellationToken,
+        deadline: Duration,
     ) -> Result<prompts::FullTexts> {
         use futures_util::StreamExt;
         let reads: Vec<(String, String)> = window
             .iter()
+            .rev()
             .filter(|m| m.data["channel"] == "mail")
             .filter_map(|m| Some((m.id.clone(), m.data["providerId"].as_str()?.to_string())))
             .collect();
-        let texts = futures_util::stream::iter(reads)
-            .map(|(id, provider_id)| async move {
-                match self
-                    .graph_reads
-                    .get(self, c, &mail_body_url(&provider_id))
-                    .await
-                {
-                    Ok(answer) => body_text(&answer).map(|text| (id, text)),
-                    Err(e) => {
-                        log::warn!(
-                            "ai: message text unavailable ({}), using its preview",
-                            e.code
-                        );
-                        None
+        // `None`: still being read. `Some(None)`: could not be read.
+        let mut settled: Vec<Option<Option<String>>> = vec![None; reads.len()];
+        {
+            let provider_ids: Vec<String> = reads.iter().map(|(_, p)| p.clone()).collect();
+            let mut arriving = futures_util::stream::iter(provider_ids.into_iter().enumerate())
+                .map(|(i, provider_id)| async move {
+                    match self
+                        .graph_reads
+                        .get(self, c, &mail_body_url(&provider_id))
+                        .await
+                    {
+                        Ok(answer) => (i, body_text(&answer)),
+                        Err(e) => {
+                            log::warn!(
+                                "ai: message text unavailable ({}), using its preview",
+                                e.code
+                            );
+                            (i, None)
+                        }
+                    }
+                })
+                .buffer_unordered(MAIL_READS_AT_ONCE);
+            let reading = async {
+                while let Some((i, text)) = arriving.next().await {
+                    settled[i] = Some(text);
+                    if budget_filled(&settled) {
+                        break;
                     }
                 }
-            })
-            .buffer_unordered(MAIL_READS_AT_ONCE)
-            .filter_map(std::future::ready)
-            .collect::<prompts::FullTexts>();
-        tokio::select! {
-            texts = texts => Ok(texts),
-            _ = cancel.cancelled() => Err(AiError::new(ErrorClass::Cancelled).into()),
+            };
+            tokio::select! {
+                _ = reading => {}
+                _ = tokio::time::sleep(deadline) => {
+                    log::warn!("ai: reading Outlook text took too long, using previews for the rest");
+                }
+                _ = cancel.cancelled() => return Err(AiError::new(ErrorClass::Cancelled).into()),
+            }
         }
+        Ok(reads
+            .into_iter()
+            .zip(settled)
+            .filter_map(|((id, _), text)| Some((id, text??)))
+            .collect())
     }
 
     /// One Claude run for a started job, recorded in the ledger under `ref_id` however it
@@ -586,6 +630,25 @@ impl Drop for LedgerEntry<'_> {
             );
         }
     }
+}
+
+/// Whether the newest messages, read so far without a gap, already hold the run's character
+/// budget (each counted up to the per-message cap), so older ones need not be read.
+fn budget_filled(settled: &[Option<Option<String>>]) -> bool {
+    let mut used = 0;
+    for read in settled {
+        match read {
+            None => return false,
+            Some(None) => {}
+            Some(Some(text)) => {
+                used += text.chars().count().min(prompts::MAX_MESSAGE_CHARS);
+                if used >= prompts::MAX_CONTEXT_CHARS {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Whether what a draft was written from is still what the conversation says: the same
@@ -1091,6 +1154,20 @@ mod tests {
         );
         let record = draft(&core, "ai:m3").unwrap();
         assert_eq!(record.data["provenance"]["partialText"], true);
+        // Only the block that fell back to its preview says so.
+        let blocks: Vec<String> = fake.calls()[0].input["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|b| b.contains(" partial=\"true\""))
+                .collect::<Vec<_>>(),
+            [false, true, false]
+        );
         // Nothing read from Microsoft is written back.
         let m3 = core
             .repo()
@@ -1251,7 +1328,7 @@ mod tests {
     #[tokio::test]
     async fn draft_job_ignores_read_state_reactions_and_later_mail() {
         let dir = tempfile::tempdir().unwrap();
-        let (fake, gate) = FakeRunner::gated((0..3).map(|_| Ok(draft_answer())).collect());
+        let (fake, gate) = FakeRunner::gated((0..4).map(|_| Ok(draft_answer())).collect());
         let core = test_core(dir.path(), Arc::new(fake), ready());
         seed(&core);
         budget_thread(&core, None);
@@ -1272,6 +1349,12 @@ mod tests {
             }),
             ("m3", "a later mail in the thread (its own Inbox row)", {
                 mail("m4", BASE + 600, "Ann Lee", false, "Also, thanks!")
+            }),
+            ("t1", "a Teams chat renamed", {
+                let mut t1 = teams("t1", BASE, "Can you join at 10?");
+                t1.revision = "v2".into();
+                t1.data["title"] = "Renamed chat".into();
+                t1
             }),
             ("t1", "a reaction in Teams", {
                 let mut t1 = teams("t1", BASE, "Can you join at 10?");
@@ -1558,6 +1641,163 @@ mod tests {
         assert_eq!(stale(&core), true);
     }
 
+    #[tokio::test]
+    async fn own_outlook_mail_cannot_be_drafted_but_own_teams_messages_can() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        seed(&core);
+        budget_thread(&core, None);
+        let mut mine = teams("t1", BASE, "Are we on for 10?");
+        mine.data["isMine"] = true.into();
+        put(&core, mine);
+        let e = core
+            .request(draft_request(&core, json!({"sourceId": "m2"})))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, "validation");
+        assert_eq!(e.message, "Choose a message someone sent you.");
+        assert!(core.repo().unwrap().jobs().unwrap().is_empty());
+        // A summary of the same thread, and a follow-up in Teams, stay allowed.
+        core.request(mutation(
+            &core,
+            Operation::AiSummarize,
+            json!({"sourceId": "m2"}),
+        ))
+        .await
+        .unwrap();
+        core.request(draft_request(&core, json!({"sourceId": "t1"})))
+            .await
+            .unwrap();
+    }
+
+    fn long_mail(id: &str, at: i64) -> Record {
+        mail(id, at, "Ann Lee", false, "preview")
+    }
+
+    fn connection_of(core: &Core) -> Connection {
+        core.repo().unwrap().connection(ACCT).unwrap()
+    }
+
+    #[tokio::test]
+    async fn mail_reads_go_newest_first_and_stop_once_the_budget_is_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(
+            dir.path(),
+            Arc::new(FakeRunner::new(vec![])),
+            ready(),
+            graph.clone(),
+        );
+        seed(&core);
+        let window: Vec<Record> = (1..=6)
+            .map(|n| long_mail(&format!("m{n}"), BASE + n * 60))
+            .collect();
+        for m in &window {
+            graph.answer(
+                &body_url(&m.id),
+                json!({"uniqueBody": {"contentType": "text", "content": "x".repeat(5_000)}}),
+            );
+        }
+        // m6 is read first and the slow older reads do not hold the budget back.
+        graph.slow(&body_url("m1"), Duration::from_secs(30));
+        graph.slow(&body_url("m2"), Duration::from_secs(30));
+        let texts = tokio::time::timeout(
+            Duration::from_secs(5),
+            core.full_mail_texts(
+                &connection_of(&core),
+                &window,
+                &CancellationToken::new(),
+                MAIL_READ_DEADLINE,
+            ),
+        )
+        .await
+        .expect("four newest messages fill 16,000 characters")
+        .unwrap();
+        let mut ids: Vec<&str> = texts.keys().map(String::as_str).collect();
+        ids.sort();
+        assert_eq!(ids, ["m3", "m4", "m5", "m6"]);
+        assert_eq!(graph.calls()[0], body_url("m6"));
+    }
+
+    #[tokio::test]
+    async fn slow_mail_reads_end_at_the_deadline_and_fall_back_to_the_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(answer(
+            json!({"summary": "Ann wants the budget.", "asks": []}),
+            "claude-haiku-4-5",
+            900,
+            0.001,
+        ))]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake, ready(), graph.clone());
+        seed(&core);
+        budget_thread(&core, Some(&graph));
+        graph.slow(&body_url("m2"), Duration::from_secs(60));
+        let c = connection_of(&core);
+        let window = {
+            let r = core.repo().unwrap();
+            let source = r.record("message", "m3", Some(ACCT), None).unwrap();
+            let w = r.workspace("personal").unwrap();
+            prompts::summary_window(&r, &w, &c, &source).unwrap()
+        };
+        let started = Instant::now();
+        let texts = core
+            .full_mail_texts(
+                &connection_of(&core),
+                &window,
+                &CancellationToken::new(),
+                Duration::from_millis(200),
+            )
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let mut ids: Vec<&str> = texts.keys().map(String::as_str).collect();
+        ids.sort();
+        assert_eq!(ids, ["m1", "m3"], "what was read in time is kept");
+        // Stop still ends the reads at once.
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let stopped = core
+            .full_mail_texts(&connection_of(&core), &window, &cancel, MAIL_READ_DEADLINE)
+            .await;
+        assert_eq!(stopped.unwrap_err().code, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn renaming_a_chat_does_not_make_its_summary_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(answer(
+            json!({"summary": "Sam asks about 10:00.", "asks": []}),
+            "claude-haiku-4-5",
+            900,
+            0.001,
+        ))]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        let mut t1 = teams("t1", BASE, "Can you join at 10?");
+        t1.data["title"] = "Sam Ortiz".into();
+        put(&core, t1);
+        core.request(mutation(
+            &core,
+            Operation::AiSummarize,
+            json!({"sourceId": "t1"}),
+        ))
+        .await
+        .unwrap();
+        run_jobs(&core).await;
+        let stale = |core: &Core| snapshot_record(core, "summary").unwrap().data["stale"].clone();
+        assert_eq!(stale(&core), false);
+        let mut renamed = teams("t1", BASE, "Can you join at 10?");
+        renamed.revision = "v2".into();
+        renamed.data["title"] = "Ops chat".into();
+        put(&core, renamed);
+        assert_eq!(stale(&core), false);
+        let mut edited = teams("t1", BASE, "Can you join at 11?");
+        edited.data["title"] = "Ops chat".into();
+        put(&core, edited);
+        assert_eq!(stale(&core), true, "what the message says still counts");
+    }
+
     /// The draft, summary and failed-job shapes the UI (Tasks 8-9) builds against.
     /// Regenerate with `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
     #[tokio::test]
@@ -1575,6 +1815,13 @@ mod tests {
             Err(AiError::new(ErrorClass::NeedsLogin)),
             Ok(draft_answer()),
             Ok(teams_answer()),
+            Err(AiError::new(ErrorClass::NeedsLogin)),
+            Ok(answer(
+                json!({"summary": "Ann asked for the Q3 budget.", "asks": []}),
+                "claude-haiku-4-5",
+                2500,
+                0.002,
+            )),
         ]);
         let graph = Arc::new(FakeGraph::default());
         let core = test_core_with_graph(dir.path(), Arc::new(fake), ready(), graph.clone());
@@ -1625,6 +1872,22 @@ mod tests {
         let running = job_when(&core, &chat_id, |j| j.payload["runModel"].is_string()).await;
         gate.release.notify_one();
         chat_run.await.unwrap();
+        let summary_record = snapshot_record(&core, "summary").unwrap();
+        // Summary jobs: one that failed on sign-in, and a refresh looked at while Claude works.
+        let summarize = |source: &'static str| {
+            mutation(&core, Operation::AiSummarize, json!({ "sourceId": source }))
+        };
+        core.request(summarize("t2")).await.unwrap();
+        let summary_failed = run_next_with(&core, &gate, || {}).await;
+        let refresh = core.request(summarize("m3")).await.unwrap();
+        let refresh_id = refresh["jobId"].as_str().unwrap().to_string();
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        let refresh_run = tokio::spawn(core.clone().run_claimed_job(claimed));
+        gate.started.notified().await;
+        let summary_running =
+            job_when(&core, &refresh_id, |j| j.payload["runModel"].is_string()).await;
+        gate.release.notify_one();
+        refresh_run.await.unwrap();
 
         // Random ids and clock values are pinned so the files only change with the shapes.
         let pin = |r: Record| {
@@ -1637,7 +1900,7 @@ mod tests {
         let pin_job = |j: Job, n: usize| {
             let mut v = serde_json::to_value(j).unwrap();
             v["id"] = format!("job-{n}").into();
-            v["key"] = format!("ai_draft:op-{n}").into();
+            v["key"] = format!("{}:op-{n}", v["kind"].as_str().unwrap()).into();
             v["dueAt"] = 1_795_000_400.into();
             v["payload"]["startedAt"] = 1_795_000_401.into();
             if v["leaseUntil"].is_i64() {
@@ -1648,6 +1911,8 @@ mod tests {
         assert_eq!(needs_login.error_class.as_deref(), Some("needs_login"));
         assert_eq!(conflict.error_code.as_deref(), Some("conflict"));
         assert_eq!(running.state, "running");
+        assert_eq!(summary_failed.error_class.as_deref(), Some("needs_login"));
+        assert_eq!(summary_running.state, "running");
 
         let dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
@@ -1658,13 +1923,12 @@ mod tests {
                 "draft-ai-chat.json",
                 pin(draft(&core, "ai:chat:chat:19:ops").unwrap()),
             ),
-            (
-                "summary.json",
-                pin(snapshot_record(&core, "summary").unwrap()),
-            ),
+            ("summary.json", pin(summary_record)),
             ("job-ai-draft-failed.json", pin_job(needs_login, 1)),
             ("job-ai-draft-conflict.json", pin_job(conflict, 2)),
             ("job-ai-draft-running.json", pin_job(running, 3)),
+            ("job-ai-summarize-failed.json", pin_job(summary_failed, 4)),
+            ("job-ai-summarize-running.json", pin_job(summary_running, 5)),
         ] {
             let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
             let path = dir.join(name);

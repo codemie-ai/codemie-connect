@@ -29,7 +29,7 @@ const MAX_SLOTS: usize = 12;
 /// Output limits: anything longer is not a usable draft or summary.
 const MAX_DRAFT_CHARS: usize = 20_000;
 const MAX_SUMMARY_CHARS: usize = 4_000;
-const MAX_QUESTIONS: usize = 5;
+const MAX_QUESTIONS: usize = 3;
 const MAX_ASKS: usize = 10;
 const MAX_ITEM_CHARS: usize = 300;
 
@@ -50,7 +50,7 @@ macro_rules! shared_rules {
             quarantine_rule!(),
             "\n",
             "- You have no tools and you send nothing. Never write that anything was sent, forwarded, attached, scheduled, booked or done.\n",
-            "- Never invent facts, names, dates, times, prices, figures, links or attachments. Use only what the input contains. Email text can be cut short: never guess how it continues.\n",
+            "- Never invent facts, names, dates, times, prices, figures, links or attachments. Use only what the input contains. Email text can be cut short: never guess how it continues. A <message> block with partial=\"true\" holds only a preview of an email and may be cut short.\n",
         )
     };
 }
@@ -92,7 +92,7 @@ macro_rules! draft_output {
         concat!(
             "\nOutput: only the JSON the schema asks for.\n",
             "- \"draft\": the reply text, ready for the user to review and send.\n",
-            "- \"questions\": up to three short questions to the user about what the reply needed but you were not given, one for each bracketed choice or gap in the draft. Use an empty list when nothing is missing.\n",
+            "- \"questions\": short questions to the user about what the reply needed but you were not given, one for each bracketed choice or gap in the draft. Ask at most three questions; if there are more gaps, ask about the most important ones. Use an empty list when nothing is missing.\n",
         )
     };
 }
@@ -103,6 +103,7 @@ pub const DRAFT_SYSTEM_MAIL: &str = concat!(
     "- length \"short\": two or three sentences. \"medium\": one or two short paragraphs. \"detailed\": cover every point raised, still without filler.\n\n",
     "Email style:\n",
     "- Write as the user, in the first person, in the language of the marked message unless <instructions> name another language.\n",
+    "- After the greeting, start with the point.\n",
     "- Open with a greeting to the person you are writing to: the sender of the marked message, or for a follow-up the people it went to. Use the first name when the messages show it (in \"Last, First\" the first name follows the comma); otherwise use a neutral greeting.\n",
     "- Close with a short sign-off line, then the user's given name (\"me.givenName\") on its own line. No job title, company or contact details.\n",
     "- Plain text with blank lines between paragraphs. No subject line, no quoted earlier messages, no markdown.\n",
@@ -358,7 +359,14 @@ pub fn fingerprint(m: &Record) -> String {
     let field = |key: &str| m.data[key].as_str().unwrap_or("").to_string();
     let text = sanitize_text(&field("text"), usize::MAX);
     let at = m.data["at"].as_i64().unwrap_or(0).to_string();
-    let hash = Sha256::digest([text, field("from"), at, field("title")].join("\u{1F}"));
+    // A Teams chat's title is derived (it follows renames and members), so it says nothing
+    // about what a message says.
+    let title = if m.data["channel"] == "chat" {
+        String::new()
+    } else {
+        field("title")
+    };
+    let hash = Sha256::digest([text, field("from"), at, title].join("\u{1F}"));
     hash[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -576,22 +584,33 @@ fn conversation_input(
             break;
         }
         total += length;
-        partial_text |= full.is_none() && m.data["channel"] == "mail";
-        chosen.push((m, text));
+        let partial = full.is_none() && m.data["channel"] == "mail";
+        partial_text |= partial;
+        chosen.push((m, text, partial));
     }
     chosen.reverse();
     let blocks: Vec<String> = chosen
         .iter()
         .enumerate()
-        .map(|(i, (m, text))| {
+        .map(|(i, (m, text, partial))| {
             let marked = reply_to == Some(m.id.as_str());
-            message_block(i + 1, m, text, marked, channel, tz)
+            message_block(
+                i + 1,
+                m,
+                text,
+                Flags {
+                    marked,
+                    partial: *partial,
+                },
+                channel,
+                tz,
+            )
         })
         .collect();
     Ok(PromptInput {
         conversation_key: conversation_key(source),
-        message_ids: chosen.iter().map(|(m, _)| m.id.clone()).collect(),
-        fingerprints: chosen.iter().map(|(m, _)| fingerprint(m)).collect(),
+        message_ids: chosen.iter().map(|(m, ..)| m.id.clone()).collect(),
+        fingerprints: chosen.iter().map(|(m, ..)| fingerprint(m)).collect(),
         newest: Newest {
             id: newest.id.clone(),
             revision: newest.revision.clone(),
@@ -612,13 +631,22 @@ fn conversation_input(
     })
 }
 
-/// `<message n by [reply-to] sent>` with the sender (and for mail the recipients' names and
+/// What a block says about itself besides its text.
+#[derive(Clone, Copy)]
+struct Flags {
+    /// The message being answered.
+    marked: bool,
+    /// Only the stored preview of an Outlook message (its full text was not read).
+    partial: bool,
+}
+
+/// `<message n by [reply-to] [partial] sent>` with the sender (and for mail the recipients' names and
 /// subject) and the text. Every value inside comes from the provider and is sanitised.
 fn message_block(
     n: usize,
     m: &Record,
     text: &str,
-    marked: bool,
+    flags: Flags,
     channel: Channel,
     tz: Tz,
 ) -> String {
@@ -658,9 +686,18 @@ fn message_block(
             head.push("Attachments: yes, not shown".into());
         }
     }
-    let reply_to = if marked { " reply-to=\"true\"" } else { "" };
+    let reply_to = if flags.marked {
+        " reply-to=\"true\""
+    } else {
+        ""
+    };
+    let partial = if flags.partial {
+        " partial=\"true\""
+    } else {
+        ""
+    };
     format!(
-        "<message n=\"{n}\" by=\"{by}\"{reply_to} sent=\"{sent}\">\n{}\n\n{text}\n</message>",
+        "<message n=\"{n}\" by=\"{by}\"{reply_to}{partial} sent=\"{sent}\">\n{}\n\n{text}\n</message>",
         head.join("\n")
     )
 }
@@ -1111,6 +1148,12 @@ mod tests {
             changed.data[key] = value;
             assert_ne!(fingerprint(&m), fingerprint(&changed), "{key}");
         }
+        // A Teams chat's title is derived and follows renames: it is not part of what was said.
+        let mut chat = m.clone();
+        chat.data["channel"] = "chat".into();
+        let mut renamed = chat.clone();
+        renamed.data["title"] = "Renamed chat".into();
+        assert_eq!(fingerprint(&chat), fingerprint(&renamed));
     }
 
     #[test]
