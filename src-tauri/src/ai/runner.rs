@@ -109,11 +109,13 @@ mod unix_run {
         }
     }
 
+    /// Creates only the staging folder itself, never its parents: the data folder it lives in
+    /// may be a drive that went away, and must not be recreated empty (DESIGN 8).
     fn create_staging(root: &Path) -> std::io::Result<Staging> {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(root)?;
+        match std::fs::DirBuilder::new().mode(0o700).create(root) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
+            _ => {}
+        }
         let dir = root.join(uuid::Uuid::new_v4().to_string());
         std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
         Ok(Staging(dir))
@@ -416,6 +418,24 @@ mod tests {
             assert!(!alive(id), "pid {id} still alive");
         }
         assert_eq!(std::fs::read_dir(stage).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_never_creates_the_staging_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("gone");
+        let r = script_runner(dir.path(), "cat >/dev/null");
+        let err = r
+            .run(
+                spec(&gone.join("ai-staging"), Duration::from_secs(10), false),
+                &native(),
+                CancellationToken::new(),
+                noop(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.class, ErrorClass::Failed);
+        assert!(!gone.exists(), "a vanished data folder is never recreated");
     }
 
     #[tokio::test]

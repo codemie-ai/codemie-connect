@@ -109,10 +109,10 @@ impl Repository {
             let _ = std::mem::replace(&mut self.db, memory).close();
         }
     }
-    /// Test failpoint: the next write, and every write after it, fails the way it does when
-    /// the data folder's disk goes away or turns read-only (`SQLITE_READONLY`). Reads still work.
+    /// Test failpoint: from now on every write fails the way it does when the data folder's
+    /// disk goes away or turns read-only (`SQLITE_READONLY`). Reads still work.
     #[cfg(test)]
-    pub fn fail_next_write(&self) {
+    pub fn fail_writes(&self) {
         self.db.execute_batch("PRAGMA query_only=1").unwrap();
     }
     /// Upgrade on open: earlier builds required manual binding and per-workspace source picking,
@@ -1930,7 +1930,7 @@ mod tests {
     fn io_class_sqlite_errors_report_storage_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         let mut r = Repository::open(&dir.path().join("db")).unwrap();
-        r.fail_next_write();
+        r.fail_writes();
         let note = item("", "n1", "note", "local", json!({"text":"x"}));
         assert_eq!(r.put_record(&note).unwrap_err().code, "storage_unavailable");
         // Reads still work, so the snapshot behind the recovery page can load.
@@ -1941,6 +1941,31 @@ mod tests {
         // Other database errors keep the generic storage code.
         let bad = r.db.execute("INSERT INTO nope VALUES(1)", []).unwrap_err();
         assert_eq!(WorkspaceError::from(bad).code, "storage");
+        let other = tempfile::tempdir().unwrap();
+        let path = other.path().join("db");
+        let fresh = Repository::open(&path).unwrap();
+        let unique = fresh
+            .db
+            .execute("INSERT INTO workspaces VALUES('personal','{}')", [])
+            .unwrap_err();
+        assert_eq!(
+            unique.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::ConstraintViolation)
+        );
+        assert_eq!(WorkspaceError::from(unique).code, "storage");
+        // Another connection holds the write lock: busy, not unavailable.
+        fresh.db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let second = Sqlite::open(&path).unwrap();
+        second.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let busy = second
+            .execute("UPDATE meta SET revision=revision+1", [])
+            .unwrap_err();
+        assert_eq!(
+            busy.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy)
+        );
+        assert_eq!(WorkspaceError::from(busy).code, "storage");
+        fresh.db.execute_batch("ROLLBACK").unwrap();
     }
     #[test]
     fn newer_schema_is_retained() {

@@ -1,6 +1,8 @@
 // Recovery page (DESIGN.md section 8): shown when the workspace can't open its data folder at
 // startup, or when an operation returns `storage_unavailable` while Connect runs. Pure: it
-// renders the `storage_status` result; app.js wires the actions.
+// renders the `storage_status` result (`issue` is native and always precise), plus `cause`, the
+// failing operation's message, and `restarting` once a restart was accepted; app.js wires the
+// actions.
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { button } from './ui.js';
@@ -24,20 +26,37 @@ export function recoverySentence(status) {
 /** Switching back is offered only when Connect is not already on its default folder. */
 const offersDefault = s => !!s && (s.custom || s.status === 'pointer_unreadable');
 
+/**
+ * One failure can reach the page twice: from the invoke watcher and from the caller's catch.
+ * Returns a check that is true only the first time it sees a given error object.
+ */
+export function firstReport() {
+  const seen = new WeakSet();
+  return err => {
+    if (!err || typeof err !== 'object') return true;
+    if (seen.has(err)) return false;
+    seen.add(err);
+    return true;
+  };
+}
+
 export function recoveryPage(status) {
   const s = status || {};
   const known = s.status in SENTENCES && s.status !== 'ready';
-  // A folder-level status explains itself; otherwise the reason the workspace didn't open does.
-  const issue = !known && s.issue ? `<p class="ws-recovery-issue">${e(s.issue)}</p>` : '';
+  // Native issues are always more precise than the status (a full disk, why it didn't open).
+  // The failing operation's own message helps only when no folder-level sentence explains it.
+  const detail = s.issue || (!known && s.cause) || '';
+  const issue = detail ? `<p class="ws-recovery-issue">${e(detail)}</p>` : '';
   const sep = String(s.defaultRoot || '').includes('\\') ? '\\' : '/';
   const where = s.status === 'pointer_unreadable'
     ? { label: 'Location file', path: s.defaultRoot ? `${s.defaultRoot}${sep}location.json` : '' }
     : { label: s.custom ? 'Data folder' : 'Data folder (default)', path: s.dataRoot || '' };
   const path = where.path ? `<div class="ws-recovery-path"><span class="ws-recovery-label">${e(where.label)}</span><code>${e(where.path)}</code></div>` : '';
   const useDefault = offersDefault(s);
+  const busy = !!s.restarting;
   const actions = [
-    button('Retry', { action: 'recovery-retry', variant: 'primary', iconName: 'refresh' }),
-    useDefault ? button('Use the default folder', { action: 'recovery-default' }) : '',
+    button(busy ? 'Restarting…' : 'Retry', { action: 'recovery-retry', variant: 'primary', iconName: 'refresh', disabled: busy }),
+    useDefault ? button('Use the default folder', { action: 'recovery-default', disabled: busy }) : '',
     // Task 13 adds "Choose another folder…" here.
   ].join('');
   const note = useDefault

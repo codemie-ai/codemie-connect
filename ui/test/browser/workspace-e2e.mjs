@@ -298,6 +298,7 @@ const STORAGE = {
   not_writable: storageOf('not_writable'),
   pointer_unreadable: storageOf('pointer_unreadable', { dataRoot: DEFAULT_ROOT, custom: false }),
   ready: storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false, issue: 'Another Connect process owns this workspace. Return to its window.' }),
+  disk_full: storageOf('not_writable', { issue: 'The disk that holds your data folder is full.' }),
 };
 
 async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false } = {}) {
@@ -980,14 +981,14 @@ for (const theme of ['dark', 'light']) {
     await check(`${theme}: recovery page for ${name}`, async () => {
       const { page, context, errors } = await open({ theme, storage, unavailable: true });
       const card = page.locator('.ws-recovery-card');
-      assert(await card.getAttribute('data-status') === name, `status ${await card.getAttribute('data-status')}`);
+      assert(await card.getAttribute('data-status') === storage.status, `status ${await card.getAttribute('data-status')}`);
       const body = await card.innerText();
       assert(/Your data folder needs attention/.test(body), body);
       const shown = name === 'pointer_unreadable' ? `${DEFAULT_ROOT}/location.json` : storage.dataRoot;
       assert(body.includes(shown), `path ${shown} not shown: ${body}`);
       if (name === 'pointer_unreadable') assert(body.includes('Connect couldn’t read where your data is kept.'), body);
-      if (name === 'ready') assert(body.includes(storage.issue), 'the open error is shown');
-      else assert(!/existing tools are still accessible/.test(body), 'generic native message leaked');
+      if (storage.issue) assert(body.includes(storage.issue), 'the native issue is shown');
+      assert(!/existing tools are still accessible/.test(body), 'generic native message leaked');
       assert(await page.locator('[data-action="recovery-retry"]').count() === 1, 'Retry');
       const offersDefault = storage.custom || name === 'pointer_unreadable';
       assert(await page.locator('[data-action="recovery-default"]').count() === (offersDefault ? 1 : 0), 'Use the default folder');
@@ -1003,10 +1004,23 @@ for (const theme of ['dark', 'light']) {
     });
   }
 
-  await check(`${theme}: recovery Retry relaunches and Use the default folder confirms first`, async () => {
+  await check(`${theme}: recovery Retry relaunches once and stays disabled`, async () => {
     const { page, context, errors } = await open({ theme, storage: STORAGE.missing, unavailable: true });
     await page.click('[data-action="recovery-retry"]');
-    await page.waitForFunction(() => window.__bridgeCalls.some(([op]) => op === 'app_relaunch'));
+    await page.waitForSelector('[data-action="recovery-retry"][disabled]:has-text("Restarting…")');
+    assert(await page.locator('[data-action="recovery-default"][disabled]').count() === 1, 'Use the default folder still enabled');
+    await page.locator('[data-action="recovery-retry"]').click({ force: true });
+    await page.waitForTimeout(200);
+    const calls = await page.evaluate(() => window.__bridgeCalls.filter(([op]) => op === 'app_relaunch').length);
+    assert(calls === 1, `app_relaunch calls ${calls}`);
+    await shot(page, `${theme}-recovery-restarting`);
+    assert(errors.length === 0, errors.join(' | '));
+    await context.close().catch(() => {});
+    currentPage = null;
+  });
+
+  await check(`${theme}: recovery Use the default folder confirms first and shows a failure`, async () => {
+    const { page, context, errors } = await open({ theme, storage: STORAGE.missing, unavailable: true });
     await page.click('[data-action="recovery-default"]');
     await page.waitForSelector('.ws-modal[open]');
     await page.waitForTimeout(250);
@@ -1021,6 +1035,7 @@ for (const theme of ['dark', 'light']) {
     await page.evaluate(() => { window.__useDefaultError = null; });
     await page.click('.ws-modal[open] button[type=submit]');
     await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+    await page.waitForSelector('[data-action="recovery-retry"][disabled]:has-text("Restarting…")');
     const calls = await page.evaluate(() => window.__bridgeCalls.filter(([op]) => op === 'data_location_use_default').length);
     assert(calls === 2, `use-default calls ${calls}`);
     assert(errors.length === 0, errors.join(' | '));

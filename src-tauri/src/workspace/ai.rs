@@ -293,7 +293,7 @@ impl Core {
             })),
             timeout: TEST_TIMEOUT,
             cap_usd: None,
-            staging_root: self.paths.staging(),
+            staging_root: self.paths.ensure_staging()?,
         };
         let started = std::time::Instant::now();
         let ledger_spec = spec.clone();

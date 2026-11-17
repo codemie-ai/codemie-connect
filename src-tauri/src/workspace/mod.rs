@@ -9,6 +9,7 @@ pub mod geometry;
 pub mod graph;
 mod inbox;
 pub mod models;
+mod paths;
 mod prompts;
 pub mod repository;
 pub mod schedules;
@@ -18,18 +19,19 @@ use crate::ai::{
     profiles::{DetectEnv, ProfileCache},
     runner::{ClaudeRunner, CliRunner},
 };
-use crate::storage::location::{self, Resolved, RootStatus};
+use crate::storage::location::Resolved;
 use models::*;
+use paths::{acquire_lock, Lock, LOCK_WAIT};
+pub use paths::{startup, CorePaths};
 use repository::Repository;
 use serde_json::{json, Value};
 use std::{
     fs::File,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, MutexGuard,
     },
-    time::Duration,
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
@@ -41,95 +43,8 @@ pub struct WorkspaceState {
     pub error: Option<String>,
     /// Where startup looked for the data and what it found (DESIGN 8).
     pub resolved: Resolved,
-}
-
-/// Where a workspace keeps its files (DESIGN 8). `data` holds the database, AI staging and
-/// curl temp files; `private`, always the default folder, holds sign-in data, plugin secrets,
-/// `owner.lock` and `window.json`. With no custom folder they are the same folder.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CorePaths {
-    pub data: PathBuf,
-    pub private: PathBuf,
-}
-impl CorePaths {
-    pub fn custom(&self) -> bool {
-        self.data != self.private
-    }
-    pub fn database(&self) -> PathBuf {
-        self.data.join("workspace.sqlite")
-    }
-    pub fn staging(&self) -> PathBuf {
-        self.data.join("ai-staging")
-    }
-    /// Plugin secrets stay private and local; Task 21 stores them here.
-    #[allow(dead_code)]
-    pub fn plugin_secrets(&self) -> PathBuf {
-        self.private.join("plugins")
-    }
-}
-
-/// How long startup waits for `owner.lock` and `connect.lock`: a relaunch can start before the
-/// process it replaces has exited.
-const LOCK_WAIT: Duration = Duration::from_secs(5);
-
-/// Locks `path` exclusively, retrying for up to `wait` while another process holds it.
-fn acquire_lock(path: &Path, wait: Duration) -> Result<File> {
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|_| WorkspaceError::storage_unavailable())?;
-    let deadline = std::time::Instant::now() + wait;
-    loop {
-        if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
-            return Ok(file);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(WorkspaceError::new(
-                "instance",
-                "Another Connect process owns this workspace. Return to its window.",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Resolves the data folder and opens the workspace there. Anything but a ready folder leaves
-/// `core` empty so the UI shows the recovery page: nothing is created in a missing, unmarked
-/// or foreign folder, and an unreadable pointer never falls back to an empty default.
-pub fn startup(
-    default_root: &Path,
-    open: impl FnOnce(&CorePaths) -> Result<Arc<Core>>,
-) -> WorkspaceState {
-    let resolved = location::resolve(default_root);
-    if resolved.status != RootStatus::Ready {
-        return WorkspaceState {
-            core: None,
-            error: None,
-            resolved,
-        };
-    }
-    let paths = CorePaths {
-        data: resolved.data_root.clone(),
-        private: resolved.private_root.clone(),
-    };
-    match open(&paths) {
-        Ok(core) => {
-            core.start();
-            WorkspaceState {
-                core: Some(core),
-                error: None,
-                resolved,
-            }
-        }
-        Err(error) => WorkspaceState {
-            core: None,
-            error: Some(error.message),
-            resolved,
-        },
-    }
+    /// Set once a restart is under way, so a second Retry does nothing.
+    pub relaunching: AtomicBool,
 }
 
 pub struct Core {
@@ -193,14 +108,19 @@ impl Core {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&paths.private, std::fs::Permissions::from_mode(0o700))?;
         }
-        let owner_lock = acquire_lock(&paths.private.join("owner.lock"), LOCK_WAIT)?;
+        let owner_lock = acquire_lock(&paths.private.join("owner.lock"), Lock::Owner, LOCK_WAIT)?;
         let connect_lock = if paths.custom() {
-            Some(acquire_lock(&paths.data.join("connect.lock"), LOCK_WAIT)?)
+            Some(acquire_lock(
+                &paths.data.join("connect.lock"),
+                Lock::DataFolder,
+                LOCK_WAIT,
+            )?)
         } else {
             None
         };
+        // Earlier builds left `graph-read-*.headers` files in what is now the private folder.
         #[cfg(target_os = "macos")]
-        curl::cleanup(&paths.data);
+        curl::cleanup(&paths.private);
         Ok(Arc::new(Self {
             repository: Mutex::new(Repository::open(&paths.database())?),
             paths: paths.clone(),
@@ -244,7 +164,7 @@ impl Core {
             }
         }
         #[cfg(target_os = "macos")]
-        curl::cleanup(&self.paths.data);
+        curl::cleanup(&self.paths.private);
     }
     fn cancel_graph_job(&self, jid: &str) {
         if let Ok(mut children) = self.graph_children.lock() {
@@ -1887,6 +1807,9 @@ pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::erro
     Ok(())
 }
 
+#[cfg(test)]
+use std::path::Path;
+
 /// The default layout: data and private files in one folder.
 #[cfg(test)]
 fn test_paths(dir: &Path) -> CorePaths {
@@ -1948,128 +1871,9 @@ pub(crate) fn test_core_slow(
 
 #[cfg(test)]
 mod tests {
+    use super::paths::tests::{custom_root, open_test, synthetic_credential};
     use super::*;
-    use crate::storage::location::{self, LocationFile, Marker, RootStatus, DATA_DIR_NAME, MARKER};
     use crate::workspace::ai::tests::{mutation, ready};
-    use crate::workspace::ai_jobs::FakeGraph;
-
-    fn open_test(paths: &CorePaths) -> Result<Arc<Core>> {
-        Core::open_with(
-            None,
-            paths,
-            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
-            ProfileCache::fixed(ready()),
-            Arc::new(FakeGraph::default()),
-        )
-    }
-    /// A marked custom data root under `parent` with the pointer in `default` aimed at it.
-    fn custom_root(default: &Path, parent: &Path) -> PathBuf {
-        let data = parent.join(DATA_DIR_NAME);
-        std::fs::create_dir_all(&data).unwrap();
-        let marker = Marker {
-            id: "m-1".into(),
-            created_at: "2026-11-17T00:00:00Z".into(),
-            app_version: "test".into(),
-        };
-        std::fs::write(data.join(MARKER), serde_json::to_vec(&marker).unwrap()).unwrap();
-        point_at(default, &data, Some("m-1"));
-        data
-    }
-    fn point_at(default: &Path, data: &Path, marker: Option<&str>) {
-        let loc = LocationFile {
-            data_dir: Some(data.into()),
-            marker_id: marker.map(Into::into),
-            ..Default::default()
-        };
-        location::write_location(default, &loc).unwrap();
-    }
-    fn synthetic_credential() -> credentials::Credential {
-        credentials::Credential {
-            refresh: "synthetic-refresh".into(),
-            client_id: "client".into(),
-            tenant: "organizations".into(),
-        }
-    }
-    #[cfg(unix)]
-    fn mode(p: &Path) -> u32 {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
-    }
-
-    #[test]
-    fn default_layout_is_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("workspace");
-        let state = startup(&root, open_test);
-        let core = state.core.expect("default folder opens");
-        assert_eq!(state.resolved.status, RootStatus::Ready);
-        assert!(!state.resolved.custom);
-        assert_eq!(core.paths.data, root);
-        assert_eq!(core.paths.private, root);
-        // Exactly where earlier builds kept everything.
-        assert!(root.join("workspace.sqlite").is_file());
-        assert!(root.join("owner.lock").is_file());
-        assert!(!root.join("connect.lock").exists());
-        assert_eq!(core.paths.staging(), root.join("ai-staging"));
-        assert_eq!(
-            geometry::path(&core.paths.private),
-            root.join("window.json")
-        );
-        let cid = id();
-        credentials::save(&core.paths.private, &cid, &synthetic_credential()).unwrap();
-        assert!(root
-            .join("credentials")
-            .join(format!("graph-{cid}.json"))
-            .is_file());
-        #[cfg(unix)]
-        assert_eq!(mode(&root), 0o700);
-    }
-
-    #[test]
-    fn startup_never_creates_db_in_missing_custom_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let default = dir.path().join("workspace");
-        // Missing: the drive is gone.
-        let missing = dir.path().join("Drive").join(DATA_DIR_NAME);
-        point_at(&default, &missing, Some("m-1"));
-        let mut opened = false;
-        let state = startup(&default, |p| {
-            opened = true;
-            open_test(p)
-        });
-        assert!(!opened, "nothing opens until the folder is ready");
-        assert!(state.core.is_none());
-        assert_eq!(state.resolved.status, RootStatus::Missing);
-        assert!(!missing.exists(), "the missing folder is never created");
-        assert!(
-            !default.join("workspace.sqlite").exists(),
-            "no silent empty default"
-        );
-        // No marker: a folder is there but it is not Connect's.
-        let unmarked = dir.path().join("Other").join(DATA_DIR_NAME);
-        std::fs::create_dir_all(&unmarked).unwrap();
-        point_at(&default, &unmarked, Some("m-1"));
-        let state = startup(&default, open_test);
-        assert!(state.core.is_none());
-        assert_eq!(state.resolved.status, RootStatus::NoMarker);
-        assert_eq!(std::fs::read_dir(&unmarked).unwrap().count(), 0);
-        // An unreadable pointer is not mistaken for "use the default".
-        std::fs::write(default.join("location.json"), b"{not json").unwrap();
-        let state = startup(&default, open_test);
-        assert!(state.core.is_none());
-        assert_eq!(state.resolved.status, RootStatus::PointerUnreadable);
-        assert!(!default.join("workspace.sqlite").exists());
-        // Core itself never creates a custom root that is gone by the time it opens.
-        let paths = CorePaths {
-            data: missing.clone(),
-            private: default.clone(),
-        };
-        assert_eq!(
-            open_test(&paths).err().map(|e| e.code),
-            Some("storage_unavailable".into())
-        );
-        assert!(!missing.exists());
-    }
 
     #[tokio::test]
     async fn credentials_stay_in_private_root_with_custom_data_root() {
@@ -2097,9 +1901,16 @@ mod tests {
             geometry::path(&core.paths.private),
             default.join("window.json")
         );
-        assert_eq!(core.paths.plugin_secrets(), default.join("plugins"));
+        assert_eq!(
+            core.paths.plugin_secrets(),
+            default.join("credentials").join("plugins")
+        );
         #[cfg(unix)]
-        assert_eq!(mode(&data), 0o755, "a custom root is never chmodded");
+        assert_eq!(
+            super::paths::tests::mode(&data),
+            0o755,
+            "a custom root is never chmodded"
+        );
         // Sign-in goes to the private folder, and disconnecting removes it from there.
         let cid = id();
         credentials::save(&core.paths.private, &cid, &synthetic_credential()).unwrap();
@@ -2131,7 +1942,7 @@ mod tests {
             Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
             ready(),
         );
-        core.repo().unwrap().fail_next_write();
+        core.repo().unwrap().fail_writes();
         let req = mutation(
             &core,
             Operation::LocalSave,
@@ -2152,34 +1963,30 @@ mod tests {
         assert!(snapshot.is_ok());
     }
 
-    #[test]
-    fn startup_reports_why_a_ready_folder_did_not_open() {
+    #[tokio::test]
+    async fn an_ai_run_never_recreates_a_vanished_data_folder() {
         let dir = tempfile::tempdir().unwrap();
-        let state = startup(dir.path(), |_| {
-            Err(WorkspaceError::new(
-                "newer_schema",
-                "Open the newer version.",
-            ))
-        });
-        assert!(state.core.is_none());
-        assert_eq!(state.error.as_deref(), Some("Open the newer version."));
-    }
-
-    #[test]
-    fn locks_wait_for_a_relaunching_owner_then_give_up() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("owner.lock");
-        let held = acquire_lock(&path, std::time::Duration::ZERO).unwrap();
-        // Still held after the wait: another Connect owns it.
-        let err = acquire_lock(&path, std::time::Duration::from_millis(250)).unwrap_err();
-        assert_eq!(err.code, "instance");
-        // Released while we wait: the relaunch gets it.
-        let releaser = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            drop(held);
-        });
-        assert!(acquire_lock(&path, std::time::Duration::from_secs(5)).is_ok());
-        releaser.join().unwrap();
+        let default = dir.path().join("workspace");
+        let drive = dir.path().join("Drive");
+        let data = custom_root(&default, &drive);
+        let core = startup(&default, open_test).core.unwrap();
+        // The drive goes away while Connect runs.
+        std::fs::remove_dir_all(&drive).unwrap();
+        let err = core
+            .request(Request {
+                op: Operation::AiTest,
+                workspace_id: Some("personal".into()),
+                expected_revision: None,
+                operation_id: None,
+                data: json!({"profileId":"claude"}),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "storage_unavailable");
+        assert!(
+            !data.exists() && !drive.exists(),
+            "the data folder came back"
+        );
     }
 
     #[test]
@@ -2190,9 +1997,12 @@ mod tests {
         let core = startup(&default, open_test).core.unwrap();
         core.release_for_restart();
         assert!(core.stop.load(Ordering::Relaxed));
-        for lock in [default.join("owner.lock"), data.join("connect.lock")] {
+        for (lock, kind) in [
+            (default.join("owner.lock"), Lock::Owner),
+            (data.join("connect.lock"), Lock::DataFolder),
+        ] {
             assert!(
-                acquire_lock(&lock, std::time::Duration::ZERO).is_ok(),
+                acquire_lock(&lock, kind, std::time::Duration::ZERO).is_ok(),
                 "{lock:?}"
             );
         }

@@ -19,7 +19,7 @@ import { renderShell } from './shell.js';
 import { nextAiSettings, LOGIN_STEPS } from './settings-ai.js';
 import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from './boot.js';
-import { recoveryPage, USE_DEFAULT_WARNING } from './recovery.js';
+import { recoveryPage, firstReport, USE_DEFAULT_WARNING } from './recovery.js';
 
 const ROUTES = ['today', 'calendar', 'inbox', 'settings'];
 const root = document.getElementById('workspace-app');
@@ -1471,13 +1471,24 @@ async function openNotification(payload) {
 // ---------------------------------------------------------------- recovery
 
 let recovering = null;
-let recoveryStatus = null;
+// What the page shows: the `storage_status` result, the failing call's message (`cause`) and
+// `restarting` once a restart was accepted.
+let recoveryView = null;
+let recoveryDeferred = false;
+// The invoke watcher and the caller's catch both see the same failure: it is handled once.
+const firstStorageReport = firstReport();
 
 // The data folder can't be used (DESIGN 8): the workspace gives way to the recovery page until
-// Connect restarts. A setup running in the CodeMie tools keeps its screen and gets a toast.
+// Connect restarts. A setup running in the CodeMie tools keeps its screen; one toast says why,
+// and the page opens on the next failing call once the setup is done.
 function showRecovery(err) {
   if (recovering) return recovering;
-  if (legacyMounted && legacyModule?.legacyToolsBusy()) return toast(err?.message || String(err), 'error');
+  if (!firstStorageReport(err)) return undefined;
+  if (legacyMounted && legacyModule?.legacyToolsBusy()) {
+    if (!recoveryDeferred) toast(err?.message || String(err), 'error');
+    recoveryDeferred = true;
+    return undefined;
+  }
   ready = false;
   recovering = (async () => {
     document.querySelectorAll('.ws-modal[open]').forEach(d => d.close());
@@ -1486,22 +1497,35 @@ function showRecovery(err) {
       document.body.append(legacy);
       legacyMounted = false;
     }
-    recoveryStatus = await invoke('storage_status').catch(() => null);
-    root.dataset.route = 'recovery';
-    root.innerHTML = recoveryPage({ ...recoveryStatus, issue: recoveryStatus?.issue || err?.message || '' });
+    const status = await invoke('storage_status').catch(() => null);
+    recoveryView = { ...status, cause: err?.message || '' };
+    renderRecovery();
   })();
   return recovering;
 }
 
+function renderRecovery() {
+  root.dataset.route = 'recovery';
+  root.innerHTML = recoveryPage(recoveryView);
+}
+
+// Native accepted the restart and Connect is about to exit: the actions stay disabled.
+async function restartWith(command) {
+  await invoke(command);
+  recoveryView = { ...recoveryView, restarting: true };
+  renderRecovery();
+}
+
 async function recoveryAction(action) {
-  if (action === 'recovery-retry') return invoke('app_relaunch');
+  if (recoveryView?.restarting) return;
+  if (action === 'recovery-retry') return restartWith('app_relaunch');
   if (action === 'recovery-default') {
-    const where = recoveryStatus?.defaultRoot ? `its default folder (${recoveryStatus.defaultRoot})` : 'its default folder';
+    const where = recoveryView?.defaultRoot ? `its default folder (${recoveryView.defaultRoot})` : 'its default folder';
     return confirmModal({
       title: 'Use the default folder?',
       text: `Connect will restart with the data in ${where}. Nothing is moved or deleted. ${USE_DEFAULT_WARNING}`,
       confirm: 'Use the default folder',
-      onConfirm: () => invoke('data_location_use_default'),
+      onConfirm: () => restartWith('data_location_use_default'),
     });
   }
   if (action === 'recovery-tools') {
