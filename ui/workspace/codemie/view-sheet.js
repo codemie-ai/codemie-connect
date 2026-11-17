@@ -122,24 +122,6 @@ const STEP_VIEWS = {
     right: button('Get started', { action: 'cm-sheet-go', variant: 'primary', iconRight: 'arrow', attrs: { 'data-step': 'signin' } }),
   }),
 
-  found: (sh, cm) => {
-    const p = activeProfile(cm) || cm.profiles[0];
-    const agents = installed(cm).map((a) => `${agentDisplay(a).name}${a.version ? ` ${a.version}` : ''}`).join(', ');
-    return {
-      eyebrow: 'Welcome to CodeMie Connect', title: 'CodeMie is already set up on this Mac',
-      text: 'Nothing has been changed. This is what Connect found and will use.',
-      body: `<div class="cm-summary">
-          <div class="cm-summary-row">${icon('user')}<span>Active profile</span><strong>${e([p?.name, cm.config.account].filter(Boolean).join(' — ') || '—')}</strong></div>
-          <div class="cm-summary-row">${icon('building')}<span>Project · model</span><strong>${e([p?.codemieProject || providerShort(p?.provider), p?.model].filter(Boolean).join(' · ') || '—')}</strong></div>
-          <div class="cm-summary-row">${icon('terminal')}<span>Coding agents</span><strong>${e(agents || 'none yet')}</strong></div>
-          <div class="cm-summary-row">${icon('user-plus')}<span>Other profiles</span><strong>${e(cm.profiles.filter((x) => x !== p).map((x) => x.name).join(', ') || 'none')}</strong></div>
-        </div>
-        <p class="ws-inline-note" style="margin-top:14px">${icon('info')}<span>You installed CodeMie${cm.runtime.ownCli?.version ? ` ${e(cm.runtime.ownCli.version)}` : ''} yourself with npm. Connect uses that copy — it does not download a second one or change yours. Terminal keeps working exactly as before.</span></p>`,
-      left: button('Add a different profile', { action: 'cm-sheet-go', variant: 'ghost', attrs: { 'data-step': 'signin', 'data-mode': 'add' } }),
-      right: button('Use this setup', { action: 'cm-found-use', variant: 'primary', iconRight: 'arrow' }),
-    };
-  },
-
   signin: (sh, cm) => {
     const d = sh.d;
     const relogin = sh.mode === 'relogin';

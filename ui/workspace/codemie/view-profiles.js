@@ -42,12 +42,13 @@ function profileCard(cm, p, ui) {
     signedOut ? badge('Signed out', 'warning', 'alert') : '',
   ].join('');
   const address = p.codemieUrl || p.baseUrl;
+  // Account and server first: the two long values get the wide columns of the first row.
   const facts = [
     ['Account', isSso(p) && active ? cm.config.account || '—' : '—'],
+    [isSso(p) ? 'Server' : 'Address', address ? hostOf(address) : '—'],
     ['Provider', providerShort(p.provider)],
     ['Project', p.codemieProject || '—'],
     ['Model', p.model || '—'],
-    [isSso(p) ? 'Server' : 'Address', address ? hostOf(address) : '—'],
   ];
   const test = ui.tests?.[p.name];
   const busy = !!cm.busy.profile || !!cm.busy.signin;
@@ -67,11 +68,11 @@ function profileCard(cm, p, ui) {
       ['edit', 'Change project and model…', 'cm-profile-edit', p.name, signedOut || busy || !isSso(p) || !p.codemieUrl],
       ['note', 'Rename…', 'cm-profile-rename', p.name, busy],
       ['link', 'Sign in again', 'cm-profile-login', p.name, !isSso(p) || !p.codemieUrl || busy],
-      ['folder', 'Show configuration file', 'cm-profile-file', p.name],
+      ['folder', 'Copy configuration file path', 'cm-profile-file', p.name],
       null,
       ['trash', 'Delete profile…', 'cm-profile-delete', p.name, busy, true],
     ]),
-  ].join('') : `<span class="ws-muted ws-hint">Rename this profile in Terminal to manage it here.</span><span class="ws-spacer"></span>${button('Show configuration file', { action: 'cm-profile-file', variant: 'ghost', iconName: 'folder', attrs: { 'data-id': p.name } })}`;
+  ].join('') : `<span class="ws-muted ws-hint">Rename this profile in Terminal to manage it here.</span><span class="ws-spacer"></span>${button('Copy configuration file path', { action: 'cm-profile-file', variant: 'ghost', iconName: 'folder', attrs: { 'data-id': p.name } })}`;
   return `<section class="ws-card${active ? ' cm-active-card' : ''}" style="margin-top:12px" data-profile="${e(p.name)}"><div class="ws-card-body cm-profile">
     <div class="cm-profile-head"><span class="cm-profile-mark${active ? ' cm-profile-mark-active' : ''}">${icon(PROVIDER_ICON[p.provider] || 'user')}</span><div class="cm-profile-name"><strong>${e(p.name)}${chips}</strong><span>${e(providerName(p.provider))}</span></div></div>
     ${expired}

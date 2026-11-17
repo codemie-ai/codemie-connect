@@ -7,7 +7,7 @@ import { setupProgress } from './model.js';
 export function todayCard(cm, prefs = {}, now = Date.now()) {
   if (!cm.loaded) return '';
   const p = setupProgress(cm, prefs);
-  if (p.complete || now < (prefs.snoozedUntil || 0)) return '';
+  if (p.complete || prefs.setupDismissed || now < (prefs.snoozedUntil || 0)) return '';
   const step = (done, label) => `<span class="${done ? 'cm-is-done' : ''}">${icon(done ? 'check-circle' : 'clock')}${e(label)}</span>`;
   const started = p.count > 0;
   const account = cm.org?.organizationName ? `your ${cm.org.organizationName} account` : 'your EPAM account';
@@ -26,5 +26,6 @@ export function todayCard(cm, prefs = {}, now = Date.now()) {
       ${button(started ? 'Continue setup' : 'Set up CodeMie', { action: 'cm-setup-open', variant: 'primary', size: 'lg', iconRight: 'arrow' })}
       ${button('Remind me tomorrow', { action: 'cm-setup-snooze', variant: 'ghost', size: 'sm' })}
     </div>
+    ${button('', { action: 'cm-setup-dismiss', iconName: 'close', variant: 'ghost', title: 'Hide — set up CodeMie any time in Settings', attrs: { class: 'ws-btn ws-btn-ghost ws-btn-icon cm-today-setup-close' } })}
   </section>`;
 }

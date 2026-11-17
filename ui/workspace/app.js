@@ -317,6 +317,11 @@ function renderSheet() {
 
 const sheetOpen = () => !!document.querySelector('#cm-sheet-host .cm-sheet');
 
+// A click anywhere outside an open CodeMie ⋯ menu closes it.
+document.addEventListener('click', ev => {
+  for (const menu of document.querySelectorAll('details.cm-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
+}, true);
+
 // The setup sheet: Escape closes it (as its close button does), unless a dialog is open over it.
 document.addEventListener('keydown', ev => {
   if (ev.key !== 'Escape' || !sheetOpen() || modalOpen()) return;

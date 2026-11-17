@@ -1444,14 +1444,6 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .cm-profile-actions .ws-spacer{min-width:8px}
 .cm-active-card{border-color:transparent;background:linear-gradient(var(--ws-card),var(--ws-card)) padding-box,var(--ws-primary-border) border-box}
 
-/* menus */
-.cm-menu-wrap{position:relative;display:inline-flex}
-.cm-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:50;min-width:200px;display:grid;padding:4px;border:1px solid var(--ws-border);border-radius:8px;background:var(--ws-card);box-shadow:var(--ws-shadow);animation:ws-pop-in .12s ease}
-.cm-menu button{display:flex;align-items:center;gap:8px;height:32px;padding:0 10px;border:0;border-radius:6px;background:none;color:var(--ws-text);font:inherit;font-size:12px;text-align:left;cursor:pointer}
-.cm-menu button:hover{background:var(--ws-hover)}
-.cm-menu button .ws-icon{width:14px;height:14px;color:var(--ws-muted)}
-.cm-menu button.cm-danger,.cm-menu button.cm-danger .ws-icon{color:var(--ws-red)}
-.cm-menu hr{border:0;border-top:1px solid var(--ws-border);margin:4px 2px}
 
 /* ------------------------------------------------------------------ agents */
 .cm-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
@@ -1559,3 +1551,13 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .cm-app-copy .cm-app-note{margin-top:2px}
 /* the panel takes focus when the sheet opens; it is a container, not a control */
 .cm-sheet-panel:focus{outline:none}
+/* CodeMie ⋯ menus: one line per item, wide enough for the longest label; disabled items look it */
+.cm-menu .ws-menu-panel{min-width:240px;max-width:320px}
+.cm-menu .ws-menu-item{width:100%;white-space:nowrap;font-family:inherit;cursor:pointer}
+.cm-menu .ws-menu-item span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.cm-menu .ws-menu-item:disabled{opacity:.42;cursor:default;pointer-events:none}
+/* profile facts: columns wide enough for an email address or a server name */
+.cm-facts{grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}
+/* Today setup card: closes from its corner */
+.cm-today-setup{position:relative;padding-right:52px}
+.cm-today-setup-close{position:absolute;top:10px;right:10px}

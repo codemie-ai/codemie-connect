@@ -33,12 +33,12 @@ export function markupRow({ title, html = '', control = '', iconName }) {
   return `<div class="ws-setting-row">${iconName ? `<span class="ws-setting-icon">${icon(iconName)}</span>` : ''}<div class="ws-setting-copy"><strong>${e(title)}</strong>${html ? `<p>${html}</p>` : ''}</div><div class="ws-setting-control">${control}</div></div>`;
 }
 
-/** One attention item as a banner (Today) — the same item Overview and the dots use. */
-export const banner = (a) => `<div class="ws-banner ws-banner-warning">${icon('alert')}<div><strong>${e(a.title)}</strong><p>${e(a.text)}</p></div><div class="ws-actions">${button(a.action.label, { action: a.action.action, variant: 'primary', attrs: { 'data-id': a.action.id } })}</div></div>`;
+/** One attention item as a banner (Today, Overview); closable when the item allows it. */
+export const banner = (a) => `<div class="ws-banner ws-banner-warning">${icon('alert')}<div><strong>${e(a.title)}</strong><p>${e(a.text)}</p></div><div class="ws-actions">${button(a.action.label, { action: a.action.action, variant: 'primary', attrs: { 'data-id': a.action.id } })}${a.dismissKey ? button('', { action: 'cm-attention-dismiss', iconName: 'close', variant: 'ghost', title: 'Dismiss', attrs: { 'data-id': a.dismissKey } }) : ''}</div></div>`;
 
 /** The workspace ⋯ menu. items: [iconName, label, action, id, disabled?, danger?] or null for a rule. */
 export function menu(id, label, items) {
-  return `<details class="ws-menu ws-menu-right" data-menu="${e(id)}"><summary class="ws-btn ws-btn-ghost ws-btn-icon" aria-label="${e(label)}" title="More">${icon('dots')}</summary><div class="ws-menu-panel">${items.map((it) => (!it ? '<hr>'
+  return `<details class="ws-menu ws-menu-right cm-menu" data-menu="${e(id)}"><summary class="ws-btn ws-btn-ghost ws-btn-icon" aria-label="${e(label)}" title="More">${icon('dots')}</summary><div class="ws-menu-panel">${items.map((it) => (!it ? '<hr>'
     : `<button type="button" class="ws-menu-item${it[5] ? ' ws-menu-danger' : ''}" data-action="${e(it[2])}" data-id="${e(it[3])}"${it[4] ? ' disabled' : ''}>${icon(it[0])}<span>${e(it[1])}</span></button>`)).join('')}</div></details>`;
 }
 

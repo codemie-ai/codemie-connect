@@ -48,8 +48,16 @@ export function setupProgress(cm, prefs = {}) {
 
 const unique = (list) => list.filter((v, i) => list.indexOf(v) === i);
 
-/** Everything that needs the person, most urgent first: Today banners, dots, Overview, Health. */
-export function attention(cm) {
+/**
+ * Everything that needs the person, most urgent first: Today banners, dots, Overview, Health.
+ * An item with a `dismissKey` can be closed (an agent the person does not use, apps they left
+ * stopped); `dismissed` holds the keys they closed. Sign-in and a broken config cannot be.
+ */
+export function attention(cm, dismissed = new Set()) {
+  return allAttention(cm).filter((a) => !a.dismissKey || !dismissed.has(a.dismissKey));
+}
+
+function allAttention(cm) {
   const out = [];
   if (cm.runtime?.state === 'failed') {
     out.push({
@@ -79,6 +87,8 @@ export function attention(cm) {
   for (const a of (cm.agents || []).filter((x) => x.installed && x.belowMinimum)) {
     out.push({
       key: `agent-old:${a.command}`,
+      // Closed for this version only: a later version that is still too old shows again.
+      dismissKey: `agent-old:${a.command}@${a.version || ''}`,
       title: `${a.name} needs an update`,
       text: `${a.name}${a.version ? ` ${a.version}` : ''} is older than CodeMie supports, so ${launcherFor(a.command)} will not start.`,
       action: { label: 'Update', action: 'cm-agent-update', id: a.command },
@@ -89,6 +99,7 @@ export function attention(cm) {
     const names = unique(configured.map((a) => a.name.split(' — ')[0])).join(' and ');
     out.push({
       key: 'gateway-stopped',
+      dismissKey: 'gateway-stopped',
       title: `${names} can’t reach CodeMie`,
       text: 'The CodeMie gateway on this Mac is not running — usually after a restart. Starting it takes a second.',
       action: { label: 'Start gateway', action: 'cm-gateway-start' },
@@ -101,8 +112,9 @@ export function attention(cm) {
 export function tabDots(cm, prefs = {}) {
   const dots = new Set();
   if (!cm.loaded) return dots;
-  const keys = attention(cm).map((a) => a.key);
-  if (!setupProgress(cm, prefs).complete || keys.length) dots.add('cm-overview');
+  const keys = attention(cm, prefs.dismissed).map((a) => a.key);
+  // Unfinished setup marks Overview until the person closes the Today card.
+  if ((!setupProgress(cm, prefs).complete && !prefs.setupDismissed) || keys.length) dots.add('cm-overview');
   if (keys.includes('signed-out') || keys.includes('config-broken')) dots.add('cm-profiles');
   if (keys.some((k) => k.startsWith('agent-old:'))) dots.add('cm-agents');
   if (keys.includes('gateway-stopped')) dots.add('cm-apps');
@@ -112,7 +124,6 @@ export function tabDots(cm, prefs = {}) {
 
 /** Where the setup sheet opens, derived from CLI state so a reopened sheet resumes correctly. */
 export function firstStep(cm, prefs = {}) {
-  if (cm.runtime?.ownCli && cm.profiles.length && !prefs.introduced) return 'found';
   const p = setupProgress(cm, prefs);
   if (!p.account) return prefs.introduced ? 'signin' : 'welcome';
   if (!p.agent) return 'agents';
@@ -120,7 +131,10 @@ export function firstStep(cm, prefs = {}) {
   return 'done';
 }
 
-/** Open the sheet by itself once per install: nothing set up yet, or a CodeMie found from before. */
+/**
+ * Open the sheet by itself once, and only on a Mac where nothing is set up: no CodeMie profile.
+ * Someone who set CodeMie up themselves finds it in Settings → CodeMie instead.
+ */
 export function shouldAutoOpen(cm, prefs = {}) {
-  return !prefs.introduced && !!cm.loaded && (cm.profiles.length === 0 || !!cm.runtime?.ownCli);
+  return !prefs.introduced && !!cm.loaded && cm.profiles.length === 0;
 }

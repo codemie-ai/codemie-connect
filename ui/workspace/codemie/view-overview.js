@@ -17,7 +17,7 @@ const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', min
 
 export function overviewPanel(cm, prefs = {}, ui = {}) {
   const p = setupProgress(cm, prefs);
-  return attention(cm).map(banner).join('') + (p.complete ? ready(cm, ui) : checklist(cm, prefs)) + cliCard(cm);
+  return attention(cm, prefs.dismissed).map(banner).join('') + (p.complete ? ready(cm, ui, prefs) : checklist(cm, prefs)) + cliCard(cm);
 }
 
 function checklist(cm, prefs) {
@@ -47,9 +47,9 @@ function checklist(cm, prefs) {
   </section>`;
 }
 
-function ready(cm, ui) {
+function ready(cm, ui, prefs = {}) {
   const p = activeProfile(cm);
-  const att = attention(cm);
+  const att = attention(cm, prefs.dismissed);
   const agents = installed(cm);
   const updates = agents.filter((a) => ['update', 'too_old'].includes(agentStatus(a))).length;
   const apps = connected(cm);

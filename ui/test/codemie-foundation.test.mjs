@@ -53,6 +53,13 @@ test('run_log_redacts_and_caps', () => {
   assert.match(log.text(), /FAILED {2}\$ b/);
 });
 
+test('run_log_shows_commands_without_stdin_plumbing', () => {
+  const log = createRunLog();
+  log.start('codemie list < /dev/null').finish(0);
+  log.start('codemie proxy status --json < NUL').finish(0);
+  assert.deepEqual(log.list().map((e) => e.cmd), ['codemie list', 'codemie proxy status --json']);
+});
+
 test('redact_masks_tokens_in_every_form', () => {
   const out = redact('Authorization: Bearer abc.def\nTOKEN=xyz\n"gatewayKey": "k1"\npassword: hunter2');
   for (const secret of ['abc.def', 'xyz', 'k1', 'hunter2']) assert.doesNotMatch(out, new RegExp(secret));

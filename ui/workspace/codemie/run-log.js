@@ -27,7 +27,9 @@ export function createRunLog({ now = () => new Date(), limit = 50, maxChars = 20
 
   return {
     start(cmd) {
-      const entry = { id: nextId++, at: now(), cmd: redact(cmd), code: null, output: '' };
+      // The closed stdin (`< /dev/null`, `< NUL`) is plumbing, not what CodeMie was asked to do.
+      const shown = redact(cmd).replace(/\s+<\s+(\/dev\/null|NUL)\s*$/, '');
+      const entry = { id: nextId++, at: now(), cmd: shown, code: null, output: '' };
       entries = [...entries, entry].slice(-limit);
       notify();
       return {

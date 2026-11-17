@@ -22,6 +22,8 @@ const PREF = {
   introduced: 'codemie.setup.introduced',
   snoozedUntil: 'codemie.setup.snoozedUntil',
   appsSkipped: 'codemie.setup.appsSkipped',
+  setupDismissed: 'codemie.setup.dismissed',
+  dismissed: 'codemie.attention.dismissed',
   folders: 'codemie.start.folders',
 };
 const RENDER_EVERY_MS = 250;
@@ -43,7 +45,18 @@ export function createCodemieController(deps) {
       introduced: localPref(PREF.introduced, '') === '1',
       snoozedUntil: Number(localPref(PREF.snoozedUntil, '0')) || 0,
       appsSkipped: localPref(PREF.appsSkipped, '') === '1',
+      setupDismissed: localPref(PREF.setupDismissed, '') === '1',
+      dismissed: dismissedNotices(),
     };
+  }
+
+  function dismissedNotices() {
+    try {
+      const list = JSON.parse(localPref(PREF.dismissed, '[]'));
+      return new Set(Array.isArray(list) ? list : []);
+    } catch {
+      return new Set();
+    }
   }
 
   // ---------------------------------------------------------------- rendering
@@ -409,6 +422,15 @@ export function createCodemieController(deps) {
       case 'cm-sheet-close': await closeSheet(); return true;
       case 'cm-sheet-later': await closeSheet({ quiet: true }); toast('You can finish setting up CodeMie from Today or Settings → CodeMie.'); return true;
       case 'cm-sheet-settings': await closeSheet({ quiet: true }); await route('settings', 'cm-overview'); return true;
+      case 'cm-setup-dismiss':
+        setLocalPref(PREF.setupDismissed, '1');
+        toast('Hidden. You can set up CodeMie any time in Settings → CodeMie.');
+        await render();
+        return true;
+      case 'cm-attention-dismiss':
+        if (el?.dataset?.id) setLocalPref(PREF.dismissed, JSON.stringify([...dismissedNotices(), el.dataset.id].slice(-50)));
+        await render();
+        return true;
       case 'cm-setup-snooze':
         setLocalPref(PREF.snoozedUntil, String(now() + 24 * 3600 * 1000));
         await render();
@@ -420,10 +442,6 @@ export function createCodemieController(deps) {
       case 'cm-sheet-go':
         if (el.dataset.mode) Object.assign(sh, newSheet(el.dataset.mode, el.dataset.step));
         else sh.step = el.dataset.step;
-        await render();
-        return true;
-      case 'cm-found-use':
-        sh.step = afterAccountStep();
         await render();
         return true;
       case 'cm-signin-start': await startSignin(); return true;
@@ -652,6 +670,8 @@ export function createCodemieController(deps) {
 
   async function handle(action, el) {
     if (!action.startsWith('cm-')) return false;
+    // An item picked from a ⋯ menu closes it (a render would otherwise keep it open).
+    el?.closest?.('details.ws-menu')?.removeAttribute('open');
     if (await sheetAction(action, el)) return true;
     const id = el?.dataset?.id;
     switch (action) {
@@ -856,7 +876,7 @@ export function createCodemieController(deps) {
 
   function banners(currentRoute) {
     if (currentRoute !== 'today') return '';
-    return attention(cm).map(banner).join('');
+    return attention(cm, prefs().dismissed).map(banner).join('');
   }
 
   const tabDots = () => dotsOf(cm, prefs());
@@ -867,7 +887,9 @@ export function createCodemieController(deps) {
     service.subscribe(scheduleRender);
     runLog.subscribe(scheduleRender);
     await service.boot();
-    // First launch: the sheet opens by itself once, at the step CLI state says comes first.
+    // A Mac where CodeMie is already set up (by Connect or in Terminal) is never walked through it.
+    if (cm.loaded && cm.profiles.length && !prefs().introduced) setLocalPref(PREF.introduced, '1');
+    // First launch with nothing set up: the sheet opens by itself once.
     if (!sh && shouldAutoOpen(cm, prefs())) {
       sh = newSheet('setup', firstStep(cm, prefs()));
       setLocalPref(PREF.introduced, '1');

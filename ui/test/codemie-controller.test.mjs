@@ -50,7 +50,8 @@ test('quit_request_with_nothing_running_does_nothing', async () => {
 
 test('prefs_read_setup_keys', () => {
   const { c } = controllerHarness({ prefs: { 'codemie.setup.introduced': '1', 'codemie.setup.snoozedUntil': '42', 'codemie.setup.appsSkipped': '1' } });
-  assert.deepEqual(c.prefs(), { introduced: true, snoozedUntil: 42, appsSkipped: true });
+  const p = c.prefs();
+  assert.deepEqual([p.introduced, p.snoozedUntil, p.appsSkipped, p.setupDismissed, [...p.dismissed]], [true, 42, true, false, []]);
 });
 
 test('banners_show_attention_on_today_only', () => {

@@ -98,9 +98,9 @@ test('tab_dots_follow_attention', () => {
   assert.deepEqual([...tabDots({ ...emptyCodemie() }, {})], [], 'nothing before the first read');
 });
 
-test('first_step_found_for_own_cli', () => {
+test('first_step_follows_cli_state', () => {
   const cm = cmWith({ runtime: { ...emptyCodemie().runtime, state: 'ready', ownCli: { version: '0.16.9' } } });
-  assert.equal(firstStep(cm, {}), 'found');
+  assert.equal(firstStep(cm, {}), 'agents', 'a CodeMie set up in Terminal goes straight to what is missing');
   assert.equal(firstStep(cm, { introduced: true }), 'agents');
   assert.equal(firstStep(cmWith({ profiles: [] }), {}), 'welcome');
   assert.equal(firstStep(cmWith({ profiles: [] }), { introduced: true }), 'signin');
@@ -116,4 +116,32 @@ test('auto_open_only_once', () => {
   assert.equal(shouldAutoOpen(fresh, { introduced: true }), false);
   assert.equal(shouldAutoOpen(cmWith(), {}), false, 'a working profile from Connect needs no welcome');
   assert.equal(shouldAutoOpen({ ...fresh, loaded: false }, {}), false);
+  // Someone who set CodeMie up themselves (their own npm copy, their own profiles) is not
+  // walked through setup again.
+  const own = cmWith({ runtime: { ...emptyCodemie().runtime, state: 'ready', ownCli: { version: '0.16.9' } } });
+  assert.equal(shouldAutoOpen(own, {}), false);
+});
+
+test('dismissed_agent_notice_stays_hidden_until_its_version_changes', () => {
+  const cm = cmWith();
+  cm.agents[1] = { name: 'Gemini CLI', command: 'gemini', installed: true, version: '0.15.4', belowMinimum: true };
+  const [notice] = attention(cm);
+  assert.equal(notice.key, 'agent-old:gemini');
+  assert.equal(notice.dismissKey, 'agent-old:gemini@0.15.4');
+  const dismissed = new Set([notice.dismissKey]);
+  assert.deepEqual(attention(cm, dismissed), []);
+  assert.ok(!tabDots(cm, { dismissed }).has('cm-agents'));
+  cm.agents[1].version = '0.16.0';
+  assert.equal(attention(cm, dismissed).length, 1, 'a different version shows again');
+});
+
+test('sign_in_and_broken_config_cannot_be_dismissed', () => {
+  const cm = cmWith({ config: { state: 'broken', active: 'gone', account: null } });
+  assert.equal(attention(cm)[0].dismissKey, undefined);
+});
+
+test('a_closed_setup_card_takes_its_dot_away', () => {
+  const cm = cmWith();
+  assert.ok(tabDots(cm, {}).has('cm-overview'));
+  assert.ok(!tabDots(cm, { setupDismissed: true }).has('cm-overview'));
 });

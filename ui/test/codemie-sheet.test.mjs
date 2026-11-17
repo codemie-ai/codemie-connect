@@ -120,6 +120,35 @@ test('today_card_snoozes_for_a_day', async () => {
   assert.equal(h.c.todayCard(Date.now()), '');
 });
 
+test('today_card_can_be_closed_for_good', async () => {
+  const h = controllerHarness({ service: freshService(), session: sessionFake() });
+  assert.match(h.c.todayCard(Date.now()), /data-action="cm-setup-dismiss"/);
+  await h.c.handle('cm-setup-dismiss', el());
+  assert.equal(h.c.todayCard(Date.now() + 7 * 24 * 3600e3), '');
+  assert.match(h.toasts.at(-1)[0], /Settings → CodeMie/);
+});
+
+test('notices_close_and_stay_closed', async () => {
+  const service = fakeService();
+  service.state.agents.push({ name: 'Gemini CLI', command: 'gemini', installed: true, version: '0.15.4', belowMinimum: true });
+  const h = controllerHarness({ service, session: sessionFake() });
+  const overview = h.c.panel('cm-overview');
+  assert.match(overview, /Gemini CLI needs an update/);
+  assert.match(overview, /data-action="cm-attention-dismiss"[^>]*data-id="agent-old:gemini@0\.15\.4"/);
+  await h.c.handle('cm-attention-dismiss', el({ id: 'agent-old:gemini@0.15.4' }));
+  assert.doesNotMatch(h.c.panel('cm-overview'), /Gemini CLI needs an update/);
+  assert.doesNotMatch(h.c.banners('today'), /Gemini CLI needs an update/);
+});
+
+test('someone_who_set_up_codemie_themselves_is_not_walked_through_it', async () => {
+  const service = fakeService();
+  service.state.runtime.ownCli = { version: '0.16.9' };
+  const h = controllerHarness({ service, session: sessionFake() });
+  await h.c.boot();
+  assert.equal(h.c.sheet(), '');
+  assert.equal(h.prefs.get('codemie.setup.introduced'), '1', 'never auto-opens later either');
+});
+
 test('auto_open_once', async () => {
   const h = controllerHarness({ service: freshService(), session: sessionFake() });
   await h.c.boot();
