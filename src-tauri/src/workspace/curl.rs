@@ -20,7 +20,7 @@ impl Drop for OwnedRead<'_> {
         }
     }
 }
-fn config(url: &str, token: &str) -> Result<String> {
+fn config(url: &str, token: &str, prefer: &str) -> Result<String> {
     if token.contains(['\r', '\n']) {
         return Err(WorkspaceError::new(
             "auth",
@@ -32,7 +32,7 @@ fn config(url: &str, token: &str) -> Result<String> {
         "url = {}\nheader = {}\nheader = {}\n",
         quote(url),
         quote(&format!("Authorization: Bearer {token}")),
-        quote("Prefer: IdType=\"ImmutableId\", outlook.timezone=\"UTC\", odata.maxpagesize=50")
+        quote(&format!("Prefer: {prefer}"))
     ))
 }
 fn decode(output: &[u8], headers: &str) -> Result<Value> {
@@ -75,12 +75,18 @@ pub(super) fn cleanup(dir: &std::path::Path) {
         }
     }
 }
-pub(super) async fn get(core: &Core, c: &Connection, url: &str, token: &str) -> Result<Value> {
+pub(super) async fn get(
+    core: &Core,
+    c: &Connection,
+    url: &str,
+    token: &str,
+    prefer: &str,
+) -> Result<Value> {
     if core.stop.load(std::sync::atomic::Ordering::Relaxed) {
         return Err(WorkspaceError::new("cancelled", "Microsoft reads stopped."));
     }
     let url = graph::validate_graph_url(url)?;
-    let input = config(url.as_str(), token)?;
+    let input = config(url.as_str(), token, prefer)?;
     let key = format!(
         "{}:{}",
         c.job_fence
@@ -229,11 +235,26 @@ mod tests {
     fn bearer_config_rejects_newline_injection() {
         assert!(config(
             "https://graph.microsoft.com/v1.0/me",
-            "synthetic\nurl = evil"
+            "synthetic\nurl = evil",
+            graph::PREFER
         )
         .is_err());
-        let value = config("https://graph.microsoft.com/v1.0/me", "synthetic").unwrap();
+        let value = config(
+            "https://graph.microsoft.com/v1.0/me",
+            "synthetic",
+            graph::PREFER,
+        )
+        .unwrap();
         assert!(value.contains("Authorization: Bearer synthetic"));
+        // The default reads ask for no body format.
+        assert!(value.contains("odata.maxpagesize=50\"\n"));
+        let text = config(
+            "https://graph.microsoft.com/v1.0/me/messages/1",
+            "synthetic",
+            graph::PREFER_TEXT_BODY,
+        )
+        .unwrap();
+        assert!(text.contains("outlook.body-content-type=\\\"text\\\""));
         assert!(!value.contains("insecure"));
     }
 }

@@ -55,6 +55,8 @@ pub struct Core {
     ai_cancel: CancellationToken,
     /// Job id -> the token of its Claude run, so Stop (`job_cancel`) ends the run at once.
     ai_jobs: Mutex<std::collections::HashMap<String, CancellationToken>>,
+    /// The Microsoft reads an AI run makes (full Outlook text); faked in tests.
+    graph_reads: Arc<dyn ai_jobs::GraphReads>,
     graph_children: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
     /// `{connectionId}:{calendarId}` -> last full calendarView refresh (unix seconds).
     calendar_refreshed: Mutex<std::collections::HashMap<String, i64>>,
@@ -76,6 +78,7 @@ impl Core {
             root,
             Arc::new(CliRunner::new(env)),
             ProfileCache::system(extra_dirs),
+            Arc::new(ai_jobs::LiveGraph),
         )
     }
     fn open_with(
@@ -83,6 +86,7 @@ impl Core {
         root: &Path,
         runner: Arc<dyn ClaudeRunner>,
         profiles: ProfileCache,
+        graph_reads: Arc<dyn ai_jobs::GraphReads>,
     ) -> Result<Arc<Self>> {
         std::fs::create_dir_all(root)?;
         #[cfg(unix)]
@@ -117,6 +121,7 @@ impl Core {
             profiles,
             ai_cancel: CancellationToken::new(),
             ai_jobs: Default::default(),
+            graph_reads,
             graph_children: Default::default(),
             calendar_refreshed: Default::default(),
             mutations: Default::default(),
@@ -276,6 +281,7 @@ impl Core {
                         job.state = "succeeded".into();
                         job.result = Some(message);
                         job.error_class = None;
+                        job.error_code = None;
                     }
                     Err(e) => {
                         job.state = if e.code == "cancelled" {
@@ -291,6 +297,7 @@ impl Core {
                         .into();
                         job.result = Some(e.message);
                         job.error_class = e.class;
+                        job.error_code = Some(e.code);
                     }
                 }
                 job.lease_until = None;
@@ -826,6 +833,7 @@ impl Core {
                     job.state = "queued".into();
                     job.due_at = now();
                     job.error_class = None;
+                    job.error_code = None;
                 } else {
                     if !matches!(job.state.as_str(), "queued" | "running" | "blocked")
                         || job.payload["dispatchStartedAt"].is_i64()
@@ -1592,6 +1600,7 @@ fn new_job(
         payload,
         result: None,
         error_class: None,
+        error_code: None,
     }
 }
 fn sha256_prefix(v: &str) -> [u8; 4] {
@@ -1779,7 +1788,23 @@ pub(crate) fn test_core(
     runner: Arc<dyn ClaudeRunner>,
     profiles: Vec<crate::ai::profiles::AiProfile>,
 ) -> Arc<Core> {
-    Core::open_with(None, dir, runner, ProfileCache::fixed(profiles)).unwrap()
+    test_core_with_graph(
+        dir,
+        runner,
+        profiles,
+        Arc::new(ai_jobs::FakeGraph::default()),
+    )
+}
+
+/// [`test_core`] whose Microsoft reads for AI runs are answered by `graph`.
+#[cfg(test)]
+fn test_core_with_graph(
+    dir: &Path,
+    runner: Arc<dyn ClaudeRunner>,
+    profiles: Vec<crate::ai::profiles::AiProfile>,
+    graph: Arc<dyn ai_jobs::GraphReads>,
+) -> Arc<Core> {
+    Core::open_with(None, dir, runner, ProfileCache::fixed(profiles), graph).unwrap()
 }
 
 #[cfg(test)]
@@ -1789,7 +1814,14 @@ pub(crate) fn test_core_slow(
     profiles: Vec<crate::ai::profiles::AiProfile>,
     delay: std::time::Duration,
 ) -> Arc<Core> {
-    Core::open_with(None, dir, runner, ProfileCache::fixed_slow(profiles, delay)).unwrap()
+    Core::open_with(
+        None,
+        dir,
+        runner,
+        ProfileCache::fixed_slow(profiles, delay),
+        Arc::new(ai_jobs::FakeGraph::default()),
+    )
+    .unwrap()
 }
 
 #[cfg(test)]

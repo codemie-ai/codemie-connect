@@ -1,6 +1,8 @@
 //! Free time for "Propose times" drafts (DESIGN 6.4). The sweep matches `freeSlots` in
-//! `ui/workspace/calendar-model.js`: timed events that are not `showAs: "free"` are busy, they
-//! are clipped to the day's window, and only gaps of at least `min_len` minutes count.
+//! `ui/workspace/calendar-model.js`: timed events that are not `showAs: "free"` (and not
+//! declined) are busy, they are clipped to the day's window, and only gaps of at least
+//! `min_len` minutes count. One deliberate addition: an all-day event shown as out of office
+//! or busy takes the whole working day (the calendar view should follow).
 use super::{graph, models::Record};
 use chrono::{Datelike, Duration, LocalResult, NaiveDate, TimeZone, Weekday};
 use chrono_tz::Tz;
@@ -22,10 +24,12 @@ pub fn free_slots(
     zone: Tz,
     now: i64,
 ) -> Vec<(i64, i64)> {
-    let busy_events: Vec<(i64, i64)> = events
+    let blocking = events
         .iter()
-        .filter(|e| e.data["showAs"] != "free" && e.data["cancelled"] != true)
-        .filter(|e| e.data["allDay"] != true)
+        .filter(|e| e.data["cancelled"] != true && e.data["response"] != "declined");
+    let busy_events: Vec<(i64, i64)> = blocking
+        .clone()
+        .filter(|e| e.data["showAs"] != "free" && e.data["allDay"] != true)
         .map(|e| {
             (
                 graph::timestamp(e.data["start"].as_str().unwrap_or("")),
@@ -33,6 +37,13 @@ pub fn free_slots(
             )
         })
         .filter(|(s, e)| *s > 0 && e > s)
+        .collect();
+    // Local dates `[start, end)` taken by all-day absences.
+    let away_days: Vec<(NaiveDate, NaiveDate)> = blocking
+        .filter(|e| {
+            e.data["allDay"] == true && matches!(e.data["showAs"].as_str(), Some("oof" | "busy"))
+        })
+        .filter_map(|e| all_day_dates(e, zone))
         .collect();
     let min_len = min_len * 60;
     let first_free = (now + STEP_SECS - 1).div_euclid(STEP_SECS) * STEP_SECS;
@@ -46,13 +57,14 @@ pub fn free_slots(
         if counted == days {
             break;
         }
-        let working = !matches!(day.weekday(), Weekday::Sat | Weekday::Sun);
+        let working = !matches!(day.weekday(), Weekday::Sat | Weekday::Sun)
+            && !away_days.iter().any(|(from, to)| *from <= day && day < *to);
         let (start, end) = (
             local(zone, day, day_start_min),
             local(zone, day, day_end_min),
         );
         if working && end > now {
-            counted += 1;
+            let before = slots.len();
             let from = start.max(first_free);
             let mut busy: Vec<(i64, i64)> = busy_events
                 .iter()
@@ -70,6 +82,10 @@ pub fn free_slots(
             if end - cursor >= min_len {
                 slots.push((cursor, end));
             }
+            // A day with no free time left is not one of the offered days.
+            if slots.len() > before {
+                counted += 1;
+            }
         }
         day = match day.succ_opt() {
             Some(next) => next,
@@ -77,6 +93,24 @@ pub fn free_slots(
         };
     }
     slots
+}
+
+/// The local dates an all-day event covers, end exclusive: its `startDate`/`endDate` when
+/// sync stored them, else the dates of its start and end in `zone`.
+fn all_day_dates(e: &Record, zone: Tz) -> Option<(NaiveDate, NaiveDate)> {
+    let stored = |key: &str| {
+        e.data[key]
+            .as_str()
+            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+    };
+    let derived = |key: &str| {
+        zone.timestamp_opt(graph::timestamp(e.data[key].as_str()?), 0)
+            .earliest()
+            .map(|t| t.date_naive())
+    };
+    let start = stored("startDate").or_else(|| derived("start"))?;
+    let end = stored("endDate").or_else(|| derived("end"))?;
+    Some((start, end.max(start.succ_opt()?)))
 }
 
 /// `minutes` after midnight of `day` in `zone`, as unix seconds. An hour skipped by a clock
@@ -93,13 +127,13 @@ fn local(zone: Tz, day: NaiveDate, minutes: i64) -> i64 {
     }
 }
 
-/// "Mon 26 Oct 2026, 09:00–10:30" in `zone`.
+/// "Mon 26 Oct, 09:00–10:30" in `zone` (offered within the next days, so no year).
 pub fn format_slot(slot: (i64, i64), zone: Tz) -> String {
     let at = |t: i64| zone.timestamp_opt(t, 0).earliest();
     match (at(slot.0), at(slot.1)) {
         (Some(s), Some(e)) => format!(
             "{}, {}–{}",
-            s.format("%a %-d %b %Y"),
+            s.format("%a %-d %b"),
             s.format("%H:%M"),
             e.format("%H:%M")
         ),
@@ -164,7 +198,7 @@ mod tests {
                 "2026-10-26T09:30:00Z",
                 json!({}),
             ),
-            // Free-marked, cancelled and all-day events never block time.
+            // Free-marked and cancelled events, and an all-day "working elsewhere", never block time.
             event(
                 "mon-free",
                 "2026-10-26T10:00:00Z",
@@ -181,7 +215,7 @@ mod tests {
                 "mon-all-day",
                 "2026-10-26T00:00:00Z",
                 "2026-10-27T00:00:00Z",
-                json!({"allDay": true}),
+                json!({"allDay": true, "showAs": "workingElsewhere"}),
             ),
             // Monday 14:00-14:20 local.
             event(
@@ -245,8 +279,75 @@ mod tests {
     }
 
     #[test]
+    fn free_slots_skip_declined_events_and_whole_day_absences() {
+        // Monday 26 Oct 2026, 08:00 in Kyiv (EET, UTC+2), before the working day starts.
+        let now = at("2026-10-26T06:00:00Z");
+        let events = vec![
+            // Declined: the time stays free (as in the calendar view).
+            event(
+                "declined",
+                "2026-10-26T08:00:00Z",
+                "2026-10-26T09:00:00Z",
+                json!({"response": "declined"}),
+            ),
+            // Out of office all Tuesday: the whole day is taken and not counted.
+            event(
+                "ooo",
+                "2026-10-26T22:00:00Z",
+                "2026-10-27T22:00:00Z",
+                json!({"allDay": true, "showAs": "oof", "startDate": "2026-10-27", "endDate": "2026-10-28"}),
+            ),
+            // An all-day note shown as free blocks nothing.
+            event(
+                "note",
+                "2026-10-27T22:00:00Z",
+                "2026-10-28T22:00:00Z",
+                json!({"allDay": true, "showAs": "free", "startDate": "2026-10-28", "endDate": "2026-10-29"}),
+            ),
+        ];
+        let slots = free_slots(&events, 9 * 60, 18 * 60, 2, 30, KYIV, now);
+        assert_eq!(
+            slots,
+            vec![
+                (at("2026-10-26T07:00:00Z"), at("2026-10-26T16:00:00Z")),
+                (at("2026-10-28T07:00:00Z"), at("2026-10-28T16:00:00Z")),
+            ]
+        );
+    }
+
+    #[test]
+    fn free_slots_count_only_days_with_free_time() {
+        // Monday is booked from 09:00 to 18:00, so Tuesday and Wednesday are the two days.
+        let now = at("2026-10-26T06:00:00Z");
+        let events = vec![event(
+            "workshop",
+            "2026-10-26T07:00:00Z",
+            "2026-10-26T16:00:00Z",
+            json!({}),
+        )];
+        let slots = free_slots(&events, 9 * 60, 18 * 60, 2, 30, KYIV, now);
+        assert_eq!(
+            slots,
+            vec![
+                (at("2026-10-27T07:00:00Z"), at("2026-10-27T16:00:00Z")),
+                (at("2026-10-28T07:00:00Z"), at("2026-10-28T16:00:00Z")),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_times_survive_skipped_and_repeated_hours() {
+        // 29 Mar 2026: Kyiv clocks jump from 03:00 to 04:00, so 03:30 becomes 04:30 EEST.
+        let spring = NaiveDate::from_ymd_opt(2026, 3, 29).unwrap();
+        assert_eq!(local(KYIV, spring, 3 * 60 + 30), at("2026-03-29T01:30:00Z"));
+        // 25 Oct 2026: 03:00-04:00 happens twice; the first (EEST) one is used.
+        let autumn = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        assert_eq!(local(KYIV, autumn, 3 * 60 + 30), at("2026-10-25T00:30:00Z"));
+    }
+
+    #[test]
     fn format_slot_names_day_date_and_times_in_the_zone() {
         let slot = (at("2026-10-26T07:00:00Z"), at("2026-10-26T08:30:00Z"));
-        assert_eq!(format_slot(slot, KYIV), "Mon 26 Oct 2026, 09:00–10:30");
+        assert_eq!(format_slot(slot, KYIV), "Mon 26 Oct, 09:00–10:30");
     }
 }

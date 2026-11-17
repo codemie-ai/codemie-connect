@@ -18,6 +18,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0";
+/// Every read: immutable ids, UTC times, 50 items a page.
+pub const PREFER: &str = "IdType=\"ImmutableId\", outlook.timezone=\"UTC\", odata.maxpagesize=50";
+/// A read that asks for message bodies as plain text instead of HTML.
+pub const PREFER_TEXT_BODY: &str = "IdType=\"ImmutableId\", outlook.timezone=\"UTC\", odata.maxpagesize=50, outlook.body-content-type=\"text\"";
 const PROFILE_PATH: &str = "/me?$select=id,displayName,givenName,surname,mail,userPrincipalName,jobTitle,department,officeLocation";
 const PHOTO_LIMIT: usize = 256 * 1024;
 const CALENDAR_REFRESH_SECONDS: i64 = 300;
@@ -425,6 +429,10 @@ impl Core {
         Ok(())
     }
     pub async fn graph_get(&self, c: &Connection, url: &str) -> Result<Value> {
+        self.graph_get_prefer(c, url, PREFER).await
+    }
+    /// [`Core::graph_get`] with another `Prefer` header, such as [`PREFER_TEXT_BODY`].
+    pub async fn graph_get_prefer(&self, c: &Connection, url: &str, prefer: &str) -> Result<Value> {
         self.check_backoff(c)?;
         let url = validate_graph_url(url)?;
         if let Some((jid, attempt)) = &c.job_fence {
@@ -457,16 +465,13 @@ impl Core {
         let token = self.access(c).await?;
         check_connection(&self.repo()?.connection(&c.id)?, c)?;
         #[cfg(target_os = "macos")]
-        let result = super::curl::get(self, c, url.as_str(), &token).await;
+        let result = super::curl::get(self, c, url.as_str(), &token, prefer).await;
         #[cfg(not(target_os = "macos"))]
         let result = read_json(
             client()?
                 .get(url)
                 .bearer_auth(token)
-                .header(
-                    "Prefer",
-                    "IdType=\"ImmutableId\", outlook.timezone=\"UTC\", odata.maxpagesize=50",
-                )
+                .header("Prefer", prefer)
                 .send()
                 .await,
         )

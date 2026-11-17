@@ -9,7 +9,9 @@
     ],
     "channel": "mail",
     "conversationKey": "mail:conv-1",
+    "latestFingerprint": "d64def50fee11e06f85815cd45bc8f4e",
     "latestMessageId": "m3",
+    "latestRevision": "v1",
     "provenance": {
       "at": 1795000500,
       "costUsd": 0.002,
@@ -20,10 +22,10 @@
         "m3"
       ],
       "model": "claude-haiku-4-5",
+      "partialText": false,
       "profile": "claude"
     },
     "sourceId": "m3",
-    "sourceRevision": "v1",
     "stale": false,
     "text": "Ann asked for the Q3 budget. You asked which version; she wants Monday's by Friday."
   },

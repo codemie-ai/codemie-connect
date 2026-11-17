@@ -4,6 +4,7 @@
     "aiSuggested": true,
     "channel": "mail",
     "conversationKey": "mail:conv-1",
+    "draftKey": "m3",
     "options": {
       "includeFreeTimes": false,
       "intent": "reply",
@@ -20,16 +21,17 @@
         "m3"
       ],
       "model": "claude-sonnet-4-5",
+      "partialText": false,
       "profile": "claude"
     },
     "questions": [
-      "Which file is the Monday version?"
+      "Can you send Ann the Monday version by Friday?"
     ],
     "sourceId": "m3",
     "sourceRevision": "v1",
-    "text": "Hi Ann,\n\nI will send the Monday version.\n\nBest,\nTaylor"
+    "text": "Hi Ann,\n\n[Yes, I can / Unfortunately, I can't] send you the Monday version by Friday.\n\nBest regards,\nTaylor"
   },
-  "id": "ai:mail:conv-1",
+  "id": "ai:m3",
   "kind": "draft",
   "revision": "rev-1",
   "source": "mail:inbox",

@@ -3,6 +3,7 @@
   "connectionId": "acct",
   "dueAt": 1795000400,
   "errorClass": "needs_login",
+  "errorCode": "needs_login",
   "id": "job-1",
   "key": "ai_draft:op-1",
   "kind": "ai_draft",
@@ -10,6 +11,7 @@
   "payload": {
     "channel": "chat",
     "conversationKey": "chat:chat:19:ops",
+    "draftKey": "chat:chat:19:ops",
     "model": null,
     "profile": "claude",
     "purpose": "chat_draft",

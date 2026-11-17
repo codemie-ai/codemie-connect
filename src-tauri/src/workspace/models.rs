@@ -255,6 +255,9 @@ pub struct Job {
     /// The Claude error class of the last failure of an AI job (`needs_login`, `needs_choice`, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_class: Option<String>,
+    /// The machine-readable code of the last failure (`conflict`, `needs_login`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

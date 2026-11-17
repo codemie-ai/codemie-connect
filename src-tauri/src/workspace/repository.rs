@@ -1344,6 +1344,7 @@ mod tests {
             payload: json!({}),
             result: None,
             error_class: None,
+            error_code: None,
         };
         r.enqueue(&j).unwrap();
         let mut claim = r.claim(now()).unwrap().unwrap();
@@ -1786,6 +1787,7 @@ mod tests {
             payload: json!({}),
             result: None,
             error_class: None,
+            error_code: None,
         };
         r.enqueue(&job).unwrap();
         assert!(r.claim(1).unwrap().is_some());
@@ -1825,6 +1827,7 @@ mod tests {
                 payload: json!({}),
                 result: None,
                 error_class: None,
+                error_code: None,
             })
             .unwrap();
         }
@@ -1892,6 +1895,7 @@ mod tests {
                 payload: json!({}),
                 result: None,
                 error_class: None,
+                error_code: None,
             };
             r.enqueue(&j).unwrap();
             r.enqueue(&j).unwrap();
@@ -1944,6 +1948,7 @@ mod tests {
                 payload: json!({"scheduleId":sid}),
                 result: None,
                 error_class: None,
+                error_code: None,
             };
             r.enqueue(&job).unwrap();
         }
@@ -1975,6 +1980,7 @@ mod tests {
             payload: json!({}),
             result: None,
             error_class: None,
+            error_code: None,
         };
         r.enqueue(&job).unwrap();
         let mut claimed = r.claim(now()).unwrap().unwrap();
@@ -2028,6 +2034,7 @@ mod tests {
             payload: json!({"incidentId":"incident"}),
             result: None,
             error_class: None,
+            error_code: None,
         };
         r.db.execute_batch("CREATE TRIGGER reject_alert BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'simulated interruption'); END").unwrap();
         assert!(r
@@ -2057,6 +2064,7 @@ mod tests {
             payload: json!({}),
             result: None,
             error_class: None,
+            error_code: None,
         };
         r.enqueue(&job).unwrap();
         let claimed = r.claim(now()).unwrap().unwrap();
@@ -2207,6 +2215,7 @@ mod tests {
                 payload: json!({"profile":"claude-api"}),
                 result: None,
                 error_class: None,
+                error_code: None,
             };
             raw.execute(
                 "INSERT INTO jobs VALUES('j1','k1','queued',?1,NULL,?2)",
@@ -2249,6 +2258,7 @@ mod tests {
             payload: json!({}),
             result: None,
             error_class: None,
+            error_code: None,
         };
         r.enqueue(&queued("ai_draft", "draft-0", at - 3)).unwrap();
         r.enqueue(&queued("ai_draft", "draft-1", at - 2)).unwrap();
@@ -2301,6 +2311,7 @@ mod tests {
             payload: json!({"request":{"sourceId":"source"}}),
             result: None,
             error_class: None,
+            error_code: None,
         };
         r.enqueue(&job).unwrap();
         let claim = r.claim(now()).unwrap().unwrap();
@@ -2416,6 +2427,7 @@ mod tests {
                 payload: json!({}),
                 result: None,
                 error_class: None,
+                error_code: None,
             };
             r.enqueue(&job).unwrap();
         }

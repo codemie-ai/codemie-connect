@@ -1,0 +1,35 @@
+{
+  "attempts": 1,
+  "connectionId": "acct",
+  "dueAt": 1795000400,
+  "errorCode": "conflict",
+  "id": "job-2",
+  "key": "ai_draft:op-2",
+  "kind": "ai_draft",
+  "leaseUntil": null,
+  "payload": {
+    "channel": "chat",
+    "conversationKey": "chat:chat:19:ops",
+    "draftKey": "chat:chat:19:ops",
+    "model": null,
+    "profile": "claude",
+    "purpose": "chat_draft",
+    "request": {
+      "includeFreeTimes": false,
+      "intent": "reply",
+      "length": "medium",
+      "sourceId": "t1",
+      "tone": "neutral"
+    },
+    "startedAt": 1795000401
+  },
+  "policy": {
+    "generation": 1,
+    "policyRevision": 1,
+    "sourceRevision": null,
+    "workspaceRevision": 1
+  },
+  "result": "The conversation changed while Claude was drafting. Draft again.",
+  "state": "failed",
+  "workspaceId": "personal"
+}
