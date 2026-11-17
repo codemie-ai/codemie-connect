@@ -1,14 +1,19 @@
 //! One plugin's QuickJS runtime and the bridge between its JavaScript and the host.
 //!
-//! Only JSON crosses the bridge, as text, both ways: the plugin hands no object to the host,
-//! and the host hands it none. Every JavaScript entry (loading, a call, an event, a timer tick,
-//! settling a promise and the jobs that follow) runs within a slice the interrupt handler
-//! enforces. Everything here lives on the host thread.
-use super::{ErrorCode, Grants, HostError, HostServices, Limits, Msg};
-use rquickjs::promise::PromiseState;
+//! Only text crosses the bridge, both ways: JSON, or `!<code> <message>` for a refusal ("wire"
+//! text, see `prelude.js`). The bridge's functions never throw and never call back into
+//! JavaScript, so no borrow of the shared `State` is ever held while plugin code runs; errors
+//! are made by the prelude, which alone decides what a thrown value says.
+//!
+//! Every entry into JavaScript happens within a turn (`begin_turn` … `end_turn`): one message
+//! from the host and the promise jobs after it, under one budget, a slice of JavaScript time
+//! and twice that of wall time. A turn that runs past its budget leaves the plugin to be
+//! restarted (the worker's job). Everything here lives on the plugin's own thread.
+use super::worker::{Halt, Msg, Notes};
+use super::{ErrorCode, Grants, HostError, HostServices, Limits};
 use rquickjs::{
-    CatchResultExt, CaughtError, Context, Ctx, Exception, Function, Module, Object, Persistent,
-    Promise, Runtime, Value,
+    CatchResultExt, CaughtError, Context, Ctx, Function, Module, Object, Persistent, Promise,
+    Runtime, Value,
 };
 use serde_json::Value as Json;
 use std::cell::{Cell, RefCell};
@@ -24,24 +29,72 @@ const PRELUDE: &str = include_str!("prelude.js");
 /// Timers one plugin may keep.
 const MAX_TIMERS: usize = 64;
 
+/// Async host calls one plugin may have waiting at once.
+const MAX_IN_FLIGHT: usize = 64;
+
+/// Unhandled rejections kept for the end of a turn; more are only counted.
+const MAX_UNHANDLED: usize = 64;
+
+/// A new `ctx.every` timer first runs this soon (or after its interval, if shorter).
+const FIRST_RUN: Duration = Duration::from_secs(1);
+
+/// How deep JSON may nest on the bridge (`serde_json`'s own limit).
+const MAX_DEPTH: usize = 128;
+
+/// One plugin's package, as loaded: what a runtime is built from.
+pub(super) struct Package {
+    pub id: String,
+    pub file: String,
+    pub source: String,
+    pub grants: Grants,
+}
+
+/// What every runtime of one plugin is wired to.
+pub(super) struct Wiring {
+    pub services: Arc<dyn HostServices>,
+    pub limits: Arc<Limits>,
+    /// The plugin's own queue, for async answers.
+    pub queue: mpsc::Sender<Msg>,
+    pub halt: Arc<Halt>,
+    pub notes: Rc<Notes>,
+}
+
+/// The budget of the turn under way.
+#[derive(Default)]
+struct Turn {
+    /// JavaScript time: moved on by what host services take.
+    js: Cell<Option<Instant>>,
+    /// Wall time, services included.
+    wall: Cell<Option<Instant>>,
+    /// The turn ran past its budget (JavaScript was interrupted, a service refused, or jobs
+    /// were left).
+    overran: Cell<bool>,
+}
+
 /// What the bridge's functions share with the host (they live in the runtime, the host
-/// outside it).
+/// outside it). No borrow of these cells is held across a call into JavaScript.
 struct State {
     plugin: String,
     generation: u64,
     limits: Arc<Limits>,
     grants: Grants,
-    /// When the JavaScript running now must stop.
-    deadline: Cell<Option<Instant>>,
+    halt: Arc<Halt>,
+    notes: Rc<Notes>,
+    turn: Turn,
     /// Async host calls waiting for their answer, by token.
     pending: RefCell<HashMap<u64, Pending>>,
     next_token: Cell<u64>,
     timers: RefCell<Vec<Timer>>,
+    /// What the prelude answered this turn, by call.
+    answers: RefCell<Vec<(u64, String)>>,
+    /// Promises rejected with nobody to hear it yet: `(promise, reason)`.
+    unhandled: RefCell<Vec<(Persistent<Value<'static>>, Persistent<Value<'static>>)>>,
+    unhandled_dropped: Cell<usize>,
 }
 
 struct Pending {
+    name: String,
     resolve: Persistent<Function<'static>>,
-    reject: Persistent<Function<'static>>,
     task: tauri::async_runtime::JoinHandle<()>,
 }
 
@@ -52,23 +105,43 @@ struct Timer {
 }
 
 impl State {
+    /// Whether running JavaScript must stop: the turn's budget is spent, or the plugin is being
+    /// stopped.
     fn stop_now(&self) -> bool {
-        self.deadline.get().is_some_and(|d| Instant::now() >= d)
+        if self.halt.is_set() {
+            return true;
+        }
+        let now = Instant::now();
+        let past = |d: &Cell<Option<Instant>>| d.get().is_some_and(|d| now >= d);
+        past(&self.turn.js) || past(&self.turn.wall)
     }
 
-    /// Host time isn't the plugin's: the slice is moved on by what a service took.
+    /// Host time isn't the plugin's JavaScript time: the JavaScript budget moves on by what a
+    /// service took (the wall budget doesn't).
     fn exclude(&self, since: Instant) {
-        if let Some(d) = self.deadline.get() {
-            self.deadline.set(Some(d + since.elapsed()));
+        if let Some(d) = self.turn.js.get() {
+            self.turn.js.set(Some(d + since.elapsed()));
         }
+    }
+
+    fn overrun(&self) -> HostError {
+        overrun(&self.limits)
     }
 
     fn parse(&self, json: &str) -> Result<Json, HostError> {
         if json.len() > self.limits.max_json {
             return Err(too_big(&self.limits));
         }
-        serde_json::from_str(json)
-            .map_err(|e| HostError::new(ErrorCode::PluginError, e.to_string()))
+        serde_json::from_str(json).map_err(|e| {
+            if e.to_string().starts_with("recursion limit exceeded") {
+                HostError::new(
+                    ErrorCode::Limit,
+                    format!("JSON nested more than {MAX_DEPTH} levels deep"),
+                )
+            } else {
+                HostError::new(ErrorCode::PluginError, e.to_string())
+            }
+        })
     }
 
     fn text(&self, value: &Json) -> Result<String, HostError> {
@@ -77,6 +150,46 @@ impl State {
             return Err(too_big(&self.limits));
         }
         Ok(json)
+    }
+
+    /// A service's answer as wire text; the first `unsupported` of each service is logged.
+    fn wire(&self, name: &str, answer: Result<Json, HostError>) -> String {
+        match answer.and_then(|v| self.text(&v)) {
+            Ok(json) => json,
+            Err(e) => {
+                if e.code == ErrorCode::Unsupported && self.notes.first_unsupported(name) {
+                    log::warn!("[plugin:{}] {e}", self.plugin);
+                }
+                refusal(&e)
+            }
+        }
+    }
+
+    /// What wire text from the prelude means.
+    fn read_wire(&self, wire: &str) -> Result<Json, HostError> {
+        let Some(refused) = wire.strip_prefix('!') else {
+            return self.parse(wire);
+        };
+        let (code, message) = refused.split_once(' ').unwrap_or((refused, ""));
+        Err(match ErrorCode::parse(code) {
+            Some(code) => HostError::new(code, message),
+            None => engine_error(message, &self.limits).unwrap_or_else(|| plugin_error(message)),
+        })
+    }
+
+    /// An exception that escaped the prelude: only the engine's own (an interrupt, memory,
+    /// the stack), since the prelude catches everything else.
+    fn escaped(&self, caught: CaughtError<'_>) -> HostError {
+        if self.turn.overran.get() {
+            return self.overrun();
+        }
+        let message = match &caught {
+            CaughtError::Exception(e) => e.message().unwrap_or_default(),
+            CaughtError::Error(rquickjs::Error::Allocation) => "out of memory".into(),
+            CaughtError::Error(e) => e.to_string(),
+            CaughtError::Value(_) => String::new(),
+        };
+        engine_error(&message, &self.limits).unwrap_or_else(|| plugin_error(&message))
     }
 }
 
@@ -87,492 +200,38 @@ fn too_big(limits: &Limits) -> HostError {
     )
 }
 
-/// What every plugin's bridge is wired to.
-pub(super) struct Wiring {
-    pub services: Arc<dyn HostServices>,
-    pub limits: Arc<Limits>,
-    /// The host thread's own queue, for async answers.
-    pub host: mpsc::Sender<Msg>,
+fn refusal(e: &HostError) -> String {
+    format!("!{} {}", e.code.as_str(), e.message)
 }
 
-/// Who waits for a promise the plugin returned.
-pub(super) enum Reply {
-    Load(oneshot::Sender<Result<(), HostError>>),
-    Call(oneshot::Sender<Result<Json, HostError>>),
-}
-
-impl Reply {
-    fn send(self, outcome: Result<Json, HostError>) {
-        match self {
-            Reply::Load(tx) => drop(tx.send(outcome.map(|_| ()))),
-            Reply::Call(tx) => drop(tx.send(outcome)),
-        }
-    }
-
-    fn is_closed(&self) -> bool {
-        match self {
-            Reply::Load(tx) => tx.is_closed(),
-            Reply::Call(tx) => tx.is_closed(),
-        }
-    }
-}
-
-struct Waiting {
-    promise: Persistent<Promise<'static>>,
-    deadline: Instant,
-    reply: Reply,
-    what: String,
-}
-
-/// What `dispatch` runs: the prelude's kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Kind {
-    Command,
-    Provider,
-    Event,
-    Timer,
-}
-
-impl Kind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Kind::Command => "command",
-            Kind::Provider => "provider",
-            Kind::Event => "event",
-            Kind::Timer => "timer",
-        }
-    }
-}
-
-/// A loaded plugin. Its JavaScript handles are released before its context and runtime
-/// (field order, and `Drop`): QuickJS refuses to free a runtime something still points into.
-pub(super) struct Plugin {
-    dispatch: Option<Persistent<Function<'static>>>,
-    waiting: Vec<Waiting>,
-    state: Rc<State>,
-    context: Context,
-    runtime: Runtime,
-}
-
-impl Drop for Plugin {
-    fn drop(&mut self) {
-        let gone = || {
-            HostError::new(
-                ErrorCode::NotFound,
-                format!("{} was unloaded", self.state.plugin),
-            )
-        };
-        for w in self.waiting.drain(..) {
-            w.reply.send(Err(gone()));
-        }
-        for (_, p) in self.state.pending.borrow_mut().drain() {
-            p.task.abort();
-        }
-        self.dispatch = None;
-    }
-}
-
-impl Plugin {
-    /// Builds the plugin's runtime, evaluates `main.js` and starts `apply(ctx)`; `reply` hears
-    /// when it has finished, or why it failed (and then there is no plugin).
-    pub fn load(
-        id: &str,
-        generation: u64,
-        file: &str,
-        source: String,
-        grants: Grants,
-        wiring: &Wiring,
-        reply: oneshot::Sender<Result<(), HostError>>,
-    ) -> Option<Plugin> {
-        let mut plugin = match Plugin::new(id, generation, grants, &wiring.limits) {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = reply.send(Err(e));
-                return None;
-            }
-        };
-        match plugin.start(file, source, wiring) {
-            Ok(promise) => {
-                plugin.wait(promise, Reply::Load(reply), "apply(ctx)".into());
-                Some(plugin)
-            }
-            Err(e) => {
-                let _ = reply.send(Err(e));
-                None
-            }
-        }
-    }
-
-    fn new(
-        id: &str,
-        generation: u64,
-        grants: Grants,
-        limits: &Arc<Limits>,
-    ) -> Result<Plugin, HostError> {
-        let internal = |e: rquickjs::Error| HostError::new(ErrorCode::PluginError, e.to_string());
-        let runtime = Runtime::new().map_err(internal)?;
-        runtime.set_memory_limit(limits.memory);
-        runtime.set_max_stack_size(limits.stack);
-        let state = Rc::new(State {
-            plugin: id.to_string(),
-            generation,
-            limits: limits.clone(),
-            grants,
-            deadline: Cell::new(None),
-            pending: RefCell::new(HashMap::new()),
-            next_token: Cell::new(0),
-            timers: RefCell::new(Vec::new()),
-        });
-        let watch = state.clone();
-        runtime.set_interrupt_handler(Some(Box::new(move || watch.stop_now())));
-        let context = Context::full(&runtime).map_err(internal)?;
-        Ok(Plugin {
-            dispatch: None,
-            waiting: Vec::new(),
-            state,
-            context,
-            runtime,
-        })
-    }
-
-    pub fn id(&self) -> &str {
-        &self.state.plugin
-    }
-
-    pub fn generation(&self) -> u64 {
-        self.state.generation
-    }
-
-    pub fn hears(&self, event: &str) -> bool {
-        self.state.grants.events.contains(event)
-    }
-
-    /// Runs JavaScript within one slice.
-    fn slice<R>(&self, f: impl FnOnce(&Ctx<'_>) -> R) -> R {
-        self.state
-            .deadline
-            .set(Some(Instant::now() + self.state.limits.slice));
-        let out = self.context.with(|ctx| f(&ctx));
-        self.state.deadline.set(None);
-        out
-    }
-
-    /// The prelude, then `main.js` as a module, then `apply(ctx)`: the promise of its end.
-    fn start(
-        &mut self,
-        file: &str,
-        source: String,
-        wiring: &Wiring,
-    ) -> Result<Persistent<Promise<'static>>, HostError> {
-        let state = self.state.clone();
-        let (dispatch, load, evaluated, exports) = self.slice(|ctx| {
-            let built = (|| {
-                let make: Function = ctx.eval(PRELUDE)?;
-                let made: Object = make.call((bridge(ctx, &state, wiring)?,))?;
-                let dispatch: Function = made.get("dispatch")?;
-                let load: Function = made.get("load")?;
-                Ok((dispatch, load))
-            })();
-            let (dispatch, load) = built.catch(ctx).map_err(|e| error_of(e, &state))?;
-            let module = Module::declare(ctx.clone(), file, source)
-                .catch(ctx)
-                .map_err(|e| load_error(file, error_of(e, &state)))?;
-            let (module, evaluated) = module
-                .eval()
-                .catch(ctx)
-                .map_err(|e| load_error(file, error_of(e, &state)))?;
-            let exports = module
-                .namespace()
-                .catch(ctx)
-                .map_err(|e| error_of(e, &state))?;
-            Ok::<_, HostError>((
-                Persistent::save(ctx, dispatch),
-                Persistent::save(ctx, load),
-                Persistent::save(ctx, evaluated),
-                Persistent::save(ctx, exports),
-            ))
-        })?;
-        self.dispatch = Some(dispatch);
-        self.run_jobs();
-        self.slice(|ctx| {
-            let evaluated = evaluated
-                .restore(ctx)
-                .map_err(|e| error_of(CaughtError::Error(e), &state))?;
-            match evaluated.state() {
-                PromiseState::Resolved => {}
-                PromiseState::Rejected => {
-                    return Err(load_error(file, rejection(ctx, &evaluated, &state)))
-                }
-                PromiseState::Pending => {
-                    return Err(HostError::new(
-                        ErrorCode::PluginError,
-                        format!("{file} waits at its top level; start its work in apply(ctx)"),
-                    ))
-                }
-            }
-            let load = load
-                .restore(ctx)
-                .map_err(|e| error_of(CaughtError::Error(e), &state))?;
-            let exports = exports
-                .restore(ctx)
-                .map_err(|e| error_of(CaughtError::Error(e), &state))?;
-            let started: Promise = load
-                .call((exports,))
-                .catch(ctx)
-                .map_err(|e| error_of(e, &state))?;
-            Ok(Persistent::save(ctx, started))
-        })
-    }
-
-    fn wait(&mut self, promise: Persistent<Promise<'static>>, reply: Reply, what: String) {
-        self.waiting.push(Waiting {
-            promise,
-            deadline: Instant::now() + self.state.limits.call,
-            reply,
-            what,
-        });
-    }
-
-    /// Runs a command or a provider for a caller, who hears its answer once it settles.
-    pub fn call(
-        &mut self,
-        kind: Kind,
-        name: &str,
-        args: &Json,
-        reply: oneshot::Sender<Result<Json, HostError>>,
-    ) {
-        let started = self
-            .state
-            .text(args)
-            .and_then(|json| self.dispatch(kind, name, Some(json)));
-        match started {
-            Ok(Some(promise)) => self.wait(promise, Reply::Call(reply), format!("“{name}”")),
-            Ok(None) => drop(reply.send(Ok(Json::Null))),
-            Err(e) => drop(reply.send(Err(e))),
-        }
-    }
-
-    /// Tells the plugin's listeners of `event`; their failures are only logged.
-    pub fn event(&mut self, event: &str, payload: &Json) {
-        let run = self
-            .state
-            .text(payload)
-            .and_then(|json| self.dispatch(Kind::Event, event, Some(json)));
-        if let Err(e) = run {
-            log::warn!("[plugin:{}] {event}: {e}", self.state.plugin);
-        }
-    }
-
-    fn dispatch(
-        &self,
-        kind: Kind,
-        name: &str,
-        json: Option<String>,
-    ) -> Result<Option<Persistent<Promise<'static>>>, HostError> {
-        let Some(dispatch) = self.dispatch.clone() else {
-            return Err(HostError::new(
-                ErrorCode::NotFound,
-                format!("{} isn't loaded", self.state.plugin),
-            ));
-        };
-        let state = &self.state;
-        self.slice(|ctx| {
-            let dispatch = dispatch
-                .restore(ctx)
-                .map_err(|e| error_of(CaughtError::Error(e), state))?;
-            let out: Value = dispatch
-                .call((kind.as_str(), name, json))
-                .catch(ctx)
-                .map_err(|e| error_of(e, state))?;
-            Ok(out.into_promise().map(|p| Persistent::save(ctx, p)))
-        })
-    }
-
-    /// Runs the plugin's pending jobs (promise reactions) within one slice.
-    pub fn run_jobs(&self) {
-        self.state
-            .deadline
-            .set(Some(Instant::now() + self.state.limits.slice));
-        // A job fails here only when the runtime stopped it (the slice, its memory): the
-        // promise it belonged to stays pending, and its caller's limit answers for it.
-        let mut failed = false;
-        loop {
-            match self.runtime.execute_pending_job() {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(_) => failed = true,
-            }
-        }
-        if failed {
-            let why = if self.state.stop_now() {
-                interrupted(&self.state.limits).message
-            } else {
-                "a promise job was stopped".to_string()
-            };
-            log::warn!("[plugin:{}] {why}", self.state.plugin);
-        }
-        self.state.deadline.set(None);
-    }
-
-    /// Answers the callers whose promise settled or whose time is up.
-    pub fn answer_settled(&mut self, now: Instant) -> Option<HostError> {
-        if self.waiting.is_empty() {
-            return None;
-        }
-        let mut load_failed = None;
-        let waiting = std::mem::take(&mut self.waiting);
-        let state = self.state.clone();
-        let mut still = Vec::new();
-        self.context.with(|ctx| {
-            for w in waiting {
-                if w.reply.is_closed() {
-                    continue;
-                }
-                let Ok(promise) = w.promise.clone().restore(&ctx) else {
-                    continue;
-                };
-                let outcome = match promise.state() {
-                    PromiseState::Pending if now < w.deadline => {
-                        still.push(w);
-                        continue;
-                    }
-                    PromiseState::Pending => Err(HostError::new(
-                        ErrorCode::Timeout,
-                        format!(
-                            "{} had no answer within {} s",
-                            w.what,
-                            state.limits.call.as_secs_f64()
-                        ),
-                    )),
-                    PromiseState::Resolved => match promise.result::<String>() {
-                        Some(Ok(json)) => state.parse(&json),
-                        Some(Err(e)) => Err(error_of(CaughtError::from_error(&ctx, e), &state)),
-                        None => continue,
-                    },
-                    PromiseState::Rejected => Err(rejection(&ctx, &promise, &state)),
-                };
-                if let (Reply::Load(_), Err(e)) = (&w.reply, &outcome) {
-                    load_failed = Some(e.clone());
-                }
-                w.reply.send(outcome);
-            }
-        });
-        self.waiting = still;
-        load_failed
-    }
-
-    /// Settles an async host call's promise with the service's answer.
-    pub fn settle(&mut self, token: u64, result: Result<Json, HostError>) {
-        let Some(p) = self.state.pending.borrow_mut().remove(&token) else {
-            return;
-        };
-        let state = self.state.clone();
-        self.slice(|ctx| {
-            let value = result.and_then(|v| state.text(&v)).and_then(|json| {
-                ctx.json_parse(json)
-                    .catch(ctx)
-                    .map_err(|e| error_of(e, &state))
-            });
-            let settled = match value {
-                Ok(v) => p.resolve.restore(ctx).and_then(|f| f.call::<_, ()>((v,))),
-                Err(e) => js_error(ctx, &e)
-                    .and_then(|v| p.reject.restore(ctx).and_then(|f| f.call::<_, ()>((v,)))),
-            };
-            if let Err(e) = settled.catch(ctx) {
-                log::warn!("[plugin:{}] settling a host call failed: {e}", state.plugin);
-            }
-        });
-        self.run_jobs();
-    }
-
-    /// When this plugin next needs the host thread: a timer, or a caller's limit.
-    pub fn next_wake(&self) -> Option<Instant> {
-        let timers = self.state.timers.borrow().iter().map(|t| t.next).min();
-        let calls = self.waiting.iter().map(|w| w.deadline).min();
-        timers.into_iter().chain(calls).min()
-    }
-
-    /// Runs the timers that are due.
-    pub fn tick(&mut self, now: Instant) {
-        let due: Vec<u32> = self
-            .state
-            .timers
-            .borrow_mut()
-            .iter_mut()
-            .filter(|t| t.next <= now)
-            .map(|t| {
-                // A late tick isn't made up: the next one is a whole interval away.
-                t.next = now + t.every;
-                t.id
-            })
-            .collect();
-        for id in &due {
-            if let Err(e) = self.dispatch(Kind::Timer, &id.to_string(), None) {
-                log::warn!("[plugin:{}] ctx.every: {e}", self.state.plugin);
-            }
-        }
-        if !due.is_empty() {
-            self.run_jobs();
-        }
-    }
-}
-
-/// Why a rejected promise was rejected.
-fn rejection<'js>(ctx: &Ctx<'js>, promise: &Promise<'js>, state: &State) -> HostError {
-    match promise.result::<Value>() {
-        Some(Err(e)) => error_of(CaughtError::from_error(ctx, e), state),
-        _ => HostError::new(ErrorCode::PluginError, "the plugin's promise failed"),
-    }
-}
-
-fn interrupted(limits: &Limits) -> HostError {
+fn overrun(limits: &Limits) -> HostError {
     HostError::new(
         ErrorCode::Timeout,
         format!(
-            "JavaScript ran for more than {} s without a break and was stopped",
-            limits.slice.as_secs_f64()
+            "the plugin used up its turn (a {} s slice of JavaScript, {} s in all) and was \
+             stopped; it starts again on its next use",
+            limits.slice.as_secs_f64(),
+            2.0 * limits.slice.as_secs_f64()
         ),
     )
 }
 
-/// A JavaScript failure as the host reports it: the plugin's own error is `plugin_error`; an
-/// error from the host keeps its code; the runtime's limits are `timeout` and `limit`.
-fn error_of(caught: CaughtError<'_>, state: &State) -> HostError {
-    let (message, code) = match &caught {
-        CaughtError::Exception(e) => (
-            e.message().unwrap_or_default(),
-            e.get::<_, Option<String>>("code").ok().flatten(),
-        ),
-        CaughtError::Value(v) => (
-            v.as_string()
-                .and_then(|s| s.to_string().ok())
-                .unwrap_or_else(|| format!("the plugin threw {}", v.type_name())),
-            None,
-        ),
-        CaughtError::Error(rquickjs::Error::Allocation) => ("out of memory".into(), None),
-        CaughtError::Error(e) => (e.to_string(), None),
-    };
-    let limits = &state.limits;
+/// The engine's own failures, by their message: its limits are `timeout` and `limit`.
+fn engine_error(message: &str, limits: &Limits) -> Option<HostError> {
     if message == "interrupted" {
-        return interrupted(limits);
+        return Some(overrun(limits));
     }
     if message == "out of memory" {
-        return HostError::new(
-            ErrorCode::Limit,
-            format!("out of memory: a plugin has {} MB", limits.memory / 1048576),
-        );
+        let message = format!("out of memory: a plugin has {} MB", limits.memory / 1048576);
+        return Some(HostError::new(ErrorCode::Limit, message));
     }
     if message.starts_with("Maximum call stack size exceeded") {
-        return HostError::new(ErrorCode::Limit, message);
+        return Some(HostError::new(ErrorCode::Limit, message));
     }
-    if let Some(code) = code.as_deref().and_then(ErrorCode::parse) {
-        let prefix = format!("{}: ", code.as_str());
-        let message = message
-            .strip_prefix(&prefix)
-            .unwrap_or(&message)
-            .to_string();
-        return HostError::new(code, message);
-    }
+    None
+}
+
+fn plugin_error(message: &str) -> HostError {
     if message.is_empty() {
         return HostError::new(
             ErrorCode::PluginError,
@@ -595,21 +254,487 @@ fn load_error(file: &str, e: HostError) -> HostError {
     e
 }
 
-/// A host error as JavaScript sees it: an `Error` with `code`.
-fn js_error<'js>(ctx: &Ctx<'js>, e: &HostError) -> rquickjs::Result<Value<'js>> {
-    let error = Exception::from_message(ctx.clone(), &e.to_string())?;
-    error.as_object().set("code", e.code.as_str())?;
-    Ok(error.into_value())
+/// Who hears that `apply(ctx)` has finished.
+pub(super) type LoadReply = oneshot::Sender<Result<(), HostError>>;
+
+/// Who waits for an answer from the plugin.
+pub(super) enum Reply {
+    /// `apply(ctx)` finishing; nobody waits when the plugin is started again after a fault.
+    Load(Option<LoadReply>),
+    Call(oneshot::Sender<Result<Json, HostError>>),
 }
 
-fn throw(ctx: &Ctx<'_>, e: &HostError) -> rquickjs::Error {
-    match js_error(ctx, e) {
-        Ok(v) => ctx.throw(v),
-        Err(failed) => failed,
+impl Reply {
+    fn send(self, outcome: Result<Json, HostError>) {
+        match self {
+            Reply::Load(Some(tx)) => drop(tx.send(outcome.map(|_| ()))),
+            Reply::Load(None) => {}
+            Reply::Call(tx) => drop(tx.send(outcome)),
+        }
+    }
+
+    fn is_load(&self) -> bool {
+        matches!(self, Reply::Load(_))
     }
 }
 
-/// The functions the prelude gets (and keeps from the plugin).
+/// What `dispatch` runs: the prelude's kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    Command,
+    Provider,
+    Event,
+    Timer,
+}
+
+impl Kind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Kind::Command => "command",
+            Kind::Provider => "provider",
+            Kind::Event => "event",
+            Kind::Timer => "timer",
+        }
+    }
+}
+
+/// The prelude's functions the host calls.
+struct Prelude {
+    dispatch: Persistent<Function<'static>>,
+    load: Persistent<Function<'static>>,
+    failure: Persistent<Function<'static>>,
+}
+
+/// A running plugin. Its JavaScript handles are released before its context and runtime
+/// (`Drop`, then field order): QuickJS refuses to free a runtime something still points into.
+pub(super) struct Plugin {
+    prelude: Option<Prelude>,
+    exports: Option<Persistent<Object<'static>>>,
+    waiting: HashMap<u64, Reply>,
+    next_call: u64,
+    /// What callers still waiting hear when the plugin goes.
+    closing: HostError,
+    state: Rc<State>,
+    context: Context,
+    runtime: Runtime,
+}
+
+impl Drop for Plugin {
+    fn drop(&mut self) {
+        for (_, reply) in self.waiting.drain() {
+            reply.send(Err(self.closing.clone()));
+        }
+        for (_, p) in self.state.pending.borrow_mut().drain() {
+            p.task.abort();
+        }
+        self.state.unhandled.borrow_mut().clear();
+        self.prelude = None;
+        self.exports = None;
+    }
+}
+
+impl Plugin {
+    /// A fresh runtime for the package: limits, the interrupt handler and the rejection
+    /// tracker. Nothing of the plugin has run yet.
+    pub fn new(package: &Package, generation: u64, wiring: &Wiring) -> Result<Plugin, HostError> {
+        let internal = |e: rquickjs::Error| HostError::new(ErrorCode::PluginError, e.to_string());
+        let runtime = Runtime::new().map_err(internal)?;
+        runtime.set_memory_limit(wiring.limits.memory);
+        runtime.set_max_stack_size(wiring.limits.stack);
+        let state = Rc::new(State {
+            plugin: package.id.clone(),
+            generation,
+            limits: wiring.limits.clone(),
+            grants: package.grants.clone(),
+            halt: wiring.halt.clone(),
+            notes: wiring.notes.clone(),
+            turn: Turn::default(),
+            pending: RefCell::new(HashMap::new()),
+            next_token: Cell::new(0),
+            timers: RefCell::new(Vec::new()),
+            answers: RefCell::new(Vec::new()),
+            unhandled: RefCell::new(Vec::new()),
+            unhandled_dropped: Cell::new(0),
+        });
+        let watch = state.clone();
+        runtime.set_interrupt_handler(Some(Box::new(move || {
+            let stop = watch.stop_now();
+            if stop {
+                watch.turn.overran.set(true);
+            }
+            stop
+        })));
+        let track = state.clone();
+        runtime.set_host_promise_rejection_tracker(Some(Box::new(
+            move |ctx: Ctx<'_>, promise: Value<'_>, reason: Value<'_>, handled: bool| {
+                track_rejection(&track, &ctx, promise, reason, handled)
+            },
+        )));
+        let context = Context::full(&runtime).map_err(internal)?;
+        Ok(Plugin {
+            prelude: None,
+            exports: None,
+            waiting: HashMap::new(),
+            next_call: 0,
+            closing: HostError::new(ErrorCode::NotFound, format!("{} was unloaded", package.id)),
+            state,
+            context,
+            runtime,
+        })
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.state.generation
+    }
+
+    /// Drops the plugin; callers still waiting hear `why`.
+    pub fn close(mut self, why: HostError) {
+        self.closing = why;
+    }
+
+    pub fn begin_turn(&self) {
+        let now = Instant::now();
+        let turn = &self.state.turn;
+        turn.js.set(Some(now + self.state.limits.slice));
+        turn.wall.set(Some(now + 2 * self.state.limits.slice));
+        turn.overran.set(false);
+    }
+
+    pub fn end_turn(&self) {
+        self.state.turn.js.set(None);
+        self.state.turn.wall.set(None);
+    }
+
+    /// Whether this turn ran past its budget, with jobs left over or not.
+    pub fn overran(&self) -> bool {
+        self.state.turn.overran.get()
+    }
+
+    pub fn overrun_error(&self) -> HostError {
+        self.state.overrun()
+    }
+
+    /// Runs JavaScript within the turn under way.
+    fn enter<R>(&self, f: impl FnOnce(&Ctx<'_>) -> R) -> R {
+        debug_assert!(
+            self.state.turn.wall.get().is_some(),
+            "JavaScript outside a turn"
+        );
+        self.context.with(|ctx| f(&ctx))
+    }
+
+    /// The prelude, then the package's `main.js` as a module, and its jobs: everything but
+    /// `apply(ctx)`.
+    pub fn evaluate(&mut self, package: &Package, wiring: &Wiring) -> Result<(), HostError> {
+        let state = self.state.clone();
+        let file = package.file.as_str();
+        let (prelude, evaluated, exports) = self.enter(|ctx| {
+            let built = (|| {
+                let make: Function = ctx.eval(PRELUDE)?;
+                let made: Object = make.call((bridge(ctx, &state, wiring)?,))?;
+                Ok::<_, rquickjs::Error>(Prelude {
+                    dispatch: Persistent::save(ctx, made.get::<_, Function>("dispatch")?),
+                    load: Persistent::save(ctx, made.get::<_, Function>("load")?),
+                    failure: Persistent::save(ctx, made.get::<_, Function>("failure")?),
+                })
+            })();
+            let prelude = built.catch(ctx).map_err(|e| state.escaped(e))?;
+            let module = Module::declare(ctx.clone(), file, package.source.as_str())
+                .catch(ctx)
+                .map_err(|e| load_error(file, state.escaped(e)))?;
+            let (module, evaluated) = module
+                .eval()
+                .catch(ctx)
+                .map_err(|e| load_error(file, state.escaped(e)))?;
+            let exports = module
+                .namespace()
+                .catch(ctx)
+                .map_err(|e| state.escaped(e))?;
+            Ok::<_, HostError>((
+                prelude,
+                Persistent::save(ctx, evaluated),
+                Persistent::save(ctx, exports),
+            ))
+        })?;
+        self.prelude = Some(prelude);
+        self.run_jobs();
+        self.enter(|ctx| {
+            let evaluated = evaluated
+                .restore(ctx)
+                .map_err(|e| state.escaped(CaughtError::Error(e)))?;
+            match evaluated.result::<Value>() {
+                None => Err(HostError::new(
+                    ErrorCode::PluginError,
+                    format!("{file} waits at its top level; start its work in apply(ctx)"),
+                )),
+                Some(Ok(_)) => Ok(()),
+                Some(Err(_)) => {
+                    let reason = ctx.catch();
+                    Err(load_error(file, self.describe(ctx, reason)))
+                }
+            }
+        })?;
+        self.exports = Some(exports);
+        Ok(())
+    }
+
+    /// Starts `apply(ctx)`; `reply` hears when it has finished.
+    pub fn apply(&mut self, reply: Reply) {
+        let call = self.wait(reply);
+        let (Some(prelude), Some(exports)) = (&self.prelude, &self.exports) else {
+            return self.answer_now(call, Err(plugin_error("the plugin isn't evaluated")));
+        };
+        let (load, exports) = (prelude.load.clone(), exports.clone());
+        let state = &self.state;
+        let started = self.enter(|ctx| {
+            let run = || {
+                let load = load.restore(ctx)?;
+                load.call::<_, ()>((exports.restore(ctx)?, call as f64))
+            };
+            run().catch(ctx).map_err(|e| state.escaped(e))
+        });
+        if let Err(e) = started {
+            self.answer_now(call, Err(e));
+        }
+    }
+
+    fn wait(&mut self, reply: Reply) -> u64 {
+        let call = self.next_call;
+        self.next_call += 1;
+        self.waiting.insert(call, reply);
+        call
+    }
+
+    fn answer_now(&mut self, call: u64, outcome: Result<Json, HostError>) {
+        if let Some(reply) = self.waiting.remove(&call) {
+            reply.send(outcome);
+        }
+    }
+
+    /// Runs a command or a provider for a caller, who hears its answer once it has one.
+    pub fn call(
+        &mut self,
+        kind: Kind,
+        name: &str,
+        args: &Json,
+        reply: oneshot::Sender<Result<Json, HostError>>,
+    ) {
+        let json = match self.state.text(args) {
+            Ok(json) => json,
+            Err(e) => return drop(reply.send(Err(e))),
+        };
+        let call = self.wait(Reply::Call(reply));
+        if let Err(e) = self.dispatch(kind, name, Some(json), Some(call)) {
+            self.answer_now(call, Err(e));
+        }
+    }
+
+    /// Tells the plugin's listeners of `event`; their failures are only logged.
+    pub fn event(&mut self, event: &str, payload: &Json) {
+        let run = self
+            .state
+            .text(payload)
+            .and_then(|json| self.dispatch(Kind::Event, event, Some(json), None));
+        if let Err(e) = run {
+            log::warn!("[plugin:{}] {event}: {e}", self.state.plugin);
+        }
+    }
+
+    fn dispatch(
+        &self,
+        kind: Kind,
+        name: &str,
+        json: Option<String>,
+        call: Option<u64>,
+    ) -> Result<(), HostError> {
+        let Some(prelude) = &self.prelude else {
+            return Err(plugin_error("the plugin isn't evaluated"));
+        };
+        let dispatch = prelude.dispatch.clone();
+        let state = &self.state;
+        self.enter(|ctx| {
+            let dispatch = dispatch
+                .restore(ctx)
+                .map_err(|e| state.escaped(CaughtError::Error(e)))?;
+            dispatch
+                .call::<_, ()>((kind.as_str(), name, json, call.map(|c| c as f64)))
+                .catch(ctx)
+                .map_err(|e| state.escaped(e))
+        })
+    }
+
+    /// Runs the plugin's pending jobs (promise reactions) until there are none or the turn's
+    /// budget is spent; jobs left over mean the turn overran.
+    pub fn run_jobs(&self) {
+        let state = &self.state;
+        let drained = self.enter(|ctx| loop {
+            if state.stop_now() {
+                break false;
+            }
+            if !ctx.execute_pending_job() {
+                break true;
+            }
+        });
+        if !drained && self.runtime.is_job_pending() {
+            state.turn.overran.set(true);
+        }
+    }
+
+    /// Settles an async host call's promise with the service's answer.
+    pub fn settle(&mut self, token: u64, result: Result<Json, HostError>) {
+        let Some(p) = self.state.pending.borrow_mut().remove(&token) else {
+            return;
+        };
+        let wire = self.state.wire(&p.name, result);
+        let state = self.state.clone();
+        self.enter(|ctx| {
+            let settled = p
+                .resolve
+                .restore(ctx)
+                .and_then(|resolve| resolve.call::<_, ()>((wire,)));
+            if let Err(e) = settled.catch(ctx) {
+                let e = state.escaped(e);
+                log::warn!("[plugin:{}] settling a host call failed: {e}", state.plugin);
+            }
+        });
+    }
+
+    /// Logs the rejections nobody handled this turn (a few a minute), described in the
+    /// plugin's time; within a turn only.
+    pub fn report_unhandled(&self) {
+        let reasons: Vec<_> = self
+            .state
+            .unhandled
+            .borrow_mut()
+            .drain(..)
+            .map(|(_, reason)| reason)
+            .collect();
+        let dropped = self.state.unhandled_dropped.replace(0);
+        if reasons.is_empty() && dropped == 0 {
+            return;
+        }
+        for reason in reasons {
+            if self.state.turn.overran.get() {
+                break;
+            }
+            let message = self.enter(|ctx| match reason.restore(ctx) {
+                Ok(reason) => self.describe(ctx, reason).message,
+                Err(_) => String::new(),
+            });
+            if self.state.notes.may_report() {
+                log::warn!(
+                    "[plugin:{}] unhandled rejection: {message}",
+                    self.state.plugin
+                );
+            }
+        }
+        if dropped > 0 && self.state.notes.may_report() {
+            log::warn!(
+                "[plugin:{}] {dropped} more unhandled rejections",
+                self.state.plugin
+            );
+        }
+    }
+
+    /// What a thrown or rejected value says, as the prelude reads it.
+    fn describe<'js>(&self, ctx: &Ctx<'js>, reason: Value<'js>) -> HostError {
+        let Some(prelude) = &self.prelude else {
+            return plugin_error("");
+        };
+        let wire = prelude
+            .failure
+            .clone()
+            .restore(ctx)
+            .and_then(|failure| failure.call::<_, String>((reason,)));
+        match wire.catch(ctx) {
+            Ok(wire) => match self.state.read_wire(&wire) {
+                Err(e) => e,
+                Ok(_) => plugin_error(""),
+            },
+            Err(e) => self.state.escaped(e),
+        }
+    }
+
+    /// Sends the answers the prelude gave this turn. After an overrun only the successful ones
+    /// go: the rest hear why the plugin is stopped. Returns how `apply(ctx)` failed, if it did.
+    pub fn deliver(&mut self) -> Option<HostError> {
+        let answers = std::mem::take(&mut *self.state.answers.borrow_mut());
+        let overran = self.overran();
+        let mut load_failed = None;
+        for (call, wire) in answers {
+            let outcome = self.state.read_wire(&wire);
+            if overran && outcome.is_err() {
+                continue;
+            }
+            let Some(reply) = self.waiting.remove(&call) else {
+                continue;
+            };
+            if let (true, Err(e)) = (reply.is_load(), &outcome) {
+                load_failed = Some(e.clone());
+            }
+            reply.send(outcome);
+        }
+        load_failed
+    }
+
+    /// When this plugin next needs its thread: its earliest timer.
+    pub fn next_wake(&self) -> Option<Instant> {
+        self.state.timers.borrow().iter().map(|t| t.next).min()
+    }
+
+    /// The timers that are due; each next runs a whole interval later (a late tick isn't made
+    /// up).
+    pub fn due_timers(&self, now: Instant) -> Vec<u32> {
+        self.state
+            .timers
+            .borrow_mut()
+            .iter_mut()
+            .filter(|t| t.next <= now)
+            .map(|t| {
+                t.next = now + t.every;
+                t.id
+            })
+            .collect()
+    }
+
+    pub fn timer(&self, id: u32) {
+        if let Err(e) = self.dispatch(Kind::Timer, &id.to_string(), None, None) {
+            log::warn!("[plugin:{}] ctx.every: {e}", self.state.plugin);
+        }
+    }
+}
+
+/// Keeps the promises rejected without a handler until the end of the turn; one handled later
+/// in the turn is let go. Runs inside the engine: it never calls into JavaScript.
+fn track_rejection<'js>(
+    state: &State,
+    ctx: &Ctx<'js>,
+    promise: Value<'js>,
+    reason: Value<'js>,
+    handled: bool,
+) {
+    let mut unhandled = state.unhandled.borrow_mut();
+    if handled {
+        let at = unhandled
+            .iter()
+            .position(|(p, _)| p.clone().restore(ctx).is_ok_and(|p| p == promise));
+        if let Some(at) = at {
+            unhandled.remove(at);
+        }
+    } else if unhandled.len() < MAX_UNHANDLED {
+        unhandled.push((
+            Persistent::save(ctx, promise),
+            Persistent::save(ctx, reason),
+        ));
+    } else {
+        state
+            .unhandled_dropped
+            .set(state.unhandled_dropped.get() + 1);
+    }
+}
+
+/// The functions the prelude gets (and keeps from the plugin). None of them throws or calls
+/// into JavaScript: each answers in wire text.
 fn bridge<'js>(
     ctx: &Ctx<'js>,
     state: &Rc<State>,
@@ -618,53 +743,74 @@ fn bridge<'js>(
     let bridge = Object::new(ctx.clone())?;
     bridge.set("id", state.plugin.as_str())?;
 
-    let (s, services_) = (state.clone(), wiring.services.clone());
-    let call = move |ctx: Ctx<'js>, name: String, args: String| -> rquickjs::Result<String> {
-        let args = s.parse(&args).map_err(|e| throw(&ctx, &e))?;
+    let (s, services) = (state.clone(), wiring.services.clone());
+    let sync_call = move |name: String, args: String| -> String {
+        if s.stop_now() {
+            s.turn.overran.set(true);
+            return refusal(&s.overrun());
+        }
+        let args = match s.parse(&args) {
+            Ok(args) => args,
+            Err(e) => return refusal(&e),
+        };
         let asked = Instant::now();
-        let answer = services_.sync(&s.plugin, &name, args);
+        let answer = services.sync(&s.plugin, &name, args);
         s.exclude(asked);
-        answer.and_then(|v| s.text(&v)).map_err(|e| throw(&ctx, &e))
+        s.wire(&name, answer)
     };
-    bridge.set("host", Function::new(ctx.clone(), call)?)?;
+    bridge.set("host", Function::new(ctx.clone(), sync_call)?)?;
 
-    let (s, services_, host) = (state.clone(), wiring.services.clone(), wiring.host.clone());
-    let later =
+    let (s, services, queue) = (state.clone(), wiring.services.clone(), wiring.queue.clone());
+    let async_call =
         move |ctx: Ctx<'js>, name: String, args: String| -> rquickjs::Result<Promise<'js>> {
-            let (promise, resolve, reject) = Promise::new(&ctx)?;
-            match s.parse(&args) {
-                Err(e) => reject.call::<_, ()>((js_error(&ctx, &e)?,))?,
-                Ok(args) => {
-                    let token = s.next_token.get();
-                    s.next_token.set(token + 1);
-                    let asked = Instant::now();
-                    let answer = services_.spawn_async(&s.plugin, &name, args);
-                    s.exclude(asked);
-                    let (host, generation) = (host.clone(), s.generation);
-                    let task = tauri::async_runtime::spawn(async move {
-                        let result = answer.await;
-                        let _ = host.send(Msg::Settle {
-                            generation,
-                            token,
-                            result,
-                        });
-                    });
-                    s.pending.borrow_mut().insert(
-                        token,
-                        Pending {
-                            resolve: Persistent::save(&ctx, resolve),
-                            reject: Persistent::save(&ctx, reject),
-                            task,
-                        },
-                    );
+            let (promise, resolve, _reject) = Promise::new(&ctx)?;
+            let refused = if s.stop_now() {
+                s.turn.overran.set(true);
+                Some(s.overrun())
+            } else if s.pending.borrow().len() >= MAX_IN_FLIGHT {
+                Some(HostError::new(
+                    ErrorCode::Limit,
+                    format!("a plugin has at most {MAX_IN_FLIGHT} host calls waiting"),
+                ))
+            } else {
+                None
+            };
+            let args = match refused.map_or_else(|| s.parse(&args), Err) {
+                Ok(args) => args,
+                Err(e) => {
+                    resolve.call::<_, ()>((refusal(&e),))?;
+                    return Ok(promise);
                 }
-            }
+            };
+            let token = s.next_token.get();
+            s.next_token.set(token + 1);
+            let asked = Instant::now();
+            let answer = services.spawn_async(&s.plugin, &name, args);
+            s.exclude(asked);
+            let (queue, generation) = (queue.clone(), s.generation);
+            let task = tauri::async_runtime::spawn(async move {
+                let result = answer.await;
+                let _ = queue.send(Msg::Settle {
+                    generation,
+                    token,
+                    result,
+                });
+            });
+            let resolve = Persistent::save(&ctx, resolve);
+            s.pending.borrow_mut().insert(
+                token,
+                Pending {
+                    name,
+                    resolve,
+                    task,
+                },
+            );
             Ok(promise)
         };
-    bridge.set("hostAsync", Function::new(ctx.clone(), later)?)?;
+    bridge.set("hostAsync", Function::new(ctx.clone(), async_call)?)?;
 
     let s = state.clone();
-    let every = move |ctx: Ctx<'js>, seconds: f64| -> rquickjs::Result<u32> {
+    let every = move |seconds: f64| -> String {
         let min = s.limits.min_every;
         let every = Duration::try_from_secs_f64(seconds)
             .ok()
@@ -674,34 +820,39 @@ fn bridge<'js>(
                 "ctx.every needs at least {} s between runs",
                 min.as_secs_f64()
             );
-            return Err(throw(&ctx, &HostError::new(ErrorCode::Limit, message)));
+            return refusal(&HostError::new(ErrorCode::Limit, message));
         };
         let mut timers = s.timers.borrow_mut();
         if timers.len() >= MAX_TIMERS {
             let message = format!("a plugin keeps at most {MAX_TIMERS} ctx.every timers");
-            return Err(throw(&ctx, &HostError::new(ErrorCode::Limit, message)));
+            return refusal(&HostError::new(ErrorCode::Limit, message));
         }
         let id = timers.len() as u32;
-        // The first run is one interval away: plugins do their start-up work in `apply`.
         timers.push(Timer {
             id,
             every,
-            next: Instant::now() + every,
+            next: Instant::now() + every.min(FIRST_RUN),
         });
-        Ok(id)
+        id.to_string()
     };
     bridge.set("every", Function::new(ctx.clone(), every)?)?;
 
     let s = state.clone();
-    let listen = move |ctx: Ctx<'js>, event: String| -> rquickjs::Result<()> {
+    let listen = move |event: String| -> String {
         if s.grants.events.contains(&event) {
-            return Ok(());
+            return "true".into();
         }
         let message =
             format!("“{event}” isn't among the events this plugin asked for (uses.events.on)");
-        Err(throw(&ctx, &HostError::new(ErrorCode::Permission, message)))
+        refusal(&HostError::new(ErrorCode::Permission, message))
     };
     bridge.set("listen", Function::new(ctx.clone(), listen)?)?;
+
+    let s = state.clone();
+    let answer = move |call: f64, wire: String| {
+        s.answers.borrow_mut().push((call as u64, wire));
+    };
+    bridge.set("answer", Function::new(ctx.clone(), answer)?)?;
 
     let s = state.clone();
     let report = move |text: String| {

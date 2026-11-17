@@ -1,25 +1,34 @@
-//! Plugin host halves (DESIGN 7.2): each plugin's `main.js` runs in its own QuickJS runtime and
-//! context (`Limits`: 64 MB, a 5 s slice, 30 s a call), all on one dedicated thread driven by
-//! messages. The plugin gets `ctx` (`prelude.js`) from `apply(ctx)`; `ctx` reaches Connect only
-//! through `HostServices`, which always hears the plugin's id from the runtime, never from the
-//! plugin's arguments. `bridge` is one plugin's runtime and the JSON-only bridge into it.
+//! Plugin host halves (PLUGIN-ENGINE.md §4, DESIGN 7.2): each plugin's `main.js` runs in its own
+//! QuickJS runtime and context on its own thread (`worker`), under `Limits`: 64 MB, a 5 s slice
+//! of JavaScript per turn (and twice that of wall time), 30 s a call. The plugin gets `ctx`
+//! (`prelude.js`) from `apply(ctx)`; `ctx` reaches Connect only through `HostServices`, which
+//! always hears the plugin's id from the runtime, never from the plugin's arguments. `bridge` is
+//! one plugin's runtime and the text-only bridge into it.
 //!
-//! Not in Connect yet: `slots`, `threads`, `view`, `terminal` and `knowledge` are undefined;
-//! `sessions`, `channel`, `agent`, `scripts` and `claude.hasPlugin/installPlugin` exist, and
-//! each call rejects with `unsupported: <name> is not available in CodeMie Connect yet`. A
-//! rejected promise rather than a throw: Telegram calls `ctx.sessions.clearChannel()` from
-//! `apply` outside any error handling, and a throw there would keep it from loading.
+//! A plugin that runs past its turn, or keeps a caller past the call limit, is stopped: its
+//! callers hear `timeout`, and it starts again from its package on its next use.
+//!
+//! Not in Connect (PLUGIN-ENGINE.md §10): `sessions`, `channel`, `agent`, `scripts`, `slots`,
+//! `threads`, `view`, `knowledge` and `claude.hasPlugin/installPlugin` are `undefined`, and
+//! `terminal` is `false`. A plugin that calls one of them unguarded fails as it would anywhere
+//! (Telegram's `apply` does, so it doesn't load until it checks).
 mod bridge;
+mod worker;
 
-use bridge::{Kind, Plugin, Wiring};
+use bridge::{Kind, Package};
 use futures_util::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
+use worker::{on_plugin_thread, Msg, Worker};
+
+/// How long unloading waits for a plugin's thread before leaving it to end on its own.
+const LET_GO: Duration = Duration::from_secs(2);
 
 /// Why a plugin call failed. In JavaScript it is an `Error` whose `message` is
 /// `"<code>: <message>"` and whose `code` property is the code.
@@ -79,12 +88,13 @@ impl HostError {
 /// What `ctx` calls in Connect, by the dotted name of the `ctx` member (`store.read`,
 /// `http.fetch`, `widgets.provide`, …), with the plugin's arguments as one JSON array.
 pub trait HostServices: Send + Sync {
-    /// Answers now. It runs on the host thread while the plugin's JavaScript waits (that wait
-    /// isn't counted against its slice), so it must be quick, and must never call back into the
-    /// `PluginHost`.
+    /// Answers now. It runs on the plugin's own thread while its JavaScript waits (that wait
+    /// counts against the turn's wall time, not its JavaScript slice), so it should be quick;
+    /// it can't call back into the `PluginHost` (refused). Its first `unsupported` answer to
+    /// each service is logged.
     fn sync(&self, plugin: &str, name: &str, args: Value) -> Result<Value, HostError>;
-    /// Answers later: the plugin gets a promise, settled on the host thread when this future
-    /// is done. Dropped unfinished when the plugin unloads.
+    /// Answers later: the plugin gets a promise, settled on its thread when this future is
+    /// done. Dropped unfinished when the plugin stops.
     fn spawn_async(
         &self,
         plugin: &str,
@@ -100,9 +110,12 @@ pub struct Limits {
     pub memory: usize,
     /// JavaScript stack of one plugin.
     pub stack: usize,
-    /// JavaScript running this long without a break (an `await`) is interrupted.
+    /// JavaScript time of one turn: a message from the host (a call, an event, the due timers,
+    /// an async answer) and the promise jobs after it. A turn also ends after twice this of wall
+    /// time, host services included. A plugin that runs past it is stopped.
     pub slice: Duration,
-    /// A command or provider answers its caller within this, or the caller is told `timeout`.
+    /// A command or provider answers its caller within this, or the caller is told `timeout`
+    /// and the plugin is stopped.
     pub call: Duration,
     /// The shortest `ctx.every` interval.
     pub min_every: Duration,
@@ -154,45 +167,21 @@ impl Grants {
     }
 }
 
-/// What the host thread is asked to do.
-enum Msg {
-    Load {
-        id: String,
-        main_js: PathBuf,
-        grants: Grants,
-        reply: oneshot::Sender<Result<(), HostError>>,
-    },
-    Call {
-        id: String,
-        kind: Kind,
-        name: String,
-        args: Value,
-        reply: oneshot::Sender<Result<Value, HostError>>,
-    },
-    Emit {
-        event: String,
-        payload: Value,
-    },
-    Unload {
-        id: String,
-        reply: oneshot::Sender<()>,
-    },
-    /// An async host call's answer, for the runtime it was asked from (a reloaded plugin's new
-    /// runtime has another generation and never hears it).
-    Settle {
-        generation: u64,
-        token: u64,
-        result: Result<Value, HostError>,
-    },
-    Stop,
+/// A loaded plugin: its package, and its thread while it has one (none after it was stopped
+/// for keeping a caller too long, until its next use).
+struct Entry {
+    package: Arc<Package>,
+    worker: Option<Worker>,
 }
 
-/// The plugins' host halves: one QuickJS runtime and context per plugin, all on one dedicated
-/// thread, driven by messages. Callers wait for answers asynchronously, so a Tauri command may
-/// await them on the async runtime.
+/// The plugins' host halves: one QuickJS runtime per plugin, each on its own thread, driven by
+/// messages. Callers wait for answers asynchronously, so a Tauri command may await them on the
+/// async runtime.
 pub struct PluginHost {
-    tx: mpsc::Sender<Msg>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    services: Arc<dyn HostServices>,
+    limits: Arc<Limits>,
+    plugins: Mutex<HashMap<String, Entry>>,
+    next_serial: AtomicU64,
 }
 
 impl PluginHost {
@@ -201,44 +190,66 @@ impl PluginHost {
     }
 
     pub fn with_limits(services: Arc<dyn HostServices>, limits: Limits) -> PluginHost {
-        let (tx, rx) = mpsc::channel();
-        let to_host = tx.clone();
-        // The runtimes are made, used and dropped on this thread only.
-        let run = move || {
-            let host = HostThread {
-                wiring: Wiring {
-                    services,
-                    limits: Arc::new(limits),
-                    host: to_host,
-                },
-                plugins: HashMap::new(),
-                generation: 0,
-            };
-            host.run(rx)
-        };
-        let thread = std::thread::Builder::new()
-            .name("plugin-host".into())
-            // Room for the plugins' JavaScript stacks above the host's own frames.
-            .stack_size(8 * 1024 * 1024)
-            .spawn(run)
-            .expect("start the plugin host thread");
         PluginHost {
-            tx,
-            thread: Some(thread),
+            services,
+            limits: Arc::new(limits),
+            plugins: Mutex::new(HashMap::new()),
+            next_serial: AtomicU64::new(0),
         }
     }
 
     /// Loads `id` from its `main.js` (replacing a loaded one): evaluates it and runs its
     /// `apply(ctx)`. A plugin that fails to load isn't kept.
     pub async fn load(&self, id: &str, main_js: &Path, grants: Grants) -> Result<(), HostError> {
-        let (reply, answer) = oneshot::channel();
-        self.send(Msg::Load {
+        refuse_reentry()?;
+        let source = std::fs::read_to_string(main_js).map_err(|e| {
+            let message = format!("can't read {}: {e}", main_js.display());
+            HostError::new(ErrorCode::NotFound, message)
+        })?;
+        let file = main_js
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "main.js".into());
+        self.unload(id).await;
+        let package = Arc::new(Package {
             id: id.to_string(),
-            main_js: main_js.to_path_buf(),
+            file,
+            source,
             grants,
-            reply,
         });
-        answer.await.unwrap_or_else(|_| Err(stopped()))
+        let (reply, answer) = oneshot::channel();
+        let worker = self.spawn(&package, Some(reply))?;
+        let loaded = match tokio::time::timeout(self.limits.call, answer).await {
+            Ok(Ok(loaded)) => loaded,
+            Ok(Err(_)) => Err(stopped(id)),
+            Err(_) => Err(HostError::new(
+                ErrorCode::Timeout,
+                format!(
+                    "apply(ctx) didn't finish within {} s",
+                    self.limits.call.as_secs_f64()
+                ),
+            )),
+        };
+        if let Err(e) = loaded {
+            worker.stop(HostError::new(
+                ErrorCode::NotFound,
+                format!("{id} didn't load"),
+            ));
+            return Err(e);
+        }
+        let entry = Entry {
+            package,
+            worker: Some(worker),
+        };
+        if let Some(old) = self.plugins().insert(id.to_string(), entry) {
+            if let Some(worker) = old.worker {
+                worker.stop(HostError::new(
+                    ErrorCode::NotFound,
+                    format!("{id} was replaced"),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Runs the plugin's command `ctx.command(command, fn)` with `args`.
@@ -259,221 +270,192 @@ impl PluginHost {
         name: &str,
         args: Value,
     ) -> Result<Value, HostError> {
+        refuse_reentry()?;
         let (reply, answer) = oneshot::channel();
-        self.send(Msg::Call {
-            id: id.to_string(),
-            kind,
-            name: name.to_string(),
-            args,
-            reply,
-        });
-        answer.await.unwrap_or_else(|_| Err(stopped()))
+        let serial = {
+            let mut plugins = self.plugins();
+            let Some(entry) = plugins.get_mut(id) else {
+                return Err(HostError::new(
+                    ErrorCode::NotFound,
+                    format!("no plugin “{id}” is loaded"),
+                ));
+            };
+            let worker = self.worker(entry)?;
+            worker.send(Msg::Call {
+                kind,
+                name: name.to_string(),
+                args,
+                reply,
+            });
+            worker.serial
+        };
+        match tokio::time::timeout(self.limits.call, answer).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(_)) => Err(stopped(id)),
+            Err(_) => {
+                let e = HostError::new(
+                    ErrorCode::Timeout,
+                    format!(
+                        "“{name}” didn't answer within {} s",
+                        self.limits.call.as_secs_f64()
+                    ),
+                );
+                self.stop_late(id, serial, &e);
+                Err(e)
+            }
+        }
     }
 
     /// Tells every plugin granted `event` (`uses.events.on`) that it happened.
     pub fn emit(&self, event: &str, payload: Value) {
-        self.send(Msg::Emit {
-            event: event.to_string(),
-            payload,
-        });
+        let mut plugins = self.plugins();
+        let hearing = plugins
+            .values_mut()
+            .filter(|e| e.package.grants.events.contains(event));
+        for entry in hearing {
+            match self.worker(entry) {
+                Ok(worker) => worker.send(Msg::Emit {
+                    event: event.to_string(),
+                    payload: payload.clone(),
+                }),
+                Err(e) => log::warn!("[plugin:{}] {event}: {e}", entry.package.id),
+            }
+        }
     }
 
-    /// Drops the plugin's runtime, its timers and its calls in flight (their callers hear
-    /// `not_found`).
+    /// Stops the plugin and drops its runtime, timers and calls in flight (their callers hear
+    /// `not_found`). Waits up to 2 s for its thread; one stuck in a service is left to end on
+    /// its own.
     pub async fn unload(&self, id: &str) {
-        let (reply, answer) = oneshot::channel();
-        self.send(Msg::Unload {
-            id: id.to_string(),
-            reply,
-        });
-        let _ = answer.await;
+        if on_plugin_thread() {
+            log::warn!("[plugin:{id}] {}", reentry());
+            return;
+        }
+        let Some(worker) = self.plugins().remove(id).and_then(|e| e.worker) else {
+            return;
+        };
+        worker.stop(HostError::new(
+            ErrorCode::NotFound,
+            format!("{id} was unloaded"),
+        ));
+        let deadline = Instant::now() + LET_GO;
+        while !worker.is_finished() {
+            if Instant::now() >= deadline {
+                log::warn!(
+                    "[plugin:{id}] still busy {} s after it was unloaded; left to end on its own",
+                    LET_GO.as_secs()
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        worker.join();
     }
 
-    fn send(&self, msg: Msg) {
-        // A send fails only once the thread has ended; the caller's reply is then dropped.
-        let _ = self.tx.send(msg);
+    fn plugins(&self) -> MutexGuard<'_, HashMap<String, Entry>> {
+        self.plugins.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn spawn(
+        &self,
+        package: &Arc<Package>,
+        load: Option<bridge::LoadReply>,
+    ) -> Result<Worker, HostError> {
+        Worker::spawn(
+            package.clone(),
+            self.services.clone(),
+            self.limits.clone(),
+            self.next_serial.fetch_add(1, Ordering::Relaxed),
+            load,
+        )
+    }
+
+    /// The plugin's thread, started again if it was stopped or has ended.
+    fn worker<'a>(&self, entry: &'a mut Entry) -> Result<&'a Worker, HostError> {
+        if entry.worker.as_ref().is_some_and(Worker::is_finished) {
+            entry.worker = None;
+        }
+        if entry.worker.is_none() {
+            entry.worker = Some(self.spawn(&entry.package, None)?);
+        }
+        entry
+            .worker
+            .as_ref()
+            .ok_or_else(|| stopped(&entry.package.id))
+    }
+
+    /// Stops a plugin that kept a caller past the call limit (unless it was already replaced):
+    /// its other callers hear `timeout`, and it starts again on its next use.
+    fn stop_late(&self, id: &str, serial: u64, why: &HostError) {
+        let mut plugins = self.plugins();
+        let Some(entry) = plugins.get_mut(id) else {
+            return;
+        };
+        if entry.worker.as_ref().is_none_or(|w| w.serial != serial) {
+            return;
+        }
+        if let Some(worker) = entry.worker.take() {
+            log::warn!("[plugin:{id}] {why}; stopped, it starts again on its next use");
+            worker.stop(HostError::new(
+                ErrorCode::Timeout,
+                format!("{id} was stopped: {}", why.message),
+            ));
+        }
     }
 }
 
 impl Drop for PluginHost {
     fn drop(&mut self) {
-        let _ = self.tx.send(Msg::Stop);
-        if let Some(thread) = self.thread.take() {
-            if thread.thread().id() != std::thread::current().id() {
-                let _ = thread.join();
-            }
+        let plugins = self
+            .plugins
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        let workers: Vec<(String, Worker)> = plugins
+            .drain()
+            .filter_map(|(id, e)| e.worker.map(|w| (id, w)))
+            .collect();
+        for (_, worker) in &workers {
+            worker.stop(HostError::new(
+                ErrorCode::NotFound,
+                "the plugin host has stopped",
+            ));
         }
-    }
-}
-
-fn stopped() -> HostError {
-    HostError::new(ErrorCode::NotFound, "the plugin host has stopped")
-}
-
-struct HostThread {
-    wiring: Wiring,
-    plugins: HashMap<String, Plugin>,
-    /// Numbers each runtime, so an async answer reaches only the runtime that asked.
-    generation: u64,
-}
-
-impl HostThread {
-    fn run(mut self, rx: mpsc::Receiver<Msg>) {
-        loop {
-            let wake = self.plugins.values().filter_map(Plugin::next_wake).min();
-            let msg = match wake {
-                Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
-                    Ok(msg) => Some(msg),
-                    Err(mpsc::RecvTimeoutError::Timeout) => None,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                },
-                None => match rx.recv() {
-                    Ok(msg) => Some(msg),
-                    Err(_) => break,
-                },
-            };
-            match msg {
-                Some(Msg::Stop) => break,
-                Some(msg) => self.handle(msg),
-                None => {}
-            }
-            self.tick();
-        }
-        // Each runtime goes with its plugin, after the JavaScript handles the host held.
-        self.plugins.clear();
-    }
-
-    fn handle(&mut self, msg: Msg) {
-        match msg {
-            Msg::Load {
-                id,
-                main_js,
-                grants,
-                reply,
-            } => self.load(id, &main_js, grants, reply),
-            Msg::Call {
-                id,
-                kind,
-                name,
-                args,
-                reply,
-            } => match self.plugins.get_mut(&id) {
-                Some(plugin) => {
-                    plugin.call(kind, &name, &args, reply);
-                    self.after(&id);
-                }
-                None => {
-                    let _ = reply.send(Err(HostError::new(
-                        ErrorCode::NotFound,
-                        format!("no plugin “{id}” is loaded"),
-                    )));
-                }
-            },
-            Msg::Emit { event, payload } => {
-                let ids: Vec<String> = self
-                    .plugins
-                    .values()
-                    .filter(|p| p.hears(&event))
-                    .map(|p| p.id().to_string())
-                    .collect();
-                for id in ids {
-                    if let Some(plugin) = self.plugins.get_mut(&id) {
-                        plugin.event(&event, &payload);
-                        self.after(&id);
-                    }
-                }
-            }
-            Msg::Unload { id, reply } => {
-                self.plugins.remove(&id);
-                let _ = reply.send(());
-            }
-            Msg::Settle {
-                generation,
-                token,
-                result,
-            } => {
-                let id = self
-                    .plugins
-                    .values()
-                    .find(|p| p.generation() == generation)
-                    .map(|p| p.id().to_string());
-                if let Some(id) = id {
-                    if let Some(plugin) = self.plugins.get_mut(&id) {
-                        plugin.settle(token, result);
-                    }
-                    self.after(&id);
-                }
-            }
-            Msg::Stop => {}
-        }
-    }
-
-    fn load(
-        &mut self,
-        id: String,
-        main_js: &Path,
-        grants: Grants,
-        reply: oneshot::Sender<Result<(), HostError>>,
-    ) {
-        self.plugins.remove(&id);
-        let source = match std::fs::read_to_string(main_js) {
-            Ok(source) => source,
-            Err(e) => {
-                let message = format!("can't read {}: {e}", main_js.display());
-                let _ = reply.send(Err(HostError::new(ErrorCode::NotFound, message)));
-                return;
-            }
-        };
-        let file = main_js
-            .file_name()
-            .map(|f| f.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "main.js".into());
-        self.generation += 1;
-        let loaded = Plugin::load(
-            &id,
-            self.generation,
-            &file,
-            source,
-            grants,
-            &self.wiring,
-            reply,
-        );
-        if let Some(plugin) = loaded {
-            self.plugins.insert(id.clone(), plugin);
-            self.after(&id);
-        }
-    }
-
-    /// After the plugin's JavaScript ran: its jobs, then the callers it can answer. A plugin
-    /// whose `apply(ctx)` failed is dropped.
-    fn after(&mut self, id: &str) {
-        if let Some(plugin) = self.plugins.get_mut(id) {
-            plugin.run_jobs();
-        }
-        self.answer(id, Instant::now());
-    }
-
-    fn answer(&mut self, id: &str, now: Instant) {
-        let Some(plugin) = self.plugins.get_mut(id) else {
+        if on_plugin_thread() {
             return;
-        };
-        if let Some(e) = plugin.answer_settled(now) {
-            log::warn!("[plugin:{id}] didn't load: {e}");
-            self.plugins.remove(id);
         }
-    }
-
-    /// Due timers, and callers whose time is up.
-    fn tick(&mut self) {
-        let now = Instant::now();
-        let ids: Vec<String> = self.plugins.keys().cloned().collect();
-        for id in ids {
-            if let Some(plugin) = self.plugins.get_mut(&id) {
-                plugin.tick(now);
+        let deadline = Instant::now() + LET_GO;
+        for (id, worker) in workers {
+            while !worker.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
             }
-            self.answer(&id, now);
+            if worker.is_finished() {
+                worker.join();
+            } else {
+                log::warn!(
+                    "[plugin:{id}] still busy when the host stopped; left to end on its own"
+                );
+            }
         }
     }
+}
+
+fn stopped(id: &str) -> HostError {
+    HostError::new(ErrorCode::NotFound, format!("{id} has stopped"))
+}
+
+fn reentry() -> HostError {
+    HostError::new(
+        ErrorCode::PluginError,
+        "the plugin host can't call into itself from a plugin's own thread",
+    )
+}
+
+/// A service running on a plugin's thread that waited on the host would wait on itself.
+fn refuse_reentry() -> Result<(), HostError> {
+    if on_plugin_thread() {
+        return Err(reentry());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -524,7 +506,17 @@ mod tests {
                     .cloned()
                     .unwrap_or(Value::Null)),
                 "log" | "widgets.provide" | "deliver.provide" => Ok(Value::Null),
+                // A slow service, or one stuck far past the call limit.
+                "system.which" => {
+                    let ms = if args[0] == "stuck" { 6000 } else { 50 };
+                    std::thread::sleep(Duration::from_millis(ms));
+                    Ok(Value::Null)
+                }
                 "settings.get" => Err(HostError::new(ErrorCode::Permission, "no settings here")),
+                "profiles" | "work.changed" => Err(HostError::new(
+                    ErrorCode::Unsupported,
+                    format!("{name} is not available in CodeMie Connect yet"),
+                )),
                 _ => Err(HostError::new(ErrorCode::NotFound, format!("no {name}"))),
             }
         }
@@ -712,7 +704,7 @@ mod tests {
         // Stopped by the slice (its try/catch can't keep it going), not by the call's limit.
         let spun = s.call("busy", "spin", Value::Null).await.unwrap_err();
         assert_eq!(spun.code, ErrorCode::Timeout, "{spun}");
-        assert!(spun.message.contains("without a break"), "{spun}");
+        assert!(spun.message.contains("slice"), "{spun}");
         assert_eq!(s.call("busy", "ping", Value::Null).await, Ok(json!("pong")));
         for command in ["spinLater", "awaitForever"] {
             let late = s.call("busy", command, Value::Null).await.unwrap_err();
@@ -773,7 +765,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_ticks_on_the_host_thread() {
+    async fn every_ticks_on_the_plugins_thread() {
         let s = Setup::new(Limits {
             min_every: Duration::from_millis(50),
             ..quick()
@@ -803,63 +795,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_namespaces_are_undefined_or_throw_unsupported() {
+    async fn missing_namespaces_are_undefined() {
         let s = Setup::new(quick());
         s.load(
             "compat",
             r#"
             export function apply(ctx) {
-              // As Telegram does at start-up, outside any error handling: the plugin still loads.
-              ctx.sessions.clearChannel()
               ctx.command('absent', () =>
-                ['slots', 'threads', 'view', 'terminal', 'knowledge'].map((k) => typeof ctx[k]))
-              ctx.command('unsupported', async () => {
-                const out = {}
-                const calls = {
-                  'sessions.channel': () => ctx.sessions.channel({ plugin: 'x' }),
-                  'sessions.skills': () => ctx.sessions.skills([]),
-                  'channel.open': () => ctx.channel.open(),
-                  'agent.set': () => ctx.agent.set({}),
-                  'scripts.run': () => ctx.scripts.run('skill', 'run.sh', []),
-                  'claude.hasPlugin': () => ctx.claude.hasPlugin('x@y'),
-                  'claude.installPlugin': () => ctx.claude.installPlugin('x@y'),
-                }
-                for (const [name, f] of Object.entries(calls)) {
-                  try { await f(); out[name] = 'resolved' } catch (e) { out[name] = `${e.code}|${e.message}` }
-                }
-                return out
-              })
+                ['slots', 'threads', 'view', 'knowledge', 'sessions', 'channel', 'agent', 'scripts']
+                  .map((k) => typeof ctx[k])
+                  .concat([typeof ctx.claude.hasPlugin, typeof ctx.claude.installPlugin]))
+              ctx.command('terminal', () => ctx.terminal)
             }
             "#,
         )
         .await;
         assert_eq!(
             s.call("compat", "absent", Value::Null).await,
-            Ok(json!(vec!["undefined"; 5]))
+            Ok(json!(vec!["undefined"; 10]))
         );
-        let out = s.call("compat", "unsupported", Value::Null).await.unwrap();
-        let names = [
-            "sessions.channel",
-            "sessions.skills",
-            "channel.open",
-            "agent.set",
-            "scripts.run",
-            "claude.hasPlugin",
-            "claude.installPlugin",
-        ];
-        assert_eq!(out.as_object().unwrap().len(), names.len(), "{out}");
-        for name in names {
-            assert_eq!(
-                out[name],
-                json!(format!(
-                    "unsupported|unsupported: {name} is not available in CodeMie Connect yet"
-                )),
-                "{name}"
-            );
-        }
+        assert_eq!(
+            s.call("compat", "terminal", Value::Null).await,
+            Ok(json!(false))
+        );
+        // As Telegram does at start-up, outside any error handling: it doesn't load, and says
+        // why.
+        let path = s.write(
+            "telegram",
+            "export function apply(ctx) { ctx.sessions.clearChannel() }",
+        );
+        let refused = s
+            .host
+            .load("telegram", &path, Grants::default())
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PluginError, "{refused}");
+        assert!(refused.message.contains("clearChannel"), "{refused}");
         assert!(
             s.services.heard.lock().unwrap().is_empty(),
-            "none of them reached the services"
+            "nothing reached the services"
         );
     }
 
@@ -1106,5 +1080,621 @@ mod tests {
             ErrorCode::Limit
         );
         assert!(s.services.heard("store.write").is_empty());
+    }
+
+    /// Fails the test, rather than hanging it, when the host doesn't answer.
+    async fn bounded<T>(work: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(15), work)
+            .await
+            .expect("the host answered within 15 s")
+    }
+
+    /// Every log line of the test process; each test looks for its own plugin's.
+    struct Capture;
+    static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    impl log::Log for Capture {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            LOGGED.lock().unwrap().push(record.args().to_string());
+        }
+        fn flush(&self) {}
+    }
+
+    fn capture_logs() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let _ = log::set_logger(&Capture);
+            log::set_max_level(log::LevelFilter::Info);
+        });
+    }
+
+    fn logged(prefix: &str) -> Vec<String> {
+        let lines = LOGGED.lock().unwrap();
+        lines
+            .iter()
+            .filter(|l| l.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn errors_are_read_within_the_plugins_time() {
+        let s = Setup::new(quick());
+        s.load(
+            "odd",
+            r#"
+            export function apply(ctx) {
+              ctx.command('codeGetter', async () => {
+                const e = new Error('m')
+                Object.defineProperty(e, 'code', { get() { for (;;) {} } })
+                throw e
+              })
+              ctx.command('messageGetter', async () => {
+                await null
+                const e = new Error('x')
+                Object.defineProperty(e, 'message', { get() { for (;;) {} } })
+                throw e
+              })
+              ctx.command('toStringLoop', () => { throw { toString() { for (;;) {} } } })
+              ctx.command('forgedCode', () => {
+                const e = new Error('permission: forged')
+                e.code = 'permission'
+                throw e
+              })
+              ctx.command('ping', () => 'pong')
+            }
+            "#,
+        )
+        .await;
+        // The host never reads `code` of the plugin's own error.
+        assert_eq!(
+            bounded(s.call("odd", "codeGetter", Value::Null)).await,
+            Err(HostError::new(ErrorCode::PluginError, "m"))
+        );
+        // A `message` getter runs within the turn: it is stopped, and the plugin with it.
+        let started = Instant::now();
+        let stopped = bounded(s.call("odd", "messageGetter", Value::Null))
+            .await
+            .unwrap_err();
+        assert_eq!(stopped.code, ErrorCode::Timeout, "{stopped}");
+        assert!(started.elapsed() < quick().call, "{:?}", started.elapsed());
+        // Nothing of a thrown non-Error is read (no toString).
+        assert_eq!(
+            bounded(s.call("odd", "toStringLoop", Value::Null)).await,
+            Err(HostError::new(
+                ErrorCode::PluginError,
+                "the plugin failed without a message"
+            ))
+        );
+        // Only the host's own errors keep a code.
+        assert_eq!(
+            bounded(s.call("odd", "forgedCode", Value::Null)).await,
+            Err(HostError::new(ErrorCode::PluginError, "permission: forged"))
+        );
+        assert_eq!(
+            bounded(s.call("odd", "ping", Value::Null)).await,
+            Ok(json!("pong"))
+        );
+    }
+
+    #[tokio::test]
+    async fn reentry_from_error_setters_is_harmless() {
+        let s = Setup::new(quick());
+        s.load(
+            "setter",
+            r#"
+            export function apply(ctx) {
+              for (let i = 0; i < 64; i++) ctx.every(3600, () => {})
+              ctx.command('evil', () => {
+                Object.defineProperty(Error.prototype, 'message', {
+                  set(v) { ctx.every(3600, () => {}) }, get() { return 'x' }, configurable: true })
+                try { ctx.every(3600, () => {}) } catch (e) { return `${e.code}|${e.message}` }
+                finally { delete Error.prototype.message }
+              })
+              // The same, uncaught: the caller hears the host's own error.
+              ctx.command('evilUncaught', () => {
+                Object.defineProperty(Error.prototype, 'message', {
+                  set(v) { ctx.every(3600, () => {}) }, get() { return 'x' }, configurable: true })
+                try { ctx.every(3600, () => {}) } finally { delete Error.prototype.message }
+              })
+              ctx.command('ping', () => 'pong')
+            }
+            "#,
+        )
+        .await;
+        assert_eq!(
+            bounded(s.call("setter", "evil", Value::Null)).await,
+            Ok(json!(
+                "limit|limit: a plugin keeps at most 64 ctx.every timers"
+            ))
+        );
+        assert_eq!(
+            bounded(s.call("setter", "evilUncaught", Value::Null)).await,
+            Err(HostError::new(
+                ErrorCode::Limit,
+                "a plugin keeps at most 64 ctx.every timers"
+            ))
+        );
+        assert_eq!(
+            bounded(s.call("setter", "ping", Value::Null)).await,
+            Ok(json!("pong"))
+        );
+    }
+
+    #[tokio::test]
+    async fn runaway_timers_stall_only_their_plugin() {
+        let s = Setup::new(Limits {
+            min_every: Duration::from_millis(50),
+            ..quick()
+        });
+        s.load(
+            "hog",
+            r#"
+            export function apply(ctx) {
+              for (let i = 0; i < 10; i++) ctx.every(0.05, () => { for (;;) {} })
+              ctx.command('ping', () => 'hog')
+            }
+            "#,
+        )
+        .await;
+        s.load(
+            "victim",
+            r#"export function apply(ctx) { ctx.command('ping', () => 'pong') }"#,
+        )
+        .await;
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let started = Instant::now();
+            assert_eq!(
+                bounded(s.call("victim", "ping", Value::Null)).await,
+                Ok(json!("pong"))
+            );
+            assert!(started.elapsed() < quick().slice, "{:?}", started.elapsed());
+        }
+        // The hog itself still answers: a call waits at most for the turn under way.
+        let started = Instant::now();
+        assert_eq!(
+            bounded(s.call("hog", "ping", Value::Null)).await,
+            Ok(json!("hog"))
+        );
+        assert!(
+            started.elapsed() < 4 * quick().slice,
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_flood_faults_only_its_plugin() {
+        let s = Arc::new(Setup::new(quick()));
+        let main = r#"
+            export function apply(ctx) {
+              ctx.command('flood', () => {
+                const f = () => { Promise.resolve().then(f); Promise.resolve().then(f) }
+                f()
+                return 'started'
+              })
+              ctx.command('ping', () => ctx.id)
+            }
+        "#;
+        s.load("flood", main).await;
+        s.load("calm", main).await;
+        let flooding = tokio::spawn({
+            let s = s.clone();
+            async move {
+                let started = Instant::now();
+                let answer = bounded(s.call("flood", "flood", Value::Null)).await;
+                (answer, started.elapsed())
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let started = Instant::now();
+        assert_eq!(
+            bounded(s.call("calm", "ping", Value::Null)).await,
+            Ok(json!("calm"))
+        );
+        assert!(
+            started.elapsed() < 2 * quick().slice,
+            "{:?}",
+            started.elapsed()
+        );
+        let (answer, took) = flooding.await.unwrap();
+        assert_eq!(answer, Ok(json!("started")));
+        assert!(took < 4 * quick().slice, "{took:?}");
+        // The flood faulted the plugin; its next call starts it again.
+        assert_eq!(
+            bounded(s.call("flood", "ping", Value::Null)).await,
+            Ok(json!("flood"))
+        );
+    }
+
+    #[tokio::test]
+    async fn slow_services_dont_stretch_a_turn_without_bound() {
+        let s = Arc::new(Setup::new(quick()));
+        s.load(
+            "slow",
+            r#"
+            export function apply(ctx) {
+              ctx.command('spin', () => { for (;;) ctx.system.which('git') })
+              ctx.command('spinCaught', () => { for (;;) { try { ctx.system.which('git') } catch {} } })
+              ctx.command('ping', () => 'pong')
+            }
+            "#,
+        )
+        .await;
+        s.load(
+            "victim",
+            r#"export function apply(ctx) { ctx.command('ping', () => 'pong') }"#,
+        )
+        .await;
+        for command in ["spin", "spinCaught"] {
+            let spinning = tokio::spawn({
+                let s = s.clone();
+                async move {
+                    let started = Instant::now();
+                    (
+                        bounded(s.call("slow", command, Value::Null)).await,
+                        started.elapsed(),
+                    )
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(
+                bounded(s.call("victim", "ping", Value::Null)).await,
+                Ok(json!("pong"))
+            );
+            let (answer, took) = spinning.await.unwrap();
+            assert_eq!(answer.unwrap_err().code, ErrorCode::Timeout, "{command}");
+            // Twice the slice of wall time, plus one slow call and a margin.
+            assert!(took < 4 * quick().slice, "{command}: {took:?}");
+            assert_eq!(
+                bounded(s.call("slow", "ping", Value::Null)).await,
+                Ok(json!("pong"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stuck_service_faults_its_plugin_and_unload_still_returns() {
+        let s = Setup::new(quick());
+        let main = r#"
+            export function apply(ctx) {
+              ctx.command('stuck', () => ctx.system.which('stuck'))
+              ctx.command('ping', () => 'pong')
+            }
+        "#;
+        s.load("stuck", main).await;
+        let stuck = bounded(s.call("stuck", "stuck", Value::Null))
+            .await
+            .unwrap_err();
+        assert_eq!(stuck.code, ErrorCode::Timeout, "{stuck}");
+        assert!(stuck.message.contains("didn't answer"), "{stuck}");
+        // Its thread is still inside the service: unload gives up on it after a bound.
+        let started = Instant::now();
+        bounded(s.host.unload("stuck")).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        s.load("stuck", main).await;
+        assert_eq!(
+            bounded(s.call("stuck", "ping", Value::Null)).await,
+            Ok(json!("pong"))
+        );
+        // A faulted plugin starts again on its next call.
+        let again = bounded(s.call("stuck", "stuck", Value::Null))
+            .await
+            .unwrap_err();
+        assert_eq!(again.code, ErrorCode::Timeout);
+        assert_eq!(
+            bounded(s.call("stuck", "ping", Value::Null)).await,
+            Ok(json!("pong"))
+        );
+    }
+
+    #[tokio::test]
+    async fn unload_and_drop_let_go_of_a_stuck_plugin() {
+        let s = Setup::new(Limits {
+            call: Duration::from_secs(20),
+            ..quick()
+        });
+        let main = r#"
+            export function apply(ctx) {
+              ctx.command('stuck', () => ctx.system.which('stuck'))
+              ctx.command('ping', () => 'pong')
+            }
+        "#;
+        s.load("stuck", main).await;
+        // The caller gives up while the plugin's thread is still inside the 6 s service.
+        let gave_up = tokio::time::timeout(
+            Duration::from_millis(200),
+            s.call("stuck", "stuck", Value::Null),
+        );
+        assert!(gave_up.await.is_err());
+        let started = Instant::now();
+        bounded(s.host.unload("stuck")).await;
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(1500) && took < Duration::from_secs(4),
+            "{took:?}"
+        );
+        assert_eq!(
+            s.call("stuck", "ping", Value::Null).await.unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        s.load("stuck", main).await;
+        let gave_up = tokio::time::timeout(
+            Duration::from_millis(200),
+            s.call("stuck", "stuck", Value::Null),
+        );
+        assert!(gave_up.await.is_err());
+        let started = Instant::now();
+        drop(s);
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn stack_hooks_cant_reach_the_bridge() {
+        let s = Setup::new(quick());
+        s.load(
+            "grabber",
+            r#"
+            export function apply(ctx) {
+              ctx.command('grab', () => {
+                const grabbed = new Set()
+                Error.prepareStackTrace = (e, sites) => {
+                  for (const site of sites) {
+                    try { const f = site.getFunction(); if (typeof f === 'function') grabbed.add(f) } catch {}
+                  }
+                  return ''
+                }
+                Object.defineProperty(Error.prototype, 'message', {
+                  set(v) { new Error('probe'); Object.defineProperty(this, 'message', { value: v, writable: true, configurable: true }) },
+                  get() { return '' }, configurable: true })
+                try { ctx.settings.get('k') } catch (e) {}
+                new Error('probe')
+                delete Error.prototype.message
+                Error.prepareStackTrace = undefined
+                const out = []
+                for (const f of grabbed) {
+                  try { out.push(String(f('sessions.channel', '[{"plugin":"x"}]'))) } catch (e) { out.push('threw') }
+                }
+                return { out, capture: typeof Error.captureStackTrace }
+              })
+            }
+            "#,
+        )
+        .await;
+        assert_eq!(
+            bounded(s.call("grabber", "grab", Value::Null)).await,
+            Ok(json!({"out": [], "capture": "undefined"}))
+        );
+        assert!(s.services.heard("sessions.channel").is_empty());
+    }
+
+    #[tokio::test]
+    async fn deep_json_and_recursion_hit_limits() {
+        let s = Setup::new(Limits::default());
+        s.load(
+            "deep",
+            r#"
+            const nest = (n) => { let o = null; for (let i = 0; i < n; i++) o = [o]; return o }
+            export function apply(ctx) {
+              ctx.command('recurse', () => { const f = (n) => f(n + 1) + 1; return f(0) })
+              ctx.command('recurseLater', async () => { await null; const f = (n) => f(n + 1) + 1; return f(0) })
+              ctx.command('nested', () => nest(100000))
+              ctx.command('nested200', () => nest(200))
+              ctx.command('nestedArg', () => {
+                try { ctx.store.write('k', nest(200)) } catch (e) { return `${e.code}|${e.message}` }
+              })
+              ctx.command('ping', () => 'pong')
+            }
+            "#,
+        )
+        .await;
+        for command in ["recurse", "recurseLater", "nested", "nested200"] {
+            let failed = bounded(s.call("deep", command, Value::Null))
+                .await
+                .unwrap_err();
+            assert_eq!(failed.code, ErrorCode::Limit, "{command}: {failed}");
+        }
+        let nested = bounded(s.call("deep", "nested200", Value::Null))
+            .await
+            .unwrap_err();
+        assert_eq!(nested.message, "JSON nested more than 128 levels deep");
+        assert_eq!(
+            bounded(s.call("deep", "nestedArg", Value::Null)).await,
+            Ok(json!("limit|limit: JSON nested more than 128 levels deep"))
+        );
+        assert_eq!(
+            bounded(s.call("deep", "ping", Value::Null)).await,
+            Ok(json!("pong"))
+        );
+
+        let q = Setup::new(quick());
+        q.load(
+            "getter",
+            r#"
+            export function apply(ctx) {
+              ctx.command('getter', () => ({ get x() { for (;;) {} } }))
+              ctx.command('toJSON', () => ({ toJSON() { for (;;) {} } }))
+              ctx.command('ping', () => 'pong')
+            }
+            "#,
+        )
+        .await;
+        for command in ["getter", "toJSON"] {
+            let failed = bounded(q.call("getter", command, Value::Null))
+                .await
+                .unwrap_err();
+            assert_eq!(failed.code, ErrorCode::Timeout, "{command}: {failed}");
+            assert_eq!(
+                bounded(q.call("getter", "ping", Value::Null)).await,
+                Ok(json!("pong"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn async_host_calls_in_flight_are_capped() {
+        let s = Setup::new(quick());
+        s.load(
+            "eager",
+            r#"
+            export function apply(ctx) {
+              ctx.command('many', async () => {
+                const waits = []
+                for (let i = 0; i < 65; i++) waits.push(ctx.claude.run({}).then(() => 'answered', (e) => e.code))
+                return await waits[64]
+              })
+            }
+            "#,
+        )
+        .await;
+        assert_eq!(
+            bounded(s.call("eager", "many", Value::Null)).await,
+            Ok(json!("limit"))
+        );
+        assert_eq!(s.services.heard("claude.run").len(), 64);
+    }
+
+    #[tokio::test]
+    async fn unsupported_calls_and_unhandled_rejections_are_logged() {
+        capture_logs();
+        let s = Setup::new(quick());
+        s.load(
+            "noisy",
+            r#"
+            export function apply(ctx) {
+              ctx.command('unsupported', () => {
+                for (const f of [ctx.profiles, ctx.profiles, () => ctx.work.changed()]) {
+                  try { f() } catch (e) { if (e.code !== 'unsupported') throw e }
+                }
+              })
+              ctx.command('unhandled', () => { Promise.reject(new Error('nobody looked')); return 'ok' })
+              ctx.command('handledLater', async () => {
+                const p = Promise.reject(new Error('looked at later'))
+                await null
+                p.catch(() => {})
+                return 'ok'
+              })
+              ctx.command('fails', async () => { throw new Error('answered the caller') })
+            }
+            "#,
+        )
+        .await;
+        for command in ["unsupported", "unhandled", "handledLater"] {
+            bounded(s.call("noisy", command, Value::Null))
+                .await
+                .unwrap();
+        }
+        bounded(s.call("noisy", "fails", Value::Null))
+            .await
+            .unwrap_err();
+        let unsupported = logged("[plugin:noisy] unsupported:");
+        assert_eq!(
+            unsupported,
+            [
+                "[plugin:noisy] unsupported: profiles is not available in CodeMie Connect yet",
+                "[plugin:noisy] unsupported: work.changed is not available in CodeMie Connect yet",
+            ]
+        );
+        assert_eq!(
+            logged("[plugin:noisy] unhandled rejection:"),
+            ["[plugin:noisy] unhandled rejection: nobody looked"]
+        );
+    }
+
+    /// Services that call back into the host, as a careless one might.
+    #[derive(Default)]
+    struct Loopback {
+        host: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
+    }
+
+    impl HostServices for Loopback {
+        fn sync(&self, plugin: &str, _name: &str, _args: Value) -> Result<Value, HostError> {
+            use futures_util::FutureExt;
+            let host = self.host.get().and_then(|h| h.upgrade()).expect("the host");
+            let answer = host.call(plugin, "ping", Value::Null).now_or_never();
+            Ok(json!(format!("{answer:?}")))
+        }
+
+        fn spawn_async(
+            &self,
+            _plugin: &str,
+            _name: &str,
+            _args: Value,
+        ) -> BoxFuture<'static, Result<Value, HostError>> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plugin_cannot_wait_on_itself() {
+        let services = Arc::new(Loopback::default());
+        let host = Arc::new(PluginHost::with_limits(services.clone(), quick()));
+        services.host.set(Arc::downgrade(&host)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("main.js");
+        std::fs::write(
+            &main,
+            r#"
+            export function apply(ctx) {
+              ctx.command('self', () => ctx.system.which('x'))
+              ctx.command('ping', () => 'pong')
+            }
+            "#,
+        )
+        .unwrap();
+        host.load("loop", &main, Grants::default()).await.unwrap();
+        let answer = bounded(host.call("loop", "self", Value::Null))
+            .await
+            .unwrap();
+        assert!(
+            answer.as_str().unwrap().contains("can't call into itself"),
+            "{answer}"
+        );
+        assert_eq!(
+            bounded(host.call("loop", "ping", Value::Null)).await,
+            Ok(json!("pong"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_timer_first_runs_after_a_second() {
+        let s = Setup::new(Limits::default());
+        s.load(
+            "soon",
+            r#"
+            export function apply(ctx) {
+              let n = 0
+              ctx.every(3600, () => { n += 1 })
+              ctx.command('n', () => n)
+            }
+            "#,
+        )
+        .await;
+        let started = Instant::now();
+        assert_eq!(s.call("soon", "n", Value::Null).await, Ok(json!(0)));
+        loop {
+            if s.call("soon", "n", Value::Null).await == Ok(json!(1)) {
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5), "never ran");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            started.elapsed() >= Duration::from_millis(800),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }
