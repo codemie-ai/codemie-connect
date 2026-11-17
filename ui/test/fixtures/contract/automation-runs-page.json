@@ -1,0 +1,214 @@
+{
+  "first": {
+    "next": "1795000400:run-2",
+    "runs": [
+      {
+        "connectionId": null,
+        "data": {
+          "automationId": "auto-reply",
+          "automationName": "Draft replies to Ann",
+          "connectionId": "acct",
+          "costUsd": 0.012,
+          "delivered": [
+            "today",
+            "draft"
+          ],
+          "draftId": "ai:m1",
+          "durationMs": 4200,
+          "model": "claude-sonnet-4-5",
+          "output": {
+            "items": [
+              {
+                "sourceId": "m0",
+                "text": "Check the Q3 numbers before sending"
+              }
+            ],
+            "summaryBlocks": [
+              {
+                "inlines": [
+                  {
+                    "text": "Ann asks for the Q3 numbers by Friday."
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "summaryMarkdown": "Ann asks for the Q3 numbers by Friday.",
+            "title": "Reply drafted for Ann"
+          },
+          "profile": "claude",
+          "sources": [
+            {
+              "at": 1794996400,
+              "channel": "mail",
+              "id": "m0",
+              "kind": "message",
+              "title": "Q3 budget"
+            },
+            {
+              "at": 1795000000,
+              "channel": "mail",
+              "id": "m1",
+              "kind": "message",
+              "title": "Q3 budget"
+            }
+          ],
+          "startedAt": 1795000480,
+          "status": "ok",
+          "trigger": {
+            "event": "mail_from",
+            "kind": "event",
+            "sourceId": "m1"
+          }
+        },
+        "id": "run-3",
+        "kind": "automation_run",
+        "revision": "rev-1",
+        "source": "automation",
+        "updatedAt": 1795000500,
+        "workspaceId": "personal"
+      },
+      {
+        "connectionId": null,
+        "data": {
+          "automationId": "auto-brief",
+          "automationName": "Morning brief",
+          "connectionId": "acct",
+          "costUsd": null,
+          "delivered": [],
+          "durationMs": 900,
+          "error": {
+            "class": "needs_login",
+            "code": "needs_login",
+            "message": "Claude is not signed in."
+          },
+          "model": null,
+          "profile": "claude",
+          "sources": [
+            {
+              "at": 1794996400,
+              "channel": "mail",
+              "id": "m0",
+              "kind": "message",
+              "title": "Q3 budget"
+            },
+            {
+              "at": 1795000000,
+              "id": "c1",
+              "kind": "commitment",
+              "title": "Send the roadmap"
+            }
+          ],
+          "startedAt": 1795000400,
+          "status": "failed",
+          "trigger": {
+            "kind": "manual"
+          }
+        },
+        "id": "run-2",
+        "kind": "automation_run",
+        "revision": "rev-1",
+        "source": "automation",
+        "updatedAt": 1795000500,
+        "workspaceId": "personal"
+      }
+    ]
+  },
+  "next": {
+    "next": null,
+    "runs": [
+      {
+        "connectionId": null,
+        "data": {
+          "automationId": "auto-brief",
+          "automationName": "Morning brief",
+          "connectionId": "acct",
+          "costUsd": 0.021,
+          "delivered": [
+            "today",
+            "notification_queued"
+          ],
+          "durationMs": 3100,
+          "model": "claude-haiku-4-5",
+          "output": {
+            "items": [
+              {
+                "sourceId": "m0",
+                "text": "Answer Ann about the Q3 budget"
+              },
+              {
+                "text": "Invented source"
+              }
+            ],
+            "summaryBlocks": [
+              {
+                "inlines": [
+                  {
+                    "text": "Replies"
+                  }
+                ],
+                "type": "heading"
+              },
+              {
+                "inlines": [
+                  {
+                    "text": "Ann asked about the "
+                  },
+                  {
+                    "bold": true,
+                    "text": "Q3 budget"
+                  },
+                  {
+                    "text": " p"
+                  }
+                ],
+                "type": "item"
+              },
+              {
+                "inlines": [
+                  {
+                    "text": "See "
+                  },
+                  {
+                    "href": "https://example.test/plan",
+                    "text": "the plan"
+                  }
+                ],
+                "type": "item"
+              }
+            ],
+            "summaryMarkdown": "### Replies\n\n- Ann asked about the **Q3 budget** p\n- See [the plan](https://example.test/plan)",
+            "title": "2 replies owed"
+          },
+          "profile": "claude",
+          "sources": [
+            {
+              "at": 1794996400,
+              "channel": "mail",
+              "id": "m0",
+              "kind": "message",
+              "title": "Q3 budget"
+            },
+            {
+              "at": 1795000000,
+              "id": "c1",
+              "kind": "commitment",
+              "title": "Send the roadmap"
+            }
+          ],
+          "startedAt": 1795000300,
+          "status": "ok",
+          "trigger": {
+            "kind": "manual"
+          }
+        },
+        "id": "run-1",
+        "kind": "automation_run",
+        "revision": "rev-1",
+        "source": "automation",
+        "updatedAt": 1795000500,
+        "workspaceId": "personal"
+      }
+    ]
+  }
+}

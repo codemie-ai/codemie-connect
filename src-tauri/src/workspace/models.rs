@@ -116,6 +116,7 @@ pub enum Operation {
     AutomationDelete,
     AutomationToggle,
     AutomationRunNow,
+    AutomationRuns,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

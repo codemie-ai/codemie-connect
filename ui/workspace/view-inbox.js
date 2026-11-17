@@ -315,6 +315,13 @@ function confirmRow(m, draft) {
     </div>`;
 }
 
+/** The automation that prepared a draft, by name; one deleted since is "an automation". */
+function automationName(s, p) {
+  if (!p.automationId) return '';
+  const name = s.records.find(r => r.kind === 'automation' && r.id === p.automationId)?.data.name;
+  return name ? `“${name}”` : 'an automation';
+}
+
 function provenanceRow(s, m, ai, ui, zone, running) {
   const p = ai.data.provenance || {};
   const used = (p.messageIds || []).map(id => s.records.find(r => r.kind === 'message' && r.id === id));
@@ -324,7 +331,7 @@ function provenanceRow(s, m, ai, ui, zone, running) {
   const open = !!ui.contextOpen;
   return `<div class="ws-draft-provenance">
       <div class="ws-draft-provenance-row">
-        <span class="ws-draft-source">${icon('spark')}<span>${e(provenanceLabel(p))}</span>
+        <span class="ws-draft-source">${icon('spark')}<span>${e(provenanceLabel(p, 'Drafted', automationName(s, p)))}</span>
           <button type="button" class="ws-draft-context-toggle" data-action="ai-draft-context" data-key="${e(draftKeyOf(m))}" aria-expanded="${open}" aria-controls="draft-context">Context${icon('chevron-down')}</button></span>
         ${p.partialText ? `<span class="ws-draft-partial" title="Connect could read only the preview of some Outlook messages, so the draft may miss details.">${icon('info')}Preview text only</span>` : ''}
         <span class="ws-draft-provenance-actions">

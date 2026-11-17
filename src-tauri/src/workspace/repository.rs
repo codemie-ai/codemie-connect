@@ -89,6 +89,7 @@ impl Repository {
                 "calendar".into(),
                 "inbox".into(),
                 "commitments".into(),
+                "automations".into(),
             ],
             widget_widths: json!({}),
         };
@@ -313,14 +314,20 @@ impl Repository {
             .active_connection
             .as_ref()
             .and_then(|s| self.connection(s).ok());
-        let visible = connection
-            .as_ref()
-            .filter(|c| c.status == "connected" && active.connection_id.as_ref() == Some(&c.id));
+        let visible = shown_account(connection.as_ref(), active);
         let cid = visible.map(|c| c.id.as_str()).unwrap_or("__unavailable__");
-        let mut local_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND workspace_id=?1 ORDER BY updated_at DESC")?;
+        let mut local_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id='' AND workspace_id=?1 AND kind<>'automation_run' ORDER BY updated_at DESC")?;
         let mut raw = local_stmt
             .query_map([&active.id], record_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        // The Run log reads its pages with `automation_runs`; the snapshot keeps only what the
+        // list and Today show: each automation's latest run and its latest run delivered to Today.
+        let mut runs_stmt = self.db.prepare(&format!("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE rowid IN (SELECT rid FROM (SELECT rid, today, row_number() OVER (PARTITION BY automation ORDER BY started DESC, updated_at DESC, id DESC) AS latest, row_number() OVER (PARTITION BY automation, today ORDER BY started DESC, updated_at DESC, id DESC) AS latest_of_kind FROM ({VISIBLE_RUNS})) WHERE latest=1 OR (today AND latest_of_kind=1)) ORDER BY updated_at DESC"))?;
+        raw.extend(
+            runs_stmt
+                .query_map(params![active.id, cid, None::<&str>], record_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        );
         let mut provider_stmt=self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE connection_id=?1 AND (workspace_id='' OR workspace_id=?2) AND (kind IN ('catalog','incident','action') OR (json_extract(?3,'$.all')=1 AND (source LIKE 'mail:%' OR source LIKE 'chat:%' OR source LIKE 'calendar:%')) OR (source LIKE 'mail:%' AND json_extract(?3,'$.mail')=1) OR source IN(SELECT 'chat:'||value FROM json_each(?3,'$.chats')) OR source IN(SELECT 'calendar:'||value FROM json_each(?3,'$.calendars'))) ORDER BY updated_at DESC")?;
         raw.extend(
             provider_stmt
@@ -332,14 +339,6 @@ impl Repository {
         );
         let mut records = Vec::new();
         for r in raw {
-            // A run that read an account's mail and calendar shows only while that account does.
-            if r.kind == "automation_run"
-                && r.data["connectionId"]
-                    .as_str()
-                    .is_some_and(|id| Some(id) != visible.map(|c| c.id.as_str()))
-            {
-                continue;
-            }
             if r.connection_id.is_none()
                 || visible.is_some_and(|c| source_permitted(&r, c)) && record_selected(&r, active)
             {
@@ -367,6 +366,45 @@ impl Repository {
             jobs,
             available,
         })
+    }
+    /// The account workspace `w` shows: the active connection while it is connected and `w` is
+    /// bound to it.
+    pub fn visible_account(&self, w: &Workspace) -> Result<Option<String>> {
+        let connection = self
+            .settings()?
+            .active_connection
+            .and_then(|id| self.connection(&id).ok());
+        Ok(shown_account(connection.as_ref(), w).map(|c| c.id.clone()))
+    }
+    /// One page of the Run log of workspace `wid`: the runs `account` may see, of `automation`
+    /// or of every automation, newest first, that started before the cursor `before`
+    /// (`startedAt`, id). Also says whether older runs follow.
+    pub fn automation_runs(
+        &self,
+        wid: &str,
+        account: Option<&str>,
+        automation: Option<&str>,
+        limit: usize,
+        before: Option<(i64, &str)>,
+    ) -> Result<(Vec<Record>, bool)> {
+        let (before_at, before_id) = before.map_or((None, ""), |(at, id)| (Some(at), id));
+        let mut stmt = self.db.prepare(&format!("SELECT r.id,r.kind,r.connection_id,r.workspace_id,r.source,r.revision,r.updated_at,r.body FROM ({VISIBLE_RUNS}) v JOIN records r ON r.rowid=v.rid WHERE ?4 IS NULL OR v.started<?4 OR (v.started=?4 AND v.id<?5) ORDER BY v.started DESC, v.id DESC LIMIT ?6"))?;
+        let mut runs = stmt
+            .query_map(
+                params![
+                    wid,
+                    account.unwrap_or("__unavailable__"),
+                    automation,
+                    before_at,
+                    before_id,
+                    limit as i64 + 1
+                ],
+                record_row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let more = runs.len() > limit;
+        runs.truncate(limit);
+        Ok((runs, more))
     }
     pub fn record(
         &self,
@@ -1129,6 +1167,13 @@ impl Repository {
         }
         Ok(())
     }
+}
+/// The automation runs of workspace ?1 that account ?2 may see, of automation ?3 when it is not
+/// NULL: a run that read an account's mail and calendar shows only while that account does.
+const VISIBLE_RUNS: &str = "SELECT rowid AS rid, id, updated_at, json_extract(body,'$.automationId') AS automation, CAST(json_extract(body,'$.startedAt') AS INTEGER) AS started, EXISTS(SELECT 1 FROM json_each(body,'$.delivered') WHERE value='today') AS today FROM records WHERE kind='automation_run' AND connection_id='' AND workspace_id=?1 AND (json_extract(body,'$.connectionId') IS NULL OR json_extract(body,'$.connectionId')=?2) AND (?3 IS NULL OR json_extract(body,'$.automationId')=?3)";
+/// The connection a workspace shows: `connection` while it is connected and `w` is bound to it.
+fn shown_account<'a>(connection: Option<&'a Connection>, w: &Workspace) -> Option<&'a Connection> {
+    connection.filter(|c| c.status == "connected" && w.connection_id.as_ref() == Some(&c.id))
 }
 /// Keeps the newest [`AUTOMATION_RUNS_KEPT`] runs of one automation, or of every automation.
 fn prune_automation_runs(db: &Sqlite, automation_id: Option<&str>) -> Result<()> {

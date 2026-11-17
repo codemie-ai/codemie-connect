@@ -638,6 +638,9 @@ impl Core {
         if req.op == Operation::AiUsage {
             return self.ai_usage(&req);
         }
+        if req.op == Operation::AutomationRuns {
+            return self.automation_runs(&req);
+        }
         // Read-style: a Test can take a minute and must not queue other edits behind it. It
         // writes only its own `ai_run` record, so there is no operation id or revision fence.
         if req.op == Operation::AiTest {
@@ -648,6 +651,15 @@ impl Core {
             return Ok(json!({"cancelled":true}));
         }
         if req.op == Operation::OpenSource {
+            // A link in an automation's result: the address comes from the stored run.
+            if req.data["kind"] == "automation_run" {
+                let run = required(&req.data, "id", 200)?;
+                let n = req.data["link"]
+                    .as_i64()
+                    .ok_or_else(|| WorkspaceError::new("validation", "Choose a link."))?;
+                graph::open_url(&self.automation_run_link(run, n)?)?;
+                return Ok(json!({"opened":true}));
+            }
             let (w, c) = self.active_workspace(&req, true)?;
             let c = c.ok_or_else(|| WorkspaceError::new("needs_login", "Connect Microsoft."))?;
             let kind = required(&req.data, "kind", 30)?;
@@ -726,6 +738,7 @@ impl Core {
                         "inbox".into(),
                         "commitments".into(),
                         "focus".into(),
+                        "automations".into(),
                     ],
                     widget_widths: json!({}),
                 };
@@ -760,10 +773,8 @@ impl Core {
                 if let Some(layout) = req.data["layout"].as_array() {
                     let values: Vec<_> = layout.iter().filter_map(Value::as_str).collect();
                     if values.len() != layout.len()
-                        || values.len() > 5
-                        || values.iter().any(|v| {
-                            !matches!(*v, "brief" | "calendar" | "inbox" | "commitments" | "focus")
-                        })
+                        || values.len() > MAX_WIDGETS
+                        || values.iter().any(|v| !valid_widget_id(v))
                     {
                         return Err(WorkspaceError::new("validation", "Invalid Today layout."));
                     }
@@ -778,12 +789,11 @@ impl Core {
                     let widths = widths.as_object().ok_or_else(|| {
                         WorkspaceError::new("validation", "Invalid widget widths.")
                     })?;
-                    if widths.iter().any(|(k, v)| {
-                        !matches!(
-                            k.as_str(),
-                            "brief" | "focus" | "calendar" | "inbox" | "commitments"
-                        ) || !matches!(v.as_i64(), Some(4 | 6 | 8 | 12))
-                    }) {
+                    if widths.len() > MAX_WIDGET_WIDTHS
+                        || widths.iter().any(|(k, v)| {
+                            !valid_widget_id(k) || !matches!(v.as_i64(), Some(4 | 6 | 8 | 12))
+                        })
+                    {
                         return Err(WorkspaceError::new(
                             "validation",
                             "Choose a supported widget width.",
@@ -1740,6 +1750,44 @@ fn sha256_prefix(v: &str) -> [u8; 4] {
     let hash = Sha256::digest(v.as_bytes());
     [hash[0], hash[1], hash[2], hash[3]]
 }
+/// Today's built-in cards (`WIDGETS` in `ui/workspace/view-today.js`).
+pub const WIDGET_IDS: &[&str] = &[
+    "brief",
+    "focus",
+    "calendar",
+    "inbox",
+    "commitments",
+    "automations",
+];
+/// The most cards a Today layout holds.
+const MAX_WIDGETS: usize = 16;
+/// Remembered card widths, kept also for cards that are hidden.
+const MAX_WIDGET_WIDTHS: usize = 64;
+
+/// A built-in card id or a plugin card `plugin:<plugin id>:<widget id>` (DESIGN 7).
+fn valid_widget_id(v: &str) -> bool {
+    if WIDGET_IDS.contains(&v) {
+        return true;
+    }
+    let Some(rest) = v.strip_prefix("plugin:") else {
+        return false;
+    };
+    let Some((plugin, widget)) = rest.split_once(':') else {
+        return false;
+    };
+    // Plugin ids follow the manifest rule `^[a-z][a-z0-9-]{1,40}$`.
+    let plugin_ok = (2..=41).contains(&plugin.len())
+        && plugin.starts_with(|c: char| c.is_ascii_lowercase())
+        && plugin
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    let widget_ok = (1..=64).contains(&widget.len())
+        && widget.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && widget
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
+    plugin_ok && widget_ok
+}
 fn valid_color(v: &str) -> Result<String> {
     if v.len() == 7 && v.starts_with('#') && v[1..].bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(v.into())
@@ -2073,6 +2121,73 @@ mod tests {
             })
             .await;
         assert!(snapshot.is_ok());
+    }
+
+    #[tokio::test]
+    async fn layout_accepts_automations_and_plugin_widgets_rejects_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let save = |data: Value| {
+            let core = core.clone();
+            async move {
+                core.request(mutation(&core, Operation::LayoutSave, data))
+                    .await
+            }
+        };
+        // Every built-in card, Automation results and a plugin card (Task 24), with widths.
+        save(json!({
+            "layout": ["brief", "focus", "calendar", "inbox", "commitments", "automations", "plugin:github:repos"],
+            "widgetWidths": {"automations": 6, "plugin:github:repos": 4, "brief": 8},
+        }))
+        .await
+        .unwrap();
+        let w = core.repo().unwrap().workspace("personal").unwrap();
+        assert_eq!(w.layout.len(), 7);
+        assert_eq!(w.layout[5], "automations");
+        assert_eq!(w.layout[6], "plugin:github:repos");
+        assert_eq!(w.widget_widths["plugin:github:repos"], 4);
+        // Sixteen cards are the most a layout holds; repeats collapse.
+        let sixteen: Vec<String> = (0..16).map(|n| format!("plugin:plugin-{n}:w")).collect();
+        save(json!({"layout": sixteen})).await.unwrap();
+        save(json!({"layout": ["automations", "automations"]}))
+            .await
+            .unwrap();
+        assert_eq!(
+            core.repo().unwrap().workspace("personal").unwrap().layout,
+            vec!["automations".to_string()]
+        );
+
+        let seventeen: Vec<String> = (0..17).map(|n| format!("plugin:plugin-{n}:w")).collect();
+        for bad in [
+            json!(["weather"]),
+            json!(["Automations"]),
+            json!(["plugin:github"]),
+            json!(["plugin::repos"]),
+            json!(["plugin:github:"]),
+            json!(["plugin:GitHub:repos"]),
+            json!(["plugin:1github:repos"]),
+            json!(["plugin:github:repos:extra"]),
+            json!(["plugin:github:re pos"]),
+            json!([42]),
+            json!(seventeen),
+        ] {
+            let err = save(json!({"layout": bad.clone()})).await.unwrap_err();
+            assert_eq!(err.message, "Invalid Today layout.", "{bad}");
+        }
+        for bad in [
+            json!({"weather": 6}),
+            json!({"automations": 5}),
+            json!({"plugin:github": 6}),
+            json!({"plugin:github:repos": "wide"}),
+        ] {
+            let err = save(json!({"widgetWidths": bad.clone()}))
+                .await
+                .unwrap_err();
+            assert_eq!(err.message, "Choose a supported widget width.", "{bad}");
+        }
+        save(json!({"widgetWidths": {"plugin:github:ci": 12, "automations": 8}}))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

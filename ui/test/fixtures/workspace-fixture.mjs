@@ -181,6 +181,49 @@ export function aiStatus(kind = 'both', { defaultProfile } = {}) {
 
 export const aiUsage = () => contract('ai-usage');
 
+// ---------------------------------------------------------------- automations (DESIGN 6.6)
+// Written by the Rust tests `contract_fixtures` (automation.json) and
+// `contract_fixtures_match_the_real_automation_runs` (runs, Run log pages, snapshot runs).
+
+export const automationContract = () => ({
+  automation: contract('automation'), runOk: contract('automation-run-ok'), runFailed: contract('automation-run-failed'),
+  runDraft: contract('automation-run-draft'), runsPage: contract('automation-runs-page'), snapshotRuns: contract('automation-snapshot-runs'),
+});
+
+/**
+ * The contract automations and the runs the snapshot keeps of them, moved to `nowMs`:
+ * "Morning brief" (`auto-brief`, weekdays 08:45) ran an hour ago (delivered to Today) and failed
+ * 5 minutes ago; "Draft replies to Ann" (`auto-reply`, mail from Ann) drafted a reply 20
+ * minutes ago. Also the records the runs cite: Ann's two mails (`m0`, `m1`, FYI so the Inbox
+ * counts stay) and the commitment `c1`.
+ */
+export function automationRecords(nowMs, connectionId = CID) {
+  const now = Math.floor(nowMs / 1000);
+  const { schedule, event } = contract('automation');
+  const saved = (tpl, id, name) => ({ ...tpl, id, updatedAt: now - 86_400, data: { ...tpl.data, id, name } });
+  const automations = [saved(schedule, 'auto-brief', 'Morning brief'), saved(event, 'auto-reply', 'Draft replies to Ann')];
+  const byId = Object.fromEntries(contract('automation-snapshot-runs').map(r => [r.id, r]));
+  const at = (run, ago) => ({ ...run, updatedAt: now - ago + 5, data: { ...run.data, connectionId, startedAt: now - ago } });
+  const runs = [at(byId['run-1'], 3600), at(byId['run-2'], 300), at(byId['run-3'], 1200)];
+  const ann = (id, ago, text) => ({
+    id, kind: 'message', source: 'mail:inbox', connectionId, workspaceId: null, revision: `r-${id}`, updatedAt: now - ago,
+    data: { channel: 'mail', title: 'Q3 budget', text, from: 'Ann Lee', fromAddress: 'ann@example.test', at: now - ago, lane: 'fyi', lifecycle: 'open', conversationId: 'conv-ann', url: 'https://outlook.office.com/mail/fixture', isRead: true, isMine: false, to: [] },
+  });
+  const sources = [
+    ann('m0', 7200, 'Could you review the Q3 budget plan?'),
+    ann('m1', 1500, 'Can you send the Q3 numbers by Friday?'),
+    { id: 'c1', kind: 'commitment', source: 'local', connectionId: null, workspaceId: 'personal', revision: 'l-c1', updatedAt: now - 600, data: { text: 'Send the roadmap', done: false, owner: 'You' } },
+  ];
+  return { automations, runs, sources };
+}
+
+/** `snapshot` with the contract automations, their runs and the records the runs cite. */
+export function withAutomations(snapshot, nowMs) {
+  const { automations, runs, sources } = automationRecords(nowMs, snapshot.connection?.id || CID);
+  snapshot.records.push(...automations, ...runs, ...sources);
+  return snapshot;
+}
+
 // ---------------------------------------------------------------- data location (DESIGN 8)
 // Written by the Rust test `contract_fixtures_match_the_real_data_location`.
 

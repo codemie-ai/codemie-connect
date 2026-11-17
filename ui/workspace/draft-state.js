@@ -112,37 +112,48 @@ export function runningLabel(job, { nowMs = Date.now(), verb = 'Drafting' } = {}
   return { text: `${label} ${seconds} s`, label, seconds, starting };
 }
 
-/** "Drafted with Claude Code · Sonnet · 4 s · from 5 messages" (`verb` "Summarized" for a summary). */
-export function provenanceLabel(p = {}, verb = 'Drafted') {
+/**
+ * "Drafted with Claude Code · Sonnet · 4 s · from 5 messages" (`verb` "Summarized" for a
+ * summary). `by` names the automation that prepared it: "Drafted by “Morning brief” with …".
+ */
+export function provenanceLabel(p = {}, verb = 'Drafted', by = '') {
   const n = (p.messageIds || []).length;
   const parts = [profileName(p.profile), modelLabel(p.model)];
   if (p.durationMs != null) parts.push(`${Math.max(1, Math.round(p.durationMs / 1000))} s`);
   if (n) parts.push(`from ${n} message${n === 1 ? '' : 's'}`);
-  return `${verb} with ${parts.filter(Boolean).join(' · ')}`;
+  return `${verb}${by ? ` by ${by}` : ''} with ${parts.filter(Boolean).join(' · ')}`;
 }
 
 // ---------------------------------------------------------------- errors (DESIGN 6.2)
 
-const retry = (job, label = 'Try again', kind = 'draft') => ({ label, action: kind === 'summary' ? 'ai-summarize-retry' : 'ai-draft-retry', iconName: 'refresh', attrs: { 'data-id': job.id } });
+const RETRY = { draft: 'ai-draft-retry', summary: 'ai-summarize-retry', automation: 'automation-run' };
+// An automation runs again as a whole (Run now); drafts and summaries retry their own job.
+const retry = (job, label = 'Try again', kind = 'draft') => ({
+  label: kind === 'automation' ? 'Run again' : label, action: RETRY[kind] || RETRY.draft, iconName: 'refresh',
+  attrs: { 'data-id': kind === 'automation' ? job.payload?.automationId : job.id },
+});
+const CHOOSE = { draft: 'ai-draft-choose', summary: 'ai-summarize-choose', automation: 'automation-choose' };
 const settingsAction = { label: 'Open Claude settings', action: 'ai-open-settings', iconName: 'settings' };
 const toolsAction = { label: 'Open CodeMie tools', action: 'setup-tools', iconName: 'tools' };
 
 /**
  * One sentence and one action for a failed draft job (or, with `kind: 'summary'`, a failed
- * summary job), keyed on its error class and code (never on its state text). Null for a job
- * that did not fail (stopped, running, done).
+ * summary job; with `kind: 'automation'`, a failed automation run shaped as a job whose
+ * `payload.automationId` names it), keyed on its error class and code (never on its state
+ * text). Null for a job that did not fail (stopped, running, done).
  */
 export function draftError(job, { profiles = [], settings = {}, kind = 'draft' } = {}) {
   if (!job || !['failed', 'blocked'].includes(job.state)) return null;
   const summary = kind === 'summary';
-  const task = summary ? 'summarize conversations' : 'draft replies';
+  const automation = kind === 'automation';
+  const task = summary ? 'summarize conversations' : automation ? 'run automations' : 'draft replies';
   const code = job.errorCode;
   if (code === 'conflict') return { tone: 'warning', sentence: 'The conversation changed while drafting.', action: retry(job, 'Draft again') };
   const cls = job.errorClass || code;
   const profileId = job.payload?.profile || settings.routes?.[job.payload?.purpose]?.profile || settings.defaultProfile || 'claude';
   const label = profiles.find(p => p.id === profileId)?.label || (isCodeMie(profileId) ? `CodeMie · ${profileId.slice(8)}` : 'Claude Code');
   switch (cls) {
-    case 'needs_choice': return { tone: 'info', sentence: 'Choose which Claude writes for you.', action: { label: 'Choose Claude', action: summary ? 'ai-summarize-choose' : 'ai-draft-choose', iconName: 'spark', attrs: { 'data-id': job.id } } };
+    case 'needs_choice': return { tone: 'info', sentence: 'Choose which Claude writes for you.', action: { label: 'Choose Claude', action: CHOOSE[kind] || CHOOSE.draft, iconName: 'spark', attrs: { 'data-id': automation ? job.payload?.automationId : job.id } } };
     case 'needs_login':
       return isCodeMie(profileId)
         ? { tone: 'warning', sentence: `${label} isn't signed in.`, action: toolsAction }
@@ -151,10 +162,10 @@ export function draftError(job, { profiles = [], settings = {}, kind = 'draft' }
     case 'too_old': return { tone: 'warning', sentence: `This Claude Code is too old to ${task}.`, action: settingsAction };
     case 'not_configured': return { tone: 'warning', sentence: "This CodeMie profile isn't fully set up.", action: toolsAction };
     case 'rate_limited': return { tone: 'warning', sentence: "Claude's usage limit was reached. Try again later.", action: null };
-    case 'permission_required': return { tone: 'warning', sentence: `This conversation is no longer available to ${summary ? 'summarize' : 'draft from'}.`, action: null };
+    case 'permission_required': return { tone: 'warning', sentence: automation ? 'Connect may no longer read what this automation needs.' : `This conversation is no longer available to ${summary ? 'summarize' : 'draft from'}.`, action: null };
     case 'timeout': return { tone: 'error', sentence: 'Claude took too long to answer.', action: retry(job, 'Try again', kind) };
     case 'invalid_output': return { tone: 'error', sentence: "Claude's answer couldn't be used.", action: retry(job, 'Try again', kind) };
-    default: return { tone: 'error', sentence: summary ? "Claude couldn't summarize this conversation." : "Claude couldn't write this draft.", action: retry(job, 'Try again', kind) };
+    default: return { tone: 'error', sentence: summary ? "Claude couldn't summarize this conversation." : automation ? "Claude couldn't finish this run." : "Claude couldn't write this draft.", action: retry(job, 'Try again', kind) };
   }
 }
 

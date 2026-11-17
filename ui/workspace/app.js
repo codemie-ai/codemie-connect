@@ -15,6 +15,9 @@ import {
   optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
 } from './draft-state.js';
 import { settings, LEGACY_TABS, SETTINGS_TABS } from './view-settings.js';
+import {
+  automations, automationEditor, draftFromAutomation, editorDraft, toAutomation, fieldForError, outputText, newAutomationDraft, duplicateDraft, TEMPLATES, AUTOMATION_TABS,
+} from './view-automations.js';
 import { renderShell } from './shell.js';
 import { nextAiSettings, LOGIN_STEPS } from './settings-ai.js';
 import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
@@ -23,7 +26,9 @@ import { recoveryPage, firstReport, USE_DEFAULT_WARNING } from './recovery.js';
 import { formatBytes, removeOldBody, useDefaultBody } from './settings-storage.js';
 import { createDataLocationFlow } from './data-location-flow.js';
 
-const ROUTES = ['today', 'calendar', 'inbox', 'settings'];
+const ROUTES = ['today', 'calendar', 'inbox', 'automations', 'settings'];
+/** Runs per Run log page (native allows up to 50). */
+const RUNS_PAGE = 20;
 const root = document.getElementById('workspace-app');
 const legacy = document.getElementById('app');
 const invoke = window.__TAURI__?.core?.invoke;
@@ -49,6 +54,8 @@ const state = {
   // Reply drafts: this session's reply-box decisions per draft key (see `replyBox`), the open
   // options popover, and failed drafts the user dismissed.
   drafts: {}, summaryUi: {}, draftPopover: null, draftDismissed: localJson('codemie.draft.dismissed', []),
+  // Automations: the open tab and the Run log pages read with `automation_runs` (null until read).
+  automations: { tab: 'automations', runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } },
 };
 let legacyModule;
 let legacyMounted = false;
@@ -61,7 +68,7 @@ let noteTimer;
 let searchTimer;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle']);
+const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle']);
 let lastDraftSignature = '';
 // Updates that arrived while the draft options popover was open; shown once it closes.
 let heldRender = false;
@@ -207,12 +214,13 @@ async function render() {
   applyTheme(s.settings.theme);
   const ctx = { state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s) };
   if (state.route === 'inbox') ensureSelection(s);
-  if (['inbox', 'today'].includes(state.route)) readClaude();
+  if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
   const pageClass = `ws-page ws-page-${state.route}`;
   const html = state.route === 'today' ? today(s, ctx)
     : state.route === 'calendar' ? calendar(s, ctx)
       : state.route === 'inbox' ? inbox(s, ctx)
-        : settings(s, ctx);
+        : state.route === 'automations' ? automations(s, ctx)
+          : settings(s, ctx);
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
   if (next) {
     next.innerHTML = shellMarkup();
@@ -305,8 +313,9 @@ async function route(name, tab) {
   if (legacyMounted && legacyModule && !(await legacyModule.leaveLegacyTools())) return;
   await savePendingNote();
   state.route = ROUTES.includes(name) ? name : 'today';
-  if (tab) state.settingsTab = SETTINGS_TABS.some(([, id]) => id === tab) ? tab : 'general';
-  history.replaceState(null, '', `#/${state.route}${state.route === 'settings' ? `/${state.settingsTab}` : ''}`);
+  if (tab && state.route === 'settings') state.settingsTab = SETTINGS_TABS.some(([, id]) => id === tab) ? tab : 'general';
+  if (tab && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === tab) ? tab : 'automations';
+  history.replaceState(null, '', `#/${state.route}${state.route === 'settings' ? `/${state.settingsTab}` : state.route === 'automations' && state.automations.tab !== 'automations' ? `/${state.automations.tab}` : ''}`);
   await render();
   const heading = root.querySelector('h1');
   heading?.setAttribute('tabindex', '-1');
@@ -314,6 +323,7 @@ async function route(name, tab) {
   if (state.route === 'calendar') await ensureCalendarWindow();
   if (state.route === 'settings' && state.settingsTab === 'ai') loadAi().catch(fail);
   if (generalTabOpen()) loadStorage().catch(fail);
+  if (runLogOpen()) loadRuns().catch(fail);
 }
 
 // ---------------------------------------------------------------- Claude (AI)
@@ -430,7 +440,7 @@ function readClaude({ now = false, detect = false } = {}) {
     if (state.ai.status === 'loading') return;
     const changed = JSON.stringify([state.ai.profiles, state.ai.settings]) !== JSON.stringify([status.profiles, status.settings]);
     Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
-    if (changed && ['inbox', 'today'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover && !legacyMounted) render();
+    if (changed && ['inbox', 'today', 'automations'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover && !legacyMounted) render();
   }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ }).finally(() => { claudeRead = null; });
   return plan.detect;
 }
@@ -692,6 +702,214 @@ function stepCalendar(direction) {
   return setCalendar(d);
 }
 
+// ---------------------------------------------------------------- automations (DESIGN 6.6)
+
+const runLogOpen = () => state.route === 'automations' && state.automations.tab === 'runs';
+const automationRecord = id => getRecord('automation', id);
+let runLoads = 0;
+let lastRunSignature = '';
+
+/** What changes when a run starts, ends or is stored: the Run log reads its first page again. */
+const runSignature = s => [
+  ...records(s, 'automation_run').map(r => `${r.id}:${r.revision}`),
+  ...s.jobs.filter(j => j.kind === 'automation_run').map(j => `${j.id}:${j.state}`),
+].sort().join('|');
+
+/**
+ * Reads the Run log: the newest page (keeping as many runs as were shown, up to 50), or with
+ * `more` the page after the last one shown. Pages come from `automation_runs`, not the snapshot.
+ */
+async function loadRuns({ more = false } = {}) {
+  const ui = state.automations.runs;
+  const load = ++runLoads;
+  const request = { automationId: ui.filter || null, limit: RUNS_PAGE };
+  if (more) {
+    if (!ui.next) return;
+    request.before = ui.next;
+    ui.loadingMore = true;
+  } else {
+    request.limit = Math.min(50, Math.max(RUNS_PAGE, ui.items?.length || 0));
+  }
+  if (runLogOpen() && !modalOpen() && more) await render();
+  try {
+    const page = await store.query('automation_runs', request);
+    if (load !== runLoads) return;
+    Object.assign(ui, { items: more ? [...(ui.items || []), ...page.runs] : page.runs, next: page.next, error: '', loadingMore: false });
+  } catch (err) {
+    if (load !== runLoads) return;
+    Object.assign(ui, { error: err?.message || String(err), loadingMore: false });
+  }
+  lastRunSignature = runSignature(snap());
+  // The filter select keeps focus after a choice; render keeps it there.
+  if (runLogOpen() && !modalOpen()) await render();
+}
+
+/** The run behind a Run log row or Today's card. */
+const runRecord = id => state.automations.runs.items?.find(r => r.id === id) || getRecord('automation_run', id);
+
+/** Asks once which Claude runs automations when nothing would choose one; false when cancelled. */
+async function claudeReadyFor(a) {
+  const ai = state.ai;
+  if (ai.status !== 'ready' || a.ai?.profile || ai.settings?.routes?.automation?.profile || ai.settings?.defaultProfile) return true;
+  return !!(await ensureClaudeChoice());
+}
+
+async function runAutomationNow(id) {
+  const rec = automationRecord(id);
+  if (!rec) throw new Error('This automation no longer exists. Refresh and try again.');
+  if (!(await claudeReadyFor(rec.data))) return;
+  await mutate('automation_run_now', { id });
+  toast(`“${rec.data.name}” is running. Its result appears in the Run log${rec.data.deliver?.today ? ' and on Today' : ''}.`, 'success');
+}
+
+const editorCtx = (error = null) => ({ zone: snap().settings.timeZone, ai: state.ai, error });
+
+/** Renders the editor again from its own form (a trigger, event, profile or reply-draft change). */
+function refreshEditor(form, change = {}, error = null) {
+  const body = form.querySelector('#automation-editor');
+  if (!body) return;
+  const draft = { ...editorDraft(new FormData(form)), ...change };
+  const focused = document.activeElement;
+  const selector = focused && body.contains(focused) ? controlSelector(focused) : null;
+  const scroll = body.closest('.ws-modal-body')?.scrollTop;
+  body.innerHTML = automationEditor(draft, editorCtx(error));
+  if (scroll !== undefined) body.closest('.ws-modal-body').scrollTop = scroll;
+  if (selector) soleMatch(body, selector)?.focus({ preventScroll: true });
+  return body;
+}
+
+/** The editor for a new or saved automation (`draft` from `draftFromAutomation`). */
+async function automationDialog(draft, { title } = {}) {
+  // Profiles and models for the AI choice; a failure leaves "Default" to choose.
+  if (state.ai.status !== 'ready') {
+    await store.query('ai_status', {}).then(status => Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings })).catch(() => {});
+  }
+  const creating = !draft.id;
+  const dialog = openModal({
+    title: title || (creating ? 'New automation' : `Edit “${draft.name}”`),
+    subtitle: 'Claude prepares, you decide. Automations never send anything.',
+    body: `<div class="ws-auto-editor" id="automation-editor">${automationEditor(draft, editorCtx())}</div>`,
+    submit: creating ? 'Create automation' : 'Save changes',
+    size: 'lg',
+    onSubmit: async form => {
+      const current = editorDraft(form);
+      const showError = err => {
+        const field = fieldForError(err?.message);
+        if (!field || err?.code && err.code !== 'validation') throw err;
+        const body = refreshEditor(dialog.querySelector('form'), {}, { field, message: err.message });
+        const target = body?.querySelector(`#${field}`);
+        target?.scrollIntoView({ block: 'center' });
+        (target?.matches('input,select,textarea') ? target : target?.querySelector('input,select,textarea'))?.focus({ preventScroll: true });
+        return false;
+      };
+      let data;
+      try {
+        data = toAutomation(current);
+      } catch (err) {
+        return showError(err);
+      }
+      try {
+        await mutate('automation_save', data);
+      } catch (err) {
+        return showError(err);
+      }
+      if (creating && data.deliver.today) await showAutomationCard();
+      toast(creating ? `“${data.name.trim()}” is ready${data.enabled ? '' : '. It stays off until you turn it on'}.` : 'Automation saved.', 'success');
+      return undefined;
+    },
+  });
+  dialog.classList.add('ws-auto-modal');
+  return dialog;
+}
+
+/** A first automation that delivers to Today puts the Automation results card on Today. */
+async function showAutomationCard() {
+  const w = current();
+  if (w.layout.includes('automations') || w.layout.length >= 16) return;
+  await store.mutate('layout_save', { layout: [...w.layout, 'automations'], widgetWidths: w.widgetWidths || {} }).catch(() => {});
+}
+
+async function automationAction(action, el) {
+  const id = el.dataset.id;
+  el.closest('details')?.removeAttribute('open');
+  switch (action) {
+    case 'automations-tab': return route('automations', el.dataset.tab);
+    case 'automation-new': return automationDialog(newAutomationDraft());
+    case 'automation-template': {
+      const template = TEMPLATES.find(t => t.id === id);
+      if (!template) return undefined;
+      return automationDialog(draftFromAutomation(template.automation), { title: `New automation: ${template.name}` });
+    }
+    case 'automation-edit': {
+      const rec = automationRecord(id);
+      if (!rec) throw new Error('This automation no longer exists. Refresh and try again.');
+      return automationDialog(draftFromAutomation({ ...rec.data, id: rec.id }));
+    }
+    case 'automation-duplicate': {
+      const rec = automationRecord(id);
+      if (!rec) throw new Error('This automation no longer exists. Refresh and try again.');
+      const copy = toAutomation(duplicateDraft(rec));
+      await mutate('automation_save', copy);
+      return toast(`Duplicated as “${copy.name}”. The copy stays off until you turn it on.`, 'success');
+    }
+    case 'automation-delete': {
+      const rec = automationRecord(id);
+      if (!rec) return undefined;
+      return confirmModal({
+        title: `Delete “${rec.data.name}”?`,
+        text: 'Its run log is deleted with it, and a run in progress stops. Reply drafts it prepared stay in your Inbox.',
+        confirm: 'Delete automation', variant: 'danger', initialFocus: 'cancel', guard: true,
+        onConfirm: async () => {
+          await mutate('automation_delete', { id });
+          state.automations.runs.items = state.automations.runs.items?.filter(r => r.data.automationId !== id) || null;
+          toast('Automation deleted.', 'success');
+        },
+      });
+    }
+    case 'automation-toggle':
+      return mutate('automation_toggle', { id, enabled: el.checked }).catch(err => { el.checked = !el.checked; throw err; });
+    case 'automation-run': return runAutomationNow(id);
+    case 'automation-choose':
+      if (!(await ensureClaudeChoice())) return undefined;
+      return runAutomationNow(id);
+    case 'automation-runs-of':
+      Object.assign(state.automations.runs, { filter: id || '', items: null, next: null, expanded: [] });
+      return route('automations', 'runs');
+    case 'automation-open-run':
+      Object.assign(state.automations.runs, { filter: el.dataset.automation || '', items: null, next: null, expanded: [id] });
+      return route('automations', 'runs');
+    case 'automation-runs-filter':
+      Object.assign(state.automations.runs, { filter: el.value, items: null, next: null, expanded: [] });
+      await render();
+      return loadRuns();
+    case 'automation-runs-refresh': return loadRuns();
+    case 'automation-runs-more': return loadRuns({ more: true });
+    case 'run-toggle': {
+      const ui = state.automations.runs;
+      ui.expanded = ui.expanded.includes(id) ? ui.expanded.filter(x => x !== id) : [...ui.expanded, id];
+      return render();
+    }
+    case 'run-copy': {
+      const text = outputText(runRecord(id));
+      try {
+        await navigator.clipboard.writeText(text);
+        return toast('Output copied.', 'success');
+      } catch {
+        return toast('Could not copy. Select the text and copy it.', 'error');
+      }
+    }
+    case 'run-link': return store.query('open_source', { kind: 'automation_run', id, link: Number(el.dataset.link) });
+    // Inside the editor: the trigger kind, the event, the profile or the reply draft changed.
+    case 'automation-kind': {
+      const form = el.closest('form');
+      refreshEditor(form, { kind: el.dataset.kind });
+      return form.querySelector(`[data-action="automation-kind"][data-kind="${el.dataset.kind}"]`)?.focus();
+    }
+    case 'automation-form': return refreshEditor(el.closest('form'));
+    default: return undefined;
+  }
+}
+
 // ---------------------------------------------------------------- dialogs
 
 function commitmentDialog(source) {
@@ -896,6 +1114,7 @@ async function handle(action, el) {
   if (action.startsWith('recovery-')) return recoveryAction(action);
   // Data location works from the recovery page too, where there is no snapshot.
   if (action.startsWith('data-')) return storageAction(action, el);
+  if (action.startsWith('automation') || action.startsWith('run-')) return automationAction(action, el);
   const id = el.dataset.id;
   const s = snap();
   switch (action) {
@@ -1351,6 +1570,10 @@ document.addEventListener('input', ev => {
     }, 220);
   }
   if (ev.target.id === 'reply-body') syncReplyBox(ev.target);
+  if (ev.target.id === 'auto-prompt') {
+    const count = ev.target.closest('form')?.querySelector('[data-auto-count]');
+    if (count) count.textContent = `${ev.target.value.length.toLocaleString('en-US')} / 4,000`;
+  }
   if (ev.target.id === 'draft-instructions' && state.draftPopover) {
     state.draftPopover.instructions = ev.target.value;
     const count = document.querySelector('[data-draft-count]');
@@ -1434,7 +1657,7 @@ let minuteTimer;
 function scheduleMinuteRender() {
   clearTimeout(minuteTimer);
   minuteTimer = setTimeout(async () => {
-    if (ready && ['today', 'calendar'].includes(state.route) && !modalOpen() && !editing() && !legacyMounted) await render().catch(() => {});
+    if (ready && ['today', 'calendar', 'automations'].includes(state.route) && !modalOpen() && !editing() && !legacyMounted) await render().catch(() => {});
     scheduleMinuteRender();
   }, 60_000 - (Date.now() % 60_000) + 50);
 }
@@ -1650,7 +1873,8 @@ async function boot() {
   }
   const hash = location.hash.split('/');
   if (hash[1]) state.route = ROUTES.includes(hash[1]) ? hash[1] : 'today';
-  if (hash[2]) state.settingsTab = hash[2];
+  if (hash[2] && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === hash[2]) ? hash[2] : 'automations';
+  else if (hash[2]) state.settingsTab = hash[2];
   try {
     await store.refresh();
   } catch (err) {
@@ -1671,6 +1895,8 @@ async function boot() {
   store.subscribe(result => {
     applyTheme(result.snapshot.settings.theme);
     if (!ready) return;
+    // A run started, ended or was stored: the Run log reads its newest page again.
+    if (runLogOpen() && state.automations.runs.items && runSignature(result.snapshot) !== lastRunSignature) loadRuns().catch(() => {});
     // A draft that arrived for the open reply box is applied first, whatever is on screen.
     const arrived = !legacyMounted && applyArrivedDraft(result.snapshot);
     if (modalOpen() || legacyMounted) return;
@@ -1688,6 +1914,7 @@ async function boot() {
   await render();
   if (aiTabOpen()) loadAi().catch(fail);
   if (generalTabOpen()) loadStorage().catch(fail);
+  if (runLogOpen()) loadRuns().catch(fail);
   const listen = window.__TAURI__.event.listen;
   // A sync round emits one change per Graph request; reload the snapshot at most ~once a second.
   let refreshTimer = null;

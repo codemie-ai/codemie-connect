@@ -386,6 +386,86 @@ impl Core {
     }
 }
 
+/// Runs per Run log page unless asked otherwise, and the most one page holds.
+const RUNS_PAGE: u64 = 20;
+const RUNS_PAGE_MAX: u64 = 50;
+
+/// The cursor after `run`: when it started and its id.
+fn cursor(run: &Record) -> String {
+    format!("{}:{}", run.data["startedAt"].as_i64().unwrap_or(0), run.id)
+}
+fn parse_cursor(text: &str) -> Option<(i64, String)> {
+    let (at, id) = text.split_once(':')?;
+    let at = at.parse().ok()?;
+    (!id.is_empty() && id.chars().count() <= 200).then(|| (at, id.to_string()))
+}
+
+impl Core {
+    /// `automation_runs {automationId?, limit?, before?}`: one page of the Run log, newest first,
+    /// with `next`, the cursor of the page after it (null at the end). Read-only like `ai_status`:
+    /// no operation id and no revision bump. Shows what the snapshot would show of each run.
+    pub(in crate::workspace) fn automation_runs(&self, req: &Request) -> Result<Value> {
+        let automation = match req.data.get("automationId") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(required(&req.data, "automationId", 200)?),
+        };
+        let limit = match req.data.get("limit") {
+            None | Some(Value::Null) => RUNS_PAGE,
+            Some(v) => v
+                .as_u64()
+                .filter(|n| (1..=RUNS_PAGE_MAX).contains(n))
+                .ok_or_else(|| invalid("Ask for 1 to 50 runs."))?,
+        } as usize;
+        let before = match req.data.get("before") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(v.as_str().and_then(parse_cursor).ok_or_else(|| {
+                invalid("This page of the run log is no longer available. Reload it.")
+            })?),
+        };
+        let r = self.repo()?;
+        let account = r.visible_account(&r.workspace(PERSONAL)?)?;
+        let (runs, more) = r.automation_runs(
+            PERSONAL,
+            account.as_deref(),
+            automation,
+            limit,
+            before.as_ref().map(|(at, id)| (*at, id.as_str())),
+        )?;
+        let next = more.then(|| runs.last().map(cursor)).flatten();
+        Ok(json!({"runs": runs, "next": next}))
+    }
+
+    /// The address of the `n`-th link (in reading order) of a stored run's summary blocks, for
+    /// Open: the renderer names a link, never an address (DESIGN 6.6, ruling R26). Only a run
+    /// the snapshot would show, and only secure links.
+    pub(in crate::workspace) fn automation_run_link(&self, run_id: &str, n: i64) -> Result<String> {
+        let missing = || WorkspaceError::new("not_found", "This link is no longer available.");
+        let r = self.repo()?;
+        let run = match r.record("automation_run", run_id, None, Some(PERSONAL)) {
+            Err(e) if e.code == "not_found" => return Err(missing()),
+            other => other?,
+        };
+        if let Some(owner) = run.data["connectionId"].as_str() {
+            if r.visible_account(&r.workspace(PERSONAL)?)?.as_deref() != Some(owner) {
+                return Err(missing());
+            }
+        }
+        let n = usize::try_from(n).map_err(|_| missing())?;
+        let href = run.data["output"]["summaryBlocks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|b| b["inlines"].as_array().into_iter().flatten())
+            .filter_map(|i| i["href"].as_str())
+            .nth(n)
+            .ok_or_else(missing)?;
+        if !href.starts_with("https://") {
+            return Err(invalid("Connect opens only secure (https) links."));
+        }
+        Ok(href.into())
+    }
+}
+
 /// The saved automation `id`.
 pub(super) fn stored(r: &Repository, id: &str) -> Result<Automation> {
     let rec = r.record("automation", id, None, Some(PERSONAL))?;
@@ -690,6 +770,145 @@ mod engine_tests {
         core.automations_after_sync().unwrap();
         let keys: Vec<String> = jobs_of(&core).into_iter().map(|j| j.key).collect();
         assert_eq!(keys, vec!["automation:auto-event:event:b4"]);
+    }
+
+    /// A stored run of `automation` that started at `started`; `today` delivers it to Today.
+    fn stored_run(id: &str, automation: &str, started: i64, today: bool, account: Value) -> Record {
+        Record {
+            id: id.into(),
+            kind: "automation_run".into(),
+            connection_id: None,
+            workspace_id: Some(PERSONAL.into()),
+            source: "automation".into(),
+            revision: "v1".into(),
+            updated_at: started + 5,
+            data: json!({"automationId": automation, "status": if today { "ok" } else { "failed" },
+                "startedAt": started, "delivered": if today { json!(["today"]) } else { json!([]) },
+                "connectionId": account}),
+        }
+    }
+    fn read(op: Operation, data: Value) -> Request {
+        Request {
+            op,
+            workspace_id: Some(PERSONAL.into()),
+            expected_revision: None,
+            operation_id: None,
+            data,
+        }
+    }
+    fn ids(runs: &Value) -> Vec<String> {
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn automation_runs_page_newest_first_and_the_snapshot_keeps_the_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        seed(&core);
+        for data in [schedule_json(), event_json()] {
+            core.request(mutation(&core, Operation::AutomationSave, data))
+                .await
+                .unwrap();
+        }
+        {
+            let mut r = core.repo().unwrap();
+            for run in [
+                stored_run("s-today", "auto-schedule", 100, true, json!("acct")),
+                stored_run("s-failed", "auto-schedule", 200, false, json!("acct")),
+                stored_run("s-quiet", "auto-schedule", 150, false, Value::Null),
+                // A run that read another account's mail never shows while this one is signed in.
+                stored_run("e-other", "auto-event", 120, true, json!("acct-2")),
+                stored_run("e-today", "auto-event", 110, true, json!("acct")),
+            ] {
+                r.put_automation_run(&run).unwrap();
+            }
+        }
+        // The snapshot carries each automation's latest run and its latest run on Today.
+        let snapshot = core.repo().unwrap().snapshot().unwrap();
+        let mut in_snapshot: Vec<&str> = snapshot
+            .records
+            .iter()
+            .filter(|r| r.kind == "automation_run")
+            .map(|r| r.id.as_str())
+            .collect();
+        in_snapshot.sort();
+        assert_eq!(in_snapshot, vec!["e-today", "s-failed", "s-today"]);
+
+        // The Run log reads pages, newest first, without an operation id or a revision bump.
+        let before = core.repo().unwrap().revision().unwrap();
+        let first = core
+            .request(read(Operation::AutomationRuns, json!({"limit": 2})))
+            .await
+            .unwrap();
+        assert_eq!(ids(&first["runs"]), vec!["s-failed", "s-quiet"]);
+        let next = first["next"].as_str().unwrap().to_string();
+        let second = core
+            .request(read(
+                Operation::AutomationRuns,
+                json!({"limit": 2, "before": next}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ids(&second["runs"]), vec!["e-today", "s-today"]);
+        assert!(second["next"].is_null());
+        let one = core
+            .request(read(
+                Operation::AutomationRuns,
+                json!({"automationId": "auto-event"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ids(&one["runs"]), vec!["e-today"]);
+        assert_eq!(core.repo().unwrap().revision().unwrap(), before);
+
+        for (bad, message) in [
+            (json!({"limit": 51}), "Ask for 1 to 50 runs."),
+            (json!({"limit": 0}), "Ask for 1 to 50 runs."),
+            (
+                json!({"before": "yesterday"}),
+                "This page of the run log is no longer available. Reload it.",
+            ),
+        ] {
+            let err = core
+                .request(read(Operation::AutomationRuns, bad))
+                .await
+                .unwrap_err();
+            assert_eq!(err.message, message);
+        }
+    }
+
+    #[tokio::test]
+    async fn run_links_resolve_only_from_the_stored_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        seed(&core);
+        let mut run = stored_run("run-1", "auto-schedule", 100, true, json!("acct"));
+        run.data["output"] = json!({"summaryBlocks": [
+            {"type": "paragraph", "inlines": [{"text": "See "}, {"text": "the plan", "href": "https://example.test/plan"}]},
+            {"type": "item", "inlines": [{"text": "plain"}, {"text": "old", "href": "http://example.test/old"}]},
+        ]});
+        let mut hidden = run.clone();
+        hidden.id = "run-2".into();
+        hidden.data["connectionId"] = "acct-2".into();
+        {
+            let mut r = core.repo().unwrap();
+            r.put_automation_run(&run).unwrap();
+            r.put_automation_run(&hidden).unwrap();
+        }
+        let link = |id: &str, n: i64| core.automation_run_link(id, n);
+        assert_eq!(link("run-1", 0).unwrap(), "https://example.test/plan");
+        assert_eq!(
+            link("run-1", 1).unwrap_err().message,
+            "Connect opens only secure (https) links."
+        );
+        assert_eq!(link("run-1", 2).unwrap_err().code, "not_found");
+        assert_eq!(link("run-1", -1).unwrap_err().code, "not_found");
+        assert_eq!(link("run-2", 0).unwrap_err().code, "not_found");
+        assert_eq!(link("missing", 0).unwrap_err().code, "not_found");
     }
 
     #[tokio::test]

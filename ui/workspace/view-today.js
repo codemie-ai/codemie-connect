@@ -6,6 +6,7 @@ import { eventsOnDay, layoutColumns, freeSlots, visibleEvents, calendarColors } 
 import { attentionMessages, records, active, connectionState, messageTitle, decisions, draftKeyOf } from './selectors.js';
 import { claudeAvailable } from './draft-state.js';
 import { dayKey, addDaysToKey, formatDate, formatTime, durationLabel, countdownLabel, greeting, firstName, zonedParts, relativeAge, hourLabel } from './format.js';
+import { automationResultsCard } from './view-automations.js';
 
 export const WIDGETS = {
   brief: { title: 'Up next', width: 8, description: 'Your current or next meeting with a one-click join.' },
@@ -13,6 +14,7 @@ export const WIDGETS = {
   calendar: { title: 'Schedule', width: 6, description: "Today's timeline with free time between meetings." },
   inbox: { title: 'Needs your reply', width: 6, description: 'Outlook and Teams messages waiting for you.' },
   commitments: { title: 'Commitments & notes', width: 12, description: 'Your promises and a scratchpad for Connect.' },
+  automations: { title: 'Automation results', width: 6, description: 'The latest result of each automation, with its sources.' },
 };
 export const WIDGET_IDS = Object.keys(WIDGETS);
 
@@ -59,6 +61,7 @@ export function today(s, ctx) {
     calendar: () => scheduleCard(s, m, connected),
     inbox: () => attentionCard(s, m, connected, ctx.state?.ai),
     commitments: () => commitmentsCard(s, m, w),
+    automations: () => automationResultsCard(s),
   };
   const layout = w.layout.filter(id => widgets[id]);
   const grid = layout.map(id => {

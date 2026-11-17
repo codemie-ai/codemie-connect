@@ -809,7 +809,8 @@ mod tests {
                 .filter(|r| r.kind == "automation_run")
                 .count()
         };
-        assert_eq!(shown(&core), 2);
+        // The snapshot keeps the automation's latest run (ruling R25); both are stored.
+        assert_eq!(shown(&core), 1);
         {
             let mut r = core.repo().unwrap();
             let mut c = r.connection(ACCT).unwrap();
@@ -1423,14 +1424,64 @@ mod tests {
         draft["data"]["provenance"]["at"] = 1_795_000_500.into();
         draft["data"]["provenance"]["runId"] = "run-3".into();
         assert_eq!(record(&event.id).data["status"], "ok");
+        let (ok_pinned, failed_pinned) = (pin(ok_run, 1), pin(record(&failed), 2));
+
+        // Ruling R25: the Run log pages and what the snapshot keeps of the same three runs,
+        // stored again under their pinned ids, one after the other.
+        let event_pinned = pin(record(&event.id), 3);
+        {
+            let mut r = core.repo().unwrap();
+            let runs = [
+                (ok.as_str(), ok_pinned.clone(), 1_795_000_300),
+                (failed.as_str(), failed_pinned.clone(), 1_795_000_400),
+                (event.id.as_str(), event_pinned, 1_795_000_480),
+            ];
+            for (id, mut value, started) in runs {
+                r.delete_local("automation_run", id, "personal").unwrap();
+                value["data"]["startedAt"] = started.into();
+                r.put_automation_run(&serde_json::from_value(value).unwrap())
+                    .unwrap();
+            }
+        }
+        let page = |data: Value| {
+            let core = core.clone();
+            async move {
+                core.request(Request {
+                    op: Operation::AutomationRuns,
+                    workspace_id: Some("personal".into()),
+                    expected_revision: None,
+                    operation_id: None,
+                    data,
+                })
+                .await
+                .unwrap()
+            }
+        };
+        let first = page(json!({"limit": 2})).await;
+        let next = page(json!({"limit": 2, "before": first["next"]})).await;
+        let mut kept: Vec<Record> = core
+            .repo()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .records
+            .into_iter()
+            .filter(|r| r.kind == "automation_run")
+            .collect();
+        kept.sort_by(|a, b| a.id.cmp(&b.id));
 
         let dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
         let update = std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1");
         for (name, value) in [
-            ("automation-run-ok.json", pin(ok_run, 1)),
-            ("automation-run-failed.json", pin(record(&failed), 2)),
+            ("automation-run-ok.json", ok_pinned),
+            ("automation-run-failed.json", failed_pinned),
             ("automation-run-draft.json", draft),
+            (
+                "automation-runs-page.json",
+                json!({"first": first, "next": next}),
+            ),
+            ("automation-snapshot-runs.json", json!(kept)),
         ] {
             let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
             let path = dir.join(name);

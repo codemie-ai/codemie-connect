@@ -76,8 +76,11 @@ function currentJobPolicy(s, job) {
   return true;
 }
 
-/** Claude work whose failures are shown where it was asked for (the reply box), not as decisions. */
-export const INLINE_AI_JOBS = new Set(['ai_draft', 'ai_summarize']);
+/**
+ * Claude work whose failures are shown where it was asked for (the reply box, the summary card,
+ * the automation's Run log), not as decisions.
+ */
+export const INLINE_AI_JOBS = new Set(['ai_draft', 'ai_summarize', 'automation_run']);
 
 /** Prepared actions and failed/blocked work that need a human decision. */
 export function decisions(s) {

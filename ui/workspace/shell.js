@@ -5,7 +5,7 @@ import { avatar, button } from './ui.js';
 import { active, attentionMessages, decisions, syncRunning } from './selectors.js';
 import { agoLabel } from './format.js';
 
-export const NAV = [['today', 'Today'], ['calendar', 'Calendar'], ['inbox', 'Inbox']];
+export const NAV = [['today', 'Today'], ['calendar', 'Calendar'], ['inbox', 'Inbox'], ['automations', 'Automations']];
 
 export function syncStatus(s) {
   const c = s.connection;

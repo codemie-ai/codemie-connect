@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations } from '../fixtures/workspace-fixture.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -35,8 +35,22 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates }) {
   const s = snapshot;
+  // Automation runs live beside the snapshot, as in native: the snapshot shows each
+  // automation's latest run and its latest run on Today; `automation_runs` pages through all.
+  let allRuns = s.records.filter(r => r.kind === 'automation_run');
+  s.records = s.records.filter(r => r.kind !== 'automation_run');
+  const startedOf = r => r.data.startedAt || 0;
+  const shownRuns = () => {
+    const keep = new Map();
+    for (const r of [...allRuns].sort((a, b) => startedOf(b) - startedOf(a))) {
+      const id = r.data.automationId;
+      if (!keep.has(`${id}:latest`)) keep.set(`${id}:latest`, r);
+      if ((r.data.delivered || []).includes('today') && !keep.has(`${id}:today`)) keep.set(`${id}:today`, r);
+    }
+    return [...new Set(keep.values())];
+  };
   const ai = aiInit;
   const location = locationInit;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -50,7 +64,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   const find = (kind, id) => s.records.find(r => r.kind === kind && r.id === id);
   const fail = (code, message, cls) => { throw cls ? { code, message, class: cls } : { code, message }; };
   const ops = {
-    snapshot: () => ({ snapshot: clone(s), authPending, authError: null }),
+    snapshot: () => ({ snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError: null }),
     settings_update: d => {
       if (d.capabilities) s.connection.enabled = d.capabilities;
       for (const [k, v] of Object.entries(d)) if (k !== 'capabilities') s.settings[k] = v;
@@ -230,6 +244,63 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       return { queued: true, jobId: job.id };
     },
   };
+  // Automations (DESIGN 6.6): saved like native (backend sentences for mistakes); Run now queues
+  // a job that runs and stores a run from the contract fixture, or the failure in
+  // `window.__automationPlan` ({ outcome: 'fail' }).
+  Object.assign(ops, {
+    automation_save: d => {
+      calls.push(['automation_save', d]);
+      if (!String(d.name || '').trim()) fail('validation', 'Give the automation a name (up to 80 characters).');
+      if (!String(d.prompt || '').trim()) fail('validation', 'Write the instructions for the automation.');
+      if (d.trigger?.kind === 'schedule' && !(d.trigger.days || []).length) fail('validation', 'Choose at least one day for the schedule.');
+      if (['mail_from', 'chat_from'].includes(d.trigger?.event) && !(d.trigger.senders || []).length) fail('validation', 'Add at least one sender or domain for this trigger.');
+      const id = d.id || crypto.randomUUID();
+      const record = { id, kind: 'automation', source: 'local', connectionId: null, workspaceId: 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { ...d, id, name: d.name.trim() } };
+      s.records = s.records.filter(r => !(r.kind === 'automation' && r.id === id)).concat(record);
+      return { record };
+    },
+    automation_toggle: d => {
+      calls.push(['automation_toggle', d]);
+      const r = find('automation', d.id);
+      r.data.enabled = d.enabled;
+      return { record: r };
+    },
+    automation_delete: d => {
+      calls.push(['automation_delete', d]);
+      s.records = s.records.filter(r => !(r.kind === 'automation' && r.id === d.id));
+      allRuns = allRuns.filter(r => r.data.automationId !== d.id);
+      return { deleted: true };
+    },
+    automation_run_now: d => {
+      calls.push(['automation_run_now', d]);
+      const a = find('automation', d.id);
+      if (s.jobs.some(j => j.kind === 'automation_run' && j.payload.automationId === d.id && ['queued', 'running'].includes(j.state))) fail('conflict', 'This automation is already running.');
+      const job = { id: crypto.randomUUID(), kind: 'automation_run', key: `automation:${d.id}:manual`, state: 'queued', dueAt: now(), workspaceId: 'personal', connectionId: null, attempts: 0, policy: {}, payload: { automationId: d.id, title: a.data.name, trigger: { kind: 'manual' } }, result: null };
+      s.jobs.unshift(job);
+      const plan = window.__automationPlan || { outcome: 'ok', ms: 1500 };
+      const update = () => { s.revision++; emit('workspace:changed'); };
+      setTimeout(() => { job.state = 'running'; job.payload.startedAt = now(); update(); }, 150);
+      setTimeout(() => {
+        if (job.state !== 'running') return;
+        const ok = plan.outcome !== 'fail';
+        const t = clone(ok ? automationTemplates.runOk : automationTemplates.runFailed);
+        const delivered = ok ? [a.data.deliver?.today && 'today', a.data.deliver?.notify && 'notification_queued'].filter(Boolean) : [];
+        allRuns.push({ ...t, id: job.id, updatedAt: now(), data: { ...t.data, automationId: a.id, automationName: a.data.name, connectionId: s.connection?.id || null, startedAt: now() - 2, trigger: { kind: 'manual' }, delivered } });
+        Object.assign(job, { state: ok ? 'succeeded' : 'failed', result: ok ? 'Automation ran' : 'Claude Code is not signed in.' });
+        update();
+      }, 150 + (plan.ms || 1500));
+      return { queued: true, jobId: job.id };
+    },
+    automation_runs: d => {
+      const limit = d.limit || 20;
+      const runs = allRuns.filter(r => !d.automationId || r.data.automationId === d.automationId)
+        .sort((a, b) => startedOf(b) - startedOf(a) || (b.id < a.id ? -1 : 1));
+      const from = d.before ? runs.findIndex(r => `${startedOf(r)}:${r.id}` === d.before) + 1 : 0;
+      const page = runs.slice(from, from + limit);
+      const next = runs.length > from + limit ? `${startedOf(page.at(-1))}:${page.at(-1).id}` : null;
+      return { runs: page, next };
+    },
+  });
   window.__setSummaryStale = value => { for (const r of s.records) if (r.kind === 'summary') r.data.stale = value; s.revision++; emit('workspace:changed'); };
   window.__bridgeCalls = calls;
   // What detection finds next time (Claude signed in or set up meanwhile).
@@ -287,7 +358,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'automation_runs'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -328,7 +399,7 @@ const STORAGE = {
   disk_full: storageOf('not_writable', { issue: 'The disk that holds your data folder is full.' }),
 };
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default' } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -343,10 +414,11 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
     const first = connected.records.find(r => r.id === 'm-reply-1');
     ['Thanks. Could you also send Jordan the draft?', 'Also, please book the review room for Thursday.', 'One more thing: the comments are due Friday 20 November.'].forEach((text, i) => connected.records.push({ ...first, id: `m-long-${i}`, revision: `r-long-${i}`, data: { ...first.data, text, at: first.data.at + 120 * (i + 1), lane: 'fyi', isRead: true } }));
   }
+  if (automations) withAutomations(connected, now);
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract() })})`);
   await page.goto(base + hash);
   await page.waitForSelector(unavailable ? '.ws-recovery' : '.ws-sidebar');
   currentPage = page;
@@ -1483,6 +1555,172 @@ for (const theme of ['dark', 'light']) {
   });
   await check('onboarding: no page errors', async () => assert(errors.length === 0, errors.join(' | ')));
   await context.close().catch(() => {});
+}
+
+// Automations (DESIGN 6.6): create from a template, run, see it on Today, turn off; the editor,
+// its validation and the Run log; both themes at 1440, 1000 and 1680 px.
+const noOverflow = async (page, what) => {
+  const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-modal[open] .ws-modal-body')].map(el => el.scrollWidth - el.clientWidth)));
+  assert(overflow <= 0, `${what} overflows by ${overflow}px`);
+};
+const editorOpen = async page => {
+  await page.waitForSelector('.ws-modal[open] #automation-editor');
+  await page.waitForTimeout(250);
+};
+for (const theme of ['dark', 'light']) {
+  for (const [width, height] of [[1440, 900], [1000, 760], [1680, 960]]) {
+    const tag = `${theme}-${width}`;
+    const { page, context, errors } = await open({ theme, width, height, hash: '#/automations' });
+
+    await check(`${tag}: automations create from Morning brief, run, show on Today and turn off`, async () => {
+      await page.waitForSelector('.ws-page-automations .ws-auto-empty');
+      assert(await page.locator('.ws-nav button[data-route=automations][aria-current=page]').count() === 1, 'sidebar entry not current');
+      await noOverflow(page, 'empty list');
+      await shot(page, `${tag}-automations-empty`);
+      await page.click('[data-action="automations-tab"][data-tab="templates"]');
+      await page.waitForSelector('[data-action="automation-template"][data-id="morning-brief"]');
+      assert(await page.locator('.ws-auto-template').count() === 4, 'four templates');
+      await noOverflow(page, 'templates');
+      await shot(page, `${tag}-automations-templates`);
+      await page.click('[data-action="automation-template"][data-id="morning-brief"]');
+      await editorOpen(page);
+      assert(await page.inputValue('#auto-name') === 'Morning brief', 'name prefilled');
+      assert(await page.inputValue('#auto-time') === '08:45', 'time prefilled');
+      assert(await page.locator('[data-day]:checked').count() === 5, 'weekdays');
+      assert(await page.locator('[data-deliver="draftReply"]').count() === 0, 'no reply draft for a schedule');
+      assert((await text(page, '.ws-modal[open]')).includes('Europe/Kyiv'), 'zone shown');
+      await noOverflow(page, 'schedule editor');
+      await shot(page, `${tag}-automation-editor-schedule`);
+      await page.evaluate(() => { const body = document.querySelector('.ws-modal[open] .ws-modal-body'); body.scrollTop = body.scrollHeight; });
+      await shot(page, `${tag}-automation-editor-schedule-bottom`);
+      await page.click('.ws-modal[open] button[type=submit]');
+      await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+      await page.click('[data-action="automations-tab"][data-tab="automations"]');
+      await page.waitForSelector('.ws-auto-row');
+      assert((await text(page, '.ws-auto-row')).includes('Weekdays at 08:45'), 'trigger summary');
+      const saved = (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === 'automation_save').at(-1)[1];
+      assert(saved.trigger.time === '08:45' && saved.deliver.today && saved.read.calendarToday && !saved.deliver.draftReply, JSON.stringify(saved));
+      const layout = await page.evaluate(() => window.__workspace.store.get().snapshot.workspaces[0].layout);
+      assert(layout.includes('automations'), `Today card added: ${layout}`);
+
+      const id = saved.id || await page.locator('.ws-auto-row').getAttribute('data-automation');
+      await page.click(`.ws-auto-row [data-action="automation-run"]`);
+      await page.waitForSelector('.ws-auto-row .ws-badge-info');
+      await page.waitForSelector('.ws-auto-row .ws-badge-success', { timeout: 6000 });
+      await noOverflow(page, 'populated list');
+      await shot(page, `${tag}-automations-list`);
+
+      await page.click('.ws-nav button[data-route=today]');
+      await page.waitForSelector('.ws-auto-card .ws-auto-result');
+      assert((await text(page, '.ws-auto-card')).includes('2 replies owed'), 'run on Today');
+      assert(await page.locator('.ws-auto-card [data-action="automation-open-run"]').count() === 1, 'Open run');
+      await page.locator('.ws-auto-card').scrollIntoViewIfNeeded();
+      await noOverflow(page, 'Today');
+      await page.locator('.ws-auto-card').screenshot({ path: join(OUT, `${tag}-today-automation-results.png`) });
+      await page.click('.ws-auto-card [data-action="automation-open-run"]');
+      await page.waitForSelector('.ws-run.ws-open .ws-run-output');
+
+      await page.click('.ws-nav button[data-route=automations]');
+      await page.click('[data-action="automations-tab"][data-tab="automations"]');
+      await page.locator('.ws-auto-row .ws-switch').first().click();
+      await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'automation_toggle' && d.enabled === false));
+      await page.waitForSelector('.ws-auto-row.ws-off');
+      assert(!(await page.locator('.ws-auto-row input[data-action="automation-toggle"]').isChecked()), 'switch still on');
+      assert(id, 'saved automation id');
+    });
+
+    await check(`${tag}: the editor locks the conversation for reply drafts and shows backend sentences inline`, async () => {
+      await page.click('[data-action="automations-tab"][data-tab="templates"]');
+      await page.click('[data-action="automation-template"][data-id="draft-replies"]');
+      await editorOpen(page);
+      const conversation = page.locator('[data-read="triggerConversation"]');
+      assert(await conversation.isChecked() && await conversation.isDisabled(), 'triggering conversation not locked');
+      assert(await page.locator('select[name="auto-event"]').inputValue() === 'mail_from', 'event');
+      await noOverflow(page, 'event editor');
+      await shot(page, `${tag}-automation-editor-event`);
+      await page.click('.ws-modal[open] button[type=submit]');
+      await page.waitForSelector('#auto-senders[aria-invalid="true"]');
+      assert((await text(page, '.ws-modal[open] .ws-field-error')).includes('Add at least one sender or domain'), 'inline sentence');
+      assert(await page.evaluate(() => document.activeElement?.id) === 'auto-senders', 'focus on the field');
+      await shot(page, `${tag}-automation-editor-error`);
+      // Turning the reply draft off unlocks the conversation; a schedule has no reply draft.
+      await page.locator('.ws-modal[open] [data-deliver="draftReply"]').locator('xpath=..').click();
+      await page.waitForFunction(() => !document.querySelector('[data-read="triggerConversation"]').disabled);
+      await page.click('[data-action="automation-kind"][data-kind="schedule"]');
+      await page.waitForSelector('#auto-time:visible');
+      assert(await page.locator('[data-deliver="draftReply"]').count() === 0, 'reply draft on a schedule');
+      await page.click('[data-action="automation-kind"][data-kind="event"]');
+      await page.fill('#auto-senders', 'ann@example.test');
+      await page.click('.ws-modal[open] button[type=submit]');
+      await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+      const saved = (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === 'automation_save').at(-1)[1];
+      assert(saved.trigger.senders[0] === 'ann@example.test' && saved.deliver.draftReply === false && saved.read.triggerConversation === true, JSON.stringify(saved));
+    });
+
+    await check(`${tag}: automations no page errors`, async () => assert(errors.length === 0, errors.join(' | ')));
+    await context.close().catch(() => {});
+
+    const logged = await open({ theme, width, height, hash: '#/automations/runs', automations: true });
+    await check(`${tag}: run log expands output, sources and the error`, async () => {
+      const p = logged.page;
+      await p.waitForSelector('.ws-run-log .ws-run');
+      assert(await p.locator('.ws-run').count() === 3, 'three runs');
+      await p.click('.ws-run-row:has-text("Morning brief"):has(.ws-badge-success)');
+      await p.waitForSelector('.ws-run.ws-open .ws-run-output');
+      const output = await text(p, '.ws-run.ws-open .ws-run-detail');
+      assert(output.includes('2 replies owed') && output.includes('Answer Ann about the Q3 budget') && output.includes('Send the roadmap'), output);
+      assert(await p.locator('.ws-run.ws-open .ws-run-summary-text strong').innerText() === 'Q3 budget', 'bold');
+      await p.click('.ws-run.ws-open [data-action="run-link"]');
+      await p.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'open_source' && d.kind === 'automation_run' && d.link === 0));
+      await noOverflow(p, 'run log');
+      await p.locator('.ws-run.ws-open').screenshot({ path: join(OUT, `${tag}-automation-runlog-ok.png`) });
+      await p.click('.ws-run-row:has(.ws-badge-error)');
+      await p.waitForSelector('.ws-run.ws-open .ws-run-error');
+      assert((await text(p, '.ws-run.ws-open .ws-run-error')).includes('signed in'), 'failure sentence');
+      await p.locator('.ws-run.ws-open:has(.ws-run-error)').screenshot({ path: join(OUT, `${tag}-automation-runlog-failed.png`) });
+      await shot(p, `${tag}-automation-runlog`);
+      // The filter shows one automation's runs.
+      await p.selectOption('select[name="auto-runs-filter"]', 'auto-reply');
+      await p.waitForFunction(() => document.querySelectorAll('.ws-run').length === 1);
+      assert((await text(p, '.ws-run-log')).includes('Draft replies to Ann'), 'filtered run');
+      await p.selectOption('select[name="auto-runs-filter"]', '');
+      await p.waitForFunction(() => document.querySelectorAll('.ws-run').length === 3);
+      await p.click('.ws-run-row:has-text("Morning brief"):has(.ws-badge-success)');
+      await p.waitForSelector('.ws-run.ws-open .ws-run-items [data-action="open-message"]');
+      // A cited message opens in the Inbox.
+      await p.click('.ws-run.ws-open .ws-run-items [data-action="open-message"]');
+      await p.waitForSelector('.ws-page-inbox .ws-read[data-message-id="m0"]');
+      // Without automations' failures in the decisions bell.
+      assert(await p.locator('.ws-bell-dot').count() === 0, 'failed runs became decisions');
+    });
+    await check(`${tag}: the list and Today show both automations' latest results`, async () => {
+      const p = logged.page;
+      await p.click('.ws-nav button[data-route=automations]');
+      await p.click('[data-action="automations-tab"][data-tab="automations"]');
+      await p.waitForSelector('.ws-auto-row >> nth=1');
+      assert((await text(p, '.ws-auto-list')).includes('When mail arrives from @epam.com or ann@example.org about “budget”'), 'event trigger summary');
+      await noOverflow(p, 'populated list');
+      await shot(p, `${tag}-automations-list-populated`);
+      await p.locator('.ws-auto-row[data-automation="auto-brief"] summary').click();
+      await p.waitForSelector('.ws-auto-row[data-automation="auto-brief"] .ws-menu[open] [data-action="automation-delete"]');
+      await shot(p, `${tag}-automations-menu`);
+      await p.keyboard.press('Escape');
+      await p.locator('.ws-auto-row[data-automation="auto-brief"] summary').click();
+      await p.evaluate(async () => {
+        const w = window.__workspace.store.get().snapshot.workspaces[0];
+        await window.__workspace.store.mutate('layout_save', { layout: [...w.layout, 'automations'], widgetWidths: w.widgetWidths });
+      });
+      await p.click('.ws-nav button[data-route=today]');
+      await p.waitForSelector('.ws-auto-card .ws-auto-result >> nth=1');
+      const card = await text(p, '.ws-auto-card');
+      assert(card.indexOf('Reply drafted for Ann') < card.indexOf('2 replies owed'), 'newest first');
+      await p.locator('.ws-auto-card').scrollIntoViewIfNeeded();
+      await noOverflow(p, 'Today');
+      await p.locator('.ws-auto-card').screenshot({ path: join(OUT, `${tag}-today-automation-results-two.png`) });
+    });
+    await check(`${tag}: run log no page errors`, async () => assert(logged.errors.length === 0, logged.errors.join(' | ')));
+    await logged.context.close().catch(() => {});
+  }
 }
 
 // Narrow and wide windows keep layouts intact.

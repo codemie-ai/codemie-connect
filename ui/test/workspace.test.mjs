@@ -411,7 +411,8 @@ test('Settings shows the account profile and automatic sources, no source picker
 
 test('shell_has_no_workspaces_entry_or_switcher', () => {
   const html = renderShell({ snapshot: buildSnapshot(Date.now()), route: 'today', resolvedDark: false });
-  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'inbox']);
+  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'inbox', 'automations']);
+  assert.match(html, /data-route="automations"/);
   assert.doesNotMatch(html, /data-route="workspaces"/);
   assert.doesNotMatch(html, /workspace-select|ws-workspace-switch|ws-ws-dot|Active workspace/);
   assert.match(html, /data-route="settings"/);
