@@ -403,6 +403,15 @@ pub struct Restarting {
     restarting: bool,
 }
 
+/// The pointer names the new folder but Connect couldn't restart itself: nothing is lost, and
+/// the next start opens the new folder.
+fn restart_failed() -> WorkspaceError {
+    WorkspaceError::new(
+        "restart_failed",
+        "Your data folder was changed. Connect couldn’t restart itself: quit Connect and open it again to finish.",
+    )
+}
+
 /// Moves the data to, adopts or starts empty in the picked folder, then restarts Connect.
 #[tauri::command]
 pub async fn data_location_change(
@@ -450,7 +459,7 @@ pub async fn data_location_change(
     // Once the pointer is written the next start opens the new folder, so a failed restart
     // only needs the user to quit and reopen; the old data is still intact.
     let result = match changed {
-        Ok(_) => relaunch(app, core).await,
+        Ok(_) => relaunch(app, core).await.map_err(|_| restart_failed()),
         Err(e) => Err(e),
     };
     if result.is_err() {
@@ -497,42 +506,69 @@ pub async fn data_location_reveal(
     not_restarting(&state)?;
     let place = Place::parse(&which)?;
     let private = state.resolved.private_root.clone();
-    blocking(move || {
-        let path = match place {
-            Place::Data => location::resolve(&private).data_root,
-            Place::Private => private,
-            Place::Logs => logs_dir(),
-            Place::Previous => location::read_location(&private).previous.ok_or_else(|| {
-                WorkspaceError::new("not_found", "There is no previous data folder.")
-            })?,
-        };
-        reveal(place, &path)
-    })
-    .await?
+    blocking(move || reveal(place, &place_path(place, &private, &logs_dir())?)).await?
 }
 
-/// Asks for a folder with the system folder picker, attached to the window. `None` when the
-/// user cancels. The picker waits for the user, so it runs on the blocking pool.
+/// Where a place is now: the data folder the pointer resolves to, the default folder, the logs
+/// folder, or the previous data folder the pointer remembers.
+pub fn place_path(place: Place, private_root: &Path, logs: &Path) -> Result<PathBuf> {
+    Ok(match place {
+        Place::Data => location::resolve(private_root).data_root,
+        Place::Private => private_root.to_path_buf(),
+        Place::Logs => logs.to_path_buf(),
+        Place::Previous => location::read_location(private_root)
+            .previous
+            .ok_or_else(|| WorkspaceError::new("not_found", "There is no previous data folder."))?,
+    })
+}
+
+/// Asks for a folder with the system folder picker, as a sheet on the window. `None` when the
+/// user cancels. `rfd` opens the panel on the main thread, as macOS requires, and the command
+/// waits for the answer elsewhere.
 #[tauri::command]
 pub async fn data_location_pick(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Option<String>> {
-    use tauri_plugin_dialog::DialogExt;
     main_window_only(window.label())?;
     not_restarting(&state)?;
-    let picker = app
-        .dialog()
-        .file()
-        .set_parent(&window)
-        .set_title("Choose where Connect keeps its data")
-        .set_can_create_directories(true)
-        .set_directory(home_dir(&app));
-    let picked = blocking(move || picker.blocking_pick_folder()).await?;
-    Ok(picked
-        .and_then(|p| p.into_path().ok())
-        .map(|p| p.to_string_lossy().into_owned()))
+    pick_folder(&app, window, home_dir(&app)).await
+}
+
+#[cfg(any(target_os = "macos", windows))]
+async fn pick_folder(
+    app: &tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    start: PathBuf,
+) -> Result<Option<String>> {
+    let unavailable = || WorkspaceError::new("io", "Connect couldn’t open the folder picker.");
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let picking = rfd::AsyncFileDialog::new()
+            .set_parent(&window)
+            .set_title("Choose where Connect keeps its data")
+            .set_can_create_directories(true)
+            .set_directory(start)
+            .pick_folder();
+        tauri::async_runtime::spawn(async move {
+            let _ = tx.send(picking.await);
+        });
+    })
+    .map_err(|_| unavailable())?;
+    let picked = rx.await.map_err(|_| unavailable())?;
+    Ok(picked.map(|folder| folder.path().to_string_lossy().into_owned()))
+}
+#[cfg(not(any(target_os = "macos", windows)))]
+async fn pick_folder(
+    _app: &tauri::AppHandle,
+    _window: tauri::WebviewWindow,
+    _start: PathBuf,
+) -> Result<Option<String>> {
+    Err(WorkspaceError::new(
+        "unsupported",
+        "Choosing a data folder is available on macOS and Windows.",
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -999,6 +1035,70 @@ mod tests {
                 o.insert("freeBytes".into(), 72_000_000u64.into());
             }
         }
+    }
+
+    #[test]
+    fn each_place_resolves_from_the_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("workspace");
+        let logs = dir.path().join("Logs");
+        let custom = dir.path().join("Drive").join(DATA_DIR_NAME);
+        std::fs::create_dir_all(&default).unwrap();
+        // The default folder, with nothing before it.
+        assert_eq!(place_path(Place::Data, &default, &logs).unwrap(), default);
+        assert_eq!(
+            place_path(Place::Private, &default, &logs).unwrap(),
+            default
+        );
+        assert_eq!(place_path(Place::Logs, &default, &logs).unwrap(), logs);
+        assert_eq!(
+            place_path(Place::Previous, &default, &logs)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        // After a move: the data folder is the custom one, the previous one is the default.
+        location::write_location(
+            &default,
+            &LocationFile {
+                data_dir: Some(custom.clone()),
+                marker_id: Some("m-1".into()),
+                previous: Some(default.clone()),
+                previous_copied: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(place_path(Place::Data, &default, &logs).unwrap(), custom);
+        assert_eq!(
+            place_path(Place::Private, &default, &logs).unwrap(),
+            default
+        );
+        assert_eq!(
+            place_path(Place::Previous, &default, &logs).unwrap(),
+            default
+        );
+    }
+
+    #[test]
+    fn a_change_whose_restart_failed_says_the_folder_changed() {
+        let e = restart_failed();
+        assert_eq!(e.code, "restart_failed");
+        assert!(e.message.starts_with("Your data folder was changed."));
+        assert!(e.message.contains("open it again"));
+    }
+
+    /// Ruling R23: no dependency may put a script in the window that replaces `window.alert` or
+    /// `window.confirm` (tauri-plugin-dialog does), so the folder picker uses `rfd` directly.
+    #[test]
+    fn the_folder_picker_adds_no_script_to_the_window() {
+        let manifest = include_str!("../../Cargo.toml");
+        let lock = include_str!("../../Cargo.lock");
+        let depends = |name: &str| manifest.lines().any(|l| l.trim_start().starts_with(name));
+        assert!(!depends("tauri-plugin-dialog"));
+        assert!(depends("rfd"));
+        assert!(!lock.contains("name = \"tauri-plugin-dialog\""));
+        assert!(lock.contains("name = \"rfd\""));
     }
 
     #[test]

@@ -88,9 +88,6 @@ pub fn run() {
             }))?;
             app.handle().plugin(tauri_plugin_notification::init())?;
             app.handle().plugin(tauri_plugin_autostart::Builder::new().build())?;
-            // Only the Rust API is used (the data-folder picker); the window gets no dialog
-            // permissions.
-            app.handle().plugin(tauri_plugin_dialog::init())?;
             // The default folder holds the pointer, sign-in data and the locks; the data itself
             // may live in a user-chosen folder it points at (DESIGN 8).
             let default_root = if cfg!(debug_assertions) {

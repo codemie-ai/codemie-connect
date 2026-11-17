@@ -233,3 +233,70 @@ test('remove and switch-back confirmations name the folder and what they do', ()
   assert.match(back, /Data there may be older or empty\./);
   assert.match(back, /Nothing is moved or copied/);
 });
+
+test('the check names the folder you chose, and where your data will be', () => {
+  const cloud = folderCheck('cloud');
+  const picked = '/Users/taylor/Library/Mobile Documents/com~apple~CloudDocs/Work';
+  const blocked = changeLocationBody(cloud, { picked });
+  assert.match(blocked, /You chose/);
+  assert.ok(blocked.includes(`>${picked}<`), 'the picked folder');
+  assert.ok(!blocked.includes(cloud.target), 'a derived folder for a folder that can’t be used');
+  const ok = folderCheck('ok');
+  const usable = changeLocationBody(ok, { picked: '/Volumes/Work Drive/Projects', mode: 'move' });
+  assert.match(usable, /Your data will be in/);
+  assert.ok(usable.includes(ok.target));
+  assert.doesNotMatch(usable, /would live/);
+});
+
+test('native text in the check is escaped', () => {
+  const report = { ...folderCheck('cloud'), fsName: '<b>APFS</b>', target: '/Volumes/<i>x</i>', issues: [{ code: 'cloud_synced', message: '<img src=x onerror=alert(1)> syncs that folder.' }] };
+  const html = changeLocationBody(report, { picked: '/Volumes/<i>x</i>' });
+  assert.doesNotMatch(html, /<img|<b>APFS|<i>x/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; syncs that folder\./);
+  assert.match(html, /&lt;b&gt;APFS&lt;\/b&gt;/);
+  const confirm = changeDialogView(flow({ ...folderCheck('ok'), target: '/Volumes/<i>x</i>' }, { step: 'confirm', error: { code: 'io', message: '<script>bad()</script>' } }));
+  assert.doesNotMatch(confirm.body, /<script>|<i>x/);
+});
+
+test('from the recovery page, confirming never points at the folder that is gone', () => {
+  const gone = '/Volumes/Gone Drive/CodeMie Connect Data';
+  const fresh = changeDialogView({ step: 'confirm', recovery: true, report: folderCheck('recovery'), mode: 'fresh', info: { dataRoot: gone } });
+  const adopt = changeDialogView({ step: 'confirm', recovery: true, report: folderCheck('existing'), mode: 'adopt', info: { dataRoot: gone } });
+  for (const view of [fresh, adopt]) {
+    assert.doesNotMatch(view.body, /stays with your current data|Your current data stays/);
+    assert.ok(!view.body.includes(gone), 'the missing folder');
+    assert.match(view.body, /Nothing is deleted/);
+    assert.match(view.body, /Connect will restart/);
+  }
+});
+
+test('a step that commits never starts with focus on its commit button', () => {
+  const ok = folderCheck('ok');
+  const confirm = changeDialogView(flow(ok, { step: 'confirm' }));
+  assert.equal(confirm.focus[0], '[data-action="data-back"]');
+  assert.ok(!confirm.focus.some(sel => /submit/.test(sel)), confirm.focus.join(' | '));
+  assert.equal(changeDialogView(flow(ok)).focus[0], 'input[name="data-mode"]:checked');
+  assert.equal(changeDialogView({ step: 'pick' }).focus[0], '[data-action="data-choose"]');
+});
+
+test('a change whose restart failed says so and offers only restarting or quitting', () => {
+  const message = 'Your data folder was changed. Connect couldn’t restart itself: quit Connect and open it again to finish.';
+  const stuck = changeDialogView(flow(folderCheck('ok'), { step: 'stuck', error: { code: 'restart_failed', message } }));
+  assert.equal(stuck.title, 'Restart Connect to finish');
+  assert.ok(stuck.body.includes(message));
+  assert.equal(stuck.busy, true, 'the dialog stays');
+  assert.match(stuck.footer, /data-action="data-restart"/);
+  assert.match(stuck.footer, /data-action="data-quit"/);
+  assert.doesNotMatch(stuck.footer, /type="submit"|data-back|data-cancel/);
+  assert.equal(stuck.focus[0], '[data-action="data-restart"]');
+});
+
+test('a restart that takes long offers to quit so Connect opens again', () => {
+  const ok = folderCheck('ok');
+  const restarting = changeDialogView(flow(ok, { step: 'restarting' }));
+  assert.doesNotMatch(restarting.body + restarting.footer, /data-quit/);
+  const slow = changeDialogView(flow(ok, { step: 'restarting', slow: true }));
+  assert.match(slow.body, /hasn’t restarted yet/);
+  assert.match(slow.footer, /data-action="data-quit"[^>]*>.*Quit and open Connect again/);
+  assert.equal(slow.busy, true);
+});

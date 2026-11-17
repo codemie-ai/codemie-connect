@@ -130,12 +130,20 @@ export function onModalClose(fn) {
   closeHook = fn;
 }
 
+/** A guarded dialog ignores a submit this soon after it opened or changed step. */
+export const COMMIT_GUARD_MS = 400;
+
 /**
  * CodeMie dialog: 50% scrim, 8px panel, 16px semibold title, close button, right-aligned
  * footer. `onSubmit(formData, dialog)` may return false to keep the dialog open; thrown errors
  * render inline. `beforeClose()` may veto closing (unsaved edits).
+ *
+ * For a dialog that commits something hard to undo (a restart, a deletion): `initialFocus:
+ * 'cancel'` focuses Cancel, so Enter never commits by default, and `guard` ignores a submit within
+ * `COMMIT_GUARD_MS` of opening or of `dialog.arm()` (a step change) and a held-down Enter, so a
+ * double click or a repeated key can't commit.
  */
-export function openModal({ title, subtitle = '', body = '', submit = 'Save', cancel = 'Cancel', onSubmit, size = 'md', variant = 'primary', workspaceId, onClose, footerExtra = '' }) {
+export function openModal({ title, subtitle = '', body = '', submit = 'Save', cancel = 'Cancel', onSubmit, size = 'md', variant = 'primary', workspaceId, onClose, footerExtra = '', initialFocus = 'auto', guard = false }) {
   const restore = document.activeElement;
   const dialog = document.createElement('dialog');
   dialog.className = `ws-modal ws-modal-${size}`;
@@ -164,8 +172,16 @@ export function openModal({ title, subtitle = '', body = '', submit = 'Save', ca
     closeHook?.();
   }, { once: true });
   const form = dialog.querySelector('form');
+  dialog.arm = () => { dialog.armedAt = performance.now(); };
+  dialog.arm();
+  if (guard) {
+    dialog.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' && ev.repeat) ev.preventDefault();
+    }, true);
+  }
   form.onsubmit = async ev => {
     ev.preventDefault();
+    if (guard && performance.now() - dialog.armedAt < COMMIT_GUARD_MS) return;
     if (!onSubmit) return dialog.close();
     const invalid = [...form.elements].find(el => el.willValidate && !el.checkValidity());
     const error = dialog.querySelector('.ws-modal-error');
@@ -189,10 +205,11 @@ export function openModal({ title, subtitle = '', body = '', submit = 'Save', ca
   document.body.append(dialog);
   dialog.showModal();
   const first = dialog.querySelector('.ws-modal-body input:not([type=hidden]):not([type=checkbox]), .ws-modal-body textarea, .ws-modal-body select');
-  (first || dialog.querySelector('[type=submit]') || dialog.querySelector('[data-modal-close]'))?.focus({ preventScroll: true });
+  const cancelButton = initialFocus === 'cancel' && dialog.querySelector('.ws-modal-footer [data-modal-close]');
+  (cancelButton || first || dialog.querySelector('[type=submit]') || dialog.querySelector('[data-modal-close]'))?.focus({ preventScroll: true });
   return dialog;
 }
 
-export function confirmModal({ title, text, confirm = 'Confirm', variant = 'primary', onConfirm, workspaceId }) {
-  return openModal({ title, body: `<p class="ws-modal-text">${e(text)}</p>`, submit: confirm, variant, onSubmit: onConfirm, size: 'sm', workspaceId });
+export function confirmModal({ title, text, confirm = 'Confirm', variant = 'primary', onConfirm, workspaceId, initialFocus, guard }) {
+  return openModal({ title, body: `<p class="ws-modal-text">${e(text)}</p>`, submit: confirm, variant, onSubmit: onConfirm, size: 'sm', workspaceId, initialFocus, guard });
 }

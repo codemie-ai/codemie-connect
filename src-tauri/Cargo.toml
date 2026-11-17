@@ -34,7 +34,6 @@ tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-notification = "2.8.1"
 tauri-plugin-autostart = "2"
-tauri-plugin-dialog = "2"
 rusqlite = { version = "0.38", features = ["bundled"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.8"
@@ -53,6 +52,11 @@ thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
 portable-pty = "0.8"
+
+# The data-folder picker (DESIGN 8). Used directly rather than through tauri-plugin-dialog, whose
+# window script replaces window.alert/confirm (ruling R23).
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+rfd = { version = "0.17", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

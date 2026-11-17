@@ -262,6 +262,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
           return clone(checks[window.__pick?.check || 'ok']);
         }
         if (cmd === 'data_location_reveal') { calls.push(['data_location_reveal', args]); return null; }
+        if (cmd === 'close_app') { calls.push(['close_app']); return null; }
         if (cmd === 'data_location_change') {
           calls.push(['data_location_change', args]);
           if (window.__changeHold) await new Promise(resolve => { window.__finishChange = resolve; });
@@ -1057,6 +1058,8 @@ for (const theme of ['dark', 'light']) {
     assert(!(await page.evaluate(() => window.__bridgeCalls.some(([op]) => op === 'data_location_use_default'))), 'switched before confirming');
     await shot(page, `${theme}-recovery-confirm-default`);
     await page.evaluate(() => { window.__useDefaultError = 'Connect couldn’t switch to the default folder: Is a directory (os error 21).'; });
+    assert(await page.evaluate(() => document.activeElement?.matches('.ws-modal[open] [data-modal-close]') && document.activeElement.textContent === 'Cancel'), 'a restart is the default button');
+    await page.waitForTimeout(450);
     await page.click('.ws-modal[open] button[type=submit]');
     await page.waitForSelector('.ws-modal[open] .ws-modal-error:has-text("Is a directory")');
     await shot(page, `${theme}-recovery-default-failed`);
@@ -1107,24 +1110,22 @@ for (const theme of ['dark', 'light']) {
 const L_DEFAULT = dataLocation('default');
 const L_COPIED = dataLocation('custom-copied');
 const L_ADOPTED = dataLocation('custom-adopted');
-const PICK = {
-  ok: { path: '/Volumes/Work Drive/Projects', check: 'ok' },
-  cloud: { path: '/Users/taylor/Library/Mobile Documents/com~apple~CloudDocs/Work', check: 'cloud' },
-  network: { path: '/Volumes/Team Share/Projects', check: 'network' },
-  tight: { path: '/Volumes/Small Drive', check: 'tight' },
-  exfat: { path: '/Volumes/USB Stick', check: 'exfat' },
-  existing: { path: '/Volumes/Work Drive/Archive', check: 'existing' },
-  recovery: { path: '/Volumes/Work Drive/Projects', check: 'recovery' },
-};
+// What the picker returns for each check fixture: the folder that fixture was checked for.
+const PICK = Object.fromEntries(['ok', 'cloud', 'network', 'tight', 'exfat', 'existing', 'recovery'].map(check => [check, { path: folderCheck(check).target.replace(/\/CodeMie Connect Data$/, ''), check }]));
 const dialog = '.ws-modal[open]';
 const continueButton = `${dialog} .ws-modal-footer button[type=submit]`;
 const settle = page => page.waitForTimeout(220);
+// A guarded dialog ignores a submit within 400 ms of opening or changing step: a deliberate
+// press comes later.
+const armed = page => page.waitForTimeout(450);
 async function pickFolder(page, pick) {
   await page.evaluate(p => { window.__pick = p; }, pick);
   await page.click(`${dialog} [data-action="data-choose"]`);
   await page.waitForSelector(`${dialog} .ws-dl-folder-head`);
   await settle(page);
 }
+// A data folder on a drive that is gone, apart from the folders the pick fixtures name.
+const GONE = storageOf('missing', { dataRoot: '/Volumes/Old Drive/CodeMie Connect Data' });
 const overflowOf = (page, selector) => page.evaluate(sel => Math.max(document.documentElement.scrollWidth - innerWidth, ...[...document.querySelectorAll(`${sel}, ${sel} *`)].map(el => el.scrollWidth - el.clientWidth)), selector);
 
 for (const theme of ['dark', 'light']) {
@@ -1164,6 +1165,7 @@ for (const theme of ['dark', 'light']) {
       assert(/Remove the old copy\?/.test(confirm) && confirm.includes(L_COPIED.previous) && confirm.includes('48.2 MB') && confirm.includes('This can’t be undone.'), confirm);
       assert(!(await page.evaluate(() => window.__bridgeCalls.some(([c]) => c === 'data_location_remove_old'))), 'removed before confirming');
       await shot(page, `${theme}-data-remove-confirm-${width}`);
+      await armed(page);
       await page.click(`${dialog} button[type=submit]`);
       await page.waitForSelector('.ws-toast:has-text("Old copy removed. 48.2 MB freed.")');
       await page.waitForFunction(() => !document.querySelector('#data-location [data-action="data-remove-old"]'));
@@ -1208,6 +1210,7 @@ for (const theme of ['dark', 'light']) {
       assert(await page.locator(`${dialog} input[name="data-mode"][value="move"]:checked`).count() === 1, 'Move my data is the default');
       assert(await page.locator(`${dialog} input[name="data-mode"][value="adopt"]`).count() === 0, 'adopt without Connect data there');
       await shot(page, `${theme}-data-change-2-check-${width}`);
+      await armed(page);
       await page.click(continueButton);
       await page.waitForSelector(`${dialog} .ws-dl-restart`);
       await settle(page);
@@ -1215,6 +1218,7 @@ for (const theme of ['dark', 'light']) {
       assert(/Move your data and restart\?/.test(confirm) && /Connect will restart\./.test(confirm) && confirm.includes(folderCheck('ok').target), confirm);
       await shot(page, `${theme}-data-change-3-confirm-${width}`);
       await page.evaluate(() => { window.__changeHold = true; });
+      await armed(page);
       await page.click(`${continueButton}:has-text("Move and restart")`);
       await page.waitForSelector(`${dialog} .ws-dl-progress:has-text("Copying your data…")`);
       await page.keyboard.press('Escape');
@@ -1273,9 +1277,11 @@ for (const theme of ['dark', 'light']) {
       await page.click(`${dialog} .ws-dl-ack .ws-check`);
       await page.waitForSelector(`${continueButton}:not([disabled])`);
       await shot(page, `${theme}-data-change-exfat-ack-${width}`);
+      await armed(page);
       await page.click(continueButton);
       await page.waitForSelector(`${dialog} .ws-dl-restart`);
       await page.evaluate(() => { window.__changeError = { code: 'busy', message: 'Connect is removing the old copy of your data. Try again in a moment.' }; });
+      await armed(page);
       await page.click(continueButton);
       await page.waitForSelector(`${dialog} .ws-inline-note.ws-warning[role=alert]:has-text("removing the old copy")`);
       assert((await lastCall(page, 'data_location_change'))?.acceptNoPermissions === true, 'acknowledgement not sent');
@@ -1295,6 +1301,7 @@ for (const theme of ['dark', 'light']) {
       const text = await page.locator(dialog).innerText();
       assert(text.includes('Nothing is moved or copied. Data there may be older or empty.') && text.includes(L_DEFAULT.privateRoot) && text.includes(dataLocation('custom').dataRoot), text);
       await shot(page, `${theme}-data-use-default-${width}`);
+      await armed(page);
       await page.click(`${dialog} button[type=submit]`);
       await page.waitForSelector(`${dialog}`, { state: 'detached' });
       await page.waitForSelector('#data-location .ws-dl-wait:has-text("Restarting Connect…")');
@@ -1305,7 +1312,7 @@ for (const theme of ['dark', 'light']) {
     });
 
     await check(`${theme} ${width}px: Choose another folder on the recovery page uses the data there or starts empty`, async () => {
-      const { page, context, errors } = await open({ theme, width, storage: STORAGE.missing, unavailable: true });
+      const { page, context, errors } = await open({ theme, width, storage: GONE, unavailable: true });
       await page.click('[data-action="recovery-choose"]');
       await page.waitForSelector(`${dialog} [data-action="data-choose"]`);
       await settle(page);
@@ -1316,7 +1323,13 @@ for (const theme of ['dark', 'light']) {
       assert(await page.locator(`${dialog} input[name="data-mode"]:checked`).count() === 0, 'a choice made for the user');
       await shot(page, `${theme}-recovery-choose-2-check-${width}`);
       await page.click(`${dialog} .ws-dl-mode:has(input[value="fresh"])`);
+      await armed(page);
       await page.click(continueButton);
+      await page.waitForSelector(`${dialog} .ws-dl-restart`);
+      const confirm = await page.locator(dialog).innerText();
+      assert(/Nothing is deleted/.test(confirm) && !confirm.includes(GONE.dataRoot) && !/current data/.test(confirm), `recovery confirm: ${confirm.replace(/\n/g, ' ')}`);
+      await shot(page, `${theme}-recovery-choose-3-confirm-${width}`);
+      await armed(page);
       await page.click(`${continueButton}:has-text("Start empty and restart")`);
       await page.waitForSelector(`${dialog} .ws-dl-progress:has-text("Restarting Connect…")`);
       assert((await lastCall(page, 'data_location_change'))?.mode === 'fresh', 'fresh');
@@ -1327,6 +1340,117 @@ for (const theme of ['dark', 'light']) {
       currentPage = null;
     });
   }
+
+  await check(`${theme}: Enter and double clicks never commit a move, a removal or a switch`, async () => {
+    const { page, context, errors } = await open({ theme, hash: '#/settings/general', location: 'custom-copied' });
+    const commits = () => page.evaluate(() => window.__bridgeCalls.filter(([c]) => ['data_location_change', 'data_location_remove_old', 'data_location_use_default'].includes(c)).length);
+    await page.click('[data-action="data-change"]');
+    await page.waitForSelector(`${dialog} [data-action="data-choose"]`);
+    await pickFolder(page, PICK.ok);
+    // Enter, Enter from the check step: the first continues, the second lands on Back.
+    await armed(page);
+    await page.focus(continueButton);
+    await page.keyboard.press('Enter');
+    await page.waitForSelector(`${dialog} .ws-dl-restart`);
+    assert(await page.evaluate(() => document.activeElement?.dataset.action === 'data-back'), 'step 3 starts on its commit button');
+    await page.keyboard.press('Enter');
+    await settle(page);
+    assert(await commits() === 0, 'Enter, Enter moved the data');
+    // A held-down Enter: its repeats don't act on the next step.
+    await page.waitForSelector(`${dialog} input[name="data-mode"]:checked`);
+    await armed(page);
+    await page.focus(continueButton);
+    await page.keyboard.down('Enter');
+    await page.waitForSelector(`${dialog} .ws-dl-restart`);
+    await page.waitForTimeout(500);
+    for (let i = 0; i < 3; i++) await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    await settle(page);
+    assert(await page.locator(`${dialog} .ws-dl-restart`).count() === 1, 'a held Enter acted on step 3');
+    assert(await commits() === 0, 'a held Enter moved the data');
+    // A fast double click on Continue doesn't reach the commit button.
+    await page.click(`${dialog} [data-action="data-back"]`);
+    await page.waitForSelector(`${dialog} input[name="data-mode"]:checked`);
+    await armed(page);
+    await page.dblclick(continueButton);
+    await settle(page);
+    assert(await commits() === 0, 'a double click on Continue moved the data');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector(dialog, { state: 'detached' });
+    // Remove old copy: Cancel has focus, so Enter right away removes nothing.
+    await page.click('[data-action="data-remove-old"]');
+    await page.waitForSelector(dialog);
+    assert(await page.evaluate(() => document.activeElement?.textContent === 'Cancel'), 'Remove old copy is the default button');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector(dialog, { state: 'detached' });
+    // Use the default folder: a click the moment it opens does nothing.
+    await page.click('[data-action="data-default"]');
+    await page.waitForSelector(dialog);
+    assert(await page.evaluate(() => document.activeElement?.textContent === 'Cancel'), 'the switch is the default button');
+    await page.click(`${dialog} button[type=submit]`);
+    await settle(page);
+    assert(await page.locator(dialog).count() === 1, 'a click right away switched folders');
+    assert(await commits() === 0, 'a commit happened without a deliberate press');
+    await page.keyboard.press('Escape');
+    assert(errors.length === 0, errors.join(' | '));
+    await context.close().catch(() => {});
+    currentPage = null;
+  });
+
+  await check(`${theme}: a move that fails leaves the dialog and the card usable`, async () => {
+    const { page, context, errors } = await open({ theme, hash: '#/settings/general' });
+    await page.click('[data-action="data-change"]');
+    await page.waitForSelector(`${dialog} [data-action="data-choose"]`);
+    await pickFolder(page, PICK.ok);
+    await armed(page);
+    await page.click(continueButton);
+    await page.waitForSelector(`${dialog} .ws-dl-restart`);
+    await page.evaluate(() => { window.__changeHold = true; window.__changeError = { code: 'io', message: 'Connect couldn’t copy your plugins: No space left on device (os error 28).' }; });
+    await armed(page);
+    await page.click(`${continueButton}:has-text("Move and restart")`);
+    await page.waitForSelector(`${dialog} .ws-dl-progress`);
+    await page.evaluate(() => window.__finishChange());
+    await page.waitForSelector(`${dialog} .ws-inline-note.ws-error:has-text("No space left on device")`);
+    assert(await page.locator(`${dialog} [data-modal-close]`).isVisible(), 'the dialog can be closed again');
+    await settle(page);
+    await shot(page, `${theme}-data-change-failed`);
+    await page.click(`${dialog} [data-action="data-back"]`);
+    await page.waitForSelector(`${dialog} input[name="data-mode"]:checked`);
+    await page.click(`${dialog} [data-action="data-cancel"]`);
+    await page.waitForSelector(dialog, { state: 'detached' });
+    assert(await page.locator('#data-location [data-action="data-change"]:not([disabled])').count() === 1, 'Change… after a failed move');
+    await page.click('[data-action="data-change"]');
+    await page.waitForSelector(`${dialog} [data-action="data-choose"]`);
+    assert(errors.length === 0, errors.join(' | '));
+    await context.close().catch(() => {});
+    currentPage = null;
+  });
+
+  await check(`${theme}: a change whose restart failed says the folder changed and offers a restart`, async () => {
+    const { page, context, errors } = await open({ theme, hash: '#/settings/general' });
+    await page.click('[data-action="data-change"]');
+    await page.waitForSelector(`${dialog} [data-action="data-choose"]`);
+    await pickFolder(page, PICK.ok);
+    await armed(page);
+    await page.click(continueButton);
+    await page.waitForSelector(`${dialog} .ws-dl-restart`);
+    await page.evaluate(() => { window.__changeError = { code: 'restart_failed', message: 'Your data folder was changed. Connect couldn’t restart itself: quit Connect and open it again to finish.' }; });
+    await armed(page);
+    await page.click(`${continueButton}:has-text("Move and restart")`);
+    await page.waitForSelector(`${dialog} h2:has-text("Restart Connect to finish")`);
+    const text = await page.locator(dialog).innerText();
+    assert(/Your data folder was changed\./.test(text) && !/Move and restart/.test(text), text);
+    await page.keyboard.press('Escape');
+    await settle(page);
+    assert(await page.locator(dialog).count() === 1, 'the dialog closed with the folder changed');
+    await shot(page, `${theme}-data-change-stuck`);
+    await page.click(`${dialog} [data-action="data-restart"]`);
+    await page.waitForSelector(`${dialog} .ws-dl-progress:has-text("Restarting Connect…")`);
+    assert(await page.evaluate(() => window.__bridgeCalls.some(([c]) => c === 'app_relaunch')), 'Restart Connect');
+    assert(errors.length === 0, errors.join(' | '));
+    await context.close().catch(() => {});
+    currentPage = null;
+  });
 }
 
 // Claude set up while Connect is open: Inbox notices when the window gets focus again.

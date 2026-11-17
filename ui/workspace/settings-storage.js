@@ -161,10 +161,11 @@ function modeCards(r, { recovery, mode }) {
 }
 
 /**
- * The checked folder: where the data would live, the disk, every reason it can't be used (each
- * with what to do), the exFAT/FAT acknowledgement, and the choices it allows (radio `data-mode`).
+ * The checked folder: where the data will be (or, for a folder Connect can't use, the folder
+ * picked), the disk, every reason it can't be used (each with what to do), the exFAT/FAT
+ * acknowledgement, and the choices it allows (radio `data-mode`).
  */
-export function changeLocationBody(report, { recovery = false, mode = null, acknowledged = false } = {}) {
+export function changeLocationBody(report, { recovery = false, mode = null, acknowledged = false, picked = '' } = {}) {
   const r = report;
   const modes = r.modes || [];
   const blocked = !modes.length;
@@ -173,10 +174,10 @@ export function changeLocationBody(report, { recovery = false, mode = null, ackn
   // The size of the data a move would copy; beside Connect data already there it would mislead.
   const yours = !recovery && !r.existing && r.requiredBytes ? `your data ${formatBytes(r.requiredBytes)}` : '';
   const facts = [r.fsName, r.freeBytes ? `${formatBytes(r.freeBytes)} free` : '', yours].filter(Boolean).join(' · ');
-  const label = blocked ? 'You chose' : r.existing ? 'Connect data in that folder' : 'Your data would live in';
+  const [label, shown] = blocked ? ['You chose', picked || r.target] : r.existing ? ['Connect data in that folder', r.target] : ['Your data will be in', r.target];
   const where = `<div class="ws-dl-folder">
       <div class="ws-dl-folder-head"><span class="ws-storage-label">${label}</span>${button('Choose another folder…', { action: 'data-choose', variant: 'ghost', iconName: 'folder' })}</div>
-      ${path(r.target)}
+      ${path(shown)}
       ${facts ? `<span class="ws-dl-facts">${icon('drive')}<span>${e(facts)}</span></span>` : ''}
     </div>`;
   const tone = blocked ? 'error' : 'warning';
@@ -230,9 +231,16 @@ function pickBody(f) {
 
 function confirmBody(f) {
   const r = f.report;
+  const where = target(r.target);
+  if (f.recovery) {
+    // The folder Connect used is out of reach: nothing here is said about what it holds.
+    const lead = f.mode === 'adopt' ? 'Connect will restart and open the workspace in:' : 'Connect will create an empty workspace in:';
+    return `<p class="ws-modal-text">${lead}</p>${where}
+      ${note('Nothing is deleted. If the folder Connect couldn’t find comes back, you can switch to it with Change… in Settings → General.')}
+      ${RESTART}`;
+  }
   const current = f.info?.dataRoot;
   const size = f.info?.sizeBytes ? ` (${formatBytes(f.info.sizeBytes)})` : '';
-  const where = target(r.target);
   const stays = current ? ` in ${path(current)}` : '';
   if (f.mode === 'move') {
     return `<p class="ws-modal-text">Connect will copy your data${e(size)} to:</p>${where}
@@ -250,10 +258,14 @@ function confirmBody(f) {
     ${RESTART}`;
 }
 
+const QUIT = button('Quit and open Connect again', { action: 'data-quit' });
+
 /**
- * One step of the change dialog: `flow.step` is pick, checking, check, confirm, working or
- * restarting. Returns its title, subtitle, body and footer (no footer while Connect works), and
- * whether the dialog must stay open.
+ * One step of the change dialog: `flow.step` is pick, checking, check, confirm, working,
+ * restarting (`slow` once it takes long) or stuck (the folder changed but Connect couldn't
+ * restart). Returns its title, subtitle, body and footer, whether the dialog must stay open
+ * (`busy`), and where focus goes, best first. A step that commits starts on Back, never on its
+ * commit button.
  */
 export function changeDialogView(flow = {}) {
   const f = flow;
@@ -261,20 +273,33 @@ export function changeDialogView(flow = {}) {
   const cancel = '<button type="button" class="ws-btn ws-btn-secondary" data-action="data-cancel">Cancel</button>';
   const footer = (primary = '', back = false) => `${back ? button('Back', { action: 'data-back', variant: 'ghost', iconName: 'chevron-left' }) : ''}<span class="ws-spacer"></span>${cancel}${primary}`;
   const submit = (label, disabled) => `<button type="submit" class="ws-btn ws-btn-primary"${disabled ? ' disabled' : ''}>${e(label)}</button>`;
-  const view = (subtitle, body, foot, extra = {}) => ({ title, subtitle, body, footer: foot, busy: false, ...extra });
+  const view = (subtitle, body, foot, extra = {}) => ({ title, subtitle, body, footer: foot, busy: false, focus: [], ...extra });
+  const choose = '[data-action="data-choose"]';
   switch (f.step) {
     case 'checking':
       return view(STEPS.check, `<div class="ws-dl-wait" role="status">${spinner('Checking that folder')}<span>Checking that folder…</span></div>`, footer());
     case 'check':
-      return view(STEPS.check, errorNote(f.error) + changeLocationBody(f.report, f), footer(submit('Continue', !canContinue(f.report, f))));
+      return view(STEPS.check, errorNote(f.error) + changeLocationBody(f.report, f), footer(submit('Continue', !canContinue(f.report, f))), {
+        focus: ['input[name="data-mode"]:checked', '[type=submit]:not([disabled])', 'input[name="data-mode"]:not([disabled])', 'input[name="data-ack"]', choose],
+      });
     case 'confirm':
-      return view(STEPS.confirm, errorNote(f.error) + confirmBody(f), footer(submit(SUBMIT[f.mode] || 'Continue', !canContinue(f.report, f)), true), { title: CONFIRM_TITLE[f.mode] || title });
+      return view(STEPS.confirm, errorNote(f.error) + confirmBody(f), footer(submit(SUBMIT[f.mode] || 'Continue', !canContinue(f.report, f)), true), {
+        title: CONFIRM_TITLE[f.mode] || title, focus: ['[data-action="data-back"]'],
+      });
     case 'working':
       return view('', wait(...(WORKING[f.mode] || WORKING.fresh)), '', { title: WORKING_TITLE[f.mode] || title, busy: true });
     case 'restarting':
-      return view('', wait('Restarting Connect…', 'Connect opens again in a moment, using the new folder.'), '', { title: 'Restarting Connect', busy: true });
+      return f.slow
+        ? view('', `${wait('Restarting Connect…', 'Connect opens again in a moment, using the new folder.')}
+            ${note('Connect hasn’t restarted yet. Your data folder was changed, so nothing is lost: quit Connect and it opens again with the new folder.', 'warning', 'clock')}`,
+        `<span class="ws-spacer"></span>${QUIT}`, { title: 'Restarting Connect', busy: true, focus: ['[data-action="data-quit"]'] })
+        : view('', wait('Restarting Connect…', 'Connect opens again in a moment, using the new folder.'), '', { title: 'Restarting Connect', busy: true });
+    case 'stuck':
+      return view('', note(e(f.error?.message || 'Your data folder was changed. Restart Connect to finish.'), 'warning', 'alert', 'alert'),
+        `<span class="ws-spacer"></span>${button('Quit Connect', { action: 'data-quit' })}${button('Restart Connect', { action: 'data-restart', variant: 'primary', iconName: 'refresh' })}`,
+        { title: 'Restart Connect to finish', busy: true, focus: ['[data-action="data-restart"]'] });
     default:
-      return view(STEPS.pick, pickBody(f), footer());
+      return view(STEPS.pick, pickBody(f), footer(), { focus: [choose] });
   }
 }
 
