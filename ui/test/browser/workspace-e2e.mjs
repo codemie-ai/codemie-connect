@@ -1585,6 +1585,25 @@ const elementShot = async (page, selector, name) => {
     }
   }
 };
+/** Wait until the page stops re-rendering (no DOM mutation for 200 ms), so a following query
+ * isn't answered by an element a background refresh is about to replace. */
+const renderSettled = page => page.evaluate(() => new Promise(resolve => {
+  let timer;
+  const done = () => { observer.disconnect(); resolve(); };
+  const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, 200); });
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+  timer = setTimeout(done, 200);
+}));
+/** Open a row's actions menu and wait for it to show; a render between the click and the check
+ * closes it, so try again with a fresh query. */
+const openRowMenu = async (page, row, wanted) => {
+  for (let attempt = 0; ; attempt++) {
+    await renderSettled(page);
+    await row.locator('summary').click();
+    try { return await row.locator(wanted).waitFor({ state: 'visible', timeout: 3000 }); }
+    catch (error) { if (attempt >= 3) throw error; }
+  }
+};
 const editorOpen = async page => {
   await page.waitForSelector('.ws-modal[open] #automation-editor');
   await page.waitForTimeout(250);
@@ -1650,6 +1669,7 @@ for (const theme of ['dark', 'light']) {
 
       await page.click('.ws-nav button[data-route=automations]');
       await page.click('[data-action="automations-tab"][data-tab="automations"]');
+      await renderSettled(page);
       await page.locator('.ws-auto-row .ws-switch').first().click();
       await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'automation_toggle' && d.enabled === false));
       await page.waitForSelector('.ws-auto-row.ws-off');
@@ -1735,8 +1755,7 @@ for (const theme of ['dark', 'light']) {
       assert((await text(p, '.ws-auto-list')).includes('When mail arrives from @epam.com or ann@example.org about “budget”'), 'event trigger summary');
       await noOverflow(p, 'populated list');
       await shot(p, `${tag}-automations-list-populated`);
-      await p.locator('.ws-auto-row[data-automation="auto-brief"] summary').click();
-      await p.waitForSelector('.ws-auto-row[data-automation="auto-brief"] .ws-menu[open] [data-action="automation-delete"]');
+      await openRowMenu(p, p.locator('.ws-auto-row[data-automation="auto-brief"]'), '.ws-menu[open] [data-action="automation-delete"]');
       // An update (the minute tick, a sync) doesn't close it.
       await p.evaluate(() => window.__workspace.render());
       assert(await p.locator('.ws-auto-row[data-automation="auto-brief"] .ws-menu[open]').count() === 1, 'menu closed by a render');
@@ -1746,7 +1765,7 @@ for (const theme of ['dark', 'light']) {
       await p.waitForSelector('.ws-auto-row.ws-off:has-text("Copy of Morning brief")');
       // Delete asks first, then removes it.
       const copy = p.locator('.ws-auto-row:has-text("Copy of Morning brief")');
-      await copy.locator('summary').click();
+      await openRowMenu(p, copy, '[data-action="automation-delete"]');
       await copy.locator('[data-action="automation-delete"]').click();
       await p.waitForSelector('.ws-modal[open]:has-text("Delete “Copy of Morning brief”?")');
       await p.waitForTimeout(450);

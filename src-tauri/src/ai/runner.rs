@@ -395,9 +395,16 @@ mod tests {
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
-    /// Waits until the script has recorded `<shell pid> <background pid>`.
+    /// Waits until the script has recorded `<shell pid> <background pid>`; fails the test after 10 s
+    /// (a loaded machine is slow, not endless).
     async fn wait_pids(file: &Path) -> Vec<i32> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the script never recorded its pids in {} within 10 s",
+                file.display()
+            );
             if let Ok(t) = std::fs::read_to_string(file) {
                 let ids: Vec<i32> = t
                     .split_whitespace()

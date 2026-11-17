@@ -4,9 +4,10 @@
 //! URLs: `connect-plugin://<id>/<path>`. Each plugin is its own origin, so its CSP (`frame_csp`)
 //! admits that plugin's files and the shim served under it, not another plugin's.
 //!
-//! Not on Windows: wry injects its init scripts, the invoke key among them, into subframes there,
-//! and WebView2 guards only top-level navigation and messages, so a plugin frame would hold the
-//! key. Every request is refused there (`PLUGIN_FRAMES_SUPPORTED`).
+//! macOS only (ruling R30). On Windows wry injects its init scripts, the invoke key among them,
+//! into subframes, and WebView2 guards only top-level navigation and messages, so a plugin frame
+//! would hold the key; on Linux (WebKitGTK) isolation is not verified. Every request is refused
+//! off macOS (`PLUGIN_FRAMES_SUPPORTED`).
 //! - `__host/<file>` is the bundled shim, `ui/plugins/frame/<file>`. It is Connect's own code and
 //!   the same for every plugin, so any well-formed id serves it.
 //! - Any other path is a file of the plugin's active version,
@@ -27,7 +28,7 @@ use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 pub const SCHEME: &str = "connect-plugin";
 /// Whether plugin frames can be isolated on this platform (see the module comment).
-pub const PLUGIN_FRAMES_SUPPORTED: bool = !cfg!(windows);
+pub const PLUGIN_FRAMES_SUPPORTED: bool = cfg!(target_os = "macos");
 /// The path prefix of the bundled shim under every plugin.
 pub const HOST_DIR: &str = "__host";
 /// The policy of every refusal.
@@ -379,7 +380,7 @@ mod tests {
             ("connect-plugin://user@hello/client.js", 404),
             ("http://evil.localhost/hello/client.js", 404),
             ("tauri://localhost/index.html", 404),
-            // WebView2's form of the scheme: plugin frames aren't served on Windows at all.
+            // WebView2's form of the scheme: plugin frames aren't served off macOS at all.
             ("http://connect-plugin.localhost/hello/client.js", 404),
             (
                 "https://connect-plugin.localhost/hello/__host/frame.html",
@@ -508,10 +509,10 @@ mod tests {
     }
 
     #[test]
-    fn plugin_frames_are_refused_on_windows() {
-        // wry injects its init scripts into subframes on Windows, so a plugin frame there would get
-        // the invoke key; until that is solved nothing is served there.
-        assert_eq!(PLUGIN_FRAMES_SUPPORTED, !cfg!(windows));
+    fn plugin_frames_are_refused_off_macos() {
+        // Windows gives a plugin frame the invoke key and Linux isn't verified (R30); nothing is
+        // served off macOS.
+        assert_eq!(PLUGIN_FRAMES_SUPPORTED, cfg!(target_os = "macos"));
         let f = fixture();
         for uri in [
             "connect-plugin://hello/client.js",
