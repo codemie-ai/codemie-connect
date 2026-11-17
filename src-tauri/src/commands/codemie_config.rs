@@ -134,6 +134,96 @@ pub fn list_profiles(json: &serde_json::Value) -> Vec<ProfileSummary> {
     out
 }
 
+/// Every profile as Settings → CodeMie shows it. Like `ProfileSummary`, no
+/// secret is ever copied: only the fields named here leave the file.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileDetail {
+    pub name: String,
+    pub provider: String,
+    pub model: Option<String>,
+    pub codemie_url: Option<String>,
+    pub codemie_project: Option<String>,
+    pub base_url: Option<String>,
+}
+
+/// The whole profile list plus the file's state (`no-configuration`, `valid`,
+/// `broken` — the same names `ConfigState` serializes to).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct CodemieProfiles {
+    pub state: String,
+    pub active: Option<String>,
+    pub account: Option<String>,
+    pub profiles: Vec<ProfileDetail>,
+}
+
+fn opt_field(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Build the profile list from the parsed config. The active profile comes
+/// first, then the rest by name. A file with neither profiles nor an active
+/// profile is `no-configuration`; one whose active profile resolves to nothing
+/// is `broken`.
+pub fn profiles_from_value(v: &serde_json::Value) -> CodemieProfiles {
+    let active = opt_field(v, "activeProfile");
+    let map = v.get("profiles").and_then(|p| p.as_object());
+    let has_profiles = map.is_some_and(|m| !m.is_empty());
+    let state = if active.is_none() && !has_profiles {
+        "no-configuration"
+    } else if active
+        .as_deref()
+        .and_then(|a| map.and_then(|m| m.get(a)))
+        .is_some_and(|p| p.is_object())
+    {
+        "valid"
+    } else {
+        "broken"
+    };
+    // CLI 0.15+ keeps the project in the top-level workspace, which wins over a
+    // profile's own value the way the CLI's config loader applies it.
+    let workspace_project = v
+        .get("workspace")
+        .and_then(|w| opt_field(w, "codeMieProject"));
+    let mut profiles: Vec<ProfileDetail> = map
+        .into_iter()
+        .flatten()
+        .filter(|(_, p)| p.is_object())
+        .map(|(key, p)| ProfileDetail {
+            name: key.clone(),
+            provider: str_field(p, "provider"),
+            model: opt_field(p, "model"),
+            codemie_url: opt_field(p, "codeMieUrl"),
+            codemie_project: workspace_project
+                .clone()
+                .or_else(|| opt_field(p, "codeMieProject")),
+            base_url: opt_field(p, "baseUrl"),
+        })
+        .collect();
+    let is_active = |p: &ProfileDetail| Some(&p.name) == active.as_ref();
+    profiles.sort_by(|a, b| is_active(b).cmp(&is_active(a)).then(a.name.cmp(&b.name)));
+    CodemieProfiles {
+        state: state.to_string(),
+        active,
+        account: opt_field(v, "userEmail"),
+        profiles,
+    }
+}
+
+/// Every profile for Settings → CodeMie. Never fails: an unreadable or
+/// unparseable file is `no-configuration`.
+#[tauri::command]
+pub fn read_codemie_profiles() -> CodemieProfiles {
+    let value = std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .unwrap_or(serde_json::Value::Null);
+    profiles_from_value(&value)
+}
+
 /// The app is Finder-launched with cwd `/`, so a repository-local `.codemie/`
 /// never applies — the global file under $HOME is always the right one.
 /// On Windows, HOME is typically unset; fall back to USERPROFILE.
@@ -231,6 +321,51 @@ mod tests {
         let json = serde_json::to_string(&CodemieConfig::default()).unwrap();
         assert!(json.contains(r#""state":"no-configuration""#), "{json}");
         assert!(json.contains(r#""account":null"#), "{json}");
+    }
+
+    #[test]
+    fn profiles_from_value_lists_all_without_secrets() {
+        let v = serde_json::json!({ "version": 2, "activeProfile": "prod", "userEmail": "a@b.c",
+          "profiles": { "prod": { "name": "prod", "provider": "ai-run-sso", "model": "claude-sonnet-4-5",
+            "codeMieUrl": "https://codemie.lab.epam.com", "codeMieProject": "EPM-CDME", "apiKey": "sso-provided" },
+            "local": { "name": "local", "provider": "litellm", "baseUrl": "http://localhost:4000", "apiKey": "sk-secret" } } });
+        let p = profiles_from_value(&v);
+        assert_eq!(p.state, "valid");
+        assert_eq!(p.active.as_deref(), Some("prod"));
+        assert_eq!(p.profiles.len(), 2);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(
+            !json.contains("sk-secret")
+                && !json.contains("sso-provided")
+                && !json.contains("apiKey")
+        );
+        assert!(json.contains("\"codemieProject\":\"EPM-CDME\""));
+    }
+
+    #[test]
+    fn profiles_from_value_broken_when_active_missing() {
+        let v = serde_json::json!({ "activeProfile": "gone", "profiles": { "prod": { "provider": "ai-run-sso" } } });
+        assert_eq!(profiles_from_value(&v).state, "broken");
+    }
+
+    #[test]
+    fn profiles_from_value_empty_is_no_configuration() {
+        assert_eq!(
+            profiles_from_value(&serde_json::json!({})).state,
+            "no-configuration"
+        );
+    }
+
+    #[test]
+    fn profiles_from_value_puts_active_first() {
+        let v = serde_json::json!({ "activeProfile": "zeta",
+          "profiles": { "alpha": { "provider": "litellm" }, "zeta": { "provider": "ai-run-sso" }, "mid": { "provider": "ollama" } } });
+        let names: Vec<_> = profiles_from_value(&v)
+            .profiles
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["zeta", "alpha", "mid"]);
     }
 
     #[test]
