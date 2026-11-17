@@ -1,0 +1,56 @@
+{
+  "market": {
+    "builtIn": false,
+    "commit": "9f3c2a17e5b04d6c8a1f2e3d4c5b6a7980123456",
+    "fetchedAt": "2026-11-17T09:30:00Z",
+    "kind": "git",
+    "name": "acme",
+    "ready": true,
+    "ref": "stable",
+    "source": "https://github.com/acme-corp/connect-plugins"
+  },
+  "plugins": [
+    {
+      "categories": [
+        "test"
+      ],
+      "featured": true,
+      "id": "standup",
+      "installable": true,
+      "installed": null,
+      "name": "Stand-up digest",
+      "reason": null,
+      "summary": "A morning digest of your team's updates on Today",
+      "update": false,
+      "version": "1.0.0"
+    },
+    {
+      "categories": [
+        "test"
+      ],
+      "featured": false,
+      "id": "vault-notes",
+      "installable": false,
+      "installed": null,
+      "name": "Vault notes",
+      "reason": "Needs Connect's Knowledge engine (coming later)",
+      "summary": "Your notes vaults, read and edited",
+      "update": false,
+      "version": "1.0.0"
+    },
+    {
+      "categories": [
+        "test"
+      ],
+      "featured": false,
+      "id": "next-gen",
+      "installable": false,
+      "installed": null,
+      "name": "Next gen",
+      "reason": "It needs Echo >=0.9.13, and Connect provides Echo API 0.9.11.",
+      "summary": "Built for a newer Echo",
+      "update": false,
+      "version": "2.0.0"
+    }
+  ]
+}

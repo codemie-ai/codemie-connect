@@ -1,0 +1,49 @@
+{
+  "categories": [
+    "test"
+  ],
+  "commit": "9f3c2a17e5b04d6c8a1f2e3d4c5b6a7980123456",
+  "featured": true,
+  "id": "standup",
+  "installable": true,
+  "installed": null,
+  "market": "acme",
+  "name": "Stand-up digest",
+  "reason": null,
+  "sheet": [
+    {
+      "key": "claude",
+      "support": {
+        "limit": "Claude runs without tools in Connect",
+        "status": "partial"
+      },
+      "text": "Ask Claude questions on your behalf"
+    },
+    {
+      "key": "deliver",
+      "support": {
+        "limit": "Teams and mail messages wait for your review in Connect; nothing is sent on its own",
+        "status": "partial"
+      },
+      "text": "Send you messages through your Today page and Teams (a message to yourself)"
+    },
+    {
+      "key": "network",
+      "support": {
+        "status": "supported"
+      },
+      "text": "Connect to api.example.com"
+    },
+    {
+      "key": "schedule",
+      "support": {
+        "status": "supported"
+      },
+      "text": "Work on its own on a schedule while Connect is open"
+    }
+  ],
+  "source": "https://github.com/acme-corp/connect-plugins#stable",
+  "summary": "A morning digest of your team's updates on Today",
+  "update": false,
+  "version": "1.0.0"
+}

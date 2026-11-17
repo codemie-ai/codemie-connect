@@ -211,6 +211,7 @@ pub fn run() {
             storage::commands::data_location_remove_old,
             storage::commands::data_location_reveal,
             storage::commands::data_location_pick,
+            plugins::commands::plugins_request,
         ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

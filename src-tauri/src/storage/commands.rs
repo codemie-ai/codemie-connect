@@ -159,7 +159,7 @@ impl Holder {
     }
 }
 
-fn main_window_only(label: &str) -> Result<()> {
+pub(crate) fn main_window_only(label: &str) -> Result<()> {
     if label == "main" {
         Ok(())
     } else {
@@ -185,7 +185,9 @@ fn ensure_can_restart(state: &WorkspaceState) -> Result<()> {
 }
 
 /// Runs file work on the blocking pool, off the main thread and the async workers.
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T> {
+pub(crate) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T> {
     tauri::async_runtime::spawn_blocking(work)
         .await
         .map_err(|_| WorkspaceError::new("io", "Connect couldn’t finish that. Try again."))
@@ -297,7 +299,7 @@ pub async fn data_location_use_default(
 
 /// Refuses while a restart, a data-folder change or Remove old copy holds the guard, saying
 /// which.
-fn not_restarting(state: &WorkspaceState) -> Result<()> {
+pub(crate) fn not_restarting(state: &WorkspaceState) -> Result<()> {
     match state.folder_guard.holder() {
         Some(holder) => Err(holder.busy()),
         None => Ok(()),

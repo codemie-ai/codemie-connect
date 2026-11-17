@@ -1,0 +1,22 @@
+[
+  {
+    "builtIn": true,
+    "commit": null,
+    "fetchedAt": null,
+    "kind": "git",
+    "name": "onetest",
+    "ready": false,
+    "ref": null,
+    "source": "https://github.com/onetest-ai/echo-plugins"
+  },
+  {
+    "builtIn": false,
+    "commit": "9f3c2a17e5b04d6c8a1f2e3d4c5b6a7980123456",
+    "fetchedAt": "2026-11-17T09:30:00Z",
+    "kind": "git",
+    "name": "acme",
+    "ready": true,
+    "ref": "stable",
+    "source": "https://github.com/acme-corp/connect-plugins"
+  }
+]

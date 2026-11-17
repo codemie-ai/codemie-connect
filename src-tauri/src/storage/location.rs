@@ -85,7 +85,7 @@ pub fn read_location(default_root: &Path) -> LocationFile {
 
 /// Atomic: write a sibling temp file, fsync, rename over the target, then
 /// (best effort) fsync the directory. The temp file is removed on failure.
-fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = target.parent().unwrap_or(Path::new("."));
     let name = target
         .file_name()

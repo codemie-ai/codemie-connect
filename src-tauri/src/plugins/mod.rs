@@ -1,11 +1,19 @@
 //! Echo-compatible plugin host (DESIGN 7). Its first piece is the isolation gate: plugin UIs are
 //! served from their own scheme to sandboxed frames (`protocol`), and commands check that their
 //! caller is Connect's own page rather than a frame inside it (`caller`). `manifest` and `capabilities` read a package's
-//! `echo-plugin.json` and describe what it asks for on the permission sheet.
+//! `echo-plugin.json` and describe what it asks for on the permission sheet. `market`, `install`
+//! and `registry` fetch marketplaces and install, update and remove plugins from them;
+//! `commands` is Settings' `plugins_request`.
 pub mod caller;
 pub mod capabilities;
+pub mod commands;
+pub mod install;
 pub mod manifest;
+pub mod market;
 pub mod protocol;
+pub mod registry;
+#[cfg(test)]
+mod testkit;
 
 /// A plugin id as Echo manifests use it (`github`, `obsidian`): lowercase, so it is also a valid
 /// URL host for `connect-plugin://<id>/`.

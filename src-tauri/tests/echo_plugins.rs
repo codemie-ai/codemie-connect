@@ -7,9 +7,15 @@
 //! - `CONNECT_KNOWLEDGE_PLUGINS_DIR` (default
 //!   `$HOME/.codex/worktrees/knowledge-plugin-0300/echo-plugins/plugins`): a moving worktree, used
 //!   for Knowledge's blocked line and the compatibility refusal only (ruling R31).
+//!
+//! Each directory's parent holds its `echo-marketplace.json`, so it is also added as a local
+//! marketplace and installed from, into a temp data root.
 use app_lib::plugins::capabilities::{sheet, Support};
+use app_lib::plugins::install::{self, tree_hash, Outcome};
 use app_lib::plugins::manifest::{check_compat, parse_manifest, ManifestError};
-use std::path::PathBuf;
+use app_lib::plugins::market::{self, CliGit};
+use app_lib::plugins::registry::{Market, PluginPaths, Registry};
+use std::path::{Path, PathBuf};
 
 fn dir(var: &str, default_under_home: &str) -> Option<PathBuf> {
     let d = std::env::var_os(var)
@@ -79,4 +85,80 @@ fn knowledge_is_blocked_and_a_range_above_connect_is_refused() {
         }
     }
     assert!(seen >= 1);
+}
+
+/// The marketplace a plugins directory belongs to (its parent), added to a temp data root.
+fn local_market(plugins: &Path) -> Option<(tempfile::TempDir, PluginPaths, Market)> {
+    let root = plugins.parent()?;
+    if !root.join(market::CATALOG_FILE).is_file() {
+        eprintln!("skipped: no {} in {}", market::CATALOG_FILE, root.display());
+        return None;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let paths = PluginPaths::new(&data, &tmp.path().join("private"));
+    // A folder is read where it is: nothing is fetched.
+    let m = market::add(&paths, &CliGit::default(), root.to_str().unwrap()).unwrap();
+    Some((tmp, paths, m))
+}
+
+#[test]
+fn published_plugins_install_from_their_local_marketplace() {
+    let Some(dir) = dir(
+        "CONNECT_ECHO_PLUGINS_DIR",
+        "AI/projects/other/echo-plugins/plugins",
+    ) else {
+        return;
+    };
+    let Some((_tmp, paths, m)) = local_market(&dir) else {
+        return;
+    };
+    // Its catalog is named like the built-in one, so it gets the next free name.
+    assert_eq!(m.name, "onetest-2");
+    let ids = ["scheduler", "github", "obsidian", "telegram"];
+    for id in ids {
+        let offer = install::offer(&paths, &m, id).unwrap();
+        assert!(offer.refusal.is_none(), "{id}: {:?}", offer.refusal);
+        let agreed: Vec<String> = offer.sheet.iter().map(|l| l.key.clone()).collect();
+        let out = install::install(&paths, &m.name, id, &agreed).unwrap();
+        assert!(matches!(out, Outcome::Installed(ref got) if got == id));
+        let reg = Registry::load(&paths).unwrap();
+        let p = &reg.installed[id];
+        let copy = paths.installed().join(id).join(&p.version);
+        assert_eq!(p.hash, tree_hash(&copy).unwrap(), "{id}");
+        assert_eq!(p.hash, tree_hash(&dir.join(id)).unwrap(), "{id}");
+        let mut want = agreed.clone();
+        want.sort();
+        assert_eq!(p.agreed, want, "{id}");
+        assert!(p.enabled);
+    }
+    for id in ids {
+        install::remove(&paths, id, true).unwrap();
+    }
+    assert!(Registry::load(&paths).unwrap().installed.is_empty());
+    assert_eq!(std::fs::read_dir(paths.installed()).unwrap().count(), 0);
+    assert_eq!(
+        std::fs::read_dir(paths.root.join("tmp")).unwrap().count(),
+        0
+    );
+}
+
+#[test]
+fn knowledge_is_refused_at_install_with_its_sheet_line() {
+    let Some(dir) = dir(
+        "CONNECT_KNOWLEDGE_PLUGINS_DIR",
+        ".codex/worktrees/knowledge-plugin-0300/echo-plugins/plugins",
+    ) else {
+        return;
+    };
+    let Some((_tmp, paths, m)) = local_market(&dir) else {
+        return;
+    };
+    let offer = install::offer(&paths, &m, "knowledge").unwrap();
+    let keys: Vec<String> = offer.sheet.iter().map(|l| l.key.clone()).collect();
+    let e = install::install(&paths, &m.name, "knowledge", &keys).unwrap_err();
+    assert_eq!(e.code, "blocked");
+    assert_eq!(e.message, "Needs Connect's Knowledge engine (coming later)");
+    assert!(Registry::load(&paths).unwrap().installed.is_empty());
 }

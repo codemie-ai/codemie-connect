@@ -11,12 +11,14 @@
 //! - `__host/<file>` is the bundled shim, `ui/plugins/frame/<file>`. It is Connect's own code and
 //!   the same for every plugin, so any well-formed id serves it.
 //! - Any other path is a file of the plugin's active version,
-//!   `<data root>/plugins/installed/<id>/<version>/<path>`.
+//!   `<data root>/plugins/installed/<id>/<version>/<path>`: the version the registry records,
+//!   while the plugin is enabled (`registry::active_version`).
 //!
 //! Every response carries a CSP and `nosniff`. Files also carry
 //! `Access-Control-Allow-Origin: null`: a sandboxed frame has an opaque origin, and module scripts
 //! load in CORS mode. Serving never makes a frame trusted; the sandbox, the CSP, the navigation
 //! guard and `caller` keep plugin code away from Connect's commands.
+use super::registry::PluginPaths;
 use crate::workspace::WorkspaceState;
 use std::path::PathBuf;
 use tauri::http::header::{
@@ -254,23 +256,32 @@ fn bundled_frame_file(
     has_key(&key).then(|| get(key)).flatten()
 }
 
+/// Roots that serve the plugins installed under `paths`, each at the version the registry
+/// records while it is enabled. The registry is read per request, so an install, update,
+/// disable or removal is served at once.
+pub fn registry_roots(paths: PluginPaths, host_file: Lookup<Vec<u8>>) -> PluginRoots {
+    PluginRoots {
+        installed: paths.installed(),
+        host_file,
+        active_version: Box::new(move |id| super::registry::active_version(&paths, id)),
+    }
+}
+
 /// The app's roots, or `None` when there is no workspace state to resolve the data folder from.
 fn app_roots<R: Runtime>(app: &AppHandle<R>) -> Option<PluginRoots> {
     let state = app.try_state::<WorkspaceState>()?;
     let resolver = app.asset_resolver();
-    Some(PluginRoots {
-        installed: state.resolved.data_root.join("plugins").join("installed"),
-        host_file: Box::new(move |rel| {
+    let paths = PluginPaths::new(&state.resolved.data_root, &state.resolved.private_root);
+    Some(registry_roots(
+        paths,
+        Box::new(move |rel| {
             bundled_frame_file(
                 rel,
                 |key| resolver.iter().any(|(k, _)| k == key),
                 |key| resolver.get(key).map(|a| a.bytes),
             )
         }),
-        // The plugin registry arrives with installs (Task 19, `<data root>/plugins/registry.json`);
-        // until then nothing is installed and only the shim is served.
-        active_version: Box::new(|_id| None),
-    })
+    ))
 }
 
 #[cfg(test)]
@@ -534,6 +545,57 @@ mod tests {
         let res = answer(&req, None, true);
         assert_eq!(res.status(), 503);
         assert_eq!(header(&res, "access-control-allow-origin"), None);
+    }
+
+    #[test]
+    fn serves_the_enabled_install_from_the_registry() {
+        use crate::plugins::install::{install, remove, set_enabled, update};
+        use crate::plugins::testkit::{self, manifest};
+        let env = testkit::env();
+        testkit::local_market(&env, &[manifest("hello", "1.0.0")]);
+        let roots = || {
+            registry_roots(
+                env.paths.clone(),
+                Box::new(|rel| (rel == "frame.html").then(|| b"<!doctype html>".to_vec())),
+            )
+        };
+        let client = "connect-plugin://hello/client.js";
+        // Not installed: only the shim.
+        assert_eq!(get(&roots(), client).status(), 404);
+        assert_eq!(
+            get(&roots(), "connect-plugin://hello/__host/frame.html").status(),
+            200
+        );
+
+        install(&env.paths, "local", "hello", &[]).unwrap();
+        let res = get(&roots(), client);
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.body(), b"export function apply(ctx) {}\n");
+        assert_eq!(
+            header(&res, "content-security-policy"),
+            Some(frame_csp("connect-plugin://hello").as_str())
+        );
+        // Nothing outside the version folder: the registry sits two folders up.
+        assert_eq!(
+            get(&roots(), "connect-plugin://hello/../registry.json").status(),
+            404
+        );
+
+        // Off: nothing of it is served; on again: served.
+        set_enabled(&env.paths, "hello", false).unwrap();
+        assert_eq!(get(&roots(), client).status(), 404);
+        set_enabled(&env.paths, "hello", true).unwrap();
+        assert_eq!(get(&roots(), client).status(), 200);
+
+        // Updated: the new version's files, at once.
+        let src = env.market.join("plugins/hello");
+        testkit::write_plugin(&src, manifest("hello", "1.1.0"));
+        fs::write(src.join("client.js"), "export const v = 2;").unwrap();
+        update(&env.paths, "hello", None).unwrap();
+        assert_eq!(get(&roots(), client).body(), b"export const v = 2;");
+
+        remove(&env.paths, "hello", false).unwrap();
+        assert_eq!(get(&roots(), client).status(), 404);
     }
 
     #[test]

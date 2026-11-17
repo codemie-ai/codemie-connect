@@ -1,0 +1,22 @@
+[
+  {
+    "agreed": [
+      "claude",
+      "deliver",
+      "network",
+      "schedule"
+    ],
+    "commit": "9f3c2a17e5b04d6c8a1f2e3d4c5b6a7980123456",
+    "enabled": true,
+    "hash": "ca0db428ee703be76f076202d91044d911ce7ca518f73bad3d42e8f14e082b7b",
+    "id": "standup",
+    "installedAt": "2026-11-17T09:30:00Z",
+    "market": "acme",
+    "name": "Stand-up digest",
+    "problem": null,
+    "source": "https://github.com/acme-corp/connect-plugins#stable",
+    "summary": "A morning digest of your team's updates on Today",
+    "update": "1.1.0",
+    "version": "1.0.0"
+  }
+]
