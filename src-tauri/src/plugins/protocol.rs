@@ -267,11 +267,13 @@ pub fn registry_roots(paths: PluginPaths, host_file: Lookup<Vec<u8>>) -> PluginR
     }
 }
 
-/// The app's roots, or `None` when there is no workspace state to resolve the data folder from.
+/// The app's roots, or `None` while the data folder isn't open (no workspace state, or a
+/// folder that couldn't be opened): nothing is served from a folder Connect isn't using.
 fn app_roots<R: Runtime>(app: &AppHandle<R>) -> Option<PluginRoots> {
     let state = app.try_state::<WorkspaceState>()?;
+    let core = state.core.as_ref()?;
     let resolver = app.asset_resolver();
-    let paths = PluginPaths::new(&state.resolved.data_root, &state.resolved.private_root);
+    let paths = PluginPaths::new(&core.paths.data, &core.paths.private);
     Some(registry_roots(
         paths,
         Box::new(move |rel| {
@@ -567,7 +569,12 @@ mod tests {
             200
         );
 
-        install(&env.paths, "local", "hello", &[]).unwrap();
+        let empty = crate::plugins::install::sheet_hash(&[]);
+        let nothing = crate::plugins::install::Agreement {
+            keys: &[],
+            sheet_hash: &empty,
+        };
+        install(&env.paths, "local", "hello", nothing).unwrap();
         let res = get(&roots(), client);
         assert_eq!(res.status(), 200);
         assert_eq!(res.body(), b"export function apply(ctx) {}\n");

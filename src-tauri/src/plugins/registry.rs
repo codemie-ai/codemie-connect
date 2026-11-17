@@ -7,7 +7,9 @@
 //! - `registry.json`, `registry.lock`
 //! - `markets/<name>-<hash8>/`: a git marketplace's clone (a local folder is read where it is)
 //! - `installed/<id>/<version>/`: what is installed
-//! - `tmp/<uuid>/`: clones and copies being checked, renamed into place when they pass
+//! - `tmp/<uuid>/`: clones and copies being checked, renamed into place when they pass; entries
+//!   older than an hour (left by a crash) are swept the first time the lock is taken, and a
+//!   data-folder move leaves `tmp/` behind
 //! - `data/<id>/`: a plugin's own data, kept on remove unless the user asks
 //!
 //! A plugin's secrets live outside it, in `<private root>/credentials/plugins/<id>/`.
@@ -15,10 +17,11 @@ use crate::workspace::models::{Result, WorkspaceError};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// The marketplace every Connect has (DESIGN 7.1).
@@ -27,6 +30,10 @@ pub const BUILT_IN_NAME: &str = "onetest";
 pub const BUILT_IN_REPO: &str = "onetest-ai/echo-plugins";
 /// How long a change waits for another one to finish.
 const LOCK_WAIT: Duration = Duration::from_secs(30);
+/// The registry format this Connect writes; a newer one is refused, never rewritten.
+pub const FORMAT: u32 = 1;
+/// A `tmp/` entry this old was left by a crash.
+const STALE_TMP: Duration = Duration::from_secs(60 * 60);
 
 /// Where the plugin files of one data folder live.
 #[derive(Debug, Clone)]
@@ -102,7 +109,9 @@ impl std::ops::Deref for TmpDir {
 
 impl Drop for TmpDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if let Err(e) = super::tree::delete_path(&self.0) {
+            log::warn!("plugins: {} stays behind: {e}", self.0.display());
+        }
     }
 }
 
@@ -174,9 +183,10 @@ impl Market {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Installed {
     pub version: String,
-    /// The marketplace it came from (its name).
+    /// The marketplace it came from (its name); empty for a plugin taken back after a reset.
     pub market: String,
-    /// That marketplace's source when it was installed.
+    /// That marketplace's source (`Source::text`) when it was installed: with the name, what
+    /// identifies the marketplace, since a removed marketplace's name can be given to another.
     pub source: String,
     /// The marketplace's commit (git) when it was installed.
     #[serde(default)]
@@ -193,8 +203,18 @@ pub struct Installed {
     pub installed_at: String,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+impl Installed {
+    /// Whether it came from this very marketplace: the same name and the same source.
+    pub fn from_market(&self, m: &Market) -> bool {
+        self.market == m.name && self.source == m.source.text()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Registry {
+    /// `FORMAT` when written by this Connect.
+    #[serde(default = "first_format")]
+    pub format: u32,
     #[serde(default)]
     pub installed: BTreeMap<String, Installed>,
     /// The built-in marketplace first, then the ones the user added.
@@ -202,20 +222,45 @@ pub struct Registry {
     pub markets: Vec<Market>,
 }
 
+fn first_format() -> u32 {
+    1
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self {
+            format: FORMAT,
+            installed: BTreeMap::new(),
+            markets: Vec::new(),
+        }
+    }
+}
+
+/// Why the registry can't be used, with what the user can do (`registry_reset`).
+fn unreadable(why: &str) -> WorkspaceError {
+    WorkspaceError::new(
+        "registry_unreadable",
+        format!(
+            "Connect couldn’t read its list of plugins: {why}. Reset the list to start it again; \
+             installed plugins are kept, turned off."
+        ),
+    )
+}
+
 impl Registry {
     /// The registry, or an empty one when there is none yet. The built-in marketplace is always
-    /// listed first.
+    /// listed first. A file that can't be read, or one written by a newer Connect, is
+    /// `registry_unreadable`.
     pub fn load(paths: &PluginPaths) -> Result<Registry> {
         let mut reg = match std::fs::read(paths.registry()) {
-            Ok(bytes) => serde_json::from_slice::<Registry>(&bytes).map_err(|e| {
-                WorkspaceError::new(
-                    "io",
-                    format!("Connect couldn’t read its list of plugins (registry.json): {e}."),
-                )
-            })?,
+            Ok(bytes) => serde_json::from_slice::<Registry>(&bytes)
+                .map_err(|e| unreadable(&format!("registry.json isn’t valid ({e})")))?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => Registry::default(),
             Err(e) => return Err(io_error("read its list of plugins", &e)),
         };
+        if reg.format > FORMAT {
+            return Err(unreadable("it was written by a newer Connect"));
+        }
         if !reg.markets.iter().any(|m| m.built_in) {
             reg.markets.insert(
                 0,
@@ -248,42 +293,95 @@ impl Registry {
     }
 }
 
+/// The exclusive lock on `registry.lock`, released on drop.
+pub struct RegistryLock {
+    _held: File,
+}
+
+/// Waits (at most `LOCK_WAIT`) for the registry's lock. The first time in this process, stale
+/// `tmp/` entries are swept under it.
+pub fn lock(paths: &PluginPaths) -> Result<RegistryLock> {
+    paths.ensure_root()?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(paths.lock())
+        .map_err(|e| io_error("open its plugin lock", &e))?;
+    let start = Instant::now();
+    while let Err(e) = file.try_lock_exclusive() {
+        if e.raw_os_error() != fs2::lock_contended_error().raw_os_error() {
+            return Err(io_error("lock its list of plugins", &e));
+        }
+        if start.elapsed() > LOCK_WAIT {
+            return Err(WorkspaceError::new(
+                "busy",
+                "Connect is still changing your plugins. Try again in a moment.",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    sweep_tmp_once(paths);
+    Ok(RegistryLock { _held: file })
+}
+
+/// Data roots whose `tmp/` was swept in this process.
+static SWEPT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// Deletes `tmp/` entries older than an hour: what a crash left mid-clone or mid-copy. Work in
+/// progress is younger (a fetch stops after a minute).
+fn sweep_tmp_once(paths: &PluginPaths) {
+    let first = SWEPT
+        .lock()
+        .map(|mut swept| swept.insert(paths.root.clone()))
+        .unwrap_or(false);
+    if !first {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(paths.tmp()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE_TMP);
+        if stale {
+            if let Err(e) = super::tree::delete_path(&entry.path()) {
+                log::warn!("plugins: {} stays behind: {e}", entry.path().display());
+            }
+        }
+    }
+}
+
 /// The registry held under its lock: changes are written with `save`, and the lock is released
 /// when this is dropped.
 pub struct Locked {
-    _lock: File,
+    _lock: RegistryLock,
     paths: PluginPaths,
     pub reg: Registry,
 }
 
 impl Locked {
-    /// Waits (at most `LOCK_WAIT`) for the lock, then reads the registry.
+    /// Takes the lock, then reads the registry.
     pub fn take(paths: &PluginPaths) -> Result<Locked> {
-        paths.ensure_root()?;
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(paths.lock())
-            .map_err(|e| io_error("open its plugin lock", &e))?;
-        let start = Instant::now();
-        while let Err(e) = file.try_lock_exclusive() {
-            if e.raw_os_error() != fs2::lock_contended_error().raw_os_error() {
-                return Err(io_error("lock its list of plugins", &e));
-            }
-            if start.elapsed() > LOCK_WAIT {
-                return Err(WorkspaceError::new(
-                    "busy",
-                    "Connect is still changing your plugins. Try again in a moment.",
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let lock = lock(paths)?;
         Ok(Locked {
             reg: Registry::load(paths)?,
-            _lock: file,
+            _lock: lock,
             paths: paths.clone(),
         })
+    }
+
+    /// A registry to write under a lock already taken (a reset, which can't read the old one).
+    pub fn with(lock: RegistryLock, paths: &PluginPaths, reg: Registry) -> Locked {
+        Locked {
+            _lock: lock,
+            paths: paths.clone(),
+            reg,
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -393,6 +491,60 @@ mod tests {
         let err = Registry::update(&gone, |_| Ok(())).unwrap_err();
         assert_eq!(err.code, "storage_unavailable");
         assert!(!dir.path().join("gone").exists());
+    }
+
+    #[test]
+    fn a_corrupt_or_newer_registry_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PluginPaths::new(dir.path(), dir.path());
+        std::fs::create_dir_all(&paths.root).unwrap();
+        for (text, why) in [
+            ("{not json", "registry.json isn’t valid"),
+            (
+                r#"{"format": 2, "installed": {}}"#,
+                "written by a newer Connect",
+            ),
+            (
+                r#"{"installed": {"x": {"version": 1}}}"#,
+                "registry.json isn’t valid",
+            ),
+        ] {
+            std::fs::write(paths.registry(), text).unwrap();
+            let e = Registry::load(&paths).unwrap_err();
+            assert_eq!(e.code, "registry_unreadable", "{text}");
+            assert!(e.message.contains(why), "{}", e.message);
+            assert!(e.message.contains("Reset the list"), "{}", e.message);
+            // Nothing is written over it, and nothing is served from it.
+            assert_eq!(
+                Registry::update(&paths, |_| Ok(())).unwrap_err().code,
+                "registry_unreadable"
+            );
+            assert_eq!(std::fs::read_to_string(paths.registry()).unwrap(), text);
+            assert_eq!(active_version(&paths, "x"), None);
+        }
+        // An older file without a format is this format.
+        std::fs::write(paths.registry(), r#"{"installed": {}}"#).unwrap();
+        assert_eq!(Registry::load(&paths).unwrap().format, FORMAT);
+    }
+
+    #[test]
+    fn stale_tmp_entries_are_swept_the_first_time_the_lock_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PluginPaths::new(dir.path(), dir.path());
+        let old = paths.tmp().join("crashed");
+        let young = paths.tmp().join("working");
+        std::fs::create_dir_all(old.join("clone")).unwrap();
+        std::fs::create_dir_all(&young).unwrap();
+        let then = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        File::open(&old).unwrap().set_modified(then).unwrap();
+        drop(lock(&paths).unwrap());
+        assert!(!old.exists());
+        assert!(young.is_dir());
+        // Only once per data root in a process.
+        std::fs::create_dir_all(&old).unwrap();
+        File::open(&old).unwrap().set_modified(then).unwrap();
+        drop(lock(&paths).unwrap());
+        assert!(old.is_dir());
     }
 
     #[test]

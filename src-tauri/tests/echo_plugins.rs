@@ -11,10 +11,12 @@
 //! Each directory's parent holds its `echo-marketplace.json`, so it is also added as a local
 //! marketplace and installed from, into a temp data root.
 use app_lib::plugins::capabilities::{sheet, Support};
-use app_lib::plugins::install::{self, tree_hash, Outcome};
+use app_lib::plugins::git::CliGit;
+use app_lib::plugins::install::{self, sheet_hash, Agreement, Outcome};
 use app_lib::plugins::manifest::{check_compat, parse_manifest, ManifestError};
-use app_lib::plugins::market::{self, CliGit};
+use app_lib::plugins::market;
 use app_lib::plugins::registry::{Market, PluginPaths, Registry};
+use app_lib::plugins::tree::tree_hash;
 use std::path::{Path, PathBuf};
 
 fn dir(var: &str, default_under_home: &str) -> Option<PathBuf> {
@@ -121,7 +123,12 @@ fn published_plugins_install_from_their_local_marketplace() {
         let offer = install::offer(&paths, &m, id).unwrap();
         assert!(offer.refusal.is_none(), "{id}: {:?}", offer.refusal);
         let agreed: Vec<String> = offer.sheet.iter().map(|l| l.key.clone()).collect();
-        let out = install::install(&paths, &m.name, id, &agreed).unwrap();
+        let hash = sheet_hash(&offer.sheet);
+        let agreement = Agreement {
+            keys: &agreed,
+            sheet_hash: &hash,
+        };
+        let out = install::install(&paths, &m.name, id, agreement).unwrap();
         assert!(matches!(out, Outcome::Installed(ref got) if got == id));
         let reg = Registry::load(&paths).unwrap();
         let p = &reg.installed[id];
@@ -157,7 +164,12 @@ fn knowledge_is_refused_at_install_with_its_sheet_line() {
     };
     let offer = install::offer(&paths, &m, "knowledge").unwrap();
     let keys: Vec<String> = offer.sheet.iter().map(|l| l.key.clone()).collect();
-    let e = install::install(&paths, &m.name, "knowledge", &keys).unwrap_err();
+    let hash = sheet_hash(&offer.sheet);
+    let agreement = Agreement {
+        keys: &keys,
+        sheet_hash: &hash,
+    };
+    let e = install::install(&paths, &m.name, "knowledge", agreement).unwrap_err();
     assert_eq!(e.code, "blocked");
     assert_eq!(e.message, "Needs Connect's Knowledge engine (coming later)");
     assert!(Registry::load(&paths).unwrap().installed.is_empty());

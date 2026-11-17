@@ -403,18 +403,40 @@ fn staging_entry(name: &str) -> bool {
 }
 
 /// Copies what moves: a verified copy of the database, then plugins and automation output
-/// with their file modes. AI staging, sign-in data, the locks, `window.json` and the pointer
-/// are never copied.
+/// with their file modes. AI staging, sign-in data, the locks, `window.json`, the pointer and
+/// `plugins/tmp` (clones and copies being checked) are never copied.
 fn copy_data(source: &Path, staging: &Path) -> Result<()> {
     copy_database(&source.join(DATABASE), &staging.join(DATABASE))?;
     for name in MOVING_FOLDERS {
         let from = source.join(name);
         if fs::symlink_metadata(&from).is_ok() {
-            copy_entry(&from, &staging.join(name))
+            copy_moving_folder(&from, &staging.join(name), name)
                 .map_err(|e| failed(&format!("Connect couldn’t copy your {name}"), e))?;
         }
     }
     Ok(())
+}
+
+/// What stays behind inside a moving folder: plugin clones and copies being checked.
+const TRANSIENT: [(&str, &str); 1] = [("plugins", "tmp")];
+
+/// `copy_entry` for a moving folder, leaving out its `TRANSIENT` entries.
+fn copy_moving_folder(from: &Path, to: &Path, name: &str) -> io::Result<()> {
+    let meta = fs::symlink_metadata(from)?;
+    if !meta.is_dir() {
+        return copy_entry(from, to);
+    }
+    fs::create_dir(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let child = entry.file_name();
+        if TRANSIENT.contains(&(name, child.to_str().unwrap_or_default())) {
+            continue;
+        }
+        copy_entry(&entry.path(), &to.join(&child))?;
+    }
+    flush_dir(to)?;
+    fs::set_permissions(to, meta.permissions())
 }
 
 /// `VACUUM INTO` a consistent copy of the (quiesced) database, puts it on disk, then proves it
@@ -864,6 +886,9 @@ pub(crate) mod tests {
         fs::create_dir_all(plugins.join("echo/bin")).unwrap();
         fs::write(plugins.join("echo/manifest.json"), "{}").unwrap();
         fs::write(plugins.join("echo/bin/run"), "#!/bin/sh\n").unwrap();
+        // A plugin copy being checked is transient: it stays behind.
+        fs::create_dir_all(plugins.join("tmp/5f1c/package")).unwrap();
+        fs::write(plugins.join("tmp/5f1c/package/main.js"), "x").unwrap();
         fs::create_dir_all(f.default.join("automations/runs")).unwrap();
         fs::write(f.default.join("automations/runs/1.json"), "{\"ok\":1}").unwrap();
         #[cfg(unix)]
@@ -909,6 +934,8 @@ pub(crate) mod tests {
             fs::read_to_string(target.join("automations/runs/1.json")).unwrap(),
             "{\"ok\":1}"
         );
+        assert!(target.join("plugins/echo/manifest.json").is_file());
+        assert!(!target.join("plugins/tmp").exists());
         #[cfg(unix)]
         {
             let moved = target.join("plugins");

@@ -4,30 +4,28 @@
 //!
 //! Sources the user can add:
 //! - a local folder (its full path), read where it is;
-//! - an `https://` git address (`#ref` picks a branch, tag or commit) or GitHub's `owner/repo[@ref]`,
-//!   cloned with `git clone --depth 1` into `<data root>/plugins/markets/<name>-<hash8>/`;
+//! - an `https://` git address (`#ref` picks a branch or tag) or GitHub's `owner/repo[@ref]`,
+//!   cloned with `git clone --depth 1` (`git`) into `<data root>/plugins/markets/<name>-<hash8>/`;
 //! - the built-in `onetest` (`onetest-ai/echo-plugins`), listed from the start and fetched only
 //!   when the user asks.
 //!
 //! Connect reaches the network only when the user adds or refreshes a git marketplace. Every
-//! other address (http, ssh, git, file) is refused, here and again by git's own protocol allowlist.
-use super::install::open_plain;
+//! other address (http, ssh, git, file) is refused, here and again by git's own protocol
+//! allowlist. A clone keeps only its checked-out files (its `.git` folder is deleted once the
+//! commit is read) and must stay within 5000 files and 64 MB.
+use super::git::Git;
 use super::registry::{io_error, now, Locked, Market, PluginPaths, Registry, Source};
+use super::tree::{check_market_tree, delete_path, open_plain};
 use crate::workspace::models::{Result, WorkspaceError};
 use serde::Deserialize;
 use serde_json::Value;
-use std::ffi::OsString;
-use std::io::{self, Read};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 /// The catalog file at a marketplace's root.
 pub const CATALOG_FILE: &str = "echo-marketplace.json";
 const MAX_CATALOG_BYTES: u64 = 256 * 1024;
 const MAX_CATALOG_PLUGINS: usize = 200;
-/// How long a fetch may take.
-pub const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn invalid(message: impl Into<String>) -> WorkspaceError {
     WorkspaceError::new("invalid", message)
@@ -105,7 +103,7 @@ fn parse_https(t: &str) -> Result<Source> {
     })
 }
 
-/// A GitHub owner: letters, digits and single dashes inside.
+/// A GitHub owner: letters, digits and dashes, not first.
 fn is_owner(s: &str) -> bool {
     (1..=39).contains(&s.len())
         && !s.starts_with('-')
@@ -120,8 +118,8 @@ fn is_repo(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// A plain branch, tag or commit: never an option (`-x`), a path out (`..`) or anything a shell
-/// or git would read specially.
+/// A plain branch or tag name (`git clone --branch` takes nothing else): never an option
+/// (`-x`), a path out (`..`) or anything a shell or git would read specially.
 fn checked_ref(reference: Option<&str>) -> Result<Option<String>> {
     let Some(r) = reference else {
         return Ok(None);
@@ -137,183 +135,9 @@ fn checked_ref(reference: Option<&str>) -> Result<Option<String>> {
         Ok(Some(r.to_string()))
     } else {
         Err(invalid(format!(
-            "“{}” isn’t a plain branch, tag or commit.",
+            "“{}” isn’t a plain branch or tag name.",
             r.escape_debug()
         )))
-    }
-}
-
-// ---------------------------------------------------------------------- git
-
-/// Fetches a marketplace. The real one is `CliGit`; tests use a stand-in so they never reach
-/// the network.
-pub trait Git: Send + Sync {
-    /// Clones `url` at `reference` (its default branch when `None`) into `dest`, which doesn't
-    /// exist yet, and returns the commit it checked out. The error is git's reason, one line.
-    fn clone_at(
-        &self,
-        url: &str,
-        reference: Option<&str>,
-        dest: &Path,
-    ) -> std::result::Result<String, String>;
-}
-
-/// The `git` command line.
-pub struct CliGit {
-    pub program: PathBuf,
-    pub timeout: Duration,
-}
-
-impl Default for CliGit {
-    fn default() -> Self {
-        Self {
-            program: PathBuf::from("git"),
-            timeout: GIT_TIMEOUT,
-        }
-    }
-}
-
-#[cfg(windows)]
-const NO_HOOKS: &str = "core.hooksPath=NUL";
-#[cfg(not(windows))]
-const NO_HOOKS: &str = "core.hooksPath=/dev/null";
-
-/// Settings every git call runs with: no hooks, https only (git refuses file, ssh, git and http
-/// itself, redirects included), no stored or prompted credentials, links checked out as plain
-/// files, no submodules, no filesystem monitor.
-fn hardening() -> Vec<OsString> {
-    [
-        NO_HOOKS,
-        "protocol.allow=never",
-        "protocol.https.allow=always",
-        "credential.helper=",
-        "core.askPass=",
-        "core.symlinks=false",
-        "core.fsmonitor=false",
-        "submodule.recurse=false",
-    ]
-    .iter()
-    .flat_map(|setting| [OsString::from("-c"), OsString::from(setting)])
-    .collect()
-}
-
-/// `git clone --depth 1` of one branch, tag or commit, never its submodules.
-pub fn clone_args(url: &str, reference: Option<&str>, dest: &Path) -> Vec<OsString> {
-    let mut args = hardening();
-    args.extend(["clone", "--depth", "1", "--no-recurse-submodules"].map(OsString::from));
-    if let Some(r) = reference {
-        args.extend([OsString::from("--branch"), OsString::from(r)]);
-    }
-    args.extend([OsString::from("--"), OsString::from(url), dest.into()]);
-    args
-}
-
-impl Git for CliGit {
-    fn clone_at(
-        &self,
-        url: &str,
-        reference: Option<&str>,
-        dest: &Path,
-    ) -> std::result::Result<String, String> {
-        let parent = dest.parent().ok_or("no folder to clone into")?;
-        self.run(&clone_args(url, reference, dest), parent)?;
-        self.head(dest)
-    }
-}
-
-impl CliGit {
-    /// The commit checked out in `repo`.
-    fn head(&self, repo: &Path) -> std::result::Result<String, String> {
-        let mut args = hardening();
-        args.extend(["rev-parse", "HEAD"].map(OsString::from));
-        let commit = self.run(&args, repo)?.trim().to_string();
-        let hex = |s: &str| s.bytes().all(|b| b.is_ascii_hexdigit());
-        if (commit.len() == 40 || commit.len() == 64) && hex(&commit) {
-            Ok(commit.to_ascii_lowercase())
-        } else {
-            Err("git didn’t say which commit it fetched".into())
-        }
-    }
-
-    /// Runs git in `cwd` with no terminal, no askpass and no credential prompts, at most
-    /// `timeout`; returns its output, or the last line of its complaint.
-    fn run(&self, args: &[OsString], cwd: &Path) -> std::result::Result<String, String> {
-        let mut child = Command::new(&self.program)
-            .args(args)
-            .current_dir(cwd)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_LFS_SKIP_SMUDGE", "1")
-            .env_remove("GIT_ASKPASS")
-            .env_remove("SSH_ASKPASS")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                if e.kind() == io::ErrorKind::NotFound {
-                    "Connect needs git to fetch marketplaces; install it, then try again".into()
-                } else {
-                    e.to_string()
-                }
-            })?;
-        let drain = |pipe: Option<Box<dyn Read + Send>>| {
-            std::thread::spawn(move || {
-                let mut kept = Vec::new();
-                if let Some(mut pipe) = pipe {
-                    let _ = (&mut pipe).take(64 * 1024).read_to_end(&mut kept);
-                    let _ = io::copy(&mut pipe, &mut io::sink());
-                }
-                kept
-            })
-        };
-        let out = drain(
-            child
-                .stdout
-                .take()
-                .map(|p| Box::new(p) as Box<dyn Read + Send>),
-        );
-        let err = drain(
-            child
-                .stderr
-                .take()
-                .map(|p| Box::new(p) as Box<dyn Read + Send>),
-        );
-        let start = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if start.elapsed() > self.timeout => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
-                        "it took longer than {} seconds",
-                        self.timeout.as_secs()
-                    ));
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-                Err(e) => return Err(e.to_string()),
-            }
-        };
-        let stdout = out.join().unwrap_or_default();
-        let stderr = err.join().unwrap_or_default();
-        if status.success() {
-            return Ok(String::from_utf8_lossy(&stdout).into_owned());
-        }
-        let text = String::from_utf8_lossy(&stderr);
-        let reason = text
-            .lines()
-            .map(str::trim)
-            .rfind(|l| !l.is_empty())
-            .unwrap_or("git failed");
-        let reason = reason
-            .strip_prefix("fatal: ")
-            .or_else(|| reason.strip_prefix("error: "))
-            .unwrap_or(reason);
-        Err(reason
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(200)
-            .collect())
     }
 }
 
@@ -446,9 +270,8 @@ pub fn plugin_dir(
                 format!("The “{}” marketplace has no plugin “{id}”.", market.name),
             )
         })?;
-    let dir = entry_dir(&market.dir(paths), &entry.source).map_err(|why| {
-        WorkspaceError::new("refused", format!("“{id}” can’t be installed: {why}."))
-    })?;
+    let dir = entry_dir(&market.dir(paths), &entry.source)
+        .map_err(|why| super::install::refused(id, why))?;
     Ok((entry, dir))
 }
 
@@ -497,11 +320,47 @@ fn already_added(reg: &Registry, source: &Source) -> Result<()> {
     }
 }
 
-fn fetch_error(source: &Source, why: String) -> WorkspaceError {
-    WorkspaceError::new(
-        "fetch_failed",
-        format!("Connect couldn’t fetch {}: {why}.", source.text()),
-    )
+/// A git marketplace fetched into `tmp/`: its checked-out files only, within the limits.
+struct Fetched {
+    _tmp: super::registry::TmpDir,
+    dir: PathBuf,
+    commit: String,
+    catalog: Catalog,
+}
+
+fn fetch(paths: &PluginPaths, git: &dyn Git, source: &Source) -> Result<Fetched> {
+    let Source::Git { url, reference } = source else {
+        return Err(invalid("Only a git marketplace is fetched."));
+    };
+    let failed = |why: String| {
+        WorkspaceError::new(
+            "fetch_failed",
+            format!("Connect couldn’t fetch {}: {why}.", source.text()),
+        )
+    };
+    let tmp = paths.fresh_tmp()?;
+    let dir = tmp.join("clone");
+    let commit = git
+        .clone_at(url, reference.as_deref(), &dir)
+        .map_err(failed)?;
+    // The commit is read; the history isn't needed and would only take room.
+    delete_path(&dir.join(".git")).map_err(|e| io_error("tidy the fetched marketplace", &e))?;
+    check_market_tree(&dir)
+        .map_err(|e| invalid(format!("That marketplace can’t be used: {e}.")))?;
+    let catalog = read_catalog(&dir)?;
+    Ok(Fetched {
+        _tmp: tmp,
+        dir,
+        commit,
+        catalog,
+    })
+}
+
+/// Deletes what a marketplace change left aside; a failure only leaves files behind.
+fn discard(path: &Path) {
+    if let Err(e) = delete_path(path) {
+        log::warn!("plugins: {} stays behind: {e}", path.display());
+    }
 }
 
 /// Adds a marketplace: reads a folder's catalog where it is, or clones a git one.
@@ -517,21 +376,13 @@ pub fn add(paths: &PluginPaths, git: &dyn Git, text: &str) -> Result<Market> {
         git => git,
     };
     already_added(&Registry::load(paths)?, &source)?;
-    let fetched = match &source {
-        Source::Local { path } => {
-            let catalog = read_catalog(path)?;
-            (catalog, None)
-        }
-        Source::Git { url, reference } => {
-            let tmp = paths.fresh_tmp()?;
-            let dest = tmp.join("clone");
-            let commit = git
-                .clone_at(url, reference.as_deref(), &dest)
-                .map_err(|why| fetch_error(&source, why))?;
-            (read_catalog(&dest)?, Some((tmp, dest, commit)))
+    let (catalog, fetched) = match &source {
+        Source::Local { path } => (read_catalog(path)?, None),
+        Source::Git { .. } => {
+            let f = fetch(paths, git, &source)?;
+            (f.catalog.clone(), Some(f))
         }
     };
-    let (catalog, clone) = fetched;
     let wanted = name_from(&catalog)?;
     let mut locked = Locked::take(paths)?;
     already_added(&locked.reg, &source)?;
@@ -539,19 +390,19 @@ pub fn add(paths: &PluginPaths, git: &dyn Git, text: &str) -> Result<Market> {
         name: unique_name(&locked.reg, &wanted)?,
         source,
         built_in: false,
-        commit: clone.as_ref().map(|(_, _, c)| c.clone()),
+        commit: fetched.as_ref().map(|f| f.commit.clone()),
         fetched_at: Some(now()),
     };
     // A clone folder left by an earlier attempt is moved aside and deleted.
-    let stale = match &clone {
-        Some((_tmp, dest, _)) => place_clone(paths, &market, dest)?,
+    let stale = match &fetched {
+        Some(f) => place_clone(paths, &market, &f.dir)?,
         None => None,
     };
     locked.reg.markets.push(market.clone());
     locked.save()?;
     drop(locked);
     if let Some(stale) = stale {
-        let _ = std::fs::remove_dir_all(stale);
+        discard(&stale);
     }
     Ok(market)
 }
@@ -562,7 +413,7 @@ fn place_clone(paths: &PluginPaths, market: &Market, clone: &Path) -> Result<Opt
     let target = market.dir(paths);
     std::fs::create_dir_all(paths.markets())
         .map_err(|e| io_error("prepare the marketplaces folder", &e))?;
-    let old = if target.exists() {
+    let old = if std::fs::symlink_metadata(&target).is_ok() {
         let aside = paths.tmp().join(uuid::Uuid::new_v4().to_string());
         std::fs::rename(&target, &aside)
             .map_err(|e| io_error("replace the marketplace’s files", &e))?;
@@ -572,7 +423,13 @@ fn place_clone(paths: &PluginPaths, market: &Market, clone: &Path) -> Result<Opt
     };
     if let Err(e) = std::fs::rename(clone, &target) {
         if let Some(aside) = &old {
-            let _ = std::fs::rename(aside, &target);
+            if let Err(back) = std::fs::rename(aside, &target) {
+                log::warn!(
+                    "plugins: the previous files of {} stay in {}: {back}",
+                    market.name,
+                    aside.display()
+                );
+            }
         }
         return Err(io_error("store the marketplace’s files", &e));
     }
@@ -586,20 +443,12 @@ pub fn refresh(paths: &PluginPaths, git: &dyn Git, name: &str) -> Result<Market>
         .market(name)
         .cloned()
         .ok_or_else(|| no_market(name))?;
-    let (commit, clone) = match &market.source {
+    let fetched = match &market.source {
         Source::Local { path } => {
             read_catalog(path)?;
-            (None, None)
+            None
         }
-        Source::Git { url, reference } => {
-            let tmp = paths.fresh_tmp()?;
-            let dest = tmp.join("clone");
-            let commit = git
-                .clone_at(url, reference.as_deref(), &dest)
-                .map_err(|why| fetch_error(&market.source, why))?;
-            read_catalog(&dest)?;
-            (Some(commit), Some((tmp, dest)))
-        }
+        Source::Git { .. } => Some(fetch(paths, git, &market.source)?),
     };
     let mut locked = Locked::take(paths)?;
     let current = locked
@@ -608,17 +457,19 @@ pub fn refresh(paths: &PluginPaths, git: &dyn Git, name: &str) -> Result<Market>
         .iter_mut()
         .find(|m| m.name == name && m.source == market.source)
         .ok_or_else(|| no_market(name))?;
-    let old = match &clone {
-        Some((_tmp, dest)) => place_clone(paths, current, dest)?,
+    let old = match &fetched {
+        Some(f) => place_clone(paths, current, &f.dir)?,
         None => None,
     };
-    current.commit = commit.or(current.commit.take());
+    if let Some(f) = &fetched {
+        current.commit = Some(f.commit.clone());
+    }
     current.fetched_at = Some(now());
     let updated = current.clone();
     locked.save()?;
     drop(locked);
     if let Some(old) = old {
-        let _ = std::fs::remove_dir_all(old);
+        discard(&old);
     }
     Ok(updated)
 }
@@ -639,7 +490,7 @@ pub fn remove(paths: &PluginPaths, name: &str) -> Result<()> {
     let market = locked.reg.markets.remove(at);
     locked.save()?;
     if let Source::Git { .. } = market.source {
-        let _ = std::fs::remove_dir_all(market.dir(paths));
+        discard(&market.dir(paths));
     }
     Ok(())
 }
@@ -727,6 +578,10 @@ mod tests {
             .unwrap_err()
             .message
             .contains("https://"));
+        assert_eq!(
+            parse_source("acme/plugins@-u").unwrap_err().message,
+            "“-u” isn’t a plain branch or tag name."
+        );
 
         // Adding one: the shorthand reaches git as the https address, at the ref.
         let env = testkit::env();
@@ -736,6 +591,8 @@ mod tests {
             &upstream.join("plugins/hello"),
             testkit::manifest("hello", "1.0.0"),
         );
+        std::fs::create_dir_all(upstream.join(".git/objects")).unwrap();
+        std::fs::write(upstream.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         let git = FakeGit::new(&upstream, "a1b2c3");
         let m = add(&env.paths, &git, "acme-corp/connect-plugins@stable").unwrap();
         assert_eq!(
@@ -752,6 +609,8 @@ mod tests {
         assert!(m.clone_name().starts_with("acme-") && m.clone_name().len() == 13);
         assert!(clone.join(CATALOG_FILE).is_file());
         assert!(clone.join("plugins/hello/echo-plugin.json").is_file());
+        // Only the checked-out files are kept.
+        assert!(!clone.join(".git").exists());
         assert_eq!(m.dir(&env.paths), clone);
         // Nothing is left in tmp.
         assert_eq!(testkit::count(&env.paths.tmp()), 0);
@@ -841,100 +700,24 @@ mod tests {
     }
 
     #[test]
-    fn git_runs_hardened_and_refuses_other_transports() {
-        let dest = Path::new("/data/plugins/tmp/u/clone");
-        let args: Vec<String> = clone_args("https://github.com/acme/plugins", Some("v1"), dest)
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        let hooks = if cfg!(windows) {
-            "core.hooksPath=NUL"
-        } else {
-            "core.hooksPath=/dev/null"
-        };
+    fn a_fetched_marketplace_larger_than_64_mb_is_refused() {
+        let env = testkit::env();
+        let upstream = env.dir.path().join("upstream");
+        testkit::write_catalog(&upstream, "Huge", &[]);
+        let blob = std::fs::File::create(upstream.join("blob.bin")).unwrap();
+        blob.set_len(64 * 1024 * 1024 + 1).unwrap();
+        let git = FakeGit::new(&upstream, "a1b2c3");
+        let e = add(&env.paths, &git, "acme/huge").unwrap_err();
         assert_eq!(
-            args,
-            [
-                "-c",
-                hooks,
-                "-c",
-                "protocol.allow=never",
-                "-c",
-                "protocol.https.allow=always",
-                "-c",
-                "credential.helper=",
-                "-c",
-                "core.askPass=",
-                "-c",
-                "core.symlinks=false",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "submodule.recurse=false",
-                "clone",
-                "--depth",
-                "1",
-                "--no-recurse-submodules",
-                "--branch",
-                "v1",
-                "--",
-                "https://github.com/acme/plugins",
-                "/data/plugins/tmp/u/clone",
-            ]
+            (e.code.as_str(), e.message.as_str()),
+            (
+                "invalid",
+                "That marketplace can’t be used: it is larger than 64 MB."
+            )
         );
-        // The real git, if this machine has one: file and http are refused before any
-        // connection is made (nothing listens at 127.0.0.1:9).
-        let probe = Command::new("git").arg("--version").output();
-        if !probe.is_ok_and(|o| o.status.success()) {
-            eprintln!("skipped: no git on this machine");
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let bare = dir.path().join("repo.git");
-        let init = Command::new("git")
-            .args(["init", "-q", "--bare"])
-            .arg(&bare)
-            .status()
-            .unwrap();
-        assert!(init.success());
-        let git = CliGit {
-            program: "git".into(),
-            timeout: Duration::from_secs(20),
-        };
-        for (url, transport) in [
-            (format!("file://{}", bare.display()), "file"),
-            ("http://127.0.0.1:9/acme/plugins".to_string(), "http"),
-            ("ssh://127.0.0.1:9/acme/plugins".to_string(), "ssh"),
-        ] {
-            let why = git
-                .clone_at(&url, None, &dir.path().join(format!("c-{transport}")))
-                .unwrap_err();
-            assert!(
-                why.contains(&format!("transport '{transport}' not allowed")),
-                "{url}: {why}"
-            );
-            assert!(!dir.path().join(format!("c-{transport}")).exists());
-        }
-        // Every hardening setting is one git accepts: the commit lookup runs with all of them.
-        let repo = dir.path().join("work");
-        let ok = Command::new("git")
-            .args(["init", "-q"])
-            .arg(&repo)
-            .status()
-            .unwrap()
-            .success()
-            && Command::new("git")
-                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
-                .args(["commit", "-q", "--allow-empty", "-m", "x"])
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success();
-        assert!(ok);
-        let commit = git.head(&repo).unwrap();
-        assert_eq!(commit.len(), 40, "{commit}");
-        // A folder that isn't a repository has no commit.
-        assert!(!git.head(dir.path()).unwrap_err().is_empty());
+        assert_eq!(testkit::count(&env.paths.tmp()), 0);
+        assert_eq!(testkit::count(&env.paths.markets()), 0);
+        assert_eq!(Registry::load(&env.paths).unwrap().markets.len(), 1);
     }
 
     #[test]

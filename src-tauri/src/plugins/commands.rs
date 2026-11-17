@@ -9,16 +9,24 @@
 //! | `market_refresh` | `{market}` | `Market` |
 //! | `market_remove` | `{market}` | `[Market]` |
 //! | `catalog` | `{market}` | `{market: Market, plugins: [Offer]}` |
-//! | `inspect` | `{market, id}` | `Offer` with `market`, `source`, `commit` and `sheet` |
-//! | `install` | `{market, id, agreed}` | `{status: "installed", plugin: Installed}` |
-//! | `update` | `{id, agreed?}` | the same, or `{status: "needs_consent", id, name, version, lines, sheet}` |
+//! | `inspect` | `{market, id}` | `Offer` with `market`, `source`, `commit`, `sheet` and `sheetHash` |
+//! | `install` | `{market, id, agreed, sheetHash}` | `{status: "installed", plugin: Installed}` |
+//! | `update` | `{id, agreed?, sheetHash?}` | the same, or `{status: "needs_consent", id, name, version, lines, sheet, sheetHash}` |
 //! | `set_enabled` | `{id, enabled}` | `Installed` |
-//! | `remove` | `{id, deleteData}` | `{removed, deletedData}` |
+//! | `remove` | `{id, deleteData}` | `{removed, deletedData}` (also for the kept data of a removed plugin) |
 //! | `installed` | | `[Installed]` |
+//! | `registry_reset` | | `{saved, adopted}`, only when the list is `registry_unreadable` |
+//!
+//! `agreed` is every key of the sheet the user was shown and `sheetHash` that sheet's hash (from
+//! `inspect` or `needs_consent`): a sheet that changed since is refused as `changed`.
+//!
+//! Requests are counted while they run, so a data-folder move waits for them (`Core::quiesce`);
+//! one that arrives during a move is refused with the move's own message.
 use super::caller::require_main_frame;
 use super::capabilities::SheetLine;
-use super::install::{self, Offer, Outcome};
-use super::market::{self, CliGit, Git};
+use super::git::{CliGit, Git};
+use super::install::{self, Agreement, Offer, Outcome};
+use super::market;
 use super::registry::{Market, PluginPaths, Registry, Source};
 use crate::storage::commands::{blocking, main_window_only, not_restarting};
 use crate::workspace::models::{Result, WorkspaceError};
@@ -38,7 +46,6 @@ pub async fn plugins_request(
 ) -> Result<Value> {
     require_main_frame(&call)?;
     main_window_only(window.label())?;
-    not_restarting(&state)?;
     let core = state.core.as_ref().ok_or_else(|| {
         WorkspaceError::new(
             "storage_unavailable",
@@ -48,8 +55,18 @@ pub async fn plugins_request(
                 .unwrap_or_else(|| "Your data folder isn’t open, so plugins can’t change.".into()),
         )
     })?;
+    // Counted first, then checked: a move that starts later waits for this request, and one
+    // under way refuses it with its own message.
+    let counted = core.begin_plugin_op();
+    not_restarting(&state)?;
+    let running = counted?;
     let paths = PluginPaths::new(&core.paths.data, &core.paths.private);
-    blocking(move || dispatch(&paths, &CliGit::default(), &op, data.unwrap_or(Value::Null))).await?
+    // The count ends with the work itself, even if this future is dropped first.
+    blocking(move || {
+        let _running = running;
+        dispatch(&paths, &CliGit::default(), &op, data.unwrap_or(Value::Null))
+    })
+    .await?
 }
 
 #[derive(Deserialize)]
@@ -66,16 +83,21 @@ struct PluginArg {
     id: String,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct InstallArg {
     market: String,
     id: String,
     agreed: Vec<String>,
+    sheet_hash: String,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UpdateArg {
     id: String,
     #[serde(default)]
     agreed: Option<Vec<String>>,
+    #[serde(default)]
+    sheet_hash: Option<String>,
 }
 #[derive(Deserialize)]
 struct EnableArg {
@@ -130,11 +152,28 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
         }
         "install" => {
             let a: InstallArg = arg(data)?;
-            outcome(paths, install::install(paths, &a.market, &a.id, &a.agreed)?)
+            let agreement = Agreement {
+                keys: &a.agreed,
+                sheet_hash: &a.sheet_hash,
+            };
+            outcome(paths, install::install(paths, &a.market, &a.id, agreement)?)
         }
         "update" => {
             let a: UpdateArg = arg(data)?;
-            outcome(paths, install::update(paths, &a.id, a.agreed.as_deref())?)
+            let agreement = match (&a.agreed, &a.sheet_hash) {
+                (Some(keys), Some(hash)) => Some(Agreement {
+                    keys,
+                    sheet_hash: hash,
+                }),
+                (None, _) => None,
+                (Some(_), None) => {
+                    return Err(WorkspaceError::new(
+                        "invalid",
+                        "That plugin request is incomplete: an agreement needs its sheetHash.",
+                    ))
+                }
+            };
+            outcome(paths, install::update(paths, &a.id, agreement)?)
         }
         "set_enabled" => {
             let a: EnableArg = arg(data)?;
@@ -147,6 +186,10 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
             Ok(json!({"removed": a.id, "deletedData": a.delete_data}))
         }
         "installed" => to_json(installed_views(paths)?),
+        "registry_reset" => {
+            let reset = install::reset_registry(paths)?;
+            Ok(json!({"saved": reset.saved, "adopted": reset.adopted}))
+        }
         other => Err(WorkspaceError::new(
             "invalid",
             format!(
@@ -224,7 +267,7 @@ fn offer_view(reg: &Registry, market: &Market, o: &Offer) -> OfferView {
     let installed = reg.installed.get(&o.id);
     let newer = |m: &super::manifest::Manifest| {
         installed
-            .filter(|p| p.market == market.name)
+            .filter(|p| p.from_market(market))
             .and_then(|p| Version::parse(&p.version).ok())
             .is_some_and(|have| m.version > have)
     };
@@ -272,6 +315,8 @@ struct DetailView {
     commit: Option<String>,
     /// Every line, what blocks first; render each with text escaping only.
     sheet: Vec<SheetLine>,
+    /// `install::sheet_hash(sheet)`: sent back with the agreement.
+    sheet_hash: String,
 }
 
 fn inspect(paths: &PluginPaths, name: &str, id: &str) -> Result<Value> {
@@ -283,6 +328,7 @@ fn inspect(paths: &PluginPaths, name: &str, id: &str) -> Result<Value> {
         market: m.name.clone(),
         source: m.source.text(),
         commit: m.commit.clone(),
+        sheet_hash: install::sheet_hash(&o.sheet),
         sheet: o.sheet,
     })
 }
@@ -309,28 +355,33 @@ struct InstalledView {
 
 fn installed_views(paths: &PluginPaths) -> Result<Vec<InstalledView>> {
     let reg = Registry::load(paths)?;
-    Ok(reg
-        .installed
+    reg.installed
         .keys()
         .filter(|id| super::valid_id(id))
         .map(|id| view_of(paths, &reg, id))
-        .collect())
+        .collect()
 }
 
 fn installed_view(paths: &PluginPaths, id: &str) -> Result<InstalledView> {
-    Ok(view_of(paths, &Registry::load(paths)?, id))
+    view_of(paths, &Registry::load(paths)?, id)
 }
 
-fn view_of(paths: &PluginPaths, reg: &Registry, id: &str) -> InstalledView {
-    let p = &reg.installed[id];
+fn view_of(paths: &PluginPaths, reg: &Registry, id: &str) -> Result<InstalledView> {
+    let p = reg.installed.get(id).ok_or_else(|| {
+        WorkspaceError::new(
+            "not_found",
+            format!("“{}” isn’t installed.", id.escape_debug()),
+        )
+    })?;
     let manifest = install::installed_manifest(paths, id, p);
+    // Only its own marketplace offers it updates: the same name and the same source.
     let update = reg
         .market(&p.market)
-        .filter(|m| market::is_ready(paths, m))
+        .filter(|m| p.from_market(m) && market::is_ready(paths, m))
         .and_then(|m| install::offered_version(paths, m, id))
         .filter(|v| Version::parse(&p.version).is_ok_and(|have| v > &have))
         .map(|v| v.to_string());
-    InstalledView {
+    Ok(InstalledView {
         id: id.to_string(),
         name: manifest
             .as_ref()
@@ -351,7 +402,7 @@ fn view_of(paths: &PluginPaths, reg: &Registry, id: &str) -> InstalledView {
         problem: manifest
             .is_none()
             .then(|| "Its files can’t be read. Remove it and install it again.".to_string()),
-    }
+    })
 }
 
 fn outcome(paths: &PluginPaths, out: Outcome) -> Result<Value> {
@@ -366,6 +417,7 @@ fn outcome(paths: &PluginPaths, out: Outcome) -> Result<Value> {
             version,
             lines,
             sheet,
+            sheet_hash,
         } => Ok(json!({
             "status": "needs_consent",
             "id": id,
@@ -373,6 +425,7 @@ fn outcome(paths: &PluginPaths, out: Outcome) -> Result<Value> {
             "version": version,
             "lines": to_json(lines)?,
             "sheet": to_json(sheet)?,
+            "sheetHash": sheet_hash,
         })),
     }
 }
@@ -477,7 +530,7 @@ mod tests {
             .collect();
         let installed = run(
             "install",
-            json!({"market": "acme", "id": "standup", "agreed": keys}),
+            json!({"market": "acme", "id": "standup", "agreed": keys, "sheetHash": inspect["sheetHash"]}),
         )
         .unwrap();
         assert_eq!(installed["status"], "installed");
@@ -494,6 +547,7 @@ mod tests {
         let needs = run("update", json!({"id": "standup"})).unwrap();
         assert_eq!(needs["status"], "needs_consent");
         assert_eq!(needs["lines"][0]["key"], "folders");
+        assert_ne!(needs["sheetHash"], inspect["sheetHash"]);
 
         let dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
@@ -541,10 +595,17 @@ mod tests {
             "{}",
             e.message
         );
-        // The whole round: install, turn off, remove with its data.
+        // The whole round: inspect, install, turn off, remove with its data.
+        let shown = run("inspect", json!({"market": "local", "id": "hello"})).unwrap();
+        let e = run(
+            "install",
+            json!({"market": "local", "id": "hello", "agreed": [], "sheetHash": "0"}),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "changed");
         let out = run(
             "install",
-            json!({"market": "local", "id": "hello", "agreed": []}),
+            json!({"market": "local", "id": "hello", "agreed": [], "sheetHash": shown["sheetHash"]}),
         )
         .unwrap();
         assert_eq!(out["plugin"]["enabled"], true);
@@ -552,6 +613,20 @@ mod tests {
         assert_eq!(out["plugin"]["problem"], Value::Null);
         let off = run("set_enabled", json!({"id": "hello", "enabled": false})).unwrap();
         assert_eq!(off["enabled"], false);
+        // An agreement without the sheet it was given to is incomplete; an unknown plugin is
+        // refused, never a crash.
+        let e = run("update", json!({"id": "hello", "agreed": []})).unwrap_err();
+        assert_eq!(e.code, "invalid");
+        assert_eq!(
+            installed_view(&env.paths, "nope").err().unwrap().code,
+            "not_found"
+        );
+        assert_eq!(
+            run("set_enabled", json!({"id": "nope", "enabled": true}))
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
         let catalog = run("catalog", json!({"market": "local"})).unwrap();
         assert_eq!(catalog["market"]["kind"], "local");
         assert_eq!(catalog["plugins"][0]["installed"], "1.0.0");
@@ -565,5 +640,21 @@ mod tests {
         assert_eq!(catalog["plugins"], json!([]));
         let markets = run("market_remove", json!({"market": "local"})).unwrap();
         assert_eq!(markets.as_array().unwrap().len(), 1);
+        // An unreadable list says so in every request, until it is reset.
+        std::fs::write(env.paths.registry(), "{").unwrap();
+        assert_eq!(
+            run("markets", Value::Null).unwrap_err().code,
+            "registry_unreadable"
+        );
+        let reset = run("registry_reset", Value::Null).unwrap();
+        assert_eq!(reset["adopted"], json!([]));
+        assert_eq!(
+            run("markets", Value::Null)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

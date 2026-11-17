@@ -1,6 +1,7 @@
 //! Synthetic plugins and marketplaces for the plugin tests: temp folders only, never the network.
+use super::git::Git;
 use super::manifest::MANIFEST_FILE;
-use super::market::{self, Git, CATALOG_FILE};
+use super::market::{self, CATALOG_FILE};
 use super::registry::{Market, PluginPaths};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

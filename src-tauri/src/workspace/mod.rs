@@ -87,6 +87,8 @@ pub struct Core {
     loop_busy: AtomicBool,
     /// Claimed jobs whose executors have not finished.
     jobs_in_flight: AtomicUsize,
+    /// `plugins_request` calls running (installs write into the data folder).
+    plugin_ops: AtomicUsize,
 }
 
 fn poisoned() -> WorkspaceError {
@@ -110,6 +112,14 @@ struct InFlight(Arc<Core>);
 impl Drop for InFlight {
     fn drop(&mut self) {
         self.0.jobs_in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Counts a plugin request as running until it is dropped, so a data-folder change waits for it.
+pub struct PluginOp(Arc<Core>);
+impl Drop for PluginOp {
+    fn drop(&mut self) {
+        self.0.plugin_ops.fetch_sub(1, Ordering::SeqCst);
     }
 }
 impl Core {
@@ -181,7 +191,22 @@ impl Core {
             paused: AtomicBool::new(false),
             loop_busy: AtomicBool::new(false),
             jobs_in_flight: AtomicUsize::new(0),
+            plugin_ops: AtomicUsize::new(0),
         }))
+    }
+    /// Counts a plugin request as running, or refuses it while the workspace is held for a
+    /// data-folder change. Counted before `hold` is read, and `quiesce` sets `hold` before it
+    /// reads the count: one of the two always sees the other.
+    pub fn begin_plugin_op(self: &Arc<Self>) -> Result<PluginOp> {
+        self.plugin_ops.fetch_add(1, Ordering::SeqCst);
+        let op = PluginOp(self.clone());
+        if self.is_held() {
+            return Err(WorkspaceError::new(
+                "busy",
+                "Connect is changing its data folder. Try again in a moment.",
+            ));
+        }
+        Ok(op)
     }
     /// Holds the workspace still for a data-folder change: the loop stops claiming jobs,
     /// Microsoft reads and running AI jobs are cancelled (drafts and summaries can be asked for
@@ -206,6 +231,17 @@ impl Core {
                 "Connect couldn’t stop its background work. Try again in a minute.",
             )
         };
+        // A plugin install writes into the data folder: it finishes first (new ones are refused
+        // while `hold` is set).
+        while self.plugin_ops.load(Ordering::SeqCst) > 0 {
+            if Instant::now() >= deadline {
+                return Err(WorkspaceError::new(
+                    "busy",
+                    "Plugins are being installed — try again in a moment.",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
         // `hold` is set before `loop_busy` is read, and the loop sets `loop_busy` before it reads
         // `hold`, so once both read idle no new round can claim a job.
         while self.loop_busy.load(Ordering::SeqCst)
@@ -257,7 +293,6 @@ impl Core {
         Ok(())
     }
     /// Whether a data-folder change holds the workspace (`quiesce` without `resume`).
-    #[cfg(test)]
     pub(crate) fn is_held(&self) -> bool {
         self.hold.load(Ordering::SeqCst) || self.paused.load(Ordering::SeqCst)
     }
@@ -2324,6 +2359,38 @@ mod tests {
         // Once everything has finished, it goes ahead.
         core.quiesce(SHORT).unwrap();
         core.resume().unwrap();
+    }
+
+    #[test]
+    fn quiesce_waits_for_plugin_requests_and_refuses_new_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        // A request that doesn't finish in time: the change gives up and everything runs again.
+        let op = core.begin_plugin_op().unwrap();
+        let err = core.quiesce(SHORT).unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.message.as_str()),
+            (
+                "busy",
+                "Plugins are being installed — try again in a moment."
+            )
+        );
+        assert!(!core.is_held());
+        // One that finishes: the change waits for it.
+        let finishing = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(op);
+        });
+        core.quiesce(std::time::Duration::from_secs(10)).unwrap();
+        finishing.join().unwrap();
+        assert_eq!(core.plugin_ops.load(Ordering::SeqCst), 0);
+        // While held, new requests are refused and not counted.
+        assert_eq!(core.begin_plugin_op().err().unwrap().code, "busy");
+        assert_eq!(core.plugin_ops.load(Ordering::SeqCst), 0);
+        core.resume().unwrap();
+        let op = core.begin_plugin_op().unwrap();
+        assert_eq!(core.plugin_ops.load(Ordering::SeqCst), 1);
+        drop(op);
     }
 
     #[test]

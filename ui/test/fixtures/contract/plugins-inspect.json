@@ -42,6 +42,7 @@
       "text": "Work on its own on a schedule while Connect is open"
     }
   ],
+  "sheetHash": "c943395793ad2e74d04bd1eab9b5d391b3146e82247ee0ecde4dc627b23627e7",
   "source": "https://github.com/acme-corp/connect-plugins#stable",
   "summary": "A morning digest of your team's updates on Today",
   "update": false,
