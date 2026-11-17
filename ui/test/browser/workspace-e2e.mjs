@@ -261,7 +261,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       s.records = s.records.filter(r => !(r.kind === 'automation' && r.id === id)).concat(record);
       // As native: turning Today delivery on puts the card on Today in the same save.
       const w = active('personal');
-      const todayCard = !!d.deliver?.today && before?.data.deliver?.today !== true && !w.layout.includes('automations') && w.layout.length < 16;
+      const wasOn = before?.data.deliver?.today === true && before?.data.enabled !== false;
+      const todayCard = d.enabled !== false && !!d.deliver?.today && !wasOn && !w.layout.includes('automations') && w.layout.length < 16;
       if (todayCard) w.layout = [...w.layout, 'automations'];
       return { record, todayCard };
     },
@@ -1766,6 +1767,9 @@ for (const theme of ['dark', 'light']) {
       await p.locator('.ws-auto-card').scrollIntoViewIfNeeded();
       await noOverflow(p, 'Today');
       await elementShot(p, '.ws-auto-card', `${tag}-today-automation-results-two.png`);
+      // The failure line opens the failed run; the result's Open run its own.
+      await p.click('.ws-auto-card .ws-auto-problem [data-action="automation-open-run"]');
+      await p.waitForSelector('.ws-page-automations .ws-run.ws-open .ws-run-error');
     });
     await check(`${tag}: run log no page errors`, async () => assert(logged.errors.length === 0, logged.errors.join(' | ')));
     await logged.context.close().catch(() => {});

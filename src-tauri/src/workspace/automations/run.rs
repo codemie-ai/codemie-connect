@@ -298,7 +298,7 @@ impl Core {
         let notification = if a.deliver.notify && r.settings()?.notifications {
             Some(new_job(
                 "notification",
-                format!("automation:{}:notify", log.id),
+                format!("automation:{}:notify:ok", log.id),
                 Some(PERSONAL.into()),
                 None,
                 now(),
@@ -379,19 +379,24 @@ impl Core {
                 Ok(a) => a,
                 Err(_) => return Ok(()),
             };
+            // Only the first failure after a success (or after a save or turn-on) notifies;
+            // the rest of a streak is in the Run log.
             let notify = log.trigger["kind"] != "manual"
                 && automation.data["deliver"]["notify"] == true
-                && r.settings()?.notifications;
+                && r.settings()?.notifications
+                && !r.failing_since(&log.automation_id, &log.id, automation.updated_at)?;
             let notification = if notify {
                 Some(new_job(
                     "notification",
-                    format!("automation:{}:notify", log.id),
+                    format!("automation:{}:failed:{}", log.automation_id, log.id),
                     Some(PERSONAL.into()),
                     None,
                     now(),
                     r.policy(Some(PERSONAL), None)?,
+                    // One OS entry per automation: a new failure notice replaces the last one.
                     json!({"title": format!("{} didn't run", log.name), "body": e.message,
                         "automationId": log.automation_id, "runId": log.id,
+                        "notificationKey": format!("automation:{}:failed", log.automation_id),
                         "expiresAt": now() + NOTIFY_FOR_SECS}),
                 ))
             } else {
@@ -790,7 +795,7 @@ mod tests {
         let notes = jobs_of(&core, "notification");
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].state, "queued");
-        assert_eq!(notes[0].key, format!("automation:{jid}:notify"));
+        assert_eq!(notes[0].key, format!("automation:{jid}:notify:ok"));
         assert_eq!(notes[0].payload["title"], "Morning brief");
         assert_eq!(notes[0].payload["body"], "2 replies owed");
         assert_eq!(notes[0].payload["automationId"], "auto-brief");
@@ -995,7 +1000,7 @@ mod tests {
         run_next(&core).await;
         let notes = jobs_of(&core, "notification");
         assert_eq!(notes.len(), 1);
-        assert_eq!(notes[0].key, format!("automation:{jid}:notify"));
+        assert_eq!(notes[0].key, format!("automation:auto-brief:failed:{jid}"));
         assert_eq!(notes[0].payload["title"], "Morning brief didn't run");
         assert_eq!(notes[0].payload["body"], "Claude is not signed in.");
         assert_eq!(notes[0].payload["runId"], jid.as_str());
@@ -1011,6 +1016,120 @@ mod tests {
         queue_scheduled(&core, "auto-brief", BASE + 86_400);
         run_next(&core).await;
         assert_eq!(jobs_of(&core, "notification").len(), 1);
+    }
+
+    /// The "didn't run" notifications queued so far.
+    fn failure_notes(core: &Core) -> Vec<Job> {
+        jobs_of(core, "notification")
+            .into_iter()
+            .filter(|j| j.key.starts_with("automation:auto-brief:failed:"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn consecutive_failures_notify_once_until_a_success_or_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let login = || Err(AiError::new(ErrorClass::NeedsLogin));
+        let fake = Arc::new(FakeRunner::new(vec![
+            login(),
+            login(),
+            login(),
+            Ok(brief_answer()),
+            login(),
+            login(),
+        ]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        save(&core, morning_brief(json!({"commitmentsNotes": true}))).await;
+        for day in 0..3 {
+            queue_scheduled(&core, "auto-brief", BASE + day * 86_400);
+            run_next(&core).await;
+        }
+        let notes = failure_notes(&core);
+        assert_eq!(notes.len(), 1, "three failures in a row notify once");
+        // One OS entry per automation: every failure notification replaces the last one.
+        assert_eq!(
+            notes[0].payload["notificationKey"],
+            "automation:auto-brief:failed"
+        );
+        // A success ends the streak; the next failure notifies again.
+        let ok = queue_scheduled(&core, "auto-brief", BASE + 3 * 86_400);
+        run_next(&core).await;
+        assert!(jobs_of(&core, "notification")
+            .iter()
+            .any(|j| j.key == format!("automation:{ok}:notify:ok")));
+        queue_scheduled(&core, "auto-brief", BASE + 4 * 86_400);
+        run_next(&core).await;
+        assert_eq!(failure_notes(&core).len(), 2);
+        // So does a failure after the automation was saved (or turned on) again.
+        {
+            let mut r = core.repo().unwrap();
+            let mut a = r
+                .record("automation", "auto-brief", None, Some("personal"))
+                .unwrap();
+            a.updated_at = now() + 10;
+            r.put_record(&a).unwrap();
+        }
+        queue_scheduled(&core, "auto-brief", BASE + 5 * 86_400);
+        run_next(&core).await;
+        let notes = failure_notes(&core);
+        assert_eq!(notes.len(), 3);
+        assert!(notes
+            .iter()
+            .all(|n| n.payload["notificationKey"] == "automation:auto-brief:failed"));
+    }
+
+    #[tokio::test]
+    async fn a_successful_retry_still_notifies_and_delivered_says_what_was_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Err(AiError::new(ErrorClass::NeedsLogin)),
+            Ok(brief_answer()),
+            Ok(brief_answer()),
+        ]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        save(&core, morning_brief(json!({"commitmentsNotes": true}))).await;
+        let jid = queue_scheduled(&core, "auto-brief", BASE);
+        run_next(&core).await;
+        assert_eq!(failure_notes(&core).len(), 1);
+        // The same job retried and succeeded: its own notification is queued too.
+        core.request(mutation(&core, Operation::JobRetry, json!({"id": jid})))
+            .await
+            .unwrap();
+        run_next(&core).await;
+        let run = |id: &str| {
+            core.repo()
+                .unwrap()
+                .record("automation_run", id, None, Some("personal"))
+                .unwrap()
+        };
+        assert_eq!(run(&jid).data["status"], "ok");
+        assert_eq!(
+            run(&jid).data["delivered"],
+            json!(["today", "notification_queued"])
+        );
+        assert!(jobs_of(&core, "notification")
+            .iter()
+            .any(|j| j.key == format!("automation:{jid}:notify:ok")));
+        // When the notification could not be queued (its key is taken), `delivered` says so.
+        let next = queue_scheduled(&core, "auto-brief", BASE + 86_400);
+        {
+            let mut r = core.repo().unwrap();
+            let policy = r.policy(Some("personal"), None).unwrap();
+            r.enqueue(&crate::workspace::new_job(
+                "notification",
+                format!("automation:{next}:notify:ok"),
+                Some("personal".into()),
+                None,
+                now() + 3600,
+                policy,
+                json!({"title": "taken"}),
+            ))
+            .unwrap();
+        }
+        run_next(&core).await;
+        assert_eq!(run(&next).data["delivered"], json!(["today"]));
     }
 
     #[tokio::test]

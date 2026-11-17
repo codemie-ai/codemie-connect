@@ -466,8 +466,8 @@ export function automationResultsCard(s, ai = {}) {
   });
 }
 
-/** "Latest run failed 5 min ago: Claude Code isn't signed in." with its action. */
-function problemLine(problem, zone, ai) {
+/** "Latest run failed 5 min ago: Claude Code isn't signed in." with its action and its own Open run. */
+function problemLine(a, problem, zone, ai) {
   const when = agoLabel(problem.data.startedAt, zone);
   const failed = problem.data.status === 'failed';
   const failure = failed ? runError(problem, ai) : null;
@@ -477,21 +477,20 @@ function problemLine(problem, zone, ai) {
   return `<div class="ws-auto-problem ws-draft-error ws-draft-tone-${tone}" role="status">
       ${icon(failed ? 'alert' : 'info')}
       <p><strong>Latest run ${failed ? 'failed' : 'was skipped'} ${e(when)}:</strong> ${e(sentence)}</p>
-      ${action ? `<div class="ws-draft-error-actions">${button(action.label, { action: action.action, iconName: action.iconName, size: 'sm', attrs: action.attrs })}</div>` : ''}
+      <div class="ws-draft-error-actions">${action ? button(action.label, { action: action.action, iconName: action.iconName, size: 'sm', attrs: action.attrs }) : ''}${button('Open run', { action: 'automation-open-run', variant: 'ghost', size: 'sm', iconRight: 'arrow', title: 'Open this run in the Run log', attrs: { 'data-id': problem.id, 'data-automation': a.id } })}</div>
     </div>`;
 }
 
 function resultItem({ a, run, problem }, s, zone, ai) {
-  const shownRun = run || problem;
   const out = run?.data.output || {};
   const items = out.items || [];
   const shown = !run ? '' : items.length ? itemsHtml(run, s, 3) : summaryHtml(run, 3);
   const more = items.length > 3 ? `<span class="ws-muted ws-hint">${items.length - 3} more in the run</span>` : '';
   return `<article class="ws-auto-result">
     <header class="ws-auto-result-head"><span class="ws-auto-result-name">${e(a.data.name)}</span>${run ? `<time title="${e(formatDateTime(run.data.startedAt, zone))}">${e(agoLabel(run.data.startedAt, zone))}</time>` : ''}</header>
-    ${problem ? problemLine(problem, zone, ai) : ''}
-    ${run ? `<h3>${e(out.title || 'Result')}</h3>${shown}` : ''}
-    <footer class="ws-auto-result-foot">${more}<span class="ws-spacer"></span>${button('Open run', { action: 'automation-open-run', variant: 'ghost', size: 'sm', iconRight: 'arrow', attrs: { 'data-id': shownRun.id, 'data-automation': a.id } })}</footer>
+    ${problem ? problemLine(a, problem, zone, ai) : ''}
+    ${run ? `<h3>${e(out.title || 'Result')}</h3>${shown}
+    <footer class="ws-auto-result-foot">${more}<span class="ws-spacer"></span>${button('Open run', { action: 'automation-open-run', variant: 'ghost', size: 'sm', iconRight: 'arrow', attrs: { 'data-id': run.id, 'data-automation': a.id } })}</footer>` : ''}
   </article>`;
 }
 
@@ -651,13 +650,14 @@ function aiSection(draft, ai, errorAt) {
   const off = capOff(draft, ai);
   const capHint = effective.startsWith('codemie:')
     ? 'Stops a run that would cost more, in US dollars. CodeMie passes it to Claude as --max-budget-usd.'
-    : off ? 'Applies to CodeMie profiles only. Claude Code with your subscription ignores it, so it is off.' : 'Applies to CodeMie profiles only.';
+    : off ? 'Applies to CodeMie profiles only; Claude Code ignores it, so it is off. A cap you set is kept.' : 'Applies to CodeMie profiles only.';
   return `<fieldset class="ws-auto-section"><legend>Claude</legend>
     <div class="ws-form-row">
       ${field('Profile', select(options, draft.profile, { id: 'auto-profile', name: 'auto-profile', 'data-action': 'automation-form' }))}
       ${field('Model', select(models, draft.profile ? draft.model : '', { id: 'auto-model', name: 'auto-model', disabled: !draft.profile }))}
     </div>
-    ${errorField('Cost cap per run (optional)', textInput({ id: 'auto-cap', name: 'auto-cap', value: off ? '' : draft.cap, inputmode: 'decimal', placeholder: off ? 'Not used' : 'No cap', autocomplete: 'off', disabled: off, ...invalid('auto-cap', errorAt) }), capHint, 'auto-cap', errorAt)}
+    ${off ? `<input type="hidden" name="auto-cap" value="${e(draft.cap)}">` : ''}
+    ${errorField('Cost cap per run (optional)', textInput({ id: 'auto-cap', name: off ? undefined : 'auto-cap', value: draft.cap, inputmode: 'decimal', placeholder: off ? 'Not used' : 'No cap', autocomplete: 'off', disabled: off, ...invalid('auto-cap', errorAt) }), capHint, 'auto-cap', errorAt)}
   </fieldset>`;
 }
 

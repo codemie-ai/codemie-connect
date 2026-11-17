@@ -191,6 +191,16 @@ test('editor_validates_and_hides_draft_reply_for_schedules', () => {
   assert.equal(errorTarget({ code: 'validation', field: 'capUsd', message: 'The cost cap must be between 0.01 and 100 US dollars.' }, nativeCap, AI), null);
   assert.equal(errorTarget({ code: 'validation', field: 'capUsd', message: 'The cost cap must be between 0.01 and 100 US dollars.' }, { ...event, profile: 'codemie:prod' }, AI).field, 'auto-cap');
   assert.match(tagWith(automationEditor(nativeCap, ctx), 'id="auto-cap"'), /\bdisabled\b/);
+  // A cap set earlier is kept while it is off: sent from a hidden field, shown greyed out.
+  const keptCap = automationEditor({ ...nativeCap, cap: '0.5' }, ctx);
+  assert.match(keptCap, /<input type="hidden" name="auto-cap" value="0\.5">/);
+  assert.doesNotMatch(tagWith(keptCap, 'id="auto-cap"'), /name=/, 'the disabled input sends nothing itself');
+  const kept = editorDraft(form({ 'auto-kind': 'event', 'auto-event': 'mail_from', 'auto-senders': 'a@b.co', 'auto-profile': 'claude', 'auto-cap': '0.5' }));
+  assert.equal(kept.cap, '0.5');
+  assert.equal(toAutomation(kept).capUsd, 0.5);
+  // Switching to CodeMie in the editor shows the same cap, live again.
+  assert.match(tagWith(automationEditor({ ...kept, profile: 'codemie:prod' }, ctx), 'id="auto-cap"'), /value="0\.5"/);
+  assert.doesNotMatch(tagWith(automationEditor({ ...kept, profile: 'codemie:prod' }, ctx), 'id="auto-cap"'), /\bdisabled\b/);
   assert.doesNotMatch(tagWith(automationEditor({ ...event, profile: 'codemie:prod' }, ctx), 'id="auto-cap"'), /\bdisabled\b/);
   assert.ok(needsSenders(draftFromAutomation(TEMPLATES[1].automation)));
   assert.ok(!needsSenders(event));
@@ -334,6 +344,10 @@ test('today_automation_card_shows_latest_results_with_sources', () => {
   const brief = cardHtml.slice(cardHtml.indexOf('Morning brief'), cardHtml.indexOf('Draft replies to Ann'));
   assert.match(brief, /Latest run failed 5 min ago:<\/strong> Claude Code isn(’|'|&#39;)t signed in\./);
   assert.ok(tagWith(brief, 'data-action="ai-copy-login"'));
+  // Its own Open run opens the failed run; the result's opens the run that produced it.
+  const line = brief.slice(brief.indexOf('ws-auto-problem'), brief.indexOf('2 replies owed'));
+  assert.ok(tagWith(line, 'data-action="automation-open-run"[^>]*data-id="run-2"'), 'the failure has its own Open run');
+  assert.ok(tagWith(brief.slice(brief.indexOf('2 replies owed')), 'data-action="automation-open-run"[^>]*data-id="run-1"'));
   assert.ok(brief.indexOf('Latest run failed') < brief.indexOf('2 replies owed'), 'the failure is above the older result');
   assert.doesNotMatch(cardHtml.slice(cardHtml.indexOf('Draft replies to Ann')), /Latest run/, 'Ann’s latest run is fine');
   // With no result on Today yet, the failure alone keeps the automation on the card.
@@ -343,6 +357,8 @@ test('today_automation_card_shows_latest_results_with_sources', () => {
   const alone = today(failedOnly, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' });
   assert.match(alone, /Morning brief[\s\S]*Latest run failed 5 min ago/);
   assert.ok(tagWith(alone, 'data-action="automation-open-run"[^>]*data-id="run-2"'));
+  const aloneBrief = alone.slice(alone.indexOf('Morning brief'), alone.indexOf('Draft replies to Ann'));
+  assert.equal(count(aloneBrief, /data-action="automation-open-run"/g), 1, 'one Open run for the failure alone');
   // A run whose automation is gone is not shown.
   s.records = s.records.filter(r => !(r.kind === 'automation' && r.id === 'auto-reply'));
   assert.doesNotMatch(today(s, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' }), /Reply drafted for Ann/);

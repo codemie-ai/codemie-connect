@@ -1523,7 +1523,9 @@ impl Core {
             return Ok("Suppressed by app quiet/focus settings; visible in Activity".into());
         }
         let (title, body) = notification_text(&s, &job.payload);
-        let nid = (u32::from_le_bytes(sha256_prefix(&job.key)) & 0x7fffffff) as i32;
+        // Notifications that share a `notificationKey` (an automation's failures) are one OS entry.
+        let os_key = job.payload["notificationKey"].as_str().unwrap_or(&job.key);
+        let nid = (u32::from_le_bytes(sha256_prefix(os_key)) & 0x7fffffff) as i32;
         let mut submitting = job.clone();
         submitting.payload["dispatchStartedAt"] = now().into();
         r.save_job(&submitting)?;

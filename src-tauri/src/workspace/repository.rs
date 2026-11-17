@@ -657,7 +657,8 @@ impl Repository {
     }
     /// Ends a claimed automation run as one unit: the run, the reply draft it prepared, the
     /// notification it queued and the job's success. A lost claim (Stop, delete, restart)
-    /// stores nothing.
+    /// stores nothing. A notification whose key is already taken is not queued, and the run's
+    /// `delivered` then doesn't claim it.
     pub fn commit_automation_run(
         &mut self,
         job: &Job,
@@ -672,15 +673,21 @@ impl Repository {
         done.lease_until = None;
         done.result = Some(result.into());
         let tx = self.db.transaction()?;
-        put_record(&tx, run)?;
-        if let Some(draft) = draft {
-            put_record(&tx, draft)?;
-        }
+        let mut run = run.clone();
         if let Some(n) = notification {
-            tx.execute(
+            let queued = tx.execute(
                 "INSERT OR IGNORE INTO jobs VALUES(?1,?2,?3,?4,?5,?6)",
                 params![n.id, n.key, n.state, n.due_at, n.lease_until, encode(n)?],
             )?;
+            if queued == 0 {
+                if let Some(delivered) = run.data["delivered"].as_array_mut() {
+                    delivered.retain(|d| d != "notification_queued");
+                }
+            }
+        }
+        put_record(&tx, &run)?;
+        if let Some(draft) = draft {
+            put_record(&tx, draft)?;
         }
         tx.execute(
             "UPDATE jobs SET state='succeeded',lease_until=NULL,body=?2 WHERE id=?1",
@@ -690,6 +697,18 @@ impl Repository {
         bump(&tx)?;
         tx.commit()?;
         Ok(())
+    }
+    /// Whether an automation's latest decided run (ok or failed, not `except`) failed at or
+    /// after `since` (when the automation was last saved or turned on): a failure streak. Runs
+    /// that started in the same second are ordered by when they were first stored (a retry
+    /// rewrites its run in place).
+    pub fn failing_since(&self, automation_id: &str, except: &str, since: i64) -> Result<bool> {
+        let last: Option<(String, i64)> = self.db.query_row(
+            "SELECT json_extract(body,'$.status'), CAST(json_extract(body,'$.startedAt') AS INTEGER) FROM records WHERE kind='automation_run' AND json_extract(body,'$.automationId')=?1 AND id<>?2 AND json_extract(body,'$.status') IN ('ok','failed') ORDER BY CAST(json_extract(body,'$.startedAt') AS INTEGER) DESC, rowid DESC LIMIT 1",
+            params![automation_id, except],
+            |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+        ).optional()?;
+        Ok(last.is_some_and(|(status, started)| status == "failed" && started >= since))
     }
     /// Saves an automation and, when given, the workspace whose Today layout gains the
     /// Automation results card, as one change.

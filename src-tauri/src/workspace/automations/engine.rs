@@ -318,11 +318,13 @@ impl Core {
                 // Turning Today delivery on (or creating with it) puts the Automation results
                 // card on Today, unless it is there or the layout is full. A card the user
                 // removed stays removed while delivery stays on.
-                let was_on = previous
-                    .as_ref()
-                    .is_some_and(|p| p.data["deliver"]["today"] == true);
+                // Only an automation that is on: a copy that stays off (Duplicate) never brings
+                // back a card the user removed.
+                let was_on = previous.as_ref().is_some_and(|p| {
+                    p.data["deliver"]["today"] == true && p.data["enabled"] != false
+                });
                 let mut card = None;
-                if a.deliver.today && !was_on {
+                if a.enabled && a.deliver.today && !was_on {
                     let mut w = r.workspace(PERSONAL)?;
                     if !w.layout.iter().any(|id| id == "automations")
                         && w.layout.len() < MAX_WIDGETS
@@ -848,6 +850,16 @@ mod engine_tests {
         core.request(mutation(&core, Operation::AutomationSave, schedule_json()))
             .await
             .unwrap();
+        assert_eq!(layout(&core), vec!["brief"]);
+        // A copy that is off (Duplicate) never brings it back.
+        let mut copy = schedule_json();
+        copy["id"] = "auto-copy".into();
+        copy["enabled"] = false.into();
+        let saved = core
+            .request(mutation(&core, Operation::AutomationSave, copy))
+            .await
+            .unwrap();
+        assert_eq!(saved["todayCard"], false);
         assert_eq!(layout(&core), vec!["brief"]);
         // Turning Today delivery on again brings it back.
         let mut off = schedule_json();
