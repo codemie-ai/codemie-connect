@@ -15,6 +15,7 @@ pub mod manifest;
 pub mod market;
 pub mod protocol;
 pub mod registry;
+pub mod services;
 #[cfg(test)]
 mod testkit;
 pub mod tree;

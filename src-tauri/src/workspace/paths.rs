@@ -29,8 +29,7 @@ impl CorePaths {
         self.data.join("ai-staging")
     }
     /// Plugin secrets sit with the sign-in data (an owner-only folder), never in the `plugins/`
-    /// folder that moves with the data. Task 21 stores them here.
-    #[allow(dead_code)]
+    /// folder that moves with the data (`plugins::services`).
     pub fn plugin_secrets(&self) -> PathBuf {
         self.private.join("credentials").join("plugins")
     }

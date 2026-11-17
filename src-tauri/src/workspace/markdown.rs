@@ -57,17 +57,80 @@ pub struct Normalised {
 
 /// Parses Claude's Markdown and rebuilds it from the parse (see the module docs).
 pub fn normalise(text: &str) -> Normalised {
-    let source = cap_chars(&clean_output(text), MAX_CHARS);
+    let blocks = fit(blocks(text, MAX_CHARS));
+    Normalised {
+        markdown: render(&blocks),
+        blocks,
+    }
+}
+
+/// The [`Block`]s that survive of untrusted Markdown (see the module docs), read from at most
+/// `max_chars` of it.
+pub fn blocks(text: &str, max_chars: usize) -> Vec<Block> {
+    let source = cap_chars(&clean_output(text), max_chars);
     let mut walk = Walk::default();
     for event in Parser::new_ext(&source, Options::empty()) {
         walk.event(event);
     }
     walk.close();
-    let blocks = fit(walk.blocks);
-    Normalised {
-        markdown: render(&blocks),
-        blocks,
+    walk.blocks
+}
+
+/// [`Block`]s as HTML, for a plugin's `ctx.markdown`: `<h3>`, `<p>`, `<ul><li>`, `<strong>`,
+/// `<em>`, `<br>` and `<a href rel="noopener noreferrer">` with a [`web_link`] address. Every text
+/// and address is escaped; nothing else is ever written, so no raw HTML gets through.
+pub fn html(blocks: &[Block]) -> String {
+    let mut out = String::new();
+    let mut in_list = false;
+    for block in blocks {
+        let item = block.kind == BlockKind::Item;
+        if item != in_list {
+            out.push_str(if item { "<ul>" } else { "</ul>" });
+            in_list = item;
+        }
+        let tag = match block.kind {
+            BlockKind::Heading => "h3",
+            BlockKind::Paragraph => "p",
+            BlockKind::Item => "li",
+        };
+        out.push_str(&format!("<{tag}>"));
+        for inline in &block.inlines {
+            let mut text = html_escape(&inline.text).replace('\n', "<br>");
+            if inline.italic {
+                text = format!("<em>{text}</em>");
+            }
+            if inline.bold {
+                text = format!("<strong>{text}</strong>");
+            }
+            if let Some(href) = &inline.href {
+                text = format!(
+                    "<a href=\"{}\" rel=\"noopener noreferrer\">{text}</a>",
+                    html_escape(href)
+                );
+            }
+            out.push_str(&text);
+        }
+        out.push_str(&format!("</{tag}>"));
     }
+    if in_list {
+        out.push_str("</ul>");
+    }
+    out
+}
+
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The blocks whose Markdown fits in [`MAX_CHARS`] (escaping can double the text): whole
