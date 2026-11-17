@@ -1821,6 +1821,8 @@ pub const WIDGET_IDS: &[&str] = &[
     "inbox",
     "commitments",
     "automations",
+    // "From plugins": plugin items and deliveries (DESIGN 7.2).
+    "plugins",
 ];
 /// The most cards a Today layout holds.
 pub(in crate::workspace) const MAX_WIDGETS: usize = 16;

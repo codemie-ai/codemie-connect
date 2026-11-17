@@ -7,6 +7,7 @@ import { attentionMessages, records, active, connectionState, messageTitle, deci
 import { claudeAvailable } from './draft-state.js';
 import { dayKey, addDaysToKey, formatDate, formatTime, durationLabel, countdownLabel, greeting, firstName, zonedParts, relativeAge, hourLabel } from './format.js';
 import { automationResultsCard } from './view-automations.js';
+import { PLUGINS_CARD, parseLayoutId, pluginWidgetCard, pluginsCard, showPluginsCard } from './today-plugins.js';
 
 export const WIDGETS = {
   brief: { title: 'Up next', width: 8, description: 'Your current or next meeting with a one-click join.' },
@@ -15,8 +16,21 @@ export const WIDGETS = {
   inbox: { title: 'Needs your reply', width: 6, description: 'Outlook and Teams messages waiting for you.' },
   commitments: { title: 'Commitments & notes', width: 12, description: 'Your promises and a scratchpad for Connect.' },
   automations: { title: 'Automation results', width: 6, description: 'The latest result of each automation, with its sources.' },
+  [PLUGINS_CARD]: { title: 'From plugins', width: 12, description: 'Decisions, deliveries and held messages your plugins prepare.' },
 };
 export const WIDGET_IDS = Object.keys(WIDGETS);
+
+/** What Customize lists, in the layout's order then the rest: Today's cards and the widgets the
+ *  enabled plugins declare (`pluginCatalog`, from `pluginWidgetCatalog`). */
+export function customizeEntries(w, pluginCatalog = []) {
+  const all = [
+    ...WIDGET_IDS.map(id => ({ id, ...WIDGETS[id] })),
+    ...pluginCatalog.map(p => ({ id: p.id, title: p.title, description: p.description, width: p.width, plugin: p.plugin })),
+  ];
+  const byId = new Map(all.map(x => [x.id, x]));
+  const order = [...w.layout.filter(id => byId.has(id)), ...all.map(x => x.id).filter(id => !w.layout.includes(id))];
+  return order.map(id => byId.get(id));
+}
 
 const WORKDAY_START = 9 * 60;
 const WORKDAY_END = 18 * 60;
@@ -62,11 +76,16 @@ export function today(s, ctx) {
     inbox: () => attentionCard(s, m, connected, ctx.state?.ai),
     commitments: () => commitmentsCard(s, m, w),
     automations: () => automationResultsCard(s, ctx.state?.ai),
+    [PLUGINS_CARD]: () => pluginsCard(s, { zone: m.zone, routeOf: ctx.plugins?.routeOf }),
   };
-  const layout = w.layout.filter(id => widgets[id]);
+  const catalog = ctx.plugins?.catalog || [];
+  const layout = w.layout.filter(id => widgets[id] || parseLayoutId(id));
+  if (!layout.includes(PLUGINS_CARD) && showPluginsCard(w, s)) layout.push(PLUGINS_CARD);
   const grid = layout.map(id => {
-    const width = [4, 6, 8, 12].includes(w.widgetWidths?.[id]) ? w.widgetWidths[id] : WIDGETS[id].width;
-    return widgets[id]().replace('class="ws-card', `class="ws-card ws-span-${width}`);
+    const fallback = WIDGETS[id]?.width || catalog.find(x => x.id === id)?.width || 6;
+    const width = [4, 6, 8, 12].includes(w.widgetWidths?.[id]) ? w.widgetWidths[id] : fallback;
+    const html = widgets[id] ? widgets[id]() : pluginWidgetCard(s, id, { catalog, drawn: ctx.plugins?.drawn, zone: m.zone });
+    return html.replace('class="ws-card', `class="ws-card ws-span-${width}`);
   }).join('');
   return `<div class="ws-today">
     <header class="ws-today-head">

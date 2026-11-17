@@ -16,8 +16,15 @@ export function syncStatus(s) {
   return `<span class="ws-sync-pill" title="Microsoft 365">${icon('check-circle')}<span>${c.lastSync ? `Synced ${e(agoLabel(c.lastSync, s.settings.timeZone))}` : 'Connected'}</span></span>`;
 }
 
-// state: { snapshot, route, resolvedDark }
-export function renderShell({ snapshot: s, route, resolvedDark }) {
+/** The sidebar's Plugins group: each page an enabled plugin adds (`activities`:
+ *  [{plugin, id, label}]), `current` the one open ({plugin, id}). Labels are the plugin's text. */
+export function pluginNav(activities = [], current = null) {
+  if (!activities.length) return '';
+  return `<div class="ws-nav-group ws-plugin-nav"><div class="ws-nav-label">Plugins</div><nav class="ws-nav" aria-label="Plugins">${activities.map(a => `<button type="button" data-action="plugin-page" data-plugin-id="${e(a.plugin)}" data-activity="${e(a.id)}" title="${e(a.label)}" ${current && current.plugin === a.plugin && current.id === a.id ? 'aria-current="page"' : ''}>${icon('puzzle')}<span>${e(a.label)}</span></button>`).join('')}</nav></div>`;
+}
+
+// state: { snapshot, route, resolvedDark, plugins: {activities, current} }
+export function renderShell({ snapshot: s, route, resolvedDark, plugins = {} }) {
   const w = active(s);
   const c = s.connection;
   const replies = attentionMessages(s).length;
@@ -26,6 +33,7 @@ export function renderShell({ snapshot: s, route, resolvedDark }) {
   return `<aside class="ws-sidebar">
       <div class="ws-brand" aria-label="EPAM AI/Run CodeMie Connect"><img class="ws-logo-dark" src="workspace/assets/logo-full-dark.svg" alt=""><img class="ws-logo-light" src="workspace/assets/logo-full-light.svg" alt=""></div>
       <nav class="ws-nav" aria-label="Main navigation">${NAV.map(([id, label]) => `<button type="button" data-action="route" data-route="${id}" ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${id === 'inbox' && replies ? `<small class="ws-count">${replies}</small>` : ''}</button>`).join('')}</nav>
+      ${pluginNav(plugins.activities, plugins.current)}
       <div class="ws-sidebar-bottom">
         <nav class="ws-nav" aria-label="Application"><button type="button" data-action="route" data-route="settings" ${route === 'settings' ? 'aria-current="page"' : ''}>${icon('settings')}<span>Settings</span>${c && c.status !== 'connected' && c.status !== 'disconnected' ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button></nav>
         <button type="button" class="ws-user" data-action="settings-tab" data-tab="microsoft" title="${connected ? 'Microsoft 365 account' : 'Connect Microsoft 365'}">

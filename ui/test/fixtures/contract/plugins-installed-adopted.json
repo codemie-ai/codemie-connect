@@ -1,0 +1,21 @@
+[
+  {
+    "addresses": [],
+    "agreed": [],
+    "client": "client.js",
+    "commit": null,
+    "enabled": false,
+    "hash": "ca0db428ee703be76f076202d91044d911ce7ca518f73bad3d42e8f14e082b7b",
+    "id": "standup",
+    "installedAt": "2026-11-17T09:30:00Z",
+    "market": "",
+    "name": "Stand-up digest",
+    "problem": null,
+    "signin": [],
+    "source": "",
+    "summary": "A morning digest of your team's updates on Today",
+    "update": null,
+    "version": "1.0.0",
+    "widgets": []
+  }
+]

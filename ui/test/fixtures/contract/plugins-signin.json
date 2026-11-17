@@ -1,0 +1,15 @@
+{
+  "notSignedIn": {
+    "code": "not_found",
+    "message": "the GitHub CLI isn't signed in on this computer: run gh auth login, then try again"
+  },
+  "signin": {
+    "from": "gh",
+    "host": "github.com",
+    "signedIn": true
+  },
+  "signout": {
+    "host": "github.com",
+    "signedIn": false
+  }
+}

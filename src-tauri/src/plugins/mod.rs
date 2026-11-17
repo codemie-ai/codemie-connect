@@ -10,6 +10,7 @@
 pub mod caller;
 pub mod capabilities;
 pub mod commands;
+pub mod extras;
 pub mod git;
 pub mod host;
 pub mod install;
@@ -20,7 +21,7 @@ pub mod protocol;
 pub mod registry;
 pub mod services;
 #[cfg(test)]
-mod testkit;
+pub(crate) mod testkit;
 pub mod tree;
 
 /// A plugin id as Echo manifests use it (`github`, `obsidian`): lowercase, so it is also a valid

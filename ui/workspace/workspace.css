@@ -915,6 +915,9 @@ ul.ws-draft-context[hidden]{display:none}
   .ws-two-col{grid-template-columns:1fr}
   .ws-glance .ws-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ws-sync-pill span{display:none}
+  .ws-plugin-nav{padding-top:12px;border-top:1px solid #ffffff33}
+  .light .ws-plugin-nav{border-top-color:#0000001f}
+  .ws-plugin-nav .ws-nav-label{display:none}
 }
 
 /* ------------------------------------------------------------------ Settings → Claude */
@@ -1220,3 +1223,159 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
   .ws-run-head,.ws-run-row{grid-template-columns:124px minmax(0,1fr) 84px 60px 68px 16px;gap:10px}
 }
 @media (min-width:1600px){.ws-auto-templates{grid-template-columns:repeat(4,minmax(0,1fr))}}
+
+/* ------------------------------------------------------------------ plugins (DESIGN 7.3)
+   Plugin frames live in a layer over the page (outside #workspace-app, which is redrawn); each
+   is laid over its slot. */
+.ws-plugin-layer{position:fixed;inset:0;z-index:3;pointer-events:none}
+.ws-plugin-frame{position:fixed;border:0;margin:0;padding:0;background:transparent;pointer-events:auto}
+/* The frame's color-scheme is the page's, so a card's frame stays transparent over its card. */
+.dark .ws-plugin-frame{color-scheme:dark}
+.light .ws-plugin-frame{color-scheme:light}
+.ws-plugin-frame[hidden]{display:none}
+#workspace-app[data-route=plugin] .ws-main{overflow:hidden}
+.ws-page-plugin{max-width:none;padding:0;height:100%}
+.ws-plugin-page{height:100%;min-height:0}
+.ws-plugin-missing{display:grid;place-items:center;height:100%;padding:32px}
+.ws-plugin-missing .ws-empty{max-width:420px}
+.ws-plugin-nav{display:grid;gap:4px;min-width:0;min-height:0;overflow-y:auto}
+.ws-plugin-nav .ws-nav-label{padding:0 11px 2px;color:#8A8A8A}
+.light .ws-plugin-nav .ws-nav-label{color:#666}
+.ws-plugin-nav .ws-nav button span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Settings: a plugin's sections under Plugins, a section filling the panel, its card slot. */
+.ws-settings-subnav{display:grid;gap:2px;margin:2px 0 4px}
+.ws-settings-subnav button{height:30px;padding-left:38px;font-size:12px}
+.ws-settings-subnav button span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-settings-panels-fill{display:flex;flex-direction:column;padding:0 0 0 0;overflow:hidden}
+.ws-settings-panels-fill>*{max-width:none}
+.ws-plugin-slot-fill{flex:1;min-height:0;border-top:1px solid var(--ws-border)}
+.ws-plugin-card-slot{display:block;min-height:0;margin:4px 0 12px}
+
+/* Plugins tab */
+.ws-plugin-icon{flex-shrink:0;width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:color-mix(in srgb,var(--ws-accent) 14%,var(--ws-raised));color:var(--ws-accent)}
+.ws-plugin-icon .ws-icon{width:18px;height:18px}
+.ws-plugin-icon-lg{width:44px;height:44px;border-radius:10px}
+.ws-plugin-icon-lg .ws-icon{width:24px;height:24px}
+.ws-plugin-row .ws-actions{flex-shrink:0;align-items:center;gap:12px}
+.ws-plugin-open{border:0;background:none;padding:0;text-align:left;color:inherit;cursor:pointer;font:inherit}
+.ws-plugin-open strong{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.ws-plugin-open:hover strong{color:var(--ws-link)}
+.ws-market-row .ws-row-main strong{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.ws-market-row .ws-actions{flex-shrink:0}
+.ws-catalog+.ws-catalog{margin-top:16px;padding-top:16px;border-top:1px solid var(--ws-border)}
+.ws-catalog-unfetched{display:flex;align-items:center;gap:12px}
+.ws-catalog-head{display:flex;align-items:baseline;gap:10px;margin-bottom:12px;font-size:13px}
+.ws-catalog-loading{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:12px}
+.ws-offer-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.ws-offer{position:relative;display:flex;flex-direction:column;gap:8px;min-width:0;padding:14px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);transition:border-color .12s ease,background .12s ease}
+.ws-offer:hover{border-color:var(--ws-border-strong);background:var(--ws-hover)}
+.ws-offer-open{position:absolute;inset:0;z-index:1;border:0;border-radius:10px;background:none;cursor:pointer}
+.ws-offer-open:focus-visible{outline:2px solid var(--ws-focus);outline-offset:2px}
+.ws-offer header{display:flex;align-items:center;gap:10px;min-width:0}
+.ws-offer-name{flex:1;min-width:0;display:grid;font-size:13px}
+.ws-offer-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-offer-name span{font-size:11px}
+.ws-offer-summary{margin:0;font-size:12px;line-height:18px;color:var(--ws-muted);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-family:var(--font-sans)}
+.ws-offer-reason{margin:0;font-size:12px;line-height:18px;color:var(--ws-amber)}
+.ws-offer-off .ws-offer-reason{color:var(--ws-muted)}
+.ws-offer footer{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:auto}
+.ws-offer footer .ws-chip{height:20px;font-size:11px}
+.ws-plugin-back{margin:0 0 8px -8px}
+.ws-plugin-detail+.ws-card{margin-top:16px}
+.ws-plugin-head{display:flex;align-items:center;gap:14px;padding:18px 18px 14px;border-bottom:1px solid var(--ws-border)}
+.ws-plugin-title{flex:1;min-width:0}
+.ws-plugin-title h3{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0;font-size:16px;line-height:24px;font-weight:600}
+.ws-plugin-title h3 .ws-muted{font-weight:400;font-size:13px}
+.ws-plugin-title p{margin:2px 0 0;font-size:12px;overflow-wrap:anywhere}
+.ws-plugin-head .ws-actions{flex-shrink:0;align-items:center;gap:12px}
+.ws-plugin-summary{margin:0 0 12px;font-size:13px;line-height:20px;color:var(--ws-text-2);font-family:var(--font-sans)}
+.ws-plugin-links{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.ws-plugin-danger{margin-top:16px;display:flex;justify-content:flex-end}
+.ws-inline-note.ws-info-note{background:var(--ws-blue-bg);color:var(--ws-blue)}
+.ws-unverified{margin-top:4px}
+.ws-sheet-title{margin:16px 0 8px;font-size:12px;font-weight:600;color:var(--ws-muted);text-transform:uppercase;letter-spacing:.6px}
+.ws-sheet{list-style:none;margin:0;padding:0;display:grid;border:1px solid var(--ws-border);border-radius:10px;overflow:hidden}
+.ws-sheet-line{display:flex;align-items:center;gap:12px;padding:10px 14px;border-top:1px solid var(--ws-border);background:var(--ws-card)}
+.ws-sheet-line:first-child{border-top:0}
+.ws-sheet-blocking{background:color-mix(in srgb,var(--ws-red) 8%,var(--ws-card))}
+.ws-sheet-copy{flex:1;min-width:0;display:grid;gap:2px;font-size:13px;line-height:19px;overflow-wrap:anywhere}
+.ws-sheet-copy small{font-size:12px;line-height:17px;color:var(--ws-muted)}
+.ws-sheet-marks{display:flex;gap:6px;flex-shrink:0}
+.ws-sheet-tick{margin-top:1px}
+.ws-modal #plugin-consent{margin-top:12px}
+.ws-market-source{display:flex;gap:8px;align-items:center}
+.ws-market-source .ws-input{flex:1;min-width:0}
+.ws-address-form{align-items:flex-end;padding:12px 0;border-top:1px solid var(--ws-border)}
+.ws-address-form .ws-field{flex:1;min-width:0}
+.ws-proxy-note{display:flex;gap:8px;align-items:flex-start;margin:12px 0 0}
+.ws-proxy-note .ws-icon{width:14px;height:14px;flex-shrink:0;margin-top:2px}
+.ws-reset-list{margin:6px 0 12px;padding-left:18px;font-size:12px;line-height:20px}
+.ws-registry-card .ws-field-label{margin-top:4px}
+.ws-registry-card+.ws-card{margin-top:16px}
+
+/* Today: plugin widgets and From plugins */
+.ws-plugin-widget .ws-card-footer,.ws-plugins-card .ws-card-footer{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ws-pw-from{flex:1;min-width:0;font-size:12px;color:var(--ws-muted)}
+.ws-pw-stat{display:grid;gap:2px}
+.ws-pw-stat strong{font-size:28px;line-height:34px;font-weight:600}
+.ws-pw-stat strong small{font-size:13px;font-weight:500;margin-left:4px;color:var(--ws-muted)}
+.ws-pw-stat span{font-size:12px;color:var(--ws-muted)}
+.ws-pw-stat p{margin:6px 0 0;font-size:12px}
+.ws-pw-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px}
+.ws-pw-cell{display:grid;gap:2px;padding:10px 12px;border:1px solid var(--ws-border);border-radius:8px;background:var(--ws-card-2)}
+.ws-pw-cell strong{font-size:20px;line-height:26px;font-weight:600}
+.ws-pw-cell span{font-size:12px;color:var(--ws-muted)}
+.ws-pw-good strong,.ws-pw-good{color:var(--ws-green)}
+.ws-pw-warn strong,.ws-pw-warn{color:var(--ws-amber)}
+.ws-pw-bad strong,.ws-pw-bad{color:var(--ws-red)}
+.ws-pw-muted{color:var(--ws-muted)}
+.ws-pw-list{list-style:none;margin:0;padding:0;display:grid}
+.ws-pw-list li{display:grid;gap:2px;padding:8px 0;border-bottom:1px solid var(--ws-border);font-size:13px}
+.ws-pw-list li:last-child{border-bottom:0}
+.ws-pw-list li span{font-size:12px;color:var(--ws-muted)}
+.ws-pw-status{display:flex;align-items:flex-start;gap:10px;color:var(--ws-text)}
+.ws-pw-status strong{font-size:14px}
+.ws-pw-status p{margin:2px 0 0;font-size:12px;color:var(--ws-muted)}
+.ws-pw-dot{width:10px;height:10px;margin-top:5px;border-radius:50%;flex-shrink:0;background:var(--ws-amber)}
+.ws-pw-ok .ws-pw-dot{background:var(--ws-green)}
+.ws-pw-bad .ws-pw-dot{background:var(--ws-red)}
+.ws-pw-card{display:grid;gap:4px;font-size:13px}
+.ws-pw-card p{margin:0;color:var(--ws-text-2);white-space:pre-wrap;font-family:var(--font-sans)}
+.ws-pw-table-wrap{overflow-x:auto}
+.ws-pw-table{width:100%;border-collapse:collapse;font-size:12px}
+.ws-pw-table th{text-align:left;font-weight:600;color:var(--ws-muted);padding:6px 8px;border-bottom:1px solid var(--ws-border);white-space:nowrap}
+.ws-pw-table td{padding:7px 8px;border-bottom:1px solid var(--ws-border);color:var(--ws-text)}
+.ws-pw-table tr:last-child td{border-bottom:0}
+.ws-pw-num{text-align:right;font-variant-numeric:tabular-nums}
+.ws-pw-bars{display:grid;gap:6px}
+.ws-pw-bar-row{display:grid;grid-template-columns:minmax(60px,30%) 1fr auto;align-items:center;gap:8px;font-size:12px}
+.ws-pw-bar-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ws-muted)}
+.ws-pw-bar{height:6px;border-radius:3px;background:var(--ws-raised);overflow:hidden}
+.ws-pw-bar span{display:block;height:100%;background:var(--ws-accent);border-radius:3px}
+.ws-pw-page{margin:0;font-size:13px;color:var(--ws-text-2)}
+.ws-pi-list{display:grid}
+.ws-pi-row{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid var(--ws-border)}
+.ws-pi-row:first-child{padding-top:0}
+.ws-pi-row:last-child{border-bottom:0}
+.ws-pi-icon{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;flex-shrink:0;background:var(--ws-raised);color:var(--ws-muted)}
+.ws-pi-icon .ws-icon{width:15px;height:15px}
+.ws-pi-urgent{background:var(--ws-red-bg);color:var(--ws-red)}
+.ws-pi-main{flex:1;min-width:0;display:grid;gap:4px}
+.ws-pi-main>strong{font-size:13px;line-height:19px}
+.ws-pi-main>p{margin:0;font-size:12px;line-height:18px;color:var(--ws-muted)}
+.ws-pi-from{font-size:11px;color:var(--ws-faint)}
+.ws-pi-actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end}
+.ws-pi-text,.ws-held-text{margin:0;max-height:180px;overflow:auto;padding:10px 12px;border:1px solid var(--ws-border);border-radius:8px;background:var(--ws-card-2);font-family:var(--font-sans);font-size:13px;line-height:20px;color:var(--ws-text-2);white-space:pre-wrap;overflow-wrap:anywhere}
+.ws-held{display:grid;gap:8px;padding:12px;border:1px dashed color-mix(in srgb,var(--ws-amber) 55%,var(--ws-border));border-radius:10px;background:color-mix(in srgb,var(--ws-amber-bg) 45%,transparent)}
+.ws-held-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.ws-held-subject{font-size:13px}
+.ws-held-foot{display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap}
+.ws-held-foot .ws-hint{display:inline-flex;align-items:center;gap:6px}
+.ws-held-foot .ws-icon{width:13px;height:13px}
+.ws-pi-work{margin-top:12px;padding-top:12px;border-top:1px solid var(--ws-border)}
+.ws-pi-work ul{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+.ws-pi-work li{display:flex;align-items:center;gap:8px;font-size:12px}
+.ws-pi-work li strong{font-weight:600}
+.ws-pi-work li span{color:var(--ws-muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:1180px){.ws-plugin-head{flex-wrap:wrap}.ws-plugin-head .ws-actions{width:100%;justify-content:flex-end}}

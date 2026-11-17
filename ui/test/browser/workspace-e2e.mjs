@@ -9,7 +9,8 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract } from '../fixtures/workspace-fixture.mjs';
+import { pluginChecks } from './plugins-checks.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -18,9 +19,33 @@ const playwright = await import(core ? pathToFileURL(join(core, 'index.js')).hre
 const chromium = playwright.chromium || playwright.default.chromium;
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ttf': 'font/ttf', '.json': 'application/json' };
+// Plugin frames: Chromium has no connect-plugin:// scheme, so the stand-in serves
+// /plugin-frames/<id>/__host/* from ui/plugins/frame/ and /plugin-frames/<id>/* from the synthetic
+// plugins in ui/test/fixtures/plugins/, with the frame headers native sends (CSP naming the origin,
+// ACAO null for module loads from the opaque frame).
+const FRAMES = 'plugin-frames/';
+function framePath(path) {
+  const [id, ...rest] = path.slice(FRAMES.length).split('/');
+  if (!/^[a-z][a-z0-9-]{1,40}$/.test(id) || rest.some(s => !s || s.startsWith('.'))) return null;
+  return rest[0] === '__host' ? join('plugins/frame', ...rest.slice(1)) : join('test/fixtures/plugins', id, ...rest);
+}
 const server = createServer(async (req, res) => {
   const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^\/+/, '') || 'index.html';
   try {
+    if (path.startsWith(FRAMES)) {
+      const file = framePath(path);
+      if (!file) throw new Error('not a plugin file');
+      const body = await readFile(join(UI, file));
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      res.writeHead(200, {
+        'content-type': TYPES[extname(file)] || 'application/octet-stream',
+        'access-control-allow-origin': 'null',
+        'content-security-policy': `default-src ${origin}; script-src ${origin}; style-src ${origin} 'unsafe-inline'; img-src ${origin} data:; connect-src 'none'`,
+        'x-content-type-options': 'nosniff',
+      });
+      res.end(body);
+      return;
+    }
     const body = await readFile(join(UI, path));
     res.writeHead(200, { 'content-type': TYPES[extname(path)] || 'application/octet-stream' });
     res.end(body);
@@ -35,7 +60,9 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase }) {
+  // Connect's window only: a plugin frame gets nothing of the native bridge.
+  if (window.top !== window) return;
   const s = snapshot;
   // Automation runs live beside the snapshot, as in native: the snapshot shows each
   // automation's latest run and its latest run on Today; `automation_runs` pages through all.
@@ -308,6 +335,70 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       return { runs: page, next };
     },
   });
+  // Plugins (`plugins_request`, `plugin_call`): an in-memory registry over the contract answers.
+  // `__pluginCalls` records what reached native, with the plugin id it went out with.
+  const pl = {
+    markets: clone(pluginInit.markets), installed: [], storage: {}, addresses: {}, signedIn: {},
+    calls: [],
+  };
+  window.__pluginCalls = pl.calls;
+  const helloView = () => {
+    const m = pluginInit.hello.manifest;
+    const p = pl.installed.find(x => x.id === 'hello');
+    return {
+      id: m.id, name: m.name, version: m.version, summary: m.summary, market: p.market, source: p.source, commit: null,
+      hash: '5eed5eed', enabled: p.enabled, agreed: p.agreed, installedAt: '2026-11-17T09:30:00Z', update: null, problem: null,
+      client: m.client, widgets: m.widgets.map(w => ({ id: w.id, label: w.label, about: w.about || '', kind: w.kind, sizes: w.sizes || [] })),
+      signin: [{ host: 'github.com', signedIn: !!pl.signedIn.hello, from: pl.signedIn.hello ? 'gh' : null }],
+      addresses: m.settings.map(x => ({ key: x.key, label: x.label, help: x.help || null, value: pl.addresses[x.key] || '' })),
+    };
+  };
+  const offerOf = market => {
+    const installed = pl.installed.find(x => x.id === 'hello');
+    return [{ ...pluginInit.hello.offer, installed: installed && installed.market === market ? pluginInit.hello.offer.version : null }, ...clone(pluginInit.others)];
+  };
+  const marketOf = name => {
+    const m = pl.markets.find(x => x.name === name);
+    if (!m) fail('not_found', `There is no marketplace “${name}”.`);
+    return m;
+  };
+  const pluginOps = {
+    markets: () => pl.markets,
+    pick_folder: () => ({ path: '/Users/qa/Plugins/acme-market' }),
+    market_add: d => {
+      if (!d.source.startsWith('/')) fail('invalid', 'The stand-in adds folders only.');
+      const m = { builtIn: false, commit: null, fetchedAt: null, kind: 'local', name: 'acme', ready: true, ref: null, source: d.source };
+      pl.markets.push(m);
+      return m;
+    },
+    market_refresh: d => marketOf(d.market),
+    market_remove: d => { pl.markets = pl.markets.filter(m => m.name !== d.market || m.builtIn); return pl.markets; },
+    catalog: d => ({ market: marketOf(d.market), plugins: marketOf(d.market).ready ? offerOf(d.market) : [] }),
+    inspect: d => {
+      const o = offerOf(d.market).find(x => x.id === d.id);
+      if (!o) fail('not_found', `The “${d.market}” marketplace has no plugin “${d.id}”.`);
+      const sheet = d.id === 'hello' ? pluginInit.hello.sheet : [{ key: 'knowledge', support: { status: 'blocking', limit: "Needs Connect's Knowledge engine (coming later)" }, text: 'Read and change your notes vaults' }];
+      return { ...o, market: d.market, source: marketOf(d.market).source, commit: null, sheet, sheetHash: d.id === 'hello' ? pluginInit.hello.sheetHash : 'k' };
+    },
+    install: d => {
+      if (d.id !== 'hello') fail('blocked', 'It can’t be installed.');
+      if (d.sheetHash !== pluginInit.hello.sheetHash) fail('changed', 'The permission sheet of “hello” changed.');
+      if (d.agreed.length !== pluginInit.hello.sheet.length) fail('consent_required', 'Agree to every line of the permission sheet to install “hello”.');
+      pl.installed.push({ id: 'hello', market: d.market, source: marketOf(d.market).source, enabled: true, agreed: [...d.agreed].sort() });
+      return { status: 'installed', plugin: helloView() };
+    },
+    installed: () => (pl.installed.length ? [helloView()] : []),
+    set_enabled: d => { pl.installed.find(x => x.id === d.id).enabled = d.enabled; return helloView(); },
+    update: () => fail('up_to_date', '“hello” is up to date (1.0.0).'),
+    remove: d => { pl.installed = pl.installed.filter(x => x.id !== d.id); return { removed: d.id, deletedData: !!d.deleteData }; },
+    signin: d => { pl.signedIn[d.id] = true; return clone(pluginInit.signin.signin); },
+    signout: d => { delete pl.signedIn[d.id]; return clone(pluginInit.signin.signout); },
+    set_addresses: d => { pl.addresses[d.key] = d.value.trim(); return helloView(); },
+    client_storage: d => {
+      if (d.items) pl.storage[d.id] = clone(d.items);
+      return { items: clone(pl.storage[d.id] || {}) };
+    },
+  };
   // A native event, as when the user clicks a notification.
   window.__emitNative = (name, payload) => (listeners[name] || []).forEach(fn => fn({ payload }));
   window.__setSummaryStale = value => { for (const r of s.records) if (r.kind === 'summary') r.data.stale = value; s.revision++; emit('workspace:changed'); };
@@ -317,7 +408,20 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   window.__TAURI__ = {
     core: {
       async invoke(cmd, args = {}) {
-        if (cmd === 'smoke_mode') return { smoke: false, probe: false, dev: true };
+        if (cmd === 'smoke_mode') return { smoke: false, probe: false, dev: true, pluginFrameBase: frameBase };
+        if (cmd === 'plugins_request') {
+          const op = pluginOps[args.op];
+          if (!op) throw { code: 'invalid', message: `Mock does not implement plugin request ${args.op}` };
+          await sleep(40);
+          return clone(op(args.data || {}));
+        }
+        if (cmd === 'plugin_call') {
+          pl.calls.push(clone(args));
+          const p = pl.installed.find(x => x.id === args.id);
+          if (!p || !p.enabled) throw { code: 'not_found', message: `“${args.id}” isn't on in Connect` };
+          if (args.command === 'greet') return { text: `Hello, ${args.args?.name || 'you'}`, from: 'CodeMie Connect' };
+          throw { code: 'not_found', message: `${args.id} has no command “${args.command}”` };
+        }
         if (cmd === 'runtime_ready') return false;
         if (cmd === 'get_app_version') return '2.2.0';
         if (cmd === 'check_for_update') return null;
@@ -408,7 +512,7 @@ const STORAGE = {
   disk_full: storageOf('not_writable', { issue: 'The disk that holds your data folder is full.' }),
 };
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, pluginRecords = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -424,10 +528,11 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
     ['Thanks. Could you also send Jordan the draft?', 'Also, please book the review room for Thursday.', 'One more thing: the comments are due Friday 20 November.'].forEach((text, i) => connected.records.push({ ...first, id: `m-long-${i}`, revision: `r-long-${i}`, data: { ...first.data, text, at: first.data.at + 120 * (i + 1), lane: 'fyi', isRead: true } }));
   }
   if (automations) withAutomations(connected, now);
+  if (pluginRecords) connected.records.push(...pluginRecords(now));
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract() })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/` })})`);
   await page.goto(base + hash);
   await page.waitForSelector(unavailable ? '.ws-recovery' : '.ws-sidebar');
   currentPage = page;
@@ -438,6 +543,16 @@ const shot = async (page, name) => {
   return page.screenshot({ path: join(OUT, `${name}.png`) });
 };
 const text = (page, selector) => page.locator(selector).first().innerText();
+
+// `WORKSPACE_E2E_ONLY=plugins` runs the plugin checks alone (they run last otherwise).
+if (process.env.WORKSPACE_E2E_ONLY === 'plugins') {
+  await pluginChecks({ open, check, assert, shot, OUT });
+  await browser.close();
+  server.close();
+  const failedOnly = results.filter(r => r[0] === 'FAIL').length;
+  console.log(`\n${results.length - failedOnly}/${results.length} browser checks passed. Screenshots: ${OUT}`);
+  process.exit(failedOnly ? 1 : 0);
+}
 
 for (const theme of ['dark', 'light']) {
   const { page, context, errors } = await open({ theme });
@@ -1796,6 +1911,10 @@ for (const theme of ['dark', 'light']) {
     await logged.context.close().catch(() => {});
   }
 }
+
+// Plugins (DESIGN 7.3, Tasks 23–24): add a marketplace, install the synthetic hello plugin, its
+// page and Settings section in their sandboxed frame, Today's plugin widgets, turn it off.
+if (process.env.WORKSPACE_E2E_ONLY !== 'plugins') await pluginChecks({ open, check, assert, shot, OUT });
 
 // Narrow and wide windows keep layouts intact.
 for (const width of [1000, 1680]) {

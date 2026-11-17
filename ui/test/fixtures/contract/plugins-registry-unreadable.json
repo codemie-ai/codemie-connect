@@ -1,0 +1,4 @@
+{
+  "code": "registry_unreadable",
+  "message": "Connect couldn’t read its list of plugins: registry.json isn’t valid (EOF while parsing an object at line 1 column 1). Reset the list to start it again; installed plugins are kept, turned off."
+}

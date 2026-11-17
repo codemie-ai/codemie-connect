@@ -290,4 +290,29 @@ mod tests {
             .call("github", "signin.keep", json!(["github.com", "a\nb"]))
             .is_err());
     }
+
+    /// The answers of Settings' Sign in and Sign out (`plugins_request` `signin`/`signout`),
+    /// and a Sign in when the GitHub CLI isn't signed in, for the window's fixtures.
+    #[tokio::test]
+    async fn contract_fixtures_match_the_real_signin() {
+        let env = Env::new();
+        let p = env.plugin(
+            "github",
+            json!({"signin": {"hosts": ["github.com"]}, "network": {"hosts": ["api.github.com"]}}),
+            json!([]),
+        );
+        let no_cli = allow(&env.services, &p, "github.com").await.unwrap_err();
+        *env.gh.token.lock().unwrap() = Some("gho_secret".into());
+        let signin = allow(&env.services, &p, "github.com").await.unwrap();
+        let signout = revoke(&env.services, &p, "github.com").unwrap();
+        assert!(!signin.to_string().contains("gho_secret"));
+        crate::plugins::testkit::contract_fixture(
+            "plugins-signin.json",
+            &json!({
+                "signin": signin,
+                "signout": signout,
+                "notSignedIn": {"code": no_cli.code.as_str(), "message": no_cli.message},
+            }),
+        );
+    }
 }

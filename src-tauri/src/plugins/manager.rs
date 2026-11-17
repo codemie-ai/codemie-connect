@@ -208,6 +208,13 @@ impl PluginManager {
         self.host.call(id, command, args).await
     }
 
+    /// The user pressed Choose folder for a marketplace on this computer: the folder they chose.
+    pub async fn pick_market_folder(&self) -> Option<PathBuf> {
+        self.services
+            .pick_folder("Choose a plugin marketplace folder")
+            .await
+    }
+
     /// The user pressed Sign in (or Sign out) on a plugin's settings.
     pub async fn sign_in(&self, id: &str, host: &str, on: bool) -> Result<Value, HostError> {
         let p = self.services.granted(id)?;

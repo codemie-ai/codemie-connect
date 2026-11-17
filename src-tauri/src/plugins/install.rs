@@ -516,35 +516,64 @@ fn commit(
 /// Turns an installed plugin on or off; its files and data stay. Turning it on needs the user's
 /// agreement to the sheet of the version installed (a plugin taken back after a reset has none).
 pub fn set_enabled(paths: &PluginPaths, id: &str, enabled: bool) -> Result<()> {
+    match enable(paths, id, enabled, None)? {
+        Outcome::Installed(_) => Ok(()),
+        Outcome::NeedsConsent { .. } => Err(WorkspaceError::new(
+            "consent_required",
+            format!("“{id}” can’t be turned on until you agree to its permission sheet."),
+        )),
+    }
+}
+
+/// Turns an installed plugin on or off, as Settings → Plugins does. Turning it on when its
+/// sheet has lines the user hasn't agreed to (Connect words a line differently now, or it was
+/// taken back after a reset) is `NeedsConsent` with the whole sheet; with an `agreement` to that
+/// very sheet the agreement is recorded and it is turned on.
+pub fn enable(
+    paths: &PluginPaths,
+    id: &str,
+    enabled: bool,
+    agreement: Option<Agreement>,
+) -> Result<Outcome> {
     checked_id(id)?;
     Registry::update(paths, |r| {
         let p = r.installed.get_mut(id).ok_or_else(|| not_installed(id))?;
         if enabled && !p.enabled {
-            agreed_to_installed(paths, id, p)?;
+            let m = installed_manifest(paths, id, p).ok_or_else(|| {
+                WorkspaceError::new(
+                    "refused",
+                    format!("The files of “{id}” can’t be read. Remove it and install it again."),
+                )
+            })?;
+            let lines = sheet(&m).map_err(|e| refused(id, e))?;
+            let new = new_lines(&lines, p);
+            if !new.is_empty() {
+                let Some(given) = agreement else {
+                    return Ok(Outcome::NeedsConsent {
+                        id: id.to_string(),
+                        name: m.name.clone(),
+                        version: p.version.clone(),
+                        lines: new,
+                        sheet_hash: sheet_hash(&lines),
+                        sheet: lines,
+                    });
+                };
+                require(id, given, &lines)?;
+                p.agreed = lines
+                    .iter()
+                    .map(|l| l.key.clone())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                p.agreed_text = lines
+                    .iter()
+                    .map(|l| (l.key.clone(), l.text.clone()))
+                    .collect();
+            }
         }
         p.enabled = enabled;
-        Ok(())
+        Ok(Outcome::Installed(id.to_string()))
     })
-}
-
-fn agreed_to_installed(paths: &PluginPaths, id: &str, p: &Installed) -> Result<()> {
-    let m = installed_manifest(paths, id, p).ok_or_else(|| {
-        WorkspaceError::new(
-            "refused",
-            format!("The files of “{id}” can’t be read. Remove it and install it again."),
-        )
-    })?;
-    let lines = sheet(&m).map_err(|e| refused(id, e))?;
-    if new_lines(&lines, p).is_empty() {
-        Ok(())
-    } else {
-        Err(WorkspaceError::new(
-            "consent_required",
-            format!(
-                "“{id}” can’t be turned on until you agree to its permission sheet. Remove it and install it again."
-            ),
-        ))
-    }
 }
 
 /// Removes a plugin: its registry entry and `installed/<id>/`. With `delete_data`, also

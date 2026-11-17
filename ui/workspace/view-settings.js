@@ -7,6 +7,7 @@ import { calendarCatalog } from './calendar-model.js';
 import { formatDateTime, agoLabel } from './format.js';
 import { aiPanel } from './settings-ai.js';
 import { storageCard } from './settings-storage.js';
+import { pluginsPage } from './settings-plugins.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
@@ -16,6 +17,7 @@ export const SETTINGS_TABS = [
   ['', 'notifications', 'Notifications', 'bell'],
   ['', 'queues', 'Rules & schedules', 'sliders'],
   ['', 'privacy', 'Data & privacy', 'shield'],
+  ['', 'plugins', 'Plugins', 'puzzle'],
   ['CodeMie tools', 'installation', 'Setup & installation', 'download'],
   ['', 'tools', 'Coding agents', 'tools'],
   ['', 'desktop', 'Desktop connection', 'monitor'],
@@ -52,16 +54,26 @@ export function settings(s, ctx) {
     activity: () => activityPanel(s),
     updates: () => updatesPanel(state),
   };
-  const content = LEGACY_TABS[tab] ? '<div id="legacy-host" class="ws-legacy-host"></div>' : (panels[tab] || panels.general)();
-  const label = SETTINGS_TABS.find(([, id]) => id === tab)?.[2] || 'Settings';
+  // Settings → Plugins, a plugin's page there, or one of its own sections (drawn in its frame).
+  const plugins = tab === 'plugins' && ctx.plugins
+    ? pluginsPage(ctx.plugins.ui, ctx.plugins.path, { status: ctx.plugins.status, sections: ctx.plugins.sections })
+    : null;
+  const content = plugins ? plugins.content : LEGACY_TABS[tab] ? '<div id="legacy-host" class="ws-legacy-host"></div>' : (panels[tab] || panels.general)();
+  const label = plugins ? plugins.label : SETTINGS_TABS.find(([, id]) => id === tab)?.[2] || 'Settings';
+  const description = plugins ? plugins.description : TAB_DESCRIPTIONS[tab];
+  const path = ctx.plugins?.path;
+  const sections = ctx.plugins?.sections || [];
+  const subnav = id => (id === 'plugins' && sections.length
+    ? `<div class="ws-settings-subnav" aria-label="Plugin sections">${sections.map(x => `<button type="button" data-action="plugin-section" data-plugin-id="${e(x.plugin)}" data-section="${e(x.id)}" ${tab === 'plugins' && path?.id === x.plugin && path?.section === x.id ? 'aria-current="page"' : ''}><span>${e(x.label)}</span>${x.badge ? `<small class="ws-count">${e(x.badge)}</small>` : ''}</button>`).join('')}</div>`
+    : '');
   return `<div class="ws-settings-layout">
     <aside class="ws-settings-sidebar">
       <div class="ws-settings-heading"><h1>Settings</h1><p>Preferences and connected services.</p></div>
-      <nav class="ws-settings-nav" aria-label="Settings">${SETTINGS_TABS.map(([group, id, text, ico]) => `${group ? `<div class="ws-nav-label">${e(group)}</div>` : ''}<button type="button" data-action="settings-tab" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${icon(ico)}<span>${e(text)}</span>${id === 'microsoft' && s.connection?.status && s.connection.status !== 'connected' && s.connection.status !== 'disconnected' ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button>`).join('')}</nav>
+      <nav class="ws-settings-nav" aria-label="Settings">${SETTINGS_TABS.map(([group, id, text, ico]) => `${group ? `<div class="ws-nav-label">${e(group)}</div>` : ''}<button type="button" data-action="settings-tab" data-tab="${id}" ${tab === id && !(id === 'plugins' && path?.section) ? 'aria-current="page"' : ''}>${icon(ico)}<span>${e(text)}</span>${id === 'microsoft' && s.connection?.status && s.connection.status !== 'connected' && s.connection.status !== 'disconnected' ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button>${subnav(id)}`).join('')}</nav>
     </aside>
     <section class="ws-settings-content">
-      <header class="ws-settings-header"><h2>${e(label)}</h2>${TAB_DESCRIPTIONS[tab] ? `<p>${e(TAB_DESCRIPTIONS[tab])}</p>` : ''}</header>
-      <div class="ws-settings-panels">${content}</div>
+      <header class="ws-settings-header"><h2>${e(label)}</h2>${description ? `<p>${e(description)}</p>` : ''}</header>
+      <div class="ws-settings-panels${plugins?.fill ? ' ws-settings-panels-fill' : ''}" data-plugin-clip>${content}</div>
     </section>
   </div>`;
 }

@@ -30,6 +30,24 @@ pub fn env() -> Env {
     }
 }
 
+/// Checks `ui/test/fixtures/contract/<name>` against a real answer, or writes it with
+/// `UPDATE_CONTRACT_FIXTURES=1` (the UI's fixtures and the browser mock read these files).
+pub fn contract_fixture(name: &str, value: &Value) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
+    let text = serde_json::to_string_pretty(value).unwrap() + "\n";
+    let path = dir.join(name);
+    if std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1") {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, &text).unwrap();
+    } else {
+        let saved = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            saved, text,
+            "{name} is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
+        );
+    }
+}
+
 /// A manifest asking for nothing, with a host and a client half.
 pub fn manifest(id: &str, version: &str) -> Value {
     let mut name = id.to_string();

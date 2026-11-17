@@ -12,12 +12,15 @@
 //! | `inspect` | `{market, id}` | `Offer` with `market`, `source`, `commit`, `sheet` and `sheetHash` |
 //! | `install` | `{market, id, agreed, sheetHash}` | `{status: "installed", plugin: Installed}` |
 //! | `update` | `{id, agreed?, sheetHash?}` | the same, or `{status: "needs_consent", id, name, version, lines, sheet, sheetHash}` |
-//! | `set_enabled` | `{id, enabled}` | `Installed` |
+//! | `set_enabled` | `{id, enabled, agreed?, sheetHash?}` | `Installed`, or turning it on with lines not agreed to: `{status: "needs_consent", …}` as `update` |
+//! | `set_addresses` | `{id, key, value}` | `Installed`: the addresses the user typed for a `hosts_from` setting |
+//! | `client_storage` | `{id, items?}` | `{items}`: what its client half keeps (read, or replaced with `items`) |
 //! | `remove` | `{id, deleteData}` | `{removed, deletedData}` (also for the kept data of a removed plugin) |
-//! | `installed` | | `[Installed]` |
+//! | `installed` | | `[Installed]`, each with its `client`, `widgets`, `signin` and `addresses` (`extras`) |
 //! | `registry_reset` | | `{saved, adopted, leftovers}`, only when the list is `registry_unreadable` |
 //! | `signin` | `{id, host}` | `{signedIn, host, from}`: the user's Sign in on the plugin's settings |
 //! | `signout` | `{id, host}` | `{signedIn: false, host}` |
+//! | `pick_folder` | | `{path}`: the folder the user chose for a marketplace, `null` when they cancelled |
 //!
 //! `agreed` is every key of the sheet the user was shown and `sheetHash` that sheet's hash (from
 //! `inspect` or `needs_consent`): a sheet that changed since is refused as `changed`.
@@ -29,6 +32,7 @@
 //! one that arrives during a move is refused with the move's own message.
 use super::caller::require_main_frame;
 use super::capabilities::SheetLine;
+use super::extras::{self, Extras};
 use super::git::{CliGit, Git};
 use super::host::HostError;
 use super::install::{self, Agreement, Offer, Outcome};
@@ -68,6 +72,10 @@ pub async fn plugins_request(
     let counted = core.begin_plugin_op();
     not_restarting(&state)?;
     let running = counted?;
+    if op == "pick_folder" {
+        let folder = manager_of(&window)?.pick_market_folder().await;
+        return Ok(json!({"path": folder.map(|f| f.display().to_string())}));
+    }
     if matches!(op.as_str(), "signin" | "signout") {
         let a: SigninArg = arg(data.unwrap_or(Value::Null))?;
         return manager_of(&window)?
@@ -169,9 +177,26 @@ struct UpdateArg {
     sheet_hash: Option<String>,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EnableArg {
     id: String,
     enabled: bool,
+    #[serde(default)]
+    agreed: Option<Vec<String>>,
+    #[serde(default)]
+    sheet_hash: Option<String>,
+}
+#[derive(Deserialize)]
+struct AddressArg {
+    id: String,
+    key: String,
+    value: String,
+}
+#[derive(Deserialize)]
+struct StorageArg {
+    id: String,
+    #[serde(default)]
+    items: Option<Value>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +213,24 @@ fn arg<T: DeserializeOwned>(data: Value) -> Result<T> {
             format!("That plugin request is incomplete: {e}."),
         )
     })
+}
+
+/// An agreement sent with a request: its keys and the hash of the sheet they were shown.
+fn agreement_of<'a>(
+    agreed: &'a Option<Vec<String>>,
+    sheet_hash: &'a Option<String>,
+) -> Result<Option<Agreement<'a>>> {
+    match (agreed, sheet_hash) {
+        (Some(keys), Some(hash)) => Ok(Some(Agreement {
+            keys,
+            sheet_hash: hash,
+        })),
+        (None, _) => Ok(None),
+        (Some(_), None) => Err(WorkspaceError::new(
+            "invalid",
+            "That plugin request is incomplete: an agreement needs its sheetHash.",
+        )),
+    }
 }
 
 fn to_json(value: impl Serialize) -> Result<Value> {
@@ -229,25 +272,28 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
         }
         "update" => {
             let a: UpdateArg = arg(data)?;
-            let agreement = match (&a.agreed, &a.sheet_hash) {
-                (Some(keys), Some(hash)) => Some(Agreement {
-                    keys,
-                    sheet_hash: hash,
-                }),
-                (None, _) => None,
-                (Some(_), None) => {
-                    return Err(WorkspaceError::new(
-                        "invalid",
-                        "That plugin request is incomplete: an agreement needs its sheetHash.",
-                    ))
-                }
-            };
+            let agreement = agreement_of(&a.agreed, &a.sheet_hash)?;
             outcome(paths, install::update(paths, &a.id, agreement)?)
         }
         "set_enabled" => {
             let a: EnableArg = arg(data)?;
-            install::set_enabled(paths, &a.id, a.enabled)?;
+            let agreement = agreement_of(&a.agreed, &a.sheet_hash)?;
+            match install::enable(paths, &a.id, a.enabled, agreement)? {
+                Outcome::Installed(id) => to_json(installed_view(paths, &id)?),
+                asked => outcome(paths, asked),
+            }
+        }
+        "set_addresses" => {
+            let a: AddressArg = arg(data)?;
+            extras::set_addresses(paths, &a.id, &a.key, &a.value)?;
             to_json(installed_view(paths, &a.id)?)
+        }
+        "client_storage" => {
+            let a: StorageArg = arg(data)?;
+            match &a.items {
+                Some(items) => extras::set_client_storage(paths, &a.id, items),
+                None => extras::client_storage(paths, &a.id),
+            }
         }
         "remove" => {
             let a: RemoveArg = arg(data)?;
@@ -422,6 +468,8 @@ struct InstalledView {
     update: Option<String>,
     /// Set when its files can't be read.
     problem: Option<String>,
+    #[serde(flatten)]
+    extras: Extras,
 }
 
 fn installed_views(paths: &PluginPaths) -> Result<Vec<InstalledView>> {
@@ -473,6 +521,7 @@ fn view_of(paths: &PluginPaths, reg: &Registry, id: &str) -> Result<InstalledVie
         problem: manifest
             .is_none()
             .then(|| "Its files can’t be read. Remove it and install it again.".to_string()),
+        extras: extras::extras(paths, id, p, manifest.as_ref()),
     })
 }
 
@@ -620,29 +669,104 @@ mod tests {
         assert_eq!(needs["lines"][0]["key"], "folders");
         assert_ne!(needs["sheetHash"], inspect["sheetHash"]);
 
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
-        let update = std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1");
+        // The list can't be read: every request says so until it is reset, which takes the
+        // installed copy back, off and with no agreement; turning it on asks for one.
+        std::fs::write(env.paths.registry(), "{").unwrap();
+        let unreadable = run("installed", Value::Null).unwrap_err();
+        assert_eq!(unreadable.code, "registry_unreadable");
+        let unreadable = json!({"code": unreadable.code, "message": unreadable.message});
+        let mut reset = run("registry_reset", Value::Null).unwrap();
+        assert!(reset["saved"]
+            .as_str()
+            .unwrap()
+            .starts_with("registry.json.bad-"));
+        reset["saved"] = json!("registry.json.bad-20261117T093000.000Z");
+        assert_eq!(reset["adopted"], json!(["standup"]));
+        let adopted = run("installed", Value::Null).unwrap();
+        assert_eq!(adopted[0]["market"], "");
+        assert_eq!(adopted[0]["enabled"], false);
+        let enable = run("set_enabled", json!({"id": "standup", "enabled": true})).unwrap();
+        assert_eq!(enable["status"], "needs_consent");
+        assert_eq!(enable["lines"].as_array().unwrap().len(), 4);
+
         for (name, value) in [
             ("plugins-markets.json", markets),
             ("plugins-catalog.json", catalog),
             ("plugins-inspect.json", inspect),
             ("plugins-installed.json", installed_list),
             ("plugins-update-needs-consent.json", needs),
+            ("plugins-registry-unreadable.json", unreadable),
+            ("plugins-registry-reset.json", reset),
+            ("plugins-installed-adopted.json", adopted),
+            ("plugins-enable-needs-consent.json", enable),
         ] {
-            let text = serde_json::to_string_pretty(&pin(value)).unwrap() + "\n";
-            let path = dir.join(name);
-            if update {
-                std::fs::create_dir_all(&dir).unwrap();
-                std::fs::write(&path, &text).unwrap();
-            } else {
-                let saved = std::fs::read_to_string(&path).unwrap_or_default();
-                assert_eq!(
-                    saved, text,
-                    "{name} is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
-                );
-            }
+            testkit::contract_fixture(name, &pin(value));
         }
+    }
+
+    #[test]
+    fn turning_on_asks_again_for_lines_not_agreed_and_records_the_agreement() {
+        let env = testkit::env();
+        let mut m = manifest("hello", "1.0.0");
+        m["uses"] = json!({"network": {"hosts": ["api.example.com"]}});
+        testkit::local_market(&env, &[m]);
+        let run = |op: &str, data: Value| dispatch(&env.paths, &testkit::NoGit, op, data);
+        let shown = run("inspect", json!({"market": "local", "id": "hello"})).unwrap();
+        run(
+            "install",
+            json!({"market": "local", "id": "hello", "agreed": ["network"], "sheetHash": shown["sheetHash"]}),
+        )
+        .unwrap();
+        run("set_enabled", json!({"id": "hello", "enabled": false})).unwrap();
+        // As after a reset: nothing agreed to any more.
+        std::fs::write(env.paths.registry(), "{").unwrap();
+        run("registry_reset", Value::Null).unwrap();
+        let asked = run("set_enabled", json!({"id": "hello", "enabled": true})).unwrap();
+        assert_eq!(asked["status"], "needs_consent");
+        assert_eq!(asked["sheetHash"], shown["sheetHash"]);
+        let e = run(
+            "set_enabled",
+            json!({"id": "hello", "enabled": true, "agreed": [], "sheetHash": asked["sheetHash"]}),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "consent_required");
+        let e = run(
+            "set_enabled",
+            json!({"id": "hello", "enabled": true, "agreed": ["network"], "sheetHash": "0"}),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "changed");
+        let on = run(
+            "set_enabled",
+            json!({"id": "hello", "enabled": true, "agreed": ["network"], "sheetHash": asked["sheetHash"]}),
+        )
+        .unwrap();
+        assert_eq!(on["enabled"], true);
+        assert_eq!(on["agreed"], json!(["network"]));
+        // Off and on again needs nothing new.
+        run("set_enabled", json!({"id": "hello", "enabled": false})).unwrap();
+        let again = run("set_enabled", json!({"id": "hello", "enabled": true})).unwrap();
+        assert_eq!(again["enabled"], true);
+        // Addresses and the client's storage go through the same request.
+        let stored = run(
+            "client_storage",
+            json!({"id": "hello", "items": {"tab": "graph"}}),
+        )
+        .unwrap();
+        assert_eq!(stored, json!({"items": {"tab": "graph"}}));
+        assert_eq!(
+            run("client_storage", json!({"id": "hello"})).unwrap(),
+            json!({"items": {"tab": "graph"}})
+        );
+        assert_eq!(
+            run(
+                "set_addresses",
+                json!({"id": "hello", "key": "servers", "value": "x"})
+            )
+            .unwrap_err()
+            .code,
+            "invalid"
+        );
     }
 
     #[test]

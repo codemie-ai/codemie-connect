@@ -233,3 +233,27 @@ export const CHECKS = ['ok', 'cloud', 'network', 'exfat', 'tight', 'existing', '
 export const dataLocation = name => contract(`location-${name}`);
 /** A `data_location_check` answer: ok, cloud, network, exfat, tight, existing, existing-data, recovery. */
 export const folderCheck = name => contract(`check-${name}`);
+
+/**
+ * The browser mock's plugins (`plugins_request`), from the Rust contract answers: the built-in
+ * marketplace, a catalog with a Knowledge plugin and one for a newer engine, and the synthetic
+ * `hello` plugin (ui/test/fixtures/plugins/hello/) a local marketplace offers.
+ */
+export function pluginContract() {
+  const hello = JSON.parse(readFileSync(new URL('./plugins/hello/echo-plugin.json', import.meta.url), 'utf8'));
+  const catalog = contract('plugins-catalog');
+  return {
+    markets: contract('plugins-markets').filter(m => m.builtIn),
+    others: catalog.plugins.filter(p => !p.installable),
+    hello: {
+      offer: { id: hello.id, name: hello.name, version: hello.version, summary: hello.summary, categories: ['test'], featured: true, installable: true, reason: null, installed: null, update: false },
+      sheet: [
+        { key: 'signin', support: { status: 'partial', limit: 'Connect signs in to GitHub only' }, text: 'Use your sign-in to github.com, and send it to the places it talks to' },
+        { key: 'network', support: { status: 'supported' }, text: 'Connect to api.example.com and the addresses you list in its settings' },
+      ],
+      sheetHash: 'f00dfeed',
+      manifest: hello,
+    },
+    signin: contract('plugins-signin'),
+  };
+}

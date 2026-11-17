@@ -255,6 +255,11 @@ impl Services {
     pub fn data_of(&self, id: &str) -> PathBuf {
         self.paths.data_of(id)
     }
+
+    /// The native folder picker, for the user's own choices (a marketplace folder).
+    pub async fn pick_folder(&self, title: &str) -> Option<PathBuf> {
+        self.outside.picker.pick(title.to_string()).await
+    }
 }
 
 impl HostServices for Services {

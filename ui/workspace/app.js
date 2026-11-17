@@ -8,7 +8,7 @@ import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calenda
 import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
 import { askCommitment, askCommitmentId } from './summary-state.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
-import { today, WIDGETS, WIDGET_IDS } from './view-today.js';
+import { today, customizeEntries } from './view-today.js';
 import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
 import { inbox, filteredMessages, snoozeUntil, draftChecks } from './view-inbox.js';
 import {
@@ -25,6 +25,10 @@ import { recoveryPage, firstReport, USE_DEFAULT_WARNING } from './recovery.js';
 import { formatBytes, removeOldBody, useDefaultBody } from './settings-storage.js';
 import { createDataLocationFlow } from './data-location-flow.js';
 import { withAppOrigin } from './app-invoke.js';
+import { pluginUrl } from '../plugins/frame-url.js';
+import { createPluginHost, internalRoute } from '../plugins/host.js';
+import { createPluginsController } from './settings-plugins.js';
+import { pluginWidgetCatalog, parseLayoutId, heldText, textOfHtml } from './today-plugins.js';
 
 const ROUTES = ['today', 'calendar', 'inbox', 'automations', 'settings'];
 const root = document.getElementById('workspace-app');
@@ -55,7 +59,13 @@ const state = {
   drafts: {}, summaryUi: {}, draftPopover: null, draftDismissed: localJson('codemie.draft.dismissed', []),
   // Automations: the open tab and the Run log pages read with `automation_runs` (null until read).
   automations: { tab: 'automations', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } },
+  // Plugins: the page open under #/p/<id>/<activity>/<route>, the Settings → Plugins path
+  // ({id, section}), what is installed, and the text of page widgets their frames drew.
+  pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
 };
+let pluginHost = null;
+let lastPluginTheme = '';
+const drawnWidgets = new Map();
 let legacyModule;
 let legacyMounted = false;
 let rendering = 0;
@@ -112,13 +122,20 @@ function applyTheme(theme) {
   const resolved = theme === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme;
   document.documentElement.classList.remove('light', 'dark');
   document.documentElement.classList.add(resolved);
+  if (pluginHost && resolved !== lastPluginTheme) {
+    lastPluginTheme = resolved;
+    pluginHost.setTheme(resolved);
+  }
   const legacyToggle = document.getElementById('theme-toggle-input');
   if (legacyToggle) legacyToggle.checked = resolved === 'dark';
 }
 
 // ---------------------------------------------------------------- shell
 
-const shellMarkup = () => renderShell({ snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark') });
+const shellMarkup = () => renderShell({
+  snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark'),
+  plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
+});
 
 function shell() {
   root.dataset.route = state.route;
@@ -213,7 +230,7 @@ async function render() {
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
-  const ctx = { state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s) };
+  const ctx = { state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext() };
   if (state.route === 'inbox') ensureSelection(s);
   if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
   const pageClass = `ws-page ws-page-${state.route}`;
@@ -221,7 +238,8 @@ async function render() {
     : state.route === 'calendar' ? calendar(s, ctx)
       : state.route === 'inbox' ? inbox(s, ctx)
         : state.route === 'automations' ? automations(s, ctx)
-          : settings(s, ctx);
+          : state.route === 'plugin' ? pluginPageHtml()
+            : settings(s, ctx);
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
   if (next) {
     next.innerHTML = shellMarkup();
@@ -249,6 +267,8 @@ async function render() {
   // the control is gone or no longer told apart from a sibling, focus is left alone.
   if (refocus && !root.contains(document.activeElement)) soleMatch(root, refocus)?.focus({ preventScroll: true });
   placeDraftPopover();
+  showPluginView();
+  if (state.route === 'today') drawPageWidgets(s);
   lastDraftSignature = draftSignature(s);
   if (state.route === 'settings' && document.getElementById('legacy-host')) await mountLegacy(revision);
 }
@@ -311,11 +331,22 @@ async function saveNote(el) {
   }
 }
 
-async function route(name, tab) {
+async function route(name, tab, pluginPath = null) {
   if (legacyMounted && legacyModule && !(await legacyModule.leaveLegacyTools())) return;
   await savePendingNote();
   state.route = ROUTES.includes(name) ? name : 'today';
   if (tab && state.route === 'settings') state.settingsTab = SETTINGS_TABS.some(([, id]) => id === tab) ? tab : 'general';
+  const onPluginsTab = state.route === 'settings' && state.settingsTab === 'plugins';
+  state.pluginPath = onPluginsTab ? pluginPath : null;
+  state.pluginPage = null;
+  if (onPluginsTab && !pluginPath) pluginsUi.ui.offer = null;
+  if (state.pluginPath) {
+    const { id, section } = state.pluginPath;
+    history.replaceState(null, '', `#/settings/plugins/${encodeURIComponent(id)}${section ? `/${encodeURIComponent(section)}` : ''}`);
+    await render();
+    if (!section) pluginsUi.load().catch(fail);
+    return;
+  }
   if (tab && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === tab) ? tab : 'automations';
   history.replaceState(null, '', `#/${state.route}${state.route === 'settings' ? `/${state.settingsTab}` : state.route === 'automations' && state.automations.tab !== 'automations' ? `/${state.automations.tab}` : ''}`);
   await render();
@@ -326,6 +357,145 @@ async function route(name, tab) {
   if (state.route === 'settings' && state.settingsTab === 'ai') loadAi().catch(fail);
   if (generalTabOpen()) loadStorage().catch(fail);
   if (runLogOpen()) automationsUi.loadRuns().catch(fail);
+  if (onPluginsTab) pluginsUi.load().catch(fail);
+}
+
+// ---------------------------------------------------------------- plugins
+
+const PLUGIN_ID = /^[a-z][a-z0-9-]{1,40}$/;
+const PLUGIN_ITEM = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
+
+/** Opens a plugin's page: `#/p/<id>/<activity>[/<route>]`. */
+async function routePlugin(id, activity, rest = '') {
+  if (!PLUGIN_ID.test(id) || !PLUGIN_ITEM.test(activity)) return route('today');
+  if (legacyMounted && legacyModule && !(await legacyModule.leaveLegacyTools())) return;
+  await savePendingNote();
+  state.route = 'plugin';
+  state.pluginPage = { id, activity, route: rest };
+  state.pluginPath = null;
+  history.replaceState(null, '', `#/p/${id}/${activity}${rest ? `/${rest}` : ''}`);
+  await render();
+}
+
+/** Opens a Connect hash: one of the app's routes, Settings → Plugins or a plugin's section, or a
+ *  plugin's page. Anything else opens Today. */
+function goHash(hash) {
+  const [head, a, b, ...rest] = String(hash || '').replace(/^#\/?/, '').split('/');
+  if (head === 'p') return routePlugin(a || '', b || '', rest.join('/'));
+  if (head === 'settings' && a === 'plugins') {
+    const id = b && PLUGIN_ID.test(decodeURIComponent(b)) ? decodeURIComponent(b) : null;
+    const section = id && rest[0] && PLUGIN_ITEM.test(decodeURIComponent(rest[0])) ? decodeURIComponent(rest[0]) : null;
+    return route('settings', 'plugins', id ? { id, section } : null);
+  }
+  if (head === 'settings') return route('settings', a);
+  return route(ROUTES.includes(head) ? head : 'today', a);
+}
+
+const pluginsUi = createPluginsController({
+  request: (op, data) => invoke('plugins_request', data === undefined ? { op } : { op, data }),
+  render: () => { if (ready && !modalOpen()) render().catch(fail); },
+  openModal,
+  toast,
+  installedChanged: list => {
+    state.installedPlugins = list;
+    state.pluginsKnown = true;
+    pluginHost?.sync(list);
+  },
+  navigate: path => route('settings', 'plugins', path),
+});
+
+/** What the views need of the plugins: Settings' tab state and Today's widget catalog. */
+function pluginContext() {
+  return {
+    ui: pluginsUi.ui,
+    path: state.pluginPath,
+    status: id => pluginHost?.status(id) || null,
+    sections: pluginHost?.sections() || [],
+    catalog: pluginWidgetCatalog(state.installedPlugins),
+    drawn: state.widgetText,
+    routeOf: internalRoute,
+  };
+}
+
+/** A plugin's page: the slot its frame is laid over, or why there is none. */
+function pluginPageHtml() {
+  const p = state.pluginPage;
+  // Until Connect knows what is installed (just after start), the page is on its way.
+  if (!state.pluginsKnown) return '<div class="ws-loading" role="status"><span class="ws-spinner"></span>Opening the plugin…</div>';
+  const status = pluginHost?.status(p.id);
+  const page = (pluginHost?.activities() || []).find(a => a.plugin === p.id && a.id === p.activity);
+  if (page || (status && status.loaded && !status.ready && !status.error)) return `<div class="ws-plugin-page" data-plugin-slot="${e(p.id)}"></div>`;
+  const why = !status ? 'Its plugin is off or not installed.' : status.error ? `Its plugin didn’t start: ${status.error}` : 'Its plugin doesn’t have this page any more.';
+  return `<div class="ws-plugin-missing"><div class="ws-empty"><span class="ws-empty-icon">${icon('puzzle')}</span><strong>This page isn’t available</strong><p>${e(why)}</p><div class="ws-actions">${button('Settings → Plugins', { action: 'settings-tab', variant: 'primary', attrs: { 'data-tab': 'plugins' } })}</div></div></div>`;
+}
+
+/** Shows the plugin frame the current route needs (a page, a section, a card), or none. */
+function showPluginView() {
+  if (!pluginHost) return;
+  const path = state.pluginPath;
+  const p = state.pluginPage;
+  const onPluginsTab = state.route === 'settings' && state.settingsTab === 'plugins';
+  if (state.route === 'plugin' && p) pluginHost.show({ id: p.id, view: 'activity', activity: p.activity, route: p.route });
+  else if (onPluginsTab && path?.section) pluginHost.show({ id: path.id, view: 'section', section: path.section });
+  else if (onPluginsTab && path?.id && pluginHost.status(path.id)?.card) pluginHost.show({ id: path.id, view: 'card' });
+  else pluginHost.show(null);
+}
+
+/** Today's `page` widgets are drawn by their plugin's frame; their text is shown. */
+function drawPageWidgets(s) {
+  if (!pluginHost) return;
+  for (const id of current().layout) {
+    const at = parseLayoutId(id);
+    const r = at && s.records.find(x => x.kind === 'plugin_widget' && x.id === `${at.plugin}:${at.widget}`);
+    if (!r || r.data?.kind !== 'page') continue;
+    // Drawn again when its data changes or its frame becomes able to draw it, never in a loop.
+    const able = !!pluginHost.status(at.plugin)?.widgets?.includes(at.widget);
+    const key = `${r.revision}:${able}`;
+    if (drawnWidgets.get(id) === key) continue;
+    drawnWidgets.set(id, key);
+    const before = state.widgetText[id];
+    pluginHost.draw(at.plugin, at.widget, r.data.data, 'M').then(html => {
+      state.widgetText[id] = textOfHtml(html, text => new DOMParser().parseFromString(text, 'text/html'));
+    }, err => {
+      state.widgetText[id] = err.message;
+    }).then(() => {
+      if (state.widgetText[id] !== before && state.route === 'today' && !modalOpen() && !editing()) render().catch(fail);
+    });
+  }
+}
+
+let pluginRenderTimer = null;
+/** A plugin's frame changed what it adds (a page, a section, a badge): drawn again soon. */
+function pluginsChanged() {
+  clearTimeout(pluginRenderTimer);
+  pluginRenderTimer = setTimeout(() => {
+    if (ready && !modalOpen() && !editing() && !legacyMounted) render().catch(fail);
+  }, 60);
+}
+
+async function pluginAction(action, el) {
+  const id = el.dataset.pluginId;
+  switch (action) {
+    case 'plugin-page': return routePlugin(id, el.dataset.activity);
+    case 'plugin-go': return goHash(el.dataset.go);
+    case 'plugin-palette': return pluginHost?.runPalette(id, Number(el.dataset.index));
+    case 'plugin-copy': {
+      const text = heldText(snap(), el.dataset.id);
+      if (text === null) return;
+      await navigator.clipboard.writeText(text);
+      return toast('Copied. Paste it where you want to send it.', 'success');
+    }
+    case 'plugin-command': {
+      let args = null;
+      try { args = JSON.parse(el.dataset.args || 'null'); } catch { /* none */ }
+      await invoke('plugin_call', { id, command: el.dataset.command, args });
+      toast('Done.', 'success');
+      return store.refresh();
+    }
+    default:
+      if (await pluginsUi.handle(action, el)) return;
+      throw new Error('This action is not available. Refresh the view and try again.');
+  }
 }
 
 // ---------------------------------------------------------------- Claude (AI)
@@ -801,20 +971,22 @@ function reviewAction(result, { onSent } = {}) {
 
 function customizeDialog() {
   const w = current();
-  const order = [...w.layout, ...WIDGET_IDS.filter(id => !w.layout.includes(id))];
+  const entries = customizeEntries(w, pluginWidgetCatalog(state.installedPlugins));
+  // "From plugins" shows itself until a saved layout says otherwise (showPluginsCard).
+  const shown = x => w.layout.includes(x.id) || (x.id === 'plugins' && !('plugins' in (w.widgetWidths || {})) && !!root.querySelector('.ws-plugins-card'));
   const dialog = openModal({
     title: 'Customize Today',
     subtitle: `Cards for ${w.name}. Drag the arrows to reorder.`,
-    body: `<div class="ws-widget-list" id="widget-order">${order.map(id => `<div class="ws-widget-row" data-widget="${id}">
-      ${toggle({ name: 'widget', attrs: { value: id, 'aria-label': `Show ${WIDGETS[id].title}` }, checked: w.layout.includes(id) })}
-      <div class="ws-widget-copy"><strong>${e(WIDGETS[id].title)}</strong><span>${e(WIDGETS[id].description)}</span></div>
-      ${select([[4, '⅓ width'], [6, '½ width'], [8, '⅔ width'], [12, 'Full width']], w.widgetWidths?.[id] || WIDGETS[id].width, { name: `width-${id}`, 'aria-label': `${WIDGETS[id].title} width` })}
+    body: `<div class="ws-widget-list" id="widget-order">${entries.map(x => `<div class="ws-widget-row" data-widget="${e(x.id)}"${x.plugin ? ` data-plugin-id="${e(x.plugin)}"` : ''}>
+      ${toggle({ name: 'widget', attrs: { value: x.id, 'aria-label': `Show ${x.title}` }, checked: shown(x) })}
+      <div class="ws-widget-copy"><strong>${e(x.title)}${x.plugin ? ` ${badge('Plugin', 'neutral', 'puzzle')}` : ''}</strong><span>${e(x.description)}</span></div>
+      ${select([[4, '⅓ width'], [6, '½ width'], [8, '⅔ width'], [12, 'Full width']], w.widgetWidths?.[x.id] || x.width, { name: `width-${x.id}`, 'aria-label': `${x.title} width` })}
       <span class="ws-reorder">${button('', { action: 'widget-up', iconName: 'chevron-up', variant: 'ghost', title: 'Move up' })}${button('', { action: 'widget-down', iconName: 'chevron-down', variant: 'ghost', title: 'Move down' })}</span>
     </div>`).join('')}</div>`,
     submit: 'Save layout',
     onSubmit: async f => {
       const layout = [...dialog.querySelectorAll('[data-widget]')].map(row => row.dataset.widget).filter(id => f.getAll('widget').includes(id));
-      const widgetWidths = Object.fromEntries(WIDGET_IDS.map(id => [id, Number(f.get(`width-${id}`))]));
+      const widgetWidths = Object.fromEntries(entries.map(x => [x.id, Number(f.get(`width-${x.id}`))]));
       await mutate('layout_save', { layout, widgetWidths });
     },
   });
@@ -917,6 +1089,7 @@ async function handle(action, el) {
   // Data location works from the recovery page too, where there is no snapshot.
   if (action.startsWith('data-')) return storageAction(action, el);
   if (action.startsWith('automation') || action.startsWith('run-')) return automationsUi.handle(action, el);
+  if (action.startsWith('plugin') || action.startsWith('market-')) return pluginAction(action, el);
   const id = el.dataset.id;
   const s = snap();
   switch (action) {
@@ -1280,6 +1453,7 @@ async function submitForm(form) {
       root.querySelector('[data-form=commitment-add] [name=text]')?.focus();
       return;
     }
+    case 'plugin-addresses': return pluginsUi.submit(form);
     case 'time-zone': await mutate('settings_update', { timeZone: String(f.get('timeZone')).trim() }); return toast('Time zone saved.', 'success');
     case 'quiet-hours': await mutate('settings_update', { quietStart: f.get('quietStart'), quietEnd: f.get('quietEnd') }); return toast('Quiet hours saved.', 'success');
     case 'registration':
@@ -1681,9 +1855,18 @@ async function boot() {
     return;
   }
   const hash = location.hash.split('/');
-  if (hash[1]) state.route = ROUTES.includes(hash[1]) ? hash[1] : 'today';
-  if (hash[2] && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === hash[2]) ? hash[2] : 'automations';
-  else if (hash[2]) state.settingsTab = hash[2];
+  if (hash[1] === 'p' && PLUGIN_ID.test(hash[2] || '') && PLUGIN_ITEM.test(hash[3] || '')) {
+    state.route = 'plugin';
+    state.pluginPage = { id: hash[2], activity: hash[3], route: hash.slice(4).join('/') };
+  } else {
+    if (hash[1]) state.route = ROUTES.includes(hash[1]) ? hash[1] : 'today';
+    if (hash[2] && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === hash[2]) ? hash[2] : 'automations';
+    else if (hash[2]) state.settingsTab = hash[2];
+    if (state.route === 'settings' && hash[2] === 'plugins' && PLUGIN_ID.test(decodeURIComponent(hash[3] || ''))) {
+      const section = decodeURIComponent(hash[4] || '');
+      state.pluginPath = { id: decodeURIComponent(hash[3]), section: PLUGIN_ITEM.test(section) ? section : null };
+    }
+  }
   try {
     await store.refresh();
   } catch (err) {
@@ -1692,6 +1875,29 @@ async function boot() {
   await bootWorkspace(store, snap());
   runtimeReady = await invoke('runtime_ready').catch(() => false);
   state.appVersion = await invoke('get_app_version').catch(() => '');
+  // Plugin UIs: one sandboxed frame per enabled plugin with a client half, in a layer outside the
+  // page the app redraws. A dev build may serve the frames from elsewhere (`pluginFrameBase`, the
+  // browser E2E's stand-in for the connect-plugin scheme).
+  const frameUrl = flags.dev && typeof flags.pluginFrameBase === 'string'
+    ? (id, path) => `${flags.pluginFrameBase}${pluginUrl(id, path, { macos: true }).slice('connect-plugin://'.length)}`
+    : pluginUrl;
+  pluginHost = createPluginHost({
+    invoke,
+    frameUrl,
+    about: () => ({ name: 'CodeMie Connect', version: state.appVersion, engine: '1.0' }),
+    theme: () => (document.documentElement.classList.contains('dark') ? 'dark' : 'light'),
+    whereNow: () => ({ view: state.route, section: state.route === 'settings' ? state.settingsTab : '', route: '' }),
+    onChange: pluginsChanged,
+    onGo: hash => { goHash(hash).catch(fail); },
+    onNotice: (text, name) => toast(`${name}: ${text}`),
+    onCopy: text => navigator.clipboard.writeText(text).then(() => toast('Copied.', 'success'), fail),
+  }).mount(document.body);
+  lastPluginTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+  pluginsUi.loadInstalled().catch(() => {
+    // Settings → Plugins says why; a plugin page opened at start says it isn't available.
+    state.pluginsKnown = true;
+    pluginsChanged();
+  });
   if (snap().revision === 0) {
     const old = localPref('cm-theme', '');
     await store.mutate('settings_update', { theme: ['light', 'dark'].includes(old) ? old : 'system', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
@@ -1724,6 +1930,7 @@ async function boot() {
   if (aiTabOpen()) loadAi().catch(fail);
   if (generalTabOpen()) loadStorage().catch(fail);
   if (runLogOpen()) automationsUi.loadRuns().catch(fail);
+  if (state.route === 'settings' && state.settingsTab === 'plugins') pluginsUi.load().catch(fail);
   const listen = window.__TAURI__.event.listen;
   // A sync round emits one change per Graph request; reload the snapshot at most ~once a second.
   let refreshTimer = null;
@@ -1743,7 +1950,17 @@ async function boot() {
   });
   await listen('workspace:notification-open', event => openNotification(event.payload || {}).catch(fail));
   await listen('workspace:installer-settled', flushNotification);
+  // Focus that only moved into a plugin's frame and back never left Connect: refreshing then would
+  // redraw the page between a click's mousedown and mouseup, and the click would be lost.
+  let focusInPluginFrame = false;
+  window.addEventListener('blur', () => setTimeout(() => {
+    focusInPluginFrame = document.hasFocus() && !!document.activeElement?.matches?.('iframe[data-plugin-frame]');
+  }));
   window.addEventListener('focus', () => {
+    if (focusInPluginFrame) {
+      focusInPluginFrame = false;
+      return;
+    }
     store.refresh().catch(() => {});
     // Back from Terminal or Settings: Claude may be signed in or set up now.
     if (readClaude({ now: true, detect: claudeRecheck })) claudeRecheck = false;

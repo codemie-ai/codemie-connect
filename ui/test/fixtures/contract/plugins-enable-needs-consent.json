@@ -1,0 +1,71 @@
+{
+  "id": "standup",
+  "lines": [
+    {
+      "key": "claude",
+      "support": {
+        "limit": "Claude runs without tools in Connect",
+        "status": "partial"
+      },
+      "text": "Ask Claude questions on your behalf"
+    },
+    {
+      "key": "deliver",
+      "support": {
+        "limit": "Teams and mail messages wait for your review in Connect; nothing is sent on its own",
+        "status": "partial"
+      },
+      "text": "Send you messages through your Today page and Teams (a message to yourself)"
+    },
+    {
+      "key": "network",
+      "support": {
+        "status": "supported"
+      },
+      "text": "Connect to api.example.com"
+    },
+    {
+      "key": "schedule",
+      "support": {
+        "status": "supported"
+      },
+      "text": "Work on its own on a schedule while Connect is open"
+    }
+  ],
+  "name": "Stand-up digest",
+  "sheet": [
+    {
+      "key": "claude",
+      "support": {
+        "limit": "Claude runs without tools in Connect",
+        "status": "partial"
+      },
+      "text": "Ask Claude questions on your behalf"
+    },
+    {
+      "key": "deliver",
+      "support": {
+        "limit": "Teams and mail messages wait for your review in Connect; nothing is sent on its own",
+        "status": "partial"
+      },
+      "text": "Send you messages through your Today page and Teams (a message to yourself)"
+    },
+    {
+      "key": "network",
+      "support": {
+        "status": "supported"
+      },
+      "text": "Connect to api.example.com"
+    },
+    {
+      "key": "schedule",
+      "support": {
+        "status": "supported"
+      },
+      "text": "Work on its own on a schedule while Connect is open"
+    }
+  ],
+  "sheetHash": "c943395793ad2e74d04bd1eab9b5d391b3146e82247ee0ecde4dc627b23627e7",
+  "status": "needs_consent",
+  "version": "1.0.0"
+}
