@@ -399,22 +399,57 @@ mod tests {
         ONE_PROCESS_TEST.lock().await
     }
 
-    /// How long a loaded machine may take to start, record or reap a process. The tests'
-    /// bounds stay far below the 30 s `sleep` and the 60 s run timeouts they tell apart.
+    /// How long a loaded machine may take to start a process and record its pids. The tests'
+    /// bounds stay far below the scripts' 300 s `sleep` and the 60 s run timeouts.
     const SLOW_MACHINE: Duration = Duration::from_secs(30);
+
+    /// How long a killed group may take to be reaped. Far below the scripts' 300 s `sleep`, so
+    /// a group the runner failed to kill fails the test rather than ending by itself.
+    const REAP: Duration = Duration::from_secs(10);
+
+    /// The stand-in script: a background `sleep` it records with its own pid, then waits.
+    fn sleeper(pids: &Path) -> String {
+        format!("sleep 300 &\necho $$ $! > '{}'\nwait", pids.display())
+    }
 
     fn alive(pid: i32) -> bool {
         // SAFETY: signal 0 only checks existence.
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
-    /// Waits until each pid is gone; fails the test after `SLOW_MACHINE`.
+    /// The `<shell pid> <background pid>` a script recorded in `file`, if it has.
+    fn recorded(file: &Path) -> Vec<i32> {
+        std::fs::read_to_string(file)
+            .map(|t| {
+                t.split_whitespace()
+                    .filter_map(|p| p.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Kills whatever the script recorded in its pids file that is still alive when dropped, so
+    /// a test that fails anywhere leaves no 300 s `sleep` behind.
+    struct KillLeftovers<'a>(&'a Path);
+
+    impl Drop for KillLeftovers<'_> {
+        fn drop(&mut self) {
+            for id in recorded(self.0).into_iter().filter(|id| alive(*id)) {
+                // SAFETY: a plain signal to a pid this test's script started.
+                unsafe {
+                    libc::kill(id, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    /// Waits until each pid is gone; fails the test after `REAP`.
     async fn wait_gone(ids: &[i32]) {
-        let deadline = std::time::Instant::now() + SLOW_MACHINE;
+        let deadline = std::time::Instant::now() + REAP;
         while let Some(id) = ids.iter().find(|id| alive(**id)) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "pid {id} still alive after {SLOW_MACHINE:?}"
+                "pid {id} still alive after {REAP:?}"
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -430,14 +465,9 @@ mod tests {
                 "the script never recorded its pids in {} within {SLOW_MACHINE:?}",
                 file.display()
             );
-            if let Ok(t) = std::fs::read_to_string(file) {
-                let ids: Vec<i32> = t
-                    .split_whitespace()
-                    .filter_map(|p| p.parse().ok())
-                    .collect();
-                if ids.len() == 2 {
-                    return ids;
-                }
+            let ids = recorded(file);
+            if ids.len() == 2 {
+                return ids;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -540,10 +570,8 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let pids = dir.path().join("pids");
-        let r = script_runner(
-            dir.path(),
-            &format!("sleep 30 &\necho $$ $! > '{}'\nwait", pids.display()),
-        );
+        let _leftovers = KillLeftovers(&pids);
+        let r = script_runner(dir.path(), &sleeper(&pids));
         let stage = dir.path().join("s");
         let cancel = CancellationToken::new();
         let c2 = cancel.clone();
@@ -569,7 +597,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             .await
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::Cancelled);
-        // Well under the script's 30 s sleep: the cancel stopped it, its own end didn't.
+        // Well under the script's 300 s sleep: the cancel stopped it, its own end didn't.
         let since = cancelled_at.lock().unwrap().expect("cancelled").elapsed();
         assert!(since < Duration::from_secs(10), "{since:?}");
         assert_gone_and_clean(&pids, &stage).await;
@@ -580,11 +608,9 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let pids = dir.path().join("pids");
+        let _leftovers = KillLeftovers(&pids);
         // Never reads stdin, so a 256 KB input fills the pipe.
-        let r = script_runner(
-            dir.path(),
-            &format!("sleep 30 &\necho $$ $! > '{}'\nwait", pids.display()),
-        );
+        let r = script_runner(dir.path(), &sleeper(&pids));
         let stage = dir.path().join("s");
         // Long enough for a loaded machine to start the script and record its pids first.
         let timeout = Duration::from_secs(3);
@@ -596,7 +622,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             .await
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::Timeout);
-        // Well under the script's 30 s sleep: the timeout ended it.
+        // Well under the script's 300 s sleep: the timeout ended it.
         assert!(
             t.elapsed() < timeout + Duration::from_secs(10),
             "{:?}",
@@ -610,10 +636,11 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let pids = dir.path().join("pids");
+        let _leftovers = KillLeftovers(&pids);
         let r = script_runner(
             dir.path(),
             &format!(
-                "sleep 30 &\necho $$ $! > '{}'\nhead -c 2000000 /dev/zero | tr '\\0' 'a'\nwait",
+                "sleep 300 &\necho $$ $! > '{}'\nhead -c 2000000 /dev/zero | tr '\\0' 'a'\nwait",
                 pids.display()
             ),
         );
@@ -629,7 +656,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             .await
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::InvalidOutput);
-        // Well under the script's 30 s sleep and the 60 s timeout: the cap ended it.
+        // Well under the script's 300 s sleep and the 60 s timeout: the cap ended it.
         assert!(t.elapsed() < Duration::from_secs(15), "{:?}", t.elapsed());
         assert_gone_and_clean(&pids, &stage).await;
     }
@@ -639,10 +666,8 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let pids = dir.path().join("pids");
-        let r = script_runner(
-            dir.path(),
-            &format!("sleep 30 &\necho $$ $! > '{}'\nwait", pids.display()),
-        );
+        let _leftovers = KillLeftovers(&pids);
+        let r = script_runner(dir.path(), &sleeper(&pids));
         let stage = dir.path().join("s");
         let sp = spec(&stage, Duration::from_secs(60), false);
         let p = native();
