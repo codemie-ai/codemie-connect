@@ -304,7 +304,7 @@ env: remove CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT; for the 
 ### 7.3 Client half (`client.js`)
 
 - **Isolation:** each enabled plugin with a client gets an iframe with `sandbox="allow-scripts"`, so its origin is opaque. It is served from `connect-plugin://<id>/`.
-- **Serving:** the protocol handler serves the host shim at `__host/*` and plugin files with CORS `Access-Control-Allow-Origin: null` (needed for module loads). The CSP is `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'`.
+- **Serving:** the protocol handler serves the host shim at `__host/*` and plugin files with CORS `Access-Control-Allow-Origin: null` (needed for module loads). The CSP names the plugin's own origin instead of `'self'`, because WebKit matches nothing for `'self'` in an opaque-origin frame and the shim's module would not load: `default-src connect-plugin://<id>; script-src connect-plugin://<id>; style-src connect-plugin://<id> 'unsafe-inline'; img-src connect-plugin://<id> data:; connect-src 'none'`. The Task 17 native smoke verified this.
 - **Shim:** loaded first in the frame, it provides:
   - `pluginCtx`: `call`, `listen`, `listenWindow`, `onUnload`, `panels`, `showPanel`, `activities`, `settings.add/section`, `palette.add`, `widgets.draw`, `where`, `go`, `render` and the `ui.*` helpers;
   - `echo-compat.css`, which maps Echo's tokens and classes to CodeMie's, light and dark;
