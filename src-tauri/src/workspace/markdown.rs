@@ -63,10 +63,76 @@ pub fn normalise(text: &str) -> Normalised {
         walk.event(event);
     }
     walk.close();
-    let markdown = render(&walk.blocks);
+    let blocks = fit(walk.blocks);
     Normalised {
-        markdown,
-        blocks: walk.blocks,
+        markdown: render(&blocks),
+        blocks,
+    }
+}
+
+/// The blocks whose Markdown fits in [`MAX_CHARS`] (escaping can double the text): whole
+/// blocks while they fit, cut on a block boundary. Only a first block that is too long on its
+/// own is shortened, ending in "…", so a result is never empty.
+fn fit(blocks: Vec<Block>) -> Vec<Block> {
+    let mut kept: Vec<Block> = Vec::new();
+    let mut used = 0;
+    for block in blocks {
+        let size = render_block(&block, kept.last(), &mut String::new());
+        if used + size <= MAX_CHARS {
+            used += size;
+            kept.push(block);
+            continue;
+        }
+        if !kept.is_empty() {
+            break;
+        }
+        // The longest start of the block that still fits, found by halving.
+        let total: usize = block.inlines.iter().map(|i| i.text.chars().count()).sum();
+        let (mut low, mut high) = (0, total);
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            let size = render_block(&shorten(&block, mid), kept.last(), &mut String::new());
+            if used + size <= MAX_CHARS {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        if low > 0 {
+            kept.push(shorten(&block, low));
+        }
+        break;
+    }
+    kept
+}
+
+/// The first `chars` characters of `block`'s text, ending in "…" (counted).
+fn shorten(block: &Block, chars: usize) -> Block {
+    let mut left = chars.saturating_sub(1);
+    let mut inlines = Vec::new();
+    for inline in &block.inlines {
+        if left == 0 {
+            break;
+        }
+        let text: String = inline.text.chars().take(left).collect();
+        left -= text.chars().count();
+        inlines.push(Inline {
+            text,
+            ..inline.clone()
+        });
+    }
+    match inlines.last_mut() {
+        Some(last) => last.text.push('…'),
+        None => inlines.push(Inline {
+            text: "…".into(),
+            bold: false,
+            italic: false,
+            href: None,
+        }),
+    }
+    Block {
+        kind: block.kind,
+        inlines,
     }
 }
 
@@ -247,23 +313,31 @@ impl Walk {
 fn render(blocks: &[Block]) -> String {
     let mut out = String::new();
     for (n, block) in blocks.iter().enumerate() {
-        if n > 0 {
-            let list = block.kind == BlockKind::Item && blocks[n - 1].kind == BlockKind::Item;
-            out.push_str(if list { "\n" } else { "\n\n" });
-        }
-        out.push_str(match block.kind {
-            BlockKind::Heading => "### ",
-            BlockKind::Item => "- ",
-            BlockKind::Paragraph => "",
-        });
-        // The text after a heading or item marker counts as the start of a line too, so
-        // "1. x" in an item can never become a nested list.
-        let mut line_start = true;
-        for inline in &block.inlines {
-            render_inline(inline, &mut line_start, &mut out);
-        }
+        render_block(block, n.checked_sub(1).map(|p| &blocks[p]), &mut out);
     }
     out
+}
+
+/// Appends one block (with the break from `previous`) to `out`; returns how many characters
+/// it added.
+fn render_block(block: &Block, previous: Option<&Block>, out: &mut String) -> usize {
+    let before = out.chars().count();
+    if let Some(previous) = previous {
+        let list = block.kind == BlockKind::Item && previous.kind == BlockKind::Item;
+        out.push_str(if list { "\n" } else { "\n\n" });
+    }
+    out.push_str(match block.kind {
+        BlockKind::Heading => "### ",
+        BlockKind::Item => "- ",
+        BlockKind::Paragraph => "",
+    });
+    // The text after a heading or item marker counts as the start of a line too, so
+    // "1. x" in an item can never become a nested list.
+    let mut line_start = true;
+    for inline in &block.inlines {
+        render_inline(inline, &mut line_start, out);
+    }
+    out.chars().count() - before
 }
 
 fn render_inline(inline: &Inline, line_start: &mut bool, out: &mut String) {
@@ -290,7 +364,9 @@ fn render_inline(inline: &Inline, line_start: &mut bool, out: &mut String) {
     out.push_str(marker);
     if let Some(href) = &inline.href {
         out.push_str("](");
-        out.push_str(href);
+        // A destination is read for entities again: `&` must stay `&` (`&amp;commat;` was
+        // decoded once to `&commat;` and must not become `@` now).
+        out.push_str(&href.replace('&', "\\&"));
         out.push(')');
     }
     escape(trail, line_start, out);
@@ -481,6 +557,42 @@ mod tests {
         // Not a link at all: the words stay as they were written.
         let out = assert_safe("[t]\n(javascript:alert(1))", &[]);
         assert_eq!(words(&out), "[t] (javascript:alert(1))");
+        // Double-encoded entities: the first parse leaves `&commat;` in a web address; written
+        // back unescaped, a second parse would turn it into `@` (a user name), a quote, a line
+        // break, a tag or a backslash. Every link must read back exactly as it was kept.
+        for input in [
+            "[x](https://ok.test&amp;commat;evil.test/)",
+            "[x](https://ok.test/&amp;quot;onmouseover=alert(1))",
+            "[x](https://ok.test/a&amp;#10;b)",
+            "[x](https://ok.test/a&amp;Tab;b)",
+            "[x](https://ok.test/&amp;lt;script&amp;gt;)",
+            "[x](https://ok.test/&amp;bsol;x)",
+        ] {
+            let out = assert_same_links(input);
+            assert_eq!(words(&out), "x", "{input:?}");
+        }
+        let out = assert_same_links("[x](https://ok.test/?a=1&b=2)");
+        assert_eq!(
+            out.blocks[0].inlines[0].href.as_deref(),
+            Some("https://ok.test/?a=1&b=2")
+        );
+    }
+
+    /// [`assert_safe`] allowing exactly the links the blocks kept: parsing the Markdown again
+    /// must give back the same addresses, each still a web address on its own.
+    fn assert_same_links(input: &str) -> Normalised {
+        let kept: Vec<String> = normalise(input)
+            .blocks
+            .iter()
+            .flat_map(|b| &b.inlines)
+            .filter_map(|i| i.href.clone())
+            .collect();
+        for href in &kept {
+            assert_eq!(web_link(href).as_deref(), Some(href.as_str()), "{input:?}");
+            assert!(!href.contains('@'), "{href:?} from {input:?}");
+        }
+        let allowed: Vec<&str> = kept.iter().map(String::as_str).collect();
+        assert_safe(input, &allowed)
     }
 
     #[test]
@@ -556,5 +668,26 @@ mod tests {
     fn output_is_capped() {
         let out = normalise(&"x".repeat(9_000));
         assert_eq!(out.markdown.chars().count(), 8_000);
+        // Escaping can double the length: the rebuilt Markdown is capped too, and the blocks
+        // say exactly what it says.
+        let out = assert_safe(&"[".repeat(100_000), &[]);
+        assert!(
+            out.markdown.chars().count() <= 8_000,
+            "{}",
+            out.markdown.len()
+        );
+        assert_eq!(render(&out.blocks), out.markdown);
+        assert!(words(&out).ends_with('…'));
+        let many: String = (0..2_000)
+            .map(|n| format!("- item {n} with [brackets]\n"))
+            .collect();
+        let out = assert_safe(&many, &[]);
+        assert!(out.markdown.chars().count() <= 8_000);
+        assert_eq!(render(&out.blocks), out.markdown);
+        assert!(
+            out.markdown.ends_with("\\]"),
+            "cut on a block boundary: {:?}",
+            &out.markdown[out.markdown.len() - 40..]
+        );
     }
 }
