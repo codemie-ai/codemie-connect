@@ -390,19 +390,44 @@ mod tests {
         Box::new(|_| {})
     }
 
+    /// The tests that start a stand-in `claude` take this first, so they run one at a time: under
+    /// a full parallel `cargo test` they starved each other of process start-ups (a script that
+    /// hadn't written its pids before its run's timeout, a group not yet reaped when checked).
+    static ONE_PROCESS_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn one_at_a_time() -> tokio::sync::MutexGuard<'static, ()> {
+        ONE_PROCESS_TEST.lock().await
+    }
+
+    /// How long a loaded machine may take to start, record or reap a process. The tests'
+    /// bounds stay far below the 30 s `sleep` and the 60 s run timeouts they tell apart.
+    const SLOW_MACHINE: Duration = Duration::from_secs(30);
+
     fn alive(pid: i32) -> bool {
         // SAFETY: signal 0 only checks existence.
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
-    /// Waits until the script has recorded `<shell pid> <background pid>`; fails the test after 10 s
-    /// (a loaded machine is slow, not endless).
+    /// Waits until each pid is gone; fails the test after `SLOW_MACHINE`.
+    async fn wait_gone(ids: &[i32]) {
+        let deadline = std::time::Instant::now() + SLOW_MACHINE;
+        while let Some(id) = ids.iter().find(|id| alive(**id)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pid {id} still alive after {SLOW_MACHINE:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Waits until the script has recorded `<shell pid> <background pid>`; fails the test after
+    /// `SLOW_MACHINE` (a loaded machine is slow, not endless).
     async fn wait_pids(file: &Path) -> Vec<i32> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + SLOW_MACHINE;
         loop {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the script never recorded its pids in {} within 10 s",
+                "the script never recorded its pids in {} within {SLOW_MACHINE:?}",
                 file.display()
             );
             if let Ok(t) = std::fs::read_to_string(file) {
@@ -420,21 +445,19 @@ mod tests {
 
     async fn assert_gone_and_clean(pids: &Path, stage: &Path) {
         let ids = wait_pids(pids).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        for id in ids {
-            assert!(!alive(id), "pid {id} still alive");
-        }
+        wait_gone(&ids).await;
         assert_eq!(std::fs::read_dir(stage).unwrap().count(), 0);
     }
 
     #[tokio::test]
     async fn run_never_creates_the_staging_parent() {
+        let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let gone = dir.path().join("gone");
         let r = script_runner(dir.path(), "cat >/dev/null");
         let err = r
             .run(
-                spec(&gone.join("ai-staging"), Duration::from_secs(10), false),
+                spec(&gone.join("ai-staging"), SLOW_MACHINE, false),
                 &native(),
                 CancellationToken::new(),
                 noop(),
@@ -447,6 +470,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_success_reads_structured_output_and_cleans_staging() {
+        let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let stage = dir.path().join("stage");
         let r = script_runner(
@@ -459,7 +483,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         let ev = events.clone();
         let out = r
             .run(
-                spec(&stage, Duration::from_secs(10), true),
+                spec(&stage, SLOW_MACHINE, true),
                 &native(),
                 CancellationToken::new(),
                 Box::new(move |e| ev.lock().unwrap().push(e)),
@@ -476,6 +500,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
 
     #[tokio::test]
     async fn run_missing_structured_output_is_invalid() {
+        let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let r = script_runner(
             dir.path(),
@@ -483,7 +508,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         );
         let e = r
             .run(
-                spec(&dir.path().join("s"), Duration::from_secs(10), true),
+                spec(&dir.path().join("s"), SLOW_MACHINE, true),
                 &native(),
                 CancellationToken::new(),
                 noop(),
@@ -495,11 +520,12 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
 
     #[tokio::test]
     async fn run_classifies_login_failure_from_stdout() {
+        let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let r = script_runner(dir.path(), "echo 'Authentication required'; exit 1");
         let e = r
             .run(
-                spec(&dir.path().join("s"), Duration::from_secs(10), false),
+                spec(&dir.path().join("s"), SLOW_MACHINE, false),
                 &native(),
                 CancellationToken::new(),
                 noop(),
@@ -511,6 +537,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
 
     #[tokio::test]
     async fn run_cancel_kills_process_group() {
+        let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let pids = dir.path().join("pids");
         let r = script_runner(
@@ -521,15 +548,17 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         let cancel = CancellationToken::new();
         let c2 = cancel.clone();
         let waited = pids.clone();
+        let cancelled_at = Arc::new(std::sync::Mutex::new(None));
+        let at = cancelled_at.clone();
         tokio::spawn(async move {
             // Cancel 200 ms after the script has started and recorded its pids.
             while !std::fs::read_to_string(&waited).is_ok_and(|t| t.contains(' ')) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
+            *at.lock().unwrap() = Some(std::time::Instant::now());
             c2.cancel();
         });
-        let t = std::time::Instant::now();
         let e = r
             .run(
                 spec(&stage, Duration::from_secs(60), false),
@@ -540,12 +569,15 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             .await
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::Cancelled);
-        assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
+        // Well under the script's 30 s sleep: the cancel stopped it, its own end didn't.
+        let since = cancelled_at.lock().unwrap().expect("cancelled").elapsed();
+        assert!(since < Duration::from_secs(10), "{since:?}");
         assert_gone_and_clean(&pids, &stage).await;
     }
 
     #[tokio::test]
     async fn run_timeout_with_unread_stdin_returns_timeout() {
+        let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let pids = dir.path().join("pids");
         // Never reads stdin, so a 256 KB input fills the pipe.
@@ -554,7 +586,9 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             &format!("sleep 30 &\necho $$ $! > '{}'\nwait", pids.display()),
         );
         let stage = dir.path().join("s");
-        let mut sp = spec(&stage, Duration::from_millis(800), false);
+        // Long enough for a loaded machine to start the script and record its pids first.
+        let timeout = Duration::from_secs(3);
+        let mut sp = spec(&stage, timeout, false);
         sp.input = json!({"big": "x".repeat(256 * 1024)});
         let t = std::time::Instant::now();
         let e = r
@@ -562,12 +596,18 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             .await
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::Timeout);
-        assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
+        // Well under the script's 30 s sleep: the timeout ended it.
+        assert!(
+            t.elapsed() < timeout + Duration::from_secs(10),
+            "{:?}",
+            t.elapsed()
+        );
         assert_gone_and_clean(&pids, &stage).await;
     }
 
     #[tokio::test]
     async fn run_output_cap_discards_oversize() {
+        let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let pids = dir.path().join("pids");
         let r = script_runner(
@@ -581,7 +621,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         let t = std::time::Instant::now();
         let e = r
             .run(
-                spec(&stage, Duration::from_secs(20), false),
+                spec(&stage, Duration::from_secs(60), false),
                 &native(),
                 CancellationToken::new(),
                 noop(),
@@ -589,12 +629,14 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
             .await
             .unwrap_err();
         assert_eq!(e.class, ErrorClass::InvalidOutput);
-        assert!(t.elapsed() < Duration::from_secs(8));
+        // Well under the script's 30 s sleep and the 60 s timeout: the cap ended it.
+        assert!(t.elapsed() < Duration::from_secs(15), "{:?}", t.elapsed());
         assert_gone_and_clean(&pids, &stage).await;
     }
 
     #[tokio::test]
     async fn run_dropped_future_kills_group() {
+        let _serial = one_at_a_time().await;
         let dir = tempfile::tempdir().unwrap();
         let pids = dir.path().join("pids");
         let r = script_runner(
@@ -611,10 +653,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"hi","struc
         };
         assert_eq!(ids.len(), 2);
         drop(fut);
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        for id in ids {
-            assert!(!alive(id), "pid {id} still alive");
-        }
+        wait_gone(&ids).await;
         assert_eq!(std::fs::read_dir(&stage).unwrap().count(), 0);
     }
 
