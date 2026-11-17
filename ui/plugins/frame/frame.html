@@ -1,12 +1,19 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="light">
 <head>
 <meta charset="utf-8">
 <title>Plugin</title>
 <!-- Connect's plugin frame (DESIGN 7.3), served as connect-plugin://<id>/__host/frame.html to a
-     sandboxed frame. For now it carries only the isolation probe, which acts in a frame with
-     ?probe=1 and does nothing anywhere else. -->
+     sandboxed frame. frame.js starts the shim, which loads the plugin's client half once Connect's
+     window hands it the frame's channel. The vendored graph libraries give ctx.ui.graph. The
+     isolation probe (probe.js) acts only in a frame opened with ?probe=1, and frame.js does nothing
+     there. -->
+<link rel="stylesheet" href="echo-compat.css">
+<script src="vendor/graphology.umd.min.js"></script>
+<script src="vendor/graphology-library.min.js"></script>
+<script src="vendor/sigma.min.js"></script>
 <script type="module" src="probe.js"></script>
+<script type="module" src="frame.js"></script>
 </head>
-<body></body>
+<body data-view="none"><div id="cx-root" class="cx-root"><main id="cx-main" class="cx-main"></main><aside id="cx-panel" class="cx-panel" hidden></aside></div></body>
 </html>

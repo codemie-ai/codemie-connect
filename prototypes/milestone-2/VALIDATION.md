@@ -183,3 +183,136 @@ New observations in this run:
 - `plugins_request`/`plugin_call` call `require_main_frame`.
 
 The probe (`ui/plugins/frame/probe.js`) and `CODEMIE_PLUGIN_SMOKE=isolation` must stay runnable, so this gate can be re-run after Task 23.
+
+## 2026-11-17 — Plugin frame isolation, re-run after Task 23 (frame shim and bridge): PASS
+
+**Build:** debug, `cargo build` in `src-tauri/` with the Task 23–24 UI embedded (`frame.html` now
+also loads `echo-compat.css`, the vendored graph libraries and the shim `frame.js`, which does
+nothing in the probe's `?probe=1` frame). Run outside the agent sandbox, on a temporary workspace:
+
+```sh
+CODEMIE_WORKSPACE_TEST_DIR="$(mktemp -d)/workspace" CODEMIE_PLUGIN_SMOKE=isolation ./target/debug/app   # exit 0
+```
+
+- **Run id:** `a8137c38-a21e-4f50-bfd5-0661bd6fc5fc`, pid 92575, version 2.1.1.
+- **Started / reported:** `2026-11-17T20:55:01.913729+00:00` / `2026-11-17T20:55:05.668323+00:00`.
+- All seven gate fields hold, `failed` is empty, `probeRunId` equals `runId`; the escapes, the
+  postMessage fallback and the navigation guard read as in the previous run.
+- A stale `/tmp/com_epam_codemie_installer_si.sock` (no process held it, no Connect was running)
+  made the first attempt exit 3 as designed; it was removed and the smoke run again.
+
+How Task 23 keeps the gate's conditions (see `ui/plugins/host.js`, `ui/plugins/frame/shim.js`,
+`ui/plugins/frame/messages.js`; covered by `ui/test/plugin-bridge.test.mjs` and the browser E2E):
+
+- `startFrame` refuses to run plugin code unless `window.parent !== window`
+  (`the shim refuses to run plugin code outside a frame`).
+- The window has no `message` listener for frames. On every `load` of a frame it makes a new
+  `MessageChannel`, closes the previous one, and hands the port to that frame's `contentWindow`
+  only. The shim takes the port only from `event.source === window.parent`, once per load.
+  Every message is checked against a strict schema (exact fields, types and sizes) on both sides.
+- The plugin id is bound to the frame when it is made; `plugin_call` and `plugins_request` go out
+  with that id, never one from a message (a message with any extra field is dropped).
+- A frame is sent only its plugin's own facts, `{name, version, engine}`, the theme, where the
+  window is, its own stored values and command answers (errors as `{code, message}` only).
+- `go` reaches internal routes only (`internalRoute`), and only from the frame on screen or right
+  after the window ran its palette entry.
+- Frames are `<iframe sandbox="allow-scripts">` with a `src` on `connect-plugin://<id>/`; no
+  `srcdoc`, no other sandbox flag.
+
+`$TMPDIR/connect-plugin-isolation.json`:
+
+```json
+{
+  "failed": [],
+  "forgedIpcReachedRust": false,
+  "internals": false,
+  "invokeRejected": true,
+  "ipcFetchRejected": true,
+  "localStorageThrows": true,
+  "moduleImportWorks": true,
+  "observed": {
+    "cookie": {
+      "threw": false,
+      "value": ""
+    },
+    "escapes": {
+      "formTargetTop": {
+        "threw": false,
+        "value": "submit() returned"
+      },
+      "topNavigation": {
+        "error": "SecurityError: The operation is insecure.",
+        "threw": true
+      },
+      "windowOpen": {
+        "threw": false,
+        "value": "null"
+      }
+    },
+    "forgedPostMessage": {
+      "threw": false,
+      "value": "sent"
+    },
+    "frameSandbox": "allow-scripts",
+    "frameSrc": "connect-plugin://isolation-probe/__host/frame.html?probe=1&run=a8137c38-a21e-4f50-bfd5-0661bd6fc5fc",
+    "href": "connect-plugin://isolation-probe/__host/frame.html?probe=1&run=a8137c38-a21e-4f50-bfd5-0661bd6fc5fc",
+    "internals": "undefined",
+    "internalsInvoke": "undefined",
+    "ipcFetch": {
+      "error": "TypeError: Load failed",
+      "rejected": true
+    },
+    "ipcFetchWindows": {
+      "error": "TypeError: Load failed",
+      "rejected": true
+    },
+    "isSecureContext": true,
+    "localStorage": {
+      "error": "SecurityError: The operation is insecure.",
+      "threw": true
+    },
+    "mainFrameLocationOrigin": "tauri://localhost",
+    "mainFrameStorageStatus": "allowed",
+    "mainFrameWorkspaceSnapshot": "allowed",
+    "mainPageStayed": true,
+    "messageOrigin": "null",
+    "moduleImport": {
+      "marker": "module-import-ok",
+      "ok": true
+    },
+    "nonShimDocumentRefused": true,
+    "origin": "null",
+    "parentDocument": {
+      "error": "SecurityError: Sandbox access violation: Blocked a frame at \"connect-plugin://isolation-probe\" from accessing a cross-origin frame.  The frame requesting access is sandboxed and lacks the \"allow-same-origin\" flag.",
+      "threw": true
+    },
+    "parentInternals": {
+      "error": "SecurityError: Sandbox access violation: Blocked a frame at \"connect-plugin://isolation-probe\" from accessing a cross-origin frame.  The frame requesting access is sandboxed and lacks the \"allow-same-origin\" flag.",
+      "threw": true
+    },
+    "postMessageFallback": {
+      "withAppOrigin": "allowed",
+      "withoutOrigin": "refused: Only Connect's own page can do this."
+    },
+    "sessionStorage": {
+      "error": "SecurityError: The operation is insecure.",
+      "threw": true
+    },
+    "tauriGlobal": "undefined",
+    "topLocation": {
+      "error": "SecurityError: Sandbox access violation: Blocked a frame at \"connect-plugin://isolation-probe\" from accessing a cross-origin frame.  The frame requesting access is sandboxed and lacks the \"allow-same-origin\" flag.",
+      "threw": true
+    },
+    "windowIpc": "undefined"
+  },
+  "parentBlocked": true,
+  "pass": true,
+  "pid": 92575,
+  "probeRunId": "a8137c38-a21e-4f50-bfd5-0661bd6fc5fc",
+  "reportedAt": "2026-11-17T20:55:05.668323+00:00",
+  "runId": "a8137c38-a21e-4f50-bfd5-0661bd6fc5fc",
+  "startedAt": "2026-11-17T20:55:01.913729+00:00",
+  "tauriGlobal": false,
+  "version": "2.1.1"
+}
+```

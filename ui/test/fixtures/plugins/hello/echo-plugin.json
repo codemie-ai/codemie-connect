@@ -1,0 +1,19 @@
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "summary": "A synthetic plugin for Connect's tests: a page, a Settings section and a widget",
+  "main": "main.js",
+  "client": "client.js",
+  "uses": {
+    "network": { "hosts": ["api.example.com"], "hosts_from": ["servers"] },
+    "signin": { "hosts": ["github.com"] }
+  },
+  "settings": [
+    { "key": "servers", "label": "Your servers", "help": "Addresses on your own network, separated by commas" }
+  ],
+  "widgets": [
+    { "id": "greeting", "label": "Hello greeting", "kind": "card", "sizes": ["M"] },
+    { "id": "board", "label": "Hello board", "kind": "page", "sizes": ["M"] }
+  ]
+}

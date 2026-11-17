@@ -1,0 +1,143 @@
+/* A plugin frame's styles (DESIGN 7.3, PLUGIN-ENGINE.md §5.2): Echo's shared token names and kit
+   classes, drawn in CodeMie's look, light and dark. The window sets <html class="light|dark">.
+   A plugin's own CSS (ctx.ui.style) builds on these variables. */
+@font-face{font-family:GeistMono;src:url('fonts/GeistMono.ttf') format('truetype');font-display:swap;font-weight:100 900}
+
+/* ------------------------------------------------------------------ tokens */
+html.dark{
+  color-scheme:dark;
+  --bg:#1A1A1A;--surface:#212224;--surface-2:#1C1D1F;--raised:#2E3033;--hover:#2A2B2E;
+  --text:#FFFFFF;--text-2:#BBBBBB;--text-3:#8A8A8A;
+  --line:#333436;--line-strong:#47484A;
+  --accent:#4F9CF9;--accent-strong:#7FB6FF;--accent-soft:rgba(79,156,249,.14);--accent-ink:#7FB6FF;
+  --warn:#F5A534;--danger:#FE3B4C;--me:#259F4C;--good:#259F4C;
+  --input:#1A1A1A;--input-line:#47484A;--input-hover:#6A6B6E;--input-focus:#F2F0EF;
+  --primary-fill:#20222E;--primary-fill-h:#262941;--primary-border:linear-gradient(90deg,#993EC7,#5677C8);--primary-text:#F2F0EF;
+  --switch-on:linear-gradient(to right,#672C92,#547CCC);--switch-off:linear-gradient(to right,#BBB,#666);
+  --shadow:0 1px 3px rgba(0,0,0,.25);
+  --chart-1:#4F9CF9;--chart-2:#C084FC;--chart-3:#259F4C;--chart-4:#F5A534;--chart-5:#FE3B4C;--chart-6:#2DD4BF;
+}
+html.light{
+  color-scheme:light;
+  --bg:#F9F9F9;--surface:#FFFFFF;--surface-2:#FBFBFB;--raised:#F4F6FA;--hover:#F1F8FF;
+  --text:#333333;--text-2:#666666;--text-3:#999999;
+  --line:#E5E5E5;--line-strong:#BBBBBB;
+  --accent:#007AFF;--accent-strong:#0062CC;--accent-soft:#E6F1FF;--accent-ink:#007AFF;
+  --warn:#9A5B00;--danger:#E5293A;--me:#1E8E41;--good:#1E8E41;
+  --input:#FFFFFF;--input-line:#CCCCCC;--input-hover:#999999;--input-focus:#007AFF;
+  --primary-fill:#D5E7FC;--primary-fill-h:#B2D7FF;--primary-border:linear-gradient(#007AFF,#007AFF);--primary-text:#007AFF;
+  --switch-on:linear-gradient(to right,#007AFF,#007AFF);--switch-off:#BBBBBB;
+  --shadow:0 1px 3px rgba(0,0,0,.06);
+  --chart-1:#007AFF;--chart-2:#7C3AED;--chart-3:#1E8E41;--chart-4:#C27C0E;--chart-5:#E5293A;--chart-6:#0D9488;
+}
+:root{
+  --font:GeistMono,ui-monospace,"SF Mono",Menlo,monospace;
+  --mono:GeistMono,ui-monospace,"SF Mono",Menlo,monospace;
+  --r-control:8px;--r-panel:12px;
+}
+
+/* ------------------------------------------------------------------ page */
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:var(--font);font-size:13px;line-height:20px;color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased;overflow:auto}
+body[data-view=card]{background:transparent;overflow:hidden;height:auto}
+body[data-view=none] .cx-root{display:none}
+.cx-root{display:grid;grid-template-columns:minmax(0,1fr);min-height:100%;align-items:start}
+.cx-root:has(.cx-panel:not([hidden])){grid-template-columns:minmax(0,1fr) 320px}
+body[data-view=card] .cx-root{min-height:0}
+.cx-main{min-width:0;padding:28px 32px 48px}
+body[data-view=section] .cx-main{padding:4px 32px 40px}
+body[data-view=card] .cx-main{padding:0}
+body[data-view=card] .cx-main>:last-child,body[data-view=card] .set-sec:last-child{margin-bottom:0}
+.cx-panel{position:sticky;top:0;min-height:100vh;max-height:100vh;overflow:auto;padding:20px;border-left:1px solid var(--line);background:var(--surface)}
+.cx-missing{color:var(--text-3)}
+h1,h2,h3,h4{margin:0 0 8px;font-weight:600;color:var(--text)}
+h1{font-size:22px;line-height:30px}
+h2{font-size:18px;line-height:28px}
+h3{font-size:14px;line-height:20px}
+h4{font-size:13px;line-height:20px}
+p{margin:0 0 10px}
+a{color:var(--accent-ink);text-decoration:none}
+a:hover{text-decoration:underline}
+code,pre,kbd{font-family:var(--mono);font-size:12px}
+code{color:var(--accent-ink)}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--surface-2)}
+hr{border:0;border-top:1px solid var(--line);margin:16px 0}
+b,strong{font-weight:600}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+::selection{background:var(--accent-soft)}
+
+/* ------------------------------------------------------------------ buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;min-width:0;padding:0 12px;border-radius:var(--r-control);border:1px solid var(--line);background:var(--surface);color:var(--text);font:inherit;font-size:12px;line-height:24px;font-weight:500;white-space:nowrap;cursor:pointer;transition:background .12s ease,border-color .12s ease}
+.btn:hover{background:var(--hover);border-color:var(--line-strong)}
+.btn:disabled,.btn[aria-disabled=true]{opacity:.5;cursor:default;pointer-events:none}
+.btn svg{width:14px;height:14px;flex:none}
+.btn.primary{border-color:transparent;background:linear-gradient(var(--primary-fill),var(--primary-fill)) padding-box,var(--primary-border) border-box;color:var(--primary-text)}
+.btn.primary:hover{background:linear-gradient(var(--primary-fill-h),var(--primary-fill-h)) padding-box,var(--primary-border) border-box}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--text-2)}
+.btn.ghost:hover{background:color-mix(in srgb,var(--text) 8%,transparent);color:var(--text)}
+.btn.danger{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,transparent);color:var(--danger)}
+.btn.danger:hover{background:color-mix(in srgb,var(--danger) 18%,transparent)}
+.btn+.btn{margin-left:6px}
+
+/* ------------------------------------------------------------------ fields */
+input,select,textarea{font:inherit;color:var(--text)}
+.search,.set-in,.set-input,input[type=text],input[type=search],input[type=url],input[type=email],input[type=password],input[type=number],select,textarea{height:32px;padding:0 12px;border:1px solid var(--input-line);border-radius:var(--r-control);background:var(--input);color:var(--text);font-size:13px;line-height:20px;transition:border-color .12s ease}
+textarea{height:auto;min-height:80px;padding:8px 12px;resize:vertical}
+.search::placeholder,.set-in::placeholder,input::placeholder,textarea::placeholder{color:var(--text-3)}
+.search:hover,.set-in:hover,input:hover,select:hover,textarea:hover{border-color:var(--input-hover)}
+.search:focus,.set-in:focus,input:focus,select:focus,textarea:focus{outline:none;border-color:var(--input-focus)}
+.set-in,.set-input{width:240px;max-width:100%}
+input[type=checkbox],input[type=radio]{accent-color:var(--accent);width:14px;height:14px}
+label{cursor:pointer}
+
+/* ------------------------------------------------------------------ settings kit */
+.set-sec{display:flex;flex-direction:column;gap:8px;margin:0 0 16px}
+.set-sec h3{margin:0;font-size:11px;line-height:16px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.set-card{border:1px solid var(--line);border-radius:var(--r-panel);background:var(--surface);box-shadow:var(--shadow)}
+.set-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+.set-row:last-child{border-bottom:0}
+.set-row b{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;font-weight:600}
+.set-row b svg{width:16px;height:16px;color:var(--text-2)}
+.set-text{min-width:0}
+.set-ctl{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}
+.set-ctl .btn+.btn{margin-left:0}
+.set-sub{font-size:12px;line-height:18px;color:var(--text-2);overflow-wrap:anywhere}
+.set-sub code,.set-row code{font-size:11.5px}
+.set-ok{color:var(--good);font-size:12px;font-weight:600}
+.set-row .bar{height:4px;border-radius:2px;background:var(--line);overflow:hidden;width:160px;margin-top:6px}
+.set-row .bar span{display:block;height:100%;background:var(--accent)}
+.sw{position:relative;flex:none;width:32px;height:16px;padding:0;border:1px solid transparent;border-radius:16px;background:var(--switch-off);background-origin:border-box;cursor:pointer}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:#fff;transition:transform .15s ease}
+.sw.on{background:var(--switch-on);background-origin:border-box}
+.sw.on::after{transform:translateX(16px)}
+.sw:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ------------------------------------------------------------------ tokens, states */
+.tok{display:inline-flex;align-items:center;gap:5px;max-width:100%;height:22px;padding:0 8px;border:0;border-radius:11px;background:var(--raised);color:var(--text);font:inherit;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tok button{border:0;background:none;padding:0;color:var(--text-3);font:inherit;cursor:pointer}
+.tok button:hover{color:var(--danger)}
+.tok.add{background:transparent;border:1px dashed var(--line-strong);color:var(--text-3);cursor:pointer}
+.tok.add:hover{color:var(--text)}
+.tok.link{cursor:pointer}
+.tok.link:hover{background:var(--line-strong)}
+.tok-in{display:inline-flex;align-items:center;gap:6px;flex:1 1 260px}
+.tok-in input{flex:1;min-width:120px}
+.error{color:var(--danger)}
+.warn{color:var(--warn)}
+.bad{color:var(--danger)}
+.notice{padding:10px 12px;border-radius:var(--r-control);background:var(--accent-soft);color:var(--text)}
+.notice.error{background:color-mix(in srgb,var(--danger) 14%,transparent)}
+.skeleton{display:flex;flex-direction:column;gap:10px}
+.skeleton i{display:block;height:12px;border-radius:4px;background:var(--line);animation:cx-pulse 1.4s ease-in-out infinite}
+.skeleton i:nth-child(2n){width:82%}
+.skeleton i:nth-child(3n){width:64%}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line-strong);border-top-color:var(--accent);border-radius:50%;animation:cx-spin .8s linear infinite;vertical-align:middle}
+@keyframes cx-pulse{50%{opacity:.5}}
+@keyframes cx-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.skeleton i,.spinner{animation:none}}
+
+/* A page some published plugins share with Echo's Scheduler: a column with a heading row. */
+.sch{display:flex;flex-direction:column;gap:14px}
+.sch-head{display:flex;align-items:flex-start;gap:12px}
+.sch-sub{font-size:12px;line-height:18px;color:var(--text-2)}

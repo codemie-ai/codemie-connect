@@ -256,6 +256,21 @@ fn bundled_frame_file(
     has_key(&key).then(|| get(key)).flatten()
 }
 
+/// A shim file read from `dir` (`ui/plugins/frame/` on disk). Under `cargo tauri dev` the UI
+/// comes from the CLI's dev server and Tauri embeds no assets, so the resolver has no shim; debug
+/// builds then read it from the checkout (`app_roots`). Each segment is a plain name, and the
+/// file's real path stays inside `dir`.
+fn disk_frame_file(dir: &std::path::Path, rel: &str) -> Option<Vec<u8>> {
+    if rel.split('/').any(|s| !plain_name(s)) {
+        return None;
+    }
+    let base = dir.canonicalize().ok()?;
+    let file = base.join(rel).canonicalize().ok()?;
+    (file.starts_with(&base) && file.is_file())
+        .then(|| std::fs::read(&file).ok())
+        .flatten()
+}
+
 /// Roots that serve the plugins installed under `paths`, each at the version the registry
 /// records while it is enabled. The registry is read per request, so an install, update,
 /// disable or removal is served at once.
@@ -274,6 +289,9 @@ fn app_roots<R: Runtime>(app: &AppHandle<R>) -> Option<PluginRoots> {
     let core = state.core.as_ref()?;
     let resolver = app.asset_resolver();
     let paths = PluginPaths::new(&core.paths.data, &core.paths.private);
+    // Debug builds under `cargo tauri dev` only: the shim from the checkout (Task 17, M8).
+    let dev_dir = (cfg!(debug_assertions) && tauri::is_dev())
+        .then(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/plugins/frame"));
     Some(registry_roots(
         paths,
         Box::new(move |rel| {
@@ -282,6 +300,7 @@ fn app_roots<R: Runtime>(app: &AppHandle<R>) -> Option<PluginRoots> {
                 |key| resolver.iter().any(|(k, _)| k == key),
                 |key| resolver.get(key).map(|a| a.bytes),
             )
+            .or_else(|| dev_dir.as_deref().and_then(|dir| disk_frame_file(dir, rel)))
         }),
     ))
 }
@@ -335,6 +354,35 @@ mod tests {
                 active_version: Box::new(|id| (id == "hello").then(|| "1.0.0".to_string())),
             },
             _dir: dir,
+        }
+    }
+
+    #[test]
+    fn the_dev_shim_is_read_only_from_inside_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let frame = dir.path().join("frame");
+        fs::create_dir_all(frame.join("vendor")).unwrap();
+        fs::write(frame.join("frame.html"), "<!doctype html>").unwrap();
+        fs::write(frame.join("vendor/sigma.min.js"), "x").unwrap();
+        fs::write(dir.path().join("secret.txt"), SECRET).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path().join("secret.txt"), frame.join("link.js")).unwrap();
+        assert_eq!(
+            disk_frame_file(&frame, "frame.html").as_deref(),
+            Some(&b"<!doctype html>"[..])
+        );
+        assert!(disk_frame_file(&frame, "vendor/sigma.min.js").is_some());
+        for bad in [
+            "../secret.txt",
+            "vendor/../../secret.txt",
+            "link.js",
+            ".hidden",
+            "",
+            "vendor",
+            "missing.js",
+            "/etc/passwd",
+        ] {
+            assert_eq!(disk_frame_file(&frame, bad), None, "{bad}");
         }
     }
 
