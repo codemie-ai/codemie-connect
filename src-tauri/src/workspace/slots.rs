@@ -1,8 +1,8 @@
 //! Free time for "Propose times" drafts (DESIGN 6.4). The sweep matches `freeSlots` in
 //! `ui/workspace/calendar-model.js`: timed events that are not `showAs: "free"` (and not
 //! declined) are busy, they are clipped to the day's window, and only gaps of at least
-//! `min_len` minutes count. One deliberate addition: an all-day event shown as out of office
-//! or busy takes the whole working day (the calendar view should follow).
+//! `min_len` minutes count. An all-day event shown as out of office or busy takes the whole
+//! working day; `freeSlots` (Today's free time) follows the same rule.
 use super::{graph, models::Record};
 use chrono::{Datelike, Duration, LocalResult, NaiveDate, TimeZone, Weekday};
 use chrono_tz::Tz;

@@ -147,7 +147,10 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
 // writes from the real handlers (UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures).
 
 const contract = name => JSON.parse(readFileSync(new URL(`./contract/${name}.json`, import.meta.url), 'utf8'));
-export const contractFixtures = () => ({ status: contract('ai-status'), usage: contract('ai-usage'), testOk: contract('ai-test-ok'), testFail: contract('ai-test-fail') });
+export const contractFixtures = () => ({
+  status: contract('ai-status'), usage: contract('ai-usage'), testOk: contract('ai-test-ok'), testFail: contract('ai-test-fail'),
+  draft: contract('draft-ai'), jobFailed: contract('job-ai-draft-failed'), jobConflict: contract('job-ai-draft-conflict'),
+});
 
 /**
  * `ai_status` answers for the browser mock and unit tests. Kinds: none, native,

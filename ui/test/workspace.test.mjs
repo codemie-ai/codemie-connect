@@ -195,6 +195,19 @@ test('free slots skip busy time and ignore events shown as free', () => {
   assert.deepEqual(freeSlots([slot(500, 1100)], 540, 1080), []);
 });
 
+test('free slots match the draft rule: declined meetings are free, an all-day absence takes the day', () => {
+  const slot = (s, e, data = {}) => ({ startMin: s, endMin: e, record: { data: { showAs: 'busy', ...data } } });
+  assert.deepEqual(freeSlots([slot(600, 660, { response: 'declined' })], 540, 1080, 30), [[540, 1080]]);
+  const allDay = (showAs, data = {}) => ({ data: { allDay: true, showAs, response: 'accepted', ...data } });
+  assert.deepEqual(freeSlots([], 540, 1080, 30, [allDay('oof')]), [], 'out of office');
+  assert.deepEqual(freeSlots([], 540, 1080, 30, [allDay('busy')]), [], 'busy all day');
+  assert.deepEqual(freeSlots([], 540, 1080, 30, [allDay('free'), allDay('tentative')]), [[540, 1080]], 'free and tentative all-day items do not block');
+  assert.deepEqual(freeSlots([], 540, 1080, 30, [allDay('oof', { response: 'declined' }), allDay('busy', { cancelled: true })]), [[540, 1080]]);
+  const s = buildSnapshot(Date.parse('2026-11-16T07:00:00Z'), { photo: false });
+  s.records.find(r => r.id === 'ev-allday').data.showAs = 'oof';
+  assert.equal(todayModel(s, new Set(), Date.parse('2026-11-16T07:00:00Z')).freeMinutes, 0, 'Today agrees with the drafts');
+});
+
 test('calendar colours use hex, then Outlook names, then a stable palette', () => {
   assert.equal(calendarColor({ hexColor: '#123456' }), '#123456');
   assert.equal(calendarColor({ color: 'lightGreen', hexColor: '' }), '#3FB27F');
@@ -370,7 +383,8 @@ test('old_ai_pin_controls_are_gone', async () => {
   assert.match(general, /Choose Claude Code or a CodeMie profile/);
   for (const file of ['app.js', 'view-inbox.js', 'view-settings.js']) {
     const source = await readFile(new URL(`../workspace/${file}`, import.meta.url), 'utf8');
-    assert.doesNotMatch(source, /ai-probe|ai-pin|ai-load|ai-draft|ai_probe|aiProfile|claude-api/, file);
+    // `ai-draft` is the Milestone 2 composer (Task 8); the Milestone 1 pin and probe stay gone.
+    assert.doesNotMatch(source, /ai-probe|ai-pin|ai-load|ai_probe|aiProfile|claude-api/, file);
   }
   assert.ok(REBASE_SAFE.has('ai_settings_save'));
   assert.ok(!REBASE_SAFE.has('ai_test'));

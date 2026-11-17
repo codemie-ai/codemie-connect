@@ -35,7 +35,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: draftTemplate, jobFailed: jobTemplate }) {
   const s = snapshot;
   const ai = aiInit;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -47,7 +47,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   const emit = name => setTimeout(() => (listeners[name] || []).forEach(fn => fn({ payload: {} })), 10);
   const active = wid => s.workspaces.find(w => w.id === (wid || s.settings.activeWorkspace));
   const find = (kind, id) => s.records.find(r => r.kind === kind && r.id === id);
-  const fail = (code, message) => { throw { code, message }; };
+  const fail = (code, message, cls) => { throw cls ? { code, message, class: cls } : { code, message }; };
   const ops = {
     snapshot: () => ({ snapshot: clone(s), authPending, authError: null }),
     settings_update: d => {
@@ -101,7 +101,13 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     open_source: d => { calls.push(['open_source', d]); return { opened: true }; },
     schedule_save: (d, wid) => ops.local_save({ ...d, kind: 'schedule', nextAt: now() + 3600 }, wid),
     schedule_delete: d => ops.local_delete({ ...d, kind: 'schedule' }),
-    job_cancel: () => ({ saved: true }),
+    job_cancel: d => {
+      calls.push(['job_cancel', d]);
+      const job = s.jobs.find(j => j.id === d.id);
+      if (job && !['queued', 'running', 'blocked'].includes(job.state)) fail('conflict', 'This job already completed.');
+      if (job) job.state = 'cancelled';
+      return { saved: true };
+    },
     job_retry: () => ({ saved: true }),
     notification_permission: () => ({ permission: 'os_managed' }),
     notification_test: () => ({ queued: true }),
@@ -123,7 +129,56 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       if (p.state !== 'ready') return { ...testFail, message: p.message || testFail.message };
       return clone(testOk);
     },
-    action_prepare: () => fail('permission_required', 'Allow replies in Settings first.'),
+    action_prepare: d => {
+      calls.push(['action_prepare', d]);
+      const m = find('message', d.sourceId);
+      if (!s.connection.enabled.includes(d.kind === 'chat_reply' ? 'chat_send' : 'mail_send')) fail('permission_required', 'Allow replies in Settings first.');
+      return { actionId: 'action-1', nonce: 'nonce-1', workspaceId: 'personal', account: s.connection.email, review: { title: `Reply to ${m.data.from}`, recipients: [{ emailAddress: { name: m.data.from, address: m.data.fromAddress || m.data.fromId } }], body: d.body } };
+    },
+    action_confirm: d => { calls.push(['action_confirm', d]); return { message: 'Sent for delivery.' }; },
+    // AI drafts: queued → running (profile, model, startedAt) → a draft record, or the failure
+    // in `window.__draftPlan`; `hold` keeps it running until `window.__finishDraft(plan)`.
+    ai_draft: d => {
+      calls.push(['ai_draft', d]);
+      const m = find('message', d.sourceId);
+      const chat = m.data.channel === 'chat';
+      const purpose = chat ? 'chat_draft' : 'mail_draft';
+      const route = ai.settings.routes?.[purpose] || {};
+      const profile = route.profile || ai.settings.defaultProfile;
+      if (!profile) fail('needs_choice', 'Choose which Claude should write for you.', 'needs_choice');
+      const key = chat ? `chat:${m.data.conversationId || m.source}` : m.id;
+      const busy = s.jobs.find(j => j.kind === 'ai_draft' && j.payload.draftKey === key && ['queued', 'running'].includes(j.state));
+      if (busy) return { queued: true, jobId: busy.id };
+      const { errorClass, errorCode, ...base } = clone(jobTemplate);
+      const job = { ...base, id: crypto.randomUUID(), key: `ai_draft:${crypto.randomUUID()}`, state: 'queued', dueAt: now(), connectionId: s.connection.id, result: null, payload: { request: { ...d }, channel: m.data.channel, conversationKey: key, draftKey: key, purpose } };
+      s.jobs.unshift(job);
+      const plan = window.__draftPlan || { outcome: 'ok', ms: 1200 };
+      const update = () => { s.revision++; emit('workspace:changed'); };
+      const start = () => {
+        if (job.state !== 'queued') return;
+        job.state = 'running';
+        Object.assign(job.payload, { startedAt: now() - (plan.startedAgo || 0), profile, model: route.model || null });
+      };
+      const finish = (result = plan) => {
+        start();
+        if (job.state !== 'running') return;
+        if (result.outcome === 'ok') {
+          const thread = s.records.filter(r => r.kind === 'message' && r.data.conversationId === m.data.conversationId).sort((a, b) => a.data.at - b.data.at).slice(-12);
+          const t = clone(draftTemplate);
+          const record = { ...t, id: `ai:${key}`, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, text: result.text || t.data.text, questions: result.questions || t.data.questions, channel: m.data.channel, sourceId: m.id, draftKey: key, conversationKey: key, options: { ...d }, provenance: { ...t.data.provenance, profile, model: job.payload.model || 'claude-sonnet-4-5', messageIds: thread.map(x => x.id), partialText: !!result.partialText } } };
+          s.records = s.records.filter(r => r.id !== record.id).concat(record);
+          job.state = 'succeeded';
+          job.result = 'AI draft ready for review';
+        } else {
+          Object.assign(job, { state: result.state || 'failed', errorClass: result.errorClass, errorCode: result.errorCode || result.errorClass, result: 'Claude could not draft.' });
+        }
+        update();
+      };
+      setTimeout(() => { if (job.state === 'queued') { start(); update(); } }, 150);
+      window.__finishDraft = finish;
+      if (plan.outcome !== 'hold') setTimeout(() => finish(plan), 150 + (plan.ms || 1200));
+      return { queued: true, jobId: job.id };
+    },
   };
   window.__bridgeCalls = calls;
   window.__TAURI__ = {
@@ -162,13 +217,15 @@ const check = async (name, fn) => {
     console.log(`✔ ${name}`);
   } catch (error) {
     results.push(['FAIL', name, error.message.split('\n')[0]]);
-    console.log(`✖ ${name} — ${error.message.split('\n')[0]}`);
+    const toasts = await currentPage?.locator('.ws-toast').allInnerTexts().catch(() => []) || [];
+    console.log(`✖ ${name} — ${error.message.split('\n')[0]}${toasts.length ? ` (toasts: ${toasts.join(' | ')})` : ''}`);
+    await currentPage?.screenshot({ path: join(OUT, `FAIL-${name.replace(/[^a-z0-9]+/gi, '-')}.png`) }).catch(() => {});
   }
 };
 const assert = (cond, message) => { if (!cond) throw new Error(message); };
 
 const browser = await chromium.launch();
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [] } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -177,8 +234,10 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   page.on('console', m => { if (m.type() === 'error' && !/favicon/.test(m.text())) errors.push(m.text()); });
   const now = Date.now();
   const connected = buildSnapshot(now, { theme, zone: 'Europe/Kyiv' });
+  connected.connection.enabled.push(...enable);
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk: contractFixtures().testOk, testFail: contractFixtures().testFail })})`);
+  const { testOk, testFail, draft, jobFailed } = contractFixtures();
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, jobFailed })})`);
   await page.goto(base + hash);
   await page.waitForSelector('.ws-sidebar');
   currentPage = page;
@@ -460,6 +519,192 @@ for (const theme of ['dark', 'light']) {
 
   await check(`${theme}: no page errors`, async () => assert(errors.length === 0, errors.join(' | ')));
   await context.close().catch(() => {});
+}
+
+// Reply drafts with Claude (DESIGN 6.4): composer, progress, result, replace, errors, Today.
+const lastCall = async (page, name) => (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === name).at(-1)?.[1];
+const plan = (page, value) => page.evaluate(v => { window.__draftPlan = v; }, value);
+const openOptions = async page => {
+  await page.click('[data-action="ai-draft-options"]');
+  await page.waitForSelector('#draft-options');
+  await page.waitForTimeout(150);
+};
+for (const theme of ['dark', 'light']) {
+  const { page, context, errors } = await open({ theme, hash: '#/inbox', enable: ['chat_send', 'mail_send'] });
+
+  await check(`${theme}: ai draft flow`, async () => {
+    await page.waitForSelector('.ws-read[data-message-id="c-reply-1"] [data-action="ai-draft-options"]');
+    await openOptions(page);
+    assert(await page.evaluate(() => document.activeElement?.dataset.action === 'ai-draft'), 'Draft is focused when the options open');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#draft-options', { state: 'detached' });
+    assert(await page.evaluate(() => document.activeElement?.dataset.action === 'ai-draft-options'), 'Esc returns focus to Draft with AI');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#draft-options');
+    await page.keyboard.press('Tab');
+    assert(await page.evaluate(() => document.activeElement?.dataset.draftIntent === 'reply'), 'Tab stays inside the popover');
+    const geometry = await page.evaluate(() => {
+      const pop = document.getElementById('draft-options').getBoundingClientRect();
+      const trigger = document.querySelector('[data-action="ai-draft-options"]').getBoundingClientRect();
+      return { pop: [pop.left, pop.top, pop.right, pop.bottom], trigger: [trigger.left, trigger.top, trigger.right, trigger.bottom], vw: innerWidth, vh: innerHeight };
+    });
+    const [l, t, r, b] = geometry.pop;
+    assert(l >= 0 && t >= 0 && r <= geometry.vw && b <= geometry.vh, `popover off screen ${JSON.stringify(geometry)}`);
+    assert(Math.abs(r - geometry.trigger[2]) < 2 && (t >= geometry.trigger[3] || b <= geometry.trigger[1]), `popover not anchored ${JSON.stringify(geometry)}`);
+    await page.click('[data-draft-intent="propose_times"]');
+    assert(await page.locator('#draft-free-times').isChecked(), 'Propose times suggests free times');
+    await page.click('[data-draft-tone="friendly"]');
+    await page.fill('#draft-instructions', 'Offer Thursday or Friday afternoon');
+    await shot(page, `${theme}-draft-options`);
+    await plan(page, { outcome: 'hold' });
+    await page.click('#draft-options [data-action="ai-draft"]');
+    await page.waitForSelector('.ws-draft-running');
+    const call = await lastCall(page, 'ai_draft');
+    assert(call.sourceId === 'c-reply-1' && call.intent === 'propose_times' && call.tone === 'friendly' && call.includeFreeTimes === true && call.instructions === 'Offer Thursday or Friday afternoon', JSON.stringify(call));
+    const remembered = await page.evaluate(() => JSON.parse(localStorage.getItem('codemie.draft.options.chat')));
+    assert(remembered.intent === 'propose_times' && remembered.tone === 'friendly' && !('instructions' in remembered), JSON.stringify(remembered));
+    await page.waitForSelector('.ws-draft-running:has-text("Drafting with Claude Code")', { timeout: 4000 });
+    await page.waitForTimeout(2100);
+    assert(/\d+ s/.test(await text(page, '.ws-draft-running')), 'elapsed seconds');
+    assert(!(await page.locator('#reply-body').isDisabled()), 'the reply stays editable');
+    assert(await page.locator('.ws-draft-running [data-action="ai-draft-stop"]').count() === 1, 'Stop');
+    assert(await page.locator('.ws-inbox-row[data-id="c-reply-1"] .ws-flag-ai').count() === 1, 'the list shows Drafting…');
+    await shot(page, `${theme}-draft-running`);
+    await page.evaluate(() => window.__finishDraft({ outcome: 'ok' }));
+    await page.waitForFunction(() => document.getElementById('reply-body')?.value.includes('[Yes, I can / Unfortunately, I can'), null, { timeout: 4000 });
+    await page.waitForSelector('.ws-draft-provenance:has-text("Drafted with Claude Code · Sonnet 4.5")');
+    assert(/from 2 messages/.test(await text(page, '.ws-draft-provenance')), 'message count');
+    assert(/Choose an option in brackets before sending/.test(await text(page, '.ws-draft-todo')), 'bracket note');
+    assert(/Can you send Ann the Monday version by Friday\?/.test(await text(page, '.ws-draft-todo')), 'questions');
+    await page.click('.ws-draft-context summary');
+    assert(/Jordan Lee/.test(await text(page, '.ws-draft-context ul')), 'context lists senders');
+    await page.waitForTimeout(250);
+    await shot(page, `${theme}-draft-result`);
+    await page.click('.ws-reply button[type=submit]');
+    await page.waitForSelector('.ws-modal[open]:has-text("Finish your reply first?")');
+    await page.waitForTimeout(250);
+    await shot(page, `${theme}-draft-unfinished`);
+    await page.click('.ws-modal[open] button:has-text("Edit reply")');
+    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+    await page.click('[data-action="ai-draft-choice"][data-option="Yes, I can"]');
+    const value = await page.locator('#reply-body').inputValue();
+    assert(value.includes('Yes, I can send you the Monday version') && !value.includes('['), value);
+    await page.click('.ws-reply button[type=submit]');
+    await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
+    assert((await lastCall(page, 'action_prepare')).body.includes('Yes, I can send you'), 'review shows the chosen option');
+    await page.click('.ws-modal[open] button:has-text("Cancel")');
+    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+    assert(!(await page.evaluate(() => window.__bridgeCalls)).some(([op]) => op === 'action_confirm'), 'Cancel sent something');
+  });
+
+  await check(`${theme}: a new draft asks before replacing typed text; Restore brings it back`, async () => {
+    await page.fill('#reply-body', 'My own reply to Jordan');
+    await plan(page, { outcome: 'ok', ms: 500, text: 'Hi Jordan, the calendar layout notes are attached.', questions: [] });
+    await page.click('[data-action="ai-draft-regenerate"]');
+    await page.waitForSelector('.ws-draft-confirm', { timeout: 5000 });
+    assert(await page.locator('#reply-body').inputValue() === 'My own reply to Jordan', 'typed text replaced without asking');
+    await page.waitForTimeout(200);
+    await shot(page, `${theme}-draft-replace`);
+    await page.click('[data-action="ai-draft-keep"]');
+    await page.waitForSelector('.ws-draft-confirm', { state: 'detached' });
+    assert(await page.locator('#reply-body').inputValue() === 'My own reply to Jordan', 'Keep mine changed the text');
+    await plan(page, { outcome: 'ok', ms: 500, text: 'Hi Jordan, notes attached. See you at the 1:1.', questions: [] });
+    await openOptions(page);
+    await page.click('#draft-options [data-action="ai-draft"]');
+    await page.waitForSelector('.ws-draft-confirm', { timeout: 5000 });
+    await page.click('[data-action="ai-draft-replace"]');
+    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Hi Jordan, notes attached. See you at the 1:1.');
+    await page.waitForSelector('[data-action="ai-draft-restore"]');
+    await page.click('[data-action="ai-draft-restore"]');
+    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'My own reply to Jordan');
+    assert(await page.locator('[data-action="ai-draft-restore"]').count() === 0, 'Restore stays after restoring');
+  });
+
+  await check(`${theme}: Stop cancels a running draft`, async () => {
+    await plan(page, { outcome: 'hold' });
+    await openOptions(page);
+    await page.click('#draft-options [data-action="ai-draft"]');
+    await page.waitForSelector('.ws-draft-running:has-text("Drafting with") [data-action="ai-draft-stop"]', { timeout: 4000 });
+    await page.click('.ws-draft-running [data-action="ai-draft-stop"]');
+    await page.waitForSelector('.ws-draft-running', { state: 'detached', timeout: 4000 });
+    assert(await lastCall(page, 'job_cancel'), 'no job_cancel');
+    assert(await page.locator('.ws-draft-error').count() === 0, 'a stopped draft shows an error');
+  });
+
+  await check(`${theme}: a failed draft explains itself in the reply box, not in decisions`, async () => {
+    const bell = await page.locator('.ws-bell-dot').count();
+    await plan(page, { outcome: 'error', ms: 300, state: 'blocked', errorClass: 'needs_login', errorCode: 'needs_login' });
+    await openOptions(page);
+    await page.click('#draft-options [data-action="ai-draft"]');
+    await page.waitForSelector('.ws-draft-error:has-text("Claude Code isn\'t signed in.")', { timeout: 5000 });
+    assert(await page.locator('.ws-draft-error [data-action="ai-copy-login"]:has-text("Copy sign-in steps")').count() === 1, 'sign-in action');
+    assert(await page.locator('.ws-bell-dot').count() === bell, 'the AI failure reached the decisions bell');
+    await shot(page, `${theme}-draft-error`);
+    await page.click('.ws-draft-error [data-action="ai-draft-dismiss"]');
+    await page.waitForSelector('.ws-draft-error', { state: 'detached' });
+  });
+
+  await check(`${theme}: Today Draft reply opens the conversation and starts a draft`, async () => {
+    await plan(page, { outcome: 'hold' });
+    await page.click('.ws-nav button[data-route=today]');
+    await page.waitForSelector('.ws-attention [data-action="draft-reply"]');
+    assert(await page.locator('.ws-attention [data-action="draft-reply"]').count() === await page.locator('.ws-attention .ws-msg-row').count(), 'one action per row');
+    const action = page.locator('.ws-attention [data-action="draft-reply"][data-id="c-reply-2"]');
+    await action.hover();
+    await page.waitForTimeout(300);
+    assert(await action.evaluate(el => el.querySelector('span').getBoundingClientRect().width > 40), 'label shows on hover');
+    await shot(page, `${theme}-today-draft-reply`);
+    await action.click();
+    await page.waitForSelector('.ws-read[data-message-id="c-reply-2"] .ws-draft-running');
+    const call = await lastCall(page, 'ai_draft');
+    assert(call.sourceId === 'c-reply-2' && call.intent === 'propose_times' && call.tone === 'friendly', `remembered options not used ${JSON.stringify(call)}`);
+    await page.evaluate(() => window.__finishDraft({ outcome: 'ok' }));
+    await page.waitForSelector('.ws-read[data-message-id="c-reply-2"] .ws-draft-provenance', { timeout: 5000 });
+  });
+
+  await check(`${theme}: ai draft no page errors`, async () => assert(errors.length === 0, errors.join(' | ')));
+  await context.close().catch(() => {});
+  currentPage = null;
+
+  await check(`${theme}: the first draft opens the chooser, then CodeMie starts`, async () => {
+    const cm = await open({ theme, hash: '#/inbox', aiDefault: null });
+    const p = cm.page;
+    await plan(p, { outcome: 'hold' });
+    await p.waitForSelector('[data-action="ai-draft-options"]');
+    await openOptions(p);
+    await p.click('#draft-options [data-action="ai-draft"]');
+    await p.waitForSelector('.ws-modal[open] [data-action="ai-choose"]');
+    await p.click('.ws-modal[open] [data-profile="codemie:prod"]');
+    await p.click('.ws-modal[open] button[type=submit]');
+    await p.waitForSelector('.ws-draft-running:has-text("Starting CodeMie")', { timeout: 5000 });
+    await p.waitForTimeout(2100);
+    await shot(p, `${theme}-draft-running-codemie`);
+    assert(cm.errors.length === 0, cm.errors.join(' | '));
+    await cm.context.close().catch(() => {});
+    currentPage = null;
+  });
+
+  for (const [width, height] of [[1000, 760], [1680, 900]]) await check(`${theme} ${width}px: the composer fits the window`, async () => {
+    const narrow = await open({ theme, width, height, hash: '#/inbox', enable: ['chat_send'] });
+    const p = narrow.page;
+    await p.waitForSelector('[data-action="ai-draft-options"]');
+    await openOptions(p);
+    const box = await p.locator('#draft-options').boundingBox();
+    assert(box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= height, `popover ${JSON.stringify(box)}`);
+    await shot(p, `${theme}-draft-options-${width}`);
+    await plan(p, { outcome: 'ok', ms: 400 });
+    await p.click('#draft-options [data-action="ai-draft"]');
+    await p.waitForSelector('.ws-draft-provenance', { timeout: 5000 });
+    await p.click('.ws-draft-context summary');
+    await p.waitForTimeout(250);
+    const overflow = await p.evaluate(() => Math.max(document.documentElement.scrollWidth - innerWidth, ...[...document.querySelectorAll('.ws-reader, .ws-reply, .ws-draft-todo, .ws-draft-provenance')].map(el => el.scrollWidth - el.clientWidth)));
+    assert(overflow <= 0, `overflow ${overflow}px`);
+    await p.locator('.ws-reply').scrollIntoViewIfNeeded();
+    await shot(p, `${theme}-draft-result-${width}`);
+    assert(narrow.errors.length === 0, narrow.errors.join(' | '));
+    await narrow.context.close().catch(() => {});
+    currentPage = null;
+  });
 }
 
 // Onboarding: start signed out, sign in once, everything appears without choosing sources.

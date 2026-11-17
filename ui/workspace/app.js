@@ -5,11 +5,14 @@ import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
 import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, toggle } from './ui.js';
 import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calendarColors } from './calendar-model.js';
-import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation } from './selectors.js';
+import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply } from './selectors.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
 import { today, WIDGETS, WIDGET_IDS } from './view-today.js';
 import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
-import { inbox, filteredMessages, snoozeUntil } from './view-inbox.js';
+import { inbox, filteredMessages, snoozeUntil, draftChecks } from './view-inbox.js';
+import {
+  optionsKey, readOptions, pickOption, draftRequest, applyDraftResult, resolveConfirm, restoreText, replyBox, runningLabel, chooseOption, choicesIn, gapsIn, unfinishedParts,
+} from './draft-state.js';
 import { settings, LEGACY_TABS, SETTINGS_TABS } from './view-settings.js';
 import { renderShell } from './shell.js';
 import { nextAiSettings, LOGIN_STEPS } from './settings-ai.js';
@@ -28,6 +31,9 @@ const state = {
   lane: 'reply', channel: 'all', search: '', showArchived: false, showSnoozed: false, inboxLimit: 200, selectedMessage: null, selectedKey: null,
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
   ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, usage: null, error: '', tests: {}, testModels: {} },
+  // Reply drafts: this session's reply-box decisions per draft key (see `replyBox`), the open
+  // options popover, and failed drafts the user dismissed.
+  drafts: {}, draftPopover: null, draftDismissed: localJson('codemie.draft.dismissed', []),
 };
 let legacyModule;
 let legacyMounted = false;
@@ -39,10 +45,15 @@ let calendarScrollKey = '';
 let noteTimer;
 let searchTimer;
 const replyInFlight = new Set();
-const KEEP_FOCUS = new Set(['widget-up', 'widget-down']);
+const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick']);
+let lastDraftSignature = '';
+let aiQuietTried = false;
 
 function localPref(key, fallback) {
   try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+function localJson(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
 }
 function setLocalPref(key, value) {
   try { localStorage.setItem(key, value); } catch { /* preference only */ }
@@ -159,7 +170,9 @@ async function render() {
   const note = document.getElementById('today-note');
   const unsavedNote = note && note.value !== note.defaultValue ? { workspaceId: note.dataset.workspaceId, text: note.value } : null;
   const reply = document.getElementById('reply-body');
-  const unsavedReply = reply && reply.value !== reply.defaultValue ? { key: reply.closest('form')?.dataset.key, text: reply.value } : null;
+  const replyKey = reply?.closest('form')?.dataset.key;
+  let unsavedReply = reply && reply.value !== reply.defaultValue ? { key: replyKey, text: reply.value } : null;
+  const replyFocus = reply && document.activeElement === reply ? { key: replyKey, start: reply.selectionStart, end: reply.selectionEnd, scroll: reply.scrollTop } : null;
   const revision = ++rendering;
   if (legacyMounted) {
     legacy.classList.add('hidden');
@@ -173,7 +186,12 @@ async function render() {
   const ctx = { state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s) };
   const page = document.getElementById('workspace-page');
   page.className = `ws-page ws-page-${state.route}`;
-  if (state.route === 'inbox') ensureSelection(s);
+  if (state.route === 'inbox') {
+    ensureSelection(s);
+    // A draft that finished under the open reply box fills it, so the typed text is not kept.
+    if (reconcileDraft(s, reply ? { key: replyKey, text: reply.value } : null) === 'fill') unsavedReply = null;
+  }
+  if (['inbox', 'today'].includes(state.route)) loadAiQuiet();
   page.innerHTML = state.route === 'today' ? today(s, ctx)
     : state.route === 'calendar' ? calendar(s, ctx)
       : state.route === 'inbox' ? inbox(s, ctx)
@@ -182,11 +200,21 @@ async function render() {
     const fresh = document.getElementById('today-note');
     if (fresh) fresh.value = unsavedNote.text;
   }
-  if (unsavedReply) {
-    const fresh = document.getElementById('reply-body');
-    if (fresh && fresh.closest('form')?.dataset.key === unsavedReply.key) fresh.value = unsavedReply.text;
-  }
+  const freshReply = document.getElementById('reply-body');
+  const freshKey = freshReply?.closest('form')?.dataset.key;
+  if (unsavedReply && freshKey === unsavedReply.key) freshReply.value = unsavedReply.text;
+  syncReplyBox(freshReply);
+  if (state.route === 'inbox') rememberDraftBaseline(s);
   restoreScroll(saved);
+  // Keep typing where you were when a draft or a sync re-renders the reply box.
+  if (replyFocus && freshKey === replyFocus.key && !freshReply.disabled) {
+    const end = freshReply.value.length;
+    freshReply.focus({ preventScroll: true });
+    freshReply.setSelectionRange(Math.min(replyFocus.start, end), Math.min(replyFocus.end, end));
+    freshReply.scrollTop = replyFocus.scroll;
+  }
+  placeDraftPopover();
+  lastDraftSignature = draftSignature(s);
   if (state.route === 'settings' && document.getElementById('legacy-host')) await mountLegacy(revision);
 }
 
@@ -353,6 +381,180 @@ export async function withClaudeChoice(run) {
     if (!(await ensureClaudeChoice())) throw err;
     return run();
   }
+}
+
+/** Reads which Claude profiles are ready (cached by native) so Inbox and Today can offer drafts. */
+function loadAiQuiet() {
+  if (aiQuietTried || state.ai.status !== 'idle' || !store) return;
+  aiQuietTried = true;
+  store.query('ai_status', {}).then(status => {
+    if (state.ai.status !== 'idle') return;
+    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
+    if (['inbox', 'today'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover && !legacyMounted) render();
+  }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ });
+}
+
+// ---------------------------------------------------------------- reply drafts (DESIGN 6.4)
+
+const draftUi = key => (state.drafts[key] ||= {});
+const rememberedOptions = channel => readOptions(localPref(optionsKey(channel), null), channel);
+const inboxMessage = s => (state.route === 'inbox' && state.selectedMessage ? s.records.find(r => r.kind === 'message' && r.id === state.selectedMessage) : null);
+
+/** What re-renders the open reply box even while the user types in it: its draft job and draft. */
+function draftSignature(s) {
+  const m = inboxMessage(s);
+  if (!m) return '';
+  const key = draftKeyOf(m);
+  const job = draftJob(s, key);
+  return [key, job?.id, job?.state, job?.payload?.startedAt, latestDraft(s, key)?.revision].join('|');
+}
+
+/**
+ * A draft finished while its conversation is open (`live` is the reply box being replaced):
+ * fill the box when it is empty or holds an untouched draft, otherwise ask before replacing.
+ * Returns 'fill', 'confirm' or null when there is nothing new.
+ */
+function reconcileDraft(s, live) {
+  const m = inboxMessage(s);
+  if (!m || !live || live.key !== draftKeyOf(m)) return null;
+  const key = draftKeyOf(m);
+  const ai = latestDraft(s, key);
+  const ui = draftUi(key);
+  if (!ai || [ui.seen, ui.confirm, ui.kept].includes(ai.revision)) return null;
+  const dirty = live.text !== (ui.baseline ?? '');
+  const { action, text } = applyDraftResult({ current: live.text, dirty, result: ai.data });
+  if (action === 'confirm') {
+    ui.confirm = ai.revision;
+    return action;
+  }
+  Object.assign(ui, { seen: ai.revision, confirm: null, kept: null, restore: null });
+  // Keep a saved reply in step, so a reload shows the draft rather than asking about old text.
+  const saved = savedReply(s, m);
+  if (saved && saved.data.text !== text) saveReply(m, text).catch(fail);
+  return action;
+}
+
+/** Remembers which text in the box came from Claude, so editing it later counts as the user's. */
+function rememberDraftBaseline(s) {
+  const m = inboxMessage(s);
+  if (!m) return;
+  const key = draftKeyOf(m);
+  const ui = draftUi(key);
+  const box = replyBox({ manual: savedReply(s, m), ai: latestDraft(s, key), ui });
+  ui.baseline = box.fromAi ? box.text : null;
+}
+
+/** Queues a draft; the first draft without a chosen Claude opens the chooser, then retries once. */
+async function startDraft(m, options, instructions = '') {
+  if (!m) throw new Error('This conversation is no longer available. Refresh and try again.');
+  try {
+    await withClaudeChoice(() => mutate('ai_draft', draftRequest(m, options, instructions)));
+  } catch (err) {
+    // Closing the chooser is an answer, not an error.
+    if (err?.code === 'needs_choice' || err?.class === 'needs_choice') return;
+    throw err;
+  }
+}
+
+/** Saves the reply box for a conversation: one saved reply per conversation, none when empty. */
+async function saveReply(m, text) {
+  const threadIds = new Set(conversation(snap(), m).map(t => t.id));
+  const previous = records(snap(), 'draft').filter(r => threadIds.has(r.data.sourceId) && !r.data.aiSuggested && r.data.sourceId !== m.id);
+  for (const r of previous) await store.mutate('local_delete', { kind: 'draft', id: r.id });
+  if (text.trim()) {
+    await mutate('draft_save', { text, sourceId: m.id, sourceRevision: m.revision });
+  } else {
+    const own = records(snap(), 'draft').find(r => r.data.sourceId === m.id && !r.data.aiSuggested);
+    if (own) await mutate('local_delete', { kind: 'draft', id: own.id });
+  }
+}
+
+/**
+ * Keeps the reply box in step with its text: it grows to fit a draft, the bracketed choices
+ * are re-read as the user types, and Restore goes once they edit.
+ */
+function syncReplyBox(field) {
+  if (!field) return;
+  field.style.height = 'auto';
+  field.style.height = `${Math.min(Math.max(field.scrollHeight + 2, 88), 360)}px`;
+  const form = field.closest('form');
+  const checks = form?.querySelector('[data-draft-checks]');
+  if (!checks) return;
+  checks.innerHTML = draftChecks(field.value);
+  checks.closest('.ws-draft-todo').hidden = !checks.innerHTML.trim() && !form.querySelector('.ws-draft-questions');
+  const ui = state.drafts[form.dataset.key];
+  if (ui?.restore && field.value !== ui.restore.replaced) {
+    ui.restore = null;
+    form.querySelector('[data-restore]')?.remove();
+  }
+}
+
+/** Anchors the options popover to Draft with AI, below it when it fits, else above. */
+function placeDraftPopover() {
+  const pop = document.getElementById('draft-options');
+  const trigger = root.querySelector('[data-action="ai-draft-options"]');
+  if (!pop || !trigger) return;
+  const t = trigger.getBoundingClientRect();
+  const margin = 12;
+  const gap = 6;
+  const height = pop.offsetHeight;
+  const below = innerHeight - t.bottom - gap - margin;
+  const above = t.top - gap - margin;
+  const top = below >= height || below >= above ? t.bottom + gap : t.top - gap - Math.min(height, above);
+  pop.style.top = `${Math.max(margin, Math.min(top, innerHeight - margin - Math.min(height, innerHeight - 2 * margin)))}px`;
+  pop.style.left = `${Math.max(margin, Math.min(t.right - pop.offsetWidth, innerWidth - margin - pop.offsetWidth))}px`;
+  pop.style.maxHeight = `${innerHeight - 2 * margin}px`;
+}
+
+async function openDraftPopover(m) {
+  state.draftPopover = { key: draftKeyOf(m), id: m.id, options: rememberedOptions(m.data.channel), instructions: '' };
+  await render();
+  document.querySelector('#draft-options [data-action="ai-draft"]')?.focus();
+}
+
+/** Closes the popover in place (no re-render, so a click elsewhere still lands). */
+function closeDraftPopover(focusTrigger = true) {
+  if (!state.draftPopover) return;
+  state.draftPopover = null;
+  document.getElementById('draft-options')?.remove();
+  const trigger = root.querySelector('[data-action="ai-draft-options"]');
+  trigger?.setAttribute('aria-expanded', 'false');
+  if (focusTrigger) trigger?.focus();
+}
+
+function dismissDraftError(jobId) {
+  state.draftDismissed = [...state.draftDismissed.filter(id => id !== jobId), jobId].slice(-50);
+  setLocalPref('codemie.draft.dismissed', JSON.stringify(state.draftDismissed));
+}
+
+/** Review & send of a reply that still has a bracketed choice or gap asks first. */
+function confirmUnfinished(id, body, parts) {
+  openModal({
+    title: 'Finish your reply first?',
+    subtitle: 'Claude left these for you to choose or fill in.',
+    body: `<ul class="ws-draft-open-list">${parts.map(p => `<li><code>${e(p)}</code></li>`).join('')}</ul><p class="ws-muted ws-hint">Pick an option or fill in each one, or review the reply as it is.</p>`,
+    submit: 'Review anyway',
+    cancel: 'Edit reply',
+    size: 'sm',
+    onSubmit: async (_form, dialog) => {
+      dialog.close();
+      await prepareReply(id, body);
+      return false;
+    },
+  });
+}
+
+/** Elapsed seconds of running drafts, updated in place (no re-render while the user types). */
+function draftTick() {
+  root.querySelectorAll('.ws-draft-running[data-started]').forEach(row => {
+    const startedAt = Number(row.dataset.started);
+    if (!startedAt) return;
+    const { label, seconds } = runningLabel({ state: row.dataset.state, payload: { startedAt, profile: row.dataset.profile, model: row.dataset.model || null } }, { profiles: state.ai.profiles });
+    const text = row.querySelector('[data-draft-label]');
+    const time = row.querySelector('[data-draft-seconds]');
+    if (text && text.textContent !== label) text.textContent = label;
+    if (time) time.textContent = seconds ? `${seconds} s` : '';
+  });
 }
 
 async function ensureCalendarWindow(force = false) {
@@ -751,18 +953,110 @@ async function handle(action, el) {
     case 'commitment': return commitmentDialog(id ? getRecord('message', id) : null);
     case 'draft-save': {
       const field = document.getElementById('reply-body');
-      const m = getRecord('message', id);
-      const threadIds = new Set(conversation(s, m).map(t => t.id));
-      // One draft per conversation: replace any draft kept against an older message of this chat.
-      const previous = records(s, 'draft').filter(r => threadIds.has(r.data.sourceId) && !r.data.aiSuggested && r.data.sourceId !== id);
-      for (const r of previous) await store.mutate('local_delete', { kind: 'draft', id: r.id });
-      if (field.value.trim()) await mutate('draft_save', { text: field.value, sourceId: id, sourceRevision: m?.revision });
-      else {
-        const own = records(snap(), 'draft').find(r => r.data.sourceId === id && !r.data.aiSuggested);
-        if (own) await mutate('local_delete', { kind: 'draft', id: own.id });
-      }
+      // One draft per conversation: replaces any draft kept against an older message of this chat.
+      await saveReply(getRecord('message', id), field.value);
       field.defaultValue = field.value;
       return toast('Draft saved on this device.', 'success');
+    }
+
+    // Reply drafts with Claude
+    case 'draft-reply': {
+      const m = getRecord('message', id);
+      if (!m) return toast('This message is no longer available. Refresh and try again.', 'error');
+      Object.assign(state, { lane: m.data.lane || 'reply', channel: 'all', search: '', selectedMessage: id, selectedKey: messageKey(m) });
+      await route('inbox');
+      await startDraft(m, rememberedOptions(m.data.channel));
+      document.getElementById('reply-body')?.focus({ preventScroll: true });
+      return;
+    }
+    case 'ai-draft-options': {
+      if (state.draftPopover) return closeDraftPopover();
+      return openDraftPopover(getRecord('message', id));
+    }
+    case 'ai-draft-pick': {
+      const pop = state.draftPopover;
+      const [field, value] = ['intent', 'tone', 'length'].map(f => [f, el.dataset[`draft${f[0].toUpperCase()}${f.slice(1)}`]]).find(([, v]) => v) || [];
+      if (!pop || !field) return;
+      pop.options = pickOption(pop.options, field, value);
+      el.closest('.ws-draft-chips').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === el)));
+      const times = document.getElementById('draft-free-times');
+      if (times) times.checked = pop.options.includeFreeTimes;
+      return;
+    }
+    case 'ai-draft-free-times': if (state.draftPopover) state.draftPopover.options = { ...state.draftPopover.options, includeFreeTimes: el.checked }; return;
+    case 'ai-draft-cancel': return closeDraftPopover();
+    case 'ai-draft': {
+      const pop = state.draftPopover;
+      if (!pop) return;
+      const m = getRecord('message', pop.id);
+      setLocalPref(optionsKey(m?.data.channel), JSON.stringify(pop.options));
+      closeDraftPopover(false);
+      await startDraft(m, pop.options, pop.instructions);
+      document.getElementById('reply-body')?.focus({ preventScroll: true });
+      return;
+    }
+    case 'ai-draft-stop':
+      try {
+        await mutate('job_cancel', { id });
+      } catch (err) {
+        // Finished a moment ago: its result (or error) is already on its way.
+        if (err?.code !== 'conflict') throw err;
+      }
+      return;
+    case 'ai-draft-regenerate': {
+      const m = getRecord('message', id);
+      const options = latestDraft(s, draftKeyOf(m))?.data.options || rememberedOptions(m.data.channel);
+      return startDraft(m, options, options.instructions);
+    }
+    case 'ai-draft-retry': case 'ai-draft-choose': {
+      const request = s.jobs.find(j => j.id === id)?.payload?.request || {};
+      if (action === 'ai-draft-choose' && !(await ensureClaudeChoice())) return;
+      dismissDraftError(id);
+      return startDraft(getRecord('message', request.sourceId) || getRecord('message', state.selectedMessage), request, request.instructions);
+    }
+    case 'ai-draft-dismiss': dismissDraftError(id); return render();
+    case 'ai-draft-keep': case 'ai-draft-replace': {
+      const m = getRecord('message', id);
+      const ai = latestDraft(s, draftKeyOf(m));
+      const field = document.getElementById('reply-body');
+      if (!ai || !field) return render();
+      const choice = action === 'ai-draft-keep' ? 'keep' : 'replace';
+      const { text, restore } = resolveConfirm({ current: field.value, text: ai.data.text }, choice);
+      Object.assign(draftUi(draftKeyOf(m)), choice === 'keep' ? { kept: ai.revision, confirm: null, restore: null } : { seen: ai.revision, kept: null, confirm: null, restore });
+      field.value = text;
+      await saveReply(m, text);
+      document.getElementById('reply-body')?.focus({ preventScroll: true });
+      return;
+    }
+    case 'ai-draft-restore': {
+      const m = getRecord('message', id);
+      const ui = draftUi(draftKeyOf(m));
+      const text = restoreText(ui.restore);
+      // Restoring answers "Replace your text?" with Keep mine after all.
+      Object.assign(ui, { restore: null, seen: null, kept: latestDraft(s, draftKeyOf(m))?.revision ?? null });
+      const field = document.getElementById('reply-body');
+      if (field) field.value = text;
+      await saveReply(m, text);
+      document.getElementById('reply-body')?.focus({ preventScroll: true });
+      return;
+    }
+    case 'ai-draft-choice': case 'ai-draft-gap': {
+      const field = document.getElementById('reply-body');
+      const index = Number(el.dataset.index);
+      if (!field) return;
+      if (action === 'ai-draft-gap') {
+        const gap = gapsIn(field.value)[index];
+        field.focus();
+        if (gap) field.setSelectionRange(gap.start, gap.end);
+        return;
+      }
+      const choice = choicesIn(field.value)[index];
+      if (!choice) return;
+      field.value = chooseOption(field.value, index, el.dataset.option);
+      field.focus();
+      field.setSelectionRange(choice.start + el.dataset.option.length, choice.start + el.dataset.option.length);
+      syncReplyBox(field);
+      return;
     }
     case 'action-detail': {
       const r = getRecord('action', id);
@@ -829,9 +1123,12 @@ async function submitForm(form) {
       const key = form.dataset.key || id;
       // A re-render can replace the form mid-request; never prepare two sends for one reply.
       if (replyInFlight.has(key)) return undefined;
+      const body = String(f.get('body') || '');
+      const open = unfinishedParts(body);
+      if (open.length) return confirmUnfinished(id, body, open);
       replyInFlight.add(key);
       try {
-        return await prepareReply(id, String(f.get('body') || ''));
+        return await prepareReply(id, body);
       } finally {
         replyInFlight.delete(key);
       }
@@ -907,6 +1204,12 @@ document.addEventListener('input', ev => {
       input?.setSelectionRange(pos, pos);
     }, 220);
   }
+  if (ev.target.id === 'reply-body') syncReplyBox(ev.target);
+  if (ev.target.id === 'draft-instructions' && state.draftPopover) {
+    state.draftPopover.instructions = ev.target.value;
+    const count = document.querySelector('[data-draft-count]');
+    if (count) count.textContent = ev.target.value.length ? `${ev.target.value.length.toLocaleString('en-US')} / 1,000` : 'Optional';
+  }
   if (ev.target.id === 'today-note') {
     clearTimeout(noteTimer);
     const label = document.getElementById('note-state');
@@ -916,8 +1219,42 @@ document.addEventListener('input', ev => {
   }
 });
 
+// The draft options popover: Esc closes it, ⌘↵ drafts, Tab stays inside it.
 document.addEventListener('keydown', ev => {
-  if (!ready || modalOpen() || editing() || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const pop = state.draftPopover && document.getElementById('draft-options');
+  if (!pop || modalOpen()) return;
+  if (ev.key === 'Escape') {
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeDraftPopover();
+  } else if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
+    ev.preventDefault();
+    pop.querySelector('[data-action="ai-draft"]')?.click();
+  } else if (ev.key === 'Tab') {
+    const focusable = [...pop.querySelectorAll('button:not(:disabled),textarea,input')].filter(x => x.offsetParent !== null);
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!pop.contains(document.activeElement)) {
+      ev.preventDefault();
+      first?.focus();
+    } else if (ev.shiftKey && document.activeElement === first) {
+      ev.preventDefault();
+      last?.focus();
+    } else if (!ev.shiftKey && document.activeElement === last) {
+      ev.preventDefault();
+      first?.focus();
+    }
+  }
+}, true);
+
+document.addEventListener('mousedown', ev => {
+  if (state.draftPopover && !ev.target.closest('#draft-options, [data-action="ai-draft-options"]')) closeDraftPopover(false);
+}, true);
+window.addEventListener('resize', placeDraftPopover);
+document.addEventListener('scroll', placeDraftPopover, true);
+
+document.addEventListener('keydown', ev => {
+  if (!ready || modalOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
   if (state.route === 'calendar') {
     const keys = { t: () => setCalendar(todayDate()), ArrowLeft: () => stepCalendar(-1), ArrowRight: () => stepCalendar(1), d: () => setCalendar(state.calendarDate, 'day'), w: () => setCalendar(state.calendarDate, 'week'), m: () => setCalendar(state.calendarDate, 'month'), a: () => setCalendar(state.calendarDate, 'agenda') };
     if (keys[ev.key]) {
@@ -1050,7 +1387,9 @@ async function boot() {
   });
   store.subscribe(result => {
     applyTheme(result.snapshot.settings.theme);
-    if (!ready || modalOpen() || legacyMounted || editing()) return;
+    if (!ready || modalOpen() || legacyMounted || state.draftPopover) return;
+    // While the user types a reply, only their own draft (its progress or result) re-renders it.
+    if (editing() && !(document.activeElement?.id === 'reply-body' && draftSignature(result.snapshot) !== lastDraftSignature)) return;
     render();
   });
   state.calendarDate = todayDate();
@@ -1086,6 +1425,7 @@ async function boot() {
   window.addEventListener('cm-theme-change', event => mutate('settings_update', { theme: event.detail }).catch(fail));
   const authTimer = setInterval(() => { if (store.get()?.authPending) store.refresh().catch(() => {}); }, 1500);
   setInterval(tick, 30_000);
+  setInterval(draftTick, 1000);
   scheduleMinuteRender();
   window.addEventListener('pagehide', () => clearInterval(authTimer), { once: true });
   if (state.route === 'calendar') await ensureCalendarWindow();

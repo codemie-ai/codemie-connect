@@ -3,7 +3,8 @@ import { escapeHtml as e } from './store.js';
 import { icon, microsoftLogo, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, button, card, emptyState, badge } from './ui.js';
 import { eventsOnDay, layoutColumns, freeSlots, visibleEvents, calendarColors } from './calendar-model.js';
-import { attentionMessages, records, active, connectionState, messageTitle, decisions } from './selectors.js';
+import { attentionMessages, records, active, connectionState, messageTitle, decisions, draftKeyOf } from './selectors.js';
+import { claudeAvailable } from './draft-state.js';
 import { dayKey, addDaysToKey, formatDate, formatTime, durationLabel, countdownLabel, greeting, firstName, zonedParts, relativeAge, hourLabel } from './format.js';
 
 export const WIDGETS = {
@@ -32,7 +33,7 @@ export function todayModel(s, hidden, nowMs = Date.now()) {
   const upcoming = timed.filter(t => t.startMs > nowMs);
   const remaining = timed.filter(t => t.endMs > nowMs);
   const busyMinutes = timed.filter(t => t.record.data.showAs !== 'free').reduce((sum, t) => sum + (t.endMin - t.startMin), 0);
-  const free = freeSlots(timed, Math.max(nowMin, WORKDAY_START), WORKDAY_END, 15);
+  const free = freeSlots(timed, Math.max(nowMin, WORKDAY_START), WORKDAY_END, 15, today.allDay);
   const freeMinutes = free.reduce((sum, [a, b]) => sum + (b - a), 0);
   return {
     zone, nowMs, nowMin, todayKey, today, timed, current, upcoming, remaining, busyMinutes, freeMinutes,
@@ -56,7 +57,7 @@ export function today(s, ctx) {
     brief: () => upNextCard(s, m, connected),
     focus: () => glanceCard(s, m, connected),
     calendar: () => scheduleCard(s, m, connected),
-    inbox: () => attentionCard(s, m, connected),
+    inbox: () => attentionCard(s, m, connected, ctx.state?.ai),
     commitments: () => commitmentsCard(s, m, w),
   };
   const layout = w.layout.filter(id => widgets[id]);
@@ -232,7 +233,7 @@ function scheduleCard(s, m, connected) {
     const past = new Date(d.end).getTime() <= m.nowMs;
     return `<button type="button" class="ws-tl-event${past ? ' ws-past' : ''}${height < 34 ? ' ws-compact' : ''}${d.showAs === 'tentative' || d.response === 'tentativelyAccepted' ? ' ws-tentative' : ''}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')};top:${top(t.startMin).toFixed(1)}px;height:${height.toFixed(1)}px;left:calc(${(t.col / t.cols) * 100}% + 2px);width:calc(${100 / t.cols}% - 4px)"><strong>${e(d.title || 'Untitled')}</strong><span>${e(formatTime(d.start, m.zone))}${d.joinUrl ? ' · Teams' : d.location ? ` · ${e(d.location)}` : ''}</span></button>`;
   }).join('');
-  const gaps = freeSlots(all, Math.max(startHour * 60, WORKDAY_START, m.nowMin), Math.min(endHour * 60, WORKDAY_END), 60)
+  const gaps = freeSlots(all, Math.max(startHour * 60, WORKDAY_START, m.nowMin), Math.min(endHour * 60, WORKDAY_END), 60, allDay)
     .map(([a, b]) => `<div class="ws-tl-free" style="top:${top(a).toFixed(1)}px;height:${(top(b) - top(a)).toFixed(1)}px"><span>Free · ${e(durationLabel(b - a))}</span></div>`).join('');
   const hours = Array.from({ length: endHour - startHour }, (_, i) => `<div class="ws-tl-hour" style="top:${i * hourHeight}px"><span>${e(hourLabel(startHour + i))}</span></div>`).join('');
   const nowLine = m.nowMin >= startHour * 60 && m.nowMin <= endHour * 60 ? `<div class="ws-now-line" data-now-line data-start-hour="${startHour}" data-hour-height="${hourHeight}" style="top:${top(m.nowMin).toFixed(1)}px"><span></span></div>` : '';
@@ -249,15 +250,19 @@ function scheduleCard(s, m, connected) {
 
 // ---------------------------------------------------------------- Attention
 
-function messageRow(s, msg, zone) {
+function messageRow(s, msg, zone, canDraft) {
   const d = msg.data;
   const glyph = d.channel === 'chat' ? teamsGlyph : outlookGlyph;
-  return `<button type="button" class="ws-msg-row" data-action="open-message" data-id="${e(msg.id)}">
+  // Own Outlook messages cannot be answered through Review & send, so they get no draft.
+  const draft = canDraft && (d.channel === 'chat' || !d.isMine)
+    ? `<button type="button" class="ws-row-action" data-action="draft-reply" data-id="${e(msg.id)}" data-key="${e(draftKeyOf(msg))}" aria-label="Draft a reply to ${e(d.from || 'this message')}" title="Draft a reply with Claude">${icon('spark')}<span>Draft reply</span></button>`
+    : '';
+  return `<div class="ws-msg-item${draft ? ' ws-has-action' : ''}"><button type="button" class="ws-msg-row" data-action="open-message" data-id="${e(msg.id)}">
     <span class="ws-msg-avatar">${avatar({ name: d.from || '?', size: 32, seed: d.fromAddress || d.fromId || d.from })}<span class="ws-msg-glyph">${glyph}</span></span>
     <span class="ws-msg-main"><span class="ws-msg-top"><strong>${e(d.from || 'Unknown sender')}</strong><time>${e(relativeAge(d.at, zone))}</time></span>
     <span class="ws-msg-title">${d.lane === 'critical' ? badge('Critical', 'error') : ''}${e(listTitle(msg, s))}</span>
     <span class="ws-msg-preview">${e(d.text || '')}</span></span>
-  </button>`;
+  </button>${draft}</div>`;
 }
 
 /** 1:1 Teams chats are titled with the other person, so show the channel instead of a repeat. */
@@ -267,15 +272,16 @@ export function listTitle(msg, s) {
   return title;
 }
 
-function attentionCard(s, m, connected) {
+function attentionCard(s, m, connected, ai) {
   if (!connected) {
     return card({ title: 'Needs your reply', iconName: 'reply', className: 'ws-attention', body: emptyState({ iconName: 'inbox', title: 'Replies you owe, in one list', text: 'Direct questions from Outlook and Teams, with the newest first.' }) });
   }
   const items = m.attention.slice(0, 6);
+  const canDraft = claudeAvailable(ai);
   return card({
     title: 'Needs your reply', iconName: 'reply', className: 'ws-attention',
     actions: button(m.attention.length ? `Inbox · ${m.attention.length}` : 'Inbox', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'inbox', 'data-lane': 'reply' } }),
-    body: items.length ? `<div class="ws-msg-list">${items.map(msg => messageRow(s, msg, m.zone)).join('')}</div>` : emptyState({ iconName: 'check-circle', title: "You're all caught up", text: 'Nothing in Outlook or Teams is waiting for your reply.' }),
+    body: items.length ? `<div class="ws-msg-list">${items.map(msg => messageRow(s, msg, m.zone, canDraft)).join('')}</div>` : emptyState({ iconName: 'check-circle', title: "You're all caught up", text: 'Nothing in Outlook or Teams is waiting for your reply.' }),
   });
 }
 

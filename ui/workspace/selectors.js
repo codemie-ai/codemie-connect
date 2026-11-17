@@ -76,12 +76,40 @@ function currentJobPolicy(s, job) {
   return true;
 }
 
+/** Claude work whose failures are shown where it was asked for (the reply box), not as decisions. */
+export const INLINE_AI_JOBS = new Set(['ai_draft', 'ai_summarize']);
+
 /** Prepared actions and failed/blocked work that need a human decision. */
 export function decisions(s) {
   return [
     ...records(s, 'action').filter(r => ['prepared', 'dispatching', 'unknown_outcome', 'rejected'].includes(r.data.state)),
-    ...s.jobs.filter(j => ['failed', 'blocked'].includes(j.state) && j.kind !== 'sync' && currentJobPolicy(s, j)),
+    ...s.jobs.filter(j => ['failed', 'blocked'].includes(j.state) && j.kind !== 'sync' && !INLINE_AI_JOBS.has(j.kind) && currentJobPolicy(s, j)),
   ];
+}
+
+// ---------------------------------------------------------------- reply drafts (DESIGN 6.4)
+
+/**
+ * What one AI draft answers: an Outlook message (its id, as Review & send does) or a whole
+ * Teams chat (the row key). Matches `draft_key` in `ai_jobs.rs`.
+ */
+export const draftKeyOf = m => (m.data.channel === 'chat' ? messageKey(m) : m.id);
+
+/** The newest `ai_draft` job for a draft key; the snapshot lists jobs newest first. */
+export function draftJob(s, key) {
+  const jobs = s.jobs.filter(j => j.kind === 'ai_draft' && j.payload?.draftKey === key);
+  return jobs.find(j => ['queued', 'running'].includes(j.state)) || jobs.sort((a, b) => (b.dueAt || 0) - (a.dueAt || 0))[0] || null;
+}
+
+/** Claude's draft record for a draft key (`ai:<key>`). */
+export function latestDraft(s, key) {
+  return s.records.find(r => r.kind === 'draft' && r.data.aiSuggested && (r.data.draftKey === key || r.id === `ai:${key}`)) || null;
+}
+
+/** The reply the user saved in Connect for a conversation (one per conversation). */
+export function savedReply(s, m) {
+  const threadIds = new Set(conversation(s, m).map(t => t.id));
+  return records(s, 'draft').filter(r => threadIds.has(r.data.sourceId) && !r.data.aiSuggested).sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
 }
 
 export const syncRunning = s => s.jobs.some(j => j.kind === 'sync' && ['queued', 'running'].includes(j.state));

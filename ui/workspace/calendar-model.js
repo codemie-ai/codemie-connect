@@ -160,10 +160,21 @@ export function layoutColumns(items, minMinutes = 20) {
   return placed;
 }
 
-/** Free gaps between `fromMin` and `toMin` not covered by busy timed items (minutes of day). */
-export function freeSlots(timed, fromMin, toMin, minLength = 30) {
+/** An all-day event shown as out of office or busy takes the whole working day (as `slots.rs` does for drafts). */
+export const blocksWorkday = r => {
+  const d = r?.data || {};
+  return d.allDay === true && ['oof', 'busy'].includes(d.showAs) && d.response !== 'declined' && !d.cancelled;
+};
+
+/**
+ * Free gaps between `fromMin` and `toMin` not covered by busy timed items (minutes of day).
+ * Declined meetings and items shown as free do not count; `allDay` items of the same day can
+ * take the whole day. The same rule offers free times to "Propose times" drafts.
+ */
+export function freeSlots(timed, fromMin, toMin, minLength = 30, allDay = []) {
+  if (allDay.some(blocksWorkday)) return [];
   const busy = timed
-    .filter(t => t.record?.data?.showAs !== 'free')
+    .filter(t => t.record?.data?.showAs !== 'free' && t.record?.data?.response !== 'declined')
     .map(t => [Math.max(t.startMin, fromMin), Math.min(t.endMin, toMin)])
     .filter(([s, e]) => e > s)
     .sort((a, b) => a[0] - b[0]);
