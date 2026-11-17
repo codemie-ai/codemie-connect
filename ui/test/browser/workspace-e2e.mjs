@@ -1889,9 +1889,25 @@ for (const theme of ['dark', 'light']) {
     await page.click(`${SHEET} button:has-text("Try again")`);
     await page.waitForSelector(`${SHEET} :text("www.example.com is not a CodeMie address")`);
     await shot(page, `${theme}-codemie-org-address-error`);
-    const calls = await page.evaluate(() => window.__bridgeCalls.length);
-    assert(calls >= 0, 'bridge reachable');
     await page.click(`${SHEET} button[title^="Close"]`);
+    await page.waitForSelector(SHEET, { state: 'detached' });
+  });
+  // Review finding 6: the sheet is a dialog — focus goes into it, Escape closes it, and the page
+  // behind it does not take keys meanwhile.
+  await check(`${theme} codemie: the setup sheet keeps the keyboard`, async () => {
+    const { page } = fresh;
+    await page.click('.ws-nav button[data-route=calendar]');
+    await page.waitForSelector('.ws-page-calendar');
+    const before = await page.locator('.ws-page-calendar h1').first().innerText();
+    await page.evaluate(() => window.__workspace.codemie.handle('cm-setup-open', { dataset: {} }));
+    await page.waitForSelector(SHEET);
+    await page.waitForTimeout(250);
+    assert(await page.evaluate(() => !!document.activeElement?.closest('#cm-sheet-host')), 'focus is not in the sheet');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('m');
+    assert((await page.locator('.ws-page-calendar h1').first().innerText()) === before, 'the calendar behind the sheet moved');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector(SHEET, { state: 'detached' });
   });
   await check(`${theme} codemie: first launch no page errors`, async () => assert(fresh.errors.length === 0, fresh.errors.join(' | ')));
   await fresh.context.close().catch(() => {});

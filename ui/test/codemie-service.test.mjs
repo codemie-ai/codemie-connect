@@ -90,6 +90,20 @@ test('load_reads_everything_once', async () => {
   assert.ok(h.calls.length > 0, 'reads again after 5 s');
 });
 
+// Review finding 4b: a forced reload (after an install) must not return a read that started before it.
+test('forced_load_during_a_load_reads_again', async () => {
+  let release;
+  let reads = 0;
+  const h = harness({ direct: { read_codemie_profiles: async () => { reads++; if (reads === 1) await new Promise((r) => { release = r; }); return { state: 'valid', active: 'prod', profiles: [{ name: 'prod' }] }; } } });
+  const first = h.svc.load();
+  await new Promise((r) => setImmediate(r));
+  const forced = h.svc.load({ force: true });
+  release();
+  await first;
+  await forced;
+  assert.equal(reads, 2);
+});
+
 test('load_skips_config_while_setup_runs', async () => {
   const h = harness({ setupRunning: () => true });
   await h.svc.load({ force: true });

@@ -286,6 +286,7 @@ function renderSheet() {
   const html = codemie.sheet();
   if (!html) {
     host?.querySelector('.cm-sheet')?.remove();
+    root.inert = false;
     return;
   }
   if (!host) {
@@ -294,11 +295,14 @@ function renderSheet() {
     document.body.append(host);
   }
   let sheetEl = host.querySelector('.cm-sheet');
-  if (!sheetEl) {
+  const opening = !sheetEl;
+  if (opening) {
     sheetEl = document.createElement('div');
     sheetEl.className = 'cm-sheet';
     host.append(sheetEl);
   }
+  // A dialog: the page behind takes no focus, clicks or keys while it is open.
+  root.inert = true;
   const body = sheetEl.querySelector('.cm-stage-body');
   const scroll = body?.scrollTop || 0;
   const stepKey = sheetEl.querySelector('[data-step-key]')?.dataset.stepKey;
@@ -307,7 +311,19 @@ function renderSheet() {
   const nextBody = sheetEl.querySelector('.cm-stage-body');
   if (nextBody && sheetEl.querySelector('[data-step-key]')?.dataset.stepKey === stepKey) nextBody.scrollTop = scroll;
   if (refocus) soleMatch(sheetEl, refocus)?.focus({ preventScroll: true });
+  // Opening (or a focus left behind on a control that is gone): the panel takes focus.
+  if (opening || !sheetEl.contains(document.activeElement)) sheetEl.querySelector('.cm-sheet-panel')?.focus({ preventScroll: true });
 }
+
+const sheetOpen = () => !!document.querySelector('#cm-sheet-host .cm-sheet');
+
+// The setup sheet: Escape closes it (as its close button does), unless a dialog is open over it.
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape' || !sheetOpen() || modalOpen()) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  codemie.handle('cm-sheet-close', { dataset: {} }).catch(fail);
+});
 
 function ensureSelection(s) {
   if (state.lane === 'decisions') return;
@@ -1427,7 +1443,7 @@ document.addEventListener('input', ev => {
 // The draft options popover: Esc closes it, ⌘↵ drafts, Tab stays inside it.
 document.addEventListener('keydown', ev => {
   const pop = state.draftPopover && document.getElementById('draft-options');
-  if (!pop || modalOpen()) return;
+  if (!pop || modalOpen() || sheetOpen()) return;
   if (ev.key === 'Escape') {
     ev.preventDefault();
     ev.stopPropagation();
@@ -1459,7 +1475,7 @@ window.addEventListener('resize', placeDraftPopover);
 document.addEventListener('scroll', placeDraftPopover, true);
 
 document.addEventListener('keydown', ev => {
-  if (!ready || modalOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if (!ready || modalOpen() || sheetOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
   if (state.route === 'calendar') {
     const keys = { t: () => setCalendar(todayDate()), ArrowLeft: () => stepCalendar(-1), ArrowRight: () => stepCalendar(1), d: () => setCalendar(state.calendarDate, 'day'), w: () => setCalendar(state.calendarDate, 'week'), m: () => setCalendar(state.calendarDate, 'month'), a: () => setCalendar(state.calendarDate, 'agenda') };
     if (keys[ev.key]) {

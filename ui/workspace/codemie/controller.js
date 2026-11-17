@@ -138,9 +138,10 @@ export function createCodemieController(deps) {
     });
   }
 
+  /** A failure the CLI shows on screen (`detectFailure`: `{ id, message, line }`), in our words. */
   function failureNotice(f) {
-    if (f.id === 'ollamaNotRunning') return 'Ollama is not running. Open the Ollama app (it sits in the menu bar), then try again.';
-    return `CodeMie could not check your project’s settings${f.reason ? ` (${f.reason})` : ''}. Setup carries on.`;
+    if (f.id === 'ollamaDown') return `${(f.message || 'Ollama is not running').replace(/\.\s*$/, '')}. Open the Ollama app (it sits in the menu bar), then try again.`;
+    return `CodeMie could not check your project’s settings${f.message ? ` (${f.message})` : ''}. Setup carries on.`;
   }
 
   /** Run `codemie setup` for the open sheet. Lists the CLI sends become the sheet's choice step. */
@@ -168,10 +169,11 @@ export function createCodemieController(deps) {
       const result = await service.hold(() => session.run(plan, ui));
       entry.append(`Saved profile ${result.profileName}`);
       entry.finish(0);
+      // Read what the CLI wrote whether or not the sheet is still open.
+      await service.load({ force: true });
       if (sh !== s) return;
       s.pending = null;
       d.signin = 'idle';
-      await service.load({ force: true });
       if (s.mode === 'add' && !d.makeActive && before && before !== result.profileName) await service.switchProfile(before);
       s.saved = result.profileName;
       s.step = s.mode === 'setup' ? afterAccountStep() : 'done';
@@ -179,6 +181,8 @@ export function createCodemieController(deps) {
     } catch (err) {
       entry.append(err?.cancelled ? 'Stopped' : err?.message || String(err));
       entry.finish(err?.cancelled ? 130 : 1);
+      // A cancelled or failed run may still have written to the config: read it, sheet open or not.
+      service.load({ force: true }).catch(() => {});
       if (sh !== s) return;
       s.pending = null;
       d.signin = 'idle';
@@ -187,9 +191,9 @@ export function createCodemieController(deps) {
         if (!err?.cancelled) toast(err?.message || String(err), 'error');
       } else {
         s.step = 'signin';
-        d.error = err?.cancelled ? null : { title: 'Setup did not finish', text: `${err?.message || String(err)} Nothing was saved.`, cmd: 'codemie setup', output: err?.raw || '' };
+        // The sentence only, never the driver's screen: it can hold a key typed into a prompt.
+        d.error = err?.cancelled ? null : { title: 'Setup did not finish', text: `${err?.message || String(err)} Nothing was saved. Health → What CodeMie ran lists what Connect asked CodeMie.` };
       }
-      service.load({ force: true }).catch(() => {});
     } finally {
       render();
     }
@@ -235,12 +239,13 @@ export function createCodemieController(deps) {
         try {
           await service.installAgent(agent);
         } catch (err) {
-          if (sh !== s) return undefined;
+          if (sh !== s || d.signin !== 'installing') return undefined;
           d.signin = 'idle';
           d.error = { title: `${agent === 'kimi' ? 'Kimi Code' : 'Claude Code'} was not installed`, text: err?.message || String(err), cmd: err?.cmd, output: err?.output };
           return render();
         }
-        if (sh !== s) return undefined;
+        // Cancel while it installed: the install stays, setup does not start.
+        if (sh !== s || d.signin !== 'installing') return undefined;
       }
     }
     if (d.choice === 'org') {

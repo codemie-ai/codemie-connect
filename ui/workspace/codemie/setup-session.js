@@ -14,8 +14,28 @@ const fail = (step, message) => Object.assign(new Error(message), { step });
 export function createSetupSession({ startSetup, cancelSetup, readProfiles }) {
   let active = false;
 
-  async function answer(prompt, plan, ui) {
+  /**
+   * A question the CLI asks again after it was answered means the answer did not work: an SSO
+   * sign-in that timed out re-asks the address, a rejected key re-asks the key. Answering the
+   * same thing again would loop (the browser opening every two minutes), so the run stops with
+   * a sentence instead.
+   */
+  function once(asked, key, repeatMessage) {
+    if (asked.has(key)) throw fail(key.split(':')[0], repeatMessage);
+    asked.add(key);
+  }
+
+  async function answer(prompt, plan, ui, asked) {
     const { id, options = [], message } = prompt;
+    if (id === 'codemieUrl') {
+      const url = plan.url ?? stripHint(message).defaultValue ?? '';
+      let host = url;
+      try { host = new URL(url).host; } catch { /* keep as typed */ }
+      once(asked, 'codemieUrl', `CodeMie at ${host} did not finish sign-in. If it runs inside your company or client network, connect to the VPN, then try again.`);
+      return url;
+    }
+    if (id === 'credential') once(asked, `credential:${stripHint(message).text}`, `CodeMie did not accept the answer to “${stripHint(message).text}”. Check it and try again.`);
+    if (id === 'profileName') once(asked, 'profileName', 'CodeMie did not accept the profile name. Choose another one and try again.');
     if (id === 'gate') {
       const i = options.findIndex((o) => (plan.mode === 'update' ? /Update an existing profile/i : /Add a new profile/i).test(o));
       if (i === -1) throw fail('gate', 'This CodeMie version asks something Connect does not expect.');
@@ -31,7 +51,6 @@ export function createSetupSession({ startSetup, cancelSetup, readProfiles }) {
       if (i === -1) throw fail('provider', `This CodeMie version does not offer ${plan.provider}.`);
       return i;
     }
-    if (id === 'codemieUrl') return plan.url ?? stripHint(message).defaultValue ?? '';
     if (id === 'credential') {
       const value = credentialAnswer(message, plan.fields);
       if (value === null) throw fail('credential', `CodeMie asked something Connect does not know: ${message}`);
@@ -54,10 +73,11 @@ export function createSetupSession({ startSetup, cancelSetup, readProfiles }) {
     active = true;
     let browserShown = false;
     const failuresShown = new Set();
+    const asked = new Set();
     try {
       const result = await startSetup({
         answerManualModel: true,
-        onPrompt: (prompt) => answer(prompt, plan, ui),
+        onPrompt: (prompt) => answer(prompt, plan, ui, asked),
         onLog: (text) => {
           if (!browserShown && BROWSER.test(String(text))) {
             browserShown = true;

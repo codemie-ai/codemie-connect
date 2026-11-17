@@ -1557,3 +1557,5 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .cm-app-extra{flex-basis:100%}
 .cm-app-extra .cm-problem{margin:0}
 .cm-app-copy .cm-app-note{margin-top:2px}
+/* the panel takes focus when the sheet opens; it is a container, not a control */
+.cm-sheet-panel:focus{outline:none}

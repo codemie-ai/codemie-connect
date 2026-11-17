@@ -79,7 +79,7 @@ export function sheetMarkup(sh, cm, prefs = {}) {
   const title = sh.mode === 'add' ? 'Add a profile' : sh.mode === 'edit' ? 'Change project and model' : sh.mode === 'relogin' ? 'Sign in again' : 'Set up CodeMie';
   const view = STEP_VIEWS[sh.step](sh, cm, prefs);
   const compact = sh.mode === 'relogin';
-  return `<div class="cm-sheet-panel${compact ? ' cm-compact' : ''}" role="dialog" aria-modal="true" aria-label="${e(title)}" data-step-key="${e(`${sh.mode}:${sh.step}:${sh.pending?.id || ''}`)}">
+  return `<div class="cm-sheet-panel${compact ? ' cm-compact' : ''}" role="dialog" aria-modal="true" aria-label="${e(title)}" tabindex="-1" data-step-key="${e(`${sh.mode}:${sh.step}:${sh.pending?.id || ''}`)}">
     ${compact ? '' : `<aside class="cm-rail">
       <div class="cm-rail-brand"><img class="ws-logo-dark" src="workspace/assets/logo-full-dark.svg" alt="EPAM AI/Run CodeMie"><img class="ws-logo-light" src="workspace/assets/logo-full-light.svg" alt="EPAM AI/Run CodeMie"></div>
       <div class="cm-rail-title">${e(title)}</div>

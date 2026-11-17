@@ -130,6 +130,80 @@ test('auto_open_once', async () => {
   assert.equal(again.c.sheet(), '');
 });
 
+/** A session whose run settles when the test says so (cancel rejects it, as the driver does). */
+function controllableSession() {
+  const runs = [];
+  let active = false;
+  let settle = null;
+  return {
+    runs,
+    running: () => active,
+    run: (plan, ui) => new Promise((resolve, reject) => {
+      runs.push({ plan, ui });
+      active = true;
+      settle = { resolve: (v) => { active = false; resolve(v); }, reject: (e) => { active = false; reject(e); } };
+    }),
+    cancel: async () => { settle?.reject(Object.assign(new Error('cancelled'), { cancelled: true })); return true; },
+    fail: (err) => settle.reject(err),
+  };
+}
+const tick = () => new Promise((r) => setImmediate(r));
+
+// Review finding 2: the driver reports a stopped Ollama as `ollamaDown` with its own message.
+test('ollama_down_notice_is_named', async () => {
+  const session = sessionFake();
+  const h = controllerHarness({ service: freshService(), session });
+  await openAtSignin(h);
+  await h.c.handle('cm-signin-start', el());
+  session.runs[0].ui.onFailure({ id: 'ollamaDown', message: 'Ollama is not running at http://localhost:11434', line: 3 });
+  assert.match(h.c.sheet(), /Ollama is not running/);
+  assert.doesNotMatch(h.c.sheet(), /could not check your project/);
+  session.runs[0].ui.onFailure({ id: 'authTimeout', message: 'timeout of 30000ms exceeded', line: 5 });
+  assert.match(h.c.sheet(), /timeout of 30000ms exceeded/);
+});
+
+// Review finding 3: the driver's screen can hold what was typed into a provider's key prompt.
+test('setup_screen_never_reaches_the_page', async () => {
+  const session = controllableSession();
+  const h = controllerHarness({ service: freshService(), session });
+  await openAtSignin(h);
+  await h.c.handle('cm-signin-start', el());
+  session.fail({ step: null, message: 'setup exited with code 1', raw: '? API Key: sk-live-secret\nError: 401' });
+  await tick();
+  const html = h.c.sheet();
+  assert.match(html, /Setup did not finish/);
+  assert.doesNotMatch(html, /sk-live-secret/);
+});
+
+// Review finding 4a: closing mid-run cancels setup; what the CLI already wrote must still show.
+test('closing_mid_run_reloads_once_settled', async () => {
+  const session = controllableSession();
+  const service = freshService();
+  const h = controllerHarness({ service, session });
+  await openAtSignin(h);
+  await h.c.handle('cm-signin-start', el());
+  await h.c.handle('cm-sheet-close', el());
+  await tick();
+  assert.ok(service.calls.some(([name, opts]) => name === 'load' && opts?.force), 'reloads after the cancelled run');
+});
+
+// Review finding 5: Cancel while the subscription's agent installs must stop there.
+test('cancel_during_subscription_install_does_not_start_setup', async () => {
+  let finishInstall;
+  const service = freshService({ installAgent: () => new Promise((r) => { finishInstall = r; }) });
+  const session = sessionFake();
+  const h = controllerHarness({ service, session });
+  await openAtSignin(h);
+  await h.c.change({ type: 'radio', value: 'subscription', dataset: { action: 'cm-draft-radio', key: 'choice' }, closest: () => null });
+  const started = h.c.handle('cm-signin-start', el());
+  await tick();
+  assert.match(h.c.sheet(), /Installing Claude Code first/);
+  await h.c.handle('cm-signin-cancel', el());
+  finishInstall();
+  await started;
+  assert.equal(session.runs.length, 0);
+});
+
 test('closing_a_running_setup_cancels_it_and_says_so', async () => {
   const session = sessionFake();
   const h = controllerHarness({ service: freshService(), session });

@@ -156,9 +156,16 @@ export function createCodemieService({ invoke, listen, runLog, platform, now = D
   }
 
   /** Read everything. Skipped while setup writes the config; throttled to once per 5 s. */
+  let queued = null;
   function load({ force = false } = {}) {
     if (setupRunning()) return Promise.resolve();
-    if (loading) return loading;
+    // A forced reload asked for during a read (after an install, say) reads again once that
+    // read ends: the one in flight started before the change.
+    if (loading) {
+      if (!force) return loading;
+      queued ||= loading.then(() => { queued = null; return load({ force: true }); });
+      return queued;
+    }
     if (!force && cm.loaded && now() - lastLoad < RELOAD_MS) return Promise.resolve();
     lastLoad = now();
     loading = (async () => {

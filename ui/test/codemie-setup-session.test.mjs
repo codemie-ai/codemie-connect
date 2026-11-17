@@ -101,6 +101,33 @@ test('subscription_model_is_chosen_from_the_list', async () => {
   assert.equal(asked[0].id, 'model');
 });
 
+// Review finding 1: an SSO sign-in that times out makes the CLI ask the address again; answering
+// it again opened the browser every two minutes, forever.
+test('repeated_sign_in_question_stops_the_run', async () => {
+  const d = fakeDriver([
+    { kind: 'list', id: 'provider', message: 'Choose your LLM provider:', options: PROVIDERS },
+    { kind: 'input', id: 'codemieUrl', message: 'CodeMie organization URL: (https://codemie.lab.epam.com)' },
+    { kind: 'input', id: 'codemieUrl', message: 'CodeMie organization URL: (https://codemie.acme-bank.com)' },
+  ]);
+  const session = createSetupSession({ startSetup: d.startSetup, cancelSetup: async () => true, readProfiles: profilesWith('default') });
+  await assert.rejects(() => session.run({ mode: 'add', provider: 'ai-run-sso', url: 'https://codemie.acme-bank.com' }, { choose: async () => 0 }), (err) => {
+    assert.match(err.message, /CodeMie at codemie\.acme-bank\.com did not finish sign-in/);
+    assert.equal(err.step, 'codemieUrl');
+    return true;
+  });
+  assert.deepEqual(d.answers, [0, 'https://codemie.acme-bank.com']);
+});
+
+test('rejected_credential_is_not_retyped', async () => {
+  const d = fakeDriver([
+    { kind: 'input', id: 'credential', message: 'API Key (optional):' },
+    { kind: 'input', id: 'credential', message: 'API Key (optional):' },
+  ]);
+  const session = createSetupSession({ startSetup: d.startSetup, cancelSetup: async () => true, readProfiles: profilesWith('default') });
+  await assert.rejects(() => session.run({ mode: 'add', provider: 'litellm', fields: { key: 'sk-1' } }, { choose: async () => 0 }), /did not accept the answer to “API Key/);
+  assert.deepEqual(d.answers, ['sk-1']);
+});
+
 test('browser_line_fires_once', async () => {
   const d = fakeDriver([], { logs: ['Opening browser for authentication...\r\n', 'still Opening browser for authentication'] });
   let opened = 0;
