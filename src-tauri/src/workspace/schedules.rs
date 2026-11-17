@@ -5,6 +5,18 @@ use chrono_tz::Tz;
 /// Daily recurrence has a local wall time and an IANA zone. Folds execute once;
 /// gaps advance to the next valid minute instead of dropping the occurrence.
 pub fn next_occurrence(zone: &str, time: &str, weekdays: bool, after: i64) -> Result<i64> {
+    const WEEKDAYS: [u8; 5] = [1, 2, 3, 4, 5];
+    const EVERY_DAY: [u8; 7] = [1, 2, 3, 4, 5, 6, 7];
+    next_occurrence_on(
+        zone,
+        time,
+        if weekdays { &WEEKDAYS } else { &EVERY_DAY },
+        after,
+    )
+}
+
+/// Like [`next_occurrence`] for any set of ISO weekdays (1 = Monday ... 7 = Sunday).
+pub fn next_occurrence_on(zone: &str, time: &str, days: &[u8], after: i64) -> Result<i64> {
     let tz: Tz = zone
         .parse()
         .map_err(|_| WorkspaceError::new("validation", "Select a valid IANA time zone."))?;
@@ -16,7 +28,7 @@ pub fn next_occurrence(zone: &str, time: &str, weekdays: bool, after: i64) -> Re
         .date_naive();
     for day in 0..10 {
         let date = start + chrono::Duration::days(day);
-        if weekdays && date.weekday().num_days_from_monday() >= 5 {
+        if !days.contains(&(date.weekday().number_from_monday() as u8)) {
             continue;
         }
         let local = date

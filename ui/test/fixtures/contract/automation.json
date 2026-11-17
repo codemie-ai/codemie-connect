@@ -1,0 +1,90 @@
+{
+  "event": {
+    "connectionId": null,
+    "data": {
+      "ai": {
+        "model": null,
+        "profile": null
+      },
+      "capUsd": null,
+      "catchUp": false,
+      "deliver": {
+        "draftReply": true,
+        "notify": false,
+        "today": true
+      },
+      "enabled": true,
+      "id": "auto-event",
+      "name": "Draft replies to Ann",
+      "prompt": "Draft a short reply to the message that started this run.",
+      "read": {
+        "calendarToday": false,
+        "commitmentsNotes": false,
+        "mailFromSenderDays": 7,
+        "needsReply": false,
+        "triggerConversation": true
+      },
+      "trigger": {
+        "event": "mail_from",
+        "keywords": [
+          "budget"
+        ],
+        "kind": "event",
+        "senders": [
+          "@epam.com",
+          "ann@example.org"
+        ]
+      }
+    },
+    "id": "auto-event",
+    "kind": "automation",
+    "revision": "rev-1",
+    "source": "local",
+    "updatedAt": 1795000500,
+    "workspaceId": "personal"
+  },
+  "schedule": {
+    "connectionId": null,
+    "data": {
+      "ai": {
+        "model": "claude-haiku-4-5",
+        "profile": "claude"
+      },
+      "capUsd": 0.5,
+      "catchUp": true,
+      "deliver": {
+        "draftReply": false,
+        "notify": true,
+        "today": true
+      },
+      "enabled": true,
+      "id": "auto-schedule",
+      "name": "Morning brief",
+      "prompt": "Summarise my day and what needs a reply.",
+      "read": {
+        "calendarToday": true,
+        "commitmentsNotes": true,
+        "mailFromSenderDays": 0,
+        "needsReply": true,
+        "triggerConversation": false
+      },
+      "trigger": {
+        "days": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "kind": "schedule",
+        "time": "08:45"
+      }
+    },
+    "id": "auto-schedule",
+    "kind": "automation",
+    "revision": "rev-1",
+    "source": "local",
+    "updatedAt": 1795000500,
+    "workspaceId": "personal"
+  }
+}

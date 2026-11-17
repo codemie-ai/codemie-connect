@@ -113,6 +113,10 @@ pub enum Operation {
     AiDraft,
     AiSummarize,
     BriefGenerate,
+    AutomationSave,
+    AutomationDelete,
+    AutomationToggle,
+    AutomationRunNow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

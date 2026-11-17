@@ -374,6 +374,13 @@ impl Repository {
         tx.commit()?;
         Ok(())
     }
+    /// Writes bookkeeping a view never shows (automation state) without a revision bump.
+    pub fn put_record_unversioned(&mut self, record: &Record) -> Result<()> {
+        let tx = self.db.transaction()?;
+        put_record(&tx, record)?;
+        tx.commit()?;
+        Ok(())
+    }
     /// Appends one `ai_run` usage record. It does not bump the revision: a run finishing is
     /// not a change the open views must reconcile with.
     pub fn put_ai_run(&mut self, record: &Record) -> Result<()> {

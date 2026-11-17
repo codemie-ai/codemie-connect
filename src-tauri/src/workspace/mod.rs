@@ -2,6 +2,7 @@
 mod actions;
 mod ai;
 mod ai_jobs;
+mod automations;
 mod credentials;
 #[cfg(target_os = "macos")]
 mod curl;
@@ -368,6 +369,9 @@ impl Core {
     /// One round of the background loop: due schedules, ready jobs, the periodic sync.
     fn background_round(self: &Arc<Self>, last_sync: &mut i64, ticks: &mut u64) {
         let _ = self.materialize_schedules();
+        if ticks.is_multiple_of(automations::ROUND_TICKS) {
+            let _ = self.automations_round();
+        }
         for _ in 0..8 {
             let job = {
                 let Ok(mut repo) = self.repo() else { break };
@@ -537,6 +541,8 @@ impl Core {
                 c.job_fence = Some((job.id.clone(), job.attempts));
                 self.sync(c, job.payload["force"] == true).await?;
                 self.refresh_incidents()?;
+                // New messages may start automations; a failure here must not fail the sync.
+                let _ = self.automations_after_sync();
                 Ok("Sources refreshed".into())
             }
             "brief" => {
@@ -584,6 +590,9 @@ impl Core {
             "ai_draft" => self.run_ai_draft(job).await,
             "ai_summarize" => self.run_ai_summary(job).await,
             "reminder" | "notification" => self.deliver_notification(job),
+            // Task 14 queues the runs; Task 15 executes them. Until then a due run finishes
+            // as a no-op, so queued jobs never pile up.
+            "automation_run" => Ok("Skipped: Automation runs arrive in Task 15".into()),
             _ => Err(WorkspaceError::new("validation", "Unsupported job type.")),
         }
     }
@@ -1064,6 +1073,10 @@ impl Core {
             Operation::AiSettingsSave => self.ai_settings_save(&req, &detected)?,
             Operation::AiDraft => self.queue_ai_draft(&req)?,
             Operation::AiSummarize => self.queue_ai_summary(&req)?,
+            Operation::AutomationSave
+            | Operation::AutomationDelete
+            | Operation::AutomationToggle
+            | Operation::AutomationRunNow => self.automation_op(&req)?,
             Operation::BriefGenerate => {
                 let (w, _) = self.active_workspace(&req, false)?;
                 self.generate_brief(&w.id, None)?;
