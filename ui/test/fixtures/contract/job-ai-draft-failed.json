@@ -1,0 +1,34 @@
+{
+  "attempts": 1,
+  "connectionId": "acct",
+  "dueAt": 1795000400,
+  "errorClass": "needs_login",
+  "id": "job-1",
+  "key": "ai_draft:op-1",
+  "kind": "ai_draft",
+  "leaseUntil": null,
+  "payload": {
+    "channel": "chat",
+    "conversationKey": "chat:chat:19:ops",
+    "model": null,
+    "profile": "claude",
+    "purpose": "chat_draft",
+    "request": {
+      "includeFreeTimes": true,
+      "intent": "propose_times",
+      "length": "medium",
+      "sourceId": "t1",
+      "tone": "neutral"
+    },
+    "startedAt": 1795000401
+  },
+  "policy": {
+    "generation": 1,
+    "policyRevision": 1,
+    "sourceRevision": null,
+    "workspaceRevision": 1
+  },
+  "result": "Claude is not signed in.",
+  "state": "blocked",
+  "workspaceId": "personal"
+}

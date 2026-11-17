@@ -8,8 +8,10 @@ pub mod geometry;
 pub mod graph;
 mod inbox;
 pub mod models;
+mod prompts;
 pub mod repository;
 pub mod schedules;
+mod slots;
 
 use crate::ai::{
     profiles::{DetectEnv, ProfileCache},
@@ -50,6 +52,8 @@ pub struct Core {
     profiles: ProfileCache,
     /// Cancelled when the app quits, so no Claude process outlives it.
     ai_cancel: CancellationToken,
+    /// Job id -> the token of its Claude run, so Stop (`job_cancel`) ends the run at once.
+    ai_jobs: Mutex<std::collections::HashMap<String, CancellationToken>>,
     graph_children: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
     /// `{connectionId}:{calendarId}` -> last full calendarView refresh (unix seconds).
     calendar_refreshed: Mutex<std::collections::HashMap<String, i64>>,
@@ -111,6 +115,7 @@ impl Core {
             runner,
             profiles,
             ai_cancel: CancellationToken::new(),
+            ai_jobs: Default::default(),
             graph_children: Default::default(),
             calendar_refreshed: Default::default(),
             mutations: Default::default(),
@@ -237,7 +242,7 @@ impl Core {
             }
         });
     }
-    async fn run_claimed_job(self: Arc<Self>, mut job: Job) {
+    async fn run_claimed_job(self: Arc<Self>, job: Job) {
         let result = {
             let execute = self.execute_job(&job);
             tokio::pin!(execute);
@@ -258,16 +263,18 @@ impl Core {
             }
         };
         if let Ok(mut repo) = self.repo() {
-            if repo
+            // The stored copy, so progress the executor saved (AI run details) is kept.
+            if let Some(mut job) = repo
                 .jobs()
                 .ok()
                 .and_then(|jobs| jobs.into_iter().find(|j| j.id == job.id))
-                .is_some_and(|j| j.state == "running" && j.attempts == job.attempts)
+                .filter(|j| j.state == "running" && j.attempts == job.attempts)
             {
                 match result {
                     Ok(message) => {
                         job.state = "succeeded".into();
-                        job.result = Some(message)
+                        job.result = Some(message);
+                        job.error_class = None;
                     }
                     Err(e) => {
                         job.state = if e.code == "cancelled" {
@@ -282,6 +289,7 @@ impl Core {
                         }
                         .into();
                         job.result = Some(e.message);
+                        job.error_class = e.class;
                     }
                 }
                 job.lease_until = None;
@@ -397,17 +405,8 @@ impl Core {
                     )),
                 }
             }
-            "ai_draft" => {
-                let req = Request {
-                    op: Operation::AiDraft,
-                    workspace_id: job.workspace_id.clone(),
-                    expected_revision: None,
-                    operation_id: None,
-                    data: job.payload["request"].clone(),
-                };
-                self.ai_draft(&req, job).await?;
-                Ok("AI draft ready for review".into())
-            }
+            "ai_draft" => self.run_ai_draft(job).await,
+            "ai_summarize" => self.run_ai_summary(job).await,
             "reminder" | "notification" => self.deliver_notification(job),
             _ => Err(WorkspaceError::new("validation", "Unsupported job type.")),
         }
@@ -825,6 +824,7 @@ impl Core {
                     )?;
                     job.state = "queued".into();
                     job.due_at = now();
+                    job.error_class = None;
                 } else {
                     if !matches!(job.state.as_str(), "queued" | "running" | "blocked")
                         || job.payload["dispatchStartedAt"].is_i64()
@@ -836,6 +836,7 @@ impl Core {
                 r.save_job(&job)?;
                 if req.op == Operation::JobCancel {
                     self.cancel_graph_job(&job.id);
+                    self.cancel_ai_job(&job.id);
                 }
                 json!({"saved":true})
             }
@@ -885,6 +886,7 @@ impl Core {
             }
             Operation::AiSettingsSave => self.ai_settings_save(&req, &detected)?,
             Operation::AiDraft => self.queue_ai_draft(&req)?,
+            Operation::AiSummarize => self.queue_ai_summary(&req)?,
             Operation::BriefGenerate => {
                 let (w, _) = self.active_workspace(&req, false)?;
                 self.generate_brief(&w.id, None)?;
@@ -1588,6 +1590,7 @@ fn new_job(
         policy,
         payload,
         result: None,
+        error_class: None,
     }
 }
 fn sha256_prefix(v: &str) -> [u8; 4] {

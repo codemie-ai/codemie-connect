@@ -1,0 +1,38 @@
+{
+  "connectionId": "acct",
+  "data": {
+    "aiSuggested": true,
+    "channel": "mail",
+    "conversationKey": "mail:conv-1",
+    "options": {
+      "includeFreeTimes": false,
+      "intent": "reply",
+      "length": "short",
+      "tone": "friendly"
+    },
+    "provenance": {
+      "at": 1795000500,
+      "costUsd": 0.0123,
+      "durationMs": 4200,
+      "messageIds": [
+        "m1",
+        "m2",
+        "m3"
+      ],
+      "model": "claude-sonnet-4-5",
+      "profile": "claude"
+    },
+    "questions": [
+      "Which file is the Monday version?"
+    ],
+    "sourceId": "m3",
+    "sourceRevision": "v1",
+    "text": "Hi Ann,\n\nI will send the Monday version.\n\nBest,\nTaylor"
+  },
+  "id": "ai:mail:conv-1",
+  "kind": "draft",
+  "revision": "rev-1",
+  "source": "mail:inbox",
+  "updatedAt": 1795000500,
+  "workspaceId": "personal"
+}

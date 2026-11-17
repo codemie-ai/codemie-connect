@@ -27,6 +27,9 @@ fn decode<T: DeserializeOwned>(s: String) -> Result<T> {
     })
 }
 
+/// `ai_run` records older than this are removed when the repository opens.
+const AI_RUN_RETENTION_DAYS: i64 = 400;
+
 impl Repository {
     pub fn open(path: &Path) -> Result<Self> {
         let db = Sqlite::open(path)?;
@@ -87,6 +90,11 @@ impl Repository {
         // Drop it and cancel drafts that were queued for it; no other data is touched.
         db.execute("UPDATE workspaces SET body=json_remove(body,'$.aiProfile') WHERE json_type(body,'$.aiProfile') IS NOT NULL",[])?;
         db.execute("UPDATE jobs SET state='cancelled',lease_until=NULL,body=json_set(body,'$.state','cancelled','$.leaseUntil',NULL,'$.result','AI drafts moved to Claude settings; request the draft again') WHERE state IN ('queued','blocked','running') AND json_extract(body,'$.kind')='ai_draft' AND json_extract(body,'$.payload.profile')='claude-api'",[])?;
+        // The AI usage ledger keeps 400 days, enough for a year-on-year month.
+        db.execute(
+            "DELETE FROM records WHERE kind='ai_run' AND updated_at<?1",
+            [now() - AI_RUN_RETENTION_DAYS * 86400],
+        )?;
         let mut repo = Self { db };
         // Earlier builds required manual binding and source picking. Best effort: never blocks opening.
         let _ = repo.bind_default_to_active();
@@ -297,6 +305,7 @@ impl Repository {
             }
         }
         super::inbox::project(self, active, visible, &mut records)?;
+        super::ai::mark_stale_summaries(&mut records);
         let jobs: Vec<Job> =
             self.documents("SELECT body FROM jobs ORDER BY due_at DESC LIMIT 300")?;
         let jobs = jobs
@@ -495,6 +504,7 @@ impl Repository {
             Operation::ActionPrepare
                 | Operation::ActionConfirm
                 | Operation::AiDraft
+                | Operation::AiSummarize
                 | Operation::CalendarWindow
         ) {
             let scope = self.request_scope(request)?;
@@ -845,10 +855,10 @@ impl Repository {
         done.state = "succeeded".into();
         done.lease_until = None;
         done.result = Some(
-            if record.kind == "draft" {
-                "AI draft ready for review"
-            } else {
-                "Daily brief updated"
+            match record.kind.as_str() {
+                "draft" => "AI draft ready for review",
+                "summary" => "Summary ready",
+                _ => "Daily brief updated",
             }
             .into(),
         );
@@ -873,7 +883,7 @@ impl Repository {
         tx.execute("UPDATE jobs SET state='queued',body=json_set(body,'$.state','queued','$.leaseUntil',NULL) WHERE state='running' AND lease_until<?1",[at])?;
         let raw: Option<String> = tx
             .query_row(
-                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind')!='ai_draft' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='ai_draft')) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 ELSE 1 END,due_at LIMIT 1",
+                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize'))<2) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 ELSE 1 END,due_at LIMIT 1",
                 params![at,allow_sync],
                 |r| r.get(0),
             )
@@ -924,8 +934,9 @@ impl Repository {
         }
         Ok(())
     }
-    #[allow(dead_code)] // used from Task 7 (drafts)
-    pub fn ai_job_source(&self, job: &Job) -> Result<Record> {
+    /// The workspace, account and source message of a claimed AI job, after checking that
+    /// the claim is still held, access is unchanged and the source may still be read.
+    pub fn ai_job_source(&self, job: &Job) -> Result<(Workspace, Connection, Record)> {
         self.check_claim(&job.id, job.attempts)?;
         self.check_policy(
             job.workspace_id.as_deref(),
@@ -942,29 +953,26 @@ impl Repository {
             .ok_or_else(|| WorkspaceError::new("cancelled", "Missing AI account."))?;
         let w = self.workspace(wid)?;
         let c = self.connection(cid)?;
-        if w.profile_revision != job.payload["profileRevision"].as_i64().unwrap_or(-1) {
-            return Err(WorkspaceError::new(
-                "cancelled",
-                "The queued AI profile changed.",
-            ));
-        }
-        let source = self.record(
-            "message",
-            required(&job.payload["request"], "sourceId", 2000)?,
-            Some(cid),
-            None,
-        )?;
+        let source = self
+            .record(
+                "message",
+                required(&job.payload["request"], "sourceId", 2000)?,
+                Some(cid),
+                None,
+            )
+            .map_err(|_| {
+                WorkspaceError::new("cancelled", "This conversation is no longer available.")
+            })?;
         if !source_available(&source)
-            || source.revision != job.payload["sourceRevision"].as_str().unwrap_or("")
             || !record_selected(&source, &w)
             || !source_permitted(&source, &c)
         {
             return Err(WorkspaceError::new(
                 "cancelled",
-                "The queued AI source changed.",
+                "This conversation is no longer available.",
             ));
         }
-        Ok(source)
+        Ok((w, c, source))
     }
     pub fn check_claim(&self, id: &str, attempt: i64) -> Result<()> {
         let valid:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE id=?1 AND state='running' AND lease_until>=?2 AND json_extract(body,'$.attempts')=?3)",params![id,now(),attempt],|r|r.get(0))?;
@@ -1335,6 +1343,7 @@ mod tests {
             policy: r.policy(None, Some(&c.id)).unwrap(),
             payload: json!({}),
             result: None,
+            error_class: None,
         };
         r.enqueue(&j).unwrap();
         let mut claim = r.claim(now()).unwrap().unwrap();
@@ -1776,6 +1785,7 @@ mod tests {
             policy: json!({}),
             payload: json!({}),
             result: None,
+            error_class: None,
         };
         r.enqueue(&job).unwrap();
         assert!(r.claim(1).unwrap().is_some());
@@ -1814,6 +1824,7 @@ mod tests {
                 policy: json!({}),
                 payload: json!({}),
                 result: None,
+                error_class: None,
             })
             .unwrap();
         }
@@ -1880,6 +1891,7 @@ mod tests {
                 policy: json!({}),
                 payload: json!({}),
                 result: None,
+                error_class: None,
             };
             r.enqueue(&j).unwrap();
             r.enqueue(&j).unwrap();
@@ -1931,6 +1943,7 @@ mod tests {
                 policy: r.policy(Some("personal"), None).unwrap(),
                 payload: json!({"scheduleId":sid}),
                 result: None,
+                error_class: None,
             };
             r.enqueue(&job).unwrap();
         }
@@ -1961,6 +1974,7 @@ mod tests {
             policy: r.policy(Some("personal"), None).unwrap(),
             payload: json!({}),
             result: None,
+            error_class: None,
         };
         r.enqueue(&job).unwrap();
         let mut claimed = r.claim(now()).unwrap().unwrap();
@@ -2013,6 +2027,7 @@ mod tests {
             policy: json!({}),
             payload: json!({"incidentId":"incident"}),
             result: None,
+            error_class: None,
         };
         r.db.execute_batch("CREATE TRIGGER reject_alert BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'simulated interruption'); END").unwrap();
         assert!(r
@@ -2041,6 +2056,7 @@ mod tests {
             policy: json!({}),
             payload: json!({}),
             result: None,
+            error_class: None,
         };
         r.enqueue(&job).unwrap();
         let claimed = r.claim(now()).unwrap().unwrap();
@@ -2190,6 +2206,7 @@ mod tests {
                 policy: json!({}),
                 payload: json!({"profile":"claude-api"}),
                 result: None,
+                error_class: None,
             };
             raw.execute(
                 "INSERT INTO jobs VALUES('j1','k1','queued',?1,NULL,?2)",
@@ -2214,60 +2231,49 @@ mod tests {
         assert!(Repository::open(&path).is_ok());
     }
     #[test]
-    fn one_ai_claim_leaves_capacity_for_due_reminders_and_preserves_queued_profile() {
+    fn ai_claims_cap_at_two_runs_and_leave_capacity_for_due_reminders() {
         let dir = tempfile::tempdir().unwrap();
         let mut r = Repository::open(&dir.path().join("db")).unwrap();
         let at = now();
-        for n in 0..3 {
-            let job = Job {
-                id: id(),
-                kind: "ai_draft".into(),
-                key: format!("ai-{n}"),
-                state: "queued".into(),
-                workspace_id: Some("personal".into()),
-                connection_id: None,
-                due_at: at,
-                lease_until: None,
-                attempts: 0,
-                policy: json!({}),
-                payload: json!({"profile":"claude-api","profileRevision":17}),
-                result: None,
-            };
-            r.enqueue(&job).unwrap();
-        }
-        let first = r.claim(at).unwrap().unwrap();
-        assert_eq!(first.kind, "ai_draft");
-        assert!(r.claim(at).unwrap().is_none());
-        let reminder = Job {
+        let queued = |kind: &str, key: &str, due: i64| Job {
             id: id(),
-            kind: "reminder".into(),
-            key: "urgent-reminder".into(),
+            kind: kind.into(),
+            key: key.into(),
             state: "queued".into(),
             workspace_id: Some("personal".into()),
             connection_id: None,
-            due_at: at,
+            due_at: due,
             lease_until: None,
             attempts: 0,
             policy: json!({}),
             payload: json!({}),
             result: None,
+            error_class: None,
         };
-        r.enqueue(&reminder).unwrap();
-        assert_eq!(r.claim(at).unwrap().unwrap().kind, "reminder");
+        r.enqueue(&queued("ai_draft", "draft-0", at - 3)).unwrap();
+        r.enqueue(&queued("ai_draft", "draft-1", at - 2)).unwrap();
+        r.enqueue(&queued("ai_summarize", "summary-0", at - 1))
+            .unwrap();
+        // Two drafts (in different conversations) run together, as the runner has 2 slots;
+        // the summary waits for a slot.
+        let first = r.claim(at).unwrap().unwrap();
+        let second = r.claim(at).unwrap().unwrap();
         assert_eq!(
-            r.jobs()
-                .unwrap()
-                .iter()
-                .filter(|j| j.kind == "ai_draft"
-                    && j.state == "queued"
-                    && j.payload["profileRevision"] == 17)
-                .count(),
-            2
+            (first.key.as_str(), second.key.as_str()),
+            ("draft-0", "draft-1")
         );
+        assert!(r.claim(at).unwrap().is_none());
+        r.enqueue(&queued("reminder", "urgent-reminder", at))
+            .unwrap();
+        assert_eq!(r.claim(at).unwrap().unwrap().kind, "reminder");
+        // When one finishes, the waiting one can start.
+        let mut done = first;
+        done.state = "succeeded".into();
+        r.save_job(&done).unwrap();
+        assert_eq!(r.claim(at).unwrap().unwrap().key, "summary-0");
     }
-    #[tokio::test]
-    async fn cancellation_during_ai_probe_prevents_dispatch_and_source_write() {
-        use std::sync::{Arc, Mutex};
+    #[test]
+    fn ai_job_source_is_fenced_by_claim_and_source_access() {
         let dir = tempfile::tempdir().unwrap();
         let mut r = Repository::open(&dir.path().join("db")).unwrap();
         let c = connection("a");
@@ -2278,7 +2284,7 @@ mod tests {
             "source",
             "message",
             "chat:chat-a",
-            json!({"text":"Synthetic private source"}),
+            json!({"channel":"chat","text":"Synthetic private source"}),
         ))
         .unwrap();
         let job = Job {
@@ -2292,40 +2298,68 @@ mod tests {
             lease_until: None,
             attempts: 0,
             policy: r.policy(Some(&w.id), Some(&c.id)).unwrap(),
-            payload: json!({"profile":"claude-api","profileRevision":w.profile_revision,"sourceRevision":"v1","request":{"sourceId":"source"}}),
+            payload: json!({"request":{"sourceId":"source"}}),
             result: None,
+            error_class: None,
         };
         r.enqueue(&job).unwrap();
         let claim = r.claim(now()).unwrap().unwrap();
-        assert!(r.ai_job_source(&claim).is_ok());
+        let (_, _, source) = r.ai_job_source(&claim).unwrap();
+        assert_eq!(source.id, "source");
+        // A source that became unavailable is never read for Claude.
         let mut unavailable = r.record("message", "source", Some("a"), None).unwrap();
         unavailable.data["unavailable"] = true.into();
         r.put_record(&unavailable).unwrap();
-        assert!(r.ai_job_source(&claim).is_err());
+        assert_eq!(r.ai_job_source(&claim).unwrap_err().code, "cancelled");
         unavailable.data["unavailable"] = false.into();
         r.put_record(&unavailable).unwrap();
-        let repo = Arc::new(Mutex::new(r));
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let (release, probe) = tokio::sync::oneshot::channel();
-        let worker_repo = repo.clone();
-        let written = observed.clone();
-        let worker_claim = claim.clone();
-        let worker = tokio::spawn(async move {
-            probe.await.unwrap();
-            let r = worker_repo.lock().unwrap();
-            let source = r.ai_job_source(&worker_claim)?;
-            written
-                .lock()
-                .unwrap()
-                .extend_from_slice(source.data["text"].as_str().unwrap().as_bytes());
-            Ok::<_, WorkspaceError>(())
-        });
-        let mut cancelled = claim;
+        // Neither is it read once the claim is gone (cancelled) or the access changed.
+        let mut cancelled = claim.clone();
         cancelled.state = "cancelled".into();
-        repo.lock().unwrap().save_job(&cancelled).unwrap();
-        release.send(()).unwrap();
-        assert_eq!(worker.await.unwrap().unwrap_err().code, "cancelled");
-        assert!(observed.lock().unwrap().is_empty());
+        r.save_job(&cancelled).unwrap();
+        assert_eq!(r.ai_job_source(&claim).unwrap_err().code, "cancelled");
+        let mut running = claim.clone();
+        running.state = "running".into();
+        r.save_job(&running).unwrap();
+        assert!(r.ai_job_source(&claim).is_ok());
+        let mut revoked = c.clone();
+        revoked.policy_revision += 1;
+        r.save_connection(&revoked).unwrap();
+        assert_eq!(r.ai_job_source(&claim).unwrap_err().code, "cancelled");
+    }
+    #[test]
+    fn open_prunes_ai_runs_older_than_400_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let mut r = Repository::open(&path).unwrap();
+        let run = |rid: &str, age_days: i64| Record {
+            id: rid.into(),
+            kind: "ai_run".into(),
+            connection_id: None,
+            workspace_id: None,
+            source: "ai".into(),
+            revision: id(),
+            updated_at: now() - age_days * 86400,
+            data: json!({"purpose":"summary","profile":"claude","status":"ok"}),
+        };
+        r.put_ai_run(&run("old", 401)).unwrap();
+        r.put_ai_run(&run("kept", 399)).unwrap();
+        r.put_record(&Record {
+            kind: "note".into(),
+            workspace_id: Some("personal".into()),
+            ..run("old-note", 900)
+        })
+        .unwrap();
+        drop(r);
+        let r = Repository::open(&path).unwrap();
+        let ids: Vec<String> = r
+            .records_of_kind("ai_run")
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect();
+        assert_eq!(ids, vec!["kept".to_string()]);
+        assert!(r.record("note", "old-note", None, Some("personal")).is_ok());
     }
     #[test]
     fn paged_chat_discovery_commits_catalog_with_cursor_and_clears_terminal_cursor() {
@@ -2381,6 +2415,7 @@ mod tests {
                 policy: json!({}),
                 payload: json!({}),
                 result: None,
+                error_class: None,
             };
             r.enqueue(&job).unwrap();
         }

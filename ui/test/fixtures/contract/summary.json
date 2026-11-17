@@ -1,0 +1,36 @@
+{
+  "connectionId": "acct",
+  "data": {
+    "asks": [
+      {
+        "due": "2026-11-20",
+        "text": "Send Ann the Monday version of the Q3 budget"
+      }
+    ],
+    "channel": "mail",
+    "conversationKey": "mail:conv-1",
+    "latestMessageId": "m3",
+    "provenance": {
+      "at": 1795000500,
+      "costUsd": 0.002,
+      "durationMs": 2500,
+      "messageIds": [
+        "m1",
+        "m2",
+        "m3"
+      ],
+      "model": "claude-haiku-4-5",
+      "profile": "claude"
+    },
+    "sourceId": "m3",
+    "sourceRevision": "v1",
+    "stale": false,
+    "text": "Ann asked for the Q3 budget. You asked which version; she wants Monday's by Friday."
+  },
+  "id": "mail:conv-1",
+  "kind": "summary",
+  "revision": "rev-1",
+  "source": "mail:inbox",
+  "updatedAt": 1795000500,
+  "workspaceId": "personal"
+}

@@ -10,6 +10,10 @@ pub struct WorkspaceError {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after: Option<i64>,
+    /// The Claude error class (DESIGN 6.2) when Claude could not do the work, so a Claude
+    /// sign-in problem is never mistaken for a Microsoft one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
 impl WorkspaceError {
@@ -18,6 +22,7 @@ impl WorkspaceError {
             code: code.into(),
             message: message.into(),
             retry_after: None,
+            class: None,
         }
     }
 }
@@ -85,6 +90,7 @@ pub enum Operation {
     AiTest,
     AiUsage,
     AiDraft,
+    AiSummarize,
     BriefGenerate,
 }
 
@@ -246,6 +252,9 @@ pub struct Job {
     pub policy: Value,
     pub payload: Value,
     pub result: Option<String>,
+    /// The Claude error class of the last failure of an AI job (`needs_login`, `needs_choice`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

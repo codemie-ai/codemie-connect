@@ -20,6 +20,16 @@ fn address(s: &str) -> Result<&str> {
     Ok(s)
 }
 
+/// Who an Outlook reply goes to: the message's `replyTo`, else its sender, exactly as
+/// Microsoft returns them for the source message. Never taken from a draft or from Claude.
+pub(super) fn reply_recipients(message: &Value) -> Vec<Value> {
+    message["replyTo"]
+        .as_array()
+        .filter(|a| !a.is_empty())
+        .cloned()
+        .unwrap_or_else(|| vec![message["from"].clone()])
+}
+
 impl Core {
     pub(super) async fn prepare_action(&self, req: &Request) -> Result<Value> {
         let (w, c) = self.active_workspace(req, true)?;
@@ -131,11 +141,7 @@ impl Core {
                             )),
                         )
                         .await?;
-                    let recipients = message["replyTo"]
-                        .as_array()
-                        .filter(|a| !a.is_empty())
-                        .cloned()
-                        .unwrap_or_else(|| vec![message["from"].clone()]);
+                    let recipients = reply_recipients(&message);
                     for to in &recipients {
                         address(to["emailAddress"]["address"].as_str().unwrap_or(""))?;
                     }
@@ -263,11 +269,7 @@ impl Core {
                         )),
                     )
                     .await?;
-                let recipients = fresh["replyTo"]
-                    .as_array()
-                    .filter(|a| !a.is_empty())
-                    .cloned()
-                    .unwrap_or_else(|| vec![fresh["from"].clone()]);
+                let recipients = reply_recipients(&fresh);
                 if fresh["changeKey"] != action.data["review"]["providerRevision"]
                     || json!(recipients) != action.data["review"]["recipients"]
                 {
