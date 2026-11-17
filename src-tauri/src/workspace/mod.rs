@@ -1,6 +1,7 @@
 //! Personal Workspace domain. Installer orchestration continues to belong to the existing JS Engine.
 mod actions;
 mod ai;
+mod ai_jobs;
 mod credentials;
 #[cfg(target_os = "macos")]
 mod curl;

@@ -305,7 +305,7 @@ impl Repository {
             }
         }
         super::inbox::project(self, active, visible, &mut records)?;
-        super::ai::mark_stale_summaries(&mut records);
+        super::ai_jobs::mark_stale_summaries(&mut records);
         let jobs: Vec<Job> =
             self.documents("SELECT body FROM jobs ORDER BY due_at DESC LIMIT 300")?;
         let jobs = jobs
