@@ -1,0 +1,20 @@
+{
+  "existing": null,
+  "freeBytes": 1099511627776,
+  "fsName": "exFAT",
+  "fsType": "exfat",
+  "issues": [
+    {
+      "code": "no_permissions",
+      "message": "This exFAT drive has no file permissions, so anyone with access to it can read your workspace."
+    }
+  ],
+  "modes": [
+    "move",
+    "fresh"
+  ],
+  "neededBytes": 115343360,
+  "needsAcknowledgement": true,
+  "requiredBytes": 48234496,
+  "target": "/Volumes/Work Drive/Projects/CodeMie Connect Data"
+}

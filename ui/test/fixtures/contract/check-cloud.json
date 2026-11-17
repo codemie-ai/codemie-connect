@@ -1,0 +1,17 @@
+{
+  "existing": null,
+  "freeBytes": 1099511627776,
+  "fsName": "APFS",
+  "fsType": "apfs",
+  "issues": [
+    {
+      "code": "cloud_synced",
+      "message": "iCloud Drive syncs that folder, and syncing can damage the workspace database."
+    }
+  ],
+  "modes": [],
+  "neededBytes": 115343360,
+  "needsAcknowledgement": false,
+  "requiredBytes": 48234496,
+  "target": "/Users/taylor/Library/Mobile Documents/com~apple~CloudDocs/Work/CodeMie Connect Data"
+}

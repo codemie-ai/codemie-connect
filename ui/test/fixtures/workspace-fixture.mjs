@@ -180,3 +180,13 @@ export function aiStatus(kind = 'both', { defaultProfile } = {}) {
 }
 
 export const aiUsage = () => contract('ai-usage');
+
+// ---------------------------------------------------------------- data location (DESIGN 8)
+// Written by the Rust test `contract_fixtures_match_the_real_data_location`.
+
+export const LOCATIONS = ['default', 'custom', 'custom-copied', 'custom-adopted', 'default-previous'];
+export const CHECKS = ['ok', 'cloud', 'network', 'exfat', 'tight', 'existing', 'existing-data', 'recovery'];
+/** A `data_location_get` answer: default, custom, custom-copied, custom-adopted, default-previous. */
+export const dataLocation = name => contract(`location-${name}`);
+/** A `data_location_check` answer: ok, cloud, network, exfat, tight, existing, existing-data, recovery. */
+export const folderCheck = name => contract(`check-${name}`);

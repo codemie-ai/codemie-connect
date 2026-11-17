@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime};
 /// A safety net for background work that ignores cancellation; running jobs normally stop
 /// within moments of `quiesce`.
 pub const QUIESCE_WAIT: Duration = Duration::from_secs(15);
-/// Room a move leaves free on the target disk beyond the copy itself.
+/// Room a move always leaves free on the target disk beyond the copy itself.
 const HEADROOM: u64 = 64 * 1024 * 1024;
 /// A new data folder is built under this name beside its final place, then renamed.
 const STAGING_PREFIX: &str = ".codemie-connect-incoming-";
@@ -91,7 +91,20 @@ pub struct Check {
     pub free_bytes: u64,
     /// What a move copies: the database, plugins and automations.
     pub required_bytes: u64,
+    /// What a move needs free on that disk: see [`space_for_move`].
+    pub needed_bytes: u64,
     pub fs_type: String,
+    /// The disk's format as macOS names it ("APFS", "exFAT").
+    pub fs_name: String,
+}
+
+/// The free space a move of `required` bytes needs on the target disk: twice the data, so the
+/// copy fits with room for the workspace to grow, and never less than the copy plus
+/// [`HEADROOM`].
+pub fn space_for_move(required: u64) -> u64 {
+    required
+        .saturating_mul(2)
+        .max(required.saturating_add(HEADROOM))
 }
 
 /// Checks a picked folder without changing anything in it (apart from a probe file that
@@ -119,6 +132,7 @@ pub fn check(places: &Places, picked: &Path, workspace_open: bool, vol: &dyn Vol
     let mut issues: Vec<Issue> = report.issues.iter().map(Issue::from).collect();
     let blocked = report.issues.iter().any(|i| !acknowledgeable(i));
     let required_bytes = folders::movable_bytes(places.data_root);
+    let needed_bytes = space_for_move(required_bytes);
     let mut modes = Vec::new();
     if blocked {
         // The reasons are already in `issues`.
@@ -136,13 +150,13 @@ pub fn check(places: &Places, picked: &Path, workspace_open: bool, vol: &dyn Vol
         ));
     } else {
         // statfs is unix-only; elsewhere free space reads as 0, which means "unknown".
-        let roomy = !cfg!(unix) || report.free_bytes >= required_bytes.saturating_add(HEADROOM);
+        let roomy = !cfg!(unix) || report.free_bytes >= needed_bytes;
         if workspace_open && roomy {
             modes.push(Mode::Move);
         } else if workspace_open {
             issues.push(Issue::new(
                 "not_enough_space",
-                "There isn’t enough free space on that disk for your data.",
+                "There isn’t enough free space on that disk to move your data.",
             ));
         }
         modes.push(Mode::Fresh);
@@ -155,6 +169,8 @@ pub fn check(places: &Places, picked: &Path, workspace_open: bool, vol: &dyn Vol
         existing,
         free_bytes: report.free_bytes,
         required_bytes,
+        needed_bytes,
+        fs_name: location::volume_name(&report.fs_type),
         fs_type: report.fs_type,
     }
 }
@@ -1379,6 +1395,8 @@ pub(crate) mod tests {
         let tight = check_on(&f.picked, true, &Vol("apfs", 1024));
         assert_eq!(tight.modes, [Mode::Fresh]);
         assert_eq!(tight.issues[0].code, "not_enough_space");
+        assert_eq!(tight.needed_bytes, space_for_move(tight.required_bytes));
+        assert_eq!(tight.fs_name, "APFS");
         // exFAT needs the user's acknowledgement, and the change says so.
         let exfat = Vol("exfat", 1 << 40);
         let report = check_on(&f.picked, true, &exfat);
@@ -1416,6 +1434,34 @@ pub(crate) mod tests {
         let same = check(&current, &marked, true, &ROOMY);
         assert!(same.modes.is_empty());
         assert_eq!(same.issues[0].code, "current_folder");
+    }
+
+    #[test]
+    fn a_move_needs_twice_the_data_free() {
+        let f = Fixture::new();
+        // A large plugin file (sparse: it takes no disk space) makes the data 200 MiB.
+        fs::create_dir_all(f.default.join("plugins")).unwrap();
+        let big = fs::File::create(f.default.join("plugins/big.bin")).unwrap();
+        big.set_len(200 << 20).unwrap();
+        let places = f.places();
+        let required = check(&places, &f.picked, true, &ROOMY).required_bytes;
+        assert!(required >= 200 << 20);
+        assert_eq!(space_for_move(required), 2 * required);
+        // Room for the copy and the old headroom, but not twice the data: no move.
+        let snug = check(
+            &places,
+            &f.picked,
+            true,
+            &Vol("apfs", required + (100 << 20)),
+        );
+        assert_eq!(snug.modes, [Mode::Fresh]);
+        assert_eq!(snug.issues[0].code, "not_enough_space");
+        assert_eq!(snug.needed_bytes, 2 * required);
+        let roomy = check(&places, &f.picked, true, &Vol("apfs", 2 * required));
+        assert_eq!(roomy.modes, [Mode::Move, Mode::Fresh]);
+        // Small data still keeps the headroom free beyond the copy.
+        assert_eq!(space_for_move(1024), 1024 + HEADROOM);
+        assert_eq!(space_for_move(u64::MAX), u64::MAX);
     }
 
     #[test]

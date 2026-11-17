@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, contractFixtures } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS } from '../fixtures/workspace-fixture.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -35,9 +35,10 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks }) {
   const s = snapshot;
   const ai = aiInit;
+  const location = locationInit;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   let authPending = false;
   const calls = [];
@@ -250,6 +251,31 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
           if (window.__useDefaultError) throw { code: 'io', message: window.__useDefaultError };
           return null;
         }
+        // Settings → Data location, from the Rust contract fixtures. `__pick` is what the folder
+        // picker returns ({ path, check }: the check fixture for that folder; null cancels);
+        // `__changeHold` keeps a change running until `__finishChange()`; `__changeError` fails it.
+        if (cmd === 'data_location_get') return clone(location);
+        if (cmd === 'data_location_pick') { calls.push(['data_location_pick']); return window.__pick?.path ?? null; }
+        if (cmd === 'data_location_check') {
+          calls.push(['data_location_check', args]);
+          await sleep(150);
+          return clone(checks[window.__pick?.check || 'ok']);
+        }
+        if (cmd === 'data_location_reveal') { calls.push(['data_location_reveal', args]); return null; }
+        if (cmd === 'data_location_change') {
+          calls.push(['data_location_change', args]);
+          if (window.__changeHold) await new Promise(resolve => { window.__finishChange = resolve; });
+          else await sleep(300);
+          if (window.__changeError) throw clone(window.__changeError);
+          return { restarting: true };
+        }
+        if (cmd === 'data_location_remove_old') {
+          calls.push(['data_location_remove_old']);
+          await sleep(200);
+          const removedBytes = location.previousSizeBytes;
+          Object.assign(location, { previous: null, previousExists: false, previousCopied: false, previousSizeBytes: 0 });
+          return { removedBytes };
+        }
         if (cmd !== 'workspace_request') throw new Error(`Unexpected native command ${cmd}`);
         if (unavailable) throw { code: 'storage_unavailable', message: 'Workspace storage is unavailable; existing tools are still accessible.' };
         if (window.__storageFail) throw { code: 'storage_unavailable', message: 'Connect lost access to its data folder.' };
@@ -301,7 +327,7 @@ const STORAGE = {
   disk_full: storageOf('not_writable', { issue: 'The disk that holds your data folder is full.' }),
 };
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default' } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -318,7 +344,8 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   }
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable })})`);
+  const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks })})`);
   await page.goto(base + hash);
   await page.waitForSelector(unavailable ? '.ws-recovery' : '.ws-sidebar');
   currentPage = page;
@@ -993,7 +1020,8 @@ for (const theme of ['dark', 'light']) {
       const offersDefault = storage.custom || name === 'pointer_unreadable';
       assert(await page.locator('[data-action="recovery-default"]').count() === (offersDefault ? 1 : 0), 'Use the default folder');
       assert(offersDefault === body.includes('Data there may be older or empty.'), 'warning');
-      assert(!/Choose another folder/.test(body), 'dead Choose button');
+      // A folder that is fine (`ready`) isn't the problem, so choosing another one isn't offered.
+      assert(await page.locator('[data-action="recovery-choose"]').count() === (storage.status === 'ready' ? 0 : 1), 'Choose another folder');
       const box = await card.boundingBox();
       const view = page.viewportSize();
       assert(Math.abs(box.x + box.width / 2 - view.width / 2) <= 2, `card not centered: ${box.x}`);
@@ -1067,6 +1095,234 @@ for (const theme of ['dark', 'light']) {
       const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - innerWidth, ...[...document.querySelectorAll('.ws-recovery-card, .ws-recovery-card *')].map(el => el.scrollWidth - el.clientWidth)));
       assert(overflow <= 0, `overflow ${overflow}px`);
       await shot(page, `${theme}-recovery-missing-${width}`);
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+  }
+}
+
+// Settings → General → Data location (DESIGN 8): the card in each state, the change dialog at
+// every step, Remove old copy, Use the default folder, and Choose another folder on the
+// recovery page. Native answers come from the Rust contract fixtures.
+const L_DEFAULT = dataLocation('default');
+const L_COPIED = dataLocation('custom-copied');
+const L_ADOPTED = dataLocation('custom-adopted');
+const PICK = {
+  ok: { path: '/Volumes/Work Drive/Projects', check: 'ok' },
+  cloud: { path: '/Users/taylor/Library/Mobile Documents/com~apple~CloudDocs/Work', check: 'cloud' },
+  network: { path: '/Volumes/Team Share/Projects', check: 'network' },
+  tight: { path: '/Volumes/Small Drive', check: 'tight' },
+  exfat: { path: '/Volumes/USB Stick', check: 'exfat' },
+  existing: { path: '/Volumes/Work Drive/Archive', check: 'existing' },
+  recovery: { path: '/Volumes/Work Drive/Projects', check: 'recovery' },
+};
+const dialog = '.ws-modal[open]';
+const continueButton = `${dialog} .ws-modal-footer button[type=submit]`;
+const settle = page => page.waitForTimeout(220);
+async function pickFolder(page, pick) {
+  await page.evaluate(p => { window.__pick = p; }, pick);
+  await page.click(`${dialog} [data-action="data-choose"]`);
+  await page.waitForSelector(`${dialog} .ws-dl-folder-head`);
+  await settle(page);
+}
+const overflowOf = (page, selector) => page.evaluate(sel => Math.max(document.documentElement.scrollWidth - innerWidth, ...[...document.querySelectorAll(`${sel}, ${sel} *`)].map(el => el.scrollWidth - el.clientWidth)), selector);
+
+for (const theme of ['dark', 'light']) {
+  for (const width of [1440, 1000, 1680]) {
+    await check(`${theme} ${width}px: Data location shows the default folder, sign-in data and logs`, async () => {
+      const { page, context, errors } = await open({ theme, width, hash: '#/settings/general' });
+      await page.waitForSelector('#data-location-path');
+      const card = page.locator('#data-location');
+      assert((await text(page, '#data-location-path')) === L_DEFAULT.dataRoot, 'data folder path');
+      const body = await card.innerText();
+      for (const part of ['DEFAULT', '48.2 MB', 'Private sign-in data', 'never moves', L_DEFAULT.logs, 'Change…']) assert(body.includes(part), `${part} missing: ${body}`);
+      assert(await card.locator('[data-action="data-default"]').count() === 0, 'Use the default folder on the default folder');
+      assert(await card.locator('[data-action="data-remove-old"]').count() === 0, 'Remove old copy without a copy');
+      assert(await overflowOf(page, '#data-location') <= 0, 'the card overflows');
+      await card.scrollIntoViewIfNeeded();
+      await shot(page, `${theme}-data-location-default-${width}`);
+      await page.click('[data-action="data-reveal"][data-which="logs"]');
+      assert((await lastCall(page, 'data_location_reveal'))?.which === 'logs', 'Show in Finder for the logs');
+      assert(errors.length === 0, errors.join(' | '));
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+
+    await check(`${theme} ${width}px: the old copy a move left can be removed after a clear confirm`, async () => {
+      const { page, context, errors } = await open({ theme, width, hash: '#/settings/general', location: 'custom-copied' });
+      await page.waitForSelector('#data-location [data-action="data-remove-old"]');
+      const card = page.locator('#data-location');
+      const body = await card.innerText();
+      assert(body.includes('CUSTOM') && body.includes('Old copy · 48.2 MB') && body.includes(L_COPIED.previous), body);
+      assert(await card.locator('[data-action="data-default"]').count() === 1, 'Use the default folder');
+      await card.scrollIntoViewIfNeeded();
+      await shot(page, `${theme}-data-location-copied-${width}`);
+      await page.click('[data-action="data-remove-old"]');
+      await page.waitForSelector(dialog);
+      await settle(page);
+      const confirm = await page.locator(dialog).innerText();
+      assert(/Remove the old copy\?/.test(confirm) && confirm.includes(L_COPIED.previous) && confirm.includes('48.2 MB') && confirm.includes('This can’t be undone.'), confirm);
+      assert(!(await page.evaluate(() => window.__bridgeCalls.some(([c]) => c === 'data_location_remove_old'))), 'removed before confirming');
+      await shot(page, `${theme}-data-remove-confirm-${width}`);
+      await page.click(`${dialog} button[type=submit]`);
+      await page.waitForSelector('.ws-toast:has-text("Old copy removed. 48.2 MB freed.")');
+      await page.waitForFunction(() => !document.querySelector('#data-location [data-action="data-remove-old"]'));
+      assert(errors.length === 0, errors.join(' | '));
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+  }
+
+  for (const width of [1440, 1000]) {
+    await check(`${theme} ${width}px: a previous folder that isn’t a copy is named, never offered for removal`, async () => {
+      const { page, context, errors } = await open({ theme, width, hash: '#/settings/general', location: 'custom-adopted' });
+      await page.waitForSelector('#data-location [data-place="previous"]');
+      const card = page.locator('#data-location');
+      const body = await card.innerText();
+      assert(body.includes('Your previous data folder is still at') && body.includes(L_ADOPTED.previous), body);
+      assert(await card.locator('[data-action="data-remove-old"]').count() === 0, 'Remove offered for a folder that may hold newer data');
+      await card.scrollIntoViewIfNeeded();
+      await shot(page, `${theme}-data-location-previous-${width}`);
+      await page.click('[data-place="previous"] [data-action="data-reveal"]');
+      assert((await lastCall(page, 'data_location_reveal'))?.which === 'previous', 'Show in Finder for the previous folder');
+      assert(errors.length === 0, errors.join(' | '));
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+
+    await check(`${theme} ${width}px: data location flow`, async () => {
+      const { page, context, errors } = await open({ theme, width, hash: '#/settings/general' });
+      await page.click('[data-action="data-change"]');
+      await page.waitForSelector(`${dialog} [data-action="data-choose"]`);
+      await settle(page);
+      const pick = await page.locator(dialog).innerText();
+      assert(/Step 1 of 3/.test(pick) && /CodeMie Connect Data/.test(pick) && pick.includes(L_DEFAULT.dataRoot), pick);
+      await shot(page, `${theme}-data-change-1-pick-${width}`);
+      // Cancelling the system picker changes nothing.
+      await page.evaluate(() => { window.__pick = null; });
+      await page.click(`${dialog} [data-action="data-choose"]`);
+      await settle(page);
+      assert(await page.locator(`${dialog} .ws-dl-folder-head`).count() === 0, 'a cancelled pick moved on');
+      await pickFolder(page, PICK.ok);
+      assert((await lastCall(page, 'data_location_check'))?.path === PICK.ok.path, 'checked the picked folder');
+      assert(await page.locator(`${dialog} input[name="data-mode"][value="move"]:checked`).count() === 1, 'Move my data is the default');
+      assert(await page.locator(`${dialog} input[name="data-mode"][value="adopt"]`).count() === 0, 'adopt without Connect data there');
+      await shot(page, `${theme}-data-change-2-check-${width}`);
+      await page.click(continueButton);
+      await page.waitForSelector(`${dialog} .ws-dl-restart`);
+      await settle(page);
+      const confirm = await page.locator(dialog).innerText();
+      assert(/Move your data and restart\?/.test(confirm) && /Connect will restart\./.test(confirm) && confirm.includes(folderCheck('ok').target), confirm);
+      await shot(page, `${theme}-data-change-3-confirm-${width}`);
+      await page.evaluate(() => { window.__changeHold = true; });
+      await page.click(`${continueButton}:has-text("Move and restart")`);
+      await page.waitForSelector(`${dialog} .ws-dl-progress:has-text("Copying your data…")`);
+      await page.keyboard.press('Escape');
+      await settle(page);
+      assert(await page.locator(dialog).count() === 1, 'Esc closed the dialog while copying');
+      assert(!(await page.locator(`${dialog} [data-modal-close]`).isVisible()), 'close button while copying');
+      await shot(page, `${theme}-data-change-4-working-${width}`);
+      const call = await lastCall(page, 'data_location_change');
+      assert(call?.mode === 'move' && call.path === PICK.ok.path && call.acceptNoPermissions === false, JSON.stringify(call));
+      await page.evaluate(() => window.__finishChange());
+      await page.waitForSelector(`${dialog} .ws-dl-progress:has-text("Restarting Connect…")`);
+      await shot(page, `${theme}-data-change-5-restarting-${width}`);
+      assert(errors.length === 0, errors.join(' | '));
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+
+    await check(`${theme} ${width}px: the check names every problem and keeps Continue off until a choice is possible`, async () => {
+      const { page, context, errors } = await open({ theme, width, hash: '#/settings/general' });
+      await page.click('[data-action="data-change"]');
+      await page.waitForSelector(`${dialog} [data-action="data-choose"]`);
+      await pickFolder(page, PICK.cloud);
+      const cloud = await page.locator(dialog).innerText();
+      assert(cloud.includes('iCloud Drive syncs that folder, and syncing can damage the workspace database.') && /isn’t synced/.test(cloud), cloud);
+      assert(await page.locator(`${dialog} input[name="data-mode"]`).count() === 0, 'choices for an unusable folder');
+      assert(await page.locator(`${continueButton}[disabled]`).count() === 1, 'Continue enabled');
+      await shot(page, `${theme}-data-change-issue-cloud-${width}`);
+      await pickFolder(page, PICK.network);
+      assert(/network drive \(SMB\)/.test(await page.locator(dialog).innerText()), 'network sentence');
+      await shot(page, `${theme}-data-change-issue-network-${width}`);
+      await pickFolder(page, PICK.tight);
+      const tight = await page.locator(dialog).innerText();
+      assert(/72 MB free/.test(tight) && /115 MB/.test(tight), tight);
+      assert(await page.locator(`${dialog} input[value="move"][disabled]`).count() === 1, 'Move offered without room');
+      assert(await page.locator(`${continueButton}[disabled]`).count() === 1, 'Start empty chosen for the user');
+      await shot(page, `${theme}-data-change-issue-space-${width}`);
+      await page.click(`${dialog} .ws-dl-mode:has(input[value="fresh"])`);
+      assert(await page.locator(`${continueButton}:not([disabled])`).count() === 1, 'Continue after choosing');
+      await pickFolder(page, PICK.existing);
+      assert(await page.locator(`${dialog} input[value="adopt"]:checked`).count() === 1, 'the Connect data there is offered');
+      assert(await page.locator(`${dialog} input[value="move"], ${dialog} input[value="fresh"]`).count() === 0, 'move or fresh over Connect data');
+      await shot(page, `${theme}-data-change-adopt-${width}`);
+      assert(errors.length === 0, errors.join(' | '));
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+
+    await check(`${theme} ${width}px: an exFAT drive needs the acknowledgement, and a busy Connect says so inline`, async () => {
+      const { page, context, errors } = await open({ theme, width, hash: '#/settings/general' });
+      await page.click('[data-action="data-change"]');
+      await page.waitForSelector(`${dialog} [data-action="data-choose"]`);
+      await pickFolder(page, PICK.exfat);
+      assert(await page.locator(`${continueButton}[disabled]`).count() === 1, 'Continue before the acknowledgement');
+      assert((await page.locator(dialog).innerText()).includes('I understand others with access to this drive can read my workspace'), 'acknowledgement');
+      await shot(page, `${theme}-data-change-exfat-${width}`);
+      await page.click(`${dialog} .ws-dl-ack .ws-check`);
+      await page.waitForSelector(`${continueButton}:not([disabled])`);
+      await shot(page, `${theme}-data-change-exfat-ack-${width}`);
+      await page.click(continueButton);
+      await page.waitForSelector(`${dialog} .ws-dl-restart`);
+      await page.evaluate(() => { window.__changeError = { code: 'busy', message: 'Connect is removing the old copy of your data. Try again in a moment.' }; });
+      await page.click(continueButton);
+      await page.waitForSelector(`${dialog} .ws-inline-note.ws-warning[role=alert]:has-text("removing the old copy")`);
+      assert((await lastCall(page, 'data_location_change'))?.acceptNoPermissions === true, 'acknowledgement not sent');
+      assert(await page.locator(`${dialog} [data-action="data-back"]`).count() === 1, 'Back after a refusal');
+      await settle(page);
+      await shot(page, `${theme}-data-change-busy-${width}`);
+      assert(errors.length === 0, errors.join(' | '));
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+
+    await check(`${theme} ${width}px: Use the default folder confirms what it means, then restarts`, async () => {
+      const { page, context, errors } = await open({ theme, width, hash: '#/settings/general', location: 'custom' });
+      await page.click('[data-action="data-default"]');
+      await page.waitForSelector(dialog);
+      await settle(page);
+      const text = await page.locator(dialog).innerText();
+      assert(text.includes('Nothing is moved or copied. Data there may be older or empty.') && text.includes(L_DEFAULT.privateRoot) && text.includes(dataLocation('custom').dataRoot), text);
+      await shot(page, `${theme}-data-use-default-${width}`);
+      await page.click(`${dialog} button[type=submit]`);
+      await page.waitForSelector(`${dialog}`, { state: 'detached' });
+      await page.waitForSelector('#data-location .ws-dl-wait:has-text("Restarting Connect…")');
+      assert(await page.locator('#data-location [data-action="data-change"][disabled]').count() === 1, 'Change… during a restart');
+      assert(errors.length === 0, errors.join(' | '));
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+
+    await check(`${theme} ${width}px: Choose another folder on the recovery page uses the data there or starts empty`, async () => {
+      const { page, context, errors } = await open({ theme, width, storage: STORAGE.missing, unavailable: true });
+      await page.click('[data-action="recovery-choose"]');
+      await page.waitForSelector(`${dialog} [data-action="data-choose"]`);
+      await settle(page);
+      assert(/can’t copy your data from here/.test(await page.locator(dialog).innerText()), 'says why Move is missing');
+      await shot(page, `${theme}-recovery-choose-1-pick-${width}`);
+      await pickFolder(page, PICK.recovery);
+      assert(await page.locator(`${dialog} input[value="move"][disabled]`).count() === 1, 'Move offered without a workspace');
+      assert(await page.locator(`${dialog} input[name="data-mode"]:checked`).count() === 0, 'a choice made for the user');
+      await shot(page, `${theme}-recovery-choose-2-check-${width}`);
+      await page.click(`${dialog} .ws-dl-mode:has(input[value="fresh"])`);
+      await page.click(continueButton);
+      await page.click(`${continueButton}:has-text("Start empty and restart")`);
+      await page.waitForSelector(`${dialog} .ws-dl-progress:has-text("Restarting Connect…")`);
+      assert((await lastCall(page, 'data_location_change'))?.mode === 'fresh', 'fresh');
+      await page.waitForSelector('[data-action="recovery-choose"][disabled]');
+      assert(await page.locator('[data-action="recovery-retry"][disabled]').count() === 1, 'Retry after a change');
+      assert(errors.length === 0, errors.join(' | '));
       await context.close().catch(() => {});
       currentPage = null;
     });

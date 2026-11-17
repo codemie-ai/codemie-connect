@@ -1,0 +1,17 @@
+{
+  "existing": null,
+  "freeBytes": 1099511627776,
+  "fsName": "SMB",
+  "fsType": "smbfs",
+  "issues": [
+    {
+      "code": "network_volume",
+      "message": "That folder is on a network drive (SMB). The workspace database needs a disk connected to this Mac."
+    }
+  ],
+  "modes": [],
+  "neededBytes": 115343360,
+  "needsAcknowledgement": false,
+  "requiredBytes": 48234496,
+  "target": "/Volumes/Work Drive/Projects/CodeMie Connect Data"
+}

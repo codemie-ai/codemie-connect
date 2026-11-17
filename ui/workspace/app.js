@@ -20,6 +20,7 @@ import { nextAiSettings, LOGIN_STEPS } from './settings-ai.js';
 import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from './boot.js';
 import { recoveryPage, firstReport, USE_DEFAULT_WARNING } from './recovery.js';
+import { changeDialogView, canContinue, defaultMode, formatBytes, removeOldBody, useDefaultBody } from './settings-storage.js';
 
 const ROUTES = ['today', 'calendar', 'inbox', 'settings'];
 const root = document.getElementById('workspace-app');
@@ -42,6 +43,8 @@ const state = {
   lane: 'reply', channel: 'all', search: '', showArchived: false, showSnoozed: false, inboxLimit: 200, selectedMessage: null, selectedKey: null,
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
   ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, usage: null, error: '', tests: {}, testModels: {} },
+  // Settings → General → Data location: the `data_location_get` answer (null until read).
+  storage: { info: null, error: '', restarting: false },
   // Reply drafts: this session's reply-box decisions per draft key (see `replyBox`), the open
   // options popover, and failed drafts the user dismissed.
   drafts: {}, summaryUi: {}, draftPopover: null, draftDismissed: localJson('codemie.draft.dismissed', []),
@@ -309,6 +312,7 @@ async function route(name, tab) {
   heading?.focus({ preventScroll: true });
   if (state.route === 'calendar') await ensureCalendarWindow();
   if (state.route === 'settings' && state.settingsTab === 'ai') loadAi().catch(fail);
+  if (generalTabOpen()) loadStorage().catch(fail);
 }
 
 // ---------------------------------------------------------------- Claude (AI)
@@ -889,6 +893,8 @@ function selectMessage(id) {
 
 async function handle(action, el) {
   if (action.startsWith('recovery-')) return recoveryAction(action);
+  // Data location works from the recovery page too, where there is no snapshot.
+  if (action.startsWith('data-')) return storageAction(action, el);
   const id = el.dataset.id;
   const s = snap();
   switch (action) {
@@ -1519,6 +1525,7 @@ async function restartWith(command) {
 async function recoveryAction(action) {
   if (recoveryView?.restarting) return;
   if (action === 'recovery-retry') return restartWith('app_relaunch');
+  if (action === 'recovery-choose') return openChangeDialog({ recovery: true });
   if (action === 'recovery-default') {
     const where = recoveryView?.defaultRoot ? `its default folder (${recoveryView.defaultRoot})` : 'its default folder';
     return confirmModal({
@@ -1533,6 +1540,161 @@ async function recoveryAction(action) {
     legacy.classList.remove('hidden');
     legacyModule = await import('../renderer.js');
     await legacyModule.initLegacyTools();
+  }
+}
+
+// ---------------------------------------------------------------- data location
+
+let storageLoads = 0;
+const generalTabOpen = () => state.route === 'settings' && state.settingsTab === 'general';
+
+/** Reads where Connect keeps its data, for Settings → General. */
+async function loadStorage() {
+  const load = ++storageLoads;
+  try {
+    const info = await invoke('data_location_get');
+    if (load !== storageLoads) return;
+    Object.assign(state.storage, { info, error: '' });
+  } catch (err) {
+    if (load !== storageLoads) return;
+    Object.assign(state.storage, { info: null, error: err?.message || String(err) });
+  }
+  if (generalTabOpen() && !modalOpen()) await render();
+}
+
+async function storageAction(action, el) {
+  const info = state.storage.info;
+  switch (action) {
+    case 'data-refresh': return loadStorage();
+    case 'data-copy-path':
+      try {
+        await navigator.clipboard.writeText(info.dataRoot);
+        return toast('Folder path copied.', 'success');
+      } catch {
+        return toast(`Could not copy. The folder is ${info.dataRoot}`, 'error');
+      }
+    case 'data-reveal': return invoke('data_location_reveal', { which: el.dataset.which });
+    case 'data-change': return openChangeDialog();
+    case 'data-default': return openModal({
+      title: 'Use the default folder?', body: useDefaultBody(info), submit: 'Use the default folder and restart', size: 'md',
+      onSubmit: async () => {
+        await invoke('data_location_use_default');
+        state.storage.restarting = true;
+      },
+    });
+    case 'data-remove-old': return openModal({
+      title: 'Remove the old copy?', body: removeOldBody(info), submit: 'Remove old copy', variant: 'danger', size: 'md',
+      onSubmit: async () => {
+        const { removedBytes } = await invoke('data_location_remove_old');
+        toast(`Old copy removed. ${formatBytes(removedBytes)} freed.`, 'success');
+        loadStorage().catch(() => {});
+      },
+    });
+    case 'data-choose': return chooseFolder();
+    case 'data-back': return changeStep({ step: 'check', error: null });
+    case 'data-cancel': return el.closest('.ws-modal')?.close();
+    default: return undefined;
+  }
+}
+
+// The change dialog (DESIGN 8): pick a folder, read the check, choose what to do, confirm, then
+// Connect works and restarts. One dialog whose steps `changeDialogView` renders from `changeFlow`.
+let changeFlow = null;
+let changeDialog = null;
+const errorOf = err => ({ code: err?.code || '', message: err?.message || String(err) });
+
+function openChangeDialog({ recovery = false } = {}) {
+  const info = recovery ? { dataRoot: recoveryView?.dataRoot } : state.storage.info;
+  const flow = { step: 'pick', recovery, info, report: null, picked: null, mode: null, acknowledged: false, error: null };
+  changeFlow = flow;
+  // The steps draw their own footer; Enter or the primary button moves to the next one.
+  const dialog = openModal({
+    title: ' ', subtitle: ' ', submit: null, cancel: null, size: 'md',
+    onSubmit: async () => { await changeNext(); return false; },
+    onClose: () => {
+      if (changeFlow === flow) changeFlow = null;
+      if (changeDialog === dialog) changeDialog = null;
+    },
+  });
+  changeDialog = dialog;
+  dialog.classList.add('ws-dl-dialog');
+  const footer = document.createElement('footer');
+  footer.className = 'ws-modal-footer';
+  dialog.querySelector('form').append(footer);
+  // While Connect copies or restarts, the dialog stays: Esc, the scrim and × do nothing.
+  dialog.beforeClose = () => !changeDialogView(flow).busy;
+  dialog.addEventListener('change', ev => {
+    if (ev.target.name === 'data-mode') flow.mode = ev.target.value;
+    else if (ev.target.name === 'data-ack') flow.acknowledged = ev.target.checked;
+    else return;
+    paintChange({ body: false });
+  });
+  paintChange();
+}
+
+function paintChange({ body = true } = {}) {
+  const dialog = changeDialog;
+  if (!dialog || !changeFlow) return;
+  const view = changeDialogView(changeFlow);
+  dialog.querySelector('.ws-modal-header h2').textContent = view.title;
+  const subtitle = dialog.querySelector('.ws-modal-header p');
+  subtitle.textContent = view.subtitle;
+  subtitle.hidden = !view.subtitle;
+  const footer = dialog.querySelector('.ws-modal-footer');
+  footer.innerHTML = view.footer;
+  footer.hidden = !view.footer;
+  dialog.classList.toggle('ws-modal-busy', view.busy);
+  if (!body) return;
+  dialog.querySelector('.ws-modal-body').innerHTML = view.body;
+  dialog.querySelector('.ws-modal-error').textContent = '';
+  const q = sel => dialog.querySelector(sel);
+  (q('.ws-modal-body input[name="data-mode"]:checked') || q('.ws-modal-footer [type=submit]:not([disabled])') || q('.ws-modal-body [data-action="data-choose"]') || q('.ws-modal-body input:not([disabled])'))?.focus({ preventScroll: true });
+}
+
+function changeStep(next) {
+  if (!changeFlow) return;
+  Object.assign(changeFlow, next);
+  paintChange();
+}
+
+async function changeNext() {
+  const f = changeFlow;
+  if (!f || !canContinue(f.report, f)) return;
+  if (f.step === 'check') return changeStep({ step: 'confirm', error: null });
+  if (f.step !== 'confirm') return;
+  changeStep({ step: 'working', error: null });
+  try {
+    await invoke('data_location_change', { path: f.picked, mode: f.mode, acceptNoPermissions: !!f.acknowledged });
+  } catch (err) {
+    if (changeFlow === f) changeStep({ step: 'confirm', error: errorOf(err) });
+    return;
+  }
+  // Native accepted: the pointer names the new folder and Connect is about to exit.
+  if (changeFlow === f) changeStep({ step: 'restarting' });
+  if (f.recovery) {
+    recoveryView = { ...recoveryView, restarting: true };
+    renderRecovery();
+  } else {
+    state.storage.restarting = true;
+  }
+}
+
+/** The system folder picker, then the check of the folder picked. Cancelling changes nothing. */
+async function chooseFolder() {
+  const f = changeFlow;
+  if (!f || f.picking) return;
+  const before = { step: f.step, picked: f.picked };
+  f.picking = true;
+  try {
+    const picked = await invoke('data_location_pick');
+    if (changeFlow !== f || !picked) return;
+    changeStep({ step: 'checking', picked, error: null });
+    const report = await invoke('data_location_check', { path: picked });
+    if (changeFlow === f) changeStep({ step: 'check', report, mode: defaultMode(report), acknowledged: false });
+  } catch (err) {
+    if (changeFlow === f) changeStep({ ...before, error: errorOf(err) });
+  } finally {
+    f.picking = false;
   }
 }
 
@@ -1604,6 +1766,7 @@ async function boot() {
   ready = true;
   await render();
   if (aiTabOpen()) loadAi().catch(fail);
+  if (generalTabOpen()) loadStorage().catch(fail);
   const listen = window.__TAURI__.event.listen;
   // A sync round emits one change per Graph request; reload the snapshot at most ~once a second.
   let refreshTimer = null;

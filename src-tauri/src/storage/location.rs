@@ -319,27 +319,66 @@ impl TargetIssue {
         }
     }
 
-    /// User-facing reason.
+    /// User-facing reason: what is wrong with the folder and why it matters, in plain words.
     pub fn reason(&self) -> String {
         match self {
             Self::NotAbsolute => "Choose a full folder path.".into(),
-            Self::NotADirectory => "That is not an existing folder.".into(),
-            Self::NotWritable => "Connect can't write to that folder.".into(),
-            Self::InsideCurrentRoot => "That folder is inside the current data folder.".into(),
+            Self::NotADirectory => {
+                "That folder isn’t there: it may have been moved, or its drive disconnected.".into()
+            }
+            Self::NotWritable => {
+                "Connect can’t create files in that folder, so it can’t keep your data there.".into()
+            }
+            Self::InsideCurrentRoot => {
+                "That folder is inside your current data folder, and data can’t move into itself."
+                    .into()
+            }
             Self::InsideDefaultRoot => {
-                "That folder is inside Connect's private folder, which holds your sign-in data.".into()
+                "That folder is inside Connect’s private folder, which holds your sign-in data and never moves.".into()
             }
-            Self::InsideAppBundle => "Folders inside apps can't hold your data.".into(),
+            Self::InsideAppBundle => {
+                "Folders inside apps can’t hold your data. Apps are replaced when they update.".into()
+            }
             Self::CloudSynced(p) => {
-                format!("That folder is synced by {p}. Sync can corrupt the workspace database.")
+                // "a cloud storage provider" starts the sentence; brand names keep their case.
+                let provider = match p.strip_prefix("a ") {
+                    Some(rest) => format!("A {rest}"),
+                    None => p.clone(),
+                };
+                format!("{provider} syncs that folder, and syncing can damage the workspace database.")
             }
-            Self::NetworkVolume(t) => format!("That is a network volume ({t}); the database needs a local disk."),
-            Self::UnsupportedVolume(t) => format!("Connect needs an APFS or Mac OS Extended disk; this one is {t}."),
+            Self::NetworkVolume(t) => format!(
+                "That folder is on a network drive ({}). The workspace database needs a disk connected to this Mac.",
+                volume_name(t)
+            ),
+            Self::UnsupportedVolume(t) => format!(
+                "That disk is formatted as {}. Connect needs APFS or Mac OS Extended.",
+                volume_name(t)
+            ),
             Self::NoUnixPermissions(t) => format!(
-                "This {t} drive has no file permissions: others with access to it can read your workspace."
+                "This {} drive has no file permissions, so anyone with access to it can read your workspace.",
+                volume_name(t)
             ),
         }
     }
+}
+
+/// How macOS names a filesystem type in Finder and Disk Utility.
+pub fn volume_name(fs_type: &str) -> String {
+    match fs_type {
+        "apfs" => "APFS",
+        "hfs" => "Mac OS Extended",
+        "exfat" => "exFAT",
+        "msdos" => "FAT",
+        "smbfs" | "cifs" => "SMB",
+        "afpfs" => "AFP",
+        "nfs" => "NFS",
+        "webdav" => "WebDAV",
+        "ftp" => "FTP",
+        "ntfs" => "NTFS",
+        other => other,
+    }
+    .into()
 }
 
 /// Canonical form that also works for paths that do not exist yet. Walks the
@@ -886,7 +925,50 @@ mod tests {
         }
         assert!(TargetIssue::InsideAppBundle
             .reason()
-            .contains("Folders inside apps can't hold your data."));
+            .contains("Folders inside apps can’t hold your data."));
+    }
+
+    #[test]
+    fn each_issue_reads_as_a_plain_reason_with_the_disk_named() {
+        let all = [
+            TargetIssue::NotAbsolute,
+            TargetIssue::NotADirectory,
+            TargetIssue::NotWritable,
+            TargetIssue::InsideCurrentRoot,
+            TargetIssue::InsideDefaultRoot,
+            TargetIssue::InsideAppBundle,
+            TargetIssue::CloudSynced("iCloud Drive".into()),
+            TargetIssue::CloudSynced("a cloud storage provider".into()),
+            TargetIssue::NetworkVolume("smbfs".into()),
+            TargetIssue::UnsupportedVolume("ntfs".into()),
+            TargetIssue::NoUnixPermissions("exfat".into()),
+        ];
+        for issue in &all {
+            let reason = issue.reason();
+            let capital = reason.starts_with(char::is_uppercase) || reason.starts_with("iCloud");
+            assert!(capital, "{reason}");
+            assert!(reason.ends_with('.'), "{reason}");
+            assert!(!reason.contains('\''), "typographic apostrophes: {reason}");
+        }
+        assert_eq!(
+            TargetIssue::CloudSynced("iCloud Drive".into()).reason(),
+            "iCloud Drive syncs that folder, and syncing can damage the workspace database."
+        );
+        assert!(TargetIssue::CloudSynced("a cloud storage provider".into())
+            .reason()
+            .starts_with("A cloud storage provider syncs"));
+        assert!(TargetIssue::NetworkVolume("smbfs".into())
+            .reason()
+            .contains("network drive (SMB)"));
+        assert!(TargetIssue::UnsupportedVolume("ntfs".into())
+            .reason()
+            .contains("formatted as NTFS"));
+        assert!(TargetIssue::NoUnixPermissions("exfat".into())
+            .reason()
+            .starts_with("This exFAT drive has no file permissions"));
+        assert_eq!(volume_name("msdos"), "FAT");
+        assert_eq!(volume_name("hfs"), "Mac OS Extended");
+        assert_eq!(volume_name("macfuse"), "macfuse");
     }
 
     #[test]

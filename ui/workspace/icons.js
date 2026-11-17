@@ -62,6 +62,8 @@ const ICONS = {
   heart: '<path d="M19.5 13.6 12 21l-7.5-7.4a5 5 0 0 1 7.5-6.5 5 5 0 0 1 7.5 6.5z"/>',
   chart: '<path d="M3 3v18h18"/><path d="M7 16v-4M11.5 16V8M16 16v-6M20.5 16V5"/>',
   update: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/>',
+  folder: '<path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h3.8a2 2 0 0 1 1.6.8l1.2 1.6a2 2 0 0 0 1.6.8h5.8A2.5 2.5 0 0 1 22 9.7v8.8a2.5 2.5 0 0 1-2.5 2.5h-14A2.5 2.5 0 0 1 3 18.5z"/>',
+  drive: '<rect x="2.5" y="13" width="19" height="7.5" rx="2"/><path d="M5 13 7.4 5.3A2 2 0 0 1 9.3 4h5.4a2 2 0 0 1 1.9 1.3L19 13"/><path d="M6.5 16.8h.01M10 16.8h.01"/>',
 };
 
 const FILLED = new Set(['dots', 'play']);

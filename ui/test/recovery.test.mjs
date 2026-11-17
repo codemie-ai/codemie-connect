@@ -22,8 +22,9 @@ test('recovery_page_offers_retry_and_default', () => {
   assert.ok(html.includes(recoverySentence(custom('missing'))));
   assert.ok(html.includes('/Volumes/Work/CodeMie Connect Data'), 'the folder path is shown');
   assert.ok(html.includes('/Users/qa/Library/Application Support/connect/workspace'), 'the default folder is named');
-  // Choose another folder arrives with Task 13: no dead button meanwhile.
-  assert.doesNotMatch(html, /Choose another folder/);
+  // Choose another folder opens the same dialog Settings uses (adopt or start empty only).
+  assert.match(html, /data-action="recovery-choose"/);
+  assert.match(html, />Choose another folder…</);
   // The CodeMie tools stay reachable while the workspace is down.
   assert.match(html, /data-action="recovery-tools"/);
 });
@@ -49,6 +50,8 @@ test('a default folder that did not open offers retry only and says why', () => 
   assert.doesNotMatch(html, /data-action="recovery-default"/);
   assert.doesNotMatch(html, new RegExp(USE_DEFAULT_WARNING));
   assert.match(html, /Another Connect process owns this workspace/);
+  // The folder itself is fine: choosing another one would not fix this.
+  assert.doesNotMatch(html, /data-action="recovery-choose"/);
 });
 
 test('a native issue always shows; the failing call\u2019s message only when nothing else explains it', () => {
@@ -68,10 +71,11 @@ test('a native issue always shows; the failing call\u2019s message only when not
   assert.doesNotMatch(both, /lost access/);
 });
 
-test('once a restart is accepted, Retry and Use the default folder stay disabled', () => {
+test('once a restart is accepted, Retry, Use the default folder and Choose stay disabled', () => {
   const html = recoveryPage(custom('missing', { restarting: true }));
   assert.match(html, /<button[^>]*data-action="recovery-retry"[^>]*disabled/);
   assert.match(html, /<button[^>]*data-action="recovery-default"[^>]*disabled/);
+  assert.match(html, /<button[^>]*data-action="recovery-choose"[^>]*disabled/);
   assert.match(html, /Restarting…/);
   assert.doesNotMatch(recoveryPage(custom('missing')), /disabled/);
 });

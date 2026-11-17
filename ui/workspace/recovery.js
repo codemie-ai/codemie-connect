@@ -2,7 +2,7 @@
 // startup, or when an operation returns `storage_unavailable` while Connect runs. Pure: it
 // renders the `storage_status` result (`issue` is native and always precise), plus `cause`, the
 // failing operation's message, and `restarting` once a restart was accepted; app.js wires the
-// actions.
+// actions. Choose another folder opens the Settings change dialog (settings-storage.js).
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { button } from './ui.js';
@@ -57,7 +57,8 @@ export function recoveryPage(status) {
   const actions = [
     button(busy ? 'Restarting…' : 'Retry', { action: 'recovery-retry', variant: 'primary', iconName: 'refresh', disabled: busy }),
     useDefault ? button('Use the default folder', { action: 'recovery-default', disabled: busy }) : '',
-    // Task 13 adds "Choose another folder…" here.
+    // A folder that is fine (status `ready`) is not what stops the workspace opening.
+    s.status && s.status !== 'ready' ? button('Choose another folder…', { action: 'recovery-choose', iconName: 'folder', disabled: busy }) : '',
   ].join('');
   const note = useDefault
     ? `<p class="ws-recovery-note">The default folder is <code>${e(s.defaultRoot || '')}</code>. ${e(USE_DEFAULT_WARNING)}</p>`

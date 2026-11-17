@@ -1,0 +1,19 @@
+{
+  "existing": null,
+  "freeBytes": 72000000,
+  "fsName": "APFS",
+  "fsType": "apfs",
+  "issues": [
+    {
+      "code": "not_enough_space",
+      "message": "There isn’t enough free space on that disk to move your data."
+    }
+  ],
+  "modes": [
+    "fresh"
+  ],
+  "neededBytes": 115343360,
+  "needsAcknowledgement": false,
+  "requiredBytes": 48234496,
+  "target": "/Volumes/Work Drive/Projects/CodeMie Connect Data"
+}

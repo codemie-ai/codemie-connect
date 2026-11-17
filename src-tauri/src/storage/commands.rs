@@ -305,6 +305,8 @@ pub enum Place {
     Data,
     Private,
     Logs,
+    /// The data folder Connect used before the last change (`previous` in the pointer).
+    Previous,
 }
 impl Place {
     pub fn parse(which: &str) -> Result<Self> {
@@ -312,6 +314,7 @@ impl Place {
             "data" => Ok(Self::Data),
             "private" => Ok(Self::Private),
             "logs" => Ok(Self::Logs),
+            "previous" => Ok(Self::Previous),
             _ => Err(WorkspaceError::new("validation", "Unknown folder.")),
         }
     }
@@ -493,12 +496,43 @@ pub async fn data_location_reveal(
     main_window_only(window.label())?;
     not_restarting(&state)?;
     let place = Place::parse(&which)?;
-    let path = match place {
-        Place::Data => location::resolve(&state.resolved.private_root).data_root,
-        Place::Private => state.resolved.private_root.clone(),
-        Place::Logs => logs_dir(),
-    };
-    blocking(move || reveal(place, &path)).await?
+    let private = state.resolved.private_root.clone();
+    blocking(move || {
+        let path = match place {
+            Place::Data => location::resolve(&private).data_root,
+            Place::Private => private,
+            Place::Logs => logs_dir(),
+            Place::Previous => location::read_location(&private).previous.ok_or_else(|| {
+                WorkspaceError::new("not_found", "There is no previous data folder.")
+            })?,
+        };
+        reveal(place, &path)
+    })
+    .await?
+}
+
+/// Asks for a folder with the system folder picker, attached to the window. `None` when the
+/// user cancels. The picker waits for the user, so it runs on the blocking pool.
+#[tauri::command]
+pub async fn data_location_pick(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    main_window_only(window.label())?;
+    not_restarting(&state)?;
+    let picker = app
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Choose where Connect keeps its data")
+        .set_can_create_directories(true)
+        .set_directory(home_dir(&app));
+    let picked = blocking(move || picker.blocking_pick_folder()).await?;
+    Ok(picked
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned()))
 }
 
 #[cfg(target_os = "macos")]
@@ -786,6 +820,9 @@ mod tests {
         );
         let (_, args) = reveal_command(Place::Private, Path::new("/Users/u/workspace"));
         assert_eq!(args[0], "-R");
+        let (_, args) = reveal_command(Place::Previous, data);
+        assert_eq!(args[0], "-R");
+        assert_eq!(Place::parse("previous").unwrap(), Place::Previous);
         // The logs folder opens, so its files are in view.
         let logs = Path::new("/Users/u/Library/Logs/CodeMie");
         let (_, args) = reveal_command(Place::Logs, logs);
@@ -800,6 +837,168 @@ mod tests {
             )),
             logs
         );
+    }
+
+    /// The `data_location_get` and `data_location_check` responses the UI reads, written from
+    /// the real functions so the UI fixtures can't drift. Paths are mapped onto a made-up home
+    /// folder and drive, and sizes and free space are pinned. Regenerate with
+    /// `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+    #[test]
+    fn contract_fixtures_match_the_real_data_location() {
+        use crate::storage::migrate::tests::{marked_root, Vol, WAIT};
+        use crate::storage::migrate::{self, Choice, Mode, Places};
+        use crate::storage::old_copy::{location_info, remove_old};
+        use crate::workspace::{open_for_tests, startup};
+        use std::fs;
+
+        let home_dir = tempfile::tempdir().unwrap();
+        let drive_dir = tempfile::tempdir().unwrap();
+        let home = home_dir.path().to_path_buf();
+        let default = home.join("Library/Application Support/com.epam.codemie.installer/workspace");
+        let logs = home.join("Library/Logs/CodeMie");
+        let projects = drive_dir.path().join("Projects");
+        let icloud = home.join("Library/Mobile Documents/com~apple~CloudDocs/Work");
+        for dir in [&logs, &projects, &icloud] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let archive = drive_dir.path().join("Archive");
+        let archived = marked_root(&archive, "8d1f2c3e-5b7a-4c9d-9e0f-1a2b3c4d5e6f");
+        let info = || json(&location_info(&default, &logs));
+        let apfs = Vol("apfs", 1 << 40);
+        let mut fixtures = Vec::new();
+
+        let core = startup(&default, open_for_tests).core.unwrap();
+        fixtures.push(("location-default.json", info()));
+        {
+            let places = Places {
+                private_root: &default,
+                data_root: &core.paths.data,
+                home: &home,
+            };
+            let check = |picked: &Path, open: bool, vol: &Vol| {
+                json(&migrate::check(&places, picked, open, vol))
+            };
+            let required = migrate::check(&places, &projects, true, &apfs).required_bytes;
+            fixtures.extend([
+                ("check-ok.json", check(&projects, true, &apfs)),
+                ("check-cloud.json", check(&icloud, true, &apfs)),
+                (
+                    "check-network.json",
+                    check(&projects, true, &Vol("smbfs", 1 << 40)),
+                ),
+                (
+                    "check-exfat.json",
+                    check(&projects, true, &Vol("exfat", 1 << 40)),
+                ),
+                (
+                    "check-tight.json",
+                    check(&projects, true, &Vol("apfs", required + 1)),
+                ),
+                ("check-existing.json", check(&archive, true, &apfs)),
+                ("check-existing-data.json", check(&archived, true, &apfs)),
+                ("check-recovery.json", check(&projects, false, &apfs)),
+            ]);
+            // A move to the drive: the default folder keeps a copy.
+            let choice = Choice {
+                picked: &projects,
+                mode: Mode::Move,
+                acknowledged: false,
+            };
+            migrate::change(&places, &choice, Some(&core), &apfs, WAIT).unwrap();
+        }
+        fixtures.push(("location-custom-copied.json", info()));
+        // Connect restarts on the drive, and Remove old copy deletes the copy.
+        core.release_for_restart();
+        let core = startup(&default, open_for_tests).core.unwrap();
+        remove_old(&default).unwrap();
+        fixtures.push(("location-custom.json", info()));
+        // "Use the default folder": the drive's folder is kept as the previous one, not a copy.
+        core.release_for_restart();
+        use_default_location(&default).unwrap();
+        fixtures.push(("location-default-previous.json", info()));
+        // Back on the drive with "Use the Connect data already there": the default folder is
+        // the previous one, and not a copy either.
+        let core = startup(&default, open_for_tests).core.unwrap();
+        let places = Places {
+            private_root: &default,
+            data_root: &core.paths.data,
+            home: &home,
+        };
+        let choice = Choice {
+            picked: &projects,
+            mode: Mode::Adopt,
+            acknowledged: false,
+        };
+        migrate::change(&places, &choice, Some(&core), &apfs, WAIT).unwrap();
+        fixtures.push(("location-custom-adopted.json", info()));
+        core.release_for_restart();
+
+        // Made-up places instead of the temporary folders: the resolved form first, since the
+        // plain one is part of it.
+        let places = [
+            (drive_dir.path(), "/Volumes/Work Drive"),
+            (home_dir.path(), "/Users/taylor"),
+        ];
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
+        let update = std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1");
+        for (name, mut value) in fixtures {
+            pin_sizes(
+                &mut value,
+                name == "check-tight.json",
+                name == "check-recovery.json",
+            );
+            let mut text = serde_json::to_string_pretty(&value).unwrap() + "\n";
+            for (real, shown) in places {
+                let resolved = location::canonical(real);
+                text = text
+                    .replace(resolved.to_str().unwrap(), shown)
+                    .replace(real.to_str().unwrap(), shown);
+            }
+            assert!(
+                !text.contains("tmp"),
+                "{name} names a temporary folder: {text}"
+            );
+            let path = dir.join(name);
+            if update {
+                fs::create_dir_all(&dir).unwrap();
+                fs::write(&path, &text).unwrap();
+            } else {
+                let saved = fs::read_to_string(&path).unwrap_or_default();
+                assert_eq!(
+                    saved, text,
+                    "{name} is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
+                );
+            }
+        }
+    }
+
+    fn json<T: Serialize>(response: &T) -> serde_json::Value {
+        serde_json::to_value(response).unwrap()
+    }
+
+    /// Fixed sizes, so the fixtures don't depend on SQLite's file sizes: 46 MiB of data on a
+    /// roomy disk; a tight disk has less free than a move needs; in recovery the data folder is
+    /// out of reach, so it measures nothing.
+    fn pin_sizes(value: &mut serde_json::Value, tight: bool, recovery: bool) {
+        const DATA: u64 = 48_234_496;
+        let data = if recovery { 0 } else { DATA };
+        let o = value.as_object_mut().unwrap();
+        if o.contains_key("sizeBytes") {
+            o.insert("sizeBytes".into(), DATA.into());
+            let previous = if o["previousExists"] == true { DATA } else { 0 };
+            o.insert("previousSizeBytes".into(), previous.into());
+        }
+        if o.contains_key("requiredBytes") {
+            o.insert("requiredBytes".into(), data.into());
+            o.insert(
+                "neededBytes".into(),
+                crate::storage::migrate::space_for_move(data).into(),
+            );
+            if tight {
+                o.insert("freeBytes".into(), 72_000_000u64.into());
+            }
+        }
     }
 
     #[test]

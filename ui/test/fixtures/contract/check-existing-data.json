@@ -1,0 +1,18 @@
+{
+  "existing": {
+    "appVersion": "2.0.0",
+    "createdAt": "2026-11-01T00:00:00Z",
+    "id": "8d1f2c3e-5b7a-4c9d-9e0f-1a2b3c4d5e6f"
+  },
+  "freeBytes": 1099511627776,
+  "fsName": "APFS",
+  "fsType": "apfs",
+  "issues": [],
+  "modes": [
+    "adopt"
+  ],
+  "neededBytes": 115343360,
+  "needsAcknowledgement": false,
+  "requiredBytes": 48234496,
+  "target": "/Volumes/Work Drive/Archive/CodeMie Connect Data"
+}

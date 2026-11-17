@@ -1,0 +1,14 @@
+{
+  "existing": null,
+  "freeBytes": 1099511627776,
+  "fsName": "APFS",
+  "fsType": "apfs",
+  "issues": [],
+  "modes": [
+    "fresh"
+  ],
+  "neededBytes": 67108864,
+  "needsAcknowledgement": false,
+  "requiredBytes": 0,
+  "target": "/Volumes/Work Drive/Projects/CodeMie Connect Data"
+}

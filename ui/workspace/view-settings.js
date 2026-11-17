@@ -6,6 +6,7 @@ import { records, syncRunning, sourceCounts, chatCatalog, connectionState } from
 import { calendarCatalog } from './calendar-model.js';
 import { formatDateTime, agoLabel } from './format.js';
 import { aiPanel } from './settings-ai.js';
+import { storageCard } from './settings-storage.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
@@ -26,7 +27,7 @@ export const SETTINGS_TABS = [
 export const LEGACY_TABS = { installation: 'home', tools: 'agents', desktop: 'connect', health: 'health', usage: 'analytics' };
 
 const TAB_DESCRIPTIONS = {
-  general: 'Time zone, background behaviour and optional AI.',
+  general: 'Time zone, background behaviour, optional AI and where your data is kept.',
   ai: 'Choose which Claude drafts and summarizes for you, and what it costs.',
   microsoft: 'Your calendar, Outlook and Teams — connected with one sign-in.',
   appearance: 'Choose how CodeMie Connect looks on your desktop.',
@@ -41,7 +42,7 @@ export function settings(s, ctx) {
   const { state, auth } = ctx;
   const tab = state.settingsTab;
   const panels = {
-    general: () => generalPanel(s),
+    general: () => generalPanel(s, state.storage),
     ai: () => aiPanel(state.ai),
     microsoft: () => microsoftPanel(s, auth),
     appearance: () => appearancePanel(s),
@@ -67,7 +68,7 @@ export function settings(s, ctx) {
 
 // ---------------------------------------------------------------- General
 
-function generalPanel(s) {
+function generalPanel(s, storage = {}) {
   const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [s.settings.timeZone];
   return card({
     title: 'Workspace preferences', iconName: 'settings',
@@ -79,7 +80,7 @@ function generalPanel(s) {
       ${settingRow({ title: 'Keep running in the menu bar', text: 'Closing the window keeps Connect syncing and reminding. Quit from the menu bar stops it.', control: toggle({ action: 'setting-toggle', checked: s.settings.background, attrs: { 'data-key': 'background', 'aria-label': 'Keep running in the menu bar' } }) })}
       ${settingRow({ title: 'Launch at login', text: 'Start Connect when you sign in to your computer.', control: toggle({ action: 'setting-toggle', checked: s.settings.launchAtLogin, attrs: { 'data-key': 'launchAtLogin', 'aria-label': 'Launch at login' } }) })}
       ${settingRow({ title: 'AI reply drafts', text: 'Choose Claude Code or a CodeMie profile for drafts and summaries. Connect never sends without your review.', control: button('Claude settings', { action: 'settings-tab', iconName: 'spark', attrs: { 'data-tab': 'ai' } }) })}`,
-  });
+  }) + storageCard(storage.info, storage);
 }
 
 // ---------------------------------------------------------------- Microsoft 365
