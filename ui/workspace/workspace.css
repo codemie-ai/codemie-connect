@@ -1552,3 +1552,8 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .cm-log-pre .cm-err{color:var(--ws-red)}
 .cm-log-pre .cm-ok{color:var(--ws-green)}
 .cm-log-pre .cm-dim{color:var(--ws-faint)}
+/* an app row keeps its failure underneath, full width */
+.cm-app{flex-wrap:wrap}
+.cm-app-extra{flex-basis:100%}
+.cm-app-extra .cm-problem{margin:0}
+.cm-app-copy .cm-app-note{margin-top:2px}

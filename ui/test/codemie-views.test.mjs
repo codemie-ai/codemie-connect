@@ -8,6 +8,7 @@ import { overviewPanel } from '../workspace/codemie/view-overview.js';
 import { healthPanel } from '../workspace/codemie/view-health.js';
 import { profilesPanel } from '../workspace/codemie/view-profiles.js';
 import { agentsPanel } from '../workspace/codemie/view-agents.js';
+import { appsPanel } from '../workspace/codemie/view-apps.js';
 
 export function cmState(over = {}) {
   const cm = emptyCodemie();
@@ -184,6 +185,40 @@ test('installed_agent_offers_update_and_terminal', () => {
   assert.match(card, /Update to 2\.1\.281/);
   assert.match(card, /data-action="cm-open-terminal" data-id="claude"/);
   assert.match(card, /Start with codemie-claude/);
+});
+
+// ---------------------------------------------------------------- Connected apps
+
+const appRowOf = (html, id) => html.split('data-app=').find((c) => c.startsWith(`"${id}"`));
+
+test('disconnect_only_where_cli_supports', () => {
+  const cm = cmState({ gateway: { state: 'running', port: 4001, profile: 'prod' } });
+  cm.apps = [
+    { id: 'claude-desktop', installed: true, configured: true },
+    { id: 'vscode-copilot', installed: false, configured: false },
+    { id: 'vscode-claude', installed: false, configured: false },
+    { id: 'codex-desktop', installed: true, configured: true },
+  ];
+  const html = appsPanel(cm, {});
+  assert.doesNotMatch(appRowOf(html, 'claude-desktop'), /cm-app-disconnect/);
+  assert.match(appRowOf(html, 'claude-desktop'), /remove CodeMie in Claude Desktop’s settings/);
+  assert.match(appRowOf(html, 'codex-desktop'), /data-action="cm-app-disconnect"/);
+  assert.match(appRowOf(html, 'vscode-copilot'), /data-action="cm-open-download"/);
+});
+
+test('gateway_card_hidden_until_configured', () => {
+  const html = appsPanel(cmState(), {});
+  assert.doesNotMatch(html, /CodeMie gateway/);
+  assert.match(appRowOf(html, 'claude-desktop'), /data-action="cm-app-connect"/);
+});
+
+test('stopped_gateway_offers_start', () => {
+  const cm = cmState();
+  cm.apps[0].configured = true;
+  const html = appsPanel(cm, {});
+  assert.match(html, /CodeMie gateway/);
+  assert.match(html, /data-action="cm-gateway-start"/);
+  assert.match(appRowOf(html, 'claude-desktop'), /Not answering/);
 });
 
 test('no_profile_offers_sign_in', () => {

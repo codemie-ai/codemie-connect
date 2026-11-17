@@ -6,13 +6,14 @@ import { icon } from '../icons.js';
 import { button, field, textInput } from '../ui.js';
 import { testResultLabel } from '../settings-ai.js';
 import { attention, tabDots as dotsOf } from './model.js';
-import { agentDisplay } from './catalog.js';
+import { APPS, agentDisplay } from './catalog.js';
 import { isSafe } from './cli.js';
 import { banner, code } from './view-common.js';
 import { overviewPanel, startableAgents } from './view-overview.js';
 import { healthPanel } from './view-health.js';
 import { profilesPanel } from './view-profiles.js';
 import { agentsPanel } from './view-agents.js';
+import { appsPanel } from './view-apps.js';
 
 const PREF = {
   introduced: 'codemie.setup.introduced',
@@ -172,6 +173,49 @@ export function createCodemieController(deps) {
     }
   }
 
+  // ---------------------------------------------------------------- Connected apps
+
+  const appInfo = (id) => APPS.find((a) => a.id === id);
+  const gatewayProfile = () => cm.gateway.profile || cm.config.active;
+
+  async function appConnect(id) {
+    const a = appInfo(id);
+    if (!a || ui.appBusy[id]) return;
+    delete ui.appErrors[id];
+    ui.appBusy[id] = 'Connecting…';
+    await render();
+    try {
+      await service.connectApps([id], gatewayProfile());
+      toast(`${a.name} now answers with CodeMie models. Restart it if it was open.`, 'success');
+    } catch (err) {
+      ui.appErrors[id] = { title: `${a.name} was not connected`, text: `${err?.message || String(err)} Nothing in the app was changed.`, cmd: err?.cmd, output: err?.output ?? '' };
+    } finally {
+      delete ui.appBusy[id];
+      await render();
+    }
+  }
+
+  function appDisconnect(id) {
+    const a = appInfo(id);
+    if (!a?.disconnectFlag) return undefined;
+    return confirmModal({
+      title: `Disconnect ${a.name}?`, text: `${a.name} goes back to its own sign-in. Your chats and settings there are not affected. You can connect it again any time.`,
+      confirm: 'Disconnect', variant: 'danger', initialFocus: 'cancel',
+      onConfirm: async () => {
+        await service.disconnectApp(id);
+        toast(`${a.name} is disconnected from CodeMie`, 'success');
+      },
+    });
+  }
+
+  async function gateway(restart, profile = gatewayProfile()) {
+    try {
+      await (restart ? service.restartGateway(profile) : service.startGateway(profile));
+    } catch {
+      // the gateway card shows what went wrong
+    }
+  }
+
   // ---------------------------------------------------------------- Overview: CLI, Health
 
   async function cliCheck(update) {
@@ -230,6 +274,13 @@ export function createCodemieController(deps) {
       case 'cm-agents-refresh': await checkAgents(); return true;
       case 'cm-agents-more': ui.showAllAgents = true; await render(); return true;
       case 'cm-agent-dismiss': delete ui.agentErrors[id]; await render(); return true;
+      case 'cm-app-connect': await appConnect(id); return true;
+      case 'cm-app-disconnect': await appDisconnect(id); return true;
+      case 'cm-app-dismiss': delete ui.appErrors[id]; await render(); return true;
+      case 'cm-apps-refresh': await service.refreshApps(); return true;
+      case 'cm-open-download': await service.openDownload(id); return true;
+      case 'cm-gateway-start': await gateway(false); return true;
+      case 'cm-gateway-restart': await gateway(true); return true;
       case 'cm-agent-copy': {
         const row = agentRow(id);
         if (row) {
@@ -257,6 +308,9 @@ export function createCodemieController(deps) {
         return true;
       case 'cm-profile-switch':
         await switchProfile(el.value);
+        return true;
+      case 'cm-gateway-profile':
+        if (el.value && el.value !== cm.gateway.profile) await gateway(true, el.value);
         return true;
       default:
         return false;
@@ -353,6 +407,7 @@ export function createCodemieController(deps) {
     'cm-overview': () => overviewPanel(cm, prefs(), ui),
     'cm-profiles': () => profilesPanel(cm, ui),
     'cm-agents': () => agentsPanel(cm, ui, runLog),
+    'cm-apps': () => appsPanel(cm, ui),
     'cm-health': () => {
       // Opening Health checks once per session, as the legacy screen did.
       if (!ui.healthAutoRan && cm.loaded && cm.profiles.length && cm.runtime.state === 'ready' && !cm.health) {
