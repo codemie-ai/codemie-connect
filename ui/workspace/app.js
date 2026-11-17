@@ -19,12 +19,22 @@ import { renderShell } from './shell.js';
 import { nextAiSettings, LOGIN_STEPS } from './settings-ai.js';
 import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from './boot.js';
+import { recoveryPage, USE_DEFAULT_WARNING } from './recovery.js';
 
 const ROUTES = ['today', 'calendar', 'inbox', 'settings'];
 const root = document.getElementById('workspace-app');
 const legacy = document.getElementById('app');
 const invoke = window.__TAURI__?.core?.invoke;
-const store = invoke ? createStore(invoke) : null;
+// Any workspace call that finds the data folder unusable switches to the recovery page.
+const watched = invoke && (async (cmd, args) => {
+  try {
+    return await invoke(cmd, args);
+  } catch (err) {
+    if (err?.code === 'storage_unavailable') showRecovery(err);
+    throw err;
+  }
+});
+const store = invoke ? createStore(watched) : null;
 
 const state = {
   route: 'today', settingsTab: 'general',
@@ -71,7 +81,7 @@ const current = () => active(snap());
 const getRecord = (kind, id) => snap().records.find(r => r.kind === kind && r.id === id);
 const modalOpen = () => !!document.querySelector('.ws-modal[open]');
 const editing = () => document.activeElement?.matches?.('input:not([type=checkbox]):not([type=radio]),textarea,select');
-const fail = err => toast(err?.message || String(err), 'error');
+const fail = err => (err?.code === 'storage_unavailable' ? showRecovery(err) : toast(err?.message || String(err), 'error'));
 
 async function mutate(op, data = {}, workspaceId) {
   const scope = workspaceId ?? [...document.querySelectorAll('.ws-modal[open]')].at(-1)?.dataset.workspaceId;
@@ -166,7 +176,7 @@ function restoreScroll(saved) {
 }
 
 async function render() {
-  if (!store?.get()) return;
+  if (!store?.get() || recovering) return;
   if (legacyMounted && legacyModule?.legacyToolsBusy()) {
     applyTheme(snap().settings.theme);
     return;
@@ -878,6 +888,7 @@ function selectMessage(id) {
 }
 
 async function handle(action, el) {
+  if (action.startsWith('recovery-')) return recoveryAction(action);
   const id = el.dataset.id;
   const s = snap();
   switch (action) {
@@ -1457,6 +1468,50 @@ async function openNotification(payload) {
   return route('settings', 'activity');
 }
 
+// ---------------------------------------------------------------- recovery
+
+let recovering = null;
+let recoveryStatus = null;
+
+// The data folder can't be used (DESIGN 8): the workspace gives way to the recovery page until
+// Connect restarts. A setup running in the CodeMie tools keeps its screen and gets a toast.
+function showRecovery(err) {
+  if (recovering) return recovering;
+  if (legacyMounted && legacyModule?.legacyToolsBusy()) return toast(err?.message || String(err), 'error');
+  ready = false;
+  recovering = (async () => {
+    document.querySelectorAll('.ws-modal[open]').forEach(d => d.close());
+    if (legacyMounted) {
+      legacy.classList.add('hidden');
+      document.body.append(legacy);
+      legacyMounted = false;
+    }
+    recoveryStatus = await invoke('storage_status').catch(() => null);
+    root.dataset.route = 'recovery';
+    root.innerHTML = recoveryPage({ ...recoveryStatus, issue: recoveryStatus?.issue || err?.message || '' });
+  })();
+  return recovering;
+}
+
+async function recoveryAction(action) {
+  if (action === 'recovery-retry') return invoke('app_relaunch');
+  if (action === 'recovery-default') {
+    const where = recoveryStatus?.defaultRoot ? `its default folder (${recoveryStatus.defaultRoot})` : 'its default folder';
+    return confirmModal({
+      title: 'Use the default folder?',
+      text: `Connect will restart with the data in ${where}. Nothing is moved or deleted. ${USE_DEFAULT_WARNING}`,
+      confirm: 'Use the default folder',
+      onConfirm: () => invoke('data_location_use_default'),
+    });
+  }
+  if (action === 'recovery-tools') {
+    root.classList.add('hidden');
+    legacy.classList.remove('hidden');
+    legacyModule = await import('../renderer.js');
+    await legacyModule.initLegacyTools();
+  }
+}
+
 // ---------------------------------------------------------------- boot
 
 async function checkAppUpdate() {
@@ -1492,14 +1547,7 @@ async function boot() {
   try {
     await store.refresh();
   } catch (err) {
-    root.innerHTML = `<div class="ws-error-page"><h1>Workspace storage needs attention</h1><p>${e(err.message || err)}</p><p>The original database is kept. Your CodeMie tools are still available.</p><button id="recovery-tools" class="ws-btn ws-btn-primary">Open CodeMie tools</button></div>`;
-    document.getElementById('recovery-tools').onclick = async () => {
-      root.classList.add('hidden');
-      legacy.classList.remove('hidden');
-      legacyModule = await import('../renderer.js');
-      await legacyModule.initLegacyTools();
-    };
-    return;
+    return showRecovery(err);
   }
   await bootWorkspace(store, snap());
   runtimeReady = await invoke('runtime_ready').catch(() => false);

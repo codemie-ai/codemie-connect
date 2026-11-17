@@ -102,6 +102,19 @@ impl Repository {
         let _ = repo.prune_chat_messages(None, super::graph::CHAT_KEEP_MESSAGES);
         Ok(repo)
     }
+    /// Closes the database file before a restart (best effort). Later calls fail.
+    pub fn close(&mut self) {
+        if let Ok(memory) = Sqlite::open_in_memory() {
+            let _ = self.db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+            let _ = std::mem::replace(&mut self.db, memory).close();
+        }
+    }
+    /// Test failpoint: the next write, and every write after it, fails the way it does when
+    /// the data folder's disk goes away or turns read-only (`SQLITE_READONLY`). Reads still work.
+    #[cfg(test)]
+    pub fn fail_next_write(&self) {
+        self.db.execute_batch("PRAGMA query_only=1").unwrap();
+    }
     /// Upgrade on open: earlier builds required manual binding and per-workspace source picking,
     /// which no longer has any UI. Every workspace on the active connected account switches to
     /// automatic sources. Idempotent afterwards.
@@ -1912,6 +1925,22 @@ mod tests {
             .unwrap()
             .iter()
             .any(|j| j.kind == "notification" && j.state == "failed"));
+    }
+    #[test]
+    fn io_class_sqlite_errors_report_storage_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&dir.path().join("db")).unwrap();
+        r.fail_next_write();
+        let note = item("", "n1", "note", "local", json!({"text":"x"}));
+        assert_eq!(r.put_record(&note).unwrap_err().code, "storage_unavailable");
+        // Reads still work, so the snapshot behind the recovery page can load.
+        assert!(r.snapshot().is_ok());
+        // A data folder that vanished before the database opened reads the same way.
+        let gone = dir.path().join("gone").join("workspace.sqlite");
+        assert!(matches!(Repository::open(&gone), Err(e) if e.code == "storage_unavailable"));
+        // Other database errors keep the generic storage code.
+        let bad = r.db.execute("INSERT INTO nope VALUES(1)", []).unwrap_err();
+        assert_eq!(WorkspaceError::from(bad).code, "storage");
     }
     #[test]
     fn newer_schema_is_retained() {

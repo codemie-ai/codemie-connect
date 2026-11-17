@@ -189,6 +189,20 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .ws-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .ws-loading{grid-column:1/-1;grid-row:1/-1;display:flex;align-items:center;justify-content:center;gap:12px;color:var(--ws-muted)}
 .ws-error-page{grid-column:1/-1;grid-row:1/-1;max-width:560px;margin:auto;padding:32px;display:grid;gap:12px}
+/* Recovery page: the data folder can't be used (DESIGN 8). One centered card over the page background. */
+.ws-recovery{grid-column:1/-1;grid-row:1/-1;display:grid;place-items:center;min-height:0;overflow:auto;padding:32px 16px;background-color:var(--ws-bg);background-image:var(--cm-content-gradient);background-size:contain;background-repeat:no-repeat;background-position:center bottom}
+.ws-recovery-card{width:min(540px,100%);box-sizing:border-box;padding:28px 28px 0;box-shadow:var(--ws-shadow)}
+.ws-recovery-icon{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;margin-bottom:16px;background:var(--ws-amber-bg);color:var(--ws-amber)}
+.ws-recovery-icon .ws-icon{width:20px;height:20px}
+.ws-recovery h1{font-size:18px;line-height:28px}
+.ws-recovery-lead{margin:6px 0 0;font-size:14px;line-height:20px;color:var(--ws-text-2)}
+.ws-recovery-issue{margin:8px 0 0;font-size:13px;line-height:20px;color:var(--ws-muted)}
+.ws-recovery-path{display:grid;gap:4px;margin-top:16px;padding:10px 12px;border:1px solid var(--ws-border);border-radius:var(--ws-radius);background:var(--ws-card-2)}
+.ws-recovery-label{font-size:12px;line-height:16px;font-weight:600;color:var(--ws-muted)}
+.ws-recovery-path code,.ws-recovery-note code{font-family:var(--font-mono);font-size:12px;line-height:18px;color:var(--ws-text);overflow-wrap:anywhere}
+.ws-recovery-actions{margin-top:20px}
+.ws-recovery-note{margin:10px 0 0;font-size:12px;line-height:18px;color:var(--ws-muted)}
+.ws-recovery-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:24px -28px 0;padding:10px 16px 10px 28px;border-top:1px solid var(--ws-border);font-size:12px;line-height:16px;color:var(--ws-muted)}
 
 /* ------------------------------------------------------------------ buttons */
 .ws-btn{--btn-h:28px;position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:var(--btn-h);min-width:0;padding:0 12px;border-radius:8px;border:1px solid var(--ws-secondary-border);background:var(--ws-secondary-bg);color:var(--ws-secondary-text);font-size:12px;line-height:24px;font-weight:600;letter-spacing:-.3px;white-space:nowrap;text-decoration:none;transition:background .12s ease,border-color .12s ease,color .12s ease,opacity .12s ease}

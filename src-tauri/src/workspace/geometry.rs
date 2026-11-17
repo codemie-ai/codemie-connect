@@ -1,5 +1,6 @@
+//! The main window's size and position, kept in the private folder (`window.json`).
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::{LogicalPosition, LogicalSize, Manager};
 #[derive(Serialize, Deserialize)]
 struct Bounds {
@@ -8,11 +9,15 @@ struct Bounds {
     width: f64,
     height: f64,
 }
-pub fn restore(app: &tauri::AppHandle, root: &Path) {
+/// Where the window bounds live inside the private folder.
+pub fn path(private: &Path) -> PathBuf {
+    private.join("window.json")
+}
+pub fn restore(app: &tauri::AppHandle, private: &Path) {
     let Some(w) = app.get_webview_window("main") else {
         return;
     };
-    let bounds = std::fs::read(root.join("window.json"))
+    let bounds = std::fs::read(path(private))
         .ok()
         .and_then(|v| serde_json::from_slice::<Bounds>(&v).ok());
     let Ok(Some(monitor)) = w.current_monitor() else {
@@ -40,7 +45,7 @@ pub fn restore(app: &tauri::AppHandle, root: &Path) {
         b.y.clamp(y_min, y_min + (height_max - height).max(0.0)),
     ));
 }
-pub fn save(w: &tauri::Window, root: &Path) {
+pub fn save(w: &tauri::Window, private: &Path) {
     if w.is_minimized().unwrap_or(true) || w.is_maximized().unwrap_or(false) {
         return;
     }
@@ -55,9 +60,9 @@ pub fn save(w: &tauri::Window, root: &Path) {
         height: f64::from(size.height) / scale,
     };
     if let Ok(bytes) = serde_json::to_vec(&bounds) {
-        let tmp = root.join("window.pending");
+        let tmp = private.join("window.pending");
         if std::fs::write(&tmp, bytes).is_ok() {
-            let _ = std::fs::rename(tmp, root.join("window.json"));
+            let _ = std::fs::rename(tmp, path(private));
         }
     }
 }

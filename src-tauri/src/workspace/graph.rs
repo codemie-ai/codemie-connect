@@ -292,7 +292,7 @@ impl Core {
             )
         })?;
         credentials::save(
-            &self.data_dir,
+            &self.paths.private,
             &connection_id,
             &Credential {
                 refresh,
@@ -361,7 +361,7 @@ impl Core {
                 return Ok(token.clone());
             }
         }
-        let credential = match credentials::load(&self.data_dir, &c.id) {
+        let credential = match credentials::load(&self.paths.private, &c.id) {
             Ok(credential) => credential,
             Err(error) => {
                 self.mark_needs_login(c, &error)?;
@@ -403,7 +403,7 @@ impl Core {
         }
         if let Some(refresh) = token.refresh_token {
             credentials::save(
-                &self.data_dir,
+                &self.paths.private,
                 &c.id,
                 &Credential {
                     refresh,

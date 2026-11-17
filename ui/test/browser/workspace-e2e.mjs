@@ -35,7 +35,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable }) {
   const s = snapshot;
   const ai = aiInit;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -241,7 +241,18 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         if (cmd === 'get_app_version') return '2.2.0';
         if (cmd === 'check_for_update') return null;
         if (cmd === 'workspace_installer_busy') return null;
+        // Data folder (DESIGN 8): `unavailable` is a workspace that never opened; `__storageFail`
+        // makes every later workspace call fail as when the drive goes away while Connect runs.
+        if (cmd === 'storage_status') return clone(storage);
+        if (cmd === 'app_relaunch') { calls.push(['app_relaunch']); return null; }
+        if (cmd === 'data_location_use_default') {
+          calls.push(['data_location_use_default']);
+          if (window.__useDefaultError) throw { code: 'io', message: window.__useDefaultError };
+          return null;
+        }
         if (cmd !== 'workspace_request') throw new Error(`Unexpected native command ${cmd}`);
+        if (unavailable) throw { code: 'storage_unavailable', message: 'Workspace storage is unavailable; existing tools are still accessible.' };
+        if (window.__storageFail) throw { code: 'storage_unavailable', message: 'Connect lost access to its data folder.' };
         const r = args.request;
         // Fake background sync: bump the revision once so the next fenced write is stale.
         if (window.__syncBump && r.op !== 'snapshot') { window.__syncBump = false; s.revision++; }
@@ -277,7 +288,19 @@ const check = async (name, fn) => {
 const assert = (cond, message) => { if (!cond) throw new Error(message); };
 
 const browser = await chromium.launch();
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false } = {}) {
+const DEFAULT_ROOT = '/Users/qa/Library/Application Support/com.epam.codemie.connect/workspace';
+const CUSTOM_ROOT = '/Volumes/Work Drive/Projects/CodeMie Connect Data';
+const storageOf = (status, extra = {}) => ({ status, dataRoot: CUSTOM_ROOT, privateRoot: DEFAULT_ROOT, defaultRoot: DEFAULT_ROOT, custom: true, ...extra });
+const STORAGE = {
+  missing: storageOf('missing'),
+  no_marker: storageOf('no_marker'),
+  marker_mismatch: storageOf('marker_mismatch'),
+  not_writable: storageOf('not_writable'),
+  pointer_unreadable: storageOf('pointer_unreadable', { dataRoot: DEFAULT_ROOT, custom: false }),
+  ready: storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false, issue: 'Another Connect process owns this workspace. Return to its window.' }),
+};
+
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -294,9 +317,9 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   }
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable })})`);
   await page.goto(base + hash);
-  await page.waitForSelector('.ws-sidebar');
+  await page.waitForSelector(unavailable ? '.ws-recovery' : '.ws-sidebar');
   currentPage = page;
   return { page, context, errors };
 }
@@ -948,6 +971,91 @@ for (const theme of ['dark', 'light']) {
     await n.context.close().catch(() => {});
     currentPage = null;
   });
+}
+
+// Recovery page (DESIGN 8): every data-folder status in both themes, its actions, and a drive
+// that goes away while Connect runs.
+for (const theme of ['dark', 'light']) {
+  for (const [name, storage] of Object.entries(STORAGE)) {
+    await check(`${theme}: recovery page for ${name}`, async () => {
+      const { page, context, errors } = await open({ theme, storage, unavailable: true });
+      const card = page.locator('.ws-recovery-card');
+      assert(await card.getAttribute('data-status') === name, `status ${await card.getAttribute('data-status')}`);
+      const body = await card.innerText();
+      assert(/Your data folder needs attention/.test(body), body);
+      const shown = name === 'pointer_unreadable' ? `${DEFAULT_ROOT}/location.json` : storage.dataRoot;
+      assert(body.includes(shown), `path ${shown} not shown: ${body}`);
+      if (name === 'pointer_unreadable') assert(body.includes('Connect couldn’t read where your data is kept.'), body);
+      if (name === 'ready') assert(body.includes(storage.issue), 'the open error is shown');
+      else assert(!/existing tools are still accessible/.test(body), 'generic native message leaked');
+      assert(await page.locator('[data-action="recovery-retry"]').count() === 1, 'Retry');
+      const offersDefault = storage.custom || name === 'pointer_unreadable';
+      assert(await page.locator('[data-action="recovery-default"]').count() === (offersDefault ? 1 : 0), 'Use the default folder');
+      assert(offersDefault === body.includes('Data there may be older or empty.'), 'warning');
+      assert(!/Choose another folder/.test(body), 'dead Choose button');
+      const box = await card.boundingBox();
+      const view = page.viewportSize();
+      assert(Math.abs(box.x + box.width / 2 - view.width / 2) <= 2, `card not centered: ${box.x}`);
+      await shot(page, `${theme}-recovery-${name}`);
+      assert(errors.length === 0, errors.join(' | '));
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+  }
+
+  await check(`${theme}: recovery Retry relaunches and Use the default folder confirms first`, async () => {
+    const { page, context, errors } = await open({ theme, storage: STORAGE.missing, unavailable: true });
+    await page.click('[data-action="recovery-retry"]');
+    await page.waitForFunction(() => window.__bridgeCalls.some(([op]) => op === 'app_relaunch'));
+    await page.click('[data-action="recovery-default"]');
+    await page.waitForSelector('.ws-modal[open]');
+    await page.waitForTimeout(250);
+    const text = await page.locator('.ws-modal[open]').innerText();
+    assert(/Use the default folder\?/.test(text) && text.includes('Data there may be older or empty.') && text.includes(DEFAULT_ROOT), text);
+    assert(!(await page.evaluate(() => window.__bridgeCalls.some(([op]) => op === 'data_location_use_default'))), 'switched before confirming');
+    await shot(page, `${theme}-recovery-confirm-default`);
+    await page.evaluate(() => { window.__useDefaultError = 'Connect couldn’t switch to the default folder: Is a directory (os error 21).'; });
+    await page.click('.ws-modal[open] button[type=submit]');
+    await page.waitForSelector('.ws-modal[open] .ws-modal-error:has-text("Is a directory")');
+    await shot(page, `${theme}-recovery-default-failed`);
+    await page.evaluate(() => { window.__useDefaultError = null; });
+    await page.click('.ws-modal[open] button[type=submit]');
+    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+    const calls = await page.evaluate(() => window.__bridgeCalls.filter(([op]) => op === 'data_location_use_default').length);
+    assert(calls === 2, `use-default calls ${calls}`);
+    assert(errors.length === 0, errors.join(' | '));
+    await context.close().catch(() => {});
+    currentPage = null;
+  });
+
+  await check(`${theme}: a drive that goes away while Connect runs shows the recovery page`, async () => {
+    const { page, context, errors } = await open({ theme, storage: STORAGE.missing });
+    await page.evaluate(() => { window.__storageFail = true; });
+    await page.fill('[data-form=commitment-add] [name=text]', 'Prepare release notes');
+    await page.click('[data-form=commitment-add] button[type=submit]');
+    await page.waitForSelector('.ws-recovery-card[data-status="missing"]');
+    assert(await page.locator('.ws-sidebar').count() === 0, 'the workspace is still on screen');
+    assert(await page.locator('.ws-toast:has-text("lost access")').count() === 0, 'a toast doubled the page');
+    // Background refreshes do not bring the workspace back over the page.
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(400);
+    assert(await page.locator('.ws-recovery').count() === 1, 'the page was replaced');
+    await shot(page, `${theme}-recovery-runtime`);
+    assert(errors.length === 0, errors.join(' | '));
+    await context.close().catch(() => {});
+    currentPage = null;
+  });
+
+  for (const width of [1000, 1680]) {
+    await check(`${theme} ${width}px: the recovery page fits`, async () => {
+      const { page, context } = await open({ theme, width, height: 760, storage: STORAGE.missing, unavailable: true });
+      const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - innerWidth, ...[...document.querySelectorAll('.ws-recovery-card, .ws-recovery-card *')].map(el => el.scrollWidth - el.clientWidth)));
+      assert(overflow <= 0, `overflow ${overflow}px`);
+      await shot(page, `${theme}-recovery-missing-${width}`);
+      await context.close().catch(() => {});
+      currentPage = null;
+    });
+  }
 }
 
 // Claude set up while Connect is open: Inbox notices when the window gets focus again.

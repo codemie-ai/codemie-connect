@@ -267,7 +267,7 @@ impl Core {
             schema: Some(prompts::schema(prompts::DRAFT_SCHEMA)),
             timeout: DRAFT_TIMEOUT,
             cap_usd: None,
-            staging_root: self.data_dir.join("ai-staging"),
+            staging_root: self.paths.staging(),
         };
         let requested_model = spec.model.clone();
         let (outcome, (text, questions)) = self
@@ -351,7 +351,7 @@ impl Core {
             schema: Some(prompts::schema(prompts::SUMMARY_SCHEMA)),
             timeout: SUMMARY_TIMEOUT,
             cap_usd: None,
-            staging_root: self.data_dir.join("ai-staging"),
+            staging_root: self.paths.staging(),
         };
         let requested_model = spec.model.clone();
         let (outcome, (text, asks)) = self

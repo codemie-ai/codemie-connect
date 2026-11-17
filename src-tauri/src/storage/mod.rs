@@ -1,7 +1,8 @@
-//! User-chosen data folder: the location pointer and target validation.
-//! Pure logic; wired into startup, moves and Settings by later tasks.
+//! User-chosen data folder: the location pointer, target validation and the commands the
+//! recovery page uses.
 
-// TODO(Tasks 11-13): startup (11), moves (12) and Settings (13) are the users; drop this allow when wired.
+// TODO(Tasks 12-13): moves (12) and Settings (13) use the rest of `location`; drop this allow when wired.
 #![allow(dead_code)]
 
+pub mod commands;
 pub mod location;

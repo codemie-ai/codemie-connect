@@ -293,7 +293,7 @@ impl Core {
             })),
             timeout: TEST_TIMEOUT,
             cap_usd: None,
-            staging_root: self.data_dir.join("ai-staging"),
+            staging_root: self.paths.staging(),
         };
         let started = std::time::Instant::now();
         let ledger_spec = spec.clone();

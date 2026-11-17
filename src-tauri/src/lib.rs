@@ -88,13 +88,19 @@ pub fn run() {
             }))?;
             app.handle().plugin(tauri_plugin_notification::init())?;
             app.handle().plugin(tauri_plugin_autostart::Builder::new().build())?;
-            let workspace_root = if cfg!(debug_assertions) {
+            // The default folder holds the pointer, sign-in data and the locks; the data itself
+            // may live in a user-chosen folder it points at (DESIGN 8).
+            let default_root = if cfg!(debug_assertions) {
                 std::env::var_os("CODEMIE_WORKSPACE_TEST_DIR").map(std::path::PathBuf::from)
             } else { None }.unwrap_or(app.path().app_data_dir()?.join("workspace"));
-            let workspace_state = match workspace::Core::open(app.handle().clone(), &workspace_root) {
-                Ok(core) => { core.start(); workspace::WorkspaceState { core: Some(core), error: None } },
-                Err(error) => workspace::WorkspaceState { core: None, error: Some(error.message) },
-            };
+            let handle = app.handle().clone();
+            let workspace_state = workspace::startup(&default_root, |paths| workspace::Core::open(handle, paths));
+            let storage_note = workspace_state.core.is_none().then(|| format!(
+                "Workspace not opened: data folder {:?} at {} {}",
+                workspace_state.resolved.status,
+                workspace_state.resolved.data_root.display(),
+                workspace_state.error.as_deref().unwrap_or(""),
+            ));
             app.manage(workspace_state);
             workspace::setup_tray(app)?;
             if cfg!(debug_assertions) {
@@ -105,6 +111,9 @@ pub fn run() {
                 )?;
             }
             commands::logger::write_line("=== CodeMie Installer session started ===", "dim");
+            if let Some(note) = storage_note {
+                commands::logger::write_line(note.trim_end(), "error");
+            }
             if existing_cli_detected {
                 commands::logger::write_line(
                     "Existing CodeMie CLI detected on PATH — using it instead of installing the bundled CLI.",
@@ -116,7 +125,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if matches!(event,tauri::WindowEvent::Moved(_)|tauri::WindowEvent::Resized(_)) {
-                if let Some(state)=window.try_state::<workspace::WorkspaceState>(){if let Some(core)=&state.core{workspace::geometry::save(window,&core.data_dir);}}
+                if let Some(state)=window.try_state::<workspace::WorkspaceState>(){if let Some(core)=&state.core{workspace::geometry::save(window,&core.paths.private);}}
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if let Some(state) = window.try_state::<workspace::WorkspaceState>() {
@@ -173,6 +182,9 @@ pub fn run() {
             commands::app_updater::get_app_version,
             workspace::workspace_request,
             workspace::workspace_installer_busy,
+            storage::commands::storage_status,
+            storage::commands::data_location_use_default,
+            storage::commands::app_relaunch,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

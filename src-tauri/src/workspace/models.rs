@@ -26,9 +26,30 @@ impl WorkspaceError {
         }
     }
 }
+impl WorkspaceError {
+    /// The data folder can't be read or written (disk gone, read-only, permission): the UI
+    /// shows the recovery page.
+    pub fn storage_unavailable() -> Self {
+        Self::new(
+            "storage_unavailable",
+            "Connect lost access to its data folder.",
+        )
+    }
+}
 impl From<rusqlite::Error> for WorkspaceError {
-    fn from(_: rusqlite::Error) -> Self {
-        Self::new("storage", "Workspace storage could not complete the operation. Your existing tools are still available.")
+    fn from(e: rusqlite::Error) -> Self {
+        use rusqlite::ErrorCode::*;
+        match e.sqlite_error_code() {
+            // The folder or its disk went away, turned read-only or refuses access.
+            Some(SystemIoFailure | CannotOpen | ReadOnly | PermissionDenied) => {
+                Self::storage_unavailable()
+            }
+            Some(DiskFull) => Self::new(
+                "storage_unavailable",
+                "The disk that holds Connect's data folder is full.",
+            ),
+            _ => Self::new("storage", "Workspace storage could not complete the operation. Your existing tools are still available."),
+        }
     }
 }
 impl From<std::io::Error> for WorkspaceError {

@@ -18,6 +18,7 @@ use crate::ai::{
     profiles::{DetectEnv, ProfileCache},
     runner::{ClaudeRunner, CliRunner},
 };
+use crate::storage::location::{self, Resolved, RootStatus};
 use models::*;
 use repository::Repository;
 use serde_json::{json, Value};
@@ -28,6 +29,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, MutexGuard,
     },
+    time::Duration,
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
@@ -35,12 +37,107 @@ use tokio_util::sync::CancellationToken;
 
 pub struct WorkspaceState {
     pub core: Option<Arc<Core>>,
+    /// Why a ready data folder did not open (another Connect owns it, a newer schema, a disk error).
     pub error: Option<String>,
+    /// Where startup looked for the data and what it found (DESIGN 8).
+    pub resolved: Resolved,
 }
+
+/// Where a workspace keeps its files (DESIGN 8). `data` holds the database, AI staging and
+/// curl temp files; `private`, always the default folder, holds sign-in data, plugin secrets,
+/// `owner.lock` and `window.json`. With no custom folder they are the same folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorePaths {
+    pub data: PathBuf,
+    pub private: PathBuf,
+}
+impl CorePaths {
+    pub fn custom(&self) -> bool {
+        self.data != self.private
+    }
+    pub fn database(&self) -> PathBuf {
+        self.data.join("workspace.sqlite")
+    }
+    pub fn staging(&self) -> PathBuf {
+        self.data.join("ai-staging")
+    }
+    /// Plugin secrets stay private and local; Task 21 stores them here.
+    #[allow(dead_code)]
+    pub fn plugin_secrets(&self) -> PathBuf {
+        self.private.join("plugins")
+    }
+}
+
+/// How long startup waits for `owner.lock` and `connect.lock`: a relaunch can start before the
+/// process it replaces has exited.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
+
+/// Locks `path` exclusively, retrying for up to `wait` while another process holds it.
+fn acquire_lock(path: &Path, wait: Duration) -> Result<File> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| WorkspaceError::storage_unavailable())?;
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
+            return Ok(file);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(WorkspaceError::new(
+                "instance",
+                "Another Connect process owns this workspace. Return to its window.",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Resolves the data folder and opens the workspace there. Anything but a ready folder leaves
+/// `core` empty so the UI shows the recovery page: nothing is created in a missing, unmarked
+/// or foreign folder, and an unreadable pointer never falls back to an empty default.
+pub fn startup(
+    default_root: &Path,
+    open: impl FnOnce(&CorePaths) -> Result<Arc<Core>>,
+) -> WorkspaceState {
+    let resolved = location::resolve(default_root);
+    if resolved.status != RootStatus::Ready {
+        return WorkspaceState {
+            core: None,
+            error: None,
+            resolved,
+        };
+    }
+    let paths = CorePaths {
+        data: resolved.data_root.clone(),
+        private: resolved.private_root.clone(),
+    };
+    match open(&paths) {
+        Ok(core) => {
+            core.start();
+            WorkspaceState {
+                core: Some(core),
+                error: None,
+                resolved,
+            }
+        }
+        Err(error) => WorkspaceState {
+            core: None,
+            error: Some(error.message),
+            resolved,
+        },
+    }
+}
+
 pub struct Core {
     repository: Mutex<Repository>,
-    pub data_dir: PathBuf,
-    _owner: File,
+    pub paths: CorePaths,
+    owner_lock: File,
+    /// Held inside a custom data folder, so two Macs can't share one drive.
+    connect_lock: Option<File>,
     /// `None` only in unit tests, which have no webview runtime.
     app: Option<tauri::AppHandle>,
     pub auth_attempt: tokio::sync::Mutex<Option<String>>,
@@ -65,7 +162,7 @@ pub struct Core {
     pub installer_busy: AtomicBool,
 }
 impl Core {
-    pub fn open(app: tauri::AppHandle, root: &Path) -> Result<Arc<Self>> {
+    pub fn open(app: tauri::AppHandle, paths: &CorePaths) -> Result<Arc<Self>> {
         // The bundled `codemie-claude` shim is searched after the user's own install.
         let extra_dirs: Vec<PathBuf> = app
             .path()
@@ -75,7 +172,7 @@ impl Core {
         let env = DetectEnv::system(extra_dirs.clone());
         Self::open_with(
             Some(app),
-            root,
+            paths,
             Arc::new(CliRunner::new(env)),
             ProfileCache::system(extra_dirs),
             Arc::new(ai_jobs::LiveGraph),
@@ -83,35 +180,32 @@ impl Core {
     }
     fn open_with(
         app: Option<tauri::AppHandle>,
-        root: &Path,
+        paths: &CorePaths,
         runner: Arc<dyn ClaudeRunner>,
         profiles: ProfileCache,
         graph_reads: Arc<dyn ai_jobs::GraphReads>,
     ) -> Result<Arc<Self>> {
-        std::fs::create_dir_all(root)?;
+        // Only the private folder is created and made owner-only. A custom data folder is the
+        // user's: it is never created or chmodded here.
+        std::fs::create_dir_all(&paths.private)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
+            std::fs::set_permissions(&paths.private, std::fs::Permissions::from_mode(0o700))?;
         }
-        let owner = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(root.join("owner.lock"))?;
-        fs2::FileExt::try_lock_exclusive(&owner).map_err(|_| {
-            WorkspaceError::new(
-                "instance",
-                "Another Connect process owns this workspace. Return to its window.",
-            )
-        })?;
+        let owner_lock = acquire_lock(&paths.private.join("owner.lock"), LOCK_WAIT)?;
+        let connect_lock = if paths.custom() {
+            Some(acquire_lock(&paths.data.join("connect.lock"), LOCK_WAIT)?)
+        } else {
+            None
+        };
         #[cfg(target_os = "macos")]
-        curl::cleanup(root);
+        curl::cleanup(&paths.data);
         Ok(Arc::new(Self {
-            repository: Mutex::new(Repository::open(&root.join("workspace.sqlite"))?),
-            data_dir: root.into(),
-            _owner: owner,
+            repository: Mutex::new(Repository::open(&paths.database())?),
+            paths: paths.clone(),
+            owner_lock,
+            connect_lock,
             app,
             auth_attempt: Default::default(),
             auth_error: Default::default(),
@@ -129,6 +223,18 @@ impl Core {
             installer_busy: AtomicBool::new(false),
         }))
     }
+    /// Before a restart: stops background work, closes the database and lets go of both locks so
+    /// the next process can take over at once. Best effort; the OS frees them on exit anyway.
+    pub fn release_for_restart(&self) {
+        self.stop_background();
+        if let Ok(mut repo) = self.repository.lock() {
+            repo.close();
+        }
+        let _ = fs2::FileExt::unlock(&self.owner_lock);
+        if let Some(lock) = &self.connect_lock {
+            let _ = fs2::FileExt::unlock(lock);
+        }
+    }
     pub fn stop_background(&self) {
         self.stop.store(true, Ordering::Relaxed);
         self.ai_cancel.cancel();
@@ -138,7 +244,7 @@ impl Core {
             }
         }
         #[cfg(target_os = "macos")]
-        curl::cleanup(&self.data_dir);
+        curl::cleanup(&self.paths.data);
     }
     fn cancel_graph_job(&self, jid: &str) {
         if let Ok(mut children) = self.graph_children.lock() {
@@ -172,7 +278,7 @@ impl Core {
     }
     pub fn start(self: &Arc<Self>) {
         let Some(app) = self.app.clone() else { return };
-        geometry::restore(&app, &self.data_dir);
+        geometry::restore(&app, &self.paths.private);
         let click_app = app.clone();
         let _ = app.notification().on_action(move |action| {
             if action.action_id() == "dismiss" {
@@ -705,7 +811,7 @@ impl Core {
                     r.settings_update(&s)?;
                 }
                 *self.session.lock().await = graph::Session::default();
-                graph::delete_secret(&self.data_dir, &cid)?;
+                graph::delete_secret(&self.paths.private, &cid)?;
                 json!({"disconnected":true})
             }
             Operation::GraphBind => {
@@ -1781,6 +1887,15 @@ pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// The default layout: data and private files in one folder.
+#[cfg(test)]
+fn test_paths(dir: &Path) -> CorePaths {
+    CorePaths {
+        data: dir.into(),
+        private: dir.into(),
+    }
+}
+
 /// A `Core` with no window, a scripted runner and a fixed profile list, for unit tests.
 #[cfg(test)]
 pub(crate) fn test_core(
@@ -1804,7 +1919,14 @@ fn test_core_with_graph(
     profiles: Vec<crate::ai::profiles::AiProfile>,
     graph: Arc<dyn ai_jobs::GraphReads>,
 ) -> Arc<Core> {
-    Core::open_with(None, dir, runner, ProfileCache::fixed(profiles), graph).unwrap()
+    Core::open_with(
+        None,
+        &test_paths(dir),
+        runner,
+        ProfileCache::fixed(profiles),
+        graph,
+    )
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -1816,7 +1938,7 @@ pub(crate) fn test_core_slow(
 ) -> Arc<Core> {
     Core::open_with(
         None,
-        dir,
+        &test_paths(dir),
         runner,
         ProfileCache::fixed_slow(profiles, delay),
         Arc::new(ai_jobs::FakeGraph::default()),
@@ -1827,6 +1949,257 @@ pub(crate) fn test_core_slow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::location::{self, LocationFile, Marker, RootStatus, DATA_DIR_NAME, MARKER};
+    use crate::workspace::ai::tests::{mutation, ready};
+    use crate::workspace::ai_jobs::FakeGraph;
+
+    fn open_test(paths: &CorePaths) -> Result<Arc<Core>> {
+        Core::open_with(
+            None,
+            paths,
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ProfileCache::fixed(ready()),
+            Arc::new(FakeGraph::default()),
+        )
+    }
+    /// A marked custom data root under `parent` with the pointer in `default` aimed at it.
+    fn custom_root(default: &Path, parent: &Path) -> PathBuf {
+        let data = parent.join(DATA_DIR_NAME);
+        std::fs::create_dir_all(&data).unwrap();
+        let marker = Marker {
+            id: "m-1".into(),
+            created_at: "2026-11-17T00:00:00Z".into(),
+            app_version: "test".into(),
+        };
+        std::fs::write(data.join(MARKER), serde_json::to_vec(&marker).unwrap()).unwrap();
+        point_at(default, &data, Some("m-1"));
+        data
+    }
+    fn point_at(default: &Path, data: &Path, marker: Option<&str>) {
+        let loc = LocationFile {
+            data_dir: Some(data.into()),
+            marker_id: marker.map(Into::into),
+            ..Default::default()
+        };
+        location::write_location(default, &loc).unwrap();
+    }
+    fn synthetic_credential() -> credentials::Credential {
+        credentials::Credential {
+            refresh: "synthetic-refresh".into(),
+            client_id: "client".into(),
+            tenant: "organizations".into(),
+        }
+    }
+    #[cfg(unix)]
+    fn mode(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn default_layout_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let state = startup(&root, open_test);
+        let core = state.core.expect("default folder opens");
+        assert_eq!(state.resolved.status, RootStatus::Ready);
+        assert!(!state.resolved.custom);
+        assert_eq!(core.paths.data, root);
+        assert_eq!(core.paths.private, root);
+        // Exactly where earlier builds kept everything.
+        assert!(root.join("workspace.sqlite").is_file());
+        assert!(root.join("owner.lock").is_file());
+        assert!(!root.join("connect.lock").exists());
+        assert_eq!(core.paths.staging(), root.join("ai-staging"));
+        assert_eq!(
+            geometry::path(&core.paths.private),
+            root.join("window.json")
+        );
+        let cid = id();
+        credentials::save(&core.paths.private, &cid, &synthetic_credential()).unwrap();
+        assert!(root
+            .join("credentials")
+            .join(format!("graph-{cid}.json"))
+            .is_file());
+        #[cfg(unix)]
+        assert_eq!(mode(&root), 0o700);
+    }
+
+    #[test]
+    fn startup_never_creates_db_in_missing_custom_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("workspace");
+        // Missing: the drive is gone.
+        let missing = dir.path().join("Drive").join(DATA_DIR_NAME);
+        point_at(&default, &missing, Some("m-1"));
+        let mut opened = false;
+        let state = startup(&default, |p| {
+            opened = true;
+            open_test(p)
+        });
+        assert!(!opened, "nothing opens until the folder is ready");
+        assert!(state.core.is_none());
+        assert_eq!(state.resolved.status, RootStatus::Missing);
+        assert!(!missing.exists(), "the missing folder is never created");
+        assert!(
+            !default.join("workspace.sqlite").exists(),
+            "no silent empty default"
+        );
+        // No marker: a folder is there but it is not Connect's.
+        let unmarked = dir.path().join("Other").join(DATA_DIR_NAME);
+        std::fs::create_dir_all(&unmarked).unwrap();
+        point_at(&default, &unmarked, Some("m-1"));
+        let state = startup(&default, open_test);
+        assert!(state.core.is_none());
+        assert_eq!(state.resolved.status, RootStatus::NoMarker);
+        assert_eq!(std::fs::read_dir(&unmarked).unwrap().count(), 0);
+        // An unreadable pointer is not mistaken for "use the default".
+        std::fs::write(default.join("location.json"), b"{not json").unwrap();
+        let state = startup(&default, open_test);
+        assert!(state.core.is_none());
+        assert_eq!(state.resolved.status, RootStatus::PointerUnreadable);
+        assert!(!default.join("workspace.sqlite").exists());
+        // Core itself never creates a custom root that is gone by the time it opens.
+        let paths = CorePaths {
+            data: missing.clone(),
+            private: default.clone(),
+        };
+        assert_eq!(
+            open_test(&paths).err().map(|e| e.code),
+            Some("storage_unavailable".into())
+        );
+        assert!(!missing.exists());
+    }
+
+    #[tokio::test]
+    async fn credentials_stay_in_private_root_with_custom_data_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("workspace");
+        let data = custom_root(&default, &dir.path().join("Drive"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let state = startup(&default, open_test);
+        let core = state.core.expect("a ready custom folder opens");
+        assert!(state.resolved.custom);
+        assert_eq!(core.paths.data, data);
+        assert_eq!(core.paths.private, default);
+        // The database, its lock and AI staging move; sign-in data, owner.lock and window.json stay.
+        assert!(data.join("workspace.sqlite").is_file());
+        assert!(data.join("connect.lock").is_file());
+        assert!(!default.join("workspace.sqlite").exists());
+        assert!(default.join("owner.lock").is_file());
+        assert!(!data.join("owner.lock").exists());
+        assert_eq!(core.paths.staging(), data.join("ai-staging"));
+        assert_eq!(
+            geometry::path(&core.paths.private),
+            default.join("window.json")
+        );
+        assert_eq!(core.paths.plugin_secrets(), default.join("plugins"));
+        #[cfg(unix)]
+        assert_eq!(mode(&data), 0o755, "a custom root is never chmodded");
+        // Sign-in goes to the private folder, and disconnecting removes it from there.
+        let cid = id();
+        credentials::save(&core.paths.private, &cid, &synthetic_credential()).unwrap();
+        let cache = default
+            .join("credentials")
+            .join(format!("graph-{cid}.json"));
+        assert!(cache.is_file());
+        assert!(!data.join("credentials").exists());
+        {
+            let mut r = core.repo().unwrap();
+            r.save_connection(&connected(&cid)).unwrap();
+            let mut s = r.settings().unwrap();
+            s.active_connection = Some(cid.clone());
+            r.settings_update(&s).unwrap();
+        }
+        let req = mutation(&core, Operation::GraphDisconnect, json!({}));
+        core.request(req).await.unwrap();
+        assert!(
+            !cache.exists(),
+            "disconnect removes the private session cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_io_failure_reports_storage_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ready(),
+        );
+        core.repo().unwrap().fail_next_write();
+        let req = mutation(
+            &core,
+            Operation::LocalSave,
+            json!({"kind":"commitment","text":"Send the report"}),
+        );
+        let err = core.request(req).await.unwrap_err();
+        assert_eq!(err.code, "storage_unavailable");
+        // No panic and no poisoned lock: the snapshot behind the recovery page still reads.
+        let snapshot = core
+            .request(Request {
+                op: Operation::Snapshot,
+                workspace_id: None,
+                expected_revision: None,
+                operation_id: None,
+                data: json!({}),
+            })
+            .await;
+        assert!(snapshot.is_ok());
+    }
+
+    #[test]
+    fn startup_reports_why_a_ready_folder_did_not_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = startup(dir.path(), |_| {
+            Err(WorkspaceError::new(
+                "newer_schema",
+                "Open the newer version.",
+            ))
+        });
+        assert!(state.core.is_none());
+        assert_eq!(state.error.as_deref(), Some("Open the newer version."));
+    }
+
+    #[test]
+    fn locks_wait_for_a_relaunching_owner_then_give_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("owner.lock");
+        let held = acquire_lock(&path, std::time::Duration::ZERO).unwrap();
+        // Still held after the wait: another Connect owns it.
+        let err = acquire_lock(&path, std::time::Duration::from_millis(250)).unwrap_err();
+        assert_eq!(err.code, "instance");
+        // Released while we wait: the relaunch gets it.
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(held);
+        });
+        assert!(acquire_lock(&path, std::time::Duration::from_secs(5)).is_ok());
+        releaser.join().unwrap();
+    }
+
+    #[test]
+    fn release_for_restart_frees_both_locks() {
+        let dir = tempfile::tempdir().unwrap();
+        let default = dir.path().join("workspace");
+        let data = custom_root(&default, &dir.path().join("Drive"));
+        let core = startup(&default, open_test).core.unwrap();
+        core.release_for_restart();
+        assert!(core.stop.load(Ordering::Relaxed));
+        for lock in [default.join("owner.lock"), data.join("connect.lock")] {
+            assert!(
+                acquire_lock(&lock, std::time::Duration::ZERO).is_ok(),
+                "{lock:?}"
+            );
+        }
+        // The database is closed: nothing reads the file any more.
+        assert!(core.repo().unwrap().snapshot().is_err());
+    }
+
     fn connected(cid: &str) -> Connection {
         Connection {
             id: cid.into(),
