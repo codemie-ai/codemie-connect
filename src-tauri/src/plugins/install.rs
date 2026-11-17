@@ -854,7 +854,7 @@ mod tests {
         let mut knowledge = manifest("vault", "1.0.0");
         knowledge["uses"] = json!({"knowledge": {}, "network": {"hosts": ["api.example.com"]}});
         let mut newer = manifest("newer", "1.0.0");
-        newer["echo"] = json!(">=0.9.13");
+        newer["engine"] = json!(">=1.1");
         let plugins = [
             manifest("linked", "1.0.0"),
             manifest("hardlinked", "1.0.0"),
@@ -906,7 +906,7 @@ mod tests {
             (
                 "newer",
                 "incompatible",
-                "It needs Echo >=0.9.13, and Connect provides Echo API 0.9.11.".into(),
+                "It needs plugin engine >=1.1.0, and Connect provides engine 1.0.".into(),
             ),
             (
                 "other-id",

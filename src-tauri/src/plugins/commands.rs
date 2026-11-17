@@ -483,8 +483,8 @@ mod tests {
         vault["uses"] = json!({"knowledge": {}, "folders": {"what": "notes folders"}});
         let mut next = manifest("next-gen", "2.0.0");
         next["name"] = json!("Next gen");
-        next["summary"] = json!("Built for a newer Echo");
-        next["echo"] = json!(">=0.9.13");
+        next["summary"] = json!("Built for a newer plugin engine");
+        next["engine"] = json!(">=1.1");
         next["uses"] = json!({"work": {}});
         for (id, m) in [
             ("standup", standup("1.0.0")),
@@ -521,7 +521,7 @@ mod tests {
         );
         assert_eq!(
             plugins[2]["reason"],
-            "It needs Echo >=0.9.13, and Connect provides Echo API 0.9.11."
+            "It needs plugin engine >=1.1.0, and Connect provides engine 1.0."
         );
         let inspect = run("inspect", json!({"market": "acme", "id": "standup"})).unwrap();
         let keys: Vec<Value> = inspect["sheet"]

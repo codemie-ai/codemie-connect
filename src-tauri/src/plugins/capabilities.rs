@@ -52,7 +52,7 @@ pub const CATALOG: &[(&str, Support)] = &[
     ),
     (
         "events",
-        Support::Partial("Only meeting_soon, sources_changed, threads_changed and shared_changed are sent"),
+        Support::Partial("Only meeting_soon, sources_changed and shared_changed are sent"),
     ),
     ("files", Support::Unsupported),
     ("work", Support::Supported),

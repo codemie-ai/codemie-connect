@@ -47,8 +47,8 @@
       "installable": false,
       "installed": null,
       "name": "Next gen",
-      "reason": "It needs Echo >=0.9.13, and Connect provides Echo API 0.9.11.",
-      "summary": "Built for a newer Echo",
+      "reason": "It needs plugin engine >=1.1.0, and Connect provides engine 1.0.",
+      "summary": "Built for a newer plugin engine",
       "update": false,
       "version": "2.0.0"
     }

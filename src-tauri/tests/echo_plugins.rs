@@ -3,7 +3,7 @@
 //!
 //! - `CONNECT_ECHO_PLUGINS_DIR` (default `$HOME/AI/projects/other/echo-plugins/plugins`): the
 //!   published plugins (echo-plugins main). Scheduler, GitHub, Obsidian and Telegram must parse,
-//!   have a sheet with nothing blocking, and fit Connect's Echo API.
+//!   have a sheet with nothing blocking, and fit Connect's plugin engine (their `echo` is ignored).
 //! - `CONNECT_KNOWLEDGE_PLUGINS_DIR` (default
 //!   `$HOME/.codex/worktrees/knowledge-plugin-0300/echo-plugins/plugins`): a moving worktree, used
 //!   for Knowledge's blocked line and the compatibility refusal only (ruling R31).
@@ -70,8 +70,8 @@ fn knowledge_is_blocked_and_a_range_above_connect_is_refused() {
         .collect();
     assert_eq!(blocked.len(), 1, "{lines:?}");
     assert_eq!(blocked[0].key, "knowledge");
-    // Whatever else is in the worktree: a range that excludes Connect's API is refused with the
-    // reason; a range that includes it passes.
+    // Whatever else is in the worktree: an engine range that excludes Connect's, or a feature it
+    // lacks, is refused with the reason; anything else passes.
     let mut seen = 0;
     for entry in std::fs::read_dir(&dir).unwrap().flatten() {
         let Ok(m) = parse_manifest(&entry.path()) else {
@@ -80,8 +80,8 @@ fn knowledge_is_blocked_and_a_range_above_connect_is_refused() {
         seen += 1;
         match check_compat(&m) {
             Ok(()) => {}
-            Err(e @ ManifestError::Incompatible { .. }) => {
-                assert!(e.to_string().starts_with("it needs Echo "), "{}: {e}", m.id)
+            Err(e @ (ManifestError::Incompatible { .. } | ManifestError::Lacking(_))) => {
+                assert!(e.to_string().starts_with("it needs "), "{}: {e}", m.id)
             }
             Err(e) => panic!("{}: {e}", m.id),
         }
