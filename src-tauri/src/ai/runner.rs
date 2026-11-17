@@ -72,8 +72,8 @@ impl ClaudeRunner for CliRunner {
             let _ = (spec, profile, cancel, on_event);
             Box::pin(async {
                 Err(AiError {
-                    class: ErrorClass::Failed,
                     message: "Claude runs are not supported on Windows yet.".to_string(),
+                    ..AiError::new(ErrorClass::Failed)
                 })
             })
         }

@@ -817,7 +817,10 @@ pub fn parse_summary(structured: &Value) -> Option<(String, Vec<Value>)> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AutomationOutput {
     pub title: String,
+    /// Canonical, escaped Markdown for copy and export.
     pub summary_markdown: String,
+    /// The same summary as the UI renders it (see [`super::markdown`]).
+    pub summary_blocks: Vec<super::markdown::Block>,
     /// `[{text, sourceId?}]`, with `sourceId` the cited record's id.
     pub items: Vec<Value>,
     pub draft: Option<String>,
@@ -839,8 +842,8 @@ pub fn parse_automation(
             .join(" ")
     };
     let title = cap_chars(&one_line(structured["title"].as_str()?), MAX_TITLE_CHARS);
-    let summary_markdown = super::markdown::sanitize(structured["summary_markdown"].as_str()?);
-    if title.is_empty() || summary_markdown.is_empty() {
+    let summary = super::markdown::normalise(structured["summary_markdown"].as_str()?);
+    if title.is_empty() || summary.blocks.is_empty() {
         return None;
     }
     let items = structured["items"]
@@ -870,7 +873,8 @@ pub fn parse_automation(
         .filter(|d| !d.is_empty() && d.chars().count() <= MAX_DRAFT_CHARS);
     Some(AutomationOutput {
         title,
-        summary_markdown,
+        summary_markdown: summary.markdown,
+        summary_blocks: summary.blocks,
         items,
         draft,
     })
@@ -1355,7 +1359,12 @@ mod tests {
         });
         let out = parse_automation(&answer, &sources, false).unwrap();
         assert_eq!(out.title, "Your day at a glance");
-        assert_eq!(out.summary_markdown, "## Today\n- Standup at 09:00");
+        assert_eq!(out.summary_markdown, "### Today\n\n- Standup at 09:00");
+        assert_eq!(
+            serde_json::to_value(&out.summary_blocks).unwrap(),
+            json!([{"type": "heading", "inlines": [{"text": "Today"}]},
+                   {"type": "item", "inlines": [{"text": "Standup at 09:00"}]}])
+        );
         assert_eq!(
             out.items,
             vec![

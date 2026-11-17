@@ -40,6 +40,8 @@ rand = "0.8"
 chrono-tz = "0.10"
 windows-timezones = { version = "0.5.1", features = ["chrono-tz"] }
 url = "2"
+# Automation results are normalised from parsed Markdown (DESIGN 6.6); no HTML output.
+pulldown-cmark = { version = "0.13", default-features = false }
 fs2 = "0.4"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "process", "io-util", "time", "fs", "sync", "net"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream", "json", "system-proxy"] }

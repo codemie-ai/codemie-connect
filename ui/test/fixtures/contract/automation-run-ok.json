@@ -21,7 +21,44 @@
           "text": "Invented source"
         }
       ],
-      "summaryMarkdown": "## Replies\n- Ann asked about the **Q3 budget** p\n- See [the plan](https://example.test/plan)",
+      "summaryBlocks": [
+        {
+          "inlines": [
+            {
+              "text": "Replies"
+            }
+          ],
+          "type": "heading"
+        },
+        {
+          "inlines": [
+            {
+              "text": "Ann asked about the "
+            },
+            {
+              "bold": true,
+              "text": "Q3 budget"
+            },
+            {
+              "text": " p"
+            }
+          ],
+          "type": "item"
+        },
+        {
+          "inlines": [
+            {
+              "text": "See "
+            },
+            {
+              "href": "https://example.test/plan",
+              "text": "the plan"
+            }
+          ],
+          "type": "item"
+        }
+      ],
+      "summaryMarkdown": "### Replies\n\n- Ann asked about the **Q3 budget** p\n- See [the plan](https://example.test/plan)",
       "title": "2 replies owed"
     },
     "profile": "claude",

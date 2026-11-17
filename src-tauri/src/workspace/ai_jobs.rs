@@ -538,8 +538,13 @@ impl Core {
                 .ok_or_else(|| AiError::new(ErrorClass::InvalidOutput)),
             Err(e) => Err(e.clone()),
         };
-        ledger.close(result.as_ref().ok(), answer.as_ref().err());
-        (result.ok(), answer)
+        // A run that ended in an error may still have reported what it cost.
+        let reported = match result {
+            Ok(outcome) => Some(outcome),
+            Err(e) => e.spent.map(|spent| *spent),
+        };
+        ledger.close(reported.as_ref(), answer.as_ref().err());
+        (reported, answer)
     }
 
     /// Stop for a running AI job (`job_cancel`); nothing happens for other jobs.

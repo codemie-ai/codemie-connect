@@ -1684,6 +1684,7 @@ fn note_run_notification(r: &mut Repository, job: &Job, state: &str, message: &s
     };
     run.data["notification"] = json!({"state": state, "message": message, "at": now()});
     run.revision = id();
+    run.updated_at = now();
     if let Err(e) = r.put_record(&run) {
         log::warn!(
             "automations: cannot note a notification outcome: {}",

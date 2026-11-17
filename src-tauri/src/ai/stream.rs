@@ -22,11 +22,14 @@ pub enum ErrorClass {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AiError {
     pub class: ErrorClass,
     /// One sentence for the user. Never raw process output.
     pub message: String,
+    /// What a run that ended in an error still reported (cost, tokens, duration, model), so
+    /// the ledger counts it: a CodeMie run stopped by `--max-budget-usd` was still paid for.
+    pub spent: Option<Box<RunOutcome>>,
 }
 
 impl AiError {
@@ -46,7 +49,14 @@ impl AiError {
         Self {
             class,
             message: message.to_string(),
+            spent: None,
         }
+    }
+
+    /// The error with what the run reported before it failed.
+    pub fn with_spent(mut self, outcome: RunOutcome) -> Self {
+        self.spent = Some(Box::new(outcome));
+        self
     }
 }
 
@@ -215,12 +225,6 @@ impl StreamParser {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        if is_error {
-            let class = classify_text(&text)
-                .or_else(classify)
-                .or(self.rate_limited.then_some(ErrorClass::RateLimited));
-            return Err(AiError::new(class.unwrap_or(ErrorClass::Failed)));
-        }
         let usage = r
             .get("usage")
             .map(|u| Usage {
@@ -238,14 +242,25 @@ impl StreamParser {
                 .max_by_key(|(_, u)| u64_at(u, "outputTokens"))
                 .map(|(k, _)| k.clone())
         });
-        Ok(RunOutcome {
+        let outcome = RunOutcome {
             structured: r.get("structured_output").filter(|s| !s.is_null()).cloned(),
             text,
             usage,
             cost_usd: r.get("total_cost_usd").and_then(Value::as_f64),
             duration_ms: u64_at(r, "duration_ms"),
             model,
-        })
+        };
+        if is_error {
+            let class = classify_text(&outcome.text)
+                .or_else(classify)
+                .or(self.rate_limited.then_some(ErrorClass::RateLimited));
+            let spent = RunOutcome {
+                structured: None,
+                ..outcome
+            };
+            return Err(AiError::new(class.unwrap_or(ErrorClass::Failed)).with_spent(spent));
+        }
+        Ok(outcome)
     }
 }
 
@@ -254,7 +269,7 @@ impl RunOutcome {
     pub fn require_structured_object(self) -> Result<Self, AiError> {
         match &self.structured {
             Some(Value::Object(_)) => Ok(self),
-            _ => Err(AiError::new(ErrorClass::InvalidOutput)),
+            _ => Err(AiError::new(ErrorClass::InvalidOutput).with_spent(self)),
         }
     }
 }
@@ -318,6 +333,34 @@ mod tests {
         let out = parse_stream(lines(include_str!("testdata/noisy.jsonl"))).unwrap();
         assert_eq!(out.text, "ok");
         assert!(out.structured.is_none());
+    }
+
+    #[test]
+    fn a_failed_result_keeps_what_the_run_cost() {
+        // A CodeMie run stopped by `--max-budget-usd` ends in an error result that still says
+        // what was spent; the ledger must count it.
+        let e = parse_stream([
+            r#"{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}"#,
+            r#"{"type":"result","subtype":"error_max_budget_usd","is_error":true,"result":"","total_cost_usd":0.52,"duration_ms":4100,"usage":{"input_tokens":3000,"output_tokens":400}}"#,
+        ])
+        .unwrap_err();
+        assert_eq!(e.class, ErrorClass::Failed);
+        let spent = e.spent.expect("the error keeps the run's cost");
+        assert_eq!(spent.cost_usd, Some(0.52));
+        assert_eq!(spent.duration_ms, 4100);
+        assert_eq!(spent.usage.input_tokens, 3000);
+        assert_eq!(spent.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert!(spent.structured.is_none());
+        // An answer without the structured output it was asked for is invalid, and still cost.
+        let e = parse_stream([
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"prose","total_cost_usd":0.01}"#,
+        ])
+        .and_then(RunOutcome::require_structured_object)
+        .unwrap_err();
+        assert_eq!(e.class, ErrorClass::InvalidOutput);
+        assert_eq!(e.spent.unwrap().cost_usd, Some(0.01));
+        // No result at all: nothing was reported.
+        assert!(parse_stream(["noise"]).unwrap_err().spent.is_none());
     }
 
     #[test]

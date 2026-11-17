@@ -323,7 +323,8 @@ impl Core {
             json!({
                 "durationMs": outcome.duration_ms,
                 "costUsd": outcome.cost_usd,
-                "output": {"title": output.title, "summaryMarkdown": output.summary_markdown, "items": output.items},
+                "output": {"title": output.title, "summaryMarkdown": output.summary_markdown,
+                    "summaryBlocks": output.summary_blocks, "items": output.items},
                 "delivered": delivered,
             }),
         );
@@ -736,9 +737,20 @@ mod tests {
             json!([{"id": "m1", "kind": "message", "title": "Q3 budget", "at": BASE, "channel": "mail"}])
         );
         assert_eq!(d["output"]["title"], "2 replies owed");
+        // Rebuilt from the parse: the javascript: link and the image keep only their words.
         assert_eq!(
             d["output"]["summaryMarkdown"],
-            "## Replies\n- Ann asked about the **Q3 budget** p\n- See [the plan](https://example.test/plan)"
+            "### Replies\n\n- Ann asked about the **Q3 budget** p\n- See [the plan](https://example.test/plan)"
+        );
+        assert_eq!(
+            d["output"]["summaryBlocks"],
+            json!([
+                {"type": "heading", "inlines": [{"text": "Replies"}]},
+                {"type": "item", "inlines": [{"text": "Ann asked about the "},
+                    {"text": "Q3 budget", "bold": true}, {"text": " p"}]},
+                {"type": "item", "inlines": [{"text": "See "},
+                    {"text": "the plan", "href": "https://example.test/plan"}]},
+            ])
         );
         assert_eq!(
             d["output"]["items"],
@@ -936,9 +948,17 @@ mod tests {
             900,
             0.004,
         );
+        // A CodeMie run stopped by its cost cap ends in an error that still reports the cost.
+        let capped = AiError::new(ErrorClass::Failed).with_spent(answer(
+            Value::Null,
+            "claude-sonnet-4-5",
+            4100,
+            0.5,
+        ));
         let fake = Arc::new(FakeRunner::new(vec![
             Err(AiError::new(ErrorClass::NeedsLogin)),
             Ok(unusable),
+            Err(capped),
         ]));
         let core = test_core(dir.path(), fake.clone(), ready());
         seed(&core);
@@ -981,6 +1001,21 @@ mod tests {
         assert_eq!(run.data["costUsd"], 0.004);
         assert_eq!(run.data["model"], "claude-haiku-4-5");
         assert!(run.data.get("output").is_none());
+        let jid = run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        let run = core
+            .repo()
+            .unwrap()
+            .record("automation_run", &jid, None, Some("personal"))
+            .unwrap();
+        assert_eq!(run.data["error"]["class"], "failed");
+        assert_eq!(run.data["costUsd"], 0.5, "the capped run's cost is kept");
+        let ledger = ai_runs(&core)
+            .into_iter()
+            .find(|r| r.data["refId"] == jid.as_str())
+            .unwrap();
+        assert_eq!(ledger.data["status"], "failed");
+        assert_eq!(ledger.data["costUsd"], 0.5, "and counted in Settings");
 
         // With no Claude chosen the run fails as needs_choice; no UI opens and Claude never runs.
         {
@@ -1002,8 +1037,8 @@ mod tests {
         assert_eq!(run.data["error"]["class"], "needs_choice");
         assert_eq!(run.data["error"]["code"], "needs_choice");
         assert!(run.data.get("output").is_none());
-        assert_eq!(fake.calls().len(), 2);
-        assert_eq!(ai_runs(&core).len(), 2);
+        assert_eq!(fake.calls().len(), 3);
+        assert_eq!(ai_runs(&core).len(), 3);
     }
 
     /// Claims the only due job and runs it on a gated runner; `during` runs while Claude works.
@@ -1216,6 +1251,15 @@ mod tests {
         save(&core, morning_brief(json!({"commitmentsNotes": true}))).await;
         let jid = run_now(&core, "auto-brief").await;
         run_next(&core).await;
+        // The run as it stood an hour ago: noting the notification makes it current again.
+        {
+            let mut r = core.repo().unwrap();
+            let mut run = r
+                .record("automation_run", &jid, None, Some("personal"))
+                .unwrap();
+            run.updated_at = now() - 3600;
+            r.put_record(&run).unwrap();
+        }
         let notice = core.repo().unwrap().claim(now()).unwrap().unwrap();
         assert_eq!(notice.kind, "notification");
         let notice_id = notice.id.clone();
@@ -1236,6 +1280,10 @@ mod tests {
             json!(["today", "notification_queued"])
         );
         assert_eq!(run.data["notification"]["state"], "suppressed");
+        assert!(
+            run.updated_at > now() - 60,
+            "the note makes the run current"
+        );
         assert_eq!(
             run.data["notification"]["message"],
             "Quiet hours or focus were on, so it was not shown."
