@@ -113,6 +113,33 @@ export async function pluginChecks({ open, check, assert, shot }) {
       await settle(page);
       await shot(page, `plugins-${tag}-page`);
 
+      // A link in its page (ruling R41): Connect asks first in its own dialog, with the whole
+      // address; Cancel opens nothing, Open asks native to open it (recorded by the stand-in).
+      const LINK = 'https://example.com/hello?from=connect&x=1';
+      await frame.locator('[data-hello-link]').click();
+      await page.waitForSelector(`${dialog} .ws-link-confirm`);
+      const asked = await page.locator(dialog).innerText();
+      assert(asked.includes('Open this link?') && asked.includes(LINK) && asked.includes('Hello wants to open this address. It opens in your browser.'), asked);
+      assert(await page.evaluate(() => document.activeElement?.matches('.ws-modal[open] [data-modal-close]') && document.activeElement.textContent === 'Cancel'), 'Cancel has the focus');
+      await page.waitForTimeout(450);
+      await shot(page, `plugins-${tag}-link`);
+      await page.click(`${dialog} .ws-modal-footer [data-modal-close]`);
+      await page.waitForSelector(dialog, { state: 'detached' });
+      assert((await page.evaluate(() => window.__pluginOpened.length)) === 0, 'opened without the user’s Open');
+      await frame.locator('[data-hello-link]').click();
+      await page.waitForSelector(`${dialog} .ws-link-confirm`);
+      await page.waitForTimeout(450);
+      await page.click(submit);
+      await page.waitForSelector(dialog, { state: 'detached' });
+      const opened = await page.evaluate(() => window.__pluginOpened);
+      assert(opened.length === 1 && opened[0].url === LINK && opened[0].id === 'hello', JSON.stringify(opened));
+      // An address Connect doesn't open is refused in words; no dialog.
+      await frame.locator('[data-hello-http]').click();
+      await page.waitForSelector('.ws-toast:has-text("Connect opens only https:// and obsidian:// links.")');
+      assert(await page.locator(dialog).count() === 0, 'a dialog for a refused address');
+      assert(await page.evaluate(() => location.hash) === '#/p/hello/home', 'the window moved');
+      await framed(page);
+
       // Its own Settings section, reached by ctx.go from its page.
       await frame.locator('[data-hello-settings]').click();
       await page.waitForFunction(() => location.hash === '#/settings/plugins/hello/main');
@@ -227,6 +254,74 @@ export async function pluginChecks({ open, check, assert, shot }) {
     });
 
     await check(`${theme}: plugin frames have no page errors`, async () => assert(errors.length === 0, errors.join(' | ')));
+
+    // The plugin manager says a reload finished (native `plugins:reloaded`): the window reads the
+    // installed list again, so a host half that didn't load shows without reopening Settings, and
+    // one that loaded gets its frame back.
+    let p = null;
+    let c = null;
+    let errs = [];
+    await check(`${theme}: a finished plugin reload is shown without reopening Settings`, async () => {
+      ({ page: p, context: c, errors: errs } = await open({ theme, width: 1440, height: 900, hash: '#/settings/plugins' }));
+      await installHello(p);
+      await p.click('.ws-settings-nav button[data-tab=plugins]');
+      await p.waitForSelector('.ws-plugin-row[data-plugin-id="hello"]');
+      await p.waitForSelector(FRAME, { state: 'attached' });
+      await p.evaluate(() => {
+        window.__setPluginLoadError('hello', 'cannot read property ‘clearChannel’ of undefined');
+        window.__emitNative('plugins:reloaded', { changed: true });
+      });
+      await p.waitForSelector('.ws-plugin-row[data-plugin-id="hello"] .ws-badge:text("Didn’t load")');
+      await p.waitForSelector(FRAME, { state: 'detached' });
+      await p.evaluate(() => {
+        window.__setPluginLoadError('hello', '');
+        window.__emitNative('plugins:reloaded', { changed: true });
+      });
+      await p.waitForSelector(FRAME, { state: 'attached' });
+      await p.waitForSelector('.ws-plugin-row[data-plugin-id="hello"] .ws-badge:text("Didn’t load")', { state: 'detached' });
+    });
+
+    // The drive goes away while a plugin page is open: the recovery page is drawn over everything,
+    // with no plugin frame left on top of its card.
+    await check(`${theme}: the recovery page covers an open plugin page`, async () => {
+      assert(p, 'no page from the check before');
+      await p.click('.ws-plugin-nav [data-action="plugin-page"][data-plugin-id="hello"]');
+      await p.frameLocator(FRAME).locator('h1:text("Hello page")').waitFor();
+      await framed(p);
+      await p.evaluate(() => { window.__storageFail = true; window.dispatchEvent(new Event('focus')); });
+      await p.waitForSelector('.ws-recovery-card[data-status="ready"]');
+      await p.waitForTimeout(300);
+      const onTop = await p.evaluate(() => {
+        const r = document.querySelector('[data-action="recovery-retry"]').getBoundingClientRect();
+        const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { inCard: !!el?.closest('.ws-recovery-card'), at: el?.tagName, frameHidden: !!document.querySelector('iframe[data-plugin-frame="hello"]')?.hidden };
+      });
+      assert(onTop.inCard && onTop.frameHidden, `a plugin frame covers the recovery page: ${JSON.stringify(onTop)}`);
+      await shot(p, `plugins-${tag}-recovery`);
+      assert(errs.length === 0, errs.join(' | '));
+    });
+    await c?.close().catch(() => {});
     await context.close().catch(() => {});
   }
+}
+
+/** Adds the folder marketplace and installs hello, agreeing to every line of its sheet. */
+async function installHello(page) {
+  await page.waitForSelector('[data-action="market-add"]');
+  await page.click('[data-action="market-add"]');
+  await page.waitForSelector(`${dialog} #market-source`);
+  await page.click(`${dialog} [data-action="market-pick"]`);
+  await page.waitForFunction(() => document.querySelector('#market-source')?.value === '/Users/qa/Plugins/acme-market');
+  await page.click(submit);
+  await page.waitForSelector('.ws-offer[data-plugin-id="hello"]');
+  await page.click('.ws-offer[data-plugin-id="hello"] .ws-offer-open');
+  await page.waitForSelector('#plugin-sheet');
+  await page.click('[data-action="plugin-install"]');
+  await page.waitForSelector(`${dialog} #plugin-consent`);
+  const boxes = page.locator(`${dialog} [name=agree]`);
+  for (let i = 0; i < await boxes.count(); i++) await boxes.nth(i).check({ force: true });
+  await page.waitForTimeout(450);
+  await page.click(submit);
+  await page.waitForSelector(dialog, { state: 'detached' });
+  await page.waitForSelector('.ws-plugin-nav [data-action="plugin-page"][data-plugin-id="hello"]', { timeout: 8000 });
 }

@@ -478,6 +478,20 @@ function pluginsChanged() {
   }, 60);
 }
 
+/** A plugin's page asked to open a link (ruling R41). The frame could forge the click, so Connect
+ *  asks in its own dialog with the whole address as text; only Open there opens it, natively
+ *  checked again. One at a time: a link asked for while a dialog is open is dropped. */
+function confirmPluginLink(url, name, id) {
+  if (modalOpen() || recovering) return;
+  const where = url.startsWith('obsidian:') ? 'It opens in Obsidian.' : 'It opens in your browser.';
+  openModal({
+    title: 'Open this link?', size: 'sm', submit: 'Open', initialFocus: 'cancel', guard: true,
+    body: `<p class="ws-modal-text">${e(name)} wants to open this address. ${where}</p>
+      <p class="ws-link-confirm"><code class="ws-storage-path">${e(url)}</code></p>`,
+    onSubmit: () => invoke('plugins_request', { op: 'open_link', data: { id, url } }),
+  });
+}
+
 async function pluginAction(action, el) {
   const id = el.dataset.pluginId;
   switch (action) {
@@ -1719,6 +1733,8 @@ function showRecovery(err) {
 }
 
 function renderRecovery() {
+  // Plugin frames lie in their own layer above the page: none may stay over the recovery card.
+  pluginHost?.show(null);
   root.dataset.route = 'recovery';
   root.innerHTML = recoveryPage(recoveryView);
 }
@@ -1902,6 +1918,7 @@ async function boot() {
     onGo: hash => { goHash(hash).catch(fail); },
     onNotice: (text, name) => toast(`${name}: ${text}`),
     onCopy: text => navigator.clipboard.writeText(text).then(() => toast('Copied.', 'success'), fail),
+    onOpen: confirmPluginLink,
   }).mount(document.body);
   lastPluginTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
   pluginsUi.loadInstalled().catch(() => {
@@ -1955,6 +1972,9 @@ async function boot() {
     }, Math.max(150, 1200 - (Date.now() - lastRefresh)));
   };
   for (const name of ['workspace:changed', 'connection:changed']) await listen(name, scheduleRefresh);
+  // The plugin manager finished a reload: what loaded and what didn't (and why) is read again, so
+  // frames, sidebar pages and "Didn’t load" follow without reopening Settings.
+  await listen('plugins:reloaded', () => { if (!recovering) pluginsUi.loadInstalled().catch(() => {}); });
   await listen('workspace:quit-request', async () => {
     if (state.updateBusy) return toast('The update is in progress. Keep Connect open until it finishes.');
     if (legacyModule) await legacyModule.leaveLegacyTools();

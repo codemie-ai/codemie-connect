@@ -97,6 +97,26 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     pageError(`CSP blocked ${event.blockedURI || 'inline'} (${event.violatedDirective || event.effectiveDirective || '?'})`);
   });
 
+  // Links (ruling R41). The frame can't navigate or open windows (no `allow-popups`, no
+  // `allow-top-navigation`), so a link the user clicks, and `window.open`, become an `open`
+  // message; Connect's window shows the address and opens it only when the user says so. Heard on
+  // the window after the plugin's own listeners: a link the plugin handled itself is left alone,
+  // and so is a place on its own page.
+  const openLink = url => post({ kind: 'event', type: 'open', url: String(url ?? '').slice(0, 2000) });
+  win.addEventListener?.('click', event => {
+    if (event.defaultPrevented) return;
+    const link = event.target?.closest?.('a[href]');
+    const href = String(link?.getAttribute('href') ?? '');
+    if (!link || href.startsWith('#')) return;
+    event.preventDefault();
+    const url = String(link.href || href);
+    // `javascript:` is a "button" the CSP refuses to run anyway, never an address to open.
+    if (!/^\s*javascript:/i.test(url)) openLink(url);
+  });
+  try {
+    Object.defineProperty(win, 'open', { value: url => { openLink(url); return null; }, configurable: true, writable: true });
+  } catch { /* the browser's stays, and opens nothing from this frame */ }
+
   function request(body) {
     if (!s.port || s.unloaded) return Promise.reject(new Error('This plugin is off.'));
     const id = s.nextId++;

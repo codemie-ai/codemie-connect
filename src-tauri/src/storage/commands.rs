@@ -404,6 +404,8 @@ pub async fn data_location_check(
             data_root: &data,
             home: &home,
         };
+        // A workspace whose folder broke while it ran can't be copied from.
+        let open = migrate::workspace_usable(open, &private);
         migrate::check(&places, &path, open, &SystemVolume)
     })
     .await
@@ -459,7 +461,7 @@ pub async fn data_location_change(
             mode,
             acknowledged: accept_no_permissions.unwrap_or(false),
         };
-        migrate::change(
+        migrate::change_from_running(
             &places,
             &choice,
             worker.as_deref(),

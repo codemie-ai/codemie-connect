@@ -272,6 +272,19 @@ fn verdict(
     if plugins.is_empty() {
         failed.push("no plugin was installed".into());
     }
+    // Review C-I1: the window makes each frame right after the install, while the manager is
+    // still loading; a plugin's first call then must wait for its host half, never be refused.
+    let early: Vec<String> = plugins
+        .iter()
+        .filter(|p| p["framedBeforeLoad"] == true)
+        .map(|p| text(&p["id"]))
+        .collect();
+    if !plugins.is_empty() && early.is_empty() {
+        failed.push(
+            "no frame was made before its plugin loaded, so the smoke didn't try that case".into(),
+        );
+    }
+    report["framedBeforeLoad"] = json!(early);
     let mut known = Vec::new();
     let mut verdicts = Map::new();
     for p in &plugins {
@@ -311,7 +324,7 @@ mod tests {
         of undefined";
 
     fn page(id: &str, views: Value) -> Value {
-        json!({"id": id, "install": "installed", "frame": {"ready": true, "error": "", "errors": []}, "views": views})
+        json!({"id": id, "install": "installed", "framedBeforeLoad": true, "frame": {"ready": true, "error": "", "errors": []}, "views": views})
     }
 
     fn section(id: &str) -> Value {
@@ -327,7 +340,7 @@ mod tests {
                 page("scheduler", json!([section("main")])),
                 page("github", json!([section("main")])),
                 page("obsidian", json!([{"view": "activity", "id": "kb", "shown": true, "ready": true, "errors": []}, section("main")])),
-                {"id": "telegram", "install": "installed", "frame": null, "views": []},
+                {"id": "telegram", "install": "installed", "framedBeforeLoad": true, "frame": null, "views": []},
             ],
         });
         let loaded = vec!["github".into(), "obsidian".into(), "scheduler".into()];
@@ -352,6 +365,10 @@ mod tests {
         assert_eq!(out["pid"], 42);
         assert_eq!(out["loaded"], json!(["github", "obsidian", "scheduler"]));
         assert_eq!(out["problems"]["telegram"], SESSIONS);
+        assert_eq!(
+            out["framedBeforeLoad"],
+            json!(["scheduler", "github", "obsidian", "telegram"])
+        );
     }
 
     /// A change to the published run: its report, the loaded plugins, the load problems.
@@ -443,6 +460,23 @@ mod tests {
                 "runId: the window's run isn't this one",
                 Box::new(|r, _, _| {
                     r["runId"] = json!("an-earlier-run");
+                }),
+            ),
+            // Review C-I1: a frame made before its host half loaded called too early.
+            (
+                "scheduler: its command “view” failed: “scheduler” isn't on in Connect",
+                Box::new(|r, _, _| {
+                    r["plugins"][0]["frame"]["calls"] = json!([
+                        {"command": "view", "ok": false, "error": "“scheduler” isn't on in Connect"},
+                    ]);
+                }),
+            ),
+            (
+                "no frame was made before its plugin loaded, so the smoke didn't try that case",
+                Box::new(|r, _, _| {
+                    for p in r["plugins"].as_array_mut().unwrap() {
+                        p["framedBeforeLoad"] = json!(false);
+                    }
                 }),
             ),
         ];

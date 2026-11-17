@@ -442,6 +442,75 @@ Branch `feat/milestone-1-workspace`, run after the UI polish commit (`fix: polis
 
 Native smokes recorded earlier in this file still stand: plugin frame isolation (PASS, re-run after Tasks 17, 20 and 23) and the published plugins in the native app (PASS; Telegram an expected, named failure).
 
+## 2026-11-18: Final review fix wave (gates and native smokes)
+
+Branch `feat/milestone-1-workspace`, the commit `fix: address the Milestone 2 final review`: Teams sender rules
+take names (A-I1), the recovery choices work after the data folder breaks mid-run (B-I1), no plugin frame over
+the recovery page (B-I2), a plugin's first call waits for the reload that loads it (C-I1), links in plugin pages
+open after Connect's own confirmation (C-I2, ruling R41), and Today's "Day at a glance" tile uses the header's
+clock ("Until 06:00 PM").
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cd src-tauri && cargo fmt --check` | clean |
+| Lint | `cd src-tauri && cargo clippy -- -D warnings` | no issues |
+| Rust tests | `cd src-tauri && cargo test` | 523 passed, 2 ignored (the live Claude runs), 5 suites |
+| JS tests | `npm test` | 679 tests: 676 passed, 0 failed, 3 skipped |
+| Browser E2E | `PLAYWRIGHT_CORE=… node ui/test/browser/workspace-e2e.mjs` | 193/193 checks passed, both themes at 1000, 1440 and 1680 px |
+
+The E2E's "Day at a glance text is cut" check now measures in the page's own font and to the subpixel (with the
+ellipsis off while measuring). The old check missed "Free to 06:00 PM", which overflowed its 102.33 px box by
+0.08 px at 1440 px.
+
+### Published plugins in the native app, frames made before the manager loads them: PASS
+
+The marketplace smoke now reads the installed list right after each install, as Settings does, so the host
+makes each plugin's frame while the manager is still loading it (Claude CLI detection runs first). Each plugin's
+`framedBeforeLoad` is recorded. A run where no frame was made before its plugin loaded fails, because it didn't
+test the case. A command refused with "isn't on in Connect" fails the run like any failed command.
+
+```sh
+CODEMIE_PLUGIN_SMOKE=/Users/Vadym_Vlasenko/AI/projects/other/echo-plugins ./target/debug/app   # exit 0
+```
+
+- **Run id:** `e0c27300-60ba-4628-b81b-5c7595d10626`, pid 98619, version 2.1.1, exit 0 (the final build).
+- **Started / reported:** `2026-11-17T23:24:37.282942+00:00` / `2026-11-17T23:25:15.041354+00:00`.
+- **Framed before load:** scheduler, telegram, obsidian. GitHub's frame came after it loaded in this run; in
+  the earlier run `d2aa7511-9c93-465e-a945-b5f257e9a000` (same source), all four were framed early and all
+  passed.
+- **Loaded:** github, obsidian, scheduler. **Known failure:** telegram (sessions API, ruling R39).
+
+| Plugin | Framed before load | Frame's first calls | Pages opened (shown · ready · page errors · commands) | Verdict |
+|---|---|---|---|---|
+| Scheduler 0.4.0 | yes | `view` ok | section `main` ✓ · ✓ · 0 · —; card ✓ · ✓ · 0 · — | pass |
+| Obsidian 0.8.0 | yes | `knowledge_wake` ok | activity `vaults` ✓ · ✓ · 0 · `view` ok; section `main` ✓ · ✓ · 0 · `view` ok; card ✓ · ✓ · 0 · — | pass |
+| GitHub 0.3.0 | no (loaded first) | — | section `main` ✓ · ✓ · 0 · `status` ok | pass |
+| Telegram 0.4.0 | yes | — (its frame goes once its load error is known) | — | known failure |
+
+**Negative check (C-I1 put back):** the same build with the manager's wait set to zero (`LOAD_WAIT =
+Duration::ZERO`, reverted at once): run `89ac7df6-5f8b-4908-b4d6-93902ec11e87`, **exit 1**,
+`failed: ["scheduler: its command “view” failed: “scheduler” isn't on in Connect"]`. That is the failure the
+review describes, and the smoke catches it.
+
+### Plugin frame isolation after the shim's link handling: PASS
+
+```sh
+CODEMIE_WORKSPACE_TEST_DIR="$(mktemp -d)/workspace" CODEMIE_PLUGIN_SMOKE=isolation ./target/debug/app   # exit 0
+```
+
+- **Run id:** `9818dc33-8cca-4634-b828-11f08e268c54`, pid 99860.
+- **Started / reported:** `2026-11-17T23:25:24.646188+00:00` / `2026-11-17T23:25:28.363282+00:00`.
+- All seven gate fields hold (`tauriGlobal` false, `internals` false, `ipcFetchRejected`, `invokeRejected`,
+  `parentBlocked`, `moduleImportWorks`, `localStorageThrows` true), `failed` is empty and `probeRunId` equals
+  `runId`.
+- Escapes are unchanged: `top.location` throws, `window.open` gives `null`, a `target=_top` form doesn't
+  navigate, `mainPageStayed: true`. The frame is still `sandbox="allow-scripts"` only.
+- Links (ruling R41) add no sandbox flag. The frame's click and `window.open` become an `open` message, and the
+  main window opens the address only after its own confirmation.
+
+No single-instance socket was left after the runs, and no live Claude prompt was sent. Nothing reached the
+network: the marketplace is a local folder, GitHub has no sign-in in a fresh data root, and no link was opened.
+
 ## Live checks (owner present): not done yet
 
 These need the owner at the Mac with a real Claude sign-in and real Microsoft data. They are read-only or reversible; nothing is sent. The controller fills in the results.

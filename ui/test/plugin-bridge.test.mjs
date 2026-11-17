@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { createShim, startFrame, createStorage } from '../plugins/frame/shim.js';
 import { checkFromFrame, checkFromWindow, V } from '../plugins/frame/messages.js';
 import { esc, setRow, setCard, sw, relDay, ago } from '../plugins/frame/kit.js';
-import { createPluginHost, internalRoute } from '../plugins/host.js';
+import { createPluginHost, internalRoute, openableUrl } from '../plugins/host.js';
 
 const HELLO = new URL('./fixtures/plugins/hello/', import.meta.url);
 const settle = (ms = 20) => new Promise(resolve => setTimeout(resolve, ms));
@@ -94,7 +94,7 @@ function wired({ invoke } = {}) {
     querySelector: () => null,
     addEventListener() {},
   };
-  const events = { go: [], notices: [], copies: [], changes: 0 };
+  const events = { go: [], notices: [], copies: [], opens: [], changes: 0 };
   const host = createPluginHost({
     invoke: invoke || (async (cmd, args) => {
       calls.push([cmd, args]);
@@ -112,6 +112,7 @@ function wired({ invoke } = {}) {
     onGo: hash => events.go.push(hash),
     onNotice: text => events.notices.push(text),
     onCopy: text => events.copies.push(text),
+    onOpen: (url, name, id) => events.opens.push([url, name, id]),
   });
   host.mount({ appendChild() {} });
   return { host, calls, fw, frames, events, get shim() { return shim; } };
@@ -383,4 +384,86 @@ test('a plugin whose host half did not load gets no frame', () => {
   w.host.sync([{ ...HELLO_INSTALLED, loadError: 'CodeMie Connect doesn’t have ctx.sessions (only Echo has it)' }]);
   assert.equal(w.frames.length, 0);
   assert.equal(w.host.status('hello'), null);
+});
+
+// ---------------------------------------------------------------- links (ruling R41)
+
+/** A click on `el` in the frame, as the browser dispatches it (bubbling up to the window). */
+function clickIn(fw, el) {
+  const event = new Event('click', { cancelable: true });
+  Object.defineProperty(event, 'target', { value: el });
+  fw.win.dispatchEvent(event);
+  return event;
+}
+const anchor = (href, resolved = href) => ({ href: resolved, getAttribute: k => (k === 'href' ? href : null), closest: sel => (sel === 'a[href]' ? anchor(href, resolved) : null) });
+
+test('a link clicked in a plugin frame, or window.open, asks the window to open it', async () => {
+  const w = await helloLoaded();
+  w.host.show({ id: 'hello', view: 'activity', activity: 'home', route: '' });
+  await settle(30);
+  // The frame can't navigate or open windows: the click is kept from navigating it, and the
+  // window hears the address.
+  const click = clickIn(w.fw, anchor('https://github.com/login/device'));
+  assert.equal(click.defaultPrevented, true);
+  // A link inside a button-like span: the anchor around the target counts.
+  clickIn(w.fw, { closest: sel => (sel === 'a[href]' ? anchor('obsidian://open?path=%2FVault%2Fa.md') : null) });
+  assert.equal(w.fw.win.open('https://example.com/x'), null, 'window.open opens nothing in the frame');
+  await settle(30);
+  assert.deepEqual(w.events.opens, [
+    ['https://github.com/login/device', 'Hello', 'hello'],
+    ['obsidian://open?path=%2FVault%2Fa.md', 'Hello', 'hello'],
+    ['https://example.com/x', 'Hello', 'hello'],
+  ]);
+  // A place on the plugin's own page, a link the plugin handled itself and a javascript: "button"
+  // are left alone; nothing reaches the window.
+  const local = clickIn(w.fw, anchor('#top', 'connect-plugin://hello/__host/frame.html#top'));
+  assert.equal(local.defaultPrevented, false);
+  const handled = new Event('click', { cancelable: true });
+  Object.defineProperty(handled, 'target', { value: anchor('https://example.com/y') });
+  handled.preventDefault();
+  w.fw.win.dispatchEvent(handled);
+  const script = clickIn(w.fw, anchor('javascript:void 0'));
+  assert.equal(script.defaultPrevented, true, 'never run as navigation');
+  await settle(30);
+  assert.equal(w.events.opens.length, 3);
+});
+
+test('the window opens plugin links only from the frame on screen, and only https and obsidian', async () => {
+  const w = await helloLoaded();
+  const port = w.shim.state.port;
+  const open = url => port.postMessage({ v: V, id: 0, kind: 'event', type: 'open', url });
+  // Not on screen: a frame can't ask (it could forge the click), so nothing happens at all.
+  open('https://github.com/login/device');
+  await settle(30);
+  assert.deepEqual(w.events.opens, []);
+  assert.deepEqual(w.events.notices, []);
+  // On screen: an allowed address is passed on for the user to confirm; anything else is refused
+  // with a notice, and never passed on.
+  w.host.show({ id: 'hello', view: 'section', section: 'main' });
+  await settle(30);
+  for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,<script>alert(1)</script>', 'http://github.com/login/device', 'https://user:pw@github.com/', 'connect-plugin://hello/x', 'tauri://localhost/']) open(bad);
+  open('https://github.com/login/device');
+  await settle(30);
+  assert.deepEqual(w.events.opens, [['https://github.com/login/device', 'Hello', 'hello']]);
+  assert.equal(w.events.notices.length, 7);
+  assert.ok(w.events.notices.every(n => n === 'Connect opens only https:// and obsidian:// links.'), w.events.notices.join(' | '));
+});
+
+test('only https and obsidian addresses are openable', () => {
+  assert.equal(openableUrl('https://github.com/login/device'), 'https://github.com/login/device');
+  assert.equal(openableUrl('HTTPS://GitHub.com/a b'), 'https://github.com/a%20b');
+  assert.equal(openableUrl('obsidian://open?path=%2FUsers%2Fme%2FVault%2Fa.md'), 'obsidian://open?path=%2FUsers%2Fme%2FVault%2Fa.md');
+  for (const bad of [
+    'javascript:alert(1)', ' javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'file:///etc/passwd', 'data:text/html,x', 'http://github.com/',
+    'https://user:pw@github.com/', 'https://user@github.com/', 'blob:https://github.com/x', 'vbscript:x', 'tauri://localhost/', 'connect-plugin://hello/x',
+    'github.com/login', '/relative', '', null, undefined, 42, `https://github.com/${'x'.repeat(2000)}`, 'https://github.com/\u0000x',
+  ]) assert.equal(openableUrl(bad), null, String(bad));
+});
+
+test('an open message carries one address of at most 2000 characters', () => {
+  const ok = { v: V, id: 0, kind: 'event', type: 'open', url: 'https://github.com/login/device' };
+  assert.ok(checkFromFrame(ok));
+  for (const bad of [{ ...ok, url: '' }, { ...ok, url: 42 }, { ...ok, url: 'x'.repeat(2001) }, { ...ok, plugin: 'other' }, { ...ok, target: '_blank' }]) {
+    assert.equal(checkFromFrame(bad), null, JSON.stringify(bad).slice(0, 80));
+  }
 });

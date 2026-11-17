@@ -7,7 +7,7 @@ import {
   layoutColumns, freeSlots, groupCalendarEvents,
 } from '../workspace/calendar-model.js';
 import {
-  dayKey, addDaysToKey, minutesOfDay, initials, firstName, relativeAge, agoLabel, countdownLabel, durationLabel, greeting, colorFor,
+  dayKey, addDaysToKey, minutesOfDay, initials, firstName, relativeAge, agoLabel, countdownLabel, durationLabel, greeting, colorFor, formatTime,
 } from '../workspace/format.js';
 import { attentionMessages, messageTitle, connectionState, decisions, sourceCounts, conversation, collapseChats } from '../workspace/selectors.js';
 import { snoozeUntil, filteredMessages, inbox } from '../workspace/view-inbox.js';
@@ -338,6 +338,19 @@ test('Today shows the live meeting, a join action, attention and commitments', (
   const m = todayModel(s, new Set(), now);
   assert.equal(m.current[0].record.id, 'ev-current');
   assert.ok(!m.timed.some(t => t.record.id === 'ev-cancelled'), 'cancelled events are hidden');
+});
+
+test('Day at a glance says when free time ends on the same clock as the header', t => {
+  // 09:00 in Kyiv: the workday ends at 18:00 there.
+  const now = Date.parse('2026-11-18T07:00:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const s = buildSnapshot(now, { photo: false, zone: 'Europe/Kyiv' });
+  const html = today(s, ctx());
+  const until = formatTime(Date.parse('2026-11-18T16:00:00Z'), 'Europe/Kyiv');
+  assert.match(html, new RegExp(`free until ${until}`), 'the header names the end of the workday');
+  // "Until" keeps the label inside the tile at 1440 px with a 12-hour clock (the browser E2E measures it).
+  assert.match(html, new RegExp(`<span>Until ${until}</span>`), 'the tile uses the same clock');
+  assert.doesNotMatch(html, /Free to 18:00/);
 });
 
 test('Today without Microsoft invites one sign-in and keeps local work', () => {

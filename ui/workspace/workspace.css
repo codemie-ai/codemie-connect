@@ -1085,6 +1085,9 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-dl-final{display:flex;align-items:center;gap:8px;font-size:13px;line-height:20px;color:var(--ws-red)}
 .ws-dl-final .ws-icon{width:16px;height:16px;flex-shrink:0}
 .ws-recovery-actions .ws-btn{flex-shrink:0}
+/* A plugin's link, shown whole before Connect opens it (ruling R41). */
+.ws-link-confirm{margin:12px 0 0}
+.ws-link-confirm .ws-storage-path{padding:10px 12px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);font-size:13px;line-height:20px}
 @media (max-width:1180px){.ws-storage-row{flex-wrap:wrap}.ws-storage-row-actions{flex-direction:row;flex-wrap:wrap;align-items:center;width:100%;padding-left:32px}}
 
 /* ------------------------------------------------------------------ Automations (DESIGN 6.6) */

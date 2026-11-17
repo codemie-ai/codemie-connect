@@ -579,7 +579,7 @@ export function toAutomation(d) {
 // Sentences of `automation_save` validation, by the field they are about. The backend names the
 // field (`err.field`); these anchored patterns are for an answer without one.
 const ERROR_FIELDS = [
-  [/^Add at least one sender|^".*" is not an email address|^Use up to 50 senders/, 'auto-senders'],
+  [/^Add at least one sender|^".*" is not an email address|^".*" is longer than a name|^Teams messages carry names|^Use up to 50 senders/, 'auto-senders'],
   [/^Give the automation a name/, 'auto-name'],
   [/^Write the instructions|^Instructions can be up to/, 'auto-prompt'],
   [/^Choose at least one day|^Days run from/, 'auto-days'],
@@ -705,8 +705,8 @@ export function automationEditor(draft, { zone = 'UTC', ai = {}, error = null } 
   };
   const senderHint = {
     mail_from: ['From', 'Addresses or domains, separated by commas. For example ann@epam.com, @epam.com', 'name@epam.com, @epam.com'],
-    chat_from: ['From', 'Names as Teams shows them, or addresses. For example Ann Lee, ann@epam.com', 'Ann Lee'],
-    critical: ['Only from (optional)', 'Leave it empty for every critical item.', 'name@epam.com'],
+    chat_from: ['From', 'Names as Teams shows them, separated by commas. For example Ann Lee, Bob Stone', 'Ann Lee'],
+    critical: ['Only from (optional)', 'Addresses, domains or Teams names. Leave it empty for every critical item.', 'name@epam.com, Ann Lee'],
   }[draft.event] || ['From', '', ''];
   const count = draft.prompt.length;
   return `<input type="hidden" name="auto-id" value="${e(draft.id)}">

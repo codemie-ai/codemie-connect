@@ -21,6 +21,7 @@
 //! | `signin` | `{id, host}` | `{signedIn, host, from}`: the user's Sign in on the plugin's settings |
 //! | `signout` | `{id, host}` | `{signedIn: false, host}` |
 //! | `pick_folder` | | `{path}`: the folder the user chose for a marketplace, `null` when they cancelled |
+//! | `open_link` | `{id, url}` | `{opened: true}`: the user pressed Open in Connect's confirmation of a link plugin `id`'s page asked to open; only `https:` and `obsidian:` addresses (ruling R41) |
 //!
 //! `agreed` is every key of the sheet the user was shown and `sheetHash` that sheet's hash (from
 //! `inspect` or `needs_consent`): a sheet that changed since is refused as `changed`.
@@ -76,6 +77,14 @@ pub async fn plugins_request(
     if op == "pick_folder" {
         let folder = manager_of(&window)?.pick_market_folder().await;
         return Ok(json!({"path": folder.map(|f| f.display().to_string())}));
+    }
+    if op == "open_link" {
+        let a: LinkArg = arg(data.unwrap_or(Value::Null))?;
+        return blocking(move || {
+            let _running = running;
+            open_link(&a.id, &a.url, crate::workspace::graph::launch_url)
+        })
+        .await?;
     }
     if matches!(op.as_str(), "signin" | "signout") {
         let a: SigninArg = arg(data.unwrap_or(Value::Null))?;
@@ -225,6 +234,56 @@ struct RemoveArg {
     id: String,
     #[serde(default)]
     delete_data: bool,
+}
+
+#[derive(Deserialize)]
+struct LinkArg {
+    id: String,
+    url: String,
+}
+
+/// The longest address a plugin's link may have.
+const LINK_MAX: usize = 2000;
+
+/// `open_link {id, url}` (ruling R41): the user pressed Open in Connect's own confirmation of a
+/// link a plugin's page asked to open. The frame could forge the click, so the address is checked
+/// again here: only `https:` (without a user name or password) and `obsidian:` addresses are
+/// opened, with the system's handler (`open`); anything else is refused.
+fn open_link(id: &str, url: &str, open: impl FnOnce(&str) -> Result<()>) -> Result<Value> {
+    if !super::valid_id(id) {
+        return Err(WorkspaceError::new("validation", "Unknown plugin."));
+    }
+    let refused = || {
+        WorkspaceError::new(
+            "validation",
+            "Connect opens only https:// and obsidian:// links.",
+        )
+    };
+    if url.len() > LINK_MAX {
+        return Err(refused());
+    }
+    let link = url::Url::parse(url).map_err(|_| refused())?;
+    let allowed = match link.scheme() {
+        "https" => {
+            link.host_str().is_some_and(|h| !h.is_empty())
+                && link.username().is_empty()
+                && link.password().is_none()
+        }
+        "obsidian" => true,
+        _ => false,
+    };
+    if !allowed {
+        return Err(refused());
+    }
+    open(link.as_str()).map_err(|e| match link.scheme() {
+        "obsidian" => WorkspaceError::new(
+            "io",
+            "Connect couldn’t open it in Obsidian. Check that Obsidian is installed.",
+        ),
+        _ => e,
+    })?;
+    log::info!("[plugin:{id}] opened a {} link", link.scheme());
+    Ok(json!({"opened": true}))
 }
 
 fn arg<T: DeserializeOwned>(data: Value) -> Result<T> {
@@ -577,6 +636,64 @@ mod tests {
     use crate::plugins::testkit::{self, manifest, FakeGit};
 
     const PINNED_TIME: &str = "2026-11-17T09:30:00Z";
+
+    #[test]
+    fn open_link_opens_only_https_and_obsidian_addresses() {
+        let mut opened = Vec::new();
+        for good in [
+            "https://github.com/login/device",
+            "https://github.com/owner/repo",
+            "obsidian://open?path=%2FUsers%2Fme%2FVault%2Fa.md",
+        ] {
+            let answer = open_link("github", good, |url| {
+                opened.push(url.to_string());
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(answer, json!({"opened": true}));
+        }
+        assert_eq!(
+            opened,
+            [
+                "https://github.com/login/device",
+                "https://github.com/owner/repo",
+                "obsidian://open?path=%2FUsers%2Fme%2FVault%2Fa.md"
+            ]
+        );
+        // The frame could forge the click, so the address is checked again here.
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,<script>alert(1)</script>",
+            "http://github.com/login/device",
+            "https://user:pw@github.com/",
+            "https://user@github.com/",
+            "tauri://localhost/",
+            "connect-plugin://github/x",
+            "vbscript:x",
+            "github.com/login/device",
+            "",
+            &format!("https://github.com/{}", "x".repeat(2000)),
+        ] {
+            let refused = open_link("github", bad, |url| panic!("opened {url}")).unwrap_err();
+            assert_eq!(refused.code, "validation", "{bad}");
+            assert_eq!(
+                refused.message,
+                "Connect opens only https:// and obsidian:// links."
+            );
+        }
+        let unknown = open_link("../x", "https://github.com/", |url| panic!("opened {url}"));
+        assert_eq!(unknown.unwrap_err().code, "validation");
+        // Obsidian not there: said in words, not as a browser failure.
+        let missing = open_link("obsidian", "obsidian://open?path=x", |_| {
+            Err(WorkspaceError::new("io", "Cannot open the system browser."))
+        })
+        .unwrap_err();
+        assert_eq!(
+            missing.message,
+            "Connect couldn’t open it in Obsidian. Check that Obsidian is installed."
+        );
+    }
 
     /// Clock values differ per run; everything else in the answers is deterministic.
     fn pin(mut v: Value) -> Value {

@@ -5,7 +5,7 @@
 
 use super::folders::{self, failed, flush, flush_dir, flush_file, DATABASE, MOVING_FOLDERS};
 use crate::storage::location::{
-    self, LocationFile, Marker, TargetIssue, VolumeInfo, DATA_DIR_NAME,
+    self, LocationFile, Marker, RootStatus, TargetIssue, VolumeInfo, DATA_DIR_NAME,
 };
 use crate::workspace::models::{Result, WorkspaceError};
 use crate::workspace::repository::SCHEMA_VERSION;
@@ -222,6 +222,36 @@ pub fn change(
             )),
         },
     }
+}
+
+/// Whether the running workspace can be held still and copied from: only while its folder
+/// still resolves ready. A folder moved, renamed or unplugged while Connect runs doesn't, so
+/// the recovery page offers Start empty and Use the data there, never Move.
+pub fn workspace_usable(core_open: bool, private_root: &Path) -> bool {
+    core_open && location::resolve(private_root).status == RootStatus::Ready
+}
+
+/// [`change`] asked for by a running Connect. When its folder broke while it ran, the workspace
+/// can't be held still (its first database read may fail, and a failed resume would leave it
+/// held), so it lets go of its database and both locks as before a restart and the change runs
+/// without it. That also frees the renamed folder's `connect.lock`, which this process held.
+/// A choice the folder doesn't allow is refused before anything is let go.
+pub fn change_from_running(
+    places: &Places,
+    choice: &Choice,
+    core: Option<&Core>,
+    vol: &dyn VolumeInfo,
+    wait: Duration,
+) -> Result<PathBuf> {
+    let usable = core.filter(|_| workspace_usable(true, places.private_root));
+    if let (Some(core), None) = (core, usable) {
+        let offered = check(places, choice.picked, false, vol);
+        if !offered.modes.contains(&choice.mode) {
+            return Err(refusal(&offered, choice.mode));
+        }
+        core.release_for_restart();
+    }
+    change(places, choice, usable, vol, wait)
 }
 
 /// The workspace held still for a change. Committed once the pointer names the new folder;
@@ -1396,6 +1426,132 @@ pub(crate) mod tests {
         assert!(notes(&core).is_empty());
         // The old data is still there.
         assert!(f.default.join("workspace.sqlite").is_file());
+    }
+
+    // ------------------------------------------- the folder breaks mid-run
+
+    /// A workspace running in `<dir>/Drive/CodeMie Connect Data` with one note, whose `Drive`
+    /// folder is then renamed in Finder while Connect runs. The open database and the folder's
+    /// lock still work through their descriptors; the pointer names a folder that is gone.
+    fn renamed_while_running() -> (Fixture, Arc<Core>, PathBuf) {
+        let f = Fixture::new();
+        f.core
+            .repo()
+            .unwrap()
+            .put_record(&note("n1", "Kept"))
+            .unwrap();
+        f.change(Mode::Move).unwrap();
+        let core = f.restart(&f.core);
+        assert!(core.paths.custom());
+        let renamed = f.dir.path().join("Drive (renamed)");
+        fs::rename(&f.picked, &renamed).unwrap();
+        assert_eq!(location::resolve(&f.default).status, RootStatus::Missing);
+        (f, core, renamed)
+    }
+    fn choose<'a>(picked: &'a Path, mode: Mode) -> Choice<'a> {
+        Choice {
+            picked,
+            mode,
+            acknowledged: false,
+        }
+    }
+
+    #[test]
+    fn a_folder_lost_while_running_offers_no_move_and_a_move_holds_nothing() {
+        let (f, core, _) = renamed_while_running();
+        let elsewhere = f.dir.path().join("Elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let places = places(&f.default, &core, &f.home);
+        let pointer = fs::read(f.default.join("location.json")).unwrap();
+
+        // What `data_location_check` offers: the workspace counts as open only while its folder
+        // resolves ready, so there is nothing to copy from and only Start empty is left.
+        assert!(!workspace_usable(true, &f.default));
+        let offered = check(
+            &places,
+            &elsewhere,
+            workspace_usable(true, &f.default),
+            &ROOMY,
+        );
+        assert_eq!(offered.modes, [Mode::Fresh]);
+        assert!(offered.issues.is_empty(), "{:?}", offered.issues);
+
+        // A Move sent anyway is refused before anything is held or written.
+        let err = change_from_running(
+            &places,
+            &choose(&elsewhere, Mode::Move),
+            Some(&core),
+            &ROOMY,
+            WAIT,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.message,
+            "Connect can move your data only while your workspace is open."
+        );
+        assert!(!core.is_held());
+        assert_eq!(fs::read(f.default.join("location.json")).unwrap(), pointer);
+        assert!(names(&elsewhere).is_empty());
+    }
+
+    #[test]
+    fn start_empty_works_after_the_folder_is_lost_while_running() {
+        let (f, core, _) = renamed_while_running();
+        let elsewhere = f.dir.path().join("Elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let places = places(&f.default, &core, &f.home);
+        // The dialog used to preselect Move; whatever it did, Start empty must still work.
+        let _ = change_from_running(
+            &places,
+            &choose(&elsewhere, Mode::Move),
+            Some(&core),
+            &ROOMY,
+            WAIT,
+        );
+        let target = change_from_running(
+            &places,
+            &choose(&elsewhere, Mode::Fresh),
+            Some(&core),
+            &ROOMY,
+            WAIT,
+        )
+        .unwrap();
+        assert_eq!(target, location::canonical(&elsewhere).join(DATA_DIR_NAME));
+        let pointer = try_read_location(&f.default).unwrap();
+        assert_eq!(pointer.data_dir, Some(target.clone()));
+        assert!(!pointer.previous_copied);
+
+        let core = f.restart(&core);
+        assert_eq!(core.paths.data, target);
+        assert!(notes(&core).is_empty());
+    }
+
+    #[test]
+    fn the_renamed_folder_can_be_adopted_while_this_connect_still_runs() {
+        let (f, core, renamed) = renamed_while_running();
+        let places = places(&f.default, &core, &f.home);
+        let offered = check(
+            &places,
+            &renamed,
+            workspace_usable(true, &f.default),
+            &ROOMY,
+        );
+        assert_eq!(offered.modes, [Mode::Adopt]);
+
+        // This process still holds the folder's `connect.lock` through its old descriptor: it
+        // lets go first, so the folder doesn't read as in use by another Connect.
+        let target = change_from_running(
+            &places,
+            &choose(&renamed, Mode::Adopt),
+            Some(&core),
+            &ROOMY,
+            WAIT,
+        )
+        .unwrap();
+        assert_eq!(target, location::canonical(&renamed.join(DATA_DIR_NAME)));
+        let core = f.restart(&core);
+        assert_eq!(core.paths.data, target);
+        assert_eq!(notes(&core), ["Kept"]);
     }
 
     // ---------------------------------------------------------------- check

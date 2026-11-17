@@ -143,3 +143,21 @@ test('each page’s commands are recorded with how they went, and kept with the 
   assert.deepEqual(scheduler.frame.calls, [{ command: 'view', ok: true, error: '' }], 'what it asked before a page was open');
   assert.deepEqual(scheduler.views[0].calls, [{ command: 'view', ok: true, error: '' }]);
 });
+
+test('each plugin’s frame is made right after its install, before the manager has loaded it (review C-I1)', async () => {
+  const c = fakeConnect({ loadsAfter: 4, frames: { scheduler: { sections: [{ id: 'main' }] }, github: { sections: [{ id: 'main' }] } } });
+  let refreshes = 0;
+  const refreshInstalled = async () => { refreshes++; c.calls.push(['refresh']); return c.refreshInstalled(); };
+  const report = await runMarketSmoke({ ...c, refreshInstalled, market: '/m', runId: 'run-6', ...quick });
+  // Install, then at once the installed list (the host makes the frame), then what the manager has.
+  const steps = c.calls.filter(([cmd, a]) => cmd === 'refresh' || cmd === 'smoke_plugins_state' || a?.op === 'install')
+    .map(([cmd, a]) => (a?.op === 'install' ? `install ${a.data.id}` : cmd));
+  assert.deepEqual(steps.slice(0, 6), ['install scheduler', 'refresh', 'smoke_plugins_state', 'install github', 'refresh', 'smoke_plugins_state']);
+  assert.ok(refreshes >= 5, `refreshed ${refreshes} times`);
+  const by = Object.fromEntries(report.plugins.map(p => [p.id, p]));
+  assert.equal(by.scheduler.framedBeforeLoad, true);
+  assert.equal(by.github.framedBeforeLoad, true);
+  assert.equal(by.obsidian.framedBeforeLoad, false, 'no frame was made for it');
+  assert.equal(by.knowledge.framedBeforeLoad, false, 'never installed');
+  assert.equal(report.error, null);
+});

@@ -1,6 +1,7 @@
 // CODEMIE_PLUGIN_SMOKE=<marketplace folder> (Task 25), smoke only: the window's side of the
 // marketplace smoke. Connect opened a fresh data root for it (commands/plugin_smoke.rs). This adds
-// the marketplace, installs every plugin it offers, waits for the plugin manager, then opens every
+// the marketplace, installs every plugin it offers (making each frame at once, before the manager
+// has loaded it, as Settings does), waits for the plugin manager, then opens every
 // page, Settings section and card each plugin's frame adds, through the app's own routes, so each
 // one is drawn by its client half in its real sandboxed frame. What the frames reported (their page
 // errors, through the bridge) goes to Rust, which adds what the manager saw, decides and quits.
@@ -64,7 +65,7 @@ export async function runMarketSmoke({
     report.market = { name: m.name, source: m.source };
     const catalog = await invoke('plugins_request', { op: 'catalog', data: { market: m.name } });
     for (const offer of catalog.plugins || []) {
-      const entry = { id: offer.id, version: offer.version || '', install: '', loadError: null, frame: null, views: [] };
+      const entry = { id: offer.id, version: offer.version || '', install: '', framedBeforeLoad: false, loadError: null, frame: null, views: [] };
       report.plugins.push(entry);
       if (offer.refusal) {
         entry.install = `refused: ${offer.refusal}`;
@@ -79,7 +80,14 @@ export async function runMarketSmoke({
         entry.install = 'installed';
       } catch (e) {
         entry.install = `failed: ${message(e)}`;
+        continue;
       }
+      // As Settings does after an install: the installed list is read at once, so the host makes
+      // the frame while the manager is still loading (it detects Claude first). Its first calls
+      // must wait for the host half (review C-I1); a refused one fails the run.
+      await refreshInstalled();
+      const s = await invoke('smoke_plugins_state');
+      entry.framedBeforeLoad = !!host.status(offer.id) && !s.loaded.includes(offer.id);
     }
 
     // The manager loads them in the background: each one loaded, or why it didn't.

@@ -339,9 +339,11 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   // `__pluginCalls` records what reached native, with the plugin id it went out with.
   const pl = {
     markets: clone(pluginInit.markets), installed: [], storage: {}, addresses: {}, signedIn: {},
-    calls: [], loadErrors: {},
+    calls: [], loadErrors: {}, opened: [],
   };
   window.__pluginCalls = pl.calls;
+  // Links the user agreed to open (`open_link`): recorded, never opened in a browser.
+  window.__pluginOpened = pl.opened;
   // Why a plugin's host half didn't load, as the manager would say (`installed` answers it).
   window.__setPluginLoadError = (id, text) => { pl.loadErrors[id] = text; };
   const helloView = () => {
@@ -397,6 +399,11 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     signin: d => { pl.signedIn[d.id] = true; return clone(pluginInit.signin.signin); },
     signout: d => { delete pl.signedIn[d.id]; return clone(pluginInit.signin.signout); },
     set_addresses: d => { pl.addresses[d.key] = d.value.trim(); return helloView(); },
+    open_link: d => {
+      if (!/^(https|obsidian):/.test(d.url)) fail('validation', 'Connect opens only https:// and obsidian:// links.');
+      pl.opened.push(clone(d));
+      return { opened: true };
+    },
     client_storage: d => {
       if (d.items) pl.storage[d.id] = clone(d.items);
       return { items: clone(pl.storage[d.id] || {}) };
@@ -581,7 +588,20 @@ for (const theme of ['dark', 'light']) {
     const p = n.page;
     await p.waitForTimeout(500);
     assert(await p.locator('.ws-banner:has-text("Bring your AI coding tools")').count() === 0, 'setup banner shows although a Claude is ready');
-    const cut = await p.evaluate(() => [...document.querySelectorAll('.ws-stat strong, .ws-stat > span:last-child')].filter(el => el.scrollWidth > el.clientWidth + 1).map(el => el.textContent));
+    // Measured in the page's own font (the fallback is narrower) and to the subpixel: the whole
+    // text's width against its box. The ellipsis is off while measuring, since Chromium lays out
+    // only the part it shows, and what it hides can be less than one whole pixel.
+    const cut = await p.evaluate(async () => {
+      await document.fonts.ready;
+      return [...document.querySelectorAll('.ws-stat strong, .ws-stat > span:last-child')].filter(el => {
+        el.style.textOverflow = 'clip';
+        const text = document.createRange();
+        text.selectNodeContents(el);
+        const over = text.getBoundingClientRect().width > el.getBoundingClientRect().width + 0.01;
+        el.style.textOverflow = '';
+        return over;
+      }).map(el => el.textContent);
+    });
     assert(!cut.length, `Day at a glance text is cut: ${cut}`);
     const z = await p.evaluate(() => {
       const line = document.querySelector('.ws-timeline .ws-now-line');
@@ -1862,6 +1882,27 @@ for (const theme of ['dark', 'light']) {
       await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
       const saved = (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === 'automation_save').at(-1)[1];
       assert(saved.trigger.senders[0] === 'ann@example.test' && saved.deliver.draftReply === false && saved.read.triggerConversation === true, JSON.stringify(saved));
+    });
+
+    // A Teams message carries the sender's name and no address: its From asks for names only, and
+    // the critical trigger's "Only from" takes addresses, domains or Teams names.
+    await check(`${tag}: the Teams and critical sender fields say what they match`, async () => {
+      await page.click('[data-action="automations-tab"][data-tab="templates"]');
+      await page.click('[data-action="automation-template"][data-id="draft-replies"]');
+      await editorOpen(page);
+      const hintOf = () => page.evaluate(() => document.querySelector('.ws-modal[open] #auto-senders')?.closest('.ws-field')?.querySelector('.ws-field-hint')?.textContent || '');
+      for (const [event, hint, name] of [
+        ['chat_from', 'Names as Teams shows them, separated by commas. For example Ann Lee, Bob Stone', 'chat'],
+        ['critical', 'Addresses, domains or Teams names. Leave it empty for every critical item.', 'critical'],
+      ]) {
+        await page.selectOption('.ws-modal[open] select[name="auto-event"]', event);
+        await page.waitForFunction(h => document.querySelector('.ws-modal[open] #auto-senders')?.closest('.ws-field')?.textContent.includes(h), hint);
+        assert(await hintOf() === hint, `${event} hint: ${await hintOf()}`);
+        await noOverflow(page, `${event} editor`);
+        await shot(page, `${tag}-automation-editor-${name}`);
+      }
+      await page.click('.ws-modal[open] .ws-modal-footer [data-modal-close]');
+      await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
     });
 
     await check(`${tag}: automations no page errors`, async () => assert(errors.length === 0, errors.join(' | ')));

@@ -1565,6 +1565,12 @@ pub fn open_url(url: &str) -> Result<()> {
             "Only secure provider links can be opened.",
         ));
     }
+    launch_url(url)
+}
+
+/// Opens an address with the system's handler (the browser, or the app that owns its scheme).
+/// The address goes to it as one argument, never through a shell; callers check it first.
+pub fn launch_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("/usr/bin/open")
         .arg(url)

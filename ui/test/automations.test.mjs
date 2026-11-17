@@ -114,6 +114,24 @@ test('trigger summaries read like sentences', () => {
 
 // ---------------------------------------------------------------- the editor
 
+test('Teams sender fields ask for names, because Teams messages carry no address', () => {
+  const ctx = { zone: 'Europe/Kyiv', ai: AI };
+  const editor = ev => {
+    const draft = draftFromAutomation({ ...TEMPLATES[0].automation, trigger: { kind: 'event', event: ev, senders: [], keywords: [] } });
+    return unescape(automationEditor(draft, ctx));
+  };
+  const chat = editor('chat_from');
+  assert.match(chat, /Names as Teams shows them/);
+  assert.doesNotMatch(chat, /addresses/i);
+  assert.doesNotMatch(chat, /ann@epam\.com/);
+  const critical = editor('critical');
+  assert.match(critical, /Addresses, domains or Teams names/);
+  assert.match(critical, /Leave it empty for every critical item/);
+  // The backend's sentence for an address in a Teams rule shows at the senders field.
+  assert.equal(fieldForError('Teams messages carry names, not addresses. Enter the name as Teams shows it, for example Ann Lee.'), 'auto-senders');
+  assert.equal(fieldForError('"x" is not an email address, a domain such as epam.com or a name as Teams shows it.'), 'auto-senders');
+});
+
 test('editor_validates_and_hides_draft_reply_for_schedules', () => {
   const ctx = { zone: 'Europe/Kyiv', ai: AI };
   // A schedule: weekday chips, a time in the workspace zone, catch-up; no reply draft.

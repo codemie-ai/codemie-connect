@@ -270,9 +270,23 @@ pub fn validate(a: &Automation) -> Result<()> {
             if senders.len() > 50 {
                 return Err(invalid_at("senders", "Use up to 50 senders."));
             }
-            if *event != EventKind::MeetingEnded {
-                for s in senders {
-                    if !valid_sender(s, *event == EventKind::ChatFrom) {
+            for s in senders {
+                match event {
+                    // Teams records carry the sender's display name and no address, so only a
+                    // name can ever match a Teams message.
+                    EventKind::ChatFrom if s.contains('@') || valid_domain(s) => {
+                        return Err(invalid_at(
+                            "senders",
+                            "Teams messages carry names, not addresses. Enter the name as Teams shows it, for example Ann Lee.",
+                        ));
+                    }
+                    EventKind::ChatFrom if s.chars().count() > 100 => {
+                        return Err(invalid_at(
+                            "senders",
+                            format!("\"{s}\" is longer than a name as Teams shows it."),
+                        ));
+                    }
+                    EventKind::MailFrom if !valid_sender(s, false) => {
                         return Err(invalid_at(
                             "senders",
                             format!(
@@ -280,6 +294,15 @@ pub fn validate(a: &Automation) -> Result<()> {
                             ),
                         ));
                     }
+                    EventKind::Critical if !valid_sender(s, true) => {
+                        return Err(invalid_at(
+                            "senders",
+                            format!(
+                                "\"{s}\" is not an email address, a domain such as epam.com or a name as Teams shows it."
+                            ),
+                        ));
+                    }
+                    _ => {}
                 }
             }
             if keywords.len() > 20 || keywords.iter().any(|k| k.chars().count() > 60) {
@@ -467,8 +490,10 @@ fn message_matches(
     let kind_ok = match event {
         EventKind::MailFrom => m.channel == "mail" && sender_matches(senders, m, false),
         EventKind::ChatFrom => m.channel == "chat" && sender_matches(senders, m, true),
+        // A name in "Only from" matches Teams items by display name; mail is matched by address.
         EventKind::Critical => {
-            critical.contains(&m.id) && (senders.is_empty() || sender_matches(senders, m, true))
+            critical.contains(&m.id)
+                && (senders.is_empty() || sender_matches(senders, m, m.channel == "chat"))
         }
         EventKind::MeetingEnded => false,
     };
@@ -825,6 +850,77 @@ mod tests {
         // A chat automation never fires on mail, a mail automation never on chat.
         assert!(!got.iter().any(|(a, s)| a == "chat" && s != "c1"));
         assert!(!got.iter().any(|(a, s)| a != "chat" && s == "c1"));
+    }
+
+    #[test]
+    fn teams_sender_rules_take_names_because_teams_messages_carry_no_address() {
+        let teams_only =
+            "Teams messages carry names, not addresses. Enter the name as Teams shows it, for example Ann Lee.";
+        for entry in ["ann@epam.com", "@epam.com", "epam.com"] {
+            assert_eq!(
+                message(validate(&event("e", EventKind::ChatFrom, &[entry], &[]))),
+                teams_only,
+                "{entry}"
+            );
+        }
+        assert!(validate(&event("e", EventKind::ChatFrom, &["Ann Lee"], &[])).is_ok());
+        // "Only from" on the critical trigger takes addresses, domains and Teams names.
+        assert!(validate(&event(
+            "e",
+            EventKind::Critical,
+            &["Ann Lee", "ann@epam.com", "@epam.com"],
+            &[]
+        ))
+        .is_ok());
+        assert_eq!(
+            message(validate(&event(
+                "e",
+                EventKind::Critical,
+                &[&"x".repeat(101)],
+                &[]
+            ))),
+            format!(
+                "\"{}\" is not an email address, a domain such as epam.com or a name as Teams shows it.",
+                "x".repeat(101)
+            )
+        );
+
+        // A Teams record has a display name and no address (graph.rs stores `from` and `fromId`).
+        let teams = MessageIn::from_record(&Record {
+            id: "c1".into(),
+            kind: "message".into(),
+            connection_id: None,
+            workspace_id: None,
+            source: "graph".into(),
+            revision: "1".into(),
+            updated_at: 0,
+            data: serde_json::json!({ "channel": "chat", "from": "Ann Lee", "fromId": "u-1", "text": "prod is down" }),
+        });
+        assert_eq!(teams.from_address, "");
+        // Anyone can put "Ann Lee" on an email, so a name never matches mail.
+        let mut boss_mail = mail("m1", "boss@epam.com", "Outage", "prod is down");
+        boss_mail.from_name = "Ann Lee".into();
+        let automations = vec![
+            event("chat", EventKind::ChatFrom, &["ann lee"], &[]),
+            event("crit-name", EventKind::Critical, &["Ann Lee"], &[]),
+            event("crit-address", EventKind::Critical, &["boss@epam.com"], &[]),
+        ];
+        let critical: HashSet<String> = ["c1".to_string(), "m1".to_string()].into();
+        let mut state = State::default();
+        let got = match_events(
+            &automations,
+            &[teams, boss_mail],
+            &[],
+            &critical,
+            &mut state,
+            1_000,
+        );
+        assert!(got.contains(&("chat".into(), "c1".into())));
+        assert!(got.contains(&("crit-name".into(), "c1".into())));
+        assert!(got.contains(&("crit-address".into(), "m1".into())));
+        // A name matches Teams items only; an address never matches a Teams item.
+        assert!(!got.contains(&("crit-name".into(), "m1".into())));
+        assert!(!got.contains(&("crit-address".into(), "c1".into())));
     }
 
     #[test]

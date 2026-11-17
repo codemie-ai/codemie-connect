@@ -220,7 +220,7 @@ function glanceCard(s, m, connected) {
     ? [
       stat(`${m.remaining.length}/${m.timed.length}`, 'Meetings left', 'calendar', 'route', { 'data-route': 'calendar' }),
       stat(durationLabel(m.busyMinutes), 'In meetings', 'users'),
-      stat(m.nowMin >= WORKDAY_END ? '—' : durationLabel(m.freeMinutes), m.nowMin >= WORKDAY_END ? 'Workday over' : 'Free to 18:00', 'coffee'),
+      stat(m.nowMin >= WORKDAY_END ? '—' : durationLabel(m.freeMinutes), m.nowMin >= WORKDAY_END ? 'Workday over' : `Until ${formatTime(endOfWorkday(m), m.zone)}`, 'coffee'),
       stat(String(m.attention.length), 'Need reply', 'reply', 'route', { 'data-route': 'inbox', 'data-lane': 'reply' }),
     ]
     : [

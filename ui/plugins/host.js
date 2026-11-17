@@ -51,6 +51,24 @@ export function internalRoute(plugin, hash) {
 }
 
 /**
+ * What a plugin's link may open (ruling R41): an `https:` address without a user name or password,
+ * or an `obsidian:` one, as its normalized text; null for anything else (`javascript:`, `file:`,
+ * `data:`, `http:`, Connect's own schemes…). Native checks it again before opening it.
+ */
+export function openableUrl(raw) {
+  if (typeof raw !== 'string' || raw === '' || raw.length > 2000 || /[\u0000-\u001f\u007f]/.test(raw)) return null;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol === 'https:') return url.hostname && !url.username && !url.password ? url.href : null;
+  if (url.protocol === 'obsidian:') return url.href;
+  return null;
+}
+
+/**
  * The host. `invoke` is Connect's own invoke; `frameUrl(id, path)` the frame's address
  * (`pluginUrl`); `about()` → {name, version, engine}; `theme()` → 'light' | 'dark'; `whereNow()`
  * → where the window is when no plugin is shown. `on*` are the window's reactions.
@@ -58,7 +76,7 @@ export function internalRoute(plugin, hash) {
 export function createPluginHost({
   invoke, frameUrl, doc = document, win = window, about = () => ({ name: 'CodeMie Connect', version: '', engine: '1.0' }),
   theme = () => 'light', whereNow = () => ({ view: 'today', section: '', route: '' }),
-  onChange = () => {}, onGo = () => {}, onNotice = () => {}, onCopy = () => {}, now = () => Date.now(),
+  onChange = () => {}, onGo = () => {}, onNotice = () => {}, onCopy = () => {}, onOpen = () => {}, now = () => Date.now(),
 }) {
   /** plugin id → {id, name, version, client, key, el, port, contrib, calls, nextId, height, error, errors, ready, shown, paletteAt} */
   const frames = new Map();
@@ -230,6 +248,14 @@ export function createPluginHost({
       }
       case 'notice': if (mayLead(rec)) onNotice(m.text, rec.name); return;
       case 'copy': if (rec.shown) onCopy(m.text, rec.name); return;
+      case 'open': {
+        // Only the frame on screen, where the user clicked; the window asks before opening.
+        if (!rec.shown) return;
+        const url = openableUrl(m.url);
+        if (url) onOpen(url, rec.name, rec.id);
+        else onNotice('Connect opens only https:// and obsidian:// links.', rec.name);
+        return;
+      }
       default:
     }
   }

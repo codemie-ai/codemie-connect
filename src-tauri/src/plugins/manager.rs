@@ -28,6 +28,10 @@ const CHANGED_AFTER: Duration = Duration::from_secs(10);
 const WORK_REFRESH: Duration = Duration::from_secs(60);
 /// `ctx.profiles()` is detected again this often.
 const PROFILES_REFRESH: Duration = Duration::from_secs(60);
+/// The longest a call for a plugin not loaded yet waits for the reloads asked for to finish.
+const LOAD_WAIT: Duration = Duration::from_secs(30);
+/// What the window hears when a reload finished: it reads the installed list again.
+const RELOADED_EVENT: &str = "plugins:reloaded";
 
 /// What a loaded plugin was loaded from: a change to any of it reloads the plugin.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +64,9 @@ pub struct PluginManager {
     profiles_at: Mutex<Option<Instant>>,
     /// One reload at a time.
     reloading: tokio::sync::Mutex<()>,
+    /// Reloads asked for that haven't finished, counted from the moment they are asked for (before
+    /// their task starts): a call for a plugin not loaded yet waits for them.
+    reloads: tokio::sync::watch::Sender<usize>,
 }
 
 impl PluginManager {
@@ -79,6 +86,7 @@ impl PluginManager {
             asked: Mutex::default(),
             profiles_at: Mutex::default(),
             reloading: tokio::sync::Mutex::new(()),
+            reloads: tokio::sync::watch::Sender::new(0),
         })
     }
 
@@ -92,8 +100,10 @@ impl PluginManager {
         };
         let manager = PluginManager::new(core.clone(), outside, Limits::default());
         let running = manager.clone();
+        // Asked for now, so frames the window makes at start wait for it.
+        let first = manager.ask_reload();
         tauri::async_runtime::spawn(async move {
-            running.reload().await;
+            first.await;
             while !running.core.stop.load(std::sync::atomic::Ordering::Relaxed) {
                 tokio::time::sleep(TICK).await;
                 running.tick().await;
@@ -104,8 +114,18 @@ impl PluginManager {
 
     /// The registry changed: loads what is now on, unloads what is off, reloads what changed.
     pub fn on_registry_change(self: &Arc<Self>) {
-        let me = self.clone();
-        tauri::async_runtime::spawn(async move { me.reload().await });
+        tauri::async_runtime::spawn(self.ask_reload());
+    }
+
+    /// A reload to run, counted as under way from now until it has run (or was dropped), so a
+    /// frame's first call waits for it. The window is told when it finished.
+    fn ask_reload(self: &Arc<Self>) -> impl std::future::Future<Output = ()> + Send + 'static {
+        self.reloads.send_modify(|n| *n += 1);
+        let asked = ReloadAsked(self.clone());
+        async move {
+            asked.0.reload().await;
+            drop(asked);
+        }
     }
 
     /// Brings the loaded plugins in line with the registry.
@@ -199,6 +219,12 @@ impl PluginManager {
     /// Runs a plugin's command for the window (its client half, a widget's or an Inbox item's
     /// button).
     pub async fn call(&self, id: &str, command: &str, args: Value) -> Result<Value, HostError> {
+        if !lock(&self.loaded).contains_key(id) {
+            // A frame made on install, update, turning on or at start can call before the reload
+            // that loads its host half is done (it detects Claude first): it waits for it.
+            let mut reloads = self.reloads.subscribe();
+            let _ = tokio::time::timeout(LOAD_WAIT, reloads.wait_for(|n| *n == 0)).await;
+        }
         if !lock(&self.loaded).contains_key(id) {
             return Err(HostError::new(
                 ErrorCode::NotFound,
@@ -327,6 +353,17 @@ impl PluginManager {
             self.core.plugin_put(&last)?;
         }
         Ok(())
+    }
+}
+
+/// A reload asked for and not finished: dropped (run, or its task gone), it is no longer counted,
+/// and the window reads the installed list again (what loaded, what didn't and why).
+struct ReloadAsked(Arc<PluginManager>);
+
+impl Drop for ReloadAsked {
+    fn drop(&mut self) {
+        self.0.reloads.send_modify(|n| *n = n.saturating_sub(1));
+        self.0.core.emit(RELOADED_EVENT);
     }
 }
 
@@ -557,6 +594,30 @@ mod tests {
         s.manager.reload().await;
         assert!(s.manager.loaded().is_empty());
         assert!(items(&s.core).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_call_made_before_a_reload_loads_its_plugin_waits_for_it() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install("hello", "1.0.0", json!({}), PING, true);
+        s.install("idle", "1.0.0", json!({}), PING, false);
+        // Installed, updated or turned on: the reload is asked for and the window makes the
+        // frame, whose first `ctx.call` can arrive before the reload has even started.
+        let reload = s.manager.ask_reload();
+        let (answer, ()) = tokio::join!(s.manager.call("hello", "ping", Value::Null), reload);
+        assert_eq!(answer, Ok(json!("pong v1")));
+        // A plugin the reload doesn't load is still refused, once the reload is done.
+        let reload = s.manager.ask_reload();
+        let (refused, ()) = tokio::join!(s.manager.call("idle", "ping", Value::Null), reload);
+        assert_eq!(refused.unwrap_err().code, ErrorCode::NotFound);
+        // With no reload under way, a plugin that isn't loaded is refused at once.
+        let at_once = tokio::time::timeout(
+            Duration::from_millis(200),
+            s.manager.call("idle", "ping", Value::Null),
+        )
+        .await
+        .expect("refused without waiting");
+        assert_eq!(at_once.unwrap_err().code, ErrorCode::NotFound);
     }
 
     /// A synthetic plugin that uses most of `ctx` (store, settings, inbox, a widget, Claude,

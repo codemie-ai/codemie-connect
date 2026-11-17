@@ -25,6 +25,7 @@ export function apply(ctx) {
       return `<div class="hello-page"><h1>Hello page</h1>
         <p class="set-sub">Route: <code>${esc(route || '(none)')}</code> · Host: ${esc(ctx.host.name)}</p>
         <p><button class="btn primary" data-hello-greet>Say hello</button> <button class="btn" data-hello-settings>Open its settings</button></p>
+        <p class="set-sub"><a data-ext data-hello-link href="https://example.com/hello?from=connect&amp;x=1">Open example.com ↗</a> · <a data-hello-http href="http://example.com/insecure">An insecure link</a></p>
         <div class="hello-out" id="hello-out">${greeting ? `<p class="set-ok">${esc(greeting)}</p>` : ''}${error ? `<p class="error">${esc(error)}</p>` : ''}</div>
         <p class="set-sub">Clicks: <span id="hello-clicks">${clicks}</span></p></div>`;
     },

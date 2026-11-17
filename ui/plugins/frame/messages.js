@@ -8,6 +8,8 @@
 //   call          {method: 'command', command, args}          a host-half command → reply {value}
 //                 {method: 'storage', items}                   the localStorage stand-in, saved
 //   event         {type: 'go', hash} {type: 'notice', text} {type: 'copy', text}
+//                 {type: 'open', url}   a link the user clicked (or window.open): the window asks
+//                                       the user, and opens https: and obsidian: addresses only
 //                 {type: 'height', px} {type: 'ready'} {type: 'error', message}
 //   contribution  {activities: [{id, label}], sections: [{id, label, badge}], card,
 //                  panels: [{id, label}], palette: [{label, keywords}], widgets: [id]}
@@ -78,6 +80,7 @@ export function checkFromFrame(m) {
         case 'go': return exactly(m, ['v', 'id', 'kind', 'type', 'hash']) && text(m.hash, HASH) ? m : null;
         case 'notice': case 'copy':
           return exactly(m, ['v', 'id', 'kind', 'type', 'text']) && text(m.text, m.type === 'copy' ? 10000 : TEXT) ? m : null;
+        case 'open': return exactly(m, ['v', 'id', 'kind', 'type', 'url']) && text(m.url, TEXT) && m.url !== '' ? m : null;
         case 'height': return exactly(m, ['v', 'id', 'kind', 'type', 'px']) && Number.isFinite(m.px) && m.px >= 0 && m.px <= 100000 ? m : null;
         case 'ready': return exactly(m, ['v', 'id', 'kind', 'type']) ? m : null;
         case 'error': return exactly(m, ['v', 'id', 'kind', 'type', 'message']) && text(m.message, TEXT) ? m : null;
