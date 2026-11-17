@@ -362,7 +362,7 @@ function decisionList(pending, zone) {
   if (!pending.length) {
     return `<div class="ws-inbox-empty">${emptyState({ iconName: 'shield', title: 'No decisions waiting', text: 'Prepared replies, events and work that needs a retry show up here. Nothing is sent automatically.' })}</div>`;
   }
-  const label = { sync: 'Refresh Microsoft sources', brief: 'Daily brief', reminder: 'Reminder', notification: 'Critical alert', calendar_window: 'Calendar period' };
+  const label = { sync: 'Refresh Microsoft sources', reminder: 'Reminder', notification: 'Critical alert', calendar_window: 'Calendar period' };
   return `<div class="ws-inbox-items">${pending.map(r => r.kind === 'action'
     ? `<div class="ws-decision">${badge(r.data.state.replace('_', ' '), r.data.state === 'prepared' ? 'info' : 'warning')}<div><strong>${e(r.data.review?.title || 'Prepared action')}</strong><p>${e(r.data.message || 'Review before it expires.')}</p></div>${button('Review', { action: 'action-detail', variant: 'primary', attrs: { 'data-id': r.id } })}</div>`
     : `<div class="ws-decision">${badge(r.state, r.state === 'failed' ? 'error' : 'warning')}<div><strong>${e(label[r.kind] || r.kind)}</strong><p>${e(r.result || '')}</p><small class="ws-muted">${e(formatDateTime(r.dueAt, zone))}</small></div>${['notification', 'send', 'reminder'].includes(r.kind) ? button('Activity', { action: 'settings-tab', attrs: { 'data-tab': 'activity' } }) : button('Retry', { action: 'job-retry', attrs: { 'data-id': r.id } })}</div>`).join('')}</div>`;

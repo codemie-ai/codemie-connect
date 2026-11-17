@@ -220,7 +220,7 @@ function queuesPanel(s) {
   }) + card({
     title: 'Schedules', iconName: 'clock',
     actions: button('Add schedule', { action: 'schedule-new', iconName: 'plus' }),
-    body: schedules.length ? `<div class="ws-rows">${schedules.map(r => `<div class="ws-row"><span class="ws-row-icon">${icon(r.data.kind === 'brief' ? 'spark' : 'bell')}</span><div class="ws-row-main"><strong>${e(r.data.label || r.data.kind)}</strong><span>${e(r.data.time)} · ${r.data.weekdays ? 'Weekdays' : 'Every day'} · next ${e(formatDateTime(r.data.nextAt, zone))}</span></div>${button('', { action: 'schedule-delete', iconName: 'trash', variant: 'ghost', title: 'Remove schedule', attrs: { 'data-id': r.id } })}</div>`).join('')}</div>`
+    body: schedules.length ? `<div class="ws-rows">${schedules.map(r => `<div class="ws-row"><span class="ws-row-icon">${icon('bell')}</span><div class="ws-row-main"><strong>${e(r.data.label || r.data.kind)}</strong><span>${e(r.data.time)} · ${r.data.weekdays ? 'Weekdays' : 'Every day'} · next ${e(formatDateTime(r.data.nextAt, zone))}</span></div>${button('', { action: 'schedule-delete', iconName: 'trash', variant: 'ghost', title: 'Remove schedule', attrs: { 'data-id': r.id } })}</div>`).join('')}</div>`
       : emptyState({ iconName: 'clock', title: 'No schedules', text: 'Schedule a daily reminder, for example to plan your day at 09:00.' }),
   });
 }
@@ -238,7 +238,7 @@ function privacyPanel(s) {
 
 // ---------------------------------------------------------------- Activity
 
-const JOB_LABEL = { sync: 'Microsoft sync', brief: 'Daily brief', reminder: 'Reminder', notification: 'Critical alert', ai_draft: 'AI reply draft', calendar_window: 'Calendar period', automation_run: 'Automation run' };
+const JOB_LABEL = { sync: 'Microsoft sync', reminder: 'Reminder', notification: 'Critical alert', ai_draft: 'AI reply draft', calendar_window: 'Calendar period', automation_run: 'Automation run' };
 const JOB_TONE = { succeeded: 'success', failed: 'error', blocked: 'warning', cancelled: 'neutral', queued: 'info', running: 'info' };
 
 function activityPanel(s) {

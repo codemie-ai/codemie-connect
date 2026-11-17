@@ -284,8 +284,8 @@ test('drafting_and_stop_survive_a_background_sync', () => {
 test('failed_ai_jobs_stay_out_of_decisions', () => {
   const s = snapshot();
   s.jobs.unshift(jobFor(s, 'c-reply-1'), { ...jobFor(s, 'm-reply-1', { errorClass: 'timeout', errorCode: 'timeout', state: 'failed' }), kind: 'ai_summarize' });
-  s.jobs.unshift({ id: 'brief-1', workspaceId: 'personal', connectionId: s.connection.id, kind: 'brief', state: 'failed', dueAt: nowSec, attempts: 1, policy: null, payload: {}, result: 'No brief' });
-  assert.deepEqual(decisions(s).map(j => j.id), ['brief-1'], 'AI failures show inline in the reply box instead');
+  s.jobs.unshift({ id: 'window-1', workspaceId: 'personal', connectionId: s.connection.id, kind: 'calendar_window', state: 'failed', dueAt: nowSec, attempts: 1, policy: null, payload: {}, result: 'Calendar unavailable' });
+  assert.deepEqual(decisions(s).map(j => j.id), ['window-1'], 'AI failures show inline in the reply box instead');
 });
 
 // ---------------------------------------------------------------- bracketed choices

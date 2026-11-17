@@ -279,41 +279,20 @@ impl Core {
             job.connection_id.as_deref(),
             &job.policy,
         )?;
-        let source_readable = r
-            .record("message", &source.id, Some(&c.id), None)
-            .is_ok_and(|current| {
-                repository::source_available(&current)
-                    && repository::record_selected(&current, &w)
-                    && repository::source_permitted(&current, &c)
-            });
-        if !source_readable || !unchanged(&ctx, &prompts::draft_window(&r, &w, &c, &source)?) {
+        let of = DraftOf {
+            workspace: &w,
+            account: &c,
+            source: &source,
+            conversation: &ctx,
+        };
+        if !still_readable(&r, &of)? {
             return Err(WorkspaceError::new(
                 "conflict",
                 "The conversation changed while Claude was drafting. Draft again.",
             ));
         }
-        let record = Record {
-            id: draft_id,
-            kind: "draft".into(),
-            connection_id: Some(c.id.clone()),
-            workspace_id: Some(w.id.clone()),
-            source: source.source.clone(),
-            revision: id(),
-            updated_at: now(),
-            // Recipients are never part of a draft: `action_prepare` takes them from the source.
-            data: json!({
-                "text": text,
-                "questions": questions,
-                "sourceId": source.id,
-                "sourceRevision": source.revision,
-                "draftKey": draft_key(&source),
-                "conversationKey": ctx.conversation_key,
-                "channel": source.data["channel"],
-                "aiSuggested": true,
-                "options": opts,
-                "provenance": provenance(&profile, &outcome, requested_model, &ctx),
-            }),
-        };
+        let made = provenance(&profile, &outcome, requested_model, &ctx);
+        let record = ai_draft_record(&of, &text, &questions, json!(opts), made);
         let stored = stored_job(&r, job)?;
         r.commit_job_record(&stored, &record)?;
         Ok("AI draft ready for review".into())
@@ -509,8 +488,28 @@ impl Core {
         ref_id: &str,
         parse: impl Fn(&Value) -> Option<T>,
     ) -> Result<(RunOutcome, T)> {
+        match self
+            .run_claude_reported(run, spec, profile, ref_id, parse)
+            .await
+        {
+            (Some(outcome), Ok(answer)) => Ok((outcome, answer)),
+            (_, Err(e)) => Err(e.into()),
+            (None, Ok(_)) => Err(AiError::new(ErrorClass::Failed).into()),
+        }
+    }
+
+    /// [`Self::run_claude`] that also gives back what Claude reported (model, duration, cost)
+    /// when its answer could not be used, so a failed run can still show what it cost.
+    pub(super) async fn run_claude_reported<T>(
+        &self,
+        run: &StartedRun<'_>,
+        spec: RunSpec,
+        profile: &AiProfile,
+        ref_id: &str,
+        parse: impl Fn(&Value) -> Option<T>,
+    ) -> (Option<RunOutcome>, std::result::Result<T, AiError>) {
         if run.cancel.is_cancelled() {
-            return Err(AiError::new(ErrorClass::Cancelled).into());
+            return (None, Err(AiError::new(ErrorClass::Cancelled)));
         }
         let ledger = LedgerEntry::open(self, spec.clone(), ref_id);
         let (models, mut reported) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -540,10 +539,7 @@ impl Core {
             Err(e) => Err(e.clone()),
         };
         ledger.close(result.as_ref().ok(), answer.as_ref().err());
-        match (result, answer) {
-            (Ok(outcome), Ok(answer)) => Ok((outcome, answer)),
-            (_, Err(e)) | (Err(e), _) => Err(e.into()),
-        }
+        (result.ok(), answer)
     }
 
     /// Stop for a running AI job (`job_cancel`); nothing happens for other jobs.
@@ -659,7 +655,7 @@ fn budget_filled(settled: &[Option<Option<String>>]) -> bool {
 /// Whether what a draft was written from is still what the conversation says: the same
 /// newest message, and every message Claude read with the same content. Read state, flags
 /// and reactions change revisions, not fingerprints, so they never count as a change.
-pub(super) fn unchanged(ctx: &prompts::PromptInput, window: &[Record]) -> bool {
+fn unchanged(ctx: &prompts::PromptInput, window: &[Record]) -> bool {
     let current: std::collections::HashMap<&str, String> = window
         .iter()
         .map(|m| (m.id.as_str(), prompts::fingerprint(m)))
@@ -670,6 +666,64 @@ pub(super) fn unchanged(ctx: &prompts::PromptInput, window: &[Record]) -> bool {
             .iter()
             .zip(&ctx.fingerprints)
             .all(|(id, fp)| current.get(id.as_str()) == Some(fp))
+}
+
+/// What an AI reply draft answers and was written from.
+pub(super) struct DraftOf<'a> {
+    pub workspace: &'a Workspace,
+    pub account: &'a Connection,
+    /// The message being answered.
+    pub source: &'a Record,
+    /// The conversation as Claude read it.
+    pub conversation: &'a prompts::PromptInput,
+}
+
+/// Whether a draft still answers what Claude read: the message can still be read here and its
+/// conversation still says the same (see [`unchanged`]).
+pub(super) fn still_readable(r: &repository::Repository, of: &DraftOf) -> Result<bool> {
+    let (w, c, source) = (of.workspace, of.account, of.source);
+    let readable = r
+        .record("message", &source.id, Some(&c.id), None)
+        .is_ok_and(|current| {
+            repository::source_available(&current)
+                && repository::record_selected(&current, w)
+                && repository::source_permitted(&current, c)
+        });
+    Ok(readable && unchanged(of.conversation, &prompts::draft_window(r, w, c, source)?))
+}
+
+/// An AI reply draft as the Inbox shows it, stored under `ai:<draftKey>` (one per Outlook
+/// message, one per Teams chat), whether a user or an automation asked for it. Recipients are
+/// never part of a draft: `action_prepare` takes them from the source.
+pub(super) fn ai_draft_record(
+    of: &DraftOf,
+    text: &str,
+    questions: &[String],
+    options: Value,
+    provenance: Value,
+) -> Record {
+    let source = of.source;
+    Record {
+        id: format!("ai:{}", draft_key(source)),
+        kind: "draft".into(),
+        connection_id: Some(of.account.id.clone()),
+        workspace_id: Some(of.workspace.id.clone()),
+        source: source.source.clone(),
+        revision: id(),
+        updated_at: now(),
+        data: json!({
+            "text": text,
+            "questions": questions,
+            "sourceId": source.id,
+            "sourceRevision": source.revision,
+            "draftKey": draft_key(source),
+            "conversationKey": of.conversation.conversation_key,
+            "channel": source.data["channel"],
+            "aiSuggested": true,
+            "options": options,
+            "provenance": provenance,
+        }),
+    }
 }
 
 /// The stored copy of a claimed job (it may carry progress saved since the claim).

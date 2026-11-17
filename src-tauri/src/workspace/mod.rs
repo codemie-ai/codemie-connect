@@ -9,6 +9,7 @@ mod curl;
 pub mod geometry;
 pub mod graph;
 mod inbox;
+mod markdown;
 pub mod models;
 mod paths;
 mod prompts;
@@ -1407,12 +1408,12 @@ impl Core {
             return Ok("Critical repeat was disabled before submission".into());
         }
         if !s.notifications {
-            return Err(WorkspaceError::new(
-                "permission_required",
-                "Notifications are disabled. The reminder remains in Activity.",
-            ));
+            let message = "Notifications are disabled. The reminder remains in Activity.";
+            note_run_notification(&mut r, job, "disabled", message);
+            return Err(WorkspaceError::new("permission_required", message));
         }
         if job.payload["expiresAt"].as_i64().is_some_and(|t| t < now()) {
+            note_run_notification(&mut r, job, "expired", "It was too late to show it.");
             return Ok("Skipped expired reminder".into());
         }
         if let Some(eid) = job.payload["eventId"].as_str() {
@@ -1503,6 +1504,12 @@ impl Core {
             && (s.focus_until.is_some_and(|t| t > now())
                 || schedules::quiet(&s.time_zone, &s.quiet_start, &s.quiet_end, now()))
         {
+            note_run_notification(
+                &mut r,
+                job,
+                "suppressed",
+                "Quiet hours or focus were on, so it was not shown.",
+            );
             return Ok("Suppressed by app quiet/focus settings; visible in Activity".into());
         }
         let (title, body) = notification_text(&s, &job.payload);
@@ -1511,7 +1518,8 @@ impl Core {
         submitting.payload["dispatchStartedAt"] = now().into();
         r.save_job(&submitting)?;
         // Keep the repository guard through submission so ack/policy writes cannot overtake dispatch.
-        self.app()?
+        let shown = self
+            .app()?
             .notification()
             .builder()
             .id(nid)
@@ -1520,13 +1528,18 @@ impl Core {
             .extra("eventId", job.payload["eventId"].clone())
             .title(title)
             .body(body)
-            .show()
-            .map_err(|_| {
-                WorkspaceError::new(
-                    "notification",
-                    "OS notification submission failed. The reminder remains in Activity.",
-                )
-            })?;
+            .show();
+        if shown.is_err() {
+            let message = "OS notification submission failed. The reminder remains in Activity.";
+            note_run_notification(&mut r, job, "failed", message);
+            return Err(WorkspaceError::new("notification", message));
+        }
+        note_run_notification(
+            &mut r,
+            job,
+            "submitted",
+            "Sent to macOS; Focus and notification settings decide whether it shows.",
+        );
         drop(r);
         Ok("OS submission requested; display depends on OS Focus and notification settings".into())
     }
@@ -1657,6 +1670,26 @@ fn materialize_due_schedules(r: &mut Repository) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Notes on the automation run a notification job belongs to (`payload.runId`) what became of
+/// its notification, so a suppressed or failed one is not lost silently. Best effort: the
+/// notification's own outcome stands either way.
+fn note_run_notification(r: &mut Repository, job: &Job, state: &str, message: &str) {
+    let Some(run_id) = job.payload["runId"].as_str() else {
+        return;
+    };
+    let Ok(mut run) = r.record("automation_run", run_id, None, job.workspace_id.as_deref()) else {
+        return;
+    };
+    run.data["notification"] = json!({"state": state, "message": message, "at": now()});
+    run.revision = id();
+    if let Err(e) = r.put_record(&run) {
+        log::warn!(
+            "automations: cannot note a notification outcome: {}",
+            e.code
+        );
+    }
 }
 
 /// A notification's title and body: what the job names (an automation's name and result

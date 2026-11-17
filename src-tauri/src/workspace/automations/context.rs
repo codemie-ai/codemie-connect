@@ -154,49 +154,66 @@ pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput
     if run.draft {
         input["draftReply"] = true.into();
     }
-    let mut present: Vec<&'static str> = Vec::new();
+    // Each present section, with how many entries of it there are before any cap.
+    let mut totals: Vec<(&'static str, usize)> = Vec::new();
     let mut first: Vec<Block> = Vec::new();
     let mut rest: Vec<Block> = Vec::new();
     let mut conversation = None;
     if let (Some(c), Some(trigger)) = (run.account, run.source) {
         if trigger.kind == "message" && (a.read.trigger_conversation || run.draft) {
-            present.push("triggerConversation");
-            let (ctx, blocks) = trigger_conversation(repo, run.workspace, c, trigger, reading)?;
+            let (ctx, blocks, total) =
+                trigger_conversation(repo, run.workspace, c, trigger, reading)?;
+            totals.push(("triggerConversation", total));
             first.extend(blocks);
             conversation = Some(ctx);
         } else if trigger.kind == "event" && a.read.trigger_conversation {
-            present.push("triggerMeeting");
+            totals.push(("triggerMeeting", 1));
             first.push(event_block("triggerMeeting", 0, trigger, tz, reading.now));
         }
     }
+    let mut add = |section: &'static str, (blocks, total): (Vec<Block>, usize)| {
+        totals.push((section, total));
+        rest.extend(blocks);
+    };
     if let Some(c) = run.account {
         let w = run.workspace;
         if a.read.calendar_today {
-            present.push("calendarToday");
-            rest.extend(calendar_today(repo, w, c, tz, reading.now)?);
+            add(
+                "calendarToday",
+                calendar_today(repo, w, c, tz, reading.now)?,
+            );
         }
         if a.read.needs_reply {
-            present.push("needsReply");
-            rest.extend(needs_reply(repo, w, c, tz, reading.now)?);
+            add("needsReply", needs_reply(repo, w, c, tz, reading.now)?);
         }
         if a.read.mail_from_sender_days > 0 {
-            present.push("senderMail");
             let skip: HashSet<&str> = conversation
                 .as_ref()
                 .map(|ctx| ctx.message_ids.iter().map(String::as_str).collect())
                 .unwrap_or_default();
             let since = reading.now - i64::from(a.read.mail_from_sender_days) * 86_400;
-            rest.extend(sender_mail(repo, w, c, run.source, since, &skip, tz)?);
+            add(
+                "senderMail",
+                sender_mail(repo, w, c, run.source, since, &skip, tz)?,
+            );
         }
     }
     if a.read.commitments_notes {
-        present.extend(["commitments", "notes"]);
-        rest.extend(commitments_and_notes(repo, run.workspace)?);
+        add("commitments", commitments(repo, run.workspace)?);
+        add("notes", notes(repo, run.workspace)?);
     }
 
-    // A record is given once, in the first section that holds it.
+    // A record is given once, in the first section that holds it; there it is not missing.
     let mut given: HashSet<String> = first.iter().map(|b| b.source.record_id.clone()).collect();
-    rest.retain(|b| given.insert(b.source.record_id.clone()));
+    rest.retain(|b| {
+        let new = given.insert(b.source.record_id.clone());
+        if !new {
+            if let Some((_, total)) = totals.iter_mut().find(|(s, _)| *s == b.section) {
+                *total = total.saturating_sub(1);
+            }
+        }
+        new
+    });
     let mut used: usize = first.iter().map(Block::cost).sum();
     rest.sort_by(|x, y| {
         y.source
@@ -217,7 +234,7 @@ pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput
     kept.sort_by_key(|b| (rank(b.section), b.order));
 
     let mut sources = Vec::new();
-    for section in &present {
+    for (section, _) in &totals {
         input[*section] = json!([]);
     }
     for (n, block) in first.into_iter().chain(kept).enumerate() {
@@ -228,6 +245,17 @@ pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput
         let mut source = block.source;
         source.handle = handle;
         sources.push(source);
+    }
+    // Lists cut short by a cap or the budget say so, with how much there is.
+    let mut truncated = serde_json::Map::new();
+    for (section, total) in totals {
+        let shown = input[section].as_array().map_or(0, Vec::len);
+        if shown < total {
+            truncated.insert(section.into(), json!({"shown": shown, "total": total}));
+        }
+    }
+    if !truncated.is_empty() {
+        input["truncated"] = truncated.into();
     }
     Ok(RunInput {
         input,
@@ -244,8 +272,9 @@ fn trigger_conversation(
     c: &Connection,
     trigger: &Record,
     reading: &Reading,
-) -> Result<(PromptInput, Vec<Block>)> {
+) -> Result<(PromptInput, Vec<Block>, usize)> {
     let ctx = prompts::draft_context(repo, w, trigger, c, &DraftOptions::default(), reading)?;
+    let total = prompts::reply_thread(repo, w, c, trigger)?.len();
     let window: HashMap<String, Record> = prompts::draft_window(repo, w, c, trigger)?
         .into_iter()
         .map(|m| (m.id.clone(), m))
@@ -267,7 +296,7 @@ fn trigger_conversation(
             })
         })
         .collect();
-    Ok((ctx, blocks))
+    Ok((ctx, blocks, total))
 }
 
 fn at(m: &Record) -> i64 {
@@ -385,7 +414,7 @@ fn calendar_today(
     c: &Connection,
     tz: Tz,
     now: i64,
-) -> Result<Vec<Block>> {
+) -> Result<(Vec<Block>, usize)> {
     let (start, end) = today(now, tz);
     let mut events: Vec<(i64, Record)> = repo
         .provider_records(&c.id, "event")?
@@ -408,12 +437,13 @@ fn calendar_today(
         })
         .collect();
     events.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.id.cmp(&y.1.id)));
-    Ok(events
+    let blocks = events
         .iter()
         .take(MAX_EVENTS)
         .enumerate()
         .map(|(i, (_, e))| event_block("calendarToday", i, e, tz, now))
-        .collect())
+        .collect();
+    Ok((blocks, events.len()))
 }
 
 /// How long a message has waited: "40 min", "5 h", "3 d".
@@ -467,7 +497,7 @@ fn needs_reply(
     c: &Connection,
     tz: Tz,
     now: i64,
-) -> Result<Vec<Block>> {
+) -> Result<(Vec<Block>, usize)> {
     let mut records = repo.account_workspace_records(&c.id, &w.id)?;
     inbox::project(repo, w, Some(c), &mut records)?;
     let mut messages: Vec<Record> = records
@@ -484,16 +514,17 @@ fn needs_reply(
         .collect();
     messages.sort_by(|x, y| at(y).cmp(&at(x)).then(x.id.cmp(&y.id)));
     let mut chats = HashSet::new();
-    Ok(messages
+    messages.retain(|m| m.data["channel"] != "chat" || chats.insert(prompts::conversation_key(m)));
+    let blocks = messages
         .iter()
-        .filter(|m| m.data["channel"] != "chat" || chats.insert(prompts::conversation_key(m)))
         .take(MAX_NEEDS_REPLY)
         .enumerate()
         .map(|(i, m)| {
             let extra = format!(" waiting=\"{}\"", waited(now, at(m)));
             message_block("needsReply", i, m, &extra, PREVIEW_CHARS, tz)
         })
-        .collect())
+        .collect();
+    Ok((blocks, messages.len()))
 }
 
 /// Email from the address of the message that started the run, since `since`, newest first;
@@ -506,13 +537,13 @@ fn sender_mail(
     since: i64,
     skip: &HashSet<&str>,
     tz: Tz,
-) -> Result<Vec<Block>> {
+) -> Result<(Vec<Block>, usize)> {
     let address = trigger
         .filter(|t| t.kind == "message")
         .map(|t| text(t, "fromAddress").to_lowercase())
         .unwrap_or_default();
     if address.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     }
     let mut mail: Vec<Record> = repo
         .provider_records(&c.id, "message")?
@@ -528,59 +559,79 @@ fn sender_mail(
         })
         .collect();
     mail.sort_by(|x, y| at(y).cmp(&at(x)).then(x.id.cmp(&y.id)));
-    Ok(mail
+    let blocks = mail
         .iter()
         .take(MAX_SENDER_MAIL)
         .enumerate()
         .map(|(i, m)| message_block("senderMail", i, m, "", SENDER_MAIL_CHARS, tz))
-        .collect())
+        .collect();
+    Ok((blocks, mail.len()))
 }
 
-/// The user's open commitments (with due date and owner) and notes, newest first.
-fn commitments_and_notes(repo: &Repository, w: &Workspace) -> Result<Vec<Block>> {
-    let mut blocks = Vec::new();
-    let open = repo
+/// The user's open commitments, newest first, each saying who promised it: "You promised: …"
+/// for the user's own, "Sam promised you: …" for one someone else owns.
+fn commitments(repo: &Repository, w: &Workspace) -> Result<(Vec<Block>, usize)> {
+    let open: Vec<Record> = repo
         .local_records(&w.id, "commitment")?
         .into_iter()
         .filter(|c| c.data["done"] != true)
-        .take(MAX_COMMITMENTS);
-    for (i, c) in open.enumerate() {
-        let body = prompts::sanitize_text(&text(&c, "text"), COMMITMENT_CHARS);
-        let due = c.data["due"]
-            .as_str()
-            .filter(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
-            .map(|d| format!(" due=\"{d}\""))
-            .unwrap_or_default();
-        let owner = prompts::sanitize_line(&text(&c, "owner"), 100);
-        let owner = if owner.is_empty() || owner == "You" {
-            String::new()
-        } else {
-            format!("\nOwner: {owner}")
-        };
-        let title = prompts::sanitize_line(&text(&c, "text"), 200);
-        blocks.push(Block {
-            section: "commitments",
-            order: i,
-            template: format!("<item {ID} kind=\"commitment\"{due}>\n{body}{owner}\n</item>"),
-            source: source("commitment", &c, title, c.updated_at),
-        });
-    }
-    for (i, n) in repo
-        .local_records(&w.id, "note")?
-        .into_iter()
+        .collect();
+    let blocks = open
+        .iter()
+        .take(MAX_COMMITMENTS)
+        .enumerate()
+        .map(|(i, c)| {
+            let body = prompts::sanitize_text(&text(c, "text"), COMMITMENT_CHARS);
+            let due = c.data["due"]
+                .as_str()
+                .filter(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
+                .map(|d| format!(" due=\"{d}\""))
+                .unwrap_or_default();
+            let owner = prompts::sanitize_line(&text(c, "owner"), 100);
+            let who = if owner.is_empty() || owner.eq_ignore_ascii_case("you") {
+                "You promised".to_string()
+            } else {
+                format!("{owner} promised you")
+            };
+            Block {
+                section: "commitments",
+                order: i,
+                template: format!("<item {ID} kind=\"commitment\"{due}>\n{who}: {body}\n</item>"),
+                source: source(
+                    "commitment",
+                    c,
+                    prompts::sanitize_line(&text(c, "text"), 200),
+                    c.updated_at,
+                ),
+            }
+        })
+        .collect();
+    Ok((blocks, open.len()))
+}
+
+/// The user's notes, newest first.
+fn notes(repo: &Repository, w: &Workspace) -> Result<(Vec<Block>, usize)> {
+    let all = repo.local_records(&w.id, "note")?;
+    let blocks = all
+        .iter()
         .take(MAX_NOTES)
         .enumerate()
-    {
-        let body = prompts::sanitize_text(&text(&n, "text"), NOTE_CHARS);
-        let title = prompts::sanitize_line(&text(&n, "text"), 200);
-        blocks.push(Block {
+        .map(|(i, n)| Block {
             section: "notes",
             order: i,
-            template: format!("<item {ID} kind=\"note\">\n{body}\n</item>"),
-            source: source("note", &n, title, n.updated_at),
-        });
-    }
-    Ok(blocks)
+            template: format!(
+                "<item {ID} kind=\"note\">\n{}\n</item>",
+                prompts::sanitize_text(&text(n, "text"), NOTE_CHARS)
+            ),
+            source: source(
+                "note",
+                n,
+                prompts::sanitize_line(&text(n, "text"), 200),
+                n.updated_at,
+            ),
+        })
+        .collect();
+    Ok((blocks, all.len()))
 }
 
 #[cfg(test)]
@@ -757,6 +808,7 @@ mod tests {
         let ids: Vec<&str> = built.sources.iter().map(|s| s.record_id.as_str()).collect();
         assert_eq!(ids, ["standup", "private", "late"]);
         assert_eq!(built.handles()["s3"], "late");
+        assert!(built.input.get("truncated").is_none(), "nothing was cut");
         // The automation's name and instructions are sanitised too.
         assert_eq!(built.input["automation"], "Morning ‹brief›");
         assert_eq!(
@@ -845,10 +897,9 @@ mod tests {
         // The newest blocks are kept: the commitment, then the newest messages; the old note is not.
         let commitments = input["commitments"].as_array().unwrap();
         assert_eq!(commitments.len(), 1);
-        assert!(commitments[0]
-            .as_str()
-            .unwrap()
-            .contains("kind=\"commitment\" due=\"2026-11-20\">\nSend the roadmap\nOwner: Sam"));
+        assert!(commitments[0].as_str().unwrap().contains(
+            "kind=\"commitment\" due=\"2026-11-20\">\nSam promised you: Send the roadmap\n"
+        ));
         assert_eq!(input["notes"], json!([]));
         let replies = input["needsReply"].as_array().unwrap();
         assert_eq!(replies.len(), 3);
@@ -867,10 +918,64 @@ mod tests {
             .collect();
         assert_eq!(ids[0], "m19");
         assert!(!ids.contains(&"m00"));
+        // Claude is told which lists were cut short and how much there is, never left to guess.
+        let truncated = &input["truncated"];
+        assert_eq!(
+            truncated["senderMail"],
+            json!({"shown": ann.len(), "total": 20})
+        );
+        assert_eq!(truncated["notes"], json!({"shown": 0, "total": 1}));
+        assert!(truncated.get("needsReply").is_none() && truncated.get("commitments").is_none());
         // Ids follow the reading order and map back to their records.
         assert_eq!(built.sources[0].record_id, "q0");
         assert_eq!(built.sources[0].handle, "s1");
         assert_eq!(built.handles().len(), built.sources.len());
+    }
+
+    #[test]
+    fn commitments_say_who_promised_what() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut r, w, c) = repo(dir.path());
+        r.put_record(&local(
+            "mine",
+            "commitment",
+            json!({"text": "Send the roadmap", "done": false, "owner": "You"}),
+            BASE,
+        ))
+        .unwrap();
+        r.put_record(&local(
+            "theirs",
+            "commitment",
+            json!({"text": "Share the deck", "done": false, "owner": "Sam Stone"}),
+            BASE - 60,
+        ))
+        .unwrap();
+        r.put_record(&local(
+            "blank",
+            "commitment",
+            json!({"text": "Book the room", "done": false}),
+            BASE - 120,
+        ))
+        .unwrap();
+        let a = automation(ReadSet {
+            commitments_notes: true,
+            ..ReadSet::default()
+        });
+        let built = build_with(&r, &w, &c, &a, &json!({"kind": "schedule"}), None);
+        let bodies: Vec<&str> = built.input["commitments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap().split_once('>').unwrap().1)
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                "\nYou promised: Send the roadmap\n</item>",
+                "\nSam Stone promised you: Share the deck\n</item>",
+                "\nYou promised: Book the room\n</item>",
+            ]
+        );
     }
 
     #[test]
@@ -924,5 +1029,9 @@ mod tests {
         let ctx = built.conversation.as_ref().unwrap();
         assert_eq!(ctx.message_ids, ["m1", "m2"]);
         assert_eq!(built.sources.len(), 2);
+        assert!(
+            built.input.get("truncated").is_none(),
+            "a message given in the conversation does not count as missing elsewhere"
+        );
     }
 }

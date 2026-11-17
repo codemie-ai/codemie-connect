@@ -7,7 +7,7 @@
     "costUsd": 0.021,
     "delivered": [
       "today",
-      "notification"
+      "notification_queued"
     ],
     "durationMs": 3100,
     "model": "claude-haiku-4-5",

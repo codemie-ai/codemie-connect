@@ -982,6 +982,9 @@ impl Repository {
     pub fn claim(&mut self, at: i64) -> Result<Option<Job>> {
         self.claim_ready(at, true)
     }
+    /// The next due job. Reminders and notifications go first and automation runs last. Claude
+    /// work runs two at a time, of which at most one is an automation run, so a burst of
+    /// automations never holds up "Draft with AI" or a summary.
     pub fn claim_ready(&mut self, at: i64, allow_sync: bool) -> Result<Option<Job>> {
         let tx = self.db.transaction()?;
         // Ambiguous OS/network dispatch is never automatically repeated after a crash.
@@ -989,7 +992,7 @@ impl Repository {
         tx.execute("UPDATE jobs SET state='queued',body=json_set(body,'$.state','queued','$.leaseUntil',NULL) WHERE state='running' AND lease_until<?1",[at])?;
         let raw: Option<String> = tx
             .query_row(
-                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize','automation_run') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize','automation_run'))<2) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 ELSE 1 END,due_at LIMIT 1",
+                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize','automation_run') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize','automation_run'))<2) AND (json_extract(body,'$.kind')!='automation_run' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='automation_run')) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 WHEN json_extract(body,'$.kind')='automation_run' THEN 2 ELSE 1 END,due_at LIMIT 1",
                 params![at,allow_sync],
                 |r| r.get(0),
             )
@@ -2511,6 +2514,40 @@ mod tests {
         // Idempotent.
         drop(r);
         assert!(Repository::open(&path).is_ok());
+    }
+    #[test]
+    fn interactive_ai_jobs_are_claimed_before_automation_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&dir.path().join("db")).unwrap();
+        let at = now();
+        let queued = |kind: &str, key: &str, due: i64| {
+            let mut j = job_of(kind, key, "queued", json!({}));
+            j.due_at = due;
+            j
+        };
+        // A burst of automation runs, then a "Draft with AI" asked for later.
+        for n in 0..3 {
+            r.enqueue(&queued("automation_run", &format!("auto-{n}"), at - 60 + n))
+                .unwrap();
+        }
+        r.enqueue(&queued("ai_draft", "draft-0", at)).unwrap();
+        assert_eq!(r.claim(at).unwrap().unwrap().key, "draft-0");
+        assert_eq!(r.claim(at).unwrap().unwrap().key, "auto-0");
+        assert!(r.claim(at).unwrap().is_none(), "both AI slots are busy");
+        // Automation runs take one slot at most, so the other stays free for the user.
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&dir.path().join("db")).unwrap();
+        for n in 0..3 {
+            r.enqueue(&queued("automation_run", &format!("auto-{n}"), at - 60 + n))
+                .unwrap();
+        }
+        assert_eq!(r.claim(at).unwrap().unwrap().key, "auto-0");
+        assert!(
+            r.claim(at).unwrap().is_none(),
+            "one automation run at a time"
+        );
+        r.enqueue(&queued("ai_summarize", "summary-0", at)).unwrap();
+        assert_eq!(r.claim(at).unwrap().unwrap().key, "summary-0");
     }
     #[test]
     fn ai_claims_cap_at_two_runs_and_leave_capacity_for_due_reminders() {

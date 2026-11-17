@@ -6,13 +6,15 @@ use super::engine::stored;
 use super::rules::Automation;
 use crate::ai::command::RunSpec;
 use crate::ai::profiles::AiProfile;
-use crate::ai::stream::{AiError, ErrorClass, RunOutcome};
+use crate::ai::stream::{AiError, ErrorClass};
 use crate::workspace::{
     ai::{resolve_route, wire_name},
-    ai_jobs::{draft_key, provenance, stored_job, unchanged, MAIL_READ_DEADLINE},
+    ai_jobs::{
+        ai_draft_record, provenance, still_readable, stored_job, DraftOf, MAIL_READ_DEADLINE,
+    },
     models::*,
     new_job,
-    prompts::{self, FullTexts, PromptInput, Reading},
+    prompts::{self, FullTexts, Reading},
     repository::{record_selected, source_available, source_permitted, Repository},
     Core,
 };
@@ -37,6 +39,8 @@ struct RunLog {
     connection_id: Option<String>,
     profile: Option<String>,
     model: Option<String>,
+    /// What Claude reported the run cost, even when its answer could not be used.
+    cost_usd: Option<f64>,
     sources: Vec<Value>,
 }
 
@@ -52,6 +56,7 @@ impl RunLog {
             connection_id: None,
             profile: None,
             model: None,
+            cost_usd: None,
             sources: Vec::new(),
         }
     }
@@ -65,7 +70,7 @@ impl RunLog {
             "status": status,
             "startedAt": self.started_at,
             "durationMs": self.clock.elapsed().as_millis() as u64,
-            "costUsd": null,
+            "costUsd": self.cost_usd,
             "profile": self.profile,
             "model": self.model,
             "sources": self.sources,
@@ -146,65 +151,6 @@ fn trigger_source(
     r.record(kind, id, Some(&c.id), None)
         .ok()
         .filter(|s| source_available(s) && record_selected(s, w) && source_permitted(s, c))
-}
-
-/// What the reply draft is written from and against.
-struct ReplyTo<'a> {
-    workspace: &'a Workspace,
-    account: &'a Connection,
-    source: &'a Record,
-    conversation: &'a PromptInput,
-}
-
-impl ReplyTo<'_> {
-    /// The draft as the Inbox's own AI drafts are stored (`ai:<draftKey>`), with the
-    /// automation in its provenance; `None` when the conversation changed or went away while
-    /// Claude worked. Recipients are never part of it.
-    fn draft(
-        &self,
-        r: &Repository,
-        text: &str,
-        profile: &AiProfile,
-        outcome: &RunOutcome,
-        requested_model: Option<String>,
-        log: &RunLog,
-    ) -> Result<Option<Record>> {
-        let (w, c, source) = (self.workspace, self.account, self.source);
-        let readable = r
-            .record("message", &source.id, Some(&c.id), None)
-            .is_ok_and(|current| {
-                source_available(&current)
-                    && record_selected(&current, w)
-                    && source_permitted(&current, c)
-            });
-        if !readable || !unchanged(self.conversation, &prompts::draft_window(r, w, c, source)?) {
-            return Ok(None);
-        }
-        let mut made = provenance(profile, outcome, requested_model, self.conversation);
-        made["automationId"] = log.automation_id.clone().into();
-        made["runId"] = log.id.clone().into();
-        Ok(Some(Record {
-            id: format!("ai:{}", draft_key(source)),
-            kind: "draft".into(),
-            connection_id: Some(c.id.clone()),
-            workspace_id: Some(w.id.clone()),
-            source: source.source.clone(),
-            revision: id(),
-            updated_at: now(),
-            data: json!({
-                "text": text,
-                "questions": [],
-                "sourceId": source.id,
-                "sourceRevision": source.revision,
-                "draftKey": draft_key(source),
-                "conversationKey": self.conversation.conversation_key,
-                "channel": source.data["channel"],
-                "aiSuggested": true,
-                "options": null,
-                "provenance": made,
-            }),
-        }))
-    }
 }
 
 impl Core {
@@ -302,16 +248,18 @@ impl Core {
             cap_usd: a.cap_usd,
             staging_root: self.paths.ensure_staging()?,
         };
-        let (outcome, output) = self
-            .run_claude(&started, spec, &profile, &log.id, |answer| {
+        let (reported, answer) = self
+            .run_claude_reported(&started, spec, &profile, &log.id, |answer| {
                 prompts::parse_automation(answer, &handles, wants_draft)
             })
-            .await?;
-        log.model = outcome
-            .model
-            .clone()
-            .or(model.clone())
-            .or_else(|| profile.default_model.clone());
+            .await;
+        if let Some(o) = &reported {
+            log.cost_usd = o.cost_usd;
+            log.model = o.model.clone().or(model.clone());
+        }
+        let output = answer?;
+        let outcome = reported.ok_or_else(|| AiError::new(ErrorClass::Failed))?;
+        log.model = log.model.take().or_else(|| profile.default_model.clone());
 
         let mut r = self.repo()?;
         r.check_policy(
@@ -328,13 +276,23 @@ impl Core {
             }
         }
         let draft = match (&output.draft, &account, message, &built.conversation) {
-            (Some(text), Some(account), Some(source), Some(conversation)) => ReplyTo {
-                workspace: &w,
-                account,
-                source,
-                conversation,
+            (Some(text), Some(account), Some(source), Some(conversation)) => {
+                let of = DraftOf {
+                    workspace: &w,
+                    account,
+                    source,
+                    conversation,
+                };
+                // A conversation that changed (or went away) while Claude worked gets no draft.
+                if still_readable(&r, &of)? {
+                    let mut made = provenance(&profile, &outcome, model, conversation);
+                    made["automationId"] = log.automation_id.clone().into();
+                    made["runId"] = log.id.clone().into();
+                    Some(ai_draft_record(&of, text, &[], Value::Null, made))
+                } else {
+                    None
+                }
             }
-            .draft(&r, text, &profile, &outcome, model, log)?,
             _ => None,
         };
         let notification = if a.deliver.notify && r.settings()?.notifications {
@@ -353,7 +311,8 @@ impl Core {
         };
         let delivered: Vec<&str> = [
             (a.deliver.today, "today"),
-            (notification.is_some(), "notification"),
+            // Only queued here: what became of it is noted on the run as `notification`.
+            (notification.is_some(), "notification_queued"),
             (draft.is_some(), "draft"),
         ]
         .into_iter()
@@ -382,16 +341,16 @@ impl Core {
         Ok(DONE.into())
     }
 
-    async fn automation_route(
-        &self,
-        a: &Automation,
-    ) -> std::result::Result<(AiProfile, Option<String>), AiError> {
-        let settings = self
-            .repo()
-            .and_then(|r| r.settings())
-            .map_err(|_| AiError::new(ErrorClass::Failed))?;
+    /// The profile and model for this automation. A storage problem reading the settings keeps
+    /// its own code; only a Claude problem is reported as one.
+    async fn automation_route(&self, a: &Automation) -> Result<(AiProfile, Option<String>)> {
+        let settings = self.repo()?.settings()?;
         let ai = pinned(settings.ai, &a.ai);
-        resolve_route(&ai, &self.profiles.profiles().await, Purpose::Automation)
+        Ok(resolve_route(
+            &ai,
+            &self.profiles.profiles().await,
+            Purpose::Automation,
+        )?)
     }
 
     /// Ends the job with a `skipped` run that says why.
@@ -426,7 +385,7 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use crate::ai::command::RunSpec;
-    use crate::ai::fake::FakeRunner;
+    use crate::ai::fake::{FakeRunner, Gate};
     use crate::ai::stream::{AiError, ErrorClass, RunOutcome, Usage};
     use crate::workspace::ai::tests::{mutation, ready};
     use crate::workspace::ai_jobs::FakeGraph;
@@ -785,7 +744,7 @@ mod tests {
             d["output"]["items"],
             json!([{"text": "Answer Ann about the Q3 budget", "sourceId": "m1"}, {"text": "Invented source"}])
         );
-        assert_eq!(d["delivered"], json!(["today", "notification"]));
+        assert_eq!(d["delivered"], json!(["today", "notification_queued"]));
         assert!(d.get("error").is_none());
         // Today reads it from the snapshot.
         let snapshot = core.repo().unwrap().snapshot().unwrap();
@@ -971,9 +930,16 @@ mod tests {
     #[tokio::test]
     async fn failed_run_records_error_class_and_no_output() {
         let dir = tempfile::tempdir().unwrap();
-        let fake = Arc::new(FakeRunner::new(vec![Err(AiError::new(
-            ErrorClass::NeedsLogin,
-        ))]));
+        let unusable = answer(
+            json!({"title": "", "summary_markdown": "Nothing", "items": []}),
+            "claude-haiku-4-5",
+            900,
+            0.004,
+        );
+        let fake = Arc::new(FakeRunner::new(vec![
+            Err(AiError::new(ErrorClass::NeedsLogin)),
+            Ok(unusable),
+        ]));
         let core = test_core(dir.path(), fake.clone(), ready());
         seed(&core);
         save(&core, morning_brief(json!({"commitmentsNotes": true}))).await;
@@ -1002,6 +968,20 @@ mod tests {
         assert_eq!(ledger[0].data["status"], "needs_login");
         assert_eq!(ledger[0].data["refId"], jid.as_str());
 
+        // An answer that cannot be used still cost something: the run keeps what Claude reported.
+        let jid = run_now(&core, "auto-brief").await;
+        let failed = run_next(&core).await;
+        assert_eq!(failed.error_class.as_deref(), Some("invalid_output"));
+        let run = core
+            .repo()
+            .unwrap()
+            .record("automation_run", &jid, None, Some("personal"))
+            .unwrap();
+        assert_eq!(run.data["error"]["class"], "invalid_output");
+        assert_eq!(run.data["costUsd"], 0.004);
+        assert_eq!(run.data["model"], "claude-haiku-4-5");
+        assert!(run.data.get("output").is_none());
+
         // With no Claude chosen the run fails as needs_choice; no UI opens and Claude never runs.
         {
             let mut r = core.repo().unwrap();
@@ -1022,8 +1002,244 @@ mod tests {
         assert_eq!(run.data["error"]["class"], "needs_choice");
         assert_eq!(run.data["error"]["code"], "needs_choice");
         assert!(run.data.get("output").is_none());
-        assert_eq!(fake.calls().len(), 1);
-        assert_eq!(ai_runs(&core).len(), 1);
+        assert_eq!(fake.calls().len(), 2);
+        assert_eq!(ai_runs(&core).len(), 2);
+    }
+
+    /// Claims the only due job and runs it on a gated runner; `during` runs while Claude works.
+    async fn run_with(core: &Arc<Core>, gate: &Gate, during: impl FnOnce()) -> Job {
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        let id = claimed.id.clone();
+        let running = tokio::spawn(core.clone().run_claimed_job(claimed));
+        gate.started.notified().await;
+        during();
+        gate.release.notify_one();
+        running.await.unwrap();
+        job(core, &id)
+    }
+
+    #[tokio::test]
+    async fn a_conversation_that_changes_mid_run_gets_no_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, gate) = FakeRunner::gated(vec![Ok(reply_answer())]);
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), Arc::new(fake), ready(), graph.clone());
+        seed(&core);
+        ann_writes(&core, &graph).await;
+        // Ann edits her mail while Claude writes the reply.
+        let done = run_with(&core, &gate, || {
+            put(
+                &core,
+                mail(
+                    "m1",
+                    BASE,
+                    "Ann Lee",
+                    "ann@example.test",
+                    "Never mind, sorted.",
+                ),
+            )
+        })
+        .await;
+        assert_eq!(done.state, "succeeded");
+        let run = &runs(&core)[0];
+        assert_eq!(run.data["status"], "ok");
+        assert_eq!(run.data["delivered"], json!(["today"]));
+        assert!(run.data.get("draftId").is_none());
+        assert!(core
+            .repo()
+            .unwrap()
+            .record("draft", "ai:m1", Some(ACCT), Some("personal"))
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn an_account_switch_mid_run_stores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, gate) = FakeRunner::gated(vec![Ok(brief_answer())]);
+        let core = test_core(dir.path(), Arc::new(fake), ready());
+        seed(&core);
+        put(
+            &core,
+            mail(
+                "m1",
+                BASE,
+                "Ann Lee",
+                "ann@example.test",
+                "Can you send the Q3 numbers?",
+            ),
+        );
+        save(&core, morning_brief(json!({"needsReply": true}))).await;
+        let jid = run_now(&core, "auto-brief").await;
+        let done = run_with(&core, &gate, || {
+            let mut r = core.repo().unwrap();
+            let mut other = r.connection(ACCT).unwrap();
+            other.id = "acct-2".into();
+            other.account_key = "acct-2".into();
+            r.save_connection(&other).unwrap();
+            let mut s = r.settings().unwrap();
+            s.active_connection = Some("acct-2".into());
+            r.settings_update(&s).unwrap();
+        })
+        .await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "cancelled");
+        assert!(
+            runs(&core).is_empty(),
+            "another account's mail summary is never stored"
+        );
+        assert!(jobs_of(&core, "notification").is_empty());
+        assert_eq!(ai_runs(&core)[0].data["status"], "ok", "Claude did run");
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_run_of_an_automation_turned_off_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(brief_answer())]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        save(&core, morning_brief(json!({"commitmentsNotes": true}))).await;
+        // The 08:45 run was queued, then the user switched the automation off.
+        {
+            let mut r = core.repo().unwrap();
+            let policy = r.policy(Some("personal"), None).unwrap();
+            r.enqueue(&crate::workspace::new_job(
+                "automation_run",
+                "automation:auto-brief:1795000000".into(),
+                Some("personal".into()),
+                None,
+                now(),
+                policy,
+                json!({"automationId": "auto-brief", "title": "Morning brief",
+                    "trigger": {"kind": "schedule", "scheduledAt": 1_795_000_000}}),
+            ))
+            .unwrap();
+        }
+        core.request(mutation(
+            &core,
+            Operation::AutomationToggle,
+            json!({"id": "auto-brief", "enabled": false}),
+        ))
+        .await
+        .unwrap();
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded");
+        assert_eq!(
+            done.result.as_deref(),
+            Some("Skipped: The automation was turned off before it ran.")
+        );
+        let run = &runs(&core)[0];
+        assert_eq!(run.data["status"], "skipped");
+        assert_eq!(
+            run.data["trigger"],
+            json!({"kind": "schedule", "scheduledAt": 1_795_000_000})
+        );
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_teams_reply_draft_is_keyed_by_the_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(answer(
+            json!({"title": "Reply drafted for Sam", "summary_markdown": "Sam asks about 10:00.",
+                "items": [], "draft": "[Yes, 10:00 works / Sorry, I can't make 10:00]."}),
+            "claude-haiku-4-5",
+            1500,
+            0.002,
+        ))]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        save(
+            &core,
+            json!({"id": "auto-sam", "name": "Reply to Sam", "enabled": true,
+                "trigger": {"kind": "event", "event": "chat_from", "senders": ["Sam Ortiz"]},
+                "read": {}, "prompt": "Draft a short reply.",
+                "ai": {}, "deliver": {"today": true, "draftReply": true}}),
+        )
+        .await;
+        core.automations_after_sync().unwrap();
+        put(
+            &core,
+            Record {
+                id: "t1".into(),
+                kind: "message".into(),
+                connection_id: Some(ACCT.into()),
+                workspace_id: None,
+                source: "chat:19:ops".into(),
+                revision: "v1".into(),
+                updated_at: BASE,
+                data: json!({"channel": "chat", "conversationId": "chat:19:ops", "chatId": "19:ops",
+                    "title": "Ops", "from": "Sam Ortiz", "isMine": false, "at": BASE,
+                    "text": "Can you join at 10:00?"}),
+            },
+        );
+        core.automations_after_sync().unwrap();
+        let done = run_next(&core).await;
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        // The draft needs the message it answers, so the chat is read even though the Read set is empty.
+        assert!(fake.calls()[0].input["triggerConversation"][0]
+            .as_str()
+            .unwrap()
+            .contains("Can you join at 10:00?"));
+        let draft = core
+            .repo()
+            .unwrap()
+            .record("draft", "ai:chat:chat:19:ops", Some(ACCT), Some("personal"))
+            .expect("one Teams draft per chat");
+        assert_eq!(draft.data["draftKey"], "chat:chat:19:ops");
+        assert_eq!(draft.data["conversationKey"], "chat:chat:19:ops");
+        assert_eq!(draft.data["channel"], "chat");
+        assert_eq!(draft.data["sourceId"], "t1");
+        assert_eq!(draft.data["provenance"]["automationId"], "auto-sam");
+        assert_eq!(runs(&core)[0].data["draftId"], "ai:chat:chat:19:ops");
+    }
+
+    #[tokio::test]
+    async fn a_notification_in_quiet_hours_is_suppressed_and_noted_on_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(brief_answer())]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        {
+            // Quiet hours from an hour ago to an hour from now (UTC).
+            let at = |t: i64| {
+                chrono::DateTime::from_timestamp(t, 0)
+                    .unwrap()
+                    .format("%H:%M")
+                    .to_string()
+            };
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.quiet_start = at(now() - 3600);
+            s.quiet_end = at(now() + 3600);
+            r.settings_update(&s).unwrap();
+        }
+        save(&core, morning_brief(json!({"commitmentsNotes": true}))).await;
+        let jid = run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        let notice = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        assert_eq!(notice.kind, "notification");
+        let notice_id = notice.id.clone();
+        core.clone().run_claimed_job(notice).await;
+        let notice = job(&core, &notice_id);
+        assert_eq!(notice.state, "succeeded");
+        assert_eq!(
+            notice.result.as_deref(),
+            Some("Suppressed by app quiet/focus settings; visible in Activity")
+        );
+        let run = core
+            .repo()
+            .unwrap()
+            .record("automation_run", &jid, None, Some("personal"))
+            .unwrap();
+        assert_eq!(
+            run.data["delivered"],
+            json!(["today", "notification_queued"])
+        );
+        assert_eq!(run.data["notification"]["state"], "suppressed");
+        assert_eq!(
+            run.data["notification"]["message"],
+            "Quiet hours or focus were on, so it was not shown."
+        );
     }
 
     #[tokio::test]
@@ -1119,13 +1335,6 @@ mod tests {
             morning_brief(json!({"needsReply": true, "commitmentsNotes": true})),
         )
         .await;
-        let ok = run_now(&core, "auto-brief").await;
-        run_next(&core).await;
-        let failed = run_now(&core, "auto-brief").await;
-        run_next(&core).await;
-        ann_writes(&core, &graph).await;
-        let event = run_next(&core).await;
-
         let record = |id: &str| {
             core.repo()
                 .unwrap()
@@ -1144,6 +1353,16 @@ mod tests {
             }
             v
         };
+        let ok = run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        // Read before the next round delivers its notification, whose outcome depends on the
+        // time of day (quiet hours).
+        let ok_run = record(&ok);
+        let failed = run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        ann_writes(&core, &graph).await;
+        let event = run_next(&core).await;
+
         let mut draft = serde_json::to_value(
             core.repo()
                 .unwrap()
@@ -1161,7 +1380,7 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
         let update = std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1");
         for (name, value) in [
-            ("automation-run-ok.json", pin(record(&ok), 1)),
+            ("automation-run-ok.json", pin(ok_run, 1)),
             ("automation-run-failed.json", pin(record(&failed), 2)),
             ("automation-run-draft.json", draft),
         ] {
