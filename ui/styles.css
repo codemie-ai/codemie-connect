@@ -142,7 +142,7 @@ body::before {
   flex-direction: column;
   gap: 3px;
 }
-/* About + analytics sit at the very bottom of the sidebar column. */
+/* About sits at the very bottom of the sidebar column. */
 #sidebar-bottom-group { margin-top: auto; }
 #sidebar-divider { height: 1px; background: var(--border); margin: 6px 4px; }
 

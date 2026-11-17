@@ -22,7 +22,6 @@ import { createHomeView, applyHomeHeader } from './home-view.js';
 import { deriveHome, signInAction, autoHealthCheck, signedInDetail, connectionFromStatus } from './home-state.js';
 import { parseAgentList } from './agents-parse.js';
 import { createCommandLog } from './command-log.js';
-import { analyticsCommand } from './analytics-command.js';
 import { parseDisconnect, readDisconnected, markDisconnected, clearDisconnected } from './disconnect.js';
 
 const { invoke } = window.__TAURI__.core;
@@ -488,11 +487,11 @@ function dismissAppUpdateBanner() {
   hideAppUpdateBanner();
 }
 
-// ---- one-shot command action (proxy connect / analytics) ----
+// ---- one-shot command action (proxy connect) ----
 // The app has one terminal (PTY) slot, and guided setup holds it for as long
 // as a run is open -- including while it waits on a question the user walked
-// away from. Anything else that needs the slot (the analytics report, the
-// Claude Desktop connection) asks to stop that run first, instead of failing
+// away from. Anything else that needs the slot (the Claude Desktop
+// connection) asks to stop that run first, instead of failing
 // with the bridge's bare "PTY already active".
 async function runAction(title, cmd, returnView = 'home', hint) {
   if (setupRunning) {
@@ -657,15 +656,6 @@ async function startSignIn() {
   updateIdentityAuthStatus(st);
 }
 
-async function runAnalytics() {
-  const help = await bridge.runner.runCapture('codemie analytics --help').catch(() => null);
-  await runAction(
-    'Analytics report',
-    analyticsCommand(help?.stdout),
-    'home',
-    'Running automatically — no input needed.'
-  );
-}
 
 let updateAppRunning = false;
 
@@ -946,10 +936,6 @@ async function boot() {
     });
   });
   showView('home');
-  document.getElementById('sidebar-analytics').addEventListener('click', () => {
-    if (installRunning) return; // CSS blocks the pointer; this covers keyboard activation
-    runAnalytics();
-  });
 
   wizardBack.addEventListener('click', () => showView('home'));
   disconnectBtn.addEventListener('click', () => {
@@ -1084,7 +1070,6 @@ export function initLegacyTools() {
 export async function openLegacyTools(name = 'home') {
   await initLegacyTools();
   if (installRunning || setupRunning) return;
-  if (name === 'analytics') { runAnalytics(); return; }
   showView(name);
 }
 export const legacyToolsBusy = () => installRunning || setupRunning;

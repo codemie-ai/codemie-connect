@@ -17,7 +17,8 @@
 
 | Module | Responsibility |
 |---|---|
-| `app.js` | Controller: routing, shell (sidebar profile, sync status), actions, forms, notes autosave, live minute re-render, legacy tools mount |
+| `app.js` | Controller: routing, shell (sidebar profile, sync status), actions, forms, notes autosave, live minute re-render; delegates `cm-*` actions to `codemie/controller.js` |
+| `codemie/` | Settings → CodeMie (Overview, Profiles, Coding agents, Connected apps, Health), the guided setup sheet and the Today setup card: `service.js` (CLI state and every CLI/native call, logged in "What CodeMie ran"), `model.js` (pure derivations), `setup-session.js` (answers `codemie setup` through `setup-driver.js`), pure `view-*.js` renderers, `controller.js` |
 | `store.js` | Serialized mutations against native revisions; `escapeHtml` |
 | `calendar-model.js` | Pure calendar geometry: view days, coverage, event spans in the workspace zone, overlap columns, free slots |
 | `format.js` | Zone-aware date/time labels, initials, avatar colours (numbers < 1e11 are epoch seconds, else ms) |
@@ -27,7 +28,7 @@
 
 Visual values follow `prototypes/milestone-1/CODEMIE-DESIGN-SPEC.md` (extracted from `codemie-ui`): GeistMono UI, 28 px buttons, 32×16 switches, 16 px checkboxes, 8 px dialogs over a 50% scrim.
 
-The existing `renderer.js` / Engine / runner / PTY are mounted once, lazily, in Settings. Runtime preparation is requested only for CLI-dependent tools. Preserve the installer contracts and original CLI/profile/PATH ownership. Workspace storage failure leaves existing tools accessible; runtime failure leaves the local workspace usable.
+Settings → CodeMie is native (`ui/workspace/codemie/`). It runs the CLI through `run_capture` / `run_stream`, uses the PTY only for `codemie setup`, and asks Rust only for what the CLI cannot tell it (`read_codemie_profiles`, `codemie_url_check`, `codemie_org_defaults`, `codemie_app_states`, `open_agent_in_terminal`). The legacy `renderer.js` installer UI is no longer mounted in Settings; it serves smoke/probe mode and the storage-recovery page only. The CodeMie runtime downloads in the background on first launch. Preserve the installer contracts and original CLI/profile/PATH ownership. Workspace storage failure leaves existing tools accessible; runtime failure leaves the local workspace usable.
 
 Workspace presentation, source access and pinned-profile revisions are separate. Account-bound sources are canonical; workspace decisions remain local. Background jobs recheck account generation, policy, selected sources, claim attempt and current schedule/rule before acting. Calendar cursors and completed resource rounds commit together. Unknown send/OS outcomes are never blindly retried.
 

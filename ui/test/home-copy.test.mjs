@@ -26,12 +26,10 @@ test('shell: the nav and the command-log footer are no longer hidden', () => {
   assert.match(html, /id="sidebar-about" class="sidebar-item hidden"/);
 });
 
-test('shell: the analytics sidebar entry is unhidden and wired', () => {
-  assert.match(html, /<button id="sidebar-analytics" class="sidebar-item">/);
-  assert.match(
-    renderer,
-    /document\.getElementById\('sidebar-analytics'\)\.addEventListener\('click', \(\) => \{[\s\S]*?runAnalytics\(\);/
-  );
+// CLI usage analytics was removed; it comes back as a native page that renders CLI data.
+test('shell: there is no CLI usage analytics entry or handler', () => {
+  assert.doesNotMatch(html, /sidebar-analytics/);
+  assert.doesNotMatch(renderer, /runAnalytics|sidebar-analytics|analytics-command/);
 });
 
 test('wizard: step header reads SETUP STEPS', () => {
