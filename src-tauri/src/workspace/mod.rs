@@ -2034,7 +2034,7 @@ pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::erro
     let show = MenuItem::with_id(app, "show", "Open CodeMie Connect", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit CodeMie Connect", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
-    let mut tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .tooltip("CodeMie Connect")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -2062,9 +2062,17 @@ pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::erro
             }
             _ => {}
         });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
-    }
+    // The menu bar wants a monochrome template that AppKit tints for the light or dark
+    // bar, like the system icons; the colour app icon stays for other platforms' trays.
+    #[cfg(target_os = "macos")]
+    let tray = tray
+        .icon(tauri::include_image!("icons/tray-template.png"))
+        .icon_as_template(true);
+    #[cfg(not(target_os = "macos"))]
+    let tray = match app.default_window_icon() {
+        Some(icon) => tray.icon(icon.clone()),
+        None => tray,
+    };
     tray.build(app)?;
     Ok(())
 }
