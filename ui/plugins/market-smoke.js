@@ -3,8 +3,10 @@
 // the marketplace, installs every plugin it offers (making each frame at once, before the manager
 // has loaded it, as Settings does), waits for the plugin manager, then opens every
 // page, Settings section and card each plugin's frame adds, through the app's own routes, so each
-// one is drawn by its client half in its real sandboxed frame. What the frames reported (their page
-// errors, through the bridge) goes to Rust, which adds what the manager saw, decides and quits.
+// one is drawn by its client half in its real sandboxed frame, and last tells every frame a
+// meeting's page shows (Echo's call page), so their `call.*` slots draw for it. What the frames
+// reported (their page errors, through the bridge) goes to Rust, which adds what the manager saw,
+// decides and quits.
 //
 // Agreeing to a permission sheet without a person happens only here: every line of the sheet the
 // plugin offers, sent with that sheet's hash, as the consent dialog would after every box is ticked.
@@ -21,6 +23,12 @@ async function until(probe, timeoutMs, wait, every = 250) {
     await wait(every);
   }
 }
+
+/** The meeting the smoke shows the frames' call slots (a folder no meeting has). */
+export const SMOKE_CALL = Object.freeze({
+  name: '2026-01-05_090000-smoke-call', stamp: '2026-01-05_090000', title: 'Smoke call', started_at: '2026-01-05T09:00:00Z',
+  notes: true, profile: null, memo: false, threads: [], client: null,
+});
 
 /** The most host-half commands a smoke run keeps. */
 const MAX_CALLS = 400;
@@ -130,6 +138,26 @@ export async function runMarketSmoke({
           calls: callsOf(callsBefore),
         });
       }
+    }
+
+    // A meeting's page: every ready frame is told one shows, as Meetings tells them; each plugin's
+    // slots draw for it (the commands they ask for, the errors they report, the text they give).
+    const framed = report.plugins.filter(p => p.frame?.ready);
+    if (framed.length && typeof host.setCall === 'function') {
+      const before = new Map(framed.map(p => [p.id, host.status(p.id)?.errors.length || 0]));
+      const callsBefore = calls.length;
+      host.setCall(SMOKE_CALL);
+      await wait(settleMs);
+      const slots = host.callSlots();
+      for (const entry of framed) {
+        const { header = [], menu = [], minutes = [] } = slots.find(x => x.plugin === entry.id) || {};
+        entry.call = {
+          errors: (host.status(entry.id)?.errors || []).slice(before.get(entry.id)),
+          calls: calls.slice(callsBefore).filter(c => c.plugin === entry.id).map(({ command, ok, error }) => ({ command, ok, error })),
+          header, menu, minutes,
+        };
+      }
+      host.setCall(null);
     }
   } catch (e) {
     report.error = message(e);

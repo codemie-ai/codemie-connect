@@ -2172,3 +2172,52 @@ async fn a_failure_after_the_document_is_written_says_so() {
     // The record still names version 1: making notes again sets it right.
     assert_eq!(meeting(&e.core, "m1").docs[0].version, 1);
 }
+
+#[tokio::test]
+async fn plugins_hear_transcribed_then_minutes_written() {
+    use crate::workspace::plugin_data::tests::Heard;
+    let n = notes_env(vec![
+        outcome(
+            "# Sync\n\n## Summary\n\nThe pilot starts.\n\n## Decisions\n\n- Start the pilot\n",
+            json!([]),
+        ),
+        outcome(
+            "# Sync\n\n## Summary\n\nThe pilot starts in May.\n",
+            json!([]),
+        ),
+    ]);
+    let e = &n.e;
+    let heard = Arc::new(Heard::default());
+    e.core.set_event_sink(heard.clone());
+    downloaded(e, "m1").await;
+    let told = heard.of("transcribed");
+    assert_eq!(
+        told,
+        [json!({"call": FOLDER, "stamp": "2026-11-04_160426", "ok": true})]
+    );
+    assert!(heard.of("minutes_written").is_empty());
+    // The first main document: written, not rewritten, with its minutes.
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let told = heard.of("minutes_written");
+    assert_eq!(told.len(), 1, "{told:?}");
+    let w = &told[0];
+    assert_eq!(w["call"], FOLDER);
+    assert_eq!(w["id"], format!("call:{FOLDER}"));
+    assert_eq!(w["link"], format!("echo://call/{FOLDER}"));
+    assert_eq!(w["rewritten"], false);
+    assert_eq!(w["minutes"]["summary"], "The pilot starts.");
+    assert_eq!(w["minutes"]["decisions"], json!(["Start the pilot"]));
+    assert_eq!(w["revision"].as_str().unwrap().len(), 16);
+    // Made again: rewritten, a new revision.
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let told = heard.of("minutes_written");
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert_eq!(told[1]["rewritten"], true);
+    assert_ne!(told[1]["revision"], told[0]["revision"]);
+}

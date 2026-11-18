@@ -17,6 +17,10 @@
 //                 {type: 'open', url}   a link the user clicked (or window.open): the window asks
 //                                       the user, and opens https: and obsidian: addresses only
 //                 {type: 'height', px} {type: 'ready'} {type: 'error', message}
+//                 {type: 'slots', call, header, menu, minutes}   the text of its `call.*` slots for the
+//                                       meeting the window shows (`call`: its folder; '' when none)
+//                 {type: 'sheet', open}   its sheet opened or closed (the window lays the frame over
+//                                       itself while a page that isn't on screen shows one)
 //   contribution  {activities: [{id, label, badge}], sections: [{id, label, badge}], card,
 //                  panels: [{id, label}], palette: [{label, keywords}], widgets: [id]}
 //   reply         {ok, value} | {ok: false, error: {code, message}}   to the window's call
@@ -24,6 +28,10 @@
 //   event         {type: 'connect', plugin, host, theme, where, storage}   (posted with the port)
 //                 {type: 'theme', theme} {type: 'show', target, where} {type: 'palette', index}
 //                 {type: 'files', files: [{file, name, size}]}   files dropped on its page, as handles
+//                 {type: 'call', call, where}   the meeting the Meetings page shows, as Echo's call
+//                                       (`{name, stamp, title, started_at, notes, profile, memo,
+//                                       threads, client}`), or null
+//                 {type: 'slot', slot: 'call.menu', index}   the user chose that ⋯ item
 //                 {type: 'unload'}
 //   call          {method: 'draw', widget, data, size, theme}    a page widget → reply {value: html}
 //   reply         as above, to the frame's call
@@ -45,6 +53,9 @@ const SKILL_MAX = 256 * 1024;
 /** Files one drop hands a page. */
 const MAX_FILES = 50;
 const fileHandle = f => isObject(f) && exactly(f, ['file', 'name', 'size']) && text(f.file, 80) && text(f.name, 1024) && Number.isFinite(f.size) && f.size >= 0;
+/** A slot's text (a chip, a menu item, a line), and how many a plugin gives one slot. */
+const SLOT_TEXT = 300;
+const MAX_SLOT_ITEMS = 8;
 /** Ids of activities, sections, panels and widgets. */
 const ITEM_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
 
@@ -110,6 +121,12 @@ export function checkFromFrame(m) {
         case 'height': return exactly(m, ['v', 'id', 'kind', 'type', 'px']) && Number.isFinite(m.px) && m.px >= 0 && m.px <= 100000 ? m : null;
         case 'ready': return exactly(m, ['v', 'id', 'kind', 'type']) ? m : null;
         case 'error': return exactly(m, ['v', 'id', 'kind', 'type', 'message']) && text(m.message, TEXT) ? m : null;
+        case 'slots': {
+          const texts = v => Array.isArray(v) && v.length <= MAX_SLOT_ITEMS && v.every(x => text(x, SLOT_TEXT) && x.trim() !== '');
+          return exactly(m, ['v', 'id', 'kind', 'type', 'call', 'header', 'menu', 'minutes']) && text(m.call, HASH)
+            && texts(m.header) && texts(m.menu) && texts(m.minutes) ? m : null;
+        }
+        case 'sheet': return exactly(m, ['v', 'id', 'kind', 'type', 'open']) && typeof m.open === 'boolean' ? m : null;
         default: return null;
       }
     case 'contribution': {
@@ -134,6 +151,17 @@ function where(w) {
   return isObject(w) && exactly(w, ['view', 'section', 'route']) && text(w.view, HASH) && text(w.section, HASH) && text(w.route, HASH);
 }
 
+const CALL_KEYS = ['name', 'stamp', 'title', 'started_at', 'notes', 'profile', 'memo', 'threads', 'client'];
+const orNull = (v, max) => v === null || text(v, max);
+
+/** Echo's call, as a call page's slots get it: a meeting with a saved folder. */
+function call(c) {
+  return isObject(c) && exactly(c, CALL_KEYS) && CALL_KEYS.every(k => k in c)
+    && text(c.name, HASH) && c.name !== '' && !/[/\\]/.test(c.name) && text(c.stamp, HASH) && text(c.title, TEXT)
+    && orNull(c.started_at, 64) && typeof c.notes === 'boolean' && orNull(c.profile, NAME) && typeof c.memo === 'boolean'
+    && Array.isArray(c.threads) && c.threads.length <= MAX_ITEMS && c.threads.every(t => text(t, NAME)) && orNull(c.client, NAME);
+}
+
 /** A message from Connect's window, or null. */
 export function checkFromWindow(m) {
   if (!envelope(m)) return null;
@@ -150,6 +178,8 @@ export function checkFromWindow(m) {
             && where(m.where) ? m : null;
         case 'palette': return exactly(m, ['v', 'id', 'kind', 'type', 'index']) && Number.isInteger(m.index) && m.index >= 0 ? m : null;
         case 'files': return exactly(m, ['v', 'id', 'kind', 'type', 'files']) && Array.isArray(m.files) && m.files.length <= MAX_FILES && m.files.every(fileHandle) ? m : null;
+        case 'call': return exactly(m, ['v', 'id', 'kind', 'type', 'call', 'where']) && (m.call === null || call(m.call)) && where(m.where) ? m : null;
+        case 'slot': return exactly(m, ['v', 'id', 'kind', 'type', 'slot', 'index']) && m.slot === 'call.menu' && Number.isInteger(m.index) && m.index >= 0 && m.index < MAX_SLOT_ITEMS ? m : null;
         case 'unload': return exactly(m, ['v', 'id', 'kind', 'type']) ? m : null;
         default: return null;
       }

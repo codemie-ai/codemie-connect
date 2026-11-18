@@ -6,14 +6,15 @@
 // the transcript badge and the "Transcript & notes" section the calendar uses, Today's "From
 // your meetings" card, and the Make notes and Import dialogs' bodies. Pure: takes the snapshot
 // and the page's view state (`ctx.state.meetings`), plus what the controller read of meeting
-// folders (`ctx.reads(id)`) and the parsed glossary (`ctx.glossary`), and returns HTML.
+// folders (`ctx.reads(id)`) and the parsed glossary (`ctx.glossary`), and what plugins' call
+// slots say for the meeting shown (`ctx.callSlots`, text only), and returns HTML.
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { avatar, button, card, emptyState, select, toggle } from './ui.js';
 import { addDaysToKey, agoLabel, dayKey, durationLabel, formatDate, formatTime } from './format.js';
 import { taskStatus } from './tasks-model.js';
 import {
-  LANES, LEGEND, STATES, TABS, TAB_LABELS, legendOf, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, tasksByMeeting, transcriptsAllowed,
+  LANES, LEGEND, STATES, TABS, TAB_LABELS, callOfMeeting, legendOf, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, tasksByMeeting, transcriptsAllowed,
 } from './meetings-model.js';
 import {
   dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, notesTab, peopleTab, plural, PAUSED, pausedFix, saveFixAction, saveNextStep, tasksTab, tplChip, tplColor, transcriptTab,
@@ -29,8 +30,25 @@ function pageOf(s, ctx = {}) {
   const items = ctx.items || meetingItems(s, now);
   return {
     s, v, now, zone: s.settings.timeZone, items, byId: new Map(items.map(m => [m.id, m])), reads: ctx.reads || (() => ({})), glossary: ctx.glossary || null,
-    rules: rulesOf(s), tasksBy: tasksByMeeting(s),
+    rules: rulesOf(s), tasksBy: tasksByMeeting(s), callSlots: Array.isArray(ctx.callSlots) ? ctx.callSlots : [],
   };
+}
+
+/** What plugins' call slots say for meeting `m` (the ones for its folder only). */
+function slotsOf(p, m) {
+  const call = callOfMeeting(m);
+  return call ? p.callSlots.filter(x => x.call === call.name) : [];
+}
+
+/** A plugin's chips by the meeting's title (`call.header`), as text. */
+function pluginChips(slots) {
+  return slots.flatMap(x => x.header.map(t => `<span class="ws-mtg-plugin-chip" title="${e(`${x.pluginName}: ${t}`)}">${icon('puzzle')}<span>${e(t)}</span></span>`)).join('');
+}
+
+/** A plugin's lines while the meeting's notes are being made (`call.minutes`), as text. */
+function pluginLines(slots, m) {
+  if (m.run?.kind !== 'meeting_notes') return '';
+  return slots.flatMap(x => x.minutes.map(t => `<p class="ws-mtg-plugin-line" title="${e(x.pluginName)}">${icon('puzzle')}<span>${e(t)}</span></p>`)).join('');
 }
 
 /** "Today", "Yesterday", "Tomorrow" or null for a day further away. */
@@ -285,10 +303,12 @@ export function statusStrip(p, mc) {
   return `<div class="ws-mtg-strip">${t}${sep}${n}${sep}${k}${folder}</div>`;
 }
 
-function meetingMenu(p, mc) {
+function meetingMenu(p, mc, slots = []) {
   const { m } = mc;
   const id = { 'data-id': m.id };
   const view = mc.docs.find(x => x.id === p.v.docView?.[m.id]) || mc.main;
+  // A plugin's ⋯ items for this meeting (`call.menu`), each run in its own page.
+  const fromPlugins = slots.flatMap(x => x.menu.map((label, i) => [label, 'plugin-call-menu', { 'data-plugin-id': x.plugin, 'data-index': String(i) }, 'puzzle']));
   return menu(`meeting-${m.id}`, dotsSummary('More for this meeting'), [
     mc.r.folder ? ['Show folder in Finder', 'meeting-reveal', id, 'folder-open'] : null,
     mc.r.folder ? ['Copy folder path', 'meeting-copy-folder', id, 'copy'] : null,
@@ -296,6 +316,8 @@ function meetingMenu(p, mc) {
     ['available', 'downloaded', 'ready', 'failed'].includes(m.state) ? ['Make notes with…', 'meeting-make-notes', id, 'sparkles'] : null,
     m.ended && ['blocked', 'none', 'offline', 'available', 'downloaded'].includes(m.state) ? ['Import a transcript file…', 'meeting-import', id, 'upload'] : null,
     m.ev ? ['Show in calendar', 'meeting-calendar', id, 'calendar'] : null,
+    fromPlugins.length ? '-' : null,
+    ...fromPlugins,
     view ? '-' : null,
     view ? [`Delete “${view.name}”…`, 'doc-delete', { ...id, 'data-doc': view.id }, 'trash', true] : null,
   ]);
@@ -310,13 +332,14 @@ function detail(p, m) {
   const where = m.online ? 'Microsoft Teams' : d.location || 'In person';
   const counts = { notes: mc.docs.length > 1 ? mc.docs.length : null, transcript: mc.segments?.length || null, tasks: mc.tasks.length || null, files: null, people: mc.people.length || null };
   const panel = { notes: notesTab, transcript: transcriptTab, tasks: tasksTab, files: filesTab, people: peopleTab }[tab](p, mc);
+  const slots = slotsOf(p, m);
   return `<div class="ws-mtg-meeting" data-meeting="${e(m.id)}">
     <header class="ws-mtg-head">
       <div class="ws-mtg-head-row">${button('', { action: 'meeting-list-toggle', iconName: 'list', variant: 'ghost', size: 'sm', title: p.v.wide ? 'Show the meeting list' : 'Hide the meeting list — more room for notes', attrs: { 'aria-pressed': String(!p.v.wide) } })}<p class="ws-eyebrow">${rel ? `${e(rel)} · ` : ''}${e(longDay(m.start, p.zone))} · ${e(formatTime(m.start, p.zone))}–${e(formatTime(m.end, p.zone))} · ${e(durationLabel(minutes))} · ${e(where)}</p></div>
-      <div class="ws-mtg-head-title"><h2>${d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</h2><div class="ws-actions">${primaryAction(m, mc)}${meetingMenu(p, mc)}</div></div>
+      <div class="ws-mtg-head-title"><h2>${d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</h2><div class="ws-actions">${pluginChips(slots)}${primaryAction(m, mc)}${meetingMenu(p, mc, slots)}</div></div>
       ${peopleLine(p, mc)}
     </header>
-    ${statusStrip(p, mc)}
+    ${statusStrip(p, mc)}${pluginLines(slots, m)}
     <div class="ws-tabs ws-mtg-tabs" role="tablist" aria-label="Meeting">${TABS.map(id => `<button type="button" role="tab" data-action="meeting-tab" data-tab="${id}" aria-selected="${tab === id}">${TAB_LABELS[id]}${counts[id] ? `<span class="ws-tab-count">${counts[id]}</span>` : ''}</button>`).join('')}</div>
     <div class="ws-mtg-panel" data-panel="${tab}">${panel}</div>
   </div>`;
@@ -328,10 +351,20 @@ function emptyDetail(s) {
   return emptyState({ iconName: 'meetings', title: 'Pick a meeting', text: 'Its transcript, notes and tasks show here.' });
 }
 
+/** The meeting the Meetings page shows: the one picked, else the list's first. */
+function selectedOf(p) {
+  return p.byId.get(p.v.selected) || meetingRows(p.s, p.v.filter, p.v.q, p.v.showNone, p.now, p.items)[0] || null;
+}
+
+/** The meeting the Meetings page shows, as plugins' call slots get it (Echo's call), or null. */
+export function shownCall(s, ctx = {}) {
+  return callOfMeeting(selectedOf(pageOf(s, ctx)));
+}
+
 /** The Meetings page. */
 export function meetings(s, ctx = {}) {
   const p = pageOf(s, ctx);
-  const selected = p.byId.get(p.v.selected) || meetingRows(s, p.v.filter, p.v.q, p.v.showNone, p.now, p.items)[0] || null;
+  const selected = selectedOf(p);
   p.selectedId = selected?.id || null;
   return `<div class="ws-mtg-layout${p.v.wide ? ' ws-mtg-wide' : ''}">
     ${list(p)}

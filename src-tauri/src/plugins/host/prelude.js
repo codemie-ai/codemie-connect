@@ -246,6 +246,11 @@
     },
     http: { fetch: deferred('http.fetch'), askAddress: deferred('http.askAddress') },
     web: { read: deferred('web.read') },
+    m365: {
+      search: deferred('m365.search'),
+      mailThread: deferred('m365.mailThread'),
+      chat: deferred('m365.chat'),
+    },
     git: {
       info: deferred('git.info'),
       status: deferred('git.status'),

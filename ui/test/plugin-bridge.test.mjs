@@ -3,10 +3,10 @@
 // (ui/test/fixtures/plugins/hello/). DOM drawing itself is covered by the browser E2E.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createShim, startFrame, createStorage } from '../plugins/frame/shim.js';
+import { createShim, startFrame, createStorage, textOf } from '../plugins/frame/shim.js';
 import { checkFromFrame, checkFromWindow, V } from '../plugins/frame/messages.js';
 import { esc, setRow, setCard, sw, relDay, ago } from '../plugins/frame/kit.js';
-import { createPluginHost, internalRoute, openableUrl } from '../plugins/host.js';
+import { createPluginHost, internalRoute, openableUrl, callLink } from '../plugins/host.js';
 
 const HELLO = new URL('./fixtures/plugins/hello/', import.meta.url);
 const settle = (ms = 20) => new Promise(resolve => setTimeout(resolve, ms));
@@ -131,7 +131,7 @@ function wired({ invoke, confirmSkill } = {}) {
     querySelector: () => null,
     addEventListener() {},
   };
-  const events = { go: [], goOpts: [], notices: [], copies: [], opens: [], changes: 0 };
+  const events = { go: [], goOpts: [], notices: [], copies: [], opens: [], changes: 0, slots: 0, calls: [] };
   const host = createPluginHost({
     invoke: invoke || (async (cmd, args) => {
       calls.push([cmd, args]);
@@ -150,6 +150,9 @@ function wired({ invoke, confirmSkill } = {}) {
     onNotice: text => events.notices.push(text),
     onCopy: text => events.copies.push(text),
     onOpen: (url, name, id) => events.opens.push([url, name, id]),
+    onSlots: () => { events.slots++; },
+    onCall: (folder, id) => events.calls.push([folder, id]),
+    whereNow: () => ({ view: 'calls', section: '', route: '' }),
     ...(confirmSkill ? { confirmSkill } : {}),
   });
   host.mount({ appendChild() {} });
@@ -514,7 +517,7 @@ test('slots_take_echos_names_and_file_drops_register', async () => {
   ctx.slots.add('call.header', { id: 'chip', render: () => 'x' });
   for (const name of ['call.menu', 'call.minutes', 'thread.profile', 'client.profile']) ctx.slots.add(name, { id: 'a', render: () => '' });
   assert.throws(() => ctx.slots.add('nope', {}), /CodeMie Connect has no slot “nope”/);
-  assert.deepEqual(ctx.slots.list(), [], 'no slot is drawn yet');
+  assert.deepEqual(ctx.slots.list(), ['call.header', 'call.menu', 'call.minutes'], 'the slots a meeting\'s page draws');
   const dropped = () => {};
   ctx.onFileDrop(dropped);
   assert.deepEqual(shim.state.drops, [dropped]);
@@ -762,4 +765,136 @@ test('a_skill_is_added_only_after_connects_own_confirmation', async () => {
   await assert.rejects(ctx.claude.installSkill('twin-me', 'x'), /only on your click/);
   w.fw.win.navigator.userActivation.isActive = true;
   assert.equal(checkFromFrame({ v: V, id: 5, kind: 'call', method: 'skill', op: 'install', name: '../x', md: '' }), null);
+});
+
+const CALL = { name: '2026-11-04_160426-sync', stamp: '2026-11-04_160426', title: 'Sync', started_at: '2026-11-04T16:00:00Z', notes: true, profile: null, memo: false, threads: [], client: null };
+
+test('a_slots_html_becomes_one_line_of_text', () => {
+  assert.equal(textOf('<span class="kn-rel"><button title="a>b"><svg><path d="M1"/></svg> Minutes → Work &amp; co ▾</button></span>'), 'Minutes → Work & co ▾');
+  assert.equal(textOf('<p class="kn-then"><svg></svg><span>Then saved to <b>Work</b>, with a row.</span></p>'), 'Then saved to Work, with a row.');
+  assert.equal(textOf('<script>alert(1)</script><style>p{}</style>ok &#x2192; &#8599; &bogus;'), 'ok → ↗ &bogus;');
+  assert.equal(textOf(null), '');
+  assert.equal(textOf('x'.repeat(400)).length, 300);
+});
+
+test('call_slots_reach_the_window_as_text_and_a_chosen_item_runs_in_the_frame', async () => {
+  const seen = { after: [], runs: [] };
+  const t = await connected(ctx => {
+    ctx.slots.add('call.header', { id: 'chip', render: c => `<button class="kn-chip">${ctx.ui.esc(c.title)} → <b>Work</b></button>`, after: (box, c) => seen.after.push([box.innerHTML, c.name]) });
+    for (const id of ['open', 'save']) {
+      ctx.slots.add('call.menu', { label: () => (id === 'open' ? 'Open in Work' : 'Save to Knowledge…'), when: tt => tt.kind === 'call' && (id === 'save' || tt.call.notes), run: tt => seen.runs.push([id, tt]) });
+    }
+    ctx.slots.add('call.menu', { label: 'Broken', when: () => { throw new Error('when broke'); }, run: () => {} });
+    ctx.slots.add('call.minutes', { id: 'then', label: 'Knowledge', render: () => '<p>Then saved to <b>Work</b>.</p>' });
+  });
+  const slots = () => t.events().filter(m => m.type === 'slots');
+  assert.equal(slots().length, 1, 'no meeting yet: empty slots, once');
+  assert.deepEqual(slots()[0], { type: 'slots', call: '', header: [], menu: [], minutes: [] });
+  t.send({ kind: 'event', type: 'call', call: CALL, where: { view: 'calls', section: '', route: '' } });
+  await settle(20);
+  assert.deepEqual(t.ctx.where(), { view: 'calls', section: '', route: '' });
+  assert.deepEqual(slots().at(-1), { type: 'slots', call: CALL.name, header: ['Sync → Work'], menu: ['Open in Work', 'Save to Knowledge…'], minutes: ['Then saved to Work.'] });
+  assert.deepEqual(seen.after.at(-1), ['<button class="kn-chip">Sync → <b>Work</b></button>', CALL.name], 'after() gets a box with its HTML');
+  assert.ok(t.events().some(m => m.type === 'error' && /when broke/.test(m.message)), 'a broken item is told, the rest drawn');
+  // Drawn again with nothing new: not sent again.
+  const before = slots().length;
+  t.ctx.render();
+  await settle(20);
+  assert.equal(slots().length, before);
+  // The user chose the second ⋯ item the window listed: it runs here, with Echo's `t`.
+  t.send({ kind: 'event', type: 'slot', slot: 'call.menu', index: 1 });
+  await settle(20);
+  assert.deepEqual(seen.runs, [['save', { kind: 'call', call: CALL }]]);
+  // A meeting without notes: the item that needs them goes.
+  t.send({ kind: 'event', type: 'call', call: { ...CALL, notes: false }, where: { view: 'calls', section: '', route: '' } });
+  await settle(20);
+  assert.deepEqual(slots().at(-1).menu, ['Save to Knowledge…']);
+  t.send({ kind: 'event', type: 'slot', slot: 'call.menu', index: 0 });
+  await settle(20);
+  assert.equal(seen.runs.at(-1)[0], 'save', 'the index is of the items listed now');
+  // No meeting: empty again; a stale index runs nothing.
+  t.send({ kind: 'event', type: 'call', call: null, where: { view: 'meetings', section: '', route: '' } });
+  await settle(20);
+  assert.deepEqual(slots().at(-1), { type: 'slots', call: '', header: [], menu: [], minutes: [] });
+  t.send({ kind: 'event', type: 'slot', slot: 'call.menu', index: 0 });
+  await settle(20);
+  assert.equal(seen.runs.length, 2);
+  // A sheet tells the window it opened and closed.
+  t.ctx.ui.sheet('<p>Save</p>', { label: 'Save the minutes to Knowledge' });
+  t.ctx.ui.closeSheet();
+  await settle(20);
+  assert.deepEqual(t.events().filter(m => m.type === 'sheet'), [{ type: 'sheet', open: true }, { type: 'sheet', open: false }]);
+});
+
+test('the_window_tells_frames_the_meeting_shows_their_slots_and_lays_a_sheet_over_itself', async () => {
+  const w = await helloLoaded();
+  const runs = [];
+  w.shim.ctx.slots.add('call.header', { id: 'chip', render: c => `<b>${c.title}</b> chip` });
+  w.shim.ctx.slots.add('call.menu', { label: 'Save to Hello…', run: tt => runs.push(tt.call.name) });
+  w.host.setCall(CALL);
+  await settle(30);
+  assert.deepEqual(w.shim.state.call, CALL);
+  assert.deepEqual(w.shim.ctx.where(), { view: 'calls', section: '', route: '' }, 'a meeting\'s page is Echo\'s call page');
+  assert.deepEqual(w.host.callSlots(), [{ plugin: 'hello', pluginName: 'Hello', call: CALL.name, header: ['Sync chip'], menu: ['Save to Hello…'], minutes: [] }]);
+  assert.ok(w.events.slots >= 1);
+  // The same meeting again tells nobody; the user's choice runs in the frame.
+  const told = w.events.slots;
+  w.host.setCall({ ...CALL });
+  await settle(20);
+  assert.equal(w.events.slots, told);
+  w.host.runSlot('hello', 0);
+  w.host.runSlot('hello', 5);
+  w.host.runSlot('nobody', 0);
+  await settle(20);
+  assert.deepEqual(runs, [CALL.name]);
+  // Its page isn't on screen: no reveal; once it shows a sheet, the frame covers the window and may.
+  await assert.rejects(w.shim.ctx.system.reveal('/v', 'a.md'), /page on screen/);
+  w.shim.ctx.ui.sheet('<p>Save the minutes</p>', { label: 'Save' });
+  await settle(20);
+  assert.equal(w.el.hidden, false);
+  assert.equal(w.el.className, 'ws-plugin-frame ws-plugin-sheet');
+  assert.deepEqual([w.el.style.left, w.el.style.top, w.el.style.width, w.el.style.height], ['0px', '0px', '100%', '100%']);
+  assert.ok(await w.shim.ctx.system.reveal('/v', 'a.md'));
+  // An Echo link to a call opens that meeting; any other link is asked about as before.
+  w.shim.ctx.ui.sheet('<p>x</p>');
+  w.fw.win.open('echo://call/2026-11-04_160426-sync');
+  w.fw.win.open('echo://call/..%2F..%2Fetc');
+  await settle(20);
+  assert.deepEqual(w.events.calls, [['2026-11-04_160426-sync', 'hello']]);
+  w.shim.ctx.ui.closeSheet();
+  await settle(20);
+  assert.equal(w.el.hidden, true);
+  assert.equal(w.el.className, 'ws-plugin-frame');
+  w.fw.win.open('echo://call/x');
+  await settle(20);
+  assert.equal(w.events.calls.length, 1, 'not from a page that isn\'t on screen');
+  // Another meeting: the old slots go until the frame draws the new ones; none at all clears them.
+  w.host.setCall(null);
+  await settle(20);
+  assert.deepEqual(w.host.callSlots(), []);
+  assert.equal(w.shim.state.call, null);
+});
+
+test('the_schema_takes_a_call_its_slots_and_a_sheet_only_as_named', () => {
+  const where = { view: 'calls', section: '', route: '' };
+  const ok = m => checkFromWindow({ v: V, id: 0, kind: 'event', ...m });
+  assert.ok(ok({ type: 'call', call: CALL, where }));
+  assert.ok(ok({ type: 'call', call: null, where }));
+  assert.equal(ok({ type: 'call', call: { ...CALL, name: '../x' }, where }), null, 'a folder\'s own name only');
+  assert.equal(ok({ type: 'call', call: { ...CALL, extra: 1 }, where }), null);
+  const { client: _, ...noClient } = CALL;
+  assert.equal(ok({ type: 'call', call: noClient, where }), null);
+  assert.equal(ok({ type: 'call', call: { ...CALL, notes: 'yes' }, where }), null);
+  assert.ok(ok({ type: 'slot', slot: 'call.menu', index: 0 }));
+  assert.equal(ok({ type: 'slot', slot: 'call.header', index: 0 }), null);
+  assert.equal(ok({ type: 'slot', slot: 'call.menu', index: 99 }), null);
+  const fromFrame = m => checkFromFrame({ v: V, id: 0, kind: 'event', ...m });
+  assert.ok(fromFrame({ type: 'slots', call: 'x', header: ['a'], menu: [], minutes: [] }));
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: Array(9).fill('a'), menu: [], minutes: [] }), null);
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: ['<b>' + 'a'.repeat(300)], menu: [], minutes: [] }), null);
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: [' '], menu: [], minutes: [] }), null);
+  assert.ok(fromFrame({ type: 'sheet', open: true }));
+  assert.equal(fromFrame({ type: 'sheet', open: 1 }), null);
+  assert.equal(callLink('echo://call/2026-11-04_160426-sync'), '2026-11-04_160426-sync');
+  for (const bad of ['echo://call/', 'echo://call/a/b', 'echo://call/a%2Fb', 'echo://call/..', 'https://call/x', 'echo://thread/x']) assert.equal(callLink(bad), null, bad);
 });

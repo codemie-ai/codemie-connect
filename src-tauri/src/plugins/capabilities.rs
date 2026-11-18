@@ -55,7 +55,7 @@ pub const CATALOG: &[(&str, Support)] = &[
     ),
     (
         "events",
-        Support::Partial("Only meeting_soon, sources_changed and shared_changed are sent"),
+        Support::Partial("Only meeting_soon, minutes_written, transcribed, sources_changed and shared_changed are sent"),
     ),
     ("files", Support::Unsupported),
     ("work", Support::Supported),
@@ -63,10 +63,7 @@ pub const CATALOG: &[(&str, Support)] = &[
     ("scripts", Support::Unsupported),
     ("ai", Support::Unsupported),
     ("skills", Support::Supported),
-    (
-        "m365",
-        Support::Partial("Connect doesn't share your mail and chats with plugins yet"),
-    ),
+    ("m365", Support::Supported),
 ];
 
 pub fn support_of(key: &str) -> Option<Support> {
@@ -231,7 +228,7 @@ const EVENTS: &[(&str, &str)] = &[
     ("shared_changed", "a value its plugins share changes"),
 ];
 /** Events Echo defines that Connect never sends: it doesn't record calls. */
-const NOT_SENT: &[&str] = &["recording_started", "recording_stopped", "transcribed"];
+const NOT_SENT: &[&str] = &["recording_started", "recording_stopped"];
 /** What `m365.read` names mean. */
 const M365_READS: &[(&str, &str)] = &[("mail", "your Outlook mail"), ("chats", "Teams chats")];
 
@@ -668,7 +665,7 @@ mod tests {
             by("skills").text,
             "Add a skill to your own Claude Code, only when you click and confirm"
         );
-        assert!(matches!(by("m365").support, Support::Partial(_)));
+        assert_eq!(by("m365").support, Support::Supported);
         assert_eq!(
             by("m365").text,
             "Read your Outlook mail and Teams chats, never send"
@@ -687,9 +684,9 @@ mod tests {
         assert!(!echo.contains("doesn't have"), "{echo}");
         assert_eq!(
             by("events").text,
-            "Know when a call's minutes are written and your mail, chat or calendar change. Ask \
-             to hear about things Connect doesn't have: recording_started, recording_stopped, \
-             transcribed"
+            "Know when a call's transcript is ready, a call's minutes are written and your mail, \
+             chat or calendar change. Ask to hear about things Connect doesn't have: \
+             recording_started, recording_stopped"
         );
         assert_eq!(by("sessions").support, Support::Unsupported);
         // `skills` is `true` or an object; anything else can't be read.

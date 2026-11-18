@@ -1239,6 +1239,14 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .dark .ws-plugin-frame{color-scheme:dark}
 .light .ws-plugin-frame{color-scheme:light}
 .ws-plugin-frame[hidden]{display:none}
+/* A plugin's sheet opened from a meeting's page: its frame over the whole window, a modal (the
+   scrim is the frame's own); toasts stay above it. */
+.ws-plugin-layer:has(.ws-plugin-sheet:not([hidden])){z-index:950}
+/* What plugins' meeting slots say (text only): a chip by the title, a line while notes run. */
+.ws-mtg-plugin-chip{display:inline-flex;align-items:center;gap:4px;max-width:280px;height:24px;padding:0 8px;border:1px solid var(--ws-border);border-radius:12px;color:var(--ws-muted);font-size:12px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-mtg-plugin-chip svg{flex:none;width:12px;height:12px}
+.ws-mtg-plugin-line{display:flex;align-items:center;gap:6px;margin:8px 0 0;color:var(--ws-muted);font-size:12px;line-height:16px}
+.ws-mtg-plugin-line svg{flex:none;width:12px;height:12px}
 #workspace-app[data-route=plugin] .ws-main{overflow:hidden}
 .ws-page-plugin{max-width:none;padding:0;height:100%}
 .ws-plugin-page{height:100%;min-height:0}

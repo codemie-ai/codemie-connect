@@ -23,6 +23,7 @@ pub mod files;
 pub mod fs;
 pub mod hidden;
 pub mod http;
+pub mod m365;
 pub mod markdown;
 pub mod notify;
 pub mod settings;
@@ -367,6 +368,7 @@ impl HostServices for Services {
                 "fs.readMany" | "fs.walk" | "fs.search" => fs::call_async(me, p, &name, args).await,
                 "store.walk" => store::walk(me, p, args).await,
                 "web.read" => web::read(&me, &p, &args).await,
+                n if n.starts_with("m365.") => m365::call(&me, &p, n, &args).await,
                 "http.askAddress" => web::ask_address(&me, &p).await,
                 n if n.starts_with("git.") => git(me, p, n, args).await,
                 "system.pickFolder" => fs::pick_folder(&me, &p, &args).await,

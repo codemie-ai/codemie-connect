@@ -44,6 +44,8 @@ html.light{
 html,body{margin:0;height:100%}
 body{font-family:var(--font);font-size:13px;line-height:20px;color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased;overflow:auto}
 body[data-view=card]{background:transparent;overflow:hidden;height:auto}
+/* No page on screen: only a sheet may show, over Connect's window, so the frame is see-through. */
+body[data-view=none]{background:transparent}
 body[data-view=none] .cx-root{display:none}
 .cx-root{display:grid;grid-template-columns:minmax(0,1fr);min-height:100%;align-items:start}
 .cx-root:has(.cx-panel:not([hidden])){grid-template-columns:minmax(0,1fr) 320px}

@@ -199,14 +199,14 @@ pub(super) const MAIL_READ_DEADLINE: Duration = Duration::from_secs(12);
 
 /// `GET /me/messages/{id}?$select=uniqueBody`: the message's own text, without the quoted
 /// thread (which the run reads as separate messages).
-fn mail_body_url(provider_id: &str) -> String {
+pub(super) fn mail_body_url(provider_id: &str) -> String {
     let id: String = url::form_urlencoded::byte_serialize(provider_id.as_bytes()).collect();
     graph::endpoint(&format!("/me/messages/{id}?$select=uniqueBody"))
 }
 
 /// The text of a `uniqueBody` answer; HTML (when the text preference was not honoured) is
 /// turned into text. `None` when there is nothing usable.
-fn body_text(answer: &Value) -> Option<String> {
+pub(super) fn body_text(answer: &Value) -> Option<String> {
     let body = &answer["uniqueBody"];
     let content = body["content"].as_str()?;
     let html = body["contentType"]

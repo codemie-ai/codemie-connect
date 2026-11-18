@@ -26,7 +26,7 @@ import { createAutomationsController, notificationTarget } from './automations-c
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { newTasksView } from './tasks-model.js';
-import { meetings } from './view-meetings.js';
+import { meetings, shownCall } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
@@ -87,6 +87,8 @@ const state = {
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
 };
 let pluginHost = null;
+/** The meeting the Meetings page shows, as plugins' call slots get it (Echo's call), or null. */
+let pluginCall = null;
 let lastPluginTheme = '';
 const drawnWidgets = new Map();
 // Settings → CodeMie: the CLI state behind it, "What CodeMie ran", the guided-setup session
@@ -328,7 +330,7 @@ async function render() {
       : state.route === 'inbox' ? inbox(s, ctx)
         : state.route === 'automations' ? automations(s, ctx)
           : state.route === 'tasks' ? tasksPage(s, ctx)
-          : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary() })
+          : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [] })
           : state.route === 'plugin' ? pluginPageHtml()
             : settings(s, ctx);
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
@@ -364,6 +366,13 @@ async function render() {
     }
   }
   placeDraftPopover();
+  // Plugins' call slots follow the meeting the Meetings page shows (Echo's call page), told when
+  // it changes.
+  const call = state.route === 'meetings' ? shownCall(s, ctx) : null;
+  if (JSON.stringify(call) !== JSON.stringify(pluginCall)) {
+    pluginCall = call;
+    pluginHost?.setCall(call);
+  }
   showPluginView();
   if (state.route === 'today') drawPageWidgets(s);
   if (state.route === 'meetings') {
@@ -701,6 +710,7 @@ async function pluginAction(action, el) {
     case 'plugin-page': return routePlugin(id, el.dataset.activity);
     case 'plugin-go': return goHash(el.dataset.go);
     case 'plugin-palette': return pluginHost?.runPalette(id, Number(el.dataset.index));
+    case 'plugin-call-menu': return pluginHost?.runSlot(id, Number(el.dataset.index));
     case 'plugin-copy': {
       const text = heldText(snap(), el.dataset.id);
       if (text === null) return;
@@ -1201,6 +1211,15 @@ const meetingsSettingsUi = store && createMeetingsSettingsController({
     if (ref) await meetingsUi.handle('meeting-goto-line', { dataset: { id, t: ref } });
   },
 });
+
+/** Opens the meeting saved in folder `folder` (a plugin's `echo://call/<folder>` link), or says
+ *  Connect has no such meeting. */
+function openMeetingFolder(folder) {
+  const m = (snap().records || []).find(r => r.kind === 'meeting' && typeof r.data?.folder === 'string'
+    && r.data.folder.split('/').filter(Boolean).pop() === folder);
+  if (!m) return toast('Connect has no meeting saved in that folder.', 'error');
+  return openMeeting(m.id).catch(fail);
+}
 
 /** Opens a meeting on the Meetings page (`#/meetings/<id>/<tab>`; `line`: a transcript line). */
 function openMeeting(id, tab = 'notes', line = null) {
@@ -2383,13 +2402,16 @@ async function boot() {
     frameUrl,
     about: () => ({ name: 'CodeMie Connect', version: state.appVersion, engine: '1.0' }),
     theme: () => (document.documentElement.classList.contains('dark') ? 'dark' : 'light'),
-    whereNow: () => ({ view: state.route, section: state.route === 'settings' ? state.settingsTab : '', route: '' }),
+    // A meeting's page is Echo's call page (`calls`) for plugins.
+    whereNow: () => ({ view: state.route === 'meetings' && pluginCall ? 'calls' : state.route, section: state.route === 'settings' ? state.settingsTab : '', route: '' }),
     onChange: pluginsChanged,
     onGo: hash => { goHash(hash).catch(fail); },
     onNotice: (text, name) => toast(`${name}: ${text}`),
     onCopy: text => navigator.clipboard.writeText(text).then(() => toast('Copied.', 'success'), fail),
     onOpen: confirmPluginLink,
     confirmSkill: confirmPluginSkill,
+    onSlots: () => { if (state.route === 'meetings') pluginsChanged(); },
+    onCall: folder => openMeetingFolder(folder),
   }).mount(document.body);
   lastPluginTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
   pluginsUi.loadInstalled().catch(() => {

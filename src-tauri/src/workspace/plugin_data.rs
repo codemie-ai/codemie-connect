@@ -90,13 +90,13 @@ impl Core {
         }
     }
 
-    fn tell(&self, event: &str, payload: Value) {
+    pub(super) fn tell(&self, event: &str, payload: Value) {
         if let Some(sink) = self.events.get() {
             sink.emit(event, payload);
         }
     }
 
-    fn heard(&self, event: &str) -> bool {
+    pub(super) fn heard(&self, event: &str) -> bool {
         self.events.get().is_some_and(|s| s.hears(event))
     }
 

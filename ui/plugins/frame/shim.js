@@ -3,8 +3,10 @@
 // `ctx`, imports `client.js` and calls `apply(ctx)`. What the plugin adds (pages, Settings
 // sections, its card, panels, palette entries, page widgets) stays in the frame: the plugin draws
 // its own HTML here, and the window learns only ids and labels (`contribution`). Echo 0.10's
-// client members are here too: `slots` (Echo's names; none drawn yet), `onFileDrop`, `ui.sheet`,
-// and the page's route mirrored into the frame's own `location.hash` (`#<plugin>:<page>/<route>`),
+// client members are here too: `slots` (the call page's `call.header`, `call.menu` and
+// `call.minutes` drawn here for the meeting the Meetings page shows, and handed to the window as
+// text only), `onFileDrop`, `ui.sheet` (the window lays a frame whose page isn't on screen over
+// itself while it shows one), and the page's route mirrored into the frame's own `location.hash` (`#<plugin>:<page>/<route>`),
 // which a plugin reads as it does in Echo. The hash is changed with `history.replaceState`, never
 // by navigating: WebKit tells the window a frame loaded again after each fragment navigation.
 // `openEchoPanel` is left out (the spec's rule 3).
@@ -32,6 +34,31 @@ const SKINS = { obsidian: /^1\.0\.\d+$/ };
 export function skinFor(id, version) {
   const fits = SKINS[String(id)];
   return fits && fits.test(String(version ?? '')) ? `skins/${id}.css` : null;
+}
+
+/** The slots Connect's window draws (as text, on a meeting's page). */
+const DRAWN_SLOTS = ['call.header', 'call.menu', 'call.minutes'];
+/** A slot's text: at most this long, and this many of one slot. */
+const SLOT_TEXT = 300;
+const SLOT_ITEMS = 8;
+
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', middot: '·', mdash: '—', ndash: '–', hellip: '…', rarr: '→' };
+/** What a slot's HTML says, as one line of text (Connect's window shows words, never a plugin's
+ *  HTML): tags dropped, a few entities read, white space folded. */
+export function textOf(html) {
+  const text = String(html ?? '')
+    .replace(/<(style|script|svg|title)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    // A block's or a button's edge parts words; an inline tag doesn't.
+    .replace(/<\/?(?:p|div|br|li|ul|ol|h[1-6]|tr|td|th|button|section|header|footer)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi, ' ')
+    .replace(/<(?:[^>"']|"[^"]*"|'[^']*')*>/g, '')
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (all, name) => {
+      if (name[0] !== '#') return ENTITIES[name.toLowerCase()] ?? all;
+      const code = name[1] === 'x' || name[1] === 'X' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > SLOT_TEXT ? `${text.slice(0, SLOT_TEXT - 1)}…` : text;
 }
 
 /** A hash that names a plugin's page (`#<plugin>:<page>…`), as opposed to a place on this page. */
@@ -89,6 +116,9 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     calls: new Map(), nextId: 1, sent: '', renderQueued: false, height: -1,
     pendingItems: null, flushTimer: null, reported: new Set(), early: [],
     slots: new Map(), drops: [], sheet: null,
+    // The meeting the window's Meetings page shows (Echo's call), its slots' text as last sent,
+    // and the ⋯ items that text lists, in order.
+    call: null, slotsSent: '', menuShown: [],
   };
   let ctx = null;
   let graph = null;
@@ -241,6 +271,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     s.where = m.where;
     setTheme(m.theme);
     s.sent = '';
+    s.slotsSent = '';
     s.height = -1;
     if (s.applied) post({ kind: 'event', type: 'ready' });
     for (const text of s.reported) post({ kind: 'event', type: 'error', message: text });
@@ -265,6 +296,8 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       case 'show': s.target = m.target; s.where = m.where; mirrorHash(m.target); renderSoon(); return;
       case 'palette': return runPalette(m.index);
       case 'files': return dropFiles(m.files);
+      case 'call': s.call = m.call; s.where = m.where; renderSoon(); return;
+      case 'slot': return runMenuItem(m.index);
       case 'unload': return unload();
       default:
     }
@@ -345,8 +378,8 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
           if (!s.slots.has(name)) s.slots.set(name, []);
           s.slots.get(name).push(item);
         },
-        // The slots Connect draws: none yet.
-        list: () => [],
+        // The slots Connect draws: a meeting's chip, ⋯ items and the line while its notes run.
+        list: () => [...DRAWN_SLOTS],
       },
       onFileDrop: fn => {
         if (typeof fn !== 'function') throw new Error('ctx.onFileDrop needs a function');
@@ -485,6 +518,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     doc.body.appendChild(scrim);
     s.sheet = { scrim, box, onClose, back: doc.activeElement };
     patch(box, String(html ?? ''));
+    post({ kind: 'event', type: 'sheet', open: true });
     (box.querySelector?.(FOCUSABLE) || box).focus?.();
     return box;
   }
@@ -496,6 +530,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     if (!sheet) return;
     s.sheet = null;
     sheet.scrim.remove();
+    post({ kind: 'event', type: 'sheet', open: false });
     try { sheet.back?.focus?.(); } catch { /* it is gone */ }
     if (tell && sheet.onClose) {
       try {
@@ -555,7 +590,80 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     Promise.resolve().then(() => {
       s.renderQueued = false;
       renderNow();
+      drawSlots();
     });
+  }
+
+  /** One slot item's HTML for the call, or '' when it draws nothing or fails (told once). */
+  function slotHtml(name, item, call) {
+    if (typeof item?.render !== 'function') return '';
+    try {
+      return String(item.render(call) ?? '');
+    } catch (e) {
+      pageError(`Slot ${name}: ${errorOf(e).message}`);
+      return '';
+    }
+  }
+
+  /** The `call.*` slots for the meeting the window shows, drawn here and sent as text: each chip
+   *  (`call.header`, its `after` told with a box holding its HTML), each ⋯ item whose `when` holds,
+   *  and each line for while its notes run (`call.minutes`). Sent when it changes. */
+  function drawSlots() {
+    if (s.unloaded || !s.port) return;
+    const call = s.call;
+    const out = { call: call ? call.name : '', header: [], menu: [], minutes: [] };
+    const shown = [];
+    if (call) {
+      const t = { kind: 'call', call: { ...call } };
+      s.drawing = true;
+      try {
+        for (const item of s.slots.get('call.header') || []) {
+          const html = slotHtml('call.header', item, { ...call });
+          const text = textOf(html);
+          if (text && out.header.length < SLOT_ITEMS) out.header.push(text);
+          if (typeof item.after === 'function') {
+            const box = doc.createElement('div');
+            patch(box, html);
+            try { item.after(box, { ...call }); } catch (e) { pageError(`Slot call.header: ${errorOf(e).message}`); }
+          }
+        }
+        for (const item of s.slots.get('call.menu') || []) {
+          try {
+            if (typeof item.when === 'function' && !item.when(t)) continue;
+            const label = textOf(typeof item.label === 'function' ? item.label(t) : item.label);
+            if (label && typeof item.run === 'function' && out.menu.length < SLOT_ITEMS) {
+              out.menu.push(label);
+              shown.push(item);
+            }
+          } catch (e) {
+            pageError(`Slot call.menu: ${errorOf(e).message}`);
+          }
+        }
+        for (const item of s.slots.get('call.minutes') || []) {
+          const text = textOf(slotHtml('call.minutes', item, { ...call }));
+          if (text && out.minutes.length < SLOT_ITEMS) out.minutes.push(text);
+        }
+      } finally {
+        s.drawing = false;
+      }
+    }
+    s.menuShown = shown;
+    const json = JSON.stringify(out);
+    if (json === s.slotsSent) return;
+    s.slotsSent = json;
+    post({ kind: 'event', type: 'slots', ...out });
+  }
+
+  /** The user chose the `index`th ⋯ item the window listed for the meeting it shows. */
+  function runMenuItem(index) {
+    const item = s.menuShown[index];
+    if (!item || !s.call) return;
+    try {
+      const out = item.run({ kind: 'call', call: { ...s.call } });
+      if (out && typeof out.catch === 'function') out.catch(e => post({ kind: 'event', type: 'notice', text: errorOf(e).message }));
+    } catch (e) {
+      post({ kind: 'event', type: 'notice', text: errorOf(e).message });
+    }
   }
 
   function viewName(t) {
@@ -757,6 +865,8 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     s.palette = [];
     s.card = null;
     s.slots.clear();
+    s.call = null;
+    s.menuShown = [];
     s.drops = [];
     closeSheet(false);
     s.unloaded = true;

@@ -1274,6 +1274,136 @@ async fn knowledge_reads_a_web_page_from_the_address_typed_in_connects_box() {
 /// Knowledge over a real vault the developer names (`KN_MY_VAULT`, a copy: Knowledge may write its
 /// index there). Prints counts and timings only, never a page's title or text. Run by hand:
 /// `KN_MY_VAULT=<copy> cargo test --test echo_plugins my_vault -- --ignored --nocapture`.
+/// The vault's Markdown files whose text holds `needle`, by path in it.
+fn notes_holding(vault: &Path, needle: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut stack = vec![vault.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = e.path();
+            if e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|x| x == "md")
+                && std::fs::read_to_string(&path).is_ok_and(|t| t.contains(needle))
+            {
+                found.push(path.strip_prefix(vault).unwrap().display().to_string());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+#[tokio::test]
+async fn knowledge_saves_connects_meeting_minutes_into_a_vault() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let c = Connect::start(&dir, &[&described()]).await;
+    let vault = c.tmp.path().join("Team Wiki");
+    fixture_vault(&vault);
+    c.picker.next(&vault);
+    let id = c
+        .call("obsidian", "add", json!({"wait": true, "minutes": "auto"}))
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    c.call("obsidian", "default", json!({"id": id})).await;
+    // A meeting Connect saved, with its notes: Knowledge's past minutes and sample list it.
+    testing::signed_in(&c.core);
+    let meetings = c.tmp.path().join("Meetings");
+    let atlas = meetings.join("2026-11-18_093000-atlas-sync");
+    testing::saved_meeting(
+        &c.core,
+        "ev1",
+        "Atlas sync",
+        ("2026-11-18T09:30:00Z", "2026-11-18T10:15:00Z"),
+        &atlas,
+        "# Atlas sync\n\n## Summary\n\nThe beta ships in May.\n\n## Decisions\n\n- Ship the beta in May\n\n## Next steps\n\n- [ ] Ann Lee: draft the plan\n",
+    );
+    let past = c.call("obsidian", "past", json!({"id": id})).await;
+    assert_eq!(past["count"], 1, "{past}");
+    assert_eq!(past["first"][0]["call"], "2026-11-18_093000-atlas-sync");
+    assert_eq!(past["first"][0]["title"], "Atlas sync");
+    let sample = c.call("obsidian", "sample", json!({"id": id})).await;
+    assert!(
+        sample.to_string().contains("The beta ships in May"),
+        "{sample}"
+    );
+    // What the meeting's page asks (its chip and ⋯ items): the vault takes it by itself.
+    let k = c
+        .call(
+            "obsidian",
+            "call_knowledge",
+            json!({"call": {"name": "2026-11-18_093000-atlas-sync", "stamp": "2026-11-18_093000", "title": "Atlas sync",
+                            "started_at": "2026-11-18T09:30:00Z", "notes": true, "profile": null, "memo": false,
+                            "threads": [], "client": null}}),
+        )
+        .await;
+    assert_eq!(k["targets"][0]["id"], id.as_str(), "{k}");
+    assert_eq!(k["vaults"][0]["mode"], "auto");
+    // Saved by hand: the minutes' note in the vault.
+    let saved = c
+        .call(
+            "obsidian",
+            "save_minutes",
+            json!({"call": "2026-11-18_093000-atlas-sync", "vault": id}),
+        )
+        .await;
+    assert_ne!(saved["state"], "mismatch", "{saved}");
+    let notes = notes_holding(&vault, "The beta ships in May");
+    assert_eq!(notes.len(), 1, "{notes:?} {saved}");
+    assert!(
+        std::fs::read_to_string(vault.join(&notes[0]))
+            .unwrap()
+            .contains("Ship the beta in May"),
+        "{notes:?}"
+    );
+    assert_eq!(
+        c.call("obsidian", "past", json!({"id": id})).await["count"],
+        0,
+        "saved: not a past minute any more"
+    );
+    // A new meeting's notes are written: `minutes_written` saves them into the vault by itself.
+    let pricing = meetings.join("2026-11-19_100000-pricing");
+    testing::saved_meeting(
+        &c.core,
+        "ev2",
+        "Pricing",
+        ("2026-11-19T10:00:00Z", "2026-11-19T10:30:00Z"),
+        &pricing,
+        "# Pricing\n\n## Summary\n\nThe price stays until June.\n",
+    );
+    testing::minutes_written(&c.core, "ev2", false);
+    let mut written = Vec::new();
+    for _ in 0..100 {
+        written = notes_holding(&vault, "The price stays until June");
+        if !written.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        written.len(),
+        1,
+        "minutes_written saved the new meeting: {:?}",
+        lines_of("obsidian")
+    );
+    let logged = lines_of("obsidian");
+    assert!(
+        logged
+            .iter()
+            .all(|l| !l.contains("is not available in CodeMie Connect")
+                && !l.contains("minutes_written:")),
+        "{logged:?}"
+    );
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
+}
+
 #[tokio::test]
 #[ignore]
 async fn my_vault_reads_in_connect() {

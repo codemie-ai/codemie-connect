@@ -233,6 +233,18 @@ fn plugin_verdict(
             );
             why.extend(failed_calls(v).into_iter().map(|c| format!("{name}: {c}")));
         }
+        // A meeting's page (Echo's call page), its call slots drawn for it.
+        let call = &p["call"];
+        why.extend(
+            errors_of(call)
+                .into_iter()
+                .map(|e| format!("meeting page: page error: {e}")),
+        );
+        why.extend(
+            failed_calls(call)
+                .into_iter()
+                .map(|c| format!("meeting page: {c}")),
+        );
     }
     why.dedup();
     (if why.is_empty() { "pass" } else { "fail" }, why)
@@ -433,6 +445,20 @@ mod tests {
                 Box::new(|r, _, _| {
                     r["plugins"][1]["views"][0]["calls"] =
                         json!([{"command": "status", "ok": false, "error": "permission: no"}]);
+                }),
+            ),
+            (
+                "obsidian: meeting page: page error: Slot call.header: x is null",
+                Box::new(|r, _, _| {
+                    r["plugins"][2]["call"] = json!({"errors": ["Slot call.header: x is null"], "calls": [],
+                                                     "header": [], "menu": [], "minutes": []});
+                }),
+            ),
+            (
+                "obsidian: meeting page: its command “call_knowledge” failed: plugin_error: no",
+                Box::new(|r, _, _| {
+                    r["plugins"][2]["call"] = json!({"errors": [], "header": [], "menu": [], "minutes": [],
+                        "calls": [{"command": "call_knowledge", "ok": false, "error": "plugin_error: no"}]});
                 }),
             ),
             (

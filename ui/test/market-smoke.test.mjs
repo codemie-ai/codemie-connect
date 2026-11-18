@@ -4,7 +4,7 @@
 // (commands/plugin_smoke.rs); the native run is recorded in prototypes/milestone-2/VALIDATION.md.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runMarketSmoke, recordCalls } from '../plugins/market-smoke.js';
+import { runMarketSmoke, recordCalls, SMOKE_CALL } from '../plugins/market-smoke.js';
 
 /** Connect as the smoke sees it: plugins_request, the manager's state, the frames' host. */
 function fakeConnect({ refuse = {}, problems = {}, frames = {}, loadsAfter = 2 } = {}) {
@@ -160,4 +160,24 @@ test('each plugin’s frame is made right after its install, before the manager 
   assert.equal(by.obsidian.framedBeforeLoad, false, 'no frame was made for it');
   assert.equal(by.knowledge.framedBeforeLoad, false, 'never installed');
   assert.equal(report.error, null);
+});
+
+test('last, every ready frame is told a meeting shows, and what its call slots did is reported', async () => {
+  const c = fakeConnect({ frames: { obsidian: { activities: [{ id: 'kb' }], errors: [] }, github: { sections: [{ id: 'main' }], errors: [] } } });
+  const told = [];
+  const smokeCalls = [];
+  c.host.setCall = call => {
+    told.push(call);
+    if (!call) return;
+    // As a frame does: Knowledge asks its host half, then reports an error; GitHub has no slots.
+    smokeCalls.push({ plugin: 'obsidian', command: 'call_knowledge', ok: true, error: '' });
+    c.host.status('obsidian');
+  };
+  c.host.callSlots = () => [{ plugin: 'obsidian', pluginName: 'Knowledge', call: SMOKE_CALL.name, header: ['Knowledge'], menu: ['Save to Knowledge…'], minutes: [] }];
+  const report = await runMarketSmoke({ ...c, calls: smokeCalls, market: '/m', runId: 'run-9', ...quick });
+  assert.deepEqual(told, [SMOKE_CALL, null], 'shown, then taken away');
+  const by = Object.fromEntries(report.plugins.map(p => [p.id, p]));
+  assert.deepEqual(by.obsidian.call, { errors: [], calls: [{ command: 'call_knowledge', ok: true, error: '' }], header: ['Knowledge'], menu: ['Save to Knowledge…'], minutes: [] });
+  assert.deepEqual(by.github.call, { errors: [], calls: [], header: [], menu: [], minutes: [] });
+  assert.equal(by.telegram.call, undefined, 'no frame, no meeting page');
 });
