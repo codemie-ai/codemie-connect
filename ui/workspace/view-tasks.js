@@ -322,7 +322,7 @@ function drawer(p) {
         <span class="ws-task-field-label">Owner</span>
         <span class="ws-task-owner-field">${face(owner, 24)}${selectBox(`data-action="task-owner" data-id="${id}" aria-label="Owner"`, ownerOptions(p, r))}</span>
         <span class="ws-task-field-label">Due</span>
-        <div class="ws-task-due-field"><input type="date" class="ws-input" data-change="task-due" data-id="${id}" value="${e(d.due || '')}" aria-label="Due date">${dueChip(status === 'done' ? null : info)}<div class="ws-task-due-quick">${picks}</div></div>
+        <div class="ws-task-due-field"><input type="date" class="ws-input" data-commit="task-due" data-id="${id}" value="${e(d.due || '')}" aria-label="Due date">${dueChip(status === 'done' ? null : info)}<div class="ws-task-due-quick">${picks}</div></div>
       </div>
       <label class="ws-field"><span class="ws-field-label">Notes</span><textarea class="ws-textarea" rows="3" maxlength="20000" data-change="task-notes" data-id="${id}" placeholder="Links, context, what “done” means…">${e(d.notes || '')}</textarea></label>
       ${source}

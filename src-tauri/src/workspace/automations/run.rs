@@ -183,9 +183,16 @@ impl Core {
         if !a.enabled && log.trigger["kind"] != "manual" {
             return self.commit_skipped(job, log, "The automation was turned off before it ran.");
         }
-        let (w, account, source) = {
+        let (w, account, source, me) = {
             let r = self.repo()?;
             let w = r.workspace(PERSONAL)?;
+            // Who "me" is, for whose tasks are whose, also when the run reads nothing from Microsoft.
+            let me = r
+                .settings()?
+                .active_connection
+                .and_then(|id| r.connection(&id).ok())
+                .map(|c| self.me_alias(&c))
+                .unwrap_or_default();
             let account = if reads_microsoft(a, &log.trigger) {
                 Some(signed_in(&r, &w)?)
             } else {
@@ -194,7 +201,7 @@ impl Core {
             let source = account
                 .as_ref()
                 .and_then(|c| trigger_source(&r, &w, c, &log.trigger));
-            (w, account, source)
+            (w, account, source, me)
         };
         log.connection_id = account.as_ref().map(|c| c.id.clone());
         if log.trigger["sourceId"].is_string() && source.is_none() {
@@ -233,6 +240,7 @@ impl Core {
             account: account.as_ref(),
             source: source.as_ref(),
             draft: wants_draft,
+            me: &me,
         };
         let built = context::build(&*self.repo()?, &run, &reading)?;
         log.sources = built.sources.iter().map(Source::to_json).collect();

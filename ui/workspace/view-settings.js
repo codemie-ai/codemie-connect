@@ -2,7 +2,7 @@
 import { escapeHtml as e } from './store.js';
 import { icon, microsoftLogo, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, badge, button, card, emptyState, field, select, settingRow, toggle, textInput, spinner } from './ui.js';
-import { records, syncRunning, sourceCounts, chatCatalog, connectionState } from './selectors.js';
+import { records, syncRunning, sourceCounts, chatCatalog, connectionState, tasksDueJob } from './selectors.js';
 import { calendarCatalog } from './calendar-model.js';
 import { formatDateTime, agoLabel } from './format.js';
 import { aiPanel } from './settings-ai.js';
@@ -270,6 +270,8 @@ function privacyPanel(s) {
 // ---------------------------------------------------------------- Activity
 
 const JOB_LABEL = { sync: 'Microsoft sync', reminder: 'Reminder', notification: 'Critical alert', ai_draft: 'AI reply draft', calendar_window: 'Calendar period', automation_run: 'Automation run' };
+/** What a job is called in Activity. */
+export const jobLabel = job => (tasksDueJob(job) ? 'Tasks due today' : JOB_LABEL[job.kind] || job.kind);
 const JOB_TONE = { succeeded: 'success', failed: 'error', blocked: 'warning', cancelled: 'neutral', queued: 'info', running: 'info' };
 
 function activityPanel(s) {
@@ -277,7 +279,7 @@ function activityPanel(s) {
   const jobs = s.jobs.slice(0, 80);
   return card({
     title: 'Background work', iconName: 'activity',
-    body: jobs.length ? `<div class="ws-rows">${jobs.map(j => `<div class="ws-row">${badge(j.state, JOB_TONE[j.state] || 'neutral')}<div class="ws-row-main"><strong>${e(JOB_LABEL[j.kind] || j.kind)}</strong><span>${e(j.result || `Scheduled ${formatDateTime(j.dueAt, zone)}`)}</span></div><time class="ws-muted">${e(formatDateTime(j.dueAt, zone))}</time>${['queued', 'running'].includes(j.state) ? button('Cancel', { action: 'job-cancel', variant: 'ghost', attrs: { 'data-id': j.id } }) : ['failed', 'blocked'].includes(j.state) && !['notification', 'send', 'reminder'].includes(j.kind) ? button('Retry', { action: 'job-retry', attrs: { 'data-id': j.id } }) : ''}</div>`).join('')}</div>`
+    body: jobs.length ? `<div class="ws-rows">${jobs.map(j => `<div class="ws-row">${badge(j.state, JOB_TONE[j.state] || 'neutral')}<div class="ws-row-main"><strong>${e(jobLabel(j))}</strong><span>${e(j.result || `Scheduled ${formatDateTime(j.dueAt, zone)}`)}</span></div><time class="ws-muted">${e(formatDateTime(j.dueAt, zone))}</time>${['queued', 'running'].includes(j.state) ? button('Cancel', { action: 'job-cancel', variant: 'ghost', attrs: { 'data-id': j.id } }) : ['failed', 'blocked'].includes(j.state) && !['notification', 'send', 'reminder'].includes(j.kind) ? button('Retry', { action: 'job-retry', attrs: { 'data-id': j.id } }) : ''}</div>`).join('')}</div>`
       : emptyState({ iconName: 'activity', title: 'No background work yet', text: 'Sync, reminders and drafts are recorded here.' }),
   });
 }

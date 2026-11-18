@@ -2001,3 +2001,37 @@ async fn contract_fixtures_match_the_real_meetings() {
     crate::plugins::testkit::contract_fixture("meeting-transcript.json", &transcript);
     crate::plugins::testkit::contract_fixture("meeting-files.json", &files);
 }
+
+/// The background round also runs the due-today reminder (Task 2), and the transcript checks of
+/// the same round still go out.
+#[tokio::test]
+async fn the_round_reminds_of_tasks_due_today_and_still_checks_transcripts() {
+    let e = env();
+    // Wed 18 Nov 2026, 10:00 in Kyiv.
+    let at = 1_794_988_800;
+    {
+        let mut r = e.core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.notifications = true;
+        r.settings_update(&s).unwrap();
+        crate::workspace::tasks::task_save(
+            &mut r,
+            "personal",
+            &json!({"id": "t1", "text": "Send the deck", "owner": "You", "due": "2026-11-18"}),
+            at,
+        )
+        .unwrap();
+    }
+    put(
+        &e.core,
+        event("m1", SYNC, &rfc(at - 2700), &rfc(at - 900), json!({})),
+    );
+    meetings_round_at(&e.core, at).unwrap();
+    let reminders: Vec<Job> = jobs(&e.core, "notification")
+        .into_iter()
+        .filter(|j| j.key == "tasks_due:2026-11-18")
+        .collect();
+    assert_eq!(reminders.len(), 1);
+    assert_eq!(reminders[0].payload["title"], "1 task due today");
+    assert_eq!(jobs(&e.core, "transcript_check").len(), 1);
+}

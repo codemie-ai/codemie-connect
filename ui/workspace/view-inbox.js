@@ -3,7 +3,7 @@
 import { escapeHtml as e } from './store.js';
 import { icon, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, badge, button, emptyState, segmented, checkbox, select, textArea } from './ui.js';
-import { LANES, laneLabel, visibleMessages, decisions, connectionState, messageTitle, conversation, can, collapseChats, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryFor, summaryJob, records } from './selectors.js';
+import { LANES, laneLabel, visibleMessages, decisions, connectionState, messageTitle, conversation, can, collapseChats, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryFor, summaryJob, records, tasksDueJob } from './selectors.js';
 import { formatDateTime, relativeAge } from './format.js';
 import { listTitle } from './view-today.js';
 import {
@@ -371,5 +371,5 @@ function decisionList(pending, zone) {
   const label = { sync: 'Refresh Microsoft sources', reminder: 'Reminder', notification: 'Critical alert', calendar_window: 'Calendar period' };
   return `<div class="ws-inbox-items">${pending.map(r => r.kind === 'action'
     ? `<div class="ws-decision">${badge(r.data.state.replace('_', ' '), r.data.state === 'prepared' ? 'info' : 'warning')}<div><strong>${e(r.data.review?.title || 'Prepared action')}</strong><p>${e(r.data.message || 'Review before it expires.')}</p></div>${button('Review', { action: 'action-detail', variant: 'primary', attrs: { 'data-id': r.id } })}</div>`
-    : `<div class="ws-decision">${badge(r.state, r.state === 'failed' ? 'error' : 'warning')}<div><strong>${e(label[r.kind] || r.kind)}</strong><p>${e(r.result || '')}</p><small class="ws-muted">${e(formatDateTime(r.dueAt, zone))}</small></div>${['notification', 'send', 'reminder'].includes(r.kind) ? button('Activity', { action: 'settings-tab', attrs: { 'data-tab': 'activity' } }) : button('Retry', { action: 'job-retry', attrs: { 'data-id': r.id } })}</div>`).join('')}</div>`;
+    : `<div class="ws-decision">${badge(r.state, r.state === 'failed' ? 'error' : 'warning')}<div><strong>${e(tasksDueJob(r) ? 'Tasks due today' : label[r.kind] || r.kind)}</strong><p>${e(r.result || '')}</p><small class="ws-muted">${e(formatDateTime(r.dueAt, zone))}</small></div>${['notification', 'send', 'reminder'].includes(r.kind) ? button('Activity', { action: 'settings-tab', attrs: { 'data-tab': 'activity' } }) : button('Retry', { action: 'job-retry', attrs: { 'data-id': r.id } })}</div>`).join('')}</div>`;
 }

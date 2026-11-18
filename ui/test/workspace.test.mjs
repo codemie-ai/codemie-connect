@@ -13,7 +13,7 @@ import { attentionMessages, messageTitle, connectionState, decisions, sourceCoun
 import { snoozeUntil, filteredMessages, inbox } from '../workspace/view-inbox.js';
 import { today, todayModel } from '../workspace/view-today.js';
 import { calendar, periodTitle, eventDetails } from '../workspace/view-calendar.js';
-import { settings } from '../workspace/view-settings.js';
+import { settings, jobLabel } from '../workspace/view-settings.js';
 import { renderShell, NAV } from '../workspace/shell.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from '../workspace/boot.js';
 import { controlSelector, soleMatch } from '../workspace/ui.js';
@@ -604,7 +604,9 @@ test('task drawer shows the meeting quote with a link to the transcript line', (
   // Status, owner from the meeting's people first, due with quick picks, notes, history.
   assert.match(drawer, /data-action="task-move" data-id="task-legal" data-col="todo" aria-pressed="true"/);
   assert.match(drawer, /<optgroup label="In this meeting"><option value="jordan.lee@example.test">Jordan Lee<\/option>[^]*?<option value="sam.okafor@example.test" selected>Sam Okafor<\/option>[^]*?<option value="taylor.morgan@example.test">Taylor Morgan \(you\)<\/option><\/optgroup><optgroup label="Everyone else">/);
-  assert.match(drawer, /data-change="task-due"[^>]*value="2026-11-15"/);
+  // A typed date saves when the field is left (blur or Enter), not on every finished segment.
+  assert.match(drawer, /data-commit="task-due"[^>]*value="2026-11-15"/);
+  assert.doesNotMatch(drawer, /data-change="task-due"/);
   for (const [label, day] of [['Today', '2026-11-18'], ['Tomorrow', '2026-11-19'], ['Friday', '2026-11-20'], ['Next week', '2026-11-23'], ['No date', '']]) {
     assert.match(drawer, new RegExp(`data-action="task-due-pick" data-id="task-legal" data-value="${day}">${label}<`), label);
   }
@@ -645,4 +647,20 @@ test('dismissed tasks are listed and Restore puts them back in To review', async
   await ctl.handle('task-restore', { dataset: { id: 'task-dashboard' }, closest: () => null });
   assert.equal(calls[0][0], 'task_save');
   assert.deepEqual([calls[0][1].id, calls[0][1].status, calls[0][1].log], ['task-dashboard', 'review', 'Restored']);
+});
+
+test('Activity and the decisions call the due-today reminder by its name, not a critical alert', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const now = Math.floor(Date.now() / 1000);
+  const job = (id, key, state, result) => ({ id, workspaceId: 'personal', connectionId: null, kind: 'notification', key, state, dueAt: now - 60, leaseUntil: null, attempts: 1, policy: null, payload: { title: '2 tasks due today', route: 'tasks' }, result });
+  s.jobs.push(job('due-1', 'tasks_due:2026-11-18', 'succeeded', 'OS submission requested'), job('crit-1', 'critical:i1:e1:0', 'succeeded', 'Shown'));
+  assert.equal(jobLabel(s.jobs.find(j => j.id === 'due-1')), 'Tasks due today');
+  assert.equal(jobLabel(s.jobs.find(j => j.id === 'crit-1')), 'Critical alert');
+  assert.equal(jobLabel({ kind: 'reminder', key: 'schedule-1:1795000000' }), 'Reminder');
+  const activity = settings(s, ctx({ settingsTab: 'activity' }));
+  assert.match(activity, /<strong>Tasks due today<\/strong><span>OS submission requested<\/span>/);
+  assert.match(activity, /<strong>Critical alert<\/strong><span>Shown<\/span>/);
+  s.jobs.push(job('due-2', 'tasks_due:2026-11-19', 'failed', 'OS notification submission failed.'));
+  const decisions = inbox(s, ctx({ lane: 'decisions' }));
+  assert.match(decisions, /<strong>Tasks due today<\/strong><p>OS notification submission failed\.<\/p>/);
 });

@@ -999,7 +999,18 @@ const tasksUi = store && createTasksController({
   state, snap, mutate, render, openModal, toast,
   openMeeting: (id, tab, line) => openMeeting(id, tab, line),
   openMessage: id => handle('open-message', { dataset: { id } }),
-  focus: selector => root.querySelector(selector)?.focus({ preventScroll: true }),
+  // The first of the selectors that finds a control takes focus. The page scrolls to it only for
+  // keyboard focus: a click (Accept, Delete) doesn't make the board jump.
+  focus: selectors => {
+    for (const selector of [].concat(selectors)) {
+      const el = root.querySelector(selector);
+      el?.focus({ preventScroll: true });
+      if (el && document.activeElement === el) {
+        if (el.matches(':focus-visible')) el.scrollIntoView({ block: 'nearest' });
+        return;
+      }
+    }
+  },
   setPref: setLocalPref,
 });
 if (tasksUi) {
@@ -1760,19 +1771,49 @@ document.addEventListener('mousedown', ev => {
 window.addEventListener('resize', placeDraftPopover);
 document.addEventListener('scroll', placeDraftPopover, true);
 
-// Tasks: Escape closes an open ⋯ menu, then quick add, then the drawer; Enter adds a quick task.
+// ⋯ and the other ws-menu menus: one open at a time; a click anywhere else closes it, and so
+// does Escape, which puts focus back on its button.
+document.addEventListener('toggle', ev => {
+  const menu = ev.target;
+  if (!menu.matches?.('details.ws-menu') || !menu.open) return;
+  for (const other of document.querySelectorAll('details.ws-menu[open]')) if (other !== menu) other.removeAttribute('open');
+}, true);
+document.addEventListener('click', ev => {
+  for (const menu of document.querySelectorAll('details.ws-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
+}, true);
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape' || ev.isComposing) return;
+  const menu = document.querySelector('details.ws-menu[open]');
+  if (!menu || (modalOpen() && !menu.closest('.ws-modal'))) return;
+  ev.preventDefault();
+  ev.stopImmediatePropagation();
+  menu.removeAttribute('open');
+  menu.querySelector('summary')?.focus();
+}, true);
+
+// Tasks: Escape closes quick add, then the drawer; Enter adds a quick task or leaves the drawer's
+// title or typed due date (which then saves).
 document.addEventListener('keydown', ev => {
   if (!ready || state.route !== 'tasks' || modalOpen() || sheetOpen() || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-  const menu = ev.key === 'Escape' && root.querySelector('details.ws-menu[open]');
-  if (menu) {
+  const field = document.activeElement?.closest?.('#workspace-app') ? document.activeElement : null;
+  if (ev.key === 'Enter' && !ev.isComposing && ev.keyCode !== 229 && field?.dataset?.commit) {
     ev.preventDefault();
-    menu.removeAttribute('open');
-    menu.querySelector('summary')?.focus();
+    field.blur();
     return;
   }
-  // A drawer field being edited saves (on its change) before the drawer closes.
-  if (ev.key === 'Escape' && document.activeElement?.dataset?.change) document.activeElement.blur();
+  // A drawer field being edited saves (on its change or when it is left) before the drawer closes.
+  if (ev.key === 'Escape' && (field?.dataset?.change || field?.dataset?.commit)) field.blur();
   tasksUi.key(ev).catch(fail);
+});
+
+// A field that saves when it is left (the drawer's typed due date): one save, with what it holds.
+document.addEventListener('focusout', ev => {
+  const el = ev.target;
+  if (!el.dataset?.commit || !el.closest?.('#workspace-app')) return;
+  handle(el.dataset.commit, el).catch(err => {
+    fail(err);
+    render().catch(() => {});
+  });
 });
 
 document.addEventListener('keydown', ev => {

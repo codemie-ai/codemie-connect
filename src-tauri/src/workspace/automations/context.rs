@@ -6,9 +6,11 @@
 use super::rules::{Automation, PROMPT_MAX};
 use crate::workspace::{
     graph, inbox,
+    meetings::model::MeAlias,
     models::*,
     prompts::{self, DraftOptions, PromptInput, Reading, MAX_CONTEXT_CHARS},
     repository::{record_selected, source_available, source_permitted, Repository},
+    tasks,
 };
 use chrono::TimeZone;
 use chrono_tz::Tz;
@@ -39,6 +41,9 @@ pub struct Run<'a> {
     pub source: Option<&'a Record>,
     /// Claude is asked for a reply draft to `source`; the conversation is then always read.
     pub draft: bool,
+    /// Who "me" is (the active account's name, aliases and address), so the user's own tasks
+    /// read as theirs; the default (only "You") when no account is known.
+    pub me: &'a MeAlias,
 }
 
 /// One block Claude read, and the record it stands for.
@@ -199,7 +204,7 @@ pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput
         }
     }
     if a.read.commitments_notes {
-        add("commitments", commitments(repo, run.workspace)?);
+        add("commitments", commitments(repo, run.workspace, run.me)?);
         add("notes", notes(repo, run.workspace)?);
     }
 
@@ -568,13 +573,15 @@ fn sender_mail(
     Ok((blocks, mail.len()))
 }
 
-/// The user's open commitments, newest first, each saying who promised it: "You promised: …"
-/// for the user's own, "Sam promised you: …" for one someone else owns.
-fn commitments(repo: &Repository, w: &Workspace) -> Result<(Vec<Block>, usize)> {
+/// The user's open tasks (To do, In progress, Waiting; not those still To review, done or
+/// dismissed), newest first, each saying who promised it: "You promised: …" for the user's own
+/// (`"You"`, their address or name), "Sam Stone promised you: …" for someone else's (by name when
+/// known), "Nobody named: …" for one without an owner.
+fn commitments(repo: &Repository, w: &Workspace, me: &MeAlias) -> Result<(Vec<Block>, usize)> {
     let open: Vec<Record> = repo
-        .local_records(&w.id, "commitment")?
+        .local_records(&w.id, tasks::KIND)?
         .into_iter()
-        .filter(|c| c.data["done"] != true)
+        .filter(|c| tasks::is_open(&c.data))
         .collect();
     let blocks = open
         .iter()
@@ -587,9 +594,14 @@ fn commitments(repo: &Repository, w: &Workspace) -> Result<(Vec<Block>, usize)> 
                 .filter(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
                 .map(|d| format!(" due=\"{d}\""))
                 .unwrap_or_default();
-            let owner = prompts::sanitize_line(&text(c, "owner"), 100);
-            let who = if owner.is_empty() || owner.eq_ignore_ascii_case("you") {
+            let name = Some(text(c, "ownerName"))
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| text(c, "owner"));
+            let owner = prompts::sanitize_line(&name, 100);
+            let who = if tasks::is_mine(&c.data, me) {
                 "You promised".to_string()
+            } else if owner.is_empty() {
+                "Nobody named".to_string()
             } else {
                 format!("{owner} promised you")
             };
@@ -756,6 +768,7 @@ mod tests {
             zone: "UTC",
             texts: &texts,
         };
+        let me = MeAlias::of(c);
         let run = Run {
             automation: a,
             trigger,
@@ -763,6 +776,7 @@ mod tests {
             account: Some(c),
             source,
             draft: false,
+            me: &me,
         };
         build(r, &run, &reading).unwrap()
     }
@@ -936,27 +950,30 @@ mod tests {
     fn commitments_say_who_promised_what() {
         let dir = tempfile::tempdir().unwrap();
         let (mut r, w, c) = repo(dir.path());
-        r.put_record(&local(
-            "mine",
-            "commitment",
-            json!({"text": "Send the roadmap", "done": false, "owner": "You"}),
-            BASE,
-        ))
-        .unwrap();
-        r.put_record(&local(
-            "theirs",
-            "commitment",
-            json!({"text": "Share the deck", "done": false, "owner": "Sam Stone"}),
-            BASE - 60,
-        ))
-        .unwrap();
-        r.put_record(&local(
-            "blank",
-            "commitment",
-            json!({"text": "Book the room", "done": false}),
-            BASE - 120,
-        ))
-        .unwrap();
+        // Newest first; the account is Taylor Reed <taylor@example.test>.
+        for (i, (id, data)) in [
+            ("mine", json!({"text": "Send the roadmap", "done": false, "owner": "You"})),
+            // Quick add, New task and the drawer store the account's address for "Me".
+            ("mine-address", json!({"text": "Prepare the demo", "status": "doing", "done": false,
+                "owner": "TAYLOR@example.test", "ownerName": "Taylor Reed"})),
+            ("mine-name", json!({"text": "Renew the certificate", "status": "waiting", "done": false,
+                "owner": "Taylor Reed"})),
+            ("theirs", json!({"text": "Share the deck", "status": "todo", "done": false,
+                "owner": "sam.stone@example.test", "ownerName": "Sam Stone"})),
+            ("theirs-free-text", json!({"text": "Book the venue", "done": false, "owner": "Ann"})),
+            ("nobody", json!({"text": "Book the room", "status": "todo", "done": false})),
+            // Not open: still to review, dismissed, done (new and old style).
+            ("review", json!({"text": "Check the logs", "status": "review", "done": false, "owner": "You"})),
+            ("dismissed", json!({"text": "Old idea", "status": "dismissed", "done": false, "owner": "You"})),
+            ("done", json!({"text": "Ship it", "status": "done", "done": true, "owner": "You"})),
+            ("done-legacy", json!({"text": "Sent the notes", "done": true, "owner": "You"})),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            r.put_record(&local(id, "commitment", data, BASE - 60 * i as i64))
+                .unwrap();
+        }
         let a = automation(ReadSet {
             commitments_notes: true,
             ..ReadSet::default()
@@ -972,10 +989,17 @@ mod tests {
             bodies,
             [
                 "\nYou promised: Send the roadmap\n</item>",
+                "\nYou promised: Prepare the demo\n</item>",
+                "\nYou promised: Renew the certificate\n</item>",
                 "\nSam Stone promised you: Share the deck\n</item>",
-                "\nYou promised: Book the room\n</item>",
+                "\nAnn promised you: Book the venue\n</item>",
+                "\nNobody named: Book the room\n</item>",
             ]
         );
+        assert!(!built
+            .input
+            .to_string()
+            .contains("taylor@example.test promised"));
     }
 
     #[test]

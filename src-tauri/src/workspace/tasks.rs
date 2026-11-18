@@ -16,7 +16,7 @@ use super::meetings::{folder, model::MeAlias};
 use super::models::*;
 use super::repository::Repository;
 use super::{new_job, workspace_id_active, Core};
-use chrono::Timelike;
+use chrono::{Datelike, Timelike};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,6 +46,9 @@ const NAME_MAX: usize = 200;
 const REF_MAX: usize = 2000;
 const LOG_MAX: usize = 200;
 const HISTORY_TEXT_MAX: usize = 500;
+/// What `local_save` let a commitment's text be before the board: a task brought back by Undo
+/// keeps it (its quote, the whole message it came from, was not limited either).
+const LEGACY_TEXT_MAX: usize = 20_000;
 /// The most history lines a task keeps (the oldest go first).
 const HISTORY_MAX: usize = 200;
 /// `meeting.json` is read for names only up to this size.
@@ -53,6 +56,12 @@ const MEETING_JSON_MAX: u64 = 1024 * 1024;
 
 /// Tasks live in the workspace Connect boots into.
 const PERSONAL: &str = "personal";
+/// The record that remembers which day the due-today reminder was decided on (bookkeeping, no
+/// revision bump), so it runs once a day even when nothing was due.
+const REMINDER_KIND: &str = "task_state";
+const REMINDER_ID: &str = "due-today";
+/// Due dates before this year are typing slips ("0002-11-20" while a year is being typed).
+const DUE_YEAR_MIN: i32 = 2000;
 /// The local hour of the daily "due today" reminder.
 const REMIND_HOUR: u32 = 9;
 
@@ -71,6 +80,12 @@ pub(crate) fn status_of(body: &Value) -> &str {
         _ if body["done"] == true => "done",
         _ => "todo",
     }
+}
+
+/// Whether someone still has to do the task (To do, In progress, Waiting): not one To review,
+/// done or dismissed.
+pub(crate) fn is_open(body: &Value) -> bool {
+    OPEN.contains(&status_of(body))
 }
 
 /// The name of a status's column: the person's own name for it, or the built-in one.
@@ -135,7 +150,7 @@ fn due(v: &Value) -> Result<Option<String>> {
     };
     chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d")
         .ok()
-        .filter(|d| d.format("%Y-%m-%d").to_string() == day)
+        .filter(|d| d.format("%Y-%m-%d").to_string() == day && d.year() >= DUE_YEAR_MIN)
         .map(|_| Some(day))
         .ok_or_else(|| invalid("due", MESSAGE))
 }
@@ -203,6 +218,8 @@ pub(crate) fn task_save(
         Err(e) => return Err(e),
     };
     let creating = existing.is_none();
+    // Undo of a delete brings the task back with its history, as it was stored.
+    let restoring = creating && data["history"].as_array().is_some_and(|h| !h.is_empty());
     let before = existing
         .as_ref()
         .map(|t| t.data.clone())
@@ -216,6 +233,7 @@ pub(crate) fn task_save(
         // A text kept from before the board (up to 20,000 characters) is never refused unchanged.
         let text = match data["text"].as_str().map(str::trim) {
             Some(same) if Some(same) == old && !same.is_empty() => Some(same.to_string()),
+            _ if restoring => text(&data["text"], "text", LEGACY_TEXT_MAX, TEXT_MESSAGE)?,
             _ => text(&data["text"], "text", TEXT_MAX, TEXT_MESSAGE)?,
         };
         body["text"] = text.ok_or_else(|| invalid("text", TEXT_MESSAGE))?.into();
@@ -227,7 +245,11 @@ pub(crate) fn task_save(
         ("owner", OWNER_MAX, "Choose an owner."),
         ("ownerName", NAME_MAX, "Choose an owner."),
         ("meetingId", REF_MAX, "Choose a meeting."),
-        ("quote", QUOTE_MAX, "The quote is too long."),
+        (
+            "quote",
+            if restoring { usize::MAX } else { QUOTE_MAX },
+            "The quote is too long.",
+        ),
         ("speaker", NAME_MAX, "Choose a speaker."),
         ("sourceId", REF_MAX, "Choose a message."),
         ("sourceRevision", REF_MAX, "Choose a message."),
@@ -518,11 +540,12 @@ fn owner_name(task: &Value, names: &HashMap<String, String>, me: &Connection) ->
         .into()
 }
 
-/// The daily reminder (Settings › Meetings › Tasks, "Remind me about tasks due today"): from
-/// 09:00 in the workspace time zone, once a day, one notification about my open tasks due that
-/// day (`payload.route` opens Tasks). Nothing when it is off, notifications are off, or nothing is
-/// due. Called by the background round; the job's key is the day, so a later round that day adds
-/// nothing (`enqueue` keeps the first job of a key).
+/// The daily reminder (Settings › Meetings › Tasks, "Remind me about tasks due today"): the first
+/// background round at or after 09:00 in the workspace time zone decides the day (remembered in
+/// a bookkeeping record, so later rounds that day do nothing) and queues one notification about
+/// my open tasks due that day (`payload.route` opens Tasks); nothing when none are due. While the
+/// reminder or notifications are off, no day is decided, so turning them on later that day still
+/// reminds once. The job's key is the day as well.
 pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
     if !workspace_id_active(PERSONAL) {
         return Ok(());
@@ -542,6 +565,24 @@ pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
     }
     let day = local.date_naive();
     let today = day.format("%Y-%m-%d").to_string();
+    // The first round at or after 09:00 decides the day, whether or not anything is due: a task
+    // made due today later (at 15:00, say) brings no notification about itself.
+    let decided = r
+        .record(REMINDER_KIND, REMINDER_ID, None, Some(PERSONAL))
+        .is_ok_and(|rec| rec.data["day"] == today.as_str());
+    if decided {
+        return Ok(());
+    }
+    r.put_record_unversioned(&Record {
+        id: REMINDER_ID.into(),
+        kind: REMINDER_KIND.into(),
+        connection_id: None,
+        workspace_id: Some(PERSONAL.into()),
+        source: "local".into(),
+        revision: super::models::id(),
+        updated_at: now,
+        data: json!({"day": today}),
+    })?;
     let me = s
         .active_connection
         .as_deref()
@@ -1019,6 +1060,50 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn undo_brings_back_a_commitment_from_before_the_board() {
+        let e = env();
+        // The old dialog kept a text up to 20,000 characters and the whole message as the quote.
+        let text = "t".repeat(5000);
+        let quote = "q".repeat(30_000);
+        e.core
+            .repo()
+            .unwrap()
+            .put_record(&Record {
+                id: "old".into(),
+                kind: KIND.into(),
+                connection_id: None,
+                workspace_id: Some("personal".into()),
+                source: "local".into(),
+                revision: "l".into(),
+                updated_at: NOW,
+                data: json!({"text": text, "done": false, "owner": "You", "quote": quote,
+                    "sourceId": "m-1", "history": [{"at": NOW, "text": "Added by you"}]}),
+            })
+            .unwrap();
+        let before = body(&e.core, "old");
+        let deleted = op(&e.core, Operation::TaskDelete, json!({"id": "old"}))
+            .await
+            .unwrap();
+        let mut restore = deleted["body"].clone();
+        restore["id"] = "old".into();
+        op(&e.core, Operation::TaskSave, restore).await.unwrap();
+        let back = body(&e.core, "old");
+        assert_eq!(back["text"], before["text"]);
+        assert_eq!(back["quote"], before["quote"]);
+        assert_eq!(back["history"], before["history"]);
+        assert_eq!(back["status"], "todo");
+        // A new task (no history to bring back) keeps the board's limits.
+        let error = op(
+            &e.core,
+            Operation::TaskSave,
+            json!({"id": "new", "text": "t".repeat(2001)}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("text"));
+    }
+
     #[test]
     fn task_save_rewrites_the_meeting_tasks_json() {
         let e = env();
@@ -1113,6 +1198,7 @@ mod tests {
             (json!({"id": "t1", "notes": "x".repeat(20_001)}), "notes"),
             (json!({"id": "t1", "due": "tomorrow"}), "due"),
             (json!({"id": "t1", "due": "2026-02-30"}), "due"),
+            (json!({"id": "t1", "due": "0002-11-20"}), "due"),
             (json!({"id": "t1", "confidence": "maybe"}), "confidence"),
             (json!({"id": "t1", "order": "first"}), "order"),
             (json!({"id": "t1", "line": -1}), "line"),
@@ -1245,39 +1331,45 @@ mod tests {
         due_today_reminders(&e.core, nine + 1800).unwrap();
         due_today_reminders(&e.core, nine + 6 * 3600).unwrap();
         assert_eq!(reminders().len(), 1);
-        // Turned off: nothing the next day.
-        let mut r = e.core.repo().unwrap();
-        let mut s = r.settings().unwrap();
-        s.meetings.remind = false;
-        r.settings_update(&s).unwrap();
-        drop(r);
+        let settings = |f: &dyn Fn(&mut Settings)| {
+            let mut r = e.core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            f(&mut s);
+            r.settings_update(&s).unwrap();
+        };
+        // 19 Nov: two of mine due. Off at 09:00, notifications off at 10:00: nothing, and the day
+        // stays open, so turning them on at 11:00 still reminds, once.
         save(&e.core, json!({"id": "mine", "due": "2026-11-19"}), NOW).unwrap();
-        due_today_reminders(&e.core, nine + 86_400).unwrap();
+        let day2 = nine + 86_400;
+        settings(&|s| s.meetings.remind = false);
+        due_today_reminders(&e.core, day2).unwrap();
+        settings(&|s| {
+            s.meetings.remind = true;
+            s.notifications = false;
+        });
+        due_today_reminders(&e.core, day2 + 3600).unwrap();
         assert_eq!(reminders().len(), 1);
-        // On, but notifications are off in Settings: nothing to show it with.
-        let mut r = e.core.repo().unwrap();
-        let mut s = r.settings().unwrap();
-        s.meetings.remind = true;
-        s.notifications = false;
-        r.settings_update(&s).unwrap();
-        drop(r);
-        due_today_reminders(&e.core, nine + 86_400).unwrap();
-        assert_eq!(reminders().len(), 1);
-        // A day with nothing due for me: nothing.
-        let mut r = e.core.repo().unwrap();
-        let mut s = r.settings().unwrap();
-        s.notifications = true;
-        r.settings_update(&s).unwrap();
-        drop(r);
-        due_today_reminders(&e.core, nine + 2 * 86_400).unwrap();
-        assert_eq!(reminders().len(), 1);
-        // The next day with a task due: one more.
-        due_today_reminders(&e.core, nine + 86_400).unwrap();
+        settings(&|s| s.notifications = true);
+        due_today_reminders(&e.core, day2 + 2 * 3600).unwrap();
+        due_today_reminders(&e.core, day2 + 3 * 3600).unwrap();
         let keys: Vec<String> = reminders().into_iter().map(|j| j.key).collect();
+        assert_eq!(keys.len(), 2, "{keys:?}");
         assert!(
             keys.contains(&"tasks_due:2026-11-19".to_string()),
             "{keys:?}"
         );
+        // 20 Nov: nothing due at 09:00. A task made due today at 15:00 brings no notification.
+        let day3 = nine + 2 * 86_400;
+        due_today_reminders(&e.core, day3).unwrap();
+        save(
+            &e.core,
+            json!({"id": "mine", "due": "2026-11-20"}),
+            day3 + 6 * 3600,
+        )
+        .unwrap();
+        due_today_reminders(&e.core, day3 + 6 * 3600).unwrap();
+        due_today_reminders(&e.core, day3 + 14 * 3600).unwrap();
+        assert_eq!(reminders().len(), 2, "the day was decided at 09:00");
     }
 
     /// The task records and the `task_delete` answer the UI (board, drawer, Undo) builds on.

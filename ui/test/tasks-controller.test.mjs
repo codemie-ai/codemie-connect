@@ -3,15 +3,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createTasksController } from '../workspace/tasks-controller.js';
-import { newTasksView, taskOrder } from '../workspace/tasks-model.js';
+import { newTasksView, taskOrder, sortTasks, taskStatus } from '../workspace/tasks-model.js';
 import { buildSnapshot, withTasks, taskContract } from './fixtures/workspace-fixture.mjs';
 
 const NOW = Date.UTC(2026, 10, 18, 12);
 
 /** A controller over fakes. `mutate` applies saves and deletes to the snapshot, as the snapshot
  *  after a real write would show them; `answers` maps an op to what it returns. */
-function harness({ answers = {} } = {}) {
-  const snapshot = withTasks(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), NOW);
+function harness({ answers = {}, snapshot = withTasks(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), NOW) } = {}) {
   const calls = { mutate: [], render: 0, toasts: [], modals: [], meetings: [], focus: [] };
   const state = { route: 'tasks', tasks: newTasksView() };
   const ctl = createTasksController({
@@ -170,4 +169,85 @@ test('Escape closes an open quick add first, then the drawer', async () => {
   assert.equal(await ctl.key(key()), true);
   assert.equal(state.tasks.drawer, null);
   assert.equal(await ctl.key(key()), false, 'nothing left to close');
+});
+
+/** A snapshot holding only `tasks`: [id, order, status, due?]. */
+const board = tasks => ({
+  settings: { timeZone: 'UTC', meetings: {} }, connection: null,
+  records: tasks.map(([id, order, status, due = null]) => ({ id, kind: 'commitment', updatedAt: 0, data: { text: id, owner: 'You', order, status, due } })),
+});
+/** A column as the board shows it. */
+const column = (snapshot, status) => snapshot.records.filter(r => r.kind === 'commitment' && taskStatus(r) === status)
+  .sort((a, b) => sortTasks(a, b, NOW, 'UTC')).map(r => r.id);
+
+test('a card dropped next to an overdue card lands where it was dropped', async () => {
+  // To do shows B (overdue, order 2000) above A (due next week, order 1000).
+  const { ctl, snapshot } = harness({ snapshot: board([['A', 1000, 'todo', '2026-11-25'], ['B', 2000, 'todo', '2026-11-17'], ['C', 500, 'waiting'], ['D', 600, 'waiting'], ['E', 700, 'waiting', '2026-11-10']]) });
+  assert.deepEqual(column(snapshot, 'todo'), ['B', 'A']);
+  await ctl.onDrop('C', 'todo', 'A');
+  assert.deepEqual(column(snapshot, 'todo'), ['B', 'C', 'A'], 'between B and A');
+  // At the very top: the first of the cards that are not overdue (overdue ones stay first).
+  await ctl.onDrop('D', 'todo', 'B');
+  assert.deepEqual(column(snapshot, 'todo'), ['B', 'D', 'C', 'A']);
+  // An overdue card dropped among the others goes to the end of the overdue ones.
+  await ctl.onDrop('E', 'todo', 'A');
+  assert.deepEqual(column(snapshot, 'todo'), ['B', 'E', 'D', 'C', 'A']);
+  // Reordering inside the overdue group.
+  await ctl.onDrop('E', 'todo', 'B');
+  assert.deepEqual(column(snapshot, 'todo'), ['E', 'B', 'D', 'C', 'A']);
+});
+
+test('repeated drops into one gap renumber the column and keep their places', async () => {
+  const cards = Array.from({ length: 40 }, (_, i) => [`c${i}`, 100 + i, 'waiting']);
+  const { ctl, snapshot, calls } = harness({ snapshot: board([['X', 1_795_000_000, 'todo'], ['Y', 1_795_000_001, 'todo'], ...cards]) });
+  for (const [id] of cards) await ctl.onDrop(id, 'todo', 'Y');
+  assert.deepEqual(column(snapshot, 'todo'), ['X', ...cards.map(([id]) => id), 'Y']);
+  const orders = column(snapshot, 'todo').map(id => taskOrder(snapshot.records.find(r => r.id === id)));
+  assert.ok(orders.every((o, i) => i === 0 || o - orders[i - 1] >= 1e-3), 'room between every two cards');
+  // Renumbering saved only orders.
+  const renumbered = calls.mutate.filter(([, d]) => !('status' in d));
+  assert.ok(renumbered.length > 0 && renumbered.every(([op, d]) => op === 'task_save' && Object.keys(d).sort().join() === 'id,order'));
+});
+
+test('keyboard focus follows a moved card, and goes to the next card after delete or dismiss', async () => {
+  const { ctl, calls } = harness({ answers: { task_delete: data => ({ deleted: true, id: data.id, body: {} }) } });
+  const first = list => (Array.isArray(list) ? list[0] : list);
+  // Move to: the card's ⋯ in its new column; from the drawer, focus stays in the drawer.
+  await ctl.handle('task-move', control({ id: 'task-legal', col: 'waiting' }));
+  assert.equal(first(calls.focus.at(-1)), '[data-menu-trigger="task-legal"]');
+  const focused = calls.focus.length;
+  await ctl.handle('task-move', control({ id: 'task-names', col: 'doing' }, { closest: sel => (sel === '.ws-task-drawer' ? {} : null) }));
+  assert.equal(calls.focus.length, focused, 'the drawer keeps its own focus');
+  // Dismiss the last card of To review: focus goes to the one above it.
+  await ctl.handle('task-dismiss', control({ id: 'task-bug' }));
+  assert.equal(first(calls.focus.at(-1)), '[data-task="task-share"] .ws-task-title');
+  // Accept: the card's title in To do.
+  await ctl.handle('task-accept', control({ id: 'task-share' }));
+  assert.equal(first(calls.focus.at(-1)), '[data-task="task-share"] .ws-task-title');
+  // Delete: the next card of the column (To do: legal moved away, so names, tenant, share, …).
+  await ctl.handle('task-delete', control({ id: 'task-tenant' }));
+  const after = calls.focus.at(-1);
+  assert.ok(Array.isArray(after) && after[0].startsWith('[data-task="') && after[0] !== '[data-task="task-tenant"] .ws-task-title', JSON.stringify(after));
+  assert.equal(after.at(-1), '[data-action="task-new"]', 'something to land on, always');
+
+});
+
+test('Enter that confirms an input method candidate does not add the task', async () => {
+  const { ctl } = harness();
+  let submitted = 0;
+  const target = { matches: () => true, form: { requestSubmit: () => { submitted++; } } };
+  const key = extra => ({ key: 'Enter', shiftKey: false, preventDefault() {}, target, ...extra });
+  assert.equal(await ctl.key(key({ isComposing: true })), false);
+  assert.equal(await ctl.key(key({ keyCode: 229 })), false);
+  assert.equal(submitted, 0);
+  assert.equal(await ctl.key(key({})), true);
+  assert.equal(submitted, 1);
+});
+
+test('a typed due date saves once, only when it changed', async () => {
+  const { ctl, calls } = harness();
+  await ctl.handle('task-due', control({ id: 'task-legal' }, { value: '2026-11-15' }));
+  assert.equal(calls.mutate.length, 0, 'unchanged');
+  await ctl.handle('task-due', control({ id: 'task-legal' }, { value: '2026-11-27' }));
+  assert.deepEqual(calls.mutate[0], ['task_save', { id: 'task-legal', due: '2026-11-27' }]);
 });

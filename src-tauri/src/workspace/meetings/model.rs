@@ -63,6 +63,17 @@ pub struct MeAlias {
     pub address: Option<String>,
 }
 
+impl MeAlias {
+    /// "Me" as the account says it: its display name and e-mail, no aliases.
+    pub fn of(c: &Connection) -> Self {
+        Self {
+            name: c.display_name.clone(),
+            aliases: Vec::new(),
+            address: Some(c.email.trim().to_string()).filter(|a| !a.is_empty()),
+        }
+    }
+}
+
 /// One Teams transcript of a meeting and when Teams started it (unix seconds).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptRef {

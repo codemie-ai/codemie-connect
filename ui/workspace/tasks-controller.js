@@ -5,7 +5,7 @@
 // so node:test drives it without a browser; only `attachBoardDrag` and the dialog's form are DOM.
 // No optimistic updates: every change is a `task_save` / `task_delete` and the snapshot after it.
 import {
-  COLUMNS, DEFAULT_FILTERS, columnName, filterTasks, meOf, meetingOf, orderBetween, peopleFor, personName, sortTasks, splitDone, taskOrder, taskStatus, tasksOf,
+  COLUMNS, DEFAULT_FILTERS, columnName, dueInfo, filterTasks, meOf, meetingOf, orderBetween, peopleFor, personName, sortTasks, splitDone, taskOrder, taskStatus, tasksOf,
 } from './tasks-model.js';
 import { field, select, textArea, textInput } from './ui.js';
 import { formatDate } from './format.js';
@@ -13,13 +13,16 @@ import { formatDate } from './format.js';
 const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 const short = text => (String(text).length > 40 ? `${String(text).slice(0, 40)}…` : String(text));
 const quoted = value => String(value).replace(/["\\]/g, '\\$&');
+/** Below this gap between two neighbours a dropped card gets no order of its own (orders near
+ *  1.8e9 have about 2^-21 of room), so the column is renumbered first. */
+const MIN_GAP = 1e-3;
 
 /**
  * `state.tasks` is the page's view state (`newTasksView()`); `snap()` the current snapshot;
  * `mutate(op, data)` a fenced write that re-renders; `render()` a re-render; `openModal` and `toast`
  * (`toast(message, tone, {label, run})`) the dialogs; `openMeeting(id, tab, line)` and
- * `openMessage(id)` navigation; `focus(selector)` moves focus after a render; `setPref` remembers
- * the board/list choice.
+ * `openMessage(id)` navigation; `focus(selectors)` moves focus after a render to the first of the
+ * selectors (a string or a list) that finds a control; `setPref` remembers the board/list choice.
  */
 export function createTasksController({
   state, snap, mutate, render, openModal = () => null, toast = () => {}, openMeeting = () => {}, openMessage = () => {},
@@ -31,6 +34,21 @@ export function createTasksController({
   const zone = () => snap().settings.timeZone;
   const missing = () => new Error('This task is no longer there. Refresh and try again.');
   const nameOf = key => (key ? personName(snap(), key, me()) : null);
+  /** Overdue cards show first in a column whatever their order (not in Done). */
+  const late = (r, status) => status !== 'done' && dueInfo(r.data.due, now(), zone())?.tone === 'overdue';
+  const titleOf = id => `[data-task="${quoted(id)}"] .ws-task-title`;
+
+  /** Where keyboard focus goes when a card leaves its column (deleted, dismissed): the next card,
+   *  else the one above, else the column's Add a task, else New task. */
+  function landingAfter(id) {
+    const t = find(id);
+    if (!t) return ['[data-action="task-new"]'];
+    const status = taskStatus(t);
+    const list = shown(status);
+    const i = list.findIndex(r => r.id === id);
+    const near = i < 0 ? [] : [list[i + 1], list[i - 1]].filter(Boolean);
+    return [...near.map(r => titleOf(r.id)), `.ws-task-col[data-col="${status}"] .ws-task-col-add`, '[data-action="task-new"]'];
+  }
 
   /** The cards a column shows now, in board order (the filters and Show older apply). */
   function shown(status) {
@@ -63,31 +81,52 @@ export function createTasksController({
   }
 
   /**
-   * A card dropped on `column` before the card `beforeId` (null: at the end). Its order goes
-   * between its new neighbours as the column shows them; from To review it is an acceptance. A
-   * card dropped where it already is, on To review or gone saves nothing.
+   * A card dropped on `column` before the card `beforeId` (null: at the end). Overdue cards show
+   * first whatever their order, so the card is placed among the cards of its own kind (overdue or
+   * not) as the column shows them: dropped above the overdue ones it goes to the top of the rest,
+   * an overdue card dropped below them to their end. Its order goes between those neighbours; when
+   * they leave no room, that run of cards is renumbered first. From To review it is an acceptance.
+   * A card dropped where it already is, on To review or gone saves nothing.
    */
   async function onDrop(taskId, column, beforeId = null) {
     const t = find(taskId);
     if (!t || !COLUMNS.includes(column) || column === 'review') return null;
     const from = taskStatus(t);
+    const overdue = late(t, column);
     const cards = shown(column);
     const rest = cards.filter(r => r.id !== taskId);
     let at = beforeId ? rest.findIndex(r => r.id === beforeId) : rest.length;
     if (at < 0) at = rest.length;
-    const prev = rest[at - 1] || null;
-    const next = rest[at] || null;
+    const kin = r => late(r, column) === overdue;
+    const group = rest.filter(kin);
+    const index = rest.slice(0, at).filter(kin).length;
+    const prev = group[index - 1] || null;
+    const next = group[index] || null;
     if (from === column) {
-      const i = cards.findIndex(r => r.id === taskId);
-      if (i >= 0 && (cards[i - 1]?.id ?? null) === (prev?.id ?? null) && (cards[i + 1]?.id ?? null) === (next?.id ?? null)) return null;
+      const own = cards.filter(kin);
+      const i = own.findIndex(r => r.id === taskId);
+      if (i >= 0 && (own[i - 1]?.id ?? null) === (prev?.id ?? null) && (own[i + 1]?.id ?? null) === (next?.id ?? null)) return null;
     }
-    const data = { id: taskId, order: orderBetween(prev && taskOrder(prev), next && taskOrder(next)) };
+    let order = orderBetween(prev && taskOrder(prev), next && taskOrder(next));
+    if (prev && next && !(taskOrder(next) - taskOrder(prev) >= MIN_GAP)) order = await renumber(group, index);
+    const data = { id: taskId, order };
     if (from !== column) {
       data.status = column;
       const log = acceptance(from, column);
       if (log) data.log = log;
     }
     return mutate('task_save', data);
+  }
+
+  /** Gives `group` (one column's cards of one kind, as shown) orders one apart, leaving room at
+   *  `index` for the card being dropped, and returns that card's order. Only orders change. */
+  async function renumber(group, index) {
+    const base = Math.floor(taskOrder(group[0]));
+    const place = k => base + (k < index ? k : k + 1);
+    for (const [k, r] of group.entries()) {
+      if (taskOrder(r) !== place(k)) await mutate('task_save', { id: r.id, order: place(k) });
+    }
+    return base + index;
   }
 
   async function openDrawer(id) {
@@ -108,8 +147,10 @@ export function createTasksController({
     const t = find(id);
     if (!t) throw missing();
     const from = taskStatus(t);
+    const landing = landingAfter(id);
     if (ui().drawer === id) ui().drawer = null;
     await move(id, 'dismissed', { log: 'Dismissed — not a task' });
+    focus(landing);
     toast('Dismissed. Dismissed tasks are listed below the board.', 'info', { label: 'Undo', run: () => move(id, from, { log: 'Restored' }) });
   }
 
@@ -133,8 +174,10 @@ export function createTasksController({
   async function remove(id) {
     const t = find(id);
     if (!t) throw missing();
+    const landing = landingAfter(id);
     if (ui().drawer === id) ui().drawer = null;
     const result = await mutate('task_delete', { id });
+    focus(landing);
     toast(`Deleted “${short(t.data.text)}”`, 'info', result?.body ? { label: 'Undo', run: () => mutate('task_save', { ...result.body, id }) } : null);
   }
 
@@ -215,19 +258,33 @@ export function createTasksController({
       // The card's title, or Edit… in its menu.
       case 'task-open': case 'task-edit': return openDrawer(id);
       case 'task-close': return closeDrawer();
-      case 'task-accept': return move(id, 'todo', { log: 'Accepted from review' });
+      case 'task-accept':
+        await move(id, 'todo', { log: 'Accepted from review' });
+        // Unless it was accepted in the drawer, focus goes to the card in its new column.
+        if (!el.closest?.('.ws-task-drawer')) focus([titleOf(id)]);
+        return undefined;
       case 'task-accept-all': return acceptAll();
       case 'task-dismiss': return dismiss(id);
       case 'task-restore':
         await move(id, 'review', { log: 'Restored' });
         toast(`Restored to ${columnName('review', snap().settings)}.`, 'success');
         return undefined;
-      case 'task-move': return move(id, el.dataset.col);
+      case 'task-move':
+        await move(id, el.dataset.col);
+        // From a card's menu, focus follows the card to its new column (the drawer keeps its own).
+        if (!el.closest?.('.ws-task-drawer')) focus([`[data-menu-trigger="${quoted(id)}"]`, titleOf(id)]);
+        return undefined;
       case 'task-status': return move(id, el.value);
       case 'task-done': return done(id, el);
       case 'task-owner': return mutate('task_save', { id, owner: el.value || null, ownerName: nameOf(el.value) });
       case 'task-due-pick': return mutate('task_save', { id, due: el.dataset.value || null });
-      case 'task-due': return mutate('task_save', { id, due: el.value || null });
+      case 'task-due': {
+        // A typed date is saved when it is left (blur or Enter), once, and only when it changed.
+        const t = find(id);
+        if (!t) throw missing();
+        if ((el.value || null) === (t.data.due || null)) return null;
+        return mutate('task_save', { id, due: el.value || null });
+      }
       case 'task-title': return rename(id, el.value);
       case 'task-notes': return notes(id, el.value);
       case 'task-delete': return remove(id);
@@ -252,6 +309,8 @@ export function createTasksController({
    *  and leaves the drawer's title (Shift+Enter is a new line). True when it took the key. */
   async function key(ev) {
     const target = ev.target;
+    // Enter or Escape that an input method (Chinese, Japanese, …) is still composing is its own.
+    if (ev.isComposing || ev.keyCode === 229) return false;
     if (ev.key === 'Enter' && !ev.shiftKey && target?.matches?.('[data-form="task-quick"] textarea, .ws-task-drawer-title')) {
       ev.preventDefault();
       if (target.form) target.form.requestSubmit();

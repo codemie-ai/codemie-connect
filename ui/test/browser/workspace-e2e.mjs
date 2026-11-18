@@ -2181,6 +2181,21 @@ for (const theme of ['dark', 'light']) {
       assert(await page.evaluate(() => document.activeElement?.dataset.col) === 'done', 'Tab reaches Done');
       await page.keyboard.press('Enter');
       await page.waitForSelector(taskIn('done', 'task-legal'));
+      // Focus follows the card: its ⋯ in Done, ready for the next move.
+      await page.waitForFunction(() => document.activeElement?.dataset.menuTrigger === 'task-legal' && document.activeElement.closest('.ws-task-col')?.dataset.col === 'done');
+
+      // Menus: one open at a time, a click elsewhere closes it, Escape closes it onto its ⋯.
+      await renderSettled(page);
+      await page.click('[data-task="task-hr"] .ws-task-menu summary');
+      await page.click('[data-task="task-demo"] .ws-task-menu summary');
+      await page.waitForSelector('[data-task="task-demo"] .ws-menu[open]');
+      assert(await page.locator('.ws-menu[open]').count() === 1, 'two menus open');
+      await page.click('.ws-tasks-heading h1');
+      assert(await page.locator('.ws-menu[open]').count() === 0, 'a click elsewhere leaves it open');
+      await page.click('[data-task="task-demo"] .ws-task-menu summary');
+      await page.keyboard.press('Escape');
+      assert(await page.locator('.ws-menu[open]').count() === 0, 'Escape leaves it open');
+      assert(await page.evaluate(() => document.activeElement?.dataset.menuTrigger) === 'task-demo', 'focus back on ⋯');
 
       // The drawer: the quote with its transcript link, owner from the meeting first, due, notes.
       await page.click('[data-task="task-bug"] .ws-task-title');
@@ -2197,6 +2212,14 @@ for (const theme of ['dark', 'light']) {
       await page.waitForSelector('.ws-task-history li:has-text("Owner set to Sam Okafor")');
       await page.click('.ws-task-drawer [data-action="task-due-pick"]:has-text("Tomorrow")');
       await page.waitForSelector('.ws-task-history li:has-text("Due date set to")');
+      // A typed date saves when it is left, once: nothing while typing, then Enter.
+      const typedFrom = await page.evaluate(() => window.__bridgeCalls.length);
+      await page.fill('.ws-task-drawer [data-commit="task-due"]', '2026-12-01');
+      await page.waitForTimeout(300);
+      assert(!(await page.evaluate(n => window.__bridgeCalls.slice(n).some(([op]) => op === 'task_save'), typedFrom)), 'saved while typing');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('.ws-task-history li:has-text("Due date set to 2026-12-01")');
+      assert((await page.evaluate(n => window.__bridgeCalls.slice(n).filter(([op]) => op === 'task_save').length, typedFrom)) === 1, 'one save');
       await page.fill('.ws-task-drawer [data-change="task-notes"]', 'Check with QA first.');
       await page.keyboard.press('Escape');
       await page.waitForSelector('.ws-task-drawer', { state: 'detached' });
@@ -2209,6 +2232,8 @@ for (const theme of ['dark', 'light']) {
       await openRowMenu(page, tenant, '[data-action="task-delete"]');
       await tenant.locator('[data-action="task-delete"]').click();
       await page.waitForSelector('[data-task="task-tenant"]', { state: 'detached' });
+      // Focus goes to the next card of the column.
+      await page.waitForFunction(() => document.activeElement?.matches('.ws-task-title') && document.activeElement.closest('.ws-task-col')?.dataset.col === 'todo');
       await page.click('.ws-toast:has-text("Deleted “Ask IT for a throttling test tenant”") .ws-toast-action');
       await page.waitForSelector(taskIn('todo', 'task-tenant'));
       const restored = await page.evaluate(() => window.__workspace.store.get().snapshot.records.find(r => r.id === 'task-tenant').data);
@@ -2273,7 +2298,8 @@ for (const theme of ['dark', 'light']) {
       await page.click('.ws-nav button[data-route=today]');
       await page.waitForSelector('.ws-commitments .ws-card-title:has-text("Tasks")');
       assert(await page.locator('.ws-commitments .ws-today-review:has-text("1 task from meeting notes to review")').count() === 1, 'review row on Today');
-      await page.locator('.ws-commitments').scrollIntoViewIfNeeded();
+      await renderSettled(page);
+      await page.evaluate(() => document.querySelector('.ws-commitments')?.scrollIntoView({ block: 'nearest' }));
       await noOverflow(page, 'Today');
       await elementShot(page, '.ws-commitments', `${tag}-today-tasks.png`);
       await page.evaluate(() => window.__emitNative('workspace:notification-open', { workspaceId: 'personal', route: 'tasks' }));

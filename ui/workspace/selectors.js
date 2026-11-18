@@ -82,6 +82,9 @@ function currentJobPolicy(s, job) {
  */
 export const INLINE_AI_JOBS = new Set(['ai_draft', 'ai_summarize', 'automation_run']);
 
+/** The daily "tasks due today" reminder: a notification job, but no critical alert. */
+export const tasksDueJob = job => job.kind === 'notification' && String(job.key || '').startsWith('tasks_due:');
+
 /** Prepared actions and failed/blocked work that need a human decision. */
 export function decisions(s) {
   return [
