@@ -1,0 +1,55 @@
+/* Knowledge (plugin `obsidian`, 1.0.x) in CodeMie Connect's look: loaded by the frame's shim after
+   the plugin's own knowledge.css, for those versions only (`skinFor`). It only restyles what the
+   plugin draws (sizes, spacing, radii, borders, the dialog), to match Connect's Settings and
+   Meetings pages; it never hides, moves or reorders anything, so a selector a later release renames
+   degrades the look, not what Knowledge does. ui/test/knowledge-skin.test.mjs checks that every
+   class named here is still in the installed knowledge.css. Colours and fonts come from
+   echo-compat.css (Connect's tokens under Echo's names). */
+
+/* The page's header and tabs: Connect's page title and tab bar. */
+.kn-head { padding: 16px 24px 0; gap: 12px; }
+.kn-h2 { font-size: 18px; font-weight: 600; letter-spacing: 0; }
+.kn-tabs { padding: 4px 18px 0; }
+.kn-switch { height: 28px; border-radius: var(--r-control); border-color: var(--line); background: var(--surface); font-weight: 500; }
+.kn-switch:hover { background: var(--hover); border-color: var(--line-strong); }
+.kn-switch-menu { border-radius: var(--r-control); }
+
+/* Empty states: Connect's empty page. */
+.kn-empty h2 { font-size: 18px; font-weight: 600; }
+.kn-empty-lead { color: var(--text-2); line-height: 20px; }
+
+/* The rails and the tree: Connect's sidebar panel. */
+.kn-tree { background: var(--sidebar); }
+.kn-tree-top .search { height: 32px; font-size: 13px; border-radius: var(--r-control); }
+.kn-tree-foot { font-size: 12px; }
+
+/* The page bar and the reader. */
+.kn-bar { padding: 8px 24px; }
+.kn-doc { padding: 20px 40px 64px; }
+.kn-doc h1 { font-weight: 600; }
+.kn-doc h2, .kn-doc h3 { font-weight: 600; }
+
+/* Notices: Connect's 8 px inline notes. */
+.kn-warn, .kn-info { border-radius: var(--r-control); padding: 10px 12px; font-size: 13px; line-height: 20px; }
+
+/* Its own dialog (`.kn-sheet`): Connect's modal, 8 px corners over a 50 % scrim, its header,
+   body and footer spacing. */
+.kn-sheet-back { background: var(--scrim); align-items: center; padding: 32px 24px; }
+.kn-sheet { border-radius: 8px; border-color: var(--line); box-shadow: 0 16px 48px rgba(0, 0, 0, .28); }
+.kn-sheet-h { padding: 18px 20px 12px; }
+.kn-sheet-h h2 { font-size: 16px; font-weight: 600; }
+.kn-sheet-h .kn-gem { border-radius: var(--r-control); }
+.kn-steps-bar { padding: 0 20px; gap: 20px; }
+.kn-steps-bar span.on i { color: var(--primary-text); background: var(--primary-fill); }
+.kn-sheet-b { padding: 16px 20px; gap: 14px; }
+.kn-sheet-f { padding: 12px 20px; background: var(--surface); }
+.kn-field > span:first-child { color: var(--text-2); font-size: 13px; }
+
+/* Pop-overs and found-lists: Connect's menus and cards. */
+.kn-pop { border-radius: var(--r-control); border-color: var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
+.kn-found { border-radius: var(--r-panel); }
+.kn-found-r { padding: 8px 12px; }
+
+/* Checkboxes: Connect's 16 px box. */
+.kn-check { gap: 8px; font-size: 13px; line-height: 20px; }
+.kn-check input { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent); }

@@ -25,6 +25,15 @@ const MAX_LIST = 40;
 const MAX_ERRORS = 20;
 /** The slots Echo has (`ctx.slots.add`); another name throws, as in Echo. */
 export const ECHO_SLOTS = ['call.header', 'call.menu', 'call.minutes', 'thread.profile', 'client.profile'];
+/** Connect's skin for a plugin's own components, by plugin and the versions it was checked
+ *  against (`skins/<id>.css`): loaded after the plugin's stylesheets; a newer version gets
+ *  Connect's colours and controls only, until its skin is checked against it. */
+const SKINS = { obsidian: /^1\.0\.\d+$/ };
+export function skinFor(id, version) {
+  const fits = SKINS[String(id)];
+  return fits && fits.test(String(version ?? '')) ? `skins/${id}.css` : null;
+}
+
 /** A hash that names a plugin's page (`#<plugin>:<page>…`), as opposed to a place on this page. */
 const PAGE_HASH = /^#[a-z][a-z0-9-]{1,40}:[a-z0-9]/i;
 /** What a sheet's Tab key moves between. */
@@ -269,6 +278,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       if (typeof mod?.apply !== 'function') throw new Error(`${path} exports no apply(ctx)`);
       await mod.apply(ctx);
       s.applied = true;
+      skin();
       post({ kind: 'event', type: 'ready' });
     } catch (e) {
       s.failed = errorOf(e).message;
@@ -422,6 +432,18 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       area.remove();
     } catch { /* the window copies it */ }
     if (!copied) post({ kind: 'event', type: 'copy', text: value });
+  }
+
+  /** Connect's skin for this plugin's version, after the plugin's own stylesheets. */
+  function skin() {
+    const path = skinFor(s.plugin.id, s.plugin.version);
+    if (!path || !doc.createElement) return;
+    const el = doc.createElement('link');
+    el.rel = 'stylesheet';
+    el.setAttribute('data-connect-skin', s.plugin.id);
+    el.href = path;
+    doc.head.appendChild(el);
+    s.owned.styles.push(el);
   }
 
   /** A stylesheet in the plugin's package, removed with it. */
