@@ -525,3 +525,75 @@ These need the owner at the Mac with a real Claude sign-in and real Microsoft da
 | 6 | Install the four plugins from the local marketplace and open each (Scheduler, GitHub, Obsidian; Telegram is expected to say it needs a plugin change) | not done |
 
 Open gates: none in code. Other open items are in [README.md](README.md), Known limits.
+
+## 2026-11-18: Merge with native CodeMie settings
+
+Branch `workspace-app`. `feat/codemie-native-settings` (18 commits since `9f19916`: native Settings → CodeMie
+replacing the embedded installer, guided first-launch setup, coding agents, connected apps, CLI usage analytics
+removed, CodeMie sign-in from the Claude tab) merged with `004c37e merge: native CodeMie settings into
+workspace-app`, then `ef7efa5 fix: make native CodeMie settings and Milestone 2 work together`.
+
+What the follow-up commit reconciles:
+
+- **One Claude tab.** Detection (`ai::profiles`) calls a CodeMie profile ready once `codemie-claude` and the
+  profile exist; Settings → CodeMie reads the active profile's sign-in (`codemie profile status`). Settings → Claude
+  and the first-use chooser now take that sign-in (`withCodemieSignIn` in `settings-ai.js`, fed by the CodeMie
+  controller's `signIn()`): a signed-out active profile is "Needs sign-in" with CodeMie's browser Sign in, is not
+  offered as ready in routing or the chooser, and the Claude tab's dot matches it. A profile that signs in with a
+  key (LiteLLM, Bedrock, subscription) gets "Manage profiles" instead of a Sign in that cannot work. Each profile
+  is listed once. A profile added, renamed, removed or made active in Settings → CodeMie is detected again at once.
+- **Today.** The CodeMie setup card replaces Milestone 2's "Bring your AI coding tools" banner and keeps that
+  banner's rule: while a Claude is ready and CodeMie setup has not started, Today shows no setup card, and the
+  sheet's "Not now" note and toast point to Settings → CodeMie only. The first-launch sheet still opens once on a
+  Mac with no CodeMie profile. A CodeMie read that changes nothing Today shows no longer redraws Today.
+- **Recovery wins.** Setup opens only after the workspace opens (never when the data folder is unusable at start),
+  and the recovery page closes an open setup sheet and takes its focus trap off. Plugin frames are out of reach
+  while the sheet is open.
+- **Smokes.** The marketplace smoke (`CODEMIE_PLUGIN_SMOKE=<folder>`) runs no CodeMie CLI command: the window does
+  not boot the CodeMie controller or reload it on focus in that mode. The isolation smoke returns before either.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cd src-tauri && cargo fmt --check` | clean |
+| Lint | `cd src-tauri && cargo clippy -- -D warnings` | no issues |
+| Rust tests | `cd src-tauri && cargo test` (outside the sandbox: PTY, loopback, `hdiutil`) | 542 passed, 2 ignored (the live Claude runs): lib 531, `bundle_resources` 2, `echo_plugins` 9 |
+| JS tests | `npm test` | 785 tests: 782 passed, 0 failed, 3 skipped |
+| Browser E2E | `PLAYWRIGHT_CORE=… node ui/test/browser/workspace-e2e.mjs` | 253/253 checks passed: Milestone 2's 193 (the AI tools banner check now checks the setup card), native settings' 30 (their tab sweep widened to 1000, 1440 and 1680 px), 30 new merge checks |
+| Installer build | `./build-installer.sh --skip-stage` | passes: "Done. All assertions passed." (`CodeMie Connect_2.1.1_aarch64.dmg`) |
+
+New merge checks, both themes: the Claude tab signs in a CodeMie profile Settings → CodeMie found signed out (one
+list of three profiles, no CodeMie profile list on it, dot on and off, routing never offers it, Ready after sign-in)
+at 1000 and 1440 px; Claude, Data & privacy, General's data location, Plugins and Today render with both sides' tabs
+(and no legacy CodeMie tools tab) at 1000 and 1440 px; the first-launch sheet fits both widths; "Not now" with a
+Claude ready; no setup over a data folder missing at start; the recovery page closes an open sheet and its buttons
+take clicks. No page errors in any of them.
+
+### Native smokes after the merge: PASS
+
+Debug build of `ef7efa5`'s tree (`cargo build` in `src-tauri/`), run outside the agent sandbox, nothing else running
+Connect.
+
+- **Plugin frame isolation** (`CODEMIE_WORKSPACE_TEST_DIR="$(mktemp -d)/workspace" CODEMIE_PLUGIN_SMOKE=isolation
+  ./target/debug/app`, exit 0): run `9e30353d-2e32-4a64-8c10-b82b57615de5`, pid 78738, started
+  `2026-11-18T05:14:07.718044+00:00`, reported `05:14:11.627700`. All seven gate fields hold, `failed` is empty,
+  `probeRunId` equals `runId`, `forgedIpcReachedRust` false, `mainPageStayed` true, frame `sandbox="allow-scripts"`.
+- **Published plugins** (`CODEMIE_PLUGIN_SMOKE=/Users/Vadym_Vlasenko/AI/projects/other/echo-plugins
+  ./target/debug/app`, exit 0): run `557f3b59-2e60-41d8-9520-8583492f7b5a`, pid 79322, started
+  `2026-11-18T05:14:28.262647+00:00`, reported `05:15:35.655830`, data root under `$TMPDIR`. Framed before load:
+  all four. Loaded: github, obsidian, scheduler (each pass, every page shown and ready, 0 page errors, every command
+  ok). Known failure: telegram (sessions API, ruling R39).
+
+No single-instance socket was left, no live Claude prompt was sent, no CodeMie sign-in or `codemie setup` ran, and
+the owner's data folder was not used.
+
+### Still needs the owner (live, not covered by mocks)
+
+| # | Check | Result |
+|---|---|---|
+| 1 | First launch of the merged build on a Mac account with no CodeMie profile: the sheet opens once after Today, "Not now" leaves the Today card (no Claude ready) or none (Claude ready) | not done |
+| 2 | A real expired CodeMie SSO profile: Settings → Claude shows "Needs sign-in", Sign in opens the browser, the card turns Ready, Today's banner and the dots go | not done |
+| 3 | Open in Terminal from Overview and Coding agents (`open_agent_in_terminal`) | not done |
+| 4 | A full SSO setup through the sheet, including a custom CodeMie address, then the new profile in Settings → Claude without a manual refresh | not done |
+| 5 | Bedrock and Claude/Kimi subscription setups through the sheet | not done |
+| 6 | Settings → CodeMie tabs live under `cargo tauri dev` (CLI 0.16.3): agents install/update/remove, connect Claude Desktop, Health | not done |
+| 7 | What `codemie profile status` reports for an active LiteLLM or Bedrock profile (the Claude tab offers no browser sign-in for those) | not done |
