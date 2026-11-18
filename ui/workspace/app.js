@@ -1,5 +1,6 @@
-// Workspace controller: routing, native snapshot rendering, actions and the lazily mounted
-// legacy CodeMie tools (installer, profiles, desktop proxy, health, analytics) under Settings.
+// Workspace controller: routing, native snapshot rendering and actions. Settings → CodeMie is
+// codemie/controller.js; the legacy installer UI (ui/renderer.js) only serves smoke/probe mode
+// and the storage-recovery page.
 import { createStore, escapeHtml as e } from './store.js';
 import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
@@ -14,7 +15,12 @@ import { inbox, filteredMessages, snoozeUntil, draftChecks } from './view-inbox.
 import {
   optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
 } from './draft-state.js';
-import { settings, LEGACY_TABS, SETTINGS_TABS } from './view-settings.js';
+import { settings, settingsTabFor } from './view-settings.js';
+import { createCodemieService } from './codemie/service.js';
+import { createCodemieController } from './codemie/controller.js';
+import { createRunLog } from './codemie/run-log.js';
+import { createSetupSession } from './codemie/setup-session.js';
+import { startSetup, cancelSetup } from '../setup-driver.js';
 import { automations, AUTOMATION_TABS } from './view-automations.js';
 import { createAutomationsController, notificationTarget } from './automations-controller.js';
 import { renderShell } from './shell.js';
@@ -66,10 +72,36 @@ const state = {
 let pluginHost = null;
 let lastPluginTheme = '';
 const drawnWidgets = new Map();
+// Settings → CodeMie: the CLI state behind it, "What CodeMie ran", the guided-setup session
+// (`codemie setup` in a headless PTY) and the controller that owns actions, sheet and banners.
+const codemieRunLog = createRunLog();
+const codemieSetup = createSetupSession({
+  // The PTY bridge and xterm load on first use: neither is needed until someone sets up CodeMie.
+  startSetup: async opts => {
+    const [{ pty }, { Terminal }] = await Promise.all([import('../runner-bridge.js'), import('../vendor/xterm.mjs')]);
+    return startSetup(opts, { spawnPty: pty.spawnPty, input: pty.input, kill: pty.kill, Terminal, suspendPtyInput: () => {}, resumePtyInput: () => {} });
+  },
+  cancelSetup,
+  readProfiles: () => invoke('read_codemie_profiles'),
+});
+const codemieService = createCodemieService({
+  invoke: (cmd, args) => invoke(cmd, args),
+  listen: (event, fn) => window.__TAURI__.event.listen(event, fn),
+  runLog: codemieRunLog,
+  platform: /^Win/i.test(navigator.platform || '') ? 'windows' : 'macos',
+  setupRunning: () => codemieSetup.running(),
+});
+const codemie = createCodemieController({
+  state, service: codemieService, session: codemieSetup, runLog: codemieRunLog,
+  render: () => render(), route: (name, tab) => route(name, tab),
+  openModal, confirmModal, toast,
+  writeText: text => navigator.clipboard.writeText(text),
+  localPref, setLocalPref, store, invoke: (cmd, args) => invoke(cmd, args),
+  canRender: () => ready && !recovering && !modalOpen(),
+  editing: () => editing() && !!document.activeElement?.closest('.ws-settings-content,#cm-sheet-host'),
+});
+codemie.busy = () => codemieSetup.running() || codemieService.busy();
 let legacyModule;
-let legacyMounted = false;
-let rendering = 0;
-let runtimeReady = false;
 let ready = false;
 let deferredNotification;
 let calendarScrollKey = '';
@@ -112,7 +144,7 @@ async function mutate(op, data = {}, workspaceId) {
     if (err?.code === 'stale_view') err.message = 'Your inbox or calendar updated while this was open. Review the latest details and try again.';
     throw err;
   } finally {
-    if (ready && !modalOpen() && !legacyMounted) await render();
+    if (ready && !modalOpen()) await render();
     flushNotification();
   }
 }
@@ -135,16 +167,12 @@ function applyTheme(theme) {
 const shellMarkup = () => renderShell({
   snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark'),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
+  settingsDot: codemie.settingsDot(),
 });
 
 function shell() {
   root.dataset.route = state.route;
   root.innerHTML = shellMarkup();
-}
-
-/** A Claude profile that can be used already brings AI tools to this Mac, so the setup banner is not needed. */
-function claudeProfileReady() {
-  return state.ai.status === 'ready' && Array.isArray(state.ai.profiles) && state.ai.profiles.some(p => p.state === 'ready');
 }
 
 function banners(s) {
@@ -156,9 +184,8 @@ function banners(s) {
   if (conn === 'other_account') {
     out.push(`<div class="ws-banner">${icon('info')}<div><strong>This workspace belongs to another Microsoft account</strong><p>Its notes and commitments are available. Use it with the signed-in account instead?</p></div><div class="ws-actions">${button('Use current account', { action: 'graph-bind', variant: 'primary' })}</div></div>`);
   }
-  if (state.route === 'today' && !runtimeReady && !claudeProfileReady() && localPref('codemie.setupBanner.dismissed', '') !== '1') {
-    out.push(`<div class="ws-banner">${icon('spark')}<div><strong>Bring your AI coding tools here too</strong><p>Set up CodeMie, Claude Code or Claude Desktop whenever you’re ready.</p></div><div class="ws-actions">${button('Set up AI tools', { action: 'setup-tools', variant: 'primary' })}${button('', { action: 'setup-dismiss', iconName: 'close', variant: 'ghost', title: 'Dismiss' })}</div></div>`);
-  }
+  // CodeMie: what needs the person (signed out, an agent too old, the gateway stopped).
+  out.push(codemie.banners(state.route));
   if (state.latestVersion && sessionPref('app-update-banner-dismissed') !== '1' && !(state.route === 'settings' && state.settingsTab === 'updates')) {
     out.push(`<div class="ws-banner">${icon('update')}<div><strong>CodeMie Connect ${e(state.latestVersion)} is available</strong><p>Your workspace and tool configuration are kept.</p></div><div class="ws-actions">${button('Review update', { action: 'settings-tab', variant: 'primary', attrs: { 'data-tab': 'updates' } })}${button('', { action: 'update-dismiss', iconName: 'close', variant: 'ghost', title: 'Dismiss' })}</div></div>`);
   }
@@ -209,10 +236,6 @@ function restoreScroll(saved) {
 
 async function render() {
   if (!store?.get() || recovering) return;
-  if (legacyMounted && legacyModule?.legacyToolsBusy()) {
-    applyTheme(snap().settings.theme);
-    return;
-  }
   const note = document.getElementById('today-note');
   const unsavedNote = note && note.value !== note.defaultValue ? { workspaceId: note.dataset.workspaceId, text: note.value } : null;
   const reply = document.getElementById('reply-body');
@@ -223,19 +246,17 @@ async function render() {
   const keepReply = reply && (document.activeElement === reply || unsavedReply) ? reply : null;
   const focused = document.activeElement;
   const refocus = focused && focused !== document.body && root.contains(focused) ? controlSelector(focused) : null;
-  const revision = ++rendering;
   heldRender = false;
   // A ⋯ menu the user opened stays open through an update (a minute tick, a new snapshot).
   const openMenus = [...root.querySelectorAll('details.ws-menu[open][data-menu]')].map(d => d.dataset.menu);
-  if (legacyMounted) {
-    legacy.classList.add('hidden');
-    document.body.append(legacy);
-    legacyMounted = false;
-  }
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
-  const ctx = { state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext() };
+  const ctx = {
+    state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(),
+    codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots() },
+    codemieCard: codemie.todayCard(),
+  };
   if (state.route === 'inbox') ensureSelection(s);
   if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
   const pageClass = `ws-page ws-page-${state.route}`;
@@ -275,26 +296,60 @@ async function render() {
   showPluginView();
   if (state.route === 'today') drawPageWidgets(s);
   lastDraftSignature = draftSignature(s);
-  if (state.route === 'settings' && document.getElementById('legacy-host')) await mountLegacy(revision);
+  renderSheet();
 }
 
-async function mountLegacy(revision) {
-  const host = document.getElementById('legacy-host');
-  if (!runtimeReady) {
-    host.innerHTML = `<section class="ws-card"><div class="ws-card-body">${`<div class="ws-empty"><span class="ws-empty-icon">${icon('tools')}</span><strong>Your CodeMie tools live here</strong><p>Prepare the CodeMie CLI to install AI tools or connect Claude Desktop. Today, Calendar and Inbox work without it.</p><div class="ws-actions">${button('Prepare CodeMie tools', { action: 'prepare-tools', variant: 'primary' })}</div></div>`}</div></section>`;
+// The CodeMie setup sheet lives outside #workspace-app so a page re-render never replays its
+// fade-in or loses what is typed in it: the element is created when the sheet opens, only its
+// content is replaced while it stays open, and it is removed when it closes.
+function renderSheet() {
+  let host = document.getElementById('cm-sheet-host');
+  const html = codemie.sheet();
+  if (!html) {
+    host?.querySelector('.cm-sheet')?.remove();
+    root.inert = false;
     return;
   }
-  try {
-    legacyModule ||= await import('../renderer.js');
-    if (revision !== rendering) return;
-    host.append(legacy);
-    legacy.classList.remove('hidden');
-    legacyMounted = true;
-    await legacyModule.openLegacyTools(LEGACY_TABS[state.settingsTab]);
-  } catch (err) {
-    fail(err);
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'cm-sheet-host';
+    document.body.append(host);
   }
+  let sheetEl = host.querySelector('.cm-sheet');
+  const opening = !sheetEl;
+  if (opening) {
+    sheetEl = document.createElement('div');
+    sheetEl.className = 'cm-sheet';
+    host.append(sheetEl);
+  }
+  // A dialog: the page behind takes no focus, clicks or keys while it is open.
+  root.inert = true;
+  const body = sheetEl.querySelector('.cm-stage-body');
+  const scroll = body?.scrollTop || 0;
+  const stepKey = sheetEl.querySelector('[data-step-key]')?.dataset.stepKey;
+  const refocus = document.activeElement && sheetEl.contains(document.activeElement) ? controlSelector(document.activeElement) : null;
+  sheetEl.innerHTML = html;
+  const nextBody = sheetEl.querySelector('.cm-stage-body');
+  if (nextBody && sheetEl.querySelector('[data-step-key]')?.dataset.stepKey === stepKey) nextBody.scrollTop = scroll;
+  if (refocus) soleMatch(sheetEl, refocus)?.focus({ preventScroll: true });
+  // Opening (or a focus left behind on a control that is gone): the panel takes focus.
+  if (opening || !sheetEl.contains(document.activeElement)) sheetEl.querySelector('.cm-sheet-panel')?.focus({ preventScroll: true });
 }
+
+const sheetOpen = () => !!document.querySelector('#cm-sheet-host .cm-sheet');
+
+// A click anywhere outside an open CodeMie ⋯ menu closes it.
+document.addEventListener('click', ev => {
+  for (const menu of document.querySelectorAll('details.cm-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
+}, true);
+
+// The setup sheet: Escape closes it (as its close button does), unless a dialog is open over it.
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape' || !sheetOpen() || modalOpen()) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  codemie.handle('cm-sheet-close', { dataset: {} }).catch(fail);
+});
 
 function ensureSelection(s) {
   if (state.lane === 'decisions') return;
@@ -337,10 +392,9 @@ async function saveNote(el) {
 }
 
 async function route(name, tab, pluginPath = null) {
-  if (legacyMounted && legacyModule && !(await legacyModule.leaveLegacyTools())) return;
   await savePendingNote();
   state.route = ROUTES.includes(name) ? name : 'today';
-  if (tab && state.route === 'settings') state.settingsTab = SETTINGS_TABS.some(([, id]) => id === tab) ? tab : 'general';
+  if (tab && state.route === 'settings') state.settingsTab = settingsTabFor(tab);
   const onPluginsTab = state.route === 'settings' && state.settingsTab === 'plugins';
   state.pluginPath = onPluginsTab ? pluginPath : null;
   state.pluginPage = null;
@@ -373,7 +427,6 @@ const PLUGIN_ITEM = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
 /** Opens a plugin's page: `#/p/<id>/<activity>[/<route>]`. */
 async function routePlugin(id, activity, rest = '') {
   if (!PLUGIN_ID.test(id) || !PLUGIN_ITEM.test(activity)) return route('today');
-  if (legacyMounted && legacyModule && !(await legacyModule.leaveLegacyTools())) return;
   await savePendingNote();
   state.route = 'plugin';
   state.pluginPage = { id, activity, route: rest };
@@ -474,7 +527,7 @@ let pluginRenderTimer = null;
 function pluginsChanged() {
   clearTimeout(pluginRenderTimer);
   pluginRenderTimer = setTimeout(() => {
-    if (ready && !modalOpen() && !editing() && !legacyMounted) render().catch(fail);
+    if (ready && !modalOpen() && !editing()) render().catch(fail);
   }, 60);
 }
 
@@ -631,7 +684,7 @@ function readClaude({ now = false, detect = false } = {}) {
     if (state.ai.status === 'loading') return;
     const changed = JSON.stringify([state.ai.profiles, state.ai.settings]) !== JSON.stringify([status.profiles, status.settings]);
     Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
-    if (changed && ['inbox', 'today', 'automations'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover && !legacyMounted) render();
+    if (changed && ['inbox', 'today', 'automations'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover) render();
   }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ }).finally(() => { claudeRead = null; });
   return plan.detect;
 }
@@ -812,7 +865,7 @@ async function closeDraftPopover(focusTrigger = true) {
 }
 
 function flushHeldRender() {
-  if (!heldRender || state.draftPopover || modalOpen() || legacyMounted) return;
+  if (!heldRender || state.draftPopover || modalOpen()) return;
   // Typing somewhere else (search, a note): the next update shows it instead.
   if (editing() && document.activeElement?.id !== 'reply-body') return;
   render().catch(fail);
@@ -1109,6 +1162,7 @@ async function handle(action, el) {
   if (action.startsWith('data-')) return storageAction(action, el);
   if (action.startsWith('automation') || action.startsWith('run-')) return automationsUi.handle(action, el);
   if (action.startsWith('plugin') || action.startsWith('market-')) return pluginAction(action, el);
+  if (action.startsWith('cm-') && await codemie.handle(action, el)) return undefined;
   const id = el.dataset.id;
   const s = snap();
   switch (action) {
@@ -1119,7 +1173,7 @@ async function handle(action, el) {
       }
       return route(el.dataset.route || 'today');
     case 'settings-tab': return route('settings', el.dataset.tab);
-    case 'setup-tools': return route('settings', 'installation');
+    case 'setup-tools': return route('settings', 'cm-overview');
     case 'ai-refresh': return loadAi();
     case 'ai-test': return testAiProfile(el.dataset.profile);
     case 'ai-test-model': state.ai.testModels[el.dataset.profile] = el.value; return;
@@ -1143,7 +1197,6 @@ async function handle(action, el) {
     case 'ai-open-settings':
       document.querySelectorAll('.ws-modal[open]').forEach(d => d.close());
       return route('settings', 'ai');
-    case 'setup-dismiss': setLocalPref('codemie.setupBanner.dismissed', '1'); return render();
     case 'update-dismiss': try { sessionStorage.setItem('app-update-banner-dismissed', '1'); } catch { /* ignore */ } return render();
     case 'update-check': return checkAppUpdate();
     case 'update-install': return confirmModal({
@@ -1162,11 +1215,6 @@ async function handle(action, el) {
         }
       },
     });
-    case 'prepare-tools':
-      legacyModule ||= await import('../renderer.js');
-      await legacyModule.initLegacyTools();
-      runtimeReady = true;
-      return render();
 
     // Microsoft
     case 'graph-connect': return connectMicrosoft();
@@ -1509,7 +1557,7 @@ async function prepareReply(id, body) {
 
 document.addEventListener('click', async ev => {
   const el = ev.target.closest('[data-action]');
-  if (!el || !el.closest('#workspace-app,.ws-modal')) return;
+  if (!el || !el.closest('#workspace-app,.ws-modal,#cm-sheet-host')) return;
   if (el.matches('input[type=checkbox],input[type=radio],select')) return;
   ev.preventDefault();
   if (el.disabled) return;
@@ -1527,6 +1575,7 @@ document.addEventListener('click', async ev => {
 document.addEventListener('change', async ev => {
   const el = ev.target;
   try {
+    if (el.closest?.('#workspace-app,.ws-modal,#cm-sheet-host') && await codemie.change(el)) return;
     if (el.matches('[data-action]') && (el.type === 'checkbox' || el.tagName === 'SELECT') && el.closest('#workspace-app,.ws-modal')) {
       await handle(el.dataset.action, el);
     }
@@ -1552,6 +1601,7 @@ document.addEventListener('submit', async ev => {
 });
 
 document.addEventListener('input', ev => {
+  if (codemie.input(ev.target)) return;
   if (ev.target.id === 'inbox-search') {
     state.search = ev.target.value;
     clearTimeout(searchTimer);
@@ -1586,7 +1636,7 @@ document.addEventListener('input', ev => {
 // The draft options popover: Esc closes it, ⌘↵ drafts, Tab stays inside it.
 document.addEventListener('keydown', ev => {
   const pop = state.draftPopover && document.getElementById('draft-options');
-  if (!pop || modalOpen()) return;
+  if (!pop || modalOpen() || sheetOpen()) return;
   if (ev.key === 'Escape') {
     ev.preventDefault();
     ev.stopPropagation();
@@ -1618,7 +1668,7 @@ window.addEventListener('resize', placeDraftPopover);
 document.addEventListener('scroll', placeDraftPopover, true);
 
 document.addEventListener('keydown', ev => {
-  if (!ready || modalOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if (!ready || modalOpen() || sheetOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
   if (state.route === 'calendar') {
     const keys = { t: () => setCalendar(todayDate()), ArrowLeft: () => stepCalendar(-1), ArrowRight: () => stepCalendar(1), d: () => setCalendar(state.calendarDate, 'day'), w: () => setCalendar(state.calendarDate, 'week'), m: () => setCalendar(state.calendarDate, 'month'), a: () => setCalendar(state.calendarDate, 'agenda') };
     if (keys[ev.key]) {
@@ -1652,7 +1702,7 @@ let minuteTimer;
 function scheduleMinuteRender() {
   clearTimeout(minuteTimer);
   minuteTimer = setTimeout(async () => {
-    if (ready && ['today', 'calendar', 'automations'].includes(state.route) && !modalOpen() && !editing() && !legacyMounted) await render().catch(() => {});
+    if (ready && ['today', 'calendar', 'automations'].includes(state.route) && !modalOpen() && !editing()) await render().catch(() => {});
     scheduleMinuteRender();
   }, 60_000 - (Date.now() % 60_000) + 50);
 }
@@ -1712,7 +1762,7 @@ const firstStorageReport = firstReport();
 function showRecovery(err) {
   if (recovering) return recovering;
   if (!firstStorageReport(err)) return undefined;
-  if (legacyMounted && legacyModule?.legacyToolsBusy()) {
+  if (codemie.busy()) {
     if (!recoveryDeferred) toast(err?.message || String(err), 'error');
     recoveryDeferred = true;
     return undefined;
@@ -1720,11 +1770,6 @@ function showRecovery(err) {
   ready = false;
   recovering = (async () => {
     document.querySelectorAll('.ws-modal[open]').forEach(d => d.close());
-    if (legacyMounted) {
-      legacy.classList.add('hidden');
-      document.body.append(legacy);
-      legacyMounted = false;
-    }
     const status = await invoke('storage_status').catch(() => null);
     recoveryView = { ...status, cause: err?.message || '' };
     renderRecovery();
@@ -1885,7 +1930,7 @@ async function boot() {
   } else {
     if (hash[1]) state.route = ROUTES.includes(hash[1]) ? hash[1] : 'today';
     if (hash[2] && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === hash[2]) ? hash[2] : 'automations';
-    else if (hash[2]) state.settingsTab = hash[2];
+    else if (hash[2]) state.settingsTab = settingsTabFor(hash[2]);
     if (state.route === 'settings' && hash[2] === 'plugins' && PLUGIN_ID.test(decodeURIComponent(hash[3] || ''))) {
       const section = decodeURIComponent(hash[4] || '');
       state.pluginPath = { id: decodeURIComponent(hash[3]), section: PLUGIN_ITEM.test(section) ? section : null };
@@ -1897,7 +1942,6 @@ async function boot() {
     return showRecovery(err);
   }
   await bootWorkspace(store, snap());
-  runtimeReady = await invoke('runtime_ready').catch(() => false);
   state.appVersion = await invoke('get_app_version').catch(() => '');
   // Plugin UIs: one sandboxed frame per enabled plugin with a client half, in a layer outside the
   // page the app redraws. A dev build may serve the frames from elsewhere (`pluginFrameBase`, the
@@ -1932,7 +1976,7 @@ async function boot() {
   }
   onModalClose(() => {
     if (modalOpen()) return;
-    if (!legacyMounted && !editing()) render().catch(fail);
+    if (!editing()) render().catch(fail);
     flushNotification();
   });
   store.subscribe(result => {
@@ -1941,8 +1985,8 @@ async function boot() {
     // A run started, ended or was stored: the Run log reads its newest page again.
     automationsUi.snapshotChanged(result.snapshot)?.catch(() => {});
     // A draft that arrived for the open reply box is applied first, whatever is on screen.
-    const arrived = !legacyMounted && applyArrivedDraft(result.snapshot);
-    if (modalOpen() || legacyMounted) return;
+    const arrived = applyArrivedDraft(result.snapshot);
+    if (modalOpen()) return;
     if (state.draftPopover) {
       heldRender = true;
       return;
@@ -1954,6 +1998,8 @@ async function boot() {
   });
   state.calendarDate = todayDate();
   ready = true;
+  // CodeMie reads the CLI in the background; the workspace does not wait for it.
+  codemie.boot().catch(fail);
   await render();
   if (aiTabOpen()) loadAi().catch(fail);
   if (generalTabOpen()) loadStorage().catch(fail);
@@ -1978,6 +2024,7 @@ async function boot() {
   await listen('workspace:quit-request', async () => {
     if (state.updateBusy) return toast('The update is in progress. Keep Connect open until it finishes.');
     if (legacyModule) await legacyModule.leaveLegacyTools();
+    return codemie.onQuitRequest();
   });
   await listen('workspace:notification-open', event => openNotification(event.payload || {}).catch(fail));
   await listen('workspace:installer-settled', flushNotification);
@@ -1993,6 +2040,8 @@ async function boot() {
       return;
     }
     store.refresh().catch(() => {});
+    // Back from Terminal or another app: an agent or app may have changed.
+    codemie.onFocus();
     // Back from Terminal or Settings: Claude may be signed in or set up now.
     if (readClaude({ now: true, detect: claudeRecheck })) claudeRecheck = false;
   });
@@ -2009,7 +2058,7 @@ async function boot() {
   scheduleMinuteRender();
   window.addEventListener('pagehide', () => clearInterval(authTimer), { once: true });
   if (state.route === 'calendar') await ensureCalendarWindow();
-  if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice };
+  if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice, codemie };
   if (smoke) {
     const report = await smoke.runMarketSmoke({
       invoke, market: marketSmoke, runId: flags.plugin_run_id, host: pluginHost, calls: smokeCalls,

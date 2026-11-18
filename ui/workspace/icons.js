@@ -66,6 +66,16 @@ const ICONS = {
   puzzle: '<path d="M5.5 6.75h3.5a2 2 0 1 1 4 0h3.5a1 1 0 0 1 1 1v3.5a2 2 0 1 1 0 4v3a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-10.5a1 1 0 0 1 1-1z"/>',
   automations: '<path d="M13.2 2.5 4.5 13.6h6.6l-1.3 7.9 8.7-11.1h-6.6z"/>',
   drive: '<rect x="2.5" y="13" width="19" height="7.5" rx="2"/><path d="M5 13 7.4 5.3A2 2 0 0 1 9.3 4h5.4a2 2 0 0 1 1.9 1.3L19 13"/><path d="M6.5 16.8h.01M10 16.8h.01"/>',
+  // Settings → CodeMie
+  terminal: '<rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/>',
+  package: '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+  plug: '<path d="M9 2.5v5M15 2.5v5M6 7.5h12v3.5a6 6 0 0 1-12 0zM12 17v4.5"/>',
+  cpu: '<rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
+  globe: '<circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5a14.5 14.5 0 0 1 0 19 14.5 14.5 0 0 1 0-19"/>',
+  building: '<rect x="4" y="2.5" width="16" height="19" rx="1.5"/><path d="M9 6.5h1M14 6.5h1M9 10.5h1M14 10.5h1M9 14.5h1M14 14.5h1M10 21.5v-3h4v3"/>',
+  'user-plus': '<circle cx="9" cy="8" r="4.5"/><path d="M1.5 21a7.5 7.5 0 0 1 15 0M19 8v6M16 11h6"/>',
+  swap: '<path d="M7 4 3 8l4 4M3 8h14M17 12l4 4-4 4M21 16H7"/>',
+  rocket: '<path d="M5 15c-1.5 1.3-2 5-2 5s3.7-.5 5-2c.7-.8.7-2.1-.1-2.9A2.2 2.2 0 0 0 5 15z"/><path d="m12 15-3-3a22 22 0 0 1 2-4A12.9 12.9 0 0 1 22 2c0 2.7-.8 7.5-6 11a22.4 22.4 0 0 1-4 2z"/><path d="M9 12H4s.6-3 2-4c1.6-1.1 5 0 5 0M12 15v5s3-.6 4-2c1.1-1.6 0-5 0-5"/>',
 };
 
 const FILLED = new Set(['dots', 'play']);

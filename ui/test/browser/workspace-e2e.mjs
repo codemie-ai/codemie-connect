@@ -60,9 +60,54 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready' }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
+  // ---- CodeMie CLI, mocked by scenario: 'fresh' (nothing set up), 'ready', 'expired' (signed out).
+  const NOT_CODEMIE = Symbol('not codemie');
+  const cm = {
+    profiles: codemie === 'fresh' ? [] : [{ name: 'prod', provider: 'ai-run-sso', model: 'claude-sonnet-4-5', codemieUrl: 'https://codemie.lab.epam.com', codemieProject: 'EPM-CDME' }],
+    signedIn: codemie !== 'expired',
+    agents: codemie === 'fresh' ? [] : ['claude'],
+    apps: { 'claude-desktop': codemie !== 'fresh' },
+  };
+  const agentList = () => `📦 Available Agents:\n\n  CodeMie Code (0.0.47)\n    Command: codemie-code\n    Status: ✓ installed\n    CodeMie Code - AI coding assistant\n\n${[['Claude Code', 'claude', '2.1.281', 'Claude Code - official Anthropic CLI tool'], ['Gemini CLI', 'gemini', '0.59.0', 'Google Gemini CLI - AI coding assistant'], ['OpenAI Codex CLI', 'codex', '0.154.0', 'OpenAI Codex CLI - AI coding agent by OpenAI'], ['Kimi Code ACP', 'kimi-acp', '0.42.0', 'Kimi Code CLI ACP mode for IDE integration']].map(([name, command, version, desc]) => `  ${name}${cm.agents.includes(command) ? ` (${version})` : ''}\n    Command: ${command}\n    Status: ${cm.agents.includes(command) ? '✓ installed' : 'not installed'}\n    ${desc}\n`).join('\n')}\n🛠️  Available Frameworks:\n`;
+  const doctorLines = ['Active Profile:', '  ✓ Active Profile: prod', '  ✓ Model: claude-sonnet-4-5', '', 'Installed Agents:', '  ✓ Claude Code (2.1.281)', '', 'Node.js:', '  ✓ Version 22.23.2', ''];
+  const stream = async (id, lines) => {
+    for (const text of lines) window.__emitNative('engine:cmd-line', { id, text, tag: 'stdout' });
+    return 0;
+  };
+  async function codemieNative(cmd, args) {
+    switch (cmd) {
+      case 'runtime_ready': return true;
+      case 'ensure_runtime': window.__emitNative('runtime:progress', { phase: 'cli', fraction: 1 }); return null;
+      case 'update_cli': return null;
+      case 'check_handshake_state': return { global_found: false, global_version: null, bundled_takes_precedence: false };
+      case 'codemie_org_defaults': return null;
+      case 'read_codemie_profiles': return { state: cm.profiles.length ? 'valid' : 'no-configuration', active: cm.profiles[0]?.name ?? null, account: cm.profiles.length ? 'taylor.morgan@epam.com' : null, profiles: JSON.parse(JSON.stringify(cm.profiles)) };
+      case 'check_profile_status': return { state: cm.signedIn ? 'signed_in' : 'not_signed_in', detail: '', code: 0 };
+      case 'codemie_app_states': return ['claude-desktop', 'vscode-copilot', 'vscode-claude', 'codex-desktop'].map(id => ({ id, installed: id === 'claude-desktop', configured: !!cm.apps[id] }));
+      case 'codemie_url_check': return /example\.com/.test(args.url) ? { verdict: 'not_codemie', status: 404, detail: `GET ${args.url}/code-assistant-api/v1/auth/login/53117 → 404` } : { verdict: 'codemie', status: 302, detail: 'GET … → 302' };
+      case 'open_agent_in_terminal': case 'open_app_download': case 'pick_project_folder': return null;
+      case 'run_capture': {
+        const c = args.cmd;
+        if (c.startsWith('codemie list')) return { code: 0, stdout: agentList(), stderr: '' };
+        if (c.startsWith('codemie --version')) return { code: 0, stdout: '0.16.3\n', stderr: '' };
+        if (c.startsWith('codemie proxy status')) return { code: 0, stdout: JSON.stringify(cm.apps['claude-desktop'] ? { status: 'healthy', apiKey: 'gk-mock', port: 4001, profile: 'prod' } : { status: 'stopped' }), stderr: '' };
+        if (c.startsWith('codemie proxy connect')) { cm.apps['claude-desktop'] = true; return { code: 0, stdout: '✓ Claude Desktop connected', stderr: '' }; }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      case 'run_stream': {
+        const c = args.cmd;
+        await new Promise(r => setTimeout(r, 200));
+        if (c.startsWith('codemie install ')) { cm.agents.push(c.split(' ')[2]); return stream(args.streamId, ['- Installing', '✓ Installed']); }
+        if (c.startsWith('codemie doctor')) return stream(args.streamId, doctorLines);
+        if (c.startsWith('codemie profile login')) { cm.signedIn = true; return stream(args.streamId, ['Opening browser for authentication...', '✓ Authentication successful!']); }
+        return stream(args.streamId, []);
+      }
+      default: return NOT_CODEMIE;
+    }
+  }
   const s = snapshot;
   // Automation runs live beside the snapshot, as in native: the snapshot shows each
   // automation's latest run and its latest run on Today; `automation_runs` pages through all.
@@ -432,7 +477,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
           if (args.command === 'greet') return { text: `Hello, ${args.args?.name || 'you'}`, from: 'CodeMie Connect' };
           throw { code: 'not_found', message: `${args.id} has no command “${args.command}”` };
         }
-        if (cmd === 'runtime_ready') return false;
+        const codemieResult = await codemieNative(cmd, args);
+        if (codemieResult !== NOT_CODEMIE) return codemieResult;
         if (cmd === 'get_app_version') return '2.2.0';
         if (cmd === 'check_for_update') return null;
         if (cmd === 'workspace_installer_busy') return null;
@@ -522,7 +568,7 @@ const STORAGE = {
   disk_full: storageOf('not_writable', { issue: 'The disk that holds your data folder is full.' }),
 };
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, pluginRecords = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, pluginRecords = null, codemie = 'ready' } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -542,7 +588,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/` })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/` })})`);
   await page.goto(base + hash);
   await page.waitForSelector(unavailable ? '.ws-recovery' : '.ws-sidebar');
   currentPage = page;
@@ -759,7 +805,7 @@ for (const theme of ['dark', 'light']) {
     await page.click('.ws-account button:has-text("Sync now")');
     await page.waitForSelector('.ws-sync-pill:has-text("Syncing")');
     await page.waitForSelector('.ws-sync-pill:has-text("Synced")', { timeout: 4000 });
-    for (const tab of ['general', 'notifications', 'appearance', 'queues', 'privacy', 'activity', 'updates', 'installation']) {
+    for (const tab of ['general', 'notifications', 'appearance', 'queues', 'privacy', 'activity', 'updates', 'cm-health']) {
       await page.click(`.ws-settings-nav button[data-tab=${tab}]`);
       await page.waitForSelector('.ws-settings-panels .ws-card');
       if (['general', 'notifications', 'appearance'].includes(tab)) await shot(page, `${theme}-settings-${tab}`);
@@ -2016,6 +2062,96 @@ for (const width of [1000, 1680]) {
     await shot(page, `light-settings-claude-${width}`);
   });
   await context.close().catch(() => {});
+}
+
+// ---------------------------------------------------------------- Settings → CodeMie
+
+const SHEET = '#cm-sheet-host .cm-sheet-panel';
+for (const theme of ['dark', 'light']) {
+  const fresh = await open({ theme, codemie: 'fresh' });
+  await check(`${theme} codemie: first launch opens setup`, async () => {
+    await fresh.page.waitForSelector(`${SHEET} :text("Let’s get your AI coding tools working")`);
+    await fresh.page.waitForTimeout(300); // the sheet fades in over 0.2 s
+    await shot(fresh.page, `${theme}-codemie-welcome`);
+    await fresh.page.click(`${SHEET} button:has-text("Not now")`);
+    await fresh.page.waitForSelector(SHEET, { state: 'detached' });
+    await fresh.page.waitForSelector('.cm-today-setup :text("Set up your AI coding tools")');
+    await shot(fresh.page, `${theme}-codemie-today-card`);
+  });
+  await check(`${theme} codemie: org address errors`, async () => {
+    const { page } = fresh;
+    await page.click('.cm-today-setup button:has-text("Set up CodeMie")');
+    await page.waitForSelector(`${SHEET} :text("How should CodeMie reach a model?")`);
+    await page.click(`${SHEET} label.cm-choice:has(input[value=org])`);
+    await page.fill(`${SHEET} input[data-draft=orgUrl]`, 'http://codemie.acme.com');
+    await page.click(`${SHEET} button:has-text("Sign in with browser")`);
+    await page.waitForSelector(`${SHEET} :text("The address must start with https://")`);
+    await page.fill(`${SHEET} input[data-draft=orgUrl]`, 'www.example.com');
+    await page.click(`${SHEET} button:has-text("Try again")`);
+    await page.waitForSelector(`${SHEET} :text("www.example.com is not a CodeMie address")`);
+    await shot(page, `${theme}-codemie-org-address-error`);
+    await page.click(`${SHEET} button[title^="Close"]`);
+    await page.waitForSelector(SHEET, { state: 'detached' });
+  });
+  // Review finding 6: the sheet is a dialog — focus goes into it, Escape closes it, and the page
+  // behind it does not take keys meanwhile.
+  await check(`${theme} codemie: the setup sheet keeps the keyboard`, async () => {
+    const { page } = fresh;
+    await page.click('.ws-nav button[data-route=calendar]');
+    await page.waitForSelector('.ws-page-calendar');
+    const before = await page.locator('.ws-page-calendar h1').first().innerText();
+    await page.evaluate(() => window.__workspace.codemie.handle('cm-setup-open', { dataset: {} }));
+    await page.waitForSelector(SHEET);
+    await page.waitForTimeout(250);
+    assert(await page.evaluate(() => !!document.activeElement?.closest('#cm-sheet-host')), 'focus is not in the sheet');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('m');
+    assert((await page.locator('.ws-page-calendar h1').first().innerText()) === before, 'the calendar behind the sheet moved');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector(SHEET, { state: 'detached' });
+  });
+  await check(`${theme} codemie: first launch no page errors`, async () => assert(fresh.errors.length === 0, fresh.errors.join(' | ')));
+  await fresh.context.close().catch(() => {});
+
+  const expired = await open({ theme, codemie: 'expired' });
+  await check(`${theme} codemie: expired sign-in banner and sign in again`, async () => {
+    const { page } = expired;
+    const banner = page.locator('.ws-banner:has-text("CodeMie sign-in expired for “prod”")');
+    await banner.waitFor();
+    await shot(page, `${theme}-codemie-expired-banner`);
+    await banner.locator('button:has-text("Sign in again")').click();
+    await page.waitForSelector('.ws-toast:has-text("Signed in again to “prod”")', { timeout: 6000 });
+    await page.waitForSelector(SHEET, { state: 'detached' });
+  });
+  await check(`${theme} codemie: expired no page errors`, async () => assert(expired.errors.length === 0, expired.errors.join(' | ')));
+  await expired.context.close().catch(() => {});
+
+  for (const width of [1000, 1680]) {
+    const ready = await open({ theme, width, codemie: 'ready', hash: '#/settings/cm-overview' });
+    await check(`${theme} ${width}px codemie: settings tabs render`, async () => {
+      const { page } = ready;
+      for (const tab of ['cm-overview', 'cm-profiles', 'cm-agents', 'cm-apps', 'cm-health']) {
+        await page.click(`.ws-settings-nav button[data-tab=${tab}]`);
+        await page.waitForSelector('.ws-settings-panels > *');
+        if (tab === 'cm-overview') await page.waitForSelector('.cm-tile');
+        if (tab === 'cm-agents') await page.waitForSelector('[data-agent="claude"]');
+        if (tab === 'cm-health') await page.waitForSelector('.cm-health-group, .ws-empty');
+        await page.waitForTimeout(300);
+        const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-settings-panels')].map(e => e.scrollWidth - e.clientWidth)));
+        assert(overflow <= 0, `${tab} overflows by ${overflow}px`);
+        await shot(page, `${theme}-settings-${tab}-${width}`);
+      }
+    });
+    await check(`${theme} ${width}px codemie: no legacy chrome in settings`, async () => {
+      const { page } = ready;
+      assert(!(await page.locator('#identity-bar:visible').count()), 'legacy identity bar is visible');
+      assert(!(await page.locator('#sidebar-analytics').count()), 'analytics entry exists');
+      assert(!(await page.locator('#legacy-host').count()), 'legacy host exists');
+      assert(!(await page.locator('.ws-settings-nav :text("CLI usage analytics")').count()), 'analytics tab exists');
+    });
+    await check(`${theme} ${width}px codemie: settings no page errors`, async () => assert(ready.errors.length === 0, ready.errors.join(' | ')));
+    await ready.context.close().catch(() => {});
+  }
 }
 
 await browser.close();

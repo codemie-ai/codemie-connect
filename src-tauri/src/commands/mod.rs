@@ -1,5 +1,7 @@
 pub mod app_updater;
+pub mod codemie_apps;
 pub mod codemie_config;
+pub mod codemie_server;
 pub mod downloader;
 pub mod handshake;
 pub mod inspector;
@@ -12,4 +14,5 @@ pub mod pty;
 pub mod runner;
 pub mod runtime;
 pub mod smoke;
+pub mod terminal_launch;
 pub mod window;

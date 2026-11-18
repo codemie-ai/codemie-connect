@@ -18,6 +18,9 @@ const ANCHOR_MAP = [
   ['Enter a name for this profile:',             'profileName'],
   ['Switch to profile',                          'activate'],
   ['Would you like to install Claude Code now?', 'installClaude'],
+  ['Select LiteLLM integration',                 'integration'],
+  ['Authentication method:',                     'bedrockAuth'],
+  ['Select AWS profile:',                        'awsProfile'],
 ];
 
 const isQuestion = (l) => l.trimStart().startsWith('?');

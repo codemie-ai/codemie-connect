@@ -23,8 +23,8 @@ export function pluginNav(activities = [], current = null) {
   return `<div class="ws-nav-group ws-plugin-nav"><div class="ws-nav-label">Plugins</div><nav class="ws-nav" aria-label="Plugins">${activities.map(a => `<button type="button" data-action="plugin-page" data-plugin-id="${e(a.plugin)}" data-activity="${e(a.id)}" title="${e(a.label)}" ${current && current.plugin === a.plugin && current.id === a.id ? 'aria-current="page"' : ''}>${icon('puzzle')}<span>${e(a.label)}</span></button>`).join('')}</nav></div>`;
 }
 
-// state: { snapshot, route, resolvedDark, plugins: {activities, current} }
-export function renderShell({ snapshot: s, route, resolvedDark, plugins = {} }) {
+// state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot } — settingsDot: CodeMie needs the person.
+export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false }) {
   const w = active(s);
   const c = s.connection;
   const replies = attentionMessages(s).length;
@@ -35,7 +35,7 @@ export function renderShell({ snapshot: s, route, resolvedDark, plugins = {} }) 
       <nav class="ws-nav" aria-label="Main navigation">${NAV.map(([id, label]) => `<button type="button" data-action="route" data-route="${id}" ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${id === 'inbox' && replies ? `<small class="ws-count">${replies}</small>` : ''}</button>`).join('')}</nav>
       ${pluginNav(plugins.activities, plugins.current)}
       <div class="ws-sidebar-bottom">
-        <nav class="ws-nav" aria-label="Application"><button type="button" data-action="route" data-route="settings" ${route === 'settings' ? 'aria-current="page"' : ''}>${icon('settings')}<span>Settings</span>${c && c.status !== 'connected' && c.status !== 'disconnected' ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button></nav>
+        <nav class="ws-nav" aria-label="Application"><button type="button" data-action="route" data-route="settings" ${route === 'settings' ? 'aria-current="page"' : ''}>${icon('settings')}<span>Settings</span>${(c && c.status !== 'connected' && c.status !== 'disconnected') || settingsDot ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button></nav>
         <button type="button" class="ws-user" data-action="settings-tab" data-tab="microsoft" title="${connected ? 'Microsoft 365 account' : 'Connect Microsoft 365'}">
           ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 32 })}
           <span class="ws-user-copy"><strong>${e(connected ? c.displayName : 'Personal workspace')}</strong><span>${e(connected ? (c.jobTitle || c.email) : 'Connect Microsoft 365')}</span></span>

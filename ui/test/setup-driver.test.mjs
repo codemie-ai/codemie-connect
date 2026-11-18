@@ -1270,6 +1270,25 @@ for (const id of ['customModel', 'modelManual']) {
   });
 }
 
+// Settings → CodeMie's guided setup answers the free-text model fallback itself (a Claude or Kimi
+// subscription lists no models); the legacy screen keeps rejecting it.
+for (const id of ['customModel', 'modelManual']) {
+  test(`${id} with answerManualModel goes to onPrompt as an input and the answer is typed`, async () => {
+    const fake = makeFakePty();
+    const termInstance = makeFakeTerminal()();
+    termInstance.__setLines(fixture(id));
+    let seen = null;
+    const p = startSetup({ answerManualModel: true, onPrompt: async (prompt) => { seen = prompt; return 'claude-sonnet-4-5'; } },
+      { suspendPtyInput: () => {}, resumePtyInput: () => {}, spawnPty: fake.spawnPty, input: fake.input, kill: fake.kill, Terminal: () => termInstance });
+    fake.feedRaw('AAAA');
+    fake.exit(1);
+    await p.catch(() => {});
+    assert.equal(seen?.kind, 'input');
+    assert.equal(seen?.id, id);
+    assert.deepEqual(fake.writes, ['claude-sonnet-4-5\r']);
+  });
+}
+
 for (const id of ['codemieUrl', 'credential']) {
   test(`${id} fixture: onPrompt called with kind 'input' and this id; answer text + \\r written, not arrow keys`, async () => {
     const fake = makeFakePty();

@@ -30,13 +30,22 @@ function makeRoot() {
 test('while the checklist is unfinished the other screens are locked', () => {
   const root = makeRoot();
   applyOnboardingNav(root, { done: false });
-  // CLI usage analytics reports on sessions there are none of yet.
-  for (const id of ['sidebar-agents', 'sidebar-connections', 'sidebar-health', 'sidebar-analytics']) {
+  for (const id of ['sidebar-agents', 'sidebar-connections', 'sidebar-health']) {
     const el = root.entries.get(id);
     assert.equal(el.disabled, true, `${id} must not be clickable`);
     assert.equal(el.classes.has('locked'), true);
     assert.equal(el.attrs.get('aria-disabled'), 'true');
   }
+});
+
+// CLI usage analytics is gone until it comes back as a native page.
+test('there is no CLI usage analytics entry', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /sidebar-analytics|CLI usage analytics/);
+  const root = makeRoot();
+  applyOnboardingNav(root, { done: false });
+  assert.equal(root.entries.get('sidebar-analytics').disabled, false, 'the nav no longer knows the entry');
 });
 
 // The checklist sends the user to Agents and Health itself. Locking Home too

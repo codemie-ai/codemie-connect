@@ -19,7 +19,7 @@ export function chooserBody(profiles = []) {
   const ready = profiles.filter(p => p.state === 'ready');
   if (!ready.length) {
     return `<p class="ws-modal-text">No Claude is ready on this Mac yet. Connect needs either Claude Code with your subscription or a CodeMie profile.</p>
-      <ol class="ws-ai-setup"><li>Install and sign in to Claude Code (open Terminal, run <code>claude</code>, then type <code>/login</code>), or set up a CodeMie profile in CodeMie tools.</li><li>Open <strong>Settings → Claude</strong> and check again.</li></ol>
+      <ol class="ws-ai-setup"><li>Install and sign in to Claude Code (open Terminal, run <code>claude</code>, then type <code>/login</code>), or set up a CodeMie profile in Settings → CodeMie.</li><li>Open <strong>Settings → Claude</strong> and check again.</li></ol>
       <div class="ws-actions">${button('Open Claude settings', { action: 'ai-open-settings', variant: 'primary', iconName: 'settings' })}</div>`;
   }
   return `<div class="ws-ai-choices" role="group" aria-label="Claude profiles">${ready.map(option).join('')}</div>

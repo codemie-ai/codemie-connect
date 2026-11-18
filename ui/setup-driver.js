@@ -286,14 +286,17 @@ let cancelPending = false;
 // side gives that 5s, so this sits just past it.
 const CANCEL_UNWIND_TIMEOUT_MS = 6000;
 
-export async function startSetup({ onPrompt, onLog, replay, onScreen } = {}, deps = {}) {
+// answerManualModel: hand the free-text model fallback (customModel / modelManual) to onPrompt as
+// an input instead of rejecting the run. Settings → CodeMie opts in: a subscription provider lists
+// no models, so the person picks one there. The legacy setup screen does not.
+export async function startSetup({ onPrompt, onLog, replay, onScreen, answerManualModel = false } = {}, deps = {}) {
   if (active) {
     throw { step: null, message: 'startSetup already in progress', raw: '' };
   }
   active = true;
   cancelPending = false;
   try {
-    activeDone = runSetup({ onPrompt, onLog, replay, onScreen }, deps);
+    activeDone = runSetup({ onPrompt, onLog, replay, onScreen, answerManualModel }, deps);
     return await activeDone;
   } finally {
     active = false;
@@ -334,7 +337,7 @@ export async function cancelSetup() {
 }
 
 // eslint-disable-next-line no-unused-vars -- replay is accepted and intentionally ignored (EPMCDME-14656 implements it later)
-async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
+async function runSetup({ onPrompt, onLog, replay, onScreen, answerManualModel }, deps) {
   const spawnPty = deps.spawnPty ?? (await import('./runner-bridge.js')).pty.spawnPty;
   const input = deps.input ?? (await import('./runner-bridge.js')).pty.input;
   const kill = deps.kill ?? (await import('./runner-bridge.js')).pty.kill;
@@ -603,7 +606,7 @@ async function runSetup({ onPrompt, onLog, replay, onScreen }, deps) {
     if (lastAnsweredInput !== null && prompt.id !== lastAnsweredInput.id) lastAnsweredInput = null;
     promptInFlight = true;
     try {
-      if (prompt.id === 'customModel' || prompt.id === 'modelManual') {
+      if ((prompt.id === 'customModel' || prompt.id === 'modelManual') && !answerManualModel) {
         throw {
           step: 'model',
           message: `model step requires a fetched list; got free-text fallback prompt "${prompt.id}"`,

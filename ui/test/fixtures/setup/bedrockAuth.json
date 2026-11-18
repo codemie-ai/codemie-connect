@@ -1,0 +1,13 @@
+[
+  "",
+  "Let's configure your AI assistant.",
+  "",
+  "? Where would you like to store this configuration? Global (~/.codemie/) - Available across all ",
+  "repositories",
+  "? Choose your LLM provider:",
+  " AWS Bedrock - Amazon Bedrock with Claude models",
+  "",
+  "? Authentication method: (Use arrow keys)",
+  "❯ AWS Profile (recommended) ",
+  "  Access Key + Secret Key "
+]

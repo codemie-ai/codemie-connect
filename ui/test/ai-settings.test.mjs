@@ -9,8 +9,17 @@ const loaded = (kind, extra = {}) => ({ status: 'ready', ...aiStatus(kind), usag
 test('ai_panel_renders_each_state', () => {
   const none = aiPanel(loaded('none'));
   assert.match(none, /Not installed/);
-  assert.match(none, /Open CodeMie tools/);
+  assert.match(none, /data-action="cm-setup-open"/);
+  assert.doesNotMatch(none, /Open CodeMie tools|data-action="setup-tools"/);
   assert.doesNotMatch(none, /data-action="ai-test"/);
+
+  // A CodeMie profile that needs a sign-in is signed in from here, in the browser.
+  const signedOut = loaded('both');
+  signedOut.profiles[2] = { ...signedOut.profiles[2], state: 'needs_login' };
+  const staging = aiPanel(signedOut).split('data-ai-profile=').find((c) => c.startsWith(`"${signedOut.profiles[2].id}"`));
+  assert.match(staging, /data-action="cm-profile-login"[^>]*data-id="staging"/);
+  assert.match(staging, /data-action="cm-tab"[^>]*data-tab="cm-profiles"/);
+  assert.doesNotMatch(staging, /Open CodeMie tools|codemie profile login/);
 
   const native = aiPanel(loaded('native'));
   assert.match(native, /data-ai-profile="claude"/);
@@ -112,7 +121,9 @@ test('ai_panel_renders_usage_rows_per_profile', () => {
 
 test('ai_panel_explains_a_codemie_profile_that_needs_sign_in_and_hides_routing_when_nothing_is_ready', () => {
   const both = aiPanel(loaded('both'));
-  assert.match(both, /codemie profile login/);
+  // Signed in from here, not by typing `codemie profile login` in Terminal.
+  assert.match(both, /data-action="cm-profile-login"/);
+  assert.doesNotMatch(both, /codemie profile login/);
   const none = aiPanel(loaded('none'));
   assert.match(none, /data-ai-routing-off/);
   assert.doesNotMatch(none, /data-route="/);

@@ -9,6 +9,24 @@ function fixture(id) {
   return JSON.parse(readFileSync(p, 'utf8'));
 }
 
+// Without its own anchor "? Select LiteLLM integration:" is read as a credential input, and
+// a driver would type an API key into a list.
+test('integration_prompt_is_a_list', () => {
+  const p = detectPrompt(fixture('integration'));
+  assert.equal(p?.id, 'integration');
+  assert.equal(p.kind, 'list');
+  assert.deepEqual(p.options, ['litellm-default (epm-sdai)', 'litellm-eu (epm-sdai)']);
+});
+
+test('bedrock_auth_prompt_is_a_list', () => {
+  const p = detectPrompt(fixture('bedrockAuth'));
+  assert.equal(p?.id, 'bedrockAuth');
+  assert.equal(p.kind, 'list');
+  assert.equal(p.options.length, 2);
+  const aws = detectPrompt(['? Select AWS profile: (Use arrow keys)', '❯ default ', '  work ']);
+  assert.equal(aws?.id, 'awsProfile');
+});
+
 const CASES = [
   ['gate',          'list',    'What would you like to do?'],
   ['updateProfile', 'list',    'Select profile to update:'],

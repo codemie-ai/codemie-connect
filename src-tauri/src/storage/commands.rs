@@ -554,21 +554,29 @@ pub async fn data_location_pick(
     require_main_frame(&call)?;
     main_window_only(window.label())?;
     not_restarting(&state)?;
-    pick_folder(&app, window, home_dir(&app)).await
+    pick_folder(
+        &app,
+        window,
+        home_dir(&app),
+        "Choose where Connect keeps its data",
+    )
+    .await
 }
 
 #[cfg(any(target_os = "macos", windows))]
-async fn pick_folder(
+pub(crate) async fn pick_folder(
     app: &tauri::AppHandle,
     window: tauri::WebviewWindow,
     start: PathBuf,
+    title: &str,
 ) -> Result<Option<String>> {
     let unavailable = || WorkspaceError::new("io", "Connect couldn’t open the folder picker.");
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let title = title.to_string();
     app.run_on_main_thread(move || {
         let picking = rfd::AsyncFileDialog::new()
             .set_parent(&window)
-            .set_title("Choose where Connect keeps its data")
+            .set_title(title)
             .set_can_create_directories(true)
             .set_directory(start)
             .pick_folder();
@@ -581,14 +589,15 @@ async fn pick_folder(
     Ok(picked.map(|folder| folder.path().to_string_lossy().into_owned()))
 }
 #[cfg(not(any(target_os = "macos", windows)))]
-async fn pick_folder(
+pub(crate) async fn pick_folder(
     _app: &tauri::AppHandle,
     _window: tauri::WebviewWindow,
     _start: PathBuf,
+    _title: &str,
 ) -> Result<Option<String>> {
     Err(WorkspaceError::new(
         "unsupported",
-        "Choosing a data folder is available on macOS and Windows.",
+        "Choosing a folder is available on macOS and Windows.",
     ))
 }
 

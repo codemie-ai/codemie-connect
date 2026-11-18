@@ -98,6 +98,7 @@ export function today(s, ctx) {
       <div class="ws-actions">${button('Customize', { action: 'customize', iconName: 'sliders' })}</div>
     </header>
     ${banners}
+    ${ctx.codemieCard || ''}
     ${state === 'none' || state === 'authorizing' ? connectHero(state) : ''}
     ${layout.length ? `<div class="ws-grid">${grid}</div>` : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want on Today.', actions: button('Choose cards', { action: 'customize', variant: 'primary' }) })}
   </div>`;

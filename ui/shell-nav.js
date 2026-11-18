@@ -7,9 +7,7 @@
 // checklist item that opens Agents or Health has to leave a way back.
 //
 // Pure DOM: the caller passes the element that holds the entries.
-// CLI usage analytics is locked with them: until sign-in and model are set there are no
-// sessions for it to report on.
-const ONBOARDING_LOCKED = ['sidebar-agents', 'sidebar-connections', 'sidebar-health', 'sidebar-analytics'];
+const ONBOARDING_LOCKED = ['sidebar-agents', 'sidebar-connections', 'sidebar-health'];
 
 export function applyOnboardingNav(root, { done } = {}) {
   for (const id of ONBOARDING_LOCKED) {
