@@ -29,6 +29,7 @@ pub mod settings;
 pub mod signin;
 pub mod store;
 pub mod today;
+pub mod vault_git;
 pub mod window;
 
 use super::host::{ErrorCode, HostError, HostServices, PluginHost};
@@ -340,6 +341,7 @@ impl HostServices for Services {
             match name.as_str() {
                 "fs.readMany" | "fs.walk" | "fs.search" => fs::call_async(me, p, &name, args).await,
                 "store.walk" => store::walk(me, p, args).await,
+                n if n.starts_with("git.") => git(me, p, n, args).await,
                 "system.pickFolder" => fs::pick_folder(&me, &p, &args).await,
                 "system.pickFiles" => files::pick(&me, &p, &args).await,
                 "fs.copyIn" => {
@@ -362,6 +364,26 @@ impl HostServices for Services {
             }
         })
     }
+}
+
+/// `ctx.git.<name>(root, …)` in a folder the user gave the plugin (`init` and `commit` change it:
+/// `folders.write`), off the async runtime.
+async fn git(
+    s: Arc<Services>,
+    p: Arc<Granted>,
+    name: &str,
+    args: Value,
+) -> Result<Value, HostError> {
+    let op = name.trim_start_matches("git.").to_string();
+    let root = text(&args, 0, "a folder")?.to_string();
+    let dir = if vault_git::writes(&op) {
+        fs::writable_root(&s, &p, &root)?
+    } else {
+        fs::root_of(&s, &p, &root)?
+    };
+    tauri::async_runtime::spawn_blocking(move || vault_git::call(&dir, &p.id, &op, &args))
+        .await
+        .map_err(|e| bad(e.to_string()))?
 }
 
 // ------------------------------------------------------------------ shared helpers

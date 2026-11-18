@@ -839,3 +839,192 @@ fn urlencoding(text: &str) -> String {
         })
         .collect()
 }
+
+#[tokio::test]
+async fn knowledge_writes_pages_with_git_history_and_takes_picked_files() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let c = Connect::start(&dir, &[&described(), &described()]).await;
+    // The twin preset makes a new vault, with its own git repository, in a folder the user picks.
+    let folder = c.tmp.path().join("My Twin");
+    std::fs::create_dir_all(&folder).unwrap();
+    c.picker.next(&folder);
+    let made = c
+        .call(
+            "obsidian",
+            "new_vault",
+            json!({"name": "My Twin", "git": true, "minutes": "auto"}),
+        )
+        .await;
+    assert_eq!(made["git"], "committed", "{made}");
+    assert_eq!(made["left_out"], json!([]), "{made}");
+    let id = made["id"].as_str().unwrap().to_string();
+    let root = Path::new(made["root"].as_str().unwrap()).to_path_buf();
+    assert!(root.join(".git").is_dir());
+    assert!(
+        root.join(".gitignore").is_file(),
+        "the preset's hidden files are written"
+    );
+    c.call(
+        "obsidian",
+        "set",
+        json!({"id": id, "key": "commit", "value": "true"}),
+    )
+    .await;
+
+    // Edit a page over the text it was opened with; an edit over a stale copy is a conflict.
+    let page = c
+        .call("obsidian", "page", json!({"id": id, "path": "CATALOG.md"}))
+        .await;
+    let base = page["base"].clone();
+    assert_eq!(page["editable"], true, "{page}");
+    let original = std::fs::read_to_string(root.join("knowledge/CATALOG.md")).unwrap();
+    let edited = format!("{original}\nEdited in Connect.\n");
+    let saved = c
+        .call(
+            "obsidian",
+            "save_page",
+            json!({"id": id, "path": "CATALOG.md", "text": edited, "base": base, "message": "Edit the index"}),
+        )
+        .await;
+    assert!(
+        saved
+            .get("conflict")
+            .is_none_or(|x| !x.as_bool().unwrap_or(false)),
+        "{saved}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("knowledge/CATALOG.md")).unwrap(),
+        edited
+    );
+    let stale = c
+        .manager
+        .call(
+            "obsidian",
+            "save_page",
+            json!({"id": id, "path": "CATALOG.md", "text": "# Gone\n", "base": base, "message": "x"}),
+        )
+        .await;
+    let stale_said = match stale {
+        Ok(v) => v.to_string(),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        stale_said.contains("conflict") || stale_said.contains("changed since"),
+        "{stale_said}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("knowledge/CATALOG.md")).unwrap(),
+        edited,
+        "the stale save wrote nothing"
+    );
+
+    // History: the preset's commit and the edit, newest first, each by the plugin; restore the
+    // first version over the edit.
+    let history = c
+        .call(
+            "obsidian",
+            "history",
+            json!({"id": id, "path": "CATALOG.md"}),
+        )
+        .await;
+    let versions = history["versions"].as_array().unwrap();
+    assert_eq!(versions.len(), 2, "{history}");
+    assert_eq!(versions[0]["echo"], "obsidian");
+    let first = versions[1]["rev"].as_str().unwrap().to_string();
+    let version = c
+        .call(
+            "obsidian",
+            "version",
+            json!({"id": id, "path": "CATALOG.md", "rev": first}),
+        )
+        .await;
+    assert!(version.get("diff").is_some(), "{version}");
+    c.call(
+        "obsidian",
+        "restore",
+        json!({"id": id, "path": "CATALOG.md", "rev": first}),
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(root.join("knowledge/CATALOG.md")).unwrap(),
+        original
+    );
+
+    // A new page, committed.
+    let fresh = c
+        .call(
+            "obsidian",
+            "new_page",
+            json!({"id": id, "folder": "topics", "title": "Atlas", "template": null, "index_row": true}),
+        )
+        .await;
+    assert!(fresh["commit"].is_string(), "{fresh}");
+    assert!(root.join("knowledge/topics/Atlas.md").is_file());
+
+    // A page the index doesn't list, fixed by Fix all.
+    std::fs::write(root.join("knowledge/topics/Beta.md"), "# Beta\n").unwrap();
+    let health = c.call("obsidian", "health", json!({"id": id})).await;
+    let key = health["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["kind"] == "not_in_index" && f["key"].as_str().unwrap().ends_with("Beta.md"))
+        .unwrap_or_else(|| panic!("{health}"))["key"]
+        .clone();
+    // As Health's Fix all sends them: each fix with the text it was shown over (`base`, `sha`).
+    let fixes = c
+        .call(
+            "obsidian",
+            "fixes",
+            json!({"id": id, "kind": "not_in_index"}),
+        )
+        .await;
+    let items: Vec<Value> = fixes["fixes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["key"] == key)
+        .map(
+            |f| json!({"key": f["key"], "choice": f["choice"], "base": f["base"], "sha": f["sha"]}),
+        )
+        .collect();
+    assert_eq!(items.len(), 1, "{fixes}");
+    let fixed = c
+        .call("obsidian", "fix_all", json!({"id": id, "items": items}))
+        .await;
+    assert_eq!(fixed["changed_since"], json!([]), "{fixed}");
+    assert!(
+        std::fs::read_to_string(root.join("knowledge/CATALOG.md"))
+            .unwrap()
+            .contains("Beta"),
+        "{fixed}"
+    );
+
+    // A file the user picks becomes one of Ingest's sources.
+    let brief = c.tmp.path().join("Brief.md");
+    std::fs::write(&brief, "# Brief\n\nThe Atlas launch is in May.\n").unwrap();
+    c.picker.next_files(&[&brief]);
+    let added = c
+        .call("obsidian", "source_add", json!({"id": id, "kind": "files"}))
+        .await;
+    assert_eq!(added["added"][0]["path"], "raw_inbox/Brief.md", "{added}");
+    let queue = c.call("obsidian", "ingest_queue", json!({"id": id})).await;
+    assert_eq!(queue["sources"][0]["path"], "raw_inbox/Brief.md");
+    assert_eq!(queue["sources"][0]["state"], "new");
+    // Nothing was left uncommitted by the plugin's own writes.
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    let dirty = String::from_utf8_lossy(&status.stdout).to_string();
+    assert!(
+        dirty
+            .lines()
+            .all(|l| l.ends_with("topics/Beta.md") || l.contains("CATALOG.md")),
+        "{dirty}"
+    );
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
+}

@@ -245,6 +245,14 @@
       which: direct('system.which'),
     },
     http: { fetch: deferred('http.fetch') },
+    git: {
+      info: deferred('git.info'),
+      status: deferred('git.status'),
+      log: deferred('git.log'),
+      show: deferred('git.show'),
+      commit: deferred('git.commit'),
+      init: deferred('git.init'),
+    },
     claude: noting({ run: deferred('claude.run') }, 'ctx.claude.', ECHO_ONLY_CLAUDE),
     profiles: direct('profiles'),
 

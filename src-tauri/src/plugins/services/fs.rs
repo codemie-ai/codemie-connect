@@ -119,6 +119,22 @@ pub(crate) fn writable(
     root: &str,
     rel: &str,
 ) -> Result<PathBuf, HostError> {
+    let root = writable_root(s, p, root)?;
+    if rel.trim_start_matches("./").is_empty() {
+        return Err(permission(
+            "a plugin doesn't change the folder itself, only files in it",
+        ));
+    }
+    if !super::hidden::hidden_ok(rel, false) {
+        return Err(permission(format!(
+            "“{rel}” is hidden: a plugin changes notes, not other programs' files"
+        )));
+    }
+    resolve(&root, rel)
+}
+
+/// A granted root the plugin may change (`folders.write`), not a hidden folder or inside one.
+pub(crate) fn writable_root(s: &Services, p: &Granted, root: &str) -> Result<PathBuf, HostError> {
     let root = root_of(s, p, root)?;
     if !p.flag("folders", "write") {
         return Err(permission(format!(
@@ -133,17 +149,7 @@ pub(crate) fn writable(
             root.display()
         )));
     }
-    if rel.trim_start_matches("./").is_empty() {
-        return Err(permission(
-            "a plugin doesn't change the folder itself, only files in it",
-        ));
-    }
-    if !super::hidden::hidden_ok(rel, false) {
-        return Err(permission(format!(
-            "“{rel}” is hidden: a plugin changes notes, not other programs' files"
-        )));
-    }
-    resolve(&root, rel)
+    Ok(root)
 }
 
 /// Makes the folders above `f` and checks again that none became a link.
