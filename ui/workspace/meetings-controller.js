@@ -265,9 +265,11 @@ export function createMeetingsController({
 
   // ---------------------------------------------------------------- notes
 
-  async function makeNotes(id, { templateId, wishes = '', findTasks = true, remember = false }) {
+  /** Queues notes for one meeting; `batch` marks one of Make notes for all, which native claims
+   *  after the person's own Claude requests (a draft asked for meanwhile goes first). */
+  async function makeNotes(id, { templateId, wishes = '', findTasks = true, remember = false, batch = false }) {
     if (!templateId) throw new Error('Choose a note template.');
-    return withChoice(() => mutate('meeting_notes', { meetingId: id, templateId, wishes, findTasks, remember }));
+    return withChoice(() => mutate('meeting_notes', { meetingId: id, templateId, wishes, findTasks, remember, ...(batch ? { batch: true } : {}) }));
   }
 
   const formOptions = f => ({
@@ -309,7 +311,7 @@ export function createMeetingsController({
       const templateId = resolveTemplate(m.ev, m.rec, s, rules).id;
       // The first failure shows its fix and stops the rest, which would mostly fail the same way
       // (no Claude chosen, signed out); the ones already queued are counted.
-      if (!await guarded(m.id, () => makeNotes(m.id, { templateId, wishes: '', findTasks: true, remember: false }))) break;
+      if (!await guarded(m.id, () => makeNotes(m.id, { templateId, wishes: '', findTasks: true, remember: false, batch: true }))) break;
       made++;
     }
     if (!made) return;

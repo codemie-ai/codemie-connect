@@ -1282,6 +1282,57 @@ async fn automatic_retries_stop_after_the_check_window() {
     assert_eq!(jobs(&e.core, "transcript_download").len(), before);
 }
 
+#[tokio::test]
+async fn a_long_transcripts_list_is_read_page_by_page() {
+    let e = env();
+    let record = ended("m1", 15, json!({}));
+    let start = graph::timestamp(record.data["start"].as_str().unwrap());
+    put(&e.core, record);
+    teams(&e.graph, &rfc(start + 60), VTT);
+    // A daily stand-up's list: earlier occurrences first, today's on the second page.
+    let page2 = format!("{}?$skiptoken=page-2", list_url(ONLINE));
+    e.graph.answer(
+        &list_url(ONLINE),
+        json!({"value": [
+            {"id": "old-1", "createdDateTime": rfc(start - 2 * 86_400)},
+            {"id": "old-2", "createdDateTime": rfc(start - 86_400)}
+        ], "@odata.nextLink": page2}),
+    );
+    e.graph.answer(
+        &page2,
+        json!({"value": [{"id": "t1", "createdDateTime": rfc(start + 60)}]}),
+    );
+    meetings_round_at(&e.core, now()).unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Downloaded, "{m:?}");
+    assert_eq!(m.transcript_ids, vec!["t1"]);
+    // A list that never ends is read at most ten pages.
+    let endless = format!("{}?$skiptoken=again", list_url(ONLINE));
+    e.graph.answer(
+        &endless,
+        json!({"value": [], "@odata.nextLink": endless.clone()}),
+    );
+    e.graph.answer(
+        &list_url(ONLINE),
+        json!({"value": [], "@odata.nextLink": endless.clone()}),
+    );
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    run_jobs(&e.core).await;
+    let reads = e.graph.calls().iter().filter(|u| **u == endless).count();
+    assert_eq!(reads, 9, "the first page and nine more");
+    assert_eq!(
+        meeting(&e.core, "m1").save_error.unwrap().code,
+        "transcript_missing"
+    );
+}
+
 /// A meeting that ended 15 minutes ago, found in Teams, whose content read fails with `code`.
 fn found_in_teams(e: &Env, code: &str) {
     let record = ended("m1", 15, json!({}));

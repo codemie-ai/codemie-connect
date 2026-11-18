@@ -8,6 +8,7 @@
   "leaseUntil": 1795000700,
   "payload": {
     "auto": false,
+    "batch": false,
     "findTasks": true,
     "meetingId": "m-ready",
     "model": null,

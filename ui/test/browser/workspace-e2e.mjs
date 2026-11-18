@@ -200,9 +200,15 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     snapshot: () => ({ snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError }),
     settings_update: d => {
       calls.push(['settings_update', clone(d)]);
+      const rootBefore = s.settings.meetings?.root ?? null;
       if (d.meetings) applyMeetings(d.meetings);
       if (d.capabilities) s.connection.enabled = d.capabilities;
       for (const [k, v] of Object.entries(d)) if (k !== 'capabilities' && k !== 'meetings') s.settings[k] = v;
+      // library_ops.rs `carry_texts`: a new meetings folder gets the glossary and the tag list
+      // (the mock keeps one copy of each, so nothing is ever kept apart or fails).
+      if (d.meetings && 'root' in d.meetings && (s.settings.meetings.root ?? null) !== rootBefore) {
+        return { saved: true, texts: { copied: ['glossary', 'tags'].filter(n => texts[n]).map(n => `${n}.md`), kept: [], failed: [] } };
+      }
       return { saved: true };
     },
     local_save: (d, wid) => {
@@ -539,7 +545,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     const tpl = s.noteTemplates.find(t => t.id === d.templateId);
     const inTeams = m.data.state === 'available';
     const steps = [...(inTeams ? ['Getting the transcript from Teams'] : []), `Writing notes with ${tpl.name}`, ...(d.findTasks !== false && tpl.extractTasks ? ['Finding tasks'] : []), `Saving to ${folderName(m)}`];
-    const j = { ...JSON.parse(JSON.stringify(notesJob)), id: crypto.randomUUID(), key: d.auto ? `meeting_notes:auto:${m.id}` : `meeting_notes:${crypto.randomUUID()}`, state: 'queued', dueAt: now(), connectionId: s.connection.id, result: null, payload: { meetingId: m.id, title: m.data.title, templateId: tpl.id, notesKey: `${m.id}:${tpl.id}`, wishes: d.wishes || '', findTasks: d.findTasks !== false, auto: !!d.auto, step: null, steps } };
+    const j = { ...JSON.parse(JSON.stringify(notesJob)), id: crypto.randomUUID(), key: d.auto ? `meeting_notes:auto:${m.id}` : `meeting_notes:${crypto.randomUUID()}`, state: 'queued', dueAt: now(), connectionId: s.connection.id, result: null, payload: { meetingId: m.id, title: m.data.title, templateId: tpl.id, notesKey: `${m.id}:${tpl.id}`, wishes: d.wishes || '', findTasks: d.findTasks !== false, auto: !!d.auto, batch: !!d.batch, step: null, steps } };
     s.jobs.unshift(j);
     const plan = window.__notesPlan || { outcome: 'ok', stepMs: 500 };
     let at = 0;
@@ -702,7 +708,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         s.records.push({ id: `${crypto.randomUUID()}-rule`, kind: 'meeting_rule', source: 'local', connectionId: null, workspaceId: 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { field: 'title', value: m.data.title, template: tpl.id, autoNotes: false, on: true, order: -1 } });
         m.data.template = null;
       }
-      return { queued: true, jobId: startNotes(m, { templateId: tpl.id, wishes: d.wishes, findTasks: d.findTasks }).id };
+      return { queued: true, jobId: startNotes(m, { templateId: tpl.id, wishes: d.wishes, findTasks: d.findTasks, batch: d.batch }).id };
     },
     meeting_set: d => {
       calls.push(['meeting_set', clone(d)]);

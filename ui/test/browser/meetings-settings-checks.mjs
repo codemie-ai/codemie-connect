@@ -88,6 +88,7 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet }
         await page.evaluate(() => { window.__dirs = ['/Volumes/Work/Meetings']; window.__meetingsPick = '/Volumes/Work/Meetings'; });
         await page.click('[data-action="meetings-settings-root-pick"]');
         await page.waitForSelector('.ws-ms-path:has-text("/Volumes/Work/Meetings")');
+        await page.waitForSelector('.ws-toast:has-text("glossary.md was copied there.")');
         assert(await page.locator('[data-error-for="meetings.root"]').count() === 0, 'the refusal is gone');
         assert(await page.locator('.ws-ms-location .ws-badge').count() === 0, 'no Default badge');
         assert(await page.locator('[data-action="meetings-settings-root-default"]').count() === 1, 'Use the default');

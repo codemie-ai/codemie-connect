@@ -916,8 +916,15 @@ impl Core {
                 json!({"selected":true})
             }
             Operation::SettingsUpdate => {
+                // A new meetings folder brings the glossary and the tag list along.
+                let root = req.data["meetings"]
+                    .get("root")
+                    .and_then(|_| self.texts_root());
                 self.update_settings(&req.data)?;
-                json!({"saved":true})
+                match self.carry_texts(root) {
+                    Some(texts) => json!({"saved": true, "texts": texts}),
+                    None => json!({"saved":true}),
+                }
             }
             Operation::LocalSave | Operation::DraftSave => {
                 let (w, _) = self.active_workspace(&req, false)?;

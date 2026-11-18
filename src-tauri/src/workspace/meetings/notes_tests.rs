@@ -900,6 +900,60 @@ async fn notes_runs_count_against_the_ai_limit() {
 }
 
 #[tokio::test]
+async fn a_draft_asked_for_after_make_notes_for_all_runs_next() {
+    let n = notes_env(vec![]);
+    let e = &n.e;
+    downloaded(e, "m1").await;
+    // Make notes for all: five runs (two through the operation, which marks them as a batch).
+    for (i, template) in ["meeting-notes", "short-summary"].iter().enumerate() {
+        make_notes(e, "m1", template, json!({"batch": true}))
+            .await
+            .unwrap();
+        assert_eq!(notes_jobs(&e.core)[i].payload["batch"], true);
+    }
+    let mut r = e.core.repo().unwrap();
+    for i in 0..3 {
+        r.enqueue(&crate::workspace::new_job(
+            "meeting_notes",
+            format!("meeting_notes:batch-{i}"),
+            Some("personal".into()),
+            None,
+            now() - 60,
+            json!({}),
+            json!({"meetingId": format!("m{i}"), "batch": true}),
+        ))
+        .unwrap();
+    }
+    // Then "Draft with AI" and Make notes on one meeting: they go before the batch.
+    let draft = crate::workspace::new_job(
+        "ai_draft",
+        "d1".into(),
+        Some("personal".into()),
+        None,
+        now(),
+        json!({}),
+        json!({}),
+    );
+    r.enqueue(&draft).unwrap();
+    let first = r.claim(now() + 5).unwrap().unwrap();
+    assert_eq!(first.kind, "ai_draft", "{first:?}");
+    r.enqueue(&crate::workspace::new_job(
+        "meeting_notes",
+        "meeting_notes:single".into(),
+        Some("personal".into()),
+        None,
+        now() + 1,
+        json!({}),
+        json!({"meetingId": "m9"}),
+    ))
+    .unwrap();
+    let second = r.claim(now() + 5).unwrap().unwrap();
+    assert_eq!(second.key, "meeting_notes:single", "{second:?}");
+    // Still two Claude runs at once: the batch waits for a free one.
+    assert!(r.claim(now() + 5).unwrap().is_none());
+}
+
+#[tokio::test]
 async fn meeting_set_chooses_the_template_and_auto() {
     let e = env();
     put(&e.core, event("m1", SYNC, START, END, json!({})));
@@ -1289,6 +1343,63 @@ async fn glossary_and_tags_are_saved_in_the_root_or_read_from_linked_files() {
     .unwrap_err();
     assert_eq!(refused.code, "validation");
     assert_eq!(text(&terms), "- **LiteLLM** — heard as “light LLM”");
+}
+
+#[tokio::test]
+async fn changing_the_meetings_folder_brings_the_glossary_and_tags_along() {
+    let e = env();
+    let save = |name: &str, text: &str| {
+        op(
+            &e.core,
+            Operation::MeetingTextSave,
+            json!({"name": name, "text": text}),
+        )
+    };
+    let root_to = |root: Value| {
+        op(
+            &e.core,
+            Operation::SettingsUpdate,
+            json!({"meetings": {"root": root}}),
+        )
+    };
+    save("glossary", "## Me\n**Taylor Morgan**").await.unwrap();
+    save("tags", "- `meeting`").await.unwrap();
+    // A chosen folder that has a tag list of its own: it is kept, never written over.
+    let chosen = e.core.paths.data.join("Chosen");
+    std::fs::create_dir(&chosen).unwrap();
+    std::fs::write(chosen.join("tags.md"), "- `mine`").unwrap();
+    let moved = root_to(chosen.to_string_lossy().into()).await.unwrap();
+    assert_eq!(
+        moved["texts"],
+        json!({"copied": ["glossary.md"], "kept": ["tags.md"], "failed": []})
+    );
+    assert_eq!(
+        text(&chosen.join("glossary.md")),
+        "## Me\n**Taylor Morgan**"
+    );
+    assert_eq!(text(&chosen.join("tags.md")), "- `mine`");
+    let glossary = e
+        .core
+        .request(read(Operation::MeetingText, json!({"name": "glossary"})))
+        .await
+        .unwrap();
+    assert_eq!(glossary["text"], "## Me\n**Taylor Morgan**");
+    // Back to the default: the same glossary is nothing to say; the other tag list is kept.
+    let back = root_to(Value::Null).await.unwrap();
+    assert_eq!(
+        back["texts"],
+        json!({"copied": [], "kept": ["tags.md"], "failed": []})
+    );
+    assert_eq!(text(&default_root(&e.core).join("tags.md")), "- `meeting`");
+    // Other settings carry no texts.
+    let other = op(
+        &e.core,
+        Operation::SettingsUpdate,
+        json!({"meetings": {"waitMin": 20}}),
+    )
+    .await
+    .unwrap();
+    assert!(other.get("texts").is_none(), "{other}");
 }
 
 #[tokio::test]

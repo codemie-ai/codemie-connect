@@ -40,6 +40,31 @@ pub fn list_url(meeting_id: &str) -> String {
     ))
 }
 
+/// The most pages of a transcripts list read: 500 transcripts at Graph's 50 a page.
+pub const LIST_PAGES: usize = 10;
+
+/// An online meeting's transcripts list, read whole: a recurring meeting's holds every
+/// occurrence's, and Graph pages it, so `@odata.nextLink` is followed (a Graph URL only), at
+/// most [`LIST_PAGES`] pages. One `{"value": [...]}` with every page's transcripts.
+pub(super) async fn list_transcripts(
+    core: &crate::workspace::Core,
+    c: &Connection,
+    meeting_id: &str,
+) -> Result<Value> {
+    let mut all = Vec::new();
+    let mut url = list_url(meeting_id);
+    for _ in 0..LIST_PAGES {
+        let page = core.graph_reads.get(core, c, &url).await?;
+        all.extend(page["value"].as_array().cloned().unwrap_or_default());
+        let Some(next) = page["@odata.nextLink"].as_str() else {
+            break;
+        };
+        graph::validate_graph_url(next)?;
+        url = next.to_string();
+    }
+    Ok(serde_json::json!({ "value": all }))
+}
+
 /// `GET /me/onlineMeetings/{id}/transcripts/{id}/content?$format=text/vtt`
 pub fn content_url(meeting_id: &str, transcript_id: &str) -> String {
     graph::endpoint(&format!(

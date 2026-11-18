@@ -9,7 +9,7 @@ use super::rules::{self, Rule, FIELDS, VALUE_MAX};
 use super::templates::{self, built_in, Template, DEFAULT_ID};
 use crate::workspace::{models::*, Core};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const NAME_MAX: usize = 80;
 const BLURB_MAX: usize = 300;
@@ -440,6 +440,55 @@ impl Core {
         }
         folder::write_file(&path, text.as_bytes()).map_err(|_| folder::unwritable(&root))?;
         Ok(json!({"saved": true, "path": path.to_string_lossy()}))
+    }
+
+    /// The meetings root `settings_update` is about to change: the folder it is now.
+    pub(in crate::workspace) fn texts_root(&self) -> Option<PathBuf> {
+        let s = self.repo().ok()?.settings().ok()?.meetings;
+        self.meetings_root(&s).ok().map(|(root, _)| root)
+    }
+
+    /// After the meetings root changed from `old`: `glossary.md` and `tags.md` that are in the
+    /// old root and not in the new one are copied there, so notes keep their spellings and
+    /// tags. A file the new root has already is never written over: it is `kept` (named only
+    /// when it differs). `{copied, kept, failed}` (file names); `None` when the root is the same.
+    pub(in crate::workspace) fn carry_texts(&self, old: Option<PathBuf>) -> Option<Value> {
+        use std::io::Write;
+        let old = old?;
+        let s = self.repo().ok()?.settings().ok()?.meetings;
+        let (new, is_default) = self.meetings_root(&s).ok()?;
+        if new == old {
+            return None;
+        }
+        let (mut copied, mut kept, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+        for which in [Text::Glossary, Text::Tags] {
+            let name = which.file_name();
+            let Ok(text) = std::fs::read(old.join(name)) else {
+                continue;
+            };
+            let target = new.join(name);
+            if let Ok(there) = std::fs::read(&target) {
+                if there != text {
+                    kept.push(name);
+                }
+                continue;
+            }
+            // The default folder is made on first use; a chosen one exists (it was checked).
+            let written = (new.is_dir() || is_default && std::fs::create_dir_all(&new).is_ok())
+                && std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&target)
+                    .and_then(|mut f| f.write_all(&text).and_then(|_| f.sync_all()))
+                    .is_ok();
+            if written {
+                copied.push(name);
+            } else {
+                log::warn!("meetings: {name} was not copied to the new meetings folder");
+                failed.push(name);
+            }
+        }
+        Some(json!({"copied": copied, "kept": kept, "failed": failed}))
     }
 
     /// `meeting_text {name}`: the glossary or the tag list (`{text, path, linked}`); empty when

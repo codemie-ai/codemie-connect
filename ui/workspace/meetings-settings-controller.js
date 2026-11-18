@@ -70,8 +70,9 @@ export function createMeetingsSettingsController({
   /** Saves one meeting setting. A refusal is kept for its field (and a switch goes back); true
    *  when it was saved. */
   async function saveSetting(key, value, { errorKey = `meetings.${key}`, el = null, payload = { [key]: value }, typed } = {}) {
+    let answer;
     try {
-      await mutate('settings_update', { meetings: payload });
+      answer = await mutate('settings_update', { meetings: payload });
     } catch (err) {
       if (!fieldOf(err)) throw err;
       if (el?.type === 'checkbox') el.checked = !el.checked;
@@ -85,7 +86,23 @@ export function createMeetingsSettingsController({
     delete v().errors[errorKey];
     delete v().drafts[errorKey];
     if (shown) await render();
-    return true;
+    return answer && typeof answer === 'object' ? answer : true;
+  }
+
+  /** What a new meetings folder means, in one toast: where new folders go, and which of the
+   *  glossary and the tag list came along (native copies them, never over a file the folder
+   *  has: `texts {copied, kept, failed}`). */
+  function rootMoved(where, answer, undo) {
+    const { copied = [], kept = [], failed = [] } = answer?.texts || {};
+    const both = copied.length === 2 ? 'Your glossary and tag list were copied there.' : copied.length ? `${copied[0]} was copied there.` : '';
+    const had = kept.length ? `The folder already had its own ${kept.join(' and ')}, so Connect kept ${kept.length > 1 ? 'them as they are' : 'it as it is'}.` : '';
+    const lost = failed.length ? `Connect couldn’t copy ${failed.join(' and ')} there: copy ${failed.length > 1 ? 'them' : 'it'} from the old folder yourself.` : '';
+    if (copied.length || failed.length) {
+      v().textsKey = '';
+      glossaryChanged();
+    }
+    const message = [`New meeting folders go to ${where}. Meetings saved before keep their folders.`, both, had, lost].filter(Boolean).join(' ');
+    toast(message, failed.length ? 'info' : 'success', { label: 'Undo', run: undo });
   }
 
   function valueOf(el) {
@@ -120,13 +137,10 @@ export function createMeetingsSettingsController({
     const picked = await pickRoot();
     if (!picked) return;
     const before = meetings().root ?? null;
-    if (!await saveSetting('root', picked)) return;
-    toast(`New meeting folders go to ${picked}. Meetings saved before keep their folders.`, 'success', {
-      label: 'Undo',
-      run: async () => {
-        await saveSetting('root', before);
-        toast('The meetings folder is back as it was.', 'success');
-      },
+    const answer = await saveSetting('root', picked);
+    if (!answer) return;
+    rootMoved(picked, answer, async () => {
+      if (await saveSetting('root', before)) toast('The meetings folder is back as it was.', 'success');
     });
   }
 
@@ -655,8 +669,9 @@ export function createMeetingsSettingsController({
       case 'meetings-settings-root-pick': return pickFolder();
       case 'meetings-settings-root-default': {
         const before = meetings().root ?? null;
-        if (!await saveSetting('root', null)) return undefined;
-        return toast('New meeting folders go to the default folder again. Meetings saved before keep their folders.', 'success', { label: 'Undo', run: () => saveSetting('root', before) });
+        const answer = await saveSetting('root', null);
+        if (!answer) return undefined;
+        return rootMoved('the default folder again', answer, () => saveSetting('root', before));
       }
       case 'meetings-settings-root-reveal': return reveal();
       // Templates

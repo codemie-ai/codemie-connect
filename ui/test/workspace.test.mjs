@@ -802,7 +802,7 @@ test('make notes for all queues one meeting_notes per to-do meeting with its own
   await ctl.handle('meeting-make-all', { dataset: {}, closest: () => null });
   const queued = calls.mutate.filter(([op]) => op === 'meeting_notes').map(([, d]) => [d.meetingId, d.templateId]).sort();
   assert.deepEqual(queued, [['mtg-release', 'short-summary'], ['mtg-roadmap', 'meeting-notes']], 'a running one is left alone');
-  assert.ok(calls.mutate.every(([, d]) => d.findTasks === true && d.wishes === ''));
+  assert.ok(calls.mutate.every(([, d]) => d.findTasks === true && d.wishes === '' && d.batch === true), 'marked as a batch: a draft asked for meanwhile goes first');
   assert.match(calls.toasts.at(-1).message, /Making notes for 2 meetings/);
 });
 

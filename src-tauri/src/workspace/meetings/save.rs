@@ -4,7 +4,9 @@ use super::folder;
 use super::folder_files::{header_lines, meeting_json, meta_json, read_segments};
 use super::model::*;
 use super::record::*;
-use super::transcripts::{content_url, list_url, lookup_url, pick_transcripts, state_after_check};
+use super::transcripts::{
+    content_url, list_transcripts, lookup_url, pick_transcripts, state_after_check,
+};
 use super::vtt;
 use crate::workspace::{graph, models::*, new_job, Core};
 use serde_json::{json, Value};
@@ -195,7 +197,7 @@ impl Core {
         end: Option<i64>,
     ) -> (Option<String>, Result<Vec<TranscriptRef>>) {
         if let Some(known) = known {
-            match self.graph_reads.get(self, c, &list_url(known)).await {
+            match list_transcripts(self, c, known).await {
                 Ok(list) => return (Some(known.into()), Ok(pick_transcripts(&list, start, end))),
                 Err(e) if e.code != "not_found" => return (Some(known.into()), Err(e)),
                 Err(_) => {}
@@ -218,7 +220,7 @@ impl Core {
                 )),
             );
         };
-        let list = self.graph_reads.get(self, c, &list_url(&external)).await;
+        let list = list_transcripts(self, c, &external).await;
         let refs = list.map(|list| pick_transcripts(&list, start, end));
         (Some(external), refs)
     }
@@ -499,9 +501,7 @@ async fn fetch_and_write(
         .ok_or_else(transcript_missing)?;
     let start = graph::timestamp(&m.start);
     let end = Some(graph::timestamp(&m.end)).filter(|e| *e > 0);
-    let list = core
-        .graph_reads
-        .get(core, c, &list_url(&external))
+    let list = list_transcripts(core, c, &external)
         .await
         .map_err(gone_if_not_found)?;
     let refs = pick_transcripts(&list, start, end);

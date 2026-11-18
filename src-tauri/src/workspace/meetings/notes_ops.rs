@@ -63,6 +63,13 @@ impl Core {
             false,
             "Choose whether to remember it.",
         )?;
+        // One of Make notes for all: claimed after the person's own Claude requests.
+        let batch = flag(
+            &req.data,
+            "batch",
+            false,
+            "Choose whether it is one of many.",
+        )?;
         let event = t.event.as_ref();
         let m = match t.meeting.clone() {
             Some(m) => m,
@@ -148,7 +155,7 @@ impl Core {
             policy,
             json!({"meetingId": t.id, "title": m.title, "templateId": template.id,
                 "notesKey": key, "wishes": wishes, "findTasks": find_tasks, "auto": false,
-                "step": null, "steps": steps}),
+                "batch": batch, "step": null, "steps": steps}),
         );
         r.enqueue(&job)?;
         Ok(json!({"queued": true, "jobId": job.id}))

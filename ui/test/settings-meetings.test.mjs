@@ -519,6 +519,28 @@ test('a refused setting shows next to its field, and changing the folder offers 
   assert.ok(v());
 });
 
+test('a new meetings folder says which of the glossary and tags came along, and which it already had', async () => {
+  const moved = texts => harness({ tab: 'meetings-transcripts', answers: { meetings_root_pick: '/Volumes/Work/Meetings', settings_update: { saved: true, texts } } });
+  let h = moved({ copied: ['glossary.md', 'tags.md'], kept: [], failed: [] });
+  await h.ctl.handle('meetings-settings-root-pick', control());
+  assert.match(h.calls.toasts.at(-1).message, /^New meeting folders go to \/Volumes\/Work\/Meetings\. Meetings saved before keep their folders\. Your glossary and tag list were copied there\.$/);
+  assert.equal(h.calls.toasts.at(-1).tone, 'success');
+  assert.equal(h.calls.glossaryChanged, 1, 'the Meetings page reads the glossary again');
+  h = moved({ copied: ['glossary.md'], kept: ['tags.md'], failed: [] });
+  await h.ctl.handle('meetings-settings-root-pick', control());
+  assert.match(h.calls.toasts.at(-1).message, /glossary\.md was copied there\. The folder already had its own tags\.md, so Connect kept it as it is\.$/);
+  h = moved({ copied: [], kept: [], failed: ['glossary.md'] });
+  await h.ctl.handle('meetings-settings-root-pick', control());
+  const failed = h.calls.toasts.at(-1);
+  assert.match(failed.message, /Connect couldn’t copy glossary\.md there: copy it from the old folder yourself\.$/);
+  assert.equal(failed.tone, 'info', 'not a plain success');
+  // Use the default: the same words.
+  h = harness({ tab: 'meetings-transcripts', answers: { settings_update: { saved: true, texts: { copied: ['tags.md'], kept: [], failed: [] } } } });
+  h.s.settings.meetings.root = '/Volumes/Work/Meetings';
+  await h.ctl.handle('meetings-settings-root-default', control());
+  assert.match(h.calls.toasts.at(-1).message, /^New meeting folders go to the default folder again\. Meetings saved before keep their folders\. tags\.md was copied there\.$/);
+});
+
 test('Edit the template from a document opens that template; settings ops rebase on a stale view', async () => {
   const { ctl, calls, v } = harness({ tab: 'general' });
   await ctl.editTemplate('short-summary');
