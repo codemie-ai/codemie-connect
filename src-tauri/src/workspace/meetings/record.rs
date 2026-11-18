@@ -60,6 +60,13 @@ pub(super) fn transcript_gone() -> WorkspaceError {
     )
 }
 
+/// Teams answered a save with a transcript that has nothing anyone said. Not retried by itself.
+pub(super) fn transcript_empty() -> WorkspaceError {
+    WorkspaceError::new(
+        "transcript_missing",
+        "Teams returned an empty transcript. Try again later, or import a file.",
+    )
+}
 /// A read during a save that Teams answered with a 404 means the transcript is gone.
 pub(super) fn gone_if_not_found(e: WorkspaceError) -> WorkspaceError {
     if e.code == "not_found" {

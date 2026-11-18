@@ -254,8 +254,25 @@ fn is_me(name: &str, me: &MeAlias) -> bool {
     !name.is_empty() && (norm(&me.name) == name || me.aliases.iter().any(|a| norm(a) == name))
 }
 
-/// Who a voice is: `(speaker, name, address)`. Me (my name or an alias), else an attendee
-/// (see [`match_person`]), else `@N` as "Speaker N", else the name as written, with no address.
+/// Me among the meeting's people: the one with the account's e-mail, else the one with my name
+/// (or an alias).
+fn my_person<'a>(people: &'a [Person], me: &MeAlias) -> Option<&'a Person> {
+    me.address
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .and_then(|a| people.iter().find(|p| p.address.eq_ignore_ascii_case(a)))
+        .or_else(|| people.iter().find(|p| is_me(&p.name, me)))
+}
+
+/// Whether `p` is the person [`my_person`] finds.
+fn is_me_person(p: &Person, people: &[Person], me: &MeAlias) -> bool {
+    my_person(people, me).is_some_and(|mine| mine.address.eq_ignore_ascii_case(&p.address))
+}
+
+/// Who a voice is: `(speaker, name, address)`. Me (my name or an alias; my attendee entry by
+/// e-mail first), else an attendee (see [`match_person`]), else `@N` as "Speaker N", else the
+/// name as written, with no address.
 pub fn resolve_voice(
     voice: &str,
     people: &[Person],
@@ -263,10 +280,7 @@ pub fn resolve_voice(
 ) -> (String, String, Option<String>) {
     let mine = is_me(voice, me) || flipped(voice).is_some_and(|f| is_me(&f, me));
     if mine {
-        let address = people
-            .iter()
-            .find(|p| is_me(&p.name, me))
-            .map(|p| p.address.clone());
+        let address = my_person(people, me).map(|p| p.address.clone());
         let name = if me.name.trim().is_empty() {
             collapse(voice)
         } else {
@@ -275,7 +289,11 @@ pub fn resolve_voice(
         return ("me".into(), name, address);
     }
     if let Some(p) = match_person(voice, people) {
-        let speaker = if is_me(&p.name, me) { "me" } else { "remote" };
+        let speaker = if is_me_person(p, people, me) {
+            "me"
+        } else {
+            "remote"
+        };
         return (speaker.into(), p.name.clone(), Some(p.address.clone()));
     }
     let voice = voice.trim();
@@ -338,7 +356,12 @@ pub fn map_speakers(
         });
         let (speaker, name, address) = match mapped {
             Some(p) => (
-                if is_me(&p.name, me) { "me" } else { "remote" }.to_string(),
+                if is_me_person(p, people, me) {
+                    "me"
+                } else {
+                    "remote"
+                }
+                .to_string(),
                 p.name.clone(),
                 Some(p.address.clone()),
             ),
@@ -390,6 +413,7 @@ mod tests {
         MeAlias {
             name: "Taylor Morgan".into(),
             aliases: vec!["TM".into()],
+            address: None,
         }
     }
     fn person(name: &str, address: &str) -> Person {
@@ -493,6 +517,49 @@ mod tests {
         assert_eq!(
             (alone[0].speaker.as_str(), alone[0].address.as_deref()),
             ("me", None)
+        );
+    }
+
+    #[test]
+    fn me_is_found_among_attendees_by_email_first() {
+        let me = MeAlias {
+            address: Some("taylor@example.test".into()),
+            ..me()
+        };
+        // Teams lists me under another display name; a namesake has my exact name.
+        let people = vec![
+            person("Morgan, Taylor (EPAM)", "taylor@example.test"),
+            person("Taylor Morgan", "taylor.morgan@other.test"),
+        ];
+        let s = segments(
+            &[
+                cue(0.0, 1.0, "TM", "hi"),
+                cue(10.0, 11.0, "Morgan, Taylor (EPAM)", "again"),
+            ],
+            &people,
+            &me,
+        );
+        assert_eq!(
+            (
+                s[0].speaker.as_str(),
+                s[0].name.as_str(),
+                s[0].address.as_deref()
+            ),
+            ("me", "Taylor Morgan", Some("taylor@example.test"))
+        );
+        assert_eq!(
+            (s[1].speaker.as_str(), s[1].address.as_deref()),
+            ("me", Some("taylor@example.test"))
+        );
+        let mut mapped = segments(&[cue(0.0, 1.0, "@1", "hi")], &people, &me);
+        let mapping = BTreeMap::from([("@1".to_string(), "taylor@example.test".to_string())]);
+        map_speakers(&mut mapped, &mapping, &people, &me);
+        assert_eq!(mapped[0].speaker, "me");
+        // Without an address, the name decides as before.
+        let by_name = segments(&[cue(0.0, 1.0, "TM", "hi")], &people, &self::me());
+        assert_eq!(
+            by_name[0].address.as_deref(),
+            Some("taylor.morgan@other.test")
         );
     }
 

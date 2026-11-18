@@ -1079,6 +1079,14 @@ impl Repository {
         deferred.result = Some("Deferred by global incident snooze".into());
         self.save_job(&deferred)
     }
+    /// Deletes the finished jobs (`succeeded`, `failed`, `cancelled`, `blocked`) of `kinds` that
+    /// were due before `before`; queued and running ones stay. Returns how many went.
+    pub fn prune_finished_jobs(&mut self, kinds: &[&str], before: i64) -> Result<usize> {
+        Ok(self.db.execute(
+            "DELETE FROM jobs WHERE state IN ('succeeded','failed','cancelled','blocked') AND due_at<?1 AND json_extract(body,'$.kind') IN (SELECT value FROM json_each(?2))",
+            params![before, encode(&kinds)?],
+        )?)
+    }
     pub fn jobs(&self) -> Result<Vec<Job>> {
         self.documents("SELECT body FROM jobs ORDER BY due_at")
     }

@@ -112,8 +112,13 @@ pub fn write_file(path: &Path, contents: &[u8]) -> io::Result<()> {
 }
 
 fn write_files(dir: &Path, files: &TranscriptFiles) -> io::Result<()> {
-    if let Some(vtt) = &files.vtt {
-        write_file(&dir.join("transcript.vtt"), vtt.as_bytes())?;
+    for (i, vtt) in files.vtt.iter().enumerate() {
+        let name = if i == 0 {
+            "transcript.vtt".to_string()
+        } else {
+            format!("transcript-{}.vtt", i + 1)
+        };
+        write_file(&dir.join(name), vtt.as_bytes())?;
     }
     write_file(&dir.join("transcript.md"), files.md.as_bytes())?;
     write_file(&dir.join("segments.json"), files.segments.as_bytes())?;
@@ -121,10 +126,21 @@ fn write_files(dir: &Path, files: &TranscriptFiles) -> io::Result<()> {
     write_file(&dir.join("meta.json"), files.meta.as_bytes())
 }
 
+/// One meeting's folder is read-only or full (the meetings folder itself may be fine).
+pub(crate) fn meeting_unwritable(dir: &Path) -> WorkspaceError {
+    WorkspaceError::new(
+        "folder_unwritable",
+        format!(
+            "Connect can’t write to this meeting’s folder: {}",
+            dir.display()
+        ),
+    )
+}
+
 /// Writes the transcript files into a meeting's own folder again (Download again, a new speaker
 /// name); its other files are left alone.
 pub(crate) fn rewrite_folder(dir: &Path, files: &TranscriptFiles) -> Result<()> {
-    write_files(dir, files).map_err(|_| unwritable(dir))
+    write_files(dir, files).map_err(|_| meeting_unwritable(dir))
 }
 
 /// The root is there, or it is the default one and is created now. A custom root is never
@@ -159,7 +175,7 @@ pub fn write_transcript_folder(
             break;
         }
         if candidate.is_dir() && folder_event(&candidate).as_deref() == Some(event_id) {
-            write_files(&candidate, files).map_err(|_| unwritable(root))?;
+            write_files(&candidate, files).map_err(|_| meeting_unwritable(&candidate))?;
             return Ok(candidate);
         }
         n += 1;
@@ -191,7 +207,7 @@ mod tests {
 
     fn files(event: &str, md: &str) -> TranscriptFiles {
         TranscriptFiles {
-            vtt: Some("WEBVTT\n".into()),
+            vtt: vec!["WEBVTT\n".into()],
             md: md.into(),
             segments: "[]".into(),
             meeting: serde_json::json!({ "event_id": event }).to_string(),
@@ -305,7 +321,7 @@ mod tests {
         assert!(!root.join("2026-11-04_160426-sync.partial").exists());
         // Without the original VTT there is no transcript.vtt.
         let mut no_vtt = files("f", "md");
-        no_vtt.vtt = None;
+        no_vtt.vtt = Vec::new();
         let other = write_transcript_folder(&root, true, "other", "f", &no_vtt).unwrap();
         assert!(!other.join("transcript.vtt").exists());
         assert!(other.join("transcript.md").is_file());
@@ -330,6 +346,47 @@ mod tests {
         fs::write(&file, "x").unwrap();
         let e = write_transcript_folder(&file, true, "n", "e", &files("e", "x")).unwrap_err();
         assert_eq!(e.code, "folder_unwritable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_meeting_folder_says_so() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let own = write_transcript_folder(root, false, "n", "e", &files("e", "one")).unwrap();
+        fs::set_permissions(&own, fs::Permissions::from_mode(0o555)).unwrap();
+        let rewrite = rewrite_folder(&own, &files("e", "two"));
+        let again = write_transcript_folder(root, false, "n", "e", &files("e", "two"));
+        fs::set_permissions(&own, fs::Permissions::from_mode(0o755)).unwrap();
+        for result in [rewrite.map(|_| own.clone()), again] {
+            let e = result.unwrap_err();
+            assert_eq!(e.code, "folder_unwritable");
+            assert_eq!(
+                e.message,
+                format!(
+                    "Connect can’t write to this meeting’s folder: {}",
+                    own.display()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn several_originals_are_numbered() {
+        let dir = tempdir().unwrap();
+        let mut two = files("e", "md");
+        two.vtt = vec!["WEBVTT\n\nfirst".into(), "WEBVTT\n\nsecond".into()];
+        let path = write_transcript_folder(dir.path(), false, "n", "e", &two).unwrap();
+        assert_eq!(
+            fs::read_to_string(path.join("transcript.vtt")).unwrap(),
+            "WEBVTT\n\nfirst"
+        );
+        assert_eq!(
+            fs::read_to_string(path.join("transcript-2.vtt")).unwrap(),
+            "WEBVTT\n\nsecond"
+        );
+        assert!(!path.join("transcript-3.vtt").exists());
     }
 
     #[test]
@@ -359,7 +416,7 @@ mod tests {
         assert_eq!(other_again, root.join("n-2"));
         // A rewrite without the original VTT keeps the one already there.
         let mut no_vtt = files("e", "three");
-        no_vtt.vtt = None;
+        no_vtt.vtt = Vec::new();
         write_transcript_folder(root, false, "n", "e", &no_vtt).unwrap();
         assert!(first.join("transcript.vtt").is_file());
         // A folder whose meeting.json is unreadable is never taken over.

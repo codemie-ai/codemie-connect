@@ -75,8 +75,10 @@ pub fn pick_transcripts(list: &Value, start: i64, end: Option<i64>) -> Vec<Trans
 }
 
 /// The state a check leaves a meeting in: `available` when Teams has transcripts; `blocked`
-/// (with Microsoft's reason) when it refused them; otherwise still `pending` until a day after
-/// the meeting ended, then `none`. A read that did not get through keeps its reason.
+/// (with Microsoft's reason) when it refused them (403, or no meeting for this account);
+/// otherwise still `pending` until a day after the meeting ended, then `none`. A read that did
+/// not get through (offline, throttled, a token Graph refused with 401) keeps its reason, and
+/// the next slot checks again.
 pub fn state_after_check(
     found: Result<Vec<TranscriptRef>>,
     ended_at: i64,
@@ -93,7 +95,7 @@ pub fn state_after_check(
         Err(e)
             if matches!(
                 e.code.as_str(),
-                "permission_required" | "needs_login" | "transcript_blocked"
+                "permission_required" | "transcript_blocked"
             ) =>
         {
             (
@@ -241,15 +243,26 @@ mod tests {
         let info = blocked.1.unwrap();
         assert_eq!(info.code, "transcript_blocked");
         assert!(info.message.contains("GraphAccessToTranscriptsDisabled"));
+        // A token Graph refused is not a meeting Microsoft refused: it waits and is checked again.
         let unauthorized = state_after_check(
             Err(WorkspaceError::new(
                 "needs_login",
-                "Unauthorized: other tenant",
+                "InvalidAuthenticationToken: expired",
             )),
             ended,
             ended + 600,
         );
-        assert_eq!(unauthorized.0, MeetingState::Blocked);
+        assert_eq!(unauthorized.0, MeetingState::Pending);
+        assert_eq!(unauthorized.1.unwrap().code, "needs_login");
+        let lookup_empty = state_after_check(
+            Err(WorkspaceError::new(
+                "transcript_blocked",
+                "Teams didn’t return this meeting.",
+            )),
+            ended,
+            ended + 600,
+        );
+        assert_eq!(lookup_empty.0, MeetingState::Blocked);
         // A read that did not get through says so, and the meeting keeps waiting.
         let offline = |now| {
             state_after_check(

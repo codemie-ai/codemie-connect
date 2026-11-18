@@ -33,12 +33,13 @@ use crate::workspace::{models::*, paths, Core};
 use std::path::PathBuf;
 
 impl Core {
-    /// Who "me" is in transcripts. Task 3 reads the glossary's `## Me` section here; until then
-    /// it is the account's display name with no aliases.
+    /// Who "me" is in transcripts: the account's display name and e-mail. Task 3 adds the
+    /// glossary's `## Me` section (aliases) here.
     pub(crate) fn me_alias(&self, c: &Connection) -> MeAlias {
         MeAlias {
             name: c.display_name.clone(),
             aliases: Vec::new(),
+            address: Some(c.email.trim().to_string()).filter(|a| !a.is_empty()),
         }
     }
 

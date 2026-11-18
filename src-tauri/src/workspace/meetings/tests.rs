@@ -1225,11 +1225,18 @@ async fn automatic_retries_stop_after_the_check_window() {
     assert_eq!(jobs(&e.core, "transcript_download").len(), 2);
     run_jobs_ahead(&e.core, 600).await;
     assert_eq!(meeting(&e.core, "m1").last_error.unwrap().code, "throttled");
-    // Once the check window is over, it waits for the person.
+    // Once the check window is over, it waits for the person: nothing new is queued (the
+    // finished jobs themselves are pruned once they are two days old).
+    let queued = |core: &Core| {
+        jobs(core, "transcript_download")
+            .iter()
+            .filter(|j| matches!(j.state.as_str(), "queued" | "running"))
+            .count()
+    };
     for late in [end + 24 * 3600, end + 25 * 3600, end + 3 * 24 * 3600] {
         meetings_round_at(&e.core, late).unwrap();
+        assert_eq!(queued(&e.core), 0, "at {late}");
     }
-    assert_eq!(jobs(&e.core, "transcript_download").len(), 2);
     // Try again still runs it.
     e.graph.answer_text(&content_url(ONLINE, "t1"), VTT);
     op(
@@ -1312,6 +1319,357 @@ async fn snapshot_carries_the_meetings_root() {
     .await
     .unwrap();
     assert_eq!(root(&e.core).await, default);
+}
+
+/// Claims the one job due now and runs it.
+async fn run_one(core: &Arc<Core>) -> Job {
+    let job = core.repo().unwrap().claim(now()).unwrap().unwrap();
+    let id = job.id.clone();
+    core.clone().run_claimed_job(job).await;
+    job_by_id(core, &id)
+}
+
+#[tokio::test]
+async fn check_on_401_stays_pending_and_rechecks() {
+    let e = env();
+    let record = ended("m1", 15, json!({}));
+    let created = rfc(graph::timestamp(record.data["start"].as_str().unwrap()) + 60);
+    put(&e.core, record);
+    teams(&e.graph, &created, VTT);
+    // Graph refuses this read's token while Connect still holds the account signed in.
+    e.graph.fail(
+        &list_url(ONLINE),
+        graph::graph_response(
+            401,
+            "60",
+            br#"{"error":{"code":"InvalidAuthenticationToken","message":"Access token has expired."}}"#,
+        )
+        .unwrap_err(),
+    );
+    let at = now();
+    meetings_round_at(&e.core, at).unwrap();
+    let ran = run_jobs(&e.core).await;
+    assert_eq!(ran.len(), 1);
+    assert_eq!(ran[0].error_code.as_deref(), Some("needs_login"));
+    let m = meeting(&e.core, "m1");
+    assert_eq!(
+        m.state,
+        MeetingState::Pending,
+        "never blocked by a token problem"
+    );
+    let error = m.error.unwrap();
+    assert_eq!(error.code, "needs_login");
+    assert!(error.message.contains("InvalidAuthenticationToken"));
+    // The next slot checks again, and this time Teams answers.
+    e.graph.answer(
+        &list_url(ONLINE),
+        json!({"value": [{"id": "t1", "createdDateTime": created}]}),
+    );
+    meetings_round_at(&e.core, at + 600).unwrap();
+    assert_eq!(jobs(&e.core, "transcript_check").len(), 2);
+    run_jobs_ahead(&e.core, 600).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Downloaded);
+    assert!(m.error.is_none());
+}
+
+#[tokio::test]
+async fn empty_teams_transcript_is_not_saved() {
+    let e = env();
+    let record = ended("m1", 15, json!({}));
+    let created = rfc(graph::timestamp(record.data["start"].as_str().unwrap()) + 60);
+    put(&e.core, record);
+    teams(&e.graph, &created, "WEBVTT\n\nNOTE nothing was said\n");
+    let at = now();
+    meetings_round_at(&e.core, at).unwrap();
+    let ran = run_jobs(&e.core).await;
+    let save = ran
+        .iter()
+        .find(|j| j.kind == "transcript_download")
+        .unwrap();
+    assert_eq!(save.state, "failed");
+    assert_eq!(save.error_code.as_deref(), Some("transcript_missing"));
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Available);
+    assert!(m.folder.is_none());
+    let error = m.last_error.unwrap();
+    assert_eq!(error.code, "transcript_missing");
+    assert!(
+        error.message.contains("Teams returned an empty transcript"),
+        "{}",
+        error.message
+    );
+    assert!(
+        !default_root(&e.core).exists()
+            || std::fs::read_dir(default_root(&e.core)).unwrap().count() == 0,
+        "no folder for an empty transcript"
+    );
+    // Not tried again by itself; Try again works once Teams has the text.
+    meetings_round_at(&e.core, at + 600).unwrap();
+    assert_eq!(jobs(&e.core, "transcript_download").len(), 1);
+    e.graph.answer_text(&content_url(ONLINE, "t1"), VTT);
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(meeting(&e.core, "m1").state, MeetingState::Downloaded);
+}
+
+#[tokio::test]
+async fn queued_auto_save_does_not_replace_an_import() {
+    let e = env();
+    let imported = json!({"meetingId": "m1", "fileName": "notes.txt",
+        "text": "Jeroen de Vries: Imported words.\n"});
+    let imported_md =
+        |id: &str| std::fs::read_to_string(folder_of(&e.core, id).join("transcript.md")).unwrap();
+    // An automatic save is queued, then the person imports a file before it runs.
+    put(&e.core, event("m1", SYNC, START, END, json!({})));
+    teams(&e.graph, CREATED, VTT);
+    op(&e.core, Operation::MeetingCheck, json!({"meetingId": "m1"}))
+        .await
+        .unwrap();
+    assert_eq!(run_one(&e.core).await.kind, "transcript_check");
+    op(&e.core, Operation::MeetingImport, imported.clone())
+        .await
+        .unwrap();
+    let save = run_one(&e.core).await;
+    assert_eq!(save.kind, "transcript_download");
+    assert_eq!(save.state, "succeeded", "{:?}", save.result);
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Downloaded);
+    assert_eq!(m.imported.as_deref(), Some("notes.txt"));
+    assert!(imported_md("m1").contains("Imported words."));
+    assert!(!folder_of(&e.core, "m1").join("transcript.vtt").exists());
+    // The person imports while the automatic save is reading from Teams.
+    put(
+        &e.core,
+        event("m2", "Daily stand-up", START, END, json!({})),
+    );
+    op(&e.core, Operation::MeetingCheck, json!({"meetingId": "m2"}))
+        .await
+        .unwrap();
+    run_one(&e.core).await;
+    e.graph.slow(
+        &content_url(ONLINE, "t1"),
+        std::time::Duration::from_millis(400),
+    );
+    let claimed = e.core.repo().unwrap().claim(now()).unwrap().unwrap();
+    assert_eq!(claimed.kind, "transcript_download");
+    let id = claimed.id.clone();
+    let running = tokio::spawn(e.core.clone().run_claimed_job(claimed));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let mut second = imported.clone();
+    second["meetingId"] = "m2".into();
+    op(&e.core, Operation::MeetingImport, second).await.unwrap();
+    running.await.unwrap();
+    assert_eq!(job_by_id(&e.core, &id).state, "succeeded");
+    assert_eq!(
+        meeting(&e.core, "m2").imported.as_deref(),
+        Some("notes.txt")
+    );
+    assert!(imported_md("m2").contains("Imported words."));
+    // The notes run saves through `save_transcript`, which replaces an import like Download
+    // again does.
+    let account = e.core.repo().unwrap().connection(ACCT).unwrap();
+    let replaced = save_transcript(&e.core, &account, "m2").await.unwrap();
+    assert!(replaced.imported.is_none());
+    assert!(imported_md("m2").contains("Welcome to the sync."));
+    // Download again, which the person asks for, still replaces the import.
+    e.graph
+        .slow(&content_url(ONLINE, "t1"), std::time::Duration::ZERO);
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert!(m.imported.is_none());
+    assert!(imported_md("m1").contains("Welcome to the sync."));
+    assert!(folder_of(&e.core, "m1").join("transcript.vtt").is_file());
+}
+
+#[tokio::test]
+async fn second_check_reuses_the_online_meeting_id() {
+    let e = env();
+    put(&e.core, ended("m1", 15, json!({})));
+    e.graph
+        .answer(&lookup_url(JOIN), json!({"value": [{"id": ONLINE}]}));
+    e.graph.answer(&list_url(ONLINE), json!({"value": []}));
+    let count = |url: &str| e.graph.calls().iter().filter(|c| c.as_str() == url).count();
+    let at = now();
+    meetings_round_at(&e.core, at).unwrap();
+    run_jobs(&e.core).await;
+    meetings_round_at(&e.core, at + 600).unwrap();
+    run_jobs_ahead(&e.core, 600).await;
+    assert_eq!(meeting(&e.core, "m1").external.as_deref(), Some(ONLINE));
+    assert_eq!(
+        count(&lookup_url(JOIN)),
+        1,
+        "the second check skips the lookup"
+    );
+    assert_eq!(count(&list_url(ONLINE)), 2);
+    // The online meeting id stopped working (404): one lookup finds it again.
+    e.graph.fail(
+        &list_url(ONLINE),
+        graph::graph_response(404, "60", b"").unwrap_err(),
+    );
+    e.graph
+        .answer(&lookup_url(JOIN), json!({"value": [{"id": "ONLINE-NEW"}]}));
+    let created = rfc(graph::timestamp(&meeting(&e.core, "m1").start) + 60);
+    e.graph.answer(
+        &list_url("ONLINE-NEW"),
+        json!({"value": [{"id": "t1", "createdDateTime": created}]}),
+    );
+    e.graph.answer_text(&content_url("ONLINE-NEW", "t1"), VTT);
+    meetings_round_at(&e.core, at + 1200).unwrap();
+    run_jobs_ahead(&e.core, 1200).await;
+    assert_eq!(count(&lookup_url(JOIN)), 2);
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.external.as_deref(), Some("ONLINE-NEW"));
+    assert_eq!(m.state, MeetingState::Downloaded);
+}
+
+#[tokio::test]
+async fn several_transcripts_keep_their_originals() {
+    let e = env();
+    let second =
+        "WEBVTT\n\n00:00:02.000 --> 00:00:05.000\n<v Novak, Marek>Back after the break.</v>\n";
+    put(&e.core, event("m1", SYNC, START, END, json!({})));
+    e.graph
+        .answer(&lookup_url(JOIN), json!({"value": [{"id": ONLINE}]}));
+    // Transcription stopped and started again ten minutes later.
+    e.graph.answer(
+        &list_url(ONLINE),
+        json!({"value": [{"id": "t2", "createdDateTime": "2026-11-04T14:14:26Z"},
+            {"id": "t1", "createdDateTime": CREATED}]}),
+    );
+    e.graph.answer_text(&content_url(ONLINE, "t1"), VTT);
+    e.graph.answer_text(&content_url(ONLINE, "t2"), second);
+    op(&e.core, Operation::MeetingCheck, json!({"meetingId": "m1"}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let folder = folder_of(&e.core, "m1");
+    assert_eq!(
+        std::fs::read_to_string(folder.join("transcript.vtt")).unwrap(),
+        VTT
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("transcript-2.vtt")).unwrap(),
+        second
+    );
+    let segments: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string(folder.join("segments.json")).unwrap())
+            .unwrap();
+    let last = segments.last().unwrap();
+    assert_eq!(
+        last["start"], 602.0,
+        "the second transcript starts 600 s later"
+    );
+    assert_eq!(last["text"], "Back after the break.");
+    assert!(std::fs::read_to_string(folder.join("transcript.md"))
+        .unwrap()
+        .contains("**Marek Novak** [00:10:02]"));
+    assert_eq!(meeting(&e.core, "m1").transcript_ids, vec!["t1", "t2"]);
+    // Without "Keep original .vtt" no original is written.
+    op(
+        &e.core,
+        Operation::SettingsUpdate,
+        json!({"meetings": {"keepVtt": false}}),
+    )
+    .await
+    .unwrap();
+    std::fs::remove_dir_all(&folder).unwrap();
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    run_jobs(&e.core).await;
+    let folder = folder_of(&e.core, "m1");
+    assert!(folder.join("segments.json").is_file());
+    assert!(!folder.join("transcript.vtt").exists() && !folder.join("transcript-2.vtt").exists());
+}
+
+#[tokio::test]
+async fn round_prunes_old_finished_transcript_jobs() {
+    let e = env();
+    let old = now() - 49 * 3600;
+    let recent = now() - 47 * 3600;
+    let rows = [
+        ("transcript_check", "succeeded", old, true),
+        ("transcript_check", "failed", old, true),
+        ("transcript_download", "cancelled", old, true),
+        ("transcript_check", "blocked", old, true),
+        ("transcript_check", "queued", old, false),
+        ("transcript_download", "running", old, false),
+        ("transcript_check", "succeeded", recent, false),
+        ("sync", "succeeded", old, false),
+    ];
+    {
+        let mut r = e.core.repo().unwrap();
+        for (i, (kind, state, due, _)) in rows.iter().enumerate() {
+            let mut job = crate::workspace::new_job(
+                kind,
+                format!("{kind}:old:{i}"),
+                Some("personal".into()),
+                Some(ACCT.into()),
+                *due,
+                json!({}),
+                json!({"meetingId": format!("gone-{i}")}),
+            );
+            job.state = state.to_string();
+            r.enqueue(&job).unwrap();
+        }
+    }
+    meetings_round_at(&e.core, now()).unwrap();
+    let left: Vec<String> = e
+        .core
+        .repo()
+        .unwrap()
+        .jobs()
+        .unwrap()
+        .into_iter()
+        .map(|j| j.key)
+        .collect();
+    for (i, (kind, state, _, pruned)) in rows.iter().enumerate() {
+        let key = format!("{kind}:old:{i}");
+        assert_eq!(!left.contains(&key), *pruned, "{key} ({state})");
+    }
+    // Pruning needs no account: it runs with transcripts off too.
+    connect(&e.core, &["calendar"]);
+    {
+        let mut r = e.core.repo().unwrap();
+        let mut job = crate::workspace::new_job(
+            "transcript_check",
+            "transcript_check:old:off".into(),
+            None,
+            Some(ACCT.into()),
+            old,
+            json!({}),
+            json!({}),
+        );
+        job.state = "succeeded".into();
+        r.enqueue(&job).unwrap();
+    }
+    meetings_round_at(&e.core, now()).unwrap();
+    assert!(!e
+        .core
+        .repo()
+        .unwrap()
+        .jobs()
+        .unwrap()
+        .iter()
+        .any(|j| j.key == "transcript_check:old:off"));
 }
 
 #[tokio::test]

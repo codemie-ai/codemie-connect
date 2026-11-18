@@ -15,6 +15,9 @@ use std::collections::{HashMap, HashSet};
 
 /// Round jobs belong to the workspace Connect boots into.
 const PERSONAL: &str = "personal";
+/// Finished check and save jobs are kept this long (a slot each, so a meeting without a
+/// transcript leaves up to 144 a day), then the round deletes them.
+const JOBS_KEPT: i64 = 48 * 3600;
 
 /// Checks start this long after a meeting ends.
 pub(super) const CHECK_AFTER: i64 = 10 * 60;
@@ -58,13 +61,18 @@ pub(super) fn retry_due(m: &MeetingRecord, now: i64) -> bool {
 /// The background look at meetings, every 15 seconds: queues a check for every ended Teams
 /// meeting still waiting for its transcript (once per slot, at most 25 a round), queues a save
 /// for every transcript found but not saved (a failed one again only while [`retry_due`]), and
-/// gives up on meetings that waited a day.
+/// gives up on meetings that waited a day. Finished check and save jobs older than two days are
+/// deleted first.
 pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
     if !workspace_id_active(PERSONAL) {
         return Ok(());
     }
     let _w = core.meeting_lock();
     let mut r = core.repo()?;
+    r.prune_finished_jobs(
+        &["transcript_check", "transcript_download"],
+        now - JOBS_KEPT,
+    )?;
     let Some(c) = r
         .settings()?
         .active_connection

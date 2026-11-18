@@ -53,11 +53,14 @@ pub struct Person {
 }
 
 /// Who "me" is in a transcript: the account's name and the other names people use for it
-/// (the glossary's `## Me` section, from Task 3).
+/// (the glossary's `## Me` section, from Task 3), and the account's e-mail, which finds me among
+/// the attendees before any name does.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeAlias {
     pub name: String,
     pub aliases: Vec<String>,
+    #[serde(default)]
+    pub address: Option<String>,
 }
 
 /// One Teams transcript of a meeting and when Teams started it (unix seconds).
@@ -70,8 +73,9 @@ pub struct TranscriptRef {
 /// The transcript files of a meeting folder, ready to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptFiles {
-    /// `transcript.vtt`, the original from Teams; `None` when it is not kept.
-    pub vtt: Option<String>,
+    /// The originals from Teams, untouched: `transcript.vtt`, then `transcript-2.vtt`, … for a
+    /// meeting transcribed more than once; empty when they are not kept.
+    pub vtt: Vec<String>,
     /// `transcript.md`
     pub md: String,
     /// `segments.json`

@@ -16,8 +16,8 @@ pub(super) const IMPORT_MAX: usize = 5 * 1024 * 1024;
 /// What a transcript save writes besides the record's own fields.
 pub(super) struct Transcript<'a> {
     cues: &'a [vtt::Cue],
-    /// The original from Teams (`transcript.vtt`).
-    teams: Option<&'a str>,
+    /// The originals from Teams, oldest first (`transcript.vtt`, `transcript-2.vtt`, …).
+    teams: &'a [String],
     /// An imported original: (`imported.vtt` or `imported.txt`, its text).
     imported: Option<(&'a str, &'a str)>,
 }
@@ -42,7 +42,11 @@ impl Core {
             vtt::map_speakers(&mut segments, &m.speakers, &people, &me);
         }
         let files = TranscriptFiles {
-            vtt: t.teams.filter(|_| s.keep_vtt).map(String::from),
+            vtt: if s.keep_vtt {
+                t.teams.to_vec()
+            } else {
+                Vec::new()
+            },
             md: vtt::transcript_md(
                 &m.title,
                 &header_lines(m, event, &settings.time_zone),
@@ -79,7 +83,7 @@ impl Core {
         };
         if let Some((file, text)) = t.imported.filter(|_| s.keep_vtt) {
             folder::write_file(&dir.join(file), text.as_bytes())
-                .map_err(|_| folder::unwritable(&dir))?;
+                .map_err(|_| folder::meeting_unwritable(&dir))?;
         }
         m.folder = Some(dir.to_string_lossy().into_owned());
         Ok(dir)
@@ -102,7 +106,17 @@ impl Core {
         let start = graph::timestamp(event.data["start"].as_str().unwrap_or(""));
         let end =
             Some(graph::timestamp(event.data["end"].as_str().unwrap_or(""))).filter(|e| *e > 0);
-        let (external, found) = self.find_transcripts(&c, &join, start, end).await;
+        // The online meeting a previous check found: no lookup again.
+        let known = self
+            .repo()?
+            .record(KIND, &id, Some(&c.id), None)
+            .ok()
+            .and_then(|r| parse(&r).ok())
+            .and_then(|m| m.external)
+            .filter(|e| !e.is_empty());
+        let (external, found) = self
+            .find_transcripts(&c, &join, known.as_deref(), start, end)
+            .await;
         if let Err(e) = &found {
             // The job's own fence, or the account signing out, is not about this meeting.
             let account_gone = e.code == "needs_login"
@@ -168,16 +182,25 @@ impl Core {
         }
     }
 
-    /// The online meeting behind `join` (when the lookup found it) and this occurrence's
-    /// transcripts. A lookup that finds no meeting is `transcript_blocked`: it belongs to an
-    /// organization this account can't see.
+    /// The online meeting behind `join` (when known or found) and this occurrence's
+    /// transcripts. A `known` online meeting is listed straight away; only when Graph no longer
+    /// knows it (404) is the join link looked up again. A lookup that finds no meeting is
+    /// `transcript_blocked`: it belongs to an organization this account can't see.
     pub(super) async fn find_transcripts(
         &self,
         c: &Connection,
         join: &str,
+        known: Option<&str>,
         start: i64,
         end: Option<i64>,
     ) -> (Option<String>, Result<Vec<TranscriptRef>>) {
+        if let Some(known) = known {
+            match self.graph_reads.get(self, c, &list_url(known)).await {
+                Ok(list) => return (Some(known.into()), Ok(pick_transcripts(&list, start, end))),
+                Err(e) if e.code != "not_found" => return (Some(known.into()), Err(e)),
+                Err(_) => {}
+            }
+        }
         let lookup = match self.graph_reads.get(self, c, &lookup_url(join)).await {
             Ok(lookup) => lookup,
             Err(e) => return (None, Err(e)),
@@ -200,12 +223,21 @@ impl Core {
         (Some(external), refs)
     }
 
-    /// `transcript_download`: saves the transcript ([`save_transcript`]).
+    /// `transcript_download`: saves the transcript. An automatic save (the round's, or the one a
+    /// check queues) keeps a transcript already in the folder (an import, an earlier save); a
+    /// person's Download again replaces it ([`save_transcript`]).
     pub(in crate::workspace) async fn run_transcript_download(&self, job: &Job) -> Result<String> {
         let c = self.job_connection(job)?;
         let id = required(&job.payload, "meetingId", 2000)?;
-        save_transcript(self, &c, id).await?;
-        Ok("Transcript saved".into())
+        let how = if job.payload["auto"] == true {
+            Saving::Automatic
+        } else {
+            Saving::Replace
+        };
+        match save_as(self, &c, id, how).await? {
+            (_, true) => Ok("Transcript saved".into()),
+            (_, false) => Ok("The meeting already has a transcript; kept it".into()),
+        }
     }
 
     /// The job's account, fenced by the job's claim.
@@ -277,7 +309,7 @@ impl Core {
             &settings,
             Transcript {
                 cues: &cues,
-                teams: None,
+                teams: &[],
                 imported: Some((&original, text)),
             },
         )?;
@@ -340,10 +372,23 @@ impl Core {
         let json = serde_json::to_string_pretty(&segments).map_err(storage)?;
         folder::write_file(&dir.join("segments.json"), json.as_bytes())
             .and_then(|_| folder::write_file(&dir.join("transcript.md"), md.as_bytes()))
-            .map_err(|_| folder::unwritable(&dir))?;
+            .map_err(|_| folder::meeting_unwritable(&dir))?;
         store(&mut *self.repo()?, &t.c, &source, &m)?;
         Ok(json!({"saved": true}))
     }
+}
+
+/// Who a save is for: an automatic one never replaces a transcript already in the folder; a
+/// person's Download again (and the notes run) does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Saving {
+    Automatic,
+    Replace,
+}
+
+/// A transcript is in the folder already: saved before, or imported by the person.
+fn kept(m: &MeetingRecord) -> bool {
+    saved(m.state) || m.imported.is_some()
 }
 
 /// Saves a meeting's Teams transcript into its meeting folder: lists this occurrence's
@@ -352,12 +397,27 @@ impl Core {
 /// the state becomes `downloaded` (or stays `ready`). A failure is kept on the meeting
 /// (`last_error`) and returned. Any job with a fenced `c` may call it: the transcript save, and
 /// the notes run when a meeting is `available`.
+// Task 3's notes run is its caller in the app; the tests call it directly.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn save_transcript(
     core: &Core,
     c: &Connection,
     meeting_id: &str,
 ) -> Result<MeetingRecord> {
-    let result = fetch_and_write(core, c, meeting_id).await;
+    save_as(core, c, meeting_id, Saving::Replace)
+        .await
+        .map(|(m, _)| m)
+}
+
+/// [`save_transcript`] for `how`: the record, and whether the save wrote it (an automatic save
+/// leaves a transcript already in the folder alone).
+pub(super) async fn save_as(
+    core: &Core,
+    c: &Connection,
+    meeting_id: &str,
+    how: Saving,
+) -> Result<(MeetingRecord, bool)> {
+    let result = fetch_and_write(core, c, meeting_id, how).await;
     if let Err(e) = &result {
         if e.code != "cancelled" {
             let _w = core.meeting_lock();
@@ -374,11 +434,12 @@ pub(crate) async fn save_transcript(
     result
 }
 
-pub(super) async fn fetch_and_write(
+async fn fetch_and_write(
     core: &Core,
     c: &Connection,
     id: &str,
-) -> Result<MeetingRecord> {
+    how: Saving,
+) -> Result<(MeetingRecord, bool)> {
     let m = {
         let r = core.repo()?;
         let stored = r
@@ -386,6 +447,9 @@ pub(super) async fn fetch_and_write(
             .map_err(|_| transcript_missing())?;
         parse(&stored)?
     };
+    if how == Saving::Automatic && kept(&m) {
+        return Ok((m, false));
+    }
     let external = m
         .external
         .clone()
@@ -416,8 +480,11 @@ pub(super) async fn fetch_and_write(
         }));
         originals.push(text);
     }
-    let original = originals.join("\n\n");
-    // Written from the record as it is now, so a speaker named meanwhile is kept.
+    if cues.is_empty() {
+        return Err(transcript_empty());
+    }
+    // Written from the record as it is now, so a speaker named meanwhile is kept, and an
+    // import made while this save read from Teams is not replaced by an automatic save.
     let _w = core.meeting_lock();
     let (mut m, event, source, settings) = {
         let r = core.repo()?;
@@ -425,6 +492,9 @@ pub(super) async fn fetch_and_write(
         let (m, event, source) = core.current(&r, c, id)?;
         (m, event, source, r.settings()?)
     };
+    if how == Saving::Automatic && kept(&m) {
+        return Ok((m, false));
+    }
     m.transcript_ids = refs.iter().map(|t| t.id.clone()).collect();
     m.transcript_start = Some(rfc3339(first));
     m.imported = None;
@@ -435,7 +505,7 @@ pub(super) async fn fetch_and_write(
         &settings,
         Transcript {
             cues: &cues,
-            teams: Some(&original),
+            teams: &originals,
             imported: None,
         },
     )?;
@@ -448,5 +518,5 @@ pub(super) async fn fetch_and_write(
         store(&mut r, c, &source, &m)?;
     }
     core.emit("workspace:changed");
-    Ok(m)
+    Ok((m, true))
 }
