@@ -199,7 +199,7 @@ function list(p) {
       <label class="ws-search">${icon('search')}<input id="meetings-search" type="search" placeholder="Search titles and people" value="${e(v.q)}" aria-label="Search meetings" autocomplete="off"></label>
       <div class="ws-segmented ws-mtg-filters" role="tablist" aria-label="Filter meetings">${lanes}</div>
     </header>
-    ${off ? `<div class="ws-mtg-off">${icon('info')}<span>Connect isn’t reading Teams transcripts yet.</span>${button('Turn on', { action: 'meeting-transcripts-on', variant: 'ghost', size: 'sm' })}</div>` : ''}
+    ${off ? `<div class="ws-mtg-off">${icon('info')}<span>Connect isn’t reading Teams transcripts yet.</span>${button('Turn on', { action: 'meeting-transcripts-on', variant: 'ghost', size: 'sm' })}${button('', { action: 'settings-tab', iconName: 'settings', variant: 'ghost', size: 'sm', title: 'Settings › Meetings › Transcripts & folders', attrs: { 'data-tab': 'meetings-transcripts' } })}</div>` : ''}
     ${toDo.length && ['all', 'process'].includes(v.filter) ? `<div class="ws-mtg-bulk">${icon('sparkles')}<span class="ws-mtg-bulk-text">${plural(toDo.length, 'transcript')} without notes</span>${button(`Make notes for all ${toDo.length}`, { action: 'meeting-make-all', variant: 'ghost', size: 'sm' })}</div>` : ''}
     <div class="ws-mtg-list-body" role="listbox" aria-label="Meetings" tabindex="-1">${body}</div>
     ${v.filter === 'all' ? `<footer class="ws-mtg-list-foot">${toggle({ action: 'meeting-show-none', checked: v.showNone, label: `Show meetings without a transcript (${counts.none})` })}</footer>` : ''}

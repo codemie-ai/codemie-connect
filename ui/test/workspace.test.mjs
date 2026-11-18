@@ -885,7 +885,7 @@ test('files tab offers download again when the folder is missing', () => {
 test('calendar badge appears on online meetings only and the event card offers Show in Meetings', () => {
   const s = meetingsSnapshot();
   const state = { calendarMode: 'week', calendarDate: new Date(MEET_NOW), calendarSidebar: true, meetings: newMeetingsView() };
-  const html = calendar(s, { state, auth: {}, hidden: new Set(), banners: '' });
+  const html = calendar(s, { state, auth: {}, hidden: new Set(), banners: '', now: MEET_NOW });
   const block = id => html.match(new RegExp(`<button type="button" class="ws-ev[^"]*" data-action="event" data-id="${id}"[^]*?</button>`))?.[0] || '';
   assert.match(block('mtg-philips'), /<span class="ws-tb ws-tb-ready" title="Notes ready · Meeting notes">/);
   assert.match(block('mtg-roadmap'), /ws-tb ws-tb-process/);

@@ -240,6 +240,7 @@ pub fn run() {
             storage::commands::data_location_remove_old,
             storage::commands::data_location_reveal,
             storage::commands::data_location_pick,
+            storage::commands::meetings_root_pick,
             plugins::commands::plugins_request,
             plugins::commands::plugin_call,
         ]))

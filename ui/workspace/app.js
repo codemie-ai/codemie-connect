@@ -28,6 +28,7 @@ import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { newTasksView } from './tasks-model.js';
 import { meetings } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
+import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
 import { renderShell } from './shell.js';
 import { nextAiSettings, withCodemieSignIn, LOGIN_STEPS } from './settings-ai.js';
@@ -78,6 +79,9 @@ const state = {
   // meetings with transcripts" and the legend groups turned off.
   meetings: newMeetingsView({ wide: localPref('codemie.meetings.wide', 'false') === 'true' }),
   calendarTranscripts: localPref('codemie.calendar.transcripts', 'false') === 'true', calendarLegend: {},
+  // Settings › Meetings: the template being edited, refusals by field, the glossary and tags as
+  // typed, the rule tester (view state only; settings, templates and rules are native's).
+  meetingsSettings: newMeetingsSettingsView(),
   // Plugins: the page open under #/p/<id>/<activity>/<route>, the Settings → Plugins path
   // ({id, section}), what is installed, and the text of page widgets their frames drew.
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
@@ -294,6 +298,8 @@ async function render() {
   const keepReply = reply && (document.activeElement === reply || unsavedReply) ? reply : null;
   const focused = document.activeElement;
   const refocus = focused && focused !== document.body && root.contains(focused) ? controlSelector(focused) : null;
+  // A field typed in keeps its caret (and selection) when the render puts focus back on it.
+  const caret = refocus && typeof focused.selectionStart === 'number' ? { value: focused.value, range: [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] } : null;
   heldRender = false;
   // A ⋯ menu the user opened stays open through an update (a minute tick, a new snapshot).
   const openMenus = [...root.querySelectorAll('details.ws-menu[open][data-menu]')].map(d => d.dataset.menu);
@@ -346,7 +352,13 @@ async function render() {
   restoreScroll(saved);
   // A background update keeps keyboard focus on the same control, and only on that one: when
   // the control is gone or no longer told apart from a sibling, focus is left alone.
-  if (refocus && !root.contains(document.activeElement)) soleMatch(root, refocus)?.focus({ preventScroll: true });
+  if (refocus && !root.contains(document.activeElement)) {
+    const again = soleMatch(root, refocus);
+    again?.focus({ preventScroll: true });
+    if (again && caret && again.value === caret.value) {
+      try { again.setSelectionRange(...caret.range); } catch { /* a field without a caret (number) */ }
+    }
+  }
   placeDraftPopover();
   showPluginView();
   if (state.route === 'today') drawPageWidgets(s);
@@ -354,6 +366,7 @@ async function render() {
     showFocusLine();
     meetingsUi.load().catch(fail);
   }
+  if (state.route === 'settings' && state.settingsTab.startsWith('meetings-')) meetingsSettingsUi.load().catch(fail);
   lastDraftSignature = draftSignature(s);
   renderSheet();
 }
@@ -1111,6 +1124,36 @@ const meetingsUi = store && createMeetingsController({
   canRender: () => ready && !modalOpen() && !editing() && !taskDrag,
 });
 
+// ---------------------------------------------------------------- Settings › Meetings
+
+const meetingsSettingsUi = store && createMeetingsSettingsController({
+  state, store, snap, mutate, render, route, openModal, confirmModal, toast,
+  // The glossary saved as it is typed: no re-render under the caret (the store's update waits too).
+  save: (op, data) => store.mutate(op, data),
+  patch: (selector, html) => {
+    const el = root.querySelector(selector);
+    if (el) el.outerHTML = html;
+  },
+  focus: focusFirst,
+  writeText: text => navigator.clipboard.writeText(text),
+  insertText: (selector, text) => {
+    const field = root.querySelector(selector);
+    if (!field) return null;
+    field.focus({ preventScroll: true });
+    field.setRangeText(text, field.selectionStart, field.selectionEnd, 'end');
+    return field.value;
+  },
+  pickRoot: () => invoke('meetings_root_pick'),
+  transcriptsOn: () => meetingsUi.transcriptsOn(),
+  makeNotes: (id, options) => meetingsUi.makeNotes(id, options),
+  guarded: (id, run) => meetingsUi.guarded(id, run),
+  glossaryChanged: () => meetingsUi.forgetGlossary(),
+  openMeeting: async (id, tab, ref) => {
+    await meetingsUi.open(id, tab);
+    if (ref) await meetingsUi.handle('meeting-goto-line', { dataset: { id, t: ref } });
+  },
+});
+
 /** Opens a meeting on the Meetings page (`#/meetings/<id>/<tab>`; `line`: a transcript line). */
 function openMeeting(id, tab = 'notes', line = null) {
   return meetingsUi.open(id, tab, line);
@@ -1349,6 +1392,7 @@ async function handle(action, el) {
     await route('tasks');
     return tasksUi.openDrawer(el.dataset.id);
   }
+  if (action.startsWith('meetings-settings-')) return meetingsSettingsUi.handle(action, el);
   if (action.startsWith('meeting-') || action.startsWith('doc-')) {
     // From the calendar's event card, a step that opens a dialog or the page closes the card first.
     const card = el.closest?.('.ws-event-modal');
@@ -1369,7 +1413,13 @@ async function handle(action, el) {
         state.selectedMessage = null;
       }
       return route(el.dataset.route || 'today');
-    case 'settings-tab': return route('settings', el.dataset.tab);
+    case 'settings-tab':
+      // A document's “Edit the template” opens that template; Note templates again leaves a clean editor.
+      // From a dialog (Make notes) or the event card, the dialog closes first.
+      document.querySelectorAll('.ws-modal[open]').forEach(d => d.close());
+      if (el.dataset.template && meetingsSettingsUi) return meetingsSettingsUi.editTemplate(el.dataset.template);
+      meetingsSettingsUi?.leaveEditor(el.dataset.tab);
+      return route('settings', el.dataset.tab);
     case 'setup-tools': return route('settings', 'cm-overview');
     case 'ai-refresh': return loadAi();
     case 'ai-test': return testAiProfile(el.dataset.profile);
@@ -1849,6 +1899,7 @@ document.addEventListener('input', ev => {
     }, 220);
   }
   if (meetingsUi?.input(ev.target)) return;
+  if (meetingsSettingsUi?.input(ev.target)) return;
   if (ev.target.id === 'reply-body') syncReplyBox(ev.target);
   if (ev.target.id === 'auto-prompt') {
     const count = ev.target.closest('form')?.querySelector('[data-auto-count]');
@@ -1943,6 +1994,17 @@ document.addEventListener('keydown', ev => {
   // A drawer field being edited saves (on its change or when it is left) before the drawer closes.
   if (ev.key === 'Escape' && (field?.dataset?.change || field?.dataset?.commit)) field.blur();
   tasksUi.key(ev).catch(fail);
+});
+
+// Settings › Meetings: Enter saves a typed field (a rule's text, a column name, a file path) by
+// leaving it, as on the Tasks page. A Markdown editor keeps Enter for new lines.
+document.addEventListener('keydown', ev => {
+  if (!ready || state.route !== 'settings' || modalOpen() || sheetOpen() || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const field = document.activeElement?.closest?.('#workspace-app') ? document.activeElement : null;
+  if (ev.key === 'Enter' && !ev.isComposing && ev.keyCode !== 229 && field?.tagName === 'INPUT' && field.dataset.commit) {
+    ev.preventDefault();
+    field.blur();
+  }
 });
 
 // A field that saves when it is left (the drawer's typed due date): one save, with what it holds.

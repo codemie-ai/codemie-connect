@@ -267,6 +267,8 @@ export async function meetingChecks({ open, check, assert, shot, OUT }) {
         const first = await page.locator('.ws-mtg-today [data-action="meeting-open"]').first().getAttribute('data-id');
         assert(['mtg-critique', 'mtg-northwind'].includes(first), `needs you first: ${first}`);
         await noOverflow(page, 'Today');
+        // The save the last check started may still re-render Today: act once it has settled.
+        await settled(page).catch(() => {});
         await page.locator('.ws-mtg-today').scrollIntoViewIfNeeded();
         await page.evaluate(() => document.querySelectorAll('.ws-toast').forEach(t => t.remove()));
         await page.locator('.ws-mtg-today').screenshot({ path: `${OUT}/${tag}-today-meetings-card.png` });

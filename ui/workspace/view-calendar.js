@@ -41,7 +41,8 @@ export function calendar(s, ctx) {
   const loadingJob = s.jobs.find(j => (j.kind === 'calendar_window' || j.kind === 'sync') && ['queued', 'running'].includes(j.state));
   const events = visibleEvents(s, hidden);
   const todayKey = dayKey(Date.now(), zone);
-  const mtg = meetingsOnCalendar(s, state, days, zone);
+  // The transcript badges' clock (`ctx.now`, a fixed time in tests).
+  const mtg = meetingsOnCalendar(s, state, days, zone, ctx.now ?? Date.now());
 
   let content;
   if (conn === 'none' || conn === 'authorizing' || conn === 'needs_login') {
@@ -99,8 +100,8 @@ export function calendar(s, ctx) {
 /** The calendar's meetings with their transcript badges, the switch that shows only meetings
  *  with transcripts (`state.calendarTranscripts`, the legend groups turned off in
  *  `state.calendarLegend`), and how many of each group the shown days hold. */
-function meetingsOnCalendar(s, state, days, zone) {
-  const items = calendarMeetings(s);
+function meetingsOnCalendar(s, state, days, zone, now) {
+  const items = calendarMeetings(s, now);
   const only = !!state.calendarTranscripts;
   const off = state.calendarLegend || {};
   const keys = new Set(days.map(localDayKey));

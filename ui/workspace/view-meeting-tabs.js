@@ -10,7 +10,6 @@ import { agoLabel, durationLabel, formatTime } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { columnName, isMine, meOf, ownerOf, peopleFor, taskStatus } from './tasks-model.js';
 import { meetingTasks, peopleOf, resolveTemplate, ruleText, templatesOf } from './meetings-model.js';
-import { SETTINGS_TABS } from './view-settings.js';
 
 export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const option = (value, label, selected) => `<option value="${e(value)}"${selected ? ' selected' : ''}>${e(label)}</option>`;
@@ -20,8 +19,6 @@ const COLOR = /^#[0-9a-f]{3,8}$/i;
 /** A template's colour for `--tpl` (only a plain hex colour gets through). */
 export const tplColor = t => (COLOR.test(String(t?.color || '')) ? t.color : '#5677C8');
 const tplIcon = t => (t?.kind === 'skill' ? 'skill' : ['note', 'list', 'users', 'sparkles', 'quote', 'tasks', 'transcript'].includes(t?.icon) ? t.icon : 'note');
-/** Settings › Meetings › Note templates, once that tab exists. */
-const templatesTab = () => SETTINGS_TABS.some(([, id]) => id === 'meetings-templates');
 
 /** One item of a ⋯ menu: `[label, action, attrs, icon, danger]`; `'-'` is a divider, `['#', text]` a heading. */
 export function menuItems(items) {
@@ -86,7 +83,7 @@ export function tplChip(p, mc, { id = 'tpl', compact = false } = {}) {
     '-',
     tpl.why === 'meeting' ? ['Back to the automatic choice', 'meeting-template', { 'data-id': mc.m.id, 'data-template': '' }, 'undo'] : null,
     [`Always use this for “${title.length > 26 ? `${title.slice(0, 26)}…` : title}”`, 'meeting-template-remember', { 'data-id': mc.m.id }, 'automations'],
-    templatesTab() ? ['Edit templates…', 'settings-tab', { 'data-tab': 'meetings-templates' }, 'settings'] : null,
+    ['Edit templates…', 'settings-tab', { 'data-tab': 'meetings-templates' }, 'settings'],
   ];
   return menu(`${id}-${mc.m.id}`, summary, items, { right: false, cls: 'ws-tpl-menu' });
 }
@@ -160,7 +157,7 @@ export function makeNotesForm(p, mc) {
   const folder = folderName(mc);
   const remember = n ? '' : `<label class="ws-check"><input type="checkbox" name="remember"${mc.tpl.why === 'rule' ? ' disabled' : ''}><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>Always use this template for “${e(mc.d.title || mc.m.title)}”</span><small>${mc.tpl.why === 'rule' ? e(mc.tpl.reason) : 'Adds a rule to your automatic rules.'}</small></span></label>`;
   return `${keep}<div class="ws-mtg-form-grid">
-    <fieldset class="ws-tpl-options"><legend class="ws-field-label">Template</legend>${options}${templatesTab() ? `<button type="button" class="ws-link ws-mtg-linkbtn ws-tpl-more" data-action="settings-tab" data-tab="meetings-templates">${icon('plus')}<span>Write your own or add a skill</span></button>` : ''}</fieldset>
+    <fieldset class="ws-tpl-options"><legend class="ws-field-label">Template</legend>${options}<button type="button" class="ws-link ws-mtg-linkbtn ws-tpl-more" data-action="settings-tab" data-tab="meetings-templates">${icon('plus')}<span>Write your own or add a skill</span></button></fieldset>
     <div class="ws-mtg-form-side">
       <label class="ws-field"><span class="ws-field-label">Anything to focus on? <small class="ws-muted">optional</small></span><textarea class="ws-textarea" name="wishes" rows="3" maxlength="1000" placeholder="e.g. Focus on the pilot plan. Keep it short."></textarea><small class="ws-field-hint">Added to the template’s instructions for this run only.</small></label>
       <div class="ws-mtg-form-checks">
@@ -216,7 +213,7 @@ function docCard(p, mc, doc, { compare = false, side = 'left' } = {}) {
   const more = menu(`doc-${m.id}-${doc.id}-${side}`, dotsSummary('Document actions', 'ws-btn-sm'), [
     !isMain ? ['Make it the main notes', 'doc-main', ids, 'check'] : null,
     ['Make again (new version)', 'doc-again', { 'data-id': m.id, 'data-template': doc.template }, 'refresh'],
-    templatesTab() ? ['Edit the template', 'settings-tab', { 'data-tab': 'meetings-templates' }, 'settings'] : null,
+    ['Edit the template', 'settings-tab', { 'data-tab': 'meetings-templates', 'data-template': doc.template || doc.id }, 'settings'],
     '-',
     ['Delete this document…', 'doc-delete', ids, 'trash', true],
   ]);

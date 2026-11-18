@@ -8,6 +8,7 @@ import { formatDateTime, agoLabel } from './format.js';
 import { aiPanel } from './settings-ai.js';
 import { storageCard } from './settings-storage.js';
 import { pluginsPage } from './settings-plugins.js';
+import { meetingsSettingsHeader, meetingsSettingsPanel, newMeetingsSettingsView, TAB_TEXT as MEETINGS_TAB_TEXT } from './view-settings-meetings.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
@@ -18,6 +19,11 @@ export const SETTINGS_TABS = [
   ['', 'queues', 'Rules & schedules', 'sliders'],
   ['', 'privacy', 'Data & privacy', 'shield'],
   ['', 'plugins', 'Plugins', 'puzzle'],
+  ['Meetings', 'meetings-transcripts', 'Transcripts & folders', 'transcript'],
+  ['', 'meetings-templates', 'Note templates', 'note'],
+  ['', 'meetings-rules', 'Automatic rules', 'automations'],
+  ['', 'meetings-glossary', 'Glossary & tags', 'book'],
+  ['', 'meetings-tasks', 'Tasks', 'tasks'],
   ['CodeMie', 'cm-overview', 'Overview', 'spark'],
   ['', 'cm-profiles', 'Profiles', 'user'],
   ['', 'cm-agents', 'Coding agents', 'terminal'],
@@ -50,6 +56,7 @@ const TAB_DESCRIPTIONS = {
   privacy: 'What is stored on this device and how to remove it.',
   activity: 'Background work: synchronization, reminders and drafts.',
   updates: 'Version information and application updates.',
+  ...MEETINGS_TAB_TEXT,
 };
 
 export function settings(s, ctx) {
@@ -73,9 +80,15 @@ export function settings(s, ctx) {
     : null;
   // Settings → CodeMie: panels, dots and header actions come from codemie/controller.js.
   const codemie = ctx.codemie;
-  const content = plugins ? plugins.content : tab.startsWith('cm-') ? (codemie?.panel(tab) ?? '') : (panels[tab] || panels.general)();
-  const label = plugins ? plugins.label : SETTINGS_TABS.find(([, id]) => id === tab)?.[2] || 'Settings';
-  const description = plugins ? plugins.description : TAB_DESCRIPTIONS[tab];
+  // Settings → Meetings: panels and header from view-settings-meetings.js (the template editor
+  // names its template and the way back instead).
+  const meetingsTab = tab.startsWith('meetings-');
+  const msView = meetingsTab ? state.meetingsSettings || newMeetingsSettingsView() : null;
+  const ms = meetingsTab ? meetingsSettingsHeader(tab, s, msView) : null;
+  const content = plugins ? plugins.content : tab.startsWith('cm-') ? (codemie?.panel(tab) ?? '')
+    : meetingsTab ? meetingsSettingsPanel(tab, s, { v: msView, auth, now: ctx.now ?? Date.now() }) : (panels[tab] || panels.general)();
+  const label = plugins ? plugins.label : ms?.label || SETTINGS_TABS.find(([, id]) => id === tab)?.[2] || 'Settings';
+  const description = plugins ? plugins.description : ms ? ms.description : TAB_DESCRIPTIONS[tab];
   const path = ctx.plugins?.path;
   const sections = ctx.plugins?.sections || [];
   const subnav = id => (id === 'plugins' && sections.length
@@ -84,14 +97,14 @@ export function settings(s, ctx) {
   const microsoftDot = s.connection?.status && s.connection.status !== 'connected' && s.connection.status !== 'disconnected';
   const dot = id => (id === 'microsoft' && microsoftDot) || !!codemie?.tabDots?.has(id);
   // Header actions are markup from the CodeMie views, escaped there.
-  const actions = tab.startsWith('cm-') || tab === 'ai' ? codemie?.headerActions?.(tab) || '' : '';
+  const actions = tab.startsWith('cm-') || tab === 'ai' ? codemie?.headerActions?.(tab) || '' : ms?.actions || '';
   return `<div class="ws-settings-layout">
     <aside class="ws-settings-sidebar">
       <div class="ws-settings-heading"><h1>Settings</h1><p>Preferences and connected services.</p></div>
       <nav class="ws-settings-nav" aria-label="Settings">${SETTINGS_TABS.map(([group, id, text, ico]) => `${group ? `<div class="ws-nav-label">${e(group)}</div>` : ''}<button type="button" data-action="settings-tab" data-tab="${id}" ${tab === id && !(id === 'plugins' && path?.section) ? 'aria-current="page"' : ''}>${icon(ico)}<span>${e(text)}</span>${dot(id) ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button>${subnav(id)}`).join('')}</nav>
     </aside>
     <section class="ws-settings-content">
-      <header class="ws-settings-header${actions ? ' ws-settings-header-actions' : ''}"><div><h2>${e(label)}</h2>${description ? `<p>${e(description)}</p>` : ''}</div>${actions ? `<div class="ws-actions">${actions}</div>` : ''}</header>
+      <header class="ws-settings-header${actions ? ' ws-settings-header-actions' : ''}"><div>${ms?.back || ''}<h2${ms ? ' data-ms-title' : ''}>${e(label)}</h2>${description ? `<p>${e(description)}</p>` : ''}</div>${actions ? `<div class="ws-actions">${actions}</div>` : ''}</header>
       <div class="ws-settings-panels${plugins?.fill ? ' ws-settings-panels-fill' : ''}" data-plugin-clip>${content}</div>
     </section>
   </div>`;

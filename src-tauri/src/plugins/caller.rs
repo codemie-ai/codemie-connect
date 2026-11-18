@@ -317,6 +317,7 @@ mod tests {
                 "data_location_remove_old",
                 "data_location_reveal",
                 "data_location_use_default",
+                "meetings_root_pick",
                 "storage_status",
             ]
         );

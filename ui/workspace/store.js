@@ -5,8 +5,9 @@
 // An AI draft or summary reads the conversation when it runs (and fails with `conflict` if it changed), and
 // Stop ends whatever is running, so neither depends on the revision the user saw. Meeting operations
 // dedupe natively (a save or notes run already going is reused), and a document edit is fenced by its
-// own baseVersion/baseRev, which answers `conflict` rather than overwriting newer text.
-export const REBASE_SAFE = new Set(['settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'ai_summarize', 'job_cancel', 'automation_save', 'automation_delete', 'automation_toggle', 'automation_run_now', 'task_save', 'task_delete', 'meeting_check', 'meeting_download', 'meeting_import', 'meeting_speakers', 'meeting_notes', 'meeting_set', 'meeting_doc', 'meeting_rule_save']);
+// own baseVersion/baseRev, which answers `conflict` rather than overwriting newer text. Templates,
+// rules and the glossary are local to this window (Settings › Meetings): a sync never touches them.
+export const REBASE_SAFE = new Set(['settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'ai_summarize', 'job_cancel', 'automation_save', 'automation_delete', 'automation_toggle', 'automation_run_now', 'task_save', 'task_delete', 'meeting_check', 'meeting_download', 'meeting_import', 'meeting_speakers', 'meeting_notes', 'meeting_set', 'meeting_doc', 'meeting_rule_save', 'meeting_rule_delete', 'meeting_rule_order', 'template_save', 'template_delete', 'meeting_text_save']);
 
 export function createStore(invoke) {
   let state = null;

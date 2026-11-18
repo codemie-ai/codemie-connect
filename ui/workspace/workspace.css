@@ -824,7 +824,7 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-settings-heading p{font-size:12px;color:var(--ws-muted)}
 .ws-settings-nav{display:grid;gap:2px}
 .ws-nav-label{font-size:11px;font-weight:600;color:var(--ws-faint);letter-spacing:.6px;text-transform:uppercase;padding:14px 10px 6px}
-.ws-settings-nav button{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border:0;border-radius:8px;background:none;color:var(--ws-text-2);font-size:13px;text-align:left}
+.ws-settings-nav button{display:flex;align-items:center;gap:10px;min-height:34px;padding:6px 10px;line-height:18px;border:0;border-radius:8px;background:none;color:var(--ws-text-2);font-size:13px;text-align:left}
 .ws-settings-nav button .ws-icon{color:var(--ws-muted)}
 .ws-settings-nav button:hover{background:var(--ws-hover)}
 .ws-settings-nav button[aria-current=page]{background:#212224;color:#fff}
@@ -2343,3 +2343,204 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-mtg-said code{font-size:11px;color:var(--ws-text-2)}
 /* A past meeting with a transcript badge stays readable: its badge is the next step. */
 .ws-ev.ws-past:has(.ws-tb),.ws-month-ev.ws-past:has(.ws-tb),.ws-agenda-row.ws-past:has(.ws-tb){opacity:.85}
+
+/* ================================================================== Settings › Meetings (ws-ms-) */
+.ws-settings-panels>.ws-ms-editor{max-width:1240px}
+.ws-ms-back{margin-bottom:4px;font-size:12px}
+.ws-ms-back .ws-icon{width:14px;height:14px}
+.ws-ms-mono{font-family:var(--font-mono)!important;font-size:12px!important}
+.ws-ms-reason{margin:0 0 12px}
+.ws-ms-pending{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--ws-muted);white-space:nowrap}
+.ws-settings-panels .ws-ms-tpl-grid .ws-card+.ws-card{margin-top:0}
+
+/* Transcripts & folders */
+.ws-ms-location{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.ws-ms-location-path{display:grid;gap:6px;min-width:0;flex:1 1 320px}
+.ws-ms-path-line{display:flex;align-items:center;gap:8px;min-width:0}
+.ws-ms-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;padding:6px 10px;border-radius:8px;background:var(--ws-input);border:1px solid var(--ws-border);color:var(--ws-text)}
+.ws-ms-location .ws-actions{flex-wrap:wrap}
+.ws-ms-location-hint{display:block;margin:8px 0 14px}
+.ws-ms-pattern{display:grid;gap:10px;padding:14px 0;border-top:1px solid var(--ws-border)}
+.ws-ms-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.ws-ms-options.ws-ms-two{grid-template-columns:repeat(2,minmax(0,1fr))}
+.ws-ms-radio-card{position:relative;display:flex;gap:10px;padding:10px 12px;border:1px solid var(--ws-border);border-radius:10px;cursor:pointer;background:var(--ws-card-2);transition:border-color .12s ease,background .12s ease}
+.ws-ms-radio-card:hover{border-color:var(--ws-border-strong)}
+.ws-ms-radio-card input{position:absolute;opacity:0;pointer-events:none}
+.ws-ms-radio-card>span{display:grid;gap:2px;min-width:0}
+.ws-ms-radio-card strong{font-size:13px;font-weight:600}
+.ws-ms-radio-card small{font-size:11px;line-height:15px;color:var(--ws-muted)}
+.ws-ms-radio-card:has(input:checked){border-color:var(--ws-accent);box-shadow:0 0 0 1px var(--ws-accent);background:color-mix(in srgb,var(--ws-accent) 8%,var(--ws-card))}
+.ws-ms-radio-card:has(input:focus-visible){outline:2px solid var(--ws-focus);outline-offset:2px}
+.ws-ms-pattern-preview{display:grid;gap:4px;padding:10px 12px;border-radius:8px;background:var(--ws-input);border:1px solid var(--ws-border);min-width:0}
+.ws-ms-pattern-preview code{font-size:12px;color:var(--ws-text-2);overflow-wrap:anywhere}
+.ws-ms-pattern-preview .ws-field-label{margin-bottom:2px}
+.ws-ms-files{display:grid;padding-top:14px;border-top:1px solid var(--ws-border)}
+.ws-ms-files>.ws-field-label{margin-bottom:6px}
+.ws-ms-file-row{display:grid;grid-template-columns:minmax(150px,260px) minmax(0,1fr) auto;align-items:center;gap:12px;min-height:40px;padding:6px 0;border-top:1px solid color-mix(in srgb,var(--ws-border) 60%,transparent);font-size:13px}
+.ws-ms-file-row code{font-size:12px;overflow-wrap:anywhere}
+.ws-ms-file-row>span{color:var(--ws-muted);font-size:12px;line-height:17px}
+
+/* Note templates */
+.ws-ms-naming{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;margin-bottom:16px;border-radius:var(--ws-radius-lg);border:1px solid color-mix(in srgb,var(--ws-accent) 35%,var(--ws-border));background:color-mix(in srgb,var(--ws-accent) 6%,var(--ws-card))}
+.ws-ms-naming-icon{color:var(--ws-accent);margin-top:2px;flex-shrink:0}
+.ws-ms-naming strong{font-size:13px}
+.ws-ms-naming p{font-size:13px;line-height:20px;color:var(--ws-muted);margin-top:2px}
+.ws-ms-naming em{font-style:normal;color:var(--ws-text);font-weight:600}
+.ws-ms-group-title{display:flex;align-items:baseline;gap:8px;margin:22px 0 10px;font-size:12px;font-weight:600;color:var(--ws-muted);text-transform:uppercase;letter-spacing:.5px}
+.ws-ms-group-title small{font-size:11px;color:var(--ws-faint)}
+.ws-ms-tpl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:12px}
+.ws-ms-tpl-card{display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px 14px 10px;border:1px solid var(--ws-border);border-radius:var(--ws-radius-lg);background:var(--ws-card);box-shadow:inset 0 3px 0 var(--tpl)}
+.ws-ms-tpl-card header{display:flex;gap:10px;align-items:flex-start;min-width:0}
+.ws-ms-tpl-card header>div{flex:1;display:grid;gap:4px;min-width:0}
+.ws-ms-tpl-card header strong{font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.ws-ms-tpl-badges{display:flex;gap:4px;flex-wrap:wrap}
+.ws-ms-tpl-card>p{flex:1;font-size:12px;line-height:18px;color:var(--ws-muted);overflow-wrap:anywhere}
+.ws-ms-tpl-card .ws-faint{color:var(--ws-faint)}
+.ws-ms-tpl-sections{display:flex;flex-wrap:wrap;gap:4px}
+.ws-ms-tpl-sections span{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:6px;background:var(--ws-raised);font-size:11px;line-height:18px;color:var(--ws-muted)}
+.ws-ms-tpl-sections .ws-icon{width:11px;height:11px}
+.ws-ms-tpl-sections .ws-ms-sec-tasks{background:var(--ws-purple-bg);color:var(--ws-purple)}
+.ws-ms-tpl-card footer{display:flex;align-items:center;gap:8px;padding-top:8px;border-top:1px solid var(--ws-border);min-width:0}
+.ws-ms-tpl-card footer small{flex:1;min-width:0;display:flex;align-items:center;gap:4px;font-size:11px}
+.ws-ms-tpl-card footer small span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-ms-tpl-card footer small .ws-icon{width:11px;height:11px;flex-shrink:0}
+.ws-ms-tpl-card .ws-menu-panel{min-width:190px}
+
+/* The template editor */
+.ws-ms-editor{display:grid;gap:12px}
+.ws-ms-editor-bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:8px;min-height:40px;padding:6px 8px 6px 12px;border-radius:10px;border:1px solid var(--ws-border);background:var(--ws-card);font-size:12px;color:var(--ws-muted);box-shadow:0 4px 12px rgba(0,0,0,.06)}
+.ws-ms-editor-state{display:inline-flex;align-items:center;gap:6px}
+.ws-ms-editor-state .ws-icon{width:14px;height:14px}
+.ws-ms-editor-bar.ws-ms-dirty{border-color:var(--ws-amber);color:var(--ws-amber)}
+.ws-ms-editor-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px;align-items:start}
+.ws-ms-editor-left{display:grid;gap:16px;min-width:0}
+.ws-settings-panels .ws-ms-editor-left .ws-card+.ws-card{margin-top:0}
+.ws-ms-editor-right{position:sticky;top:56px;min-width:0}
+.ws-ms-form-rows{display:grid;gap:14px}
+.ws-ms-swatches{display:flex;gap:6px;flex-wrap:wrap}
+.ws-ms-swatch{width:22px;height:22px;padding:0;border-radius:50%;border:2px solid transparent;background:var(--c);box-shadow:0 0 0 1px var(--ws-border);cursor:pointer}
+.ws-ms-swatch[aria-pressed=true]{border-color:var(--ws-card);box-shadow:0 0 0 2px var(--c)}
+.ws-ms-swatch:focus-visible{outline:2px solid var(--ws-focus);outline-offset:3px}
+.ws-ms-vars{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}
+.ws-ms-var{height:22px;padding:0 7px;border:1px solid var(--ws-border);border-radius:6px;background:var(--ws-card-2);color:var(--ws-purple);font-family:var(--font-mono);font-size:11px;cursor:pointer}
+.ws-ms-var:hover{border-color:var(--ws-purple)}
+.ws-ms-prompt{width:100%;box-sizing:border-box;min-height:420px;font-family:var(--font-mono)!important;font-size:12px!important;line-height:19px!important;resize:vertical}
+.ws-ms-sec-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 12px}
+.ws-ms-sec-grid .ws-check{font-size:12px;line-height:18px;min-width:0}
+.ws-ms-tasks-row{display:flex;gap:12px;align-items:flex-start;margin-top:14px;padding-top:14px;border-top:1px solid var(--ws-border)}
+.ws-ms-tasks-row>div{display:grid;gap:2px;min-width:0}
+.ws-ms-tasks-row strong{font-size:13px}
+.ws-ms-tasks-row small{font-size:12px;line-height:17px;color:var(--ws-muted)}
+/* The latest notes stay in view beside the editor: the card fits under the bar. */
+.ws-ms-latest .ws-card-body{max-height:max(240px,calc(100vh - 380px));overflow:auto;padding:0}
+.ws-ms-latest .ws-mtg-card-head p{overflow-wrap:anywhere}
+.ws-ms-latest .ws-md{max-width:none}
+.ws-ms-latest .ws-card-footer small{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-ms-latest-wait{display:grid;place-items:center;min-height:120px}
+.ws-md-ts:disabled{cursor:default;text-decoration:none}
+
+/* Add a skill */
+.ws-ms-skill-list{display:grid;gap:8px;max-height:44vh;overflow:auto;padding:2px}
+.ws-ms-skill-opt{position:relative;display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--ws-border);border-radius:10px;cursor:pointer;--tpl:#7B3FBF}
+.ws-ms-skill-opt input{position:absolute;opacity:0;pointer-events:none}
+.ws-ms-skill-opt:has(input:checked){border-color:var(--ws-purple);box-shadow:0 0 0 1px var(--ws-purple)}
+.ws-ms-skill-opt:has(input:focus-visible){outline:2px solid var(--ws-focus);outline-offset:2px}
+.ws-ms-skill-opt>span:last-child{display:grid;gap:3px;min-width:0}
+.ws-ms-skill-opt strong{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13px}
+.ws-ms-skill-opt small{font-size:12px;line-height:17px;color:var(--ws-muted)}
+.ws-ms-skill-opt code{font-size:11px;color:var(--ws-faint);overflow-wrap:anywhere}
+.ws-ms-skill-opt.ws-ms-off{opacity:.55;cursor:default}
+.ws-ms-skill-path{margin-top:14px}
+.ws-ms-skill-path .ws-field-error[hidden]{display:none}
+
+/* Automatic rules */
+.ws-ms-rules{display:grid;gap:8px}
+.ws-ms-rule{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:12px;align-items:start;padding:12px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2)}
+.ws-ms-rule-off .ws-ms-rule-main,.ws-ms-rule-off .ws-ms-rule-n{opacity:.55}
+.ws-ms-rule-default{margin-top:8px;border-style:dashed;background:none}
+.ws-ms-rule-n{display:grid;place-items:center;width:24px;height:24px;margin-top:5px;border-radius:50%;background:var(--ws-raised);font-size:12px;font-weight:700;color:var(--ws-muted)}
+.ws-ms-rule-n .ws-icon{width:13px;height:13px}
+.ws-ms-rule-main{display:grid;gap:10px;min-width:0}
+.ws-ms-rule-when{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.ws-ms-rule-when .ws-select-wrap{width:auto;min-width:160px;max-width:100%}
+.ws-ms-rule-word{font-size:13px;color:var(--ws-muted)}
+.ws-ms-rule-value{width:200px;max-width:100%;flex:0 1 200px}
+.ws-ms-rule-main .ws-field-error{margin:0}
+.ws-ms-rule-opts{display:flex;align-items:center;gap:6px 16px;flex-wrap:wrap}
+.ws-ms-rule-opts .ws-check{font-size:12px}
+.ws-ms-rule-opts small{font-size:11px;line-height:16px;flex-basis:100%;overflow-wrap:anywhere}
+.ws-ms-rule-act{display:flex;align-items:center;gap:2px;padding-top:3px}
+.ws-ms-rule-act .ws-switch{margin:0 6px}
+.ws-ms-rule-test{display:grid;grid-template-columns:minmax(0,1fr) 96px minmax(0,1fr);gap:12px;align-items:end}
+.ws-ms-test-result{display:flex;gap:10px;align-items:center;min-height:36px;padding:7px 12px;border-radius:10px;border:1px solid var(--tpl);background:color-mix(in srgb,var(--tpl) 10%,var(--ws-card));box-sizing:border-box;min-width:0}
+.ws-ms-test-result>div{display:grid;min-width:0}
+.ws-ms-test-result strong{font-size:13px}
+.ws-ms-test-result small{font-size:11px;line-height:15px;color:var(--ws-muted);overflow-wrap:anywhere}
+
+/* Glossary & tags */
+.ws-ms-source{display:grid;gap:8px}
+.ws-ms-paths{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px;margin-top:6px}
+.ws-ms-paths>small{grid-column:1/-1}
+.ws-ms-md-card{overflow:hidden}
+.ws-ms-md-card .ws-card-header{flex-wrap:wrap;padding-bottom:4px}
+.ws-ms-md-file{font-size:11px;font-weight:400;color:var(--ws-muted);padding:1px 6px;border-radius:5px;background:var(--ws-raised);margin-left:2px}
+.ws-ms-md-grid{display:grid;grid-template-columns:minmax(0,1fr) 260px;min-height:0}
+.ws-ms-md-main{padding:14px 16px 16px 18px;min-width:0}
+.ws-ms-md-text{width:100%;box-sizing:border-box;min-height:360px;font-family:var(--font-mono)!important;font-size:12.5px!important;line-height:20px!important;resize:vertical}
+.ws-ms-md-preview{padding:0;max-width:none;min-height:120px}
+.ws-ms-md-empty{padding:20px 0;font-size:13px}
+.ws-ms-md-side{display:grid;align-content:start;gap:8px;padding:14px 16px;border-left:1px solid var(--ws-border);background:var(--ws-card-2);min-width:0}
+.ws-ms-md-summary{display:grid;gap:8px;font-size:12px;min-width:0}
+.ws-ms-md-summary>strong{font-size:12px;margin-top:4px}
+.ws-ms-md-summary small{font-size:11px;line-height:16px}
+.ws-ms-md-chips{display:flex;flex-wrap:wrap;gap:4px}
+.ws-ms-md-chips code{padding:1px 6px;border-radius:5px;background:var(--ws-raised);font-size:11px;overflow-wrap:anywhere}
+.ws-ms-md-me{display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;background:var(--ws-card);min-width:0}
+.ws-ms-md-me>span{display:grid;min-width:0}
+.ws-ms-md-me strong{overflow-wrap:anywhere}
+.ws-ms-md-me small{font-size:11px;color:var(--ws-muted);overflow-wrap:anywhere}
+.ws-ms-md-warn{display:flex;gap:6px;align-items:flex-start;font-size:12px;line-height:17px;color:var(--ws-amber)}
+.ws-ms-md-warn .ws-icon{width:13px;height:13px;flex-shrink:0;margin-top:2px}
+.ws-ms-md-pairs{list-style:none;margin:0;padding:0;display:grid;gap:3px}
+.ws-ms-md-pairs li{display:flex;align-items:center;gap:6px;font-size:11px;min-width:0}
+.ws-ms-md-pairs li span{color:var(--ws-muted);text-decoration:underline wavy color-mix(in srgb,var(--ws-amber) 70%,transparent);text-underline-offset:3px;overflow-wrap:anywhere}
+.ws-ms-md-pairs li strong{overflow-wrap:anywhere}
+.ws-ms-md-pairs .ws-icon{width:11px;height:11px;color:var(--ws-faint);flex-shrink:0}
+.ws-ms-md-linked{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;margin-bottom:10px;border-radius:8px;background:var(--ws-blue-bg)}
+.ws-ms-md-linked>.ws-icon{color:var(--ws-blue);margin-top:2px;flex-shrink:0}
+.ws-ms-md-linked div{display:grid;gap:2px;min-width:0}
+.ws-ms-md-linked strong{font-size:12px;font-weight:600;overflow-wrap:anywhere}
+.ws-ms-md-linked small{font-size:12px;color:var(--ws-muted)}
+.ws-ms-md-status{display:inline-flex;align-items:center;gap:6px;min-width:0;font-size:12px;color:var(--ws-muted)}
+.ws-ms-md-status .ws-icon{width:13px;height:13px;flex-shrink:0}
+.ws-ms-md-saved{color:var(--ws-green)}
+.ws-ms-md-error{color:var(--ws-red)}
+
+/* Tasks */
+.ws-ms-col-names{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:6px}
+.ws-ms-col{display:grid;gap:4px;min-width:0}
+.ws-ms-col-name{display:flex;align-items:center;gap:6px;min-width:0}
+.ws-ms-col-swatch{width:8px;height:8px;border-radius:50%;background:var(--col);flex-shrink:0}
+.ws-ms-col-name .ws-input{height:30px;min-width:0;font-size:12px}
+.ws-ms-col-hint{display:block;margin:6px 0 4px}
+
+/* Narrow windows: one column, nothing overflows. */
+@media (max-width:1280px){
+  .ws-ms-editor-grid{grid-template-columns:minmax(0,1fr)}
+  .ws-ms-editor-right{position:static}
+  .ws-ms-latest .ws-card-body{max-height:480px}
+}
+@media (max-width:1180px){
+  .ws-ms-md-grid{grid-template-columns:minmax(0,1fr)}
+  .ws-ms-md-side{border-left:0;border-top:1px solid var(--ws-border)}
+  .ws-ms-options{grid-template-columns:minmax(0,1fr)}
+  .ws-ms-options.ws-ms-two{grid-template-columns:minmax(0,1fr)}
+  .ws-ms-col-names{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .ws-ms-file-row{grid-template-columns:minmax(0,1fr) auto}
+  .ws-ms-file-row>span{grid-column:1;grid-row:2}
+  .ws-ms-file-row>:last-child{grid-row:1/3;grid-column:2}
+  .ws-ms-rule-test{grid-template-columns:minmax(0,1fr) 96px}
+  .ws-ms-test-result{grid-column:1/-1}
+  .ws-ms-paths{grid-template-columns:minmax(0,1fr)}
+  .ws-ms-sec-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}

@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
+import { meetingSettingsChecks } from './meetings-settings-checks.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -136,11 +137,67 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   const active = wid => s.workspaces.find(w => w.id === (wid || s.settings.activeWorkspace));
   const find = (kind, id) => s.records.find(r => r.kind === kind && r.id === id);
   const fail = (code, message, cls) => { throw cls ? { code, message, class: cls } : { code, message }; };
+  // A refused field, as WorkspaceError carries it (`field`), so the UI can show it there.
+  const refuse = (field, message) => { throw { code: 'validation', message, field }; };
+  // Settings › Meetings: the built-in templates as native has them, the glossary and tag texts in
+  // the meetings folder, and whether Microsoft's last sign-in was refused.
+  const BUILT_INS = clone((s.noteTemplates || []).filter(t => t.kind === 'builtin'));
+  const texts = { glossary: glossaryText, tags: '' };
+  let authError = null;
+  /** model.rs `MeetingSettings::apply`: only the fields given change, each checked; nothing
+   *  changes when one is refused. */
+  function applyMeetings(d) {
+    if (!d || typeof d !== 'object' || Array.isArray(d)) refuse('meetings', 'Send the meeting settings as an object.');
+    const next = clone(s.settings.meetings);
+    const one = (k, v, allowed, message) => { if (!allowed.includes(v)) refuse(k, message); next[k] = v; };
+    const int = (k, v, lo, hi, message) => { if (!Number.isInteger(v) || v < lo || v > hi) refuse(k, message); next[k] = v; };
+    const path = (k, v, message) => { if (v === null || v === '') return null; if (typeof v !== 'string' || !v.trim().startsWith('/')) refuse(k, message); return v.trim(); };
+    for (const [k, v] of Object.entries(d)) {
+      switch (k) {
+        case 'root': {
+          const root = path(k, v, 'Choose a folder for your meetings.');
+          if (root && root !== s.settings.meetings.root && !(window.__dirs || []).includes(root)) refuse(k, 'That folder doesn’t exist. Choose another one.');
+          next.root = root;
+          break;
+        }
+        case 'folderPattern': one(k, v, ['echo', 'date-title', 'title-date'], 'Choose a folder name pattern.'); break;
+        case 'checkEveryMin': one(k, v, [5, 10, 30], 'Look for transcripts every 5, 10 or 30 minutes.'); break;
+        case 'autoNotes': one(k, v, ['off', 'rules', 'all'], 'Choose when notes are made automatically.'); break;
+        case 'waitMin': int(k, v, 0, 240, 'Wait between 0 and 240 minutes after the meeting.'); break;
+        case 'doneDays': int(k, v, 1, 365, 'Hide done tasks after 1 to 365 days.'); break;
+        case 'skipShort': case 'keepVtt': case 'keepVersions': case 'review': case 'onlyAttendees': case 'weMe': case 'askSpeakers': case 'remind': case 'dueOnlySaid':
+          if (typeof v !== 'boolean') refuse(k, 'Turn this setting on or off.');
+          next[k] = v;
+          break;
+        case 'glossarySource': one(k, v, ['connect', 'file'], 'Choose where the glossary and tags live.'); break;
+        case 'glossaryFile': next[k] = path(k, v, 'Choose the glossary file by its full path.'); break;
+        case 'tagsFile': next[k] = path(k, v, 'Choose the tags file by its full path.'); break;
+        case 'defaultTemplate': if (typeof v !== 'string' || !v.trim() || v.length > 100) refuse(k, 'Choose a default template.'); next[k] = v.trim(); break;
+        case 'columns':
+          if (!v || typeof v !== 'object') refuse(k, 'Name the board columns.');
+          next.columns = { ...next.columns };
+          for (const [status, name] of Object.entries(v)) {
+            if (!['review', 'todo', 'doing', 'waiting', 'done'].includes(status)) refuse(k, 'Name only the board’s own columns.');
+            const n = name === null ? '' : String(name).trim();
+            if ([...n].length > 40) refuse(k, 'Keep column names to 40 characters.');
+            if (n) next.columns[status] = n; else delete next.columns[status];
+          }
+          break;
+        default: refuse(k, 'Unknown meeting setting.');
+      }
+    }
+    s.settings.meetings = next;
+    s.meetingsRoot = { path: next.root || DEFAULT_MEETINGS_ROOT, isDefault: !next.root };
+  }
+  const DEFAULT_MEETINGS_ROOT = s.meetingsRoot?.path || '/Users/taylor/CodeMie Connect/Meetings';
+  const SCOPES = { calendar: 'Calendars.Read', mail: 'Mail.Read', chats: 'Chat.Read', meetings: 'OnlineMeetings.Read', transcripts: 'OnlineMeetingTranscript.Read.All' };
   const ops = {
-    snapshot: () => ({ snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError: null }),
+    snapshot: () => ({ snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError }),
     settings_update: d => {
+      calls.push(['settings_update', clone(d)]);
+      if (d.meetings) applyMeetings(d.meetings);
       if (d.capabilities) s.connection.enabled = d.capabilities;
-      for (const [k, v] of Object.entries(d)) if (k !== 'capabilities') s.settings[k] = v;
+      for (const [k, v] of Object.entries(d)) if (k !== 'capabilities' && k !== 'meetings') s.settings[k] = v;
       return { saved: true };
     },
     local_save: (d, wid) => {
@@ -169,9 +226,18 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     graph_connect: d => {
       calls.push(['graph_connect', d]);
       authPending = true;
+      authError = null;
       setTimeout(() => {
         authPending = false;
-        Object.assign(s, connected, { settings: { ...connected.settings, theme: s.settings.theme } });
+        // `__consentDeclined`: Microsoft's page said no; nothing changes and the sign-in says why.
+        if (window.__consentDeclined) authError = 'Microsoft didn’t give Connect access: the permission request was declined.';
+        else {
+          const before = s.connection && s.connection.status !== 'disconnected' ? s.connection : null;
+          Object.assign(s, connected, { settings: { ...connected.settings, theme: s.settings.theme } });
+          // The capabilities asked for, with their scopes (graph.rs finish_auth).
+          const caps = [...new Set([...(before ? before.enabled : connected.connection.enabled), ...(d.capabilities || [])])];
+          s.connection = { ...s.connection, enabled: caps, scopes: [...new Set([...(s.connection.scopes || []), ...caps.map(c => SCOPES[c]).filter(Boolean)])] };
+        }
         emit('connection:changed');
       }, 900);
       return { status: 'authorizing' };
@@ -663,19 +729,114 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       touch(m);
       return d.action === 'delete' ? { deleted: true } : { saved: true };
     },
-    template_save: d => { calls.push(['template_save', clone(d)]); return { id: d.id || crypto.randomUUID() }; },
-    template_delete: d => { calls.push(['template_delete', clone(d)]); return ['meeting-notes', 'short-summary'].includes(d.id) ? { reset: true, id: d.id } : { deleted: true, id: d.id }; },
-    meeting_rule_save: d => {
-      calls.push(['meeting_rule_save', clone(d)]);
+    // Settings › Meetings (library_ops.rs): templates over the built-ins as native merges them
+    // (an override says `edited`, deleting it is Reset to built-in), rules with their order, and
+    // the glossary and tag list (linked files are only read). Refusals carry `field`.
+    template_save: d => {
+      calls.push(['template_save', clone(d)]);
+      const has = k => Object.prototype.hasOwnProperty.call(d, k);
+      if (has('id') && d.id !== null && !/^[A-Za-z0-9._:-]{1,100}$/.test(String(d.id))) refuse('id', 'Choose a template.');
       const id = d.id || crypto.randomUUID();
-      s.records = s.records.filter(r => !(r.kind === 'meeting_rule' && r.id === id)).concat({ id, kind: 'meeting_rule', source: 'local', connectionId: null, workspaceId: 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { field: d.field, value: d.value, template: d.template, autoNotes: !!d.autoNotes, on: d.on !== false, order: d.order ?? 0 } });
+      const stored = s.noteTemplates.find(t => t.id === id);
+      const kind = stored?.kind || d.kind || 'custom';
+      if (!stored && !['custom', 'skill'].includes(kind)) refuse('kind', 'Choose your own template or a skill.');
+      const t = stored ? clone(stored) : { id, kind, name: '', blurb: '', prompt: '', sections: [], extractTasks: true, color: kind === 'skill' ? '#7B3FBF' : '#2297F6', icon: kind === 'skill' ? 'shield' : 'note', skillPath: null, edited: false };
+      const text = (k, max, message) => {
+        if (!has(k)) return undefined;
+        const v = d[k] === null ? '' : d[k];
+        if (typeof v !== 'string' || [...v.trim()].length > max) refuse(k, message);
+        return v.trim();
+      };
+      const name = text('name', 80, 'Name the template (up to 80 characters).');
+      if (name !== undefined) t.name = name;
+      if (!t.name) refuse('name', 'Name the template (up to 80 characters).');
+      const blurb = text('blurb', 300, 'Keep the description to 300 characters.');
+      if (blurb !== undefined) t.blurb = blurb;
+      const prompt = text('prompt', 50000, 'Keep the instructions to 50,000 characters.');
+      if (prompt !== undefined) t.prompt = prompt;
+      if (has('sections')) {
+        if (!Array.isArray(d.sections) || d.sections.length > 20 || d.sections.some(x => !/^[A-Za-z][A-Za-z0-9]{0,39}$/.test(x))) refuse('sections', 'Choose the template’s sections.');
+        t.sections = [...new Set(d.sections)];
+      }
+      if (has('extractTasks')) t.extractTasks = !!d.extractTasks;
+      const color = text('color', 7, 'Choose a colour.');
+      if (color !== undefined) { if (!/^#[0-9a-f]{6}$/i.test(color)) refuse('color', 'Choose a colour.'); t.color = color; }
+      const icon = text('icon', 30, 'Choose an icon.');
+      if (icon !== undefined) t.icon = icon;
+      if (kind === 'skill') {
+        const path = text('skillPath', 1024, 'Choose the skill’s SKILL.md by its full path.');
+        if (path !== undefined) {
+          const known = (window.__skills || []).some(x => x.path === path) || path === t.skillPath || window.__files?.[path] !== undefined;
+          if (!path.startsWith('/') || !/\.md$/i.test(path) || !known) refuse('skillPath', 'Choose the skill’s SKILL.md by its full path.');
+          t.skillPath = path;
+        }
+        if (!t.skillPath) refuse('skillPath', 'Choose the skill’s SKILL.md by its full path.');
+      } else if (!t.prompt) refuse('prompt', 'Write the template’s instructions.');
+      if (t.kind === 'builtin') t.edited = true;
+      s.noteTemplates = stored ? s.noteTemplates.map(x => (x.id === id ? t : x)) : [...s.noteTemplates, t];
       return { id };
     },
-    meeting_rule_delete: d => { calls.push(['meeting_rule_delete', clone(d)]); return { deleted: true, id: d.id, body: {} }; },
-    meeting_rule_order: d => { calls.push(['meeting_rule_order', clone(d)]); return { saved: true }; },
-    meeting_text_save: d => { calls.push(['meeting_text_save', { name: d.name }]); return { saved: true, path: `/Users/qa/CodeMie Connect/Meetings/${d.name}.md` }; },
-    meeting_text: d => ({ text: d.name === 'glossary' ? glossaryText : '', path: `/Users/qa/CodeMie Connect/Meetings/${d.name}.md`, linked: false }),
-    meeting_skills: () => [],
+    template_delete: d => {
+      calls.push(['template_delete', clone(d)]);
+      const original = BUILT_INS.find(t => t.id === d.id);
+      if (original) { s.noteTemplates = s.noteTemplates.map(t => (t.id === d.id ? clone(original) : t)); return { reset: true, id: d.id }; }
+      if (!s.noteTemplates.some(t => t.id === d.id)) fail('not_found', 'This template is no longer there.');
+      if (s.settings.meetings.defaultTemplate === d.id) s.settings.meetings.defaultTemplate = 'meeting-notes';
+      for (const r of s.records) if (r.kind === 'meeting_rule' && r.data.template === d.id) r.data.template = s.settings.meetings.defaultTemplate;
+      s.noteTemplates = s.noteTemplates.filter(t => t.id !== d.id);
+      return { deleted: true, id: d.id };
+    },
+    meeting_rule_save: d => {
+      calls.push(['meeting_rule_save', clone(d)]);
+      const has = k => Object.prototype.hasOwnProperty.call(d, k);
+      const id = d.id || crypto.randomUUID();
+      const rules = s.records.filter(r => r.kind === 'meeting_rule');
+      const stored = rules.find(r => r.id === id);
+      const rule = stored ? clone(stored.data) : { field: 'title', value: '', template: '', autoNotes: false, on: true, order: Math.max(-1, ...rules.map(r => r.data.order + 1 || 0)) };
+      if (!stored && !has('order')) rule.order = rules.length ? Math.max(...rules.map(r => Number(r.data.order) || 0)) + 1 : 0;
+      if (has('field')) { if (!['title', 'organizer', 'org', 'people'].includes(d.field)) refuse('field', 'Choose what the rule looks at.'); rule.field = d.field; }
+      if (has('value')) { const v = String(d.value ?? '').trim(); if ([...v].length > 200) refuse('value', 'Keep the rule’s text to 200 characters.'); rule.value = v; }
+      if (has('template')) rule.template = String(d.template ?? '').trim();
+      if ((!stored || has('template')) && !s.noteTemplates.some(t => t.id === rule.template)) refuse('template', 'Choose a note template.');
+      if (has('autoNotes')) rule.autoNotes = !!d.autoNotes;
+      if (has('on')) rule.on = !!d.on;
+      if (has('order')) rule.order = Number(d.order);
+      s.records = s.records.filter(r => !(r.kind === 'meeting_rule' && r.id === id)).concat({ id, kind: 'meeting_rule', source: 'local', connectionId: null, workspaceId: 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: rule });
+      return { id };
+    },
+    meeting_rule_delete: d => {
+      calls.push(['meeting_rule_delete', clone(d)]);
+      const rec = s.records.find(r => r.kind === 'meeting_rule' && r.id === d.id);
+      if (!rec) fail('not_found', 'This rule is no longer there.');
+      s.records = s.records.filter(r => r !== rec);
+      return { deleted: true, id: d.id, body: rec.data };
+    },
+    meeting_rule_order: d => {
+      calls.push(['meeting_rule_order', clone(d)]);
+      const rules = s.records.filter(r => r.kind === 'meeting_rule');
+      if (!Array.isArray(d.ids) || d.ids.some(id => !rules.some(r => r.id === id))) fail('not_found', 'A rule is no longer there.');
+      const rank = r => { const i = d.ids.indexOf(r.id); return i < 0 ? d.ids.length : i; };
+      rules.sort((a, b) => a.data.order - b.data.order || (a.id < b.id ? -1 : 1)).sort((a, b) => rank(a) - rank(b)).forEach((r, i) => { r.data.order = i; });
+      return { saved: true };
+    },
+    meeting_text_save: d => {
+      calls.push(['meeting_text_save', clone(d)]);
+      if (!['glossary', 'tags'].includes(d.name)) refuse('name', 'Choose the glossary or the tag list.');
+      if (typeof d.text !== 'string') refuse('text', 'Write the text.');
+      if (new TextEncoder().encode(d.text).length > 100 * 1024) fail('too_large', 'Keep the glossary and the tag list to 100 KB each.');
+      if (s.settings.meetings.glossarySource === 'file') refuse('name', 'This is a file you keep elsewhere. Edit it there, or keep the glossary and tags here in Connect.');
+      texts[d.name] = d.text;
+      return { saved: true, path: `${s.meetingsRoot.path}/${d.name}.md` };
+    },
+    meeting_text: d => {
+      const m = s.settings.meetings;
+      if (m.glossarySource === 'file') {
+        const path = d.name === 'glossary' ? m.glossaryFile : m.tagsFile;
+        return { text: (path && window.__files?.[path]) || '', path: path || null, linked: true };
+      }
+      return { text: texts[d.name] ?? '', path: `${s.meetingsRoot.path}/${d.name}.md`, linked: false };
+    },
+    meeting_skills: () => clone(window.__skills || []),
   });
   // Tasks: `task_save` merges into the stored body and writes history lines as native does
   // (src-tauri/src/workspace/tasks.rs); `task_delete` answers with the body (task-delete.json).
@@ -842,6 +1003,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         // `__changeHold` keeps a change running until `__finishChange()`; `__changeError` fails it.
         if (cmd === 'data_location_get') return clone(location);
         if (cmd === 'data_location_pick') { calls.push(['data_location_pick']); return window.__pick?.path ?? null; }
+        // Settings › Meetings › Change…: `__meetingsPick` is the folder chosen (null cancels).
+        if (cmd === 'meetings_root_pick') { calls.push(['meetings_root_pick']); return window.__meetingsPick ?? null; }
         if (cmd === 'data_location_check') {
           calls.push(['data_location_check', args]);
           await sleep(150);
@@ -927,7 +1090,7 @@ const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve
   timer = setTimeout(done, 150);
 }), limit).catch(() => {});
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -945,6 +1108,10 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (automations) withAutomations(connected, now);
   if (tasks) withTasks(connected, now);
   if (meetings) withMeetings(connected, now);
+  if (transcriptsOff) {
+    connected.connection.enabled = connected.connection.enabled.filter(c => c !== 'meetings' && c !== 'transcripts');
+    connected.connection.scopes = connected.connection.scopes.filter(x => !/^OnlineMeeting/.test(x));
+  }
   if (pluginRecords) connected.records.push(...pluginRecords(now));
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
@@ -964,9 +1131,10 @@ const shot = async (page, name) => {
 };
 const text = (page, selector) => page.locator(selector).first().innerText();
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-settings'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, OUT });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
   server.close();
@@ -1183,7 +1351,14 @@ for (const theme of ['dark', 'light']) {
   await check(`${theme}: checkbox and button geometry match CodeMie`, async () => {
     await page.click('.ws-settings-nav button[data-tab=notifications]');
     await quiet(page);
-    const btn = await page.locator('.ws-settings-panels .ws-btn-primary').first().evaluate(e => { const c = getComputedStyle(e); return [e.getBoundingClientRect().height, c.fontSize, c.fontWeight, c.borderRadius]; });
+    // Measured on the button as it is once it is drawn: a follow-up render may replace the first one.
+    const btn = await (await page.waitForFunction(() => {
+      const e = document.querySelector('.ws-settings-panels .ws-btn-primary');
+      const height = e?.getBoundingClientRect().height;
+      if (!height) return null;
+      const c = getComputedStyle(e);
+      return [height, c.fontSize, c.fontWeight, c.borderRadius];
+    })).jsonValue();
     assert(btn[0] === 28 && btn[1] === '12px' && btn[2] === '600' && btn[3] === '8px', `button ${btn}`);
     const font = await page.evaluate(() => getComputedStyle(document.querySelector('#workspace-app')).fontFamily);
     assert(/GeistMono/.test(font), font);
@@ -2622,6 +2797,10 @@ for (const theme of ['dark', 'light']) {
 // Meetings (Task 4): the list and the meeting, the calendar's badges and event card, Today's card,
 // import, speakers, Make notes as soon as it arrives, Try again, a task's quote, ↑/↓.
 await meetingChecks({ open, check, assert, shot, OUT });
+
+// Settings › Meetings (Task 5): transcripts and folders, note templates and skills, rules and the
+// tester, the glossary typed and linked, tasks.
+await meetingSettingsChecks({ open, check, assert, shot, quiet, OUT });
 
 // Plugins (DESIGN 7.3, Tasks 23–24): add a marketplace, install the synthetic hello plugin, its
 // page and Settings section in their sandboxed frame, Today's plugin widgets, turn it off.

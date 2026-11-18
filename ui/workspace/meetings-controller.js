@@ -87,6 +87,8 @@ export function createMeetingsController({
   }
 
   const glossary = () => glossaryRead.value;
+  /** The glossary changed (Settings › Meetings): the next transcript read takes it again. */
+  const forgetGlossary = () => { glossaryRead = { at: 0, value: null, pending: false }; };
   async function loadGlossary() {
     if (glossaryRead.pending || now() - glossaryRead.at < GLOSSARY_FOR_MS) return false;
     glossaryRead.pending = true;
@@ -228,7 +230,7 @@ export function createMeetingsController({
       case 'folder_missing':
         return toast(`The folder of “${titleOf(id)}” is gone.`, 'error', id && record(id)?.data?.transcriptIds?.length && !record(id)?.data?.imported ? { label: 'Download again', run: () => download(id) } : { label: 'Import', run: () => importDialog(id) });
       case 'folder_unwritable':
-        return toast(err.message || 'Connect can’t write to the meetings folder.', 'error');
+        return toast(err.message || 'Connect can’t write to the meetings folder.', 'error', { label: 'Open Settings › Meetings', run: () => route('settings', 'meetings-transcripts') });
       case 'transcript_missing':
         return toast(err.message || 'Teams no longer has this transcript. Import the file instead.', 'error', { label: 'Import', run: () => importDialog(id) });
       case 'transcript_blocked':
@@ -695,5 +697,5 @@ export function createMeetingsController({
     return undefined;
   }
 
-  return { open, handle, input, submit, key, load, data, glossary, ensureSelection, makeNotesDialog, importDialog, problem };
+  return { open, handle, input, submit, key, load, data, glossary, ensureSelection, makeNotesDialog, importDialog, problem, guarded, makeNotes, transcriptsOn, forgetGlossary };
 }

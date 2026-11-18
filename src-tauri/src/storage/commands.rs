@@ -571,6 +571,44 @@ pub async fn data_location_pick(
     .await
 }
 
+/// Asks for the folder Connect keeps meeting folders in (Settings › Meetings › Transcripts &
+/// folders), as a sheet on the window. `None` when the user cancels. Saving the folder goes
+/// through `settings_update {meetings: {root}}`, which checks it; meetings saved before keep
+/// their folders.
+#[tauri::command]
+pub async fn meetings_root_pick(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    call: tauri::ipc::Request<'_>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Option<String>> {
+    require_main_frame(&call)?;
+    main_window_only(window.label())?;
+    let root = state.core.as_ref().and_then(|core| {
+        let settings = core.repo().ok()?.settings().ok()?.meetings;
+        core.meetings_root(&settings).ok().map(|(root, _)| root)
+    });
+    let start = meetings_picker_start(root.as_deref(), &home_dir(&app));
+    pick_folder(
+        &app,
+        window,
+        start,
+        "Choose where Connect keeps meeting folders",
+    )
+    .await
+}
+
+/// Where the meetings folder picker opens: the meetings folder, else the folder it would be
+/// made in (the default one is made on the first save), else home.
+pub fn meetings_picker_start(root: Option<&Path>, home: &Path) -> PathBuf {
+    root.into_iter()
+        .flat_map(|r| [Some(r), r.parent()])
+        .flatten()
+        .find(|dir| dir.is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.to_path_buf())
+}
+
 #[cfg(any(target_os = "macos", windows))]
 pub(crate) async fn pick_folder(
     app: &tauri::AppHandle,
@@ -677,6 +715,23 @@ mod tests {
         }
     }
     const ROOMY: Space = Space(100 * 1024 * 1024 * 1024);
+
+    #[test]
+    fn meetings_picker_opens_at_the_meetings_folder_or_the_nearest_one_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let parent = home.join("CodeMie Connect");
+        let root = parent.join("Meetings");
+        std::fs::create_dir_all(&home).unwrap();
+        // The default folder is made on the first save: before that, its parent, else home.
+        assert_eq!(meetings_picker_start(Some(&root), &home), home);
+        std::fs::create_dir_all(&parent).unwrap();
+        assert_eq!(meetings_picker_start(Some(&root), &home), parent);
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(meetings_picker_start(Some(&root), &home), root);
+        // No workspace open (or no home): home.
+        assert_eq!(meetings_picker_start(None, &home), home);
+    }
 
     #[test]
     fn use_default_rewrites_pointer_without_core() {
