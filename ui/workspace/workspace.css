@@ -2511,6 +2511,9 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-ms-md-linked div{display:grid;gap:2px;min-width:0}
 .ws-ms-md-linked strong{font-size:12px;font-weight:600;overflow-wrap:anywhere}
 .ws-ms-md-linked small{font-size:12px;color:var(--ws-muted)}
+.ws-ms-md-unread>div{display:grid;gap:6px;min-width:0;overflow-wrap:anywhere}
+.ws-ms-md-unread strong{font-weight:600}
+.ws-ms-md-unread .ws-btn{justify-self:start}
 .ws-ms-md-status{display:inline-flex;align-items:center;gap:6px;min-width:0;font-size:12px;color:var(--ws-muted)}
 .ws-ms-md-status .ws-icon{width:13px;height:13px;flex-shrink:0}
 .ws-ms-md-saved{color:var(--ws-green)}

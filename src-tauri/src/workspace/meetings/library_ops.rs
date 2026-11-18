@@ -422,6 +422,17 @@ impl Core {
             ));
         }
         let path = path.ok_or_else(|| folder::unwritable(&root))?;
+        // Never over a file Connect could not read whole: what it showed was not all of it.
+        let (_, cut) = glossary::read_text(Some(&path))?;
+        if cut {
+            return Err(WorkspaceError::new(
+                "too_large",
+                format!(
+                    "{} is longer than 100 KB, so Connect shows it read-only and won’t change it. Shorten it in your editor, then read it again.",
+                    glossary::file_label(&path)
+                ),
+            ));
+        }
         // The default folder is made on first use; a chosen one that is gone is chosen again.
         let there = root.is_dir() || is_default && std::fs::create_dir_all(&root).is_ok();
         if !there {
@@ -441,9 +452,9 @@ impl Core {
             Ok((root, _)) => glossary::text_path(&root, &s, which),
             Err(_) => (None, s.glossary_source == "file"),
         };
-        let (text, _) = glossary::read_text(path.as_deref());
+        let (text, cut) = glossary::read_text(path.as_deref())?;
         Ok(
-            json!({"text": text, "path": path.map(|p| p.to_string_lossy().into_owned()), "linked": linked}),
+            json!({"text": text, "path": path.map(|p| p.to_string_lossy().into_owned()), "linked": linked, "cut": cut}),
         )
     }
 

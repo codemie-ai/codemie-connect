@@ -219,7 +219,7 @@ impl Core {
             .ok_or_else(folder_missing)?;
         let version = |key: &str| req.data[key].as_u64().and_then(|v| u32::try_from(v).ok());
         match action {
-            "main" => docs::set_main(&dir, &mut m, doc_id)?,
+            "main" => docs::set_main(&dir, &mut m, doc_id, &zone)?,
             "delete" => docs::delete(&dir, &mut m, doc_id, &zone)?,
             "version" => {
                 let v = version("version").ok_or_else(|| invalid("Choose a version."))?;

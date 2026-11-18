@@ -3,6 +3,7 @@
 //! `## Me` and the quoted names after it, every **bold** term or person, the quoted spellings
 //! after "heard as", and every `` `tag` `` that starts a list item.
 use super::model::{MeAlias, MeetingSettings};
+use crate::workspace::models::WorkspaceError;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -190,20 +191,21 @@ pub fn text_path(root: &Path, s: &MeetingSettings, which: Text) -> (Option<PathB
     (Some(root.join(which.file_name())), false)
 }
 
-/// A document's text: empty when the file is not there (or can't be read), the first 100 KB
-/// when it is longer (and `true`).
-pub fn read_text(path: Option<&Path>) -> (String, bool) {
+/// A document's text: empty when there is no file (or none is chosen), the first 100 KB when it
+/// is longer (and `true`). Any other failure to read it is `unreadable`, so nothing is ever
+/// written over a document Connect could not read.
+pub fn read_text(path: Option<&Path>) -> Result<(String, bool), WorkspaceError> {
     use std::io::Read;
-    let Some(file) = path.and_then(|p| std::fs::File::open(p).ok()) else {
-        return (String::new(), false);
+    let Some(path) = path else {
+        return Ok((String::new(), false));
     };
     let mut bytes = Vec::new();
-    if file
-        .take(TEXT_MAX as u64 + 4)
-        .read_to_end(&mut bytes)
-        .is_err()
+    match std::fs::File::open(path)
+        .and_then(|file| file.take(TEXT_MAX as u64 + 4).read_to_end(&mut bytes))
     {
-        return (String::new(), false);
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((String::new(), false)),
+        Err(e) => return Err(unreadable(path, &e)),
     }
     let cut = bytes.len() > TEXT_MAX;
     if cut {
@@ -214,7 +216,30 @@ pub fn read_text(path: Option<&Path>) -> (String, bool) {
         // A character split by the cut.
         text.pop();
     }
-    (text, cut)
+    Ok((text, cut))
+}
+
+/// The file's name, as the person sees it in Finder.
+pub fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// A glossary or tag list Connect can't read: names the file and says it stays as it is.
+pub fn unreadable(path: &Path, e: &std::io::Error) -> WorkspaceError {
+    let why = match e.kind() {
+        std::io::ErrorKind::PermissionDenied => "it isn’t allowed to open it",
+        std::io::ErrorKind::IsADirectory => "it is a folder, not a file",
+        _ => "the file may be offline or in use",
+    };
+    WorkspaceError::new(
+        "unreadable",
+        format!(
+            "Connect can’t read {} ({why}), so it won’t change it. Check the file in Finder, then try again.",
+            file_label(path)
+        ),
+    )
 }
 
 /// `me` as the glossary names me: its `## Me` name and aliases (the account's own name becomes
@@ -390,17 +415,41 @@ mod tests {
         assert_eq!(text_path(root, &s, Text::Tags), (None, true));
         // Missing reads as empty; a long one is cut at 100 KB on a character boundary.
         assert_eq!(
-            read_text(Some(&root.join("none.md"))),
+            read_text(Some(&root.join("none.md"))).unwrap(),
             (String::new(), false)
         );
-        assert_eq!(read_text(None), (String::new(), false));
+        assert_eq!(read_text(None).unwrap(), (String::new(), false));
         let long = root.join("long.md");
         std::fs::write(&long, "é".repeat(TEXT_MAX)).unwrap();
-        let (text, cut) = read_text(Some(&long));
+        let (text, cut) = read_text(Some(&long)).unwrap();
         assert!(cut);
         assert!(text.len() <= TEXT_MAX && text.chars().all(|c| c == 'é'));
         std::fs::write(&long, "- `meeting`\n").unwrap();
-        assert_eq!(read_text(Some(&long)), ("- `meeting`\n".into(), false));
+        assert_eq!(
+            read_text(Some(&long)).unwrap(),
+            ("- `meeting`\n".into(), false)
+        );
+    }
+
+    #[test]
+    fn a_text_that_cannot_be_read_is_an_error_that_names_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // A folder where the file should be.
+        let folder = dir.path().join("glossary.md");
+        std::fs::create_dir(&folder).unwrap();
+        let e = read_text(Some(&folder)).unwrap_err();
+        assert_eq!(e.code, "unreadable");
+        assert!(e.message.contains("glossary.md"), "{}", e.message);
+        // A file Connect may not read.
+        let locked = dir.path().join("tags.md");
+        std::fs::write(&locked, "- `meeting`\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = read_text(Some(&locked));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let e = refused.unwrap_err();
+        assert_eq!(e.code, "unreadable");
+        assert!(e.message.contains("tags.md"), "{}", e.message);
     }
 
     #[test]

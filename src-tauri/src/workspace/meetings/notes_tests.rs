@@ -1217,7 +1217,7 @@ async fn glossary_and_tags_are_saved_in_the_root_or_read_from_linked_files() {
     let empty = text_of("glossary").await.unwrap();
     assert_eq!(
         empty,
-        json!({"text": "", "path": root.join("glossary.md").to_string_lossy(), "linked": false})
+        json!({"text": "", "path": root.join("glossary.md").to_string_lossy(), "linked": false, "cut": false})
     );
     let saved = op(
         &e.core,
@@ -1273,11 +1273,11 @@ async fn glossary_and_tags_are_saved_in_the_root_or_read_from_linked_files() {
     .unwrap();
     assert_eq!(
         text_of("glossary").await.unwrap(),
-        json!({"text": "- **LiteLLM** — heard as “light LLM”", "path": terms.to_string_lossy(), "linked": true})
+        json!({"text": "- **LiteLLM** — heard as “light LLM”", "path": terms.to_string_lossy(), "linked": true, "cut": false})
     );
     assert_eq!(
         text_of("tags").await.unwrap(),
-        json!({"text": "", "path": null, "linked": true})
+        json!({"text": "", "path": null, "linked": true, "cut": false})
     );
     let refused = op(
         &e.core,
@@ -1288,6 +1288,63 @@ async fn glossary_and_tags_are_saved_in_the_root_or_read_from_linked_files() {
     .unwrap_err();
     assert_eq!(refused.code, "validation");
     assert_eq!(text(&terms), "- **LiteLLM** — heard as “light LLM”");
+}
+
+#[tokio::test]
+async fn a_glossary_that_cannot_be_read_whole_is_never_written_over() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = env();
+    let root = default_root(&e.core);
+    std::fs::create_dir_all(&root).unwrap();
+    let text_of = |name: &str| {
+        e.core
+            .request(read(Operation::MeetingText, json!({"name": name})))
+    };
+    let save = |name: &str, text: &str| {
+        op(
+            &e.core,
+            Operation::MeetingTextSave,
+            json!({"name": name, "text": text}),
+        )
+    };
+    // Longer than 100 KB: the first 100 KB, said to be cut; saving over it is refused.
+    let long = format!(
+        "## Me\n**Taylor Morgan**\n{}",
+        "- **Term**\n".repeat(12_000)
+    );
+    std::fs::write(root.join("glossary.md"), &long).unwrap();
+    let cut = text_of("glossary").await.unwrap();
+    assert_eq!(cut["cut"], true);
+    assert_eq!(cut["text"].as_str().unwrap().len(), 100 * 1024);
+    let refused = save("glossary", "## Me\n**Taylor Morgan**")
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "too_large", "{refused:?}");
+    assert!(refused.message.contains("glossary.md"), "{refused:?}");
+    assert_eq!(text(&root.join("glossary.md")), long);
+    // A file Connect may not read: an error that names it, and nothing is written over it.
+    let tags = root.join("tags.md");
+    std::fs::write(&tags, "- `meeting`\n- `pilot`\n").unwrap();
+    std::fs::set_permissions(&tags, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let read_error = text_of("tags").await;
+    let save_error = save("tags", "").await;
+    std::fs::set_permissions(&tags, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let read_error = read_error.unwrap_err();
+    assert_eq!(read_error.code, "unreadable");
+    assert!(read_error.message.contains("tags.md"), "{read_error:?}");
+    assert_eq!(save_error.unwrap_err().code, "unreadable");
+    assert_eq!(text(&tags), "- `meeting`\n- `pilot`\n");
+    // A folder where the file should be.
+    std::fs::remove_file(&tags).unwrap();
+    std::fs::create_dir(&tags).unwrap();
+    assert_eq!(text_of("tags").await.unwrap_err().code, "unreadable");
+    assert_eq!(save("tags", "- `x`").await.unwrap_err().code, "unreadable");
+    assert!(tags.is_dir());
+    // Missing is simply empty, and can be written.
+    std::fs::remove_dir(&tags).unwrap();
+    assert_eq!(text_of("tags").await.unwrap()["text"], "");
+    save("tags", "- `x`").await.unwrap();
+    assert_eq!(text(&tags), "- `x`");
 }
 
 /// The notes job, a meeting with two documents, the glossary parse and the template choice the
@@ -1645,6 +1702,89 @@ async fn history_copies_never_overwrite_an_archived_document() {
         .clone()
         .unwrap();
     assert_eq!(text(&dir.join(kept)), "# A2");
+}
+
+/// The texts in `notes-history/`, sorted.
+fn history_texts(dir: &Path) -> Vec<String> {
+    let mut texts: Vec<String> = std::fs::read_dir(dir.join("notes-history"))
+        .map(|entries| entries.map(|f| text(&f.unwrap().path())).collect())
+        .unwrap_or_default();
+    texts.sort();
+    texts
+}
+
+#[tokio::test]
+async fn notes_never_overwrite_a_document_the_meeting_does_not_know() {
+    // Signed out and back in: the folder is reused, the new record knows no documents.
+    let n = notes_env(vec![
+        outcome("# New notes", json!([])),
+        outcome("# New summary", json!([])),
+    ]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    std::fs::write(dir.join("notes.md"), "# My notes, edited by hand").unwrap();
+    std::fs::write(dir.join("notes.short-summary.md"), "# My old summary").unwrap();
+    assert!(meeting(&e.core, "m1").docs.is_empty());
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    let ran = run_jobs(&e.core).await;
+    assert_eq!(ran[0].state, "succeeded", "{ran:?}");
+    assert_eq!(text(&dir.join("notes.md")), "# New notes");
+    assert_eq!(history_texts(&dir), vec!["# My notes, edited by hand"]);
+    let log = text(&dir.join("run.log"));
+    assert!(
+        log.contains("notes.md was already in the folder: kept as notes-history/"),
+        "{log}"
+    );
+    // A second template's file, unique among the meeting's documents but already on disk.
+    make_notes(e, "m1", "short-summary", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(text(&dir.join("notes.short-summary.md")), "# New summary");
+    assert_eq!(
+        history_texts(&dir),
+        vec!["# My notes, edited by hand", "# My old summary"]
+    );
+}
+
+#[tokio::test]
+async fn choosing_the_main_document_never_overwrites_an_unknown_file_and_rolls_back() {
+    let n = notes_env(vec![outcome("# A", json!([])), outcome("# B", json!([]))]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    for template in ["meeting-notes", "short-summary"] {
+        make_notes(e, "m1", template, json!({})).await.unwrap();
+        run_jobs(&e.core).await;
+    }
+    let main = |id: &str| {
+        op(
+            &e.core,
+            Operation::MeetingDoc,
+            json!({"meetingId": "m1", "action": "main", "docId": id}),
+        )
+    };
+    // The old main document can't be renamed (a folder has its name): nothing changes, and no
+    // hidden swap file is left behind.
+    std::fs::create_dir(dir.join("notes.meeting-notes.md")).unwrap();
+    let failed = main("short-summary").await.unwrap_err();
+    assert_eq!(failed.code, "folder_unwritable", "{failed:?}");
+    assert!(!dir.join(".notes.md.swap").exists());
+    assert_eq!(text(&dir.join("notes.md")), "# A");
+    assert_eq!(text(&dir.join("notes.short-summary.md")), "# B");
+    assert_eq!(
+        meeting(&e.core, "m1").main.as_deref(),
+        Some("meeting-notes")
+    );
+    // A file the meeting doesn't know has that name: it is kept in notes-history/ first.
+    std::fs::remove_dir(dir.join("notes.meeting-notes.md")).unwrap();
+    std::fs::write(dir.join("notes.meeting-notes.md"), "# Mine").unwrap();
+    main("short-summary").await.unwrap();
+    assert_eq!(text(&dir.join("notes.md")), "# B");
+    assert_eq!(text(&dir.join("notes.meeting-notes.md")), "# A");
+    assert_eq!(history_texts(&dir), vec!["# Mine"]);
+    assert!(!dir.join(".notes.md.swap").exists());
 }
 
 #[tokio::test]

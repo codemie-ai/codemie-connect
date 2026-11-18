@@ -54,7 +54,10 @@ impl Core {
             return me;
         };
         let (path, _) = glossary::text_path(&root, s, glossary::Text::Glossary);
-        let (text, _) = glossary::read_text(path.as_deref());
+        // A glossary that can't be read names nobody: the account as it is.
+        let Ok((text, _)) = glossary::read_text(path.as_deref()) else {
+            return me;
+        };
         if text.trim().is_empty() {
             return me;
         }

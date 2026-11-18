@@ -13,6 +13,8 @@ use std::path::Path;
 const HISTORY: &str = "notes-history";
 /// The main document's file.
 const MAIN: &str = "notes.md";
+/// Where the new main document waits while the old one is renamed.
+const SWAP: &str = ".notes.md.swap";
 
 fn doc_gone() -> WorkspaceError {
     WorkspaceError::new("not_found", "This document is no longer there.")
@@ -22,8 +24,16 @@ fn version_gone() -> WorkspaceError {
     WorkspaceError::new("not_found", "That version of the document wasn’t kept.")
 }
 
-/// Writes a run's document; the version it replaces is copied to `notes-history/` first.
-pub(super) fn write_change(dir: &Path, change: &DocChange) -> Result<()> {
+/// Writes a run's document; the version it replaces is copied to `notes-history/` first. A new
+/// document whose file is already in the folder (the meeting's record doesn't know it, e.g.
+/// after signing out and back in) never writes over it: that file moves to `notes-history/`
+/// first, and its new name is returned.
+pub(super) fn write_change(
+    dir: &Path,
+    m: &MeetingRecord,
+    change: &DocChange,
+    zone: &str,
+) -> Result<Option<String>> {
     let unwritable = |_| meeting_unwritable(dir);
     if let Some((from, to)) = &change.history {
         // A document file someone removed has nothing to keep.
@@ -32,7 +42,57 @@ pub(super) fn write_change(dir: &Path, change: &DocChange) -> Result<()> {
             folder::write_file(&dir.join(to), &old).map_err(unwritable)?;
         }
     }
-    folder::write_file(&dir.join(&change.file), change.text.as_bytes()).map_err(unwritable)
+    let kept = if change.created {
+        keep_unknown(dir, m, &change.file, Some(&change.doc_id), zone)?
+    } else {
+        None
+    };
+    if let Err(e) = folder::write_file(&dir.join(&change.file), change.text.as_bytes()) {
+        // Back where it was: a failed run leaves the folder as it found it.
+        if let Some(name) = &kept {
+            let _ = fs::rename(dir.join(name), dir.join(&change.file));
+        }
+        return Err(unwritable(e));
+    }
+    Ok(kept)
+}
+
+/// Moves `file` into `notes-history/` (named for when it was last changed) when it is in the
+/// folder, so whatever is renamed or written to that name next can't destroy it. Only for a
+/// name no document of the record has (besides `new`, the document about to get it): the
+/// person's own file, or one from before a sign-out. The history name, or `None` when there
+/// was no such file.
+fn keep_unknown(
+    dir: &Path,
+    m: &MeetingRecord,
+    file: &str,
+    new: Option<&str>,
+    zone: &str,
+) -> Result<Option<String>> {
+    if m.docs
+        .iter()
+        .any(|d| d.file == file && Some(d.id.as_str()) != new)
+    {
+        return Ok(None);
+    }
+    let source = dir.join(file);
+    let Ok(meta) = fs::metadata(&source) else {
+        return Ok(None);
+    };
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    let at = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or_else(now, |d| d.as_secs() as i64);
+    let stem = file.strip_suffix(".md").unwrap_or(file);
+    let name = unique_name(&history_name(at, zone, stem), &history_taken(dir, m));
+    fs::create_dir_all(dir.join(HISTORY))
+        .and_then(|_| fs::rename(&source, dir.join(&name)))
+        .map_err(|_| meeting_unwritable(dir))?;
+    Ok(Some(name))
 }
 
 /// The history files the record names and the ones in the folder: a new one never replaces any.
@@ -98,8 +158,9 @@ fn side_file(m: &MeetingRecord, index: usize) -> String {
 }
 
 /// Makes `doc_id` the main document: it becomes `notes.md`, the old main one
-/// `notes.<template-slug>.md`.
-pub(super) fn set_main(dir: &Path, m: &mut MeetingRecord, doc_id: &str) -> Result<()> {
+/// `notes.<template-slug>.md`. A file the record doesn't know that has one of those names is
+/// kept in `notes-history/` first; when a rename fails, the files are put back as they were.
+pub(super) fn set_main(dir: &Path, m: &mut MeetingRecord, doc_id: &str, zone: &str) -> Result<()> {
     let target = m
         .docs
         .iter()
@@ -113,15 +174,32 @@ pub(super) fn set_main(dir: &Path, m: &mut MeetingRecord, doc_id: &str) -> Resul
         .iter()
         .position(|d| d.file == MAIN)
         .filter(|i| *i != target);
+    let target_file = m.docs[target].file.clone();
+    let side = old.map(|i| (i, side_file(m, i)));
+    // Names something is renamed onto: never over a file the record doesn't know.
+    keep_unknown(dir, m, SWAP, None, zone)?;
+    match &side {
+        Some((_, file)) => keep_unknown(dir, m, file, None, zone)?,
+        None => keep_unknown(dir, m, MAIN, None, zone)?,
+    };
     // Out of the way first, so the old main can't be overwritten.
-    let swap = ".notes.md.swap";
-    rename_if_there(dir, &m.docs[target].file.clone(), swap)?;
-    if let Some(i) = old {
-        let file = side_file(m, i);
-        rename_if_there(dir, MAIN, &file)?;
+    rename_if_there(dir, &target_file, SWAP)?;
+    if let Some((_, file)) = &side {
+        if let Err(e) = rename_if_there(dir, MAIN, file) {
+            let _ = rename_if_there(dir, SWAP, &target_file);
+            return Err(e);
+        }
+    }
+    if let Err(e) = rename_if_there(dir, SWAP, MAIN) {
+        if let Some((_, file)) = &side {
+            let _ = rename_if_there(dir, file, MAIN);
+        }
+        let _ = rename_if_there(dir, SWAP, &target_file);
+        return Err(e);
+    }
+    if let Some((i, file)) = side {
         m.docs[i].file = file;
     }
-    rename_if_there(dir, swap, MAIN)?;
     m.docs[target].file = MAIN.into();
     m.main = Some(doc_id.into());
     Ok(())
@@ -145,7 +223,7 @@ pub(super) fn delete(dir: &Path, m: &mut MeetingRecord, doc_id: &str, zone: &str
     if main_gone {
         m.main = None;
         if let Some(next) = m.docs.first().map(|d| d.id.clone()) {
-            set_main(dir, m, &next)?;
+            set_main(dir, m, &next, zone)?;
         }
     }
     if m.docs.is_empty() && m.state == MeetingState::Ready {

@@ -143,6 +143,11 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   // the meetings folder, and whether Microsoft's last sign-in was refused.
   const BUILT_INS = clone((s.noteTemplates || []).filter(t => t.kind === 'builtin'));
   const texts = { glossary: glossaryText, tags: '' };
+  // glossary.rs `read_text`: `window.__textRead[name]` is `unreadable` (no permission) or `cut`
+  // (longer than 100 KB) for a check of those states.
+  const textRead = name => {
+    if (window.__textRead?.[name] === 'unreadable') fail('unreadable', `Connect can’t read ${name}.md (it isn’t allowed to open it), so it won’t change it. Check the file in Finder, then try again.`);
+  };
   let authError = null;
   /** model.rs `MeetingSettings::apply`: only the fields given change, each checked; nothing
    *  changes when one is refused. */
@@ -825,6 +830,9 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       if (typeof d.text !== 'string') refuse('text', 'Write the text.');
       if (new TextEncoder().encode(d.text).length > 100 * 1024) fail('too_large', 'Keep the glossary and the tag list to 100 KB each.');
       if (s.settings.meetings.glossarySource === 'file') refuse('name', 'This is a file you keep elsewhere. Edit it there, or keep the glossary and tags here in Connect.');
+      // library_ops.rs: never over a file Connect could not read whole.
+      textRead(d.name);
+      if (window.__textRead?.[d.name] === 'cut') fail('too_large', `${d.name}.md is longer than 100 KB, so Connect shows it read-only and won’t change it. Shorten it in your editor, then read it again.`);
       texts[d.name] = d.text;
       return { saved: true, path: `${s.meetingsRoot.path}/${d.name}.md` };
     },
@@ -832,9 +840,12 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       const m = s.settings.meetings;
       if (m.glossarySource === 'file') {
         const path = d.name === 'glossary' ? m.glossaryFile : m.tagsFile;
-        return { text: (path && window.__files?.[path]) || '', path: path || null, linked: true };
+        return { text: (path && window.__files?.[path]) || '', path: path || null, linked: true, cut: false };
       }
-      return { text: texts[d.name] ?? '', path: `${s.meetingsRoot.path}/${d.name}.md`, linked: false };
+      textRead(d.name);
+      const cut = window.__textRead?.[d.name] === 'cut';
+      const text = cut ? `- \`meeting\` — every meeting note\n${'- `pilot` — pilots and rollouts\n'.repeat(4)}` : texts[d.name] ?? '';
+      return { text, path: `${s.meetingsRoot.path}/${d.name}.md`, linked: false, cut };
     },
     meeting_skills: () => clone(window.__skills || []),
   });

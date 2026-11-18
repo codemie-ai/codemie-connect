@@ -247,6 +247,32 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet }
         await page.waitForSelector('.ws-ms-test-result:has-text("Rule 2")');
       });
 
+      await check(`${tag}: a glossary not read whole is read-only and never saved, until Try again`, async () => {
+        // glossary.md can't be opened; tags.md is longer than 100 KB.
+        await page.evaluate(() => { window.__textRead = { glossary: 'unreadable', tags: 'cut' }; });
+        await tab(page, 'meetings-glossary');
+        await page.waitForSelector('[data-md-card="glossary"] .ws-ms-md-unread[role="alert"]:has-text("can’t read glossary.md")');
+        await page.waitForSelector('[data-md-card="tags"] .ws-ms-md-unread:has-text("longer than 100 KB")');
+        await page.waitForSelector('[data-md-card="tags"] .ws-ms-md-preview code:has-text("pilot")');
+        assert(await page.locator('[data-md-card] textarea').count() === 0, 'no editor for a text not read whole');
+        assert(await page.locator('[data-action="meetings-settings-md-reset"]').count() === 0, 'nothing to restore');
+        assert(!(await page.locator('[data-md-card="glossary"]').innerText()).includes('Your text is still here'), 'no false promise');
+        await noOverflow(page, 'a glossary not read');
+        await shot(page, `${tag}-settings-meetings-glossary-unread`);
+        // Keys pressed reach no editor, and nothing is saved.
+        const saves = (await calls(page, 'meeting_text_save')).length;
+        await page.focus('[data-action="meetings-settings-md-reread"][data-k="glossary"]');
+        await page.keyboard.type('xyz');
+        await page.waitForTimeout(900);
+        assert((await calls(page, 'meeting_text_save')).length === saves, 'nothing is saved over a file Connect could not read');
+        // Readable again: Try again shows the editors.
+        await page.evaluate(() => { window.__textRead = {}; });
+        await page.click('[data-action="meetings-settings-md-reread"][data-k="glossary"]');
+        await page.waitForSelector('[data-ms-input="md"][data-k="glossary"]');
+        await page.click('[data-action="meetings-settings-md-reread"][data-k="tags"]');
+        await page.waitForSelector('[data-ms-input="md"][data-k="tags"]');
+      });
+
       await check(`${tag}: glossary typed and parsed without a re-render, then linked files`, async () => {
         await tab(page, 'meetings-glossary');
         const area = '[data-ms-input="md"][data-k="glossary"]';

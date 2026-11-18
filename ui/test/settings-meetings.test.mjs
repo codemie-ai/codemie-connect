@@ -249,6 +249,56 @@ test('glossary panel parses as you type without re-rendering the textarea', asyn
   assert.equal(refused.v().texts.glossary.text, 'x'.repeat(10));
 });
 
+test('a glossary that could not be read, or was read only in part, is shown read-only and never saved', async () => {
+  const unreadable = failure('unreadable', 'Connect can’t read glossary.md (it isn’t allowed to open it), so it won’t change it. Check the file in Finder, then try again.');
+  const long = `- \`meeting\` — every meeting note\n${'- **Term** — a long list\n'.repeat(3)}`;
+  let glossary = unreadable;
+  const answers = { meeting_text: d => { if (d.name === 'tags') return { text: long, path: '/x/tags.md', linked: false, cut: true }; if (glossary instanceof Error) throw glossary; return glossary; } };
+  const { ctl, calls, v, panel, runTimers } = harness({ tab: 'meetings-glossary', answers });
+  await ctl.load();
+  const html = panel();
+  const card = kind => html.slice(html.indexOf(`data-md-card="${kind}"`), html.indexOf('</section>', html.indexOf(`data-md-card="${kind}"`)));
+  // Not read: why, and Try again; no editor, nothing to restore, no "Your text is still here".
+  assert.doesNotMatch(card('glossary'), /<textarea/);
+  assert.match(card('glossary'), /role="alert"[^]*Connect can’t read glossary\.md/);
+  assert.match(card('glossary'), /data-action="meetings-settings-md-reread"[^>]*data-k="glossary"[^>]*>[^]*Try again/);
+  assert.doesNotMatch(card('glossary'), /Your text is still here/);
+  assert.doesNotMatch(card('glossary'), /Restore the example/);
+  assert.doesNotMatch(card('glossary'), /data-action="meetings-settings-md-tab"/);
+  // Read in part: the first 100 KB shown read-only, with what to do.
+  assert.doesNotMatch(card('tags'), /<textarea/);
+  assert.match(card('tags'), /longer than 100 KB/);
+  assert.match(card('tags'), /<code>meeting<\/code>/, 'the text is shown');
+  assert.match(card('tags'), /data-action="meetings-settings-md-reread"[^>]*data-k="tags"/);
+  assert.doesNotMatch(card('tags'), /Restore the example/);
+  // Typing (a stale editor) and Restore the example change nothing.
+  for (const k of ['glossary', 'tags']) {
+    ctl.input({ dataset: { msInput: 'md', k }, value: 'typed' });
+    await ctl.handle('meetings-settings-md-flush', control({ k }));
+    await ctl.handle('meetings-settings-md-reset', control({ k }));
+  }
+  await runTimers();
+  assert.equal(calls.timers.length, 0);
+  assert.deepEqual([...calls.save, ...calls.mutate].filter(([op]) => op === 'meeting_text_save'), []);
+  // Try again reads it once more; now it can be edited and saved.
+  glossary = { text: '## Me\n**Taylor Morgan**\n', path: '/x/glossary.md', linked: false, cut: false };
+  await ctl.handle('meetings-settings-md-reread', control({ k: 'glossary' }));
+  assert.deepEqual(calls.query.at(-1), ['meeting_text', { name: 'glossary' }]);
+  const patched = calls.patches.filter(([sel]) => sel === '[data-md-card="glossary"]').at(-1)?.[1] || '';
+  assert.match(patched, /<textarea[^>]*data-k="glossary"[^>]*>## Me/);
+  ctl.input({ dataset: { msInput: 'md', k: 'glossary' }, value: '## Me\n**Taylor Morgan** — “TM”' });
+  await runTimers();
+  assert.deepEqual(calls.save, [['meeting_text_save', { name: 'glossary', text: '## Me\n**Taylor Morgan** — “TM”' }]]);
+  // Restored, then the file can't be read: Undo doesn't write over it.
+  await ctl.handle('meetings-settings-md-reset', control({ k: 'glossary' }));
+  const undo = calls.toasts.find(t => /back to the example/.test(t.message));
+  v().texts.glossary = { text: '', read: 'failed', readError: 'Connect can’t read glossary.md.', state: 'idle' };
+  const writes = calls.mutate.length;
+  await undo.action.run();
+  assert.equal(calls.mutate.length, writes, 'Undo writes nothing over a file Connect could not read');
+  assert.match(calls.toasts.at(-1).message, /can’t read glossary\.md/);
+});
+
 test('linked mode shows the file path read-only and hides Restore the example', async () => {
   const s = snapshot();
   Object.assign(s.settings.meetings, { glossarySource: 'file', glossaryFile: '/Users/taylor/knowledge/TERMS_TAXONOMY.md', tagsFile: '/Users/taylor/knowledge/TAG_TAXONOMY.md' });

@@ -497,6 +497,19 @@ export function createMeetingsSettingsController({
   const linked = () => meetings().glossarySource === 'file';
   const textsKey = () => JSON.stringify([meetings().glossarySource, meetings().glossaryFile, meetings().tagsFile, snap().meetingsRoot?.path]);
 
+  /** One text as native read it. `read` is `ok` (all of it: it can be edited), `cut` (longer
+   *  than 100 KB: its first 100 KB, read-only) or `failed` (nothing read: never written over). */
+  async function readText(name) {
+    try {
+      const answer = await store.query('meeting_text', { name });
+      return { text: String(answer?.text ?? ''), path: answer?.path || null, linked: !!answer?.linked, read: answer?.cut ? 'cut' : 'ok', state: 'idle' };
+    } catch (err) {
+      return { text: '', path: null, linked: linked(), read: 'failed', readError: err?.message || String(err), state: 'idle' };
+    }
+  }
+  /** Whether a text was read whole, so what is typed may be saved over it. */
+  const editable = t => !!t && t.read === 'ok' && !linked();
+
   async function readTexts() {
     const key = textsKey();
     const view = v();
@@ -504,25 +517,30 @@ export function createMeetingsSettingsController({
     if (!stale || Object.values(timers).some(Boolean)) return false;
     view.textsKey = key;
     view.textsAt = now();
-    const read = async name => {
-      try {
-        const answer = await store.query('meeting_text', { name });
-        return { text: String(answer?.text ?? ''), path: answer?.path || null, linked: !!answer?.linked, state: 'idle' };
-      } catch (err) {
-        return { text: '', path: null, linked: linked(), state: 'error', error: err?.message || String(err) };
-      }
-    };
-    const [glossary, tags] = [await read('glossary'), await read('tags')];
+    const [glossary, tags] = [await readText('glossary'), await readText('tags')];
     // Typed meanwhile: what was typed stays.
     for (const [name, value] of [['glossary', glossary], ['tags', tags]]) if (!timers[name] && view.texts[name]?.state !== 'saving') view.texts[name] = value;
     return true;
+  }
+
+  /** Try again on a text that was not read whole: read it once more and show it. */
+  async function rereadText(kind) {
+    const view = v();
+    if (timers[kind] || !view.texts[kind] || editable(view.texts[kind])) return;
+    view.texts[kind] = null;
+    patch(`[data-md-card="${kind}"]`, mdEditor(kind, snap(), view));
+    const value = await readText(kind);
+    if (view.texts[kind] !== null) return;
+    view.texts[kind] = value;
+    if (state.route === 'settings' && state.settingsTab === 'meetings-glossary') patch(`[data-md-card="${kind}"]`, mdEditor(kind, snap(), view));
+    focus([`[data-ms-input="md"][data-k="${kind}"]`, `[data-action="meetings-settings-md-reread"][data-k="${kind}"]`]);
   }
 
   /** Saves what is typed now; the editor is never re-rendered. */
   async function saveText(kind) {
     timers[kind] = null;
     const t = v().texts[kind];
-    if (!t || linked()) return;
+    if (!editable(t)) return;
     const text = t.text;
     t.state = 'saving';
     patch(`[data-md-status="${kind}"]`, mdStatus(kind, t));
@@ -540,7 +558,7 @@ export function createMeetingsSettingsController({
 
   function typed(kind, value) {
     const t = v().texts[kind];
-    if (!t || linked()) return;
+    if (!editable(t)) return;
     t.text = String(value ?? '');
     t.state = 'saving';
     patch(`[data-md-summary="${kind}"]`, mdSummary(kind, t.text));
@@ -558,7 +576,7 @@ export function createMeetingsSettingsController({
 
   async function restoreExample(kind) {
     const t = v().texts[kind];
-    if (!t || linked()) return;
+    if (!editable(t)) return;
     if (timers[kind]) {
       cancel(timers[kind]);
       timers[kind] = null;
@@ -570,9 +588,15 @@ export function createMeetingsSettingsController({
     glossaryChanged();
     Object.assign(t, { text, state: 'saved', path: answer?.path || t.path, error: null });
     await render();
-    toast(`The ${kind === 'tags' ? 'tag list' : 'glossary'} is back to the example`, 'success', {
+    const what = kind === 'tags' ? 'tag list' : 'glossary';
+    toast(`The ${what} is back to the example`, 'success', {
       label: 'Undo',
       run: async () => {
+        // Read again since and not read whole: nothing is written over it.
+        if (!editable(v().texts[kind])) {
+          toast(`Connect can’t read ${kind}.md just now, so Undo didn’t change it. Use Try again on the ${what} first.`, 'error');
+          return;
+        }
         await mutate('meeting_text_save', { name: kind, text: before });
         glossaryChanged();
         Object.assign(v().texts[kind] || {}, { text: before, state: 'saved' });
@@ -698,6 +722,7 @@ export function createMeetingsSettingsController({
         return focus(`[data-action="meetings-settings-md-tab"][data-k="${quoted(el.dataset.k)}"][data-v="${quoted(v().mdTab[el.dataset.k])}"]`);
       case 'meetings-settings-md-flush': return flushText(el.dataset.k);
       case 'meetings-settings-md-reset': return restoreExample(el.dataset.k);
+      case 'meetings-settings-md-reread': return rereadText(el.dataset.k);
       default: return undefined;
     }
   }

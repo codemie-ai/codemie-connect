@@ -364,9 +364,16 @@ impl Core {
             .as_ref()
             .and_then(|e| e.data["organizer"]["address"].as_str())
             .map(String::from);
+        // A text Connect can't read is left out of this run (and named in run.log).
+        let mut unread = Vec::new();
         let texts = self.meetings_root(s).ok().map(|(root, _)| {
-            let read =
-                |which| glossary::read_text(glossary::text_path(&root, s, which).0.as_deref());
+            let mut read = |which| {
+                let path = glossary::text_path(&root, s, which).0;
+                glossary::read_text(path.as_deref()).unwrap_or_else(|_| {
+                    unread.extend(path.as_deref().map(glossary::file_label));
+                    (String::new(), false)
+                })
+            };
             (read(Text::Glossary), read(Text::Tags))
         });
         let ((glossary_md, glossary_cut), (tags_md, tags_cut)) =
@@ -447,6 +454,11 @@ impl Core {
                 "The glossary or the tag list is longer than 100 KB: Claude read its first 100 KB."
                     .into(),
             );
+        }
+        for file in &unread {
+            log.push(format!(
+                "Connect couldn’t read {file}, so Claude worked without it."
+            ));
         }
         if !plan.wishes.is_empty() {
             log.push(format!("Wishes: {}", plan.wishes));
@@ -560,7 +572,7 @@ impl Core {
             },
         );
         // Nothing has changed yet: a failure here leaves the documents as they were.
-        docs::write_change(&dir, &change)?;
+        let kept = docs::write_change(&dir, &m, &change, &settings.time_zone)?;
         #[cfg(test)]
         if FAIL_AFTER_WRITE.with(|f| f.replace(false)) {
             r.fail_writes();
@@ -568,6 +580,12 @@ impl Core {
         let written = |e: WorkspaceError| Failure::written(e, &change.file);
         if folder::write_file(&dir.join("meta.json"), meta_json(&m).as_bytes()).is_err() {
             log::warn!("meetings: cannot rewrite meta.json");
+        }
+        if let Some(kept) = &kept {
+            log.push(format!(
+                "{} was already in the folder: kept as {kept}",
+                change.file
+            ));
         }
         log.extend(change.log.iter().cloned());
         let mut added = 0;

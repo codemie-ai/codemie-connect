@@ -258,20 +258,33 @@ export function mdEditor(kind, s, v) {
   const path = linked ? (kind === 'glossary' ? settings.glossaryFile : settings.tagsFile) || t?.path || '' : '';
   const file = linked ? (path ? String(path).split(/[\\/]/).pop() : 'not chosen') : `${kind}.md`;
   const tab = v.mdTab?.[kind] === 'preview' ? 'preview' : 'write';
-  const preview = () => (text.trim() ? `<article class="ws-md ws-ms-md-preview">${timesIn(renderMarkdown(text), null)}</article>` : `<p class="ws-muted ws-ms-md-empty">${linked ? 'This file is empty, or Connect can’t read it.' : 'Nothing written yet.'}</p>`);
+  // Read whole (`ok`) it can be edited; cut at 100 KB or not read at all it is only shown, and
+  // nothing is ever written over it.
+  const whole = !t || t.read === 'ok' || t.read === undefined;
+  const preview = () => (text.trim() ? `<article class="ws-md ws-ms-md-preview">${timesIn(renderMarkdown(text), null)}</article>` : `<p class="ws-muted ws-ms-md-empty">${linked ? 'This file is empty.' : 'Nothing written yet.'}</p>`);
+  const name = linked ? file : `${kind}.md`;
+  const again = label => button(label, { action: 'meetings-settings-md-reread', size: 'sm', iconName: 'refresh', attrs: { 'data-k': kind } });
+  const unread = !t || whole ? ''
+    : t.read === 'cut'
+      ? `<div class="ws-inline-note ws-warning ws-ms-md-unread" role="status">${icon('alert')}<div><strong>${e(name)} is longer than 100 KB</strong><span>Connect shows its first 100 KB, read-only, and notes use only that part. Shorten it in your editor, then read it again.</span>${again('Read it again')}</div></div>`
+      : `<div class="ws-inline-note ws-error ws-ms-md-unread" role="alert">${icon('alert')}<div><strong>Couldn’t read ${e(name)}</strong><span>${e(t.readError || `Connect can’t read ${name}, so it won’t change it.`)}</span>${again('Try again')}</div></div>`;
   const editor = !t ? `<div class="ws-ms-latest-wait">${spinner(`Reading the ${doc.title.toLowerCase()}`)}</div>`
-    : linked ? (path ? `<div class="ws-ms-md-linked">${icon('link')}<div><strong>Read from <code>${e(path)}</code></strong><small>Connect reads the file before every run. Edit it where it lives — in your editor or your knowledge base.</small></div></div>${preview()}`
+    : linked ? (path ? `<div class="ws-ms-md-linked">${icon('link')}<div><strong>Read from <code>${e(path)}</code></strong><small>Connect reads the file before every run. Edit it where it lives — in your editor or your knowledge base.</small></div></div>${unread}${t.read === 'failed' ? '' : preview()}`
       : `<p class="ws-inline-note ws-warning">${icon('alert')}<span>Choose the ${kind === 'glossary' ? 'glossary' : 'tags'} file above.</span></p>`)
-      : tab === 'preview' ? preview()
-        : `<textarea class="ws-textarea ws-ms-md-text" data-ms-input="md" data-k="${kind}" data-commit="meetings-settings-md-flush" spellcheck="true" rows="20" aria-label="${e(doc.title)} (Markdown)" placeholder="${kind === 'glossary' ? '## Me&#10;**Your Name** — also “Nickname”' : '- `meeting` — every meeting note'}">${e(text)}</textarea>`;
-  const tabs = linked ? '' : `<div class="ws-segmented" role="tablist" aria-label="${e(doc.title)} view"><button type="button" role="tab" data-action="meetings-settings-md-tab" data-k="${kind}" data-v="write" aria-selected="${tab === 'write'}">${icon('edit')}Write</button><button type="button" role="tab" data-action="meetings-settings-md-tab" data-k="${kind}" data-v="preview" aria-selected="${tab === 'preview'}">${icon('eye')}Preview</button></div>`;
+      : !whole ? `${unread}${t.read === 'cut' ? preview() : ''}`
+        : tab === 'preview' ? preview()
+          : `<textarea class="ws-textarea ws-ms-md-text" data-ms-input="md" data-k="${kind}" data-commit="meetings-settings-md-flush" spellcheck="true" rows="20" aria-label="${e(doc.title)} (Markdown)" placeholder="${kind === 'glossary' ? '## Me&#10;**Your Name** — also “Nickname”' : '- `meeting` — every meeting note'}">${e(text)}</textarea>`;
+  const tabs = linked || !whole ? '' : `<div class="ws-segmented" role="tablist" aria-label="${e(doc.title)} view"><button type="button" role="tab" data-action="meetings-settings-md-tab" data-k="${kind}" data-v="write" aria-selected="${tab === 'write'}">${icon('edit')}Write</button><button type="button" role="tab" data-action="meetings-settings-md-tab" data-k="${kind}" data-v="preview" aria-selected="${tab === 'preview'}">${icon('eye')}Preview</button></div>`;
+  const footer = linked ? ''
+    : whole ? `<footer class="ws-card-footer">${mdStatus(kind, t)}<span class="ws-spacer"></span>${button('Restore the example', { action: 'meetings-settings-md-reset', variant: 'ghost', size: 'sm', iconName: 'undo', attrs: { 'data-k': kind } })}</footer>`
+      : `<footer class="ws-card-footer"><small class="ws-ms-md-status" data-md-status="${kind}">${icon('lock')}<span>Read-only: Connect changes nothing in ${e(name)} until it can read all of it.</span></small></footer>`;
   return `<section class="ws-card ws-ms-md-card" data-md-card="${kind}">
     <header class="ws-card-header"><div class="ws-mtg-card-head"><h2 class="ws-card-title"><span class="ws-card-icon">${icon(doc.iconName)}</span>${e(doc.title)} <code class="ws-ms-md-file">${e(file)}</code></h2><p>${doc.sub}</p></div>${tabs}</header>
     <div class="ws-ms-md-grid">
       <div class="ws-ms-md-main">${editor}</div>
-      <aside class="ws-ms-md-side"><span class="ws-field-label">What Connect picks up</span>${mdSummary(kind, text)}</aside>
+      <aside class="ws-ms-md-side"><span class="ws-field-label">What Connect picks up</span>${t?.read === 'failed' ? '<p class="ws-muted ws-ms-md-empty">Nothing, until Connect can read it.</p>' : mdSummary(kind, text)}</aside>
     </div>
-    ${linked ? '' : `<footer class="ws-card-footer">${mdStatus(kind, t)}<span class="ws-spacer"></span>${button('Restore the example', { action: 'meetings-settings-md-reset', variant: 'ghost', size: 'sm', iconName: 'undo', attrs: { 'data-k': kind } })}</footer>`}
+    ${footer}
   </section>`;
 }
 
