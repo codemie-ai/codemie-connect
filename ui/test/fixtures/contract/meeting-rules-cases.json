@@ -1,0 +1,377 @@
+{
+  "cases": [
+    {
+      "event": {
+        "attendees": [
+          {
+            "address": "jeroen@philips.com",
+            "name": "Jeroen de Vries",
+            "type": "required"
+          }
+        ],
+        "title": "Philips stand-up"
+      },
+      "expected": {
+        "auto": false,
+        "rule": null,
+        "template": "short-summary",
+        "why": "meeting"
+      },
+      "meeting": {
+        "auto": null,
+        "template": "short-summary"
+      },
+      "name": "chosen for the meeting"
+    },
+    {
+      "event": {
+        "attendees": [
+          {
+            "address": "sam@epam.com",
+            "name": "Sam",
+            "type": "required"
+          },
+          {
+            "address": "ann@epam.com",
+            "name": "Ann",
+            "type": "required"
+          },
+          {
+            "address": "lee@epam.com",
+            "name": "Lee",
+            "type": "required"
+          }
+        ],
+        "title": "Daily stand-up"
+      },
+      "expected": {
+        "auto": false,
+        "rule": "r-standup",
+        "template": "short-summary",
+        "why": "rule"
+      },
+      "meeting": null,
+      "name": "title rule"
+    },
+    {
+      "event": {
+        "attendees": [
+          {
+            "address": "taylor@epam.com",
+            "name": "Taylor Morgan",
+            "type": "required"
+          }
+        ],
+        "organizer": {
+          "address": "jeroen@philips.com",
+          "name": "Jeroen de Vries",
+          "type": "required"
+        },
+        "title": "Weekly sync"
+      },
+      "expected": {
+        "auto": true,
+        "rule": "r-philips",
+        "template": "meeting-notes",
+        "why": "rule"
+      },
+      "meeting": null,
+      "name": "company rule makes notes automatically"
+    },
+    {
+      "event": {
+        "attendees": [
+          {
+            "address": "anouk@philips.com",
+            "name": "Anouk Bakker",
+            "type": "required"
+          },
+          {
+            "address": "taylor@epam.com",
+            "name": "Taylor Morgan",
+            "type": "required"
+          },
+          {
+            "address": "sam@epam.com",
+            "name": "Sam",
+            "type": "required"
+          }
+        ],
+        "title": "Weekly sync"
+      },
+      "expected": {
+        "auto": false,
+        "rule": "r-philips",
+        "template": "meeting-notes",
+        "why": "rule"
+      },
+      "meeting": {
+        "auto": false,
+        "template": null
+      },
+      "name": "the meeting says no"
+    },
+    {
+      "event": {
+        "attendees": [
+          {
+            "address": "taylor@epam.com",
+            "name": "Taylor Morgan",
+            "type": "required"
+          }
+        ],
+        "organizer": {
+          "address": "sam@epam.com",
+          "name": "Sam",
+          "type": "required"
+        },
+        "title": "1:1"
+      },
+      "expected": {
+        "auto": false,
+        "rule": "r-pair",
+        "template": "client",
+        "why": "rule"
+      },
+      "meeting": null,
+      "name": "people count"
+    },
+    {
+      "event": {
+        "attendees": [
+          {
+            "address": "a@epam.com",
+            "name": "A",
+            "type": "required"
+          },
+          {
+            "address": "b@epam.com",
+            "name": "B",
+            "type": "required"
+          }
+        ],
+        "organizer": {
+          "address": "priya@epam.com",
+          "name": "Priya Raman",
+          "type": "required"
+        },
+        "title": "Budget"
+      },
+      "expected": {
+        "auto": false,
+        "rule": null,
+        "template": "client",
+        "why": "default"
+      },
+      "meeting": null,
+      "name": "rule template gone"
+    },
+    {
+      "event": {
+        "attendees": [],
+        "title": "Lunch and learn"
+      },
+      "expected": {
+        "auto": true,
+        "rule": null,
+        "template": "client",
+        "why": "default"
+      },
+      "meeting": {
+        "auto": true,
+        "template": null
+      },
+      "name": "default"
+    }
+  ],
+  "noteTemplates": [
+    {
+      "blurb": "Your reference format: organized by topic, decisions keep their “why”, every task has one owner. Still makes sense months later.",
+      "color": "#5677C8",
+      "edited": false,
+      "extractTasks": true,
+      "icon": "note",
+      "id": "meeting-notes",
+      "kind": "builtin",
+      "name": "Meeting notes",
+      "prompt": "You turn one meeting transcript into meeting notes for {{me}}. Nobody answers questions during your run — put doubts in Transcript Notes.\n\nMeeting: {{title}} · {{date}}\nParticipants: {{participants}}\nExtra wishes for this run: {{wishes}}\n\nTHE NOTE IS KNOWLEDGE, NOT MINUTES\nWrite what a reader needs to know afterwards, not what happened in what order.\n- Organize by topic. A thread that recurs across the meeting becomes one topic.\n- Each bullet is a standalone statement — a claim, definition, number, example, decision or argument — that still makes sense when read alone months later. Name the subject instead of writing \"it\" or \"this\".\n- Keep the reasoning: why a decision or position holds, and what it was weighed against.\n- Attribute positions to people (**Name:**) and keep disagreements visible.\n- {{me}}'s statements matter most; capture them precisely.\n- Speech-to-text garbles names and terms. Spell them as the glossary does; whatever stays uncertain goes to Transcript Notes.\n\nDensity over coverage: one bullet per distinct fact, argument, decision or number; repeated points merged; greetings, logistics and scheduling chatter left out. A short meeting makes a short note.\n\nSECTIONS — keep this order. Sections marked \"if\" appear only when the condition holds.\n---\ntitle, date, participants, tags, summary (two sentences: who met and why, and what came out of it)\n---\n## TL;DR — 3–5 bullets: decisions, shifts in thinking, the most reusable insights\n## Context — 2–4 sentences: why this meeting happened, who was there in what role, what was at stake\n## Knowledge — 3–8 topics as noun phrases, each with standalone bullets\n## Decisions — if any: <decision> — <why>\n## Plan — if a plan or sequence of steps was discussed: <step> — <owner> — <timing or \"timing open\">\n## Action Items — if concrete next steps exist\n## Open Questions — if anything was left unresolved: <question> — <why it is open, who holds it>\n## Transcript Notes — if a term or name stayed uncertain: \"<as heard>\" → <best reading> (unverified)\n\nTAGS: only from the tag list, \"meeting\" first. When no tag fits a topic, use fewer tags and name the missing one in Transcript Notes.\n\nTASKS (returned as JSON next to the note)\n- One row per task, written as an imperative, self-contained action.\n- Owner is one attendee's full name. A collective \"we\" becomes {{me}}.\n- Due is a date only when one was stated or follows unambiguously from the meeting date (\"by Friday\"); otherwise empty.\n- Quote the transcript line the task comes from.\n\nGlossary:\n{{glossary}}\n\nTag list:\n{{tags}}\n\nTranscript:\n{{transcript}}",
+      "sections": [
+        "frontmatter",
+        "tldr",
+        "context",
+        "knowledge",
+        "decisions",
+        "plan",
+        "actions",
+        "questions",
+        "transcriptNotes"
+      ],
+      "skillPath": null
+    },
+    {
+      "blurb": "A recap you can paste into chat: two sentences, the decisions, who does what by when.",
+      "color": "#259F4C",
+      "edited": false,
+      "extractTasks": true,
+      "icon": "list",
+      "id": "short-summary",
+      "kind": "builtin",
+      "name": "Short summary",
+      "prompt": "Write a short summary of \"{{title}}\" ({{date}}) that {{me}} can paste into a chat.\n\n## Summary — two sentences: who met, why, and what came out of it\n## Decisions — if any: <decision> — <why>, one line each\n## Action items — owner · action · due date only when someone said one\n\nSame rules as Meeting notes: name the subject, attribute positions, spell names and terms as the glossary does, \"we\" becomes {{me}}. Leave out everything else. Wishes: {{wishes}}\n\nGlossary:\n{{glossary}}\n\nTranscript:\n{{transcript}}",
+      "sections": [
+        "summary",
+        "decisions",
+        "actions"
+      ],
+      "skillPath": null
+    },
+    {
+      "blurb": "",
+      "color": "#C084FC",
+      "edited": false,
+      "extractTasks": true,
+      "icon": "users",
+      "id": "client",
+      "kind": "custom",
+      "name": "My client recap",
+      "prompt": "Recap {{title}}",
+      "sections": [
+        "summary"
+      ],
+      "skillPath": null
+    }
+  ],
+  "records": [
+    {
+      "connectionId": null,
+      "data": {
+        "blurb": "",
+        "color": "#C084FC",
+        "extractTasks": true,
+        "icon": "users",
+        "kind": "custom",
+        "name": "My client recap",
+        "prompt": "Recap {{title}}",
+        "sections": [
+          "summary"
+        ],
+        "skillPath": null
+      },
+      "id": "client",
+      "kind": "note_template",
+      "revision": "rev-client",
+      "source": "local",
+      "updatedAt": 1795000000,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "autoNotes": true,
+        "field": "title",
+        "on": false,
+        "order": 0,
+        "template": "short-summary",
+        "value": "Philips"
+      },
+      "id": "r-off",
+      "kind": "meeting_rule",
+      "revision": "rev-r-off",
+      "source": "local",
+      "updatedAt": 1795000000,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "autoNotes": false,
+        "field": "title",
+        "on": true,
+        "order": 1,
+        "template": "short-summary",
+        "value": "stand-up"
+      },
+      "id": "r-standup",
+      "kind": "meeting_rule",
+      "revision": "rev-r-standup",
+      "source": "local",
+      "updatedAt": 1795000000,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "autoNotes": true,
+        "field": "org",
+        "on": true,
+        "order": 2,
+        "template": "meeting-notes",
+        "value": "philips"
+      },
+      "id": "r-philips",
+      "kind": "meeting_rule",
+      "revision": "rev-r-philips",
+      "source": "local",
+      "updatedAt": 1795000000,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "autoNotes": false,
+        "field": "people",
+        "on": true,
+        "order": 3,
+        "template": "client",
+        "value": "2"
+      },
+      "id": "r-pair",
+      "kind": "meeting_rule",
+      "revision": "rev-r-pair",
+      "source": "local",
+      "updatedAt": 1795000000,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "autoNotes": false,
+        "field": "organizer",
+        "on": true,
+        "order": 4,
+        "template": "deleted-template",
+        "value": "priya"
+      },
+      "id": "r-boss",
+      "kind": "meeting_rule",
+      "revision": "rev-r-boss",
+      "source": "local",
+      "updatedAt": 1795000000,
+      "workspaceId": "personal"
+    }
+  ],
+  "settings": {
+    "meetings": {
+      "askSpeakers": true,
+      "autoNotes": "rules",
+      "checkEveryMin": 10,
+      "columns": {},
+      "defaultTemplate": "client",
+      "doneDays": 14,
+      "dueOnlySaid": true,
+      "folderPattern": "echo",
+      "glossaryFile": null,
+      "glossarySource": "connect",
+      "keepVersions": true,
+      "keepVtt": true,
+      "onlyAttendees": true,
+      "remind": true,
+      "review": true,
+      "root": null,
+      "skipShort": true,
+      "tagsFile": null,
+      "waitMin": 15,
+      "weMe": true
+    }
+  }
+}

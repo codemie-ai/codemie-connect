@@ -1,6 +1,8 @@
 //! The background look at meetings: which ended meetings to check, which found transcripts to
-//! save (and when a failed save is tried again), and when a meeting stops waiting.
+//! save (and when a failed save is tried again), which saved ones get notes by themselves, and
+//! when a meeting stops waiting.
 use super::model::*;
+use super::notes_job::AutoNotes;
 use super::record::{has_link, parse, slot, store};
 use super::transcripts;
 use crate::workspace::{
@@ -60,9 +62,10 @@ pub(super) fn retry_due(m: &MeetingRecord, now: i64) -> bool {
 
 /// The background look at meetings, every 15 seconds: queues a check for every ended Teams
 /// meeting still waiting for its transcript (once per slot, at most 25 a round), queues a save
-/// for every transcript found but not saved (a failed one again only while [`retry_due`]), and
-/// gives up on meetings that waited a day. Finished check and save jobs older than two days are
-/// deleted first.
+/// for every transcript found but not saved (a failed one again only while [`retry_due`], and
+/// not while notes for it are saving it), queues automatic notes for saved transcripts that ask
+/// for them (see `notes_job::auto_due`), and gives up on meetings that waited a day. Finished
+/// check and save jobs older than two days are deleted first.
 pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
     if !workspace_id_active(PERSONAL) {
         return Ok(());
@@ -111,17 +114,26 @@ pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
         .filter(|rec| visible(rec))
         .filter_map(|rec| Some((rec.id.clone(), (rec.source.clone(), parse(&rec).ok()?))))
         .collect();
-    let mut due: Vec<(i64, Record)> = r
+    let events: Vec<Record> = r
         .provider_records(&c.id, "event")?
         .into_iter()
-        .filter(|e| visible(e) && checkable(e, now))
+        .filter(|e| visible(e))
+        .collect();
+    let mut due: Vec<(i64, Record)> = events
+        .iter()
+        .filter(|e| checkable(e, now))
         .filter(|e| {
             meetings.get(&e.id).is_none_or(|(_, m)| {
                 matches!(m.state, MeetingState::Pending | MeetingState::Upcoming)
             })
         })
         .filter(|e| !busy("transcript_check", &e.id))
-        .map(|e| (graph::timestamp(e.data["end"].as_str().unwrap_or("")), e))
+        .map(|e| {
+            (
+                graph::timestamp(e.data["end"].as_str().unwrap_or("")),
+                e.clone(),
+            )
+        })
         .collect();
     // The most recent meetings first: theirs are the transcripts people wait for.
     due.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
@@ -151,6 +163,7 @@ pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
             m.state == MeetingState::Available
                 && retry_due(m, now)
                 && !busy("transcript_download", id)
+                && !busy("meeting_notes", id)
         })
         .map(|(id, (_, m))| (id, m))
         .collect();
@@ -174,6 +187,18 @@ pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
             json!({"meetingId": id, "title": m.title, "auto": true}),
         ))?;
         saves += 1;
+    }
+    // Notes by themselves: the meeting's own switch, a rule or the setting.
+    let auto = AutoNotes::read(&r, &c, &jobs)?;
+    let mut waiting: Vec<(&String, &MeetingRecord)> = meetings
+        .iter()
+        .filter(|(_, (_, m))| m.state == MeetingState::Downloaded)
+        .map(|(id, (_, m))| (id, m))
+        .collect();
+    waiting.sort_by(|a, b| b.1.end.cmp(&a.1.end).then_with(|| a.0.cmp(b.0)));
+    for (id, m) in waiting {
+        let event = events.iter().find(|e| &e.id == id);
+        auto.queue(&mut r, m, event, now)?;
     }
     for (id, (source, m)) in &meetings {
         let end = graph::timestamp(&m.end);

@@ -12,6 +12,7 @@ export const PURPOSES = [
   ['summary', 'Summaries', 'Thread and day summaries.'],
   ['automation', 'Automations', 'Scheduled and rule-based work.'],
   ['plugin', 'Plugins', 'Plugins that ask Claude for help.'],
+  ['meeting', 'Meeting notes', 'Notes and summaries from transcripts.'],
 ];
 
 const STATE_CHIP = {

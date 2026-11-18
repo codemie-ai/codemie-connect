@@ -657,6 +657,7 @@ impl Core {
             "automation_run" => self.run_automation(job).await,
             "transcript_check" => self.run_transcript_check(job).await,
             "transcript_download" => self.run_transcript_download(job).await,
+            "meeting_notes" => self.run_meeting_notes(job).await,
             _ => Err(WorkspaceError::new("validation", "Unsupported job type.")),
         }
     }
@@ -703,6 +704,7 @@ impl Core {
                         path: path.to_string_lossy().into_owned(),
                         is_default,
                     });
+            snapshot.note_templates = meetings::templates::all(&snapshot.records);
             return Ok(
                 json!({"snapshot":snapshot,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
             );
@@ -719,6 +721,12 @@ impl Core {
         }
         if req.op == Operation::MeetingRead {
             return self.meeting_read(&req);
+        }
+        if req.op == Operation::MeetingText {
+            return self.meeting_text(&req);
+        }
+        if req.op == Operation::MeetingSkills {
+            return self.meeting_skills();
         }
         // Shows a folder in Finder: nothing stored changes.
         if req.op == Operation::MeetingsReveal {
@@ -1195,6 +1203,15 @@ impl Core {
             | Operation::MeetingDownload
             | Operation::MeetingImport
             | Operation::MeetingSpeakers => self.meeting_op(&req)?,
+            Operation::MeetingNotes | Operation::MeetingSet | Operation::MeetingDoc => {
+                self.notes_op(&req)?
+            }
+            Operation::TemplateSave
+            | Operation::TemplateDelete
+            | Operation::MeetingRuleSave
+            | Operation::MeetingRuleDelete
+            | Operation::MeetingRuleOrder
+            | Operation::MeetingTextSave => self.library_op(&req)?,
             Operation::TaskSave | Operation::TaskDelete => self.task_op(&req)?,
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
@@ -1817,7 +1834,8 @@ fn note_run_notification(r: &mut Repository, job: &Job, state: &str, message: &s
 }
 
 /// What a shown notification carries, so a click opens what it is about: its message, its
-/// calendar event, the automation run it reports or the page it names (`route`, e.g. Tasks).
+/// calendar event, the automation run it reports, the meeting whose notes are ready
+/// (`meetingId`) or the page it names (`route`, e.g. Tasks or Meetings).
 fn notification_extras(job: &Job) -> Vec<(&'static str, Value)> {
     vec![
         ("workspaceId", json!(job.workspace_id)),
@@ -1825,6 +1843,7 @@ fn notification_extras(job: &Job) -> Vec<(&'static str, Value)> {
         ("eventId", job.payload["eventId"].clone()),
         ("runId", job.payload["runId"].clone()),
         ("automationId", job.payload["automationId"].clone()),
+        ("meetingId", job.payload["meetingId"].clone()),
         ("route", job.payload["route"].clone()),
     ]
 }
@@ -1832,7 +1851,8 @@ fn notification_extras(job: &Job) -> Vec<(&'static str, Value)> {
 fn notification_open_payload(extra: &std::collections::HashMap<String, Value>) -> Value {
     let get = |key: &str| extra.get(key).cloned().unwrap_or(Value::Null);
     json!({"workspaceId": get("workspaceId"), "itemId": get("itemId"), "eventId": get("eventId"),
-        "runId": get("runId"), "automationId": get("automationId"), "route": get("route")})
+        "runId": get("runId"), "automationId": get("automationId"), "meetingId": get("meetingId"),
+        "route": get("route")})
 }
 
 /// A notification's title and body: what the job names (an automation's name and result
@@ -2665,7 +2685,7 @@ mod tests {
         assert_eq!(extra["workspaceId"], "personal");
         assert_eq!(
             notification_open_payload(&extra),
-            json!({"workspaceId": "personal", "itemId": null, "eventId": null, "runId": "run-1", "automationId": "auto-brief", "route": null})
+            json!({"workspaceId": "personal", "itemId": null, "eventId": null, "runId": "run-1", "automationId": "auto-brief", "meetingId": null, "route": null})
         );
         // A critical alert still opens its message.
         let mut critical = job.clone();
@@ -2684,6 +2704,18 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v))
             .collect();
         assert_eq!(notification_open_payload(&extra)["route"], "tasks");
+        // Notes made by themselves open their meeting on the Meetings page.
+        let mut notes = job.clone();
+        notes.payload = json!({"title": "Notes ready: Weekly sync", "body": "Made with Meeting notes.", "meetingId": "m-1", "route": "meetings"});
+        let extra: std::collections::HashMap<String, Value> = notification_extras(&notes)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        let open = notification_open_payload(&extra);
+        assert_eq!(
+            (open["meetingId"].as_str(), open["route"].as_str()),
+            (Some("m-1"), Some("meetings"))
+        );
     }
 
     #[test]

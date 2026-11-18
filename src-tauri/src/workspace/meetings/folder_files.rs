@@ -62,7 +62,8 @@ pub(super) fn meeting_json(m: &MeetingRecord, event: Option<&Record>) -> String 
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
 
-/// `meta.json`: where the transcript came from and which documents were made from it.
+/// `meta.json`: where the transcript came from, which documents were made from it (each
+/// template's current version), and the Claude profile and model of the latest one.
 pub(crate) fn meta_json(m: &MeetingRecord) -> String {
     let source = if m.imported.is_some() {
         "import"
@@ -74,11 +75,15 @@ pub(crate) fn meta_json(m: &MeetingRecord) -> String {
         .iter()
         .map(|d| (d.template.clone(), json!(d.version)))
         .collect();
+    let latest = m.docs.iter().max_by_key(|d| d.updated_at);
     let v = json!({"source": source,
         "started_at": m.transcript_start.clone().unwrap_or_else(|| m.start.clone()),
         "ended_at": m.end, "transcript_ids": m.transcript_ids, "imported_from": m.imported,
         "templates": m.docs.iter().map(|d| d.template.clone()).collect::<Vec<_>>(),
-        "ai_profile": Value::Null, "versions": versions});
+        "main": m.docs.iter().find(|d| Some(&d.id) == m.main.as_ref()).map(|d| d.template.clone()),
+        "ai_profile": latest.and_then(|d| d.profile.clone()),
+        "model": latest.and_then(|d| d.model.clone()),
+        "versions": versions});
     serde_json::to_string_pretty(&v).unwrap_or_default()
 }
 

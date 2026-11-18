@@ -587,7 +587,7 @@ pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
         .active_connection
         .as_deref()
         .and_then(|id| r.connection(id).ok())
-        .map(|c| core.me_alias(&c))
+        .map(|c| core.me_alias(&c, &s.meetings))
         .unwrap_or_default();
     let mut due: Vec<Record> = r
         .local_records(PERSONAL, KIND)?

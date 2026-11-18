@@ -1,4 +1,5 @@
 //! The meeting operations a person starts, and the read-only reads of a meeting folder.
+use super::docs;
 use super::folder;
 use super::folder_files::{read_segments, READ_MAX};
 use super::model::*;
@@ -80,16 +81,20 @@ impl Core {
     }
 
     /// `meeting_read {meetingId, part}`: `transcript` → `{segments}`, `files` →
-    /// `{files: [{name, size, modified}]}`, `file` (with `name`) → `{text}`. Read-only.
+    /// `{files: [{name, size, modified}]}`, `file` (with `name`) → `{text}`, `doc` (with
+    /// `docId`, and `version` for an earlier one) → `{text}`. Read-only.
     pub(in crate::workspace) fn meeting_read(&self, req: &Request) -> Result<Value> {
         let part = req.data["part"].as_str().unwrap_or("");
-        if !matches!(part, "transcript" | "files" | "file") {
-            return Err(invalid("Choose the transcript, the files or one file."));
+        if !matches!(part, "transcript" | "files" | "file" | "doc") {
+            return Err(invalid(
+                "Choose the transcript, the files, one file or a document.",
+            ));
         }
         let t = self.target(req)?;
-        let dir = t
-            .meeting
-            .and_then(|m| m.folder)
+        let meeting = t.meeting.ok_or_else(no_transcript)?;
+        let dir = meeting
+            .folder
+            .clone()
             .map(PathBuf::from)
             .ok_or_else(no_transcript)?;
         if !dir.is_dir() {
@@ -97,6 +102,18 @@ impl Core {
         }
         match part {
             "transcript" => Ok(json!({"segments": read_segments(&dir)?})),
+            "doc" => {
+                let doc = required(&req.data, "docId", 200)?;
+                let version = match &req.data["version"] {
+                    Value::Null => None,
+                    v => Some(
+                        v.as_u64()
+                            .and_then(|v| u32::try_from(v).ok())
+                            .ok_or_else(|| invalid("Choose a version."))?,
+                    ),
+                };
+                Ok(json!({"text": docs::read(&dir, &meeting, doc, version)?}))
+            }
             "files" => {
                 let mut files: Vec<Value> = std::fs::read_dir(&dir)
                     .map_err(|_| folder_missing())?

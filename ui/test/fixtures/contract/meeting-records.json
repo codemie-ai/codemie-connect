@@ -153,5 +153,86 @@
     "source": "calendar:cal-1",
     "updatedAt": 1795000500,
     "workspaceId": null
+  },
+  {
+    "connectionId": "7f1c2a4e-0000-4000-8000-000000000001",
+    "data": {
+      "auto": null,
+      "checkedAt": 1795000400,
+      "docs": [
+        {
+          "auto": false,
+          "createdAt": 1795000450,
+          "edited": false,
+          "file": "notes.md",
+          "id": "meeting-notes",
+          "model": "claude-sonnet-4-5",
+          "name": "Meeting notes",
+          "profile": "claude",
+          "template": "meeting-notes",
+          "updatedAt": 1795000450,
+          "version": 1,
+          "versions": [],
+          "wishes": null
+        }
+      ],
+      "end": "2026-11-04T14:30:00Z",
+      "error": null,
+      "eventId": "m-ready",
+      "external": "ONLINE-m-ready",
+      "folder": "/Users/taylor/CodeMie Connect/Meetings/2026-11-04_160426-design-critique",
+      "imported": null,
+      "lastError": null,
+      "main": "meeting-notes",
+      "speakers": {},
+      "start": "2026-11-04T14:00:00Z",
+      "state": "ready",
+      "template": null,
+      "title": "Design critique",
+      "transcriptIds": [
+        "t"
+      ],
+      "transcriptStart": "2026-11-04T14:04:26Z"
+    },
+    "id": "m-ready",
+    "kind": "meeting",
+    "revision": "rev-5",
+    "source": "calendar:cal-1",
+    "updatedAt": 1795000500,
+    "workspaceId": null
+  },
+  {
+    "connectionId": "7f1c2a4e-0000-4000-8000-000000000001",
+    "data": {
+      "auto": null,
+      "checkedAt": 1795000400,
+      "docs": [],
+      "end": "2026-11-04T14:30:00Z",
+      "error": null,
+      "eventId": "m-failed",
+      "external": "ONLINE-m-failed",
+      "folder": "/Users/taylor/CodeMie Connect/Meetings/2026-11-04_160426-release-2-4-go-no-go",
+      "imported": null,
+      "lastError": {
+        "code": "needs_login",
+        "message": "Claude is not signed in."
+      },
+      "main": null,
+      "speakers": {},
+      "start": "2026-11-04T14:00:00Z",
+      "state": "failed",
+      "template": null,
+      "title": "Release 2.4 go/no-go",
+      "transcriptIds": [
+        "t"
+      ],
+      "transcriptStart": "2026-11-04T14:04:26Z"
+    },
+    "id": "m-failed",
+    "kind": "meeting",
+    "revision": "rev-6",
+    "source": "calendar:cal-1",
+    "updatedAt": 1795000500,
+    "workspaceId": null
   }
 ]

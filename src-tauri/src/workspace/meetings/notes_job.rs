@@ -1,0 +1,819 @@
+//! The `meeting_notes` job: saves the transcript first while it is still in Teams, runs Claude
+//! with the meeting's template (or a skill's `SKILL.md`, read for every run), and writes the
+//! document, `meta.json`, `run.log` and the tasks it found. A run that fails never touches the
+//! documents; `run.log` says why. Also decides which meetings get notes by themselves.
+use super::docs;
+use super::folder;
+use super::folder_files::{meta_json, read_segments};
+use super::glossary::{self, Text};
+use super::model::*;
+use super::notes::{self, NotesOutput, NotesRequest, RunInfo, TaskContext};
+use super::record::*;
+use super::rules::{self, Rule};
+use super::save::save_transcript;
+use super::templates::{self, Template};
+use crate::ai::command::RunSpec;
+use crate::workspace::{
+    ai::wire_name, ai_jobs::stored_job, graph, models::*, new_job, prompts, repository::Repository,
+    tasks, Core,
+};
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// A notes run may take ten minutes (a two-hour workshop).
+pub(super) const NOTES_TIMEOUT: Duration = Duration::from_secs(600);
+/// Round jobs belong to the workspace Connect boots into.
+const PERSONAL: &str = "personal";
+/// Automatic notes are made for meetings that ended at most two days ago.
+const AUTO_WINDOW: i64 = 2 * 24 * 3600;
+/// "Skip very short meetings": under three minutes long, or under three minutes of talking.
+const SHORT: f64 = 180.0;
+/// `run.log` keeps its newest 256 KB.
+const RUN_LOG_MAX: usize = 256 * 1024;
+
+pub(super) const GETTING: &str = "Getting the transcript from Teams";
+const FINDING: &str = "Finding tasks";
+
+/// The steps a run shows (`payload.steps`), in order.
+pub(super) fn steps_for(
+    saving: bool,
+    template: &str,
+    find_tasks: bool,
+    folder: Option<&str>,
+) -> Vec<String> {
+    let mut steps = Vec::new();
+    if saving {
+        steps.push(GETTING.to_string());
+    }
+    steps.push(format!("Writing notes with {template}"));
+    if find_tasks {
+        steps.push(FINDING.to_string());
+    }
+    steps.push(match folder {
+        Some(name) => format!("Saving to {name}"),
+        None => "Saving to the meeting folder".to_string(),
+    });
+    steps
+}
+
+/// A folder's own name.
+pub(super) fn folder_name(m: &MeetingRecord) -> Option<String> {
+    m.folder.as_deref().and_then(|f| {
+        Path::new(f)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+    })
+}
+
+fn template_gone() -> WorkspaceError {
+    WorkspaceError::new(
+        "not_found",
+        "This note template no longer exists. Choose another one.",
+    )
+}
+
+fn skill_missing(t: &Template) -> WorkspaceError {
+    WorkspaceError::new(
+        "skill_missing",
+        format!(
+            "The skill “{}” is not at {} any more. Choose its SKILL.md again in Settings › Meetings › Note templates.",
+            t.name,
+            t.skill_path.as_deref().unwrap_or("its old place")
+        ),
+    )
+}
+
+/// A skill's `SKILL.md`, read now: `skill_missing` when it is gone, `too_large` over 50 000
+/// characters.
+fn read_skill(t: &Template) -> Result<String> {
+    let path = t
+        .skill_path
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| skill_missing(t))?;
+    let len = std::fs::metadata(path)
+        .ok()
+        .filter(|m| m.is_file())
+        .ok_or_else(|| skill_missing(t))?
+        .len();
+    let too_large = || {
+        WorkspaceError::new(
+            "too_large",
+            format!(
+                "The skill “{}” is longer than 50 000 characters. Shorten its SKILL.md.",
+                t.name
+            ),
+        )
+    };
+    if len > 4 * notes::SKILL_MAX as u64 {
+        return Err(too_large());
+    }
+    let bytes = std::fs::read(path).map_err(|_| skill_missing(t))?;
+    let text = String::from_utf8_lossy(&bytes).trim().to_string();
+    if text.chars().count() > notes::SKILL_MAX {
+        return Err(too_large());
+    }
+    if text.is_empty() {
+        return Err(skill_missing(t));
+    }
+    Ok(text)
+}
+
+/// `n thing` or `n things`.
+fn plural(n: usize, thing: &str) -> String {
+    if n == 1 {
+        format!("1 {thing}")
+    } else {
+        format!("{n} {thing}s")
+    }
+}
+
+/// Appends one entry to the folder's `run.log` (its newest 256 KB are kept). Best effort.
+fn append_run_log(dir: &Path, lines: &[String]) {
+    let path = dir.join("run.log");
+    let mut log = std::fs::read_to_string(&path).unwrap_or_default();
+    if !log.is_empty() && !log.ends_with("\n\n") {
+        log.push_str(if log.ends_with('\n') { "\n" } else { "\n\n" });
+    }
+    log.push_str(&lines.join("\n"));
+    log.push('\n');
+    if log.len() > RUN_LOG_MAX {
+        let mut cut = log.len() - RUN_LOG_MAX;
+        while !log.is_char_boundary(cut) {
+            cut += 1;
+        }
+        log = log[cut..].to_string();
+    }
+    if folder::write_file(&path, log.as_bytes()).is_err() {
+        log::warn!("meetings: cannot write run.log");
+    }
+}
+
+fn stamp(zone: &str) -> String {
+    local_time(&rfc3339(now()), zone)
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
+}
+
+/// What Claude's run gave a notes job, ready to save.
+struct Finished {
+    out: NotesOutput,
+    segments: Vec<super::vtt::Segment>,
+    cut: bool,
+    profile: String,
+    model: Option<String>,
+    /// `run.log` lines so far.
+    log: Vec<String>,
+}
+
+/// What a run read from its job and the meeting before Claude runs.
+struct Plan {
+    template: Template,
+    find_tasks: bool,
+    wishes: String,
+    auto: bool,
+    workspace: String,
+}
+
+impl Core {
+    /// `meeting_notes`: notes for a meeting with one template (see the module docs).
+    pub(in crate::workspace) async fn run_meeting_notes(&self, job: &Job) -> Result<String> {
+        let id = required(&job.payload, "meetingId", 2000)?.to_string();
+        let c = self.notes_connection(job)?;
+        let plan = match self.notes_plan(job) {
+            Ok(plan) => plan,
+            Err(e) => {
+                // The template was deleted after the run was queued.
+                let named = job.payload["templateId"].as_str().unwrap_or("A template");
+                self.note_notes_failure(&c, &id, named, &e);
+                return Err(e);
+            }
+        };
+        let (state, folder) = {
+            let r = self.repo()?;
+            r.check_claim(&job.id, job.attempts)?;
+            let (m, _, _) = self.current(&r, &c, &id)?;
+            (m.state, folder_name(&m))
+        };
+        let saving = state == MeetingState::Available;
+        let mut steps = steps_for(
+            saving,
+            &plan.template.name,
+            plan.find_tasks,
+            folder.as_deref(),
+        );
+        if saving {
+            // Make notes on a transcript still in Teams saves it first; a failed save fails
+            // the run with the save's reason, which the meeting keeps (`last_error`).
+            self.note_step(job, &steps, GETTING)?;
+            let saved = save_transcript(self, &self.job_connection(job)?, &id).await?;
+            steps = steps_for(
+                true,
+                &plan.template.name,
+                plan.find_tasks,
+                folder_name(&saved).as_deref(),
+            );
+        }
+        let written = self.write_notes(job, &c, &id, &plan, &steps).await;
+        if let Err(e) = &written {
+            self.note_notes_failure(&c, &id, &plan.template.name, e);
+        }
+        written
+    }
+
+    /// The job's account, fenced by its claim. Notes need no transcript permission: an imported
+    /// transcript has notes too.
+    fn notes_connection(&self, job: &Job) -> Result<Connection> {
+        let cid = job
+            .connection_id
+            .as_deref()
+            .ok_or_else(|| WorkspaceError::new("needs_login", "Connect Microsoft."))?;
+        let mut c = self.repo()?.connection(cid)?;
+        c.job_fence = Some((job.id.clone(), job.attempts));
+        Ok(c)
+    }
+
+    fn notes_plan(&self, job: &Job) -> Result<Plan> {
+        let workspace = job.workspace_id.clone().unwrap_or_else(|| PERSONAL.into());
+        let all = templates::all(&self.repo()?.local_records(&workspace, templates::KIND)?);
+        let template = templates::find(&all, job.payload["templateId"].as_str().unwrap_or(""))
+            .cloned()
+            .ok_or_else(template_gone)?;
+        Ok(Plan {
+            find_tasks: job.payload["findTasks"] != false && template.extract_tasks,
+            template,
+            wishes: job.payload["wishes"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            auto: job.payload["auto"] == true,
+            workspace,
+        })
+    }
+
+    /// Notes `step` (one of `steps`) on the running job, for the progress line.
+    fn note_step(&self, job: &Job, steps: &[String], step: &str) -> Result<()> {
+        {
+            let mut r = self.repo()?;
+            r.check_claim(&job.id, job.attempts)?;
+            let mut current = stored_job(&r, job)?;
+            current.payload["steps"] = json!(steps);
+            current.payload["step"] = step.into();
+            r.save_job(&current)?;
+        }
+        self.emit("workspace:changed");
+        Ok(())
+    }
+
+    async fn write_notes(
+        &self,
+        job: &Job,
+        c: &Connection,
+        id: &str,
+        plan: &Plan,
+        steps: &[String],
+    ) -> Result<String> {
+        let t = &plan.template;
+        let (m, event, settings) = {
+            let r = self.repo()?;
+            r.check_claim(&job.id, job.attempts)?;
+            let (m, event, _) = self.current(&r, c, id)?;
+            (m, event, r.settings()?)
+        };
+        if !saved(m.state) {
+            return Err(no_transcript());
+        }
+        let dir = m
+            .folder
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|d| d.is_dir())
+            .ok_or_else(folder_missing)?;
+        let segments = read_segments(&dir)?;
+        if segments.is_empty() {
+            return Err(no_transcript());
+        }
+        let skill = if t.kind == "skill" {
+            Some(read_skill(t)?)
+        } else {
+            None
+        };
+        self.note_step(job, steps, &format!("Writing notes with {}", t.name))?;
+        let (profile, model) = self.route(Purpose::Meeting).await?;
+        let run = self.start_run(job, &profile, &model)?;
+        let s = &settings.meetings;
+        let me = self.me_alias(c, s);
+        let people = with_me(people_of(event.as_ref()), c);
+        let organizer = event
+            .as_ref()
+            .and_then(|e| e.data["organizer"]["address"].as_str())
+            .map(String::from);
+        let texts = self.meetings_root(s).ok().map(|(root, _)| {
+            let read =
+                |which| glossary::read_text(glossary::text_path(&root, s, which).0.as_deref());
+            (read(Text::Glossary), read(Text::Tags))
+        });
+        let ((glossary_md, glossary_cut), (tags_md, tags_cut)) =
+            texts.unwrap_or(((String::new(), false), (String::new(), false)));
+        let (input, cut) = notes::notes_input(&NotesRequest {
+            meeting: &m,
+            segments: &segments,
+            people: &people,
+            organizer: organizer.as_deref(),
+            me: &me,
+            zone: &settings.time_zone,
+            template_text: if skill.is_some() { "" } else { &t.prompt },
+            glossary_md: &glossary_md,
+            tags_md: &tags_md,
+            wishes: &plan.wishes,
+            settings: s,
+            find_tasks: plan.find_tasks,
+        });
+        let spec = RunSpec {
+            purpose: wire_name(Purpose::Meeting),
+            profile_id: profile.id.clone(),
+            model,
+            system: skill
+                .as_deref()
+                .map_or_else(|| notes::NOTES_SYSTEM.to_string(), notes::skill_system),
+            input,
+            schema: Some(prompts::schema(notes::NOTES_SCHEMA)),
+            timeout: NOTES_TIMEOUT,
+            cap_usd: None,
+            staging_root: self.paths.ensure_staging()?,
+        };
+        let requested = spec.model.clone();
+        let lines = segments.len();
+        let (reported, answer) = self
+            .run_claude_reported(&run, spec, &profile, id, |v| notes::parse_notes(v, lines))
+            .await;
+        let out = answer?;
+        if plan.find_tasks {
+            self.note_step(job, steps, FINDING)?;
+        }
+        self.note_step(job, steps, steps.last().map_or("", String::as_str))?;
+        let mut log = vec![
+            format!(
+                "{} · {}{}",
+                stamp(&settings.time_zone),
+                t.name,
+                if plan.auto { " · automatic" } else { "" }
+            ),
+            format!(
+                "Claude: {} · {} · {:.0} s{}",
+                profile.id,
+                reported
+                    .as_ref()
+                    .and_then(|o| o.model.clone())
+                    .or(requested.clone())
+                    .unwrap_or_else(|| "default model".into()),
+                reported
+                    .as_ref()
+                    .map_or(0.0, |o| o.duration_ms as f64 / 1000.0),
+                reported
+                    .as_ref()
+                    .and_then(|o| o.cost_usd)
+                    .map(|c| format!(" · ${c:.2}"))
+                    .unwrap_or_default()
+            ),
+            format!(
+                "Transcript: {}{}",
+                plural(lines, "line"),
+                if cut {
+                    format!(", {} (the notes say so)", notes::CUT_NOTE.to_lowercase())
+                } else {
+                    String::new()
+                }
+            ),
+        ];
+        if glossary_cut || tags_cut {
+            log.push(
+                "The glossary or the tag list is longer than 100 KB: Claude read its first 100 KB."
+                    .into(),
+            );
+        }
+        if !plan.wishes.is_empty() {
+            log.push(format!("Wishes: {}", plan.wishes));
+        }
+        let model = reported
+            .as_ref()
+            .and_then(|o| o.model.clone())
+            .or(requested)
+            .or_else(|| profile.default_model.clone());
+        self.save_notes(
+            job,
+            c,
+            id,
+            plan,
+            Finished {
+                out,
+                segments,
+                cut,
+                profile: profile.id.clone(),
+                model,
+                log,
+            },
+        )
+    }
+
+    /// Writes a run's document, `meta.json`, tasks and `run.log`, and stores the meeting with
+    /// the job's success, all under the meeting lock (taken here, before the repository).
+    fn save_notes(
+        &self,
+        job: &Job,
+        c: &Connection,
+        id: &str,
+        plan: &Plan,
+        done: Finished,
+    ) -> Result<String> {
+        let t = &plan.template;
+        let Finished {
+            out,
+            segments,
+            cut,
+            profile,
+            model,
+            mut log,
+        } = done;
+        let out = &out;
+        let _w = self.meeting_lock();
+        let mut r = self.repo()?;
+        r.validate_claim(c)?;
+        let (mut m, event, source) = self.current(&r, c, id)?;
+        let settings = r.settings()?;
+        let dir = m
+            .folder
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|d| d.is_dir())
+            .ok_or_else(folder_missing)?;
+        let change = notes::apply(
+            &mut m,
+            t,
+            out,
+            &RunInfo {
+                now: now(),
+                zone: &settings.time_zone,
+                auto: plan.auto,
+                cut,
+                keep_versions: settings.meetings.keep_versions,
+                profile: Some(profile),
+                model,
+                wishes: Some(plan.wishes.clone()).filter(|w| !w.is_empty()),
+            },
+        );
+        docs::write_change(&dir, &change)?;
+        if folder::write_file(&dir.join("meta.json"), meta_json(&m).as_bytes()).is_err() {
+            log::warn!("meetings: cannot rewrite meta.json");
+        }
+        log.extend(change.log.iter().cloned());
+        let mut added = 0;
+        if plan.find_tasks {
+            let me = self.me_alias(c, &settings.meetings);
+            let people = with_me(people_of(event.as_ref()), c);
+            let existing: Vec<Value> = r
+                .local_records(&plan.workspace, tasks::KIND)?
+                .into_iter()
+                .filter(|task| task.data["meetingId"] == id)
+                .map(|task| task.data)
+                .collect();
+            let found = notes::tasks_from(
+                out,
+                &TaskContext {
+                    meeting_id: id,
+                    template_name: &t.name,
+                    segments: &segments,
+                    people: &people,
+                    me: &me,
+                    settings: &settings.meetings,
+                },
+                &existing,
+            );
+            let kept = out.tasks.len() - found.len();
+            for body in &found {
+                match tasks::task_save(&mut r, &plan.workspace, body, now()) {
+                    Ok(_) => added += 1,
+                    Err(e) => {
+                        log::warn!("meetings: a task from the notes was not saved: {}", e.code);
+                        log.push(format!("A task could not be saved: {}", e.message));
+                    }
+                }
+            }
+            let mut said = Vec::new();
+            if added > 0 {
+                said.push(if settings.meetings.review {
+                    format!("{} to review", plural(added, "new task"))
+                } else {
+                    format!("{} on the board", plural(added, "new task"))
+                });
+            }
+            if kept > 0 {
+                said.push(format!("{} already on the board", plural(kept, "task")));
+            }
+            if said.is_empty() {
+                said.push("none found".into());
+            }
+            log.push(format!("Tasks: {}", said.join(", ")));
+        }
+        append_run_log(&dir, &log);
+        let stored = stored_job(&r, job)?;
+        r.commit_job_record(&stored, &record_of(c, &source, &m)?)?;
+        if plan.auto {
+            let body = if added > 0 {
+                format!(
+                    "Made with {}. {} to review.",
+                    t.name,
+                    plural(added, "new task")
+                )
+            } else {
+                format!("Made with {}.", t.name)
+            };
+            let policy = r.policy(job.workspace_id.as_deref(), job.connection_id.as_deref())?;
+            r.enqueue(&new_job(
+                "notification",
+                format!("meeting_notes_ready:{}", job.id),
+                job.workspace_id.clone(),
+                job.connection_id.clone(),
+                now(),
+                policy,
+                json!({"title": format!("Notes ready: {}", m.title), "body": body,
+                    "meetingId": id, "route": "meetings", "expiresAt": now() + 2 * 3600}),
+            ))?;
+        }
+        drop(r);
+        self.emit("workspace:changed");
+        Ok("Notes ready".into())
+    }
+
+    /// A failed run: the meeting keeps why (`last_error`) and is `failed` while it has no
+    /// documents (one with documents stays `ready`); `run.log` says what happened. A run that
+    /// was stopped changes nothing on the meeting.
+    fn note_notes_failure(&self, c: &Connection, id: &str, template: &str, e: &WorkspaceError) {
+        let _w = self.meeting_lock();
+        let Ok(mut r) = self.repo() else {
+            return;
+        };
+        let Ok((mut m, _, source)) = self.current(&r, c, id) else {
+            return;
+        };
+        let zone = r.settings().map(|s| s.time_zone).unwrap_or_default();
+        let mut lines = vec![format!("{} · {template} · failed", stamp(&zone))];
+        if e.code == "cancelled" {
+            lines.push("Stopped before the notes were written.".into());
+        } else {
+            lines.push(format!("{} ({})", e.message, e.code));
+            if saved(m.state) {
+                m.last_error = Some(ErrorInfo::from(e));
+                if m.docs.is_empty() {
+                    m.state = MeetingState::Failed;
+                }
+                if let Err(stored) = store(&mut r, c, &source, &m) {
+                    log::warn!("meetings: cannot note a failed notes run: {}", stored.code);
+                }
+            }
+        }
+        lines.push(if m.docs.is_empty() {
+            "No notes were written.".into()
+        } else {
+            "Your documents were not changed.".into()
+        });
+        drop(r);
+        if let Some(dir) = m.folder.as_deref().map(Path::new).filter(|d| d.is_dir()) {
+            append_run_log(dir, &lines);
+        }
+        self.emit("workspace:changed");
+    }
+
+    /// Right after a save: notes for a meeting that asked for them as soon as its transcript
+    /// arrived (or whose wait is over). Best effort; the round tries again.
+    pub(super) fn auto_notes_after_save(&self, c: &Connection, id: &str) {
+        let _w = self.meeting_lock();
+        let queued = self.repo().and_then(|mut r| {
+            let (m, event, _) = self.current(&r, c, id)?;
+            let auto = AutoNotes::read(&r, c, &r.jobs()?)?;
+            auto.queue(&mut r, &m, event.as_ref(), now())
+        });
+        if let Err(e) = queued {
+            log::warn!("meetings: automatic notes not queued: {}", e.code);
+        }
+    }
+}
+
+/// What the round needs to decide on automatic notes, read once.
+pub(super) struct AutoNotes {
+    settings: MeetingSettings,
+    rules: Vec<Rule>,
+    templates: Vec<Template>,
+    /// The meetings that ever had a notes job.
+    noted: std::collections::HashSet<String>,
+    connection: String,
+    policy: Value,
+}
+
+impl AutoNotes {
+    /// Reads the rules, templates and settings; `jobs` are the jobs there are now.
+    pub(super) fn read(r: &Repository, c: &Connection, jobs: &[Job]) -> Result<Self> {
+        let mut rules: Vec<Rule> = r
+            .local_records(PERSONAL, rules::KIND)?
+            .iter()
+            .filter_map(rules::from_record)
+            .collect();
+        rules.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
+        Ok(Self {
+            settings: r.settings()?.meetings,
+            rules,
+            templates: templates::all(&r.local_records(PERSONAL, templates::KIND)?),
+            noted: jobs
+                .iter()
+                .filter(|j| j.kind == "meeting_notes")
+                .filter_map(|j| j.payload["meetingId"].as_str().map(String::from))
+                .collect(),
+            connection: c.id.clone(),
+            policy: r.policy(Some(PERSONAL), Some(&c.id))?,
+        })
+    }
+
+    /// Whether `m` gets notes by themselves now (see [`auto_due`]); queues them with the fixed
+    /// key `meeting_notes:auto:<meetingId>`, so a meeting gets one automatic attempt.
+    pub(super) fn queue(
+        &self,
+        r: &mut Repository,
+        m: &MeetingRecord,
+        event: Option<&Record>,
+        now: i64,
+    ) -> Result<bool> {
+        if self.noted.contains(&m.event_id) {
+            return Ok(false);
+        }
+        let data = event
+            .map(|e| e.data.clone())
+            .unwrap_or_else(|| json!({"title": m.title}));
+        let talk = || {
+            m.folder
+                .as_deref()
+                .and_then(|d| read_segments(Path::new(d)).ok())
+                .map(|segments| segments.iter().map(|s| (s.end - s.start).max(0.0)).sum())
+        };
+        if !auto_due(m, &data, &self.rules, &self.settings, now, talk) {
+            return Ok(false);
+        }
+        let (t, why) = templates::resolve(m, &data, &self.rules, &self.settings, &self.templates);
+        let steps = steps_for(false, &t.name, t.extract_tasks, folder_name(m).as_deref());
+        r.enqueue(&new_job(
+            "meeting_notes",
+            format!("meeting_notes:auto:{}", m.event_id),
+            Some(PERSONAL.into()),
+            Some(self.connection.clone()),
+            now,
+            self.policy.clone(),
+            json!({"meetingId": m.event_id, "title": m.title, "templateId": t.id,
+                "notesKey": format!("{}:{}", m.event_id, t.id), "wishes": "",
+                "findTasks": t.extract_tasks, "auto": true, "reason": why.to_json(),
+                "step": null, "steps": steps}),
+        ))?;
+        Ok(true)
+    }
+}
+
+/// Whether a meeting's notes are made by themselves now: its transcript is saved and it has no
+/// documents yet; it asks for them (its own switch, else the first matching rule or Settings ›
+/// Meetings › Make notes automatically); it ended at most two days ago. What the person asked
+/// for on the meeting follows the save at once; a rule or the setting waits `waitMin` after
+/// the meeting and skips very short ones (under 3 minutes, or under 3 minutes of talking).
+pub(super) fn auto_due(
+    m: &MeetingRecord,
+    event: &Value,
+    rules: &[Rule],
+    s: &MeetingSettings,
+    now: i64,
+    talk: impl FnOnce() -> Option<f64>,
+) -> bool {
+    let start = graph::timestamp(&m.start);
+    let end = graph::timestamp(&m.end);
+    if m.state != MeetingState::Downloaded || end <= 0 || now - end >= AUTO_WINDOW {
+        return false;
+    }
+    let (wanted, asked) = rules::auto_notes(m.auto, event, rules, s);
+    if !wanted {
+        return false;
+    }
+    if asked {
+        return true;
+    }
+    if now < end + s.wait_min * 60 {
+        return false;
+    }
+    let length = (end - start) as f64;
+    !(s.skip_short && (length < SHORT || talk().is_some_and(|t| t < SHORT)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const END: i64 = 1_795_000_000;
+
+    fn downloaded(minutes: i64, auto: Option<bool>) -> MeetingRecord {
+        MeetingRecord {
+            title: "Philips sync".into(),
+            start: rfc3339(END - minutes * 60),
+            end: rfc3339(END),
+            state: MeetingState::Downloaded,
+            auto,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn auto_notes_wait_skip_short_meetings_and_stop_after_two_days() {
+        let event = json!({"title": "Philips sync"});
+        let rule = Rule {
+            id: "r".into(),
+            value: "philips".into(),
+            template: "meeting-notes".into(),
+            auto_notes: true,
+            ..Default::default()
+        };
+        let rules = vec![rule];
+        let s = MeetingSettings::default();
+        let long = || Some(600.0);
+        let m = downloaded(30, None);
+        // A rule waits 15 minutes after the meeting.
+        assert!(!auto_due(&m, &event, &rules, &s, END + 14 * 60, long));
+        assert!(auto_due(&m, &event, &rules, &s, END + 15 * 60, long));
+        // Too short, or almost no talking.
+        assert!(!auto_due(
+            &downloaded(2, None),
+            &event,
+            &rules,
+            &s,
+            END + 3600,
+            long
+        ));
+        assert!(!auto_due(&m, &event, &rules, &s, END + 3600, || Some(90.0)));
+        let keep = MeetingSettings {
+            skip_short: false,
+            ..Default::default()
+        };
+        assert!(auto_due(
+            &downloaded(2, None),
+            &event,
+            &rules,
+            &keep,
+            END + 3600,
+            || Some(10.0)
+        ));
+        // An unreadable transcript is not taken for a short one.
+        assert!(auto_due(&m, &event, &rules, &s, END + 3600, || None));
+        // Not after two days, not with notes or a failed run, not without a rule.
+        assert!(!auto_due(&m, &event, &rules, &s, END + AUTO_WINDOW, long));
+        for state in [
+            MeetingState::Ready,
+            MeetingState::Failed,
+            MeetingState::Available,
+        ] {
+            let other = MeetingRecord { state, ..m.clone() };
+            assert!(!auto_due(&other, &event, &rules, &s, END + 3600, long));
+        }
+        assert!(!auto_due(&m, &event, &[], &s, END + 3600, long));
+        // Asked for on the meeting: at once, whatever its length; and "no" wins over a rule.
+        assert!(auto_due(
+            &downloaded(2, Some(true)),
+            &event,
+            &[],
+            &s,
+            END + 60,
+            || Some(5.0)
+        ));
+        assert!(!auto_due(
+            &downloaded(30, Some(false)),
+            &event,
+            &rules,
+            &s,
+            END + 3600,
+            long
+        ));
+    }
+
+    #[test]
+    fn steps_name_each_phase() {
+        assert_eq!(
+            steps_for(true, "Short summary", false, None),
+            vec![
+                GETTING,
+                "Writing notes with Short summary",
+                "Saving to the meeting folder"
+            ]
+        );
+        assert_eq!(
+            steps_for(false, "Meeting notes", true, Some("2026-11-04_160426-sync")),
+            vec![
+                "Writing notes with Meeting notes",
+                FINDING,
+                "Saving to 2026-11-04_160426-sync"
+            ]
+        );
+    }
+}

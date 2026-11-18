@@ -187,11 +187,12 @@ impl Core {
             let r = self.repo()?;
             let w = r.workspace(PERSONAL)?;
             // Who "me" is, for whose tasks are whose, also when the run reads nothing from Microsoft.
-            let me = r
-                .settings()?
+            let settings = r.settings()?;
+            let me = settings
                 .active_connection
-                .and_then(|id| r.connection(&id).ok())
-                .map(|c| self.me_alias(&c))
+                .as_deref()
+                .and_then(|id| r.connection(id).ok())
+                .map(|c| self.me_alias(&c, &settings.meetings))
                 .unwrap_or_default();
             let account = if reads_microsoft(a, &log.trigger) {
                 Some(signed_in(&r, &w)?)

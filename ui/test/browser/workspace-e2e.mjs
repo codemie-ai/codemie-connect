@@ -390,6 +390,21 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     meetings_reveal: d => { calls.push(['meetings_reveal', d]); return { opened: true }; },
     meeting_read: d => (d.part === 'transcript' ? { segments: [] } : d.part === 'files' ? { files: [] } : { text: '' }),
   });
+  // Notes (Task 3): the operations answer as native does; nothing runs Claude or writes a folder.
+  // Templates, rules and texts are recorded so later checks can read what the UI sent.
+  Object.assign(ops, {
+    meeting_notes: d => { calls.push(['meeting_notes', clone(d)]); return { queued: true, jobId: crypto.randomUUID() }; },
+    meeting_set: d => { calls.push(['meeting_set', clone(d)]); return { saved: true }; },
+    meeting_doc: d => { calls.push(['meeting_doc', clone(d)]); return d.action === 'delete' ? { deleted: true } : { saved: true }; },
+    template_save: d => { calls.push(['template_save', clone(d)]); return { id: d.id || crypto.randomUUID() }; },
+    template_delete: d => { calls.push(['template_delete', clone(d)]); return ['meeting-notes', 'short-summary'].includes(d.id) ? { reset: true, id: d.id } : { deleted: true, id: d.id }; },
+    meeting_rule_save: d => { calls.push(['meeting_rule_save', clone(d)]); return { id: d.id || crypto.randomUUID() }; },
+    meeting_rule_delete: d => { calls.push(['meeting_rule_delete', clone(d)]); return { deleted: true, id: d.id, body: {} }; },
+    meeting_rule_order: d => { calls.push(['meeting_rule_order', clone(d)]); return { saved: true }; },
+    meeting_text_save: d => { calls.push(['meeting_text_save', { name: d.name }]); return { saved: true, path: `/Users/qa/CodeMie Connect/Meetings/${d.name}.md` }; },
+    meeting_text: d => ({ text: '', path: `/Users/qa/CodeMie Connect/Meetings/${d.name}.md`, linked: false }),
+    meeting_skills: () => [],
+  });
   // Tasks: `task_save` merges into the stored body and writes history lines as native does
   // (src-tauri/src/workspace/tasks.rs); `task_delete` answers with the body (task-delete.json).
   const TASK_NAMES = { review: 'To review', todo: 'To do', doing: 'In progress', waiting: 'Waiting', done: 'Done', dismissed: 'Dismissed' };
@@ -586,7 +601,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'automation_runs', 'meeting_read', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -905,7 +920,8 @@ for (const theme of ['dark', 'light']) {
     const native = await text(page, '[data-ai-profile="claude"]');
     assert(/Ready/i.test(native) && /Max/.test(native) && /taylor@example\.com/.test(native) && /2\.1\.150/.test(native), native);
     assert(/Needs sign-in/i.test(await text(page, '[data-ai-profile="codemie:staging"]')), 'needs sign-in chip');
-    assert(await page.locator('[data-ai-route-row]').count() === 5, 'route rows');
+    assert(await page.locator('[data-ai-route-row]').count() === 6, 'route rows');
+    assert(/Meeting notes/.test(await text(page, '[data-ai-route-row="meeting"]')), 'meeting notes route row');
     assert(/runs/.test(await text(page, '#ai-usage')) && /estimate/i.test(await text(page, '#ai-usage')), 'usage');
     await shot(page, `${theme}-settings-claude-both`);
     await page.locator('.ws-settings-panels').evaluate(el => { el.scrollTop = el.scrollHeight; });

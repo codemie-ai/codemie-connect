@@ -128,6 +128,17 @@ pub enum Operation {
     MeetingSpeakers,
     MeetingsReveal,
     MeetingRead,
+    MeetingNotes,
+    MeetingSet,
+    MeetingDoc,
+    MeetingText,
+    MeetingTextSave,
+    MeetingSkills,
+    TemplateSave,
+    TemplateDelete,
+    MeetingRuleSave,
+    MeetingRuleDelete,
+    MeetingRuleOrder,
     TaskSave,
     TaskDelete,
 }
@@ -247,6 +258,8 @@ pub enum Purpose {
     Summary,
     Automation,
     Plugin,
+    /// Notes and summaries from meeting transcripts.
+    Meeting,
 }
 /// An empty route uses the default profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,6 +327,9 @@ pub struct Snapshot {
     /// The resolved meetings folder (Settings › Meetings). Filled by `Core` for the window's
     /// snapshot; `None` elsewhere, and when Connect can't find the home folder.
     pub meetings_root: Option<super::meetings::model::MeetingsRoot>,
+    /// Every note template: the built-ins (with the person's changes) and the person's own and
+    /// skills. Filled by `Core` for the window's snapshot; empty elsewhere.
+    pub note_templates: Vec<super::meetings::templates::Template>,
 }
 
 pub fn required<'a>(data: &'a Value, key: &str, max: usize) -> Result<&'a str> {

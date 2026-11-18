@@ -36,7 +36,7 @@ impl Core {
     ) -> Result<PathBuf> {
         let s = &settings.meetings;
         let people = with_me(people_of(event), c);
-        let me = self.me_alias(c);
+        let me = self.me_alias(c, s);
         let mut segments = vtt::segments(t.cues, &people, &me);
         if !m.speakers.is_empty() {
             vtt::map_speakers(&mut segments, &m.speakers, &people, &me);
@@ -235,7 +235,11 @@ impl Core {
             Saving::Replace
         };
         match save_as(self, &c, id, how).await? {
-            (_, true) => Ok("Transcript saved".into()),
+            (_, true) => {
+                // A meeting that asked for notes as soon as its transcript arrived gets them now.
+                self.auto_notes_after_save(&c, id);
+                Ok("Transcript saved".into())
+            }
             (_, false) => Ok("The meeting already has a transcript; kept it".into()),
         }
     }
@@ -336,10 +340,10 @@ impl Core {
             .trim()
             .to_string();
         let _w = self.meeting_lock();
-        let (mut m, event, source, zone) = {
+        let (mut m, event, source, settings) = {
             let r = self.repo()?;
             let (m, event, source) = self.current(&r, &t.c, &t.id)?;
-            (m, event, source, r.settings()?.time_zone)
+            (m, event, source, r.settings()?)
         };
         let dir = m
             .folder
@@ -363,10 +367,11 @@ impl Core {
                 .ok_or_else(|| invalid("Choose someone who was at the meeting."))?;
             m.speakers.insert(voice, person.address.clone());
         }
-        vtt::map_speakers(&mut segments, &m.speakers, &people, &self.me_alias(&t.c));
+        let me = self.me_alias(&t.c, &settings.meetings);
+        vtt::map_speakers(&mut segments, &m.speakers, &people, &me);
         let md = vtt::transcript_md(
             &m.title,
-            &header_lines(&m, event.as_ref(), &zone),
+            &header_lines(&m, event.as_ref(), &settings.time_zone),
             &segments,
         );
         let json = serde_json::to_string_pretty(&segments).map_err(storage)?;
@@ -396,9 +401,8 @@ fn kept(m: &MeetingRecord) -> bool {
 /// at each one's offset from when it started, and writes the folder. Documents and tasks stay;
 /// the state becomes `downloaded` (or stays `ready`). A failure is kept on the meeting
 /// (`last_error`) and returned. Any job with a fenced `c` may call it: the transcript save, and
-/// the notes run when a meeting is `available`.
-// Task 3's notes run is its caller in the app; the tests call it directly.
-#[cfg_attr(not(test), allow(dead_code))]
+/// the notes run when a meeting is `available`. It takes [`Core::meeting_lock`] itself, so a
+/// caller never holds it.
 pub(crate) async fn save_transcript(
     core: &Core,
     c: &Connection,

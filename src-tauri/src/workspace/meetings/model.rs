@@ -97,31 +97,54 @@ pub struct TranscriptFiles {
     pub meta: String,
 }
 
-/// One earlier version of a document (filled by notes runs, Task 3).
+/// One earlier version of a document, kept in `notes-history/` while Settings › Meetings keeps
+/// earlier versions.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DocVersion {
     pub version: u32,
+    /// When this version was written (or last edited).
     pub at: i64,
-    /// `notes-history/<YYYY-MM-DD_HHMM>-<template-id>.md`; `None` when earlier versions are not kept.
+    /// `notes-history/<YYYY-MM-DD_HHMM>-<template-id>.md`.
     pub file: Option<String>,
+    /// The Claude profile and model that wrote it.
     pub profile: Option<String>,
     pub model: Option<String>,
+    /// Made automatically, not asked for by the person.
+    pub auto: bool,
+    /// Changed by the person after Claude wrote it.
+    pub edited: bool,
+    /// What the person asked the run to focus on.
+    pub wishes: Option<String>,
 }
 
-/// A document made from a transcript with one template (filled by notes runs, Task 3).
+/// A document made from a transcript with one template. Running the same template again adds
+/// a version: the current one is `version`, the earlier ones kept are `versions`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Doc {
+    /// The template's id: one document per template.
     pub id: String,
     pub template: String,
+    /// The template's name when the document was made.
     pub name: String,
     /// `notes.md` for the main document, `notes.<template-slug>.md` for the others.
     pub file: String,
     pub version: u32,
+    /// Earlier versions that were kept, oldest first.
     pub versions: Vec<DocVersion>,
     pub created_at: i64,
+    /// When the current version was written (or last edited).
     pub updated_at: i64,
+    /// The Claude profile and model that wrote the current version.
+    pub profile: Option<String>,
+    pub model: Option<String>,
+    /// The current version was made automatically.
+    pub auto: bool,
+    /// The current version was changed by the person after Claude wrote it.
+    pub edited: bool,
+    /// What the person asked the current version to focus on.
+    pub wishes: Option<String>,
 }
 
 /// The meetings folder as the snapshot carries it (`meetingsRoot`): `settings.meetings.root`

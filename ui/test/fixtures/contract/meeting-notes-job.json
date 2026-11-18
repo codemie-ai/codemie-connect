@@ -1,0 +1,37 @@
+{
+  "attempts": 1,
+  "connectionId": "7f1c2a4e-0000-4000-8000-000000000001",
+  "dueAt": 1795000400,
+  "id": "job-notes-1",
+  "key": "meeting_notes:op-1",
+  "kind": "meeting_notes",
+  "leaseUntil": 1795000700,
+  "payload": {
+    "auto": false,
+    "findTasks": true,
+    "meetingId": "m-ready",
+    "model": null,
+    "notesKey": "m-ready:meeting-notes",
+    "profile": "claude",
+    "runModel": "claude-sonnet-4-5",
+    "startedAt": 1795000401,
+    "step": "Writing notes with Meeting notes",
+    "steps": [
+      "Writing notes with Meeting notes",
+      "Finding tasks",
+      "Saving to 2026-11-04_160426-philips-codemie-conversations-syncup"
+    ],
+    "templateId": "meeting-notes",
+    "title": "Philips CodeMie conversations syncup",
+    "wishes": "focus on the pilot"
+  },
+  "policy": {
+    "generation": 1,
+    "policyRevision": 1,
+    "sourceRevision": null,
+    "workspaceRevision": 1
+  },
+  "result": null,
+  "state": "running",
+  "workspaceId": "personal"
+}

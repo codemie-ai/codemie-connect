@@ -102,7 +102,12 @@ pub(super) fn store(
     source: &str,
     m: &MeetingRecord,
 ) -> Result<()> {
-    r.put_record(&Record {
+    r.put_record(&record_of(c, source, m)?)
+}
+
+/// The record [`store`] writes: the meeting beside its event, a new revision.
+pub(super) fn record_of(c: &Connection, source: &str, m: &MeetingRecord) -> Result<Record> {
+    Ok(Record {
         id: m.event_id.clone(),
         kind: KIND.into(),
         connection_id: Some(c.id.clone()),

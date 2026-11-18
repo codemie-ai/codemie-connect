@@ -1,6 +1,7 @@
 //! Job and operation tests for meetings: a real `Core` over a temp folder, Graph answered by
 //! `FakeGraph`, files in the temp folder's home.
 use super::model::*;
+use super::save::save_transcript;
 use super::transcripts::{content_url, list_url, lookup_url};
 use super::*;
 use crate::ai::fake::FakeRunner;
@@ -12,34 +13,34 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const ACCT: &str = "7f1c2a4e-0000-4000-8000-000000000001";
-const JOIN: &str =
+pub(super) const ACCT: &str = "7f1c2a4e-0000-4000-8000-000000000001";
+pub(super) const JOIN: &str =
     "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%7d";
-const ONLINE: &str = "MSo1N2Y5ZGFj";
-const SYNC: &str = "Philips CodeMie conversations syncup";
+pub(super) const ONLINE: &str = "MSo1N2Y5ZGFj";
+pub(super) const SYNC: &str = "Philips CodeMie conversations syncup";
 /// 16:00 in Kyiv (UTC+2 in November).
-const START: &str = "2026-11-04T14:00:00Z";
-const END: &str = "2026-11-04T14:30:00Z";
+pub(super) const START: &str = "2026-11-04T14:00:00Z";
+pub(super) const END: &str = "2026-11-04T14:30:00Z";
 /// Teams started transcribing at 16:04:26 Kyiv time.
-const CREATED: &str = "2026-11-04T14:04:26Z";
+pub(super) const CREATED: &str = "2026-11-04T14:04:26Z";
 
-const VTT: &str = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n<v Jeroen de Vries>Welcome to the sync.</v>\n\n00:00:05.000 --> 00:00:09.000\n<v Novak, Marek>Thanks. The demo is ready.</v>\n\n00:00:12.000 --> 00:00:15.000\n<v @1>Can I join late?</v>\n\n00:00:20.000 --> 00:00:24.000\n<v Taylor Morgan>I&#39;ll send the notes.</v>\n";
+pub(super) const VTT: &str = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n<v Jeroen de Vries>Welcome to the sync.</v>\n\n00:00:05.000 --> 00:00:09.000\n<v Novak, Marek>Thanks. The demo is ready.</v>\n\n00:00:12.000 --> 00:00:15.000\n<v @1>Can I join late?</v>\n\n00:00:20.000 --> 00:00:24.000\n<v Taylor Morgan>I&#39;ll send the notes.</v>\n";
 
-struct Env {
-    _dir: tempfile::TempDir,
-    core: Arc<Core>,
-    graph: Arc<FakeGraph>,
+pub(super) struct Env {
+    pub(super) _dir: tempfile::TempDir,
+    pub(super) core: Arc<Core>,
+    pub(super) graph: Arc<FakeGraph>,
 }
 
-fn env() -> Env {
+pub(super) fn env() -> Env {
+    env_with(Arc::new(FakeRunner::new(vec![])))
+}
+
+/// [`env`] with Claude answered by `runner`.
+pub(super) fn env_with(runner: Arc<FakeRunner>) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let graph = Arc::new(FakeGraph::default());
-    let core = test_core_with_graph(
-        dir.path(),
-        Arc::new(FakeRunner::new(vec![])),
-        ready(),
-        graph.clone(),
-    );
+    let core = test_core_with_graph(dir.path(), runner, ready(), graph.clone());
     connect(&core, &["calendar", "meetings", "transcripts"]);
     Env {
         _dir: dir,
@@ -49,7 +50,7 @@ fn env() -> Env {
 }
 
 /// The signed-in account (Taylor Morgan) with `enabled` capabilities, bound to `personal`.
-fn connect(core: &Core, enabled: &[&str]) {
+pub(super) fn connect(core: &Core, enabled: &[&str]) {
     let mut r = core.repo().unwrap();
     let c = Connection {
         id: ACCT.into(),
@@ -79,7 +80,7 @@ fn connect(core: &Core, enabled: &[&str]) {
     r.save_workspace(&w).unwrap();
 }
 
-fn rfc(at: i64) -> String {
+pub(super) fn rfc(at: i64) -> String {
     chrono::DateTime::from_timestamp(at, 0)
         .unwrap()
         .format("%Y-%m-%dT%H:%M:%SZ")
@@ -87,7 +88,7 @@ fn rfc(at: i64) -> String {
 }
 
 /// A Teams meeting from `start` to `end` (RFC 3339), as `graph::normalize_event` stores it.
-fn event(id: &str, title: &str, start: &str, end: &str, extra: Value) -> Record {
+pub(super) fn event(id: &str, title: &str, start: &str, end: &str, extra: Value) -> Record {
     let mut data = json!({"title": title, "start": start, "end": end, "allDay": false,
     "cancelled": false, "isOnlineMeeting": true, "joinUrl": JOIN, "response": "accepted",
     "isOrganizer": false, "seriesId": "series-1", "calendarId": "cal-1",
@@ -112,17 +113,17 @@ fn event(id: &str, title: &str, start: &str, end: &str, extra: Value) -> Record 
 }
 
 /// A meeting that ended `minutes` ago, half an hour long.
-fn ended(id: &str, minutes: i64, extra: Value) -> Record {
+pub(super) fn ended(id: &str, minutes: i64, extra: Value) -> Record {
     let end = now() - minutes * 60;
     event(id, SYNC, &rfc(end - 1800), &rfc(end), extra)
 }
 
-fn put(core: &Core, record: Record) {
+pub(super) fn put(core: &Core, record: Record) {
     core.repo().unwrap().put_record(&record).unwrap();
 }
 
 /// Teams answers for one meeting: the lookup, a transcript created at `created`, its content.
-fn teams(graph: &FakeGraph, created: &str, vtt: &str) {
+pub(super) fn teams(graph: &FakeGraph, created: &str, vtt: &str) {
     graph.answer(
         &lookup_url(JOIN),
         json!({"value": [{"id": ONLINE, "joinWebUrl": JOIN}]}),
@@ -134,7 +135,7 @@ fn teams(graph: &FakeGraph, created: &str, vtt: &str) {
     graph.answer_text(&content_url(ONLINE, "t1"), vtt);
 }
 
-fn store_for_test(core: &Core, id: &str, m: &MeetingRecord) {
+pub(super) fn store_for_test(core: &Core, id: &str, m: &MeetingRecord) {
     put(
         core,
         Record {
@@ -150,7 +151,7 @@ fn store_for_test(core: &Core, id: &str, m: &MeetingRecord) {
     );
 }
 
-fn meeting(core: &Core, id: &str) -> MeetingRecord {
+pub(super) fn meeting(core: &Core, id: &str) -> MeetingRecord {
     let record = core
         .repo()
         .unwrap()
@@ -159,7 +160,7 @@ fn meeting(core: &Core, id: &str) -> MeetingRecord {
     serde_json::from_value(record.data).unwrap()
 }
 
-fn jobs(core: &Core, kind: &str) -> Vec<Job> {
+pub(super) fn jobs(core: &Core, kind: &str) -> Vec<Job> {
     core.repo()
         .unwrap()
         .jobs()
@@ -169,7 +170,7 @@ fn jobs(core: &Core, kind: &str) -> Vec<Job> {
         .collect()
 }
 
-fn job_by_id(core: &Core, id: &str) -> Job {
+pub(super) fn job_by_id(core: &Core, id: &str) -> Job {
     core.repo()
         .unwrap()
         .jobs()
@@ -182,7 +183,7 @@ fn job_by_id(core: &Core, id: &str) -> Job {
 /// Claims and runs every due job, one at a time, as the background loop does, with the clock
 /// `ahead` seconds in the future (a later slot). The clock is read for every claim: a job queued
 /// by the previous one may be due a second later.
-async fn run_jobs_ahead(core: &Arc<Core>, ahead: i64) -> Vec<Job> {
+pub(super) async fn run_jobs_ahead(core: &Arc<Core>, ahead: i64) -> Vec<Job> {
     let mut ran = Vec::new();
     loop {
         let job = core.repo().unwrap().claim(now() + ahead).unwrap();
@@ -194,11 +195,11 @@ async fn run_jobs_ahead(core: &Arc<Core>, ahead: i64) -> Vec<Job> {
     ran
 }
 
-async fn run_jobs(core: &Arc<Core>) -> Vec<Job> {
+pub(super) async fn run_jobs(core: &Arc<Core>) -> Vec<Job> {
     run_jobs_ahead(core, 0).await
 }
 
-fn read(op: Operation, data: Value) -> Request {
+pub(super) fn read(op: Operation, data: Value) -> Request {
     Request {
         op,
         workspace_id: Some("personal".into()),
@@ -208,15 +209,15 @@ fn read(op: Operation, data: Value) -> Request {
     }
 }
 
-async fn op(core: &Arc<Core>, op: Operation, data: Value) -> Result<Value> {
+pub(super) async fn op(core: &Arc<Core>, op: Operation, data: Value) -> Result<Value> {
     core.request(mutation(core, op, data)).await
 }
 
-fn slot(at: i64) -> i64 {
+pub(super) fn slot(at: i64) -> i64 {
     at / 600
 }
 
-fn default_root(core: &Core) -> PathBuf {
+pub(super) fn default_root(core: &Core) -> PathBuf {
     core.home
         .clone()
         .unwrap()
@@ -224,7 +225,7 @@ fn default_root(core: &Core) -> PathBuf {
         .join("Meetings")
 }
 
-fn folder_of(core: &Core, id: &str) -> PathBuf {
+pub(super) fn folder_of(core: &Core, id: &str) -> PathBuf {
     let m = meeting(core, id);
     let Some(folder) = m.folder.clone() else {
         let jobs = core.repo().unwrap().jobs().unwrap();
@@ -233,7 +234,7 @@ fn folder_of(core: &Core, id: &str) -> PathBuf {
     PathBuf::from(folder)
 }
 
-const FILES: [&str; 5] = [
+pub(super) const FILES: [&str; 5] = [
     "transcript.vtt",
     "transcript.md",
     "segments.json",
@@ -1322,7 +1323,7 @@ async fn snapshot_carries_the_meetings_root() {
 }
 
 /// Claims the one job due now and runs it.
-async fn run_one(core: &Arc<Core>) -> Job {
+pub(super) async fn run_one(core: &Arc<Core>) -> Job {
     let job = core.repo().unwrap().claim(now()).unwrap().unwrap();
     let id = job.id.clone();
     core.clone().run_claimed_job(job).await;
@@ -1809,7 +1810,27 @@ async fn settings_update_validates_meeting_settings() {
 /// Regenerate with `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
 #[tokio::test]
 async fn contract_fixtures_match_the_real_meetings() {
-    let e = env();
+    use crate::ai::stream::{AiError, ErrorClass, RunOutcome, Usage};
+    let e = env_with(Arc::new(FakeRunner::new(vec![
+        Ok(RunOutcome {
+            structured: Some(
+                json!({"notesMarkdown": "# Design critique\n\n## TL;DR\n- The demo is ready.",
+                "tasks": [{"title": "Send the notes", "owner": "Taylor Morgan", "due": "", "line": 3, "confidence": "high"}]}),
+            ),
+            text: String::new(),
+            usage: Usage::default(),
+            cost_usd: None,
+            duration_ms: 4000,
+            model: Some("claude-sonnet-4-5".into()),
+        }),
+        Err(AiError::new(ErrorClass::NeedsLogin)),
+    ])));
+    {
+        let mut r = e.core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.ai.default_profile = Some("claude".into());
+        r.settings_update(&s).unwrap();
+    }
     // downloaded: saved from Teams.
     put(&e.core, event("m-downloaded", SYNC, START, END, json!({})));
     teams(&e.graph, CREATED, VTT);
@@ -1893,6 +1914,38 @@ async fn contract_fixtures_match_the_real_meetings() {
     .await
     .unwrap();
     run_jobs(&e.core).await;
+    // ready: notes made with Meeting notes; failed: notes for another meeting stopped at a Claude
+    // sign-in.
+    for (id, title) in [
+        ("m-ready", "Design critique"),
+        ("m-failed", "Release 2.4 go/no-go"),
+    ] {
+        let join = format!("https://teams.microsoft.com/l/{id}");
+        let online = format!("ONLINE-{id}");
+        put(
+            &e.core,
+            event(id, title, START, END, json!({"joinUrl": join})),
+        );
+        e.graph
+            .answer(&lookup_url(&join), json!({"value": [{"id": online}]}));
+        e.graph.answer(
+            &list_url(&online),
+            json!({"value": [{"id": "t", "createdDateTime": CREATED}]}),
+        );
+        e.graph.answer_text(&content_url(&online, "t"), VTT);
+        op(&e.core, Operation::MeetingCheck, json!({"meetingId": id}))
+            .await
+            .unwrap();
+        run_jobs(&e.core).await;
+        op(
+            &e.core,
+            Operation::MeetingNotes,
+            json!({"meetingId": id, "templateId": "meeting-notes"}),
+        )
+        .await
+        .unwrap();
+        run_jobs(&e.core).await;
+    }
     // available: found in Teams, the save is waiting for the person (folder gone).
     put(
         &e.core,
@@ -1961,6 +2014,8 @@ async fn contract_fixtures_match_the_real_meetings() {
         "m-downloaded",
         "m-blocked",
         "m-none",
+        "m-ready",
+        "m-failed",
     ]
     .into_iter()
     .enumerate()
@@ -1978,7 +2033,11 @@ async fn contract_fixtures_match_the_real_meetings() {
         if d["checkedAt"].is_i64() {
             d["checkedAt"] = 1_795_000_400.into();
         }
-        if !matches!(id, "m-downloaded" | "m-available") {
+        for doc in d["docs"].as_array_mut().into_iter().flatten() {
+            doc["createdAt"] = 1_795_000_450.into();
+            doc["updatedAt"] = 1_795_000_450.into();
+        }
+        if !matches!(id, "m-downloaded" | "m-available" | "m-ready" | "m-failed") {
             d["start"] = "2026-11-04T09:00:00Z".into();
             d["end"] = "2026-11-04T09:30:00Z".into();
         }
@@ -1994,9 +2053,19 @@ async fn contract_fixtures_match_the_real_meetings() {
         .collect();
     assert_eq!(
         states,
-        vec!["pending", "available", "downloaded", "blocked", "none"]
+        vec![
+            "pending",
+            "available",
+            "downloaded",
+            "blocked",
+            "none",
+            "ready",
+            "failed"
+        ]
     );
     assert_eq!(records[1]["data"]["lastError"]["code"], "folder_unwritable");
+    assert_eq!(records[5]["data"]["docs"][0]["file"], "notes.md");
+    assert_eq!(records[6]["data"]["lastError"]["code"], "needs_login");
     crate::plugins::testkit::contract_fixture("meeting-records.json", &Value::Array(records));
     crate::plugins::testkit::contract_fixture("meeting-transcript.json", &transcript);
     crate::plugins::testkit::contract_fixture("meeting-files.json", &files);

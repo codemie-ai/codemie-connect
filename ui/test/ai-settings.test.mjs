@@ -38,8 +38,10 @@ test('ai_panel_renders_each_state', () => {
   const both = aiPanel(loaded('both'));
   assert.equal((both.match(/data-ai-profile="/g) || []).length, 3);
   assert.match(both, /select[^>]*name="ai-default"/);
-  for (const row of ['Mail replies', 'Teams replies', 'Summaries', 'Automations', 'Plugins']) assert.match(both, new RegExp(row));
-  assert.equal((both.match(/data-route="/g) || []).length, 10);
+  for (const row of ['Mail replies', 'Teams replies', 'Summaries', 'Automations', 'Plugins', 'Meeting notes']) assert.match(both, new RegExp(row));
+  assert.match(both, /Notes and summaries from transcripts\./);
+  assert.equal((both.match(/data-route="/g) || []).length, 12);
+  assert.match(both, /data-route="meeting"[^>]*data-field="profile"|data-field="profile"[^>]*data-route="meeting"/);
   assert.match(both, /id="ai-usage"/);
   assert.match(both, /estimate/i);
   assert.match(both, /The message text you draft from is sent to this provider\./);

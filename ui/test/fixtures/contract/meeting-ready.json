@@ -1,0 +1,62 @@
+{
+  "connectionId": "7f1c2a4e-0000-4000-8000-000000000001",
+  "data": {
+    "auto": null,
+    "checkedAt": 1795000400,
+    "docs": [
+      {
+        "auto": false,
+        "createdAt": 1795000500,
+        "edited": false,
+        "file": "notes.md",
+        "id": "meeting-notes",
+        "model": "claude-sonnet-4-5",
+        "name": "Meeting notes",
+        "profile": "claude",
+        "template": "meeting-notes",
+        "updatedAt": 1795000500,
+        "version": 1,
+        "versions": [],
+        "wishes": "focus on the pilot"
+      },
+      {
+        "auto": false,
+        "createdAt": 1795000560,
+        "edited": false,
+        "file": "notes.short-summary.md",
+        "id": "short-summary",
+        "model": "claude-sonnet-4-5",
+        "name": "Short summary",
+        "profile": "claude",
+        "template": "short-summary",
+        "updatedAt": 1795000560,
+        "version": 1,
+        "versions": [],
+        "wishes": null
+      }
+    ],
+    "end": "2026-11-04T14:30:00Z",
+    "error": null,
+    "eventId": "m-ready",
+    "external": "MSo1N2Y5ZGFj",
+    "folder": "/Users/taylor/CodeMie Connect/Meetings/2026-11-04_160426-philips-codemie-conversations-syncup",
+    "imported": null,
+    "lastError": null,
+    "main": "meeting-notes",
+    "speakers": {},
+    "start": "2026-11-04T14:00:00Z",
+    "state": "ready",
+    "template": null,
+    "title": "Philips CodeMie conversations syncup",
+    "transcriptIds": [
+      "t1"
+    ],
+    "transcriptStart": "2026-11-04T14:04:26Z"
+  },
+  "id": "m-ready",
+  "kind": "meeting",
+  "revision": "rev-ready",
+  "source": "calendar:cal-1",
+  "updatedAt": 1795000900,
+  "workspaceId": null
+}
