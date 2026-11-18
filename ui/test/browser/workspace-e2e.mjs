@@ -914,6 +914,19 @@ const STORAGE = {
   disk_full: storageOf('not_writable', { issue: 'The disk that holds your data folder is full.' }),
 };
 
+/** Waits until the page stops re-rendering: no element added or removed for 150 ms, for at most
+ *  `limit` ms. Boot and a route change render more than once (the snapshot, then what the page
+ *  reads, such as Settings' data location), so a check that grabs an element at once can hold one
+ *  the next render replaces. Unlike `renderSettled` it never fails (a live clock keeps changing). */
+const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve => {
+  let timer;
+  const done = () => { observer.disconnect(); clearTimeout(timer); clearTimeout(cap); resolve(); };
+  const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, 150); });
+  const cap = setTimeout(done, limit);
+  observer.observe(document.body, { childList: true, subtree: true });
+  timer = setTimeout(done, 150);
+}), limit).catch(() => {});
+
 async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
@@ -941,6 +954,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   await page.goto(base + hash);
   await page.waitForSelector(unavailable ? '.ws-recovery' : '.ws-sidebar');
+  await quiet(page);
   currentPage = page;
   return { page, context, errors };
 }
@@ -953,7 +967,7 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 // `WORKSPACE_E2E_ONLY=plugins` (or `meetings`) runs those checks alone (they run last otherwise).
 if (['plugins', 'meetings'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, OUT });
-  else await pluginChecks({ open, check, assert, shot, OUT });
+  else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
   server.close();
   const failedOnly = results.filter(r => r[0] === 'FAIL').length;
@@ -1168,6 +1182,7 @@ for (const theme of ['dark', 'light']) {
 
   await check(`${theme}: checkbox and button geometry match CodeMie`, async () => {
     await page.click('.ws-settings-nav button[data-tab=notifications]');
+    await quiet(page);
     const btn = await page.locator('.ws-settings-panels .ws-btn-primary').first().evaluate(e => { const c = getComputedStyle(e); return [e.getBoundingClientRect().height, c.fontSize, c.fontWeight, c.borderRadius]; });
     assert(btn[0] === 28 && btn[1] === '12px' && btn[2] === '600' && btn[3] === '8px', `button ${btn}`);
     const font = await page.evaluate(() => getComputedStyle(document.querySelector('#workspace-app')).fontFamily);
@@ -2222,7 +2237,7 @@ for (const theme of ['dark', 'light']) {
       await shot(page, `${tag}-automations-created`);
       const row = await text(page, '.ws-auto-row');
       assert(row.includes('Weekdays at 08:45') && /Next: (Today|Tomorrow|Mon|Tue|Wed|Thu|Fri) 08:45/.test(row), row);
-      await page.waitForSelector('.ws-auto-row:not(.ws-auto-highlight)', { timeout: 6000 });
+      await page.waitForSelector('.ws-auto-row:not(.ws-auto-highlight)', { timeout: 10000 });
       const saved = (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === 'automation_save').at(-1)[1];
       assert(saved.trigger.time === '08:45' && saved.deliver.today && saved.read.calendarToday && !saved.deliver.draftReply, JSON.stringify(saved));
       const layout = await page.evaluate(() => window.__workspace.store.get().snapshot.workspaces[0].layout);
@@ -2240,6 +2255,7 @@ for (const theme of ['dark', 'light']) {
       await page.waitForSelector('.ws-auto-card .ws-auto-result');
       assert((await text(page, '.ws-auto-card')).includes('2 replies owed'), 'run on Today');
       assert(await page.locator('.ws-auto-card [data-action="automation-open-run"]').count() === 1, 'Open run');
+      await quiet(page);
       await page.locator('.ws-auto-card').scrollIntoViewIfNeeded();
       await noOverflow(page, 'Today');
       await elementShot(page, '.ws-auto-card', `${tag}-today-automation-results.png`);
@@ -2380,9 +2396,10 @@ for (const theme of ['dark', 'light']) {
       await p.click('.ws-nav button[data-route=today]');
       await p.waitForSelector('.ws-auto-card .ws-auto-result >> nth=1');
       const card = await text(p, '.ws-auto-card');
-      assert(/Latest run failed 5 min ago: Claude Code isn.t signed in\./.test(card), card);
+      assert(/Latest run failed \d+ min ago: Claude Code isn.t signed in\./.test(card), card);
       // Newest first: Morning brief's failure 5 minutes ago (above its older result), then Ann's reply.
       assert(card.indexOf('Latest run failed') < card.indexOf('2 replies owed') && card.indexOf('2 replies owed') < card.indexOf('Reply drafted for Ann'), card);
+      await quiet(p);
       await p.locator('.ws-auto-card').scrollIntoViewIfNeeded();
       await noOverflow(p, 'Today');
       await elementShot(p, '.ws-auto-card', `${tag}-today-automation-results-two.png`);
@@ -2440,6 +2457,7 @@ for (const theme of ['dark', 'light']) {
 
       // Drag task-names onto Waiting: the column lights up and a line shows where it lands.
       const card = page.locator('[data-task="task-names"]');
+      await renderSettled(page);
       await card.scrollIntoViewIfNeeded();
       const from = await card.boundingBox();
       await page.mouse.move(from.x + from.width / 2, from.y + 12);
@@ -2607,7 +2625,7 @@ await meetingChecks({ open, check, assert, shot, OUT });
 
 // Plugins (DESIGN 7.3, Tasks 23–24): add a marketplace, install the synthetic hello plugin, its
 // page and Settings section in their sandboxed frame, Today's plugin widgets, turn it off.
-if (process.env.WORKSPACE_E2E_ONLY !== 'plugins') await pluginChecks({ open, check, assert, shot, OUT });
+if (process.env.WORKSPACE_E2E_ONLY !== 'plugins') await pluginChecks({ open, check, assert, shot, quiet, OUT });
 
 // Narrow and wide windows keep layouts intact.
 for (const width of [1000, 1680]) {

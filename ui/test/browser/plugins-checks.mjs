@@ -22,7 +22,7 @@ export function pluginRecords(nowMs) {
   ];
 }
 
-export async function pluginChecks({ open, check, assert, shot }) {
+export async function pluginChecks({ open, check, assert, shot, quiet }) {
   const settle = page => page.waitForTimeout(250);
   const noOverflow = async (page, what) => {
     const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-settings-panels')].map(el => el.scrollWidth - el.clientWidth)));
@@ -185,6 +185,8 @@ export async function pluginChecks({ open, check, assert, shot }) {
       await page.waitForSelector('[data-widget="plugin:hello:board"] .ws-pw-page:has-text("Drawn in its frame")');
       assert(await page.locator('[data-widget="plugin:hello:board"] img').count() === 0, 'the drawn HTML is shown as text');
       assert(await page.evaluate(() => !window.__pwned), 'nothing a plugin gave ran');
+      // The frames' widget text arrives in more than one render.
+      await quiet(page);
       await page.locator('.ws-plugins-card').scrollIntoViewIfNeeded();
       await settle(page);
       await shot(page, `plugins-${tag}-today`);
@@ -213,6 +215,7 @@ export async function pluginChecks({ open, check, assert, shot }) {
         await page.click('.ws-nav button[data-route=today]');
         await page.waitForSelector('.ws-plugins-card');
         await noOverflow(page, `Today ${width}`);
+        await quiet(page);
         await page.locator('.ws-plugins-card').scrollIntoViewIfNeeded();
         await settle(page);
         await shot(page, `plugins-${theme}-${width}-today`);
