@@ -424,7 +424,8 @@ impl Core {
             }
         });
     }
-    /// One round of the background loop: due schedules, ready jobs, the periodic sync.
+    /// One round of the background loop: due schedules, ready jobs, the periodic sync (see
+    /// [`sync_interval`]).
     fn background_round(self: &Arc<Self>, last_sync: &mut i64, ticks: &mut u64) {
         let _ = self.materialize_schedules();
         if ticks.is_multiple_of(automations::ROUND_TICKS) {
@@ -461,7 +462,8 @@ impl Core {
             .and_then(|a| a.get_webview_window("main"))
             .and_then(|w| w.is_visible().ok())
             .unwrap_or(false);
-        if now() - *last_sync > if visible { 60 } else { 300 } {
+        if now() - *last_sync > sync_interval(self.repo().and_then(|r| r.settings()).ok(), visible)
+        {
             *last_sync = now();
             let _ = self.queue_sync();
         }
@@ -1285,6 +1287,15 @@ impl Core {
                 r.clear_cursor_prefix(cid, "chat:")?;
             }
         }
+        if let Some(min) = data["syncEveryMin"].as_i64() {
+            if !SYNC_EVERY_MIN.contains(&min) {
+                return Err(WorkspaceError::new(
+                    "validation",
+                    "Choose a supported sync interval.",
+                ));
+            }
+            s.sync_every_min = min;
+        }
         if let Some(v) = data["notifications"].as_bool() {
             if v && !matches!(s.notification_permission.as_str(), "granted" | "os_managed") {
                 return Err(WorkspaceError::new(
@@ -1965,6 +1976,18 @@ fn valid_color(v: &str) -> Result<String> {
         ))
     }
 }
+/// The background sync intervals Settings › Microsoft 365 offers, in minutes.
+const SYNC_EVERY_MIN: [i64; 5] = [1, 2, 5, 15, 30];
+/// Seconds between background syncs: the setting while the window is open, and never more often
+/// than every five minutes while it is hidden.
+fn sync_interval(settings: Option<Settings>, visible: bool) -> i64 {
+    let every = settings.map_or(1, |s| s.sync_every_min).clamp(1, 30) * 60;
+    if visible {
+        every
+    } else {
+        every.max(300)
+    }
+}
 /// Read capabilities requested when sign-in names none: everything a workspace shows.
 const DEFAULT_CAPABILITIES: &[&str] = &["calendar", "mail", "chats"];
 fn connect_capabilities(data: &Value) -> Result<Vec<String>> {
@@ -2212,6 +2235,44 @@ mod tests {
     use super::paths::tests::{custom_root, open_test, synthetic_credential};
     use super::*;
     use crate::workspace::ai::tests::{mutation, ready};
+
+    #[test]
+    fn background_sync_follows_the_setting_and_slows_when_hidden() {
+        let every = |min: i64| Settings {
+            sync_every_min: min,
+            ..Default::default()
+        };
+        assert_eq!(Settings::default().sync_every_min, 1);
+        assert_eq!(sync_interval(None, true), 60);
+        assert_eq!(sync_interval(Some(every(1)), true), 60);
+        assert_eq!(sync_interval(Some(every(1)), false), 300);
+        assert_eq!(sync_interval(Some(every(15)), true), 900);
+        assert_eq!(sync_interval(Some(every(15)), false), 900);
+        // Settings written before the field existed read as every minute.
+        let old: Settings = serde_json::from_str(r#"{"syncDays":7}"#).unwrap();
+        assert_eq!(sync_interval(Some(old), true), 60);
+    }
+
+    #[tokio::test]
+    async fn settings_update_takes_a_supported_sync_interval_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ready(),
+        );
+        let set = |min: i64| {
+            mutation(
+                &core,
+                Operation::SettingsUpdate,
+                json!({ "syncEveryMin": min }),
+            )
+        };
+        core.request(set(5)).await.unwrap();
+        assert_eq!(core.repo().unwrap().settings().unwrap().sync_every_min, 5);
+        assert_eq!(core.request(set(3)).await.unwrap_err().code, "validation");
+        assert_eq!(core.repo().unwrap().settings().unwrap().sync_every_min, 5);
+    }
 
     #[tokio::test]
     async fn credentials_stay_in_private_root_with_custom_data_root() {

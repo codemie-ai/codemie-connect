@@ -210,6 +210,8 @@ pub struct Settings {
     pub launch_at_login: bool,
     pub critical_repeat: bool,
     pub sync_days: i64,
+    /// Minutes between background syncs while the window is open (Settings › Microsoft 365).
+    pub sync_every_min: i64,
     pub notifications: bool,
     pub notification_preview: bool,
     pub quiet_start: String,
@@ -233,6 +235,7 @@ impl Default for Settings {
             launch_at_login: false,
             critical_repeat: true,
             sync_days: 30,
+            sync_every_min: 1,
             notifications: false,
             notification_preview: false,
             quiet_start: "22:00".into(),

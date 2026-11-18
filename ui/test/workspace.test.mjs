@@ -434,6 +434,30 @@ test('old_ai_pin_controls_are_gone', async () => {
   assert.ok(!REBASE_SAFE.has('ai_test'));
 });
 
+test('background syncs stay quiet; a sync you start shows; the interval is a setting, every minute by default', () => {
+  const s = buildSnapshot(Date.now());
+  s.connection.lastSync = Math.floor(Date.now() / 1000) - 30;
+  const sync = (force, state = 'running') => ({ id: `sync-${force}`, kind: 'sync', state, dueAt: 0, payload: { force } });
+  const shell = () => renderShell({ snapshot: s, route: 'today', resolvedDark: false });
+  const microsoft = () => settings(s, ctx({ settingsTab: 'microsoft' }));
+  s.jobs = [sync(false)];
+  assert.doesNotMatch(shell(), /Syncing…/, 'a background round is quiet');
+  assert.match(microsoft(), /data-action="sync"[^>]*>[^]*?Sync now/, 'Sync now stays available');
+  s.jobs = [sync(true, 'queued')];
+  assert.match(shell(), /Syncing…/, 'Sync now shows');
+  assert.match(microsoft(), /Syncing…/);
+  s.connection.lastSync = null;
+  s.jobs = [sync(false)];
+  assert.match(shell(), /Syncing…/, 'the very first sync shows');
+  s.jobs = [];
+  delete s.settings.syncEveryMin;
+  const html = microsoft();
+  assert.match(html, /Check for new mail and chats/);
+  assert.match(html, /<option value="1" selected>Every minute \(default\)<\/option>/);
+  s.settings.syncEveryMin = 15;
+  assert.match(microsoft(), /<option value="15" selected>Every 15 minutes<\/option>/);
+});
+
 test('Settings shows the account profile and automatic sources, no source picker', () => {
   const s = buildSnapshot(Date.now());
   const html = settings(s, ctx({ settingsTab: 'microsoft' }));

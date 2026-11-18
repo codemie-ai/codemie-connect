@@ -136,6 +136,11 @@ export function savedReply(s, m) {
 }
 
 export const syncRunning = s => s.jobs.some(j => j.kind === 'sync' && ['queued', 'running'].includes(j.state));
+/** The sync the header and Settings show: one the person started (Sync now, sign-in, a sources
+ *  change: `force`) or the very first. The background rounds every few minutes stay quiet. */
+export const syncShown = s => s.jobs.some(j => j.kind === 'sync' && ['queued', 'running'].includes(j.state) && (j.payload?.force === true || !s.connection?.lastSync));
+/** Settings › Microsoft 365 › Check for new mail and chats: [minutes, label] (mod.rs `SYNC_EVERY_MIN`). */
+export const SYNC_EVERY = [[1, 'Every minute (default)'], [2, 'Every 2 minutes'], [5, 'Every 5 minutes'], [15, 'Every 15 minutes'], [30, 'Every 30 minutes']];
 
 /**
  * Microsoft connection state for the active workspace:

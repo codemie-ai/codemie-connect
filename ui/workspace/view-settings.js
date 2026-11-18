@@ -2,7 +2,7 @@
 import { escapeHtml as e } from './store.js';
 import { icon, microsoftLogo, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, badge, button, card, emptyState, field, select, settingRow, toggle, textInput, spinner } from './ui.js';
-import { records, syncRunning, sourceCounts, chatCatalog, connectionState, tasksDueJob } from './selectors.js';
+import { records, syncShown, SYNC_EVERY, sourceCounts, chatCatalog, connectionState, tasksDueJob } from './selectors.js';
 import { calendarCatalog } from './calendar-model.js';
 import { formatDateTime, agoLabel } from './format.js';
 import { aiPanel } from './settings-ai.js';
@@ -156,7 +156,7 @@ function microsoftPanel(s, auth) {
   const counts = sourceCounts(s);
   const calendars = calendarCatalog(s);
   const chats = chatCatalog(s);
-  const running = syncRunning(s);
+  const running = syncShown(s);
   const needsLogin = c.status !== 'connected';
   const subtitle = [c.jobTitle, c.department].filter(Boolean).join(' · ');
   const status = needsLogin ? badge('Sign in again', 'warning', 'alert') : running ? badge('Syncing', 'info', 'refresh') : badge('Connected', 'success', 'check');
@@ -184,7 +184,8 @@ function microsoftPanel(s, auth) {
       ${sourceRow(outlookGlyph, 'Outlook', `Inbox and Sent · ${counts.mail} messages`, c.enabled.includes('mail'))}
       ${sourceRow(teamsGlyph, 'Teams', chats.length ? `${chats.length} recent chats · ${counts.chat} messages` : 'Discovering chats…', c.enabled.includes('chats'))}
     </div>
-    ${settingRow({ title: 'Message history', text: 'How far back Outlook and Teams are read on first sync.', control: select([[1, '1 day'], [7, '7 days'], [30, '30 days'], [90, '90 days']], s.settings.syncDays, { 'data-action': 'sync-days', 'aria-label': 'Message history' }) })}`,
+    ${settingRow({ title: 'Message history', text: 'How far back Outlook and Teams are read on first sync.', control: select([[1, '1 day'], [7, '7 days'], [30, '30 days'], [90, '90 days']], s.settings.syncDays, { 'data-action': 'sync-days', 'aria-label': 'Message history' }) })}
+    ${settingRow({ title: 'Check for new mail and chats', text: 'In the background, without a Syncing badge. A hidden window checks at most every 5 minutes; calendars refresh every 5 minutes.', control: select(SYNC_EVERY, s.settings.syncEveryMin || 1, { 'data-action': 'sync-every', 'aria-label': 'Check for new mail and chats' }) })}`,
   });
   const permissions = card({
     title: 'Allow actions', iconName: 'shield',

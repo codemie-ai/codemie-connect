@@ -1483,6 +1483,7 @@ async function handle(action, el) {
     }
     case 'sync': await mutate('sync_request'); return;
     case 'sync-days': return mutate('settings_update', { syncDays: Number(el.value) });
+    case 'sync-every': return mutate('settings_update', { syncEveryMin: Number(el.value) });
 
     // Appearance & settings
     case 'theme': return mutate('settings_update', { theme: el.dataset.theme });

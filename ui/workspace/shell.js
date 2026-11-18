@@ -2,7 +2,7 @@
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { avatar, button } from './ui.js';
-import { active, attentionMessages, decisions, syncRunning } from './selectors.js';
+import { active, attentionMessages, decisions, syncShown } from './selectors.js';
 import { agoLabel } from './format.js';
 import { taskStatus } from './tasks-model.js';
 import { meetingCounts } from './meetings-model.js';
@@ -13,7 +13,7 @@ export function syncStatus(s) {
   const c = s.connection;
   if (!c || c.status === 'disconnected') return `<button type="button" class="ws-sync-pill" data-action="settings-tab" data-tab="microsoft">${icon('link')}<span>Connect Microsoft 365</span></button>`;
   if (c.status !== 'connected') return `<button type="button" class="ws-sync-pill ws-warn" data-action="settings-tab" data-tab="microsoft">${icon('alert')}<span>Sign in again</span></button>`;
-  if (syncRunning(s)) return `<span class="ws-sync-pill">${icon('refresh', 'ws-spin')}<span>Syncing…</span></span>`;
+  if (syncShown(s)) return `<span class="ws-sync-pill">${icon('refresh', 'ws-spin')}<span>Syncing…</span></span>`;
   if (c.syncError) return `<button type="button" class="ws-sync-pill ws-warn" data-action="settings-tab" data-tab="microsoft" title="${e(c.syncError)}">${icon('alert')}<span>Partly synced</span></button>`;
   return `<span class="ws-sync-pill" title="Microsoft 365">${icon('check-circle')}<span>${c.lastSync ? `Synced ${e(agoLabel(c.lastSync, s.settings.timeZone))}` : 'Connected'}</span></span>`;
 }

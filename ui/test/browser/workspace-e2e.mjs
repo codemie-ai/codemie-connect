@@ -1426,6 +1426,19 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('[data-key=criticalRepeat]').isChecked() !== before, 'setting did not persist after the sync');
   });
 
+  await check(`${theme}: Microsoft 365 › how often to check, every minute by default`, async () => {
+    await page.click('.ws-nav button[data-route=settings]');
+    await page.click('.ws-settings-nav button[data-tab=microsoft]');
+    const every = page.locator('select[data-action="sync-every"]');
+    assert(await every.inputValue() === '1', `default ${await every.inputValue()}`);
+    assert(/Every minute \(default\)/.test(await every.locator('option:checked').innerText()), 'the default is named');
+    await every.selectOption('5');
+    await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'settings_update' && d.syncEveryMin === 5));
+    await page.waitForFunction(() => document.querySelector('select[data-action="sync-every"]')?.value === '5');
+    await page.locator('select[data-action="sync-every"]').selectOption('1');
+    await page.waitForFunction(() => document.querySelector('select[data-action="sync-every"]')?.value === '1');
+  });
+
   await check(`${theme}: settings claude page`, async () => {
     await page.click('.ws-nav button[data-route=settings]');
     await page.click('.ws-settings-nav button[data-tab=ai]');
