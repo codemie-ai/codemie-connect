@@ -4,6 +4,8 @@ Status: **postponed from Milestone 2** by the owner (2026-11-17); the owner cont
 
 Milestone 2 builds what Knowledge depends on: the Echo-compatible plugin host, the Claude profiles and runner, and the data folder. See [DESIGN.md](DESIGN.md) and [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
+**Follow-up:** [KNOWLEDGE-PLUGIN-FEASIBILITY.md](KNOWLEDGE-PLUGIN-FEASIBILITY.md) asks whether the whole engine can move into the plugin. Short answer: yes, but only once both apps give plugins six generic primitives. It includes a QuickJS benchmark. If that route is taken, §9 below changes: the engine would be ported to plugin JavaScript, not into Connect. The exact API both apps would add is in [SHARED-HOST-API.md](SHARED-HOST-API.md).
+
 ## 1. What the Knowledge plugin is
 
 - **Pinned sources (both local only, not pushed):**
