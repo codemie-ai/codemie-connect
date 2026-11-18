@@ -1270,3 +1270,118 @@ async fn knowledge_reads_a_web_page_from_the_address_typed_in_connects_box() {
         "{said}"
     );
 }
+
+/// Knowledge over a real vault the developer names (`KN_MY_VAULT`, a copy: Knowledge may write its
+/// index there). Prints counts and timings only, never a page's title or text. Run by hand:
+/// `KN_MY_VAULT=<copy> cargo test --test echo_plugins my_vault -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore]
+async fn my_vault_reads_in_connect() {
+    let (Some(dir), Ok(vault)) = (published(), std::env::var("KN_MY_VAULT")) else {
+        return;
+    };
+    let c = Connect::start(&dir, &[&described()]).await;
+    c.picker.next(Path::new(&vault));
+    let timed =
+        |what: &str, t: std::time::Instant| println!("{what}: {} ms", t.elapsed().as_millis());
+    let t = std::time::Instant::now();
+    let id = c.call("obsidian", "add", json!({"wait": true})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    timed("add (walk, survey, description)", t);
+    let t = std::time::Instant::now();
+    let kn = c.call("obsidian", "kn", json!({"id": id})).await;
+    timed("kn", t);
+    let v = &kn["vaults"][0];
+    println!(
+        "vault: available={} read_only={} pages={} notes={} in_git={} is_vault={}",
+        v["available"],
+        !v["read_only"].is_null(),
+        v["pages"],
+        v["notes"],
+        v["in_git"],
+        v["is_vault"]
+    );
+    let t = std::time::Instant::now();
+    let tree = c.call("obsidian", "tree", json!({"id": id})).await;
+    timed("tree", t);
+    let pages = tree["pages"].as_array().map_or(0, Vec::len);
+    println!("tree: {pages} pages");
+    if let Some(first) = tree["pages"].as_array().and_then(|p| p.first()) {
+        let t = std::time::Instant::now();
+        let page = c
+            .manager
+            .call("obsidian", "page", json!({"id": id, "path": first["path"]}))
+            .await;
+        timed("page (first)", t);
+        match page {
+            Ok(p) => println!(
+                "page: html {} bytes, editable={}",
+                p["html"].as_str().map_or(0, str::len),
+                p["editable"]
+            ),
+            Err(e) => println!("page: ERR {}", e.code.as_str()),
+        }
+        let t = std::time::Instant::now();
+        let h = c
+            .manager
+            .call(
+                "obsidian",
+                "history",
+                json!({"id": id, "path": first["path"]}),
+            )
+            .await;
+        timed("history (first)", t);
+        println!(
+            "history: {} versions",
+            h.ok()
+                .and_then(|h| h["versions"].as_array().map(Vec::len))
+                .unwrap_or(0)
+        );
+    }
+    let t = std::time::Instant::now();
+    let graph = c
+        .call("obsidian", "graph", json!({"id": id, "mode": "links"}))
+        .await;
+    timed("graph", t);
+    println!(
+        "graph: {} nodes, {} edges",
+        graph["nodes"].as_array().map_or(0, Vec::len),
+        graph["edges"].as_array().map_or(0, Vec::len)
+    );
+    let t = std::time::Instant::now();
+    let health = c.call("obsidian", "health", json!({"id": id})).await;
+    timed("health", t);
+    let mut kinds = std::collections::BTreeMap::new();
+    for f in health["findings"].as_array().into_iter().flatten() {
+        *kinds
+            .entry(f["kind"].as_str().unwrap_or("?").to_string())
+            .or_insert(0) += 1;
+    }
+    println!(
+        "health: score {} findings {kinds:?}",
+        health["score"]["total"]
+    );
+    let t = std::time::Instant::now();
+    let found = c
+        .call("obsidian", "find", json!({"id": id, "q": "the"}))
+        .await;
+    timed("find", t);
+    println!(
+        "find: {} hits",
+        found["hits"].as_array().map_or(0, Vec::len)
+    );
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        c.call("obsidian", "rev", json!({"id": id})).await;
+        timed("rev (the 2 s poll)", t);
+    }
+    let problems: Vec<String> = lines_of("obsidian")
+        .into_iter()
+        .filter(|l| l.contains("not available") || l.contains("unsupported"))
+        .collect();
+    println!("unsupported calls: {}", problems.len());
+    assert!(problems.is_empty(), "{problems:?}");
+    assert!(c.sent().is_empty());
+}
