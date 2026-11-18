@@ -238,11 +238,12 @@ fn lines_of(id: &str) -> Vec<String> {
     lines.iter().filter(|l| l.contains(&tag)).cloned().collect()
 }
 
-/// Copies a marketplace folder, leaving out hidden entries (`.git`).
+/// Copies a marketplace folder, leaving out its git repository (`.git`); the plugins' own hidden
+/// files (Knowledge's starter `.claude/skills`, `.obsidian`) come along, as a clone has them.
 fn copy_market(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap().flatten() {
-        if entry.file_name().to_string_lossy().starts_with('.') {
+        if entry.file_name() == ".git" {
             continue;
         }
         let target = to.join(entry.file_name());
@@ -1025,6 +1026,138 @@ async fn knowledge_writes_pages_with_git_history_and_takes_picked_files() {
             .lines()
             .all(|l| l.ends_with("topics/Beta.md") || l.contains("CATALOG.md")),
         "{dirty}"
+    );
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
+}
+
+#[tokio::test]
+async fn knowledge_asks_claude_in_the_vault_and_in_a_copy_of_it() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let lint = json!({"findings": [{"kind": "contradiction", "title": "Two launch dates",
+        "note": "The topic and the brief disagree.",
+        "pages": [{"path": "knowledge/topics/Atlas.md", "line": 3, "quote": "The Atlas launch is in June."}]}]})
+    .to_string();
+    let c = Connect::start(&dir, &[&described(), &lint, "Ingested the brief."]).await;
+    // Claude, when it may edit, changes a page in the folder it was started in and says why.
+    c.runner.on_run(|spec| {
+        let Some(f) = spec.folder.as_ref().filter(|f| f.edit) else {
+            return;
+        };
+        std::fs::write(
+            f.dir.join("knowledge/topics/Atlas.md"),
+            "# Atlas\n\nThe Atlas launch is in May.\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(f.dir.join(".echo-ingest")).unwrap();
+        let notes = json!({"changes": [{"path": "knowledge/topics/Atlas.md", "why": "The brief dates the launch",
+            "quotes": [{"source": "raw_inbox/Brief.md", "text": "The Atlas launch is in May."}]}]});
+        std::fs::write(f.dir.join(".echo-ingest/changes.json"), notes.to_string()).unwrap();
+    });
+    let folder = c.tmp.path().join("My Twin");
+    std::fs::create_dir_all(&folder).unwrap();
+    c.picker.next(&folder);
+    let made = c
+        .call(
+            "obsidian",
+            "new_vault",
+            json!({"name": "My Twin", "git": true, "minutes": "auto"}),
+        )
+        .await;
+    let id = made["id"].as_str().unwrap().to_string();
+    let root = Path::new(made["root"].as_str().unwrap()).to_path_buf();
+    // The starter's own skills are in the vault (the package's hidden files reach it).
+    assert!(root.join(".claude/skills/process-inbox/SKILL.md").is_file());
+    let atlas = root.join("knowledge/topics/Atlas.md");
+    std::fs::write(&atlas, "# Atlas\n\nThe Atlas launch is in June.\n").unwrap();
+
+    // AI checks: read tools in the vault itself; the finding is kept.
+    let lint = c
+        .call("obsidian", "lint", json!({"id": id, "wait": true}))
+        .await;
+    assert_eq!(lint["state"], "done", "{lint}");
+    assert_eq!(lint["kept"], 1, "{lint}");
+    let health = c.call("obsidian", "health", json!({"id": id})).await;
+    assert!(
+        health["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["kind"] == "contradiction"),
+        "{health}"
+    );
+
+    // Ingest: the file the user added is run through the vault's skill in a copy; the change
+    // waits for review, and only what is approved reaches the vault.
+    let brief = c.tmp.path().join("Brief.md");
+    std::fs::write(&brief, "# Brief\n\nThe Atlas launch is in May.\n").unwrap();
+    c.picker.next_files(&[&brief]);
+    c.call("obsidian", "source_add", json!({"id": id, "kind": "files"}))
+        .await;
+    let run = c
+        .call("obsidian", "ingest_go", json!({"id": id, "wait": true}))
+        .await;
+    assert_eq!(run["state"], "review", "{run}");
+    assert_eq!(run["skill"], "process-inbox");
+    let run_id = run["run"].clone();
+    assert_eq!(
+        std::fs::read_to_string(&atlas).unwrap(),
+        "# Atlas\n\nThe Atlas launch is in June.\n",
+        "nothing reaches the vault before review"
+    );
+    let changes = c
+        .call(
+            "obsidian",
+            "ingest_changes",
+            json!({"id": id, "run": run_id}),
+        )
+        .await;
+    assert_eq!(changes["changes"][0]["path"], "knowledge/topics/Atlas.md");
+    assert_eq!(changes["changes"][0]["invented"], 0, "{changes}");
+    c.call(
+        "obsidian",
+        "change",
+        json!({"id": id, "run": run_id, "path": "knowledge/topics/Atlas.md", "decision": "approve"}),
+    )
+    .await;
+    let applied = c
+        .call("obsidian", "ingest_apply", json!({"id": id, "run": run_id}))
+        .await;
+    assert_eq!(
+        applied["written"],
+        json!(["knowledge/topics/Atlas.md"]),
+        "{applied}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&atlas).unwrap(),
+        "# Atlas\n\nThe Atlas launch is in May.\n"
+    );
+
+    // Three runs: the description tool-free, the checks with read tools, Ingest with edit tools
+    // in a copy that is gone afterwards.
+    let tools: Vec<Option<String>> = c
+        .runs()
+        .iter()
+        .map(|(_, args)| tools_of(args).map(str::to_string))
+        .collect();
+    assert_eq!(
+        tools,
+        [
+            Some(String::new()),
+            Some("Read,Grep,Glob,Skill".into()),
+            Some("Read,Grep,Glob,Skill,Edit,Write".into())
+        ]
+    );
+    let snapshots = c
+        .core
+        .paths
+        .data
+        .join("plugins/data/obsidian/store/cache/snapshots");
+    assert_eq!(
+        std::fs::read_dir(&snapshots).map_or(0, |d| d.count()),
+        0,
+        "the run's copy was removed"
     );
     assert!(c.sent().is_empty(), "{:?}", c.sent());
 }

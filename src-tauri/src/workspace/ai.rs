@@ -311,6 +311,7 @@ impl Core {
             timeout: TEST_TIMEOUT,
             cap_usd: None,
             staging_root: self.paths.ensure_staging()?,
+            folder: None,
         };
         let started = std::time::Instant::now();
         let ledger_spec = spec.clone();
@@ -655,6 +656,7 @@ pub(super) mod tests {
                 timeout: Duration::from_secs(1),
                 cap_usd: None,
                 staging_root: dir.path().join("s"),
+                folder: None,
             };
             let before: Vec<String> = core
                 .repo()

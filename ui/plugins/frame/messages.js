@@ -9,6 +9,7 @@
 //                                       `files`: ids of handles the user gave it, for `fn(args, {files})`
 //                 {method: 'storage', items}                   the localStorage stand-in, saved
 //                 {method: 'reveal', root, path}               ctx.system.reveal, on the user's click
+//                 {method: 'session', folder, path, mode, profile}   ctx.claude.session, on the user's click
 //                                       (the window answers only for the frame on screen)
 //   event         {type: 'go', hash, replace} {type: 'notice', text} {type: 'copy', text}
 //                 {type: 'open', url}   a link the user clicked (or window.open): the window asks
@@ -81,6 +82,10 @@ export function checkFromFrame(m) {
       if (m.method === 'storage') {
         return exactly(m, ['v', 'id', 'kind', 'method', 'items']) && isObject(m.items)
           && Object.values(m.items).every(x => typeof x === 'string') && jsonSize(m.items) <= MAX_JSON ? m : null;
+      }
+      if (m.method === 'session') {
+        return exactly(m, ['v', 'id', 'kind', 'method', 'folder', 'path', 'mode', 'profile']) && text(m.folder, PATH) && m.folder !== ''
+          && text(m.path, PATH) && ['', 'read', 'edit'].includes(m.mode) && text(m.profile, NAME) ? m : null;
       }
       if (m.method === 'reveal') {
         return exactly(m, ['v', 'id', 'kind', 'method', 'root', 'path']) && text(m.root, PATH) && m.root !== '' && text(m.path, PATH) ? m : null;

@@ -330,6 +330,7 @@ impl Core {
             timeout: DRAFT_TIMEOUT,
             cap_usd: None,
             staging_root: self.paths.ensure_staging()?,
+            folder: None,
         };
         let requested_model = spec.model.clone();
         let (outcome, (text, questions)) = self
@@ -393,6 +394,7 @@ impl Core {
             timeout: SUMMARY_TIMEOUT,
             cap_usd: None,
             staging_root: self.paths.ensure_staging()?,
+            folder: None,
         };
         let requested_model = spec.model.clone();
         let (outcome, (text, asks)) = self

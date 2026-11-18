@@ -1,18 +1,115 @@
-//! `ctx.claude.run({prompt, title, profile, model, tools, dir, timeout})` (PLUGIN-ENGINE.md §4.4,
-//! DESIGN 7.2): always tool-free in Connect, whatever `tools` says (it is recorded), on the
-//! user's own profiles only (the one named, else the `plugin` route). The run is an `ai_run` of
-//! purpose `plugin`. With `dir`, its prompt and answer are kept in the plugin's store there
-//! (`prompt.md`, `answer.md`), as Echo keeps them. `timeout` is in minutes: 20 by default, 1–20.
+//! `ctx.claude.run({prompt, title, profile, model, tools, dir, timeout, key, folder, path, mode,
+//! exclude})` and `ctx.claude.stop(key)` (PLUGIN-ENGINE.md §4.4, Echo 0.10), on the user's own
+//! profiles only (the one named, else the `plugin` route). The run is an `ai_run` of purpose
+//! `plugin`. With `dir`, its prompt and answer are kept in the plugin's store there (`prompt.md`,
+//! `answer.md`), as Echo keeps them. `timeout` is in minutes: 20 by default, 1–60.
+//!
+//! Without `folder` a run is tool-free, whatever `tools` says (it is recorded). With `folder` (a
+//! folder the user gave the plugin, `path` a folder in it) Claude works there, with the folder's
+//! own CLAUDE.md and skills and never its hooks, the web, a terminal or an MCP server:
+//! - `mode: 'read'` (the default): read tools only;
+//! - `mode: 'edit'`: edit tools in the folder itself (needs `folders.write`);
+//! - `mode: 'copy'`: edit tools in a copy in the plugin's store (`snapshot`), answered as
+//!   `snapshot: {path, files, bytes, skipped, why}`; a run that fails removes its copy.
+//!
+//! A folder whose `.claude/settings*.json` could send the run elsewhere (`env`, `apiKeyHelper`…)
+//! is refused. One run per `key` at a time; `claude.stop(key)` stops it, and it fails `stopped`.
 use super::store::{inside, root};
-use super::{bad, Granted, Services};
+use super::{bad, fs, lock, snapshot, Granted, Services};
+use crate::ai::command::FolderRun;
 use crate::ai::stream::{AiError, ErrorClass};
 use crate::plugins::host::{ErrorCode, HostError};
 use crate::workspace::plugin_data::PluginRun;
 use serde_json::Value;
+use std::path::Path;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 const MAX_PROMPT: usize = 200_000;
-const MAX_MINUTES: u64 = 20;
+const DEFAULT_MINUTES: u64 = 20;
+const MAX_MINUTES: u64 = 60;
+/// Settings a folder's own `.claude/settings*.json` may not have: each can send a run elsewhere.
+const REDIRECTING: [&str; 5] = [
+    "env",
+    "apiKeyHelper",
+    "awsAuthRefresh",
+    "awsCredentialExport",
+    "otelHeadersHelper",
+];
+
+/// The runs going on under a key, by plugin and key (lowercase): their stop tokens.
+#[derive(Default)]
+pub struct Keyed(std::collections::HashMap<(String, String), CancellationToken>);
+
+/// Holds a key while its run lasts.
+struct KeyHold<'a> {
+    s: &'a Services,
+    slot: (String, String),
+}
+
+impl Drop for KeyHold<'_> {
+    fn drop(&mut self) {
+        lock(&self.s.runs).0.remove(&self.slot);
+    }
+}
+
+fn claim<'a>(
+    s: &'a Services,
+    plugin: &str,
+    key: &str,
+    token: &CancellationToken,
+) -> Result<KeyHold<'a>, HostError> {
+    let slot = (plugin.to_string(), key.to_lowercase());
+    let mut runs = lock(&s.runs);
+    if runs.0.contains_key(&slot) {
+        return Err(bad(format!(
+            "the run's key is busy: a run with key “{key}” is running already"
+        )));
+    }
+    runs.0.insert(slot.clone(), token.clone());
+    Ok(KeyHold { s, slot })
+}
+
+/// `claude.stop(key)`: stops the plugin's run under `key`; whether one was running.
+pub fn stop(s: &Services, p: &Granted, key: &str) -> Result<Value, HostError> {
+    p.needs("claude", "ask Claude")?;
+    let slot = (p.id.clone(), key.to_lowercase());
+    Ok(match lock(&s.runs).0.get(&slot) {
+        Some(token) => {
+            token.cancel();
+            Value::Bool(true)
+        }
+        None => Value::Bool(false),
+    })
+}
+
+/// The folder's own Claude settings refuse it when they could send the run elsewhere.
+pub(crate) fn refuse_redirecting(dir: &Path) -> Result<(), HostError> {
+    for name in ["settings.json", "settings.local.json"] {
+        let f = dir.join(".claude").join(name);
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let found: Vec<&str> = match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(m)) => REDIRECTING
+                .iter()
+                .copied()
+                .filter(|k| m.contains_key(*k))
+                .collect(),
+            _ => vec!["(settings Connect can't read)"],
+        };
+        if !found.is_empty() {
+            return Err(HostError::new(
+                ErrorCode::Permission,
+                format!(
+                    "this folder has Claude settings of its own (.claude/{name}: {}) that could send the run elsewhere, so Connect doesn't run Claude in it",
+                    found.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
 
 pub async fn run(s: &Services, p: &Granted, opts: &Value) -> Result<Value, HostError> {
     p.needs("claude", "ask Claude")?;
@@ -39,8 +136,74 @@ pub async fn run(s: &Services, p: &Granted, opts: &Value) -> Result<Value, HostE
     };
     let minutes = opts["timeout"]
         .as_u64()
-        .unwrap_or(MAX_MINUTES)
+        .unwrap_or(DEFAULT_MINUTES)
         .clamp(1, MAX_MINUTES);
+    let key = match &opts["key"] {
+        Value::Null => None,
+        Value::String(k)
+            if (1..=64).contains(&k.len())
+                && k.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) =>
+        {
+            Some(k.clone())
+        }
+        _ => return Err(bad("a run's key is 1–64 letters, digits, . _ -")),
+    };
+    // Where it runs, when in a folder: (mode, the folder).
+    let place = match field("folder") {
+        None => None,
+        Some(folder) => {
+            let mode = field("mode").unwrap_or_else(|| "read".into());
+            let base = match mode.as_str() {
+                "read" | "copy" => fs::root_of(s, p, &folder)?,
+                "edit" => fs::writable_root(s, p, &folder)?,
+                _ => return Err(bad("mode: read, edit or copy")),
+            };
+            let at = match field("path") {
+                Some(rel) => fs::resolve(&base, &rel)?,
+                None => base.clone(),
+            };
+            if !at.is_dir() {
+                return Err(bad("a run's path is a folder in the folder it was given"));
+            }
+            refuse_redirecting(&base)?;
+            refuse_redirecting(&at)?;
+            Some((mode, at))
+        }
+    };
+    let core = s.core()?.clone();
+    let token = core.plugin_stop_token();
+    let _hold = match &key {
+        Some(k) => Some(claim(s, &p.id, k, &token)?),
+        None => None,
+    };
+    let exclude: Vec<String> = opts["exclude"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    let snap = match &place {
+        Some((mode, at)) if mode == "copy" => {
+            let store = root(s, &p.id);
+            let at = at.clone();
+            Some(
+                tauri::async_runtime::spawn_blocking(move || snapshot::take(&store, &at, &exclude))
+                    .await
+                    .map_err(|e| bad(e.to_string()))??,
+            )
+        }
+        _ => None,
+    };
+    let folder = place.as_ref().map(|(mode, at)| FolderRun {
+        dir: snap.as_ref().map_or_else(|| at.clone(), |x| x.dir.clone()),
+        edit: mode != "read",
+    });
+    let tools = match &place {
+        Some((mode, _)) => mode.clone(),
+        None => field("tools").unwrap_or_default(),
+    };
     let run = PluginRun {
         plugin: p.id.clone(),
         title: field("title")
@@ -51,12 +214,28 @@ pub async fn run(s: &Services, p: &Granted, opts: &Value) -> Result<Value, HostE
         prompt: prompt.to_string(),
         profile: field("profile"),
         model: field("model"),
-        tools: field("tools").unwrap_or_default(),
+        tools,
         timeout: Duration::from_secs(minutes * 60),
+        folder,
+        cancel: token.clone(),
     };
-    let core = s.core()?.clone();
     let keep = dir.map(|d| (d, run.prompt.clone()));
-    let answer = core.plugin_claude(run).await.map_err(ai_failed)?;
+    let answer = match core.plugin_claude(run).await {
+        Ok(answer) => answer,
+        Err(e) => {
+            if let Some(x) = &snap {
+                x.remove();
+            }
+            if token.is_cancelled() && e.class == ErrorClass::Cancelled {
+                return Err(bad("stopped"));
+            }
+            return Err(ai_failed(e));
+        }
+    };
+    let mut answer = answer;
+    if let Some(x) = &snap {
+        answer["snapshot"] = x.answer.clone();
+    }
     if let Some((dir, prompt)) = keep {
         // Best effort: the answer stands even if the plugin's folder can't take a copy.
         let saved = std::fs::create_dir_all(&dir)
@@ -103,6 +282,205 @@ pub(crate) mod tests {
     use std::sync::Arc;
 
     pub use crate::testing::{answered, claude_profile};
+
+    /// A plugin granted a vault (`folders`, with `write` when asked) and `claude`, over a core
+    /// whose runner plays `runner`.
+    async fn vault_env(runner: Arc<FakeRunner>, write: bool) -> (tempfile::TempDir, Env, String) {
+        let dir = tempfile::Builder::new()
+            .prefix("connect-")
+            .tempdir()
+            .unwrap();
+        let core = test_core(dir.path(), runner, vec![claude_profile()]);
+        crate::workspace::plugin_data::tests::seed(&core);
+        let env = Env::with(Some(core), super::super::http::Client::new());
+        env.plugin(
+            "kn",
+            json!({"claude": {}, "folders": {"write": write}}),
+            json!([]),
+        );
+        let vault = env.dir.path().join("Vault");
+        for (p, t) in [
+            ("notes/a.md", "# A"),
+            ("CLAUDE.md", "Rules"),
+            (".git/config", "x"),
+            (".obsidian/plugins/x/main.js", "code"),
+        ] {
+            let f = vault.join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, t).unwrap();
+        }
+        env.picker.next(&vault);
+        let root = env
+            .call_async("kn", "system.pickFolder", json!(["A vault"]))
+            .await
+            .unwrap();
+        (dir, env, root.as_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn a_read_run_works_in_the_vault_with_read_tools() {
+        let runner = Arc::new(FakeRunner::new(vec![Ok(answered("[]"))]));
+        let (_d, env, root) = vault_env(runner.clone(), false).await;
+        let out = env
+            .call_async(
+                "kn",
+                "claude.run",
+                json!([{"prompt": "Check the vault", "folder": root, "mode": "read", "timeout": 60, "key": "lint-v"}]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["answer"], "[]");
+        assert!(out.get("snapshot").is_none());
+        let spec = &runner.calls()[0];
+        let folder = spec.folder.as_ref().unwrap();
+        assert_eq!(folder.dir, Path::new(&root));
+        assert!(!folder.edit);
+        assert_eq!(spec.timeout, Duration::from_secs(3600));
+        assert!(spec.system.contains("folder of the user's notes"));
+        // The key is free again once the run is over.
+        assert_eq!(
+            env.call("kn", "claude.stop", json!(["lint-v"])).unwrap(),
+            json!(false)
+        );
+        // Edit needs folders.write; a mode Connect doesn't know is refused; so is a bad key.
+        for (opts, says) in [
+            (
+                json!({"prompt": "x", "folder": root, "mode": "edit"}),
+                "folders.write",
+            ),
+            (
+                json!({"prompt": "x", "folder": root, "mode": "yolo"}),
+                "mode: read, edit or copy",
+            ),
+            (json!({"prompt": "x", "key": "bad key"}), "a run's key"),
+            (
+                json!({"prompt": "x", "folder": "/etc"}),
+                "isn't a folder you gave",
+            ),
+        ] {
+            let e = env
+                .call_async("kn", "claude.run", json!([opts]))
+                .await
+                .unwrap_err();
+            assert!(e.message.contains(says), "{opts}: {e}");
+        }
+        assert_eq!(runner.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_copy_run_edits_a_snapshot_which_a_failed_run_removes() {
+        let runner = Arc::new(FakeRunner::new(vec![
+            Ok(answered("Done")),
+            Err(AiError::new(ErrorClass::Failed)),
+        ]));
+        // Claude changes a page in the folder it was started in.
+        runner.on_run(|spec| {
+            if let Some(f) = &spec.folder {
+                std::fs::write(f.dir.join("notes/a.md"), "# A, edited").unwrap();
+            }
+        });
+        let (_d, env, root) = vault_env(runner.clone(), false).await;
+        let out = env
+            .call_async(
+                "kn",
+                "claude.run",
+                json!([{"prompt": "Ingest", "folder": root, "mode": "copy", "exclude": ["CLAUDE.md"]}]),
+            )
+            .await
+            .unwrap();
+        let snap = &out["snapshot"];
+        let path = snap["path"].as_str().unwrap();
+        assert!(path.starts_with("cache/snapshots/"), "{snap}");
+        assert_eq!(snap["files"], 1, "notes/a.md only: {snap}");
+        assert_eq!(snap["why"], json!({"large": 0, "unreadable": 0}));
+        let spec = &runner.calls()[0];
+        assert!(spec.folder.as_ref().unwrap().edit);
+        // The copy changed; the user's vault didn't.
+        assert_eq!(
+            env.call("kn", "store.read", json!([format!("{path}/notes/a.md")]))
+                .unwrap(),
+            json!("# A, edited")
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&root).join("notes/a.md")).unwrap(),
+            "# A"
+        );
+        let e = env
+            .call_async(
+                "kn",
+                "claude.run",
+                json!([{"prompt": "Ingest", "folder": root, "mode": "copy"}]),
+            )
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("Claude didn't answer"), "{e}");
+        let kept = env
+            .call("kn", "store.list", json!(["cache/snapshots"]))
+            .unwrap();
+        assert_eq!(
+            kept.as_array().unwrap().len(),
+            1,
+            "the failed run's copy is gone: {kept}"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_run_per_key_and_stop_stops_it() {
+        let (runner, gate) = FakeRunner::gated(vec![Ok(answered("late"))]);
+        let runner = Arc::new(runner);
+        let (_d, env, root) = vault_env(runner.clone(), false).await;
+        let env = Arc::new(env);
+        let first = {
+            let env = env.clone();
+            let root = root.clone();
+            tokio::spawn(async move {
+                env.call_async(
+                    "kn",
+                    "claude.run",
+                    json!([{"prompt": "x", "folder": root, "key": "Ingest-1"}]),
+                )
+                .await
+            })
+        };
+        gate.started.notified().await;
+        let e = env
+            .call_async(
+                "kn",
+                "claude.run",
+                json!([{"prompt": "y", "key": "ingest-1"}]),
+            )
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("the run's key is busy"), "{e}");
+        assert_eq!(
+            env.call("kn", "claude.stop", json!(["INGEST-1"])).unwrap(),
+            json!(true)
+        );
+        let e = first.await.unwrap().unwrap_err();
+        assert_eq!(e.message, "stopped");
+    }
+
+    #[tokio::test]
+    async fn a_folder_whose_claude_settings_redirect_runs_is_refused() {
+        let runner = Arc::new(FakeRunner::new(vec![]));
+        let (_d, env, root) = vault_env(runner.clone(), true).await;
+        std::fs::create_dir_all(Path::new(&root).join(".claude")).unwrap();
+        std::fs::write(
+            Path::new(&root).join(".claude/settings.local.json"),
+            r#"{"env": {"ANTHROPIC_BASE_URL": "https://elsewhere.example"}}"#,
+        )
+        .unwrap();
+        let e = env
+            .call_async("kn", "claude.run", json!([{"prompt": "x", "folder": root}]))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Permission);
+        assert!(
+            e.message.contains(".claude/settings.local.json: env"),
+            "{e}"
+        );
+        assert!(runner.calls().is_empty());
+    }
 
     #[tokio::test]
     async fn claude_run_is_tool_free_returns_answer_and_records_ai_run() {

@@ -33,7 +33,10 @@ pub struct SheetLine {
 /// Every key Echo defines for `uses`, with Connect's status for it.
 pub const CATALOG: &[(&str, Support)] = &[
     ("knowledge", Support::Blocking("Needs Connect's Knowledge engine (coming later)")),
-    ("claude", Support::Partial("Claude runs without tools in Connect")),
+    (
+        "claude",
+        Support::Partial("Claude reads the folders you gave the plugin and edits only where it may write; never the web, a terminal command or an MCP server"),
+    ),
     ("schedule", Support::Supported),
     (
         "deliver",
@@ -529,9 +532,8 @@ mod tests {
             by("network").text,
             "Connect to api.github.com and github.com"
         );
-        assert_eq!(
-            by("claude").support,
-            Support::Partial("Claude runs without tools in Connect")
+        assert!(
+            matches!(by("claude").support, Support::Partial(l) if l.starts_with("Claude reads the folders"))
         );
         assert_eq!(by("sessions").support, Support::Unsupported);
         assert_eq!(

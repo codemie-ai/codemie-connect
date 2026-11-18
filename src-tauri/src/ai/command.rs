@@ -24,6 +24,11 @@ pub const NATIVE_ENV_REMOVE: &[&str] = &[
 ];
 
 const SETTINGS_JSON: &str = r#"{"disableAllHooks":true,"claudeMdExcludes":["**"]}"#;
+/// A folder run reads the folder's own CLAUDE.md files, never its hooks.
+const FOLDER_SETTINGS_JSON: &str = r#"{"disableAllHooks":true}"#;
+/// What Claude may do in a folder run: read and search it and use its skills; edit a copy of it.
+const FOLDER_READ_TOOLS: &str = "Read,Grep,Glob,Skill";
+const FOLDER_EDIT_TOOLS: &str = "Read,Grep,Glob,Skill,Edit,Write";
 const MCP_JSON: &str = r#"{"mcpServers":{}}"#;
 
 #[derive(Debug, Clone)]
@@ -38,6 +43,17 @@ pub struct RunSpec {
     /// Spend ceiling in US dollars, passed as `--max-budget-usd` for CodeMie profiles only.
     pub cap_usd: Option<f64>,
     pub staging_root: PathBuf,
+    /// A run in a folder (a plugin's vault) instead of a fresh staging folder.
+    pub folder: Option<FolderRun>,
+}
+
+/// A run in a folder: Claude reads and searches it and uses its skills, and with `edit` changes
+/// it (a copy of the user's folder, never the folder itself). Hooks stay off; no web, terminal or
+/// MCP server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderRun {
+    pub dir: PathBuf,
+    pub edit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,24 +84,49 @@ pub fn build_command(spec: &RunSpec, profile: &AiProfile, bin: &Path, cwd: &Path
     if let (ProfileKind::Native, Some(m)) = (&profile.kind, model) {
         args.extend(["--model".to_string(), m.clone()]);
     }
-    for a in [
-        "--tools",
-        "",
-        "--disable-slash-commands",
-        "--strict-mcp-config",
-        "--mcp-config",
-        MCP_JSON,
-        "--no-session-persistence",
-        "--setting-sources",
-        "",
-        "--settings",
-        SETTINGS_JSON,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-    ] {
-        args.push(a.to_string());
+    match &spec.folder {
+        None => {
+            for a in [
+                "--tools",
+                "",
+                "--disable-slash-commands",
+                "--strict-mcp-config",
+                "--mcp-config",
+                MCP_JSON,
+                "--no-session-persistence",
+                "--setting-sources",
+                "",
+                "--settings",
+                SETTINGS_JSON,
+            ] {
+                args.push(a.to_string());
+            }
+        }
+        Some(f) => {
+            let (tools, mode) = if f.edit {
+                (FOLDER_EDIT_TOOLS, "acceptEdits")
+            } else {
+                (FOLDER_READ_TOOLS, "dontAsk")
+            };
+            for a in [
+                "--tools",
+                tools,
+                "--permission-mode",
+                mode,
+                "--strict-mcp-config",
+                "--mcp-config",
+                MCP_JSON,
+                "--no-session-persistence",
+                "--setting-sources",
+                "user,project",
+                "--settings",
+                FOLDER_SETTINGS_JSON,
+            ] {
+                args.push(a.to_string());
+            }
+        }
     }
+    args.extend(["--output-format", "stream-json", "--verbose"].map(String::from));
     // A CodeMie profile bills per call, so a run can carry a spend ceiling. A subscription
     // run has no per-call bill and never takes one.
     if let (ProfileKind::CodeMie { .. }, Some(cap)) = (&profile.kind, spec.cap_usd) {
@@ -100,7 +141,10 @@ pub fn build_command(spec: &RunSpec, profile: &AiProfile, bin: &Path, cwd: &Path
         args,
         env_remove: env_remove.iter().map(|s| s.to_string()).collect(),
         env_set: vec![("CLAUDE_CODE_DISABLE_AUTO_MEMORY".into(), "1".into())],
-        cwd: cwd.to_path_buf(),
+        cwd: spec
+            .folder
+            .as_ref()
+            .map_or_else(|| cwd.to_path_buf(), |f| f.dir.clone()),
     }
 }
 
@@ -121,6 +165,7 @@ mod tests {
             timeout: Duration::from_secs(60),
             cap_usd: None,
             staging_root: PathBuf::from("/tmp/stage"),
+            folder: None,
         }
     }
 
@@ -195,6 +240,47 @@ mod tests {
         want.extend(v(TAIL));
         want.extend(v(&["--system-prompt", "SYS"]));
         assert_eq!(plan.args, want);
+    }
+
+    #[test]
+    fn folder_runs_read_and_edit_in_the_folder_with_its_skills() {
+        let p = profile(ProfileKind::Native);
+        let mut read = spec(None, None);
+        read.folder = Some(FolderRun {
+            dir: PathBuf::from("/Users/taylor/Vault"),
+            edit: false,
+        });
+        let plan = build_command(&read, &p, Path::new("/bin/claude"), Path::new("/stage/1"));
+        assert_eq!(plan.cwd, Path::new("/Users/taylor/Vault"));
+        let after = |flag: &str| {
+            let at = plan
+                .args
+                .iter()
+                .position(|a| a == flag)
+                .unwrap_or_else(|| panic!("{flag}"));
+            plan.args[at + 1].clone()
+        };
+        assert_eq!(after("--tools"), "Read,Grep,Glob,Skill");
+        assert_eq!(after("--permission-mode"), "dontAsk");
+        assert_eq!(after("--setting-sources"), "user,project");
+        assert_eq!(after("--settings"), r#"{"disableAllHooks":true}"#);
+        assert_eq!(after("--mcp-config"), r#"{"mcpServers":{}}"#);
+        for flag in ["--strict-mcp-config", "--no-session-persistence", "--print"] {
+            assert!(plan.args.iter().any(|a| a == flag), "{flag}");
+        }
+        // The vault's own skills load: slash commands aren't turned off.
+        assert!(!plan.args.iter().any(|a| a == "--disable-slash-commands"));
+        let mut edit = read.clone();
+        edit.folder.as_mut().unwrap().edit = true;
+        let plan = build_command(&edit, &p, Path::new("/bin/claude"), Path::new("/s"));
+        let at = plan.args.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(plan.args[at + 1], "Read,Grep,Glob,Skill,Edit,Write");
+        let at = plan
+            .args
+            .iter()
+            .position(|a| a == "--permission-mode")
+            .unwrap();
+        assert_eq!(plan.args[at + 1], "acceptEdits");
     }
 
     #[test]

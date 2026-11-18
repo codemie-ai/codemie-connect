@@ -27,6 +27,7 @@ pub mod markdown;
 pub mod notify;
 pub mod settings;
 pub mod signin;
+pub mod snapshot;
 pub mod store;
 pub mod today;
 pub mod vault_git;
@@ -167,6 +168,8 @@ pub struct Services {
     pub(crate) writes: Mutex<()>,
     /// The file handles plugins were given (`pickFiles`, dropped files).
     pub(crate) files: Mutex<files::Handles>,
+    /// The Claude runs going on under a key (`claude.run({key})`, `claude.stop(key)`).
+    pub(crate) runs: Mutex<claude::Keyed>,
 }
 
 impl Services {
@@ -183,6 +186,7 @@ impl Services {
             profiles: RwLock::new(serde_json::json!({"default": null, "profiles": []})),
             writes: Mutex::new(()),
             files: Mutex::default(),
+            runs: Mutex::default(),
         })
     }
 
@@ -204,6 +208,14 @@ impl Services {
             .profiles
             .write()
             .unwrap_or_else(PoisonError::into_inner) = profiles;
+    }
+
+    /// What `ctx.profiles()` answers now.
+    pub(crate) fn profiles_now(&self) -> Value {
+        self.profiles
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// The providers plugins registered, for the plugin manager to ask.
@@ -293,6 +305,7 @@ impl HostServices for Services {
             "notify" => notify::notify(self, &p, &args),
             "markdown" => markdown::render(&p.id, &args),
             "markdown.links" => markdown::links(&args),
+            "claude.stop" => claude::stop(self, &p, text(&args, 0, "a run's key")?),
             "crypto.sha256" => Ok(Value::from(cas::sha_hex(
                 text(&args, 0, "the text to hash")?.as_bytes(),
             ))),

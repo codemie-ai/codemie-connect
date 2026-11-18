@@ -55,6 +55,57 @@ pub fn command_script(folder: &Path, launcher: &str, profile: &str) -> String {
     )
 }
 
+/// The `.command` file for a Claude Code session a plugin's page asked for (Knowledge's "Ask the
+/// vault"): every word single-quoted, so nothing in a folder's name or an argument reaches the
+/// shell as anything but text.
+pub fn session_script(folder: &Path, argv: &[String]) -> String {
+    let quote = |s: &str| format!("'{}'", s.replace('\'', r"'\''"));
+    let words: Vec<String> = argv.iter().map(|a| quote(a)).collect();
+    format!(
+        "#!/bin/zsh -l\nrm -f -- \"$0\"\ncd -- {} || exit 1\nexec {}\n",
+        quote(&folder.to_string_lossy()),
+        words.join(" ")
+    )
+}
+
+/// Opens Terminal in `folder` running `argv` (a session a plugin's page asked for, after the
+/// window's checks and Rust's).
+pub fn open_session(app: &tauri::AppHandle, folder: &Path, argv: &[String]) -> CmdResult<()> {
+    if !folder.is_absolute() || !folder.is_dir() {
+        return Err(InstallerError::Other(
+            "That folder no longer exists.".into(),
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        use tauri::Manager;
+        let dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| InstallerError::Other(e.to_string()))?;
+        std::fs::create_dir_all(&dir)?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let script = dir.join(format!("plugin-session-{stamp}.command"));
+        std::fs::write(&script, session_script(folder, argv))?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+        spawn(
+            "/usr/bin/open",
+            &["-a", "Terminal", &script.to_string_lossy()],
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, argv);
+        Err(InstallerError::Other(
+            "A plugin's Claude Code session opens on macOS only.".into(),
+        ))
+    }
+}
+
 /// The only pages `open_app_download` can open.
 pub fn download_url(app_id: &str) -> Option<&'static str> {
     match app_id {
@@ -173,6 +224,29 @@ pub fn open_app_download(app_id: String) -> CmdResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_script_quotes_every_word() {
+        let script = session_script(
+            Path::new("/Users/taylor/My 'Vault'"),
+            &[
+                "claude".into(),
+                "--tools".into(),
+                "Read,Grep".into(),
+                "$(rm -rf ~)".into(),
+            ],
+        );
+        let want = r#"cd -- '/Users/taylor/My '\''Vault'\''' || exit 1"#;
+        assert!(script.contains(want), "{script}");
+        assert!(
+            script.ends_with("exec 'claude' '--tools' 'Read,Grep' '$(rm -rf ~)'\n"),
+            "{script}"
+        );
+        assert!(
+            script.starts_with("#!/bin/zsh -l\nrm -f -- \"$0\"\n"),
+            "{script}"
+        );
+    }
 
     #[test]
     fn rejects_bad_launcher() {

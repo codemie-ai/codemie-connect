@@ -9,7 +9,7 @@
 //! rows). Each one's id starts with `<plugin>:` and its data names the `plugin`.
 use super::ai::{resolve_route, unready_error, wire_name};
 use super::{graph, models::*, Core};
-use crate::ai::command::RunSpec;
+use crate::ai::command::{FolderRun, RunSpec};
 use crate::ai::stream::{AiError, ErrorClass};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -34,6 +34,15 @@ const PLUGIN_SYSTEM: &str = "You answer a request from a plugin the user install
     useful part first. You send nothing and make no commitments the user didn't ask for, and \
     you never invent facts, dates or prices.";
 
+/// The system prompt of a plugin's run in a folder of the user's (a vault): read tools, and
+/// edit tools only in a copy or where the plugin may write.
+const PLUGIN_FOLDER_SYSTEM: &str = "You answer a request from a plugin the user installed in \
+    their work app. You work in a folder of the user's notes, the folder you were started in: \
+    read and search it with your tools, follow its CLAUDE.md and skills, and change files only \
+    when the request asks for it and your tools allow it. Never look outside this folder. Answer \
+    in Markdown, useful part first. You send nothing and make no commitments the user didn't ask \
+    for, and you never invent facts, dates or prices.";
+
 /// A plugin's Claude run, as `ctx.claude.run` asked for it.
 pub(crate) struct PluginRun {
     pub plugin: String,
@@ -41,9 +50,13 @@ pub(crate) struct PluginRun {
     pub prompt: String,
     pub profile: Option<String>,
     pub model: Option<String>,
-    /// What the plugin asked for (recorded; Connect always runs tool-free).
+    /// What the plugin asked for (recorded; a run without a folder is tool-free).
     pub tools: String,
     pub timeout: Duration,
+    /// A run in a folder of the user's (or a copy of it).
+    pub folder: Option<FolderRun>,
+    /// Stops the run (`ctx.claude.stop(key)`); a child of Connect's own, so quitting stops it.
+    pub cancel: tokio_util::sync::CancellationToken,
 }
 
 /// How a plugin names one of the sources it may read: `mail:<id>`, `chat:<id>`, `event:<id>`.
@@ -130,6 +143,11 @@ impl Core {
         Some((c.display_name, c.email))
     }
 
+    /// A token that stops one plugin run, stopped too when Connect stops its Claude work.
+    pub(crate) fn plugin_stop_token(&self) -> tokio_util::sync::CancellationToken {
+        self.ai_cancel.child_token()
+    }
+
     /// The messages and meetings plugins may read: exactly what the active workspace shows
     /// (its selected sources of the account it is bound to).
     pub(crate) fn plugin_sources(&self) -> Result<Vec<Record>> {
@@ -192,7 +210,12 @@ impl Core {
             purpose: wire_name(Purpose::Plugin),
             profile_id: profile.id.clone(),
             model,
-            system: PLUGIN_SYSTEM.into(),
+            system: if run.folder.is_some() {
+                PLUGIN_FOLDER_SYSTEM
+            } else {
+                PLUGIN_SYSTEM
+            }
+            .into(),
             input: json!({"title": run.title, "request": run.prompt}),
             schema: None,
             timeout: run.timeout,
@@ -201,16 +224,12 @@ impl Core {
                 .paths
                 .ensure_staging()
                 .map_err(|_| AiError::new(ErrorClass::Failed))?,
+            folder: run.folder.clone(),
         };
         let started = Instant::now();
         let result = self
             .runner
-            .run(
-                spec.clone(),
-                &profile,
-                self.ai_cancel.child_token(),
-                Box::new(|_| {}),
-            )
+            .run(spec.clone(), &profile, run.cancel.clone(), Box::new(|_| {}))
             .await;
         let ref_id = format!("plugin:{}", run.plugin);
         let mut record = self.ai_run_record(

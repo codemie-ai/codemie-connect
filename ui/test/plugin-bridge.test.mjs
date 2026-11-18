@@ -702,3 +702,19 @@ test('files_handed_to_the_page_go_with_a_call_by_their_ids', async () => {
   assert.deepEqual(sent.at(-1), { id: 'hello', command: 'greet', args: {} }, 'no files: none sent');
   assert.equal(checkFromFrame({ v: V, id: 9, kind: 'call', method: 'command', command: 'x', args: {}, files: [{ file: 'h1' }] }), null);
 });
+
+test('a_claude_code_session_is_asked_for_only_by_the_page_on_screen_on_a_click', async () => {
+  const w = await helloLoaded();
+  const sessions = () => w.calls.filter(([cmd, a]) => cmd === 'plugins_request' && a.op === 'frame_session').map(([, a]) => a.data);
+  // Not on screen: told as a notice, nothing reaches native.
+  assert.equal(await w.shim.ctx.claude.session({ folder: '/Users/taylor/Vault' }), null);
+  assert.deepEqual(sessions(), []);
+  w.host.show({ id: 'hello', view: 'activity', activity: 'home', route: '' });
+  await settle(20);
+  await w.shim.ctx.claude.session({ folder: '/Users/taylor/Vault', profile: 'codemie:prod', mode: 'yolo' });
+  assert.deepEqual(sessions(), [{ id: 'hello', folder: '/Users/taylor/Vault', path: '', mode: '', profile: 'codemie:prod' }]);
+  w.fw.win.navigator.userActivation.isActive = false;
+  assert.throws(() => w.shim.ctx.claude.session({ folder: '/v' }), /your click/);
+  w.fw.win.navigator.userActivation.isActive = true;
+  assert.equal(checkFromFrame({ v: V, id: 4, kind: 'call', method: 'session', folder: '/v', path: '', mode: 'admin', profile: '' }), null);
+});

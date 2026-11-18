@@ -16,6 +16,8 @@ export const STORAGE_MAX = 1024 * 1024;
 /** Writes to the stand-in are saved together, this long after the last one. */
 const FLUSH_MS = 250;
 const ITEM_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
+/** A command's, a profile's name. */
+const NAME_MAX = 80;
 const CLIENT_PATH = /^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_./-]*\.m?js$/;
 const STYLESHEET = /^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_/.-]*\.css$/;
 const MAX_LIST = 40;
@@ -362,6 +364,20 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
           if (!ITEM_ID.test(String(widget)) || typeof fn !== 'function') throw new Error('widgets.draw(widget, fn) draws a declared page widget');
           s.draws.set(String(widget), fn);
           contribute();
+        },
+      },
+      claude: {
+        // Claude Code in Terminal, in a folder the user gave the plugin, on the user's click. What
+        // goes wrong is told in Connect's window; the plugin's page goes on.
+        session: (o = {}) => {
+          if (win.navigator?.userActivation?.isActive !== true) throw new Error('Claude Code opens only on your click');
+          return request({
+            method: 'session', folder: String(o.folder ?? ''), path: String(o.path ?? ''),
+            mode: ['read', 'edit'].includes(o.mode) ? o.mode : '', profile: String(o.profile ?? '').slice(0, NAME_MAX),
+          }).catch(e => {
+            post({ kind: 'event', type: 'notice', text: errorOf(e).message });
+            return null;
+          });
         },
       },
       system: {

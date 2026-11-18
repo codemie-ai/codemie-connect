@@ -216,11 +216,14 @@ export function createPluginHost({
   }
 
   /** What a frame asks of the window: its commands, its stored values, and (the frame on screen
-   *  only, after the user's click there) a reveal in Finder. */
+   *  only, after the user's click there) a reveal in Finder or a Claude Code session. */
   function ask(rec, m) {
     if (m.method === 'command') return invoke('plugin_call', { id: rec.id, command: m.command, args: m.args ?? null, ...(m.files ? { files: m.files } : {}) });
     if (m.method === 'storage') return invoke('plugins_request', { op: 'client_storage', data: { id: rec.id, items: m.items } }).then(() => null);
     if (!rec.shown) return Promise.reject(Object.assign(new Error('Only the page on screen can do that.'), { code: 'permission' }));
+    if (m.method === 'session') {
+      return invoke('plugins_request', { op: 'frame_session', data: { id: rec.id, folder: m.folder, path: m.path, mode: m.mode, profile: m.profile } });
+    }
     return invoke('plugins_request', { op: 'frame_reveal', data: { id: rec.id, root: m.root, path: m.path } });
   }
 

@@ -36,7 +36,7 @@ test('detail_shows_sheet_markers_and_unverified_notice', () => {
   assert.match(html, /id="plugin-sheet"/);
   assert.ok(html.includes(UNVERIFIED.replace('·', '·')), 'the unverified notice');
   for (const marker of ['Partial', 'Supported']) assert.match(html, new RegExp(`>${marker}<`));
-  assert.match(html, /Claude runs without tools in Connect/, 'a partial line says its limit');
+  assert.match(html, /Claude reads the folders you gave the plugin and edits only where it may write; never the web, a terminal command or an MCP server/, 'a partial line says its limit');
   assert.match(html, /data-action="plugin-install" data-plugin-id="standup" data-market="acme"/);
   assert.match(html, /9f3c2a1/, 'the commit it would install from');
   const all = sheetList(lines);

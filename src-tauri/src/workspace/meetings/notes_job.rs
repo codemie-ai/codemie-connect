@@ -416,6 +416,7 @@ impl Core {
             timeout: NOTES_TIMEOUT,
             cap_usd: None,
             staging_root: self.paths.ensure_staging()?,
+            folder: None,
         };
         let requested = spec.model.clone();
         let lines = segments.len();

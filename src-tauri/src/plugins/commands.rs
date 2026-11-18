@@ -24,6 +24,7 @@
 //! | `open_link` | `{id, url}` | `{opened: true}`: the user pressed Open in Connect's confirmation of a link plugin `id`'s page asked to open; only `https:` and `obsidian:` addresses (ruling R41) |
 //! | `frame_files` | `{id, paths}` | `[{file, name, size}]`: files dropped on plugin `id`'s page, as its handles (`services::window`) |
 //! | `frame_reveal` | `{id, root, path}` | `{revealed: true}`: its page's `ctx.system.reveal`, on the user's click |
+//! | `frame_session` | `{id, folder, path, mode, profile}` | `{opened: true}`: its page's `ctx.claude.session`, Claude Code in Terminal in that folder |
 //!
 //! `agreed` is every key of the sheet the user was shown and `sheetHash` that sheet's hash (from
 //! `inspect` or `needs_consent`): a sheet that changed since is refused as `changed`.
@@ -91,9 +92,13 @@ pub async fn plugins_request(
     if let Some(action) = op.strip_prefix("frame_") {
         let services = manager_of(&window)?.services().clone();
         let action = action.to_string();
+        let app = {
+            use tauri::Manager;
+            window.app_handle().clone()
+        };
         return blocking(move || {
             let _running = running;
-            frame_request(&services, &action, data.unwrap_or(Value::Null))
+            frame_request(&app, &services, &action, data.unwrap_or(Value::Null))
         })
         .await?;
     }
@@ -305,6 +310,17 @@ struct FilesArg {
     paths: Vec<String>,
 }
 #[derive(Deserialize)]
+struct SessionArg {
+    id: String,
+    folder: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    profile: String,
+}
+#[derive(Deserialize)]
 struct RevealArg {
     id: String,
     root: String,
@@ -314,12 +330,26 @@ struct RevealArg {
 
 /// What the window asks for the plugin page on screen (`services::window`).
 fn frame_request(
+    app: &tauri::AppHandle,
     services: &crate::plugins::services::Services,
     action: &str,
     data: Value,
 ) -> Result<Value> {
     use crate::plugins::services::window;
     match action {
+        "session" => {
+            let a: SessionArg = arg(data)?;
+            let (dir, argv) =
+                window::session(services, &a.id, &a.folder, &a.path, &a.mode, &a.profile)
+                    .map_err(host_error)?;
+            crate::commands::terminal_launch::open_session(app, &dir, &argv)
+                .map_err(|e| WorkspaceError::new("io", e.to_string()))?;
+            log::info!(
+                "[plugin:{}] opened Claude Code in a folder it was given",
+                a.id
+            );
+            Ok(json!({"opened": true}))
+        }
         "files" => {
             let a: FilesArg = arg(data)?;
             window::hand_files(services, &a.id, &a.paths).map_err(host_error)
