@@ -278,7 +278,8 @@ test('drafting_and_stop_survive_a_background_sync', () => {
   // that moved the revision must not turn either into "your inbox updated" errors.
   assert.ok(REBASE_SAFE.has('ai_draft'));
   assert.ok(REBASE_SAFE.has('job_cancel'));
-  assert.ok(!REBASE_SAFE.has('action_prepare'));
+  // Preparing a reply reads the message as it is too; Send is guarded by the review (actions.rs).
+  assert.ok(REBASE_SAFE.has('action_prepare'));
 });
 
 test('failed_ai_jobs_stay_out_of_decisions', () => {

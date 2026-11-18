@@ -13,7 +13,14 @@
 // are local to this window (Settings › Meetings): a sync never touches them, and the revision
 // fence protects nothing about a file's content (`meeting_text_save` refuses to write over a
 // glossary it could not read whole).
-export const REBASE_SAFE = new Set(['settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'ai_summarize', 'job_cancel', 'automation_save', 'automation_delete', 'automation_toggle', 'automation_run_now', 'task_save', 'task_delete', 'meeting_check', 'meeting_download', 'meeting_import', 'meeting_speakers', 'meeting_notes', 'meeting_set', 'meeting_doc', 'meeting_rule_save', 'meeting_rule_delete', 'meeting_rule_order', 'template_save', 'template_delete', 'meeting_text_save']);
+// Sending: `action_prepare` reads the source as it is when it runs and keeps its revision, and the
+// person reviews what will go out; `action_confirm` sends only that reviewed action and refuses
+// (`conflict`) when it was used, expired or its source changed since (actions.rs `confirm_action`).
+// Sync now, Retry, a calendar range and a test notification act on things as they are when they run.
+export const REBASE_SAFE = new Set(['action_prepare', 'action_confirm', 'sync_request', 'job_retry', 'calendar_window', 'notification_test', 'settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'ai_summarize', 'job_cancel', 'automation_save', 'automation_delete', 'automation_toggle', 'automation_run_now', 'task_save', 'task_delete', 'meeting_check', 'meeting_download', 'meeting_import', 'meeting_speakers', 'meeting_notes', 'meeting_set', 'meeting_doc', 'meeting_rule_save', 'meeting_rule_delete', 'meeting_rule_order', 'template_save', 'template_delete', 'meeting_text_save']);
+
+/** How many times a rebase-safe operation is sent before a stale view is reported. */
+const REBASE_TRIES = 5;
 
 export function createStore(invoke) {
   let state = null;
@@ -45,13 +52,16 @@ export function createStore(invoke) {
         },
       });
       try {
-        try {
-          return await send();
-        } catch (error) {
-          if (!retry || error?.code !== 'stale_view') throw error;
-          // A background sync moved the revision. Rebase onto the fresh snapshot, once, with the same operation ID.
-          await refresh();
-          return await send();
+        // A background sync moved the revision. Rebase onto the fresh snapshot with the same
+        // operation ID; a sync writing record after record can move it again in between, so a
+        // few times. A refused attempt reserves nothing natively.
+        for (let attempt = 1; ; attempt++) {
+          try {
+            return await send();
+          } catch (error) {
+            if (!retry || error?.code !== 'stale_view' || attempt >= REBASE_TRIES) throw error;
+            await refresh();
+          }
         }
       } finally {
         await refresh();

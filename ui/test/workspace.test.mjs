@@ -97,21 +97,30 @@ test('mutate retries once after stale_view for rebase-safe ops', async () => {
   assert.equal(calls[1].workspaceId, 'ws-2');
 });
 
-test('mutate retries only once when the revision keeps moving', async () => {
+test('mutate rebases through a sync that keeps moving the revision, then gives up', async () => {
   let revision = 0;
   let writes = 0;
+  let acceptAt = 4;
   const store = createStore(async (_, { request: r }) => {
     if (r.op === 'snapshot') return { snapshot: { revision, settings: { activeWorkspace: 'personal' } } };
     writes++;
+    if (writes === acceptAt) return { ok: true, expectedRevision: r.expectedRevision };
     revision++;
     throw { code: 'stale_view' };
   });
   await store.refresh();
+  // A mail sync writes record after record: the fourth try lands, on the revision it read last.
+  assert.deepEqual(await store.mutate('meeting_check', {}), { ok: true, expectedRevision: 3 });
+  writes = 0;
+  acceptAt = Infinity;
   await assert.rejects(store.mutate('local_save', {}), { code: 'stale_view' });
-  assert.equal(writes, 2);
+  assert.equal(writes, 5, 'five tries, then the stale view is reported');
 });
 
-test('mutate surfaces stale_view for review ops', async () => {
+test('sending rebases; native guards the review itself', async () => {
+  // action_confirm refuses a used, expired or changed-source review (actions.rs), so a sync
+  // that moved the revision while the review was open must not block Send.
+  for (const op of ['action_prepare', 'action_confirm', 'sync_request', 'job_retry', 'calendar_window']) assert.ok(REBASE_SAFE.has(op), op);
   let writes = 0;
   const store = createStore(async (_, { request: r }) => {
     if (r.op === 'snapshot') return { snapshot: { revision: 1, settings: { activeWorkspace: 'personal' } } };
@@ -119,8 +128,9 @@ test('mutate surfaces stale_view for review ops', async () => {
     throw { code: 'stale_view' };
   });
   await store.refresh();
-  assert.ok(!REBASE_SAFE.has('action_prepare'));
-  await assert.rejects(store.mutate('action_prepare', {}), { code: 'stale_view' });
+  // Operations outside the set still report a stale view at once.
+  assert.ok(!REBASE_SAFE.has('graph_disconnect'));
+  await assert.rejects(store.mutate('graph_disconnect', {}), { code: 'stale_view' });
   assert.equal(writes, 1);
 });
 

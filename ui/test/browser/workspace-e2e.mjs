@@ -1623,6 +1623,18 @@ for (const theme of ['dark', 'light']) {
     await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
   });
 
+  await check(`${theme}: a background sync while replying never blocks Review or Send`, async () => {
+    await page.fill('#reply-body', 'Thanks, see you at 11.');
+    await page.evaluate(() => { window.__syncBump = true; });
+    await page.click('.ws-reply button[type=submit]');
+    await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
+    await page.evaluate(() => { window.__syncBump = true; });
+    await page.click('.ws-modal[open] button[type=submit]');
+    await page.waitForSelector('.ws-toast:has-text("Sent for delivery")');
+    assert(await page.locator('.ws-toasts .ws-toast-error').count() === 0, `an error toast appeared: ${await page.locator('.ws-toasts .ws-toast-error').allInnerTexts()}`);
+    assert((await lastCall(page, 'action_confirm'))?.actionId, 'the mock bridge got the confirm');
+  });
+
   await check(`${theme}: a draft arriving while you type asks first, in the same box; Restore survives edits`, async () => {
     await plan(page, { outcome: 'hold' });
     await page.click('[data-action="ai-draft-regenerate"]');
