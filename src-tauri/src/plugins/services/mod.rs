@@ -16,6 +16,8 @@
 //! work rows), `echo_read`, `events` (shared values) and `signin`.
 pub mod cas;
 pub mod claude;
+#[cfg(test)]
+mod contract_tests;
 pub mod deliver;
 pub mod echo_read;
 pub mod events;
@@ -568,6 +570,38 @@ pub(crate) mod testing {
             args: Value,
         ) -> Result<Value, HostError> {
             self.services.spawn_async(id, name, args).await
+        }
+    }
+
+    /// A JSON answer's shape, to compare with what Echo gives: an object's keys with their
+    /// shapes, a list's first item's shape (`"empty"` for none), else the type's name.
+    pub fn shape(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                Value::Object(m.iter().map(|(k, x)| (k.clone(), shape(x))).collect())
+            }
+            Value::Array(a) => json!([a.first().map(shape).unwrap_or(json!("empty"))]),
+            Value::String(_) => json!("str"),
+            Value::Number(_) => json!("num"),
+            Value::Bool(_) => json!("bool"),
+            Value::Null => json!("null"),
+        }
+    }
+
+    /// Whether `v` has at least the keys of `want` (a `shape`), each of its shape: Echo's answer,
+    /// which may say more. `"empty"` takes any list.
+    pub fn has_shape(v: &Value, want: &Value) -> bool {
+        match (v, want) {
+            (_, Value::String(t)) if t == "empty" => v.is_array(),
+            (Value::Object(m), Value::Object(w)) => w
+                .iter()
+                .all(|(k, x)| m.get(k).is_some_and(|y| has_shape(y, x))),
+            (Value::Array(a), Value::Array(w)) => match (a.first(), w.first()) {
+                (Some(x), Some(y)) => has_shape(x, y),
+                (None, _) => true,
+                _ => false,
+            },
+            _ => shape(v) == *want,
         }
     }
 }

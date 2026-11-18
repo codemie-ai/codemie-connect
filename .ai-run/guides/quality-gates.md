@@ -35,7 +35,7 @@ Run order is fastest-to-slowest.
 **Side effects**: cargo test compiles into src-tauri/target; commands/runner.rs tests run real /bin/zsh -lc commands; workspace tests open SQLite in temp folders; staging download as in lint on first run; contract fixtures under ui/test/fixtures/contract are rewritten only with UPDATE_CONTRACT_FIXTURES=1.
 **Pass**: exit 0: node:test reports no failing test and cargo test reports `test result: ok` for each target
 **Fail**: non-zero exit; node:test prints the failing test and its assertion, cargo test lists the failed tests
-**Skip if**: tests/echo_plugins.rs tests print `skipped:` and pass when the CONNECT_ECHO_PLUGINS_DIR / CONNECT_KNOWLEDGE_PLUGINS_DIR folders are missing; the live_* Claude tests are #[ignore]
+**Skip if**: tests/echo_plugins.rs tests print `skipped:` and pass when the CONNECT_ECHO_PLUGINS_DIR folder is missing; the live_* Claude tests are #[ignore]
 **Notes**: Do not skip the JS half for a Rust-only change that alters a response shape: the regenerated contract fixtures under ui/test/fixtures/contract are what the JS tests read. Rust unit tests live inline under #[cfg(test)], in sibling test modules (workspace/meetings/tests.rs, notes_tests.rs) and in src-tauri/tests/.
 
 ### build

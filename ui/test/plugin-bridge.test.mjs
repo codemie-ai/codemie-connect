@@ -898,3 +898,13 @@ test('the_schema_takes_a_call_its_slots_and_a_sheet_only_as_named', () => {
   assert.equal(callLink('echo://call/2026-11-04_160426-sync'), '2026-11-04_160426-sync');
   for (const bad of ['echo://call/', 'echo://call/a/b', 'echo://call/a%2Fb', 'echo://call/..', 'https://call/x', 'echo://thread/x']) assert.equal(callLink(bad), null, bad);
 });
+
+test('the_frames_refusals_match_the_regexes_knowledge_reads_them_by', async () => {
+  const { ctx, fw } = await connected(() => {});
+  fw.win.navigator.userActivation.isActive = false;
+  // Knowledge's KN_CLICK_GONE: the click was spent before Connect could ask.
+  await assert.rejects(ctx.claude.installSkill('twin-vault', '---\nname: twin-vault\n---\n'), /only on your click/);
+  await assert.rejects(ctx.claude.removeSkill('twin-vault'), /only on your click/);
+  assert.throws(() => ctx.claude.session({ folder: '/v' }), /only on your click/);
+  await assert.rejects(ctx.system.reveal('/v', 'a.md'), /only on your click/);
+});

@@ -42,7 +42,7 @@ const REDIRECTING: [&str; 5] = [
 pub struct Keyed(std::collections::HashMap<(String, String), CancellationToken>);
 
 /// Holds a key while its run lasts.
-struct KeyHold<'a> {
+pub(super) struct KeyHold<'a> {
     s: &'a Services,
     slot: (String, String),
 }
@@ -53,7 +53,7 @@ impl Drop for KeyHold<'_> {
     }
 }
 
-fn claim<'a>(
+pub(super) fn claim<'a>(
     s: &'a Services,
     plugin: &str,
     key: &str,
@@ -388,6 +388,17 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
+        // Echo's answer, as the plugin's fakes give it.
+        assert!(
+            super::super::testing::has_shape(
+                &out,
+                &json!({"answer": "str", "model": "str", "actions": "empty",
+                   "usage": {"input_tokens": "num", "output_tokens": "num", "cost_usd": "num"},
+                   "snapshot": {"path": "str", "files": "num", "bytes": "num", "skipped": "num",
+                                "why": {"large": "num", "unreadable": "num"}}})
+            ),
+            "{out}"
+        );
         let snap = &out["snapshot"];
         let path = snap["path"].as_str().unwrap();
         assert!(path.starts_with("cache/snapshots/"), "{snap}");

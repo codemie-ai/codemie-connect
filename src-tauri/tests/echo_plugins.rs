@@ -1404,6 +1404,186 @@ async fn knowledge_saves_connects_meeting_minutes_into_a_vault() {
     assert!(c.sent().is_empty(), "{:?}", c.sent());
 }
 
+/// Knowledge's whole flow in Connect, as the user goes through it: a twin vault made, read
+/// (Home, Pages, a page, Graph, Health), a page edited with its history, AI checks, Ingest of a
+/// file the user picked, and a Connect meeting's minutes saved into it.
+#[tokio::test]
+async fn knowledge_full_flow_in_connect() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let lint = json!({"findings": [{"kind": "contradiction", "title": "Two launch dates",
+        "note": "The topic and the brief disagree.",
+        "pages": [{"path": "knowledge/topics/Atlas.md", "line": 3, "quote": "The Atlas launch is in June."}]}]})
+    .to_string();
+    let c = Connect::start(&dir, &[&described(), &lint, "Ingested the brief."]).await;
+    c.runner.on_run(|spec| {
+        let Some(f) = spec.folder.as_ref().filter(|f| f.edit) else {
+            return;
+        };
+        std::fs::write(
+            f.dir.join("knowledge/topics/Atlas.md"),
+            "# Atlas\n\nThe Atlas launch is in May.\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(f.dir.join(".echo-ingest")).unwrap();
+        let notes = json!({"changes": [{"path": "knowledge/topics/Atlas.md", "why": "The brief dates the launch",
+            "quotes": [{"source": "raw_inbox/Brief.md", "text": "The Atlas launch is in May."}]}]});
+        std::fs::write(f.dir.join(".echo-ingest/changes.json"), notes.to_string()).unwrap();
+    });
+
+    // add: the twin preset, in a folder the user picks, with git.
+    let folder = c.tmp.path().join("My Twin");
+    std::fs::create_dir_all(&folder).unwrap();
+    c.picker.next(&folder);
+    let made = c
+        .call(
+            "obsidian",
+            "new_vault",
+            json!({"name": "My Twin", "git": true, "minutes": "auto"}),
+        )
+        .await;
+    assert_eq!(made["git"], "committed", "{made}");
+    let id = made["id"].as_str().unwrap().to_string();
+    let root = Path::new(made["root"].as_str().unwrap()).to_path_buf();
+    c.call(
+        "obsidian",
+        "set",
+        json!({"id": id, "key": "commit", "value": "true"}),
+    )
+    .await;
+    let atlas = root.join("knowledge/topics/Atlas.md");
+    std::fs::create_dir_all(atlas.parent().unwrap()).unwrap();
+    std::fs::write(&atlas, "# Atlas\n\nThe Atlas launch is in June.\n").unwrap();
+
+    // kn, tree, page, graph, health: what Home, Pages, Graph and Health show.
+    let kn = c.call("obsidian", "kn", json!({})).await;
+    assert_eq!(kn["vaults"][0]["id"], id.as_str(), "{kn}");
+    assert_eq!(kn["vaults"][0]["available"], true);
+    let tree = c.call("obsidian", "tree", json!({"id": id})).await;
+    let pages: Vec<&str> = tree["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        pages.contains(&"CATALOG.md") && pages.contains(&"topics/Atlas.md"),
+        "{pages:?}"
+    );
+    let page = c
+        .call("obsidian", "page", json!({"id": id, "path": "CATALOG.md"}))
+        .await;
+    assert_eq!(page["editable"], true, "{page}");
+    assert!(page["html"]
+        .as_str()
+        .is_some_and(|h| !h.contains("<script")));
+    let graph = c
+        .call("obsidian", "graph", json!({"id": id, "mode": "links"}))
+        .await;
+    assert!(graph["edges"].is_array(), "{graph}");
+    let health = c.call("obsidian", "health", json!({"id": id})).await;
+    assert!(health["findings"].is_array(), "{health}");
+
+    // save_page over the text it was opened with, then its history.
+    let original = std::fs::read_to_string(root.join("knowledge/CATALOG.md")).unwrap();
+    let edited = format!("{original}\nEdited in Connect.\n");
+    c.call(
+        "obsidian",
+        "save_page",
+        json!({"id": id, "path": "CATALOG.md", "text": edited, "base": page["base"], "message": "Edit the index"}),
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(root.join("knowledge/CATALOG.md")).unwrap(),
+        edited
+    );
+    let history = c
+        .call(
+            "obsidian",
+            "history",
+            json!({"id": id, "path": "CATALOG.md"}),
+        )
+        .await;
+    assert_eq!(
+        history["versions"].as_array().unwrap().len(),
+        2,
+        "{history}"
+    );
+
+    // lint: Claude's checks, read tools in the vault; the finding is kept.
+    let checked = c
+        .call("obsidian", "lint", json!({"id": id, "wait": true}))
+        .await;
+    assert_eq!(checked["state"], "done", "{checked}");
+    assert_eq!(checked["kept"], 1, "{checked}");
+
+    // ingest: a file the user picked, run in a copy; the approved change reaches the vault.
+    let brief = c.tmp.path().join("Brief.md");
+    std::fs::write(&brief, "# Brief\n\nThe Atlas launch is in May.\n").unwrap();
+    c.picker.next_files(&[&brief]);
+    c.call("obsidian", "source_add", json!({"id": id, "kind": "files"}))
+        .await;
+    let run = c
+        .call("obsidian", "ingest_go", json!({"id": id, "wait": true}))
+        .await;
+    assert_eq!(run["state"], "review", "{run}");
+    c.call(
+        "obsidian",
+        "change",
+        json!({"id": id, "run": run["run"], "path": "knowledge/topics/Atlas.md", "decision": "approve"}),
+    )
+    .await;
+    let applied = c
+        .call(
+            "obsidian",
+            "ingest_apply",
+            json!({"id": id, "run": run["run"]}),
+        )
+        .await;
+    assert_eq!(applied["written"], json!(["knowledge/topics/Atlas.md"]));
+    assert_eq!(
+        std::fs::read_to_string(&atlas).unwrap(),
+        "# Atlas\n\nThe Atlas launch is in May.\n"
+    );
+
+    // save_minutes: a meeting Connect saved, its minutes into the vault.
+    testing::signed_in(&c.core);
+    testing::saved_meeting(
+        &c.core,
+        "ev1",
+        "Atlas sync",
+        ("2026-11-18T09:30:00Z", "2026-11-18T10:15:00Z"),
+        &c.tmp.path().join("Meetings/2026-11-18_093000-atlas-sync"),
+        "# Atlas sync\n\n## Summary\n\nThe beta ships in May.\n\n## Decisions\n\n- Ship the beta in May\n",
+    );
+    let saved = c
+        .call(
+            "obsidian",
+            "save_minutes",
+            json!({"call": "2026-11-18_093000-atlas-sync", "vault": id}),
+        )
+        .await;
+    assert_eq!(saved["state"], "saved", "{saved}");
+    assert_eq!(saved["index"], "added", "with a row in the index: {saved}");
+    let note = std::fs::read_to_string(root.join(saved["path"].as_str().unwrap())).unwrap();
+    assert!(
+        note.contains("The beta ships in May") && note.contains("Ship the beta in May"),
+        "{note}"
+    );
+
+    // Three Claude runs (description, checks, Ingest); nothing sent; no member missing.
+    assert_eq!(c.runs().len(), 3);
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
+    let logged = lines_of("obsidian");
+    assert!(
+        logged
+            .iter()
+            .all(|l| !l.contains("is not available in CodeMie Connect")),
+        "{logged:?}"
+    );
+}
+
 #[tokio::test]
 #[ignore]
 async fn my_vault_reads_in_connect() {

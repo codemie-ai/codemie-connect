@@ -140,7 +140,7 @@ impl Ran {
 
 /// `git` in an absolute `PATH` folder; never one inside `root` (a granted folder supplies no
 /// programs).
-fn locate(path_var: &OsStr, root: &Path) -> Result<PathBuf, HostError> {
+pub(super) fn locate(path_var: &OsStr, root: &Path) -> Result<PathBuf, HostError> {
     let name = if cfg!(windows) { "git.exe" } else { "git" };
     std::env::split_paths(path_var)
         .filter(|dir| {
@@ -544,7 +544,8 @@ impl Git {
         };
         let initial = format!("--initial-branch={branch}");
         self.ok(root, &["init", "-q", "--template=", &initial])?;
-        self.info(root)
+        // Echo's answer: `info` says the rest.
+        Ok(json!({"repo": true}))
     }
 
     fn commit(&self, root: &Path, plugin: &str, o: &Value) -> Result<Value, HostError> {
@@ -1250,6 +1251,10 @@ mod tests {
         let vault = t.folder("vault");
         assert_eq!(
             t.call(&vault, "init", json!([vault])).unwrap(),
+            json!({"repo": true})
+        );
+        assert_eq!(
+            t.call(&vault, "info", json!([vault])).unwrap(),
             json!({"repo": true, "branch": "main", "head": null, "detached": false,
                    "busy": null, "subfolder": false})
         );
@@ -1263,9 +1268,9 @@ mod tests {
         assert!(!sub.join(".git").exists());
 
         let other = t.folder("other");
-        let info = t
-            .call(&other, "init", json!([other, {"branch": "trunk"}]))
+        t.call(&other, "init", json!([other, {"branch": "trunk"}]))
             .unwrap();
+        let info = t.call(&other, "info", json!([other])).unwrap();
         assert_eq!(info["branch"], json!("trunk"));
         let bad_name = t.folder("bad");
         assert!(t
