@@ -96,6 +96,9 @@ pub struct Core {
     events: std::sync::OnceLock<Arc<dyn EventSink>>,
     /// The meetings plugins were told of (`meeting_soon`), with their start.
     meetings_told: Mutex<std::collections::HashMap<String, i64>>,
+    /// Held by one writer of meeting records and transcript files at a time
+    /// (`Core::meeting_lock`).
+    meeting_writes: Mutex<()>,
     /// The user's home folder, where the default meetings root lives. Tests use a folder inside
     /// their temp data folder, so they never write into the real home.
     home: Option<PathBuf>,
@@ -208,6 +211,7 @@ impl Core {
             plugin_ops: AtomicUsize::new(0),
             events: std::sync::OnceLock::new(),
             meetings_told: Default::default(),
+            meeting_writes: Default::default(),
             home,
         }))
     }

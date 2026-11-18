@@ -1,6 +1,5 @@
 //! macOS Graph read transport, matching Echo's system-curl integration. Secrets use stdin only.
 use super::{graph, models::*, Core};
-use serde_json::Value;
 use std::{collections::HashMap, process::Stdio, sync::Mutex, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -76,14 +75,10 @@ impl Response {
             })
             .unwrap_or("60")
     }
-}
-/// A JSON answer.
-fn decode(response: &Response) -> Result<Value> {
-    graph::graph_response(response.status, response.retry(), &response.body)
-}
-/// A text answer (a transcript's WebVTT).
-fn decode_text(response: &Response) -> Result<String> {
-    graph::graph_text_response(response.status, response.retry(), &response.body)
+    /// The answer, as `decode` reads it: JSON (`graph_response`) or text (`graph_text_response`).
+    pub(super) fn decode<T>(&self, decode: graph::Decoder<T>) -> Result<T> {
+        decode(self.status, self.retry(), &self.body)
+    }
 }
 pub(super) fn cleanup(dir: &std::path::Path) {
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -99,24 +94,6 @@ pub(super) fn cleanup(dir: &std::path::Path) {
             }
         }
     }
-}
-pub(super) async fn get(
-    core: &Core,
-    c: &Connection,
-    url: &str,
-    token: &str,
-    prefer: &str,
-) -> Result<Value> {
-    decode(&get_bytes(core, c, url, token, prefer).await?)
-}
-pub(super) async fn get_text(
-    core: &Core,
-    c: &Connection,
-    url: &str,
-    token: &str,
-    prefer: &str,
-) -> Result<String> {
-    decode_text(&get_bytes(core, c, url, token, prefer).await?)
 }
 /// One Graph GET through `/usr/bin/curl`: the bearer goes in on stdin, never on the command
 /// line, and the read stops with the job that made it.
@@ -265,33 +242,37 @@ mod tests {
     fn response_framing_preserves_backoff_and_never_displays_provider_error_body() {
         let framed =
             |output: &[u8], headers: &str| Response::framed(output.to_vec(), headers.to_string());
-        let e = decode(
-            &framed(
-                b"PRIVATE_ERROR\n429",
-                "HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 429\r\nretry-after: 17\r\n",
-            )
-            .unwrap(),
+        let e = framed(
+            b"PRIVATE_ERROR\n429",
+            "HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 429\r\nretry-after: 17\r\n",
         )
+        .unwrap()
+        .decode(graph::graph_response)
         .unwrap_err();
         assert_eq!(e.retry_after, Some(17));
         assert!(!e.message.contains("PRIVATE_ERROR"));
         assert_eq!(
-            decode(&framed(b"{\"value\":[]}\n200", "").unwrap()).unwrap()["value"],
+            framed(b"{\"value\":[]}\n200", "")
+                .unwrap()
+                .decode(graph::graph_response)
+                .unwrap()["value"],
             serde_json::json!([])
         );
         assert!(framed(b"truncated", "").is_err());
         // Text answers share the framing and status mapping; a 403 keeps Microsoft's reason.
         assert_eq!(
-            decode_text(&framed(b"WEBVTT\n\n200", "").unwrap()).unwrap(),
+            framed(b"WEBVTT\n\n200", "")
+                .unwrap()
+                .decode(graph::graph_text_response)
+                .unwrap(),
             "WEBVTT\n"
         );
-        let e = decode_text(
-            &framed(
-                b"{\"error\":{\"code\":\"Forbidden\",\"message\":\"GraphAccessToTranscriptsDisabled\"}}\n403",
-                "",
-            )
-            .unwrap(),
+        let e = framed(
+            b"{\"error\":{\"code\":\"Forbidden\",\"message\":\"GraphAccessToTranscriptsDisabled\"}}\n403",
+            "",
         )
+        .unwrap()
+        .decode(graph::graph_text_response)
         .unwrap_err();
         assert_eq!(e.code, "permission_required");
         assert_eq!(e.message, "Forbidden: GraphAccessToTranscriptsDisabled");

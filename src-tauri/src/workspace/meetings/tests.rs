@@ -6,6 +6,7 @@ use super::*;
 use crate::ai::fake::FakeRunner;
 use crate::workspace::ai::tests::{mutation, ready};
 use crate::workspace::ai_jobs::FakeGraph;
+use crate::workspace::{graph, models::*};
 use crate::workspace::{test_core_with_graph, Core};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

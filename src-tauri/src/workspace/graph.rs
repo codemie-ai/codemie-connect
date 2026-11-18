@@ -461,15 +461,33 @@ impl Core {
     }
     /// [`Core::graph_get`] with another `Prefer` header, such as [`PREFER_TEXT_BODY`].
     pub async fn graph_get_prefer(&self, c: &Connection, url: &str, prefer: &str) -> Result<Value> {
+        self.graph_read(c, url, prefer, graph_response).await
+    }
+    /// A read whose answer is text, not JSON (a transcript's WebVTT content). Fenced, throttled
+    /// and labelled like [`Core::graph_get`].
+    pub async fn graph_get_text(&self, c: &Connection, url: &str) -> Result<String> {
+        self.graph_read(c, url, PREFER, graph_text_response).await
+    }
+    /// One Graph GET: backoff, URL check, the job row's label, a token, the account fence, the
+    /// transport (curl on macOS), `decode` for the answer, and the backoff Microsoft asked for.
+    async fn graph_read<T>(
+        &self,
+        c: &Connection,
+        url: &str,
+        prefer: &str,
+        decode: Decoder<T>,
+    ) -> Result<T> {
         self.check_backoff(c)?;
         let url = validate_graph_url(url)?;
         self.note_read(c, &url)?;
         let token = self.access(c).await?;
         check_connection(&self.repo()?.connection(&c.id)?, c)?;
         #[cfg(target_os = "macos")]
-        let result = super::curl::get(self, c, url.as_str(), &token, prefer).await;
+        let result = super::curl::get_bytes(self, c, url.as_str(), &token, prefer)
+            .await
+            .and_then(|response| response.decode(decode));
         #[cfg(not(target_os = "macos"))]
-        let result = read_json(
+        let result = read_body(
             client()?
                 .get(url)
                 .bearer_auth(token)
@@ -477,30 +495,8 @@ impl Core {
                 .send()
                 .await,
         )
-        .await;
-        self.remember_backoff(c, &result)?;
-        result
-    }
-    /// A read whose answer is text, not JSON (a transcript's WebVTT content). Fenced, throttled
-    /// and labelled like [`Core::graph_get`].
-    pub async fn graph_get_text(&self, c: &Connection, url: &str) -> Result<String> {
-        self.check_backoff(c)?;
-        let url = validate_graph_url(url)?;
-        self.note_read(c, &url)?;
-        let token = self.access(c).await?;
-        check_connection(&self.repo()?.connection(&c.id)?, c)?;
-        #[cfg(target_os = "macos")]
-        let result = super::curl::get_text(self, c, url.as_str(), &token, PREFER).await;
-        #[cfg(not(target_os = "macos"))]
-        let result = read_text(
-            client()?
-                .get(url)
-                .bearer_auth(token)
-                .header("Prefer", PREFER)
-                .send()
-                .await,
-        )
-        .await;
+        .await
+        .and_then(|(status, retry, body)| decode(status, &retry, &body));
         self.remember_backoff(c, &result)?;
         result
     }
@@ -1142,6 +1138,8 @@ fn graph_error(status: u16, retry: &str, bytes: &[u8]) -> WorkspaceError {
     }
     error
 }
+/// Turns a response's status, `Retry-After` and body into a read's answer.
+pub(super) type Decoder<T> = fn(u16, &str, &[u8]) -> Result<T>;
 pub(super) fn graph_response(status: u16, retry: &str, bytes: &[u8]) -> Result<Value> {
     if !(200..300).contains(&status) {
         return Err(graph_error(status, retry, bytes));
@@ -1214,13 +1212,6 @@ async fn read_json(
 ) -> Result<Value> {
     let (status, retry, bytes) = read_body(response).await?;
     graph_response(status, &retry, &bytes)
-}
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-async fn read_text(
-    response: std::result::Result<reqwest::Response, reqwest::Error>,
-) -> Result<String> {
-    let (status, retry, bytes) = read_body(response).await?;
-    graph_text_response(status, &retry, &bytes)
 }
 
 pub fn timestamp(v: &str) -> i64 {
