@@ -242,12 +242,15 @@ export function createMeetingsController({
     }
   }
 
+  /** Runs a step; a failure shows its next step. True only when it worked, so a success toast
+   *  can never follow a failure. */
   async function guarded(id, run) {
     try {
-      return await run();
+      await run();
+      return true;
     } catch (err) {
       problem(err, id);
-      return null;
+      return false;
     }
   }
 
@@ -295,10 +298,13 @@ export function createMeetingsController({
     let made = 0;
     for (const m of todo) {
       const templateId = resolveTemplate(m.ev, m.rec, s, rules).id;
-      await makeNotes(m.id, { templateId, wishes: '', findTasks: true, remember: false });
+      // The first failure shows its fix and stops the rest, which would mostly fail the same way
+      // (no Claude chosen, signed out); the ones already queued are counted.
+      if (!await guarded(m.id, () => makeNotes(m.id, { templateId, wishes: '', findTasks: true, remember: false }))) break;
       made++;
     }
-    if (made) toast(`Making notes for ${plural(made, 'meeting')}. Each uses its own template.`, 'success');
+    if (!made) return;
+    toast(made === todo.length ? `Making notes for ${plural(made, 'meeting')}. Each uses its own template.` : `Making notes for ${made} of ${plural(todo.length, 'meeting')}. Each uses its own template.`, 'success');
   }
 
   async function retry(id) {
@@ -509,7 +515,7 @@ export function createMeetingsController({
       case 'meeting-compare': setCompare(el.dataset.v === '1'); return render();
       case 'meeting-open': return open(id);
       case 'meeting-make-notes': return makeNotesDialog(id);
-      case 'meeting-make-all': return guarded(null, makeAll);
+      case 'meeting-make-all': return makeAll();
       case 'meeting-retry': return guarded(id, () => retry(id));
       case 'meeting-check':
         return guarded(id, async () => {
@@ -518,8 +524,14 @@ export function createMeetingsController({
         });
       case 'meeting-check-all': {
         const waiting = meetingItems(snap(), now()).filter(m => m.state === 'pending' && !m.run);
-        for (const m of waiting) await guarded(m.id, () => mutate('meeting_check', { meetingId: m.id }));
-        return toast(waiting.length ? `Checking Teams for ${plural(waiting.length, 'transcript')}` : 'No meeting is waiting for a transcript.', waiting.length ? 'success' : 'info');
+        if (!waiting.length) return toast('No meeting is waiting for a transcript.', 'info');
+        let checked = 0;
+        // As Make notes for all: the first failure shows its fix and stops the rest.
+        for (const m of waiting) {
+          if (!await guarded(m.id, () => mutate('meeting_check', { meetingId: m.id }))) break;
+          checked++;
+        }
+        return checked ? toast(`Checking Teams for ${checked === waiting.length ? plural(checked, 'transcript') : `${checked} of ${plural(waiting.length, 'transcript')}`}`, 'success') : undefined;
       }
       case 'meeting-download': return guarded(id, () => download(id));
       case 'meeting-import': return importDialog(el.dataset?.id || null);
@@ -614,7 +626,7 @@ export function createMeetingsController({
       }
       case 'doc-main': {
         const doc = docOf(id, docId);
-        await guarded(id, () => mutate('meeting_doc', { meetingId: id, docId, action: 'main' }));
+        if (!await guarded(id, () => mutate('meeting_doc', { meetingId: id, docId, action: 'main' }))) return undefined;
         return toast(`“${doc?.name || 'The document'}” is now the main notes (notes.md)`, 'success');
       }
       case 'doc-again': {

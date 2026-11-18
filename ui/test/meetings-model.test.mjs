@@ -146,3 +146,15 @@ test('parseGlossary and parseTags match glossary-parse.json', () => {
   // Unclosed bold reads nothing; a quoted "we will…" is not an alias.
   assert.deepEqual(parseGlossary('## Me\n**Ann** — “Annie”, “we will do it”\n## Terms\n- **Open bold'), { me: { name: 'Ann', aliases: ['Annie'], address: null }, pairs: [], terms: [], people: [] });
 });
+
+test('an in-person meeting with an imported transcript is in All and To do, not counted as without one', () => {
+  const s = snapshot();
+  const roadmap = s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-roadmap');
+  s.records.push({ ...roadmap, id: 'mtg-lunch', data: { ...roadmap.data, title: 'Team lunch', imported: true, transcriptIds: [] } });
+  const ids = (filter, showNone = false) => meetingRows(s, filter, '', showNone, NOW).map(m => m.id);
+  assert.ok(ids('all').includes('mtg-lunch'), 'All shows the imported in-person meeting');
+  assert.ok(ids('process').includes('mtg-lunch'), 'To do shows it');
+  assert.deepEqual(meetingCounts(s, NOW), { process: 4, attention: 2, none: 1 });
+  // A meeting nobody transcribed stays out of All, behind the switch.
+  assert.ok(!ids('all').includes('mtg-planning') && ids('all', true).includes('mtg-planning'));
+});

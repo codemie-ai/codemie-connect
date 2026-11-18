@@ -206,7 +206,8 @@ export function meetingItems(s, now = Date.now()) {
 }
 
 const IN_LANE = {
-  all: (m, showNone) => m.ended && (showNone || (m.online && !['none', 'offline', 'upcoming'].includes(m.state))),
+  // By state, not by `online`: an in-person meeting whose transcript was imported has one too.
+  all: (m, showNone) => m.ended && (showNone || !['none', 'offline', 'upcoming'].includes(m.state)),
   process: m => m.state === 'available' || m.state === 'downloaded',
   ready: m => m.state === 'ready',
   attention: m => m.state === 'failed' || m.state === 'blocked',

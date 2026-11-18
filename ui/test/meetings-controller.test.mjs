@@ -162,3 +162,27 @@ test('needs_choice, blocked transcripts and missing folders lead to the next ste
   await ctl.handle('meeting-download', control({ id: 'mtg-roadmap' }));
   assert.deepEqual(calls.mutate.at(-1), ['meeting_download', { meetingId: 'mtg-roadmap' }]);
 });
+
+test('a failed step never ends with a success toast', async () => {
+  const successes = calls => calls.toasts.filter(t => t.tone === 'success').map(t => t.message);
+  // Make main when the folder is gone: the fix, and no “is now the main notes”.
+  let h = harness({ answers: { meeting_doc: failure('folder_missing') } });
+  await h.ctl.handle('doc-main', control({ id: 'mtg-philips', doc: 'short-summary' }));
+  assert.deepEqual(successes(h.calls), []);
+  assert.equal(h.calls.toasts.at(-1).tone, 'error');
+  // Check all while Connect may not read transcripts: no “Checking Teams for n transcripts”.
+  h = harness({ answers: { meeting_check: failure('permission_required') } });
+  await h.ctl.handle('meeting-check-all', control({}));
+  assert.deepEqual(successes(h.calls), []);
+  assert.equal(h.calls.mutate.filter(([op]) => op === 'meeting_check').length, 1, 'stops at the first failure');
+  // Make notes for all with no Claude chosen: no “Making notes for n meetings”, one chooser.
+  h = harness({ answers: { meeting_notes: failure('needs_choice') } });
+  await h.ctl.handle('meeting-make-all', control({}));
+  assert.deepEqual(successes(h.calls), []);
+  assert.equal(h.calls.mutate.filter(([op]) => op === 'meeting_notes').length, 1, 'stops at the first failure');
+  // The second of three fails: the toast counts only the first.
+  let n = 0;
+  h = harness({ answers: { meeting_notes: () => { if (++n === 2) throw failure('folder_missing'); return { queued: true }; } } });
+  await h.ctl.handle('meeting-make-all', control({}));
+  assert.match(successes(h.calls).join(), /^Making notes for 1 of 3 meetings/);
+});
