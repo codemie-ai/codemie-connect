@@ -431,13 +431,17 @@ export function parseGlossary(md = '') {
 }
 
 /** glossary.rs `parse_tags`: every `` `tag` `` that starts a list item. */
+/** glossary.rs `blank`: Unicode white space and a byte order mark. `\s` has the mark but not
+ *  U+0085 (next line), which Rust's `is_whitespace` has: both read the same set. */
+const trimBlank = s => s.replace(/^[\s\u0085]+/, '');
+
 export function parseTags(md = '') {
   const out = [];
   for (const line of String(md ?? '').split(/\r?\n/)) {
-    const start = line.trimStart();
+    const start = trimBlank(line);
     if (!['-', '*'].includes(start[0])) continue;
     const item = start.slice(1);
-    const rest = item.trimStart();
+    const rest = trimBlank(item);
     if (rest.length === item.length || rest[0] !== '`') continue;
     const end = rest.indexOf('`', 1);
     if (end > 1) out.push(rest.slice(1, end));

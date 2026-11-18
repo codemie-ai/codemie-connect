@@ -6,19 +6,29 @@
 // that a change of the meeting record's revision empties. app.js routes the `meeting-*` and
 // `doc-*` actions here; everything it touches is injected, so node:test drives it without a
 // browser. No optimistic updates: every change is an operation and the snapshot after it.
+import { escapeHtml } from './store.js';
 import { DEFAULT_FILTERS } from './tasks-model.js';
+import { quoted } from './tasks-controller.js';
 import { formatDate, formatTime } from './format.js';
 import {
   TABS, failedNotesJob, laneFor, lineAt, meetingItems, meetingRows, meetingTasks, parseGlossary, resolveTemplate, rulesOf,
 } from './meetings-model.js';
 import { importBody, makeNotesBody } from './view-meetings.js';
+import { plural } from './view-meeting-tabs.js';
 
-const quoted = value => String(value).replace(/["\\]/g, '\\$&');
 const IMPORT_MAX = 5 * 1024 * 1024;
 const GLOSSARY_FOR_MS = 60_000;
-const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 /** A friendly error that keeps the code the next step depends on. */
 const problemOf = (code, message) => Object.assign(new Error(message), { code });
+/** Problems of one meeting, which a batch goes on past, and how a summary says them. Any other
+ *  problem (needs_choice, needs_login, permission_required, offline, …) would repeat for every
+ *  meeting, so a batch stops at it. */
+const ONE_MEETING = {
+  folder_missing: 'its folder is gone',
+  not_found: 'it’s no longer in your calendar',
+  transcript_missing: 'Teams no longer has the transcript',
+  transcript_blocked: 'its organizer’s Teams doesn’t share it',
+};
 
 /**
  * `state.meetings` is the page's view state (`newMeetingsView()`); `snap()` the snapshot;
@@ -301,21 +311,62 @@ export function createMeetingsController({
     return dialog;
   }
 
+  /** Runs `run` for each meeting of a batch (Make notes for all, Check all). A problem of one
+   *  meeting (`ONE_MEETING`) is noted and the rest go on; any other would repeat for every
+   *  meeting (no Claude chosen, signed out, no permission, offline): its fix shows and the rest
+   *  stop. `{done, skipped: [{m, err}], stopped}`. */
+  async function eachMeeting(items, run) {
+    const out = { done: 0, skipped: [], stopped: null };
+    for (const m of items) {
+      try {
+        await run(m);
+        out.done++;
+      } catch (err) {
+        if (ONE_MEETING[err?.code]) {
+          out.skipped.push({ m, err });
+          continue;
+        }
+        out.stopped = err;
+        try {
+          problem(err, m.id);
+        } catch {
+          toast(err?.message || String(err), 'error');
+        }
+        break;
+      }
+    }
+    return out;
+  }
+
+  /** What a batch did, in one toast: all of it, some of it (and which meetings need the person,
+   *  with a way to open them), or none of it. Nothing after a stop but the count queued before
+   *  it: the stop's own fix is already showing. */
+  function batchToast({ done, skipped, stopped }, total, { verb, noun, all }) {
+    if (stopped) {
+      if (done) toast(`${verb} ${done} of ${plural(total, noun)}. The others wait until that’s fixed.`, 'info');
+      return;
+    }
+    if (!skipped.length) {
+      if (done) toast(all(done), 'success');
+      return;
+    }
+    const names = skipped.slice(0, 3).map(x => `“${x.m.title}”`).join(', ') + (skipped.length > 3 ? ` and ${skipped.length - 3} more` : '');
+    const whys = [...new Set(skipped.map(x => ONE_MEETING[x.err.code]))];
+    const why = whys.length === 1 ? whys[0] : 'each has its reason on the meeting';
+    const need = `${plural(skipped.length, 'meeting')} ${skipped.length === 1 ? 'needs' : 'need'} you: ${names} (${why}).`;
+    const first = skipped[0].m.id;
+    const action = { label: skipped.length === 1 ? 'Open it' : 'Open the first', run: () => open(first) };
+    if (done) toast(`${verb} ${done} of ${plural(total, noun)} · ${skipped.length === 1 ? '1 needs you' : `${skipped.length} need you`}: ${names} (${why}).`, 'info', action);
+    else toast(`${verb === 'Making notes for' ? 'No notes were started' : 'Nothing was checked'} · ${need}`, 'error', action);
+  }
+
   /** Make notes for every transcript without notes, each with its own template. */
   async function makeAll() {
     const s = snap();
     const rules = rulesOf(s);
-    const todo = meetingItems(s, now()).filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run);
-    let made = 0;
-    for (const m of todo) {
-      const templateId = resolveTemplate(m.ev, m.rec, s, rules).id;
-      // The first failure shows its fix and stops the rest, which would mostly fail the same way
-      // (no Claude chosen, signed out); the ones already queued are counted.
-      if (!await guarded(m.id, () => makeNotes(m.id, { templateId, wishes: '', findTasks: true, remember: false, batch: true }))) break;
-      made++;
-    }
-    if (!made) return;
-    toast(made === todo.length ? `Making notes for ${plural(made, 'meeting')}. Each uses its own template.` : `Making notes for ${made} of ${plural(todo.length, 'meeting')}. Each uses its own template.`, 'success');
+    const todo = meetingItems(s, now()).filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run && !m.paused);
+    const result = await eachMeeting(todo, m => makeNotes(m.id, { templateId: resolveTemplate(m.ev, m.rec, s, rules).id, wishes: '', findTasks: true, remember: false, batch: true }));
+    batchToast(result, todo.length, { verb: 'Making notes for', noun: 'meeting', all: n => `Making notes for ${plural(n, 'meeting')}. Each uses its own template.` });
   }
 
   async function retry(id) {
@@ -414,13 +465,15 @@ export function createMeetingsController({
   async function deleteDoc(id, docId) {
     const doc = docOf(id, docId);
     if (!doc) throw new Error('This document is no longer there.');
+    // The version shown when Delete was chosen: native refuses when a newer one was made since.
+    const base = { baseVersion: doc.version, baseRev: doc.rev };
     const kept = (doc.versions || []).length;
     confirmModal({
       title: `Delete “${doc.name}”?`,
       text: `The document${kept ? ` and its ${plural(kept, 'earlier version')}` : ''} move to notes-history in the meeting folder. The transcript, the other documents and the tasks stay.`,
       confirm: 'Delete document', variant: 'danger', initialFocus: 'cancel', guard: true,
       onConfirm: async () => {
-        await mutate('meeting_doc', { meetingId: id, docId, action: 'delete' });
+        await mutate('meeting_doc', { meetingId: id, docId, action: 'delete', ...base });
         const view = v();
         if (view.docView[id] === docId) delete view.docView[id];
         if ((record(id)?.data?.docs || []).length < 2) setCompare(false);
@@ -487,8 +540,7 @@ export function createMeetingsController({
   async function filePreview(id, name) {
     const text = await fileText(id, name);
     const folder = record(id)?.data?.folder || '';
-    const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-    openModal({ title: name, subtitle: folder, size: 'lg', submit: 'Save a copy', cancel: 'Close', body: `<pre class="ws-mtg-pre">${esc(text)}</pre>`, onSubmit: () => { downloadText(name, text); } });
+    openModal({ title: name, subtitle: folder, size: 'lg', submit: 'Save a copy', cancel: 'Close', body: `<pre class="ws-mtg-pre">${escapeHtml(text)}</pre>`, onSubmit: () => { downloadText(name, text); } });
   }
 
   async function fileText(id, name) {
@@ -539,13 +591,9 @@ export function createMeetingsController({
       case 'meeting-check-all': {
         const waiting = meetingItems(snap(), now()).filter(m => m.state === 'pending' && !m.run);
         if (!waiting.length) return toast('No meeting is waiting for a transcript.', 'info');
-        let checked = 0;
-        // As Make notes for all: the first failure shows its fix and stops the rest.
-        for (const m of waiting) {
-          if (!await guarded(m.id, () => mutate('meeting_check', { meetingId: m.id }))) break;
-          checked++;
-        }
-        return checked ? toast(`Checking Teams for ${checked === waiting.length ? plural(checked, 'transcript') : `${checked} of ${plural(waiting.length, 'transcript')}`}`, 'success') : undefined;
+        // As Make notes for all: one meeting's problem is skipped, one that would repeat stops.
+        const result = await eachMeeting(waiting, m => mutate('meeting_check', { meetingId: m.id }));
+        return batchToast(result, waiting.length, { verb: 'Checking Teams for', noun: 'transcript', all: n => `Checking Teams for ${plural(n, 'transcript')}` });
       }
       case 'meeting-download': return guarded(id, () => download(id));
       case 'meeting-import': return importDialog(el.dataset?.id || null);
@@ -591,7 +639,9 @@ export function createMeetingsController({
         const voice = el.dataset.voice;
         await mutate('meeting_speakers', { meetingId: id, voice, address: el.value });
         const name = el.selectedOptions?.[0]?.textContent || el.value;
-        return toast(`${voice} is ${name}`, 'success');
+        // The voice as the transcript shows it ("Speaker 1"), never Teams' raw id ("@1").
+        const shown = el.dataset.name || (/^@\d+$/.test(voice) ? `Speaker ${voice.slice(1)}` : voice);
+        return toast(`${shown} is ${name}`, 'success');
       }
       case 'meeting-speaker-filter': view.speaker = el.dataset.key || ''; return render();
       case 'meeting-goto-line': return gotoLine(id, el.dataset.t || null, el.dataset.line !== undefined && el.dataset.line !== '' ? Number(el.dataset.line) : null);
@@ -636,7 +686,9 @@ export function createMeetingsController({
       case 'doc-version-current': delete view.version[`${id}:${docId}`]; return render();
       case 'doc-use-version': {
         const version = Number(el.dataset.version);
-        await mutate('meeting_doc', { meetingId: id, docId, action: 'version', version });
+        const doc = docOf(id, docId);
+        // Over the version shown now only: native refuses when the document changed since.
+        await mutate('meeting_doc', { meetingId: id, docId, action: 'version', version, baseVersion: doc?.version, baseRev: doc?.rev });
         delete view.version[`${id}:${docId}`];
         return toast(`Version ${version} is the current one again. The one it replaced is kept.`, 'success');
       }

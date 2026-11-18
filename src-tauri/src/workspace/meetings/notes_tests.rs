@@ -377,7 +377,7 @@ async fn notes_same_template_after_success_queues_again() {
     op(
         &e.core,
         Operation::MeetingDoc,
-        json!({"meetingId": "m1", "docId": "meeting-notes", "action": "version", "version": 1}),
+        json!({"meetingId": "m1", "docId": "meeting-notes", "action": "version", "version": 1, "baseVersion": 2, "baseRev": 2}),
     )
     .await
     .unwrap();
@@ -818,9 +818,12 @@ async fn meeting_doc_main_delete_and_edit() {
         .unwrap();
     assert_eq!(read_back["text"], "# A, edited");
     // Deleting the main document promotes the next one; its text is kept in notes-history/.
-    doc("delete", json!({"docId": "short-summary"}))
-        .await
-        .unwrap();
+    doc(
+        "delete",
+        json!({"docId": "short-summary", "baseVersion": 1, "baseRev": 1}),
+    )
+    .await
+    .unwrap();
     assert_eq!(text(&dir.join("notes.md")), "# A, edited");
     assert!(!dir.join("notes.meeting-notes.md").exists());
     let history: Vec<String> = std::fs::read_dir(dir.join("notes-history"))
@@ -834,9 +837,12 @@ async fn meeting_doc_main_delete_and_edit() {
     assert_eq!(m.docs[0].file, "notes.md");
     assert_eq!(m.state, MeetingState::Ready);
     // Deleting the last one: the transcript is still there, no notes.
-    doc("delete", json!({"docId": "meeting-notes"}))
-        .await
-        .unwrap();
+    doc(
+        "delete",
+        json!({"docId": "meeting-notes", "baseVersion": 1, "baseRev": 2}),
+    )
+    .await
+    .unwrap();
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Downloaded);
     assert!(m.docs.is_empty());
@@ -860,6 +866,59 @@ async fn meeting_doc_main_delete_and_edit() {
             .code,
         "validation"
     );
+}
+
+#[tokio::test]
+async fn delete_and_using_a_version_are_fenced_by_what_was_shown() {
+    let n = notes_env(vec![
+        outcome("# One", json!([])),
+        outcome("# Two", json!([])),
+    ]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    for _ in 0..2 {
+        make_notes(e, "m1", "meeting-notes", json!({}))
+            .await
+            .unwrap();
+        run_jobs(&e.core).await;
+    }
+    let doc = |action: &str, extra: Value| {
+        let mut data = json!({"meetingId": "m1", "docId": "meeting-notes", "action": action});
+        for (k, v) in extra.as_object().unwrap() {
+            data[k] = v.clone();
+        }
+        op(&e.core, Operation::MeetingDoc, data)
+    };
+    // Shown when it was version 1: a new version was made since, so neither is done.
+    for (action, extra) in [
+        ("delete", json!({"baseVersion": 1, "baseRev": 1})),
+        ("delete", json!({})),
+        (
+            "version",
+            json!({"version": 1, "baseVersion": 1, "baseRev": 1}),
+        ),
+    ] {
+        let refused = doc(action, extra.clone()).await.unwrap_err();
+        assert_eq!(refused.code, "conflict", "{action} {extra}");
+    }
+    assert_eq!(text(&dir.join("notes.md")), "# Two");
+    assert_eq!(meeting(&e.core, "m1").docs[0].version, 2);
+    // What is shown now: done.
+    doc(
+        "version",
+        json!({"version": 1, "baseVersion": 2, "baseRev": 2}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(text(&dir.join("notes.md")), "# One");
+    let shown = meeting(&e.core, "m1").docs[0].clone();
+    doc(
+        "delete",
+        json!({"baseVersion": shown.version, "baseRev": shown.rev}),
+    )
+    .await
+    .unwrap();
+    assert!(meeting(&e.core, "m1").docs.is_empty());
 }
 
 #[tokio::test]
@@ -1464,7 +1523,7 @@ async fn a_glossary_that_cannot_be_read_whole_is_never_written_over() {
 /// `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
 #[tokio::test]
 async fn contract_fixtures_match_the_real_meeting_notes() {
-    use super::glossary::{parse_glossary, parse_tags, EXAMPLE_GLOSSARY, EXAMPLE_TAGS};
+    use super::glossary::{parse_glossary, parse_tags, EXAMPLE_GLOSSARY, EXAMPLE_TAGS, TAG_EDGES};
     use super::rules::Rule;
     use super::templates;
     let (runner, gate) = FakeRunner::gated(vec![
@@ -1542,8 +1601,9 @@ async fn contract_fixtures_match_the_real_meeting_notes() {
 
     // The glossary and tag list as Settings › Glossary & tags shows them parsed.
     let glossary = format!("{EXAMPLE_GLOSSARY}- **Jeroen** — heard as “Yeroen”\n");
-    let parse = json!({"glossary": glossary, "tags": EXAMPLE_TAGS,
-        "expected": {"glossary": parse_glossary(&glossary), "tags": parse_tags(EXAMPLE_TAGS)}});
+    let parse = json!({"glossary": glossary, "tags": EXAMPLE_TAGS, "tagEdges": TAG_EDGES,
+        "expected": {"glossary": parse_glossary(&glossary), "tags": parse_tags(EXAMPLE_TAGS),
+            "tagEdges": parse_tags(TAG_EDGES)}});
 
     // Which template a meeting uses, and whether notes are made by themselves.
     let local = |id: &str, kind: &str, data: Value| Record {
@@ -1790,7 +1850,7 @@ async fn history_copies_never_overwrite_an_archived_document() {
     op(
         &e.core,
         Operation::MeetingDoc,
-        json!({"meetingId": "m1", "docId": "meeting-notes", "action": "delete"}),
+        json!({"meetingId": "m1", "docId": "meeting-notes", "action": "delete", "baseVersion": 1, "baseRev": 1}),
     )
     .await
     .unwrap();

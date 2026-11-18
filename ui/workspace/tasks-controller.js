@@ -12,7 +12,8 @@ import { formatDate } from './format.js';
 
 const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 const short = text => (String(text).length > 40 ? `${String(text).slice(0, 40)}…` : String(text));
-const quoted = value => String(value).replace(/["\\]/g, '\\$&');
+/** A value inside a CSS attribute selector's quotes. */
+export const quoted = value => String(value).replace(/["\\]/g, '\\$&');
 /** Below this gap between two neighbours a dropped card gets no order of its own (orders near
  *  1.8e9 have about 2^-21 of room), so the column is renumbered first. */
 const MIN_GAP = 1e-3;
@@ -282,6 +283,8 @@ export function createTasksController({
         // A typed date is saved when it is left (blur or Enter), once, and only when it changed.
         const t = find(id);
         if (!t) throw missing();
+        // A date typed only in part reads "" (`validity.badInput`): the due date stays.
+        if (el.validity?.badInput) return null;
         if ((el.value || null) === (t.data.due || null)) return null;
         return mutate('task_save', { id, due: el.value || null });
       }

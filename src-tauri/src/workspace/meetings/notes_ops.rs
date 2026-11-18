@@ -196,10 +196,10 @@ impl Core {
 
     /// `meeting_doc {meetingId, docId, action, version?, text?, baseVersion?, baseRev?}`: `main`
     /// makes a document `notes.md`, `delete` moves it to `notes-history/`, `version` uses an
-    /// earlier version again, `edit` saves the person's text. An edit sends the document's
-    /// `version` and `rev` as the editor opened them (`baseVersion`, `baseRev`); when its text
-    /// changed since (a run, an earlier version used again, another edit) it is refused with
-    /// `conflict`.
+    /// earlier version again, `edit` saves the person's text. Delete, version and edit send the
+    /// document's `version` and `rev` as the person saw them (`baseVersion`, `baseRev`); when its
+    /// text changed since (a run, an earlier version used again, another edit) they are refused
+    /// with `conflict`. Making a document the main one only renames files, so it needs no fence.
     fn meeting_doc(&self, req: &Request) -> Result<Value> {
         let action = req.data["action"].as_str().unwrap_or("");
         if !matches!(action, "main" | "delete" | "version" | "edit") {
@@ -225,21 +225,23 @@ impl Core {
             .filter(|d| d.is_dir())
             .ok_or_else(folder_missing)?;
         let version = |key: &str| req.data[key].as_u64().and_then(|v| u32::try_from(v).ok());
+        // What the person saw: delete, an earlier version and an edit are refused when the
+        // document changed since.
+        let base = docs::Base {
+            version: version("baseVersion"),
+            rev: version("baseRev"),
+        };
         match action {
             "main" => docs::set_main(&dir, &mut m, doc_id, &zone)?,
-            "delete" => docs::delete(&dir, &mut m, doc_id, &zone)?,
+            "delete" => docs::delete(&dir, &mut m, doc_id, base, &zone)?,
             "version" => {
                 let v = version("version").ok_or_else(|| invalid("Choose a version."))?;
-                docs::use_version(&dir, &mut m, doc_id, v, &zone)?
+                docs::use_version(&dir, &mut m, doc_id, v, base, &zone)?
             }
             _ => {
                 let text = req.data["text"]
                     .as_str()
                     .ok_or_else(|| invalid("Write the notes."))?;
-                let base = docs::Base {
-                    version: version("baseVersion"),
-                    rev: version("baseRev"),
-                };
                 docs::edit(&dir, &mut m, doc_id, text, base, now())?
             }
         }

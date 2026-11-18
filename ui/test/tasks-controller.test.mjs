@@ -251,3 +251,13 @@ test('a typed due date saves once, only when it changed', async () => {
   await ctl.handle('task-due', control({ id: 'task-legal' }, { value: '2026-11-27' }));
   assert.deepEqual(calls.mutate[0], ['task_save', { id: 'task-legal', due: '2026-11-27' }]);
 });
+
+test('a date typed only in part, left behind, keeps the due date', async () => {
+  const { ctl, calls } = harness();
+  // The field reads "" while its text isn't a whole date (validity.badInput): nothing is cleared.
+  await ctl.handle('task-due', control({ id: 'task-legal' }, { value: '', validity: { badInput: true } }));
+  assert.equal(calls.mutate.length, 0);
+  // Emptied on purpose: the date goes.
+  await ctl.handle('task-due', control({ id: 'task-legal' }, { value: '', validity: { badInput: false } }));
+  assert.deepEqual(calls.mutate[0], ['task_save', { id: 'task-legal', due: null }]);
+});

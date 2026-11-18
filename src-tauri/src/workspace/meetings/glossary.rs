@@ -138,12 +138,18 @@ pub fn parse_glossary(md: &str) -> Glossary {
     g
 }
 
+/// A blank at the start of a tag line, as the window's `parseTags` reads one: Unicode white
+/// space, and a byte order mark (which JavaScript's `trimStart` drops and Rust's keeps).
+fn blank(c: char) -> bool {
+    c.is_whitespace() || c == '\u{FEFF}'
+}
+
 /// Every `` `tag` `` that starts a list item (`- ` or `* `), as the prototype's `parseTags`.
 pub fn parse_tags(md: &str) -> Vec<String> {
     md.lines()
         .filter_map(|line| {
-            let item = line.trim_start().strip_prefix(['-', '*'])?;
-            let rest = item.trim_start();
+            let item = line.trim_start_matches(blank).strip_prefix(['-', '*'])?;
+            let rest = item.trim_start_matches(blank);
             if rest.len() == item.len() {
                 return None;
             }
@@ -288,6 +294,12 @@ Spellings and names the AI should get right. Write it the way you would brief a 
 - **Hannah Lee**, **Marco Rossi** — Northwind (partner), partnerships and security
 ";
 
+/// Tag lines whose blanks differ between Rust and JavaScript (a byte order mark, a next line, a
+/// no-break space), for the parity fixture.
+#[cfg(test)]
+pub(crate) const TAG_EDGES: &str =
+    "\u{FEFF}- `bom`\n\u{85}- `nel`\n-\u{A0}`nbsp`\n-\u{FEFF}`after-bom`\n\u{FEFF}\n";
+
 /// The example tag list.
 #[cfg(test)]
 pub(crate) const EXAMPLE_TAGS: &str = "# Tags
@@ -390,6 +402,12 @@ mod tests {
         assert_eq!(
             parse_tags("Use `meeting` first.\n  * `pilot` and `x`\n-`nospace`\n- ``\n-\t`tab`\n"),
             vec!["pilot", "tab"]
+        );
+        // A byte order mark (an editor's, before the first line) is blank like a space, as in
+        // the window's parseTags; so is a next line (U+0085).
+        assert_eq!(
+            parse_tags(TAG_EDGES),
+            vec!["bom", "nel", "nbsp", "after-bom"]
         );
     }
 

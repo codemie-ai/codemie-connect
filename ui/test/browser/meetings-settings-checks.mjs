@@ -10,7 +10,7 @@ const dialog = '.ws-modal[open]';
 const submit = `${dialog} .ws-modal-footer button[type=submit]`;
 const toggleOf = action => `label.ws-switch:has([data-action="${action}"])`;
 
-export async function meetingSettingsChecks({ open, check, assert, shot, quiet }) {
+export async function meetingSettingsChecks({ open, check, assert, shot, quiet, settled }) {
   const calls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
   const lastCall = async (page, op) => (await calls(page, op)).at(-1);
   const waitCall = (page, op, test = '() => true') => page.waitForFunction(([o, t]) => window.__bridgeCalls.some(([x, d]) => x === o && new Function('d', `return (${t})(d)`)(d)), [op, test]);
@@ -18,15 +18,6 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet }
     const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-settings-panels, .ws-settings-content, .ws-ms-editor, .ws-ms-tpl-card, .ws-ms-rule, .ws-ms-md-card, .ws-ms-file-row, .ws-ms-pattern-preview, .ws-ms-location, .ws-modal[open] .ws-modal-body')].filter(el => el.clientWidth > 0).map(el => el.scrollWidth - el.clientWidth)));
     assert(overflow <= 0, `${what} overflows by ${overflow}px`);
   };
-  /** Waits until the page stops re-rendering (no DOM change for 200 ms). */
-  const settled = (page, limit = 4000) => page.evaluate(limit => new Promise((resolve, reject) => {
-    let timer;
-    const finish = fn => { observer.disconnect(); clearTimeout(timer); clearTimeout(cap); fn(); };
-    const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => finish(resolve), 200); });
-    const cap = setTimeout(() => finish(() => reject(new Error(`still re-rendering after ${limit} ms`))), limit);
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-    timer = setTimeout(() => finish(resolve), 200);
-  }), limit);
   const tab = async (page, id) => {
     await page.click(`.ws-settings-nav button[data-tab="${id}"]`);
     await page.waitForSelector(`.ws-settings-nav button[data-tab="${id}"][aria-current="page"]`);

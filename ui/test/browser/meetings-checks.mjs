@@ -19,22 +19,13 @@ const VTT = `WEBVTT
 <v Taylor Morgan>Great, I’ll send the draft agreement on Friday.</v>
 `;
 
-export async function meetingChecks({ open, check, assert, shot, OUT }) {
+export async function meetingChecks({ open, check, assert, shot, settled, OUT }) {
   const calls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
   const lastCall = async (page, op) => (await calls(page, op)).at(-1);
   const noOverflow = async (page, what) => {
     const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-mtg-list, .ws-mtg-detail, .ws-mtg-list-body, .ws-modal[open] .ws-modal-body, .ws-mtg-legend')].filter(el => el.clientWidth > 0 && getComputedStyle(el).visibility !== 'hidden').map(el => el.scrollWidth - el.clientWidth)));
     assert(overflow <= 0, `${what} overflows by ${overflow}px`);
   };
-  /** Waits until the page stops re-rendering (no DOM change for 200 ms). */
-  const settled = (page, limit = 4000) => page.evaluate(limit => new Promise((resolve, reject) => {
-    let timer;
-    const finish = fn => { observer.disconnect(); clearTimeout(timer); clearTimeout(cap); fn(); };
-    const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => finish(resolve), 200); });
-    const cap = setTimeout(() => finish(() => reject(new Error(`still re-rendering after ${limit} ms`))), limit);
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-    timer = setTimeout(() => finish(resolve), 200);
-  }), limit);
   const hash = page => page.evaluate(() => location.hash);
   /** A screenshot once a dialog has finished opening (its fade-in is 160 ms). */
   const dialogShot = async (page, name) => {
@@ -310,6 +301,27 @@ export async function meetingChecks({ open, check, assert, shot, OUT }) {
         const sent = await lastCall(page, 'meeting_notes');
         assert(sent.meetingId === 'mtg-vendor' && sent.templateId === 'short-summary' && sent.wishes === 'Only the decisions, please' && sent.findTasks === false, JSON.stringify(sent));
         await page.waitForSelector(`${row('mtg-vendor')} .ws-tone-success`, { timeout: 8000 });
+      });
+
+      await check(`${tag}: Make notes for all goes on past a meeting whose folder is gone`, async () => {
+        await page.click('[data-action="meeting-filter"][data-filter="process"]');
+        await settled(page);
+        const todo = await page.locator('.ws-mtg-row').evaluateAll(rows => rows.filter(r => !r.querySelector('.ws-mtg-row-spin')).map(r => ({ id: r.dataset.id, title: r.querySelector('strong').innerText.trim(), saved: /No notes yet/.test(r.innerText) })));
+        const gone = todo.find(x => x.saved);
+        assert(gone && todo.length >= 2, JSON.stringify(todo));
+        await page.evaluate(id => window.__folderMissing(id), gone.id);
+        await page.evaluate(() => { window.__notesPlan = { outcome: 'ok', stepMs: 150 }; });
+        const sends = (await calls(page, 'meeting_notes')).length;
+        await page.click('[data-action="meeting-make-all"]');
+        const summary = page.locator(`.ws-toast:has-text("needs you: “${gone.title}” (its folder is gone)")`);
+        await summary.waitFor();
+        const text = await summary.innerText();
+        assert(text.startsWith(`Making notes for ${todo.length - 1} of ${todo.length} meetings`), text);
+        assert((await calls(page, 'meeting_notes')).length - sends === todo.length, 'every meeting was tried');
+        await page.evaluate(() => document.querySelectorAll('.ws-toast').forEach(t => { if (!/needs you/.test(t.innerText)) t.remove(); }));
+        await page.screenshot({ path: `${OUT}/${tag}-meetings-make-all-skipped.png` });
+        await summary.locator('.ws-toast-action').click();
+        await page.waitForFunction(id => location.hash.startsWith(`#/meetings/${encodeURIComponent(id)}/`), gone.id);
       });
 
       await check(`${tag}: Today card → meeting`, async () => {

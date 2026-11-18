@@ -10,7 +10,7 @@ import { agoLabel, formatDate } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { columnName } from './tasks-model.js';
 import { parseGlossary, parseTags, resolveTemplate, ruleText, rulesOf, templatesOf } from './meetings-model.js';
-import { plural, tplColor } from './view-meeting-tabs.js';
+import { plural, tplColor, tplIcon } from './view-meeting-tabs.js';
 
 /** What a template's sections are called (the prototype's labels). */
 export const SECTION_LABELS = {
@@ -25,8 +25,6 @@ export const VARIABLES = [
   ['{{glossary}}', 'Your glossary (Markdown)'], ['{{tags}}', 'Your tag list (Markdown)'], ['{{wishes}}', 'What you typed for this run'], ['{{transcript}}', 'The transcript, line by line'],
 ];
 export const SWATCHES = ['#5677C8', '#259F4C', '#C084FC', '#F5A534', '#E65100', '#2297F6', '#FE3B4C', '#00796B', '#7B3FBF'];
-const ICONS = ['note', 'list', 'users', 'sparkles', 'quote', 'tasks', 'transcript'];
-const tplIcon = t => (t?.kind === 'skill' ? 'skill' : ICONS.includes(t?.icon) ? t.icon : 'note');
 
 /** A refusal shown under the field it is about (`key`: `meetings.root`, `tpl.name`, …). */
 export const fieldError = (v, key) => (v?.errors?.[key] ? `<p class="ws-field-error" role="alert" data-error-for="${e(key)}">${e(v.errors[key])}</p>` : '');

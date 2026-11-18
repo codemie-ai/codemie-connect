@@ -18,7 +18,8 @@ const attr = (k, v) => ` ${k}="${e(v)}"`;
 const COLOR = /^#[0-9a-f]{3,8}$/i;
 /** A template's colour for `--tpl` (only a plain hex colour gets through). */
 export const tplColor = t => (COLOR.test(String(t?.color || '')) ? t.color : '#5677C8');
-const tplIcon = t => (t?.kind === 'skill' ? 'skill' : ['note', 'list', 'users', 'sparkles', 'quote', 'tasks', 'transcript'].includes(t?.icon) ? t.icon : 'note');
+/** The icon a template shows: a skill's own, else one of the template icons (a note by default). */
+export const tplIcon = t => (t?.kind === 'skill' ? 'skill' : ['note', 'list', 'users', 'sparkles', 'quote', 'tasks', 'transcript'].includes(t?.icon) ? t.icon : 'note');
 
 /** One item of a ⋯ menu: `[label, action, attrs, icon, danger]`; `'-'` is a divider, `['#', text]` a heading. */
 export function menuItems(items) {
@@ -368,12 +369,12 @@ const voiceKey = seg => (seg.address ? `a:${String(seg.address).toLowerCase()}` 
 function speakerMap(p, mc, unnamed, [title, text]) {
   const mapped = new Set(Object.values(mc.r.speakers || {}).map(a => String(a).toLowerCase()));
   const choices = mc.people.filter(x => x.address && !x.me && !mapped.has(x.address.toLowerCase()));
-  return `<div class="ws-banner ws-mtg-speakers-banner">${icon('users')}<div><strong>${e(title)}</strong><p>${e(text)}</p></div><div class="ws-mtg-speaker-map">${unnamed.map(seg => `<label><span>${e(seg.name)}</span>${selectBox(`data-action="meeting-speaker" data-id="${e(mc.m.id)}" data-voice="${e(seg.voice)}" aria-label="${e(`Who is ${seg.name}?`)}"`, `${option('', 'Who is it?', true)}${choices.map(x => option(x.address, x.name, false)).join('')}`)}</label>`).join('')}</div></div>`;
+  return `<div class="ws-banner ws-mtg-speakers-banner">${icon('users')}<div><strong>${e(title)}</strong><p>${e(text)}</p></div><div class="ws-mtg-speaker-map">${unnamed.map(seg => `<label><span>${e(seg.name)}</span>${selectBox(`data-action="meeting-speaker" data-id="${e(mc.m.id)}" data-voice="${e(seg.voice)}" data-name="${e(seg.name)}" aria-label="${e(`Who is ${seg.name}?`)}"`, `${option('', 'Who is it?', true)}${choices.map(x => option(x.address, x.name, false)).join('')}`)}</label>`).join('')}</div></div>`;
 }
 
 /** A transcript that isn't readable yet: still in Teams, its save failed, being read, or gone. */
 function transcriptMissing(p, mc) {
-  const { m, r } = mc;
+  const { m } = mc;
   if (['pending', 'blocked', 'none', 'offline', 'upcoming'].includes(m.state)) return explainer(p, mc);
   if (m.state === 'available') {
     if (mc.paused) return pausedBanner(mc);

@@ -10,17 +10,17 @@ import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { formatDate, formatTime } from './format.js';
 import { COLUMN_NAMES } from './tasks-model.js';
+import { quoted } from './tasks-controller.js';
 import { templatesOf } from './meetings-model.js';
 import { badge, select } from './ui.js';
 import {
   draftOf, editorBar, exampleText, isDirty, latestCard, latestDoc, latestKey, mdEditor, mdStatus, mdSummary, ruleTestResult, sortedRules, swatches, templateOf, wordsHint,
 } from './settings-meetings-editors.js';
 import { newMeetingsSettingsView, tryableMeetings } from './view-settings-meetings.js';
+import { plural } from './view-meeting-tabs.js';
 
 export { newMeetingsSettingsView };
 
-const quoted = value => String(value).replace(/["\\]/g, '\\$&');
-const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 const NUMBERS = new Set(['checkEveryMin', 'waitMin', 'doneDays']);
 const TEXT_SAVE_MS = 600;
 const LINKED_READ_MS = 15_000;

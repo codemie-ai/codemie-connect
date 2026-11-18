@@ -60,6 +60,12 @@
         "Entra ID"
       ]
     },
+    "tagEdges": [
+      "bom",
+      "nel",
+      "nbsp",
+      "after-bom"
+    ],
     "tags": [
       "meeting",
       "philips",
@@ -74,5 +80,6 @@
     ]
   },
   "glossary": "# Glossary\n\nSpellings and names the AI should get right. Write it the way you would brief a new colleague — Connect picks up the **bold** terms and whatever follows “heard as”.\n\n## Me\n**Taylor Morgan** — also “Taylor”, “Тейлор”, “TM”. When the team says “we will…”, the task is mine.\n\n## Products and tools\n- **CodeMie** — EPAM’s AI platform; heard as “code me”, “code mie”\n- **AI/Run** — the EPAM AI programme; heard as “air run”\n- **LiteLLM** — the model proxy behind CodeMie budgets; heard as “light LLM”, “lite LLM”\n- **Bedrock** — AWS models; heard as “bedrox”\n- **Entra ID** — Microsoft identity, where Philips keeps its groups; heard as “entra id”\n\n## People and roles\n- **Jeroen de Vries** — Philips, product owner\n- **Anouk Bakker** — Philips, solution architect\n- **Priya Raman** — delivery manager, runs the weekly and the stand-ups\n- **Hannah Lee**, **Marco Rossi** — Northwind (partner), partnerships and security\n- **Jeroen** — heard as “Yeroen”\n",
+  "tagEdges": "﻿- `bom`\n- `nel`\n- `nbsp`\n-﻿`after-bom`\n﻿\n",
   "tags": "# Tags\n\nNotes get tags from this list only, `meeting` first. When nothing fits a topic, the AI uses fewer tags and says which one was missing.\n\n- `meeting` — every meeting note\n- `philips` — the Philips account\n- `compliance` — audits, retention, legal hold\n- `pilot` — pilots and rollouts\n- `release` — releases and go/no-go decisions\n- `codemie-connect` — the Connect desktop app\n- `architecture` — design reviews and technical decisions\n- `interview` — interviews I ran\n- `stand-up` — daily stand-ups\n- `partner` — partners and resellers\n"
 }

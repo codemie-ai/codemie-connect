@@ -206,13 +206,24 @@ pub(super) fn set_main(dir: &Path, m: &mut MeetingRecord, doc_id: &str, zone: &s
 }
 
 /// Deletes a document: its text moves to `notes-history/`, its earlier versions stay there.
-/// The next document becomes the main one; without documents the meeting has no notes.
-pub(super) fn delete(dir: &Path, m: &mut MeetingRecord, doc_id: &str, zone: &str) -> Result<()> {
+/// The next document becomes the main one; without documents the meeting has no notes. Only
+/// the text the person saw (`base`) is deleted: one changed since is a `conflict`.
+pub(super) fn delete(
+    dir: &Path,
+    m: &mut MeetingRecord,
+    doc_id: &str,
+    base: Base,
+    zone: &str,
+) -> Result<()> {
     let index = m
         .docs
         .iter()
         .position(|d| d.id == doc_id)
         .ok_or_else(doc_gone)?;
+    base.check(
+        &m.docs[index],
+        "A new version of this document was just made, so it wasn’t deleted. Look at it, then delete it if you still want to.",
+    )?;
     let doc = m.docs[index].clone();
     archive(dir, m, &doc.file, doc.updated_at, &doc.template, zone)?;
     m.docs.remove(index);
@@ -233,12 +244,14 @@ pub(super) fn delete(dir: &Path, m: &mut MeetingRecord, doc_id: &str, zone: &str
 }
 
 /// Uses an earlier, kept version of a document again: it becomes the document (with its own
-/// number), and the version it replaces is kept in `notes-history/`.
+/// number), and the version it replaces is kept in `notes-history/`. Only over the text the
+/// person saw (`base`): a document changed since is a `conflict`.
 pub(super) fn use_version(
     dir: &Path,
     m: &mut MeetingRecord,
     doc_id: &str,
     version: u32,
+    base: Base,
     zone: &str,
 ) -> Result<()> {
     let index = m
@@ -246,6 +259,10 @@ pub(super) fn use_version(
         .iter()
         .position(|d| d.id == doc_id)
         .ok_or_else(doc_gone)?;
+    base.check(
+        &m.docs[index],
+        "This document changed since you chose that version, so nothing was replaced. Look at it again, then choose.",
+    )?;
     if m.docs[index].version == version {
         return Ok(());
     }
@@ -297,11 +314,23 @@ pub(super) fn use_version(
     Ok(())
 }
 
-/// What an edit was opened on: the document's `version` and `rev` when the editor opened it.
+/// What a change was made on: the document's `version` and `rev` as the person saw it (when
+/// the editor opened it, or when Delete or an earlier version was chosen).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Base {
     pub(super) version: Option<u32>,
     pub(super) rev: Option<u32>,
+}
+
+impl Base {
+    /// `conflict` (saying `message`) unless `doc` is still what the person saw; a change that
+    /// doesn't say what it saw is refused the same way.
+    fn check(self, doc: &Doc, message: &str) -> Result<()> {
+        if self.version != Some(doc.version) || self.rev != Some(doc.rev) {
+            return Err(WorkspaceError::new("conflict", message));
+        }
+        Ok(())
+    }
 }
 
 /// Saves the person's edit of a document, unless its text changed since they opened it: a new
@@ -320,12 +349,10 @@ pub(super) fn edit(
         .iter_mut()
         .find(|d| d.id == doc_id)
         .ok_or_else(doc_gone)?;
-    if base.version != Some(doc.version) || base.rev != Some(doc.rev) {
-        return Err(WorkspaceError::new(
-            "conflict",
-            "This document changed while you were editing it. Copy your text, then open the document again.",
-        ));
-    }
+    base.check(
+        doc,
+        "This document changed while you were editing it. Copy your text, then open the document again.",
+    )?;
     if text.contains('\0') {
         return Err(WorkspaceError::new(
             "validation",

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMeetingsController } from '../workspace/meetings-controller.js';
-import { newMeetingsView } from '../workspace/meetings-model.js';
+import { meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
 import { newTasksView } from '../workspace/tasks-model.js';
 import { buildSnapshot, withMeetings, meetingContract } from './fixtures/workspace-fixture.mjs';
 
@@ -180,11 +180,12 @@ test('a failed step never ends with a success toast', async () => {
   await h.ctl.handle('meeting-make-all', control({}));
   assert.deepEqual(successes(h.calls), []);
   assert.equal(h.calls.mutate.filter(([op]) => op === 'meeting_notes').length, 1, 'stops at the first failure');
-  // The second of three fails: the toast counts only the first.
+  // The second of three can't be queued: no plain success; the others still are.
   let n = 0;
   h = harness({ answers: { meeting_notes: () => { if (++n === 2) throw failure('folder_missing'); return { queued: true }; } } });
   await h.ctl.handle('meeting-make-all', control({}));
-  assert.match(successes(h.calls).join(), /^Making notes for 1 of 3 meetings/);
+  assert.deepEqual(successes(h.calls), []);
+  assert.match(h.calls.toasts.at(-1).message, /^Making notes for 2 of 3 meetings · 1 needs you/);
 });
 
 test('a Microsoft sign-in leads to Microsoft and a Claude one to Settings › Claude', async () => {
@@ -258,4 +259,71 @@ test('the Notes tab’s Make notes form keeps what was chosen and typed in the v
   refused.ctl.input({ dataset: { make: 'mtg-roadmap' }, name: 'wishes', type: 'textarea', value: 'Keep me', closest: () => null });
   await refused.ctl.submit({ dataset: { form: 'meeting-notes', id: 'mtg-roadmap' } }, form({ template: 'meeting-notes', wishes: 'Keep me', findTasks: 'on' }));
   assert.equal(refused.state.meetings.makeForm['mtg-roadmap'].wishes, 'Keep me');
+});
+
+test('Make notes for all and Check all go on past one meeting’s problem and stop at one that would repeat', async () => {
+  const tried = (calls, op) => calls.mutate.filter(([o]) => o === op).map(([, d]) => d.meetingId);
+  // A missing folder: the others are still queued, and the summary says which one needs you.
+  let h = harness({ answers: { meeting_notes: d => { if (d.meetingId === 'mtg-roadmap') throw failure('folder_missing', 'The meeting folder was moved or deleted.'); return { queued: true }; } } });
+  await h.ctl.handle('meeting-make-all', control({}));
+  assert.equal(tried(h.calls, 'meeting_notes').length, 3, 'every meeting was tried');
+  let summary = h.calls.toasts.at(-1);
+  assert.equal(summary.message, 'Making notes for 2 of 3 meetings · 1 needs you: “Roadmap review” (its folder is gone).');
+  assert.equal(summary.tone, 'info');
+  assert.equal(summary.action.label, 'Open it');
+  await summary.action.run();
+  assert.equal(h.state.meetings.selected, 'mtg-roadmap');
+  // None could be queued: an error, still naming them, the first one opens.
+  h = harness({ answers: { meeting_notes: failure('transcript_missing', 'Teams no longer has this transcript.') } });
+  await h.ctl.handle('meeting-make-all', control({}));
+  assert.equal(tried(h.calls, 'meeting_notes').length, 3);
+  summary = h.calls.toasts.at(-1);
+  assert.match(summary.message, /^No notes were started · 3 meetings need you: “[^”]+”, “[^”]+”, “[^”]+” \(Teams no longer has the transcript\)\.$/);
+  assert.equal(summary.tone, 'error');
+  assert.equal(summary.action.label, 'Open the first');
+  // Signed out would repeat for every meeting: one try and its fix, with what was queued before.
+  let n = 0;
+  h = harness({ answers: { meeting_notes: () => { if (++n === 2) throw failure('needs_login', 'Connect Microsoft.'); return { queued: true }; } } });
+  await h.ctl.handle('meeting-make-all', control({}));
+  assert.equal(tried(h.calls, 'meeting_notes').length, 2);
+  assert.ok(h.calls.toasts.some(t => t.action?.label === 'Sign in to Microsoft'), 'its fix');
+  assert.equal(h.calls.toasts.at(-1).message, 'Making notes for 1 of 3 meetings. The others wait until that’s fixed.');
+  // Check all: the same rules.
+  const s = snapshot();
+  s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-release').data.state = 'pending';
+  h = harness({ s, answers: { meeting_check: d => { if (d.meetingId === 'mtg-release') throw failure('transcript_blocked', 'Teams didn’t return this meeting.'); return { queued: true }; } } });
+  await h.ctl.handle('meeting-check-all', control({}));
+  const checked = tried(h.calls, 'meeting_check');
+  const waiting = meetingItems(s, NOW).filter(m => m.state === 'pending' && !m.run).map(m => m.id);
+  assert.deepEqual(checked, waiting, 'every waiting meeting was checked');
+  assert.ok(checked.indexOf('mtg-release') < checked.length - 1, `it went on past the blocked one: ${checked.join()}`);
+  assert.equal(h.calls.toasts.at(-1).message, `Checking Teams for ${checked.length - 1} of ${checked.length} transcripts · 1 needs you: “Release 2.4 go/no-go” (its organizer’s Teams doesn’t share it).`);
+  h = harness({ s, answers: { meeting_check: failure('offline', 'Microsoft can’t be reached.') } });
+  await h.ctl.handle('meeting-check-all', control({}));
+  assert.equal(tried(h.calls, 'meeting_check').length, 1, 'offline would repeat');
+});
+
+test('naming a speaker says who the voice was, by the name the transcript shows', async () => {
+  const { ctl, calls } = harness();
+  await ctl.handle('meeting-speaker', control({ id: 'mtg-philips', voice: '@1', name: 'Speaker 1' }, { value: 'jordan.lee@example.test', selectedOptions: [{ textContent: 'Jordan Lee' }] }));
+  assert.deepEqual(calls.mutate.at(-1), ['meeting_speakers', { meetingId: 'mtg-philips', voice: '@1', address: 'jordan.lee@example.test' }]);
+  assert.equal(calls.toasts.at(-1).message, 'Speaker 1 is Jordan Lee');
+  // Without the shown name, a Teams voice id still reads as a speaker.
+  await ctl.handle('meeting-speaker', control({ id: 'mtg-philips', voice: '@2' }, { value: 'sam@example.test', selectedOptions: [{ textContent: 'Sam Okafor' }] }));
+  assert.equal(calls.toasts.at(-1).message, 'Speaker 2 is Sam Okafor');
+});
+
+test('Delete and Use this version say which version was shown, so a newer one is never lost', async () => {
+  const { ctl, calls, record } = harness();
+  const shown = id => record('mtg-philips').data.docs.find(d => d.id === id);
+  const summary = { ...shown('short-summary') };
+  await ctl.handle('doc-delete', control({ id: 'mtg-philips', doc: 'short-summary' }));
+  // A run made a new version while the dialog was open: the delete still names the one shown.
+  shown('short-summary').version += 1;
+  shown('short-summary').rev += 1;
+  await calls.modals.at(-1).onConfirm();
+  assert.deepEqual(calls.mutate.at(-1), ['meeting_doc', { meetingId: 'mtg-philips', docId: 'short-summary', action: 'delete', baseVersion: summary.version, baseRev: summary.rev }]);
+  const notes = shown('meeting-notes');
+  await ctl.handle('doc-use-version', control({ id: 'mtg-philips', doc: 'meeting-notes', version: '1' }));
+  assert.deepEqual(calls.mutate.at(-1), ['meeting_doc', { meetingId: 'mtg-philips', docId: 'meeting-notes', action: 'version', version: 1, baseVersion: notes.version, baseRev: notes.rev }]);
 });

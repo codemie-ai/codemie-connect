@@ -3,10 +3,16 @@
 // Operations whose outcome does not depend on what the user was looking at, so a
 // background sync bumping the revision may safely rebase them onto the fresh snapshot.
 // An AI draft or summary reads the conversation when it runs (and fails with `conflict` if it changed), and
-// Stop ends whatever is running, so neither depends on the revision the user saw. Meeting operations
-// dedupe natively (a save or notes run already going is reused), and a document edit is fenced by its
-// own baseVersion/baseRev, which answers `conflict` rather than overwriting newer text. Templates,
-// rules and the glossary are local to this window (Settings › Meetings): a sync never touches them.
+// Stop ends whatever is running, so neither depends on the revision the user saw.
+// Meetings: `meeting_doc` edit, delete and version are fenced by their own baseVersion/baseRev (the
+// document as the person saw it), so native answers `conflict` rather than overwriting or archiving
+// text made since; `main` only renames files, and import replaces the transcript the person chose
+// to replace. Check, download and notes dedupe natively (a save or notes run already going is
+// reused) and act on the meeting as it is when they run; `meeting_set` and `meeting_speakers`
+// change only what the person picked. Templates, rules, their order and the glossary and tag list
+// are local to this window (Settings › Meetings): a sync never touches them, and the revision
+// fence protects nothing about a file's content (`meeting_text_save` refuses to write over a
+// glossary it could not read whole).
 export const REBASE_SAFE = new Set(['settings_update', 'layout_save', 'local_save', 'local_delete', 'inbox_decision', 'draft_save', 'schedule_save', 'schedule_delete', 'workspace_select', 'ai_settings_save', 'ai_draft', 'ai_summarize', 'job_cancel', 'automation_save', 'automation_delete', 'automation_toggle', 'automation_run_now', 'task_save', 'task_delete', 'meeting_check', 'meeting_download', 'meeting_import', 'meeting_speakers', 'meeting_notes', 'meeting_set', 'meeting_doc', 'meeting_rule_save', 'meeting_rule_delete', 'meeting_rule_order', 'template_save', 'template_delete', 'meeting_text_save']);
 
 export function createStore(invoke) {

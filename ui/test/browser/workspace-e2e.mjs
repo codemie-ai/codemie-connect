@@ -726,8 +726,10 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       const [m, f] = readable(d.meetingId);
       const doc = m.data.docs.find(x => x.id === d.docId);
       if (!doc) fail('not_found', 'This document is no longer there.');
+      // docs.rs `Base::check`: edit, delete and version name the version the person saw.
+      const stale = message => { if (d.baseVersion !== doc.version || d.baseRev !== doc.rev) fail('conflict', message); };
       if (d.action === 'edit') {
-        if (d.baseVersion !== doc.version || d.baseRev !== doc.rev) fail('conflict', 'These notes changed since you opened them. Read the new version, then edit again.');
+        stale('This document changed while you were editing it. Copy your text, then open the document again.');
         f.docs[doc.id] = d.text;
         Object.assign(doc, { rev: doc.rev + 1, edited: true, updatedAt: now() });
       } else if (d.action === 'main') {
@@ -736,12 +738,16 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         doc.file = 'notes.md';
         m.data.main = doc.id;
       } else if (d.action === 'delete') {
+        stale('A new version of this document was just made, so it wasn’t deleted. Look at it, then delete it if you still want to.');
         m.data.docs = m.data.docs.filter(x => x !== doc);
         if (m.data.main === doc.id) { m.data.main = m.data.docs[0]?.id || null; if (m.data.docs[0]) m.data.docs[0].file = 'notes.md'; }
         if (!m.data.docs.length) m.data.state = 'downloaded';
       } else if (d.action === 'version') {
+        if (!Number.isInteger(d.version)) fail('validation', 'Choose a version.');
+        stale('This document changed since you chose that version, so nothing was replaced. Look at it again, then choose.');
+        if (d.version === doc.version) return { saved: true };
         const kept = doc.versions.find(v => v.version === d.version);
-        if (!kept) fail('validation', 'Choose a version.');
+        if (!kept) fail('not_found', 'That version of the document wasn’t kept.');
         const text = f.docs[`${doc.id}@${d.version}`];
         f.docs[`${doc.id}@${doc.version}`] = f.docs[doc.id];
         f.docs[doc.id] = text;
@@ -1112,6 +1118,19 @@ const STORAGE = {
  *  `limit` ms. Boot and a route change render more than once (the snapshot, then what the page
  *  reads, such as Settings' data location), so a check that grabs an element at once can hold one
  *  the next render replaces. Unlike `renderSettled` it never fails (a live clock keeps changing). */
+/** Wait until the page stops re-rendering (no DOM mutation for 200 ms), so a following query
+ * isn't answered by an element a background refresh is about to replace. */
+const renderSettled = (page, limit = 3000) => page.evaluate(limit => new Promise((resolve, reject) => {
+  let timer;
+  const finish = (fn, arg) => { observer.disconnect(); clearTimeout(timer); clearTimeout(cap); fn(arg); };
+  const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => finish(resolve), 200); });
+  const cap = setTimeout(() => finish(reject, new Error(`the page was still re-rendering after ${limit} ms`)), limit);
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+  timer = setTimeout(() => finish(resolve), 200);
+}), limit);
+
+/** [renderSettled] as the meetings checks wait for it (4 s). */
+const settled = (page, limit = 4000) => renderSettled(page, limit);
 const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve => {
   let timer;
   const done = () => { observer.disconnect(); clearTimeout(timer); clearTimeout(cap); resolve(); };
@@ -1164,8 +1183,8 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 
 // `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`) runs those checks alone (they run last otherwise).
 if (['plugins', 'meetings', 'meetings-settings'].includes(process.env.WORKSPACE_E2E_ONLY)) {
-  if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, OUT });
-  else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, OUT });
+  if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, settled, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
   server.close();
@@ -2383,16 +2402,6 @@ const elementShot = async (page, selector, name) => {
     }
   }
 };
-/** Wait until the page stops re-rendering (no DOM mutation for 200 ms), so a following query
- * isn't answered by an element a background refresh is about to replace. */
-const renderSettled = (page, limit = 3000) => page.evaluate(limit => new Promise((resolve, reject) => {
-  let timer;
-  const finish = (fn, arg) => { observer.disconnect(); clearTimeout(timer); clearTimeout(cap); fn(arg); };
-  const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => finish(resolve), 200); });
-  const cap = setTimeout(() => finish(reject, new Error(`the page was still re-rendering after ${limit} ms`)), limit);
-  observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-  timer = setTimeout(() => finish(resolve), 200);
-}), limit);
 /** Open a row's actions menu and wait for it to show; a render between the click and the check
  * closes it, so try again with a fresh query. A menu that is already open is left alone (a second
  * click on its summary would close it). */
@@ -2827,11 +2836,11 @@ for (const theme of ['dark', 'light']) {
 
 // Meetings (Task 4): the list and the meeting, the calendar's badges and event card, Today's card,
 // import, speakers, Make notes as soon as it arrives, Try again, a task's quote, ↑/↓.
-await meetingChecks({ open, check, assert, shot, OUT });
+await meetingChecks({ open, check, assert, shot, settled, OUT });
 
 // Settings › Meetings (Task 5): transcripts and folders, note templates and skills, rules and the
 // tester, the glossary typed and linked, tasks.
-await meetingSettingsChecks({ open, check, assert, shot, quiet, OUT });
+await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
 
 // Plugins (DESIGN 7.3, Tasks 23–24): add a marketplace, install the synthetic hello plugin, its
 // page and Settings section in their sandboxed frame, Today's plugin widgets, turn it off.

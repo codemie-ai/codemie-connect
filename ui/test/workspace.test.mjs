@@ -784,7 +784,7 @@ test('meeting detail: people by name with organizer/you/company, dimmed when the
   // Transcript: speaker filter, a line with its task, the unnamed guest to match, glossary underline.
   const transcript = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'transcript' }, { glossary: { pairs: [['code me', 'CodeMie']] } })));
   assert.match(transcript, /1 speaker without a name/);
-  assert.match(transcript, /<select class="ws-select" data-action="meeting-speaker" data-id="mtg-philips" data-voice="@1"/);
+  assert.match(transcript, /<select class="ws-select" data-action="meeting-speaker" data-id="mtg-philips" data-voice="@1" data-name="Speaker 1"/);
   assert.match(transcript, /<mark class="ws-mtg-fix" title="Written as “CodeMie” in notes \(your glossary\)">Code me<\/mark>/);
   assert.match(transcript, /data-action="task-open-today" data-id="task-endpoint"[^>]*>[^]*?Task for You: Add the by-id endpoint/);
   assert.match(transcript, /id="meeting-line-3"/);

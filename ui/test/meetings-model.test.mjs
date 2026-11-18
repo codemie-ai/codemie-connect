@@ -141,6 +141,8 @@ test('parseGlossary and parseTags match glossary-parse.json', () => {
   const fixture = contract('glossary-parse');
   assert.deepEqual(parseGlossary(fixture.glossary), fixture.expected.glossary);
   assert.deepEqual(parseTags(fixture.tags), fixture.expected.tags);
+  // Blanks that differ between Rust and JavaScript (a byte order mark, a next line, a no-break space).
+  assert.deepEqual(parseTags(fixture.tagEdges), fixture.expected.tagEdges);
   assert.deepEqual(parseGlossary(''), { me: null, pairs: [], terms: [], people: [] });
   assert.deepEqual(parseTags('- not a tag\n* `ok`\n-`no space`'), ['ok']);
   // Unclosed bold reads nothing; a quoted "we will…" is not an alias.
