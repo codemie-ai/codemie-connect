@@ -13,11 +13,13 @@ use super::rules::{self, Rule};
 use super::save::save_transcript;
 use super::templates::{self, Template};
 use crate::ai::command::RunSpec;
+use crate::ai::stream::AiError;
 use crate::workspace::{
     ai::wire_name, ai_jobs::stored_job, graph, models::*, new_job, prompts, repository::Repository,
     tasks, Core,
 };
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -156,6 +158,55 @@ fn stamp(zone: &str) -> String {
         .to_string()
 }
 
+/// Why a notes run failed, and whether its document was already written (then the record
+/// and `run.log` must not say the documents are unchanged).
+struct Failure {
+    error: Box<WorkspaceError>,
+    /// The document file that already holds the new notes.
+    written: Option<String>,
+}
+
+impl Failure {
+    fn written(error: WorkspaceError, file: &str) -> Self {
+        Self {
+            error: Box::new(error),
+            written: Some(file.to_string()),
+        }
+    }
+}
+
+impl From<WorkspaceError> for Failure {
+    fn from(error: WorkspaceError) -> Self {
+        Self {
+            error: Box::new(error),
+            written: None,
+        }
+    }
+}
+
+impl From<AiError> for Failure {
+    fn from(error: AiError) -> Self {
+        WorkspaceError::from(error).into()
+    }
+}
+
+/// "2 new tasks to review" (or "on the board" when they skip review), as `run.log` and the
+/// Notes ready notification say it.
+fn new_tasks(n: usize, review: bool) -> String {
+    format!(
+        "{} {}",
+        plural(n, "new task"),
+        if review { "to review" } else { "on the board" }
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test failpoint: the next notes run on this thread loses its database right after it
+    /// writes the document.
+    pub(super) static FAIL_AFTER_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// What Claude's run gave a notes job, ready to save.
 struct Finished {
     out: NotesOutput,
@@ -186,7 +237,7 @@ impl Core {
             Err(e) => {
                 // The template was deleted after the run was queued.
                 let named = job.payload["templateId"].as_str().unwrap_or("A template");
-                self.note_notes_failure(&c, &id, named, &e);
+                self.note_notes_failure(&c, &id, named, &e, None);
                 return Err(e);
             }
         };
@@ -215,11 +266,14 @@ impl Core {
                 folder_name(&saved).as_deref(),
             );
         }
-        let written = self.write_notes(job, &c, &id, &plan, &steps).await;
-        if let Err(e) = &written {
-            self.note_notes_failure(&c, &id, &plan.template.name, e);
+        match self.write_notes(job, &c, &id, &plan, &steps).await {
+            Ok(done) => Ok(done),
+            Err(f) => {
+                let name = &plan.template.name;
+                self.note_notes_failure(&c, &id, name, &f.error, f.written.as_deref());
+                Err(*f.error)
+            }
         }
-        written
     }
 
     /// The job's account, fenced by its claim. Notes need no transcript permission: an imported
@@ -274,7 +328,7 @@ impl Core {
         id: &str,
         plan: &Plan,
         steps: &[String],
-    ) -> Result<String> {
+    ) -> std::result::Result<String, Failure> {
         let t = &plan.template;
         let (m, event, settings) = {
             let r = self.repo()?;
@@ -283,7 +337,7 @@ impl Core {
             (m, event, r.settings()?)
         };
         if !saved(m.state) {
-            return Err(no_transcript());
+            return Err(no_transcript().into());
         }
         let dir = m
             .folder
@@ -293,7 +347,7 @@ impl Core {
             .ok_or_else(folder_missing)?;
         let segments = read_segments(&dir)?;
         if segments.is_empty() {
-            return Err(no_transcript());
+            return Err(no_transcript().into());
         }
         let skill = if t.kind == "skill" {
             Some(read_skill(t)?)
@@ -418,8 +472,10 @@ impl Core {
         )
     }
 
-    /// Writes a run's document, `meta.json`, tasks and `run.log`, and stores the meeting with
-    /// the job's success, all under the meeting lock (taken here, before the repository).
+    /// Writes a run's document, `meta.json` and tasks, stores the meeting with the job's success
+    /// and adds the run to `run.log`, all under the meeting lock (taken here, before the
+    /// repository). Everything that can fail is read before the document is written; once it
+    /// is, a failure says so ([`Failure::written`]) instead of claiming nothing changed.
     fn save_notes(
         &self,
         job: &Job,
@@ -427,7 +483,7 @@ impl Core {
         id: &str,
         plan: &Plan,
         done: Finished,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, Failure> {
         let t = &plan.template;
         let Finished {
             out,
@@ -437,7 +493,6 @@ impl Core {
             model,
             mut log,
         } = done;
-        let out = &out;
         let _w = self.meeting_lock();
         let mut r = self.repo()?;
         r.validate_claim(c)?;
@@ -449,10 +504,49 @@ impl Core {
             .map(PathBuf::from)
             .filter(|d| d.is_dir())
             .ok_or_else(folder_missing)?;
+        let stored = stored_job(&r, job)?;
+        // The tasks the meeting has, and the lines whose task the person deleted.
+        let existing: Vec<Value> = if plan.find_tasks {
+            r.local_records(&plan.workspace, tasks::KIND)?
+                .into_iter()
+                .filter(|task| task.data["meetingId"] == id)
+                .map(|task| task.data)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let on_board: HashSet<u64> = existing.iter().filter_map(|t| t["line"].as_u64()).collect();
+        let removed: HashSet<u64> = m
+            .removed_lines
+            .iter()
+            .copied()
+            .filter(|l| !on_board.contains(l))
+            .collect();
+        let found = if plan.find_tasks {
+            let me = self.me_alias(c, &settings.meetings);
+            let people = with_me(people_of(event.as_ref()), c);
+            let mut known = existing.clone();
+            known.extend(removed.iter().map(|l| json!({"meetingId": id, "line": l})));
+            notes::tasks_from(
+                &out,
+                &TaskContext {
+                    meeting_id: id,
+                    template_name: &t.name,
+                    segments: &segments,
+                    people: &people,
+                    me: &me,
+                    settings: &settings.meetings,
+                },
+                &known,
+            )
+        } else {
+            Vec::new()
+        };
+        let history_taken = docs::history_taken(&dir, &m);
         let change = notes::apply(
             &mut m,
             t,
-            out,
+            &out,
             &RunInfo {
                 now: now(),
                 zone: &settings.time_zone,
@@ -462,55 +556,48 @@ impl Core {
                 profile: Some(profile),
                 model,
                 wishes: Some(plan.wishes.clone()).filter(|w| !w.is_empty()),
+                history_taken,
             },
         );
+        // Nothing has changed yet: a failure here leaves the documents as they were.
         docs::write_change(&dir, &change)?;
+        #[cfg(test)]
+        if FAIL_AFTER_WRITE.with(|f| f.replace(false)) {
+            r.fail_writes();
+        }
+        let written = |e: WorkspaceError| Failure::written(e, &change.file);
         if folder::write_file(&dir.join("meta.json"), meta_json(&m).as_bytes()).is_err() {
             log::warn!("meetings: cannot rewrite meta.json");
         }
         log.extend(change.log.iter().cloned());
         let mut added = 0;
-        if plan.find_tasks {
-            let me = self.me_alias(c, &settings.meetings);
-            let people = with_me(people_of(event.as_ref()), c);
-            let existing: Vec<Value> = r
-                .local_records(&plan.workspace, tasks::KIND)?
-                .into_iter()
-                .filter(|task| task.data["meetingId"] == id)
-                .map(|task| task.data)
-                .collect();
-            let found = notes::tasks_from(
-                out,
-                &TaskContext {
-                    meeting_id: id,
-                    template_name: &t.name,
-                    segments: &segments,
-                    people: &people,
-                    me: &me,
-                    settings: &settings.meetings,
-                },
-                &existing,
-            );
-            let kept = out.tasks.len() - found.len();
-            for body in &found {
-                match tasks::task_save(&mut r, &plan.workspace, body, now()) {
-                    Ok(_) => added += 1,
-                    Err(e) => {
-                        log::warn!("meetings: a task from the notes was not saved: {}", e.code);
-                        log.push(format!("A task could not be saved: {}", e.message));
-                    }
+        for body in &found {
+            match tasks::task_save(&mut r, &plan.workspace, body, now()) {
+                Ok(_) => added += 1,
+                Err(e) => {
+                    log::warn!("meetings: a task from the notes was not saved: {}", e.code);
+                    log.push(format!("A task could not be saved: {}", e.message));
                 }
             }
+        }
+        r.commit_job_record(&stored, &record_of(c, &source, &m).map_err(written)?)
+            .map_err(written)?;
+        if plan.find_tasks {
+            let asked: HashSet<u64> = out.tasks.iter().map(|t| t.line as u64).collect();
+            let kept = asked.intersection(&on_board).count();
+            let left_out = asked.intersection(&removed).count();
             let mut said = Vec::new();
             if added > 0 {
-                said.push(if settings.meetings.review {
-                    format!("{} to review", plural(added, "new task"))
-                } else {
-                    format!("{} on the board", plural(added, "new task"))
-                });
+                said.push(new_tasks(added, settings.meetings.review));
             }
             if kept > 0 {
                 said.push(format!("{} already on the board", plural(kept, "task")));
+            }
+            if left_out > 0 {
+                said.push(format!(
+                    "{} you deleted before, not added again",
+                    plural(left_out, "task")
+                ));
             }
             if said.is_empty() {
                 said.push("none found".into());
@@ -518,29 +605,37 @@ impl Core {
             log.push(format!("Tasks: {}", said.join(", ")));
         }
         append_run_log(&dir, &log);
-        let stored = stored_job(&r, job)?;
-        r.commit_job_record(&stored, &record_of(c, &source, &m)?)?;
         if plan.auto {
+            // The notes are saved: a notification that can't be queued is only logged.
             let body = if added > 0 {
                 format!(
-                    "Made with {}. {} to review.",
+                    "Made with {}. {}.",
                     t.name,
-                    plural(added, "new task")
+                    new_tasks(added, settings.meetings.review)
                 )
             } else {
                 format!("Made with {}.", t.name)
             };
-            let policy = r.policy(job.workspace_id.as_deref(), job.connection_id.as_deref())?;
-            r.enqueue(&new_job(
-                "notification",
-                format!("meeting_notes_ready:{}", job.id),
-                job.workspace_id.clone(),
-                job.connection_id.clone(),
-                now(),
-                policy,
-                json!({"title": format!("Notes ready: {}", m.title), "body": body,
-                    "meetingId": id, "route": "meetings", "expiresAt": now() + 2 * 3600}),
-            ))?;
+            let queued = r
+                .policy(job.workspace_id.as_deref(), job.connection_id.as_deref())
+                .and_then(|policy| {
+                    r.enqueue(&new_job(
+                        "notification",
+                        format!("meeting_notes_ready:{}", job.id),
+                        job.workspace_id.clone(),
+                        job.connection_id.clone(),
+                        now(),
+                        policy,
+                        json!({"title": format!("Notes ready: {}", m.title), "body": body,
+                            "meetingId": id, "route": "meetings", "expiresAt": now() + 2 * 3600}),
+                    ))
+                });
+            if let Err(e) = queued {
+                log::warn!(
+                    "meetings: the Notes ready notification was not queued: {}",
+                    e.code
+                );
+            }
         }
         drop(r);
         self.emit("workspace:changed");
@@ -548,9 +643,17 @@ impl Core {
     }
 
     /// A failed run: the meeting keeps why (`last_error`) and is `failed` while it has no
-    /// documents (one with documents stays `ready`); `run.log` says what happened. A run that
-    /// was stopped changes nothing on the meeting.
-    fn note_notes_failure(&self, c: &Connection, id: &str, template: &str, e: &WorkspaceError) {
+    /// documents (one with documents stays `ready`); `run.log` says what happened, and that
+    /// the documents are unchanged only when they are (`written` names a document file that
+    /// already got the new notes). A run that was stopped changes nothing on the meeting.
+    fn note_notes_failure(
+        &self,
+        c: &Connection,
+        id: &str,
+        template: &str,
+        e: &WorkspaceError,
+        written: Option<&str>,
+    ) {
         let _w = self.meeting_lock();
         let Ok(mut r) = self.repo() else {
             return;
@@ -560,7 +663,7 @@ impl Core {
         };
         let zone = r.settings().map(|s| s.time_zone).unwrap_or_default();
         let mut lines = vec![format!("{} · {template} · failed", stamp(&zone))];
-        if e.code == "cancelled" {
+        if e.code == "cancelled" && written.is_none() {
             lines.push("Stopped before the notes were written.".into());
         } else {
             lines.push(format!("{} ({})", e.message, e.code));
@@ -574,10 +677,12 @@ impl Core {
                 }
             }
         }
-        lines.push(if m.docs.is_empty() {
-            "No notes were written.".into()
-        } else {
-            "Your documents were not changed.".into()
+        lines.push(match written {
+            Some(file) => format!(
+                "{file} has the new notes, but Connect couldn’t record them. Make notes again to see them in Connect."
+            ),
+            None if m.docs.is_empty() => "No notes were written.".into(),
+            None => "Your documents were not changed.".into(),
         });
         drop(r);
         if let Some(dir) = m.folder.as_deref().map(Path::new).filter(|d| d.is_dir()) {

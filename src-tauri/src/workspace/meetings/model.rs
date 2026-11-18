@@ -131,6 +131,10 @@ pub struct Doc {
     /// `notes.md` for the main document, `notes.<template-slug>.md` for the others.
     pub file: String,
     pub version: u32,
+    /// Goes up by one whenever the document's text changes (a run, a person's edit, an earlier
+    /// version used again). An edit names the `version` and `rev` it was opened on; anything
+    /// else is a conflict.
+    pub rev: u32,
     /// Earlier versions that were kept, oldest first.
     pub versions: Vec<DocVersion>,
     pub created_at: i64,
@@ -193,6 +197,8 @@ pub struct MeetingRecord {
     pub main: Option<String>,
     /// Why the last save failed; cleared by a save that works.
     pub last_error: Option<ErrorInfo>,
+    /// Transcript lines whose task the person deleted: notes made again don't bring it back.
+    pub removed_lines: Vec<u64>,
 }
 
 /// `settings.meetings` (Settings › Meetings).

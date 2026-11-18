@@ -105,6 +105,28 @@ pub(super) fn store(
     r.put_record(&record_of(c, source, m)?)
 }
 
+/// A task found on `line` of a meeting's transcript was deleted: the meeting remembers the
+/// line (`removedLines`), so notes made again don't bring the task back. Undo saves the task
+/// itself again. Callers hold [`Core::meeting_lock`].
+pub(crate) fn remember_removed_line(r: &mut Repository, meeting_id: &str, line: u64) -> Result<()> {
+    let Some(cid) = r.settings()?.active_connection else {
+        return Ok(());
+    };
+    let Ok(mut record) = r.record(KIND, meeting_id, Some(&cid), None) else {
+        return Ok(());
+    };
+    let mut m = parse(&record)?;
+    if m.removed_lines.contains(&line) {
+        return Ok(());
+    }
+    m.removed_lines.push(line);
+    m.removed_lines.sort_unstable();
+    record.data = serde_json::to_value(&m).map_err(storage)?;
+    record.revision = id();
+    record.updated_at = now();
+    r.put_record(&record)
+}
+
 /// The record [`store`] writes: the meeting beside its event, a new revision.
 pub(super) fn record_of(c: &Connection, source: &str, m: &MeetingRecord) -> Result<Record> {
     Ok(Record {

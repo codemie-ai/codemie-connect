@@ -21,8 +21,19 @@ import { tasksPage } from '../workspace/view-tasks.js';
 import { createTasksController } from '../workspace/tasks-controller.js';
 import { newTasksView } from '../workspace/tasks-model.js';
 import { buildSnapshot, withTasks } from './fixtures/workspace-fixture.mjs';
+import { readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------- store
+
+test('the fixture snapshot carries the note templates native sends', () => {
+  const native = JSON.parse(readFileSync(new URL('./fixtures/contract/note-templates.json', import.meta.url), 'utf8'));
+  for (const connected of [true, false]) {
+    const { noteTemplates } = buildSnapshot(Date.now(), { connected });
+    assert.deepEqual(noteTemplates, native);
+  }
+  assert.deepEqual(native.map(t => [t.id, t.kind, t.edited]), [['meeting-notes', 'builtin', false], ['short-summary', 'builtin', false]]);
+  assert.match(native[0].prompt, /^You turn one meeting transcript into meeting notes for \{\{me\}\}\./);
+});
 
 test('the probe only invokes explicit read-only inspectors', async () => {
   const calls = [];

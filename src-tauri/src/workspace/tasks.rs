@@ -427,7 +427,9 @@ pub(crate) fn task_save(
 }
 
 /// Deletes a task of `workspace_id` and returns its body, so Undo can save it back with
-/// [`task_save`]. Rewrites its meeting's `tasks.json`. Callers hold [`Core::meeting_lock`].
+/// [`task_save`]. Rewrites its meeting's `tasks.json`; a task found on a transcript line has its
+/// line remembered on the meeting, so notes made again don't add it back. Callers hold
+/// [`Core::meeting_lock`].
 pub(crate) fn task_delete(r: &mut Repository, workspace_id: &str, id: &str) -> Result<Value> {
     let task = r.record(KIND, id, None, Some(workspace_id)).map_err(|e| {
         if e.code == "not_found" {
@@ -438,6 +440,12 @@ pub(crate) fn task_delete(r: &mut Repository, workspace_id: &str, id: &str) -> R
     })?;
     r.delete_local(KIND, id, workspace_id)?;
     if let Some(meeting) = task.data["meetingId"].as_str() {
+        if let Some(line) = task.data["line"].as_u64() {
+            // Notes made again must not bring a deleted task back.
+            if let Err(e) = super::meetings::remember_removed_line(r, meeting, line) {
+                log::warn!("tasks: cannot remember a deleted task's line: {}", e.code);
+            }
+        }
         write_tasks_json(r, workspace_id, meeting);
     }
     Ok(task.data)

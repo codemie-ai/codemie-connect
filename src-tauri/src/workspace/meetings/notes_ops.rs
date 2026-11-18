@@ -187,10 +187,12 @@ impl Core {
         Ok(json!({"saved": true}))
     }
 
-    /// `meeting_doc {meetingId, docId, action, version?, text?, baseVersion?}`: `main` makes a
-    /// document `notes.md`, `delete` moves it to `notes-history/`, `version` uses an earlier
-    /// version again, `edit` saves the person's text (refused with `conflict` when the document
-    /// changed since `baseVersion`).
+    /// `meeting_doc {meetingId, docId, action, version?, text?, baseVersion?, baseRev?}`: `main`
+    /// makes a document `notes.md`, `delete` moves it to `notes-history/`, `version` uses an
+    /// earlier version again, `edit` saves the person's text. An edit sends the document's
+    /// `version` and `rev` as the editor opened them (`baseVersion`, `baseRev`); when its text
+    /// changed since (a run, an earlier version used again, another edit) it is refused with
+    /// `conflict`.
     fn meeting_doc(&self, req: &Request) -> Result<Value> {
         let action = req.data["action"].as_str().unwrap_or("");
         if !matches!(action, "main" | "delete" | "version" | "edit") {
@@ -227,7 +229,11 @@ impl Core {
                 let text = req.data["text"]
                     .as_str()
                     .ok_or_else(|| invalid("Write the notes."))?;
-                docs::edit(&dir, &mut m, doc_id, text, version("baseVersion"), now())?
+                let base = docs::Base {
+                    version: version("baseVersion"),
+                    rev: version("baseRev"),
+                };
+                docs::edit(&dir, &mut m, doc_id, text, base, now())?
             }
         }
         if folder::write_file(&dir.join("meta.json"), meta_json(&m).as_bytes()).is_err() {

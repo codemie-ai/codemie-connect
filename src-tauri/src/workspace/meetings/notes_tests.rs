@@ -324,6 +324,7 @@ async fn notes_same_template_after_success_queues_again() {
     let n = notes_env(vec![
         outcome("# Version one", json!([])),
         outcome("# Version two", json!([])),
+        outcome("# Version three", json!([])),
     ]);
     let e = &n.e;
     let dir = downloaded(e, "m1").await;
@@ -392,6 +393,33 @@ async fn notes_same_template_after_success_queues_again() {
         !dir.join(kept).exists(),
         "version 1's history copy is the document now"
     );
+    // Notes again after using version 1: version 3, and version 2 is still there to read.
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(text(&dir.join("notes.md")), "# Version three");
+    let doc = meeting(&e.core, "m1").docs[0].clone();
+    assert_eq!(doc.version, 3);
+    assert_eq!(
+        doc.versions.iter().map(|v| v.version).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    for (version, said) in [
+        (1, "# Version one"),
+        (2, "# Version two"),
+        (3, "# Version three"),
+    ] {
+        let read_back = e
+            .core
+            .request(read(
+                Operation::MeetingRead,
+                json!({"meetingId": "m1", "part": "doc", "docId": "meeting-notes", "version": version}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(read_back["text"], said, "version {version}");
+    }
 }
 
 #[tokio::test]
@@ -529,7 +557,10 @@ async fn skill_template_reads_skill_md_each_run() {
 async fn auto_notes_follow_rules_and_wait() {
     let n = notes_env(vec![
         outcome("# Philips", json!([])),
-        outcome("# Planning", json!([])),
+        outcome(
+            "# Planning",
+            json!([{"title": "Send the notes", "owner": "Taylor Morgan", "due": "", "line": 3, "confidence": "high"}]),
+        ),
     ]);
     let e = &n.e;
     {
@@ -585,6 +616,14 @@ async fn auto_notes_follow_rules_and_wait() {
     meetings_round_at(&e.core, end + 3600).unwrap();
     assert_eq!(notes_jobs(&e.core).len(), 1);
 
+    // Tasks that skip review: the notification says where they went, as run.log does.
+    op(
+        &e.core,
+        Operation::SettingsUpdate,
+        json!({"meetings": {"review": false}}),
+    )
+    .await
+    .unwrap();
     // "Make notes as soon as it arrives" on a meeting still waiting for Teams: the notes follow
     // the automatic save at once.
     let end2 = now() - 12 * 60;
@@ -630,6 +669,16 @@ async fn auto_notes_follow_rules_and_wait() {
     assert_eq!(asap.state, "succeeded");
     assert_eq!(asap.payload["templateId"], "meeting-notes");
     assert_eq!(meeting(&e.core, "asap").state, MeetingState::Ready);
+    let note = jobs(&e.core, "notification")
+        .into_iter()
+        .find(|j| j.payload["meetingId"] == "asap")
+        .unwrap();
+    assert_eq!(
+        note.payload["body"],
+        "Made with Meeting notes. 1 new task on the board."
+    );
+    assert!(text(&folder_of(&e.core, "asap").join("run.log"))
+        .contains("Tasks: 1 new task on the board"));
 
     // Very short meetings, or ones with almost no talking, get no automatic notes.
     for (id, minutes, vtt) in [("short", 2, LONG_VTT), ("quiet", 30, VTT)] {
@@ -724,24 +773,40 @@ async fn meeting_doc_main_delete_and_edit() {
             ("short-summary", "notes.md")
         ]
     );
-    // An edit made on an older version is refused.
-    let stale = doc(
-        "edit",
-        json!({"docId": "meeting-notes", "text": "# A, edited", "baseVersion": 2}),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(stale.code, "conflict");
+    // An edit sends the version and rev it was opened on; one made on an older version, or
+    // without saying what it was opened on, is refused.
+    assert_eq!(meeting(&e.core, "m1").docs[0].rev, 1);
+    for base in [
+        json!({"baseVersion": 2, "baseRev": 1}),
+        json!({"baseVersion": 1}),
+    ] {
+        let mut data = json!({"docId": "meeting-notes", "text": "# A, edited"});
+        data.as_object_mut()
+            .unwrap()
+            .extend(base.as_object().unwrap().clone());
+        let stale = doc("edit", data).await.unwrap_err();
+        assert_eq!(stale.code, "conflict", "{base}");
+    }
     assert_eq!(text(&dir.join("notes.meeting-notes.md")), "# A");
     doc(
         "edit",
-        json!({"docId": "meeting-notes", "text": "# A, edited", "baseVersion": 1}),
+        json!({"docId": "meeting-notes", "text": "# A, edited", "baseVersion": 1, "baseRev": 1}),
     )
     .await
     .unwrap();
     assert_eq!(text(&dir.join("notes.meeting-notes.md")), "# A, edited");
     let m = meeting(&e.core, "m1");
     assert!(m.docs[0].edited);
+    assert_eq!((m.docs[0].version, m.docs[0].rev), (1, 2));
+    // A second window that opened the same text: refused, the first edit stays.
+    let other = doc(
+        "edit",
+        json!({"docId": "meeting-notes", "text": "# A, other window", "baseVersion": 1, "baseRev": 1}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(other.code, "conflict");
+    assert_eq!(text(&dir.join("notes.meeting-notes.md")), "# A, edited");
     let read_back = e
         .core
         .request(read(
@@ -1470,4 +1535,146 @@ async fn contract_fixtures_match_the_real_meeting_notes() {
     crate::plugins::testkit::contract_fixture("meeting-ready.json", &ready);
     crate::plugins::testkit::contract_fixture("glossary-parse.json", &parse);
     crate::plugins::testkit::contract_fixture("meeting-rules-cases.json", &rule_cases);
+    // `noteTemplates` as a snapshot carries it with no template of the person's own.
+    let snapshot = e
+        .core
+        .request(read(Operation::Snapshot, json!({})))
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot["snapshot"]["noteTemplates"],
+        serde_json::to_value(templates::all(&[])).unwrap()
+    );
+    crate::plugins::testkit::contract_fixture(
+        "note-templates.json",
+        &snapshot["snapshot"]["noteTemplates"],
+    );
+}
+
+#[tokio::test]
+async fn deleted_tasks_stay_deleted_when_notes_are_made_again() {
+    let found = json!([
+        {"title": "Send the notes", "owner": "Taylor Morgan", "due": "", "line": 3, "confidence": "high"},
+        {"title": "Prepare the demo", "owner": "Marek Novak", "due": "", "line": 1, "confidence": "high"}
+    ]);
+    // The second run finds the same two, one of them twice.
+    let again = json!([
+        {"title": "Send the notes", "owner": "Taylor Morgan", "due": "", "line": 3, "confidence": "high"},
+        {"title": "Send the notes today", "owner": "Taylor Morgan", "due": "", "line": 3, "confidence": "high"},
+        {"title": "Prepare the demo", "owner": "Marek Novak", "due": "", "line": 1, "confidence": "high"}
+    ]);
+    let n = notes_env(vec![outcome("# Notes", found), outcome("# Summary", again)]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(tasks_of(&e.core, "m1").len(), 2);
+    // The demo task was wrong: deleted, its line is remembered on the meeting.
+    let wrong = tasks_of(&e.core, "m1")
+        .into_iter()
+        .find(|t| t.data["line"] == 1)
+        .unwrap();
+    let deleted = op(&e.core, Operation::TaskDelete, json!({"id": wrong.id}))
+        .await
+        .unwrap();
+    assert_eq!(meeting(&e.core, "m1").removed_lines, vec![1]);
+    // Another summary finds the same tasks: nothing comes back, nothing is doubled.
+    make_notes(e, "m1", "short-summary", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let left = tasks_of(&e.core, "m1");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].data["line"], 3);
+    let log = text(&dir.join("run.log"));
+    assert!(
+        log.contains(
+            "Tasks: 1 task already on the board, 1 task you deleted before, not added again"
+        ),
+        "{log}"
+    );
+    // Undo still brings the deleted task back.
+    let mut body = deleted["body"].clone();
+    body["id"] = wrong.id.clone().into();
+    op(&e.core, Operation::TaskSave, body).await.unwrap();
+    let back = tasks_of(&e.core, "m1");
+    assert_eq!(back.len(), 2);
+    assert_eq!(back[0].data["text"], "Prepare the demo");
+}
+
+#[tokio::test]
+async fn history_copies_never_overwrite_an_archived_document() {
+    let n = notes_env(vec![
+        outcome("# A1", json!([])),
+        outcome("# A2", json!([])),
+        outcome("# A3", json!([])),
+    ]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    // Deleted: its text is archived in notes-history/ under the time it was written.
+    op(
+        &e.core,
+        Operation::MeetingDoc,
+        json!({"meetingId": "m1", "docId": "meeting-notes", "action": "delete"}),
+    )
+    .await
+    .unwrap();
+    // The same template twice more within the same minute: the replaced version gets its own
+    // history file next to the archived one.
+    for _ in 0..2 {
+        make_notes(e, "m1", "meeting-notes", json!({}))
+            .await
+            .unwrap();
+        run_jobs(&e.core).await;
+    }
+    assert_eq!(text(&dir.join("notes.md")), "# A3");
+    let mut history: Vec<String> = std::fs::read_dir(dir.join("notes-history"))
+        .unwrap()
+        .map(|f| text(&f.unwrap().path()))
+        .collect();
+    history.sort();
+    assert_eq!(history, vec!["# A1", "# A2"]);
+    let kept = meeting(&e.core, "m1").docs[0].versions[0]
+        .file
+        .clone()
+        .unwrap();
+    assert_eq!(text(&dir.join(kept)), "# A2");
+}
+
+#[tokio::test]
+async fn a_failure_after_the_document_is_written_says_so() {
+    let n = notes_env(vec![
+        outcome("# Old", json!([])),
+        outcome("# New", json!([])),
+    ]);
+    let e = &n.e;
+    let dir = downloaded(e, "m1").await;
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    // The data folder goes read-only right after notes.md is written.
+    super::notes_job::FAIL_AFTER_WRITE.with(|f| f.set(true));
+    let job = e.core.repo().unwrap().claim(now()).unwrap().unwrap();
+    e.core.clone().run_claimed_job(job).await;
+    assert_eq!(text(&dir.join("notes.md")), "# New");
+    let log = text(&dir.join("run.log"));
+    let last = log.trim_end().rsplit("\n\n").next().unwrap();
+    assert!(last.contains("Meeting notes · failed"), "{log}");
+    assert!(
+        last.contains("notes.md has the new notes, but Connect couldn’t record them."),
+        "{last}"
+    );
+    assert!(!last.contains("not changed"), "{last}");
+    // The record still names version 1: making notes again sets it right.
+    assert_eq!(meeting(&e.core, "m1").docs[0].version, 1);
 }

@@ -129,6 +129,9 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
     available: connected,
     // The resolved meetings folder (`meetingsRoot`): a setting, there signed in or not.
     meetingsRoot: { path: '/Users/taylor/CodeMie Connect/Meetings', isDefault: true },
+    // Every note template (`noteTemplates`): the two built-ins as native sends them
+    // (contract/note-templates.json), there signed in or not.
+    noteTemplates: contract('note-templates'),
     settings: {
       theme, timeZone: zone, background: true, launchAtLogin: false, criticalRepeat: true, syncDays: 30, notifications: true, notificationPreview: false,
       quietStart: '22:00', quietEnd: '08:00', clientId: '3d7688c6-f449-4d04-8b0d-57d94818e922', tenant: 'common', activeWorkspace: 'personal',

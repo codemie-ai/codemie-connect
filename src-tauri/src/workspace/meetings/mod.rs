@@ -37,6 +37,7 @@ mod tests;
 pub(crate) mod transcripts;
 pub(crate) mod vtt;
 
+pub(crate) use record::remember_removed_line;
 pub(crate) use round::meetings_round_at;
 
 use self::model::{MeAlias, MeetingSettings};

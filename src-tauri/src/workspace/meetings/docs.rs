@@ -36,7 +36,7 @@ pub(super) fn write_change(dir: &Path, change: &DocChange) -> Result<()> {
 }
 
 /// The history files the record names and the ones in the folder: a new one never replaces any.
-fn history_taken(dir: &Path, m: &MeetingRecord) -> Vec<String> {
+pub(super) fn history_taken(dir: &Path, m: &MeetingRecord) -> Vec<String> {
     let mut taken: Vec<String> = m
         .docs
         .iter()
@@ -209,6 +209,7 @@ pub(super) fn use_version(
         doc.versions.sort_by_key(|v| v.version);
     }
     doc.version = used.version;
+    doc.rev += 1;
     doc.updated_at = used.at;
     doc.profile = used.profile;
     doc.model = used.model;
@@ -218,14 +219,22 @@ pub(super) fn use_version(
     Ok(())
 }
 
-/// Saves the person's edit of a document, unless it changed since they opened it
-/// (`base_version`).
+/// What an edit was opened on: the document's `version` and `rev` when the editor opened it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Base {
+    pub(super) version: Option<u32>,
+    pub(super) rev: Option<u32>,
+}
+
+/// Saves the person's edit of a document, unless its text changed since they opened it: a new
+/// run, an earlier version used again, or another edit (`rev`), so two windows editing from the
+/// same text can't silently overwrite each other.
 pub(super) fn edit(
     dir: &Path,
     m: &mut MeetingRecord,
     doc_id: &str,
     text: &str,
-    base_version: Option<u32>,
+    base: Base,
     now: i64,
 ) -> Result<()> {
     let doc = m
@@ -233,7 +242,7 @@ pub(super) fn edit(
         .iter_mut()
         .find(|d| d.id == doc_id)
         .ok_or_else(doc_gone)?;
-    if base_version != Some(doc.version) {
+    if base.version != Some(doc.version) || base.rev != Some(doc.rev) {
         return Err(WorkspaceError::new(
             "conflict",
             "This document changed while you were editing it. Copy your text, then open the document again.",
@@ -254,6 +263,7 @@ pub(super) fn edit(
     folder::write_file(&dir.join(&doc.file), text.as_bytes())
         .map_err(|_| meeting_unwritable(dir))?;
     doc.edited = true;
+    doc.rev += 1;
     doc.updated_at = now;
     Ok(())
 }
