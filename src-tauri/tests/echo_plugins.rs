@@ -271,6 +271,23 @@ struct Connect {
 impl Connect {
     /// Claude answers `answers`, in order.
     async fn start(plugins: &Path, answers: &[&str]) -> Connect {
+        Connect::start_with(plugins, answers, HttpClient::offline()).await
+    }
+
+    /// As `start`, the network answering a plain GET of `pages` (`web.read`).
+    async fn start_with_pages(
+        plugins: &Path,
+        answers: &[&str],
+        pages: &[(&str, u16, &str, &[u8])],
+    ) -> Connect {
+        Connect::start_with(plugins, answers, HttpClient::canned(pages)).await
+    }
+
+    async fn start_with(
+        plugins: &Path,
+        answers: &[&str],
+        (http, sent): (HttpClient, Recorded),
+    ) -> Connect {
         captured();
         // Not a hidden folder (`.tmpXXXX`): Knowledge, like Echo, never changes a vault inside one.
         let tmp = tempfile::Builder::new()
@@ -300,7 +317,6 @@ impl Connect {
             };
             install::install(&paths, &m.name, id, agreement).unwrap();
         }
-        let (http, sent) = HttpClient::offline();
         let picker = Arc::new(Picked::default());
         let gh = Arc::new(FakeGh::default());
         let outside = Outside {
@@ -1160,4 +1176,97 @@ async fn knowledge_asks_claude_in_the_vault_and_in_a_copy_of_it() {
         "the run's copy was removed"
     );
     assert!(c.sent().is_empty(), "{:?}", c.sent());
+}
+
+#[tokio::test]
+async fn knowledge_reads_a_web_page_from_the_address_typed_in_connects_box() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let page = "<html lang=en><head><title>Atlas</title></head><body><nav>Menu</nav><article>\
+        <h1>Atlas launches in May</h1><p>The team ships the beta to the first customers.</p>\
+        <img src=\"/img/chart.png\" alt=\"Launch chart\" width=\"640\" height=\"480\"></article></body></html>";
+    let c = Connect::start_with_pages(
+        &dir,
+        &[&described()],
+        &[
+            (
+                "https://news.example.com/atlas",
+                200,
+                "text/html; charset=utf-8",
+                page.as_bytes(),
+            ),
+            (
+                "https://news.example.com/img/chart.png",
+                200,
+                "image/png",
+                b"\x89PNG\r\n",
+            ),
+        ],
+    )
+    .await;
+    let folder = c.tmp.path().join("My Twin");
+    std::fs::create_dir_all(&folder).unwrap();
+    c.picker.next(&folder);
+    let made = c
+        .call(
+            "obsidian",
+            "new_vault",
+            json!({"name": "My Twin", "git": true, "minutes": "auto"}),
+        )
+        .await;
+    let id = made["id"].as_str().unwrap().to_string();
+    let root = Path::new(made["root"].as_str().unwrap()).to_path_buf();
+    // The site isn't one the user listed: Knowledge hears "may reach only" and asks for the
+    // address in Connect's own box, where the user types it.
+    *c.picker.2.lock().unwrap() = Some("https://news.example.com/atlas".into());
+    let added = c
+        .call(
+            "obsidian",
+            "source_add",
+            json!({"id": id, "kind": "web", "url": "https://news.example.com/atlas"}),
+        )
+        .await;
+    let path = added["path"].as_str().unwrap_or_else(|| panic!("{added}"));
+    assert!(path.starts_with("raw_inbox/"), "{added}");
+    let text = std::fs::read_to_string(root.join(path)).unwrap();
+    assert!(
+        text.contains("The team ships the beta to the first customers."),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Menu"),
+        "the page's navigation is left out: {text}"
+    );
+    // Its picture was saved by Connect and copied beside the page.
+    assert_eq!(added["pictures_failed"], 0, "{added}");
+    let pictures = std::fs::read_dir(root.join(path).with_extension(""))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(pictures, 1, "{added}");
+    // One read of the page and one of its picture; nothing else went out.
+    assert_eq!(
+        c.sent(),
+        [
+            "GET https://news.example.com/atlas",
+            "GET https://news.example.com/img/chart.png"
+        ]
+    );
+    // The typed address was good once: Knowledge's next read of it needs the box again.
+    let again = c
+        .manager
+        .call(
+            "obsidian",
+            "source_add",
+            json!({"id": id, "kind": "web", "url": "https://news.example.com/atlas"}),
+        )
+        .await;
+    let said = match again {
+        Ok(v) => v.to_string(),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        said.contains("cancelled") || said.contains("in the vault already"),
+        "{said}"
+    );
 }

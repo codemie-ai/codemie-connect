@@ -10,6 +10,8 @@
 //                 {method: 'storage', items}                   the localStorage stand-in, saved
 //                 {method: 'reveal', root, path}               ctx.system.reveal, on the user's click
 //                 {method: 'session', folder, path, mode, profile}   ctx.claude.session, on the user's click
+//                 {method: 'skill', op, name, md}              ctx.claude.installSkill / removeSkill, on the
+//                                       user's click; the window asks the user first
 //                                       (the window answers only for the frame on screen)
 //   event         {type: 'go', hash, replace} {type: 'notice', text} {type: 'copy', text}
 //                 {type: 'open', url}   a link the user clicked (or window.open): the window asks
@@ -38,6 +40,8 @@ const MAX_JSON = 1024 * 1024;
 const MAX_ITEMS = 40;
 /** A folder's path or a path in it. */
 const PATH = 4096;
+/** A skill's Markdown. */
+const SKILL_MAX = 256 * 1024;
 /** Files one drop hands a page. */
 const MAX_FILES = 50;
 const fileHandle = f => isObject(f) && exactly(f, ['file', 'name', 'size']) && text(f.file, 80) && text(f.name, 1024) && Number.isFinite(f.size) && f.size >= 0;
@@ -86,6 +90,10 @@ export function checkFromFrame(m) {
       if (m.method === 'session') {
         return exactly(m, ['v', 'id', 'kind', 'method', 'folder', 'path', 'mode', 'profile']) && text(m.folder, PATH) && m.folder !== ''
           && text(m.path, PATH) && ['', 'read', 'edit'].includes(m.mode) && text(m.profile, NAME) ? m : null;
+      }
+      if (m.method === 'skill') {
+        return exactly(m, ['v', 'id', 'kind', 'method', 'op', 'name', 'md']) && ['install', 'remove'].includes(m.op)
+          && text(m.name, 64) && /^[a-z0-9-]{1,64}$/.test(m.name) && text(m.md, SKILL_MAX) ? m : null;
       }
       if (m.method === 'reveal') {
         return exactly(m, ['v', 'id', 'kind', 'method', 'root', 'path']) && text(m.root, PATH) && m.root !== '' && text(m.path, PATH) ? m : null;

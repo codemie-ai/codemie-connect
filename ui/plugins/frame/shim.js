@@ -379,6 +379,16 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
             return null;
           });
         },
+        // A skill in the user's own Claude Code: asked for on the user's click, confirmed in
+        // Connect's window, which shows its name and description first.
+        installSkill: (name, md) => {
+          if (win.navigator?.userActivation?.isActive !== true) return Promise.reject(new Error('a skill is added only on your click'));
+          return request({ method: 'skill', op: 'install', name: String(name ?? ''), md: String(md ?? '') });
+        },
+        removeSkill: name => {
+          if (win.navigator?.userActivation?.isActive !== true) return Promise.reject(new Error('a skill is removed only on your click'));
+          return request({ method: 'skill', op: 'remove', name: String(name ?? ''), md: '' });
+        },
       },
       system: {
         // Shows a file of a folder the user gave the plugin in Finder, on the user's click.

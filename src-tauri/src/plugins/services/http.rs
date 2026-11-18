@@ -26,6 +26,17 @@ pub struct Client {
     /// `METHOD url`, and fails as if the network were down.
     #[cfg(any(test, feature = "test-support"))]
     offline: Option<Recorded>,
+    /// Tests only: the answers an offline client gives a `get` (`web.read`), by address.
+    #[cfg(any(test, feature = "test-support"))]
+    canned: HashMap<String, Got>,
+}
+
+/// What a plain GET got: its status, headers (lowercase names) and body.
+#[derive(Debug, Clone, Default)]
+pub struct Got {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
 }
 
 /// The requests an offline client was asked to send.
@@ -45,6 +56,8 @@ impl Client {
             test_hosts: HashMap::new(),
             #[cfg(any(test, feature = "test-support"))]
             offline: None,
+            #[cfg(any(test, feature = "test-support"))]
+            canned: HashMap::new(),
         }
     }
 
@@ -52,12 +65,92 @@ impl Client {
     /// if the network were down.
     #[cfg(any(test, feature = "test-support"))]
     pub fn offline() -> (Client, Recorded) {
+        Client::canned(&[])
+    }
+
+    /// An offline client whose `get` answers these addresses (`status`, `content-type`, body);
+    /// every request that passed the checks is recorded as `METHOD url`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn canned(pages: &[(&str, u16, &str, &[u8])]) -> (Client, Recorded) {
         let recorded = Recorded::default();
         let client = Client {
             offline: Some(recorded.clone()),
+            canned: pages
+                .iter()
+                .map(|(url, status, kind, body)| {
+                    let headers = HashMap::from([("content-type".to_string(), kind.to_string())]);
+                    let got = Got {
+                        status: *status,
+                        headers,
+                        body: body.to_vec(),
+                    };
+                    (url.to_string(), got)
+                })
+                .collect(),
             ..Client::new()
         };
         (client, recorded)
+    }
+
+    /// A plain GET of an address already admitted: no redirect followed, nothing compressed
+    /// asked for, `max` bytes at most, `timeout` in all.
+    pub async fn get(&self, url: &Url, max: usize, timeout: Duration) -> Result<Got, HostError> {
+        let host = url.host_str().unwrap_or("").to_string();
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(recorded) = &self.offline {
+            recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("GET {url}"));
+            return self.canned.get(url.as_str()).cloned().ok_or_else(|| {
+                HostError::new(
+                    ErrorCode::PluginError,
+                    format!("couldn't reach {host}: offline (a test)"),
+                )
+            });
+        }
+        let target = self.target(url)?;
+        let sent = self
+            .inner
+            .get(target)
+            .header("Accept-Encoding", "identity")
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,image/*;q=0.9,*/*;q=0.1",
+            )
+            .timeout(timeout)
+            .send();
+        let res = sent.await.map_err(|e| failed(&host, &e))?;
+        let status = res.status().as_u16();
+        let headers: HashMap<String, String> = res
+            .headers()
+            .iter()
+            .filter_map(|(n, v)| {
+                Some((
+                    n.as_str().to_ascii_lowercase(),
+                    v.to_str().ok()?.to_string(),
+                ))
+            })
+            .collect();
+        let mut body = Vec::new();
+        if (200..300).contains(&status) {
+            let mut stream = res.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| failed(&host, &e))?;
+                if body.len() + chunk.len() > max {
+                    return Err(HostError::new(
+                        ErrorCode::Limit,
+                        format!("{host} answered more than {} MB", max.div_ceil(1 << 20)),
+                    ));
+                }
+                body.extend_from_slice(&chunk);
+            }
+        }
+        Ok(Got {
+            status,
+            headers,
+            body,
+        })
     }
 
     /// A client that sends each `host` of `hosts` to its loopback base instead, with a shorter
@@ -78,6 +171,7 @@ impl Client {
                 .map(|(h, base)| (h.to_string(), base.clone()))
                 .collect(),
             offline: None,
+            canned: HashMap::new(),
         }
     }
 
@@ -176,11 +270,15 @@ pub fn allowed(p: &Granted, listed: &[String], url: &str) -> Result<Url, HostErr
     }
     let parsed = Url::parse(url).map_err(|_| bad(format!("“{url}” isn't an address")))?;
     let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    // Echo's words, which plugins match (`/may reach only/`).
     let refused = || {
+        let hosts = p.words("network", "hosts");
+        let settings = p.words("network", "hosts_from");
         permission(format!(
-            "{} may not reach {url}: only HTTPS to the hosts it named when it was installed \
-             (uses.network.hosts), or addresses you listed",
-            p.id
+            "{} may reach only the hosts its manifest names ({}) and the addresses you list in its settings ({}), not {url}",
+            p.id,
+            if hosts.is_empty() { "none".to_string() } else { hosts.join(", ") },
+            if settings.is_empty() { "none".to_string() } else { settings.join(", ") },
         ))
     };
     if host.is_empty() || !parsed.username().is_empty() || parsed.password().is_some() {
@@ -333,6 +431,12 @@ mod tests {
         assert!(offline.message.contains("offline"), "{offline}");
         let refused = fetch("https://evil.example.com/").await.unwrap_err();
         assert_eq!(refused.code, ErrorCode::Permission);
+        assert!(
+            refused
+                .message
+                .contains("may reach only the hosts its manifest names"),
+            "{refused}"
+        );
         assert_eq!(
             *sent.lock().unwrap(),
             ["POST https://api.example.com/graphql"]

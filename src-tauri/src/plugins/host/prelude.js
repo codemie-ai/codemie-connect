@@ -244,7 +244,8 @@
       pickFiles: deferred('system.pickFiles'),
       which: direct('system.which'),
     },
-    http: { fetch: deferred('http.fetch') },
+    http: { fetch: deferred('http.fetch'), askAddress: deferred('http.askAddress') },
+    web: { read: deferred('web.read') },
     git: {
       info: deferred('git.info'),
       status: deferred('git.status'),

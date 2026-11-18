@@ -25,6 +25,10 @@
 //! | `frame_files` | `{id, paths}` | `[{file, name, size}]`: files dropped on plugin `id`'s page, as its handles (`services::window`) |
 //! | `frame_reveal` | `{id, root, path}` | `{revealed: true}`: its page's `ctx.system.reveal`, on the user's click |
 //! | `frame_session` | `{id, folder, path, mode, profile}` | `{opened: true}`: its page's `ctx.claude.session`, Claude Code in Terminal in that folder |
+//! | `frame_skill_check` | `{id, name, md}` | `{name, description, path, replaces}`: what its page's `ctx.claude.installSkill` would add, for Connect's confirmation |
+//! | `frame_skill_install` | `{id, name, md}` | `{installed, path}`: after the user said yes in Connect's window |
+//! | `frame_skill_remove` | `{id, name}` | `{removed: true}`: its page's `ctx.claude.removeSkill`, after the user said yes |
+//! | `address_answer` | `{ask, url}` | `{answered}`: what the user typed in Connect's box for a plugin's `http.askAddress` (`url` null: cancelled) |
 //!
 //! `agreed` is every key of the sheet the user was shown and `sheetHash` that sheet's hash (from
 //! `inspect` or `needs_consent`): a sheet that changed since is refused as `changed`.
@@ -88,6 +92,11 @@ pub async fn plugins_request(
             open_link(&a.id, &a.url, crate::workspace::graph::launch_url)
         })
         .await?;
+    }
+    if op == "address_answer" {
+        let a: AnswerArg = arg(data.unwrap_or(Value::Null))?;
+        let answered = super::manager::answer_address(a.ask, a.url);
+        return Ok(json!({"answered": answered}));
     }
     if let Some(action) = op.strip_prefix("frame_") {
         let services = manager_of(&window)?.services().clone();
@@ -310,6 +319,19 @@ struct FilesArg {
     paths: Vec<String>,
 }
 #[derive(Deserialize)]
+struct AnswerArg {
+    ask: u64,
+    #[serde(default)]
+    url: Option<String>,
+}
+#[derive(Deserialize)]
+struct SkillArg {
+    id: String,
+    name: String,
+    #[serde(default)]
+    md: String,
+}
+#[derive(Deserialize)]
 struct SessionArg {
     id: String,
     folder: String,
@@ -335,8 +357,30 @@ fn frame_request(
     action: &str,
     data: Value,
 ) -> Result<Value> {
-    use crate::plugins::services::window;
+    use crate::plugins::services::{skills, window};
+    let skill = |data: Value| -> Result<(
+        SkillArg,
+        std::sync::Arc<crate::plugins::services::Granted>,
+        std::path::PathBuf,
+    )> {
+        let a: SkillArg = arg(data)?;
+        let p = services.granted(&a.id).map_err(host_error)?;
+        let home = skills::home().map_err(host_error)?;
+        Ok((a, p, home))
+    };
     match action {
+        "skill_check" => {
+            let (a, p, home) = skill(data)?;
+            skills::check(services, &p, &a.name, &a.md, &home).map_err(host_error)
+        }
+        "skill_install" => {
+            let (a, p, home) = skill(data)?;
+            skills::install(services, &p, &a.name, &a.md, &home).map_err(host_error)
+        }
+        "skill_remove" => {
+            let (a, p, home) = skill(data)?;
+            skills::remove(services, &p, &a.name, &home).map_err(host_error)
+        }
         "session" => {
             let a: SessionArg = arg(data)?;
             let (dir, argv) =

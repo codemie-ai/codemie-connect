@@ -27,10 +27,13 @@ pub mod markdown;
 pub mod notify;
 pub mod settings;
 pub mod signin;
+pub mod skills;
 pub mod snapshot;
 pub mod store;
 pub mod today;
 pub mod vault_git;
+pub mod web;
+pub mod web_page;
 pub mod window;
 
 use super::host::{ErrorCode, HostError, HostServices, PluginHost};
@@ -128,6 +131,12 @@ pub trait FolderPicker: Send + Sync {
     /// The folder the user chose, or `None` when they cancelled.
     fn pick(&self, title: String) -> BoxFuture<'static, Option<PathBuf>>;
 
+    /// The address of one web page the user types in Connect's own box for plugin `name`
+    /// (`http.askAddress`), `None` when they cancel.
+    fn ask_address(&self, _name: String) -> BoxFuture<'static, Option<String>> {
+        Box::pin(async { None })
+    }
+
     /// The files the user chose (one unless `multiple`; only `exts` when given), none when they
     /// cancelled.
     fn pick_files(
@@ -170,6 +179,8 @@ pub struct Services {
     pub(crate) files: Mutex<files::Handles>,
     /// The Claude runs going on under a key (`claude.run({key})`, `claude.stop(key)`).
     pub(crate) runs: Mutex<claude::Keyed>,
+    /// The addresses the user typed for plugins (`http.askAddress`), each good for one read.
+    pub(crate) asked: Mutex<web::Asked>,
 }
 
 impl Services {
@@ -187,6 +198,7 @@ impl Services {
             writes: Mutex::new(()),
             files: Mutex::default(),
             runs: Mutex::default(),
+            asked: Mutex::default(),
         })
     }
 
@@ -354,6 +366,8 @@ impl HostServices for Services {
             match name.as_str() {
                 "fs.readMany" | "fs.walk" | "fs.search" => fs::call_async(me, p, &name, args).await,
                 "store.walk" => store::walk(me, p, args).await,
+                "web.read" => web::read(&me, &p, &args).await,
+                "http.askAddress" => web::ask_address(&me, &p).await,
                 n if n.starts_with("git.") => git(me, p, n, args).await,
                 "system.pickFolder" => fs::pick_folder(&me, &p, &args).await,
                 "system.pickFiles" => files::pick(&me, &p, &args).await,

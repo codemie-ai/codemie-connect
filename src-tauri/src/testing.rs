@@ -99,7 +99,12 @@ pub fn command_args(spec: &RunSpec) -> Vec<String> {
 
 /// Answers the folder picker with whatever the test put in it (then nothing: the user cancelled).
 #[derive(Default)]
-pub struct Picked(pub Mutex<Option<PathBuf>>, pub Mutex<Vec<PathBuf>>);
+pub struct Picked(
+    pub Mutex<Option<PathBuf>>,
+    pub Mutex<Vec<PathBuf>>,
+    /// What the user types in the address box next.
+    pub Mutex<Option<String>>,
+);
 
 impl Picked {
     /// The folder the user picks next.
@@ -127,6 +132,11 @@ impl FolderPicker for Picked {
     ) -> BoxFuture<'static, Vec<PathBuf>> {
         let picked = std::mem::take(&mut *self.1.lock().unwrap());
         Box::pin(async move { picked })
+    }
+
+    fn ask_address(&self, _name: String) -> BoxFuture<'static, Option<String>> {
+        let typed = self.2.lock().unwrap().take();
+        Box::pin(async move { typed })
     }
 }
 

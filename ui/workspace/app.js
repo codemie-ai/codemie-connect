@@ -651,6 +651,50 @@ function confirmPluginLink(url, name, id) {
   });
 }
 
+/** A plugin's page asks to add a skill to the user's own Claude Code (or take out one it added):
+ *  Connect asks first, showing the skill's name, description and place. Resolves to the answer. */
+function confirmPluginSkill({ op, plugin, name, description = '', path = '', replaces = false }) {
+  return new Promise(resolve => {
+    if (recovering) return resolve(false);
+    let answered = false;
+    const done = yes => { if (!answered) { answered = true; resolve(yes); } };
+    const adding = op === 'install';
+    openModal({
+      title: adding ? `Add /${name} to Claude Code?` : `Remove /${name} from Claude Code?`,
+      size: 'sm', submit: adding ? (replaces ? 'Update skill' : 'Add skill') : 'Remove skill', variant: adding ? 'primary' : 'danger',
+      initialFocus: 'cancel', guard: true,
+      body: `<p class="ws-modal-text">${e(plugin)} ${adding ? 'wants to add a skill to your own Claude Code, for every session.' : 'wants to take out the skill it added to your Claude Code.'}</p>
+        ${description ? `<p class="ws-modal-text"><strong>/${e(name)}</strong>: ${e(description)}</p>` : ''}
+        <p class="ws-link-confirm"><code class="ws-storage-path">${e(path)}</code></p>`,
+      onSubmit: () => done(true),
+      onClose: () => done(false),
+    });
+  });
+}
+
+/** A plugin asks for the address of one web page to read (`http.askAddress`): Connect's own box,
+ *  never the plugin's page. The answer goes to Rust, which lets that one read through. */
+function askPluginAddress({ ask, plugin }) {
+  let answered = false;
+  const answer = url => {
+    if (answered) return;
+    answered = true;
+    invoke('plugins_request', { op: 'address_answer', data: { ask, url } }).catch(() => {});
+  };
+  if (recovering) return answer(null);
+  openModal({
+    title: 'Read a web page', size: 'sm', submit: 'Read it', guard: true,
+    body: `<p class="ws-modal-text">${e(plugin)} asks for the address of a web page to fetch once. Type or paste it:</p>
+      <label class="ws-field"><span class="ws-field-label">Address</span><input class="ws-input" name="url" type="url" required maxlength="2000" autocomplete="off" spellcheck="false" placeholder="https://"></label>`,
+    onSubmit: form => {
+      const url = String(form.get('url') || '').trim();
+      if (!/^https?:\/\/[^\s@]+$/i.test(url)) throw new Error('Type an address that starts with https:// or http://.');
+      answer(url);
+    },
+    onClose: () => answer(null),
+  });
+}
+
 async function pluginAction(action, el) {
   const id = el.dataset.pluginId;
   switch (action) {
@@ -2345,6 +2389,7 @@ async function boot() {
     onNotice: (text, name) => toast(`${name}: ${text}`),
     onCopy: text => navigator.clipboard.writeText(text).then(() => toast('Copied.', 'success'), fail),
     onOpen: confirmPluginLink,
+    confirmSkill: confirmPluginSkill,
   }).mount(document.body);
   lastPluginTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
   pluginsUi.loadInstalled().catch(() => {
@@ -2414,6 +2459,7 @@ async function boot() {
   });
   await listen('workspace:notification-open', event => openNotification(event.payload || {}).catch(fail));
   await listen('workspace:installer-settled', flushNotification);
+  await listen('plugins:ask-address', event => askPluginAddress(event.payload || {}));
   // Files dropped on a plugin's page (its `ctx.onFileDrop`): Rust makes handles of that plugin's,
   // and the page gets those, never the paths.
   await listen('tauri://drag-drop', event => {

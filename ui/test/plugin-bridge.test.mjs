@@ -103,7 +103,7 @@ function shimOf(fw, extra = {}) {
 }
 
 /** The window's bridge over a stand-in document whose iframes hand their messages to a shim. */
-function wired({ invoke } = {}) {
+function wired({ invoke, confirmSkill } = {}) {
   const calls = [];
   const fw = frameWindow();
   let shim = null;
@@ -150,6 +150,7 @@ function wired({ invoke } = {}) {
     onNotice: text => events.notices.push(text),
     onCopy: text => events.copies.push(text),
     onOpen: (url, name, id) => events.opens.push([url, name, id]),
+    ...(confirmSkill ? { confirmSkill } : {}),
   });
   host.mount({ appendChild() {} });
   return { host, calls, fw, frames, events, get shim() { return shim; } };
@@ -717,4 +718,48 @@ test('a_claude_code_session_is_asked_for_only_by_the_page_on_screen_on_a_click',
   assert.throws(() => w.shim.ctx.claude.session({ folder: '/v' }), /your click/);
   w.fw.win.navigator.userActivation.isActive = true;
   assert.equal(checkFromFrame({ v: V, id: 4, kind: 'call', method: 'session', folder: '/v', path: '', mode: 'admin', profile: '' }), null);
+});
+
+test('a_skill_is_added_only_after_connects_own_confirmation', async () => {
+  const asked = [];
+  let yes = true;
+  const calls = [];
+  const fw = frameWindow();
+  // The wired window with a confirmation of its own.
+  const w = wired({
+    invoke: async (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'plugins_request' && args.op === 'frame_skill_check') return { name: args.data.name, description: 'My twin', path: `~/.claude/skills/${args.data.name}/SKILL.md`, replaces: false };
+      if (cmd === 'plugins_request' && args.op === 'frame_skill_install') return { installed: true };
+      if (cmd === 'plugins_request' && args.op === 'frame_skill_remove') return { removed: true };
+      if (cmd === 'plugins_request') return { items: {} };
+      return null;
+    },
+    confirmSkill: async details => { asked.push(details); return yes; },
+  });
+  assert.ok(fw);
+  w.host.sync([HELLO_INSTALLED]);
+  w.frames[0].load();
+  await settle(60);
+  const ctx = w.shim.ctx;
+  // Not on screen: refused before anything is checked.
+  await assert.rejects(ctx.claude.installSkill('twin-me', '---\nname: twin-me\n---\n'), /page on screen/);
+  w.host.show({ id: 'hello', view: 'activity', activity: 'home', route: '' });
+  await settle(20);
+  assert.deepEqual(await ctx.claude.installSkill('twin-me', '---\nname: twin-me\n---\n'), { installed: true });
+  assert.deepEqual(asked[0], { op: 'install', plugin: 'Hello', name: 'twin-me', description: 'My twin', path: '~/.claude/skills/twin-me/SKILL.md', replaces: false });
+  const ops = () => calls.filter(([cmd]) => cmd === 'plugins_request').map(([, a]) => a.op).filter(op => op.startsWith('frame_skill'));
+  assert.deepEqual(ops(), ['frame_skill_check', 'frame_skill_install']);
+  // The user says no: nothing is written.
+  yes = false;
+  await assert.rejects(ctx.claude.installSkill('twin-me', 'x'), /You chose not to add \/twin-me/);
+  await assert.rejects(ctx.claude.removeSkill('twin-me'), /You chose to keep/);
+  assert.deepEqual(ops(), ['frame_skill_check', 'frame_skill_install', 'frame_skill_check']);
+  yes = true;
+  assert.deepEqual(await ctx.claude.removeSkill('twin-me'), { removed: true });
+  // Only on the user's click, in Echo's words; never a name that isn't a skill's.
+  w.fw.win.navigator.userActivation.isActive = false;
+  await assert.rejects(ctx.claude.installSkill('twin-me', 'x'), /only on your click/);
+  w.fw.win.navigator.userActivation.isActive = true;
+  assert.equal(checkFromFrame({ v: V, id: 5, kind: 'call', method: 'skill', op: 'install', name: '../x', md: '' }), null);
 });

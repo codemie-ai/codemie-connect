@@ -77,6 +77,7 @@ export function createPluginHost({
   invoke, frameUrl, doc = document, win = window, about = () => ({ name: 'CodeMie Connect', version: '', engine: '1.0' }),
   theme = () => 'light', whereNow = () => ({ view: 'today', section: '', route: '' }),
   onChange = () => {}, onGo = () => {}, onNotice = () => {}, onCopy = () => {}, onOpen = () => {}, now = () => Date.now(),
+  confirmSkill = async () => false,
 }) {
   /** plugin id → {id, name, version, client, key, el, port, contrib, calls, nextId, height, error, errors, ready, shown, paletteAt} */
   const frames = new Map();
@@ -221,10 +222,23 @@ export function createPluginHost({
     if (m.method === 'command') return invoke('plugin_call', { id: rec.id, command: m.command, args: m.args ?? null, ...(m.files ? { files: m.files } : {}) });
     if (m.method === 'storage') return invoke('plugins_request', { op: 'client_storage', data: { id: rec.id, items: m.items } }).then(() => null);
     if (!rec.shown) return Promise.reject(Object.assign(new Error('Only the page on screen can do that.'), { code: 'permission' }));
+    if (m.method === 'skill') return skill(rec, m);
     if (m.method === 'session') {
       return invoke('plugins_request', { op: 'frame_session', data: { id: rec.id, folder: m.folder, path: m.path, mode: m.mode, profile: m.profile } });
     }
     return invoke('plugins_request', { op: 'frame_reveal', data: { id: rec.id, root: m.root, path: m.path } });
+  }
+
+  /** A skill in the user's own Claude Code, after Connect's own confirmation: what it adds (its
+   *  name, description and place, checked in Rust), or what it takes out. */
+  async function skill(rec, m) {
+    const data = { id: rec.id, name: m.name, md: m.md };
+    const shown = m.op === 'install'
+      ? await invoke('plugins_request', { op: 'frame_skill_check', data })
+      : { name: m.name, path: `~/.claude/skills/${m.name}/SKILL.md` };
+    const yes = await confirmSkill({ op: m.op, plugin: rec.name, ...shown });
+    if (!yes) throw Object.assign(new Error(m.op === 'install' ? `You chose not to add /${m.name}.` : `You chose to keep /${m.name}.`), { code: 'cancelled' });
+    return invoke('plugins_request', { op: m.op === 'install' ? 'frame_skill_install' : 'frame_skill_remove', data });
   }
 
   async function answer(rec, port, m) {

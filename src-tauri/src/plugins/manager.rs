@@ -439,6 +439,23 @@ fn widget_args(p: &Granted, widget: &str) -> Value {
     })
 }
 
+/// The address boxes Connect's window has open for plugins (`http.askAddress`), by ask.
+type Asks =
+    std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Option<String>>>>;
+fn asks() -> &'static Asks {
+    static ASKS: std::sync::OnceLock<Asks> = std::sync::OnceLock::new();
+    ASKS.get_or_init(Default::default)
+}
+/// An address box goes unanswered this long at most.
+const ASK_WAIT: Duration = Duration::from_secs(600);
+
+/// What the user typed in the window's address box `ask` (`None`: cancelled). Whether a box was
+/// waiting for it.
+pub fn answer_address(ask: u64, url: Option<String>) -> bool {
+    let waiting = lock(asks()).remove(&ask);
+    waiting.is_some_and(|tx| tx.send(url).is_ok())
+}
+
 /// The folder picker over the main window (the data-folder picker's way, DESIGN 8).
 struct NativePicker(tauri::AppHandle);
 
@@ -472,6 +489,33 @@ impl FolderPicker for NativePicker {
     #[cfg(not(any(target_os = "macos", windows)))]
     fn pick(&self, _title: String) -> BoxFuture<'static, Option<PathBuf>> {
         Box::pin(async { None })
+    }
+
+    /// Connect's own box in the main window (`plugins:ask-address`), answered by
+    /// `plugins_request address_answer`.
+    fn ask_address(&self, name: String) -> BoxFuture<'static, Option<String>> {
+        use tauri::Emitter;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let app = self.0.clone();
+        Box::pin(async move {
+            let ask = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            lock(asks()).insert(ask, tx);
+            if app
+                .emit_to(
+                    "main",
+                    "plugins:ask-address",
+                    json!({"ask": ask, "plugin": name}),
+                )
+                .is_err()
+            {
+                lock(asks()).remove(&ask);
+                return None;
+            }
+            let answer = tokio::time::timeout(ASK_WAIT, rx).await;
+            lock(asks()).remove(&ask);
+            answer.ok().and_then(Result::ok).flatten()
+        })
     }
 
     #[cfg(any(target_os = "macos", windows))]
