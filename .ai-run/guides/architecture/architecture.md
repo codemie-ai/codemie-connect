@@ -1,11 +1,45 @@
 # Architecture
 
-**Project**: CodeMie Installer (macOS)
+**Project**: CodeMie Connect
 **Style**: Frontend installer orchestration (Option B) plus a native workspace service
 **Languages**: Rust (backend) + Vanilla JS ESM (frontend)
 **Framework**: Tauri v2 (2.12.6)
 
 ---
+
+## Overview
+
+CodeMie Connect is a Tauri v2 desktop app: the window (`ui/`, plain ES modules, no bundler) renders the Personal Workspace and Settings, and Rust (`src-tauri/src/`) owns the system commands, the workspace domain with its background jobs, Claude runs, the data folder and the plugin host. The legacy installer flow keeps its Engine in JS and calls thin Rust commands (Option B).
+
+| Part | What it holds | Start here |
+|---|---|---|
+| `ui/workspace/` | the window: routing, pure views and models, controllers, the store | `ui/workspace/app.js::handle` |
+| `ui/workspace/codemie/` | Settings → CodeMie: CLI state and calls, setup sheet, views | `ui/workspace/codemie/service.js::createCodemieService` |
+| `ui/plugins/` | plugin frames, their MessageChannel and message schema | `ui/plugins/host.js::createPluginHost` |
+| `ui/ (top level)` | legacy installer UI (Engine, handlers, renderer) and the CLI output parsers Settings reuses | `ui/engine.js::Engine` |
+| `src-tauri/src/commands/` | installer and system commands: shell, PTY, runtime, PATH, logs, updater, smokes | `src-tauri/src/commands/runner.rs::run_capture` |
+| `src-tauri/src/workspace/` | Core, SQLite repository, Graph sync, jobs, inbox, tasks | `src-tauri/src/workspace/mod.rs::Core.request` |
+| `src-tauri/src/workspace/meetings/` | Teams transcripts, meeting folders, notes from templates | `src-tauri/src/workspace/meetings/record.rs::Core.meeting_lock` |
+| `src-tauri/src/workspace/automations/` | automation rules, engine, runs and delivery to Today | `src-tauri/src/workspace/automations/engine.rs::automation_op` |
+| `src-tauri/src/ai/` | Claude CLI discovery, profiles, the isolated runner | `src-tauri/src/ai/runner.rs::ClaudeRunner` |
+| `src-tauri/src/storage/` | data-folder pointer, target checks, move, old copy, recovery commands | `src-tauri/src/storage/location.rs::LocationFile` |
+| `src-tauri/src/plugins/` | Echo-compatible plugins: manifest, marketplaces, install, caller checks, connect-plugin scheme | `src-tauri/src/plugins/caller.rs::require_main_frame` |
+| `src-tauri/src/plugins/host/` | one QuickJS runtime per plugin and the JSON bridge | `src-tauri/src/plugins/host/mod.rs::PluginHost` |
+| `src-tauri/src/plugins/services/` | Connect's side of the plugin ctx, with grant checks | `src-tauri/src/plugins/services/mod.rs::Granted` |
+| `src-tauri/tests/` | integration tests: bundle resources, the published Echo plugins | `src-tauri/tests/bundle_resources.rs::resources_map` |
+
+## Key abstractions
+
+| Abstraction | What it is | Where |
+|---|---|---|
+| Core | the opened workspace: repository, Graph session, Claude runner, background loop | `src-tauri/src/workspace/mod.rs::Core` |
+| Request / Operation | the typed `workspace_request` payload and its operations | `src-tauri/src/workspace/models.rs::Request` |
+| WorkspaceError | the error that crosses IPC: `code`, `message`, optional `retry_after`, `class` and `field` | `src-tauri/src/workspace/models.rs::WorkspaceError` |
+| Repository | SQLite store with the revision and operation reservations | `src-tauri/src/workspace/repository.rs::Repository` |
+| ClaudeRunner | runs one Claude call; `CliRunner` in the app, `FakeRunner` in tests | `src-tauri/src/ai/runner.rs::ClaudeRunner` |
+| Granted | what one loaded plugin may do: its package and the agreed `uses` keys | `src-tauri/src/plugins/services/mod.rs::Granted` |
+| AppState | installer-side managed state: PATH, PTY, CLI detection, update check | `src-tauri/src/state.rs::AppState` |
+| createStore | the window's store: snapshot, serialized mutations, queries | `ui/workspace/store.js::createStore` |
 
 ## Workspace boundary (Milestone 1)
 
@@ -88,35 +122,24 @@ Connect implements plugin engine 1.0 (PLUGIN-ENGINE.md §10). `sessions`, `chann
 
 ---
 
-## Architecture Overview
+## Structure and boundaries
 
-```
-ui/                         (frontend — ES modules, no bundler)
-  index.html                views + overlays
-  renderer.js               view routing + Engine construction
-  engine.js / handlers.js   install orchestration + per-step logic
-  runner-bridge.js          wraps Rust commands as JS module surface
-  models.js / steps.js      data models + step loading
-  terminal.js / log.js      UI widgets
+### Rules
+- R1. Put Personal Workspace domain code (Microsoft sign-in and sync, records, jobs, meetings, tasks, automations) in `src-tauri/src/workspace/` and reach it from the window through the `workspace_request` command, which hands a typed `Request` to `Core::request`; installer and CLI system calls stay in `src-tauri/src/commands/` (the workspace keeps running while its views are hidden). Evidence: `src-tauri/src/workspace/mod.rs::workspace_request`
+- R2. Keep the installer step flow in JS (`ui/engine.js`, `ui/handlers.js`, Option B) and load the legacy installer UI (`ui/renderer.js`) through `initLegacyTools`, which `boot` does for smoke and probe runs and `recoveryAction` for the recovery page's tools; the window's page is `ui/workspace/app.js`, the module `ui/index.html` loads. Evidence: `ui/workspace/app.js::boot`
+- R3. Keep Microsoft credentials in Rust: the refresh token is a `Credential` written to `credentials/graph-<connection id>.json` by `cache_path`, and `models::Connection`, which the snapshot carries to the window, holds account and sync fields and no token field. Evidence: `src-tauri/src/workspace/credentials.rs::cache_path`
+- R4. Put credentials and plugin secrets under `CorePaths.private`, which a data-folder move leaves in place; movable data goes under `CorePaths.data`. Evidence: `src-tauri/src/workspace/paths.rs::CorePaths`
 
-src-tauri/src/              (backend — thin Rust command layer)
-  lib.rs                    builder, state, command registration
-  state.rs                  AppState { remembered, pty, pre_injection_path, bundled_injected, existing_cli_detected }
-  error.rs                  InstallerError + CmdResult<T>
-  commands/                 one module per system concern
-    runner.rs               shell execution (capture / stream / fresh_env)
-    inspector.rs            git / node / npm / codemie probes
-    installer.rs            Node .pkg download + sudo install
-    runtime.rs              macOS first-launch install of Node + CLI into Application Support, CLI updates
-    downloader.rs           reqwest streaming download
-    pathman.rs              login-shell PATH + ~/.zprofile persistence
-    pty.rs                  portable-pty interactive terminal
-    logger.rs               ~/Library/Logs/CodeMie/ file logger
-    window.rs / smoke.rs    window control + smoke test modes
-  steps.rs                  get_steps: embedded config/steps.yaml
-```
+### Constraints
+| Do not | Do instead | Why | Evidence |
+|---|---|---|---|
+| Add a token or secret field to a snapshot type (`Connection`, `Settings`, `Record`) | Keep it in `workspace/credentials.rs` or the plugin secret store under the private root | the snapshot crosses IPC into the webview | `src-tauri/src/workspace/models.rs::Connection` |
+| Move installer Engine orchestration into Rust | Add a thin command in `src-tauri/src/commands/` and call it from the JS handler | Option B keeps the tested Engine and its approval gate in JS | `ui/engine.js::Engine` |
 
-**Key decision (Option B):** orchestration brain stays in JS (reused from Electron app). Rust provides only thin system commands. This eliminates the highest-risk port (async approval-gate) and reuses ~400 lines of already-tested JS.
+### Read first
+| When you are | Exemplar | Why this one | Tests |
+|---|---|---|---|
+| adding a workspace feature end to end | `src-tauri/src/workspace/tasks.rs::Core.task_op` | newest complete feature: operation dispatch, meeting-folder lock, repository write, history | `src-tauri/src/workspace/tasks.rs::task_delete_returns_the_body_and_save_restores_it` |
 
 ---
 
@@ -127,59 +150,108 @@ src-tauri/src/              (backend — thin Rust command layer)
 | `engine.js` | Step sequencing, approval gates, fatal/non-fatal logic | handlers.js, models.js |
 | `handlers.js` | Per-step logic — calls `runner-bridge.js` for system ops | runner-bridge.js |
 | `runner-bridge.js` | Tauri `invoke()` / `listen()` wrappers | Tauri IPC |
-| `renderer.js` | View routing (home/wizard/connect), Engine construction | engine.js, runner-bridge.js |
+| `renderer.js` | Legacy installer UI (home/wizard/connect views, Engine construction), loaded by `initLegacyTools` for smoke/probe runs and the recovery tools | engine.js, runner-bridge.js |
 | `commands/runner.rs` | `run_capture`, `run_stream`, `run_fresh_env` — login-shell exec | tokio, state.rs |
 | `commands/inspector.rs` | `check_git/node/npm/codemie`, `check_profile_status` | runner.rs |
 | `commands/runtime.rs` | `runtime_ready`, `ensure_runtime`, `update_cli` — Node from nodejs.org (pinned SHA-256 in runtime.json) into `runtime/node-<v>`, the CLI via `npm ci` with the embedded `assets/codemie-cli` lock into `runtime/cli-<v>`, `node`/`cli` links switched atomically; `update_cli` installs a newer npm release in the background; stale dirs removed at launch; the legacy adapter gates CLI-dependent boot on it | reqwest, sha2, state.rs |
 | `state.rs` | `AppState` — PTY handle, remembered PATH dirs, `bundled_injected`, `existing_cli_detected` (the user's own CLI: no download) | pty.rs |
 | `error.rs` | `InstallerError` (thiserror) → serializes to String for IPC | — |
 
+## Patterns in use
+
+### Rules
+- R1. Send a workspace mutation through `store.mutate`: it runs calls one at a time, sends a new `operationId` UUID with the snapshot's `expectedRevision`, and reads a fresh snapshot afterwards, so the UI renders what native storage kept. Evidence: `ui/workspace/store.js::createStore`
+- R2. Add an operation to `REBASE_SAFE` when its outcome does not depend on the revision the person saw; the store then retries it once after `stale_view`, with the same operation id, on the fresh snapshot. Evidence: `ui/workspace/store.js::REBASE_SAFE`
+- R3. Keep `view-*.js`, `*-model.js` and `shell.js` pure (state in, HTML string or value out, provider text through `escapeHtml`) so `node:test` can import them; `app.js` reads `document` at import and wires them to the DOM. Evidence: `ui/workspace/shell.js::renderShell`
+- R4. Give a new control a `data-action` with its feature's prefix (`task`, `meeting-`, `doc-`, `meetings-settings-`, `cm-`, `plugin`, `automation`) and handle it in that feature's controller, made by a `create…Controller` factory that receives `state`, `snap`, `mutate`, `render` and `toast`; `handle` in `app.js` routes by prefix. Evidence: `ui/workspace/app.js::handle`
+- R5. Run a Claude prompt through `Core`'s `Arc<dyn ClaudeRunner>` with a `RunSpec`; `build_command` makes the call headless and tool-free (`--tools ""`, `--strict-mcp-config`, `--no-session-persistence`). Evidence: `src-tauri/src/ai/command.rs::build_command`
+- R6. Build a CodeMie CLI command string in `cliCommands` and pass each interpolated value through `assertSafe`, because `run_capture` and `run_stream` hand the string unchecked to `/bin/zsh -lc` or `cmd.exe /c`. Evidence: `ui/workspace/codemie/cli.js::cliCommands`
+
+### Constraints
+| Do not | Do instead | Why | Evidence |
+|---|---|---|---|
+| Call `invoke` from a `view-*.js` renderer | Call the controller, which calls the store or `codemie/service.js` | views stay importable by `node:test` | `ui/workspace/codemie/service.js::createCodemieService` |
+| Spawn `claude` with `Command::new` | Go through `ClaudeRunner` (`CliRunner` in the app, `FakeRunner` in tests) | the runner holds the isolation flags, the two-run limit and cancellation | `src-tauri/src/ai/runner.rs::ClaudeRunner` |
+
+### Read first
+| When you are | Exemplar | Why this one | Tests |
+|---|---|---|---|
+| adding a page controller | `ui/workspace/tasks-controller.js::createTasksController` | injected store, render, modal and toast; Undo through `mutate` | `ui/test/tasks-controller.test.mjs::harness` |
+| adding a Settings → CodeMie CLI call | `ui/workspace/codemie/service.js::createCodemieService` | `run()` logs to "What CodeMie ran", throws a sentence on a non-zero exit, tells Rust the installer is busy | `ui/test/codemie-service.test.mjs::harness` |
+
 ---
 
-## IPC Pattern
+## Request flow
 
-Frontend→backend: `invoke('<command_name>', { arg })` via Tauri IPC.
-Backend→frontend: `app.emit("engine:<event>", payload)` events — see `src-tauri/src/commands/runner.rs:87`.
+Frontend→backend: `invoke('<command_name>', { arg })` via Tauri IPC; the workspace window's invoke is wrapped by `withAppOrigin`.
+Backend→frontend: `app.emit("<area>:<event>", payload)` events, e.g. `engine:cmd-line` from `src-tauri/src/commands/runner.rs::run_stream`.
 
-All commands registered in `src-tauri/src/lib.rs:27–56`.
+Commands are registered in `src-tauri/src/lib.rs::run`, inside `plugins::caller::app_page_only(tauri::generate_handler![…])`.
 
 | ✅ DO | ❌ DON'T |
 |---|---|
-| Call system ops via `invoke()` in `runner-bridge.js` | Import Node/OS APIs directly in frontend JS |
-| Add new Rust commands to `commands/` + register in `lib.rs` | Move installer Engine orchestration into Rust |
-| Use `CmdResult<T>` for fallible commands | Return raw `String` errors from commands |
+| Call installer system ops via `invoke()` in `runner-bridge.js` (legacy installer) or `codemie/service.js` (Settings → CodeMie) | Import Node/OS APIs directly in frontend JS |
+| Add new Rust commands to a module file + register them in `lib.rs` | Move installer Engine orchestration into Rust |
+| Use `CmdResult<T>` in `src-tauri/src/commands/` and `workspace::models::Result<T>` in workspace, storage and plugins commands | Return raw `String` errors from commands |
+
+### Rules
+- R1. Reach native workspace state with `store.mutate` or `store.query`, which call `invoke('workspace_request', {request})`; `withAppOrigin` adds the page's `Origin` header, which `require_main_frame` checks after Tauri falls back to postMessage. Evidence: `ui/workspace/app-invoke.js::withAppOrigin`
+- R2. `workspace_request` runs `require_main_frame(&call)?` first; `Core::request` then answers read-only operations (`snapshot`, `ai_status`, `ai_usage`, `meeting_read`, `meeting_text`, …) before it takes the mutation lock and the revision fence. Evidence: `src-tauri/src/workspace/mod.rs::Core.request`
+- R3. A mutation reserves its operation id and bumps the revision in `check_request` before asynchronous work; a repeated id with the same content returns the stored result through `operation_result` instead of running again, and other content under that id is `conflict`. Evidence: `src-tauri/src/workspace/repository.rs::Repository.check_request`
+- R4. Queue Claude work as a job keyed by its source (`queue_ai_job` reuses a queued or running job with the same key) that the background loop claims; the operation returns at once and the UI follows the job in the snapshot. Evidence: `src-tauri/src/workspace/ai_jobs.rs::queue_ai_job`
+- R5. Branch on `code` of a workspace error in the UI (`stale_view`, `storage_unavailable`, `needs_login`, `validation`, `conflict`) and show `message` as written; `storage_unavailable` from a workspace call opens the recovery page. Evidence: `ui/workspace/app.js::watched`
+
+### Constraints
+| Do not | Do instead | Why | Evidence |
+|---|---|---|---|
+| Await Graph or Claude inside a synchronous mutation | Queue a job and return | the mutation lock holds the person's other edits behind it | `src-tauri/src/workspace/mod.rs::Core.request` |
+
+### Read first
+| When you are | Exemplar | Why this one | Tests |
+|---|---|---|---|
+| tracing a workspace request end to end | `src-tauri/src/workspace/mod.rs::Core.request` | read-only answers, mutation lock, revision fence, dispatch, operation result | `src-tauri/src/workspace/mod.rs::runtime_io_failure_reports_storage_unavailable` |
 
 ---
 
 ## Error Handling Pattern
 
-`InstallerError` (thiserror) is the single error type for all Rust commands. It serializes to a plain String so the frontend receives a readable message — mirrors the Electron app's `throw new Error(msg)` pattern.
+`InstallerError` (thiserror) is the error type of the installer commands in `src-tauri/src/commands/`. It serializes to a plain String so the frontend receives a readable message — mirrors the Electron app's `throw new Error(msg)` pattern. Workspace, storage and plugins commands return `WorkspaceError` (`code`, `message`, optional `retry_after`, `class`, `field`) instead.
 
-- Definition: `src-tauri/src/error.rs:6`
-- Alias: `pub type CmdResult<T> = Result<T, InstallerError>` — `src-tauri/src/error.rs:25`
+- Definition: `src-tauri/src/error.rs::InstallerError`
+- Alias: `pub type CmdResult<T> = Result<T, InstallerError>` — `src-tauri/src/error.rs::CmdResult`
 - Usage: fallible commands return `CmdResult<T>`; infallible ones return `T` directly
 
 ---
 
 ## State Pattern
 
-`AppState` is managed via Tauri's `manage()` call (`lib.rs:10`) and injected into commands via `State<'_, AppState>`.
+`AppState` is managed via Tauri's `manage()` call in `src-tauri/src/lib.rs::run` and injected into commands via `State<'_, AppState>`; `WorkspaceState` (the opened `Core`) and `PluginManager` are managed the same way.
 
 - `remembered` — `Vec<String>` of PATH dirs discovered during the session; used by `run_fresh_env` so a just-installed binary is found without restart
-- `pty` — `Option<PtyHandle>` for the active pseudo-terminal
+- `pty` — `Option<(String, PtyHandle)>`: the active pseudo-terminal and its id
 
-Reference: `src-tauri/src/state.rs:14`
+Reference: `src-tauri/src/state.rs::AppState`
 
 ---
 
-## Adding New System Commands
+## Extension points
 
-1. Create or extend a file in `src-tauri/src/commands/`.
+1. Create or extend a file in `src-tauri/src/commands/` (installer and CLI system ops) or in the owning module (`workspace/`, `storage/`, `plugins/`).
 2. Annotate the function with `#[tauri::command]`.
-3. Return `T` (infallible) or `CmdResult<T>` (fallible).
-4. Register in `lib.rs` `invoke_handler!` block.
-5. Add a JS wrapper in `runner-bridge.js`.
+3. Return `T` (infallible) or `CmdResult<T>` (fallible) in `commands/`; `workspace::models::Result<T>` elsewhere.
+4. Register it in `lib.rs` `run`, inside the `generate_handler!` list that `app_page_only` wraps.
+5. Call it from JS: `runner-bridge.js` for the legacy installer, `codemie/service.js` for Settings → CodeMie, the store for workspace data.
 6. Add a unit test in the same Rust module under `#[cfg(test)]`.
+
+### Rules
+- R1. Make `require_main_frame(&call)?;` the first statement of a command that reads or changes workspace, plugin or data-folder state, and list it in `every_guarded_command_checks_its_caller_first`, which checks `storage/commands.rs`, `workspace_request` and `plugins/commands.rs`. Evidence: `src-tauri/src/plugins/caller.rs::require_main_frame`
+- R2. Add a workspace operation as a variant of `models::Operation` (sent in snake_case), dispatch it in `Core::request` (a read-only one before the mutation lock), and add it to `REBASE_SAFE` in `store.js` when its outcome does not depend on the revision the person saw. Evidence: `src-tauri/src/workspace/models.rs::Operation`
+- R3. Route a plugin `ctx` service in `HostServices for Services` and check the agreed `uses` key with `Granted::needs` before acting; a plugin's own checks are no protection. Evidence: `src-tauri/src/plugins/services/mod.rs::Granted.needs`
+
+### Read first
+| When you are | Exemplar | Why this one | Tests |
+|---|---|---|---|
+| adding a data-folder command | `src-tauri/src/storage/commands.rs::storage_status` | caller check, main-window check, blocking work off the async runtime | `src-tauri/src/plugins/caller.rs::every_guarded_command_checks_its_caller_first` |
 
 ---
 
@@ -187,6 +259,84 @@ Reference: `src-tauri/src/state.rs:14`
 
 | Config | Location | Access |
 |---|---|---|
-| Install steps | `config/steps.yaml` (embedded via `include_str!`) | `steps::get_steps()` — `src-tauri/src/steps.rs` |
-| Smoke mode flags | `CODEMIE_SMOKE=1` / `CODEMIE_PROBE_SMOKE=1` env vars | `lib.rs` startup + `commands/smoke.rs` |
-| Session log | `~/Library/Logs/CodeMie/codemie_wizard.log` | `commands/logger.rs:34` |
+| Install steps | `config/steps.yaml` (macOS) and `config/steps-windows.yaml` (Windows), embedded via `include_str!` | `src-tauri/src/steps.rs::get_steps` |
+| Smoke mode flags | `CODEMIE_SMOKE`, `CODEMIE_PROBE_SMOKE`, `CODEMIE_PLUGIN_SMOKE`, `CODEMIE_STATUS_SMOKE` env vars | read by `src-tauri/src/commands/smoke.rs::smoke_mode`; the plugin and status smokes start in `src-tauri/src/lib.rs::run` |
+| Session log | `~/Library/Logs/CodeMie/codemie_wizard.log` (Windows: `%USERPROFILE%\AppData\Local\CodeMie\Logs`) | `src-tauri/src/commands/logger.rs::log_path` |
+| Pinned runtime | `runtime.json` (Node version and SHA-256s, CLI package and version) | `scripts/stage-runtime.sh`, `build-installer.sh`; the app embeds `assets/codemie-cli/package.json` and `package-lock.json` (`src-tauri/src/commands/runtime.rs::CLI_PACKAGE_LOCK`) |
+| Test data folder | `CODEMIE_WORKSPACE_TEST_DIR` (debug builds) | `src-tauri/src/lib.rs::run` |
+
+## Examples
+
+### A workspace operation
+
+Source: `src-tauri/src/workspace/tasks.rs::Core.task_op`
+
+```rust
+    pub(in crate::workspace) fn task_op(&self, req: &Request) -> Result<Value> {
+        let (w, _) = self.active_workspace(req, false)?;
+        // Same order as the other meeting-folder writers: their lock, then the repository.
+        let _folders = self.meeting_lock();
+        let mut r = self.repo()?;
+        match req.op {
+            Operation::TaskSave => {
+                let mut data = req.data.clone();
+                if let (Some(fields), Some(op)) = (data.as_object_mut(), &req.operation_id) {
+                    // A new task takes the operation's id, so a retried request makes one task.
+                    if fields.get("id").is_none_or(Value::is_null) {
+                        fields.insert("id".into(), op.clone().into());
+                    }
+                }
+                let task = task_save(&mut r, &w.id, &data, now())?;
+                Ok(json!({"id": task.id}))
+            }
+            Operation::TaskDelete => {
+                let id = required(&req.data, "id", ID_MAX)?;
+                let body = task_delete(&mut r, &w.id, id)?;
+```
+
+### A serialized mutation
+
+Source: `ui/workspace/store.js::createStore.mutate`
+
+```js
+  function mutate(op, data = {}, workspaceId, { retry = REBASE_SAFE.has(op) } = {}) {
+    const run = async () => {
+      if (!state) await refresh();
+      const operationId = crypto.randomUUID();
+      const send = () => invoke('workspace_request', {
+        request: {
+          op,
+          data,
+          workspaceId: workspaceId ?? state.snapshot.settings.activeWorkspace,
+          expectedRevision: state.snapshot.revision,
+          operationId,
+        },
+      });
+      try {
+        // A background sync moved the revision. Rebase onto the fresh snapshot with the same
+        // operation ID; a sync writing record after record can move it again in between, so a
+        // few times. A refused attempt reserves nothing natively.
+        for (let attempt = 1; ; attempt++) {
+          try {
+            return await send();
+```
+
+## Common pitfalls
+
+| Symptom | Cause | Fix | Evidence |
+|---|---|---|---|
+| A save fails with `stale_view` right after a background sync | the sync bumped the revision and the operation is not in `REBASE_SAFE` | refresh and let the person review, or add the operation to `REBASE_SAFE` when its outcome does not depend on what they saw | `ui/workspace/store.js::REBASE_SAFE` |
+| A command is refused when called from a plugin page or with no `Origin` | `require_main_frame` accepts Connect's own page origin only | call it from Connect's page through the `withAppOrigin` invoke | `src-tauri/src/plugins/caller.rs::require_main_frame` |
+| A bundle builds with `errors: 0` but Node cannot resolve its files | a glob key in `bundle.resources` flattens the tree onto file names | map each source to its target; `tests/bundle_resources.rs` checks the map | `src-tauri/tests/bundle_resources.rs::resources_map` |
+| A plugin call fails with a permission error although the plugin asked for it | the person did not agree to that `uses` key on the permission sheet | update the plugin and agree to the new sheet | `src-tauri/src/plugins/services/mod.rs::Granted.needs` |
+
+## Quick reference
+
+| Task | Do | Where |
+|---|---|---|
+| Add a workspace operation | variant in `Operation`, dispatch in `Core::request`, decide `REBASE_SAFE`, test with `mutation` | `src-tauri/src/workspace/models.rs::Operation` |
+| Add an installer or system command | function in `commands/`, register in `run`, wrapper in `runner-bridge.js` | `src-tauri/src/lib.rs::run` |
+| Add a Settings → CodeMie CLI call | command string in `cliCommands`, run through `run()` in the service | `ui/workspace/codemie/cli.js::cliCommands` |
+| Add a plugin ctx service | route it in `HostServices for Services`, check `Granted::needs` | `src-tauri/src/plugins/services/mod.rs::Granted.needs` |
+| Read the plugin host design | packages, host half, client half, limits | `prototypes/milestone-2/DESIGN.md` § 7. Plugin host |
+| Read the meetings design | transcript states, folder and files, templates | `docs/superpowers/specs/2026-11-17-meetings-transcripts-tasks-design.md` § Transcript states |

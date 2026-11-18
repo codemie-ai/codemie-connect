@@ -94,3 +94,12 @@ assets/windows/bin/runtime-key
 /output/
 prototypes/
 .idea
+
+# AI
+.ai-run/sdlc-factory/
+.agents/memory/sdlc/daily/
+docs/superpowers/tasks/*/**/*.local/
+docs/superpowers/tasks/*/**/task-*-brief.md
+docs/superpowers/tasks/*/**/task-*-report.md
+docs/superpowers/qa-tasks/*/**/*.local.*
+.codegraph/

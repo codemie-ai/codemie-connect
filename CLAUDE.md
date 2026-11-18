@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-**Purpose**: Claude Code entrypoint for `codemie-claude-installer-macos-tauri`.
+**Purpose**: Claude Code entrypoint for `CodeMie Connect`.
 
 <!-- ai-run-init:guide-imports start -->
 @AGENTS.md

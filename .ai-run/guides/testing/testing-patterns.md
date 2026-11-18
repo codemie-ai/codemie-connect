@@ -1,18 +1,46 @@
 # Testing Patterns
 
-**Project**: CodeMie Installer (macOS)
+**Project**: CodeMie Connect
 **Rust tests**: `cargo test` — inline `#[cfg(test)]` modules
 **JS tests**: `node --test` — `ui/test/*.test.mjs`
 
 ---
 
-## Test Organization
+## Overview
+
+Two suites run in CI: `node:test` files in `ui/test/` (pure UI modules, controllers over fakes, contract-fixture parity) and `cargo test` in `src-tauri/` (unit tests beside the code, integration tests in `src-tauri/tests/`). Rust tests write the JSON contract fixtures that the UI tests and the browser mock read; the Playwright browser run, the live Claude tests and the smoke modes are run by hand.
+
+| Part | What it holds | Start here |
+|---|---|---|
+| `ui/test/` | node:test suites, one file per module | `package.json::test` |
+| `ui/test/fixtures/` | snapshot builders and the contract JSON | `ui/test/fixtures/workspace-fixture.mjs::buildSnapshot` |
+| `ui/test/browser/` | Chromium run of the real ui/ against a mocked native bridge | `ui/test/browser/workspace-e2e.mjs::WORKSPACE_E2E_ONLY` |
+| `ui/test/tools/` | replays a captured setup transcript into fixtures | `ui/test/tools/replay-capture.mjs::FIXTURE_DIR` |
+| `src-tauri/src/ (mod tests)` | unit tests next to the code, `test_core` for workspace tests | `src-tauri/src/workspace/mod.rs::test_core` |
+| `src-tauri/src/testing.rs` | doubles for the integration tests (test-support feature) | `src-tauri/src/testing.rs::claude_profile` |
+| `src-tauri/tests/` | integration tests: bundle resources, the published Echo plugins | `src-tauri/tests/echo_plugins.rs::CONNECT_ECHO_PLUGINS_DIR` |
+
+## Key abstractions
+
+| Abstraction | What it is | Where |
+|---|---|---|
+| test_core | a `Core` over a temp folder with a scripted runner and fixed profiles | `src-tauri/src/workspace/mod.rs::test_core` |
+| FakeRunner | scripted Claude outcomes; records each `RunSpec` | `src-tauri/src/ai/fake.rs::FakeRunner` |
+| contract_fixture | checks or writes `ui/test/fixtures/contract/<name>` | `src-tauri/src/plugins/testkit.rs::contract_fixture` |
+| buildSnapshot | synthetic snapshot for UI tests | `ui/test/fixtures/workspace-fixture.mjs::buildSnapshot` |
+| fakeService | Settings → CodeMie service stand-in | `ui/test/codemie-fakes.mjs::fakeService` |
+
+## Organization and naming
 
 ```
 src-tauri/src/commands/
-  runner.rs:129     #[cfg(test)] — shell execution (real login shell)
-  logger.rs:67      #[cfg(test)] — log line formatting
-  inspector.rs      (probes; tested via runner integration)
+  runner.rs         unix-only mod tests — shell execution (real login shell)
+  logger.rs         #[cfg(test)] mod tests — log line formatting, CLI debug log path
+  inspector.rs      #[cfg(test)] mod tests — probes
+src-tauri/src/workspace/meetings/
+  tests.rs, notes_tests.rs   test modules declared in meetings/mod.rs
+src-tauri/tests/
+  bundle_resources.rs, echo_plugins.rs   integration tests (test-support feature)
 
 ui/test/
   engine.test.mjs   Engine orchestration (step sequencing, gates, fatal logic)
@@ -25,14 +53,6 @@ ui/test/
   browser/meetings-checks.mjs, browser/meetings-settings-checks.mjs   its Meetings and Settings › Meetings checks
 ```
 
-### Workspace browser end-to-end
-
-`PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node ui/test/browser/workspace-e2e.mjs` serves `ui/` on loopback, injects a mocked `window.__TAURI__`, and drives sign-in, Today, Calendar (all modes), Inbox, Settings, the absence of any Workspaces UI, and sign-out in both themes at 1000/1440/1680 px. Screenshots land in `output/playwright/workspace-e2e/` (git-ignored). It needs loopback binding (outside the default sandbox) and proves UI behaviour only — never native Graph, storage or notifications.
-
-### Contract fixtures
-
-`ui/test/fixtures/contract/ai-*.json` are the real `ai_status`, `ai_usage` and `ai_test` responses, written by the Rust test `contract_fixtures_match_the_real_responses`; the UI fixtures, the browser mock and `ai-settings.test.mjs` read them. `draft-ai.json` (Outlook), `draft-ai-chat.json` (Teams), `summary.json`, `job-ai-draft-failed.json`, `job-ai-draft-conflict.json` and `job-ai-draft-running.json` are AI draft records, a summary record, and `ai_draft` jobs that failed on a Claude sign-in (`errorClass`), failed on a changed conversation (`errorCode: conflict`) and are still running (with the `runModel` Claude reported), exactly as the snapshot carries them, written by `contract_fixtures_match_the_real_ai_jobs` (random ids and clock values pinned). `location-*.json` (`data_location_get`: default, custom, after a move, after adopting, after "Use the default folder") and `check-*.json` (`data_location_check`: ok, cloud, network, exFAT, too little space, Connect data there, recovery) are written by `contract_fixtures_match_the_real_data_location` from a real move, removal and adopt in temp folders (paths mapped to `/Users/taylor` and `/Volumes/Work Drive`, sizes pinned); `settings-storage.test.mjs` and the browser mock read them. `plugins-*.json` (`plugins_request`: `markets`, `catalog` with a Knowledge-blocked and a newer-Echo plugin, `inspect` with its sheet and `sheetHash`, `installed` with an update offered, and an `update` that needs consent, with its `sheetHash`) are written by `contract_fixtures_match_the_real_plugins` from a synthetic marketplace fetched through a stand-in git (times pinned). After changing any of those responses or records run `cd src-tauri && UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`, then commit the JSON; without the variable the test fails when the files are stale.
-
 ### Naming Conventions
 
 | Element | Pattern | Example |
@@ -40,6 +60,11 @@ ui/test/
 | Rust test fns | `snake_case describing behavior` | `run_capture_runs_via_shell_and_captures_stdout` |
 | JS test names | plain string describing behavior | `'fatal failure halts and marks remaining SKIPPED'` |
 | JS test files | `<module>.test.mjs` | `engine.test.mjs` |
+
+### Rules
+- R1. Put a JS test at `ui/test/<module>.test.mjs`: `npm test` runs the glob `ui/test/*.test.mjs`, so a file in a subfolder (`ui/test/browser/`) or without the `.test.mjs` suffix is not run. Evidence: `package.json::test`
+- R2. Put Rust unit tests in a `#[cfg(test)] mod tests` inside the file under test; a module whose tests outgrow it keeps them in a sibling file declared `#[cfg(test)] mod tests;`, as `workspace/meetings/` does. Evidence: `src-tauri/src/workspace/meetings/tests.rs::contract_fixtures_match_the_real_meetings`
+- R3. Put a test that needs crate internals from outside the crate in `src-tauri/tests/` and take its doubles from `app_lib::testing`, which exists with the `test-support` feature that the crate's own dev-dependency turns on. Evidence: `src-tauri/Cargo.toml::test-support`
 
 ---
 
@@ -56,10 +81,10 @@ ui/test/
 
 ## Rust Test Pattern
 
-Rust tests run against the real system (no mocks). Tests that invoke `capture()` run actual shell commands via `/bin/zsh -lc`.
+`commands/` tests run against the real system: tests that invoke `capture()` run actual shell commands via `/bin/zsh -lc`. Workspace, AI and plugin tests use doubles instead (see Mocking).
 
-- Runner tests: `src-tauri/src/commands/runner.rs:133` — `#[tokio::test]` for async
-- Logger tests: `src-tauri/src/commands/logger.rs:71` — synchronous `#[test]`
+- Runner tests: `src-tauri/src/commands/runner.rs::run_capture_runs_via_shell_and_captures_stdout` — `#[tokio::test]` for async
+- Logger tests: `src-tauri/src/commands/logger.rs::cli_debug_log_is_the_dated_file_under_codemie_logs` — synchronous `#[test]`
 - Runtime tests: `src-tauri/src/commands/runtime.rs` (`mod tests`) — helpers take explicit paths, so tests lay out versioned dirs and links in tempdirs; no network
 
 | ✅ DO | ❌ DON'T |
@@ -74,11 +99,11 @@ Rust tests run against the real system (no mocks). Tests that invoke `capture()`
 
 JS tests use the `node:test` built-in runner with `node:assert/strict`. No test framework dependency.
 
-Engine tests inject a synthetic `emit` function and stub `handlers` to verify orchestration behavior without Tauri — see `ui/test/engine.test.mjs:15`.
+Engine tests inject a synthetic `emit` function and stub `handlers` to verify orchestration behavior without Tauri — see `ui/test/engine.test.mjs::mkSteps`.
 
 The macOS shim (`assets/macos/bin/codemie`) is executed in `ui/test/shim.test.mjs` under a throwaway `HOME` with a fake linked runtime, never against the real one.
 
-Approval gate tests (`ignore()` / `approve()`) use a `setTimeout` shim to yield before calling the gate — see `ui/test/engine.test.mjs:61`.
+Approval gate tests (`ignore()` / `approve()`) use a `setTimeout` shim to yield before calling the gate — see the approval-gate tests in `ui/test/engine.test.mjs`, which drive `ui/engine.js::Engine.approve`.
 
 | ✅ DO | ❌ DON'T |
 |---|---|
@@ -92,6 +117,47 @@ Approval gate tests (`ignore()` / `approve()`) use a `setTimeout` shim to yield 
 **Rust**: add a `#[cfg(test)]` block inside the same file as the code under test. For async commands use `#[tokio::test]`.
 
 **JS**: add a `*.test.mjs` file under `ui/test/`. Import the module under test with a relative path. Use `node:test` and `node:assert`.
+
+## Test shape
+
+### Rules
+- R1. Test a workspace UI controller through its factory with fakes for `mutate`, `render`, `openModal` and `toast`, asserting on the recorded calls and on the snapshot the fake `mutate` changed, as `harness` does; `node:test` cannot load `app.js`. Evidence: `ui/test/tasks-controller.test.mjs::harness`
+- R2. Test a workspace operation in Rust over `test_core(tempdir, Arc::new(FakeRunner::new(...)), ready())`, building the request with `mutation(&core, Operation::…, data)` (a fresh operation id and the current revision) and calling `core.request`. Evidence: `src-tauri/src/workspace/ai.rs::mutation`
+
+### Read first
+| When you are | Exemplar | Why this one | Tests |
+|---|---|---|---|
+| testing a workspace operation | `src-tauri/src/workspace/ai.rs::mutation` | builds a request with a fresh operation id and the current revision | `src-tauri/src/workspace/tasks.rs::task_delete_returns_the_body_and_save_restores_it` |
+| testing a page controller | `ui/test/tasks-controller.test.mjs::harness` | fakes record `mutate` calls and apply them to the snapshot | exemplar is a test |
+
+## Fixtures and factories
+
+### Rules
+- R1. Write a native response the UI depends on to `ui/test/fixtures/contract/` with `contract_fixture` from a real call in a Rust test; UI tests and the browser mock read that JSON, and the Rust test fails while the file is stale. Evidence: `src-tauri/src/plugins/testkit.rs::contract_fixture`
+- R2. Build UI test state with `buildSnapshot(now, options)` and the `with…` helpers (`withTasks`, `withMeetings`, `withAutomations`), which merge the contract records, rather than hand-written snapshots. Evidence: `ui/test/fixtures/workspace-fixture.mjs::withTasks`
+- R3. Use invented people and mapped paths in fixtures (`MEETINGS_ROOT` is under `/Users/taylor`), not real accounts or home folders. Evidence: `ui/test/fixtures/workspace-fixture.mjs::MEETINGS_ROOT`
+
+## Mocking
+
+### Rules
+- R1. Stand in for Claude with `FakeRunner` (scripted outcomes, recorded `RunSpec`s) and for the Microsoft reads an AI run makes with `ai_jobs::FakeGraph`; `test_core` wires both into the `Core` a workspace test opens. Evidence: `src-tauri/src/ai/fake.rs::FakeRunner`
+- R2. Fake Settings → CodeMie with `fakeService` from `ui/test/codemie-fakes.mjs`, which records each call by name. Evidence: `ui/test/codemie-fakes.mjs::fakeService`
+- R3. Keep `commands/runner.rs` tests on the real login shell, asserting the exit code and trimmed stdout; they compile under `#[cfg(all(test, unix))]`. Evidence: `src-tauri/src/commands/runner.rs::run_capture_runs_via_shell_and_captures_stdout`
+
+### Constraints
+| Do not | Do instead | Why | Evidence |
+|---|---|---|---|
+| Start `claude` from a test | `FakeRunner` through `test_core`; real runs only in the `#[ignore]` `live_*` tests | a real run spends tokens and needs a signed-in Claude | `src-tauri/src/ai/runner.rs::live_native_isolated_run` |
+
+## Database testing
+
+### Rules
+- R1. Test repository and workspace code against real SQLite in a `tempfile::tempdir()` through `test_core`, which puts the data and private roots in that folder; a test does not open the person's data folder. Evidence: `src-tauri/src/workspace/mod.rs::test_core`
+
+## Test environment
+
+### Rules
+- R1. Point `CONNECT_ECHO_PLUGINS_DIR` (and `CONNECT_KNOWLEDGE_PLUGINS_DIR`) at checkouts to run `tests/echo_plugins.rs` for real; when a folder is missing, its tests print `skipped:` and pass. Evidence: `src-tauri/tests/echo_plugins.rs::CONNECT_ECHO_PLUGINS_DIR`
 
 ---
 
@@ -116,16 +182,86 @@ Approval gate tests (`ignore()` / `approve()`) use a `setTimeout` shim to yield 
 
 The status checks for Claude (`ai_status`, `ai_usage`) are read-only by construction: they list profiles and read this month's usage, never send a prompt. Only `ai_test`, which the user starts, runs Claude.
 
-**Contract fixtures.** The JSON in `ui/test/fixtures/contract/` is written by Rust tests and read by UI tests and the browser mock, so the mock cannot drift from the real responses. After changing a response or record shape run `cd src-tauri && UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`, then commit the JSON; without the variable the tests fail when the files are stale. Sets: `ai-*`, `draft-*`, `summary`, `job-ai-draft-*`, `automation*`, `location-*`, `check-*`, `plugins-*`, `meeting-*`, `note-templates`, `glossary-parse`, `task-*` (`task-records.json`: task bodies as `task_save` stores them; `task-delete.json`: the `task_delete` answer Undo saves back).
+**Contract fixtures.** The JSON in `ui/test/fixtures/contract/` is written by Rust tests and read by UI tests and the browser mock, so the mock cannot drift from the real responses. After changing a response or record shape run `cd src-tauri && UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`, then commit the JSON; without the variable the tests fail when the files are stale. Sets: `ai-*`, `draft-*`, `summary`, `job-ai-draft-*`, `job-ai-summarize-*`, `automation*`, `location-*`, `check-*`, `plugins-*`, `meeting-*`, `note-templates`, `glossary-parse`, `task-*` (`task-records.json`: task bodies as `task_save` stores them; `task-delete.json`: the `task_delete` answer Undo saves back).
 
 **Meetings and tasks fixtures.** `contract_fixtures_match_the_real_meetings` writes `meeting-records.json` (records pending, available, downloaded, blocked, none, ready, failed, and ready after a failed Download again: `saveError` beside the notes), `meeting-transcript.json` and `meeting-files.json` (`meeting_read` answers); `contract_fixtures_match_the_real_meeting_notes` writes `meeting-notes-job.json` (a running `meeting_notes` job with `step`/`steps`), `meeting-ready.json` (two documents), `note-templates.json` (the snapshot's `noteTemplates`), `meeting-rules-cases.json` (settings, templates, rules and cases with the expected template, reason and automatic notes) and `glossary-parse.json` (the example glossary and tag list with native's parse, and `tagEdges`: tag lines whose blanks differ between Rust and JavaScript, a byte order mark among them); `contract_fixtures_match_the_real_tasks` writes `task-records.json` and `task-delete.json`. `withMeetings` / `withTasks` in `workspace-fixture.mjs` build the UI fixture from them, and the browser mock answers every meeting, template, rule, glossary and task operation in their shapes (refusals with `field`). **Parity tests** keep the JS mirrors of native logic honest: `meetings-model.test.mjs` checks `resolveTemplate` against every case in `meeting-rules-cases.json` and `parseGlossary` / `parseTags` against `glossary-parse.json`; `settings-meetings.test.mjs` checks the folder-name preview against folder.rs's rules (Unicode letters kept, cut at 60, `meeting` when empty) and that Restore the example writes native's example texts.
 
 **Pure-module rule.** `ui/workspace/app.js` touches `document` at import, so it cannot be loaded by `node:test`. Logic that needs a test lives in pure modules (`draft-state.js`, `summary-state.js`, `settings-ai.js`, `settings-storage.js`, `data-location-flow.js`, `automations-controller.js`, `settings-plugins.js`, `today-plugins.js`, `tasks-model.js`, `tasks-controller.js`, `meetings-model.js`, `meetings-controller.js`, `meetings-settings-controller.js`, `settings-meetings-editors.js`, `markdown.js`, `view-*.js`, `calendar-model.js`, `selectors.js`) that take state and return values or HTML; `app.js` only wires them to the DOM.
 
-**Browser E2E.** `PLAYWRIGHT_CORE=/Users/Vadym_Vlasenko/.npm/_npx/e41f203b7505f1fb/node_modules/playwright-core node ui/test/browser/workspace-e2e.mjs` (screenshots in `output/playwright/workspace-e2e/`; binds loopback, so run it outside the sandbox). It drives the real `ui/` against a mocked native bridge in both themes at 1000/1440/1680 px: Today, Calendar, Inbox with AI drafts and summaries, Settings (Claude, Storage, Plugins), automations, and the plugin frames. `ui/test/browser/plugins-checks.mjs` holds its plugin checks, `meetings-checks.mjs` the Meetings page, calendar badges and Today card, `meetings-settings-checks.mjs` Settings › Meetings (each with no horizontal overflow at every width); `WORKSPACE_E2E_ONLY=plugins|meetings|meetings-settings` runs one set alone. It proves UI behaviour only, never native storage, Graph or Claude.
+**Browser E2E.** `PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node ui/test/browser/workspace-e2e.mjs` (screenshots in `output/playwright/workspace-e2e/`; binds loopback, so run it outside the sandbox). It drives the real `ui/` against a mocked native bridge in both themes at 1000/1440/1680 px: Today, Calendar, Inbox with AI drafts and summaries, Settings (Claude, Storage, Plugins), automations, and the plugin frames. `ui/test/browser/plugins-checks.mjs` holds its plugin checks, `meetings-checks.mjs` the Meetings page, calendar badges and Today card, `meetings-settings-checks.mjs` Settings › Meetings (each with no horizontal overflow at each width); `WORKSPACE_E2E_ONLY=plugins|meetings|meetings-settings` runs one set alone. It proves UI behaviour only, not native storage, Graph or Claude.
 
 ---
 
 ## What Is Not Tested Automatically
 
-The genuine install operations (`install_node`, `codemie setup`, `sudo .pkg`, `~/.zprofile` edits) and network actions (`proxy connect`, analytics) are **never run automatically**. Verify them by hand from the home page. Smoke modes (`CODEMIE_SMOKE=1`, `CODEMIE_PROBE_SMOKE=1`) provide a non-destructive integration check for the renderer and PTY wiring — see `README.md:157`.
+The genuine install operations (the first-launch runtime download in `ensure_runtime`, `codemie setup`, the `~/.zprofile` edits of `persist_to_zprofile`) and network actions (`proxy connect`, analytics) are not run by `npm test` or `cargo test`. Verify them by hand in the app. Smoke modes (`CODEMIE_SMOKE=1`, `CODEMIE_PROBE_SMOKE=1`) provide a non-destructive integration check for the renderer and PTY wiring — see the Smoke modes table above.
+
+## Examples
+
+### A controller harness over fakes
+
+Source: `ui/test/tasks-controller.test.mjs::harness`
+
+```js
+function harness({ answers = {}, snapshot = withTasks(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), NOW) } = {}) {
+  const calls = { mutate: [], render: 0, toasts: [], modals: [], meetings: [], focus: [] };
+  const state = { route: 'tasks', tasks: newTasksView() };
+  const ctl = createTasksController({
+    state,
+    snap: () => snapshot,
+    mutate: async (op, data) => {
+      calls.mutate.push([op, data]);
+      const stored = snapshot.records.find(r => r.kind === 'commitment' && r.id === data.id);
+      if (op === 'task_save' && stored) {
+        const { log, ...fields } = data;
+        Object.assign(stored.data, fields, fields.status ? { done: fields.status === 'done' } : {});
+      }
+      if (op === 'task_delete') snapshot.records = snapshot.records.filter(r => r !== stored);
+      return typeof answers[op] === 'function' ? answers[op](data) : answers[op] ?? { id: data.id || 'task-new' };
+    },
+    render: async () => { calls.render++; },
+    openModal: options => { calls.modals.push(options); return { querySelector: () => null }; },
+    confirmModal: options => { calls.modals.push(options); },
+    toast: (message, tone, action) => calls.toasts.push({ message, tone, action }),
+```
+
+### Checking a contract fixture
+
+Source: `src-tauri/src/plugins/testkit.rs::contract_fixture`
+
+```rust
+pub fn contract_fixture(name: &str, value: &Value) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
+    let text = serde_json::to_string_pretty(value).unwrap() + "\n";
+    let path = dir.join(name);
+    if std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1") {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, &text).unwrap();
+    } else {
+        let saved = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            saved, text,
+            "{name} is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
+        );
+    }
+}
+```
+
+## Common pitfalls
+
+| Symptom | Cause | Fix | Evidence |
+|---|---|---|---|
+| `cargo test` fails with `<name> is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures` | a native response or record shape changed | regenerate the fixtures and commit the JSON with the change | `src-tauri/src/plugins/testkit.rs::contract_fixture` |
+| A test that imports `app.js` fails under `node:test` | `app.js` reads `window` and `document` at import | move the logic into a pure module and test that | `ui/workspace/app.js::rawInvoke` |
+| `tests/echo_plugins.rs` passes but tested nothing | the plugin folders are missing, so each test prints `skipped:` and returns | set `CONNECT_ECHO_PLUGINS_DIR` and `CONNECT_KNOWLEDGE_PLUGINS_DIR` | `src-tauri/tests/echo_plugins.rs::CONNECT_ECHO_PLUGINS_DIR` |
+| The browser run fails at start inside the agent sandbox | it serves `ui/` on a loopback port | run it outside the sandbox with `PLAYWRIGHT_CORE` set | `ui/test/browser/workspace-e2e.mjs::WORKSPACE_E2E_ONLY` |
+
+## Quick reference
+
+| Task | Do | Where |
+|---|---|---|
+| Run one JS test file | `node --test ui/test/<name>.test.mjs` | `package.json::test` |
+| Run one Rust test | `cd src-tauri && cargo test <name>` | `Makefile::test-rust` |
+| Regenerate contract fixtures | `cd src-tauri && UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`, commit the JSON | `src-tauri/src/plugins/testkit.rs::contract_fixture` |
+| Run the live Claude tests | `cd src-tauri && cargo test live_ -- --ignored` (spends tokens) | `src-tauri/src/ai/runner.rs::live_native_isolated_run` |
+| Run one browser check set | `WORKSPACE_E2E_ONLY=meetings PLAYWRIGHT_CORE=… node ui/test/browser/workspace-e2e.mjs` | `ui/test/browser/workspace-e2e.mjs::WORKSPACE_E2E_ONLY` |

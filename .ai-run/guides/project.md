@@ -4,16 +4,16 @@
 
 | Field | Value | Source |
 |---|---|---|
-| Project name | CodeMie Installer (macOS) | `README.md:1` |
-| Repository/package | codemie-installer-macos-tauri | `package.json:2` |
-| Project code/key | EPM-CDME | `git remote -v` — `epm-cdme/codemie-claude-installer-macos.git` |
+| Project name | CodeMie Connect | src-tauri/tauri.conf.json::productName |
+| Repository/package | codemie-connect | README.md::codemie-connect |
+| Project code/key | EPMCDME | src-tauri/src/lib.rs::EPMCDME |
 
 ## Work Item Tracker
 
 | Field | Value |
 |---|---|
 | Provider | Jira |
-| Key/prefix | EPM-CDME |
+| Key/prefix | EPMCDME |
 
 > Adapter configuration belongs exclusively in `## Ticket Adapter`. Do not duplicate adapter status or instructions in the Work Item Tracker table.
 
@@ -23,22 +23,30 @@
 **Adapter**: Invoke the `codemie-jira-assistant` skill via the Skill tool.
 **Lookup**: Invoke the `codemie-jira-assistant` skill with the ticket key and a request for summary, description, acceptance criteria, and links.
 **Create**: Invoke the `codemie-jira-assistant` skill with the complete ticket payload or approved story file as the argument.
-**Output**: Ticket key and URL returned by the skill.
+**Output**: Ticket key (`EPMCDME-<number>`) and URL returned by the skill.
+**Comment**: Invoke the `codemie-jira-assistant` skill with a request to add a comment to the ticket, passing the comment body as the argument.
+**Attach**: Invoke the `codemie-jira-assistant` skill with a request to attach the file at {{FILE_PATH}} to ticket {{ID}} under the name `sdlc-<kind>-<filename>`.
 
 ## Source Control And Review
 
 | Field | Value |
 |---|---|
-| Provider | GitLab |
-| Repository remote | https://gitbud.epam.com/epm-cdme/codemie-claude-installer-macos.git |
+| Provider | GitHub |
+| Repository remote | https://github.com/codemie-ai/codemie-connect |
 | Default target branch | main |
-| Review artifact type | MR |
+| Review artifact type | PR |
 
 ## MR Adapter
 
 **Status**: configured
-**Adapter**: glab
-**Instructions**: glab is installed at `%LOCALAPPDATA%\Programs\glab\glab.exe` (not on PATH). Invoke as `"$LOCALAPPDATA/Programs/glab/glab.exe"` from Bash or `"$env:LOCALAPPDATA\Programs\glab\glab.exe"` from PowerShell. Authenticated to `gitbud.epam.com` via keyring. Default target branch is `main`; a sub-task branch cut from a group branch targets that group branch instead.
+**Adapter**: gh
+**Instructions**: Use the GitHub CLI: `gh pr create --repo codemie-ai/codemie-connect --base main`. A branch for the workspace milestone targets `workspace-app` instead of `main`.
+
+## Complexity Scoring
+
+**Status**: configured
+**Field**: Total Score
+**Format**: numeric
 
 ## Lifecycle Intent Handling
 
@@ -47,13 +55,7 @@ Invoke the `codemie-jira-assistant` skill and ask it to update the ticket's comp
 Ticket ID: extract from the current branch name (pattern `EPMCDME-\d+`) or from the run work item.
 
 ### artifact_published
-Invoke the `codemie-jira-assistant` skill and attach the artifact file using the `--file` flag:
-
-```bash
-codemie assistants chat "289d2751-afd9-4c77-a272-90df7cd71702" \
-  "Attach this file to Jira ticket EPMCDME-<ID> as the approved <kind> artifact." \
-  --file "<path-to-artifact>"
-```
+Invoke the `codemie-jira-assistant` skill with a request to attach the artifact file at `<path-to-artifact>` to ticket `EPMCDME-<ID>` as the approved `<kind>` artifact.
 
 Ticket ID: extract from the current branch name (pattern `EPMCDME-\d+`) or from the run work item.
 `<path-to-artifact>`: use `data.artifact_path`, or the path to `spec.md` / `plan.md` in the run directory.
