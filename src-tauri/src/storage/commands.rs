@@ -342,7 +342,7 @@ pub fn reveal_command(place: Place, path: &Path) -> (PathBuf, Vec<OsString>) {
 pub fn logs_folder(log_file: &Path) -> PathBuf {
     log_file.parent().unwrap_or(log_file).to_path_buf()
 }
-fn logs_dir() -> PathBuf {
+pub(crate) fn logs_dir() -> PathBuf {
     logs_folder(Path::new(&crate::commands::logger::log_path()))
 }
 

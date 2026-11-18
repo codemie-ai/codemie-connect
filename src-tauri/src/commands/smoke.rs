@@ -23,6 +23,11 @@ pub struct SmokeFlags {
     pub plugin: Option<String>,
     /// This plugin smoke run's id, which the probe frame must echo back.
     pub plugin_run_id: Option<String>,
+    /// `CODEMIE_STATUS_SMOKE` (`status_smoke`): `status`, `live`, `move` or `default`.
+    pub status: Option<String>,
+    /// That run's id, which the window's report must carry, and when it started (unix seconds).
+    pub status_run_id: Option<String>,
+    pub status_started_at: Option<i64>,
 }
 
 #[tauri::command]
@@ -38,6 +43,9 @@ pub fn smoke_mode() -> SmokeFlags {
         shot: std::env::var("CODEMIE_SHOT").ok(),
         plugin: std::env::var(PLUGIN_SMOKE).ok(),
         plugin_run_id: PLUGIN_RUN.get().map(|run| run.run_id.clone()),
+        status: super::status_smoke::running().map(|s| s.mode.name().to_string()),
+        status_run_id: super::status_smoke::running().map(|s| s.run.run_id.clone()),
+        status_started_at: super::status_smoke::running().map(|s| s.started_unix),
     }
 }
 
@@ -65,6 +73,22 @@ fn single_instance_socket(identifier: &str) -> PathBuf {
     ))
 }
 
+/// Exits 3 when another Connect is running: single-instance would hand this smoke launch (`var`)
+/// to it, which exits 0 having tested nothing. Checking for the socket, rather than connecting to
+/// it, leaves the other app alone.
+pub(super) fn refuse_beside_running(var: &str, identifier: &str) {
+    let socket = single_instance_socket(identifier);
+    if cfg!(target_os = "macos") && socket.exists() {
+        eprintln!(
+            "{var}: another Connect is running ({} exists). This launch would be handed to it \
+             and test nothing. Quit it (or delete the socket if no Connect is running) and run \
+             the smoke again.",
+            socket.display()
+        );
+        std::process::exit(3);
+    }
+}
+
 /// Starts a plugin smoke run, when `CODEMIE_PLUGIN_SMOKE` is set. Called in setup before the
 /// single-instance plugin: it removes the previous report, so a stale PASS can never be read, and
 /// refuses to run beside another Connect. That launch would be handed to the running app, which
@@ -85,16 +109,7 @@ pub fn start_plugin_smoke(identifier: &str, version: &str) {
             }
         }
     }
-    let socket = single_instance_socket(identifier);
-    if cfg!(target_os = "macos") && socket.exists() {
-        eprintln!(
-            "CODEMIE_PLUGIN_SMOKE: another Connect is running ({} exists). This launch would be \
-             handed to it and test nothing. Quit it (or delete the socket if no Connect is \
-             running) and run the smoke again.",
-            socket.display()
-        );
-        std::process::exit(3);
-    }
+    refuse_beside_running(PLUGIN_SMOKE, identifier);
     let run_id = uuid::Uuid::new_v4().to_string();
     // Anything but `isolation` names a marketplace folder (`plugin_smoke`).
     if let Some(value) = std::env::var(PLUGIN_SMOKE)

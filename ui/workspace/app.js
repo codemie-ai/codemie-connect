@@ -1946,6 +1946,8 @@ async function boot() {
   // CODEMIE_PLUGIN_SMOKE=<marketplace folder>: the app boots as usual on the smoke's own data root,
   // then runs the marketplace smoke (ui/plugins/market-smoke.js) and quits.
   const marketSmoke = flags.plugin && flags.plugin !== 'isolation' ? flags.plugin : null;
+  // CODEMIE_STATUS_SMOKE=status|live: the app boots as usual, then reports (status-smoke.js) and quits.
+  const statusSmoke = ['status', 'live'].includes(flags.status) ? flags.status : null;
   if (flags.smoke || flags.probe) {
     root.classList.add('hidden');
     legacy.classList.remove('hidden');
@@ -2030,7 +2032,9 @@ async function boot() {
   ready = true;
   // CodeMie reads the CLI in the background; the workspace does not wait for it. The marketplace
   // smoke runs on its own data root and tests plugins only: it runs no CodeMie CLI command.
-  if (!marketSmoke) codemie.boot().catch(fail);
+  // The status smoke says whether the first-launch sheet would open: the prefs before boot decide.
+  const setupBefore = statusSmoke ? codemie.prefs() : null;
+  const codemieBooted = marketSmoke ? null : codemie.boot().catch(fail);
   await render();
   if (aiTabOpen()) loadAi().catch(fail);
   if (generalTabOpen()) loadStorage().catch(fail);
@@ -2099,6 +2103,22 @@ async function boot() {
     });
     // Rust writes the verdict and quits.
     return invoke('smoke_plugins_report', { report });
+  }
+  if (statusSmoke) {
+    const { runStatusSmoke, recordOps, setupFacts } = await import('./status-smoke.js');
+    const ops = [];
+    const report = await runStatusSmoke({
+      invoke, store: createStore(recordOps(watched, ops)), ops, mode: statusSmoke,
+      runId: flags.status_run_id, since: flags.status_started_at, ai: () => state.ai, hidden: hiddenCalendars,
+      setup: async () => {
+        const started = Date.now();
+        const booted = await Promise.race([codemieBooted.then(() => true), new Promise(resolve => setTimeout(resolve, 120_000, false))]);
+        const facts = setupFacts(codemie.service.state, setupBefore, codemie.prefs(), !!codemie.sheet());
+        return { ...facts, booted, bootWaitMs: Date.now() - started };
+      },
+    });
+    // Rust adds its view, writes the verdict and quits.
+    return invoke('smoke_status_report', { report });
   }
   if (shouldCheckForAppUpdate(localPref(`codemie.app.lastUpdateCheck.${state.appVersion}`, null))) checkAppUpdate().catch(() => {});
 }

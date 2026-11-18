@@ -34,6 +34,10 @@ pub fn run() {
                 &app.config().identifier,
                 &app.package_info().version.to_string(),
             );
+            commands::status_smoke::start(
+                &app.config().identifier,
+                &app.package_info().version.to_string(),
+            );
             // PATH injection uses set_var and must run before any plugin starts a thread.
             let resolved = commands::pathman::apply_resolved_shell_path();
             // Capture PATH before injection so detection searches the pre-bundle PATH,
@@ -132,6 +136,7 @@ pub fn run() {
             if let Some(core) = &core {
                 app.manage(plugins::manager::PluginManager::start(app.handle(), core));
             }
+            commands::status_smoke::arm(app.handle());
             workspace::setup_tray(app)?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -215,6 +220,9 @@ pub fn run() {
             commands::smoke::smoke_plugin_report,
             commands::plugin_smoke::smoke_plugins_state,
             commands::plugin_smoke::smoke_plugins_report,
+            commands::status_smoke::smoke_status_facts,
+            commands::status_smoke::smoke_status_discard,
+            commands::status_smoke::smoke_status_report,
             steps::get_steps,
             steps::get_logo_path,
             commands::app_updater::check_for_update,

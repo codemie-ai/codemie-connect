@@ -209,6 +209,23 @@ impl PluginManager {
         lock(&self.problems).clone()
     }
 
+    /// Reloads asked for that haven't finished: 0 once the manager has settled.
+    pub fn reloads_pending(&self) -> usize {
+        *self.reloads.borrow()
+    }
+
+    /// The installed plugins as `(id, version, on)`, or why the list can't be read.
+    pub fn installed(&self) -> Result<Vec<(String, String, bool)>, String> {
+        Registry::load(&self.paths)
+            .map(|reg| {
+                reg.installed
+                    .into_iter()
+                    .map(|(id, p)| (id, p.version, p.enabled))
+                    .collect()
+            })
+            .map_err(|e| e.message)
+    }
+
     /// The ids of the loaded plugins.
     pub fn loaded(&self) -> Vec<String> {
         let mut ids: Vec<String> = lock(&self.loaded).keys().cloned().collect();

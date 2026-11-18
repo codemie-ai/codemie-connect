@@ -511,18 +511,21 @@ CODEMIE_WORKSPACE_TEST_DIR="$(mktemp -d)/workspace" CODEMIE_PLUGIN_SMOKE=isolati
 No single-instance socket was left after the runs, and no live Claude prompt was sent. Nothing reached the
 network: the marketplace is a local folder, GitHub has no sign-in in a fresh data root, and no link was opened.
 
-## Live checks (owner present): not done yet
+## Live checks: done without the window (2026-11-18)
 
-These need the owner at the Mac with a real Claude sign-in and real Microsoft data. They are read-only or reversible; nothing is sent. The controller fills in the results.
+The owner approved these checks on their real data and asked for them to run without them. Desktop control
+(clicking the native window) wasn't available, so each ran through the env-gated smokes of the real debug app on
+`workspace-app` (see "Live checks without the window" at the end of this file). Nothing was sent, posted or
+written to the calendar.
 
 | # | Check | Result |
 |---|---|---|
-| 1 | Claude page states: profile list, default and per-purpose routes, usage, Test on each ready profile, and the no-Claude state | not done |
-| 2 | One AI draft on a real conversation (not sent): the box fills, Regenerate works, nothing leaves the Mac | not done |
-| 3 | One summary of a real thread, with its asks | not done |
-| 4 | One Morning brief run: the card on Today and the Run log entry | not done |
-| 5 | Data folder move to a temp folder and back: the check page, the restart, the data intact, the old copy, then Use the default folder | not done |
-| 6 | Install the four plugins from the local marketplace and open each (Scheduler, GitHub, Obsidian; Telegram is expected to say it needs a plugin change) | not done |
+| 1 | Claude page states: profile list, default and per-purpose routes, usage, Test on each ready profile, and the no-Claude state | **Data: pass** (status `5235d54a-1ecb-4f4b-8a74-9fd986c5d3cd`): three profiles, all ready (Claude Code subscription, CodeMie `prod`, CodeMie `sso-autotest`), default `codemie:prod`, no per-purpose routes. **Test:** the live runs `live_native_isolated_run` and `live_codemie_isolated_run` (subscription with Haiku, CodeMie `prod`) pass; `sso-autotest` wasn't tested. **Not possible without desktop control:** the page as drawn, the usage panel and the Test buttons in the window. The no-Claude state needs Claude removed from this Mac, so it wasn't tried |
+| 2 | One AI draft on a real conversation (not sent): the box fills, Regenerate works, nothing leaves the Mac | **Pass** (live `4b918108-b24d-44b9-b763-ea9b693423d7`): the only needs-reply item (a Teams chat), `ai_draft` succeeded in 16.4 s (Claude 2.7 s, CodeMie `prod`), 156 characters, 2 questions, 6 messages read. The draft was then discarded and the conversation left as it was. No send op was called and outgoing actions stayed at 0. **Not possible without desktop control:** the box filling on screen and Regenerate, which would also be a second Claude run |
+| 3 | One summary of a real thread, with its asks | **Pass** (same run): a 5-message Outlook thread, `ai_summarize` succeeded in 20.7 s (Claude 4.0 s), 676 characters in 1 paragraph. The asks list came back empty: nothing in that thread was asked of the owner. The summary was removed afterwards |
+| 4 | One Morning brief run: the card on Today and the Run log entry | **Pass** (same run): no Morning brief existed, so one was made from the template, turned off so no schedule could run it. Run `37274d73-6ba2-4599-93d0-5a96ac4715b5` came back `ok` in 4.9 s: 3 blocks, 5 items, 15 sources, delivered to Today and as a notification. The Run log lists it, and Today's Automation results card (already on the layout) shows it. The automation was deleted afterwards and the layout is unchanged. A macOS notification was shown |
+| 5 | Data folder move to a temp folder and back: the check page, the restart, the data intact, the old copy, then Use the default folder | **Pass on a test data root, not the owner's**: the permission system refused copying the owner's data root, so the move ran on the marketplace smoke's root (four plugins installed). Runs: status `9d1bf634-…` → move `9b4f200b-d79c-4105-af8a-e4718f59a60c` (check: Move and Start empty offered, no issues, APFS; copy in 202 ms) → status `355a4cbd-…` (custom folder, same rows, plugins load) → Use the default folder `6262b72a-…` → status `a8bfacf1-…` (default folder, same rows, the moved folder kept as the old copy). The rows were the same at every step. **Not possible without desktop control:** the folder picker and the automatic restart; each start was a separate launch instead |
+| 6 | Install the four plugins from the local marketplace and open each (Scheduler, GitHub, Obsidian; Telegram is expected to say it needs a plugin change) | **Pass** (marketplace smoke `01606110-698d-4500-9b77-f417e5701eb5`, temp data root): all four framed before load. Scheduler, GitHub and Obsidian loaded and passed, with every page shown and ready, 0 page errors and every command ok. Telegram is the known failure (sessions API, ruling R39). On the owner's own data only Telegram is installed, and it fails to load the same way |
 
 Open gates: none in code. Other open items are in [README.md](README.md), Known limits.
 
@@ -590,10 +593,102 @@ the owner's data folder was not used.
 
 | # | Check | Result |
 |---|---|---|
-| 1 | First launch of the merged build on a Mac account with no CodeMie profile: the sheet opens once after Today, "Not now" leaves the Today card (no Claude ready) or none (Claude ready) | not done |
-| 2 | A real expired CodeMie SSO profile: Settings → Claude shows "Needs sign-in", Sign in opens the browser, the card turns Ready, Today's banner and the dots go | not done |
-| 3 | Open in Terminal from Overview and Coding agents (`open_agent_in_terminal`) | not done |
-| 4 | A full SSO setup through the sheet, including a custom CodeMie address, then the new profile in Settings → Claude without a manual refresh | not done |
-| 5 | Bedrock and Claude/Kimi subscription setups through the sheet | not done |
-| 6 | Settings → CodeMie tabs live under `cargo tauri dev` (CLI 0.16.3): agents install/update/remove, connect Claude Desktop, Health | not done |
-| 7 | What `codemie profile status` reports for an active LiteLLM or Bedrock profile (the Claude tab offers no browser sign-in for those) | not done |
+| 1 | First launch of the merged build on a Mac account with no CodeMie profile: the sheet opens once after Today, "Not now" leaves the Today card (no Claude ready) or none (Claude ready) | **Partly.** On this Mac (two CodeMie profiles, signed in) the status smoke shows the sheet wouldn't open and didn't (`wouldOpen: false`, `sheetOpen: false`, no attention items). The no-profile case would need the owner's profiles removed, and "Not now" needs the window: not done |
+| 2 | A real expired CodeMie SSO profile: Settings → Claude shows "Needs sign-in", Sign in opens the browser, the card turns Ready, Today's banner and the dots go | Not possible: no profile is expired, and signing in is not allowed without the owner |
+| 3 | Open in Terminal from Overview and Coding agents (`open_agent_in_terminal`) | Not possible without desktop control |
+| 4 | A full SSO setup through the sheet, including a custom CodeMie address, then the new profile in Settings → Claude without a manual refresh | Not possible: a real SSO sign-in in the browser |
+| 5 | Bedrock and Claude/Kimi subscription setups through the sheet | Not possible without desktop control and the owner's keys |
+| 6 | Settings → CodeMie tabs live under `cargo tauri dev` (CLI 0.16.3): agents install/update/remove, connect Claude Desktop, Health | **Partly.** The CodeMie reads behind the tabs ran in every status run: CLI loaded, 2 profiles, active profile signed in, nothing needs attention. Install, update, remove, connecting Claude Desktop and Health change the owner's setup and need the window: not done |
+| 7 | What `codemie profile status` reports for an active LiteLLM or Bedrock profile (the Claude tab offers no browser sign-in for those) | Not possible: no such profile on this Mac |
+
+## 2026-11-18: Live checks without the window
+
+Branch `workspace-app` after `8d48b16`, with the status smoke (`CODEMIE_STATUS_SMOKE`, ruling R14:
+`src-tauri/src/commands/status_smoke.rs`, `ui/workspace/status-smoke.js`). Debug build (`cargo build` in
+`src-tauri/`), run outside the agent sandbox. Before each launch on the owner's data, the check found no
+single-instance socket and no Connect process. The live checks table above links here.
+
+**What the status smoke does.** Connect boots as the owner's own launch does: their data folder unless
+`CODEMIE_WORKSPACE_TEST_DIR` is set. It waits for the workspace, the first sync and the plugin manager, then
+writes `$TMPDIR/connect-status-smoke.json`. The report holds statuses, counts, lengths, timings and ids only:
+e-mail addresses become `<redacted>`, the home folder becomes `~`, and keys that carry text (message, draft or
+summary text, subjects, names, asks, questions) are dropped. Exit codes: 0 pass, 1 fail, 2 nothing reported in
+time, 3 can't run.
+
+- `live` adds one AI draft, one summary and one Morning brief run through the UI's own workspace ops.
+  - It fails if any send op (`action_prepare`, `action_confirm`) is called or if outgoing actions change.
+  - Afterwards it removes what it made: a debug-only command deletes only an AI draft or a summary that wasn't
+    there before the run and was written after it started; an automation it made is deleted.
+- `move:<folder>` and `default` run only on a test data root and are refused without one.
+
+### On the owner's data
+
+| Run | Command | Run id | Result |
+|---|---|---|---|
+| Status | `CODEMIE_STATUS_SMOKE=status ./target/debug/app` | `5235d54a-1ecb-4f4b-8a74-9fd986c5d3cd` (pid 57770, 05:52:35 → 05:53:02 UTC) | exit 0, pass. First sync succeeded after 25.3 s, plugin manager settled in 0.4 s |
+| Live | `CODEMIE_STATUS_SMOKE=live ./target/debug/app` | `4b918108-b24d-44b9-b763-ea9b693423d7` (pid 61712, 05:54:22 → 05:55:49 UTC) | exit 0, pass. Draft, summary and Morning brief all `ok` (table above). Workspace ops called: `ai_draft`, `ai_summarize`, `automation_save`, `automation_run_now`, `automation_runs`, `automation_delete`, `snapshot`; no send op; outgoing actions 0 → 0 |
+
+What the status run found:
+
+- **Version:** 2.1.1.
+- **Data folder:** the default folder (not custom), status ready, 18.9 MB of movable data, no old copy.
+- **Claude:** three profiles, all ready: `claude` (subscription, Max plan), `codemie:prod` and `codemie:sso-autotest`.
+  The default is `codemie:prod`, and there are no per-purpose routes.
+- **Plugins:** Telegram 0.4.0 is installed and on. It doesn't load, for the known reason (sessions API).
+- **Workspace counts:**
+  - Needs reply 1, critical 0. Inbox lanes: FYI 315, Low priority 53, Waiting 0, Decisions 0.
+  - 292 Outlook messages and 1,284 Teams messages; 14 events today; 1 automation (on); 6 cards on Today.
+  - Microsoft is connected with no sync error.
+- **Needs attention:** nothing.
+- **CodeMie setup sheet:** wouldn't open (CLI loaded, two profiles, signed in).
+
+The database rows were the same before and after the live run for drafts (3), summaries (1), automations (1)
+and automation runs (2). Three `ai_run` usage records (12 → 15) and the finished AI jobs remain: they are the
+usage log of the three approved Claude runs. A local macOS notification of the Morning brief was shown.
+
+### Data folder move (test data root)
+
+The permission system refused copying the owner's data root to a temp folder, so the owner's data wasn't
+copied. The move ran instead on the data root the marketplace smoke made (`$TMPDIR/connect-plugin-smoke-01606110-…/workspace`,
+four plugins installed), with `CODEMIE_WORKSPACE_TEST_DIR` set to it and the target a fresh `mktemp -d` folder:
+
+| Phase | `CODEMIE_STATUS_SMOKE` | Run id | Result |
+|---|---|---|---|
+| 1 | `status` | `9d1bf634-0156-49b6-8948-a287038258c1` | default folder; rows: workspaces 1, `plugin_widget` 4, jobs 0; github, obsidian, scheduler load |
+| 2 | `move:<temp folder>` | `9b4f200b-d79c-4105-af8a-e4718f59a60c` | check: Move and Start empty offered, no issues, APFS, 0.6 MB needed. Moved in 202 ms; the pointer names `<temp folder>/CodeMie Connect Data`; old copy kept (`previousCopied: true`) |
+| 3 | `status` | `355a4cbd-2df1-40d6-bb2a-3e142d29b7f6` | custom folder ready, same rows, the same three plugins load |
+| 4 | `default` | `6262b72a-afa5-4ea2-91e2-eac1d6c2b931` | "Use the default folder": the pointer back to the default |
+| 5 | `status` | `a8bfacf1-a831-4719-9376-5c5768fdd95c` | default folder, same rows, the moved folder listed as the old copy (`previousExists: true`) |
+
+Each phase exited 0. The folder picker and the restart need the window; here each start was its own launch.
+
+### Other live runs
+
+- **Live Claude runs:** `cd src-tauri && cargo test --lib live_ -- --ignored` gave 2 passed
+  (`live_native_isolated_run`, `live_codemie_isolated_run`) in 14.4 s. CodeMie `prod` needed no sign-in.
+- **Legacy smokes**, first native run after the merge, on a temp `CODEMIE_WORKSPACE_TEST_DIR`:
+  - `CODEMIE_SMOKE=1`: exit 0. `SMOKE_PROBE` showed 7 step rows, canvas, background `rgb(26, 26, 26)`, theme
+    dark, no boot error, and a 4-segment identity bar (its text isn't recorded). `SMOKE_STREAM` gave code 0 with
+    5 lines for a 2-line `printf`, because the login shell adds lines. `SMOKE_PTY` exited 0 and saw its marker,
+    then `SMOKE_OK`.
+  - `CODEMIE_PROBE_SMOKE=1`: exit 0. git 2.39.5, node v22.16.0 and npm 10.9.2 were found. codemie was found,
+    but with an empty version string. Then `PROBE_DONE`.
+- **Plugin marketplace smoke:**
+  `CODEMIE_PLUGIN_SMOKE=/Users/Vadym_Vlasenko/AI/projects/other/echo-plugins ./target/debug/app` exited 0.
+  Run `01606110-698d-4500-9b77-f417e5701eb5`, pid 76304, 06:01:18 → 06:02:26 UTC.
+- **Negative checks**, each exit 3 before any data folder opens:
+  - a placeholder single-instance socket (the stale report is removed too);
+  - `move:` without `CODEMIE_WORKSPACE_TEST_DIR`;
+  - an unknown mode;
+  - the release binary (`the status smoke runs in a debug build only`).
+
+### Gates
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cd src-tauri && cargo fmt --check` | clean |
+| Lint | `cd src-tauri && cargo clippy -- -D warnings` | no issues |
+| Rust tests | `cd src-tauri && cargo test` (outside the sandbox) | 549 passed, 2 ignored (the live Claude runs): lib 538, `bundle_resources` 2, `echo_plugins` 9 |
+| JS tests | `npm test` | 795 tests: 792 passed, 0 failed, 3 skipped |
+| Browser E2E | `PLAYWRIGHT_CORE=… node ui/test/browser/workspace-e2e.mjs` | 253/253 checks passed |
+| Installer build | `./build-installer.sh --skip-stage` | passes: "Done. All assertions passed." (`CodeMie Connect_2.1.1_aarch64.dmg`) |

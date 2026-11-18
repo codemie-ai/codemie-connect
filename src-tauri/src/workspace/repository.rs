@@ -257,6 +257,43 @@ impl Repository {
             |r| r.get(0),
         )?)
     }
+    /// How many rows the database holds: records by kind, then `jobs`, `workspaces` and
+    /// `connections` (the status smoke compares them before and after a data-folder move).
+    pub fn row_counts(&self) -> Result<std::collections::BTreeMap<String, i64>> {
+        let mut counts = std::collections::BTreeMap::new();
+        let mut kinds = self
+            .db
+            .prepare("SELECT kind, count(*) FROM records GROUP BY kind")?;
+        for row in kinds.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+            let (kind, n) = row?;
+            counts.insert(format!("records.{kind}"), n);
+        }
+        for table in ["jobs", "workspaces", "connections"] {
+            let n: i64 = self
+                .db
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?;
+            counts.insert(table.to_string(), n);
+        }
+        Ok(counts)
+    }
+    /// Deletes one record, whatever its account and workspace; true when there was one. Only the
+    /// status smoke uses it, to remove the AI draft and summary it made (`commands::status_smoke`).
+    pub fn delete_record(
+        &mut self,
+        kind: &str,
+        id: &str,
+        connection_id: &str,
+        workspace_id: &str,
+    ) -> Result<bool> {
+        let tx = self.db.transaction()?;
+        let n = tx.execute(
+            "DELETE FROM records WHERE id=?1 AND kind=?2 AND connection_id=?3 AND workspace_id=?4",
+            params![id, kind, connection_id, workspace_id],
+        )?;
+        bump(&tx)?;
+        tx.commit()?;
+        Ok(n > 0)
+    }
     pub fn revision(&self) -> Result<i64> {
         Ok(self
             .db

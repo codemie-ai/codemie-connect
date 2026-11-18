@@ -14,5 +14,6 @@ pub mod pty;
 pub mod runner;
 pub mod runtime;
 pub mod smoke;
+pub mod status_smoke;
 pub mod terminal_launch;
 pub mod window;
