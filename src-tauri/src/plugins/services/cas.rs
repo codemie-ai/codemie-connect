@@ -9,6 +9,9 @@ use sha2::{Digest, Sha256};
 use std::io::Write as _;
 use std::path::Path;
 
+/// A file larger than this isn't hashed to be compared.
+const COMPARE_MAX: u64 = 64 << 20;
+
 /// The sha256 of `bytes`, lowercase hex.
 pub fn sha_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -63,6 +66,9 @@ pub fn write(path: &Path, rel: &str, bytes: &[u8], guard: &Guard) -> Result<(), 
     match guard {
         Guard::Any => crate::storage::location::write_atomic(path, bytes).map_err(failed),
         Guard::IfSha(want) => {
+            if std::fs::metadata(path).is_ok_and(|m| m.len() > COMPARE_MAX) {
+                return Err(bad(format!("“{rel}” is over 64 MB: it can't be compared")));
+            }
             let now = std::fs::read(path).ok().map(|b| sha_hex(&b));
             if now.as_deref() != Some(want.as_str()) {
                 return Err(bad(format!(

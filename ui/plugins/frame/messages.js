@@ -5,8 +5,11 @@
 // message: the channel it arrived on names the frame, and the frame names the plugin.
 //
 // Frame → window
-//   call          {method: 'command', command, args}          a host-half command → reply {value}
+//   call          {method: 'command', command, args, files?}  a host-half command → reply {value};
+//                                       `files`: ids of handles the user gave it, for `fn(args, {files})`
 //                 {method: 'storage', items}                   the localStorage stand-in, saved
+//                 {method: 'reveal', root, path}               ctx.system.reveal, on the user's click
+//                                       (the window answers only for the frame on screen)
 //   event         {type: 'go', hash, replace} {type: 'notice', text} {type: 'copy', text}
 //                 {type: 'open', url}   a link the user clicked (or window.open): the window asks
 //                                       the user, and opens https: and obsidian: addresses only
@@ -17,6 +20,7 @@
 // Window → frame
 //   event         {type: 'connect', plugin, host, theme, where, storage}   (posted with the port)
 //                 {type: 'theme', theme} {type: 'show', target, where} {type: 'palette', index}
+//                 {type: 'files', files: [{file, name, size}]}   files dropped on its page, as handles
 //                 {type: 'unload'}
 //   call          {method: 'draw', widget, data, size, theme}    a page widget → reply {value: html}
 //   reply         as above, to the frame's call
@@ -31,6 +35,11 @@ const NAME = 80;
 const MAX_JSON = 1024 * 1024;
 /** Each list in a contribution. */
 const MAX_ITEMS = 40;
+/** A folder's path or a path in it. */
+const PATH = 4096;
+/** Files one drop hands a page. */
+const MAX_FILES = 50;
+const fileHandle = f => isObject(f) && exactly(f, ['file', 'name', 'size']) && text(f.file, 80) && text(f.name, 1024) && Number.isFinite(f.size) && f.size >= 0;
 /** Ids of activities, sections, panels and widgets. */
 const ITEM_ID = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
 
@@ -65,12 +74,16 @@ export function checkFromFrame(m) {
   switch (m.kind) {
     case 'call':
       if (m.method === 'command') {
-        return exactly(m, ['v', 'id', 'kind', 'method', 'command', 'args']) && text(m.command, NAME) && m.command !== ''
-          && jsonSize(m.args) <= MAX_JSON ? m : null;
+        return exactly(m, ['v', 'id', 'kind', 'method', 'command', 'args', 'files']) && text(m.command, NAME) && m.command !== ''
+          && jsonSize(m.args) <= MAX_JSON
+          && (m.files === undefined || (Array.isArray(m.files) && m.files.length <= MAX_FILES && m.files.every(f => text(f, 80) && f !== ''))) ? m : null;
       }
       if (m.method === 'storage') {
         return exactly(m, ['v', 'id', 'kind', 'method', 'items']) && isObject(m.items)
           && Object.values(m.items).every(x => typeof x === 'string') && jsonSize(m.items) <= MAX_JSON ? m : null;
+      }
+      if (m.method === 'reveal') {
+        return exactly(m, ['v', 'id', 'kind', 'method', 'root', 'path']) && text(m.root, PATH) && m.root !== '' && text(m.path, PATH) ? m : null;
       }
       return null;
     case 'reply':
@@ -123,6 +136,7 @@ export function checkFromWindow(m) {
           return exactly(m, ['v', 'id', 'kind', 'type', 'target', 'where']) && isObject(m.target) && VIEWS.includes(m.target.view)
             && where(m.where) ? m : null;
         case 'palette': return exactly(m, ['v', 'id', 'kind', 'type', 'index']) && Number.isInteger(m.index) && m.index >= 0 ? m : null;
+        case 'files': return exactly(m, ['v', 'id', 'kind', 'type', 'files']) && Array.isArray(m.files) && m.files.length <= MAX_FILES && m.files.every(fileHandle) ? m : null;
         case 'unload': return exactly(m, ['v', 'id', 'kind', 'type']) ? m : null;
         default: return null;
       }

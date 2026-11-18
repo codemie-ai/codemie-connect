@@ -253,6 +253,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       case 'theme': setTheme(m.theme); graph?.retheme(); renderSoon(); return;
       case 'show': s.target = m.target; s.where = m.where; mirrorHash(m.target); renderSoon(); return;
       case 'palette': return runPalette(m.index);
+      case 'files': return dropFiles(m.files);
       case 'unload': return unload();
       default:
     }
@@ -314,7 +315,11 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     return {
       id: s.plugin.id,
       host: { name: String(s.host.name || ''), version: String(s.host.version || ''), engine: String(s.host.engine || '') },
-      call: (command, args = {}) => request({ method: 'command', command: String(command), args: args === undefined ? null : args }),
+      call: (command, args = {}, opts) => {
+        // Files the user handed the page (`onFileDrop`, a picker) go with the call by their ids.
+        const files = Array.isArray(opts?.files) ? opts.files.map(f => String(typeof f === 'string' ? f : f?.file ?? '')).filter(Boolean) : [];
+        return request({ method: 'command', command: String(command), args: args === undefined ? null : args, ...(files.length ? { files } : {}) });
+      },
       render: () => { if (!s.drawing) renderSoon(); },
       listen: (type, fn, opts) => { doc.addEventListener(type, fn, opts); own.listeners.push([type, fn, opts]); },
       listenWindow: (type, fn, opts) => { win.addEventListener(type, fn, opts); own.windowListeners.push([type, fn, opts]); },
@@ -357,6 +362,13 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
           if (!ITEM_ID.test(String(widget)) || typeof fn !== 'function') throw new Error('widgets.draw(widget, fn) draws a declared page widget');
           s.draws.set(String(widget), fn);
           contribute();
+        },
+      },
+      system: {
+        // Shows a file of a folder the user gave the plugin in Finder, on the user's click.
+        reveal: (root, path = '') => {
+          if (win.navigator?.userActivation?.isActive !== true) return Promise.reject(new Error('Finder opens only on your click'));
+          return request({ method: 'reveal', root: String(root ?? ''), path: String(path ?? '') });
         },
       },
       where: () => ({ ...s.where }),
@@ -613,6 +625,18 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       }
     }
     s.port.postMessage({ v: V, id: m.id, kind: 'reply', ...answer });
+  }
+
+  /** Files dropped on the page (handles, never paths), to each `onFileDrop` listener. */
+  function dropFiles(files) {
+    for (const fn of s.drops) {
+      try {
+        const out = fn(files.map(f => ({ ...f })));
+        if (out && typeof out.catch === 'function') out.catch(e => pageError(`Dropped files: ${errorOf(e).message}`));
+      } catch (e) {
+        pageError(`Dropped files: ${errorOf(e).message}`);
+      }
+    }
   }
 
   function runPalette(index) {

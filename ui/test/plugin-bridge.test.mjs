@@ -662,3 +662,43 @@ test('a_page_being_typed_in_is_left_alone_and_its_badge_reaches_the_window', asy
   assert.equal(last().activities[0].badge, '99+');
   assert.ok(checkFromFrame(last()), 'the window takes it');
 });
+
+test('reveal_and_dropped_files_reach_only_the_page_on_screen', async () => {
+  const w = await helloLoaded();
+  const dropped = [];
+  w.shim.ctx.onFileDrop(files => dropped.push(files));
+  // Not on screen: no reveal, no files.
+  await assert.rejects(w.shim.ctx.system.reveal('/v', 'a.md'), /page on screen/);
+  assert.equal(w.host.dropFiles('hello', [{ file: 'h1', name: 'a.pdf', size: 3 }]), false);
+  w.host.show({ id: 'hello', view: 'activity', activity: 'home', route: '' });
+  await settle(20);
+  const answer = await w.shim.ctx.system.reveal('/Users/taylor/Vault', 'notes/a.md');
+  assert.ok(answer);
+  const asked = w.calls.filter(([cmd, a]) => cmd === 'plugins_request' && a.op === 'frame_reveal');
+  assert.deepEqual(asked.at(-1)[1].data, { id: 'hello', root: '/Users/taylor/Vault', path: 'notes/a.md' }, 'the id is the frame’s own');
+  // Only on the user's click.
+  w.fw.win.navigator.userActivation.isActive = false;
+  await assert.rejects(w.shim.ctx.system.reveal('/v', ''), /your click/);
+  w.fw.win.navigator.userActivation.isActive = true;
+  // Dropped while its page shows: the handles, nothing else.
+  assert.equal(w.host.dropFiles('hello', [{ file: 'h1', name: 'Brief.pdf', size: 12, path: '/Users/taylor/Brief.pdf' }]), true);
+  await settle(20);
+  assert.deepEqual(dropped, [[{ file: 'h1', name: 'Brief.pdf', size: 12 }]]);
+  // The schema keeps the window from sending anything else.
+  assert.equal(checkFromWindow({ v: V, id: 0, kind: 'event', type: 'files', files: [{ file: 'h', name: 'x', size: 1, path: '/x' }] }), null);
+  assert.equal(checkFromFrame({ v: V, id: 3, kind: 'call', method: 'reveal', root: '', path: 'x' }), null);
+  // A Settings section of the same plugin isn't a page files are dropped on.
+  w.host.show({ id: 'hello', view: 'section', section: 'main' });
+  await settle(20);
+  assert.equal(w.host.dropFiles('hello', [{ file: 'h2', name: 'b', size: 1 }]), false);
+});
+
+test('files_handed_to_the_page_go_with_a_call_by_their_ids', async () => {
+  const w = await helloLoaded();
+  await w.shim.ctx.call('source_add', { kind: 'files' }, { files: [{ file: 'h1', name: 'a.pdf', size: 1 }, 'h2'] });
+  await w.shim.ctx.call('greet', {});
+  const sent = w.calls.filter(([cmd]) => cmd === 'plugin_call').map(([, a]) => a);
+  assert.deepEqual(sent.at(-2), { id: 'hello', command: 'source_add', args: { kind: 'files' }, files: ['h1', 'h2'] });
+  assert.deepEqual(sent.at(-1), { id: 'hello', command: 'greet', args: {} }, 'no files: none sent');
+  assert.equal(checkFromFrame({ v: V, id: 9, kind: 'call', method: 'command', command: 'x', args: {}, files: [{ file: 'h1' }] }), null);
+});

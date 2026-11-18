@@ -215,12 +215,19 @@ export function createPluginHost({
     }
   }
 
+  /** What a frame asks of the window: its commands, its stored values, and (the frame on screen
+   *  only, after the user's click there) a reveal in Finder. */
+  function ask(rec, m) {
+    if (m.method === 'command') return invoke('plugin_call', { id: rec.id, command: m.command, args: m.args ?? null, ...(m.files ? { files: m.files } : {}) });
+    if (m.method === 'storage') return invoke('plugins_request', { op: 'client_storage', data: { id: rec.id, items: m.items } }).then(() => null);
+    if (!rec.shown) return Promise.reject(Object.assign(new Error('Only the page on screen can do that.'), { code: 'permission' }));
+    return invoke('plugins_request', { op: 'frame_reveal', data: { id: rec.id, root: m.root, path: m.path } });
+  }
+
   async function answer(rec, port, m) {
     let reply;
     try {
-      const value = m.method === 'command'
-        ? await invoke('plugin_call', { id: rec.id, command: m.command, args: m.args ?? null })
-        : (await invoke('plugins_request', { op: 'client_storage', data: { id: rec.id, items: m.items } }), null);
+      const value = await ask(rec, m);
       reply = { ok: true, value: value === undefined ? null : value };
     } catch (e) {
       reply = { ok: false, error: errorOf(e) };
@@ -371,10 +378,19 @@ export function createPluginHost({
     });
   }
 
+  /** Files dropped on the window while plugin `id`'s page is on screen, as its handles, for its
+   *  `onFileDrop`. Any other frame gets none. */
+  function dropFiles(id, files) {
+    const rec = frames.get(id);
+    if (!rec?.shown || target?.view !== 'activity' || !Array.isArray(files) || !files.length) return false;
+    send(rec, { kind: 'event', type: 'files', files: files.map(f => ({ file: String(f.file), name: String(f.name), size: Number(f.size) || 0 })) });
+    return true;
+  }
+
   const list = key => [...frames.values()].flatMap(rec => rec.contrib[key].map(x => ({ ...x, plugin: rec.id, pluginName: rec.name })));
 
   const api = {
-    mount, sync, show, place, placeSoon, setTheme, runPalette, draw, unload,
+    mount, sync, show, place, placeSoon, setTheme, runPalette, draw, unload, dropFiles,
     /** The pages plugins add, for the sidebar: [{plugin, pluginName, id, label}]. */
     activities: () => list('activities'),
     /** Their Settings sections: [{plugin, pluginName, id, label, badge}]. */

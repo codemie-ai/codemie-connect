@@ -99,18 +99,33 @@ pub fn command_args(spec: &RunSpec) -> Vec<String> {
 
 /// Answers the folder picker with whatever the test put in it (then nothing: the user cancelled).
 #[derive(Default)]
-pub struct Picked(pub Mutex<Option<PathBuf>>);
+pub struct Picked(pub Mutex<Option<PathBuf>>, pub Mutex<Vec<PathBuf>>);
 
 impl Picked {
     /// The folder the user picks next.
     pub fn next(&self, folder: &Path) {
         *self.0.lock().unwrap() = Some(folder.to_path_buf());
     }
+
+    /// The files the user picks next.
+    pub fn next_files(&self, files: &[&Path]) {
+        *self.1.lock().unwrap() = files.iter().map(|f| f.to_path_buf()).collect();
+    }
 }
 
 impl FolderPicker for Picked {
     fn pick(&self, _title: String) -> BoxFuture<'static, Option<PathBuf>> {
         let picked = self.0.lock().unwrap().take();
+        Box::pin(async move { picked })
+    }
+
+    fn pick_files(
+        &self,
+        _title: String,
+        _multiple: bool,
+        _exts: Vec<String>,
+    ) -> BoxFuture<'static, Vec<PathBuf>> {
+        let picked = std::mem::take(&mut *self.1.lock().unwrap());
         Box::pin(async move { picked })
     }
 }

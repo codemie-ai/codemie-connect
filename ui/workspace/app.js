@@ -2414,6 +2414,16 @@ async function boot() {
   });
   await listen('workspace:notification-open', event => openNotification(event.payload || {}).catch(fail));
   await listen('workspace:installer-settled', flushNotification);
+  // Files dropped on a plugin's page (its `ctx.onFileDrop`): Rust makes handles of that plugin's,
+  // and the page gets those, never the paths.
+  await listen('tauri://drag-drop', event => {
+    const shown = pluginHost?.shown();
+    const paths = Array.isArray(event.payload?.paths) ? event.payload.paths.filter(p => typeof p === 'string').slice(0, 50) : [];
+    if (state.route !== 'plugin' || shown?.view !== 'activity' || !paths.length) return;
+    invoke('plugins_request', { op: 'frame_files', data: { id: shown.id, paths } })
+      .then(files => { if (pluginHost?.shown()?.id === shown.id) pluginHost.dropFiles(shown.id, files); })
+      .catch(fail);
+  });
   // Focus that only moved into a plugin's frame and back never left Connect: refreshing then would
   // redraw the page between a click's mousedown and mouseup, and the click would be lost.
   let focusInPluginFrame = false;

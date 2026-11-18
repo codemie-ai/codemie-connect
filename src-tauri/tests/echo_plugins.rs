@@ -271,7 +271,11 @@ impl Connect {
     /// Claude answers `answers`, in order.
     async fn start(plugins: &Path, answers: &[&str]) -> Connect {
         captured();
-        let tmp = tempfile::tempdir().unwrap();
+        // Not a hidden folder (`.tmpXXXX`): Knowledge, like Echo, never changes a vault inside one.
+        let tmp = tempfile::Builder::new()
+            .prefix("connect-")
+            .tempdir()
+            .unwrap();
         let copy = tmp.path().join("market");
         copy_market(plugins.parent().unwrap(), &copy);
         let script = answers.iter().map(|a| testing::answer(a)).collect();
@@ -683,4 +687,155 @@ async fn all_four_load_without_unknown_capability_errors() {
             .is_err());
     }
     assert!(c.sent().is_empty(), "{:?}", c.sent());
+}
+
+/// Knowledge's fixture vault with an attachment, a link to a page that isn't there and a table.
+fn fixture_vault_with_media(root: &Path) {
+    fixture_vault(root);
+    std::fs::create_dir_all(root.join("Files")).unwrap();
+    std::fs::write(root.join("Files/chart.png"), b"\x89PNG").unwrap();
+    std::fs::write(
+        root.join("Projects/Atlas.md"),
+        "---\ntype: project\nstatus: active\n---\n# Atlas\n\nOwner: [[Ann Lee]]. See [[Nowhere]].\n\n\
+         ![[chart.png]]\n\n| Phase | Due |\n|---|---|\n| Beta | May |\n\n- [ ] Ship the beta\n",
+    )
+    .unwrap();
+}
+
+/// A description Claude gives for a vault (the one tool-free run `add` makes).
+fn described() -> String {
+    json!({"kind": "team", "when": "Questions about Atlas", "what": "A team wiki", "where": "People/, Projects/",
+           "how": "Wiki links", "can": "Answer", "leave": "Daily/", "belongs": []})
+    .to_string()
+}
+
+#[tokio::test]
+async fn knowledge_reads_a_vault_home_pages_graph_health_and_find() {
+    let Some(dir) = published() else {
+        return;
+    };
+    let c = Connect::start(&dir, &[&described()]).await;
+    let vault = c.tmp.path().join("Team Wiki");
+    fixture_vault_with_media(&vault);
+    c.picker.next(&vault);
+    let id = c.call("obsidian", "add", json!({"wait": true})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(id, "team-wiki");
+
+    let kn = c.call("obsidian", "kn", json!({})).await;
+    let v = &kn["vaults"][0];
+    assert_eq!(v["available"], true, "{v}");
+    assert_eq!(
+        v["read_only"],
+        Value::Null,
+        "a vault in a plain folder can be changed: {v}"
+    );
+    assert_eq!(v["detected"]["obsidian"]["attachments"], "Files");
+
+    let tree = c.call("obsidian", "tree", json!({"id": id})).await;
+    let pages: Vec<&str> = tree["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        pages,
+        [
+            "Daily/2026-11-16.md",
+            "People/Ann Lee.md",
+            "Projects/Atlas.md",
+            "README.md"
+        ]
+    );
+
+    // A page: its wiki link to a page of the vault is its Knowledge route, a missing page is
+    // marked, the attachment comes by the frame's image route, the table and task list render.
+    let page = c
+        .call(
+            "obsidian",
+            "page",
+            json!({"id": id, "path": "Projects/Atlas.md"}),
+        )
+        .await;
+    let html = page["html"].as_str().unwrap();
+    assert!(
+        html.contains(r##"href="#obsidian:knowledge/team-wiki/pages/People/Ann%20Lee.md""##),
+        "{html}"
+    );
+    assert!(html.contains(r#"data-md-missing="Nowhere""#), "{html}");
+    let root = urlencoding(vault.canonicalize().unwrap().to_str().unwrap());
+    assert!(
+        html.contains(&format!(
+            r#"src="plugin/obsidian/folder/{root}/Files/chart.png""#
+        )),
+        "{html}"
+    );
+    assert!(
+        html.contains("<table>") && html.contains("type=\"checkbox\""),
+        "{html}"
+    );
+    assert!(!html.contains("<script"), "{html}");
+
+    let graph = c
+        .call("obsidian", "graph", json!({"id": id, "mode": "links"}))
+        .await;
+    assert!(graph["edges"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(["Projects/Atlas.md", "People/Ann Lee.md"])));
+
+    // Health in code alone: no Claude run beyond the description.
+    let health = c.call("obsidian", "health", json!({"id": id})).await;
+    let kinds: Vec<&str> = health["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"broken"), "{kinds:?}");
+    assert!(kinds.contains(&"not_in_index"), "{kinds:?}");
+    assert_eq!(c.runs().len(), 1);
+
+    let found = c
+        .call("obsidian", "find", json!({"id": id, "q": "Atlas"}))
+        .await;
+    assert_eq!(found["hits"][0]["path"], "Projects/Atlas.md");
+    let home = c.call("obsidian", "home", json!({"id": id})).await;
+    assert_eq!(home["vault"]["pages"], 4);
+    assert_eq!(home["vault"]["obsidian"], true);
+    // The page's revision for the 2 s poll.
+    let rev = c.call("obsidian", "rev", json!({"id": id})).await;
+    assert_eq!(rev["rev"], tree["rev"]);
+    let logged = lines_of("obsidian");
+    assert!(
+        logged
+            .iter()
+            .all(|l| !l.contains("is not available in CodeMie Connect")),
+        "{logged:?}"
+    );
+    assert!(c.sent().is_empty(), "{:?}", c.sent());
+}
+
+/// `encodeURIComponent` as the plugin writes a root into its image route.
+fn urlencoding(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }

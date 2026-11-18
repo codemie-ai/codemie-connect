@@ -19,7 +19,9 @@ pub mod claude;
 pub mod deliver;
 pub mod echo_read;
 pub mod events;
+pub mod files;
 pub mod fs;
+pub mod hidden;
 pub mod http;
 pub mod markdown;
 pub mod notify;
@@ -27,6 +29,7 @@ pub mod settings;
 pub mod signin;
 pub mod store;
 pub mod today;
+pub mod window;
 
 use super::host::{ErrorCode, HostError, HostServices, PluginHost};
 use super::manifest::{parse_manifest, SettingDef, WidgetDef};
@@ -117,10 +120,22 @@ impl Granted {
     }
 }
 
-/// The folder picker `system.pickFolder` opens: the native one in the app, a stand-in in tests.
+/// The pickers `system.pickFolder` and `system.pickFiles` open: the native ones in the app,
+/// stand-ins in tests.
 pub trait FolderPicker: Send + Sync {
     /// The folder the user chose, or `None` when they cancelled.
     fn pick(&self, title: String) -> BoxFuture<'static, Option<PathBuf>>;
+
+    /// The files the user chose (one unless `multiple`; only `exts` when given), none when they
+    /// cancelled.
+    fn pick_files(
+        &self,
+        _title: String,
+        _multiple: bool,
+        _exts: Vec<String>,
+    ) -> BoxFuture<'static, Vec<PathBuf>> {
+        Box::pin(async { Vec::new() })
+    }
 }
 
 /// What the services reach outside Connect: the native ones in the app, stand-ins in tests.
@@ -149,6 +164,8 @@ pub struct Services {
     profiles: RwLock<Value>,
     /// Orders guarded writes (`{ifSha, createNew}`): a comparison and its write are one step.
     pub(crate) writes: Mutex<()>,
+    /// The file handles plugins were given (`pickFiles`, dropped files).
+    pub(crate) files: Mutex<files::Handles>,
 }
 
 impl Services {
@@ -164,6 +181,7 @@ impl Services {
             today: Mutex::default(),
             profiles: RwLock::new(serde_json::json!({"default": null, "profiles": []})),
             writes: Mutex::new(()),
+            files: Mutex::default(),
         })
     }
 
@@ -272,7 +290,8 @@ impl HostServices for Services {
         match name {
             "log" => notify::log(&p, &args),
             "notify" => notify::notify(self, &p, &args),
-            "markdown" => markdown::render(&args),
+            "markdown" => markdown::render(&p.id, &args),
+            "markdown.links" => markdown::links(&args),
             "crypto.sha256" => Ok(Value::from(cas::sha_hex(
                 text(&args, 0, "the text to hash")?.as_bytes(),
             ))),
@@ -319,8 +338,15 @@ impl HostServices for Services {
         let name = name.to_string();
         Box::pin(async move {
             match name.as_str() {
-                "fs.readMany" | "fs.walk" => fs::call_async(me, p, &name, args).await,
+                "fs.readMany" | "fs.walk" | "fs.search" => fs::call_async(me, p, &name, args).await,
+                "store.walk" => store::walk(me, p, args).await,
                 "system.pickFolder" => fs::pick_folder(&me, &p, &args).await,
+                "system.pickFiles" => files::pick(&me, &p, &args).await,
+                "fs.copyIn" => {
+                    tauri::async_runtime::spawn_blocking(move || files::copy_in(&me, &p, &args))
+                        .await
+                        .map_err(|e| bad(e.to_string()))?
+                }
                 "http.fetch" => {
                     let url = text(&args, 0, "an address")?.to_string();
                     let listed = settings::listed_addresses(&me, &p);
@@ -421,7 +447,11 @@ pub(crate) mod testing {
         }
 
         pub fn with(core: Option<Arc<Core>>, http: http::Client) -> Env {
-            let dir = tempfile::tempdir().unwrap();
+            // Not a hidden folder (`.tmpXXXX`): folders given to plugins never are.
+            let dir = tempfile::Builder::new()
+                .prefix("connect-")
+                .tempdir()
+                .unwrap();
             let data = dir.path().join("data");
             std::fs::create_dir_all(&data).unwrap();
             let paths = PluginPaths::new(&data, &dir.path().join("private"));

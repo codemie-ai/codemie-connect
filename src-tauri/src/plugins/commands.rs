@@ -22,6 +22,8 @@
 //! | `signout` | `{id, host}` | `{signedIn: false, host}` |
 //! | `pick_folder` | | `{path}`: the folder the user chose for a marketplace, `null` when they cancelled |
 //! | `open_link` | `{id, url}` | `{opened: true}`: the user pressed Open in Connect's confirmation of a link plugin `id`'s page asked to open; only `https:` and `obsidian:` addresses (ruling R41) |
+//! | `frame_files` | `{id, paths}` | `[{file, name, size}]`: files dropped on plugin `id`'s page, as its handles (`services::window`) |
+//! | `frame_reveal` | `{id, root, path}` | `{revealed: true}`: its page's `ctx.system.reveal`, on the user's click |
 //!
 //! `agreed` is every key of the sheet the user was shown and `sheetHash` that sheet's hash (from
 //! `inspect` or `needs_consent`): a sheet that changed since is refused as `changed`.
@@ -86,6 +88,15 @@ pub async fn plugins_request(
         })
         .await?;
     }
+    if let Some(action) = op.strip_prefix("frame_") {
+        let services = manager_of(&window)?.services().clone();
+        let action = action.to_string();
+        return blocking(move || {
+            let _running = running;
+            frame_request(&services, &action, data.unwrap_or(Value::Null))
+        })
+        .await?;
+    }
     if matches!(op.as_str(), "signin" | "signout") {
         let a: SigninArg = arg(data.unwrap_or(Value::Null))?;
         return manager_of(&window)?
@@ -142,11 +153,13 @@ pub async fn plugin_call(
     id: String,
     command: String,
     args: Option<Value>,
+    files: Option<Vec<String>>,
 ) -> Result<Value> {
     require_main_frame(&call)?;
     main_window_only(window.label())?;
+    let files = files.unwrap_or_default();
     manager_of(&window)?
-        .call(&id, &command, args.unwrap_or(Value::Null))
+        .call_with_files(&id, &command, args.unwrap_or(Value::Null), &files)
         .await
         .map_err(host_error)
 }
@@ -284,6 +297,46 @@ fn open_link(id: &str, url: &str, open: impl FnOnce(&str) -> Result<()>) -> Resu
     })?;
     log::info!("[plugin:{id}] opened a {} link", link.scheme());
     Ok(json!({"opened": true}))
+}
+
+#[derive(Deserialize)]
+struct FilesArg {
+    id: String,
+    paths: Vec<String>,
+}
+#[derive(Deserialize)]
+struct RevealArg {
+    id: String,
+    root: String,
+    #[serde(default)]
+    path: String,
+}
+
+/// What the window asks for the plugin page on screen (`services::window`).
+fn frame_request(
+    services: &crate::plugins::services::Services,
+    action: &str,
+    data: Value,
+) -> Result<Value> {
+    use crate::plugins::services::window;
+    match action {
+        "files" => {
+            let a: FilesArg = arg(data)?;
+            window::hand_files(services, &a.id, &a.paths).map_err(host_error)
+        }
+        "reveal" => {
+            let a: RevealArg = arg(data)?;
+            window::reveal(services, &a.id, &a.root, &a.path, window::open_in_finder)
+                .map_err(host_error)
+        }
+        other => Err(WorkspaceError::new(
+            "invalid",
+            format!(
+                "Connect doesn’t know the plugin request “frame_{}”.",
+                other.escape_debug()
+            ),
+        )),
+    }
 }
 
 fn arg<T: DeserializeOwned>(data: Value) -> Result<T> {

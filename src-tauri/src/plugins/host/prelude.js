@@ -216,6 +216,7 @@
       read: direct('store.read'),
       write: direct('store.write'),
       update: storeUpdate,
+      walk: deferred('store.walk'),
       list: direct('store.list'),
       remove: direct('store.remove'),
       path: direct('store.path'),
@@ -229,18 +230,28 @@
       read: direct('fs.read'),
       readMany: deferred('fs.readMany'),
       walk: deferred('fs.walk'),
+      stat: direct('fs.stat'),
+      search: deferred('fs.search'),
+      append: direct('fs.append'),
+      copyIn: deferred('fs.copyIn'),
       write: direct('fs.write'),
       move: direct('fs.move'),
       remove: direct('fs.remove'),
       forget: direct('fs.forget'),
     },
-    system: { pickFolder: deferred('system.pickFolder'), which: direct('system.which') },
+    system: {
+      pickFolder: deferred('system.pickFolder'),
+      pickFiles: deferred('system.pickFiles'),
+      which: direct('system.which'),
+    },
     http: { fetch: deferred('http.fetch') },
     claude: noting({ run: deferred('claude.run') }, 'ctx.claude.', ECHO_ONLY_CLAUDE),
     profiles: direct('profiles'),
 
     notify: direct('notify'),
-    markdown: direct('markdown'),
+    // `ctx.markdown(md[, {breaks, links, images}])`, and `ctx.markdown.links(md[, {detail}])`, the
+    // destinations a page has, resolved by the plugin before it renders.
+    markdown: Object.assign(direct('markdown'), { links: direct('markdown.links') }),
     crypto: { sha256 },
     inbox: { set: direct('inbox.set'), clear: direct('inbox.clear') },
     widgets: {
@@ -322,14 +333,17 @@
   const dispatch = (kind, name, json, call) => {
     touched = ''
     const args = json === undefined ? undefined : parse(json)
-    if (kind === 'command' || kind === 'provider') {
-      const target = (kind === 'command' ? commands : providers).get(name)
+    if (kind === 'command' || kind === 'command+files' || kind === 'provider') {
+      const target = (kind === 'provider' ? providers : commands).get(name)
       if (!target) {
-        const what = kind === 'command' ? 'no command' : 'nothing provides'
+        const what = kind === 'provider' ? 'nothing provides' : 'no command'
         bridge.answer(call, `!not_found ${what} “${name}”`)
         return
       }
-      answerWith(call, () => target(args))
+      // A command hears the files the user handed it with the call, as in Echo: `fn(args, {files})`.
+      if (kind === 'provider') answerWith(call, () => target(args))
+      else if (kind === 'command') answerWith(call, () => target(args, { files: [] }))
+      else answerWith(call, () => target(args.args, { files: args.files }))
     } else if (kind === 'event') {
       for (const f of listeners.get(name) || []) runAlone(name, f, args)
     } else if (kind === 'timer' && timers.has(Num(name))) {

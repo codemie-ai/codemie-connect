@@ -10,6 +10,9 @@
 //! off macOS (`PLUGIN_FRAMES_SUPPORTED`).
 //! - `__host/<file>` is the bundled shim, `ui/plugins/frame/<file>`. It is Connect's own code and
 //!   the same for every plugin, so any well-formed id serves it.
+//! - `__host/plugin/<id>/folder/<root>/<rel>` is an image in a folder the user gave plugin `<id>`
+//!   (a vault page's picture; Knowledge writes the address relative to its frame), served only on
+//!   `<id>`'s own origin, only from a granted root, only png, jpg, gif and webp up to 10 MB.
 //! - Any other path is a file of the plugin's active version,
 //!   `<data root>/plugins/installed/<id>/<version>/<path>`: the version the registry records,
 //!   while the plugin is enabled (`registry::active_version`).
@@ -58,12 +61,33 @@ pub struct PluginRoots {
     pub host_file: Lookup<Vec<u8>>,
     /// The installed plugin's active version, or `None` when it isn't installed.
     pub active_version: Lookup<String>,
+    /// The folders the user gave a plugin (`system.pickFolder`), by their real paths.
+    pub granted_roots: Lookup<Vec<String>>,
 }
+
+/// The images a page may show from a granted folder, and the largest one.
+const FOLDER_IMAGES: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+const FOLDER_IMAGE_MAX: u64 = 10 << 20;
 
 /// Answers one `connect-plugin` request: a file with the frame headers, or a refusal.
 pub fn serve(req: &Request<Vec<u8>>, roots: &PluginRoots) -> Response<Vec<u8>> {
     if req.method() != Method::GET && req.method() != Method::HEAD {
         return refuse(StatusCode::METHOD_NOT_ALLOWED);
+    }
+    if req
+        .uri()
+        .path()
+        .starts_with(&format!("/{HOST_DIR}/plugin/"))
+    {
+        return match folder_image(roots, req.uri()) {
+            Some((name, mut body, origin)) => {
+                if req.method() == Method::HEAD {
+                    body.clear();
+                }
+                respond(StatusCode::OK, mime(&name), body, Some(&frame_csp(&origin)))
+            }
+            None => refuse(StatusCode::NOT_FOUND),
+        };
     }
     let Some(Target { id, origin, path }) = target(req.uri()) else {
         return refuse(StatusCode::NOT_FOUND);
@@ -93,16 +117,57 @@ struct Target {
     path: Vec<String>,
 }
 
-fn target(uri: &Uri) -> Option<Target> {
+/// The plugin a URL is addressed to: its host, a valid id, with no user info or port.
+fn plugin_of(uri: &Uri) -> Option<&str> {
     let authority = uri.authority()?;
     // No user info and no port: the authority is the host alone.
     if authority.as_str() != authority.host() {
         return None;
     }
     let id = authority.host();
-    if uri.scheme_str()? != SCHEME || !super::valid_id(id) {
+    (uri.scheme_str()? == SCHEME && super::valid_id(id)).then_some(id)
+}
+
+/// `__host/plugin/<id>/folder/<root>/<rel…>`: the file's name and bytes, and the origin it is
+/// served on, when `<id>` is the plugin the URL is addressed to, `<root>` (one encoded segment)
+/// is a folder the user gave it, and `<rel>` a plain path in it to an image of 10 MB at most.
+fn folder_image(roots: &PluginRoots, uri: &Uri) -> Option<(String, Vec<u8>, String)> {
+    let id = plugin_of(uri)?;
+    let rest = uri.path().strip_prefix(&format!("/{HOST_DIR}/plugin/"))?;
+    let mut parts = rest.split('/');
+    if parts.next()? != id || parts.next()? != "folder" {
         return None;
     }
+    (roots.active_version)(id)?;
+    let root = percent_decode(parts.next()?)?;
+    if !(roots.granted_roots)(id)
+        .unwrap_or_default()
+        .contains(&root)
+    {
+        return None;
+    }
+    let rel = parts.map(decode_segment).collect::<Option<Vec<_>>>()?;
+    let name = rel.last()?.clone();
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    if !FOLDER_IMAGES.contains(&ext.as_str()) {
+        return None;
+    }
+    let base = std::path::Path::new(&root).canonicalize().ok()?;
+    let file = rel
+        .iter()
+        .fold(base.clone(), |dir, n| dir.join(n))
+        .canonicalize()
+        .ok()?;
+    let meta = std::fs::metadata(&file).ok()?;
+    if !file.starts_with(&base) || !meta.is_file() || meta.len() > FOLDER_IMAGE_MAX {
+        return None;
+    }
+    let body = std::fs::read(&file).ok()?;
+    Some((name, body, format!("{SCHEME}://{id}")))
+}
+
+fn target(uri: &Uri) -> Option<Target> {
+    let id = plugin_of(uri)?;
     let path = uri
         .path()
         .strip_prefix('/')?
@@ -118,6 +183,11 @@ fn target(uri: &Uri) -> Option<Target> {
 
 /// One percent-decoded path segment that names a plain entry inside its folder.
 fn decode_segment(raw: &str) -> Option<String> {
+    percent_decode(raw).filter(|s| plain_name(s))
+}
+
+/// `raw` with its `%XX` escapes decoded, when that is UTF-8 (a bad escape is refused).
+fn percent_decode(raw: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(raw.len());
     let mut it = raw.bytes();
     while let Some(b) = it.next() {
@@ -129,7 +199,7 @@ fn decode_segment(raw: &str) -> Option<String> {
             bytes.push(b);
         }
     }
-    String::from_utf8(bytes).ok().filter(|s| plain_name(s))
+    String::from_utf8(bytes).ok()
 }
 
 /// Refuses an empty name (`//`, a trailing `/`), anything starting with `.` (`..`, `.%2e`,
@@ -275,10 +345,12 @@ fn disk_frame_file(dir: &std::path::Path, rel: &str) -> Option<Vec<u8>> {
 /// records while it is enabled. The registry is read per request, so an install, update,
 /// disable or removal is served at once.
 pub fn registry_roots(paths: PluginPaths, host_file: Lookup<Vec<u8>>) -> PluginRoots {
+    let granted = paths.clone();
     PluginRoots {
         installed: paths.installed(),
         host_file,
         active_version: Box::new(move |id| super::registry::active_version(&paths, id)),
+        granted_roots: Box::new(move |id| Some(super::services::fs::granted_roots(&granted, id))),
     }
 }
 
@@ -344,6 +416,16 @@ mod tests {
         fs::write(host.join("frame.html"), "<!doctype html>").unwrap();
         fs::write(host.join("probe.js"), "export {}").unwrap();
         let host_dir = host.clone();
+        // A vault the user gave `hello`, with pictures and other files.
+        let vault = dir.path().join("My Vault");
+        fs::create_dir_all(vault.join("Files")).unwrap();
+        fs::write(vault.join("Files/chart.png"), b"\x89PNG").unwrap();
+        fs::write(vault.join("Files/notes.md"), "# notes").unwrap();
+        fs::write(vault.join("big.png"), vec![0u8; (10 << 20) + 1]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path().join("secret.txt"), vault.join("Files/leak.png"))
+            .unwrap();
+        let vault_root = vault.canonicalize().unwrap().display().to_string();
         Fixture {
             roots: PluginRoots {
                 installed,
@@ -352,6 +434,9 @@ mod tests {
                     (!rel.contains("..")).then(|| fs::read(host_dir.join(rel)).ok())?
                 }),
                 active_version: Box::new(|id| (id == "hello").then(|| "1.0.0".to_string())),
+                granted_roots: Box::new(move |id| {
+                    (id == "hello").then(|| vec![vault_root.clone()])
+                }),
             },
             _dir: dir,
         }
@@ -383,6 +468,46 @@ mod tests {
             "/etc/passwd",
         ] {
             assert_eq!(disk_frame_file(&frame, bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn folder_images_come_only_from_a_granted_folder_of_the_frames_own_plugin() {
+        let f = fixture();
+        let root = (f.roots.granted_roots)("hello").unwrap().remove(0);
+        let enc: String = root
+            .bytes()
+            .map(|b| match b {
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect();
+        let url =
+            |rest: &str| format!("connect-plugin://hello/__host/plugin/hello/folder/{enc}/{rest}");
+        let ok = get(&f.roots, &url("Files/chart.png"));
+        assert_eq!(ok.status(), 200);
+        assert_eq!(header(&ok, "content-type"), Some("image/png"));
+        assert_eq!(ok.body(), b"\x89PNG");
+        assert!(header(&ok, "content-security-policy")
+            .unwrap()
+            .contains("connect-plugin://hello"));
+        for bad in [
+            url("Files/notes.md"),
+            url("big.png"),
+            url("Files/leak.png"),
+            url("Files/../../secret.txt"),
+            url("Files/%2e%2e/%2e%2e/secret.txt"),
+            url("missing.png"),
+            // Another plugin's address on this origin, or this plugin's on another's.
+            format!("connect-plugin://hello/__host/plugin/other/folder/{enc}/Files/chart.png"),
+            format!("connect-plugin://other/__host/plugin/hello/folder/{enc}/Files/chart.png"),
+            // A folder it wasn't given.
+            "connect-plugin://hello/__host/plugin/hello/folder/%2Fetc/hosts.png".to_string(),
+            format!("connect-plugin://hello/__host/plugin/hello/folder/{enc}%2FFiles/chart.png"),
+        ] {
+            assert_eq!(get(&f.roots, &bad).status(), 404, "{bad}");
         }
     }
 

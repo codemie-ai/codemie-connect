@@ -52,6 +52,7 @@ pub fn call(s: &Services, p: &Granted, name: &str, args: &Value) -> Result<Value
             removed.map_err(|e| io_failed(&format!("remove “{rel}”"), &e))?;
             Ok(Value::Null)
         }
+        "store.walk" => Err(bad("ctx.store.walk answers a promise")),
         "store.path" => {
             let path = inside(&store, at(args, 0).as_str().unwrap_or(""), true)?;
             ensure_dirs(&store, &store.join("_"))?;
@@ -70,6 +71,28 @@ pub fn call(s: &Services, p: &Granted, name: &str, args: &Value) -> Result<Value
         }
         _ => Err(super::unsupported(name)),
     }
+}
+
+/// `store.walk(path, {ext, hidden, max, sha})`: the store's files under `path`, relative to the
+/// store, `[{path, size, mtime, sha?}]`, off the plugin's thread.
+pub async fn walk(
+    s: std::sync::Arc<Services>,
+    p: std::sync::Arc<Granted>,
+    args: Value,
+) -> Result<Value, HostError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = root(&s, &p.id);
+        let start = inside(&store, at(&args, 0).as_str().unwrap_or(""), true)?;
+        if !start.is_dir() {
+            return Ok(json!([]));
+        }
+        let o = super::fs::WalkOpts::of(at(&args, 1), 20_000, 100_000);
+        let base = dunce::canonicalize(&store).unwrap_or(store);
+        let start = dunce::canonicalize(&start).unwrap_or(start);
+        Ok(json!(super::fs::file_rows(&base, &start, &o)))
+    })
+    .await
+    .map_err(|e| bad(e.to_string()))?
 }
 
 /// The components of a relative path of plain names: no root, no `.`/`..`, no NUL or
@@ -218,6 +241,44 @@ mod tests {
             env.call("alpha", "crypto.sha256", json!(["abc"])).unwrap(),
             json!("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         );
+    }
+
+    #[tokio::test]
+    async fn store_walk_lists_files_with_their_shas() {
+        let env = Env::new();
+        env.plugin("alpha", json!({}), json!([]));
+        for (p, t) in [
+            ("cache/snapshots/ab/x.md", "x"),
+            ("cache/snapshots/ab/.obsidian/app.json", "{}"),
+            ("cache/web/i.png", "png"),
+            ("vaults.json", "[]"),
+        ] {
+            env.call("alpha", "store.write", json!([p, t])).unwrap();
+        }
+        let walk = |args: Value| {
+            let env = &env;
+            async move { env.call_async("alpha", "store.walk", args).await.unwrap() }
+        };
+        let all = walk(json!(["cache", {"sha": true}])).await;
+        let paths: Vec<&str> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, ["cache/snapshots/ab/x.md", "cache/web/i.png"]);
+        assert_eq!(all[0]["size"], 1);
+        assert_eq!(all[0]["sha"], super::super::cas::sha_hex(b"x"));
+        let hidden = walk(json!(["cache/snapshots", {"hidden": true}])).await;
+        assert_eq!(hidden.as_array().unwrap().len(), 2);
+        assert!(hidden[0].get("sha").is_none());
+        let md = walk(json!(["", {"ext": ["md"]}])).await;
+        assert_eq!(md.as_array().unwrap().len(), 1);
+        assert_eq!(walk(json!(["nothing", {}])).await, json!([]));
+        assert!(env
+            .call_async("alpha", "store.walk", json!(["../x", {}]))
+            .await
+            .is_err());
     }
 
     #[tokio::test]
