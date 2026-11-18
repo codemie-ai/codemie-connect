@@ -91,8 +91,12 @@ pub(super) fn storage(_: serde_json::Error) -> WorkspaceError {
     WorkspaceError::new("storage", "A meeting record could not be read or saved.")
 }
 
+/// A stored meeting record; an older one's single error is split into the save's or the notes
+/// run's here, and the next write keeps only the new fields.
 pub(super) fn parse(record: &Record) -> Result<MeetingRecord> {
-    serde_json::from_value(record.data.clone()).map_err(storage)
+    let mut m: MeetingRecord = serde_json::from_value(record.data.clone()).map_err(storage)?;
+    m.split_legacy_error();
+    Ok(m)
 }
 
 /// Writes the meeting record beside its event (`source` is the event's `calendar:` source).

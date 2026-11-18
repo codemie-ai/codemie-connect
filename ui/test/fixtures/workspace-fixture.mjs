@@ -340,7 +340,7 @@ function meetingPlan(nowMs) {
     { id: 'mtg-philips', title: 'Philips CodeMie conversations syncup', start: top - 2 * day - 2 * hour, minutes: 60, organizer: P.jeroen, people: [P.anouk, P.me, P.priya, P.sam, P.jordan], state: 'ready' },
     { id: 'mtg-roadmap', title: 'Roadmap review', start: top - day - hour, minutes: 60, organizer: P.jordan, people: [P.priya, P.me], state: 'downloaded' },
     { id: 'mtg-release', title: 'Release 2.4 go/no-go', start: top - 2 * hour, minutes: 45, organizer: P.sam, people: [P.elena, P.me], state: 'available' },
-    { id: 'mtg-vendor', title: 'Vendor onboarding', start: top - 3 * hour, minutes: 30, organizer: P.elena, people: [P.me, P.jordan], state: 'available', lastError: { code: 'provider', message: 'Teams didn’t answer in time.' } },
+    { id: 'mtg-vendor', title: 'Vendor onboarding', start: top - 3 * hour, minutes: 30, organizer: P.elena, people: [P.me, P.jordan], state: 'available', saveError: { code: 'provider', message: 'Teams didn’t answer in time.' } },
     { id: 'mtg-sprint', title: 'Sprint 25 planning', start: nowMs - 80 * 60_000, minutes: 60, organizer: P.priya, people: [P.me, P.jordan, P.sam, P.elena], state: 'pending' },
     { id: 'mtg-northwind', title: 'Northwind partnership call', start: top - 5 * hour, minutes: 60, organizer: P.hannah, people: [P.me, P.jordan], state: 'blocked' },
     { id: 'mtg-critique', title: 'Design critique: Tasks board', start: top - day - 4 * hour, minutes: 45, organizer: P.elena, people: [P.me, P.sam], state: 'failed' },
@@ -504,7 +504,7 @@ export function withMeetings(snapshot, nowMs = Date.now()) {
       ...clonePlain(contractRecord.data), eventId: m.id, title: m.title, start: ev.data.start, end: ev.data.end, state: m.state,
       folder: folders[m.id]?.folder ?? null, external: found || m.state === 'pending' ? `ONLINE-${m.id}` : contractRecord.data.external,
       transcriptIds: found ? ['t-1'] : [], transcriptStart: found ? isoOf(m.start + 4 * 60_000) : null, checkedAt: now - 120,
-      lastError: m.lastError ?? (m.state === 'available' ? null : contractRecord.data.lastError), removedLines: [],
+      saveError: m.saveError ?? (m.state === 'available' ? null : contractRecord.data.saveError), notesError: contractRecord.data.notesError ?? null, pendingNotes: null, removedLines: [],
     };
     if (m.state === 'ready') data.docs = data.docs.map((d, i) => ({ ...d, createdAt: now - 2 * 86_400 + i * 3600, updatedAt: now - 2 * 86_400 + i * 3600, auto: i === 0 }));
     added.push({ ...contractRecord, id: m.id, connectionId: cid, workspaceId: null, source: 'calendar:cal-main', revision: `r-meeting-${m.id}`, updatedAt: now - 300, data });

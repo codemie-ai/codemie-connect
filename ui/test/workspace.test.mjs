@@ -850,6 +850,78 @@ test('no Download button: available reads "Saving the transcript", a failed save
   assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap' }))), /data-action="meeting-download" data-id="mtg-roadmap"[^>]*>[^]*?<span>Download again from Teams<\/span>/);
 });
 
+const meetingData = (s, id) => s.records.find(r => r.kind === 'meeting' && r.id === id).data;
+
+test('save and notes errors show apart: a failed Download again on saved notes, the notes banner only for a notes run', () => {
+  const s = meetingsSnapshot();
+  // Ready, and Download again failed: a save banner whose Try again downloads; no notes banner.
+  meetingData(s, 'mtg-philips').saveError = { code: 'provider', message: 'Teams didn’t answer in time.' };
+  const philips = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' })));
+  assert.match(philips, /Download again didn’t work[^]*?Teams didn’t answer in time\.[^]*?Your transcript and notes are as they were\.[^]*?data-action="meeting-download" data-id="mtg-philips"/);
+  assert.doesNotMatch(philips, /notes run didn’t finish|notes weren’t written|data-action="meeting-retry"/);
+  // Downloaded, the same: visible on the meeting.
+  meetingData(s, 'mtg-roadmap').saveError = { code: 'provider', message: 'Teams didn’t answer in time.' };
+  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap' }))), /Download again didn’t work[^]*?data-action="meeting-download" data-id="mtg-roadmap"/);
+  // A failed notes run: the notes banner, whose Try again makes the notes again.
+  const critique = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-critique' })));
+  assert.match(critique, /The notes weren’t written[^]*?data-action="meeting-retry" data-id="mtg-critique"/);
+  assert.doesNotMatch(critique, /Download again didn’t work|Couldn’t get the transcript/);
+  // An older record with one lastError reads as before: on a found transcript, the save's.
+  const vendor = meetingData(s, 'mtg-vendor');
+  delete vendor.saveError;
+  delete vendor.notesError;
+  vendor.lastError = { code: 'provider', message: 'An older failure.' };
+  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' }))), /Couldn’t get the transcript from Teams[^]*?An older failure\./);
+});
+
+test('a save that needs a Microsoft sign-in offers Sign in again, then Try again once signed in; an unwritable folder leads to Settings', () => {
+  const s = meetingsSnapshot();
+  const vendor = meetingData(s, 'mtg-vendor');
+  vendor.saveError = { code: 'needs_login', message: 'Microsoft authorization expired.' };
+  s.connection.status = 'needs_login';
+  let html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' })));
+  assert.match(stripOf(html), /data-action="graph-connect"[^>]*>[^]*?Sign in again/);
+  // Signed in again: no Sign in again anywhere; Try again saves it, and the round will too.
+  s.connection.status = 'connected';
+  html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' })));
+  assert.doesNotMatch(html, /Sign in again|graph-connect/);
+  assert.match(stripOf(html), /data-action="meeting-download"[^>]*data-id="mtg-vendor"[^>]*>[^]*?Try again/);
+  assert.match(html, /You’re signed in again: Connect tries again by itself in a few minutes\./);
+  // A meetings folder Connect can't write to: the button goes where the text says.
+  vendor.saveError = { code: 'folder_unwritable', message: 'Connect can’t write to /Volumes/Gone/Meetings. Choose the folder again in Settings › Meetings.' };
+  html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' })));
+  assert.match(stripOf(html), /data-action="settings-tab"[^>]*data-tab="meetings-transcripts"/);
+  assert.match(html, /ws-mtg-run-failed[^]*?data-action="settings-tab"[^>]*data-tab="meetings-transcripts"[^>]*>[^]*?Open Settings › Meetings/);
+  assert.doesNotMatch(html, /data-action="meeting-download"/);
+  // Stopped by the person: said so, and only they start it again.
+  vendor.saveError = { code: 'cancelled', message: 'You stopped saving the transcript, so Connect won’t try again by itself.' };
+  html = meetings(s, meetingsCtx({ selected: 'mtg-vendor' }));
+  assert.match(rowOf(html, 'mtg-vendor'), /<em class="ws-tone-muted">Saving stopped<\/em>/);
+  assert.match(stripOf(detailOf(html)), /saving stopped[^]*?data-action="meeting-download"[^>]*>[^]*?Try again/);
+});
+
+test('notes asked for during a failed save are promised after the transcript; without a request nothing is promised', () => {
+  const s = meetingsSnapshot();
+  let strip = stripOf(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' }))));
+  assert.doesNotMatch(strip, /after the transcript/);
+  meetingData(s, 'mtg-vendor').pendingNotes = { templateId: 'short-summary', wishes: 'Only decisions', findTasks: true, workspaceId: 'personal', jobId: 'job-1' };
+  strip = stripOf(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' }))));
+  assert.match(strip, /<strong>Notes<\/strong><small>Short summary · after the transcript<\/small>/);
+  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' }))), /Short summary is made as soon as it’s saved\./);
+});
+
+test('stored available and pending meetings show as waiting, with why, while transcripts are off', () => {
+  const s = meetingsSnapshot();
+  s.connection.enabled = s.connection.enabled.filter(c => c !== 'transcripts');
+  const html = meetings(s, meetingsCtx({ selected: 'mtg-release' }));
+  for (const id of ['mtg-release', 'mtg-sprint']) assert.match(rowOf(html, id), /<em class="ws-tone-warning">Waiting: transcripts are off<\/em>/, id);
+  const strip = stripOf(detailOf(html));
+  assert.doesNotMatch(strip, /ws-spin|saving it from Teams/);
+  assert.match(strip, /transcripts are off[^]*?data-action="meeting-transcripts-on"/);
+  // Not "Make notes for all" (it can't save them now).
+  assert.match(html, /1 transcript without notes[^]*?Make notes for all 1/);
+});
+
 test('a meeting waiting for Teams offers "Make notes as soon as it arrives", which sends meeting_set {auto:true}', async () => {
   const s = meetingsSnapshot();
   const html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-sprint' })));

@@ -1142,9 +1142,13 @@ impl Core {
                     job.state = "cancelled".into();
                 }
                 r.save_job(&job)?;
+                drop(r);
                 if req.op == Operation::JobCancel {
                     self.cancel_graph_job(&job.id);
                     self.cancel_ai_job(&job.id);
+                    if job.kind == "transcript_download" {
+                        self.note_save_stopped(&job);
+                    }
                 }
                 json!({"saved":true})
             }

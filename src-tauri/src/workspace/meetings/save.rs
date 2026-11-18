@@ -153,7 +153,7 @@ impl Core {
             if state == MeetingState::Available {
                 m.transcript_ids = refs.iter().map(|t| t.id.clone()).collect();
                 m.transcript_start = refs.first().map(|t| rfc3339(t.created));
-                m.last_error = None;
+                m.save_error = None;
             }
             store(&mut r, &c, &source, &m)?;
             if state == MeetingState::Available {
@@ -236,11 +236,46 @@ impl Core {
         };
         match save_as(self, &c, id, how).await? {
             (_, true) => {
-                // A meeting that asked for notes as soon as its transcript arrived gets them now.
-                self.auto_notes_after_save(&c, id);
+                // Notes the person asked for while the save failed are made now; else a meeting
+                // that asked for notes as soon as its transcript arrived gets them now.
+                if !self.queue_pending_notes(&c, id) {
+                    self.auto_notes_after_save(&c, id);
+                }
                 Ok("Transcript saved".into())
             }
             (_, false) => Ok("The meeting already has a transcript; kept it".into()),
+        }
+    }
+
+    /// The person stopped a save (`job_cancel`): a meeting still waiting for its transcript keeps
+    /// that (`save_error` `cancelled`), so the round doesn't start it again by itself; Try again
+    /// does. Takes the meeting lock; the caller holds no repository.
+    pub(in crate::workspace) fn note_save_stopped(&self, job: &Job) {
+        let (Some(id), Some(cid)) = (
+            job.payload["meetingId"].as_str(),
+            job.connection_id.as_deref(),
+        ) else {
+            return;
+        };
+        let _w = self.meeting_lock();
+        let stopped = self.repo().and_then(|mut r| {
+            let c = r.connection(cid)?;
+            let (mut m, _, source) = self.current(&r, &c, id)?;
+            if m.state != MeetingState::Available {
+                return Ok(false);
+            }
+            m.save_error = Some(ErrorInfo {
+                code: "cancelled".into(),
+                message: "You stopped saving the transcript, so Connect won’t try again by itself."
+                    .into(),
+            });
+            store(&mut r, &c, &source, &m)?;
+            Ok(true)
+        });
+        match stopped {
+            Ok(true) => self.emit("workspace:changed"),
+            Ok(false) => {}
+            Err(e) => log::warn!("meetings: a stopped save was not noted: {}", e.code),
         }
     }
 
@@ -319,7 +354,10 @@ impl Core {
         )?;
         m.state = after_save(&m);
         m.error = None;
-        m.last_error = None;
+        m.save_error = None;
+        // The person has the transcript now; the import asks them to name the speakers before
+        // they make notes, so notes waiting for a save from Teams are not made by themselves.
+        m.pending_notes = None;
         store(&mut *self.repo()?, &t.c, &source, &m)?;
         Ok(json!({"saved": true}))
     }
@@ -400,7 +438,7 @@ fn kept(m: &MeetingRecord) -> bool {
 /// transcripts again (Teams may have added or updated one), reads each one's WebVTT, joins them
 /// at each one's offset from when it started, and writes the folder. Documents and tasks stay;
 /// the state becomes `downloaded` (or stays `ready`). A failure is kept on the meeting
-/// (`last_error`) and returned. Any job with a fenced `c` may call it: the transcript save, and
+/// (`save_error`) and returned. Any job with a fenced `c` may call it: the transcript save, and
 /// the notes run when a meeting is `available`. It takes [`Core::meeting_lock`] itself, so a
 /// caller never holds it.
 pub(crate) async fn save_transcript(
@@ -427,7 +465,7 @@ pub(super) async fn save_as(
             let _w = core.meeting_lock();
             if let Ok(mut r) = core.repo() {
                 if let Ok((mut m, _, source)) = core.current(&r, c, meeting_id) {
-                    m.last_error = Some(ErrorInfo::from(e));
+                    m.save_error = Some(ErrorInfo::from(e));
                     if let Err(stored) = store(&mut r, c, &source, &m) {
                         log::warn!("meetings: cannot note a failed save: {}", stored.code);
                     }
@@ -515,7 +553,7 @@ async fn fetch_and_write(
     )?;
     m.state = after_save(&m);
     m.error = None;
-    m.last_error = None;
+    m.save_error = None;
     {
         let mut r = core.repo()?;
         r.validate_claim(c)?;

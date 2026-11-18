@@ -7,6 +7,7 @@ use super::transcripts::{content_url, list_url, lookup_url};
 use super::*;
 use crate::ai::fake::FakeRunner;
 use crate::ai::stream::{AiError, ErrorClass, RunOutcome, Usage};
+use crate::workspace::graph;
 use crate::workspace::models::*;
 use crate::workspace::Core;
 use serde_json::{json, Value};
@@ -218,7 +219,7 @@ async fn notes_job_downloads_first_when_available() {
     run_jobs(&e.core).await;
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Available);
-    assert_eq!(m.last_error.unwrap().code, "throttled");
+    assert_eq!(m.save_error.unwrap().code, "throttled");
     // Make notes saves it first; while that fails, no notes and no Claude.
     make_notes(e, "m1", "meeting-notes", json!({}))
         .await
@@ -238,7 +239,7 @@ async fn notes_job_downloads_first_when_available() {
         MeetingState::Available,
         "a failed save is not a failed notes run"
     );
-    assert_eq!(m.last_error.unwrap().code, "throttled");
+    assert_eq!(m.save_error.unwrap().code, "throttled");
     assert!(n.runner.calls().is_empty());
     // Teams answers: one Make notes saves the transcript and writes the notes.
     e.graph.answer_text(&content, VTT);
@@ -263,7 +264,7 @@ async fn notes_job_downloads_first_when_available() {
     }
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Ready);
-    assert_eq!(m.last_error, None);
+    assert_eq!(m.save_error, None);
     assert_eq!(n.runner.calls().len(), 1);
 }
 
@@ -445,7 +446,7 @@ async fn notes_failure_keeps_existing_documents() {
     assert_eq!(failed.error_code.as_deref(), Some("needs_login"));
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Ready, "documents keep it ready");
-    assert_eq!(m.last_error.as_ref().unwrap().code, "needs_login");
+    assert_eq!(m.notes_error.as_ref().unwrap().code, "needs_login");
     assert_eq!(m.docs.len(), 1);
     assert_eq!(text(&dir.join("notes.md")), "# Meeting notes");
     assert!(!dir.join("notes.short-summary.md").exists());
@@ -483,7 +484,7 @@ async fn notes_failure_keeps_existing_documents() {
     run_jobs(&e.core).await;
     let m2 = meeting(&e.core, "m2");
     assert_eq!(m2.state, MeetingState::Failed);
-    assert_eq!(m2.last_error.unwrap().code, "invalid_output");
+    assert_eq!(m2.notes_error.unwrap().code, "invalid_output");
     assert!(m2.docs.is_empty());
     let dir2 = folder_of(&e.core, "m2");
     assert!(!dir2.join("notes.md").exists());
@@ -550,7 +551,7 @@ async fn skill_template_reads_skill_md_each_run() {
     assert_eq!(n.runner.calls().len(), 2);
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Ready);
-    assert_eq!(m.last_error.unwrap().code, "skill_missing");
+    assert_eq!(m.notes_error.unwrap().code, "skill_missing");
 }
 
 #[tokio::test]
@@ -1702,6 +1703,188 @@ async fn history_copies_never_overwrite_an_archived_document() {
         .clone()
         .unwrap();
     assert_eq!(text(&dir.join(kept)), "# A2");
+}
+
+#[tokio::test]
+async fn save_and_notes_failures_are_kept_apart() {
+    let n = notes_env(vec![
+        outcome("# A", json!([])),
+        Err(AiError::new(ErrorClass::NeedsLogin)),
+        outcome("# A again", json!([])),
+    ]);
+    let e = &n.e;
+    downloaded(e, "m1").await;
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let download = || {
+        op(
+            &e.core,
+            Operation::MeetingDownload,
+            json!({"meetingId": "m1"}),
+        )
+    };
+    // Download again fails on a meeting with notes: a save error, no notes error.
+    let content = content_url(ONLINE, "t1");
+    e.graph.fail(
+        &content,
+        WorkspaceError::new("throttled", "Too many requests."),
+    );
+    download().await.unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Ready);
+    assert_eq!(m.save_error.as_ref().unwrap().code, "throttled");
+    assert!(m.notes_error.is_none(), "not a notes failure");
+    // A notes run that fails: the notes error; the save error is left as it was.
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.notes_error.as_ref().unwrap().code, "needs_login");
+    assert_eq!(m.save_error.as_ref().unwrap().code, "throttled");
+    // Download again works: only the save error goes.
+    e.graph.answer_text(&content, VTT);
+    download().await.unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert!(m.save_error.is_none());
+    assert_eq!(m.notes_error.as_ref().unwrap().code, "needs_login");
+    // Notes that work: the notes error goes.
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert!(m.notes_error.is_none() && m.save_error.is_none());
+}
+
+/// A meeting that ended 15 minutes ago, found in Teams, whose first save fails with `code`.
+async fn found_but_not_saved(e: &Env, code: &str) -> i64 {
+    let record = ended("m1", 15, json!({}));
+    let created = rfc(graph::timestamp(record.data["start"].as_str().unwrap()) + 60);
+    put(&e.core, record);
+    teams(&e.graph, &created, VTT);
+    e.graph.fail(
+        &content_url(ONLINE, "t1"),
+        WorkspaceError::new(code, "Teams didn’t answer."),
+    );
+    let at = now();
+    super::round::meetings_round_at(&e.core, at).unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Available);
+    assert_eq!(m.save_error.as_ref().unwrap().code, code);
+    at
+}
+
+#[tokio::test]
+async fn notes_asked_for_while_a_save_fails_follow_the_next_save_once() {
+    let n = notes_env(vec![outcome("# Decisions", json!([]))]);
+    let e = &n.e;
+    let at = found_but_not_saved(e, "throttled").await;
+    // Make notes with a template and wishes: its save fails the same way; the request is kept.
+    make_notes(
+        e,
+        "m1",
+        "short-summary",
+        json!({"wishes": "Only the decisions", "findTasks": false}),
+    )
+    .await
+    .unwrap();
+    let ran = run_jobs(&e.core).await;
+    assert_eq!(ran[0].kind, "meeting_notes");
+    assert_eq!(ran[0].state, "failed");
+    let pending = meeting(&e.core, "m1").pending_notes.unwrap();
+    assert_eq!(
+        (
+            pending.template_id.as_str(),
+            pending.wishes.as_str(),
+            pending.find_tasks
+        ),
+        ("short-summary", "Only the decisions", false)
+    );
+    assert!(n.runner.calls().is_empty());
+    // Teams answers: the round's next save works and queues exactly those notes.
+    e.graph.answer_text(&content_url(ONLINE, "t1"), VTT);
+    super::round::meetings_round_at(&e.core, at + 600).unwrap();
+    let ran = run_jobs_ahead(&e.core, 600).await;
+    let notes: Vec<&Job> = ran.iter().filter(|j| j.kind == "meeting_notes").collect();
+    assert_eq!(notes.len(), 1, "{ran:#?}");
+    assert_eq!(notes[0].state, "succeeded", "{:?}", notes[0]);
+    assert_eq!(notes[0].payload["templateId"], "short-summary");
+    assert_eq!(notes[0].payload["wishes"], "Only the decisions");
+    assert_eq!(notes[0].payload["findTasks"], false);
+    assert_eq!(notes[0].payload["auto"], false);
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Ready);
+    assert!(m.pending_notes.is_none() && m.save_error.is_none());
+    assert_eq!(m.docs[0].template, "short-summary");
+    assert_eq!(m.docs[0].wishes.as_deref(), Some("Only the decisions"));
+    // Later rounds queue nothing more.
+    for later in [1200, 1800] {
+        super::round::meetings_round_at(&e.core, at + later).unwrap();
+        run_jobs_ahead(&e.core, later).await;
+    }
+    assert_eq!(notes_jobs(&e.core).len(), 2);
+    assert_eq!(n.runner.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn a_permanent_save_failure_shows_and_keeps_no_hidden_notes() {
+    let n = notes_env(vec![outcome("# Automatic", json!([]))]);
+    let e = &n.e;
+    // Notes are made automatically for every meeting, at once.
+    op(
+        &e.core,
+        Operation::SettingsUpdate,
+        json!({"meetings": {"autoNotes": "all", "waitMin": 0, "skipShort": false}}),
+    )
+    .await
+    .unwrap();
+    // The chosen meetings folder is gone: every save fails until the person chooses it again.
+    let chosen = e.core.paths.data.join("Chosen");
+    std::fs::create_dir(&chosen).unwrap();
+    op(
+        &e.core,
+        Operation::SettingsUpdate,
+        json!({"meetings": {"root": chosen.to_string_lossy()}}),
+    )
+    .await
+    .unwrap();
+    std::fs::remove_dir(&chosen).unwrap();
+    let record = ended("m1", 15, json!({}));
+    let created = rfc(graph::timestamp(record.data["start"].as_str().unwrap()) + 60);
+    put(&e.core, record);
+    teams(&e.graph, &created, VTT);
+    super::round::meetings_round_at(&e.core, now()).unwrap();
+    run_jobs(&e.core).await;
+    make_notes(e, "m1", "short-summary", json!({"wishes": "x"}))
+        .await
+        .unwrap();
+    let ran = run_jobs(&e.core).await;
+    assert_eq!(ran[0].error_code.as_deref(), Some("folder_unwritable"));
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.save_error.as_ref().unwrap().code, "folder_unwritable");
+    assert!(m.pending_notes.is_none(), "no hidden request");
+    // The folder is back and Try again saves it: the failed run doesn't count as notes made,
+    // so the automatic notes the setting asks for are made.
+    std::fs::create_dir(&chosen).unwrap();
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    let ran = run_jobs(&e.core).await;
+    let notes: Vec<&Job> = ran.iter().filter(|j| j.kind == "meeting_notes").collect();
+    assert_eq!(notes.len(), 1, "{ran:#?}");
+    assert_eq!(notes[0].key, "meeting_notes:auto:m1");
+    assert_eq!(notes[0].state, "succeeded");
+    assert_eq!(meeting(&e.core, "m1").state, MeetingState::Ready);
 }
 
 /// The texts in `notes-history/`, sorted.

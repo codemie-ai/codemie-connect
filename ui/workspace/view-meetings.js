@@ -13,10 +13,10 @@ import { avatar, button, card, emptyState, select, toggle } from './ui.js';
 import { addDaysToKey, agoLabel, dayKey, durationLabel, formatDate, formatTime } from './format.js';
 import { taskStatus } from './tasks-model.js';
 import {
-  LANES, LEGEND, STATES, TABS, TAB_LABELS, legendOf, meetingCounts, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, tasksByMeeting, transcriptsAllowed,
+  LANES, LEGEND, STATES, TABS, TAB_LABELS, legendOf, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, tasksByMeeting, transcriptsAllowed,
 } from './meetings-model.js';
 import {
-  dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, notesTab, peopleTab, plural, saveNextStep, tasksTab, tplChip, tplColor, transcriptTab,
+  dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, notesTab, peopleTab, plural, PAUSED, pausedFix, saveFixAction, saveNextStep, tasksTab, tplChip, tplColor, transcriptTab,
 } from './view-meeting-tabs.js';
 
 const PILL_TONE = { muted: 'neutral', info: 'info', purple: 'purple', success: 'success', error: 'error', warning: 'warning' };
@@ -57,10 +57,12 @@ function runText(run, p) {
 /** The state shown for a meeting: a running notes job or save is `processing` / `downloading`. */
 const shownState = m => (m.run?.kind === 'meeting_notes' ? 'processing' : m.run?.kind === 'transcript_download' ? 'downloading' : m.state);
 
-/** The coloured status line of a meeting: its label and tone. */
+/** The coloured status line of a meeting: its label and tone. A meeting that waits while
+ *  transcripts are off never looks like work in progress. */
 function statusOf(m, mc) {
   if (m.run && m.run.kind !== 'transcript_check') return { tone: m.run.kind === 'meeting_notes' ? 'purple' : 'info', label: `${runText(m.run)}…` };
-  if (m.state === 'available' && mc.r.lastError) return { tone: 'error', label: 'Couldn’t get the transcript' };
+  if (m.paused) return { tone: 'warning', label: PAUSED[m.paused].status };
+  if (m.state === 'available' && mc.saveError) return mc.saveError.code === 'cancelled' ? { tone: 'muted', label: 'Saving stopped' } : { tone: 'error', label: 'Couldn’t get the transcript' };
   if (m.state === 'upcoming') return { tone: 'muted', label: m.online ? (mc.tpl.auto ? 'Notes after the meeting' : 'Upcoming') : mc.d.location || 'In person' };
   return STATES[m.state] ? { tone: STATES[m.state].tone, label: STATES[m.state].label } : { tone: 'muted', label: m.state };
 }
@@ -68,7 +70,7 @@ function statusOf(m, mc) {
 /** A small pill with the state, as the event card shows it. */
 export function statePill(m, mc) {
   const st = statusOf(m, mc);
-  const spin = m.run || m.state === 'pending';
+  const spin = m.run || (m.state === 'pending' && !m.paused);
   return `<span class="ws-pill ws-pill-${PILL_TONE[st.tone] || 'neutral'}">${icon(spin ? 'refresh' : STATE_ICON[m.state] || 'clock', spin ? 'ws-spin' : '')}${e(st.label.replace(/…$/, ''))}</span>`;
 }
 
@@ -77,6 +79,7 @@ export function statePill(m, mc) {
 export function primaryAction(m, mc, { size, where = 'detail' } = {}) {
   if (m.run && m.run.kind !== 'transcript_check') return '';
   const id = { 'data-id': m.id };
+  if (m.paused) return pausedFix(m.paused, size);
   switch (m.state) {
     case 'available':
     case 'downloaded': return button('Make notes', { action: 'meeting-make-notes', variant: 'primary', iconName: 'sparkles', attrs: id, size });
@@ -92,14 +95,15 @@ export function primaryAction(m, mc, { size, where = 'detail' } = {}) {
 /** One line on where a meeting stands (the event card and Today). */
 function stateLine(m, mc) {
   if (m.run && m.run.kind !== 'transcript_check') return `${e(runText(m.run))}…`;
+  if (m.paused) return e(PAUSED[m.paused].line);
   const tasks = mc.tasks.length;
   const review = mc.review.length;
   switch (m.state) {
     case 'ready': return tasks ? `${plural(tasks, 'task')}${review ? ` · <span class="ws-mtg-accent">${review} to review</span>` : ' on the board'}` : 'No tasks found';
     case 'downloaded': return `Transcript saved${mc.imported ? ' · from a file' : ''}`;
-    case 'available': return mc.r.lastError ? `<span class="ws-mtg-err">Couldn’t get it from Teams</span> · ${e(mc.r.lastError.message || '')}` : 'Saving it from Teams…';
+    case 'available': return mc.saveError ? `<span class="ws-mtg-err">${mc.saveError.code === 'cancelled' ? 'Saving stopped' : 'Couldn’t get it from Teams'}</span> · ${e(mc.saveError.message || '')}` : 'Saving it from Teams…';
     case 'pending': return mc.tpl.auto ? `${icon('automations')}Notes as soon as it arrives` : 'Teams usually has it 5–15 minutes after the end';
-    case 'failed': return `<span class="ws-mtg-err">${e(mc.r.lastError?.message || 'The notes run failed.')}</span>`;
+    case 'failed': return `<span class="ws-mtg-err">${e(mc.notesError?.message || 'The notes run failed.')}</span>`;
     case 'blocked': return 'Guests can’t read it — import the file';
     case 'none': return 'Nobody started transcription';
     case 'offline': return e(mc.d.location || 'In person');
@@ -113,13 +117,13 @@ function stateLine(m, mc) {
 export function tBadge(s, m, { label = false, rules } = {}) {
   if (!m?.online) return '';
   const auto = m.state === 'upcoming' && resolveTemplate(m.ev, m.rec, s, rules).auto;
-  const key = legendOf(m.state, { busy: !!m.run, auto });
+  const key = legendOf(m.state, { busy: !!m.run, auto, paused: m.paused });
   if (!key) return '';
   const [, text, ico] = LEGEND.find(([id]) => id === key);
   const st = shownState(m);
   const docs = m.rec?.data?.docs || [];
   const main = docs.find(d => d.id === m.rec?.data?.main) || docs[0];
-  const title = `${(STATES[st]?.label || text).replace(/…$/, '')}${st === 'ready' && main ? ` · ${main.name}` : ''}`;
+  const title = m.paused ? PAUSED[m.paused].line : `${(STATES[st]?.label || text).replace(/…$/, '')}${st === 'ready' && main ? ` · ${main.name}` : ''}`;
   return `<span class="ws-tb ws-tb-${key}${label ? ' ws-tb-label' : ''}" title="${e(title)}">${icon(ico, key === 'busy' ? 'ws-spin' : '')}${label ? `<span>${e(text)}</span>` : ''}</span>`;
 }
 
@@ -129,7 +133,7 @@ export function calendarMeetings(s, now = Date.now()) {
   const rules = rulesOf(s);
   for (const m of meetingItems(s, now)) {
     const auto = m.online && m.state === 'upcoming' && resolveTemplate(m.ev, m.rec, s, rules).auto;
-    out.set(m.id, { ...m, legend: m.online ? legendOf(m.state, { busy: !!m.run, auto }) : null });
+    out.set(m.id, { ...m, legend: m.online ? legendOf(m.state, { busy: !!m.run, auto, paused: m.paused }) : null });
   }
   return out;
 }
@@ -173,7 +177,7 @@ function list(p) {
   const { v, s } = p;
   const rows = meetingRows(s, v.filter, v.q, v.showNone, p.now, p.items);
   const counts = meetingCounts(s, p.now, p.items);
-  const toDo = p.items.filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run);
+  const toDo = p.items.filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run && !m.paused);
   const groups = [];
   for (const m of rows) {
     const key = dayKey(m.start, p.zone);
@@ -245,20 +249,33 @@ export function statusStrip(p, mc) {
   const lines = mc.segments ? plural(mc.segments.length, 'line') : 'saved';
   const checking = run?.kind === 'transcript_check';
   const org = mc.people.find(x => x.organizer);
-  const saveError = m.state === 'available' && r.lastError;
-  const t = mc.saved ? seg('done', 'Transcript', `${lines}${mc.imported ? ' · from a file' : ''}`)
-    : m.state === 'available' ? seg(saveError ? 'error' : 'busy', 'Transcript', saveError ? 'couldn’t get it from Teams' : 'saving it from Teams', saveError ? segBtn(r.lastError.code === 'needs_login' ? 'Sign in again' : 'Try again', r.lastError.code === 'needs_login' ? 'graph-connect' : 'meeting-download', id) : '')
-      : m.state === 'pending' ? seg('busy', 'Transcript', checking ? 'checking Teams…' : 'Teams is still processing', checking ? '' : segBtn('Check now', 'meeting-check', id))
-        : m.state === 'blocked' ? seg('blocked', 'Transcript', `blocked by ${e(org?.company ? `${org.company}’s Teams` : 'the organizer’s Teams')}`, segBtn('Import', 'meeting-import', id))
-          : m.state === 'upcoming' ? seg('todo', 'Transcript', m.online ? 'after the meeting' : 'in person, none')
-            : seg('todo', 'Transcript', m.state === 'offline' ? 'in person, none' : 'nobody transcribed', m.ended ? segBtn('Import', 'meeting-import', id) : '');
+  const saveError = m.state === 'available' && !mc.paused ? mc.saveError : null;
+  const fix = err => {
+    const [label, action, attrs] = saveFixAction(mc, err.code);
+    return segBtn(label.replace(' transcript file', ''), action, attrs);
+  };
+  const off = mc.paused ? segBtn(...PAUSED[mc.paused].fix, {}) : '';
+  // A Download again that failed on a saved transcript says so here (the saved one stays); its
+  // banner has the details.
+  const resave = mc.saved && mc.saveError && !run;
+  const t = mc.saved ? seg('done', 'Transcript', resave ? '<span class="ws-mtg-err">download again failed</span>' : `${lines}${mc.imported ? ' · from a file' : ''}`)
+    : mc.paused ? seg('todo', 'Transcript', PAUSED[mc.paused].seg, off)
+      : m.state === 'available' ? seg(!saveError ? 'busy' : saveError.code === 'cancelled' ? 'now' : 'error', 'Transcript', !saveError ? 'saving it from Teams' : saveError.code === 'cancelled' ? 'saving stopped' : 'couldn’t get it from Teams', saveError ? fix(saveError) : '')
+        : m.state === 'pending' ? seg('busy', 'Transcript', checking ? 'checking Teams…' : 'Teams is still processing', checking ? '' : segBtn('Check now', 'meeting-check', id))
+          : m.state === 'blocked' ? seg('blocked', 'Transcript', `blocked by ${e(org?.company ? `${org.company}’s Teams` : 'the organizer’s Teams')}`, segBtn('Import', 'meeting-import', id))
+            : m.state === 'upcoming' ? seg('todo', 'Transcript', m.online ? 'after the meeting' : 'in person, none')
+              : seg('todo', 'Transcript', m.state === 'offline' ? 'in person, none' : 'nobody transcribed', m.ended ? segBtn('Import', 'meeting-import', id) : '');
   const docs = mc.docs.length;
+  // Notes are promised after the transcript only when they will be made: the person asked
+  // while the save failed (`pending`), or the meeting makes them by itself.
   const n = m.state === 'ready' ? seg('done', 'Notes', docs > 1 ? `${docs} documents` : e(mc.docs[0]?.name || 'made'))
-    : m.state === 'failed' ? seg('error', 'Notes', e(r.lastError?.message || 'the run failed'), segBtn('Try again', 'meeting-retry', id, 'primary'))
-      : m.state === 'downloaded' || (m.state === 'available' && !saveError) ? seg('now', 'Notes', `not made · ${e(tpl.template.name)}`, segBtn('Make notes', 'meeting-make-notes', id, 'primary'))
-        : m.state === 'available' ? seg('todo', 'Notes', `${e(tpl.template.name)} · after the transcript`)
-          : ['upcoming', 'pending'].includes(m.state) && m.online ? seg('todo', 'Notes', `${e(tpl.template.name)} · ${tpl.auto ? (m.state === 'pending' ? 'as soon as it arrives' : 'automatic') : 'you start them'}`)
-            : seg('todo', 'Notes', '—');
+    : m.state === 'failed' ? seg('error', 'Notes', e(mc.notesError?.message || 'the run failed'), segBtn('Try again', 'meeting-retry', id, 'primary'))
+      : mc.paused ? seg('todo', 'Notes', `${e(tpl.template.name)} · ${mc.paused === 'off' ? 'once transcripts are on' : 'once you sign in again'}`)
+        : mc.pending && m.state === 'available' ? seg('todo', 'Notes', `${e(mc.pending.name)} · after the transcript`)
+          : m.state === 'downloaded' || (m.state === 'available' && !saveError) ? seg('now', 'Notes', `not made · ${e(tpl.template.name)}`, segBtn('Make notes', 'meeting-make-notes', id, 'primary'))
+            : m.state === 'available' ? seg('todo', 'Notes', `not made · ${e(tpl.template.name)}`)
+              : ['upcoming', 'pending'].includes(m.state) && m.online ? seg('todo', 'Notes', `${e(tpl.template.name)} · ${tpl.auto ? (m.state === 'pending' ? 'as soon as it arrives' : 'automatic') : 'you start them'}`)
+                : seg('todo', 'Notes', '—');
   const total = mc.tasks.length;
   const review = mc.review.length;
   const k = total ? seg(review ? 'now' : 'done', 'Tasks', review ? `<span class="ws-mtg-accent">${review} to review</span> of ${total}` : `${total} on the board`, review ? segBtn('Review', 'meeting-tab', { 'data-tab': 'tasks' }) : '')
@@ -376,7 +393,10 @@ export function todayMeetingsCard(s, now = Date.now()) {
   const toDo = meetingRows(s, 'process', '', false, now, items);
   const rows = [...attention, ...toDo].slice(0, 5).map(m => {
     const rel = relDay(m.start, zone, now);
-    const text = m.run && m.run.kind !== 'transcript_check' ? `${runText(m.run)}…` : m.state === 'available' && m.rec?.data?.lastError ? 'Couldn’t get the transcript — try again' : TODAY_TEXT[m.state];
+    const saveError = m.state === 'available' ? meetingErrors(m.rec).save : null;
+    const text = m.run && m.run.kind !== 'transcript_check' ? `${runText(m.run)}…`
+      : m.paused ? PAUSED[m.paused].line
+        : saveError ? (saveError.code === 'cancelled' ? 'Saving stopped — try again' : 'Couldn’t get the transcript — try again') : TODAY_TEXT[m.state];
     return `<button type="button" class="ws-mtg-today-row" data-action="meeting-open" data-id="${e(m.id)}"><span class="ws-mtg-today-when">${e(rel || formatDate(m.start, zone, { month: 'short', day: 'numeric' }))}<small>${e(formatTime(m.start, zone))}</small></span><span class="ws-mtg-today-copy"><strong>${e(m.title)}</strong><small class="${['failed', 'blocked'].includes(m.state) ? 'ws-mtg-err' : ''}">${e(text || '')}</small></span>${m.run ? '<span class="ws-spinner ws-mtg-row-spin" role="status" aria-label="In progress"></span>' : icon('chevron-right')}</button>`;
   }).join('');
   const more = attention.length + toDo.length - 5;

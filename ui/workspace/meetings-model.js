@@ -37,9 +37,12 @@ export const LEGEND = [
   ['auto', 'Notes after the meeting', 'automations'],
 ];
 
-/** Which legend group a state belongs to: a running job is always "Working on it". */
-export function legendOf(state, { busy = false, auto = false } = {}) {
-  if (busy || state === 'pending') return 'busy';
+/** Which legend group a state belongs to: a running job is always "Working on it"; a meeting
+ *  waiting while transcripts are off (`paused`) needs the person. */
+export function legendOf(state, { busy = false, auto = false, paused = false } = {}) {
+  if (busy) return 'busy';
+  if (paused) return 'attention';
+  if (state === 'pending') return 'busy';
   if (state === 'ready') return 'ready';
   if (state === 'available' || state === 'downloaded') return 'process';
   if (state === 'failed' || state === 'blocked') return 'attention';
@@ -82,6 +85,8 @@ export function meetingState(event, record, now = Date.now(), transcriptsOn = tr
   const d = dataOf(event) || r || {};
   const end = timeOf(d.end ?? r?.end);
   const ended = Number.isFinite(end) && end <= now;
+  // A stored `pending` past the day of waiting is `none`, as the round makes it when it runs.
+  if (r?.state === 'pending' && ended && now - end >= STOP_AFTER_MS) return 'none';
   if (r?.state && STATES[r.state] && !(r.state === 'upcoming' && ended)) return r.state;
   if (!ended) return 'upcoming';
   if (!isOnline(d)) return 'offline';
@@ -91,6 +96,19 @@ export function meetingState(event, record, now = Date.now(), transcriptsOn = tr
 
 /** Transcripts are read when the account allows both Graph scopes (graph.rs `transcripts_permitted`). */
 export const transcriptsAllowed = s => can(s, 'meetings') && can(s, 'transcripts');
+
+/**
+ * A meeting record's two errors: `save` (why the last save from Teams failed, `cancelled` when
+ * the person stopped it) and `notes` (why the last notes run failed). An older record has one
+ * `lastError`, read as native's `split_legacy_error` reads it: a `ready` or `failed` meeting's
+ * as the notes run's, any other as the save's.
+ */
+export function meetingErrors(record) {
+  const r = dataOf(record) || {};
+  if ('saveError' in r || 'notesError' in r) return { save: r.saveError || null, notes: r.notesError || null };
+  const old = r.lastError || null;
+  return ['ready', 'failed'].includes(r.state) ? { save: null, notes: old } : { save: old, notes: null };
+}
 
 /** The organizer and everyone invited (not rooms), each once, as `{name, address}`. */
 export function attendeesOf(d) {
@@ -177,6 +195,7 @@ export function failedNotesJob(s, meetingId) {
  *  event left the calendar too), each `{id, ev, rec, title, start, end, ended, online, state, run}`. */
 export function meetingItems(s, now = Date.now()) {
   const on = transcriptsAllowed(s);
+  const waiting = s.connection && s.connection.status !== 'connected' ? 'signin' : 'off';
   const runs = runsOf(s);
   const records = new Map();
   const events = new Map();
@@ -190,9 +209,14 @@ export function meetingItems(s, now = Date.now()) {
     const start = timeOf(d.start ?? r.start);
     const end = timeOf(d.end ?? r.end);
     const id = ev?.id || rec.id;
+    const state = meetingState(ev, rec, now, on);
+    const run = runs.get(id) || null;
     return {
       id, ev, rec, title: d.title || r.title || 'Untitled meeting', start, end, ended: Number.isFinite(end) && end <= now,
-      online: ev ? isOnline(d) : r.state !== 'offline', state: meetingState(ev, rec, now, on), run: runs.get(id) || null,
+      online: ev ? isOnline(d) : r.state !== 'offline', state, run,
+      // Found or waiting for Teams, but nothing can get it now: why (`signin` while Microsoft
+      // needs the person to sign in again, `off` while reading transcripts is off), else null.
+      paused: !on && !run && (state === 'available' || state === 'pending') ? waiting : null,
     };
   };
   const out = [];
@@ -208,9 +232,9 @@ export function meetingItems(s, now = Date.now()) {
 const IN_LANE = {
   // By state, not by `online`: an in-person meeting whose transcript was imported has one too.
   all: (m, showNone) => m.ended && (showNone || !['none', 'offline', 'upcoming'].includes(m.state)),
-  process: m => m.state === 'available' || m.state === 'downloaded',
+  process: m => (m.state === 'available' || m.state === 'downloaded') && !m.paused,
   ready: m => m.state === 'ready',
-  attention: m => m.state === 'failed' || m.state === 'blocked',
+  attention: m => m.state === 'failed' || m.state === 'blocked' || !!m.paused,
   upcoming: m => m.state === 'upcoming',
 };
 

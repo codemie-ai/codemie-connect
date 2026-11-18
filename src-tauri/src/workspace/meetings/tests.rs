@@ -345,7 +345,7 @@ async fn check_finds_a_transcript_and_saves_it() {
     assert_eq!(m.transcript_ids, vec!["t1".to_string()]);
     assert_eq!(m.external.as_deref(), Some(ONLINE));
     assert_eq!(m.transcript_start.as_deref(), Some(created.as_str()));
-    assert!(m.checked_at.is_some() && m.error.is_none() && m.last_error.is_none());
+    assert!(m.checked_at.is_some() && m.error.is_none() && m.save_error.is_none());
     let folder = PathBuf::from(m.folder.unwrap());
     assert!(
         folder.starts_with(default_root(&e.core)),
@@ -610,7 +610,7 @@ async fn download_into_unwritable_root_fails_cleanly() {
     assert_eq!(save.error_code.as_deref(), Some("folder_unwritable"));
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Available);
-    assert_eq!(m.last_error.as_ref().unwrap().code, "folder_unwritable");
+    assert_eq!(m.save_error.as_ref().unwrap().code, "folder_unwritable");
     assert!(m.folder.is_none());
     assert!(!chosen.exists(), "a custom root is never created");
     // It waits for the person: no automatic retry in later slots.
@@ -630,7 +630,7 @@ async fn download_into_unwritable_root_fails_cleanly() {
     run_jobs(&e.core).await;
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Downloaded);
-    assert!(m.last_error.is_none());
+    assert!(m.save_error.is_none());
     assert!(PathBuf::from(m.folder.unwrap()).starts_with(&chosen));
 }
 
@@ -1065,7 +1065,7 @@ async fn failed_save_retries_in_the_next_slot() {
     run_jobs(&e.core).await;
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Available);
-    assert_eq!(m.last_error.unwrap().code, "throttled");
+    assert_eq!(m.save_error.unwrap().code, "throttled");
     // The same slot never queues it twice.
     meetings_round_at(&e.core, at).unwrap();
     assert_eq!(jobs(&e.core, "transcript_download").len(), 1);
@@ -1080,7 +1080,7 @@ async fn failed_save_retries_in_the_next_slot() {
     run_jobs_ahead(&e.core, 600).await;
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Downloaded);
-    assert!(m.last_error.is_none());
+    assert!(m.save_error.is_none());
     // Try again starts at once, without waiting for a slot.
     put(
         &e.core,
@@ -1106,7 +1106,7 @@ async fn failed_save_retries_in_the_next_slot() {
         .await
         .unwrap();
     run_jobs(&e.core).await;
-    assert_eq!(meeting(&e.core, "m2").last_error.unwrap().code, "offline");
+    assert_eq!(meeting(&e.core, "m2").save_error.unwrap().code, "offline");
     e.graph.answer_text(&content_url("ONLINE2", "t2"), VTT);
     let retry = op(
         &e.core,
@@ -1144,7 +1144,7 @@ async fn save_of_a_deleted_transcript_is_not_retried() {
     assert_eq!(save.error_code.as_deref(), Some("transcript_missing"));
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Available, "Try again stays on offer");
-    let error = m.last_error.unwrap();
+    let error = m.save_error.unwrap();
     assert_eq!(error.code, "transcript_missing");
     assert!(
         error
@@ -1169,7 +1169,7 @@ async fn save_of_a_deleted_transcript_is_not_retried() {
     .unwrap();
     run_jobs(&e.core).await;
     assert_eq!(
-        meeting(&e.core, "m1").last_error.unwrap().code,
+        meeting(&e.core, "m1").save_error.unwrap().code,
         "transcript_missing"
     );
     e.graph.answer(&list_url(ONLINE), json!({"value": []}));
@@ -1200,7 +1200,7 @@ async fn save_of_a_deleted_transcript_is_not_retried() {
     run_jobs(&e.core).await;
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Downloaded);
-    assert!(m.last_error.is_none());
+    assert!(m.save_error.is_none());
 }
 
 #[tokio::test]
@@ -1225,7 +1225,7 @@ async fn automatic_retries_stop_after_the_check_window() {
     meetings_round_at(&e.core, at + 600).unwrap();
     assert_eq!(jobs(&e.core, "transcript_download").len(), 2);
     run_jobs_ahead(&e.core, 600).await;
-    assert_eq!(meeting(&e.core, "m1").last_error.unwrap().code, "throttled");
+    assert_eq!(meeting(&e.core, "m1").save_error.unwrap().code, "throttled");
     // Once the check window is over, it waits for the person: nothing new is queued (the
     // finished jobs themselves are pruned once they are two days old).
     let queued = |core: &Core| {
@@ -1276,10 +1276,93 @@ async fn automatic_retries_stop_after_the_check_window() {
         .await
         .unwrap();
     run_jobs(&e.core).await;
-    assert_eq!(meeting(&e.core, "m2").last_error.unwrap().code, "offline");
+    assert_eq!(meeting(&e.core, "m2").save_error.unwrap().code, "offline");
     let before = jobs(&e.core, "transcript_download").len();
     meetings_round_at(&e.core, now() + 600).unwrap();
     assert_eq!(jobs(&e.core, "transcript_download").len(), before);
+}
+
+/// A meeting that ended 15 minutes ago, found in Teams, whose content read fails with `code`.
+fn found_in_teams(e: &Env, code: &str) {
+    let record = ended("m1", 15, json!({}));
+    let created = rfc(graph::timestamp(record.data["start"].as_str().unwrap()) + 60);
+    put(&e.core, record);
+    teams(&e.graph, &created, VTT);
+    e.graph.fail(
+        &content_url(ONLINE, "t1"),
+        WorkspaceError::new(code, "Teams didn’t answer."),
+    );
+}
+
+fn set_status(core: &Core, status: &str) {
+    let mut r = core.repo().unwrap();
+    let mut c = r.connection(ACCT).unwrap();
+    c.status = status.into();
+    r.save_connection(&c).unwrap();
+}
+
+#[tokio::test]
+async fn a_save_that_needed_a_sign_in_is_tried_again_once_signed_in() {
+    let e = env();
+    found_in_teams(&e, "needs_login");
+    let at = now();
+    meetings_round_at(&e.core, at).unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(
+        meeting(&e.core, "m1").save_error.unwrap().code,
+        "needs_login"
+    );
+    // While Microsoft needs the sign-in, nothing is tried.
+    set_status(&e.core, "needs_login");
+    meetings_round_at(&e.core, at + 600).unwrap();
+    assert_eq!(jobs(&e.core, "transcript_download").len(), 1);
+    // Signed in again: the next slot saves it by itself.
+    set_status(&e.core, "connected");
+    e.graph.answer_text(&content_url(ONLINE, "t1"), VTT);
+    meetings_round_at(&e.core, at + 1200).unwrap();
+    run_jobs_ahead(&e.core, 1200).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Downloaded);
+    assert!(m.save_error.is_none());
+}
+
+#[tokio::test]
+async fn cancelling_an_automatic_save_stops_the_automatic_tries() {
+    let e = env();
+    found_in_teams(&e, "throttled");
+    e.graph.answer_text(&content_url(ONLINE, "t1"), VTT);
+    let at = now();
+    meetings_round_at(&e.core, at).unwrap();
+    // The check finds it and queues the save; the person stops the save before it runs.
+    let check = e.core.repo().unwrap().claim(now()).unwrap().unwrap();
+    assert_eq!(check.kind, "transcript_check");
+    e.core.clone().run_claimed_job(check).await;
+    let save = jobs(&e.core, "transcript_download").remove(0);
+    op(&e.core, Operation::JobCancel, json!({"id": save.id}))
+        .await
+        .unwrap();
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Available);
+    assert_eq!(m.save_error.as_ref().unwrap().code, "cancelled");
+    // No later slot tries it again by itself.
+    for later in [600, 1200, 3600] {
+        meetings_round_at(&e.core, at + later).unwrap();
+        run_jobs_ahead(&e.core, later).await;
+    }
+    assert_eq!(jobs(&e.core, "transcript_download").len(), 1);
+    assert_eq!(meeting(&e.core, "m1").state, MeetingState::Available);
+    // Asked again: Try again saves it.
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Downloaded);
+    assert!(m.save_error.is_none());
 }
 
 #[tokio::test]
@@ -1393,7 +1476,7 @@ async fn empty_teams_transcript_is_not_saved() {
     let m = meeting(&e.core, "m1");
     assert_eq!(m.state, MeetingState::Available);
     assert!(m.folder.is_none());
-    let error = m.last_error.unwrap();
+    let error = m.save_error.unwrap();
     assert_eq!(error.code, "transcript_missing");
     assert!(
         error.message.contains("Teams returned an empty transcript"),
@@ -1824,6 +1907,14 @@ async fn contract_fixtures_match_the_real_meetings() {
             model: Some("claude-sonnet-4-5".into()),
         }),
         Err(AiError::new(ErrorClass::NeedsLogin)),
+        Ok(RunOutcome {
+            structured: Some(json!({"notesMarkdown": "# Pilot kickoff", "tasks": []})),
+            text: String::new(),
+            usage: Usage::default(),
+            cost_usd: None,
+            duration_ms: 3000,
+            model: Some("claude-sonnet-4-5".into()),
+        }),
     ])));
     {
         let mut r = e.core.repo().unwrap();
@@ -1916,9 +2007,11 @@ async fn contract_fixtures_match_the_real_meetings() {
     run_jobs(&e.core).await;
     // ready: notes made with Meeting notes; failed: notes for another meeting stopped at a Claude
     // sign-in.
+    // ready + a failed Download again: a save error beside the notes, no notes error.
     for (id, title) in [
         ("m-ready", "Design critique"),
         ("m-failed", "Release 2.4 go/no-go"),
+        ("m-resave", "Pilot kickoff"),
     ] {
         let join = format!("https://teams.microsoft.com/l/{id}");
         let online = format!("ONLINE-{id}");
@@ -1946,6 +2039,18 @@ async fn contract_fixtures_match_the_real_meetings() {
         .unwrap();
         run_jobs(&e.core).await;
     }
+    e.graph.fail(
+        &content_url("ONLINE-m-resave", "t"),
+        WorkspaceError::new("provider", "Teams didn’t answer in time."),
+    );
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m-resave"}),
+    )
+    .await
+    .unwrap();
+    run_jobs(&e.core).await;
     // available: found in Teams, the save is waiting for the person (folder gone).
     put(
         &e.core,
@@ -2016,6 +2121,7 @@ async fn contract_fixtures_match_the_real_meetings() {
         "m-none",
         "m-ready",
         "m-failed",
+        "m-resave",
     ]
     .into_iter()
     .enumerate()
@@ -2037,7 +2143,10 @@ async fn contract_fixtures_match_the_real_meetings() {
             doc["createdAt"] = 1_795_000_450.into();
             doc["updatedAt"] = 1_795_000_450.into();
         }
-        if !matches!(id, "m-downloaded" | "m-available" | "m-ready" | "m-failed") {
+        if !matches!(
+            id,
+            "m-downloaded" | "m-available" | "m-ready" | "m-failed" | "m-resave"
+        ) {
             d["start"] = "2026-11-04T09:00:00Z".into();
             d["end"] = "2026-11-04T09:30:00Z".into();
         }
@@ -2060,12 +2169,17 @@ async fn contract_fixtures_match_the_real_meetings() {
             "blocked",
             "none",
             "ready",
-            "failed"
+            "failed",
+            "ready"
         ]
     );
-    assert_eq!(records[1]["data"]["lastError"]["code"], "folder_unwritable");
+    assert_eq!(records[1]["data"]["saveError"]["code"], "folder_unwritable");
     assert_eq!(records[5]["data"]["docs"][0]["file"], "notes.md");
-    assert_eq!(records[6]["data"]["lastError"]["code"], "needs_login");
+    assert_eq!(records[6]["data"]["notesError"]["code"], "needs_login");
+    assert_eq!(records[6]["data"]["saveError"], Value::Null);
+    assert_eq!(records[7]["data"]["saveError"]["code"], "provider");
+    assert_eq!(records[7]["data"]["notesError"], Value::Null);
+    assert!(records.iter().all(|r| r["data"].get("lastError").is_none()));
     crate::plugins::testkit::contract_fixture("meeting-records.json", &Value::Array(records));
     crate::plugins::testkit::contract_fixture("meeting-transcript.json", &transcript);
     crate::plugins::testkit::contract_fixture("meeting-files.json", &files);

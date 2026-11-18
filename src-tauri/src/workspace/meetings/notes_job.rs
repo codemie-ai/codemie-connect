@@ -256,9 +256,21 @@ impl Core {
         );
         if saving {
             // Make notes on a transcript still in Teams saves it first; a failed save fails
-            // the run with the save's reason, which the meeting keeps (`last_error`).
+            // the run with the save's reason, which the meeting keeps (`save_error`). When that
+            // reason passes, the request is kept too: the next save that works makes these
+            // notes ([`Core::queue_pending_notes`]).
             self.note_step(job, &steps, GETTING)?;
-            let saved = save_transcript(self, &self.job_connection(job)?, &id).await?;
+            let saved = match save_transcript(self, &self.job_connection(job)?, &id).await {
+                Ok(saved) => saved,
+                Err(e) => {
+                    if !plan.auto && super::round::RETRYABLE.contains(&e.code.as_str()) {
+                        self.keep_notes_request(&c, &id, job, &plan);
+                    }
+                    return Err(e);
+                }
+            };
+            // An earlier request for another template follows this save too.
+            self.queue_pending_notes(&c, &id);
             steps = steps_for(
                 true,
                 &plan.template.name,
@@ -660,7 +672,7 @@ impl Core {
         Ok("Notes ready".into())
     }
 
-    /// A failed run: the meeting keeps why (`last_error`) and is `failed` while it has no
+    /// A failed run: the meeting keeps why (`notes_error`) and is `failed` while it has no
     /// documents (one with documents stays `ready`); `run.log` says what happened, and that
     /// the documents are unchanged only when they are (`written` names a document file that
     /// already got the new notes). A run that was stopped changes nothing on the meeting.
@@ -686,7 +698,7 @@ impl Core {
         } else {
             lines.push(format!("{} ({})", e.message, e.code));
             if saved(m.state) {
-                m.last_error = Some(ErrorInfo::from(e));
+                m.notes_error = Some(ErrorInfo::from(e));
                 if m.docs.is_empty() {
                     m.state = MeetingState::Failed;
                 }
@@ -709,6 +721,80 @@ impl Core {
         self.emit("workspace:changed");
     }
 
+    /// A person's Make notes whose save failed for a reason that passes: the meeting keeps what
+    /// they asked for (`pending_notes`) while its transcript is still in Teams. Best effort.
+    fn keep_notes_request(&self, c: &Connection, id: &str, job: &Job, plan: &Plan) {
+        let _w = self.meeting_lock();
+        let kept = self.repo().and_then(|mut r| {
+            let (mut m, _, source) = self.current(&r, c, id)?;
+            if m.state != MeetingState::Available {
+                return Ok(());
+            }
+            m.pending_notes = Some(PendingNotes {
+                template_id: plan.template.id.clone(),
+                wishes: plan.wishes.clone(),
+                find_tasks: job.payload["findTasks"] != false,
+                workspace_id: plan.workspace.clone(),
+                job_id: job.id.clone(),
+            });
+            store(&mut r, c, &source, &m)
+        });
+        if let Err(e) = kept {
+            log::warn!("meetings: a notes request was not kept: {}", e.code);
+        }
+    }
+
+    /// Right after a save that worked: the notes the person asked for while it failed
+    /// (`pending_notes`) are queued, keyed by the job that asked so they are queued once, unless
+    /// notes with that template are waiting or running already; the request is then cleared.
+    /// True when the meeting had such a request. Best effort; takes the meeting lock.
+    pub(super) fn queue_pending_notes(&self, c: &Connection, id: &str) -> bool {
+        let _w = self.meeting_lock();
+        let queued = self.repo().and_then(|mut r| {
+            let (mut m, _, source) = self.current(&r, c, id)?;
+            let Some(p) = m.pending_notes.take() else {
+                return Ok(false);
+            };
+            let all = templates::all(&r.local_records(&p.workspace_id, templates::KIND)?);
+            match templates::find(&all, &p.template_id).filter(|_| saved(m.state)) {
+                Some(t) => {
+                    let key = format!("{id}:{}", t.id);
+                    let busy = r.jobs()?.iter().any(|j| {
+                        j.kind == "meeting_notes"
+                            && j.payload["notesKey"] == key.as_str()
+                            && matches!(j.state.as_str(), "queued" | "running")
+                    });
+                    if !busy {
+                        let policy = r.policy(Some(&p.workspace_id), Some(&c.id))?;
+                        let extract = p.find_tasks && t.extract_tasks;
+                        let steps = steps_for(false, &t.name, extract, folder_name(&m).as_deref());
+                        r.enqueue(&new_job(
+                            "meeting_notes",
+                            format!("meeting_notes:after-save:{}", p.job_id),
+                            Some(p.workspace_id.clone()),
+                            Some(c.id.clone()),
+                            now(),
+                            policy,
+                            json!({"meetingId": id, "title": m.title, "templateId": t.id,
+                                "notesKey": key, "wishes": p.wishes, "findTasks": p.find_tasks,
+                                "auto": false, "step": null, "steps": steps}),
+                        ))?;
+                    }
+                }
+                None => log::warn!("meetings: notes asked for are dropped: their template is gone"),
+            }
+            store(&mut r, c, &source, &m)?;
+            Ok(true)
+        });
+        match queued {
+            Ok(had) => had,
+            Err(e) => {
+                log::warn!("meetings: notes asked for were not queued: {}", e.code);
+                false
+            }
+        }
+    }
+
     /// Right after a save: notes for a meeting that asked for them as soon as its transcript
     /// arrived (or whose wait is over). Best effort; the round tries again.
     pub(super) fn auto_notes_after_save(&self, c: &Connection, id: &str) {
@@ -729,7 +815,8 @@ pub(super) struct AutoNotes {
     settings: MeetingSettings,
     rules: Vec<Rule>,
     templates: Vec<Template>,
-    /// The meetings that ever had a notes job.
+    /// The meetings that had a notes job that didn't fail (a failed one made no notes, so it
+    /// doesn't stand in for the automatic ones).
     noted: std::collections::HashSet<String>,
     connection: String,
     policy: Value,
@@ -750,7 +837,9 @@ impl AutoNotes {
             templates: templates::all(&r.local_records(PERSONAL, templates::KIND)?),
             noted: jobs
                 .iter()
-                .filter(|j| j.kind == "meeting_notes")
+                .filter(|j| {
+                    j.kind == "meeting_notes" && !matches!(j.state.as_str(), "failed" | "blocked")
+                })
                 .filter_map(|j| j.payload["meetingId"].as_str().map(String::from))
                 .collect(),
             connection: c.id.clone(),
@@ -802,9 +891,10 @@ impl AutoNotes {
 
 /// Whether a meeting's notes are made by themselves now: its transcript is saved and it has no
 /// documents yet; it asks for them (its own switch, else the first matching rule or Settings ›
-/// Meetings › Make notes automatically); it ended at most two days ago. What the person asked
-/// for on the meeting follows the save at once; a rule or the setting waits `waitMin` after
-/// the meeting and skips very short ones (under 3 minutes, or under 3 minutes of talking).
+/// Meetings › Make notes automatically). What the person asked for on the meeting follows the
+/// save at once, however late it comes; a rule or the setting only for a meeting that ended
+/// at most two days ago, `waitMin` after it, skipping very short ones (under 3 minutes, or
+/// under 3 minutes of talking).
 pub(super) fn auto_due(
     m: &MeetingRecord,
     event: &Value,
@@ -815,7 +905,7 @@ pub(super) fn auto_due(
 ) -> bool {
     let start = graph::timestamp(&m.start);
     let end = graph::timestamp(&m.end);
-    if m.state != MeetingState::Downloaded || end <= 0 || now - end >= AUTO_WINDOW {
+    if m.state != MeetingState::Downloaded || end <= 0 {
         return false;
     }
     let (wanted, asked) = rules::auto_notes(m.auto, event, rules, s);
@@ -825,7 +915,7 @@ pub(super) fn auto_due(
     if asked {
         return true;
     }
-    if now < end + s.wait_min * 60 {
+    if now - end >= AUTO_WINDOW || now < end + s.wait_min * 60 {
         return false;
     }
     let length = (end - start) as f64;
@@ -916,6 +1006,24 @@ mod tests {
             &rules,
             &s,
             END + 3600,
+            long
+        ));
+        // Asked for on the meeting holds after two days too (a save that worked only later); a
+        // rule or the setting doesn't.
+        assert!(auto_due(
+            &downloaded(30, Some(true)),
+            &event,
+            &[],
+            &s,
+            END + AUTO_WINDOW + 3600,
+            long
+        ));
+        assert!(!auto_due(
+            &m,
+            &event,
+            &rules,
+            &s,
+            END + AUTO_WINDOW + 3600,
             long
         ));
     }

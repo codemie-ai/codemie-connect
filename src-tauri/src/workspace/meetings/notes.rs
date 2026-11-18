@@ -455,7 +455,7 @@ pub fn apply(
         log.push(CUT_LINE.to_string());
     }
     meeting.state = MeetingState::Ready;
-    meeting.last_error = None;
+    meeting.notes_error = None;
     DocChange { log, ..change }
 }
 
@@ -947,9 +947,13 @@ mod tests {
             history_taken: vec![],
         };
         let mut m = sync();
-        m.last_error = Some(ErrorInfo {
+        m.notes_error = Some(ErrorInfo {
             code: "needs_login".into(),
             message: "Sign in.".into(),
+        });
+        m.save_error = Some(ErrorInfo {
+            code: "throttled".into(),
+            message: "Wait.".into(),
         });
         // Run A: the first document is the main notes.md.
         let a1 = apply(&mut m, &notes, &out("A1"), &run(at, true));
@@ -966,7 +970,12 @@ mod tests {
             }
         );
         assert_eq!(m.state, MeetingState::Ready);
-        assert_eq!(m.last_error, None);
+        assert_eq!(m.notes_error, None, "a run that works clears its own error");
+        assert_eq!(
+            m.save_error.as_ref().unwrap().code,
+            "throttled",
+            "not the save's"
+        );
         assert_eq!(m.main.as_deref(), Some("meeting-notes"));
         assert_eq!(
             m.docs,

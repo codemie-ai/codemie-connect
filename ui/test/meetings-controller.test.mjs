@@ -186,3 +186,49 @@ test('a failed step never ends with a success toast', async () => {
   await h.ctl.handle('meeting-make-all', control({}));
   assert.match(successes(h.calls).join(), /^Making notes for 1 of 3 meetings/);
 });
+
+test('a Microsoft sign-in leads to Microsoft and a Claude one to Settings › Claude', async () => {
+  // needs_login from a meeting operation is the Microsoft account (target()/active_workspace).
+  const signedOut = failure('needs_login', 'Connect Microsoft.');
+  const connected = [];
+  const ms = harnessWithConnect(connected, { meeting_download: signedOut });
+  await ms.ctl.handle('meeting-download', control({ id: 'mtg-vendor' }));
+  const toast = ms.calls.toasts.at(-1);
+  assert.equal(toast.tone, 'error');
+  assert.equal(toast.action.label, 'Sign in to Microsoft');
+  await toast.action.run();
+  assert.deepEqual(connected, [[]], 'Microsoft sign-in, no extra access');
+  assert.ok(!ms.calls.routes.some(([, tab]) => tab === 'ai'), 'not Settings › Claude');
+  // A Claude sign-in (its class says so) is Settings › Claude.
+  const claude = Object.assign(failure('needs_login', 'Claude is not signed in.'), { class: 'needs_login' });
+  const c = harnessWithConnect([], { meeting_notes: claude });
+  await c.ctl.handle('meeting-retry', control({ id: 'mtg-critique' }));
+  assert.equal(c.calls.toasts.at(-1).action.label, 'Open Settings › Claude');
+});
+
+test('Cancel on a save says Connect won’t try again by itself; on notes, that nothing changed', async () => {
+  const { ctl, calls, s } = harness();
+  s.jobs.push({ id: 'job-save', kind: 'transcript_download', state: 'running', payload: { meetingId: 'mtg-release', auto: true } });
+  s.jobs.push({ id: 'job-notes', kind: 'meeting_notes', state: 'running', payload: { meetingId: 'mtg-roadmap' } });
+  await ctl.handle('meeting-cancel', control({ id: 'job-save' }));
+  assert.deepEqual(calls.mutate.at(-1), ['job_cancel', { id: 'job-save' }]);
+  assert.match(calls.toasts.at(-1).message, /Stopped saving the transcript\. Connect won’t try again by itself: use Try again when you want it\./);
+  await ctl.handle('meeting-cancel', control({ id: 'job-notes' }));
+  assert.match(calls.toasts.at(-1).message, /^Stopped\. Nothing in the folder changed\.$/);
+});
+
+/** [harness] with a Microsoft sign-in that records what it was asked for. */
+function harnessWithConnect(connected, answers) {
+  const calls = { mutate: [], toasts: [], routes: [] };
+  const state = { route: 'meetings', meetings: { ...newMeetingsView() }, tasks: newTasksView() };
+  const s = snapshot();
+  const ctl = createMeetingsController({
+    state, snap: () => s, store: { query: async () => ({}) },
+    mutate: async (op, data) => { calls.mutate.push([op, data]); const a = answers[op]; if (a instanceof Error) throw a; return a ?? { queued: true }; },
+    render: async () => {}, route: async (name, tab) => { calls.routes.push([name, tab]); },
+    toast: (message, tone, action) => calls.toasts.push({ message, tone, action }),
+    connect: async capabilities => { connected.push(capabilities); },
+    now: () => NOW,
+  });
+  return { ctl, calls };
+}

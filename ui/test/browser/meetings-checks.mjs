@@ -255,10 +255,36 @@ export async function meetingChecks({ open, check, assert, shot, OUT }) {
         await page.click('.ws-mtg-strip [data-action="meeting-download"]');
         await page.waitForSelector('.ws-mtg-strip-run');
         await page.waitForSelector('.ws-mtg-strip:not(.ws-mtg-strip-run) [data-action="meeting-download"]', { timeout: 8000 });
+        // Stopped while it saves: it says so and stays stopped; only Try again starts it again.
+        await page.evaluate(() => { window.__downloadPlan = { outcome: 'ok', ms: 5000 }; });
+        await page.click('.ws-mtg-strip [data-action="meeting-download"]');
+        await page.waitForSelector('.ws-mtg-strip-run [data-action="meeting-cancel"]');
+        await page.click('.ws-mtg-strip-run [data-action="meeting-cancel"]');
+        await page.waitForSelector('.ws-toast:has-text("Connect won’t try again by itself")');
+        await page.waitForSelector('.ws-mtg-strip:not(.ws-mtg-strip-run):has-text("saving stopped") [data-action="meeting-download"]');
+        await page.waitForSelector(`${row('mtg-vendor')} .ws-tone-muted:has-text("Saving stopped")`);
+        await shot(page, `${tag}-meetings-save-stopped`);
+        await page.evaluate(() => { window.__downloadPlan = null; });
         await page.click('.ws-mtg-strip [data-action="meeting-download"]');
         await page.waitForSelector(`${row('mtg-vendor')} .ws-tone-purple`, { timeout: 8000 });
-        assert((await calls(page, 'meeting_download')).length === 2, 'two tries');
+        assert((await calls(page, 'meeting_download')).length === 3, 'three tries');
         await page.waitForSelector('.ws-mtg-strip [data-action="meeting-make-notes"]');
+      });
+
+      await check(`${tag}: a failed Download again shows on the meeting, apart from the notes`, async () => {
+        await select(page, 'mtg-philips', 'all');
+        await page.evaluate(() => { window.__downloadPlan = { outcome: 'fail', ms: 300 }; });
+        await page.click('.ws-mtg-head .ws-menu > summary');
+        await page.click('.ws-mtg-head .ws-menu [data-action="meeting-download"]');
+        await page.waitForSelector('.ws-mtg-run-failed:has-text("Download again didn’t work")', { timeout: 8000 });
+        assert(await page.locator('.ws-mtg-run-failed [data-action="meeting-retry"]').count() === 0, 'not offered as a notes failure');
+        assert(/download again failed/.test(await page.locator('.ws-mtg-strip').innerText()), 'the strip says so');
+        await noOverflow(page, 'a failed Download again');
+        await shot(page, `${tag}-meetings-redownload-failed`);
+        // Its Try again downloads it again: the banner goes, the notes stay.
+        await page.click('.ws-mtg-run-failed [data-action="meeting-download"]');
+        await page.waitForFunction(() => !document.querySelector('.ws-mtg-run-failed'), null, { timeout: 8000 });
+        assert(await page.locator('.ws-mtg-doctab[data-doc="meeting-notes"]').count() === 1, 'the notes stay');
       });
 
       await check(`${tag}: Today card → meeting`, async () => {

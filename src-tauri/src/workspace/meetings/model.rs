@@ -14,7 +14,7 @@ pub enum MeetingState {
     /// Ended less than a day ago; Teams has no transcript yet.
     #[default]
     Pending,
-    /// Found in Teams: being saved, or the save failed (`last_error`).
+    /// Found in Teams: being saved, or the save failed (`save_error`).
     Available,
     /// The transcript is in the meeting folder; no notes yet.
     Downloaded,
@@ -195,10 +195,52 @@ pub struct MeetingRecord {
     pub docs: Vec<Doc>,
     /// The id of the main document (Task 3).
     pub main: Option<String>,
-    /// Why the last save failed; cleared by a save that works.
+    /// Why the last save from Teams failed (`cancelled` when the person stopped it: then only
+    /// they start it again); cleared by a save that works.
+    pub save_error: Option<ErrorInfo>,
+    /// Why the last notes run failed; cleared by a run that works.
+    pub notes_error: Option<ErrorInfo>,
+    /// Notes the person asked for while the save failed for a reason that passes: the next save
+    /// that works queues them once.
+    pub pending_notes: Option<PendingNotes>,
+    /// Older records kept one error for both steps: read only, and split by
+    /// [`MeetingRecord::split_legacy_error`] when the record is read.
+    #[serde(skip_serializing)]
     pub last_error: Option<ErrorInfo>,
     /// Transcript lines whose task the person deleted: notes made again don't bring it back.
     pub removed_lines: Vec<u64>,
+}
+
+/// A Make notes that waits for the transcript: what it asked for, where its tasks go, and the
+/// job that asked (the job queued after the save is keyed by it, so it is queued once).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PendingNotes {
+    pub template_id: String,
+    pub wishes: String,
+    pub find_tasks: bool,
+    pub workspace_id: String,
+    pub job_id: String,
+}
+
+impl MeetingRecord {
+    /// An older record's one `lastError` becomes the step it belonged to, once: before a
+    /// transcript is saved (`available`, `downloaded`) only a save wrote it; on a `ready` or
+    /// `failed` meeting it was shown as the last notes run's. A record that already has the
+    /// two fields keeps them.
+    pub fn split_legacy_error(&mut self) {
+        let Some(e) = self.last_error.take() else {
+            return;
+        };
+        if self.save_error.is_some() || self.notes_error.is_some() {
+            return;
+        }
+        if matches!(self.state, MeetingState::Ready | MeetingState::Failed) {
+            self.notes_error = Some(e);
+        } else {
+            self.save_error = Some(e);
+        }
+    }
 }
 
 /// `settings.meetings` (Settings › Meetings).
@@ -544,9 +586,20 @@ mod tests {
             end: "2026-11-04T16:30:00Z".into(),
             state: MeetingState::None,
             transcript_ids: vec!["t1".into()],
-            last_error: Some(ErrorInfo {
+            save_error: Some(ErrorInfo {
                 code: "folder_unwritable".into(),
                 message: "Choose the folder again.".into(),
+            }),
+            notes_error: Some(ErrorInfo {
+                code: "needs_login".into(),
+                message: "Claude is not signed in.".into(),
+            }),
+            pending_notes: Some(PendingNotes {
+                template_id: "short-summary".into(),
+                wishes: "Keep it short".into(),
+                find_tasks: false,
+                workspace_id: "personal".into(),
+                job_id: "j1".into(),
             }),
             ..Default::default()
         };
@@ -554,7 +607,14 @@ mod tests {
         assert_eq!(v["eventId"], "e1");
         assert_eq!(v["state"], "none");
         assert_eq!(v["transcriptIds"], json!(["t1"]));
-        assert_eq!(v["lastError"]["code"], "folder_unwritable");
+        assert_eq!(v["saveError"]["code"], "folder_unwritable");
+        assert_eq!(v["notesError"]["code"], "needs_login");
+        assert_eq!(
+            v["pendingNotes"],
+            json!({"templateId": "short-summary", "wishes": "Keep it short", "findTasks": false,
+                "workspaceId": "personal", "jobId": "j1"})
+        );
+        assert!(v.get("lastError").is_none(), "one field per step");
         for key in [
             "transcriptStart",
             "folder",
@@ -612,5 +672,39 @@ mod tests {
                 message: "Wait.".into()
             }
         );
+    }
+
+    #[test]
+    fn an_old_last_error_is_read_once_as_the_save_or_the_notes_error() {
+        let old = |state: &str| {
+            let mut m: MeetingRecord = serde_json::from_value(json!({"eventId": "e",
+                "state": state, "lastError": {"code": "provider", "message": "Teams didn’t answer."}}))
+            .unwrap();
+            m.split_legacy_error();
+            m
+        };
+        // Before notes exist the field could only be a save's; a failed or ready meeting showed
+        // it as the notes run's.
+        for state in ["available", "downloaded"] {
+            let m = old(state);
+            assert_eq!(m.save_error.unwrap().code, "provider", "{state}");
+            assert!(m.notes_error.is_none() && m.last_error.is_none());
+        }
+        for state in ["ready", "failed"] {
+            let m = old(state);
+            assert_eq!(m.notes_error.unwrap().code, "provider", "{state}");
+            assert!(m.save_error.is_none() && m.last_error.is_none());
+        }
+        // Written again, the old field is gone.
+        let v = serde_json::to_value(old("failed")).unwrap();
+        assert!(v.get("lastError").is_none());
+        assert_eq!(v["notesError"]["code"], "provider");
+        // A record that has the new fields keeps them.
+        let mut both: MeetingRecord = serde_json::from_value(json!({"eventId": "e", "state": "ready",
+            "lastError": {"code": "x", "message": "x"}, "saveError": {"code": "offline", "message": "o"}}))
+        .unwrap();
+        both.split_legacy_error();
+        assert_eq!(both.save_error.unwrap().code, "offline");
+        assert!(both.notes_error.is_none());
     }
 }

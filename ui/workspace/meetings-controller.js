@@ -238,7 +238,10 @@ export function createMeetingsController({
       case 'permission_required':
         return toast('Connect needs your permission to read Teams transcripts.', 'error', connect ? { label: 'Turn on', run: () => transcriptsOn() } : null);
       case 'needs_login':
-        return toast(err.message || 'Sign in again to go on.', 'error', { label: 'Open Settings › Claude', run: () => route('settings', 'ai') });
+        // A meeting operation answers needs_login for the Microsoft account (target(),
+        // active_workspace); only an error that carries Claude's class is Claude's sign-in.
+        if (err.class === 'needs_login') return toast(err.message || 'Claude needs you to sign in again.', 'error', { label: 'Open Settings › Claude', run: () => route('settings', 'ai') });
+        return toast(err.message || 'Microsoft 365 needs you to sign in again.', 'error', { label: 'Sign in to Microsoft', run: () => (connect ? connect([]) : route('settings', 'microsoft')) });
       default:
         throw err;
     }
@@ -585,8 +588,10 @@ export function createMeetingsController({
       case 'meeting-goto-line': return gotoLine(id, el.dataset.t || null, el.dataset.line !== undefined && el.dataset.line !== '' ? Number(el.dataset.line) : null);
       case 'meeting-cancel':
         try {
+          const kind = (snap().jobs || []).find(j => j.id === el.dataset.id)?.kind;
           await mutate('job_cancel', { id: el.dataset.id });
-          toast('Stopped. Nothing in the folder changed.');
+          // A stopped save is not started again by the round (native keeps it on the meeting).
+          toast(kind === 'transcript_download' ? 'Stopped saving the transcript. Connect won’t try again by itself: use Try again when you want it.' : 'Stopped. Nothing in the folder changed.');
         } catch (err) {
           if (err?.code !== 'conflict') throw err;
         }

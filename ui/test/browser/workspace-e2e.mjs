@@ -265,6 +265,12 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       const job = s.jobs.find(j => j.id === d.id);
       if (job && !['queued', 'running', 'blocked'].includes(job.state)) fail('conflict', 'This job already completed.');
       if (job) job.state = 'cancelled';
+      // save.rs `note_save_stopped`: a stopped save of a meeting still in Teams is not started again by itself.
+      const stopped = job?.kind === 'transcript_download' && s.records.find(r => r.kind === 'meeting' && r.id === job.payload?.meetingId);
+      if (stopped && stopped.data.state === 'available') {
+        stopped.data.saveError = { code: 'cancelled', message: 'You stopped saving the transcript, so Connect won’t try again by itself.' };
+        stopped.revision = crypto.randomUUID();
+      }
       return { saved: true };
     },
     job_retry: () => ({ saved: true }),
@@ -469,7 +475,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     const ev = find('event', id);
     if (!ev) fail('not_found', 'This meeting is no longer in your calendar.');
     const ended = Date.parse(ev.data.end) <= Date.now();
-    m = { id, kind: 'meeting', source: ev.source, connectionId: s.connection.id, workspaceId: null, revision: crypto.randomUUID(), updatedAt: now(), data: { eventId: id, title: ev.data.title, start: ev.data.start, end: ev.data.end, state: !ev.data.joinUrl ? 'offline' : ended ? 'pending' : 'upcoming', transcriptIds: [], transcriptStart: null, folder: null, checkedAt: null, error: null, external: null, imported: null, speakers: {}, template: null, auto: null, docs: [], main: null, lastError: null, removedLines: [] } };
+    m = { id, kind: 'meeting', source: ev.source, connectionId: s.connection.id, workspaceId: null, revision: crypto.randomUUID(), updatedAt: now(), data: { eventId: id, title: ev.data.title, start: ev.data.start, end: ev.data.end, state: !ev.data.joinUrl ? 'offline' : ended ? 'pending' : 'upcoming', transcriptIds: [], transcriptStart: null, folder: null, checkedAt: null, error: null, external: null, imported: null, speakers: {}, template: null, auto: null, docs: [], main: null, saveError: null, notesError: null, pendingNotes: null, removedLines: [] } };
     s.records.push(m);
     return m;
   };
@@ -505,18 +511,24 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   const resolved = m => m.data.template || (s.records.filter(r => r.kind === 'meeting_rule' && r.data.on !== false).find(r => r.data.field === 'title' && m.data.title.toLowerCase().includes(String(r.data.value).toLowerCase()))?.data.template) || s.settings.meetings?.defaultTemplate || 'meeting-notes';
   function startSave(m, auto) {
     const j = job('transcript_download', auto ? `transcript_download:auto:${m.id}:1` : `transcript_download:${crypto.randomUUID()}`, { meetingId: m.id, title: m.data.title, auto });
-    setTimeout(() => { j.state = 'running'; update(); }, 150);
+    setTimeout(() => { if (j.state === 'queued') { j.state = 'running'; update(); } }, 150);
     setTimeout(() => {
+      // A stopped save changes nothing (native drops its future).
+      if (j.state === 'cancelled') return;
       if (window.__downloadPlan?.outcome === 'fail') {
         window.__downloadPlan = null;
-        m.data.lastError = { code: 'provider', message: 'Teams didn’t answer in time.' };
+        m.data.saveError = { code: 'provider', message: 'Teams didn’t answer in time.' };
         Object.assign(j, { state: 'failed', result: 'Teams didn’t answer in time.', errorCode: 'provider' });
       } else {
         writeFolder(m, folders[m.id]?.segments?.length ? folders[m.id].segments : sampleSegments(m.id));
         if (!saved(m.data.state)) m.data.state = 'downloaded';
-        m.data.lastError = null;
+        m.data.saveError = null;
         Object.assign(j, { state: 'succeeded', result: 'Transcript saved' });
-        if (m.data.auto && !m.data.docs.length) startNotes(m, { templateId: resolved(m), wishes: '', findTasks: true, auto: true });
+        // save.rs: notes asked for while the save failed come first, else the meeting's own.
+        const pending = m.data.pendingNotes;
+        m.data.pendingNotes = null;
+        if (pending) startNotes(m, { templateId: pending.templateId, wishes: pending.wishes, findTasks: pending.findTasks });
+        else if (m.data.auto && !m.data.docs.length) startNotes(m, { templateId: resolved(m), wishes: '', findTasks: true, auto: true });
       }
       touch(m);
       update();
@@ -534,7 +546,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     const finish = (result = plan) => {
       if (!['queued', 'running'].includes(j.state)) return;
       if (result.outcome === 'fail') {
-        m.data.lastError = { code: 'needs_login', message: 'Claude is not signed in.' };
+        m.data.notesError = { code: 'needs_login', message: 'Claude is not signed in.' };
         if (!m.data.docs.length) m.data.state = 'failed';
         Object.assign(j, { state: 'failed', result: 'Claude is not signed in.', errorClass: 'needs_login', errorCode: 'needs_login' });
       } else {
@@ -552,7 +564,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         }
         f.docs[doc.id] = text;
         writeFolder(m);
-        Object.assign(m.data, { state: 'ready', lastError: null });
+        Object.assign(m.data, { state: 'ready', notesError: null });
         if (d.findTasks !== false && !s.records.some(r => r.kind === 'commitment' && r.data.meetingId === m.id && r.data.line === 2)) {
           const seg = f.segments[Math.min(2, f.segments.length - 1)];
           s.records.push({ id: `task-${m.id}-2`, kind: 'commitment', source: 'local', connectionId: null, workspaceId: 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { text: 'Send the go/no-go summary', owner: seg?.address || null, ownerName: seg?.name || null, due: null, notes: null, meetingId: m.id, line: 2, quote: seg?.text || null, quoteAt: seg?.start ?? null, speaker: seg?.name || null, confidence: 'high', status: 'review', done: false, order: 500, createdAt: now(), history: [{ at: now(), text: `Found in the notes (${tpl.name})` }] } });
@@ -640,7 +652,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       const m = ensureMeeting(d.meetingId);
       const segments = parseVtt(d.text, m.id);
       if (!segments.length) fail('validation', 'Connect found no one speaking in this file. Use a Teams .vtt, or lines like “Name: what they said”.');
-      Object.assign(m.data, { imported: d.fileName.split(/[\\/]/).pop(), transcriptStart: null, state: m.data.docs.length ? 'ready' : 'downloaded', error: null, lastError: null });
+      Object.assign(m.data, { imported: d.fileName.split(/[\\/]/).pop(), transcriptStart: null, state: m.data.docs.length ? 'ready' : 'downloaded', error: null, saveError: null, pendingNotes: null });
       (folders[m.id] ||= { folder: `${MEETINGS_ROOT}/${folderName(m)}`, segments: [], files: [], texts: {}, docs: {} }).raw = d.text;
       writeFolder(m, segments);
       touch(m);

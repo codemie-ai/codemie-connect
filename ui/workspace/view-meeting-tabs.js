@@ -9,7 +9,7 @@ import { avatar, badge, button, card, emptyState, toggle } from './ui.js';
 import { agoLabel, durationLabel, formatTime } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { columnName, isMine, meOf, ownerOf, peopleFor, taskStatus } from './tasks-model.js';
-import { meetingTasks, peopleOf, resolveTemplate, ruleText, templatesOf } from './meetings-model.js';
+import { meetingErrors, meetingTasks, peopleOf, resolveTemplate, ruleText, templatesOf } from './meetings-model.js';
 
 export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const option = (value, label, selected) => `<option value="${e(value)}"${selected ? ' selected' : ''}>${e(label)}</option>`;
@@ -47,8 +47,16 @@ export function meetingContext(p, m) {
   const docs = Array.isArray(r.docs) ? r.docs : [];
   const tasks = p.tasksBy ? p.tasksBy.get(m.id) || [] : meetingTasks(p.s, m.id);
   const data = (p.reads && p.reads(m.id)) || {};
+  const errors = meetingErrors(r);
+  const pendingTpl = r.pendingNotes?.templateId ? templatesOf(p.s).find(t => t.id === r.pendingNotes.templateId) || null : null;
   return {
     m, d, r, docs, tasks, data,
+    // Why the last save from Teams failed, and why the last notes run did: each has its own way on.
+    saveError: errors.save, notesError: errors.notes,
+    // The template of the notes asked for while the save failed: made after the transcript.
+    pending: pendingTpl,
+    connected: p.s.connection?.status === 'connected',
+    paused: m.paused || null,
     tpl: resolveTemplate(m.ev, m.rec, p.s, p.rules),
     main: docs.find(x => x.id === r.main) || docs[0] || null,
     review: tasks.filter(t => taskStatus(t) === 'review'),
@@ -99,6 +107,12 @@ export function explainer(p, mc) {
   const id = { 'data-id': m.id };
   const box = (iconName, tone, body) => card({ className: 'ws-mtg-explain', body: `<div class="ws-mtg-explain-body"><span class="ws-mtg-explain-icon${tone ? ` ws-mtg-explain-${tone}` : ''}">${icon(iconName)}</span><div>${body}</div></div>` });
   const every = Number(p.s.settings.meetings?.checkEveryMin) || 10;
+  if (m.state === 'pending' && mc.paused) {
+    const why = PAUSED[mc.paused];
+    return box('info', 'warning', `<h3>${e(why.title)}</h3>
+      <p>The meeting ended at ${e(formatTime(d.end, p.zone))}. Connect doesn’t look for its transcript ${why.until}; Teams keeps it meanwhile. If you have the file, import it.</p>
+      <div class="ws-actions ws-mtg-explain-actions">${pausedFix(mc.paused)}${button('Import transcript file', { action: 'meeting-import', iconName: 'upload', attrs: id })}</div>`);
+  }
   if (m.state === 'pending') {
     return box('clock', '', `<h3>Teams is still preparing the transcript</h3>
       <p>The meeting ended at ${e(formatTime(d.end, p.zone))}. Teams usually needs 5–15 minutes. Connect checks every ${every} minutes for a day and saves the transcript here as soon as it appears.</p>
@@ -238,11 +252,12 @@ function docCard(p, mc, doc, { compare = false, side = 'left' } = {}) {
 export function notesTab(p, mc) {
   const { m, r, docs, run } = mc;
   const notesRun = run?.kind === 'meeting_notes' ? run : null;
-  if ((notesRun || run?.kind === 'transcript_download') && !docs.length) return card({ className: 'ws-mtg-busy-card', body: skeleton() });
+  const saving = run?.kind === 'transcript_download';
+  if ((notesRun || saving) && !docs.length) return card({ className: 'ws-mtg-busy-card', body: skeleton() });
   if (['pending', 'blocked', 'none', 'offline', 'upcoming'].includes(m.state)) return explainer(p, mc);
-  const failedBanner = !r.lastError || notesRun ? ''
-    : ['failed', 'ready'].includes(m.state) ? lastRunBanner(mc)
-      : m.state === 'available' ? `<div class="ws-banner ws-banner-warning ws-mtg-run-failed" role="status">${icon('alert')}<div><strong>Couldn’t get the transcript from Teams</strong><p>${e(r.lastError.message || '')} ${e(saveNextStep(r.lastError.code))} Make notes tries again first.</p></div><div class="ws-actions">${saveFix(mc, r.lastError.code)}</div></div>` : '';
+  // Each step's failure has its own banner and its own way on: a save's (also a Download again
+  // on saved notes) and a notes run's.
+  const failedBanner = `${saving || notesRun ? '' : saveBanner(mc)}${!notesRun && mc.notesError && ['failed', 'ready'].includes(m.state) ? lastRunBanner(mc) : ''}`;
   if (!docs.length) {
     const intro = m.state === 'available' ? 'Connect gets the transcript from Teams first, then writes the notes.' : mc.segments ? `${plural(mc.segments.length, 'line')} from ${plural(new Set(mc.segments.map(x => x.address || x.voice)).size, 'speaker')}, already in the meeting folder.` : 'The transcript is in the meeting folder.';
     return `${failedBanner}<form class="ws-card ws-mtg-make" data-form="meeting-notes" data-id="${e(m.id)}">
@@ -269,9 +284,39 @@ export function notesTab(p, mc) {
   return `${failedBanner}${bar}${docCard(p, mc, view)}`;
 }
 
+/** Why a found or awaited transcript waits (`mc.paused`, see meetingItems), in the words each
+ *  place uses, and the one button that ends the wait. */
+export const PAUSED = {
+  off: { status: 'Waiting: transcripts are off', line: 'Waiting: reading Teams transcripts is off', seg: 'waiting · transcripts are off', title: 'Reading Teams transcripts is off', until: 'until you turn reading transcripts on again', fix: ['Turn on', 'meeting-transcripts-on'] },
+  signin: { status: 'Waiting: sign in to Microsoft 365', line: 'Waiting: Microsoft 365 needs you to sign in again', seg: 'waiting · sign in to Microsoft 365', title: 'Microsoft 365 needs you to sign in again', until: 'until you sign in again', fix: ['Sign in again', 'graph-connect'] },
+};
+export const pausedFix = (paused, size) => button(PAUSED[paused].fix[0], { action: PAUSED[paused].fix[1], variant: 'primary', size });
+
+/** A transcript found or waited for that nothing can get now: why, and the way on. */
+function pausedBanner(mc) {
+  const why = PAUSED[mc.paused];
+  const found = mc.m.state === 'available';
+  return `<div class="ws-banner ws-banner-warning ws-mtg-paused" role="status">${icon('info')}<div><strong>${e(why.title)}</strong><p>${found ? 'Connect found this transcript in Teams but can’t save it' : 'Connect doesn’t look for this transcript'} ${why.until}. Nothing is lost meanwhile.</p></div><div class="ws-actions">${pausedFix(mc.paused)}</div></div>`;
+}
+
+/** The last save from Teams failed, or the person stopped it: why, and the way on. On saved
+ *  notes it was a Download again, which changed nothing. */
+function saveBanner(mc) {
+  const { m } = mc;
+  if (m.state === 'available' && mc.paused) return pausedBanner(mc);
+  const err = mc.saveError;
+  if (!err) return '';
+  const stopped = err.code === 'cancelled';
+  const title = stopped ? 'Saving the transcript stopped' : mc.saved ? 'Download again didn’t work' : 'Couldn’t get the transcript from Teams';
+  // Only a transcript still in Teams is tried again by itself; Download again is the person's.
+  const next = mc.saved && saveFixAction(mc, err.code)[1] === 'meeting-download' ? 'Try again in a moment.' : saveNextStep(err.code, mc);
+  const after = mc.saved ? 'Your transcript and notes are as they were.' : mc.pending ? `${mc.pending.name} is made as soon as it’s saved.` : 'Make notes tries again first.';
+  return `<div class="ws-banner ws-banner-warning ws-mtg-run-failed" role="status">${icon('alert')}<div><strong>${e(title)}</strong><p>${[err.message || '', next, after].filter(Boolean).map(e).join(' ')}</p></div><div class="ws-actions">${saveFix(mc, err.code)}</div></div>`;
+}
+
 /** The last notes run failed: why, and the way on (sign in again, Try again). */
 function lastRunBanner(mc) {
-  const err = mc.r.lastError || {};
+  const err = mc.notesError || {};
   const login = err.code === 'needs_login';
   const choice = err.code === 'needs_choice';
   return `<div class="ws-banner ws-banner-warning ws-mtg-run-failed" role="status">${icon('alert')}<div><strong>${mc.docs.length ? 'The last notes run didn’t finish' : 'The notes weren’t written'}</strong><p>${e(err.message || 'Claude stopped before the notes were ready.')} ${mc.docs.length ? 'Your documents are as they were.' : 'Nothing was lost — the transcript is in the folder, and the run log is in Files.'}</p></div><div class="ws-actions">${login || choice ? button(login ? 'Sign in again' : 'Choose Claude', { action: 'ai-open-settings', variant: 'ghost' }) : ''}${button('Try again', { action: 'meeting-retry', variant: 'primary', iconName: 'refresh', attrs: { 'data-id': mc.m.id } })}</div></div>`;
@@ -325,8 +370,10 @@ function transcriptMissing(p, mc) {
   const { m, r } = mc;
   if (['pending', 'blocked', 'none', 'offline', 'upcoming'].includes(m.state)) return explainer(p, mc);
   if (m.state === 'available') {
-    const err = r.lastError;
-    return card({ body: emptyState({ iconName: 'transcript', title: err ? 'Couldn’t get the transcript from Teams' : 'Saving the transcript from Teams', text: err ? `${err.message || ''} ${saveNextStep(err.code)}`.trim() : 'It shows here in a moment, with a copy in the meeting folder.', actions: err ? saveFix(mc, err.code) : '' }) });
+    if (mc.paused) return pausedBanner(mc);
+    const err = mc.saveError;
+    const title = !err ? 'Saving the transcript from Teams' : err.code === 'cancelled' ? 'Saving the transcript stopped' : 'Couldn’t get the transcript from Teams';
+    return card({ body: emptyState({ iconName: 'transcript', title, text: err ? `${err.message || ''} ${saveNextStep(err.code, mc)}`.trim() : 'It shows here in a moment, with a copy in the meeting folder.', actions: err ? saveFix(mc, err.code) : '' }) });
   }
   const read = mc.data.transcript;
   if (read?.error) return folderGone(mc, read.error);
@@ -334,20 +381,33 @@ function transcriptMissing(p, mc) {
 }
 
 const SAVE_NEXT = {
-  folder_unwritable: 'Choose the meetings folder again in Settings.',
-  needs_login: 'Sign in to Microsoft 365 again, then try again.',
+  folder_unwritable: 'Choose the meetings folder again in Settings › Meetings.',
   throttled: 'Connect tries again by itself in a few minutes.',
   offline: 'Connect tries again by itself once it is online.',
   provider: 'Connect tries again by itself in a few minutes.',
   transcript_missing: 'Teams no longer has it. Import the file instead.',
 };
-export const saveNextStep = code => SAVE_NEXT[code] || '';
+/** What happens next after a failed save, in words that match its button (`saveFix`). A
+ *  Microsoft sign-in depends on the account: signed out, sign in; signed in again, the round
+ *  tries by itself (`mc.connected`). */
+export function saveNextStep(code, mc = {}) {
+  if (code === 'needs_login') return mc.connected ? 'You’re signed in again: Connect tries again by itself in a few minutes.' : 'Sign in to Microsoft 365 again: Connect then tries again by itself.';
+  return SAVE_NEXT[code] || '';
+}
 
-/** What a failed save offers: sign in again, or Try again. */
+/** The one button that fixes a failed save, or the step it waits on (`[label, action, attrs]`). */
+export function saveFixAction(mc, code) {
+  if (code === 'needs_login' && !mc.connected) return ['Sign in again', 'graph-connect', {}];
+  if (code === 'folder_unwritable') return ['Open Settings › Meetings', 'settings-tab', { 'data-tab': 'meetings-transcripts' }];
+  if (code === 'transcript_missing') return ['Import transcript file', 'meeting-import', { 'data-id': mc.m.id }];
+  return ['Try again', 'meeting-download', { 'data-id': mc.m.id }];
+}
+
+/** What a failed save offers: sign in again, choose the folder again, import, or Try again. */
 export function saveFix(mc, code) {
-  if (code === 'needs_login') return button('Sign in again', { action: 'graph-connect', variant: 'primary' });
-  if (code === 'transcript_missing') return button('Import transcript file', { action: 'meeting-import', variant: 'primary', iconName: 'upload', attrs: { 'data-id': mc.m.id } });
-  return button('Try again', { action: 'meeting-download', variant: 'primary', iconName: 'refresh', attrs: { 'data-id': mc.m.id } });
+  const [label, action, attrs] = saveFixAction(mc, code);
+  const iconName = { 'meeting-import': 'upload', 'settings-tab': 'settings', 'meeting-download': 'refresh' }[action];
+  return button(label, { action, variant: 'primary', iconName, attrs });
 }
 
 function folderGone(mc, error) {
@@ -492,7 +552,7 @@ const fileIcon = n => (n.endsWith('.json') ? 'file-code' : n.endsWith('.md') ? '
 export function filesTab(p, mc) {
   const { m, r } = mc;
   if (!r.folder) {
-    return explainer(p, mc) || card({ body: emptyState({ iconName: 'folder', title: 'No folder yet', text: 'Connect creates the meeting’s folder in your meetings folder as soon as it has the transcript.', actions: m.state === 'available' && r.lastError ? saveFix(mc, r.lastError.code) : '' }) });
+    return explainer(p, mc) || card({ body: emptyState({ iconName: 'folder', title: 'No folder yet', text: 'Connect creates the meeting’s folder in your meetings folder as soon as it has the transcript.', actions: m.state === 'available' && mc.saveError && !mc.paused ? saveFix(mc, mc.saveError.code) : '' }) });
   }
   const read = mc.data.files;
   if (read?.error) return folderGone(mc, read.error);

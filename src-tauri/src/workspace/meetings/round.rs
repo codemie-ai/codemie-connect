@@ -28,9 +28,10 @@ pub(super) const CHECK_AFTER: i64 = 10 * 60;
 pub(super) const ROUND_LIMIT: usize = 25;
 
 /// A save that failed with one of these is tried again by the round in its next slot, within
-/// the check window; the rest (`folder_unwritable`, `needs_login`, `transcript_missing`, …) wait
-/// for the person.
-pub(super) const RETRYABLE: [&str; 3] = ["throttled", "offline", "provider"];
+/// the check window: they pass by themselves, and `needs_login` passes once the person signs in
+/// again (the round runs only while the account is connected). The rest (`folder_unwritable`,
+/// `transcript_missing`, a save the person stopped, …) wait for the person.
+pub(super) const RETRYABLE: [&str; 4] = ["throttled", "offline", "provider", "needs_login"];
 
 /// An ended Teams meeting worth asking Teams about: not declined, cancelled or all-day, with a
 /// join link, ended at least 10 minutes and less than a day ago.
@@ -50,10 +51,10 @@ pub(super) fn checkable(event: &Record, now: i64) -> bool {
 }
 
 /// Whether the round may still try a failed save again: its last error is one that passes
-/// (`throttled`, `offline`, `provider`) and the meeting is within the check window (a day
-/// after it ended). After that only Try again / Download again run it.
+/// ([`RETRYABLE`]) and the meeting is within the check window (a day after it ended). After
+/// that only Try again / Download again run it.
 pub(super) fn retry_due(m: &MeetingRecord, now: i64) -> bool {
-    let Some(e) = &m.last_error else {
+    let Some(e) = &m.save_error else {
         return true;
     };
     let end = graph::timestamp(&m.end);
