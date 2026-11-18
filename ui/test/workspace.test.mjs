@@ -20,9 +20,9 @@ import { controlSelector, soleMatch } from '../workspace/ui.js';
 import { tasksPage } from '../workspace/view-tasks.js';
 import { createTasksController } from '../workspace/tasks-controller.js';
 import { newTasksView } from '../workspace/tasks-model.js';
-import { meetings } from '../workspace/view-meetings.js';
+import { meetings, makeNotesBody } from '../workspace/view-meetings.js';
 import { createMeetingsController } from '../workspace/meetings-controller.js';
-import { newMeetingsView } from '../workspace/meetings-model.js';
+import { meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
 import { active } from '../workspace/selectors.js';
 import { buildSnapshot, withTasks, withMeetings, meetingFolders, meetingContract } from './fixtures/workspace-fixture.mjs';
 import { readFileSync } from 'node:fs';
@@ -851,6 +851,25 @@ test('no Download button: available reads "Saving the transcript", a failed save
 });
 
 const meetingData = (s, id) => s.records.find(r => r.kind === 'meeting' && r.id === id).data;
+
+test('the Notes tab’s Make notes form renders what the view state keeps, so a refresh never resets it', () => {
+  const s = meetingsSnapshot();
+  const notes = view => detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap', tab: 'notes', ...view })));
+  const radio = (html, id) => html.match(new RegExp(`<input type="radio" name="template" value="${id}"[^>]*>`))?.[0] || '';
+  // Nothing chosen yet: the meeting's template, tasks on, nothing typed; fields say which meeting.
+  let html = notes({});
+  assert.match(radio(html, 'meeting-notes'), / checked/);
+  assert.match(html, /<textarea[^>]*name="wishes"[^>]*data-make="mtg-roadmap"[^>]*><\/textarea>/);
+  // Chosen and typed: rendered back as they were.
+  html = notes({ makeForm: { 'mtg-roadmap': { templateId: 'short-summary', wishes: 'Only <the> decisions', findTasks: false, remember: true } } });
+  assert.doesNotMatch(radio(html, 'meeting-notes'), / checked/);
+  assert.match(radio(html, 'short-summary'), / checked/);
+  assert.match(html, /name="wishes"[^>]*>Only &lt;the&gt; decisions<\/textarea>/);
+  assert.match(html, /<input type="checkbox" name="findTasks"(?![^>]* checked)[^>]*>/);
+  assert.match(html, /<input type="checkbox" name="remember"[^>]* checked/);
+  // The dialog keeps its own fields (a dialog blocks renders).
+  assert.doesNotMatch(makeNotesBody(s, meetingItems(s, MEET_NOW).find(m => m.id === 'mtg-roadmap'), { now: MEET_NOW }), /data-make=/);
+});
 
 test('save and notes errors show apart: a failed Download again on saved notes, the notes banner only for a notes run', () => {
   const s = meetingsSnapshot();

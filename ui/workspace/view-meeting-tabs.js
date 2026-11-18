@@ -151,31 +151,37 @@ export function explainer(p, mc) {
 
 /** The Make notes form (dialog and Notes tab): the template (the meeting's choice first; with
  *  documents already, the first template without one is picked), what to focus on, tasks,
- *  remembering the choice, and where the result goes. */
-export function makeNotesForm(p, mc) {
+ *  remembering the choice, and where the result goes. On the Notes tab (`kept`, the view
+ *  state's `makeForm[meetingId]`) it shows what was chosen and typed, and its fields carry
+ *  `data-make` so each change is kept there: a background render never resets it. */
+export function makeNotesForm(p, mc, { kept = null, tab = false } = {}) {
   const all = templatesOf(p.s);
   const current = mc.tpl.template;
   const has = new Map(mc.docs.map(doc => [doc.template || doc.id, doc]));
-  const pick = mc.docs.length ? (all.find(t => !has.has(t.id) && t.kind !== 'skill') || all.find(t => !has.has(t.id)) || current) : current;
+  const first = mc.docs.length ? (all.find(t => !has.has(t.id) && t.kind !== 'skill') || all.find(t => !has.has(t.id)) || current) : current;
+  const pick = all.find(t => t.id === kept?.templateId) || first;
+  const make = tab ? ` data-make="${e(mc.m.id)}"` : '';
+  const findTasks = kept?.findTasks ?? true;
+  const remembered = kept?.remember ?? false;
   const ordered = [current, ...all.filter(t => t.id !== current.id)];
   const options = ordered.map(t => {
     const doc = has.get(t.id);
     const tag = doc ? `<em class="ws-tpl-tag ws-tpl-has-doc">Made · adds version ${Math.max(Number(doc.version) || 1, ...(doc.versions || []).map(v => Number(v.version) || 0)) + 1}</em>`
       : t.id === current.id ? `<em class="ws-tpl-tag">${mc.tpl.why === 'meeting' ? 'Chosen' : mc.tpl.why === 'rule' ? 'From rule' : 'Default'}</em>` : '';
     const kind = t.kind === 'skill' ? badge('Skill', 'purple', 'skill') : t.kind === 'custom' ? badge('Yours', 'info') : '';
-    return `<label class="ws-tpl-option" style="--tpl:${tplColor(t)}"><input type="radio" name="template" value="${e(t.id)}"${t.id === pick.id ? ' checked' : ''}><span class="ws-tpl-icon">${icon(tplIcon(t))}</span><span class="ws-tpl-copy"><strong><span>${e(t.name)}</span>${tag}${kind}</strong>${t.blurb ? `<small>${e(t.blurb)}</small>` : ''}</span></label>`;
+    return `<label class="ws-tpl-option" style="--tpl:${tplColor(t)}"><input type="radio" name="template" value="${e(t.id)}"${t.id === pick.id ? ' checked' : ''}${make}><span class="ws-tpl-icon">${icon(tplIcon(t))}</span><span class="ws-tpl-copy"><strong><span>${e(t.name)}</span>${tag}${kind}</strong>${t.blurb ? `<small>${e(t.blurb)}</small>` : ''}</span></label>`;
   }).join('');
   const review = p.s.settings.meetings?.review !== false;
   const n = mc.docs.length;
   const keep = n ? `<p class="ws-mtg-keep">${icon('check-circle')}<span>Your ${n > 1 ? `${n} documents stay as they are` : `<strong>${e(mc.docs[0].name)}</strong> stays as it is`}. Another template adds a document next to ${n > 1 ? 'them' : 'it'}; the same template adds a new version.</span></p>` : '';
   const folder = folderName(mc);
-  const remember = n ? '' : `<label class="ws-check"><input type="checkbox" name="remember"${mc.tpl.why === 'rule' ? ' disabled' : ''}><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>Always use this template for “${e(mc.d.title || mc.m.title)}”</span><small>${mc.tpl.why === 'rule' ? e(mc.tpl.reason) : 'Adds a rule to your automatic rules.'}</small></span></label>`;
+  const remember = n ? '' : `<label class="ws-check"><input type="checkbox" name="remember"${mc.tpl.why === 'rule' ? ' disabled' : remembered ? ' checked' : ''}${make}><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>Always use this template for “${e(mc.d.title || mc.m.title)}”</span><small>${mc.tpl.why === 'rule' ? e(mc.tpl.reason) : 'Adds a rule to your automatic rules.'}</small></span></label>`;
   return `${keep}<div class="ws-mtg-form-grid">
     <fieldset class="ws-tpl-options"><legend class="ws-field-label">Template</legend>${options}<button type="button" class="ws-link ws-mtg-linkbtn ws-tpl-more" data-action="settings-tab" data-tab="meetings-templates">${icon('plus')}<span>Write your own or add a skill</span></button></fieldset>
     <div class="ws-mtg-form-side">
-      <label class="ws-field"><span class="ws-field-label">Anything to focus on? <small class="ws-muted">optional</small></span><textarea class="ws-textarea" name="wishes" rows="3" maxlength="1000" placeholder="e.g. Focus on the pilot plan. Keep it short."></textarea><small class="ws-field-hint">Added to the template’s instructions for this run only.</small></label>
+      <label class="ws-field"><span class="ws-field-label">Anything to focus on? <small class="ws-muted">optional</small></span><textarea class="ws-textarea" name="wishes" rows="3" maxlength="1000" placeholder="e.g. Focus on the pilot plan. Keep it short."${make}>${e(kept?.wishes || '')}</textarea><small class="ws-field-hint">Added to the template’s instructions for this run only.</small></label>
       <div class="ws-mtg-form-checks">
-        <label class="ws-check"><input type="checkbox" name="findTasks" checked><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>Find tasks and owners</span><small>${review ? 'New ones land in To review; ones already found are kept.' : 'They go straight to To do; ones already found are kept.'}</small></span></label>
+        <label class="ws-check"><input type="checkbox" name="findTasks"${findTasks ? ' checked' : ''}${make}><span class="ws-check-box" aria-hidden="true">${icon('check')}</span><span class="ws-check-text"><span>Find tasks and owners</span><small>${review ? 'New ones land in To review; ones already found are kept.' : 'They go straight to To do; ones already found are kept.'}</small></span></label>
         ${remember}
       </div>
       <p class="ws-mtg-privacy">${icon('shield')}<span>The transcript goes only to the Claude chosen for Meeting notes in <button type="button" class="ws-link ws-mtg-linkbtn" data-action="ai-open-settings">Settings › Claude</button>.${folder ? ` Everything is saved in <code>${e(folder)}</code>.` : ' Everything is saved in the meeting’s folder.'}</span></p>
@@ -262,7 +268,7 @@ export function notesTab(p, mc) {
     const intro = m.state === 'available' ? 'Connect gets the transcript from Teams first, then writes the notes.' : mc.segments ? `${plural(mc.segments.length, 'line')} from ${plural(new Set(mc.segments.map(x => x.address || x.voice)).size, 'speaker')}, already in the meeting folder.` : 'The transcript is in the meeting folder.';
     return `${failedBanner}<form class="ws-card ws-mtg-make" data-form="meeting-notes" data-id="${e(m.id)}">
       <header class="ws-card-header"><div class="ws-mtg-card-head"><h2 class="ws-card-title"><span class="ws-card-icon">${icon('sparkles')}</span>Make notes from this transcript</h2><p>${e(intro)}</p></div></header>
-      <div class="ws-card-body">${makeNotesForm(p, mc)}</div>
+      <div class="ws-card-body">${makeNotesForm(p, mc, { kept: p.v.makeForm?.[m.id] || null, tab: true })}</div>
       <footer class="ws-card-footer ws-mtg-make-foot"><span class="ws-spacer"></span>${button('Make notes', { type: 'submit', variant: 'magic', iconName: 'sparkles', size: 'lg' })}</footer>
     </form>`;
   }

@@ -166,6 +166,7 @@ export function createMeetingsController({
     }
     const view = v();
     const same = view.selected === id;
+    if (!same) leave(view.selected);
     Object.assign(view, laneFor(m, view.filter, view.showNone), {
       q: '', selected: id,
       tab: TABS.includes(tab) ? tab : same ? view.tab : 'notes',
@@ -179,7 +180,10 @@ export function createMeetingsController({
 
   async function select(id) {
     const view = v();
-    if (view.selected !== id) Object.assign(view, { selected: id, tq: '', speaker: '', focusLine: null, peopleAll: null });
+    if (view.selected !== id) {
+      leave(view.selected);
+      Object.assign(view, { selected: id, tq: '', speaker: '', focusLine: null, peopleAll: null });
+    }
     await rerender();
   }
 
@@ -501,7 +505,10 @@ export function createMeetingsController({
       case 'meeting-filter': {
         view.filter = el.dataset.filter || 'all';
         const rows = meetingRows(snap(), view.filter, view.q, view.showNone, now());
-        if (!rows.some(m => m.id === view.selected)) view.selected = rows[0]?.id || null;
+        if (!rows.some(m => m.id === view.selected)) {
+          leave(view.selected);
+          view.selected = rows[0]?.id || null;
+        }
         return rerender();
       }
       case 'meeting-show-none': view.showNone = !!el.checked; return render();
@@ -679,23 +686,43 @@ export function createMeetingsController({
     }
   }
 
-  /** Fields typed into: the document editor keeps its draft in the view state. */
+  /** Fields typed into: the document editor keeps its draft in the view state, and the Notes
+   *  tab's Make notes form (`data-make`) what was chosen and typed, so a render keeps them. */
   function input(el) {
     if (el?.id === 'meeting-doc-editor' && v().editing) {
       v().editing.draft = el.value;
       return true;
     }
-    return false;
+    const id = el?.dataset?.make;
+    if (!id) return false;
+    const view = v();
+    if (!view.makeForm) view.makeForm = {};
+    const kept = view.makeForm[id] || (view.makeForm[id] = {});
+    if (el.name === 'template') {
+      if (el.checked) kept.templateId = el.value;
+    } else if (el.name === 'wishes') kept.wishes = String(el.value ?? '');
+    else if (el.name === 'findTasks' || el.name === 'remember') kept[el.name] = !!el.checked;
+    return true;
+  }
+
+  /** The person left a meeting: its unsent Make notes form starts afresh next time. */
+  function leave(id) {
+    if (id && v().makeForm) delete v().makeForm[id];
   }
 
   /** Forms: the Notes tab's Make notes and a task added from the Tasks tab. */
   async function submit(form, f) {
     const id = form.dataset.id;
     if (form.dataset.form === 'meeting-notes') {
-      const options = formOptions(f);
+      // What the view state kept wins over the form's fields (a render may have rebuilt them).
+      const kept = v().makeForm?.[id] || {};
+      const options = { ...formOptions(f), ...kept };
       const queued = await guarded(id, () => makeNotes(id, options));
       const name = (snap().noteTemplates || []).find(t => t.id === options.templateId)?.name || 'notes';
-      if (queued) toast(`Making ${name} for “${titleOf(id)}”`, 'success');
+      if (queued) {
+        leave(id);
+        toast(`Making ${name} for “${titleOf(id)}”`, 'success');
+      }
       return undefined;
     }
     if (form.dataset.form === 'meeting-task') return addTask(id, f);

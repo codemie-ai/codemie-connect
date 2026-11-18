@@ -232,3 +232,30 @@ function harnessWithConnect(connected, answers) {
   });
   return { ctl, calls };
 }
+
+test('the Notes tab’s Make notes form keeps what was chosen and typed in the view state until it is sent or the meeting is left', async () => {
+  const { ctl, state, calls } = harness({ view: { selected: 'mtg-roadmap', tab: 'notes' } });
+  const field = (name, extra) => ({ dataset: { make: 'mtg-roadmap' }, name, closest: () => null, ...extra });
+  assert.equal(ctl.input(field('template', { type: 'radio', checked: true, value: 'short-summary' })), true);
+  ctl.input(field('wishes', { type: 'textarea', value: 'Only the decisions' }));
+  ctl.input(field('findTasks', { type: 'checkbox', checked: false }));
+  ctl.input(field('remember', { type: 'checkbox', checked: true }));
+  assert.deepEqual(state.meetings.makeForm['mtg-roadmap'], { templateId: 'short-summary', wishes: 'Only the decisions', findTasks: false, remember: true });
+  // An unchecked radio (the one left) changes nothing.
+  ctl.input(field('template', { type: 'radio', checked: false, value: 'meeting-notes' }));
+  assert.equal(state.meetings.makeForm['mtg-roadmap'].templateId, 'short-summary');
+  // Sent: queued with those choices, and the form starts afresh next time.
+  const f = form({ template: 'short-summary', wishes: 'Only the decisions', remember: 'on' });
+  await ctl.submit({ dataset: { form: 'meeting-notes', id: 'mtg-roadmap' } }, f);
+  assert.deepEqual(calls.mutate.at(-1), ['meeting_notes', { meetingId: 'mtg-roadmap', templateId: 'short-summary', wishes: 'Only the decisions', findTasks: false, remember: true }]);
+  assert.equal(state.meetings.makeForm['mtg-roadmap'], undefined);
+  // Left for another meeting: forgotten.
+  ctl.input(field('wishes', { type: 'textarea', value: 'Draft' }));
+  await ctl.handle('meeting-select', control({ id: 'mtg-release' }));
+  assert.equal(state.meetings.makeForm['mtg-roadmap'], undefined);
+  // A refused send keeps them to try again.
+  const refused = harness({ view: { selected: 'mtg-roadmap', tab: 'notes' }, answers: { meeting_notes: failure('folder_missing') } });
+  refused.ctl.input({ dataset: { make: 'mtg-roadmap' }, name: 'wishes', type: 'textarea', value: 'Keep me', closest: () => null });
+  await refused.ctl.submit({ dataset: { form: 'meeting-notes', id: 'mtg-roadmap' } }, form({ template: 'meeting-notes', wishes: 'Keep me', findTasks: 'on' }));
+  assert.equal(refused.state.meetings.makeForm['mtg-roadmap'].wishes, 'Keep me');
+});

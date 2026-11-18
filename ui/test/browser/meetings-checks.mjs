@@ -283,8 +283,33 @@ export async function meetingChecks({ open, check, assert, shot, OUT }) {
         await shot(page, `${tag}-meetings-redownload-failed`);
         // Its Try again downloads it again: the banner goes, the notes stay.
         await page.click('.ws-mtg-run-failed [data-action="meeting-download"]');
-        await page.waitForFunction(() => !document.querySelector('.ws-mtg-run-failed'), null, { timeout: 8000 });
+        await page.waitForFunction(() => !document.querySelector('.ws-mtg-run-failed, .ws-mtg-strip-run'), null, { timeout: 8000 });
         assert(await page.locator('.ws-mtg-doctab[data-doc="meeting-notes"]').count() === 1, 'the notes stay');
+      });
+
+      await check(`${tag}: the Notes tab’s Make notes form keeps a template and wishes through a refresh`, async () => {
+        const make = 'form[data-form="meeting-notes"][data-id="mtg-vendor"]';
+        await select(page, 'mtg-vendor', 'all');
+        await page.waitForSelector(make);
+        await page.click(`${make} label.ws-tpl-option:has(input[value="short-summary"])`);
+        await page.fill(`${make} textarea[name="wishes"]`, 'Only the decisions, please');
+        await page.click(`${make} label.ws-check:has(input[name="findTasks"])`);
+        // Focus leaves the fields, then the store refreshes and the page renders again.
+        await page.click(`${make} .ws-card-title`);
+        const before = await page.$(make);
+        await page.evaluate(() => window.__refresh());
+        await page.waitForFunction(old => { const now = document.querySelector('form[data-form="meeting-notes"][data-id="mtg-vendor"]'); return now && now !== old; }, before);
+        assert(await page.isChecked(`${make} input[value="short-summary"]`), 'the template is kept');
+        assert(await page.inputValue(`${make} textarea[name="wishes"]`) === 'Only the decisions, please', 'the wishes are kept');
+        assert(!await page.isChecked(`${make} input[name="findTasks"]`), 'Find tasks is kept');
+        await noOverflow(page, 'the Make notes form');
+        const sends = (await calls(page, 'meeting_notes')).length;
+        await page.evaluate(() => { window.__notesPlan = { outcome: 'ok', stepMs: 200 }; });
+        await page.click(`${make} button[type=submit]`);
+        await page.waitForFunction(n => window.__bridgeCalls.filter(([o]) => o === 'meeting_notes').length > n, sends);
+        const sent = await lastCall(page, 'meeting_notes');
+        assert(sent.meetingId === 'mtg-vendor' && sent.templateId === 'short-summary' && sent.wishes === 'Only the decisions, please' && sent.findTasks === false, JSON.stringify(sent));
+        await page.waitForSelector(`${row('mtg-vendor')} .ws-tone-success`, { timeout: 8000 });
       });
 
       await check(`${tag}: Today card → meeting`, async () => {

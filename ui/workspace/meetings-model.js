@@ -57,6 +57,9 @@ export const newMeetingsView = ({ wide = false } = {}) => ({
   // shown per meeting, the second one in Side by side, an earlier version being read, the
   // transcript's search and speaker filter, and the meeting whose whole guest list is shown.
   editing: null, docView: {}, compareWith: {}, version: {}, tq: '', speaker: '', peopleAll: null,
+  // The Notes tab's Make notes form by meeting id ({templateId, wishes, findTasks, remember}, each
+  // only once changed), so a background render shows what was chosen and typed.
+  makeForm: {},
 });
 
 const dataOf = x => (x && typeof x === 'object' && 'data' in x ? x.data : x) || null;
