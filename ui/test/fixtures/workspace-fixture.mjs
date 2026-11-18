@@ -60,6 +60,8 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
     title, start: iso(startMs), end: iso(endMs), allDay: false, cancelled: false, calendarId: cal,
     location: '', organizer: people.jordan, attendees: [], url: 'https://outlook.office.com/calendar/item/fixture',
     joinUrl: null, preview: '', showAs: 'busy', response: 'accepted', isOrganizer: false, categories: [], importance: 'normal', private: false, ...data,
+    // As Graph says it: a Teams meeting is an online meeting (normalize_event, `isOnlineMeeting`).
+    isOnlineMeeting: data.isOnlineMeeting ?? !!data.joinUrl,
   });
   const allDay = (id, cal, title, dayMs, days = 1) => record(id, 'event', `calendar:${cal}`, {
     title, start: `${dateOnly(dayMs)}T00:00:00Z`, end: `${dateOnly(dayMs + days * 86_400_000)}T00:00:00Z`, startDate: dateOnly(dayMs), endDate: dateOnly(dayMs + days * 86_400_000),
@@ -304,6 +306,236 @@ export function withTasks(snapshot, nowMs = Date.now()) {
   snapshot.records.push(...extra, ...tasks);
   return snapshot;
 }
+
+// ---------------------------------------------------------------- meetings (Task 4)
+// Meeting records as native keeps them (meeting-records.json, meeting-ready.json) on events
+// relative to `nowMs`, a running notes job (meeting-notes-job.json) shape, and what
+// `meeting_read` answers for their folders (meeting-transcript.json, meeting-files.json shapes).
+
+export const meetingContract = () => ({
+  records: contract('meeting-records'), ready: contract('meeting-ready'), job: contract('meeting-notes-job'),
+  transcript: contract('meeting-transcript'), files: contract('meeting-files'), rules: contract('meeting-rules-cases'),
+});
+
+export const MEETINGS_ROOT = '/Users/taylor/CodeMie Connect/Meetings';
+const P = {
+  me: { name: 'Taylor Morgan', address: 'taylor.morgan@example.test' },
+  jordan: { name: 'Jordan Lee', address: 'jordan.lee@example.test' },
+  priya: { name: 'Priya Natarajan', address: 'priya.n@example.test' },
+  sam: { name: 'Sam Okafor', address: 'sam.okafor@example.test' },
+  elena: { name: 'Elena Varga', address: 'elena.varga@example.test' },
+  jeroen: { name: 'Jeroen de Vries', address: 'jeroen.devries@philips.test' },
+  anouk: { name: 'Anouk Bakker', address: 'anouk.bakker@philips.test' },
+  hannah: { name: 'Hannah Lee', address: 'hannah.lee@northwind.test' },
+};
+const isoOf = ms => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/** The fixture's meetings: id, title, start, minutes, organizer, attendees, record state (null:
+ *  no record), and what else the record holds. */
+function meetingPlan(nowMs) {
+  const hour = 3_600_000;
+  const day = 24 * hour;
+  const top = Math.floor(nowMs / hour) * hour;
+  return [
+    { id: 'mtg-philips', title: 'Philips CodeMie conversations syncup', start: top - 2 * day - 2 * hour, minutes: 60, organizer: P.jeroen, people: [P.anouk, P.me, P.priya, P.sam, P.jordan], state: 'ready' },
+    { id: 'mtg-roadmap', title: 'Roadmap review', start: top - day - hour, minutes: 60, organizer: P.jordan, people: [P.priya, P.me], state: 'downloaded' },
+    { id: 'mtg-release', title: 'Release 2.4 go/no-go', start: top - 2 * hour, minutes: 45, organizer: P.sam, people: [P.elena, P.me], state: 'available' },
+    { id: 'mtg-vendor', title: 'Vendor onboarding', start: top - 3 * hour, minutes: 30, organizer: P.elena, people: [P.me, P.jordan], state: 'available', lastError: { code: 'provider', message: 'Teams didn’t answer in time.' } },
+    { id: 'mtg-sprint', title: 'Sprint 25 planning', start: nowMs - 80 * 60_000, minutes: 60, organizer: P.priya, people: [P.me, P.jordan, P.sam, P.elena], state: 'pending' },
+    { id: 'mtg-northwind', title: 'Northwind partnership call', start: top - 5 * hour, minutes: 60, organizer: P.hannah, people: [P.me, P.jordan], state: 'blocked' },
+    { id: 'mtg-critique', title: 'Design critique: Tasks board', start: top - day - 4 * hour, minutes: 45, organizer: P.elena, people: [P.me, P.sam], state: 'failed' },
+    { id: 'mtg-planning', title: 'Quarterly planning', start: top - 3 * day - hour, minutes: 60, organizer: P.jordan, people: [P.me, P.priya], state: 'none' },
+    { id: 'mtg-lunch', title: 'Team lunch', start: top - day + hour, minutes: 60, organizer: P.me, people: [P.jordan, P.priya], state: null, inPerson: true },
+  ];
+}
+
+/** Lines of the fixture transcripts (segments.json as `meeting_read {part:"transcript"}` answers):
+ *  [seconds, person or voice, text]. Line 4 of the Philips sync is a guest Teams couldn't name. */
+const LINES = {
+  'mtg-philips': [
+    [0, P.jeroen, 'Welcome to the sync. Today: the export, retention and the January pilot.'],
+    [14, P.me, 'Thanks. The export demo is ready on staging.'],
+    [38, P.anouk, 'For the audit we need every tool output by id. Is that doable?'],
+    [60, P.me, 'Yes. I’ll add the by-id endpoint in sprint 24.'],
+    [92, '@1', 'Can I join late next time? I am the legal contact.'],
+    [130, P.jeroen, 'Legal wants ninety days of retention, except anything on legal hold.'],
+    [175, P.priya, 'I’ll send Legal the written requirement by Friday.'],
+    [210, P.jeroen, 'Then the pilot: forty users in January. Code me will host it.'],
+    [262, P.sam, 'I’ll prepare the pilot user list.'],
+    [300, P.me, 'Great, I’ll send the notes after the call.'],
+  ],
+  'mtg-roadmap': [
+    [0, P.jordan, 'Let’s go through the roadmap for Q1.'],
+    [20, P.priya, 'Sync first, then the Tasks board. <img src=x onerror="window.__xss=1"> stays text.'],
+    [61, P.me, 'Agreed. I’ll write the plan down today.'],
+    [95, P.jordan, 'Good. That’s all for today.'],
+  ],
+  'mtg-critique': [
+    [0, P.elena, 'Let’s look at the board columns.'],
+    [30, P.sam, 'Review should be the first column.'],
+    [70, P.me, 'Agreed, and overdue cards go first.'],
+  ],
+};
+
+function segmentsOf(id) {
+  const lines = LINES[id] || [];
+  return lines.map(([start, who, text], i) => {
+    const person = typeof who === 'string' ? null : who;
+    const next = lines[i + 1]?.[0] ?? start + 12;
+    return {
+      address: person?.address ?? null,
+      end: next - 2,
+      name: person ? person.name : `Speaker ${who.slice(1)}`,
+      speaker: person === P.me ? 'me' : 'remote',
+      start,
+      text,
+      voice: person ? person.name : who,
+    };
+  });
+}
+
+const NOTES_MD = `---
+title: Philips CodeMie conversations syncup
+date: {date}
+tags: [meeting, philips, pilot]
+participants: Jeroen de Vries, Anouk Bakker, Taylor Morgan, Priya Natarajan, Sam Okafor
+summary: "Philips and EPAM agreed the export, the retention rule and a January pilot."
+---
+# Philips CodeMie conversations syncup
+
+## TL;DR
+- The **export** demo is ready on staging.
+- Tool outputs become readable by id for the audit [00:01].
+- Retention is ninety days, except legal hold [00:02].
+
+## Decisions
+- **Ninety days of retention** — Legal asked for it; legal hold stays.
+
+## Action items
+| Owner | Action | Due | Said at |
+|---|---|---|---|
+| Taylor Morgan | Add the by-id endpoint | — | [00:01] |
+| Priya Natarajan | Send Legal the written requirement | Friday | [00:03] |
+| Sam Okafor | Prepare the pilot user list | — | [00:04] |
+
+## Open questions
+- [ ] Who is the legal contact for the pilot?
+`;
+
+const SUMMARY_MD = `# Short summary
+
+Philips and EPAM met about the export, retention and the pilot. \`pilot\` starts in January.
+
+## Decisions
+- Ninety days of retention, legal hold excluded.
+
+> Sent to Jeroen after the call. <script>window.__xss=1</script> stays text.
+`;
+
+/** What `meeting_read` answers for each fixture meeting that has a folder: `segments`, `files`
+ *  (`{name, size, modified}`), the text of each file, and each document's text by id (and
+ *  `<id>@<version>` for an earlier version). */
+export function meetingFolders(nowMs = Date.now()) {
+  const plan = meetingPlan(nowMs);
+  const out = {};
+  for (const m of plan.filter(x => ['ready', 'downloaded', 'failed'].includes(x.state))) {
+    const date = new Date(m.start).toISOString().slice(0, 10);
+    const segments = segmentsOf(m.id);
+    const docs = m.state === 'ready' ? { 'meeting-notes': NOTES_MD.replace('{date}', date), 'short-summary': SUMMARY_MD } : {};
+    const texts = {
+      'meeting.json': JSON.stringify({ event_id: m.id, subject: m.title, organizer: m.organizer, attendees: m.people }, null, 2),
+      'meta.json': JSON.stringify({ source: 'teams', started_at: isoOf(m.start), ended_at: isoOf(m.start + m.minutes * 60_000) }, null, 2),
+      'segments.json': JSON.stringify(segments, null, 2),
+      'transcript.md': `# ${m.title}\n\n${segments.map(s => `**${s.name}** [00:${String(Math.floor(s.start / 60)).padStart(2, '0')}:${String(s.start % 60).padStart(2, '0')}]\n${s.text}`).join('\n\n')}\n`,
+      'transcript.vtt': `WEBVTT\n\n${segments.map(s => `00:00:${String(s.start % 60).padStart(2, '0')}.000 --> 00:00:${String(s.end % 60).padStart(2, '0')}.000\n<v ${s.voice}>${s.text}</v>`).join('\n\n')}\n`,
+      ...(m.state === 'ready' ? { 'notes.md': docs['meeting-notes'], 'notes.short-summary.md': docs['short-summary'], 'tasks.json': '[]' } : {}),
+      ...(m.state !== 'downloaded' ? { 'run.log': m.state === 'failed' ? '[failed] Claude is not signed in.\n' : '[ok] Meeting notes → notes.md\n' } : {}),
+    };
+    const modified = Math.floor(nowMs / 1000) - 3600;
+    out[m.id] = {
+      folder: `${MEETINGS_ROOT}/${date}_${m.id}`,
+      segments,
+      files: Object.keys(texts).sort().map(name => ({ modified, name, size: new TextEncoder().encode(texts[name]).length })),
+      texts,
+      docs,
+    };
+  }
+  return out;
+}
+
+/**
+ * `snapshot` with the Meetings page's meetings, one per state: ready with two documents
+ * (Philips, made by a rule), downloaded, available (saving) and available after a failed save,
+ * pending, blocked, failed (Claude signed out), none, and an in-person lunch (offline, no record);
+ * an upcoming Team demo set to make notes automatically; rules (stand-up → Short summary, Philips
+ * → Meeting notes automatically); tasks from the Philips sync; the `meetings` and `transcripts`
+ * capabilities; `settings.meetings` as native sends it.
+ */
+export function withMeetings(snapshot, nowMs = Date.now()) {
+  const now = Math.floor(nowMs / 1000);
+  const cid = snapshot.connection?.id || CID;
+  const zone = snapshot.settings.timeZone || 'UTC';
+  const { records, ready, rules } = meetingContract();
+  if (snapshot.connection) {
+    snapshot.connection.enabled = [...new Set([...snapshot.connection.enabled, 'meetings', 'transcripts'])];
+    snapshot.connection.scopes = [...new Set([...snapshot.connection.scopes, 'OnlineMeetings.Read', 'OnlineMeetingTranscript.Read.All'])];
+  }
+  snapshot.settings.meetings = { ...rules.settings.meetings, defaultTemplate: 'meeting-notes' };
+  const folders = meetingFolders(nowMs);
+  const base = records.find(r => r.data.state === 'pending');
+  const added = [];
+  for (const m of meetingPlan(nowMs)) {
+    const end = m.start + m.minutes * 60_000;
+    const ev = {
+      id: m.id, kind: 'event', source: 'calendar:cal-main', connectionId: cid, workspaceId: null, revision: `r-${m.id}`, updatedAt: now - 600,
+      data: {
+        title: m.title, start: isoOf(m.start), end: isoOf(end), allDay: false, cancelled: false, calendarId: 'cal-main',
+        location: m.inPerson ? 'Canteen, 2nd floor' : 'Microsoft Teams Meeting', organizer: m.organizer,
+        attendees: m.people.map(p => ({ ...p, type: 'required', response: 'accepted' })), url: 'https://outlook.office.com/calendar/item/fixture',
+        joinUrl: m.inPerson ? null : `https://teams.microsoft.com/l/meetup-join/${m.id}`, isOnlineMeeting: !m.inPerson, preview: '', showAs: 'busy',
+        response: m.organizer === P.me ? 'organizer' : 'accepted', isOrganizer: m.organizer === P.me, categories: [], importance: 'normal', private: false,
+      },
+    };
+    added.push(ev);
+    if (!m.state) continue;
+    const contractRecord = m.state === 'ready' ? ready : records.find(r => r.data.state === m.state) || base;
+    const found = ['available', 'downloaded', 'ready', 'failed'].includes(m.state);
+    const data = {
+      ...clonePlain(contractRecord.data), eventId: m.id, title: m.title, start: ev.data.start, end: ev.data.end, state: m.state,
+      folder: folders[m.id]?.folder ?? null, external: found || m.state === 'pending' ? `ONLINE-${m.id}` : contractRecord.data.external,
+      transcriptIds: found ? ['t-1'] : [], transcriptStart: found ? isoOf(m.start + 4 * 60_000) : null, checkedAt: now - 120,
+      lastError: m.lastError ?? (m.state === 'available' ? null : contractRecord.data.lastError), removedLines: [],
+    };
+    if (m.state === 'ready') data.docs = data.docs.map((d, i) => ({ ...d, createdAt: now - 2 * 86_400 + i * 3600, updatedAt: now - 2 * 86_400 + i * 3600, auto: i === 0 }));
+    added.push({ ...contractRecord, id: m.id, connectionId: cid, workspaceId: null, source: 'calendar:cal-main', revision: `r-meeting-${m.id}`, updatedAt: now - 300, data });
+  }
+  // An upcoming Teams meeting set to make notes by itself.
+  const demo = snapshot.records.find(r => r.id === 'ev-week-1');
+  if (demo) added.push({ ...base, id: demo.id, connectionId: cid, source: demo.source, revision: 'r-meeting-ev-week-1', updatedAt: now - 300, data: { ...clonePlain(base.data), eventId: demo.id, title: demo.data.title, start: demo.data.start, end: demo.data.end, state: 'upcoming', auto: true, external: null } });
+  const rule = (id, order, field, value, template, autoNotes) => ({ id, kind: 'meeting_rule', source: 'local', connectionId: null, workspaceId: 'personal', revision: `rev-${id}`, updatedAt: now - 86_400, data: { field, value, template, autoNotes, on: true, order } });
+  added.push(rule('r-standup', 1, 'title', 'stand-up', 'short-summary', false), rule('r-philips', 2, 'org', 'philips', 'meeting-notes', true));
+  // Tasks from the Philips sync: two to review (one with an owner Connect isn't sure of), one on the board.
+  const [template] = taskContract().records;
+  const said = (id, status, text, owner, line, extra = {}) => {
+    const seg = folders['mtg-philips'].segments[line];
+    return {
+      ...template, id, revision: `l-${id}`, updatedAt: now - 3600,
+      data: {
+        text, owner: owner.address, ownerName: owner.name, due: null, notes: null, meetingId: 'mtg-philips', line, quoteAt: seg.start, quote: seg.text, speaker: seg.name,
+        confidence: 'high', createdAt: now - 2 * 86_400, history: [{ at: now - 2 * 86_400, text: 'Found in the notes (Meeting notes)' }], order: 100 + line, status, done: false, doneAt: null, ...extra,
+      },
+    };
+  };
+  added.push(
+    said('task-endpoint', 'review', 'Add the by-id endpoint for tool outputs', P.me, 3),
+    said('task-legal-req', 'todo', 'Send Legal the written retention requirement', P.priya, 6, { due: dayIn(nowMs, zone, 3) }),
+    said('task-pilot-list', 'review', 'Prepare the pilot user list', P.sam, 8, { confidence: 'low' }),
+  );
+  snapshot.records.push(...added);
+  return snapshot;
+}
+
+const clonePlain = value => JSON.parse(JSON.stringify(value));
 
 // ---------------------------------------------------------------- data location (DESIGN 8)
 // Written by the Rust test `contract_fixtures_match_the_real_data_location`.

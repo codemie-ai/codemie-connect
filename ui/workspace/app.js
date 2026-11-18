@@ -10,7 +10,7 @@ import { active, decisions, connectionState, records, LANES, messageTitle, colla
 import { askCommitment, askCommitmentId } from './summary-state.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
 import { today, customizeEntries } from './view-today.js';
-import { calendar, eventDetails, HOUR_HEIGHT } from './view-calendar.js';
+import { calendar, eventDetails, eventActions, HOUR_HEIGHT } from './view-calendar.js';
 import { inbox, filteredMessages, snoozeUntil, draftChecks } from './view-inbox.js';
 import {
   optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
@@ -26,6 +26,9 @@ import { createAutomationsController, notificationTarget } from './automations-c
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { newTasksView } from './tasks-model.js';
+import { meetings } from './view-meetings.js';
+import { createMeetingsController } from './meetings-controller.js';
+import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
 import { renderShell } from './shell.js';
 import { nextAiSettings, withCodemieSignIn, LOGIN_STEPS } from './settings-ai.js';
 import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
@@ -39,7 +42,7 @@ import { createPluginHost, internalRoute } from '../plugins/host.js';
 import { createPluginsController } from './settings-plugins.js';
 import { pluginWidgetCatalog, parseLayoutId, heldText, textOfHtml } from './today-plugins.js';
 
-const ROUTES = ['today', 'calendar', 'tasks', 'inbox', 'automations', 'settings'];
+const ROUTES = HASH_ROUTES;
 const root = document.getElementById('workspace-app');
 const legacy = document.getElementById('app');
 const rawInvoke = window.__TAURI__?.core?.invoke;
@@ -70,6 +73,11 @@ const state = {
   automations: { tab: 'automations', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } },
   // Tasks: board or list, filters, the open drawer and quick add (view state only; tasks are native's).
   tasks: newTasksView(localPref('codemie.tasks.view', 'board')),
+  // Meetings: the list's filter and search, the selected meeting and tab, the hidden list, Side by
+  // side, the document editor (view state only; meetings are native's). The calendar's "Only
+  // meetings with transcripts" and the legend groups turned off.
+  meetings: newMeetingsView({ wide: localPref('codemie.meetings.wide', 'false') === 'true' }),
+  calendarTranscripts: localPref('codemie.calendar.transcripts', 'false') === 'true', calendarLegend: {},
   // Plugins: the page open under #/p/<id>/<activity>/<route>, the Settings → Plugins path
   // ({id, section}), what is installed, and the text of page widgets their frames drew.
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
@@ -132,6 +140,7 @@ let calendarScrollKey = '';
 let noteTimer;
 let searchTimer;
 let taskSearchTimer;
+let meetingSearchTimer;
 // A card is being dragged on the Tasks board: updates wait until it is dropped.
 let taskDrag = false;
 const replyInFlight = new Set();
@@ -239,6 +248,9 @@ function captureScroll() {
     board: q('.ws-task-board')?.scrollLeft || 0,
     drawer: q('.ws-task-drawer-body')?.scrollTop || 0,
     drawerId: state.tasks.drawer,
+    meetingList: q('.ws-mtg-list-body')?.scrollTop || 0,
+    meetingDetail: q('.ws-mtg-detail')?.scrollTop || 0,
+    meetingView: q('.ws-mtg-meeting') ? `${q('.ws-mtg-meeting').dataset.meeting}|${q('.ws-mtg-panel')?.dataset.panel}` : null,
   };
 }
 
@@ -263,6 +275,10 @@ function restoreScroll(saved) {
   const reader = q('.ws-reader');
   if (reader && saved.readerId && q('.ws-read')?.dataset.messageId === saved.readerId) reader.scrollTop = saved.reader;
   if (q('.ws-settings-sidebar')) q('.ws-settings-sidebar').scrollTop = saved.nav;
+  // Meetings: the list keeps its place; the meeting keeps its place unless another one (or tab) opened.
+  if (q('.ws-mtg-list-body')) q('.ws-mtg-list-body').scrollTop = saved.meetingList;
+  const meeting = q('.ws-mtg-meeting');
+  if (meeting && saved.meetingView === `${meeting.dataset.meeting}|${q('.ws-mtg-panel')?.dataset.panel}`) q('.ws-mtg-detail').scrollTop = saved.meetingDetail;
   if (q('.ws-settings-panels') && saved.tab === state.settingsTab) q('.ws-settings-panels').scrollTop = saved.panels;
 }
 
@@ -290,6 +306,11 @@ async function render() {
     codemieCard: codemie.todayCard(),
   };
   if (state.route === 'inbox') ensureSelection(s);
+  if (state.route === 'meetings') {
+    // The meeting shown is the one in the hash (`#/meetings/<id>/<tab>`), also when the list picked it.
+    meetingsUi.ensureSelection();
+    if (location.hash !== routeHash()) history.replaceState(null, '', routeHash());
+  }
   if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
   const pageClass = `ws-page ws-page-${state.route}`;
   const html = state.route === 'today' ? today(s, ctx)
@@ -297,6 +318,7 @@ async function render() {
       : state.route === 'inbox' ? inbox(s, ctx)
         : state.route === 'automations' ? automations(s, ctx)
           : state.route === 'tasks' ? tasksPage(s, ctx)
+          : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary() })
           : state.route === 'plugin' ? pluginPageHtml()
             : settings(s, ctx);
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
@@ -328,8 +350,27 @@ async function render() {
   placeDraftPopover();
   showPluginView();
   if (state.route === 'today') drawPageWidgets(s);
+  if (state.route === 'meetings') {
+    showFocusLine();
+    meetingsUi.load().catch(fail);
+  }
   lastDraftSignature = draftSignature(s);
   renderSheet();
+}
+
+/** A transcript line a task quote or a note's time opened: scrolled to and highlighted a moment. */
+let focusLineTimer = null;
+function showFocusLine() {
+  const line = state.meetings.focusLine;
+  if (line === null || line === undefined || state.meetings.tab !== 'transcript') return;
+  const el = document.getElementById(`meeting-line-${line}`);
+  if (!el) return;
+  el.scrollIntoView({ block: 'center' });
+  clearTimeout(focusLineTimer);
+  focusLineTimer = setTimeout(() => {
+    if (state.meetings.focusLine === line) state.meetings.focusLine = null;
+    document.getElementById(`meeting-line-${line}`)?.classList.remove('ws-mtg-focus');
+  }, 2600);
 }
 
 // The CodeMie setup sheet lives outside #workspace-app so a page re-render never replays its
@@ -444,7 +485,8 @@ async function route(name, tab, pluginPath = null) {
     return;
   }
   if (tab && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === tab) ? tab : 'automations';
-  history.replaceState(null, '', `#/${state.route}${state.route === 'settings' ? `/${state.settingsTab}` : state.route === 'automations' && state.automations.tab !== 'automations' ? `/${state.automations.tab}` : ''}`);
+  if (state.route === 'meetings') meetingsUi.ensureSelection();
+  history.replaceState(null, '', routeHash());
   await render();
   const heading = root.querySelector('h1');
   heading?.setAttribute('tabindex', '-1');
@@ -454,6 +496,12 @@ async function route(name, tab, pluginPath = null) {
   if (generalTabOpen()) loadStorage().catch(fail);
   if (runLogOpen()) automationsUi.loadRuns().catch(fail);
   if (onPluginsTab) pluginsUi.load().catch(fail);
+}
+
+/** The hash of the page open now: `#/route/tab`, `#/meetings/<id>/<tab>` for a meeting. */
+function routeHash() {
+  if (state.route === 'meetings') return meetingHash(state.meetings.selected, state.meetings.tab);
+  return `#/${state.route}${state.route === 'settings' ? `/${state.settingsTab}` : state.route === 'automations' && state.automations.tab !== 'automations' ? `/${state.automations.tab}` : ''}`;
 }
 
 // ---------------------------------------------------------------- plugins
@@ -483,6 +531,10 @@ function goHash(hash) {
     return route('settings', 'plugins', id ? { id, section } : null);
   }
   if (head === 'settings') return route('settings', a);
+  if (head === 'meetings') {
+    const target = parseHash(`#/${[head, a, b].filter(x => x !== undefined).join('/')}`);
+    if (target.meetingId) return meetingsUi.open(target.meetingId, target.tab);
+  }
   return route(ROUTES.includes(head) ? head : 'today', a);
 }
 
@@ -995,22 +1047,24 @@ const runLogOpen = () => !!automationsUi?.runLogOpen();
 
 // ---------------------------------------------------------------- tasks (spec "Tasks page")
 
+/** The first of the selectors that finds a control takes focus. The page scrolls to it only for
+ *  keyboard focus: a click (Accept, Delete) doesn't make the board jump. */
+function focusFirst(selectors) {
+  for (const selector of [].concat(selectors)) {
+    const el = root.querySelector(selector);
+    el?.focus({ preventScroll: true });
+    if (el && document.activeElement === el) {
+      if (el.matches(':focus-visible')) el.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+  }
+}
+
 const tasksUi = store && createTasksController({
   state, snap, mutate, render, openModal, toast,
   openMeeting: (id, tab, line) => openMeeting(id, tab, line),
   openMessage: id => handle('open-message', { dataset: { id } }),
-  // The first of the selectors that finds a control takes focus. The page scrolls to it only for
-  // keyboard focus: a click (Accept, Delete) doesn't make the board jump.
-  focus: selectors => {
-    for (const selector of [].concat(selectors)) {
-      const el = root.querySelector(selector);
-      el?.focus({ preventScroll: true });
-      if (el && document.activeElement === el) {
-        if (el.matches(':focus-visible')) el.scrollIntoView({ block: 'nearest' });
-        return;
-      }
-    }
-  },
+  focus: focusFirst,
   setPref: setLocalPref,
 });
 if (tasksUi) {
@@ -1023,16 +1077,43 @@ if (tasksUi) {
   });
 }
 
-/**
- * Opens a meeting (`#/meetings/<id>/<tab>`, `line` for the transcript). Until the Meetings page
- * is there (it takes `tab` and `line`), the meeting's calendar event opens instead, on its day.
- */
-async function openMeeting(id, tab = 'notes', line = null) {
-  const ev = getRecord('event', id);
-  if (!ev) return toast('This meeting is no longer in your calendar.', 'error');
-  state.calendarDate = dateFromKey(dayKey(ev.data.start, snap().settings.timeZone));
-  await route('calendar');
-  return eventDialog(getRecord('event', id));
+// ---------------------------------------------------------------- meetings (spec "Meetings page")
+
+/** Saves `text` as a file in Downloads (the browser's download). */
+function downloadText(name, text, type = 'text/markdown;charset=utf-8') {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const meetingsUi = store && createMeetingsController({
+  state, store, snap, mutate, render, route, openModal, confirmModal, toast,
+  writeText: text => navigator.clipboard.writeText(text),
+  downloadText,
+  focus: focusFirst,
+  setPref: setLocalPref,
+  syncHash: () => { if (state.route === 'meetings') history.replaceState(null, '', routeHash()); },
+  ensureClaudeChoice,
+  moveTask: (id, status, options) => tasksUi.move(id, status, options),
+  connect: capabilities => connectMicrosoft(capabilities),
+  showEvent: async id => {
+    const ev = getRecord('event', id);
+    if (!ev) return toast('This meeting is no longer in your calendar.', 'error');
+    state.calendarDate = dateFromKey(dayKey(ev.data.start, snap().settings.timeZone));
+    await route('calendar');
+    return eventDialog(getRecord('event', id));
+  },
+  canRender: () => ready && !modalOpen() && !editing() && !taskDrag,
+});
+
+/** Opens a meeting on the Meetings page (`#/meetings/<id>/<tab>`; `line`: a transcript line). */
+function openMeeting(id, tab = 'notes', line = null) {
+  return meetingsUi.open(id, tab, line);
 }
 
 // ---------------------------------------------------------------- dialogs
@@ -1056,17 +1137,35 @@ function commitmentDialog(source) {
 function eventDialog(ev) {
   if (!ev) return toast('This event is no longer available. Refresh the calendar.', 'error');
   const d = ev.data;
-  const live = new Date(d.end).getTime() > Date.now();
   const dialog = openModal({
     title: d.title || 'Untitled event',
     body: eventDetails(snap(), ev),
     submit: null,
     cancel: 'Close',
     size: 'md',
-    footerExtra: `${d.joinUrl && live ? button('Join Teams meeting', { action: 'join', variant: 'primary', iconName: 'video', attrs: { 'data-id': ev.id } }) : ''}${d.url ? button('Open in Outlook', { action: 'source', iconName: 'external', attrs: { 'data-kind': 'event', 'data-id': ev.id } }) : ''}${live && new Date(d.start).getTime() > Date.now() ? button('Remind me', { action: 'event-reminder', variant: 'ghost', iconName: 'bell', attrs: { 'data-id': ev.id } }) : ''}`,
+    footerExtra: eventActions(snap(), ev),
   });
   dialog.classList.add('ws-event-modal');
+  dialog.dataset.eventId = ev.id;
   dialog.style.setProperty('--event-color', calendarColors(snap()).get(d.calendarId) || 'var(--ws-accent)');
+}
+
+/** An open event card follows the snapshot (its Transcript & notes section: a run's step, a
+ *  switch turned on) while the page behind it waits for the dialog to close. */
+function refreshEventDialog() {
+  const dialog = document.querySelector('.ws-event-modal[open][data-event-id]');
+  const body = dialog?.querySelector('.ws-modal-body');
+  if (!body) return;
+  const ev = getRecord('event', dialog.dataset.eventId);
+  if (!ev) return;
+  const html = eventDetails(snap(), ev);
+  if (body.dataset.html === html) return;
+  const focused = body.contains(document.activeElement) ? controlSelector(document.activeElement) : null;
+  const open = [...body.querySelectorAll('details[open][data-menu]')].map(x => x.dataset.menu);
+  body.innerHTML = html;
+  body.dataset.html = html;
+  for (const menu of open) body.querySelector(`details[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
+  if (focused) soleMatch(body, focused)?.focus({ preventScroll: true });
 }
 
 function newEventDialog() {
@@ -1127,7 +1226,9 @@ function customizeDialog() {
   const w = current();
   const entries = customizeEntries(w, pluginWidgetCatalog(state.installedPlugins));
   // "From plugins" shows itself until a saved layout says otherwise (showPluginsCard).
-  const shown = x => w.layout.includes(x.id) || (x.id === 'plugins' && !('plugins' in (w.widgetWidths || {})) && !!root.querySelector('.ws-plugins-card'));
+  const shown = x => w.layout.includes(x.id)
+    || (x.id === 'plugins' && !('plugins' in (w.widgetWidths || {})) && !!root.querySelector('.ws-plugins-card'))
+    || (x.id === 'meetings' && !('meetings' in (w.widgetWidths || {})) && !!root.querySelector('.ws-mtg-today'));
   const dialog = openModal({
     title: 'Customize Today',
     subtitle: `Cards for ${w.name}. Drag the arrows to reorder.`,
@@ -1206,7 +1307,7 @@ function reminderDialog(ev) {
 async function connectMicrosoft(extra) {
   const c = snap().connection;
   const enabled = c && c.status !== 'disconnected' ? c.enabled : [];
-  const capabilities = [...new Set(['calendar', 'mail', 'chats', ...enabled, ...(extra ? [extra] : [])])];
+  const capabilities = [...new Set(['calendar', 'mail', 'chats', ...enabled, ...[].concat(extra || [])])];
   await mutate('graph_connect', { capabilities });
   toast('A Microsoft sign-in page opened in your browser.');
 }
@@ -1247,6 +1348,14 @@ async function handle(action, el) {
   if (action === 'task-open-today') {
     await route('tasks');
     return tasksUi.openDrawer(el.dataset.id);
+  }
+  if (action.startsWith('meeting-') || action.startsWith('doc-')) {
+    // From the calendar's event card, a step that opens a dialog or the page closes the card first.
+    const card = el.closest?.('.ws-event-modal');
+    if (card && ['meeting-make-notes', 'meeting-import', 'meeting-open', 'meeting-retry', 'meeting-calendar'].includes(action)) card.close();
+    await meetingsUi.handle(action, el);
+    if (card?.open) refreshEventDialog();
+    return undefined;
   }
   if (action.startsWith('task')) return tasksUi.handle(action, el);
   if (action.startsWith('plugin') || action.startsWith('market-')) return pluginAction(action, el);
@@ -1354,6 +1463,13 @@ async function handle(action, el) {
       return render();
     }
     case 'event': return eventDialog(getRecord('event', id));
+    case 'calendar-transcripts':
+      state.calendarTranscripts = el.checked;
+      setLocalPref('codemie.calendar.transcripts', String(el.checked));
+      return render();
+    case 'calendar-legend':
+      state.calendarLegend = { ...state.calendarLegend, [el.dataset.key]: !el.checked };
+      return render();
     case 'join': await store.query('open_source', { id, kind: 'event', join: true }); return;
     case 'source': await store.query('open_source', { id, kind: el.dataset.kind, join: false }); return;
     case 'event-reminder': {
@@ -1607,6 +1723,7 @@ async function submitForm(form) {
       return;
     }
     case 'task-quick': return tasksUi.quickAdd(form.dataset.col, Object.fromEntries(f));
+    case 'meeting-notes': case 'meeting-task': return meetingsUi.submit(form, f);
     case 'plugin-addresses': return pluginsUi.submit(form);
     case 'time-zone': await mutate('settings_update', { timeZone: String(f.get('timeZone')).trim() }); return toast('Time zone saved.', 'success');
     case 'quiet-hours': await mutate('settings_update', { quietStart: f.get('quietStart'), quietEnd: f.get('quietEnd') }); return toast('Quiet hours saved.', 'success');
@@ -1718,6 +1835,20 @@ document.addEventListener('input', ev => {
       input?.setSelectionRange(pos, pos);
     }, 220);
   }
+  if (ev.target.id === 'meetings-search' || ev.target.id === 'meeting-transcript-search') {
+    const which = ev.target.id;
+    if (which === 'meetings-search') state.meetings.q = ev.target.value;
+    else state.meetings.tq = ev.target.value;
+    clearTimeout(meetingSearchTimer);
+    const pos = ev.target.selectionStart;
+    meetingSearchTimer = setTimeout(async () => {
+      await render();
+      const input = document.getElementById(which);
+      input?.focus();
+      input?.setSelectionRange(pos, pos);
+    }, 220);
+  }
+  if (meetingsUi?.input(ev.target)) return;
   if (ev.target.id === 'reply-body') syncReplyBox(ev.target);
   if (ev.target.id === 'auto-prompt') {
     const count = ev.target.closest('form')?.querySelector('[data-auto-count]');
@@ -1794,11 +1925,19 @@ document.addEventListener('keydown', ev => {
 // Tasks: Escape closes quick add, then the drawer; Enter adds a quick task or leaves the drawer's
 // title or typed due date (which then saves).
 document.addEventListener('keydown', ev => {
-  if (!ready || state.route !== 'tasks' || modalOpen() || sheetOpen() || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if (!ready || !['tasks', 'meetings'].includes(state.route) || modalOpen() || sheetOpen() || ev.metaKey || ev.ctrlKey || ev.altKey) return;
   const field = document.activeElement?.closest?.('#workspace-app') ? document.activeElement : null;
   if (ev.key === 'Enter' && !ev.isComposing && ev.keyCode !== 229 && field?.dataset?.commit) {
     ev.preventDefault();
     field.blur();
+    return;
+  }
+  if (state.route === 'meetings') {
+    // Escape leaves the document editor (asking first when the edit isn't saved).
+    if (ev.key === 'Escape' && !ev.isComposing && field?.id === 'meeting-doc-editor' && state.meetings.editing) {
+      ev.preventDefault();
+      meetingsUi.handle('doc-edit-cancel', { dataset: { id: state.meetings.editing.meetingId, doc: state.meetings.editing.docId } }).catch(fail);
+    }
     return;
   }
   // A drawer field being edited saves (on its change or when it is left) before the drawer closes.
@@ -1824,6 +1963,8 @@ document.addEventListener('keydown', ev => {
       ev.preventDefault();
       keys[ev.key]().catch(fail);
     }
+  } else if (state.route === 'meetings') {
+    meetingsUi.key(ev).catch(fail);
   } else if (state.route === 'inbox' && ['ArrowDown', 'ArrowUp', 'j', 'k'].includes(ev.key)) {
     const rows = [...root.querySelectorAll('.ws-inbox-row')];
     if (!rows.length) return;
@@ -1851,7 +1992,7 @@ let minuteTimer;
 function scheduleMinuteRender() {
   clearTimeout(minuteTimer);
   minuteTimer = setTimeout(async () => {
-    if (ready && ['today', 'calendar', 'automations'].includes(state.route) && !modalOpen() && !editing()) await render().catch(() => {});
+    if (ready && ['today', 'calendar', 'automations', 'meetings'].includes(state.route) && !modalOpen() && !editing()) await render().catch(() => {});
     scheduleMinuteRender();
   }, 60_000 - (Date.now() % 60_000) + 50);
 }
@@ -1889,6 +2030,8 @@ async function openNotification(payload) {
     await route('calendar');
     return eventDialog(getRecord('event', payload.eventId));
   }
+  // Notes made by themselves (and anything else about a meeting): the meeting.
+  if (payload.meetingId) return meetingsUi.open(payload.meetingId, 'notes');
   // Tasks due today.
   if (payload.route === 'tasks') return route('tasks');
   // An automation's result or failure: its run, open in the Run log.
@@ -2086,8 +2229,12 @@ async function boot() {
     state.route = 'plugin';
     state.pluginPage = { id: hash[2], activity: hash[3], route: hash.slice(4).join('/') };
   } else {
-    if (hash[1]) state.route = ROUTES.includes(hash[1]) ? hash[1] : 'today';
-    if (hash[2] && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === hash[2]) ? hash[2] : 'automations';
+    const target = parseHash(location.hash);
+    if (target.route) state.route = target.route;
+    if (target.route === 'meetings') {
+      if (target.meetingId) state.meetings.selected = target.meetingId;
+      if (target.tab) state.meetings.tab = target.tab;
+    } else if (hash[2] && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === hash[2]) ? hash[2] : 'automations';
     else if (hash[2]) state.settingsTab = settingsTabFor(hash[2]);
     if (state.route === 'settings' && hash[2] === 'plugins' && PLUGIN_ID.test(decodeURIComponent(hash[3] || ''))) {
       const section = decodeURIComponent(hash[4] || '');
@@ -2144,6 +2291,7 @@ async function boot() {
     automationsUi.snapshotChanged(result.snapshot)?.catch(() => {});
     // A draft that arrived for the open reply box is applied first, whatever is on screen.
     const arrived = applyArrivedDraft(result.snapshot);
+    refreshEventDialog();
     if (modalOpen()) return;
     if (state.draftPopover || taskDrag) {
       heldRender = true;
@@ -2219,7 +2367,7 @@ async function boot() {
   scheduleMinuteRender();
   window.addEventListener('pagehide', () => clearInterval(authTimer), { once: true });
   if (state.route === 'calendar') await ensureCalendarWindow();
-  if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice, codemie };
+  if (flags.dev) window.__workspace = { store, state, route, render, ensureClaudeChoice, withClaudeChoice, codemie, meetingsUi };
   if (smoke) {
     const report = await smoke.runMarketSmoke({
       invoke, market: marketSmoke, runId: flags.plugin_run_id, host: pluginHost, calls: smokeCalls,

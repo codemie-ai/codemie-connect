@@ -82,6 +82,14 @@ const ICONS = {
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   history: '<path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5M12 7.5v4.8l3 1.8"/>',
   sparkles: '<path d="M12 3 13.9 8.6 19.5 10.5 13.9 12.4 12 18l-1.9-5.6L4.5 10.5l5.6-1.9z"/><path d="M19 3v3M17.5 4.5h3M5 17v3M3.5 18.5h3"/>',
+  // Meetings: the page, a transcript file, import, the meeting folder and its files, skills.
+  meetings: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h8A2.5 2.5 0 0 1 16 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-8A2.5 2.5 0 0 1 3 16.5z"/><path d="m16 10.5 5-3v9l-5-3"/><path d="M6.5 10h6M6.5 13.5h4"/>',
+  transcript: '<path d="M14.5 2.5H6a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2.5V8h6"/><path d="M8 12.5h2.5M13 12.5h3M8 16.5h5M15.5 16.5h.5"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+  'folder-open': '<path d="M3 18.5V6.5A2.5 2.5 0 0 1 5.5 4h3.8a2 2 0 0 1 1.6.8l1.2 1.6a2 2 0 0 0 1.6.8h4.8A2.5 2.5 0 0 1 21 9.7V10"/><path d="M3 18.5 5.6 11.8A2 2 0 0 1 7.5 10.5H21a1 1 0 0 1 .9 1.4L19.3 19a2 2 0 0 1-1.9 1.5H5a2 2 0 0 1-2-2z"/>',
+  'file-code': '<path d="M14.5 2.5H6a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2.5V8h6M10 12.5l-2 2 2 2M14 12.5l2 2-2 2"/>',
+  skill: '<path d="M14 4.5a2 2 0 1 0-4 0V6H6a1 1 0 0 0-1 1v4h1.5a2 2 0 1 1 0 4H5v4a1 1 0 0 0 1 1h4v-1.5a2 2 0 1 1 4 0V20h4a1 1 0 0 0 1-1v-4h-1.5a2 2 0 1 1 0-4H19V7a1 1 0 0 0-1-1h-4z"/>',
+  'calendar-check': '<rect x="3" y="4.5" width="18" height="16.5" rx="2.5"/><path d="M8 2.5v4M16 2.5v4M3 9.5h18M9 15l2 2 4-4"/>',
 };
 
 const FILLED = new Set(['dots', 'play']);

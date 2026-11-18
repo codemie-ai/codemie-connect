@@ -1,13 +1,15 @@
 // Calendar: Outlook-grade day/week time grid, month grid and agenda, all in the workspace zone.
 import { escapeHtml as e } from './store.js';
 import { icon, teamsGlyph } from './icons.js';
-import { button, segmented, emptyState, avatar, badge } from './ui.js';
+import { button, segmented, emptyState, avatar, badge, toggle } from './ui.js';
 import {
   calendarDays, calendarWindow, calendarCoverage, calendarCatalog, calendarColor, calendarIds,
   eventsOnDay, layoutColumns, visibleEvents, eventSpan,
 } from './calendar-model.js';
 import { connectionState, can } from './selectors.js';
 import { dayKey, localDayKey, formatDate, formatTime, durationLabel, hourLabel, zonedParts, dateFromKey } from './format.js';
+import { LEGEND } from './meetings-model.js';
+import { calendarMeetings, meetingCard, tBadge } from './view-meetings.js';
 
 export const HOUR_HEIGHT = 48;
 export const MODES = [['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['agenda', 'Agenda']];
@@ -39,6 +41,7 @@ export function calendar(s, ctx) {
   const loadingJob = s.jobs.find(j => (j.kind === 'calendar_window' || j.kind === 'sync') && ['queued', 'running'].includes(j.state));
   const events = visibleEvents(s, hidden);
   const todayKey = dayKey(Date.now(), zone);
+  const mtg = meetingsOnCalendar(s, state, days, zone);
 
   let content;
   if (conn === 'none' || conn === 'authorizing' || conn === 'needs_login') {
@@ -51,9 +54,9 @@ export function calendar(s, ctx) {
     if (conn === 'needs_login' && events.length) content = '';
   }
   if (content === undefined || content === '') {
-    const view = mode === 'month' ? monthView(days, events, zone, todayKey, colors, state)
-      : mode === 'agenda' ? agendaView(days, events, zone, todayKey, colors, covered)
-        : timeGrid(days, events, zone, todayKey, colors);
+    const view = mode === 'month' ? monthView(days, events, zone, todayKey, colors, state, mtg)
+      : mode === 'agenda' ? agendaView(days, events, zone, todayKey, colors, covered, mtg)
+        : timeGrid(days, events, zone, todayKey, colors, mtg);
     content = (content || '') + view;
   }
 
@@ -63,6 +66,7 @@ export function calendar(s, ctx) {
   return `<div class="ws-calendar-page${state.calendarSidebar === false ? ' ws-cal-collapsed' : ''}">
     <aside class="ws-cal-side" aria-label="Calendar navigation">
       ${miniMonth(state.calendarDate, mode === 'month' ? [] : days, events, zone, todayKey)}
+      ${legendPanel(mtg, mode)}
       <div class="ws-cal-list">
         <div class="ws-cal-list-head"><span class="ws-field-label">My calendars</span>${catalog.length ? `<span class="ws-muted">${catalog.length}</span>` : ''}</div>
         ${catalog.length ? catalog.map(cal => `<label class="ws-cal-toggle" style="--event-color:${e(colors.get(cal.id))}"><input type="checkbox" data-action="calendar-visibility" data-id="${e(cal.id)}" ${hidden.has(cal.id) ? '' : 'checked'}><span class="ws-cal-swatch" aria-hidden="true">${icon('check')}</span><span class="ws-cal-name">${e(cal.name || 'Calendar')}</span>${cal.isDefaultCalendar ? '<small>Default</small>' : ''}</label>`).join('')
@@ -87,6 +91,37 @@ export function calendar(s, ctx) {
       ${banners}
       <div class="ws-cal-view ws-cal-${mode}">${content}</div>
     </section>
+  </div>`;
+}
+
+// ---------------------------------------------------------------- transcripts on the calendar
+
+/** The calendar's meetings with their transcript badges, the switch that shows only meetings
+ *  with transcripts (`state.calendarTranscripts`, the legend groups turned off in
+ *  `state.calendarLegend`), and how many of each group the shown days hold. */
+function meetingsOnCalendar(s, state, days, zone) {
+  const items = calendarMeetings(s);
+  const only = !!state.calendarTranscripts;
+  const off = state.calendarLegend || {};
+  const keys = new Set(days.map(localDayKey));
+  const counts = Object.fromEntries(LEGEND.map(([id]) => [id, 0]));
+  for (const m of items.values()) if (m.legend && keys.has(dayKey(m.start, zone))) counts[m.legend]++;
+  const shown = id => {
+    if (!only) return true;
+    const m = items.get(id);
+    return !!m?.legend && off[m.legend] !== true;
+  };
+  return { s, items, only, off, counts, shown, badge: (id, opts) => tBadge(s, items.get(id), opts) };
+}
+
+function legendPanel(mtg, mode) {
+  const scope = { day: 'this day', week: 'this week', month: 'this month', agenda: 'these two weeks' }[mode] || 'this view';
+  const rows = LEGEND.map(([id, label, ico]) => `<label class="ws-mtg-legend-row${mtg.only && mtg.off[id] ? ' ws-mtg-off' : ''}">${mtg.only ? `<input type="checkbox" data-action="calendar-legend" data-key="${id}"${mtg.off[id] ? '' : ' checked'} aria-label="Show ${e(label.toLowerCase())}">` : ''}<span class="ws-tb ws-tb-${id}">${icon(ico)}</span><span>${e(label)}</span><small>${mtg.counts[id] || ''}</small></label>`).join('');
+  return `<div class="ws-mtg-legend">
+    <div class="ws-cal-list-head"><span class="ws-field-label">Meeting notes</span><span class="ws-muted">${scope}</span></div>
+    ${toggle({ action: 'calendar-transcripts', checked: mtg.only, label: 'Only meetings with transcripts' })}
+    <div class="ws-mtg-legend-rows">${rows}</div>
+    <p class="ws-hint ws-muted">Badges appear on Teams meetings. Transcripts are saved on their own; click a meeting to make notes.</p>
   </div>`;
 }
 
@@ -125,7 +160,7 @@ function eventClasses(d, nowMs, extra = '') {
   ].filter(Boolean).join(' ');
 }
 
-function timeGrid(days, events, zone, todayKey, colors) {
+function timeGrid(days, events, zone, todayKey, colors, mtg) {
   const nowMs = Date.now();
   const nowParts = zonedParts(nowMs, zone);
   const nowMin = nowParts.hour * 60 + nowParts.minute;
@@ -144,10 +179,13 @@ function timeGrid(days, events, zone, todayKey, colors) {
       const height = Math.max(18, ((t.visualEnd - t.startMin) / 60) * HOUR_HEIGHT - 2);
       const compact = height < 38;
       const where = d.joinUrl ? 'Microsoft Teams' : d.location || '';
-      return `<button type="button" class="${eventClasses(d, nowMs, compact ? 'ws-compact' : height < 62 ? 'ws-short' : '')}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')};top:${top.toFixed(1)}px;height:${height.toFixed(1)}px;left:calc(${((t.col / t.cols) * 100).toFixed(3)}% + 1px);width:calc(${(100 / t.cols).toFixed(3)}% - 3px)" title="${e(`${formatTime(d.start, zone)}–${formatTime(d.end, zone)} ${d.title || ''}`)}">
+      const badge = mtg.badge(t.record.id);
+      const extra = [compact ? 'ws-compact' : height < 62 ? 'ws-short' : '', badge ? 'ws-mtg-has-badge' : '', mtg.shown(t.record.id) ? '' : 'ws-mtg-dim'].filter(Boolean).join(' ');
+      return `<button type="button" class="${eventClasses(d, nowMs, extra)}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')};top:${top.toFixed(1)}px;height:${height.toFixed(1)}px;left:calc(${((t.col / t.cols) * 100).toFixed(3)}% + 1px);width:calc(${(100 / t.cols).toFixed(3)}% - 3px)" title="${e(`${formatTime(d.start, zone)}–${formatTime(d.end, zone)} ${d.title || ''}`)}">
         <strong>${e(d.title || 'Untitled event')}</strong>
         <span class="ws-ev-time">${compact ? '' : `${e(formatTime(d.start, zone))} – ${e(formatTime(d.end, zone))}`}${compact ? e(formatTime(d.start, zone)) : ''}</span>
         ${!compact && height > 56 && where ? `<span class="ws-ev-where">${d.joinUrl ? teamsGlyph : icon('pin')}${e(where)}</span>` : ''}
+        ${badge}
       </button>`;
     }).join('');
     const now = c.key === todayKey ? `<div class="ws-now-line" data-now-line data-start-hour="0" data-hour-height="${HOUR_HEIGHT}" style="top:${((nowMin / 60) * HOUR_HEIGHT).toFixed(1)}px"><span></span></div>` : '';
@@ -174,15 +212,15 @@ function shortZone(zone) {
 
 // ---------------------------------------------------------------- month
 
-function monthView(days, events, zone, todayKey, colors, state) {
+function monthView(days, events, zone, todayKey, colors, state, mtg) {
   const current = state.calendarDate.getMonth();
   const nowMs = Date.now();
   const cells = days.map(day => {
     const key = localDayKey(day);
     const { allDay, timed } = eventsOnDay(events, key, zone);
     const items = [
-      ...allDay.map(r => `<button type="button" class="ws-chip-event" data-action="event" data-id="${e(r.id)}" style="--event-color:${e(colors.get(r.data.calendarId) || 'var(--ws-accent)')}">${e(r.data.title || 'All-day event')}</button>`),
-      ...timed.map(t => `<button type="button" class="ws-month-ev${new Date(t.record.data.end).getTime() <= nowMs ? ' ws-past' : ''}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(t.record.data.calendarId) || 'var(--ws-accent)')}"><span class="ws-dot"></span><time>${e(formatTime(t.record.data.start, zone))}</time><span>${e(t.record.data.title || 'Untitled')}</span></button>`),
+      ...allDay.filter(() => !mtg.only).map(r => `<button type="button" class="ws-chip-event" data-action="event" data-id="${e(r.id)}" style="--event-color:${e(colors.get(r.data.calendarId) || 'var(--ws-accent)')}">${e(r.data.title || 'All-day event')}</button>`),
+      ...timed.filter(t => mtg.shown(t.record.id)).map(t => `<button type="button" class="ws-month-ev${new Date(t.record.data.end).getTime() <= nowMs ? ' ws-past' : ''}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(t.record.data.calendarId) || 'var(--ws-accent)')}"><span class="ws-dot"></span><time>${e(formatTime(t.record.data.start, zone))}</time><span class="ws-month-ev-title">${e(t.record.data.title || 'Untitled')}</span>${mtg.badge(t.record.id)}</button>`),
     ];
     const max = 3;
     const more = items.length - max;
@@ -196,12 +234,12 @@ function monthView(days, events, zone, todayKey, colors, state) {
 
 // ---------------------------------------------------------------- agenda
 
-function agendaView(days, events, zone, todayKey, colors, covered) {
+function agendaView(days, events, zone, todayKey, colors, covered, mtg) {
   const nowMs = Date.now();
   const groups = days.map(day => {
     const key = localDayKey(day);
     const { allDay, timed } = eventsOnDay(events, key, zone);
-    return { key, day, allDay, timed };
+    return { key, day, allDay: mtg.only ? [] : allDay, timed: timed.filter(t => mtg.shown(t.record.id)) };
   }).filter(g => g.allDay.length || g.timed.length);
   if (!groups.length) {
     return emptyState({ iconName: 'coffee', title: covered ? 'Nothing scheduled' : 'Loading this period', text: covered ? 'No events in the next two weeks.' : 'Events appear as soon as this period is synchronized.' });
@@ -209,20 +247,21 @@ function agendaView(days, events, zone, todayKey, colors, covered) {
   return `<div class="ws-agenda">${groups.map(g => `<section class="ws-agenda-day${g.key === todayKey ? ' ws-today' : ''}">
     <header><strong>${g.day.getDate()}</strong><div><span>${e(g.day.toLocaleDateString(undefined, { weekday: 'long' }))}</span><small>${e(g.day.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}${g.key === todayKey ? ' · Today' : ''}</small></div></header>
     <div class="ws-agenda-items">
-      ${g.allDay.map(r => agendaRow(r, zone, colors, nowMs, true)).join('')}
-      ${g.timed.map(t => agendaRow(t.record, zone, colors, nowMs, false)).join('')}
+      ${g.allDay.map(r => agendaRow(r, zone, colors, nowMs, true, mtg)).join('')}
+      ${g.timed.map(t => agendaRow(t.record, zone, colors, nowMs, false, mtg)).join('')}
     </div>
   </section>`).join('')}</div>`;
 }
 
-function agendaRow(r, zone, colors, nowMs, allDay) {
+function agendaRow(r, zone, colors, nowMs, allDay, mtg) {
   const d = r.data;
   const minutes = (new Date(d.end) - new Date(d.start)) / 60000;
-  return `<div class="ws-agenda-row${new Date(d.end).getTime() <= nowMs ? ' ws-past' : ''}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')}">
+  const badge = allDay ? '' : mtg.badge(r.id, { label: true });
+  return `<div class="ws-agenda-row${badge ? ' ws-mtg-agenda-row' : ''}${new Date(d.end).getTime() <= nowMs ? ' ws-past' : ''}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')}">
     <span class="ws-agenda-time">${allDay ? 'All day' : `${e(formatTime(d.start, zone))}<small>${e(durationLabel(minutes))}</small>`}</span>
     <span class="ws-agenda-bar"></span>
     <button type="button" class="ws-agenda-main" data-action="event" data-id="${e(r.id)}"><strong>${e(d.title || 'Untitled event')}</strong><span>${d.joinUrl ? `${teamsGlyph}Microsoft Teams` : d.location ? `${icon('pin')}${e(d.location)}` : e(d.organizer?.name || '')}</span></button>
-    ${d.joinUrl && new Date(d.end).getTime() > nowMs ? button('Join', { action: 'join', variant: 'primary', iconName: 'video', size: 'sm', attrs: { 'data-id': r.id } }) : ''}
+    ${badge || (d.joinUrl && new Date(d.end).getTime() > nowMs) ? `<span class="ws-mtg-agenda-state">${badge}${d.joinUrl && new Date(d.end).getTime() > nowMs ? button('Join', { action: 'join', variant: 'primary', iconName: 'video', size: 'sm', attrs: { 'data-id': r.id } }) : ''}</span>` : ''}
   </div>`;
 }
 
@@ -257,5 +296,15 @@ export function eventDetails(s, ev) {
     ${attendees.length ? `<details class="ws-attendees"${attendees.length <= 8 ? ' open' : ''}><summary>${icon('users')}${attendees.length} attendee${attendees.length === 1 ? '' : 's'}</summary><ul>${attendees.slice(0, 60).map(a => `<li>${avatar({ name: a.name || a.address, size: 24, seed: a.address })}<span>${e(a.name || a.address)}</span>${RESPONSE[a.response] && a.response !== 'none' && a.response !== 'notResponded' ? badge(RESPONSE[a.response][0], RESPONSE[a.response][1]) : ''}</li>`).join('')}</ul></details>` : ''}
     ${d.preview ? `<div class="ws-event-preview">${e(d.preview)}</div>` : ''}
     ${d.private ? `<p class="ws-muted ws-hint">${icon('lock')} Private event</p>` : ''}
+    ${meetingCard(s, ev)}
   </div>`;
+}
+
+/** The event card's footer: Join, Open in Outlook, Remind me, and Show in Meetings for a Teams
+ *  meeting. */
+export function eventActions(s, ev, nowMs = Date.now()) {
+  const d = ev.data;
+  const live = new Date(d.end).getTime() > nowMs;
+  const meeting = !d.cancelled && !d.allDay && (d.joinUrl || d.isOnlineMeeting === true);
+  return `${d.joinUrl && live ? button('Join Teams meeting', { action: 'join', variant: 'primary', iconName: 'video', attrs: { 'data-id': ev.id } }) : ''}${d.url ? button('Open in Outlook', { action: 'source', iconName: 'external', attrs: { 'data-kind': 'event', 'data-id': ev.id } }) : ''}${live && new Date(d.start).getTime() > nowMs ? button('Remind me', { action: 'event-reminder', variant: 'ghost', iconName: 'bell', attrs: { 'data-id': ev.id } }) : ''}${meeting ? button('Show in Meetings', { action: 'meeting-open', attrs: { 'data-id': ev.id } }) : ''}`;
 }

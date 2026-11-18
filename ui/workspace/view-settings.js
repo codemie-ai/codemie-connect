@@ -269,7 +269,10 @@ function privacyPanel(s) {
 
 // ---------------------------------------------------------------- Activity
 
-const JOB_LABEL = { sync: 'Microsoft sync', reminder: 'Reminder', notification: 'Critical alert', ai_draft: 'AI reply draft', calendar_window: 'Calendar period', automation_run: 'Automation run' };
+const JOB_LABEL = {
+  sync: 'Microsoft sync', reminder: 'Reminder', notification: 'Critical alert', ai_draft: 'AI reply draft', calendar_window: 'Calendar period', automation_run: 'Automation run',
+  transcript_check: 'Transcript check', transcript_download: 'Transcript save', meeting_notes: 'Meeting notes',
+};
 /** What a job is called in Activity. */
 export const jobLabel = job => (tasksDueJob(job) ? 'Tasks due today' : JOB_LABEL[job.kind] || job.kind);
 const JOB_TONE = { succeeded: 'success', failed: 'error', blocked: 'warning', cancelled: 'neutral', queued: 'info', running: 'info' };

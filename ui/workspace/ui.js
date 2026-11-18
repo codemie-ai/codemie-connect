@@ -10,10 +10,10 @@ const attrsOf = (attrs = {}) => Object.entries(attrs)
 
 /**
  * Button. Variants follow the platform: primary (gradient outline / blue tint), secondary
- * (outlined), ghost (text), magic (AI gradient fill), danger.
+ * (outlined), ghost (text), magic (AI gradient fill), danger. `className` adds classes of its own.
  */
-export function button(label, { action, variant = 'secondary', iconName, iconRight, size, attrs = {}, title, disabled, type = 'button' } = {}) {
-  const classes = ['ws-btn', `ws-btn-${variant}`, size ? `ws-btn-${size}` : '', !label ? 'ws-btn-icon' : ''].filter(Boolean).join(' ');
+export function button(label, { action, variant = 'secondary', iconName, iconRight, size, attrs = {}, title, disabled, type = 'button', className = '' } = {}) {
+  const classes = ['ws-btn', `ws-btn-${variant}`, size ? `ws-btn-${size}` : '', !label ? 'ws-btn-icon' : '', className].filter(Boolean).join(' ');
   const content = `${iconName ? icon(iconName) : ''}${label ? `<span>${e(label)}</span>` : ''}${iconRight ? icon(iconRight) : ''}`;
   return `<button ${attrsOf({ type, class: classes, 'data-action': action, title, 'aria-label': !label ? title : undefined, disabled, ...attrs })}>${content}</button>`;
 }

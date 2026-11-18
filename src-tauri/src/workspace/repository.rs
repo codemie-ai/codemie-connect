@@ -384,8 +384,11 @@ impl Repository {
         }
         super::inbox::project(self, active, visible, &mut records)?;
         super::ai_jobs::mark_stale_summaries(&mut records);
-        let jobs: Vec<Job> =
-            self.documents("SELECT body FROM jobs ORDER BY due_at DESC LIMIT 300")?;
+        // The newest 300 jobs, leaving out transcript checks that found nothing: one runs per
+        // waiting meeting every few minutes and would push sync, send and AI rows out of Activity.
+        let jobs: Vec<Job> = self.documents(
+            "SELECT body FROM jobs WHERE NOT (state='succeeded' AND json_extract(body,'$.kind')='transcript_check') ORDER BY due_at DESC LIMIT 300",
+        )?;
         let jobs = jobs
             .into_iter()
             .filter(|j| {
@@ -2725,6 +2728,55 @@ mod tests {
         );
         r.enqueue(&queued("ai_summarize", "summary-0", at)).unwrap();
         assert_eq!(r.claim(at).unwrap().unwrap().key, "summary-0");
+    }
+    #[test]
+    fn routine_transcript_checks_never_push_other_work_out_of_the_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&dir.path().join("db")).unwrap();
+        let at = now();
+        let mut sync = job_of("sync", "sync:1", "succeeded", json!({}));
+        sync.due_at = at - 3600;
+        r.enqueue(&sync).unwrap();
+        // 400 checks that found nothing, all newer than the sync: the snapshot keeps 300 rows.
+        for n in 0..400 {
+            let mut check = job_of(
+                "transcript_check",
+                &format!("transcript_check:m{n}:1"),
+                "succeeded",
+                json!({"meetingId": format!("m{n}")}),
+            );
+            check.due_at = at - 600 + n;
+            r.enqueue(&check).unwrap();
+        }
+        // A check that failed and one waiting to run still show, as Activity needs them.
+        for (key, state) in [
+            ("transcript_check:failed:1", "failed"),
+            ("transcript_check:queued:1", "queued"),
+        ] {
+            let mut j = job_of("transcript_check", key, state, json!({}));
+            j.due_at = at;
+            r.enqueue(&j).unwrap();
+        }
+        let s = r.snapshot().unwrap();
+        let keys: Vec<&str> = s.jobs.iter().map(|j| j.key.as_str()).collect();
+        assert!(keys.contains(&"sync:1"), "the sync is still in Activity");
+        assert!(keys.contains(&"transcript_check:failed:1"));
+        assert!(keys.contains(&"transcript_check:queued:1"));
+        assert!(
+            !s.jobs
+                .iter()
+                .any(|j| j.kind == "transcript_check" && j.state == "succeeded"),
+            "routine checks that found nothing stay out"
+        );
+        // The rows are still there for the round (pruned after two days, not here).
+        assert_eq!(
+            r.jobs()
+                .unwrap()
+                .iter()
+                .filter(|j| j.kind == "transcript_check")
+                .count(),
+            402
+        );
     }
     #[test]
     fn automatic_notes_take_one_claude_slot_and_person_notes_two() {

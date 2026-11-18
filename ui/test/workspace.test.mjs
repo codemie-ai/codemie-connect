@@ -7,12 +7,12 @@ import {
   layoutColumns, freeSlots, groupCalendarEvents,
 } from '../workspace/calendar-model.js';
 import {
-  dayKey, addDaysToKey, minutesOfDay, initials, firstName, relativeAge, agoLabel, countdownLabel, durationLabel, greeting, colorFor, formatTime,
+  dayKey, addDaysToKey, minutesOfDay, initials, firstName, relativeAge, agoLabel, countdownLabel, durationLabel, greeting, colorFor, formatTime, formatDate,
 } from '../workspace/format.js';
 import { attentionMessages, messageTitle, connectionState, decisions, sourceCounts, conversation, collapseChats } from '../workspace/selectors.js';
 import { snoozeUntil, filteredMessages, inbox } from '../workspace/view-inbox.js';
-import { today, todayModel } from '../workspace/view-today.js';
-import { calendar, periodTitle, eventDetails } from '../workspace/view-calendar.js';
+import { today, todayModel, WIDGETS } from '../workspace/view-today.js';
+import { calendar, periodTitle, eventDetails, eventActions } from '../workspace/view-calendar.js';
 import { settings, jobLabel } from '../workspace/view-settings.js';
 import { renderShell, NAV } from '../workspace/shell.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from '../workspace/boot.js';
@@ -20,7 +20,11 @@ import { controlSelector, soleMatch } from '../workspace/ui.js';
 import { tasksPage } from '../workspace/view-tasks.js';
 import { createTasksController } from '../workspace/tasks-controller.js';
 import { newTasksView } from '../workspace/tasks-model.js';
-import { buildSnapshot, withTasks } from './fixtures/workspace-fixture.mjs';
+import { meetings } from '../workspace/view-meetings.js';
+import { createMeetingsController } from '../workspace/meetings-controller.js';
+import { newMeetingsView } from '../workspace/meetings-model.js';
+import { active } from '../workspace/selectors.js';
+import { buildSnapshot, withTasks, withMeetings, meetingFolders, meetingContract } from './fixtures/workspace-fixture.mjs';
 import { readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------- store
@@ -447,7 +451,7 @@ test('Settings shows the account profile and automatic sources, no source picker
 
 test('shell_has_no_workspaces_entry_or_switcher', () => {
   const html = renderShell({ snapshot: buildSnapshot(Date.now()), route: 'today', resolvedDark: false });
-  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'tasks', 'inbox', 'automations']);
+  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations']);
   assert.match(html, /data-route="automations"/);
   assert.doesNotMatch(html, /data-route="workspaces"/);
   assert.doesNotMatch(html, /workspace-select|ws-workspace-switch|ws-ws-dot|Active workspace/);
@@ -457,12 +461,15 @@ test('shell_has_no_workspaces_entry_or_switcher', () => {
   assert.match(html, /ws-sync-pill/);
 });
 
-test('NAV lists Today, Calendar, Tasks, Inbox, Automations', () => {
-  assert.deepEqual(NAV, [['today', 'Today'], ['calendar', 'Calendar'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations']]);
+test('NAV lists Today, Calendar, Meetings, Tasks, Inbox, Automations', () => {
+  assert.deepEqual(NAV, [['today', 'Today'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations']]);
   const now = Date.UTC(2026, 10, 18, 12);
   const html = renderShell({ snapshot: withTasks(buildSnapshot(now, { photo: false }), now), route: 'tasks', resolvedDark: true });
   assert.match(html, /data-route="tasks" aria-current="page"><svg[^]*?<span>Tasks<\/span><small class="ws-count" title="Tasks to review">2<\/small>/, 'Tasks is current and counts the tasks to review');
   assert.doesNotMatch(renderShell({ snapshot: buildSnapshot(now, { photo: false }), route: 'today', resolvedDark: true }), /Tasks to review/);
+  // Meetings has its own icon and counts what waits for the person: to do and needs you.
+  const meetingsHtml = renderShell({ snapshot: withMeetings(buildSnapshot(now, { photo: false }), now), route: 'meetings', resolvedDark: true, now });
+  assert.match(meetingsHtml, /data-route="meetings" aria-current="page"><svg[^>]*>(?!<circle cx="5")[^]*?<span>Meetings<\/span><small class="ws-count" title="Transcripts waiting for you">5<\/small>/);
 });
 
 test('boot_selects_personal_when_another_workspace_is_active', async () => {
@@ -674,4 +681,290 @@ test('Activity and the decisions call the due-today reminder by its name, not a 
   s.jobs.push(job('due-2', 'tasks_due:2026-11-19', 'failed', 'OS notification submission failed.'));
   const decisions = inbox(s, ctx({ lane: 'decisions' }));
   assert.match(decisions, /<strong>Tasks due today<\/strong><p>OS notification submission failed\.<\/p>/);
+});
+
+// ---------------------------------------------------------------- meetings
+
+const MEET_NOW = Date.UTC(2026, 10, 18, 15, 20);
+const meetingsSnapshot = () => withMeetings(buildSnapshot(MEET_NOW, { photo: false, zone: 'UTC' }), MEET_NOW);
+const FOLDERS = meetingFolders(MEET_NOW);
+/** What the controller has read for a meeting: its transcript and documents, as native answers. */
+const reads = (overrides = {}) => id => ({
+  transcript: FOLDERS[id] ? { segments: FOLDERS[id].segments } : undefined,
+  files: FOLDERS[id] ? { files: FOLDERS[id].files } : undefined,
+  docs: Object.fromEntries(Object.entries(FOLDERS[id]?.docs || {}).map(([doc, text]) => [doc, { text }])),
+  ...(overrides[id] || {}),
+});
+const meetingsCtx = (view = {}, extra = {}) => ({ state: { meetings: { ...newMeetingsView(), ...view }, tasks: newTasksView() }, now: MEET_NOW, banners: '', reads: reads(), ...extra });
+/** One list row, from its button to the next. */
+const rowOf = (html, id) => html.match(new RegExp(`<button type="button" class="ws-mtg-row[^"]*"[^>]*data-id="${id}"[^]*?</button>`))?.[0] || '';
+const detailOf = html => html.match(/<section class="ws-mtg-detail"[^]*$/)?.[0] || '';
+const stripOf = html => html.match(/<div class="ws-mtg-strip[^"]*"[^]*?<\/div>(?=\s*<div class="ws-tabs)/)?.[0] || '';
+/** A meetings controller over fakes: `calls` records what it sent and showed. */
+function meetingsHarness(s, view = {}, answers = {}) {
+  const calls = { mutate: [], toasts: [], modals: [] };
+  const state = { route: 'meetings', meetings: { ...newMeetingsView(), ...view }, tasks: newTasksView() };
+  const ctl = createMeetingsController({
+    state, snap: () => s, store: { query: async () => ({}) },
+    mutate: async (op, data) => { calls.mutate.push([op, data]); return answers[op] ?? { queued: true, jobId: `job-${calls.mutate.length}` }; },
+    render: async () => {}, route: async () => {}, openModal: o => { calls.modals.push(o); return { querySelector: () => null }; }, confirmModal: o => calls.modals.push(o),
+    toast: (message, tone, action) => calls.toasts.push({ message, tone, action }), writeText: async () => {}, downloadText: () => {}, focus: () => {}, now: () => MEET_NOW,
+  });
+  return { ctl, state, calls };
+}
+const notesJob = (meetingId, extra = {}) => ({ ...meetingContract().job, id: `job-${meetingId}`, payload: { ...meetingContract().job.payload, meetingId, ...extra } });
+
+test('meetings list: rows show time, title, coloured status; spinner only while a job runs; no status icons', () => {
+  const s = meetingsSnapshot();
+  s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-roadmap').data.title = 'Roadmap <b>review</b>';
+  s.records.find(r => r.kind === 'event' && r.id === 'mtg-roadmap').data.title = 'Roadmap <b>review</b>';
+  let html = meetings(s, meetingsCtx({ selected: 'mtg-philips' }));
+  assert.match(html, /<h1>Meetings<\/h1>/);
+  // Filters: All · To do (3) · Ready · Needs you (2) · Upcoming, and the switch for meetings without a transcript.
+  assert.match(html, /data-action="meeting-filter" data-filter="all" aria-selected="true">All</);
+  assert.match(html, /data-filter="process"[^>]*>To do<span class="ws-segmented-count">3<\/span>/);
+  assert.match(html, /data-filter="attention"[^>]*>Needs you<span class="ws-segmented-count ws-mtg-count-alert">2<\/span>/);
+  assert.match(html, /Show meetings without a transcript \(2\)/);
+  // A row: time, title, status in its colour and what goes with it; selected; no icon at all.
+  const philips = rowOf(html, 'mtg-philips');
+  assert.match(philips, /class="ws-mtg-row ws-mtg-on" role="option" aria-selected="true"/);
+  assert.ok(philips.includes(`<span class="ws-mtg-row-time">${formatTime(Date.UTC(2026, 10, 16, 13), 'UTC')}</span>`), philips);
+  assert.match(philips, /<strong>Philips CodeMie conversations syncup<\/strong>/);
+  assert.match(philips, /<em class="ws-tone-success">Notes ready<\/em><i>·<\/i>2 documents<i>·<\/i><span class="ws-mtg-accent">2 to review<\/span>/);
+  for (const [id, tone, label] of [
+    ['mtg-roadmap', 'purple', 'No notes yet'], ['mtg-release', 'info', 'Saving the transcript'], ['mtg-vendor', 'error', 'Couldn’t get the transcript'],
+    ['mtg-sprint', 'info', 'Waiting for Teams'], ['mtg-northwind', 'warning', 'Teams blocked access'], ['mtg-critique', 'error', 'Notes failed'],
+  ]) assert.match(rowOf(html, id), new RegExp(`<em class="ws-tone-${tone}">${label}</em>`), id);
+  assert.match(rowOf(html, 'mtg-roadmap'), /<strong>Roadmap &lt;b&gt;review&lt;\/b&gt;<\/strong>/, 'titles are escaped');
+  assert.match(rowOf(html, 'mtg-roadmap'), /<i>·<\/i>Meeting notes/, 'the template it would use');
+  for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-sprint', 'mtg-critique']) assert.doesNotMatch(rowOf(html, id), /<svg/, `${id} has no status icon`);
+  assert.doesNotMatch(html, /ws-mtg-row-spin/, 'nothing runs: no spinner');
+  // Grouped by day, newest first.
+  assert.match(html, /<div class="ws-mtg-day">Today<span>[^<]+<\/span><\/div>/);
+  assert.match(html, /<div class="ws-mtg-day">Yesterday<span>/);
+  // A run: the row shows its step and the one spinner.
+  s.jobs.push(notesJob('mtg-roadmap'));
+  html = meetings(s, meetingsCtx({ selected: 'mtg-philips' }));
+  assert.match(rowOf(html, 'mtg-roadmap'), /<em class="ws-tone-purple">Writing notes with Meeting notes…<\/em>/);
+  assert.match(rowOf(html, 'mtg-roadmap'), /<span class="ws-spinner ws-mtg-row-spin" role="status" aria-label="In progress"><\/span>/);
+  assert.equal((html.match(/ws-mtg-row-spin/g) || []).length, 1);
+  // Make notes for all: the to-do meetings that aren't running.
+  assert.match(html, /2 transcripts without notes[^]*?data-action="meeting-make-all"[^>]*><span>Make notes for all 2<\/span>/);
+  // Search and an empty lane.
+  assert.match(meetings(s, meetingsCtx({ q: 'zzz' })), /Nothing matches “zzz”/);
+});
+
+test('meeting detail: people by name with organizer/you/company, dimmed when they never spoke, status strip, five tabs', () => {
+  const s = meetingsSnapshot();
+  const html = meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'notes' }));
+  const detail = detailOf(html);
+  assert.match(detail, /<h2>Philips CodeMie conversations syncup<\/h2>/);
+  const when = `${formatDate(Date.UTC(2026, 10, 16, 12), 'UTC', { weekday: 'long', month: 'long', day: 'numeric' })} · ${formatTime(Date.UTC(2026, 10, 16, 13), 'UTC')}–${formatTime(Date.UTC(2026, 10, 16, 14), 'UTC')} · 1 h · Microsoft Teams`;
+  assert.ok(detail.includes(when), when);
+  // People by name: the organizer first, me, the company of guests; who never spoke is dimmed.
+  assert.match(detail, /<button type="button" class="ws-mtg-pchip"[^>]*>[^]*?<span>Jeroen de Vries<\/span><small>organizer · Philips<\/small><\/button>/);
+  assert.match(detail, /<span>Taylor Morgan<\/span><small>you<\/small>/);
+  assert.match(detail, /<span>Anouk Bakker<\/span><small>Philips<\/small>/);
+  assert.match(detail, /class="ws-mtg-pchip ws-mtg-quiet"[^>]*title="Jordan Lee · didn’t speak"/);
+  assert.doesNotMatch(detail, /class="ws-mtg-pchip ws-mtg-quiet"[^>]*title="Priya/);
+  // The strip: Transcript › Notes › Tasks, and the folder.
+  const strip = stripOf(detail);
+  assert.match(strip, /ws-mtg-seg-done[^]*?<strong>Transcript<\/strong><small>10 lines<\/small>/);
+  assert.match(strip, /ws-mtg-seg-done[^]*?<strong>Notes<\/strong><small>2 documents<\/small>/);
+  assert.match(strip, /ws-mtg-seg-now[^]*?<strong>Tasks<\/strong><small><span class="ws-mtg-accent">2 to review<\/span> of 3<\/small>/);
+  assert.match(strip, /data-action="meeting-reveal"[^>]*data-id="mtg-philips"/);
+  // Five tabs with their counts.
+  const tabs = [...detail.matchAll(/role="tab" data-action="meeting-tab" data-tab="([a-z]+)" aria-selected="(true|false)">([A-Za-z]+)(?:<span class="ws-tab-count">(\d+)<\/span>)?/g)].map(m => [m[1], m[2], m[3], m[4] || '']);
+  assert.deepEqual(tabs, [['notes', 'true', 'Notes', '2'], ['transcript', 'false', 'Transcript', '10'], ['tasks', 'false', 'Tasks', '3'], ['files', 'false', 'Files', ''], ['people', 'false', 'People', '6']]);
+  // Notes: document chips, One / Side by side, the main document rendered, escaped.
+  assert.match(detail, /data-action="doc-view" data-id="mtg-philips" data-doc="meeting-notes" aria-selected="true"[^>]*>[^]*?Meeting notes<\/span><em class="ws-mtg-main">Main<\/em>/);
+  assert.match(detail, /data-action="meeting-compare" data-v="1"/);
+  assert.match(detail, /<article class="ws-md">[^]*?<h3>TL;DR<\/h3>/);
+  assert.match(detail, /data-action="meeting-goto-line" data-t="00:01"/);
+  // Transcript: speaker filter, a line with its task, the unnamed guest to match, glossary underline.
+  const transcript = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'transcript' }, { glossary: { pairs: [['code me', 'CodeMie']] } })));
+  assert.match(transcript, /1 speaker without a name/);
+  assert.match(transcript, /<select class="ws-select" data-action="meeting-speaker" data-id="mtg-philips" data-voice="@1"/);
+  assert.match(transcript, /<mark class="ws-mtg-fix" title="Written as “CodeMie” in notes \(your glossary\)">Code me<\/mark>/);
+  assert.match(transcript, /data-action="task-open-today" data-id="task-endpoint"[^>]*>[^]*?Task for You: Add the by-id endpoint/);
+  assert.match(transcript, /id="meeting-line-3"/);
+  // People: talk share and tasks per person.
+  const people = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'people' })));
+  assert.match(people, /<strong>Jeroen de Vries<\/strong><small>jeroen\.devries@philips\.test · Philips<\/small>[^]*?Organizer[^]*?% talking/);
+  assert.match(people, /Jordan Lee[^]*?<small class="ws-muted">didn’t speak<\/small>/);
+});
+
+test('make notes for all queues one meeting_notes per to-do meeting with its own template', async () => {
+  const s = meetingsSnapshot();
+  s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-release').data.template = 'short-summary';
+  s.jobs.push(notesJob('mtg-vendor', { notesKey: 'mtg-vendor:meeting-notes' }));
+  const { ctl, calls } = meetingsHarness(s);
+  await ctl.handle('meeting-make-all', { dataset: {}, closest: () => null });
+  const queued = calls.mutate.filter(([op]) => op === 'meeting_notes').map(([, d]) => [d.meetingId, d.templateId]).sort();
+  assert.deepEqual(queued, [['mtg-release', 'short-summary'], ['mtg-roadmap', 'meeting-notes']], 'a running one is left alone');
+  assert.ok(calls.mutate.every(([, d]) => d.findTasks === true && d.wishes === ''));
+  assert.match(calls.toasts.at(-1).message, /Making notes for 2 meetings/);
+});
+
+test('status strip shows a button only for the actionable step', () => {
+  const s = meetingsSnapshot();
+  const buttons = id => [...stripOf(detailOf(meetings(s, meetingsCtx({ selected: id })))).matchAll(/class="ws-btn [^"]*ws-mtg-seg-btn"[^>]*data-action="([a-z-]+)"/g)].map(m => m[1]);
+  assert.deepEqual(buttons('mtg-roadmap'), ['meeting-make-notes']);
+  assert.deepEqual(buttons('mtg-philips'), ['meeting-tab'], 'Review the tasks');
+  assert.deepEqual(buttons('mtg-sprint'), ['meeting-check']);
+  assert.deepEqual(buttons('mtg-critique'), ['meeting-retry']);
+  assert.deepEqual(buttons('mtg-northwind'), ['meeting-import']);
+  assert.deepEqual(buttons('mtg-vendor'), ['meeting-download'], 'Try again after a failed save');
+  assert.deepEqual(buttons('mtg-release'), ['meeting-make-notes']);
+  // Everything done: no button at all.
+  for (const t of s.records.filter(r => r.kind === 'commitment' && r.data.meetingId === 'mtg-philips')) t.data.status = 'todo';
+  assert.deepEqual(buttons('mtg-philips'), []);
+  // A run: the strip is the progress line with Cancel.
+  s.jobs.push(notesJob('mtg-roadmap', { step: 'Finding tasks' }));
+  const run = stripOf(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap' }))));
+  assert.match(run, /class="ws-mtg-strip ws-mtg-strip-run" aria-live="polite"/);
+  assert.match(run, /<strong>Making Meeting notes<\/strong><small>Finding tasks… · step 2 of 3<\/small>/);
+  assert.match(run, /<span class="ws-runbar" role="progressbar"[^>]*aria-valuenow="50"/);
+  assert.match(run, /data-action="meeting-cancel" data-id="job-mtg-roadmap"/);
+});
+
+test('no Download button: available reads "Saving the transcript", a failed save shows Try again, Make notes works from available', async () => {
+  const s = meetingsSnapshot();
+  const release = meetings(s, meetingsCtx({ selected: 'mtg-release' }));
+  assert.doesNotMatch(release, />Download</);
+  assert.match(stripOf(detailOf(release)), /ws-mtg-seg-busy[^]*?<strong>Transcript<\/strong><small>saving it from Teams<\/small>/);
+  assert.match(detailOf(release), /data-action="meeting-make-notes" data-id="mtg-release"/);
+  const vendor = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor', tab: 'transcript' })));
+  assert.match(stripOf(vendor), /ws-mtg-seg-error[^]*?couldn’t get it from Teams[^]*?<span>Try again<\/span>/);
+  assert.match(vendor, /Couldn’t get the transcript from Teams[^]*?Teams didn’t answer in time\.[^]*?data-action="meeting-download"/);
+  // Make notes from a transcript still in Teams: the dialog says it saves it first.
+  const { ctl, calls } = meetingsHarness(s);
+  await ctl.handle('meeting-make-notes', { dataset: { id: 'mtg-release' }, closest: () => null });
+  assert.match(calls.modals.at(-1).body, /Connect gets the transcript from Teams first, then writes the notes\./);
+  const f = new FormData();
+  f.append('template', 'meeting-notes');
+  f.append('findTasks', 'on');
+  await calls.modals.at(-1).onSubmit(f);
+  assert.deepEqual(calls.mutate.at(-1), ['meeting_notes', { meetingId: 'mtg-release', templateId: 'meeting-notes', wishes: '', findTasks: true, remember: false }]);
+  // Download again lives in the ⋯ menu of a saved transcript only.
+  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap' }))), /data-action="meeting-download" data-id="mtg-roadmap"[^>]*>[^]*?<span>Download again from Teams<\/span>/);
+});
+
+test('a meeting waiting for Teams offers "Make notes as soon as it arrives", which sends meeting_set {auto:true}', async () => {
+  const s = meetingsSnapshot();
+  const html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-sprint' })));
+  assert.match(html, /Teams is still preparing the transcript/);
+  assert.match(html, /<input type="checkbox" role="switch" data-action="meeting-auto" data-id="mtg-sprint"><span class="ws-switch-track"[^]*?Make notes as soon as it arrives/);
+  const { ctl, calls } = meetingsHarness(s);
+  await ctl.handle('meeting-auto', { dataset: { id: 'mtg-sprint' }, checked: true, closest: () => null });
+  assert.deepEqual(calls.mutate.at(-1), ['meeting_set', { meetingId: 'mtg-sprint', auto: true }]);
+  assert.match(calls.toasts.at(-1).message, /as soon as Teams has the transcript/);
+  // Once on, the switch is on and the row says so.
+  s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-sprint').data.auto = true;
+  const after = meetings(s, meetingsCtx({ selected: 'mtg-sprint' }));
+  assert.match(after, /role="switch" checked data-action="meeting-auto" data-id="mtg-sprint"/);
+  assert.match(rowOf(after, 'mtg-sprint'), /notes when it arrives/);
+});
+
+test('files tab offers download again when the folder is missing', () => {
+  const s = meetingsSnapshot();
+  const ok = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap', tab: 'files' })));
+  assert.match(ok, /<strong>transcript\.md<\/strong>/);
+  assert.match(ok, /data-action="meeting-file-preview" data-id="mtg-roadmap" data-file="segments\.json"/);
+  assert.match(ok, /data-action="meeting-file-save"[^>]*data-id="mtg-roadmap" data-file="segments\.json"/);
+  const missing = { files: { error: { code: 'folder_missing', message: 'The meeting folder is gone.' } } };
+  const gone = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap', tab: 'files' }, { reads: reads({ 'mtg-roadmap': missing }) })));
+  assert.match(gone, /The meeting folder is gone/);
+  assert.match(gone, /data-action="meeting-download" data-id="mtg-roadmap"[^>]*>[^]*?<span>Download again<\/span>/);
+  // An imported transcript can't come from Teams again: import it again instead.
+  s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-roadmap').data.imported = 'roadmap.vtt';
+  const imported = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap', tab: 'files' }, { reads: reads({ 'mtg-roadmap': missing }) })));
+  assert.match(imported, /data-action="meeting-import" data-id="mtg-roadmap"/);
+});
+
+test('calendar badge appears on online meetings only and the event card offers Show in Meetings', () => {
+  const s = meetingsSnapshot();
+  const state = { calendarMode: 'week', calendarDate: new Date(MEET_NOW), calendarSidebar: true, meetings: newMeetingsView() };
+  const html = calendar(s, { state, auth: {}, hidden: new Set(), banners: '' });
+  const block = id => html.match(new RegExp(`<button type="button" class="ws-ev[^"]*" data-action="event" data-id="${id}"[^]*?</button>`))?.[0] || '';
+  assert.match(block('mtg-philips'), /<span class="ws-tb ws-tb-ready" title="Notes ready · Meeting notes">/);
+  assert.match(block('mtg-roadmap'), /ws-tb ws-tb-process/);
+  assert.match(block('mtg-sprint'), /ws-tb ws-tb-busy/);
+  assert.match(block('mtg-critique'), /ws-tb ws-tb-attention/);
+  assert.match(block('ev-week-1'), /ws-tb ws-tb-auto/);
+  assert.doesNotMatch(block('mtg-lunch'), /ws-tb/, 'in person: no badge');
+  assert.doesNotMatch(block('ev-next'), /ws-tb/, 'upcoming without automatic notes: no badge');
+  // The side panel: the switch and the legend with this view's counts.
+  assert.match(html, /data-action="calendar-transcripts"[^>]*>[^]*?Only meetings with transcripts/);
+  assert.match(html, /<span class="ws-tb ws-tb-attention">[^]*?<span>Needs you<\/span><small>2<\/small>/);
+  // The event card: Transcript & notes with the next step; the footer opens the meeting.
+  const roadmap = s.records.find(r => r.kind === 'event' && r.id === 'mtg-roadmap');
+  const card = eventDetails(s, roadmap);
+  assert.match(card, /<section class="ws-mtg-ev">[^]*?<strong>Transcript &amp; notes<\/strong>[^]*?No notes yet/);
+  assert.match(card, /data-action="meeting-make-notes" data-id="mtg-roadmap"/);
+  assert.match(eventActions(s, roadmap), /data-action="meeting-open" data-id="mtg-roadmap"[^>]*><span>Show in Meetings<\/span>/);
+  const lunch = s.records.find(r => r.kind === 'event' && r.id === 'mtg-lunch');
+  assert.match(eventDetails(s, lunch), /In-person meeting — Teams won’t have a transcript/);
+  assert.doesNotMatch(eventActions(s, lunch), /Show in Meetings/);
+  // Only meetings with transcripts: the others are dimmed in the week.
+  const only = calendar(s, { state: { ...state, calendarTranscripts: true }, auth: {}, hidden: new Set(), banners: '' });
+  assert.match(only, /class="ws-ev[^"]*ws-mtg-dim[^"]*" data-action="event" data-id="mtg-lunch"/);
+  assert.doesNotMatch(only, /class="ws-ev[^"]*ws-mtg-dim[^"]*" data-action="event" data-id="mtg-philips"/);
+});
+
+test('today meetings card lists needs-you before to-do and links to the meeting', () => {
+  const s = meetingsSnapshot();
+  const ctx = { auth: {}, hidden: new Set(), banners: '', state: {}, now: MEET_NOW };
+  // Not in the layout yet and never hidden: it shows itself while something waits.
+  let html = today(s, ctx);
+  const card = html.match(/<section class="ws-card[^"]*ws-mtg-today[^"]*"[^]*?<\/section>/)?.[0] || '';
+  assert.match(card, /From your meetings/);
+  const rows = [...card.matchAll(/data-action="meeting-open" data-id="([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual(rows.slice(0, 2).sort(), ['mtg-critique', 'mtg-northwind'], 'needs you first');
+  assert.deepEqual(rows.slice(2).sort(), ['mtg-release', 'mtg-roadmap', 'mtg-vendor']);
+  assert.match(card, /Teams blocked the transcript/);
+  assert.match(card, /Notes failed — try again/);
+  assert.match(card, /Transcript saved, no notes yet/);
+  assert.match(card, /data-action="route" data-route="meetings"/);
+  // Hidden in Customize: it stays hidden.
+  active(s).widgetWidths = { meetings: 6 };
+  assert.doesNotMatch(today(s, ctx), /ws-mtg-today/);
+  // In the layout and nothing waiting: all caught up.
+  active(s).layout = [...active(s).layout, 'meetings'];
+  for (const r of s.records.filter(x => x.kind === 'meeting')) r.data.state = 'ready';
+  html = today(s, ctx);
+  assert.match(html, /ws-mtg-today[^]*?All caught up[^]*?Every transcript has notes\./);
+  assert.ok(WIDGETS.meetings && WIDGETS.meetings.title === 'From your meetings');
+});
+
+test('Activity names transcript checks, transcript saves and meeting notes', () => {
+  assert.equal(jobLabel({ kind: 'transcript_check', key: 'transcript_check:m:1' }), 'Transcript check');
+  assert.equal(jobLabel({ kind: 'transcript_download', key: 'transcript_download:auto:m:1' }), 'Transcript save');
+  assert.equal(jobLabel({ kind: 'meeting_notes', key: 'meeting_notes:op' }), 'Meeting notes');
+});
+
+test('transcript search and glossary marks never split escaped text', () => {
+  const s = meetingsSnapshot();
+  const segments = [{ address: 'jordan.lee@example.test', end: 9, name: 'Jordan Lee', speaker: 'remote', start: 0, text: 'R&D said <b>code me</b> & amp', voice: 'Jordan Lee' }];
+  const read = reads({ 'mtg-roadmap': { transcript: { segments } } });
+  const html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap', tab: 'transcript', tq: 'amp' }, { reads: read, glossary: { pairs: [['code me', 'CodeMie']] } })));
+  assert.match(html, /<p>R&amp;D said &lt;b&gt;<mark class="ws-mtg-fix" title="Written as “CodeMie” in notes \(your glossary\)">code me<\/mark>&lt;\/b&gt; &amp; <mark class="ws-mtg-hit">amp<\/mark><\/p>/);
+  assert.match(html, /1 match/);
+});
+
+test('meeting operations survive a background sync: they rebase once on a stale view', async () => {
+  // Their outcome never depends on the revision the person saw: notes and saves dedupe natively,
+  // and a document edit is fenced by its own baseVersion/baseRev (conflict).
+  for (const op of ['meeting_check', 'meeting_download', 'meeting_import', 'meeting_speakers', 'meeting_notes', 'meeting_set', 'meeting_doc', 'meeting_rule_save']) assert.ok(REBASE_SAFE.has(op), op);
+  let revision = 7;
+  const sent = [];
+  const store = createStore(async (cmd, { request }) => {
+    if (request.op === 'snapshot') return { snapshot: { revision, settings: { activeWorkspace: 'personal' } } };
+    sent.push(request.expectedRevision);
+    if (sent.length === 1) { revision = 8; throw { code: 'stale_view', message: 'This view changed.' }; }
+    return { saved: true };
+  });
+  await store.refresh();
+  assert.deepEqual(await store.mutate('meeting_doc', { action: 'edit' }), { saved: true });
+  assert.deepEqual(sent, [7, 8]);
 });

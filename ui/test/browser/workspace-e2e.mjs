@@ -9,8 +9,9 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
+import { meetingChecks } from './meetings-checks.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -60,7 +61,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready' }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '' }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // ---- CodeMie CLI, mocked by scenario: 'fresh' (nothing set up), 'ready', 'expired' (signed out).
@@ -380,29 +381,300 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       return { runs: page, next };
     },
   });
-  // Meetings: minimal stand-ins for the transcript operations (the Meetings page builds on
-  // them). Nothing is opened or written; `meeting_read` answers as a meeting with no files.
+  // Meetings (Tasks 1, 3, 4): the operations answer as native does (contract fixtures), and the
+  // background work they start runs here: a check finds the transcript, a save writes the folder
+  // (`folders`, what `meeting_read` answers), a notes job steps through `steps` and writes a
+  // document and tasks. `window.__checkPlan` ({found, ms}), `window.__downloadPlan` ({outcome:
+  // 'fail'}) and `window.__notesPlan` ({outcome: 'ok'|'fail'|'hold', stepMs}) pick what happens;
+  // `window.__finishNotes()` ends a held run. `window.__folderMissing(id)` deletes a folder.
+  const folders = folderInit;
+  const MEETINGS_ROOT = '/Users/taylor/CodeMie Connect/Meetings';
+  const update = () => { s.revision++; emit('workspace:changed'); };
+  const meetingRec = id => s.records.find(r => r.kind === 'meeting' && r.id === id);
+  const touch = m => { m.revision = crypto.randomUUID(); m.updatedAt = now(); };
+  const ensureMeeting = id => {
+    let m = meetingRec(id);
+    if (m) return m;
+    const ev = find('event', id);
+    if (!ev) fail('not_found', 'This meeting is no longer in your calendar.');
+    const ended = Date.parse(ev.data.end) <= Date.now();
+    m = { id, kind: 'meeting', source: ev.source, connectionId: s.connection.id, workspaceId: null, revision: crypto.randomUUID(), updatedAt: now(), data: { eventId: id, title: ev.data.title, start: ev.data.start, end: ev.data.end, state: !ev.data.joinUrl ? 'offline' : ended ? 'pending' : 'upcoming', transcriptIds: [], transcriptStart: null, folder: null, checkedAt: null, error: null, external: null, imported: null, speakers: {}, template: null, auto: null, docs: [], main: null, lastError: null, removedLines: [] } };
+    s.records.push(m);
+    return m;
+  };
+  const people = id => { const ev = find('event', id); return ev ? [ev.data.organizer, ...(ev.data.attendees || [])].filter(p => p?.address) : []; };
+  const saved = st => ['downloaded', 'ready', 'failed'].includes(st);
+  const folderName = m => `${String(m.data.start).slice(0, 10)}_${m.id}`;
+  const writeFolder = (m, segments) => {
+    const f = folders[m.id] || (folders[m.id] = { folder: `${MEETINGS_ROOT}/${folderName(m)}`, segments: [], files: [], texts: {}, docs: {} });
+    f.missing = false;
+    if (segments) f.segments = segments;
+    f.texts['segments.json'] = JSON.stringify(f.segments, null, 2);
+    f.texts['transcript.md'] = `# ${m.data.title}\n\n${f.segments.map(x => `**${x.name}**\n${x.text}`).join('\n\n')}\n`;
+    f.texts['meeting.json'] = JSON.stringify({ event_id: m.id, subject: m.data.title }, null, 2);
+    if (m.data.imported) f.texts[`imported.${m.data.imported.split('.').pop().toLowerCase()}`] = f.raw || '';
+    else f.texts['transcript.vtt'] = `WEBVTT\n\n${f.segments.map(x => `<v ${x.voice}>${x.text}</v>`).join('\n\n')}\n`;
+    // The documents' files as they are named now (a new main document takes notes.md).
+    for (const name of Object.keys(f.texts)) if (/^notes(\..+)?\.md$/.test(name)) delete f.texts[name];
+    for (const doc of m.data.docs) f.texts[doc.file] = f.docs[doc.id] || '';
+    f.files = Object.keys(f.texts).sort().map(name => ({ name, size: new TextEncoder().encode(f.texts[name]).length, modified: now() }));
+    m.data.folder = f.folder;
+    return f;
+  };
+  const SAMPLE_LINES = [['Welcome, everyone.', 0], ['The release looks good from QA.', 1], ['I’ll send the go/no-go summary today.', 2], ['Then we ship on Thursday.', 0]];
+  const sampleSegments = id => {
+    const p = people(id);
+    return SAMPLE_LINES.map(([text, who], i) => { const x = p[who % Math.max(1, p.length)] || { name: 'Speaker 1', address: null }; return { address: x.address || null, end: i * 30 + 25, name: x.name, speaker: x.address === s.connection.email ? 'me' : 'remote', start: i * 30, text, voice: x.name }; });
+  };
+  const job = (kind, key, payload) => {
+    const j = { id: crypto.randomUUID(), workspaceId: 'personal', connectionId: s.connection.id, kind, key, state: 'queued', dueAt: now(), leaseUntil: null, attempts: 0, policy: {}, payload, result: null };
+    s.jobs.unshift(j);
+    return j;
+  };
+  const resolved = m => m.data.template || (s.records.filter(r => r.kind === 'meeting_rule' && r.data.on !== false).find(r => r.data.field === 'title' && m.data.title.toLowerCase().includes(String(r.data.value).toLowerCase()))?.data.template) || s.settings.meetings?.defaultTemplate || 'meeting-notes';
+  function startSave(m, auto) {
+    const j = job('transcript_download', auto ? `transcript_download:auto:${m.id}:1` : `transcript_download:${crypto.randomUUID()}`, { meetingId: m.id, title: m.data.title, auto });
+    setTimeout(() => { j.state = 'running'; update(); }, 150);
+    setTimeout(() => {
+      if (window.__downloadPlan?.outcome === 'fail') {
+        window.__downloadPlan = null;
+        m.data.lastError = { code: 'provider', message: 'Teams didn’t answer in time.' };
+        Object.assign(j, { state: 'failed', result: 'Teams didn’t answer in time.', errorCode: 'provider' });
+      } else {
+        writeFolder(m, folders[m.id]?.segments?.length ? folders[m.id].segments : sampleSegments(m.id));
+        if (!saved(m.data.state)) m.data.state = 'downloaded';
+        m.data.lastError = null;
+        Object.assign(j, { state: 'succeeded', result: 'Transcript saved' });
+        if (m.data.auto && !m.data.docs.length) startNotes(m, { templateId: resolved(m), wishes: '', findTasks: true, auto: true });
+      }
+      touch(m);
+      update();
+    }, 150 + (window.__downloadPlan?.ms || 700));
+    return j;
+  }
+  function startNotes(m, d) {
+    const tpl = s.noteTemplates.find(t => t.id === d.templateId);
+    const inTeams = m.data.state === 'available';
+    const steps = [...(inTeams ? ['Getting the transcript from Teams'] : []), `Writing notes with ${tpl.name}`, ...(d.findTasks !== false && tpl.extractTasks ? ['Finding tasks'] : []), `Saving to ${folderName(m)}`];
+    const j = { ...JSON.parse(JSON.stringify(notesJob)), id: crypto.randomUUID(), key: d.auto ? `meeting_notes:auto:${m.id}` : `meeting_notes:${crypto.randomUUID()}`, state: 'queued', dueAt: now(), connectionId: s.connection.id, result: null, payload: { meetingId: m.id, title: m.data.title, templateId: tpl.id, notesKey: `${m.id}:${tpl.id}`, wishes: d.wishes || '', findTasks: d.findTasks !== false, auto: !!d.auto, step: null, steps } };
+    s.jobs.unshift(j);
+    const plan = window.__notesPlan || { outcome: 'ok', stepMs: 500 };
+    let at = 0;
+    const finish = (result = plan) => {
+      if (!['queued', 'running'].includes(j.state)) return;
+      if (result.outcome === 'fail') {
+        m.data.lastError = { code: 'needs_login', message: 'Claude is not signed in.' };
+        if (!m.data.docs.length) m.data.state = 'failed';
+        Object.assign(j, { state: 'failed', result: 'Claude is not signed in.', errorClass: 'needs_login', errorCode: 'needs_login' });
+      } else {
+        const f = writeFolder(m);
+        const text = `# ${tpl.name}\n\n## Summary\n${m.data.title}: the team agreed the plan [00:00].\n\n## Action items\n- [ ] Send the go/no-go summary [00:01]\n`;
+        let doc = m.data.docs.find(x => x.id === tpl.id);
+        if (doc) {
+          doc.versions = [...doc.versions, { version: doc.version, at: doc.updatedAt, file: `notes-history/${tpl.id}.md`, profile: doc.profile, model: doc.model, auto: doc.auto, edited: doc.edited, wishes: doc.wishes }];
+          f.docs[`${doc.id}@${doc.version}`] = f.docs[doc.id];
+          Object.assign(doc, { version: doc.version + 1, rev: doc.rev + 1, updatedAt: now(), auto: !!d.auto, edited: false, wishes: d.wishes || null });
+        } else {
+          doc = { auto: !!d.auto, createdAt: now(), edited: false, file: m.data.docs.length ? `notes.${tpl.id}.md` : 'notes.md', id: tpl.id, model: 'claude-sonnet-4-5', name: tpl.name, profile: 'claude', rev: 1, template: tpl.id, updatedAt: now(), version: 1, versions: [], wishes: d.wishes || null };
+          m.data.docs.push(doc);
+          if (!m.data.main) m.data.main = doc.id;
+        }
+        f.docs[doc.id] = text;
+        writeFolder(m);
+        Object.assign(m.data, { state: 'ready', lastError: null });
+        if (d.findTasks !== false && !s.records.some(r => r.kind === 'commitment' && r.data.meetingId === m.id && r.data.line === 2)) {
+          const seg = f.segments[Math.min(2, f.segments.length - 1)];
+          s.records.push({ id: `task-${m.id}-2`, kind: 'commitment', source: 'local', connectionId: null, workspaceId: 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { text: 'Send the go/no-go summary', owner: seg?.address || null, ownerName: seg?.name || null, due: null, notes: null, meetingId: m.id, line: 2, quote: seg?.text || null, quoteAt: seg?.start ?? null, speaker: seg?.name || null, confidence: 'high', status: 'review', done: false, order: 500, createdAt: now(), history: [{ at: now(), text: `Found in the notes (${tpl.name})` }] } });
+        }
+        Object.assign(j, { state: 'succeeded', result: 'Notes ready' });
+      }
+      touch(m);
+      update();
+    };
+    const step = () => {
+      if (!['queued', 'running'].includes(j.state)) return;
+      j.state = 'running';
+      j.payload.step = steps[at];
+      if (steps[at] === 'Getting the transcript from Teams') {
+        writeFolder(m, folders[m.id]?.segments?.length ? folders[m.id].segments : sampleSegments(m.id));
+        m.data.state = 'downloaded';
+        touch(m);
+      }
+      update();
+      at++;
+      if (at < steps.length) setTimeout(step, plan.stepMs || 500);
+      else if (plan.outcome !== 'hold') setTimeout(() => finish(plan), plan.stepMs || 500);
+    };
+    window.__finishNotes = finish;
+    setTimeout(step, 150);
+    return j;
+  }
+  window.__folderMissing = id => { if (folders[id]) folders[id].missing = true; };
+  // Another window (or a run) changes a document while the person edits it.
+  window.__docChanged = (id, docId) => {
+    const m = meetingRec(id);
+    const doc = m.data.docs.find(x => x.id === docId);
+    folders[id].docs[docId] = `${folders[id].docs[docId]}\n\nAdded in another window.`;
+    doc.rev += 1;
+    touch(m);
+    update();
+  };
+  const readable = id => {
+    const m = meetingRec(id);
+    if (!m || !m.data.folder) fail('not_found', 'This meeting has no transcript yet.');
+    if (folders[id]?.missing) fail('folder_missing', 'The meeting folder was moved or deleted. Download the transcript again.');
+    return [m, folders[id]];
+  };
+  const parseVtt = (text, id) => {
+    const p = people(id);
+    const out = [];
+    for (const [, voice, said] of String(text).matchAll(/<v\s+([^>]+)>([\s\S]*?)(?:<\/v>|\n\n|$)/g)) {
+      const who = p.find(x => x.name.toLowerCase() === voice.trim().toLowerCase());
+      out.push({ address: who?.address || null, end: out.length * 20 + 15, name: who?.name || voice.trim(), speaker: who?.address === s.connection.email ? 'me' : 'remote', start: out.length * 20, text: said.replace(/<[^>]+>/g, '').trim(), voice: voice.trim() });
+    }
+    return out;
+  };
   Object.assign(ops, {
-    meeting_check: d => { calls.push(['meeting_check', d]); return { queued: true, jobId: crypto.randomUUID() }; },
-    meeting_download: d => { calls.push(['meeting_download', d]); return { queued: true, jobId: crypto.randomUUID() }; },
-    meeting_import: d => { calls.push(['meeting_import', { meetingId: d.meetingId, fileName: d.fileName }]); return { saved: true }; },
-    meeting_speakers: d => { calls.push(['meeting_speakers', d]); return { saved: true }; },
-    meetings_reveal: d => { calls.push(['meetings_reveal', d]); return { opened: true }; },
-    meeting_read: d => (d.part === 'transcript' ? { segments: [] } : d.part === 'files' ? { files: [] } : { text: '' }),
+    meeting_check: d => {
+      calls.push(['meeting_check', d]);
+      const m = ensureMeeting(d.meetingId);
+      if (saved(m.data.state) || m.data.state === 'available') fail('validation', 'Connect already has this meeting’s transcript.');
+      const busy = s.jobs.find(j => j.kind === 'transcript_check' && j.payload.meetingId === m.id && ['queued', 'running'].includes(j.state));
+      if (busy) return { queued: true, jobId: busy.id };
+      const plan = window.__checkPlan || { found: true, ms: 700 };
+      const j = job('transcript_check', `transcript_check:${crypto.randomUUID()}`, { meetingId: m.id, title: m.data.title, auto: false });
+      setTimeout(() => { j.state = 'running'; update(); }, 150);
+      setTimeout(() => {
+        m.data.checkedAt = now();
+        if (plan.found) {
+          Object.assign(m.data, { state: 'available', transcriptIds: ['t-1'], external: `ONLINE-${m.id}`, transcriptStart: m.data.start, error: null });
+          Object.assign(j, { state: 'succeeded', result: 'Transcript found' });
+          startSave(m, true);
+        } else Object.assign(j, { state: 'succeeded', result: 'No transcript yet' });
+        touch(m);
+        update();
+      }, 150 + plan.ms);
+      return { queued: true, jobId: j.id };
+    },
+    meeting_download: d => {
+      calls.push(['meeting_download', d]);
+      const m = meetingRec(d.meetingId);
+      if (!m?.data.transcriptIds?.length || !m.data.external) fail('transcript_missing', 'Teams has no transcript of this meeting for Connect to save. Check again later.');
+      const busy = s.jobs.find(j => j.kind === 'transcript_download' && j.payload.meetingId === m.id && ['queued', 'running'].includes(j.state));
+      return { queued: true, jobId: (busy || startSave(m, false)).id };
+    },
+    meeting_import: d => {
+      calls.push(['meeting_import', { meetingId: d.meetingId, fileName: d.fileName }]);
+      if (!/\.(vtt|txt)$/i.test(d.fileName || '')) fail('validation', 'Import a Teams .vtt or a .txt transcript.');
+      const m = ensureMeeting(d.meetingId);
+      const segments = parseVtt(d.text, m.id);
+      if (!segments.length) fail('validation', 'Connect found no one speaking in this file. Use a Teams .vtt, or lines like “Name: what they said”.');
+      Object.assign(m.data, { imported: d.fileName.split(/[\\/]/).pop(), transcriptStart: null, state: m.data.docs.length ? 'ready' : 'downloaded', error: null, lastError: null });
+      (folders[m.id] ||= { folder: `${MEETINGS_ROOT}/${folderName(m)}`, segments: [], files: [], texts: {}, docs: {} }).raw = d.text;
+      writeFolder(m, segments);
+      touch(m);
+      return { saved: true };
+    },
+    meeting_speakers: d => {
+      calls.push(['meeting_speakers', d]);
+      const [m, f] = readable(d.meetingId);
+      const who = people(m.id).find(p => p.address.toLowerCase() === String(d.address).toLowerCase());
+      if (d.address && !who) fail('validation', 'Choose someone who was at the meeting.');
+      if (d.address) m.data.speakers[d.voice] = who.address; else delete m.data.speakers[d.voice];
+      writeFolder(m, f.segments.map(x => (x.voice === d.voice ? { ...x, address: who?.address || null, name: who?.name || x.voice } : x)));
+      touch(m);
+      return { saved: true };
+    },
+    meetings_reveal: d => {
+      calls.push(['meetings_reveal', d]);
+      if (d.meetingId && folders[d.meetingId]?.missing) fail('folder_missing', 'The meeting folder was moved or deleted. Download the transcript again.');
+      return { opened: true };
+    },
+    meeting_read: d => {
+      if (!['transcript', 'files', 'file', 'doc'].includes(d.part)) fail('validation', 'Choose the transcript, the files, one file or a document.');
+      const [, f] = readable(d.meetingId);
+      calls.push(['meeting_read', { meetingId: d.meetingId, part: d.part, name: d.name, docId: d.docId, version: d.version }]);
+      if (d.part === 'transcript') return { segments: f.segments };
+      if (d.part === 'files') return { files: f.files };
+      if (d.part === 'file') return f.texts[d.name] !== undefined ? { text: f.texts[d.name] } : fail('not_found', 'That file isn’t in the meeting folder.');
+      const text = f.docs[d.version ? `${d.docId}@${d.version}` : d.docId];
+      return text !== undefined ? { text } : fail('not_found', 'This document is no longer there.');
+    },
   });
   // Notes (Task 3): the operations answer as native does; nothing runs Claude or writes a folder.
   // Templates, rules and texts are recorded so later checks can read what the UI sent.
   Object.assign(ops, {
-    meeting_notes: d => { calls.push(['meeting_notes', clone(d)]); return { queued: true, jobId: crypto.randomUUID() }; },
-    meeting_set: d => { calls.push(['meeting_set', clone(d)]); return { saved: true }; },
-    meeting_doc: d => { calls.push(['meeting_doc', clone(d)]); return d.action === 'delete' ? { deleted: true } : { saved: true }; },
+    meeting_notes: d => {
+      calls.push(['meeting_notes', clone(d)]);
+      const m = ensureMeeting(d.meetingId);
+      if (!saved(m.data.state) && !(m.data.state === 'available' && m.data.transcriptIds?.length)) fail('not_found', 'This meeting has no transcript yet.');
+      if (saved(m.data.state) && folders[m.id]?.missing) fail('folder_missing', 'The meeting folder was moved or deleted. Download the transcript again.');
+      const tpl = s.noteTemplates.find(t => t.id === d.templateId);
+      if (!tpl) fail('validation', 'Choose a note template.');
+      const profile = ai.settings.routes?.meeting?.profile || ai.settings.defaultProfile;
+      if (!profile) fail('needs_choice', 'Choose which Claude should write for you.', 'needs_choice');
+      const busy = s.jobs.find(j => j.kind === 'meeting_notes' && j.payload.notesKey === `${m.id}:${tpl.id}` && ['queued', 'running'].includes(j.state));
+      if (busy) return { queued: true, jobId: busy.id };
+      if (d.remember) {
+        s.records.push({ id: `${crypto.randomUUID()}-rule`, kind: 'meeting_rule', source: 'local', connectionId: null, workspaceId: 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { field: 'title', value: m.data.title, template: tpl.id, autoNotes: false, on: true, order: -1 } });
+        m.data.template = null;
+      }
+      return { queued: true, jobId: startNotes(m, { templateId: tpl.id, wishes: d.wishes, findTasks: d.findTasks }).id };
+    },
+    meeting_set: d => {
+      calls.push(['meeting_set', clone(d)]);
+      const m = ensureMeeting(d.meetingId);
+      if ('template' in d) {
+        if (d.template !== null && !s.noteTemplates.some(t => t.id === d.template)) fail('validation', 'Choose a note template.');
+        m.data.template = d.template;
+      }
+      if ('auto' in d) m.data.auto = d.auto;
+      touch(m);
+      return { saved: true };
+    },
+    meeting_doc: d => {
+      calls.push(['meeting_doc', clone(d)]);
+      const [m, f] = readable(d.meetingId);
+      const doc = m.data.docs.find(x => x.id === d.docId);
+      if (!doc) fail('not_found', 'This document is no longer there.');
+      if (d.action === 'edit') {
+        if (d.baseVersion !== doc.version || d.baseRev !== doc.rev) fail('conflict', 'These notes changed since you opened them. Read the new version, then edit again.');
+        f.docs[doc.id] = d.text;
+        Object.assign(doc, { rev: doc.rev + 1, edited: true, updatedAt: now() });
+      } else if (d.action === 'main') {
+        const old = m.data.docs.find(x => x.id === m.data.main);
+        if (old && old !== doc) old.file = `notes.${old.id}.md`;
+        doc.file = 'notes.md';
+        m.data.main = doc.id;
+      } else if (d.action === 'delete') {
+        m.data.docs = m.data.docs.filter(x => x !== doc);
+        if (m.data.main === doc.id) { m.data.main = m.data.docs[0]?.id || null; if (m.data.docs[0]) m.data.docs[0].file = 'notes.md'; }
+        if (!m.data.docs.length) m.data.state = 'downloaded';
+      } else if (d.action === 'version') {
+        const kept = doc.versions.find(v => v.version === d.version);
+        if (!kept) fail('validation', 'Choose a version.');
+        const text = f.docs[`${doc.id}@${d.version}`];
+        f.docs[`${doc.id}@${doc.version}`] = f.docs[doc.id];
+        f.docs[doc.id] = text;
+        doc.versions = doc.versions.filter(v => v !== kept).concat({ version: doc.version, at: doc.updatedAt, file: null, profile: doc.profile, model: doc.model, auto: doc.auto, edited: doc.edited, wishes: doc.wishes }).sort((a, b) => a.version - b.version);
+        Object.assign(doc, { version: kept.version, rev: doc.rev + 1, updatedAt: kept.at });
+      } else fail('validation', 'Choose what to do with the document.');
+      writeFolder(m);
+      touch(m);
+      return d.action === 'delete' ? { deleted: true } : { saved: true };
+    },
     template_save: d => { calls.push(['template_save', clone(d)]); return { id: d.id || crypto.randomUUID() }; },
     template_delete: d => { calls.push(['template_delete', clone(d)]); return ['meeting-notes', 'short-summary'].includes(d.id) ? { reset: true, id: d.id } : { deleted: true, id: d.id }; },
-    meeting_rule_save: d => { calls.push(['meeting_rule_save', clone(d)]); return { id: d.id || crypto.randomUUID() }; },
+    meeting_rule_save: d => {
+      calls.push(['meeting_rule_save', clone(d)]);
+      const id = d.id || crypto.randomUUID();
+      s.records = s.records.filter(r => !(r.kind === 'meeting_rule' && r.id === id)).concat({ id, kind: 'meeting_rule', source: 'local', connectionId: null, workspaceId: 'personal', revision: crypto.randomUUID(), updatedAt: now(), data: { field: d.field, value: d.value, template: d.template, autoNotes: !!d.autoNotes, on: d.on !== false, order: d.order ?? 0 } });
+      return { id };
+    },
     meeting_rule_delete: d => { calls.push(['meeting_rule_delete', clone(d)]); return { deleted: true, id: d.id, body: {} }; },
     meeting_rule_order: d => { calls.push(['meeting_rule_order', clone(d)]); return { saved: true }; },
     meeting_text_save: d => { calls.push(['meeting_text_save', { name: d.name }]); return { saved: true, path: `/Users/qa/CodeMie Connect/Meetings/${d.name}.md` }; },
-    meeting_text: d => ({ text: '', path: `/Users/qa/CodeMie Connect/Meetings/${d.name}.md`, linked: false }),
+    meeting_text: d => ({ text: d.name === 'glossary' ? glossaryText : '', path: `/Users/qa/CodeMie Connect/Meetings/${d.name}.md`, linked: false }),
     meeting_skills: () => [],
   });
   // Tasks: `task_save` merges into the stored body and writes history lines as native does
@@ -642,7 +914,7 @@ const STORAGE = {
   disk_full: storageOf('not_writable', { issue: 'The disk that holds your data folder is full.' }),
 };
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -659,11 +931,12 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   }
   if (automations) withAutomations(connected, now);
   if (tasks) withTasks(connected, now);
+  if (meetings) withMeetings(connected, now);
   if (pluginRecords) connected.records.push(...pluginRecords(now));
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/` })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n' })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   await page.goto(base + hash);
@@ -677,9 +950,10 @@ const shot = async (page, name) => {
 };
 const text = (page, selector) => page.locator(selector).first().innerText();
 
-// `WORKSPACE_E2E_ONLY=plugins` runs the plugin checks alone (they run last otherwise).
-if (process.env.WORKSPACE_E2E_ONLY === 'plugins') {
-  await pluginChecks({ open, check, assert, shot, OUT });
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+  if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, OUT });
+  else await pluginChecks({ open, check, assert, shot, OUT });
   await browser.close();
   server.close();
   const failedOnly = results.filter(r => r[0] === 'FAIL').length;
@@ -2326,6 +2600,10 @@ for (const theme of ['dark', 'light']) {
     currentPage = null;
   }
 }
+
+// Meetings (Task 4): the list and the meeting, the calendar's badges and event card, Today's card,
+// import, speakers, Make notes as soon as it arrives, Try again, a task's quote, ↑/↓.
+await meetingChecks({ open, check, assert, shot, OUT });
 
 // Plugins (DESIGN 7.3, Tasks 23–24): add a marketplace, install the synthetic hello plugin, its
 // page and Settings section in their sandboxed frame, Today's plugin widgets, turn it off.

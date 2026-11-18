@@ -5,8 +5,9 @@ import { avatar, button } from './ui.js';
 import { active, attentionMessages, decisions, syncRunning } from './selectors.js';
 import { agoLabel } from './format.js';
 import { taskStatus } from './tasks-model.js';
+import { meetingCounts } from './meetings-model.js';
 
-export const NAV = [['today', 'Today'], ['calendar', 'Calendar'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations']];
+export const NAV = [['today', 'Today'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations']];
 
 export function syncStatus(s) {
   const c = s.connection;
@@ -24,15 +25,18 @@ export function pluginNav(activities = [], current = null) {
   return `<div class="ws-nav-group ws-plugin-nav"><div class="ws-nav-label">Plugins</div><nav class="ws-nav" aria-label="Plugins">${activities.map(a => `<button type="button" data-action="plugin-page" data-plugin-id="${e(a.plugin)}" data-activity="${e(a.id)}" title="${e(a.label)}" ${current && current.plugin === a.plugin && current.id === a.id ? 'aria-current="page"' : ''}>${icon('puzzle')}<span>${e(a.label)}</span></button>`).join('')}</nav></div>`;
 }
 
-// state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot } — settingsDot: CodeMie needs the person.
-export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false }) {
+// state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot, now } — settingsDot: CodeMie needs the person.
+export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, now = Date.now() }) {
   const w = active(s);
   const c = s.connection;
   const replies = attentionMessages(s).length;
   const pendingDecisions = decisions(s).length;
   const toReview = s.records.filter(r => r.kind === 'commitment' && taskStatus(r) === 'review').length;
+  // Meetings: transcripts to make notes from, and meetings that need the person.
+  const meetingsWaiting = (({ process, attention }) => process + attention)(meetingCounts(s, now));
   const count = id => (id === 'inbox' && replies ? `<small class="ws-count">${replies}</small>`
-    : id === 'tasks' && toReview ? `<small class="ws-count" title="Tasks to review">${toReview}</small>` : '');
+    : id === 'tasks' && toReview ? `<small class="ws-count" title="Tasks to review">${toReview}</small>`
+      : id === 'meetings' && meetingsWaiting ? `<small class="ws-count" title="Transcripts waiting for you">${meetingsWaiting}</small>` : '');
   const connected = c && c.status !== 'disconnected';
   return `<aside class="ws-sidebar">
       <div class="ws-brand" aria-label="EPAM AI/Run CodeMie Connect"><img class="ws-logo-dark" src="workspace/assets/logo-full-dark.svg" alt=""><img class="ws-logo-light" src="workspace/assets/logo-full-light.svg" alt=""></div>

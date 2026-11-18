@@ -1912,6 +1912,8 @@ pub const WIDGET_IDS: &[&str] = &[
     "automations",
     // "From plugins": plugin items and deliveries (DESIGN 7.2).
     "plugins",
+    // "From your meetings": meetings that need the person, transcripts waiting for notes.
+    "meetings",
 ];
 /// The most cards a Today layout holds.
 pub(in crate::workspace) const MAX_WIDGETS: usize = 16;
@@ -2286,6 +2288,22 @@ mod tests {
             })
             .await;
         assert!(snapshot.is_ok());
+    }
+
+    #[tokio::test]
+    async fn layout_accepts_the_meetings_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        core.request(mutation(
+            &core,
+            Operation::LayoutSave,
+            json!({"layout": ["brief", "meetings"], "widgetWidths": {"meetings": 6}}),
+        ))
+        .await
+        .unwrap();
+        let w = core.repo().unwrap().workspace("personal").unwrap();
+        assert_eq!(w.layout, vec!["brief".to_string(), "meetings".to_string()]);
+        assert_eq!(w.widget_widths["meetings"], 6);
     }
 
     #[tokio::test]

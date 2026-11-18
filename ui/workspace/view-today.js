@@ -9,6 +9,7 @@ import { dayKey, addDaysToKey, formatDate, formatTime, durationLabel, countdownL
 import { automationResultsCard } from './view-automations.js';
 import { PLUGINS_CARD, parseLayoutId, pluginWidgetCard, pluginsCard, showPluginsCard } from './today-plugins.js';
 import { isMine, meOf, ownerOf, sortTasks, taskStatus } from './tasks-model.js';
+import { showMeetingsCard, todayMeetingsCard } from './view-meetings.js';
 
 export const WIDGETS = {
   brief: { title: 'Up next', width: 8, description: 'Your current or next meeting with a one-click join.' },
@@ -16,6 +17,7 @@ export const WIDGETS = {
   calendar: { title: 'Schedule', width: 6, description: "Today's timeline with free time between meetings." },
   inbox: { title: 'Needs your reply', width: 6, description: 'Outlook and Teams messages waiting for you.' },
   commitments: { title: 'Tasks', width: 12, description: 'Your open tasks and a scratchpad for Connect.' },
+  meetings: { title: 'From your meetings', width: 6, description: 'Meetings that need you and transcripts waiting for notes.' },
   automations: { title: 'Automation results', width: 6, description: 'The latest result of each automation, with its sources.' },
   [PLUGINS_CARD]: { title: 'From plugins', width: 12, description: 'Decisions, deliveries and held messages your plugins prepare.' },
 };
@@ -63,7 +65,7 @@ export function todayModel(s, hidden, nowMs = Date.now()) {
 export function today(s, ctx) {
   const { auth, hidden, banners } = ctx;
   const w = active(s);
-  const m = todayModel(s, hidden);
+  const m = todayModel(s, hidden, ctx.now);
   const state = connectionState(s, auth);
   const connected = state === 'connected';
   const c = s.connection;
@@ -76,11 +78,14 @@ export function today(s, ctx) {
     calendar: () => scheduleCard(s, m, connected),
     inbox: () => attentionCard(s, m, connected, ctx.state?.ai),
     commitments: () => commitmentsCard(s, m, w),
+    meetings: () => todayMeetingsCard(s, m.nowMs),
     automations: () => automationResultsCard(s, ctx.state?.ai),
     [PLUGINS_CARD]: () => pluginsCard(s, { zone: m.zone, routeOf: ctx.plugins?.routeOf }),
   };
   const catalog = ctx.plugins?.catalog || [];
   const layout = w.layout.filter(id => widgets[id] || parseLayoutId(id));
+  // "From your meetings" shows itself while a meeting waits, until a saved layout hides it.
+  if (!layout.includes('meetings') && showMeetingsCard(w, s, m.nowMs)) layout.push('meetings');
   if (!layout.includes(PLUGINS_CARD) && showPluginsCard(w, s)) layout.push(PLUGINS_CARD);
   const grid = layout.map(id => {
     const fallback = WIDGETS[id]?.width || catalog.find(x => x.id === id)?.width || 6;
