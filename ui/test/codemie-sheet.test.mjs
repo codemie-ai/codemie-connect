@@ -244,3 +244,62 @@ test('closing_a_running_setup_cancels_it_and_says_so', async () => {
   assert.equal(h.c.sheet(), '');
   assert.match(h.toasts.at(-1)[0], /Setup paused/);
 });
+
+// Merge with Milestone 2: a Claude that is already ready on this Mac brings AI tools here, so Today
+// does not ask to set them up again until CodeMie setup has started (the old setup banner's rule).
+test('today_card_waits_while_a_claude_is_ready_and_nothing_is_started', async () => {
+  const now = Date.UTC(2026, 10, 17, 9);
+  const service = freshService();
+  const h = controllerHarness({ service, session: sessionFake(), claudeReady: () => true });
+  assert.equal(h.c.todayCard(now), '');
+  // "Not now" on the first-launch sheet then points at Settings, where setup stays.
+  await h.c.handle('cm-setup-open', el());
+  await h.c.handle('cm-sheet-later', el());
+  assert.match(h.toasts.at(-1)[0], /Settings → CodeMie/);
+  assert.doesNotMatch(h.toasts.at(-1)[0], /Today/);
+  // Once setup has started, the card keeps it in view whatever Claude is ready.
+  service.state.profiles = [{ name: 'prod', provider: 'ai-run-sso', codemieUrl: 'https://codemie.lab.epam.com' }];
+  assert.match(h.c.todayCard(now), /Finish setting up your AI coding tools/);
+});
+
+test('today_card_without_a_ready_claude_still_invites_setup', async () => {
+  const h = controllerHarness({ service: freshService(), session: sessionFake(), claudeReady: () => false });
+  assert.match(h.c.todayCard(Date.now()), /Set up your AI coding tools/);
+  await h.c.handle('cm-setup-open', el());
+  await h.c.handle('cm-sheet-later', el());
+  assert.match(h.toasts.at(-1)[0], /from Today or Settings → CodeMie/);
+});
+
+// Settings → Claude shows a CodeMie profile's sign-in as Settings → CodeMie read it.
+test('sign_in_state_is_shared_with_the_claude_tab', () => {
+  const service = fakeService();
+  service.state.profiles.push({ name: 'local', provider: 'litellm', baseUrl: 'http://localhost:4000' });
+  service.state.auth = { state: 'not_signed_in', detail: '' };
+  const h = controllerHarness({ service, session: sessionFake() });
+  assert.deepEqual(h.c.signIn(), {
+    loaded: true, active: 'prod', state: 'not_signed_in',
+    profiles: [{ name: 'prod', browser: true }, { name: 'staging', browser: true }, { name: 'local', browser: false }],
+  });
+});
+
+// The recovery page replaces the workspace: an open setup sheet closes without a toast.
+test('recovery_closes_the_sheet_quietly', async () => {
+  const session = sessionFake();
+  const h = controllerHarness({ service: freshService(), session });
+  await openAtSignin(h);
+  await h.c.handle('cm-signin-start', el());
+  const toasts = h.toasts.length;
+  await h.c.closeSheet();
+  assert.equal(h.c.sheet(), '');
+  assert.equal(session.running(), false);
+  assert.equal(h.toasts.length, toasts);
+});
+
+test('welcome_says_where_setup_waits', async () => {
+  const ready = controllerHarness({ service: freshService(), session: sessionFake(), claudeReady: () => true });
+  await ready.c.handle('cm-setup-open', el());
+  assert.match(ready.c.sheet(), /You can finish later from Settings → CodeMie/);
+  const none = controllerHarness({ service: freshService(), session: sessionFake(), claudeReady: () => false });
+  await none.c.handle('cm-setup-open', el());
+  assert.match(none.c.sheet(), /You can finish later from Today or Settings → CodeMie/);
+});

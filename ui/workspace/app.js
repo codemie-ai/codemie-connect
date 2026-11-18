@@ -24,7 +24,7 @@ import { startSetup, cancelSetup } from '../setup-driver.js';
 import { automations, AUTOMATION_TABS } from './view-automations.js';
 import { createAutomationsController, notificationTarget } from './automations-controller.js';
 import { renderShell } from './shell.js';
-import { nextAiSettings, LOGIN_STEPS } from './settings-ai.js';
+import { nextAiSettings, withCodemieSignIn, LOGIN_STEPS } from './settings-ai.js';
 import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from './boot.js';
 import { recoveryPage, firstReport, USE_DEFAULT_WARNING } from './recovery.js';
@@ -99,8 +99,27 @@ const codemie = createCodemieController({
   localPref, setLocalPref, store, invoke: (cmd, args) => invoke(cmd, args),
   canRender: () => ready && !recovering && !modalOpen(),
   editing: () => editing() && !!document.activeElement?.closest('.ws-settings-content,#cm-sheet-host'),
+  claudeReady: () => claudeProfileReady(),
 });
 codemie.busy = () => codemieSetup.running() || codemieService.busy();
+// Settings → Claude detects CodeMie profiles natively (cached for 30 s): a profile added, renamed,
+// removed or made active in Settings → CodeMie is detected again at once, so both tabs agree.
+let codemieProfilesSeen = null;
+codemieService.subscribe(() => {
+  const cm = codemieService.state;
+  if (!cm.loaded) return;
+  const seen = JSON.stringify([cm.profiles.map(p => p.name), cm.config.active]);
+  if (codemieProfilesSeen !== null && seen !== codemieProfilesSeen && ready && !recovering) {
+    if (aiTabOpen()) loadAi().catch(() => {});
+    else readClaude({ now: true, detect: true });
+  }
+  codemieProfilesSeen = seen;
+});
+
+/** A Claude profile that can be used already brings AI tools to this Mac (see the Today setup card). */
+function claudeProfileReady() {
+  return state.ai.status === 'ready' && Array.isArray(state.ai.profiles) && state.ai.profiles.some(p => p.state === 'ready');
+}
 let legacyModule;
 let ready = false;
 let deferredNotification;
@@ -254,7 +273,7 @@ async function render() {
   applyTheme(s.settings.theme);
   const ctx = {
     state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(),
-    codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots() },
+    codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots(), signIn: codemie.signIn() },
     codemieCard: codemie.todayCard(),
   };
   if (state.route === 'inbox') ensureSelection(s);
@@ -305,9 +324,12 @@ async function render() {
 function renderSheet() {
   let host = document.getElementById('cm-sheet-host');
   const html = codemie.sheet();
+  // Plugin frames lie in their own layer over the page: the sheet keeps them out of reach too.
+  const pluginLayer = document.querySelector('.ws-plugin-layer');
   if (!html) {
     host?.querySelector('.cm-sheet')?.remove();
     root.inert = false;
+    if (pluginLayer) pluginLayer.inert = false;
     return;
   }
   if (!host) {
@@ -324,6 +346,7 @@ function renderSheet() {
   }
   // A dialog: the page behind takes no focus, clicks or keys while it is open.
   root.inert = true;
+  if (pluginLayer) pluginLayer.inert = true;
   const body = sheetEl.querySelector('.cm-stage-body');
   const scroll = body?.scrollTop || 0;
   const stepKey = sheetEl.querySelector('[data-step-key]')?.dataset.stepKey;
@@ -635,12 +658,14 @@ async function askClaudeChoice() {
     return null;
   }
   Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
-  const anyReady = status.profiles.some(p => p.state === 'ready');
+  // A CodeMie profile Settings → CodeMie found signed out is not offered as ready.
+  const offered = withCodemieSignIn(status.profiles, codemie.signIn());
+  const anyReady = offered.some(p => p.state === 'ready');
   return new Promise(resolve => {
     let chosen = null;
     openModal({
       title: CHOOSER_TITLE, subtitle: anyReady ? 'Connect asks once. You can change it in Settings → Claude.' : '',
-      body: chooserBody(status.profiles), submit: anyReady ? 'Choose' : null, cancel: anyReady ? 'Cancel' : 'Close', size: 'md',
+      body: chooserBody(offered), submit: anyReady ? 'Choose' : null, cancel: anyReady ? 'Cancel' : 'Close', size: 'md',
       onSubmit: async (_form, dialog) => {
         const id = dialog.dataset.choice;
         if (!id) throw new Error('Select a Claude to continue.');
@@ -1780,6 +1805,11 @@ function showRecovery(err) {
 function renderRecovery() {
   // Plugin frames lie in their own layer above the page: none may stay over the recovery card.
   pluginHost?.show(null);
+  // Nor may the CodeMie setup sheet: it closes (stopping a setup that waits on the person).
+  codemie.closeSheet().catch(() => {});
+  document.querySelector('#cm-sheet-host .cm-sheet')?.remove();
+  document.querySelector('.ws-plugin-layer')?.removeAttribute('inert');
+  root.inert = false;
   root.dataset.route = 'recovery';
   root.innerHTML = recoveryPage(recoveryView);
 }
@@ -1998,8 +2028,9 @@ async function boot() {
   });
   state.calendarDate = todayDate();
   ready = true;
-  // CodeMie reads the CLI in the background; the workspace does not wait for it.
-  codemie.boot().catch(fail);
+  // CodeMie reads the CLI in the background; the workspace does not wait for it. The marketplace
+  // smoke runs on its own data root and tests plugins only: it runs no CodeMie CLI command.
+  if (!marketSmoke) codemie.boot().catch(fail);
   await render();
   if (aiTabOpen()) loadAi().catch(fail);
   if (generalTabOpen()) loadStorage().catch(fail);
@@ -2041,7 +2072,7 @@ async function boot() {
     }
     store.refresh().catch(() => {});
     // Back from Terminal or another app: an agent or app may have changed.
-    codemie.onFocus();
+    if (!marketSmoke) codemie.onFocus();
     // Back from Terminal or Settings: Claude may be signed in or set up now.
     if (readClaude({ now: true, detect: claudeRecheck })) claudeRecheck = false;
   });

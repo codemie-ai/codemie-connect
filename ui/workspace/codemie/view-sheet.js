@@ -106,7 +106,7 @@ function problemBox(err) {
 }
 
 const STEP_VIEWS = {
-  welcome: (sh, cm) => ({
+  welcome: (sh, cm, prefs = {}) => ({
     eyebrow: 'Welcome to CodeMie Connect', title: 'Let’s get your AI coding tools working',
     text: 'Connect sets up CodeMie for you — the same steps as the CodeMie CLI, without Terminal.',
     body: `<div class="cm-welcome">
@@ -118,7 +118,8 @@ const STEP_VIEWS = {
       <p class="cm-time-note">${icon('clock')}${cm.org ? `About 3 minutes. You need your ${e(cm.org.organizationName || 'work')} account.` : 'About 3 minutes. You need your work account, and the VPN if you are outside the office.'}</p>
     </div>`,
     left: button('Not now', { action: 'cm-sheet-later', variant: 'ghost' }),
-    note: 'You can finish later from Today or Settings → CodeMie',
+    // `resumeFrom`: Today shows no setup card while a ready Claude waits for setup to start.
+    note: `You can finish later from ${prefs.resumeFrom || 'Today or Settings → CodeMie'}`,
     right: button('Get started', { action: 'cm-sheet-go', variant: 'primary', iconRight: 'arrow', attrs: { 'data-step': 'signin' } }),
   }),
 

@@ -34,6 +34,26 @@ const STATE_TEXT = {
 };
 
 export const isNative = p => p?.kind?.type === 'native' || p?.id === 'claude';
+const CODEMIE = 'codemie:';
+
+/**
+ * Detection calls a CodeMie profile ready once `codemie-claude` and the profile exist; its sign-in
+ * is proved by the first run. Settings → CodeMie reads the active profile's sign-in
+ * (`codemie profile status`), so a profile it found signed out is "Needs sign-in" here too, and
+ * each CodeMie profile says whether it signs in with a browser (`codemieUrl`) or with a key.
+ * `signIn`: the CodeMie controller's `signIn()` (`{ loaded, active, state, profiles: [{name, browser}] }`).
+ */
+export function withCodemieSignIn(profiles = [], signIn) {
+  if (!signIn?.loaded) return profiles;
+  const browser = new Map((signIn.profiles || []).map(x => [x.name, !!x.browser]));
+  return profiles.map(p => {
+    if (!String(p.id || '').startsWith(CODEMIE)) return p;
+    const name = p.id.slice(CODEMIE.length);
+    const out = browser.has(name) ? { ...p, browserSignIn: browser.get(name) } : p;
+    if (p.state !== 'ready' || signIn.state !== 'not_signed_in' || signIn.active !== name) return out;
+    return { ...out, state: 'needs_login', message: 'Its CodeMie sign-in expired. Sign in again to use it.' };
+  });
+}
 const profileLabel = (profiles, id) => profiles.find(p => p.id === id)?.label || id;
 const shortLabel = (profiles, id) => { const p = profiles.find(x => x.id === id); return !p ? id : isNative(p) ? 'Claude Code' : p.label; };
 
@@ -93,7 +113,10 @@ function stateAction(p) {
   // A CodeMie profile signs in again in the browser, from here (Settings → CodeMie's sign-in dialog).
   if (p.state === 'needs_login') {
     const name = String(p.id || '').replace(/^codemie:/, '');
-    return `<div class="ws-actions">${button('Sign in', { action: 'cm-profile-login', variant: 'primary', iconName: 'link', attrs: { 'data-id': name } })}${button('Manage profiles', { action: 'cm-tab', variant: 'ghost', attrs: { 'data-tab': 'cm-profiles' } })}${again}</div>`;
+    const manage = button('Manage profiles', { action: 'cm-tab', variant: 'ghost', attrs: { 'data-tab': 'cm-profiles' } });
+    // A LiteLLM, Bedrock or subscription profile has no browser sign-in to offer.
+    if (p.browserSignIn === false) return `<div class="ws-ai-steps"><span>This profile signs in with a key. Set it up again in Settings → CodeMie → Profiles.</span></div><div class="ws-actions">${manage}${again}</div>`;
+    return `<div class="ws-actions">${button('Sign in', { action: 'cm-profile-login', variant: 'primary', iconName: 'link', attrs: { 'data-id': name } })}${manage}${again}</div>`;
   }
   if (p.state === 'too_old') return `<div class="ws-ai-steps"><span>Update Claude Code: open Terminal, run <code>claude update</code>, then check again.</span></div><div class="ws-actions">${isNative(p) ? '' : setup}${again}</div>`;
   if (p.state === 'not_installed' || p.state === 'not_configured') return `<div class="ws-actions">${setup}${again}</div>`;
@@ -168,14 +191,15 @@ function usageCard(ai) {
   return card({ title: 'This month', iconName: 'chart', body, attrs: { id: 'ai-usage' } });
 }
 
-export function aiPanel(ai = {}) {
+/** Settings → Claude. `codemie`: the CodeMie controller's sign-in state (`withCodemieSignIn`). */
+export function aiPanel(ai = {}, { codemie } = {}) {
   if (ai.status === 'loading' || !ai.status || ai.status === 'idle') {
     return card({ body: `<div class="ws-ai-loading" role="status">${spinner('Checking Claude')}<span>Checking your Claude setup…</span></div>` });
   }
   if (ai.status === 'error') {
     return card({ body: emptyState({ iconName: 'alert', title: 'Could not check Claude', text: ai.error || 'Something went wrong while checking.', actions: button('Retry', { action: 'ai-refresh', variant: 'primary', iconName: 'refresh' }) }) });
   }
-  const profiles = ai.profiles || [];
+  const profiles = withCodemieSignIn(ai.profiles || [], codemie);
   const state = { ...ai, profiles, settings: ai.settings || { defaultProfile: null, routes: {} } };
   return `${profiles.map(p => profileCard(p, state)).join('')}${defaultCard(state)}${usageCard(state)}`;
 }

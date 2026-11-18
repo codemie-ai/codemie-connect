@@ -40,18 +40,18 @@ export function fakeService(over = {}) {
   return svc;
 }
 
-export function controllerHarness({ service = fakeService(), session, prefs = {} } = {}) {
+export function controllerHarness({ service = fakeService(), session, prefs = {}, claudeReady, state = { route: 'settings', settingsTab: 'cm-overview' }, render = async () => {} } = {}) {
   const invoked = [];
   const toasts = [];
   const modals = [];
   const store = new Map(Object.entries(prefs));
   const s = session || { running: () => false, cancel: async () => true };
   const c = createCodemieController({
-    state: { route: 'settings', settingsTab: 'cm-overview' },
+    state,
     service,
     session: s,
     runLog: createRunLog(),
-    render: async () => {},
+    render,
     route: async () => {},
     openModal: (m) => { modals.push(m); return { close() {} }; },
     confirmModal: (m) => { modals.push(m); return m.onConfirm?.(); },
@@ -61,6 +61,7 @@ export function controllerHarness({ service = fakeService(), session, prefs = {}
     setLocalPref: (k, v) => store.set(k, v),
     store: { query: async () => ({ ok: true }) },
     invoke: async (name, args) => { invoked.push([name, args]); return null; },
+    ...(claudeReady ? { claudeReady } : {}),
   });
   return { c, service, invoked, toasts, modals, prefs: store };
 }

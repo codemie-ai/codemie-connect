@@ -32,6 +32,8 @@ export function createCodemieController(deps) {
   const {
     state, service, session, runLog, render, route, openModal, confirmModal, toast, writeText,
     localPref, setLocalPref, store, invoke, canRender = () => true, editing = () => false, now = Date.now,
+    // A Claude already ready on this Mac (Settings → Claude): Today then waits for setup to start.
+    claudeReady = () => false,
   } = deps;
   const cm = service.state;
   // What the person is doing in these tabs; never derived from the CLI.
@@ -63,14 +65,18 @@ export function createCodemieController(deps) {
 
   let renderTimer = null;
   let lastRender = 0;
+  // What the last render put on Today (the app asks for both on every render of it).
+  const onToday = { card: null, banners: null };
   const visible = () => state.route === 'settings' || state.route === 'today';
-  /** Service and run-log updates re-render at most every 250 ms, never under a field being typed in. */
+  /** Service and run-log updates re-render at most every 250 ms, never under a field being typed in.
+   *  Today shows only the setup card and the notices, so it is redrawn only when they change. */
   function scheduleRender() {
     if (renderTimer || !visible()) return;
     renderTimer = setTimeout(() => {
       renderTimer = null;
       lastRender = now();
       if (!canRender() || editing()) return;
+      if (state.route === 'today' && cardHtml() === onToday.card && bannersHtml() === onToday.banners) return;
       Promise.resolve(render()).catch(() => {});
     }, Math.max(0, RENDER_EVERY_MS - (now() - lastRender)));
   }
@@ -346,6 +352,9 @@ export function createCodemieController(deps) {
     return render();
   }
 
+  /** Where unfinished setup is picked up again: Today shows no card while it waits (`todayCard`). */
+  const resumeFrom = () => (cardHtml() ? 'Today or Settings → CodeMie' : 'Settings → CodeMie');
+
   async function closeSheet({ quiet = false } = {}) {
     const s = sh;
     if (!s) return;
@@ -354,7 +363,7 @@ export function createCodemieController(deps) {
     if (!quiet) {
       const complete = setupProgress(cm, prefs()).complete;
       if (s.mode === 'setup' && s.step === 'done') toast('CodeMie is ready.', 'success');
-      else if (s.mode === 'setup' && !complete) toast('Setup paused. Everything so far is saved — continue from Today or Settings → CodeMie.');
+      else if (s.mode === 'setup' && !complete) toast(`Setup paused. Everything so far is saved — continue from ${resumeFrom()}.`);
     }
     await render();
   }
@@ -420,7 +429,7 @@ export function createCodemieController(deps) {
     const d = sh?.d;
     switch (action) {
       case 'cm-sheet-close': await closeSheet(); return true;
-      case 'cm-sheet-later': await closeSheet({ quiet: true }); toast('You can finish setting up CodeMie from Today or Settings → CodeMie.'); return true;
+      case 'cm-sheet-later': await closeSheet({ quiet: true }); toast(`You can finish setting up CodeMie from ${resumeFrom()}.`); return true;
       case 'cm-sheet-settings': await closeSheet({ quiet: true }); await route('settings', 'cm-overview'); return true;
       case 'cm-setup-dismiss':
         setLocalPref(PREF.setupDismissed, '1');
@@ -874,12 +883,34 @@ export function createCodemieController(deps) {
     return '';
   }
 
+  const bannersHtml = () => attention(cm, prefs().dismissed).map(banner).join('');
+
   function banners(currentRoute) {
     if (currentRoute !== 'today') return '';
-    return attention(cm, prefs().dismissed).map(banner).join('');
+    onToday.banners = bannersHtml();
+    return onToday.banners;
   }
 
   const tabDots = () => dotsOf(cm, prefs());
+
+  const cardHtml = (at = now()) => todayCardView(cm, prefs(), at, { claudeReady: !!claudeReady() });
+
+  /** The Today setup card (empty when there is none to show), as a render puts it on the page. */
+  function todayCard(at = now()) {
+    onToday.card = cardHtml(at);
+    return onToday.card;
+  }
+
+  /** What Settings → Claude needs to agree with these tabs: the active profile's sign-in, and
+   *  which profiles sign in with a browser. Names only, never secrets. */
+  function signIn() {
+    return {
+      loaded: !!cm.loaded,
+      active: cm.config.active,
+      state: cm.auth.state,
+      profiles: cm.profiles.map((p) => ({ name: p.name, browser: !!p.codemieUrl })),
+    };
+  }
 
   // ---------------------------------------------------------------- lifecycle
 
@@ -923,10 +954,13 @@ export function createCodemieController(deps) {
     panel,
     headerActions,
     banners,
-    todayCard: (at = now()) => todayCardView(cm, prefs(), at),
+    todayCard,
+    signIn,
+    // The recovery page replaces the workspace: an open sheet closes (and its setup stops) quietly.
+    closeSheet: () => closeSheet({ quiet: true }),
     settingsDot: () => tabDots().size > 0,
     tabDots,
-    sheet: () => (sh ? sheetMarkup(sh, cm, prefs()) : ''),
+    sheet: () => (sh ? sheetMarkup(sh, cm, { ...prefs(), resumeFrom: resumeFrom() }) : ''),
     boot,
     onFocus,
     onQuitRequest,

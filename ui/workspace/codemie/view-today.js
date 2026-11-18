@@ -4,10 +4,12 @@ import { icon } from '../icons.js';
 import { button, spinner } from '../ui.js';
 import { setupProgress } from './model.js';
 
-export function todayCard(cm, prefs = {}, now = Date.now()) {
+/** `claudeReady`: a Claude is ready on this Mac already, so a setup nobody started waits in Settings. */
+export function todayCard(cm, prefs = {}, now = Date.now(), { claudeReady = false } = {}) {
   if (!cm.loaded) return '';
   const p = setupProgress(cm, prefs);
   if (p.complete || prefs.setupDismissed || now < (prefs.snoozedUntil || 0)) return '';
+  if (claudeReady && p.count === 0) return '';
   const step = (done, label) => `<span class="${done ? 'cm-is-done' : ''}">${icon(done ? 'check-circle' : 'clock')}${e(label)}</span>`;
   const started = p.count > 0;
   const account = cm.org?.organizationName ? `your ${cm.org.organizationName} account` : 'your EPAM account';

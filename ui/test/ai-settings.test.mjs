@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { aiPanel, nextAiSettings, testResultLabel } from '../workspace/settings-ai.js';
+import { aiPanel, nextAiSettings, testResultLabel, withCodemieSignIn } from '../workspace/settings-ai.js';
 import { chooserBody } from '../workspace/ai-chooser.js';
 import { aiStatus, aiUsage, contractFixtures } from './fixtures/workspace-fixture.mjs';
 
@@ -142,4 +142,44 @@ test('ui_renderers_accept_the_contract_fixtures_from_the_real_backend', () => {
   // Round trip through the settings logic with the real shapes.
   const next = nextAiSettings(status.settings, status.profiles, { field: 'default', value: 'codemie:prod' });
   assert.equal(next.defaultProfile, 'codemie:prod');
+});
+
+// Merge with native CodeMie settings: one Claude tab. A CodeMie profile's readiness there agrees with
+// Settings → CodeMie, which reads the active profile's sign-in (`codemie profile status`).
+const cardOf = (html, id) => html.split('data-ai-profile=').find((c) => c.startsWith(`"${id}"`)) || '';
+const expired = { loaded: true, active: 'prod', state: 'not_signed_in', profiles: [{ name: 'prod', browser: true }, { name: 'staging', browser: true }] };
+
+test('claude_tab_shows_the_codemie_sign_in_settings_codemie_read', () => {
+  const ai = loaded('both');
+  const html = aiPanel(ai, { codemie: expired });
+  const prod = cardOf(html, 'codemie:prod');
+  assert.match(prod, /Needs sign-in/);
+  assert.doesNotMatch(prod, /ws-badge-success/);
+  assert.match(prod, /data-action="cm-profile-login"[^>]*data-id="prod"/);
+  // One list: the CodeMie profiles appear once each, as detection found them.
+  assert.equal((html.match(/data-ai-profile="/g) || []).length, 3);
+  // Routing offers only what is ready, so the signed-out profile is marked there too.
+  assert.doesNotMatch(html.split('data-ai-route-row')[0], /<option value="codemie:prod"/);
+  // Signed in again, or nothing read yet: detection stands.
+  assert.match(cardOf(aiPanel(ai, { codemie: { ...expired, state: 'signed_in' } }), 'codemie:prod'), /ws-badge-success/);
+  assert.match(cardOf(aiPanel(ai, { codemie: { ...expired, loaded: false } }), 'codemie:prod'), /ws-badge-success/);
+  assert.match(cardOf(aiPanel(ai), 'codemie:prod'), /ws-badge-success/);
+});
+
+test('a_codemie_profile_without_browser_sign_in_gets_no_sign_in_button', () => {
+  const ai = loaded('both');
+  const html = aiPanel(ai, { codemie: { ...expired, profiles: [{ name: 'prod', browser: true }, { name: 'staging', browser: false }] } });
+  const staging = cardOf(html, 'codemie:staging');
+  assert.match(staging, /Needs sign-in/);
+  assert.doesNotMatch(staging, /data-action="cm-profile-login"/);
+  assert.match(staging, /data-action="cm-tab"[^>]*data-tab="cm-profiles"/);
+});
+
+test('chooser_does_not_offer_a_signed_out_codemie_profile', () => {
+  const profiles = withCodemieSignIn(loaded('both').profiles, expired);
+  assert.equal(profiles.find((p) => p.id === 'codemie:prod').state, 'needs_login');
+  assert.equal(profiles.find((p) => p.id === 'claude').state, 'ready');
+  const body = chooserBody(profiles);
+  assert.doesNotMatch(body, /codemie:prod/);
+  assert.match(body, /data-profile="claude"/);
 });

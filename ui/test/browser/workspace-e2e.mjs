@@ -568,7 +568,7 @@ const STORAGE = {
   disk_full: storageOf('not_writable', { issue: 'The disk that holds your data folder is full.' }),
 };
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, pluginRecords = null, codemie = 'ready' } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -589,6 +589,8 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
   await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/` })})`);
+  // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
+  if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   await page.goto(base + hash);
   await page.waitForSelector(unavailable ? '.ws-recovery' : '.ws-sidebar');
   currentPage = page;
@@ -627,13 +629,16 @@ for (const theme of ['dark', 'light']) {
   });
 
   // Polish checks (Today and Inbox), both widths: the now line stays under event text, the Day at a
-  // glance labels fit, the AI tools banner hides when a Claude is ready, the reader's action bar keeps
-  // its commitment button beside the lane picker.
+  // glance labels fit, the AI tools prompt (now the CodeMie setup card) hides when a Claude is ready
+  // and CodeMie setup has not started, the reader's action bar keeps its commitment button beside
+  // the lane picker.
+  const introduced = { 'codemie.setup.introduced': '1' };
   for (const [width, height] of [[1000, 760], [1440, 900]]) await check(`${theme} ${width}px: Today and Inbox polish`, async () => {
-    const n = await open({ theme, width, height });
+    const n = await open({ theme, width, height, codemie: 'fresh', localPrefs: introduced });
     const p = n.page;
     await p.waitForTimeout(500);
-    assert(await p.locator('.ws-banner:has-text("Bring your AI coding tools")').count() === 0, 'setup banner shows although a Claude is ready');
+    assert(await p.locator('.ws-banner:has-text("Bring your AI coding tools")').count() === 0, 'the old setup banner is back');
+    assert(await p.locator('.cm-today-setup').count() === 0, 'setup card shows although a Claude is ready');
     // Measured in the page's own font (the fallback is narrower) and to the subpixel: the whole
     // text's width against its box. The ellipsis is off while measuring, since Chromium lays out
     // only the part it shows, and what it hides can be less than one whole pixel.
@@ -668,9 +673,9 @@ for (const theme of ['dark', 'light']) {
     assert(rows.sameRow, `the commitment button wrapped away from the lane picker: ${JSON.stringify(rows)}`);
     await shot(p, `${theme}-inbox-actions-${width}`);
     await n.context.close().catch(() => {});
-    const none = await open({ theme, width, height, ai: 'none' });
-    await none.page.waitForTimeout(500);
-    assert(await none.page.locator('.ws-banner:has-text("Bring your AI coding tools")').count() === 1, 'setup banner is missing when no Claude is ready');
+    const none = await open({ theme, width, height, ai: 'none', codemie: 'fresh', localPrefs: introduced });
+    await none.page.waitForSelector('.cm-today-setup :text("Set up your AI coding tools")');
+    assert(await none.page.locator('.ws-banner:has-text("Bring your AI coding tools")').count() === 0, 'the old setup banner is back');
     await none.context.close().catch(() => {});
     currentPage = null;
   });
@@ -2068,7 +2073,8 @@ for (const width of [1000, 1680]) {
 
 const SHEET = '#cm-sheet-host .cm-sheet-panel';
 for (const theme of ['dark', 'light']) {
-  const fresh = await open({ theme, codemie: 'fresh' });
+  // First launch on a Mac with nothing set up: no CodeMie profile and no Claude.
+  const fresh = await open({ theme, codemie: 'fresh', ai: 'none' });
   await check(`${theme} codemie: first launch opens setup`, async () => {
     await fresh.page.waitForSelector(`${SHEET} :text("Let’s get your AI coding tools working")`);
     await fresh.page.waitForTimeout(300); // the sheet fades in over 0.2 s
@@ -2126,7 +2132,7 @@ for (const theme of ['dark', 'light']) {
   await check(`${theme} codemie: expired no page errors`, async () => assert(expired.errors.length === 0, expired.errors.join(' | ')));
   await expired.context.close().catch(() => {});
 
-  for (const width of [1000, 1680]) {
+  for (const width of [1000, 1440, 1680]) {
     const ready = await open({ theme, width, codemie: 'ready', hash: '#/settings/cm-overview' });
     await check(`${theme} ${width}px codemie: settings tabs render`, async () => {
       const { page } = ready;
@@ -2152,6 +2158,129 @@ for (const theme of ['dark', 'light']) {
     await check(`${theme} ${width}px codemie: settings no page errors`, async () => assert(ready.errors.length === 0, ready.errors.join(' | ')));
     await ready.context.close().catch(() => {});
   }
+}
+
+// ---------------------------------------------------------------- merge: native CodeMie settings + Milestone 2
+
+// What the merge has to keep working together: one Claude tab whose CodeMie profiles agree with
+// Settings → CodeMie, setup that never opens over the recovery page, the Today card rule, and the
+// screens of both sides at 1000 and 1440 px in both themes.
+const fits = page => page.evaluate(() => Math.max(document.documentElement.scrollWidth - innerWidth, ...[...document.querySelectorAll('.ws-settings-panels, .ws-ai-table-wrap, .cm-sheet-panel')].map(e => e.scrollWidth - e.clientWidth)));
+const aiCard = id => `[data-ai-profile="${id}"]`;
+for (const theme of ['dark', 'light']) {
+  for (const width of [1000, 1440]) {
+    const height = width === 1000 ? 760 : 900;
+    const expired = await open({ theme, width, height, codemie: 'expired', hash: '#/settings/ai' });
+    await check(`${theme} ${width}px merge: the Claude tab signs in a CodeMie profile Settings → CodeMie found signed out`, async () => {
+      const { page } = expired;
+      await page.waitForSelector(`${aiCard('codemie:prod')} :text("Needs sign-in")`);
+      // One profile list: each detected profile once, no second list from the CodeMie tabs.
+      assert(await page.locator('[data-ai-profile]').count() === 3, 'the Claude tab lists profiles twice');
+      assert(await page.locator('.cm-profile').count() === 0, 'a CodeMie profile list is on the Claude tab');
+      assert(await page.locator('.ws-settings-nav button[data-tab=ai] .ws-dot-alert').count() === 1, 'the Claude tab has no dot');
+      assert(await page.locator(`${aiCard('codemie:prod')} .ws-badge-success`).count() === 0, 'the signed-out profile also says Ready');
+      assert(await page.locator('select[name=ai-default] option[value="codemie:prod"]').count() === 0, 'routing offers the signed-out profile');
+      assert(await fits(page) <= 0, 'the Claude tab overflows');
+      await shot(page, `${theme}-merge-claude-expired-${width}`);
+      await page.click(`${aiCard('codemie:prod')} button[data-action=cm-profile-login][data-id=prod]`);
+      await page.waitForSelector('.ws-toast:has-text("Signed in again to “prod”")', { timeout: 6000 });
+      await page.waitForSelector(`${aiCard('codemie:prod')} .ws-badge-success`);
+      assert(await page.locator('.ws-settings-nav button[data-tab=ai] .ws-dot-alert').count() === 0, 'the Claude tab dot stays after sign-in');
+      await shot(page, `${theme}-merge-claude-signed-in-${width}`);
+    });
+    await check(`${theme} ${width}px merge: Claude sign-in no page errors`, async () => assert(expired.errors.length === 0, expired.errors.join(' | ')));
+    await expired.context.close().catch(() => {});
+
+    const both = await open({ theme, width, height, hash: '#/settings/ai' });
+    await check(`${theme} ${width}px merge: Claude, Data & privacy, data location, Plugins and Today render together`, async () => {
+      const { page } = both;
+      await page.waitForSelector(aiCard('claude'));
+      await page.waitForTimeout(300);
+      assert(await fits(page) <= 0, 'Claude overflows');
+      await shot(page, `${theme}-merge-settings-claude-${width}`);
+      for (const [tab, ready, name] of [['privacy', '.ws-settings-panels .ws-card', 'privacy'], ['general', '#data-location', 'data-location'], ['plugins', '.ws-settings-panels > *', 'plugins']]) {
+        await page.click(`.ws-settings-nav button[data-tab=${tab}]`);
+        await page.waitForSelector(ready);
+        await page.waitForTimeout(300);
+        assert(await fits(page) <= 0, `${tab} overflows`);
+        await shot(page, `${theme}-merge-settings-${name}-${width}`);
+      }
+      // The Settings nav holds both sides: Plugins and the CodeMie group, and no legacy CodeMie tools.
+      const tabs = await page.$$eval('.ws-settings-nav button[data-tab]', bs => bs.map(b => b.dataset.tab));
+      for (const tab of ['ai', 'privacy', 'plugins', 'cm-overview', 'cm-profiles', 'cm-agents', 'cm-apps', 'cm-health']) assert(tabs.includes(tab), `no ${tab} tab`);
+      for (const tab of ['installation', 'tools', 'desktop', 'health', 'usage']) assert(!tabs.includes(tab), `legacy ${tab} tab`);
+      await page.click('.ws-nav button[data-route=today]');
+      await page.waitForSelector('.ws-page-today .ws-grid');
+      await page.waitForTimeout(400);
+      assert(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, 'Today overflows');
+      await shot(page, `${theme}-merge-today-${width}`);
+    });
+    await check(`${theme} ${width}px merge: screens no page errors`, async () => assert(both.errors.length === 0, both.errors.join(' | ')));
+    await both.context.close().catch(() => {});
+
+    const first = await open({ theme, width, height, codemie: 'fresh', ai: 'none' });
+    await check(`${theme} ${width}px merge: first-launch setup fits`, async () => {
+      const { page } = first;
+      await page.waitForSelector(`${SHEET} :text("Let’s get your AI coding tools working")`);
+      await page.waitForTimeout(300);
+      const box = await page.locator(SHEET).boundingBox();
+      assert(box && box.y >= 0 && box.y + box.height <= height + 1 && box.x >= 0 && box.x + box.width <= width + 1, `the sheet leaves the window: ${JSON.stringify(box)}`);
+      assert(await page.evaluate(() => document.querySelector('.ws-plugin-layer')?.inert !== false), 'plugin frames stay reachable under the sheet');
+      await shot(page, `${theme}-merge-setup-welcome-${width}`);
+      await page.click(`${SHEET} button:has-text("Get started")`);
+      await page.waitForSelector(`${SHEET} :text("How should CodeMie reach a model?")`);
+      await page.waitForTimeout(250);
+      assert(await fits(page) <= 0, 'the sign-in step overflows');
+      await shot(page, `${theme}-merge-setup-signin-${width}`);
+    });
+    await check(`${theme} ${width}px merge: first-launch no page errors`, async () => assert(first.errors.length === 0, first.errors.join(' | ')));
+    await first.context.close().catch(() => {});
+  }
+
+  // A Claude is ready but CodeMie is not set up: setup still opens once (CodeMie's first-launch
+  // rule), and after "Not now" Today stays without the card (Milestone 2's rule) and says where to go.
+  const claudeOnly = await open({ theme, codemie: 'fresh' });
+  await check(`${theme} merge: Not now with a Claude ready points to Settings → CodeMie`, async () => {
+    const { page } = claudeOnly;
+    await page.waitForSelector(`${SHEET} :text("Let’s get your AI coding tools working")`);
+    await page.click(`${SHEET} button:has-text("Not now")`);
+    await page.waitForSelector(SHEET, { state: 'detached' });
+    await page.waitForSelector('.ws-toast:has-text("Settings → CodeMie")');
+    assert(!/Today/.test(await page.locator('.ws-toast').last().innerText()), 'the toast points to a Today card that is not there');
+    await page.waitForTimeout(400);
+    assert(await page.locator('.cm-today-setup').count() === 0, 'the setup card shows although a Claude is ready');
+    assert(await page.locator('.ws-settings-nav, .ws-sidebar').count() > 0, 'the workspace is gone');
+  });
+  await claudeOnly.context.close().catch(() => {});
+  currentPage = null;
+
+  // The recovery page wins: setup never opens over it, and an open sheet gives way to it.
+  await check(`${theme} merge: no setup over a data folder that is missing at start`, async () => {
+    const { page, context, errors } = await open({ theme, codemie: 'fresh', ai: 'none', storage: STORAGE.missing, unavailable: true });
+    await page.waitForTimeout(1200);
+    assert(await page.locator('#cm-sheet-host .cm-sheet').count() === 0, 'setup opened over the recovery page');
+    assert(await page.locator('.ws-recovery-card').count() === 1, 'no recovery page');
+    assert(errors.length === 0, errors.join(' | '));
+    await context.close().catch(() => {});
+    currentPage = null;
+  });
+  await check(`${theme} merge: the recovery page closes an open setup sheet`, async () => {
+    const { page, context, errors } = await open({ theme, codemie: 'fresh', ai: 'none', storage: STORAGE.missing });
+    await page.waitForSelector(SHEET);
+    await page.evaluate(() => { window.__storageFail = true; window.dispatchEvent(new Event('focus')); });
+    await page.waitForSelector('.ws-recovery-card[data-status="missing"]');
+    await page.waitForSelector('#cm-sheet-host .cm-sheet', { state: 'detached' });
+    assert(await page.evaluate(() => !document.getElementById('workspace-app').inert), 'the recovery page stays inert');
+    const hit = await page.evaluate(() => {
+      const b = document.querySelector('[data-action="recovery-retry"]').getBoundingClientRect();
+      return document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2)?.closest('[data-action="recovery-retry"]') != null;
+    });
+    assert(hit, 'something covers the recovery buttons');
+    await shot(page, `${theme}-merge-recovery-over-setup`);
+    assert(errors.length === 0, errors.join(' | '));
+    await context.close().catch(() => {});
+    currentPage = null;
+  });
 }
 
 await browser.close();

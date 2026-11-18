@@ -57,7 +57,8 @@ export function settings(s, ctx) {
   const tab = state.settingsTab;
   const panels = {
     general: () => generalPanel(s, state.storage),
-    ai: () => aiPanel(state.ai),
+    // A CodeMie profile's sign-in as Settings → CodeMie read it (one readiness per profile).
+    ai: () => aiPanel(state.ai, { codemie: ctx.codemie?.signIn }),
     microsoft: () => microsoftPanel(s, auth),
     appearance: () => appearancePanel(s),
     notifications: () => notificationsPanel(s),

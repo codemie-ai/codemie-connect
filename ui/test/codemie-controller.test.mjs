@@ -117,3 +117,24 @@ test('profile_test_uses_the_claude_test', async () => {
   await c.handle('cm-profile-test', el({ id: 'prod' }));
   assert.match(c.panel('cm-profiles'), /cm-status[^>]*>.*OK/s);
 });
+
+// Merge with Milestone 2: Today holds hover states, a draft about to start and plugin cards, so a
+// CodeMie read that changes nothing Today shows (the setup card, the notices) does not redraw it.
+test('today_redraws_only_when_codemie_changes_what_today_shows', async () => {
+  const listeners = [];
+  const service = fakeService({ subscribe: (fn) => { listeners.push(fn); return () => {}; } });
+  let renders = 0;
+  let c;
+  // As app.js does: every render of Today asks for the card and the notices.
+  ({ c } = controllerHarness({ service, state: { route: 'today' }, render: async () => { renders++; c.todayCard(); c.banners('today'); } }));
+  c.todayCard();
+  c.banners('today');
+  await c.boot();
+  const notify = async () => { listeners.forEach((fn) => fn()); await new Promise((r) => setTimeout(r, 300)); };
+  await notify();
+  assert.equal(renders, 0, 'an unchanged read redrew Today');
+  const first = renders;
+  service.state.auth = { state: 'not_signed_in', detail: '' };
+  await notify();
+  assert.equal(renders, first + 1, 'a sign-in that expired did not reach Today');
+});
