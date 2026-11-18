@@ -243,7 +243,7 @@ export function createPluginHost({
         return placeSoon();
       case 'go': {
         const hash = mayLead(rec) ? internalRoute(rec.id, m.hash) : null;
-        if (hash) onGo(hash, rec.id);
+        if (hash) onGo(hash, rec.id, { replace: m.replace === true });
         return;
       }
       case 'notice': if (mayLead(rec)) onNotice(m.text, rec.name); return;

@@ -59,6 +59,11 @@ pub const CATALOG: &[(&str, Support)] = &[
     ("signin", Support::Partial("Only GitHub sign-in is available")),
     ("scripts", Support::Unsupported),
     ("ai", Support::Unsupported),
+    ("skills", Support::Supported),
+    (
+        "m365",
+        Support::Partial("Connect doesn't share your mail and chats with plugins yet"),
+    ),
 ];
 
 pub fn support_of(key: &str) -> Option<Support> {
@@ -77,7 +82,9 @@ pub fn sheet(m: &Manifest) -> Result<Vec<SheetLine>, ManifestError> {
                 key: key.clone(),
                 why,
             };
-            if !value.is_object() {
+            // `skills` is a plain `true` in Echo's manifests; every other key is an object.
+            let plain_true = key == "skills" && value == &Value::Bool(true);
+            if !(value.is_object() || plain_true) {
                 return Err(bad("it must be an object".into()));
             }
             let text = describe(key, value).map_err(bad)?;
@@ -193,6 +200,8 @@ const ECHO_READS: &[(&str, &str)] = &[
     ("sources", "your calls, mail and chat"),
     ("source", "your calls, mail and chat"),
     ("calls", "your calls' minutes and transcripts"),
+    ("me", "your name and email address"),
+    ("recording", "whether a call is being recorded"),
 ];
 const ECHO_WRITES: &[(&str, &str)] = &[
     ("dictionary", "Add names to your dictionary"),
@@ -218,6 +227,10 @@ const EVENTS: &[(&str, &str)] = &[
     ("threads_changed", "a thread is renamed, merged or deleted"),
     ("shared_changed", "a value its plugins share changes"),
 ];
+/** Events Echo defines that Connect never sends: it doesn't record calls. */
+const NOT_SENT: &[&str] = &["recording_started", "recording_stopped", "transcribed"];
+/** What `m365.read` names mean. */
+const M365_READS: &[(&str, &str)] = &[("mail", "your Outlook mail"), ("chats", "Teams chats")];
 
 fn describe(key: &str, v: &Value) -> Result<String, String> {
     match key {
@@ -274,7 +287,11 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
                     join_words(&quoted(&from))
                 ));
             }
-            Ok(format!("Connect to {}", parts.join(" and to ")))
+            let mut text = format!("Connect to {}", parts.join(" and to "));
+            if flag(v, "ask")? {
+                text.push_str(" and fetch one web page from an address you type in Connect's box");
+            }
+            Ok(text)
         }
         "channel" => {
             let p = v.get("plugin").and_then(Value::as_str).unwrap_or("");
@@ -390,14 +407,15 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
             if on.is_empty() {
                 return Err("it hears nothing".into());
             }
+            let sent = |k: &str| !NOT_SENT.contains(&k);
             let known: Vec<String> = EVENTS
                 .iter()
-                .filter(|(k, _)| on.iter().any(|o| o == k))
+                .filter(|(k, _)| sent(k) && on.iter().any(|o| o == k))
                 .map(|(_, w)| (*w).to_string())
                 .collect();
             let unknown: Vec<String> = on
                 .iter()
-                .filter(|o| !EVENTS.iter().any(|(k, _)| k == o))
+                .filter(|o| !sent(o) || !EVENTS.iter().any(|(k, _)| k == o))
                 .cloned()
                 .collect();
             let mut lines = vec![];
@@ -423,6 +441,36 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
             ))
         }
         "work" => Ok("Add its items to your Today page's My work".into()),
+        "skills" => {
+            Ok("Add a skill to your own Claude Code, only when you click and confirm".into())
+        }
+        "m365" => {
+            let read = words(v, "read", 8, is_name)?;
+            if read.is_empty() {
+                return Err("it asks to read nothing (mail, chats)".into());
+            }
+            let known: Vec<String> = M365_READS
+                .iter()
+                .filter(|(k, _)| read.iter().any(|r| r == k))
+                .map(|(_, w)| (*w).to_string())
+                .collect();
+            let unknown: Vec<String> = read
+                .iter()
+                .filter(|r| !M365_READS.iter().any(|(k, _)| k == r))
+                .cloned()
+                .collect();
+            let mut lines = vec![];
+            if !known.is_empty() {
+                lines.push(format!("Read {}, never send", join_words(&known)));
+            }
+            if !unknown.is_empty() {
+                lines.push(format!(
+                    "Ask for things Connect doesn't have: {}",
+                    unknown.join(", ")
+                ));
+            }
+            Ok(lines.join(". "))
+        }
         "signin" => {
             let hosts = words(v, "hosts", 4, is_host)?;
             if hosts.is_empty() {
@@ -528,6 +576,7 @@ mod tests {
             "files": {"read": ["~/Library/x.json"]}, "work": {},
             "signin": {"hosts": ["github.com"], "keep": true},
             "scripts": {"run": []}, "ai": {"wrapper": {"name": "A", "command": "acme"}},
+            "skills": true, "m365": {"read": ["mail"]},
         });
         assert_eq!(samples.as_object().unwrap().len(), CATALOG.len());
         let lines = sheet(&manifest_with(samples)).unwrap();
@@ -589,6 +638,75 @@ mod tests {
             assert!(bad(json!({ key: [1] })), "{key}");
         }
         assert!(!bad(json!({"folders": {"what": "Obsidian vaults"}})));
+    }
+
+    /// Knowledge 1.0.1's `uses`, as published.
+    fn knowledge_uses() -> Value {
+        json!({
+            "folders": {"what": "folders of notes (Knowledge vaults)", "write": true},
+            "claude": {},
+            "echo": {"read": ["clients", "threads", "source", "sources", "calls", "me", "recording", "dictionary"]},
+            "network": {"hosts_from": ["web_sites"], "ask": true},
+            "skills": true,
+            "sessions": {"skills": true, "read": true, "hints": true, "commands": ["search", "info"]},
+            "events": {"on": ["minutes_written", "sources_changed", "recording_started", "recording_stopped", "transcribed"]},
+            "m365": {"read": ["mail", "chats"]},
+        })
+    }
+
+    #[test]
+    fn knowledge_sheet_is_honest() {
+        let lines = sheet(&manifest_with(knowledge_uses())).unwrap();
+        let by = |k: &str| lines.iter().find(|l| l.key == k).unwrap().clone();
+        assert!(lines
+            .iter()
+            .all(|l| !matches!(l.support, Support::Blocking(_))));
+        assert_eq!(by("skills").support, Support::Supported);
+        assert_eq!(
+            by("skills").text,
+            "Add a skill to your own Claude Code, only when you click and confirm"
+        );
+        assert!(matches!(by("m365").support, Support::Partial(_)));
+        assert_eq!(
+            by("m365").text,
+            "Read your Outlook mail and Teams chats, never send"
+        );
+        assert_eq!(
+            by("network").text,
+            "Connect to the addresses you enter in its setting \"web_sites\" and fetch one web \
+             page from an address you type in Connect's box"
+        );
+        let echo = by("echo").text;
+        assert!(echo.contains("your name and email address"), "{echo}");
+        assert!(
+            echo.contains("your calls' minutes and transcripts"),
+            "{echo}"
+        );
+        assert!(!echo.contains("doesn't have"), "{echo}");
+        assert_eq!(
+            by("events").text,
+            "Know when a call's minutes are written and your mail, chat or calendar change. Ask \
+             to hear about things Connect doesn't have: recording_started, recording_stopped, \
+             transcribed"
+        );
+        assert_eq!(by("sessions").support, Support::Unsupported);
+        // `skills` is `true` or an object; anything else can't be read.
+        for bad in [json!("yes"), json!(1), json!(false)] {
+            assert!(
+                matches!(
+                    sheet(&manifest_with(json!({ "skills": bad }))),
+                    Err(ManifestError::BadValue { .. })
+                ),
+                "{bad}"
+            );
+        }
+        assert!(sheet(&manifest_with(json!({"skills": {}}))).is_ok());
+        // An m365 kind Connect doesn't read is named.
+        let lines = sheet(&manifest_with(json!({"m365": {"read": ["mail", "files"]}}))).unwrap();
+        assert_eq!(
+            lines[0].text,
+            "Read your Outlook mail, never send. Ask for things Connect doesn't have: files"
+        );
     }
 
     #[test]

@@ -19,10 +19,11 @@ export function syncStatus(s) {
 }
 
 /** The sidebar's Plugins group: each page an enabled plugin adds (`activities`:
- *  [{plugin, id, label}]), `current` the one open ({plugin, id}). Labels are the plugin's text. */
+ *  [{plugin, id, label, badge}]), `current` the one open ({plugin, id}). Labels and badges are the
+ *  plugin's text. */
 export function pluginNav(activities = [], current = null) {
   if (!activities.length) return '';
-  return `<div class="ws-nav-group ws-plugin-nav"><div class="ws-nav-label">Plugins</div><nav class="ws-nav" aria-label="Plugins">${activities.map(a => `<button type="button" data-action="plugin-page" data-plugin-id="${e(a.plugin)}" data-activity="${e(a.id)}" title="${e(a.label)}" ${current && current.plugin === a.plugin && current.id === a.id ? 'aria-current="page"' : ''}>${icon('puzzle')}<span>${e(a.label)}</span></button>`).join('')}</nav></div>`;
+  return `<div class="ws-nav-group ws-plugin-nav"><div class="ws-nav-label">Plugins</div><nav class="ws-nav" aria-label="Plugins">${activities.map(a => `<button type="button" data-action="plugin-page" data-plugin-id="${e(a.plugin)}" data-activity="${e(a.id)}" title="${e(a.label)}" ${current && current.plugin === a.plugin && current.id === a.id ? 'aria-current="page"' : ''}>${icon('puzzle')}<span>${e(a.label)}</span>${a.badge ? `<small class="ws-count">${e(a.badge)}</small>` : ''}</button>`).join('')}</nav></div>`;
 }
 
 // state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot, now } — settingsDot: CodeMie needs the person.

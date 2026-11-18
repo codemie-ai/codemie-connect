@@ -25,14 +25,15 @@ pub fn call(s: &Services, p: &Granted, name: &str, args: &Value) -> Result<Value
             let content = at(args, 1)
                 .as_str()
                 .ok_or_else(|| bad("ctx.store.write takes text: JSON.stringify an object first"))?;
+            let guard = super::cas::guard_of(at(args, 2))?;
             plain_top(rel)?;
             let path = inside(&store, rel, false)?;
             if path.is_dir() {
                 return Err(bad(format!("“{rel}” is a folder")));
             }
             ensure_dirs(&store, &path)?;
-            crate::storage::location::write_atomic(&path, content.as_bytes())
-                .map_err(|e| io_failed(&format!("write “{rel}”"), &e))?;
+            let _order = super::lock(&s.writes);
+            super::cas::write(&path, rel, content.as_bytes(), &guard)?;
             Ok(Value::Null)
         }
         "store.list" => {
@@ -187,8 +188,77 @@ fn inside_package(p: &Granted, rel: &str) -> Result<Option<PathBuf>, HostError> 
 #[cfg(test)]
 mod tests {
     use super::super::testing::Env;
-    use crate::plugins::host::ErrorCode;
+    use crate::plugins::host::{ErrorCode, Grants, PluginHost};
     use serde_json::{json, Value};
+    use std::sync::Arc;
+
+    #[test]
+    fn store_write_compares_and_creates_with_echos_words() {
+        let env = Env::new();
+        env.plugin("alpha", json!({}), json!([]));
+        let call = |args: Value| env.call("alpha", "store.write", args);
+        call(json!(["vaults.json", "[1]", {"createNew": true}])).unwrap();
+        let e = call(json!(["vaults.json", "[2]", {"ifSha": null}])).unwrap_err();
+        assert_eq!(e.message, "“vaults.json” is there already");
+        let sha = super::super::cas::sha_hex(b"[0]");
+        let e = call(json!(["vaults.json", "[2]", { "ifSha": sha }])).unwrap_err();
+        assert_eq!(e.code, ErrorCode::PluginError);
+        assert_eq!(
+            e.message,
+            "“vaults.json” changed since you read it: read it again"
+        );
+        let sha = super::super::cas::sha_hex(b"[1]");
+        call(json!(["vaults.json", "[2]", { "ifSha": sha }])).unwrap();
+        assert_eq!(
+            env.call("alpha", "store.read", json!(["vaults.json"]))
+                .unwrap(),
+            json!("[2]")
+        );
+        assert_eq!(
+            env.call("alpha", "crypto.sha256", json!(["abc"])).unwrap(),
+            json!("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+    }
+
+    #[tokio::test]
+    async fn store_update_reads_changes_and_writes_once() {
+        let env = Env::new();
+        let host = Arc::new(PluginHost::new(env.services.clone()));
+        env.services.set_host(&host);
+        env.plugin("alpha", json!({}), json!([]));
+        let main = env.dir.path().join("main.js");
+        std::fs::write(
+            &main,
+            r#"
+            export function apply(ctx) {
+              ctx.command('bump', () => [
+                ctx.store.update('n.txt', (t) => String(Number(t || 0) + 1)),
+                ctx.store.update('n.txt', (t) => String(Number(t) + 1)),
+                ctx.store.update('n.txt', (t) => t),
+                ctx.store.update('n.txt', () => undefined),
+                ctx.crypto.sha256('abc'),
+              ])
+            }
+            "#,
+        )
+        .unwrap();
+        host.load("alpha", &main, Grants::default()).await.unwrap();
+        let out = host.call("alpha", "bump", Value::Null).await.unwrap();
+        assert_eq!(
+            out,
+            json!([
+                "1",
+                "2",
+                "2",
+                "2",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            ])
+        );
+        assert_eq!(
+            env.call("alpha", "store.read", json!(["n.txt"])).unwrap(),
+            json!("2")
+        );
+    }
 
     #[test]
     fn store_reads_writes_lists_and_removes_inside_its_own_folder() {

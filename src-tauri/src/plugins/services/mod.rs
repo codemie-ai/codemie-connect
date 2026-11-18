@@ -14,6 +14,7 @@
 //! The services: `store` (with `package`), `settings`, `fs` (with `system`), `http`, `notify`
 //! (with `log`), `markdown`; `claude` (with `profiles`), `deliver`, `today` (inbox, widgets,
 //! work rows), `echo_read`, `events` (shared values) and `signin`.
+pub mod cas;
 pub mod claude;
 pub mod deliver;
 pub mod echo_read;
@@ -146,6 +147,8 @@ pub struct Services {
     today: Mutex<today::Provided>,
     /// `ctx.profiles()`, refreshed by the plugin manager (detection is too slow for a turn).
     profiles: RwLock<Value>,
+    /// Orders guarded writes (`{ifSha, createNew}`): a comparison and its write are one step.
+    pub(crate) writes: Mutex<()>,
 }
 
 impl Services {
@@ -160,6 +163,7 @@ impl Services {
             providers: Mutex::default(),
             today: Mutex::default(),
             profiles: RwLock::new(serde_json::json!({"default": null, "profiles": []})),
+            writes: Mutex::new(()),
         })
     }
 
@@ -269,6 +273,9 @@ impl HostServices for Services {
             "log" => notify::log(&p, &args),
             "notify" => notify::notify(self, &p, &args),
             "markdown" => markdown::render(&args),
+            "crypto.sha256" => Ok(Value::from(cas::sha_hex(
+                text(&args, 0, "the text to hash")?.as_bytes(),
+            ))),
             n if n.starts_with("store.") || n.starts_with("package.") => {
                 store::call(self, &p, n, &args)
             }

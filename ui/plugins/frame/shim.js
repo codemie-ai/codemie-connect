@@ -2,8 +2,12 @@
 // frame, waits for Connect's window to hand it the frame's channel, builds the client half's
 // `ctx`, imports `client.js` and calls `apply(ctx)`. What the plugin adds (pages, Settings
 // sections, its card, panels, palette entries, page widgets) stays in the frame: the plugin draws
-// its own HTML here, and the window learns only ids and labels (`contribution`). Members Connect
-// lacks (`slots`, `openEchoPanel`) are left out, as the spec's rule 3 says.
+// its own HTML here, and the window learns only ids and labels (`contribution`). Echo 0.10's
+// client members are here too: `slots` (Echo's names; none drawn yet), `onFileDrop`, `ui.sheet`,
+// and the page's route mirrored into the frame's own `location.hash` (`#<plugin>:<page>/<route>`),
+// which a plugin reads as it does in Echo. The hash is changed with `history.replaceState`, never
+// by navigating: WebKit tells the window a frame loaded again after each fragment navigation.
+// `openEchoPanel` is left out (the spec's rule 3).
 import { V, checkFromWindow, errorOf } from './messages.js';
 import { esc, setRow, setCard, sw, ICON, relDay, ago, patch as domPatch } from './kit.js';
 
@@ -17,6 +21,12 @@ const STYLESHEET = /^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_/.-]*\.css$/;
 const MAX_LIST = 40;
 /** The most different page errors a frame reports in one load. */
 const MAX_ERRORS = 20;
+/** The slots Echo has (`ctx.slots.add`); another name throws, as in Echo. */
+export const ECHO_SLOTS = ['call.header', 'call.menu', 'call.minutes', 'thread.profile', 'client.profile'];
+/** A hash that names a plugin's page (`#<plugin>:<page>…`), as opposed to a place on this page. */
+const PAGE_HASH = /^#[a-z][a-z0-9-]{1,40}:[a-z0-9]/i;
+/** What a sheet's Tab key moves between. */
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
 /** A `localStorage` stand-in: the Storage interface over `initial`, calling `onChange(all)` after
  *  each change. Over `max` (as JSON) a write throws, as a full browser storage does. */
@@ -67,6 +77,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     owned: { listeners: [], windowListeners: [], styles: [], cleanups: [] },
     calls: new Map(), nextId: 1, sent: '', renderQueued: false, height: -1,
     pendingItems: null, flushTimer: null, reported: new Set(), early: [],
+    slots: new Map(), drops: [], sheet: null,
   };
   let ctx = null;
   let graph = null;
@@ -107,7 +118,13 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     if (event.defaultPrevented) return;
     const link = event.target?.closest?.('a[href]');
     const href = String(link?.getAttribute('href') ?? '');
-    if (!link || href.startsWith('#')) return;
+    if (!link) return;
+    if (href.startsWith('#')) {
+      // A place in the frame: followed here, without a navigation (see mirrorHash).
+      event.preventDefault();
+      followHash(href);
+      return;
+    }
     event.preventDefault();
     const url = String(link.href || href);
     // `javascript:` is a "button" the CSP refuses to run anyway, never an address to open.
@@ -116,6 +133,59 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
   try {
     Object.defineProperty(win, 'open', { value: url => { openLink(url); return null; }, configurable: true, writable: true });
   } catch { /* the browser's stays, and opens nothing from this frame */ }
+
+  // The page's route lives in the frame's own hash, as a plugin reads it in Echo. The window's
+  // route is mirrored in on `show`; a page's hash the frame moves to itself (a `#…` link, or the
+  // plugin setting `location.hash`) is told to the window as `go`, so Connect's address follows,
+  // and drawn at once; any other hash is a place on the page, scrolled to.
+  function hashMoved(hash) {
+    if (s.sheet) closeSheet(true);
+    if (PAGE_HASH.test(hash)) {
+      if (s.target.view === 'activity') post({ kind: 'event', type: 'go', hash: hash.slice(0, 600), replace: true });
+      renderSoon();
+    } else if (hash.length > 1) {
+      let id = hash.slice(1);
+      try { id = decodeURIComponent(id); } catch { /* as written */ }
+      doc.getElementById?.(id)?.scrollIntoView?.();
+    }
+  }
+  function followHash(hash) {
+    if (String(win.location?.hash || '') === hash) return;
+    try {
+      win.history.replaceState(null, '', hash);
+    } catch {
+      return;
+    }
+    hashMoved(hash);
+  }
+  win.addEventListener?.('hashchange', () => hashMoved(String(win.location?.hash || '')));
+
+  // A sheet (`ctx.ui.sheet`) is one modal over the page: Esc and a click on the scrim close it
+  // and tell its `onClose` once; Tab stays inside it.
+  doc.addEventListener?.('keydown', event => {
+    if (!s.sheet) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSheet(true);
+    } else if (event.key === 'Tab') {
+      const items = [...s.sheet.box.querySelectorAll(FOCUSABLE)];
+      if (!items.length) {
+        event.preventDefault();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const inside = s.sheet.box.contains(doc.activeElement);
+      if (event.shiftKey && (doc.activeElement === first || !inside)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (doc.activeElement === last || !inside)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  }, true);
 
   function request(body) {
     if (!s.port || s.unloaded) return Promise.reject(new Error('This plugin is off.'));
@@ -129,11 +199,12 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
   // ------------------------------------------------------------ the window's messages
 
   function onWindowMessage(event) {
-    // One channel per load of this frame, from Connect's window only.
-    if (s.port || event.source !== win.parent) return;
+    // A channel from Connect's window only.
+    if (event.source !== win.parent) return;
     const m = checkFromWindow(event.data);
     const port = event.ports && event.ports[0];
     if (!m || m.kind !== 'event' || m.type !== 'connect' || !port) return;
+    if (s.port) return reconnect(m, port);
     s.port = port;
     port.onmessage = onPortMessage;
     s.plugin = m.plugin;
@@ -144,6 +215,26 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     for (const text of s.early.splice(0)) post({ kind: 'event', type: 'error', message: text });
     ctx = makeCtx();
     boot();
+  }
+
+  /** The window handed this page a new channel without loading it again (WebKit tells the window
+   *  a frame loaded after a fragment navigation): the page goes on over the new one. What the old
+   *  channel still owed is lost, so those calls fail; the window hears the page as it is. */
+  function reconnect(m, port) {
+    if (s.unloaded || m.plugin.id !== s.plugin?.id) return;
+    s.port.onmessage = null;
+    s.port = port;
+    port.onmessage = onPortMessage;
+    for (const call of s.calls.values()) call.reject(new Error('Connect lost this answer; try again.'));
+    s.calls.clear();
+    s.where = m.where;
+    setTheme(m.theme);
+    s.sent = '';
+    s.height = -1;
+    if (s.applied) post({ kind: 'event', type: 'ready' });
+    for (const text of s.reported) post({ kind: 'event', type: 'error', message: text });
+    contribute();
+    renderSoon();
   }
 
   function onPortMessage(event) {
@@ -160,7 +251,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     if (m.kind === 'call') return answerDraw(m);
     switch (m.type) {
       case 'theme': setTheme(m.theme); graph?.retheme(); renderSoon(); return;
-      case 'show': s.target = m.target; s.where = m.where; renderSoon(); return;
+      case 'show': s.target = m.target; s.where = m.where; mirrorHash(m.target); renderSoon(); return;
       case 'palette': return runPalette(m.index);
       case 'unload': return unload();
       default:
@@ -208,6 +299,8 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       notice: text => post({ kind: 'event', type: 'notice', text: String(text ?? '').slice(0, 2000) }),
       copy,
       stylesheet,
+      sheet: openSheet,
+      closeSheet: () => closeSheet(false),
       style: css => {
         const el = doc.createElement('style');
         el.setAttribute('data-plugin', s.plugin.id);
@@ -227,6 +320,21 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       listenWindow: (type, fn, opts) => { win.addEventListener(type, fn, opts); own.windowListeners.push([type, fn, opts]); },
       onUnload: fn => { if (typeof fn === 'function') own.cleanups.push(fn); },
       activities: { add: a => register(s.activities, a, 'An activity') },
+      slots: {
+        add: (slot, item) => {
+          const name = String(slot);
+          if (!ECHO_SLOTS.includes(name)) throw new Error(`${s.host.name || 'Connect'} has no slot “${name}”`);
+          if (!item || typeof item !== 'object') throw new Error(`slots.add(“${name}”) needs an item`);
+          if (!s.slots.has(name)) s.slots.set(name, []);
+          s.slots.get(name).push(item);
+        },
+        // The slots Connect draws: none yet.
+        list: () => [],
+      },
+      onFileDrop: fn => {
+        if (typeof fn !== 'function') throw new Error('ctx.onFileDrop needs a function');
+        s.drops.push(fn);
+      },
       settings: {
         add: card => {
           if (!card || typeof card.render !== 'function') throw new Error('A settings card needs render()');
@@ -252,7 +360,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
         },
       },
       where: () => ({ ...s.where }),
-      go: hash => post({ kind: 'event', type: 'go', hash: String(hash ?? '').slice(0, 600) }),
+      go: (hash, opts) => post({ kind: 'event', type: 'go', hash: String(hash ?? '').slice(0, 600), replace: !!(opts && opts.replace) }),
       ui,
     };
   }
@@ -293,14 +401,73 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     });
   }
 
+  /** Opens the sheet with `html` (or, when one is open, draws `html` in it): the box returned is
+   *  where the plugin patches it again. */
+  function openSheet(html, opts) {
+    const label = String(opts?.label ?? '').slice(0, 120);
+    const onClose = typeof opts?.onClose === 'function' ? opts.onClose : null;
+    if (s.sheet) {
+      s.sheet.onClose = onClose;
+      s.sheet.box.setAttribute('aria-label', label);
+      patch(s.sheet.box, String(html ?? ''));
+      return s.sheet.box;
+    }
+    const scrim = doc.createElement('div');
+    scrim.className = 'td-modal plug-scrim';
+    const box = doc.createElement('div');
+    box.className = 'td-dialog plug-sheet';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-label', label);
+    box.setAttribute('tabindex', '-1');
+    scrim.addEventListener?.('click', event => { if (event.target === scrim) closeSheet(true); });
+    scrim.appendChild(box);
+    doc.body.appendChild(scrim);
+    s.sheet = { scrim, box, onClose, back: doc.activeElement };
+    patch(box, String(html ?? ''));
+    (box.querySelector?.(FOCUSABLE) || box).focus?.();
+    return box;
+  }
+
+  /** Closes the sheet; `tell`: the user closed it (Esc, the scrim, a new address), so `onClose`
+   *  hears it, once. */
+  function closeSheet(tell) {
+    const sheet = s.sheet;
+    if (!sheet) return;
+    s.sheet = null;
+    sheet.scrim.remove();
+    try { sheet.back?.focus?.(); } catch { /* it is gone */ }
+    if (tell && sheet.onClose) {
+      try {
+        sheet.onClose();
+      } catch (e) {
+        pageError(`Sheet: ${errorOf(e).message}`);
+      }
+    }
+  }
+
+  /** The window's route of the page shown, in the frame's own hash: replaced in the frame's
+   *  history, so it adds no entry, fires no `hashchange` and isn't a navigation. */
+  function mirrorHash(t) {
+    if (t.view !== 'activity' || !s.plugin || !win.location) return;
+    const hash = `#${s.plugin.id}:${t.activity}${t.route ? `/${t.route}` : ''}`;
+    if (win.location.hash === hash) return;
+    try {
+      win.history.replaceState(null, '', hash);
+    } catch { /* the page reads the hash it had */ }
+  }
+
   // ------------------------------------------------------------ what the window shows
 
   const label = (v, fallback) => String(v ?? '').trim().slice(0, 80) || fallback;
 
-  function badgeOf(section) {
-    if (typeof section.badge !== 'function') return '';
+  /** A page's or section's badge: a count (1–99, `99+`) or a short mark like `!`. */
+  function badgeOf(item) {
+    if (typeof item.badge !== 'function') return '';
     try {
-      return String(section.badge() ?? '').slice(0, 8);
+      const b = item.badge();
+      if (typeof b === 'number') return b > 0 ? (b > 99 ? '99+' : String(Math.floor(b))) : '';
+      return String(b ?? '').slice(0, 8);
     } catch {
       return '';
     }
@@ -309,7 +476,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
   function contribute() {
     if (s.unloaded) return;
     const c = {
-      activities: [...s.activities.values()].slice(0, MAX_LIST).map(a => ({ id: a.id, label: label(a.label, a.id) })),
+      activities: [...s.activities.values()].slice(0, MAX_LIST).map(a => ({ id: a.id, label: label(a.label, a.id), badge: badgeOf(a) })),
       sections: [...s.sections.values()].slice(0, MAX_LIST).map(x => ({ id: x.id, label: label(x.label, x.id), badge: badgeOf(x) })),
       card: !!s.card,
       panels: [...s.panels.values()].slice(0, MAX_LIST).map(p => ({ id: p.id, label: label(p.label, p.id) })),
@@ -365,6 +532,16 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     const t = s.target;
     doc.body.setAttribute('data-view', t.view);
     const view = viewOf(t);
+    // A page being typed in is left as it is (`editing()`, as in Echo): it asks to be drawn when
+    // it is ready.
+    if (t.view === 'activity' && view && typeof view.editing === 'function') {
+      let held = false;
+      try { held = !!view.editing(); } catch { /* drawn */ }
+      if (held) {
+        contribute();
+        return;
+      }
+    }
     let html = '';
     let panel = null;
     s.drawing = true;
@@ -454,6 +631,8 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     const html = doc.documentElement;
     html.classList.remove('light', 'dark');
     html.classList.add(theme);
+    // Echo's pages watch `data-theme` (a canvas reads its colours again).
+    html.setAttribute?.('data-theme', theme);
     if (html.style) html.style.colorScheme = theme;
   }
 
@@ -505,6 +684,9 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     s.draws.clear();
     s.palette = [];
     s.card = null;
+    s.slots.clear();
+    s.drops = [];
+    closeSheet(false);
     s.unloaded = true;
     for (const call of s.calls.values()) call.reject(new Error('This plugin is off.'));
     s.calls.clear();

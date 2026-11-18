@@ -122,6 +122,14 @@ impl Core {
         (c.status == "connected").then_some(c.email)
     }
 
+    /// The Microsoft account's name and e-mail address (Echo's `me`), while one is signed in.
+    pub(crate) fn plugin_me(&self) -> Option<(String, String)> {
+        let r = self.repo().ok()?;
+        let cid = r.settings().ok()?.active_connection?;
+        let c = r.connection(&cid).ok()?;
+        Some((c.display_name, c.email))
+    }
+
     /// The messages and meetings plugins may read: exactly what the active workspace shows
     /// (its selected sources of the account it is bound to).
     pub(crate) fn plugin_sources(&self) -> Result<Vec<Record>> {

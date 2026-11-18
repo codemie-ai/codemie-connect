@@ -3,16 +3,14 @@
 //!
 //! - `CONNECT_ECHO_PLUGINS_DIR` (default `$HOME/AI/projects/other/echo-plugins/plugins`; the
 //!   marketplace folder above it works too): the published plugins (echo-plugins main).
-//!   Scheduler, GitHub, Obsidian and Telegram must parse, have a sheet with nothing blocking, and
-//!   fit Connect's plugin engine (their `echo` is ignored). Then each one's real `main.js` runs
-//!   (Task 25's conformance): installed from a temp copy of the marketplace into a temp data
-//!   root, loaded by the real `PluginManager` into the real host with Connect's real services
-//!   over a real `Core`, and only what is outside Connect faked: Claude (`FakeRunner`), the
-//!   network (an offline client that records what it was asked to send), the folder picker and
-//!   the GitHub CLI.
-//! - `CONNECT_KNOWLEDGE_PLUGINS_DIR` (default
-//!   `$HOME/.codex/worktrees/knowledge-plugin-0300/echo-plugins/plugins`): a moving worktree, used
-//!   for Knowledge's blocked line and the compatibility refusal only (ruling R31).
+//!   Scheduler, GitHub, Knowledge (`obsidian`) and Telegram must parse, have a sheet with nothing
+//!   blocking, and fit Connect's plugin engine and the Echo API it provides (`ECHO_COMPAT`). Then
+//!   each one's real `main.js` runs (Task 25's conformance): installed from a temp copy of the
+//!   marketplace into a temp data root, loaded by the real `PluginManager` into the real host
+//!   with Connect's real services over a real `Core`, and only what is outside Connect faked:
+//!   Claude (`FakeRunner`), the network (an offline client that records what it was asked to
+//!   send), the folder picker and the GitHub CLI. Knowledge's flow grows with each Echo 0.10
+//!   member Connect adds (docs/superpowers/plans/2026-11-18-knowledge-plugin-in-connect.md).
 //!
 //! Each directory's parent holds its `echo-marketplace.json`, so it is also added as a local
 //! marketplace and installed from, into a temp data root.
@@ -21,7 +19,7 @@ use app_lib::plugins::git::CliGit;
 use app_lib::plugins::host::{ErrorCode, Limits};
 use app_lib::plugins::install::{self, sheet_hash, Agreement, Outcome};
 use app_lib::plugins::manager::PluginManager;
-use app_lib::plugins::manifest::{check_compat, parse_manifest, ManifestError};
+use app_lib::plugins::manifest::{check_compat, parse_manifest, ManifestError, ECHO_COMPAT};
 use app_lib::plugins::market;
 use app_lib::plugins::registry::{Market, PluginPaths, Registry};
 use app_lib::plugins::services::Outside;
@@ -77,38 +75,23 @@ fn published_manifests_parse_and_none_is_blocked() {
 }
 
 #[test]
-fn knowledge_is_blocked_and_a_range_above_connect_is_refused() {
-    let Some(dir) = dir(
-        "CONNECT_KNOWLEDGE_PLUGINS_DIR",
-        ".codex/worktrees/knowledge-plugin-0300/echo-plugins/plugins",
-    ) else {
+fn knowledge_needs_the_echo_api_connect_provides() {
+    let Some(dir) = published() else {
         return;
     };
-    let m = parse_manifest(&dir.join("knowledge")).unwrap();
-    let lines = sheet(&m).unwrap();
-    let blocked: Vec<_> = lines
-        .iter()
-        .filter(|l| matches!(l.support, Support::Blocking(_)))
-        .collect();
-    assert_eq!(blocked.len(), 1, "{lines:?}");
-    assert_eq!(blocked[0].key, "knowledge");
-    // Whatever else is in the worktree: an engine range that excludes Connect's, or a feature it
-    // lacks, is refused with the reason; anything else passes.
-    let mut seen = 0;
-    for entry in std::fs::read_dir(&dir).unwrap().flatten() {
-        let Ok(m) = parse_manifest(&entry.path()) else {
-            continue;
-        };
-        seen += 1;
-        match check_compat(&m) {
-            Ok(()) => {}
-            Err(e @ (ManifestError::Incompatible { .. } | ManifestError::Lacking(_))) => {
-                assert!(e.to_string().starts_with("it needs "), "{}: {e}", m.id)
-            }
-            Err(e) => panic!("{}: {e}", m.id),
-        }
-    }
-    assert!(seen >= 1);
+    let m = parse_manifest(&dir.join("obsidian")).unwrap();
+    assert_eq!(m.name, "Knowledge");
+    // Knowledge says `"echo": ">=0.10.0"`; Connect gives plugins Echo 0.10's API.
+    let echo = m.echo.clone().expect("Knowledge names the Echo it needs");
+    assert!(echo.matches(&semver::Version::parse(ECHO_COMPAT).unwrap()));
+    check_compat(&m).unwrap();
+    // A Knowledge made for a newer Echo would be listed as needing a newer Connect.
+    let mut newer = m.clone();
+    newer.echo = Some(semver::VersionReq::parse(">=0.11.0").unwrap());
+    assert!(matches!(
+        check_compat(&newer),
+        Err(ManifestError::NeedsNewerConnect { .. })
+    ));
 }
 
 /// The marketplace a plugins directory belongs to (its parent), added to a temp data root.
@@ -170,27 +153,55 @@ fn published_plugins_install_from_their_local_marketplace() {
 }
 
 #[test]
-fn knowledge_is_refused_at_install_with_its_sheet_line() {
-    let Some(dir) = dir(
-        "CONNECT_KNOWLEDGE_PLUGINS_DIR",
-        ".codex/worktrees/knowledge-plugin-0300/echo-plugins/plugins",
-    ) else {
+fn knowledge_installs_with_an_honest_sheet() {
+    let Some(dir) = published() else {
         return;
     };
     let Some((_tmp, paths, m)) = local_market(&dir) else {
         return;
     };
-    let offer = install::offer(&paths, &m, "knowledge").unwrap();
+    let offer = install::offer(&paths, &m, "obsidian").unwrap();
+    assert!(offer.refusal.is_none(), "{:?}", offer.refusal);
+    let line = |k: &str| {
+        offer
+            .sheet
+            .iter()
+            .find(|l| l.key == k)
+            .unwrap_or_else(|| panic!("no {k} line: {:?}", offer.sheet))
+            .clone()
+    };
+    // What Connect does for it, and what it doesn't, line by line.
+    assert_eq!(line("skills").support, Support::Supported);
+    assert_eq!(
+        line("skills").text,
+        "Add a skill to your own Claude Code, only when you click and confirm"
+    );
+    assert_eq!(
+        line("m365").text,
+        "Read your Outlook mail and Teams chats, never send"
+    );
+    assert_eq!(line("sessions").support, Support::Unsupported);
+    assert!(line("network")
+        .text
+        .ends_with("fetch one web page from an address you type in Connect's box"));
+    assert!(line("events")
+        .text
+        .contains("Connect doesn't have: recording_started, recording_stopped"));
+    assert!(line("echo").text.contains("your name and email address"));
+    assert!(offer
+        .sheet
+        .iter()
+        .all(|l| !matches!(l.support, Support::Blocking(_))));
     let keys: Vec<String> = offer.sheet.iter().map(|l| l.key.clone()).collect();
     let hash = sheet_hash(&offer.sheet);
     let agreement = Agreement {
         keys: &keys,
         sheet_hash: &hash,
     };
-    let e = install::install(&paths, &m.name, "knowledge", agreement).unwrap_err();
-    assert_eq!(e.code, "blocked");
-    assert_eq!(e.message, "Needs Connect's Knowledge engine (coming later)");
-    assert!(Registry::load(&paths).unwrap().installed.is_empty());
+    let out = install::install(&paths, &m.name, "obsidian", agreement).unwrap();
+    assert!(matches!(out, Outcome::Installed(ref got) if got == "obsidian"));
+    let reg = Registry::load(&paths).unwrap();
+    assert_eq!(reg.installed["obsidian"].version, "1.0.1");
 }
 
 // ------------------------------------------------------------------ the plugins running (Task 25)
@@ -378,7 +389,8 @@ async fn scheduler_routine_runs_claude_tool_free_and_delivers_today() {
     let ai_runs = testing::records(&c.core, "ai_run");
     assert_eq!(ai_runs.len(), 1);
     assert_eq!(ai_runs[0].1["plugin"], "scheduler");
-    assert_eq!(ai_runs[0].1["tools"], "read");
+    // The published Scheduler takes the routine's `read` as `auto` itself (its `toolsOf`).
+    assert_eq!(ai_runs[0].1["tools"], "auto");
 
     // Its answer is a card on Today, named by the routine.
     let cards: Vec<Value> = testing::records(&c.core, "plugin_item")
@@ -649,7 +661,7 @@ async fn all_four_load_without_unknown_capability_errors() {
     c.call("scheduler", "templates", json!({})).await;
     c.call("github", "status", json!({})).await;
     c.call("obsidian", "view", json!({"window": true})).await;
-    c.call("obsidian", "knowledge_status", json!({})).await;
+    c.call("obsidian", "kn", json!({})).await;
 
     // No service any of them reached was one Connect lacks, and every event was granted.
     for id in PUBLISHED {

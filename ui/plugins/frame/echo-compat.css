@@ -16,6 +16,7 @@ html.dark{
   --switch-on:linear-gradient(to right,#672C92,#547CCC);--switch-off:linear-gradient(to right,#BBB,#666);
   --shadow:0 1px 3px rgba(0,0,0,.25);
   --chart-1:#4F9CF9;--chart-2:#C084FC;--chart-3:#259F4C;--chart-4:#F5A534;--chart-5:#FE3B4C;--chart-6:#2DD4BF;
+  --spk2:#C084FC;--spk3:#2DD4BF;--spk4:#F5A534;--sidebar:#1C1D1F;--scrim:rgba(0,0,0,.5);
 }
 html.light{
   color-scheme:light;
@@ -29,10 +30,12 @@ html.light{
   --switch-on:linear-gradient(to right,#007AFF,#007AFF);--switch-off:#BBBBBB;
   --shadow:0 1px 3px rgba(0,0,0,.06);
   --chart-1:#007AFF;--chart-2:#7C3AED;--chart-3:#1E8E41;--chart-4:#C27C0E;--chart-5:#E5293A;--chart-6:#0D9488;
+  --spk2:#7C3AED;--spk3:#0D9488;--spk4:#C27C0E;--sidebar:#FBFBFB;--scrim:rgba(0,0,0,.5);
 }
 :root{
-  --font:GeistMono,ui-monospace,"SF Mono",Menlo,monospace;
-  --mono:GeistMono,ui-monospace,"SF Mono",Menlo,monospace;
+  /* The window's own stacks (codemie-tokens.css): GeistMono for text and code. */
+  --font:'GeistMono',monospace;
+  --mono:'GeistMono',monospace;
   --r-control:8px;--r-panel:12px;
 }
 
@@ -49,6 +52,11 @@ body[data-view=card] .cx-root{min-height:0}
 body[data-view=section] .cx-main{padding:4px 32px 40px}
 body[data-view=card] .cx-main{padding:0}
 body[data-view=card] .cx-main>:last-child,body[data-view=card] .set-sec:last-child{margin-bottom:0}
+/* A page that draws its own rail and header (Knowledge's `.kn`) fills the frame edge to edge and
+   scrolls inside itself. */
+body[data-view=activity]:has(.cx-main>.kn){overflow:hidden}
+body[data-view=activity] .cx-root:has(>.cx-main>.kn){height:100%;min-height:0}
+body[data-view=activity] .cx-main:has(>.kn){height:100%;padding:0;overflow:hidden}
 .cx-panel{position:sticky;top:0;min-height:100vh;max-height:100vh;overflow:auto;padding:20px;border-left:1px solid var(--line);background:var(--surface)}
 .cx-missing{color:var(--text-3)}
 h1,h2,h3,h4{margin:0 0 8px;font-weight:600;color:var(--text)}
@@ -79,6 +87,35 @@ b,strong{font-weight:600}
 .btn.danger{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,transparent);color:var(--danger)}
 .btn.danger:hover{background:color-mix(in srgb,var(--danger) 18%,transparent)}
 .btn+.btn{margin-left:6px}
+.btn.sm{height:24px;padding:0 8px;font-size:11.5px;line-height:20px}
+.btn.sm svg{width:12px;height:12px}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;border:1px solid transparent;border-radius:var(--r-control);background:transparent;color:var(--text-2);font:inherit;cursor:pointer;transition:background .12s ease,color .12s ease}
+.icon-btn:hover,.icon-btn[aria-expanded=true]{background:color-mix(in srgb,var(--text) 8%,transparent);color:var(--text)}
+.icon-btn:disabled{opacity:.5;cursor:default}
+.icon-btn svg{width:16px;height:16px}
+.grow{flex:1 1 auto;min-width:0}
+.selectable{-webkit-user-select:text;user-select:text}
+
+/* ------------------------------------------------------------------ tabs, segments, menus, tags */
+.tabs{display:flex;gap:8px;border-bottom:1px solid var(--line)}
+.tab{display:inline-flex;align-items:center;gap:6px;padding:8px 8px 10px;margin-bottom:-1px;border:0;border-bottom:2px solid transparent;background:none;color:var(--text-2);font:inherit;font-size:13px;line-height:20px;white-space:nowrap;cursor:pointer;transition:color .15s ease,border-color .15s ease}
+.tab:hover{color:var(--text);border-bottom-color:var(--line-strong)}
+.tab[aria-selected=true],.tab.on{color:var(--text);font-weight:600;border-bottom-color:var(--text);cursor:default}
+.seg{display:inline-flex;align-items:center;gap:2px;padding:2px;border-radius:var(--r-control);border:1px solid var(--line);background:var(--surface-2)}
+.seg button{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text-2);font:inherit;font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer}
+.seg button:hover{color:var(--text)}
+.seg button[aria-pressed=true],.seg button[aria-selected=true],.seg button.on{color:var(--primary-text);border-color:transparent;background:linear-gradient(var(--primary-fill),var(--primary-fill)) padding-box,var(--primary-border) border-box}
+.menu{position:absolute;z-index:30;min-width:200px;display:grid;gap:2px;padding:8px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--surface);box-shadow:0 8px 24px rgba(0,0,0,.18)}
+.menu-item{display:flex;align-items:center;gap:8px;width:100%;min-height:32px;padding:0 10px;border:0;border-radius:6px;background:none;text-align:left;font:inherit;font-size:12px;font-weight:500;color:var(--text);text-decoration:none;cursor:pointer}
+.menu-item:hover,.menu-item:focus-visible{background:var(--hover);text-decoration:none}
+.menu-item.on{color:var(--accent-ink)}
+.menu-item svg{width:14px;height:14px;flex:none}
+.menu-sep{height:1px;margin:4px 0;background:var(--line)}
+.tag{display:inline-flex;align-items:center;gap:4px;max-width:100%;height:20px;padding:0 8px;border-radius:10px;border:1px solid var(--line);background:var(--raised);color:var(--text-2);font-size:11px;font-weight:600;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tag.acc{color:var(--accent-ink);background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.tag.ok{color:var(--good);background:color-mix(in srgb,var(--good) 12%,transparent);border-color:color-mix(in srgb,var(--good) 40%,transparent)}
+.tag.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+a.md-missing,a[data-md-missing]{color:var(--text-3);text-decoration:underline dotted;cursor:pointer}
 
 /* ------------------------------------------------------------------ fields */
 input,select,textarea{font:inherit;color:var(--text)}
@@ -105,6 +142,11 @@ label{cursor:pointer}
 .set-sub{font-size:12px;line-height:18px;color:var(--text-2);overflow-wrap:anywhere}
 .set-sub code,.set-row code{font-size:11.5px}
 .set-ok{color:var(--good);font-size:12px;font-weight:600}
+.set-foot{margin:0;font-size:12px;line-height:18px;color:var(--text-3)}
+.set-nav{display:flex;align-items:center;gap:8px;width:100%;min-height:32px;padding:0 10px;border:0;border-radius:6px;background:none;text-align:left;font:inherit;font-size:13px;color:var(--text-2);cursor:pointer}
+.set-nav:hover{background:var(--hover);color:var(--text)}
+.set-nav[aria-current=page],.set-nav[aria-selected=true],.set-nav.on{background:var(--hover);color:var(--text);font-weight:600}
+.set-nav.danger{color:var(--danger)}
 .set-row .bar{height:4px;border-radius:2px;background:var(--line);overflow:hidden;width:160px;margin-top:6px}
 .set-row .bar span{display:block;height:100%;background:var(--accent)}
 .sw{position:relative;flex:none;width:32px;height:16px;padding:0;border:1px solid transparent;border-radius:16px;background:var(--switch-off);background-origin:border-box;cursor:pointer}
@@ -141,3 +183,8 @@ label{cursor:pointer}
 .sch{display:flex;flex-direction:column;gap:14px}
 .sch-head{display:flex;align-items:flex-start;gap:12px}
 .sch-sub{font-size:12px;line-height:18px;color:var(--text-2)}
+
+/* ------------------------------------------------------------------ a plugin's sheet (ctx.ui.sheet) */
+/* Connect's dialog: 8px corners over a 50% scrim. */
+.td-modal.plug-scrim{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:32px 24px;background:var(--scrim)}
+.td-dialog.plug-sheet{width:min(640px,100%);max-height:calc(100vh - 64px);overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);box-shadow:0 16px 48px rgba(0,0,0,.28);outline:none}

@@ -6,6 +6,9 @@
 //!   (`channel`) and meetings (`meeting`), ids `mail:<id>`, `chat:<id>`, `event:<id>`;
 //! - `source(id)`: one of them with its text;
 //! - `threads`: `[]` (Connect has none);
+//! - `calls`: `[]` until meetings with a saved folder are shared (Phase 5);
+//! - `me`: the signed-in Microsoft account's `{name, email}` (`null`s when no one is);
+//! - `recording`: always `{state: 'idle'}` (Connect doesn't record calls);
 //! - `clients` and `dictionary`: kept by Connect for the plugin, in
 //!   `<data>/plugins/data/<id>/echo/`; `dictionary.add` (with `uses.echo.write: ["dictionary"]`)
 //!   adds to it.
@@ -35,7 +38,15 @@ pub fn read(s: &Services, p: &Granted, args: &Value) -> Result<Value, HostError>
         )));
     }
     match kind {
-        "threads" => Ok(json!([])),
+        "threads" | "calls" => Ok(json!([])),
+        "me" => {
+            let me = s.core().ok().and_then(|c| c.plugin_me());
+            Ok(match me {
+                Some((name, email)) => json!({"name": name, "email": email}),
+                None => json!({"name": null, "email": null}),
+            })
+        }
+        "recording" => Ok(json!({"state": "idle", "call": null, "stamp": null})),
         "clients" => Ok(read_json(&echo_dir(s, &p.id).join("clients.json"), json!([]))),
         "dictionary" => Ok(json!({"terms": terms(s, &p.id)})),
         "people" => Ok(people(&sources(s)?)),
@@ -50,7 +61,7 @@ pub fn read(s: &Services, p: &Granted, args: &Value) -> Result<Value, HostError>
         }
         other => Err(HostError::new(
             ErrorCode::Unsupported,
-            format!("Connect doesn't share “{other}” (people, sources, source, clients, dictionary, threads)"),
+            format!("Connect doesn't share “{other}” (people, sources, source, clients, dictionary, threads, calls, me, recording)"),
         )),
     }
 }
@@ -361,6 +372,22 @@ mod tests {
         assert_eq!(read(json!(["source", "event:e1"]))["text"], "Agenda: Q3");
         // Threads are always empty; clients and the dictionary are the plugin's own.
         assert_eq!(read(json!(["threads"])), json!([]));
+        // Echo 0.10's calls (none until meetings are shared), me and recording (never).
+        env.plugin(
+            "knowledge",
+            json!({"echo": {"read": ["calls", "me", "recording"]}}),
+            json!([]),
+        );
+        let k = |kind: &str| env.call("knowledge", "echo.read", json!([kind])).unwrap();
+        assert_eq!(k("calls"), json!([]));
+        assert_eq!(
+            k("me"),
+            json!({"name": "Taylor Reed", "email": "taylor@example.test"})
+        );
+        assert_eq!(
+            k("recording"),
+            json!({"state": "idle", "call": null, "stamp": null})
+        );
         assert_eq!(read(json!(["clients"])), json!([]));
         let added = env
             .call(

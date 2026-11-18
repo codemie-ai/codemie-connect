@@ -7,11 +7,11 @@
 // Frame → window
 //   call          {method: 'command', command, args}          a host-half command → reply {value}
 //                 {method: 'storage', items}                   the localStorage stand-in, saved
-//   event         {type: 'go', hash} {type: 'notice', text} {type: 'copy', text}
+//   event         {type: 'go', hash, replace} {type: 'notice', text} {type: 'copy', text}
 //                 {type: 'open', url}   a link the user clicked (or window.open): the window asks
 //                                       the user, and opens https: and obsidian: addresses only
 //                 {type: 'height', px} {type: 'ready'} {type: 'error', message}
-//   contribution  {activities: [{id, label}], sections: [{id, label, badge}], card,
+//   contribution  {activities: [{id, label, badge}], sections: [{id, label, badge}], card,
 //                  panels: [{id, label}], palette: [{label, keywords}], widgets: [id]}
 //   reply         {ok, value} | {ok: false, error: {code, message}}   to the window's call
 // Window → frame
@@ -77,7 +77,7 @@ export function checkFromFrame(m) {
       return reply(m) ? m : null;
     case 'event':
       switch (m.type) {
-        case 'go': return exactly(m, ['v', 'id', 'kind', 'type', 'hash']) && text(m.hash, HASH) ? m : null;
+        case 'go': return exactly(m, ['v', 'id', 'kind', 'type', 'hash', 'replace']) && text(m.hash, HASH) && (m.replace === undefined || typeof m.replace === 'boolean') ? m : null;
         case 'notice': case 'copy':
           return exactly(m, ['v', 'id', 'kind', 'type', 'text']) && text(m.text, m.type === 'copy' ? 10000 : TEXT) ? m : null;
         case 'open': return exactly(m, ['v', 'id', 'kind', 'type', 'url']) && text(m.url, TEXT) && m.url !== '' ? m : null;
@@ -88,7 +88,7 @@ export function checkFromFrame(m) {
       }
     case 'contribution': {
       const ok = exactly(m, ['v', 'id', 'kind', 'activities', 'sections', 'card', 'panels', 'palette', 'widgets'])
-        && list(m.activities, x => labelled(x) && exactly(x, ['id', 'label']) && text(x.id, 64) && ITEM_ID.test(x.id))
+        && list(m.activities, x => labelled(x) && exactly(x, ['id', 'label', 'badge']) && text(x.id, 64) && ITEM_ID.test(x.id) && (x.badge === undefined || text(x.badge, 8)))
         && list(m.sections, x => labelled(x) && exactly(x, ['id', 'label', 'badge']) && text(x.id, 64) && ITEM_ID.test(x.id) && text(x.badge, 8))
         && typeof m.card === 'boolean'
         && list(m.panels, x => labelled(x) && exactly(x, ['id', 'label']) && text(x.id, 64) && ITEM_ID.test(x.id))

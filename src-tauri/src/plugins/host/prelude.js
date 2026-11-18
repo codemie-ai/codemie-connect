@@ -153,6 +153,30 @@
     return p
   }
 
+  // `ctx.store.update(path, f)` (Echo 0.10): read, change with `f(text | null)`, and write only
+  // over what was read; another writer in between means read again, 50 times at most. `f`
+  // giving undefined, null or the same text writes nothing. Answers the text now stored.
+  const UPDATE_TRIES = 50
+  const sha256 = (t) => read(bridge.host('crypto.sha256', stringify([Str(t)])))
+  const storeUpdate = (path, f) => {
+    fn('ctx.store.update', f)
+    const name = Str(path)
+    for (let i = 0; i < UPDATE_TRIES; i += 1) {
+      const now = read(bridge.host('store.read', stringify([name])))
+      const next = f(now)
+      if (next === undefined || next === null) return now
+      const text = Str(next)
+      if (text === now) return now
+      const guard = now === null ? { createNew: true } : { ifSha: sha256(now) }
+      const wire = bridge.host('store.write', stringify([name, text, guard]))
+      if (wire[0] !== '!') return text
+      const e = fromWire(wire)
+      const message = madeGet(made, e)[1]
+      if (indexOf(message, 'changed since') < 0 && indexOf(message, 'there already') < 0) throw e
+    }
+    throw hostError('plugin_error', `“${name}” kept changing while it was updated`)
+  }
+
   const commands = new Map()
   const providers = new Map()
   const listeners = new Map()
@@ -191,6 +215,7 @@
     store: {
       read: direct('store.read'),
       write: direct('store.write'),
+      update: storeUpdate,
       list: direct('store.list'),
       remove: direct('store.remove'),
       path: direct('store.path'),
@@ -216,6 +241,7 @@
 
     notify: direct('notify'),
     markdown: direct('markdown'),
+    crypto: { sha256 },
     inbox: { set: direct('inbox.set'), clear: direct('inbox.clear') },
     widgets: {
       provide: (id, f) => {

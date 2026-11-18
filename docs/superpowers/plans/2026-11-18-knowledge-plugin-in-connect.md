@@ -87,7 +87,15 @@
 - [ ] **Step 8: Real plugin.** In `echo_plugins.rs` replace `knowledge_is_blocked_…` and `knowledge_is_refused_at_install…` with `knowledge_installs_with_an_honest_sheet` (no Blocking line; `skills`, `m365`, `sessions` lines as above) and update `obsidian_walks_fixture_vault…` to 1.0.1's commands (`add`, `view`, `kn`) with no load problem and no "not available in CodeMie Connect" log line. `CONNECT_ECHO_PLUGINS_DIR=… cargo test --test echo_plugins` → PASS.
 - [ ] **Step 9: Gates and app check.** `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `npm test`; the marketplace smoke reports Knowledge installed, its page opened and no frame error. Commit `feat: Knowledge installs from the marketplace and its page loads in Connect`.
 
-**Spike findings:** _(filled in by Step 1)_
+**Spike findings** (Chromium, the real `client.js` through Connect's real `host.js` and shim, backed first by stubs and then by the real `main.js` over the plugin's own `fake-ctx.mjs` on a made-up twin vault):
+
+1. `apply` rejects at `ctx.onFileDrop is not a function` after the activity is registered; with `onFileDrop`, `slots` and `ui.sheet` stubbed nothing else breaks: the client is ready, adds its Settings section, its card and nine palette entries. → Step 7.
+2. `import()` of `view.js`, `model.js`, `rows.js` and `seam.js` with the `?v=` query works under the frame's CSP. The `localStorage` stand-in works (the chosen vault is remembered). Nothing to change.
+3. Fragment navigation works inside the sandboxed, opaque-origin frame, and the plugin reads `location.hash` in `render()`. But Connect never sets the frame's hash, so every tab click (`ctx.go('#obsidian:knowledge/<vault>/<tab>')`) moves the window and the frame keeps drawing Home. An in-frame `hashchange` doesn't redraw. → Step 7: set the hash on `show`, redraw and report a `hashchange` as `go`.
+4. The canvas graph draws, but into a box with no height: `.kn` is `height: 100%` and the frame's `.cx-main` has padding and no height. The legend and zoom buttons land over the header. → Step 7: full-bleed layout for an activity that draws its own rail and header.
+5. The graph reads its colours when `data-theme` changes on `<html>`; Connect never sets it. → Step 7.
+6. Echo's `tabs`/`tab`, `seg`, `menu`/`menu-item`/`menu-sep`, `icon-btn`, `tag` and `btn.sm` show as browser defaults. → Step 7 (layer 2).
+7. `ctx.go(hash, {replace})` loses `replace` on the way to the window. → Step 7.
 
 ### Task 2: Read side (Phase 2)
 
