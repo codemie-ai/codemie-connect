@@ -17,7 +17,10 @@ import { settings } from '../workspace/view-settings.js';
 import { renderShell, NAV } from '../workspace/shell.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from '../workspace/boot.js';
 import { controlSelector, soleMatch } from '../workspace/ui.js';
-import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
+import { tasksPage } from '../workspace/view-tasks.js';
+import { createTasksController } from '../workspace/tasks-controller.js';
+import { newTasksView } from '../workspace/tasks-model.js';
+import { buildSnapshot, withTasks } from './fixtures/workspace-fixture.mjs';
 
 // ---------------------------------------------------------------- store
 
@@ -334,6 +337,8 @@ test('Today shows the live meeting, a join action, attention and commitments', (
   assert.match(html, /Join Teams meeting/);
   assert.match(html, /Production alert/);
   assert.match(html, /Send the roadmap comments to Priya/);
+  assert.match(html, /<h2 class="ws-card-title"><span class="ws-card-icon">[^]*?<\/span>Tasks<\/h2>/, 'the commitments card is Tasks');
+  assert.match(html, /placeholder="Add a task…/);
   assert.match(html, /data-now-line/);
   const m = todayModel(s, new Set(), now);
   assert.equal(m.current[0].record.id, 'ev-current');
@@ -431,7 +436,7 @@ test('Settings shows the account profile and automatic sources, no source picker
 
 test('shell_has_no_workspaces_entry_or_switcher', () => {
   const html = renderShell({ snapshot: buildSnapshot(Date.now()), route: 'today', resolvedDark: false });
-  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'inbox', 'automations']);
+  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'tasks', 'inbox', 'automations']);
   assert.match(html, /data-route="automations"/);
   assert.doesNotMatch(html, /data-route="workspaces"/);
   assert.doesNotMatch(html, /workspace-select|ws-workspace-switch|ws-ws-dot|Active workspace/);
@@ -439,6 +444,14 @@ test('shell_has_no_workspaces_entry_or_switcher', () => {
   assert.match(html, /data-action="theme-toggle"/);
   assert.match(html, /ws-bell/);
   assert.match(html, /ws-sync-pill/);
+});
+
+test('NAV lists Today, Calendar, Tasks, Inbox, Automations', () => {
+  assert.deepEqual(NAV, [['today', 'Today'], ['calendar', 'Calendar'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations']]);
+  const now = Date.UTC(2026, 10, 18, 12);
+  const html = renderShell({ snapshot: withTasks(buildSnapshot(now, { photo: false }), now), route: 'tasks', resolvedDark: true });
+  assert.match(html, /data-route="tasks" aria-current="page"><svg[^]*?<span>Tasks<\/span><small class="ws-count" title="Tasks to review">2<\/small>/, 'Tasks is current and counts the tasks to review');
+  assert.doesNotMatch(renderShell({ snapshot: buildSnapshot(now, { photo: false }), route: 'today', resolvedDark: true }), /Tasks to review/);
 });
 
 test('boot_selects_personal_when_another_workspace_is_active', async () => {
@@ -493,4 +506,143 @@ test('focus_returns_only_to_the_exact_control', () => {
   assert.equal(soleMatch(root(2), 'button'), null, 'two candidates: leave focus alone');
   assert.equal(soleMatch(root(0), 'button'), null);
   assert.equal(soleMatch(root(1), null), null);
+});
+
+// ---------------------------------------------------------------- tasks
+
+const TASKS_NOW = Date.UTC(2026, 10, 18, 12);
+const tasksSnapshot = () => withTasks(buildSnapshot(TASKS_NOW, { photo: false, zone: 'UTC' }), TASKS_NOW);
+const tasksCtx = (view = {}) => ({ state: { tasks: { ...newTasksView(), ...view } }, now: TASKS_NOW, banners: '' });
+/** The markup of one card, from its article to the next one. */
+const cardOf = (html, id) => html.match(new RegExp(`<article[^>]*data-task="${id}"[^]*?</article>`))?.[0] || '';
+
+test('tasks board renders five columns, review cards with Accept/Dismiss, overdue in red', () => {
+  const s = tasksSnapshot();
+  s.records.push({ ...s.records.find(r => r.id === 'task-tenant'), id: 'task-xss', data: { ...s.records.find(r => r.id === 'task-tenant').data, text: '<img src=x onerror=alert(1)> escaped task', order: 20 } });
+  const html = tasksPage(s, tasksCtx());
+  assert.match(html, /<h1>Tasks<\/h1>/);
+  const columns = [...html.matchAll(/<section class="ws-task-col[^"]*" data-col="([a-z]+)"/g)].map(m => m[1]);
+  assert.deepEqual(columns, ['review', 'todo', 'doing', 'waiting', 'done']);
+  for (const [col, name, count] of [['review', 'To review', 2], ['todo', 'To do', 6], ['doing', 'In progress', 1], ['waiting', 'Waiting', 1], ['done', 'Done', 2]]) {
+    assert.match(html, new RegExp(`data-col="${col}"[^>]*>[^]*?<h2>${name}</h2><span class="ws-task-col-count"[^>]*>${count}</span>`), col);
+  }
+  // Review cards: the quote, Accept and Dismiss, no quick check.
+  const review = cardOf(html, 'task-share');
+  assert.match(review, /data-action="task-accept" data-id="task-share"/);
+  assert.match(review, /data-action="task-dismiss" data-id="task-share"/);
+  assert.match(review, /“I’ll share the Tasks board mockups tomorrow\.”/);
+  assert.match(review, /Daily stand-up/);
+  assert.doesNotMatch(review, /data-action="task-done"/);
+  // Overdue: first in To do, red, with its chip.
+  const todo = html.match(/<section class="ws-task-col" data-col="todo"[^]*?<\/section>/)[0];
+  assert.ok(todo.indexOf('data-task="task-legal"') < todo.indexOf('data-task="task-names"'), 'overdue first');
+  const legal = cardOf(html, 'task-legal');
+  assert.match(legal, /class="ws-task ws-task-overdue"/);
+  assert.match(legal, /ws-due ws-due-overdue/);
+  assert.match(legal, /Sam/);
+  // Owners by name with initials; mine says You; nobody's says Nobody.
+  assert.match(cardOf(html, 'task-demo'), /<span class="ws-avatar[^"]*"[^>]*>TM<\/span><span>You<\/span>/);
+  assert.match(cardOf(html, 'task-tenant'), /Nobody/);
+  // Every card can be dragged and has a Move to menu for the keyboard.
+  assert.match(legal, /draggable="true"/);
+  assert.match(legal, /Move to[^]*?data-action="task-move" data-id="task-legal" data-col="doing"/);
+  // Its title is the one task-open control on the card, so focus finds it again after a render.
+  assert.equal([...legal.matchAll(/data-action="task-open"/g)].length, 1);
+  assert.match(legal, /data-action="task-edit" data-id="task-legal"/);
+  assert.doesNotMatch(legal, /data-action="task-move" data-id="task-legal" data-col="todo"/, 'not to where it is');
+  assert.doesNotMatch(legal, /data-col="review"/, 'never back to review');
+  // Quick add in every column but To review; drop zones too.
+  assert.deepEqual([...html.matchAll(/data-action="task-quick" data-col="([a-z]+)"/g)].map(m => m[1]).filter((c, i, a) => a.indexOf(c) === i), ['todo', 'doing', 'waiting', 'done']);
+  assert.deepEqual([...html.matchAll(/data-drop="([a-z]+)"/g)].map(m => m[1]), ['todo', 'doing', 'waiting', 'done']);
+  // Done a month ago waits behind Show older; dismissed ones behind their link.
+  assert.doesNotMatch(html, /data-task="task-room"/);
+  assert.match(html, /data-action="tasks-older"[^>]*>[^]*?Show 1 older done task/);
+  assert.match(tasksPage(s, tasksCtx({ showOlder: true })), /data-task="task-room"/);
+  assert.match(html, /data-action="tasks-dismissed"[^>]*>[^]*?1 dismissed task/);
+  // Provider and person text is escaped.
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; escaped task/);
+  // Filters: lanes with counts, person, meeting and due selects, search.
+  assert.match(html, /data-action="tasks-who" data-who="others" aria-selected="false">Owed to me<span class="ws-count">5<\/span>/);
+  assert.match(html, /data-filter="meeting"[^]*?<option value="ev-sync">Philips CodeMie conversations syncup/);
+  assert.match(html, /<option value="overdue">Overdue \(1\)<\/option>/);
+  assert.match(html, /id="tasks-search"/);
+  // Renamed columns come from Settings › Meetings.
+  s.settings.meetings = { columns: { todo: 'Next up' } };
+  assert.match(tasksPage(s, tasksCtx()), /<h2>Next up<\/h2>/);
+  // A filter shows only what matches, with Clear filters.
+  const owed = tasksPage(s, tasksCtx({ filters: { who: 'others', person: '', meeting: '', due: 'overdue', q: '' } }));
+  assert.deepEqual([...owed.matchAll(/data-task="([^"]+)"/g)].map(m => m[1]), ['task-legal']);
+  assert.match(owed, /data-action="tasks-clear"/);
+  // Without the meetings in the snapshot (signed out) a card still says where it came from.
+  const out = tasksSnapshot();
+  out.records = out.records.filter(r => !['meeting', 'event'].includes(r.kind));
+  const plain = tasksPage(out, tasksCtx());
+  assert.match(cardOf(plain, 'task-legal'), /From a meeting/);
+  assert.match(cardOf(plain, 'task-tenant'), /Added by you/);
+});
+
+test('low-confidence review cards show Check the owner', () => {
+  const html = tasksPage(tasksSnapshot(), tasksCtx());
+  assert.match(cardOf(html, 'task-bug'), /Check the owner/);
+  assert.doesNotMatch(cardOf(html, 'task-share'), /Check the owner/);
+  // The drawer says why.
+  const drawer = tasksPage(tasksSnapshot(), tasksCtx({ drawer: 'task-bug' }));
+  assert.match(drawer, /Found in the notes — owner unsure/);
+});
+
+test('task drawer shows the meeting quote with a link to the transcript line', () => {
+  const s = tasksSnapshot();
+  const html = tasksPage(s, tasksCtx({ drawer: 'task-legal' }));
+  const drawer = html.match(/<aside class="ws-task-drawer"[^]*?<\/aside>/)?.[0] || '';
+  assert.match(drawer, /role="dialog"/);
+  assert.match(drawer, /<textarea class="ws-task-drawer-title"[^>]*data-change="task-title"[^>]*>Send Legal the written legal-hold requirement<\/textarea>/);
+  assert.match(drawer, /Philips CodeMie conversations syncup/);
+  assert.match(drawer, /“I’ll send Legal the written requirement\.”/);
+  assert.match(drawer, /Sam Okafor ·/);
+  assert.match(drawer, /<a class="ws-link" href="#\/meetings\/ev-sync\/transcript" data-action="task-quote" data-id="task-legal">10:55 into the meeting — show in transcript<\/a>/);
+  // Status, owner from the meeting's people first, due with quick picks, notes, history.
+  assert.match(drawer, /data-action="task-move" data-id="task-legal" data-col="todo" aria-pressed="true"/);
+  assert.match(drawer, /<optgroup label="In this meeting"><option value="jordan.lee@example.test">Jordan Lee<\/option>[^]*?<option value="sam.okafor@example.test" selected>Sam Okafor<\/option>[^]*?<option value="taylor.morgan@example.test">Taylor Morgan \(you\)<\/option><\/optgroup><optgroup label="Everyone else">/);
+  assert.match(drawer, /data-change="task-due"[^>]*value="2026-11-15"/);
+  for (const [label, day] of [['Today', '2026-11-18'], ['Tomorrow', '2026-11-19'], ['Friday', '2026-11-20'], ['Next week', '2026-11-23'], ['No date', '']]) {
+    assert.match(drawer, new RegExp(`data-action="task-due-pick" data-id="task-legal" data-value="${day}">${label}<`), label);
+  }
+  assert.match(drawer, /data-change="task-notes"/);
+  assert.match(drawer, /Found in the notes \(Meeting notes\)/);
+  assert.match(drawer, /update tasks\.json in the meeting folder/);
+  // A task added by hand has no meeting section.
+  const own = tasksPage(s, tasksCtx({ drawer: 'task-tenant' }));
+  assert.doesNotMatch(own, /show in transcript|tasks\.json/);
+  assert.match(own, /<option value="" selected>Nobody named<\/option>/);
+});
+
+test('list view groups I owe, Owed to me, Nobody named', () => {
+  const html = tasksPage(tasksSnapshot(), tasksCtx({ view: 'list' }));
+  const groups = [...html.matchAll(/<h2 class="ws-card-title">([^<]+)<span class="ws-tab-count">(\d+)<\/span><\/h2>/g)].map(m => [m[1], Number(m[2])]);
+  assert.deepEqual(groups, [['I owe', 4], ['Owed to me', 6], ['Nobody named', 1]]);
+  assert.doesNotMatch(html, /data-col="todo"/, 'no board');
+  // Rows: done checkbox, title, owner, due, where it came from and a status select.
+  assert.match(html, /<input type="checkbox" data-action="task-done" data-id="task-pilot" checked/);
+  assert.match(html, /data-action="task-status" data-id="task-legal"/);
+  assert.match(html, /To review<\/span>/);
+  // Open tasks before done ones within a group.
+  const owe = html.match(/I owe[^]*?<\/section>/)[0];
+  assert.ok(owe.indexOf('task-demo') < owe.indexOf('commit-3'), 'open first');
+  // Nothing matches: an empty state with Clear filters.
+  const none = tasksPage(tasksSnapshot(), tasksCtx({ view: 'list', filters: { who: 'all', person: '', meeting: '', due: 'any', q: 'zzz' } }));
+  assert.match(none, /No tasks match[^]*?data-action="tasks-clear"/);
+});
+
+test('dismissed tasks are listed and Restore puts them back in To review', async () => {
+  const s = tasksSnapshot();
+  const html = tasksPage(s, tasksCtx({ showDismissed: true }));
+  const list = html.match(/<section class="ws-card ws-task-dismissed-list"[^]*?<\/section>/)?.[0] || '';
+  assert.match(list, /Re-check the old dashboard/);
+  assert.match(list, /data-action="task-restore" data-id="task-dashboard"/);
+  const calls = [];
+  const ctl = createTasksController({ state: { route: 'tasks', tasks: newTasksView() }, snap: () => s, mutate: async (op, data) => { calls.push([op, data]); return {}; }, render: async () => {}, toast: () => {}, now: () => TASKS_NOW });
+  await ctl.handle('task-restore', { dataset: { id: 'task-dashboard' }, closest: () => null });
+  assert.equal(calls[0][0], 'task_save');
+  assert.deepEqual([calls[0][1].id, calls[0][1].status, calls[0][1].log], ['task-dashboard', 'review', 'Restored']);
 });

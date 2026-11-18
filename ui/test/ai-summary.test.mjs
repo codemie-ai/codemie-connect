@@ -105,11 +105,12 @@ test('summary_card_lists_asks_and_adds_commitment', () => {
   assert.match(html, /data-action="summary-toggle"[^>]*aria-expanded="true"/);
   assert.match(html, /data-action="ai-summarize"[^>]*>(?:(?!<\/button>).)*Refresh/);
 
-  // The commitment holds the ask; the same ask is the same commitment, so it is added once.
+  // The task holds the ask, in To do; the same ask is the same task, so it is added once.
+  assert.match(html, /data-action="summary-ask-commit"[^>]*>(?:(?!<\/button>).)*Add to tasks/);
   const key = summaryKeyOf(message(s, 'm-reply-1'));
   const ask = summaryFor(s, message(s, 'm-reply-1')).data.asks[0];
   const request = askCommitment(key, ask);
-  assert.deepEqual({ ...request, id: undefined }, { kind: 'commitment', id: undefined, text: 'Send Priya the roadmap comments', owner: 'You', due: '2026-11-20' });
+  assert.deepEqual({ ...request, id: undefined }, { id: undefined, text: 'Send Priya the roadmap comments', owner: 'You', due: '2026-11-20', status: 'todo' });
   assert.equal(request.id, askCommitmentId(key, { text: ' send priya the roadmap comments ' }));
   assert.notEqual(request.id, askCommitmentId(key, { text: 'Book the review room' }));
   assert.equal(askCommitment(key, { text: 'x', due: 'next week' }).due, null, 'only a real date becomes the due date');

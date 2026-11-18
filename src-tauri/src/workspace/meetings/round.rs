@@ -67,6 +67,10 @@ pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
     if !workspace_id_active(PERSONAL) {
         return Ok(());
     }
+    // Tasks due today: one reminder a day from 09:00. Its failure never holds up transcripts.
+    if let Err(e) = crate::workspace::tasks::due_today_reminders(core, now) {
+        log::warn!("tasks: the due-today reminder failed: {}", e.code);
+    }
     let _w = core.meeting_lock();
     let mut r = core.repo()?;
     r.prune_finished_jobs(

@@ -8,13 +8,14 @@ import { claudeAvailable } from './draft-state.js';
 import { dayKey, addDaysToKey, formatDate, formatTime, durationLabel, countdownLabel, greeting, firstName, zonedParts, relativeAge, hourLabel } from './format.js';
 import { automationResultsCard } from './view-automations.js';
 import { PLUGINS_CARD, parseLayoutId, pluginWidgetCard, pluginsCard, showPluginsCard } from './today-plugins.js';
+import { isMine, meOf, ownerOf, sortTasks, taskStatus } from './tasks-model.js';
 
 export const WIDGETS = {
   brief: { title: 'Up next', width: 8, description: 'Your current or next meeting with a one-click join.' },
   focus: { title: 'Day at a glance', width: 4, description: 'Meetings, free time, replies and a focus timer.' },
   calendar: { title: 'Schedule', width: 6, description: "Today's timeline with free time between meetings." },
   inbox: { title: 'Needs your reply', width: 6, description: 'Outlook and Teams messages waiting for you.' },
-  commitments: { title: 'Commitments & notes', width: 12, description: 'Your promises and a scratchpad for Connect.' },
+  commitments: { title: 'Tasks', width: 12, description: 'Your open tasks and a scratchpad for Connect.' },
   automations: { title: 'Automation results', width: 6, description: 'The latest result of each automation, with its sources.' },
   [PLUGINS_CARD]: { title: 'From plugins', width: 12, description: 'Decisions, deliveries and held messages your plugins prepare.' },
 };
@@ -215,7 +216,7 @@ function upNextCard(s, m, connected) {
 function glanceCard(s, m, connected) {
   const now = Date.now() / 1000;
   const focusUntil = s.settings.focusUntil > now ? s.settings.focusUntil : null;
-  const openCommitments = m.commitments.filter(c => !c.data.done).length;
+  const openCommitments = m.commitments.filter(c => ['todo', 'doing', 'waiting'].includes(taskStatus(c))).length;
   const stat = (value, label, iconName, action, attrs = {}) => `<${action ? `button type="button" data-action="${action}"` : 'div'} class="ws-stat" ${Object.entries(attrs).map(([k, v]) => `${k}="${e(v)}"`).join(' ')}><span class="ws-stat-icon">${icon(iconName)}</span><strong>${e(value)}</strong><span>${e(label)}</span></${action ? 'button' : 'div'}>`;
   const stats = connected
     ? [
@@ -225,7 +226,7 @@ function glanceCard(s, m, connected) {
       stat(String(m.attention.length), 'Need reply', 'reply', 'route', { 'data-route': 'inbox', 'data-lane': 'reply' }),
     ]
     : [
-      stat(String(openCommitments), 'Open commitments', 'check-circle'),
+      stat(String(openCommitments), 'Open tasks', 'check-circle'),
       stat(String(decisions(s).length), 'Decisions', 'shield'),
     ];
   const focus = focusUntil
@@ -308,27 +309,37 @@ function attentionCard(s, m, connected, ai) {
   });
 }
 
-// ---------------------------------------------------------------- Commitments & notes
+// ---------------------------------------------------------------- Tasks & notes
 
 function commitmentsCard(s, m, w) {
-  const open = m.commitments.filter(c => !c.data.done);
-  const done = m.commitments.filter(c => c.data.done).slice(0, 5);
+  const me = meOf(s);
+  // Today lists what is on the board to do; To review and dismissed ones stay on the Tasks page.
+  const open = m.commitments.filter(c => ['todo', 'doing', 'waiting'].includes(taskStatus(c))).sort((a, b) => sortTasks(a, b, m.nowMs, m.zone));
+  const done = m.commitments.filter(c => taskStatus(c) === 'done').sort((a, b) => (b.data.doneAt || b.updatedAt) - (a.data.doneAt || a.updatedAt)).slice(0, 5);
+  const review = m.commitments.filter(c => taskStatus(c) === 'review').length;
   const note = records(s, 'note')[0];
-  const row = c => `<div class="ws-todo${c.data.done ? ' ws-done' : ''}">
-    <label class="ws-check"><input type="checkbox" data-action="commitment-toggle" data-id="${e(c.id)}" ${c.data.done ? 'checked' : ''} aria-label="Mark “${e(c.data.text)}” ${c.data.done ? 'open' : 'done'}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
-    <div class="ws-todo-text"><span>${e(c.data.text)}</span>${c.data.due || (c.data.owner && c.data.owner !== 'You') ? `<small>${c.data.due ? `${icon('calendar')}${e(formatDate(`${c.data.due}T12:00:00`, undefined, { month: 'short', day: 'numeric' }))}` : ''}${c.data.owner && c.data.owner !== 'You' ? ` · ${e(c.data.owner)}` : ''}</small>` : ''}</div>
-    ${button('', { action: 'local-delete', iconName: 'trash', variant: 'ghost', title: 'Delete commitment', attrs: { 'data-kind': 'commitment', 'data-id': c.id } })}
+  const row = c => {
+    const isDone = taskStatus(c) === 'done';
+    const owner = isMine(c, me) ? '' : ownerOf(c, me).name;
+    const due = c.data.due ? `${icon('calendar')}${e(formatDate(`${c.data.due}T12:00:00`, undefined, { month: 'short', day: 'numeric' }))}` : '';
+    return `<div class="ws-todo${isDone ? ' ws-done' : ''}">
+    <label class="ws-check"><input type="checkbox" data-action="commitment-toggle" data-id="${e(c.id)}" ${isDone ? 'checked' : ''} aria-label="Mark “${e(c.data.text)}” ${isDone ? 'open' : 'done'}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
+    <div class="ws-todo-text"><button type="button" class="ws-link-title" data-action="task-open-today" data-id="${e(c.id)}">${e(c.data.text)}</button>${due || owner ? `<small>${due}${due && owner ? ' · ' : ''}${e(owner)}</small>` : ''}</div>
+    ${button('', { action: 'task-delete', iconName: 'trash', variant: 'ghost', title: 'Delete task', attrs: { 'data-id': c.id } })}
   </div>`;
+  };
   return card({
-    title: 'Commitments & notes', iconName: 'check-circle', className: 'ws-commitments',
+    title: 'Tasks', iconName: 'tasks', className: 'ws-commitments',
+    actions: button('Board', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'tasks' } }),
     body: `<div class="ws-two-col">
       <div class="ws-todo-col">
         <form class="ws-quick-add" data-form="commitment-add">
-          <input class="ws-input" name="text" maxlength="500" placeholder="Add a commitment… e.g. Send the roadmap to Anna" aria-label="New commitment" autocomplete="off">
+          <input class="ws-input" name="text" maxlength="2000" placeholder="Add a task… e.g. Send the roadmap to Anna" aria-label="New task" autocomplete="off">
           <input class="ws-input ws-date" name="due" type="date" aria-label="Due date">
           ${button('Add', { type: 'submit', variant: 'primary', iconName: 'plus' })}
         </form>
-        <div class="ws-todo-list">${open.map(row).join('') || '<p class="ws-muted ws-hint">No open commitments. Add one above or from any Inbox message.</p>'}</div>
+        ${review ? `<button type="button" class="ws-today-review" data-action="route" data-route="tasks">${icon('sparkles')}<span><strong>${review} ${review === 1 ? 'task' : 'tasks'} from meeting notes to review</strong><small>Check owners and dates, then accept</small></span>${icon('chevron-right')}</button>` : ''}
+        <div class="ws-todo-list">${open.map(row).join('') || '<p class="ws-muted ws-hint">No open tasks. Add one above or from any Inbox message.</p>'}</div>
         ${done.length ? `<details class="ws-done-list"><summary>Completed · ${done.length}</summary>${done.map(row).join('')}</details>` : ''}
       </div>
       <div class="ws-note-col">

@@ -1,0 +1,24 @@
+{
+  "body": {
+    "createdAt": 1795000000,
+    "done": true,
+    "doneAt": 1795000300,
+    "history": [
+      {
+        "at": 1795000000,
+        "text": "Added by you"
+      },
+      {
+        "at": 1795000300,
+        "text": "Moved from To do to Done"
+      }
+    ],
+    "order": 3.0,
+    "owner": "You",
+    "ownerName": null,
+    "status": "done",
+    "text": "Book a room for demo day"
+  },
+  "deleted": true,
+  "id": "task-done"
+}

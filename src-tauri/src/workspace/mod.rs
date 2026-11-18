@@ -18,6 +18,7 @@ mod prompts;
 pub mod repository;
 pub mod schedules;
 mod slots;
+pub(crate) mod tasks;
 
 use crate::ai::{
     profiles::{DetectEnv, ProfileCache},
@@ -920,26 +921,42 @@ impl Core {
                 if !matches!(kind, "note" | "commitment" | "draft" | "rule") {
                     return Err(WorkspaceError::new("validation", "Unsupported local item."));
                 }
-                let text = required(&req.data, "text", 20000)?;
-                let record = Record {
-                    id: if req.op == Operation::DraftSave {
-                        format!("manual:{}", required(&req.data, "sourceId", 2000)?)
-                    } else {
-                        req.data["id"]
-                            .as_str()
-                            .map(String::from)
-                            .unwrap_or_else(|| req.operation_id.clone().unwrap_or_else(id))
-                    },
-                    kind: kind.into(),
-                    connection_id: None,
-                    workspace_id: Some(w.id),
-                    source: "local".into(),
-                    revision: id(),
-                    updated_at: now(),
-                    data: json!({"text":text,"done":req.data["done"].as_bool().unwrap_or(false),"due":req.data["due"],"owner":req.data["owner"],"sourceId":req.data["sourceId"],"sourceRevision":req.data["sourceRevision"],"quote":req.data["quote"],"lane":req.data["lane"],"keyword":req.data["keyword"],"sender":req.data["sender"],"enabled":req.data["enabled"]}),
-                };
-                self.repo()?.put_record(&record)?;
-                json!({"id":record.id})
+                if kind == tasks::KIND {
+                    // A commitment is a task: the change is merged into it, so its status,
+                    // history and meeting fields stay, and its meeting's tasks.json follows.
+                    let mut data = req.data.clone();
+                    if let Some(fields) = data.as_object_mut() {
+                        fields.remove("kind");
+                        if fields.get("id").is_none_or(Value::is_null) {
+                            let new = req.operation_id.clone().unwrap_or_else(id);
+                            fields.insert("id".into(), new.into());
+                        }
+                    }
+                    let _folders = self.meeting_lock();
+                    let task = tasks::task_save(&mut *self.repo()?, &w.id, &data, now())?;
+                    json!({"id": task.id})
+                } else {
+                    let text = required(&req.data, "text", 20000)?;
+                    let record = Record {
+                        id: if req.op == Operation::DraftSave {
+                            format!("manual:{}", required(&req.data, "sourceId", 2000)?)
+                        } else {
+                            req.data["id"]
+                                .as_str()
+                                .map(String::from)
+                                .unwrap_or_else(|| req.operation_id.clone().unwrap_or_else(id))
+                        },
+                        kind: kind.into(),
+                        connection_id: None,
+                        workspace_id: Some(w.id),
+                        source: "local".into(),
+                        revision: id(),
+                        updated_at: now(),
+                        data: json!({"text":text,"done":req.data["done"].as_bool().unwrap_or(false),"due":req.data["due"],"owner":req.data["owner"],"sourceId":req.data["sourceId"],"sourceRevision":req.data["sourceRevision"],"quote":req.data["quote"],"lane":req.data["lane"],"keyword":req.data["keyword"],"sender":req.data["sender"],"enabled":req.data["enabled"]}),
+                    };
+                    self.repo()?.put_record(&record)?;
+                    json!({"id":record.id})
+                }
             }
             Operation::LocalDelete => {
                 let (w, _) = self.active_workspace(&req, false)?;
@@ -947,8 +964,17 @@ impl Core {
                 if !matches!(kind, "note" | "commitment" | "draft" | "schedule" | "rule") {
                     return Err(WorkspaceError::new("validation", "Invalid local item."));
                 }
-                self.repo()?
-                    .delete_local(kind, required(&req.data, "id", 200)?, &w.id)?;
+                let rid = required(&req.data, "id", 200)?;
+                if kind == tasks::KIND {
+                    // Its meeting's tasks.json follows; one already gone is deleted all the same.
+                    let _folders = self.meeting_lock();
+                    match tasks::task_delete(&mut *self.repo()?, &w.id, rid) {
+                        Err(e) if e.code != "not_found" => return Err(e),
+                        _ => {}
+                    }
+                } else {
+                    self.repo()?.delete_local(kind, rid, &w.id)?;
+                }
                 json!({"deleted":true})
             }
             Operation::GraphConnect => self.graph_connect(connect_capabilities(&req.data)?).await?,
@@ -1169,6 +1195,7 @@ impl Core {
             | Operation::MeetingDownload
             | Operation::MeetingImport
             | Operation::MeetingSpeakers => self.meeting_op(&req)?,
+            Operation::TaskSave | Operation::TaskDelete => self.task_op(&req)?,
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
         self.repo()?
@@ -1790,7 +1817,7 @@ fn note_run_notification(r: &mut Repository, job: &Job, state: &str, message: &s
 }
 
 /// What a shown notification carries, so a click opens what it is about: its message, its
-/// calendar event or the automation run it reports.
+/// calendar event, the automation run it reports or the page it names (`route`, e.g. Tasks).
 fn notification_extras(job: &Job) -> Vec<(&'static str, Value)> {
     vec![
         ("workspaceId", json!(job.workspace_id)),
@@ -1798,13 +1825,14 @@ fn notification_extras(job: &Job) -> Vec<(&'static str, Value)> {
         ("eventId", job.payload["eventId"].clone()),
         ("runId", job.payload["runId"].clone()),
         ("automationId", job.payload["automationId"].clone()),
+        ("route", job.payload["route"].clone()),
     ]
 }
 /// The `workspace:notification-open` payload for the extras of a clicked notification.
 fn notification_open_payload(extra: &std::collections::HashMap<String, Value>) -> Value {
     let get = |key: &str| extra.get(key).cloned().unwrap_or(Value::Null);
     json!({"workspaceId": get("workspaceId"), "itemId": get("itemId"), "eventId": get("eventId"),
-        "runId": get("runId"), "automationId": get("automationId")})
+        "runId": get("runId"), "automationId": get("automationId"), "route": get("route")})
 }
 
 /// A notification's title and body: what the job names (an automation's name and result
@@ -2637,7 +2665,7 @@ mod tests {
         assert_eq!(extra["workspaceId"], "personal");
         assert_eq!(
             notification_open_payload(&extra),
-            json!({"workspaceId": "personal", "itemId": null, "eventId": null, "runId": "run-1", "automationId": "auto-brief"})
+            json!({"workspaceId": "personal", "itemId": null, "eventId": null, "runId": "run-1", "automationId": "auto-brief", "route": null})
         );
         // A critical alert still opens its message.
         let mut critical = job.clone();
@@ -2648,6 +2676,14 @@ mod tests {
             .collect();
         assert_eq!(notification_open_payload(&extra)["itemId"], "m-1");
         assert_eq!(notification_open_payload(&extra)["runId"], Value::Null);
+        // Tasks due today open the Tasks page.
+        let mut due = job.clone();
+        due.payload = json!({"title": "2 tasks due today", "route": "tasks"});
+        let extra: std::collections::HashMap<String, Value> = notification_extras(&due)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        assert_eq!(notification_open_payload(&extra)["route"], "tasks");
     }
 
     #[test]

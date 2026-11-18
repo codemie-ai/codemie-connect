@@ -126,7 +126,7 @@ function reader(s, m, zone, state = {}) {
         ${button(d.lifecycle === 'archived' ? 'Restore' : 'Done', { action: 'message-archive', iconName: d.lifecycle === 'archived' ? 'inbox' : 'check', attrs: { 'data-id': m.id }, title: d.lifecycle === 'archived' ? 'Move back to the Inbox' : 'Archive in Connect' })}
         <details class="ws-menu"><summary class="ws-btn ws-btn-secondary">${icon('snooze')}<span>Snooze</span></summary><div class="ws-menu-panel">${SNOOZE.map(([value, label]) => `<button type="button" class="ws-menu-item" data-action="message-snooze" data-id="${e(m.id)}" data-preset="${value}">${e(label)}</button>`).join('')}</div></details>
         ${summaryButton(s, m, state, { thread: fullThread, unavailable })}
-        <span class="ws-read-lane">${select(laneOptions, d.lane, { 'data-action': 'message-lane', 'data-id': m.id, 'aria-label': 'Move to lane' })}${button('', { action: 'commitment', iconName: 'check-circle', variant: 'ghost', title: 'Add a commitment from this message', attrs: { 'data-id': m.id } })}</span>
+        <span class="ws-read-lane">${select(laneOptions, d.lane, { 'data-action': 'message-lane', 'data-id': m.id, 'aria-label': 'Move to lane' })}${button('', { action: 'commitment', iconName: 'check-circle', variant: 'ghost', title: 'Add a task from this message', attrs: { 'data-id': m.id } })}</span>
         ${d.lane === 'critical' && !d.acknowledgedAt ? button('Acknowledge', { action: 'message-ack', variant: 'danger', iconName: 'bell', attrs: { 'data-id': m.id } }) : ''}
       </div>
     </header>
@@ -178,7 +178,7 @@ function summarySection(s, m, zone, state) {
         <span class="ws-summary-ask-text">${e(ask.text)}${due ? `<span class="ws-summary-due">${icon('clock')}Due ${e(due)}</span>` : ''}</span>
         ${added[i]
     ? `<span class="ws-summary-added" role="status">${icon('check')}Added</span>`
-    : button('Add to commitments', { action: 'summary-ask-commit', size: 'sm', iconName: 'check-circle', attrs: { 'data-index': i, 'data-key': key, 'data-ask': askCommitmentId(key, ask) } })}
+    : button('Add to tasks', { action: 'summary-ask-commit', size: 'sm', iconName: 'check-circle', attrs: { 'data-index': i, 'data-key': key, 'data-ask': askCommitmentId(key, ask) } })}
       </li>`;
   }).join('');
   const p = d.provenance || {};

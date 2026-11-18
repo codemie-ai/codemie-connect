@@ -101,7 +101,11 @@ export function soleMatch(root, selector) {
 
 // ---------------------------------------------------------------- toast
 
-export function toast(message, tone = 'info') {
+/**
+ * A toast. `action` (`{label, run}`) adds one button, such as Undo: it runs once and the toast
+ * goes; a failure shows as an error toast. Such a toast stays 10 s instead of 6 s.
+ */
+export function toast(message, tone = 'info', action = null) {
   let host = document.querySelector('.ws-toasts');
   if (!host) {
     host = document.createElement('div');
@@ -112,13 +116,23 @@ export function toast(message, tone = 'info') {
   const el = document.createElement('div');
   el.className = `ws-toast ws-toast-${tone}`;
   el.setAttribute('role', tone === 'error' ? 'alert' : 'status');
-  el.innerHTML = `${icon(tone === 'error' ? 'alert' : tone === 'success' ? 'check-circle' : 'info')}<span></span><button type="button" class="ws-toast-close" aria-label="Dismiss">${icon('close')}</button>`;
+  el.innerHTML = `${icon(tone === 'error' ? 'alert' : tone === 'success' ? 'check-circle' : 'info')}<span></span>${action ? '<button type="button" class="ws-btn ws-btn-ghost ws-btn-sm ws-toast-action"></button>' : ''}<button type="button" class="ws-toast-close" aria-label="Dismiss">${icon('close')}</button>`;
   el.querySelector('span').textContent = message;
-  el.querySelector('button').onclick = () => el.remove();
+  el.querySelector('.ws-toast-close').onclick = () => el.remove();
+  if (action) {
+    const run = el.querySelector('.ws-toast-action');
+    run.textContent = action.label;
+    run.onclick = () => {
+      el.remove();
+      Promise.resolve().then(action.run).catch(err => toast(err?.message || String(err), 'error'));
+    };
+  }
   host.append(el);
   while (host.children.length > 3) host.firstElementChild.remove();
-  setTimeout(() => el.classList.add('ws-toast-leave'), 6000);
-  setTimeout(() => el.remove(), 6400);
+  // A toast with an action (Undo) stays longer, so there is time to use it.
+  const life = action ? 10000 : 6000;
+  setTimeout(() => el.classList.add('ws-toast-leave'), life);
+  setTimeout(() => el.remove(), life + 400);
   return el;
 }
 

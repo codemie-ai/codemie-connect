@@ -226,6 +226,82 @@ export function withAutomations(snapshot, nowMs) {
   return snapshot;
 }
 
+// ---------------------------------------------------------------- tasks
+// Written by the Rust test `contract_fixtures_match_the_real_tasks` (task-records.json,
+// task-delete.json): the body of a task as `task_save` stores it, and the `task_delete` answer.
+
+export const taskContract = () => ({ records: contract('task-records'), deleted: contract('task-delete'), meetings: contract('meeting-records') });
+
+/** `YYYY-MM-DD` `days` from `nowMs` in `zone`. */
+function dayIn(nowMs, zone, days) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(nowMs)).map(x => [x.type, x.value]));
+  const d = new Date(Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day) + days));
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * `snapshot` with a Tasks board: two past meetings (today's "Daily stand-up" and the "Philips
+ * CodeMie conversations syncup" two days ago, each with its meeting record), and tasks in every
+ * column: two to review (one with an owner Connect isn't sure of), an overdue one, mine due today,
+ * one waiting, one for nobody, one done two days ago, one done a month ago (behind Show older) and
+ * one dismissed. Owners are the fixture's people by address; the legacy commitments stay as they are.
+ */
+export function withTasks(snapshot, nowMs = Date.now()) {
+  const now = Math.floor(nowMs / 1000);
+  const zone = snapshot.settings.timeZone || 'UTC';
+  const day = n => dayIn(nowMs, zone, n);
+  const cid = snapshot.connection?.id || CID;
+  const people = {
+    jordan: ['jordan.lee@example.test', 'Jordan Lee'],
+    priya: ['priya.n@example.test', 'Priya Natarajan'],
+    sam: ['sam.okafor@example.test', 'Sam Okafor'],
+    elena: ['elena.varga@example.test', 'Elena Varga'],
+    me: ['taylor.morgan@example.test', 'Taylor Morgan'],
+  };
+  const { records: [template], meetings } = taskContract();
+  const downloaded = meetings.find(m => m.data.state === 'downloaded');
+  const standup = snapshot.records.find(r => r.id === 'ev-standup');
+  const syncStart = (now - 2 * 86_400 - 3600) * 1000;
+  const sync = {
+    ...standup, id: 'ev-sync', revision: 'r-ev-sync',
+    data: {
+      ...standup?.data, title: 'Philips CodeMie conversations syncup', start: new Date(syncStart).toISOString().replace(/\.\d{3}Z$/, 'Z'), end: new Date(syncStart + 3_600_000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      organizer: { name: 'Jordan Lee', address: people.jordan[0] },
+      attendees: [people.priya, people.sam, people.elena, people.me].map(([address, name]) => ({ name, address, type: 'required', response: 'accepted' })),
+    },
+  };
+  const meeting = ev => ({
+    ...downloaded, id: ev.id, connectionId: cid, revision: `r-meeting-${ev.id}`, updatedAt: now - 3600,
+    data: { ...downloaded.data, eventId: ev.id, title: ev.data.title, start: ev.data.start, end: ev.data.end, folder: `/Users/taylor/CodeMie Connect/Meetings/${ev.id}` },
+  });
+  const extra = standup ? [sync, meeting(standup), meeting(sync)] : [];
+  const added = now - 3 * 86_400;
+  const task = (id, order, status, data = {}) => ({
+    ...template, id, revision: `l-${id}`, updatedAt: data.doneAt || now - 600,
+    data: {
+      text: id, owner: null, ownerName: null, due: null, notes: null, meetingId: null, line: null, quote: null, quoteAt: null, speaker: null, confidence: null,
+      createdAt: added, history: [{ at: added, text: 'Added by you' }], ...data,
+      order, status, done: status === 'done', doneAt: data.doneAt || null,
+    },
+  });
+  const owner = key => ({ owner: people[key][0], ownerName: people[key][1] });
+  const said = (meetingId, line, quoteAt, quote, speaker = 'Jordan Lee') => ({ meetingId, line, quoteAt, quote, speaker, confidence: 'high', history: [{ at: now - 3600, text: 'Found in the notes (Meeting notes)' }] });
+  const tasks = [
+    task('task-share', 1, 'review', { text: 'Share the Tasks board mockups', ...owner('jordan'), due: day(1), ...said('ev-standup', 3, 173, 'I’ll share the Tasks board mockups tomorrow.') }),
+    task('task-bug', 2, 'review', { text: 'Move the recurring-meeting sync bug to 2.5', ...owner('priya'), ...said('ev-sync', 7, 412, 'Priya, can you take the recurring sync bug into 2.5?'), confidence: 'low' }),
+    task('task-legal', 3, 'todo', { text: 'Send Legal the written legal-hold requirement', ...owner('sam'), due: day(-3), ...said('ev-sync', 12, 655, 'I’ll send Legal the written requirement.', 'Sam Okafor') }),
+    task('task-names', 4, 'todo', { text: 'Send the names of the 40 pilot users', ...owner('elena'), due: day(10), ...said('ev-sync', 15, 801, 'I’ll send the names next week.', 'Elena Varga') }),
+    task('task-demo', 5, 'doing', { text: 'Prepare the export demo for the Philips sync', ...owner('me'), due: day(0), notes: 'Use the staging tenant.' }),
+    task('task-hr', 6, 'waiting', { text: 'Ask HR for a user-to-department CSV export', ...owner('jordan'), meetingId: 'ev-standup' }),
+    task('task-tenant', 7, 'todo', { text: 'Ask IT for a throttling test tenant' }),
+    task('task-pilot', 8, 'done', { text: 'Draft the January pilot plan', ...owner('priya'), doneAt: now - 2 * 86_400 }),
+    task('task-room', 9, 'done', { text: 'Book a room for demo day', owner: 'You', doneAt: now - 30 * 86_400 }),
+    task('task-dashboard', 10, 'dismissed', { text: 'Re-check the old dashboard', ...said('ev-standup', 20, 1201, 'Maybe someone could look at the old dashboard.') }),
+  ];
+  snapshot.records.push(...extra, ...tasks);
+  return snapshot;
+}
+
 // ---------------------------------------------------------------- data location (DESIGN 8)
 // Written by the Rust test `contract_fixtures_match_the_real_data_location`.
 

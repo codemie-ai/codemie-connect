@@ -25,6 +25,7 @@
 | `selectors.js` | Snapshot projections: messages, attention, decisions, connection state, chat titles |
 | `ui.js` / `icons.js` | CodeMie components (button variants, switch, checkbox, modal, toast, segmented, badge, avatar) and stroke icons |
 | `view-today.js`, `view-calendar.js`, `view-inbox.js`, `view-settings.js` | Pure HTML renderers for each route |
+| `view-tasks.js`, `tasks-model.js`, `tasks-controller.js` | Tasks page (board, list, drawer): pure renderer, pure model (status, owner, filters, order) and the controller for moves, drag and drop and Undo. Tasks are `commitment` records written by `task_save` / `task_delete` (`src-tauri/src/workspace/tasks.rs`, which also keeps each meeting folder's `tasks.json` and queues the 09:00 due-today reminder) |
 
 Visual values follow `prototypes/milestone-1/CODEMIE-DESIGN-SPEC.md` (extracted from `codemie-ui`): GeistMono UI, 28 px buttons, 32×16 switches, 16 px checkboxes, 8 px dialogs over a 50% scrim.
 

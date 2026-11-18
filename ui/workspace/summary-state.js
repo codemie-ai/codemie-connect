@@ -66,9 +66,9 @@ function hash(text) {
   return `${a.toString(36)}${b.toString(36)}-`;
 }
 
-/** The `local_save` request that adds an ask to the commitments. */
+/** The `task_save` request that adds an ask to the tasks, in To do. */
 export function askCommitment(summaryKey, ask) {
-  return { kind: 'commitment', id: askCommitmentId(summaryKey, ask), text: String(ask?.text || '').trim(), owner: 'You', due: askDueDate(ask?.due) };
+  return { id: askCommitmentId(summaryKey, ask), text: String(ask?.text || '').trim(), owner: 'You', due: askDueDate(ask?.due), status: 'todo' };
 }
 
 /** Which of a summary's asks are already commitments (`commitments` are the commitment records). */

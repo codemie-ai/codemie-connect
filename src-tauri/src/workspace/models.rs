@@ -128,6 +128,8 @@ pub enum Operation {
     MeetingSpeakers,
     MeetingsReveal,
     MeetingRead,
+    TaskSave,
+    TaskDelete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

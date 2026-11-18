@@ -4,8 +4,9 @@ import { icon } from './icons.js';
 import { avatar, button } from './ui.js';
 import { active, attentionMessages, decisions, syncRunning } from './selectors.js';
 import { agoLabel } from './format.js';
+import { taskStatus } from './tasks-model.js';
 
-export const NAV = [['today', 'Today'], ['calendar', 'Calendar'], ['inbox', 'Inbox'], ['automations', 'Automations']];
+export const NAV = [['today', 'Today'], ['calendar', 'Calendar'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations']];
 
 export function syncStatus(s) {
   const c = s.connection;
@@ -29,10 +30,13 @@ export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, se
   const c = s.connection;
   const replies = attentionMessages(s).length;
   const pendingDecisions = decisions(s).length;
+  const toReview = s.records.filter(r => r.kind === 'commitment' && taskStatus(r) === 'review').length;
+  const count = id => (id === 'inbox' && replies ? `<small class="ws-count">${replies}</small>`
+    : id === 'tasks' && toReview ? `<small class="ws-count" title="Tasks to review">${toReview}</small>` : '');
   const connected = c && c.status !== 'disconnected';
   return `<aside class="ws-sidebar">
       <div class="ws-brand" aria-label="EPAM AI/Run CodeMie Connect"><img class="ws-logo-dark" src="workspace/assets/logo-full-dark.svg" alt=""><img class="ws-logo-light" src="workspace/assets/logo-full-light.svg" alt=""></div>
-      <nav class="ws-nav" aria-label="Main navigation">${NAV.map(([id, label]) => `<button type="button" data-action="route" data-route="${id}" ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${id === 'inbox' && replies ? `<small class="ws-count">${replies}</small>` : ''}</button>`).join('')}</nav>
+      <nav class="ws-nav" aria-label="Main navigation">${NAV.map(([id, label]) => `<button type="button" data-action="route" data-route="${id}" ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${count(id)}</button>`).join('')}</nav>
       ${pluginNav(plugins.activities, plugins.current)}
       <div class="ws-sidebar-bottom">
         <nav class="ws-nav" aria-label="Application"><button type="button" data-action="route" data-route="settings" ${route === 'settings' ? 'aria-current="page"' : ''}>${icon('settings')}<span>Settings</span>${(c && c.status !== 'connected' && c.status !== 'disconnected') || settingsDot ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button></nav>

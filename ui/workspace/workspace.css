@@ -1727,3 +1727,175 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 /* Today setup card: closes from its corner */
 .cm-today-setup{position:relative;padding-right:52px}
 .cm-today-setup-close{position:absolute;top:10px;right:10px}
+
+/* ------------------------------------------------------------------ tasks (spec "Tasks page") */
+.ws-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.ws-segmented button[aria-pressed=true]{color:var(--ws-primary-text);border-color:transparent;background:linear-gradient(var(--ws-primary-fill),var(--ws-primary-fill)) padding-box,var(--ws-primary-border) border-box}
+.ws-segmented button .ws-icon{width:14px;height:14px}
+.ws-toast-action{margin-top:-3px;color:var(--ws-link);flex-shrink:0}
+.ws-toast>span{flex:1;min-width:0}
+.ws-menu-label{padding:6px 10px 2px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--ws-faint)}
+.ws-tasks-heading{align-items:flex-start;margin-bottom:18px}
+.ws-tasks-heading .ws-actions{flex-wrap:nowrap}
+.ws-tasks-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:10px 12px;margin-bottom:14px}
+.ws-tasks-toolbar .ws-lanes{flex-wrap:nowrap}
+.ws-tasks-filters{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;flex-wrap:wrap}
+.ws-tasks-filters .ws-select-wrap{width:150px;flex:0 1 150px}
+.ws-tasks-filters .ws-select{height:28px;font-size:12px}
+.ws-tasks-search{flex:1 1 180px;max-width:260px;margin-left:auto}
+.ws-tasks-search input{height:28px;font-size:12px}
+/* the board: one column per status, side by side; a narrow window scrolls the board, not the page */
+.ws-task-board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(200px,1fr);gap:12px;align-items:start;overflow-x:auto;padding-bottom:12px;min-height:calc(100vh - 290px)}
+.ws-task-col{display:flex;flex-direction:column;min-width:0;border:1px solid var(--ws-border);border-radius:var(--ws-radius-lg);background:color-mix(in srgb,var(--ws-card) 55%,transparent);transition:border-color .12s ease,background .12s ease}
+.ws-task-col.ws-drop-on{border-color:var(--col);background:color-mix(in srgb,var(--col) 8%,var(--ws-card))}
+.ws-task-col-head{display:flex;align-items:center;gap:8px;min-height:40px;padding:8px 8px 6px 14px}
+.ws-task-col-head h2{font-size:13px;line-height:18px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ws-task-col-dot{width:8px;height:8px;border-radius:50%;background:var(--col);flex-shrink:0}
+.ws-task-col-count{padding:0 7px;border-radius:9px;background:var(--ws-raised);color:var(--ws-muted);font-size:11px;font-weight:600;line-height:18px}
+.ws-task-col-head .ws-btn{flex-shrink:0}
+.ws-task-col-note{display:flex;gap:6px;align-items:flex-start;margin:0 8px 6px;padding:7px 9px;border-radius:8px;background:var(--ws-purple-bg);color:var(--ws-purple);font-size:11px;line-height:15px}
+.ws-task-col-note .ws-icon{width:12px;height:12px;margin-top:2px}
+.ws-task-col-body{display:flex;flex-direction:column;gap:8px;min-height:80px;min-width:0;padding:2px 8px 8px}
+.ws-task-col-empty{display:grid;place-items:center;min-height:70px;padding:10px;border:1px dashed var(--ws-border);border-radius:10px;color:var(--ws-faint);font-size:12px;line-height:17px;text-align:center}
+.ws-drop-on .ws-task-col-empty{border-color:var(--col);color:var(--ws-muted)}
+.ws-task-col-add{display:flex;align-items:center;gap:6px;margin:0 8px 8px;padding:7px 8px;border:0;border-radius:8px;background:none;color:var(--ws-muted);font-size:12px;text-align:left}
+.ws-task-col-add:hover{background:var(--ws-hover);color:var(--ws-text)}
+.ws-task-col-add .ws-icon,.ws-task-col-more .ws-icon{width:14px;height:14px}
+.ws-task-col-more{display:flex;align-items:center;justify-content:center;gap:6px;padding:6px;border:0;border-radius:8px;background:none;color:var(--ws-link);font-size:12px}
+.ws-task-col-more:hover{background:var(--ws-hover)}
+.ws-task-insert{height:3px;margin:-2px 4px;border-radius:2px;background:var(--col,var(--ws-accent));box-shadow:0 0 0 2px color-mix(in srgb,var(--col,var(--ws-accent)) 25%,transparent)}
+/* cards */
+.ws-task{position:relative;display:grid;grid-template-columns:minmax(0,1fr);gap:8px;min-width:0;padding:10px 10px 8px 12px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card);box-shadow:var(--ws-shadow-sm);cursor:grab;transition:border-color .12s ease,box-shadow .12s ease,opacity .12s ease}
+.ws-task>*{min-width:0}
+.ws-task:hover{border-color:var(--ws-border-strong);box-shadow:0 4px 14px rgba(0,0,0,.18)}
+.light .ws-task:hover{box-shadow:0 4px 14px rgba(20,30,60,.10)}
+.ws-task:active{cursor:grabbing}
+.ws-task.ws-dragging{opacity:.4}
+.ws-task-open{border-color:var(--ws-accent);box-shadow:0 0 0 1px var(--ws-accent)}
+.ws-task-review{border-style:dashed;border-color:color-mix(in srgb,var(--ws-purple) 55%,var(--ws-border))}
+.ws-task-overdue{box-shadow:inset 3px 0 0 var(--ws-red)}
+.ws-task-overdue:hover{box-shadow:inset 3px 0 0 var(--ws-red),0 4px 14px rgba(0,0,0,.18)}
+.ws-task-top{position:relative;display:flex;align-items:center;gap:6px;min-width:0;min-height:20px}
+/* ✓ and ⋯ lie over the source line, shown on hover or keyboard focus, so it keeps its room */
+.ws-task-tools{position:absolute;top:-4px;right:-4px;display:flex;align-items:center;gap:2px;padding-left:12px;border-radius:6px;background:linear-gradient(90deg,transparent,var(--ws-card) 12px);opacity:0;transition:opacity .12s ease}
+.ws-task:hover .ws-task-tools,.ws-task:focus-within .ws-task-tools,.ws-task-tools:has(.ws-menu[open]){opacity:1}
+.ws-task-src{display:inline-flex;align-items:center;gap:5px;flex:1;min-width:0;padding:0;border:0;background:none;color:var(--ws-muted);font-size:11px;line-height:16px;text-align:left}
+.ws-task-src span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-task-src em{font-style:normal;color:var(--ws-faint);white-space:nowrap}
+.ws-task-src .ws-product,.ws-task-src .ws-icon{width:12px;height:12px}
+button.ws-task-src:hover span{color:var(--ws-link)}
+.ws-task-menu .ws-menu-panel{z-index:35;min-width:210px}
+.ws-task-menu .ws-menu-item{width:100%;white-space:nowrap}
+/* a narrow window shows a sliver of the next column, so the board says it scrolls */
+@media (max-width:1100px){.ws-task-board{grid-auto-columns:minmax(186px,1fr)}.ws-task-col-head .ws-btn,.ws-task-src em{display:none}}
+.ws-task-title{display:flex;gap:6px;align-items:flex-start;padding:0;border:0;background:none;color:var(--ws-text);font-family:var(--font-sans);font-size:13px;font-weight:500;line-height:19px;text-align:left;overflow-wrap:anywhere}
+.ws-task-title:hover{color:var(--ws-link)}
+.ws-task-done-icon{width:14px;height:14px;margin-top:2px;color:var(--ws-green)}
+.ws-task-done .ws-task-title span{color:var(--ws-muted);text-decoration:line-through}
+.ws-task-low{display:inline-flex;align-items:center;gap:5px;color:var(--ws-amber);font-size:11px;font-weight:600}
+.ws-task-low .ws-icon{width:12px;height:12px}
+.ws-task-said{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;padding-left:8px;border-left:2px solid color-mix(in srgb,var(--ws-purple) 45%,var(--ws-border));color:var(--ws-muted);font-family:var(--font-sans);font-size:12px;font-style:italic;line-height:17px}
+.ws-task-foot{display:flex;align-items:center;flex-wrap:wrap;gap:6px;row-gap:6px;min-width:0;min-height:24px}
+.ws-task-owner{display:inline-flex;align-items:center;gap:5px;min-width:0;max-width:100%;color:var(--ws-muted);font-size:11px}
+.ws-task-owner>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-task-nobody{--size:24px;flex:0 0 var(--size);display:inline-grid;place-items:center;width:var(--size);height:var(--size);border:1px dashed var(--ws-border-strong);border-radius:50%;color:var(--ws-faint);box-sizing:border-box}
+.ws-task-nobody .ws-icon{width:calc(var(--size) * .55);height:calc(var(--size) * .55)}
+.ws-task-mark{display:grid;place-items:center;color:var(--ws-faint)}
+.ws-task-mark .ws-icon{width:12px;height:12px}
+.ws-task-check:hover{color:var(--ws-green)}
+.ws-task-actions{display:flex;justify-content:flex-end;gap:4px;margin:0 -2px -2px;padding-top:6px;border-top:1px dashed var(--ws-border)}
+.ws-due{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:10px;background:var(--ws-raised);color:var(--ws-muted);font-size:11px;font-weight:600;white-space:nowrap}
+.ws-due .ws-icon{width:11px;height:11px}
+.ws-due-overdue{background:var(--ws-red-bg);color:var(--ws-red)}
+.ws-due-today{background:var(--ws-amber-bg);color:var(--ws-amber)}
+.ws-due-soon{background:var(--ws-blue-bg);color:var(--ws-blue)}
+/* quick add */
+.ws-task-quick{display:grid;gap:8px;padding:10px;border:1px solid var(--ws-accent);border-radius:10px;background:var(--ws-card)}
+.ws-task-quick .ws-textarea{min-height:56px;font-size:13px}
+.ws-task-quick-row{display:flex;align-items:center;gap:6px;min-width:0}
+.ws-task-quick-row .ws-select-wrap{flex:1}
+.ws-task-quick-row .ws-select,.ws-task-quick-row .ws-input{height:28px;font-size:12px}
+.ws-task-quick-row input[type=date]{width:128px;flex:0 0 128px;padding:0 6px}
+:root.dark .ws-task-quick input[type=date],:root.dark .ws-task-due-field input{color-scheme:dark}
+/* dismissed */
+.ws-task-dismissed{margin-top:10px}
+.ws-task-dismissed-toggle{display:inline-flex;align-items:center;gap:6px;font-size:12px}
+.ws-task-dismissed-toggle .ws-icon{width:14px;height:14px}
+.ws-task-dismissed-list{max-width:760px}
+.ws-task-dismissed-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--ws-border);font-size:13px}
+.ws-task-dismissed-row:first-child{border-top:0}
+.ws-task-dismissed-row>span{flex:1;min-width:0}
+/* list */
+.ws-task-list{display:grid;gap:14px}
+.ws-task-table{display:grid}
+.ws-task-row{display:grid;grid-template-columns:24px minmax(0,1fr) 170px 100px minmax(0,220px) 140px;align-items:center;gap:12px;padding:8px 18px;border-top:1px solid var(--ws-border);font-size:13px}
+.ws-task-row:first-child{border-top:0}
+.ws-task-row-head{padding-top:10px;padding-bottom:6px;color:var(--ws-faint);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+.ws-task-row-title{display:flex;align-items:center;gap:8px;min-width:0}
+.ws-task-row-title .ws-link-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-sans);font-size:13px}
+.ws-task-row-done .ws-task-row-title .ws-link-title{color:var(--ws-muted);text-decoration:line-through}
+.ws-task-row-overdue{box-shadow:inset 3px 0 0 var(--ws-red)}
+.ws-task-row-owner{display:flex;align-items:center;gap:6px;min-width:0;color:var(--ws-muted);font-size:12px}
+.ws-task-row-owner>span:last-child,.ws-task-row-from .ws-link{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.ws-task-row-from{display:flex;min-width:0;font-size:12px}
+.ws-task-row .ws-select-wrap{width:100%}
+.ws-task-row .ws-select{height:28px;font-size:12px}
+.ws-task-list-more{justify-self:start}
+.ws-task-empty .ws-task-list-more{margin:0 auto 16px}
+@media (max-width:1180px){.ws-task-row{grid-template-columns:24px minmax(0,1fr) 140px 96px 130px}.ws-task-row>[role=cell]:nth-child(5),.ws-task-row>[role=columnheader]:nth-child(5){display:none}}
+/* drawer */
+.ws-task-scrim{position:fixed;inset:0;z-index:40;background:color-mix(in srgb,#000 22%,transparent)}
+.ws-task-drawer{position:fixed;z-index:41;top:0;right:0;bottom:0;width:min(460px,100vw);display:flex;flex-direction:column;border-left:1px solid var(--ws-border);background:var(--ws-card);box-shadow:var(--ws-shadow);color:var(--ws-text);animation:ws-task-drawer-in .18s ease}
+@keyframes ws-task-drawer-in{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.ws-task-drawer{animation:none}}
+.ws-task-drawer-head{display:flex;align-items:center;gap:6px;padding:12px 12px 8px 20px}
+.ws-task-drawer-body{flex:1;display:grid;align-content:start;gap:18px;overflow:auto;padding:4px 20px 20px}
+.ws-task-drawer-title{width:100%;box-sizing:border-box;min-height:56px;margin:0 -8px;padding:6px 8px;border:1px solid transparent;border-radius:8px;background:none;color:var(--ws-text);font-family:var(--font-sans);font-size:18px;font-weight:600;line-height:26px;resize:none;field-sizing:content}
+.ws-task-drawer-title:hover{border-color:var(--ws-border)}
+#workspace-app .ws-task-drawer-title:focus{outline:none;border-color:var(--ws-input-focus);background:var(--ws-input)}
+.ws-task-review-box{display:flex;flex-wrap:wrap;align-items:flex-start;gap:10px;padding:12px;border:1px solid color-mix(in srgb,var(--ws-purple) 35%,transparent);border-radius:10px;background:var(--ws-purple-bg)}
+.ws-task-review-box>.ws-icon{margin-top:2px;color:var(--ws-purple)}
+.ws-task-review-box>div:nth-child(2){flex:1;min-width:200px;display:grid;gap:2px}
+.ws-task-review-box strong{font-size:13px}
+.ws-task-review-box p{color:var(--ws-muted);font-size:12px;line-height:17px}
+.ws-task-review-box .ws-actions{margin-left:auto}
+.ws-task-fields{display:grid;grid-template-columns:70px minmax(0,1fr);align-items:center;gap:12px}
+.ws-task-field-label{align-self:start;padding-top:6px;color:var(--ws-muted);font-size:12px}
+.ws-task-status{justify-self:start;flex-wrap:wrap}
+.ws-task-owner-field{display:flex;align-items:center;gap:8px;min-width:0}
+.ws-task-owner-field .ws-select-wrap{flex:1}
+.ws-task-due-field{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.ws-task-due-field input{width:150px;height:30px}
+.ws-task-due-quick{display:flex;flex-wrap:wrap;gap:4px;width:100%}
+.ws-task-chip{height:24px;padding:0 9px;border:1px solid var(--ws-border);border-radius:12px;background:var(--ws-card-2);color:var(--ws-muted);font-size:11px;white-space:nowrap}
+.ws-task-chip:hover{border-color:var(--ws-border-strong);color:var(--ws-text)}
+.ws-task-source{display:grid;gap:8px}
+.ws-task-source>.ws-btn{justify-self:start}
+.ws-task-source-meeting{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);color:var(--ws-text);text-align:left}
+.ws-task-source-meeting:hover{border-color:var(--ws-border-strong)}
+.ws-task-source-meeting>span{flex:1;display:grid;min-width:0}
+.ws-task-source-meeting strong{font-size:13px;overflow-wrap:anywhere}
+.ws-task-source-meeting small{color:var(--ws-muted);font-size:11px}
+.ws-task-source-meeting .ws-product{width:18px;height:18px}
+.ws-task-quote{display:flex;align-items:flex-start;gap:10px;margin:0}
+.ws-task-quote blockquote{flex:1;min-width:0;margin:0;padding:10px 12px;border-radius:0 10px 10px 10px;background:var(--ws-raised)}
+.ws-task-quote p{color:var(--ws-text);font-family:var(--font-sans);font-size:13px;line-height:20px;overflow-wrap:anywhere}
+.ws-task-quote figcaption{margin-top:6px;color:var(--ws-muted);font-size:11px;line-height:16px}
+.ws-task-quote figcaption .ws-link{font-size:11px}
+.ws-task-history ol{display:grid;gap:8px;margin:6px 0 0;padding:0 0 0 12px;border-left:2px solid var(--ws-border);list-style:none}
+.ws-task-history li{position:relative;display:grid;font-size:12px}
+.ws-task-history li::before{content:"";position:absolute;left:-17px;top:5px;width:8px;height:8px;border-radius:50%;background:var(--ws-border-strong)}
+.ws-task-history small{color:var(--ws-faint);font-size:11px}
+.ws-task-drawer-foot{padding:10px 20px;border-top:1px solid var(--ws-border)}
+.ws-task-drawer-foot small{display:flex;align-items:center;gap:6px;color:var(--ws-muted);font-size:12px}
+.ws-task-drawer-foot .ws-icon{width:13px;height:13px;color:var(--ws-green)}
+.ws-task-form{display:grid;gap:14px}
+.ws-task-form .ws-field{align-content:start}
+/* Today's Tasks card: rows open the task; the tasks to review link to the board */
+.ws-todo-text .ws-link-title{font-size:14px;line-height:20px;overflow-wrap:anywhere}
+.ws-todo.ws-done .ws-todo-text .ws-link-title{text-decoration:line-through;color:var(--ws-muted)}
+.ws-today-review{display:flex;align-items:center;gap:12px;width:100%;margin-bottom:8px;padding:8px 10px;border:0;border-radius:8px;background:var(--ws-purple-bg);color:var(--ws-text);text-align:left}
+.ws-today-review>.ws-icon:first-child{color:var(--ws-purple)}
+.ws-today-review>span{flex:1;display:grid;min-width:0}
+.ws-today-review strong{font-size:13px;font-weight:600}
+.ws-today-review small{color:var(--ws-muted);font-size:12px}

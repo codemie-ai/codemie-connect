@@ -213,7 +213,7 @@ impl Core {
     /// One writer of meeting records and transcript files at a time (the round, the jobs and
     /// the operations), so a save never drops a speaker mapping made while it read from Teams.
     /// Taken before the repository and never held across an await.
-    pub(super) fn meeting_lock(&self) -> MutexGuard<'_, ()> {
+    pub(in crate::workspace) fn meeting_lock(&self) -> MutexGuard<'_, ()> {
         self.meeting_writes
             .lock()
             .unwrap_or_else(|e| e.into_inner())

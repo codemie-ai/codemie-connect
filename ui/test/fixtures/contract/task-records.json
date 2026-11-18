@@ -1,0 +1,102 @@
+[
+  {
+    "connectionId": null,
+    "data": {
+      "confidence": "low",
+      "createdAt": 1795000000,
+      "done": false,
+      "doneAt": null,
+      "due": "2026-11-20",
+      "history": [
+        {
+          "at": 1795000000,
+          "text": "Found in the notes (Meeting notes)"
+        }
+      ],
+      "line": 3,
+      "meetingId": "m-downloaded",
+      "order": 1.0,
+      "owner": "priya.n@example.test",
+      "ownerName": "Priya Natarajan",
+      "quote": "Priya, can you take the recurring sync bug into 2.5?",
+      "quoteAt": 173.0,
+      "speaker": "Jordan Lee",
+      "status": "review",
+      "text": "Move the recurring-meeting sync bug to 2.5"
+    },
+    "id": "task-review",
+    "kind": "commitment",
+    "revision": "rev-0",
+    "source": "local",
+    "updatedAt": 1795000000,
+    "workspaceId": "personal"
+  },
+  {
+    "connectionId": null,
+    "data": {
+      "createdAt": 1795000000,
+      "done": false,
+      "doneAt": null,
+      "due": "2026-11-18",
+      "history": [
+        {
+          "at": 1795000000,
+          "text": "Added by you"
+        },
+        {
+          "at": 1795000060,
+          "text": "Moved from To do to In progress"
+        },
+        {
+          "at": 1795000120,
+          "text": "Owner set to Taylor Morgan"
+        },
+        {
+          "at": 1795000120,
+          "text": "Due date set to 2026-11-18"
+        }
+      ],
+      "notes": "Use the staging tenant.",
+      "order": 2.0,
+      "owner": "taylor@example.test",
+      "ownerName": "Taylor Morgan",
+      "status": "doing",
+      "text": "Prepare the export demo for the Philips sync"
+    },
+    "id": "task-doing",
+    "kind": "commitment",
+    "revision": "rev-1",
+    "source": "local",
+    "updatedAt": 1795000120,
+    "workspaceId": "personal"
+  },
+  {
+    "connectionId": null,
+    "data": {
+      "createdAt": 1795000000,
+      "done": true,
+      "doneAt": 1795000300,
+      "history": [
+        {
+          "at": 1795000000,
+          "text": "Added by you"
+        },
+        {
+          "at": 1795000300,
+          "text": "Moved from To do to Done"
+        }
+      ],
+      "order": 3.0,
+      "owner": "You",
+      "ownerName": null,
+      "status": "done",
+      "text": "Book a room for demo day"
+    },
+    "id": "task-done",
+    "kind": "commitment",
+    "revision": "rev-2",
+    "source": "local",
+    "updatedAt": 1795000300,
+    "workspaceId": "personal"
+  }
+]

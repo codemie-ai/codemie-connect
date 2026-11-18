@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
@@ -390,6 +390,55 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     meetings_reveal: d => { calls.push(['meetings_reveal', d]); return { opened: true }; },
     meeting_read: d => (d.part === 'transcript' ? { segments: [] } : d.part === 'files' ? { files: [] } : { text: '' }),
   });
+  // Tasks: `task_save` merges into the stored body and writes history lines as native does
+  // (src-tauri/src/workspace/tasks.rs); `task_delete` answers with the body (task-delete.json).
+  const TASK_NAMES = { review: 'To review', todo: 'To do', doing: 'In progress', waiting: 'Waiting', done: 'Done', dismissed: 'Dismissed' };
+  const taskStatus = b => (TASK_NAMES[b.status] ? b.status : b.done ? 'done' : 'todo');
+  Object.assign(ops, {
+    task_save: (d, wid) => {
+      calls.push(['task_save', clone(d)]);
+      const at = now();
+      const { id: given, log, history, ...fields } = d;
+      const id = given || crypto.randomUUID();
+      const stored = s.records.find(r => r.kind === 'commitment' && r.id === id);
+      if ('text' in fields || !stored) {
+        const text = String(fields.text ?? '').trim();
+        if (!text || text.length > 2000) fail('validation', 'Write what needs doing (up to 2,000 characters).');
+        fields.text = text;
+      }
+      if (!stored) {
+        const orders = s.records.filter(r => r.kind === 'commitment').map(r => r.data.order ?? r.updatedAt);
+        const status = fields.status || (fields.done ? 'done' : 'todo');
+        s.records.push({ id, kind: 'commitment', source: 'local', connectionId: null, workspaceId: wid || 'personal', revision: crypto.randomUUID(), updatedAt: at,
+          data: { ...fields, status, done: status === 'done', doneAt: status === 'done' ? fields.doneAt || at : null, createdAt: fields.createdAt || at, order: fields.order ?? Math.max(at, ...orders) + 1, history: history?.length ? history : [{ at, text: log || 'Added by you' }] } });
+        return { id };
+      }
+      const before = stored.data;
+      const body = { ...before, ...fields };
+      const from = taskStatus(before);
+      const to = fields.status || ('done' in fields ? (fields.done ? 'done' : from === 'done' ? 'todo' : from) : from);
+      Object.assign(body, { status: to, done: to === 'done', doneAt: to === 'done' ? (from === 'done' ? before.doneAt : at) : null });
+      const lines = [];
+      if (to !== from) lines.push(log || `Moved from ${TASK_NAMES[from]} to ${TASK_NAMES[to]}`);
+      if ('owner' in fields && (fields.owner || null) !== (before.owner || null)) {
+        if (!('ownerName' in fields)) body.ownerName = null;
+        if (before.confidence === 'low' && !('confidence' in fields)) body.confidence = 'high';
+        lines.push(body.owner ? `Owner set to ${body.ownerName || body.owner}` : 'Owner removed');
+      }
+      if ('due' in fields && (fields.due || null) !== (before.due || null)) lines.push(body.due ? `Due date set to ${body.due}` : 'Due date removed');
+      if (log && to === from) lines.push(log);
+      body.history = [...(before.history || []), ...lines.map(text => ({ at, text }))];
+      Object.assign(stored, { data: body, revision: crypto.randomUUID(), updatedAt: at });
+      return { id };
+    },
+    task_delete: d => {
+      calls.push(['task_delete', clone(d)]);
+      const stored = s.records.find(r => r.kind === 'commitment' && r.id === d.id);
+      if (!stored) fail('not_found', 'This task is no longer there.');
+      s.records = s.records.filter(r => r !== stored);
+      return { deleted: true, id: d.id, body: clone(stored.data) };
+    },
+  });
   // Plugins (`plugins_request`, `plugin_call`): an in-memory registry over the contract answers.
   // `__pluginCalls` records what reached native, with the plugin id it went out with.
   const pl = {
@@ -578,7 +627,7 @@ const STORAGE = {
   disk_full: storageOf('not_writable', { issue: 'The disk that holds your data folder is full.' }),
 };
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -594,6 +643,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
     ['Thanks. Could you also send Jordan the draft?', 'Also, please book the review room for Thursday.', 'One more thing: the comments are due Friday 20 November.'].forEach((text, i) => connected.records.push({ ...first, id: `m-long-${i}`, revision: `r-long-${i}`, data: { ...first.data, text, at: first.data.at + 120 * (i + 1), lane: 'fyi', isRead: true } }));
   }
   if (automations) withAutomations(connected, now);
+  if (tasks) withTasks(connected, now);
   if (pluginRecords) connected.records.push(...pluginRecords(now));
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
@@ -2055,15 +2105,195 @@ for (const theme of ['dark', 'light']) {
   }
 }
 
+// Tasks (spec "Tasks page"): the board with the fixture's tasks (withTasks); accept, drag with the
+// drop line, the keyboard Move to menu, the drawer, delete and Undo, filters, the list, dismissed
+// tasks and quick add; both themes at 1440, 1000 and 1680 px.
+const lastSave = async (page, op = 'task_save') => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).at(-1)?.[1];
+const taskIn = (col, id) => `.ws-task-col[data-col="${col}"] [data-task="${id}"]`;
+for (const theme of ['dark', 'light']) {
+  for (const [width, height] of [[1440, 900], [1000, 760], [1680, 960]]) {
+    const tag = `${theme}-${width}`;
+    const { page, context, errors } = await open({ theme, width, height, hash: '#/tasks', tasks: true });
+    await check(`${tag}: tasks board: review, drag, edit, delete and undo`, async () => {
+      await page.waitForSelector('.ws-task-board');
+      assert(await page.locator('.ws-nav button[data-route=tasks][aria-current=page]').count() === 1, 'Tasks is not current');
+      assert((await text(page, '.ws-nav button[data-route=tasks] .ws-count')) === '2', 'two tasks to review in the sidebar');
+      const columns = await page.locator('.ws-task-col').evaluateAll(cols => cols.map(c => `${c.dataset.col}:${c.querySelector('.ws-task-col-count').textContent}`));
+      assert(columns.join() === 'review:2,todo:5,doing:1,waiting:1,done:2', columns.join());
+      // Review cards: the quote, Check the owner for the unsure one, Accept and Dismiss.
+      assert(await page.locator('[data-task="task-bug"] .ws-task-low:has-text("Check the owner")').count() === 1, 'Check the owner');
+      assert(await page.locator('[data-task="task-share"] .ws-task-said').count() === 1, 'quote snippet');
+      // Overdue first in To do, red.
+      assert(await page.locator('.ws-task-col[data-col="todo"] [data-task]').first().getAttribute('data-task') === 'task-legal', 'overdue first');
+      const red = await page.locator('[data-task="task-legal"] .ws-due-overdue').evaluate(el => getComputedStyle(el).color);
+      assert(/rgb\((254, 59, 76|229, 41, 58)\)/.test(red), `overdue chip colour ${red}`);
+      await noOverflow(page, 'board');
+      await renderSettled(page);
+      await shot(page, `${tag}-tasks-board`);
+
+      // Owed to me + Overdue: only others' overdue tasks, and the counts say so.
+      await page.click('[data-action="tasks-who"][data-who="others"]');
+      await page.selectOption('select[data-filter="due"]', 'overdue');
+      await page.waitForSelector('[data-action="tasks-clear"]');
+      const owed = await page.locator('.ws-task-board [data-task]').evaluateAll(cards => cards.map(c => c.dataset.task));
+      assert(owed.join() === 'task-legal', `owed to me, overdue: ${owed}`);
+      const filtered = await page.locator('.ws-task-col-count').evaluateAll(counts => counts.map(c => c.textContent).join());
+      assert(filtered === '0,1,0,0,0', `column counts ${filtered}`);
+      await noOverflow(page, 'filtered board');
+      await page.click('[data-action="tasks-clear"]');
+      await page.waitForSelector('[data-action="tasks-clear"]', { state: 'detached' });
+
+      // Accept: to To do with the history line.
+      await page.click('[data-task="task-share"] [data-action="task-accept"]');
+      await page.waitForSelector(taskIn('todo', 'task-share'));
+      assert((await lastSave(page)).log === 'Accepted from review', 'accept log');
+
+      // Drag task-names onto Waiting: the column lights up and a line shows where it lands.
+      const card = page.locator('[data-task="task-names"]');
+      await card.scrollIntoViewIfNeeded();
+      const from = await card.boundingBox();
+      await page.mouse.move(from.x + from.width / 2, from.y + 12);
+      await page.mouse.down();
+      const zone = page.locator('.ws-task-col[data-col="waiting"] [data-drop]');
+      const to = await zone.boundingBox();
+      await page.mouse.move(to.x + to.width / 2, to.y + 8, { steps: 8 });
+      await page.mouse.move(to.x + to.width / 2, to.y + 10, { steps: 2 });
+      await page.waitForSelector('.ws-task-col[data-col="waiting"].ws-drop-on .ws-task-insert', { timeout: 3000 });
+      await shot(page, `${tag}-tasks-drag`);
+      await page.mouse.up();
+      await page.waitForSelector(taskIn('waiting', 'task-names'));
+      const dropped = await lastSave(page);
+      assert(dropped.id === 'task-names' && dropped.status === 'waiting', JSON.stringify(dropped));
+      const order = await page.locator('.ws-task-col[data-col="waiting"] [data-task]').evaluateAll(cards => cards.map(c => c.dataset.task));
+      assert(order[0] === 'task-names' && order.includes('task-hr'), `dropped above task-hr: ${order}`);
+      assert(await page.locator('.ws-task-insert').count() === 0, 'the drop line stays');
+
+      // Keyboard: the card's ⋯ › Move to › Done (an update meanwhile keeps the focus where it is).
+      await renderSettled(page);
+      await page.focus('[data-task="task-legal"] .ws-task-menu summary');
+      await page.evaluate(() => window.__workspace.render());
+      assert(await page.evaluate(() => document.activeElement?.dataset.menuTrigger) === 'task-legal', 'focus kept on ⋯ through a render');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('[data-task="task-legal"] .ws-menu[open] [data-action="task-move"][data-col="done"]');
+      await page.keyboard.press('Tab');
+      await page.keyboard.press('Tab');
+      await page.keyboard.press('Tab');
+      assert(await page.evaluate(() => document.activeElement?.dataset.col) === 'done', 'Tab reaches Done');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector(taskIn('done', 'task-legal'));
+
+      // The drawer: the quote with its transcript link, owner from the meeting first, due, notes.
+      await page.click('[data-task="task-bug"] .ws-task-title');
+      await page.waitForSelector('.ws-task-drawer');
+      await page.waitForFunction(() => document.activeElement?.classList.contains('ws-task-drawer-title'), null, { timeout: 3000 });
+      const link = page.locator('.ws-task-drawer a[data-action="task-quote"]');
+      assert(await link.getAttribute('href') === '#/meetings/ev-sync/transcript', 'transcript link');
+      assert(/6:52 into the meeting — show in transcript/.test(await link.innerText()), 'quote time');
+      assert(await page.locator('.ws-task-drawer optgroup[label="In this meeting"] option').count() === 5, 'meeting people first');
+      await noOverflow(page, 'drawer');
+      await renderSettled(page);
+      await shot(page, `${tag}-task-drawer`);
+      await page.selectOption('.ws-task-drawer select[data-action="task-owner"]', 'sam.okafor@example.test');
+      await page.waitForSelector('.ws-task-history li:has-text("Owner set to Sam Okafor")');
+      await page.click('.ws-task-drawer [data-action="task-due-pick"]:has-text("Tomorrow")');
+      await page.waitForSelector('.ws-task-history li:has-text("Due date set to")');
+      await page.fill('.ws-task-drawer [data-change="task-notes"]', 'Check with QA first.');
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.ws-task-drawer', { state: 'detached' });
+      await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'task_save' && d.notes === 'Check with QA first.'));
+      await renderSettled(page);
+      assert(await page.evaluate(() => document.activeElement?.closest('[data-task]')?.dataset.task) === 'task-bug', 'focus back on the card');
+
+      // Delete from the card menu, then Undo: the card is back with its history.
+      const tenant = page.locator('[data-task="task-tenant"]');
+      await openRowMenu(page, tenant, '[data-action="task-delete"]');
+      await tenant.locator('[data-action="task-delete"]').click();
+      await page.waitForSelector('[data-task="task-tenant"]', { state: 'detached' });
+      await page.click('.ws-toast:has-text("Deleted “Ask IT for a throttling test tenant”") .ws-toast-action');
+      await page.waitForSelector(taskIn('todo', 'task-tenant'));
+      const restored = await page.evaluate(() => window.__workspace.store.get().snapshot.records.find(r => r.id === 'task-tenant').data);
+      assert(restored.history.length === 1 && restored.status === 'todo', JSON.stringify(restored));
+
+      // Dismiss a review card; it is listed below the board and Restore brings it back.
+      await page.click('[data-task="task-bug"] [data-action="task-dismiss"]');
+      await page.waitForSelector('[data-task="task-bug"]', { state: 'detached' });
+      await page.click('[data-action="tasks-dismissed"]');
+      await page.waitForSelector('.ws-task-dismissed-list [data-action="task-restore"][data-id="task-bug"]');
+      await renderSettled(page);
+      await shot(page, `${tag}-tasks-dismissed`);
+      await page.click('.ws-task-dismissed-list [data-action="task-restore"][data-id="task-bug"]');
+      await page.waitForSelector(taskIn('review', 'task-bug'));
+
+      // Owed to me without a date: what others owe, open and done lately.
+      await page.click('[data-action="tasks-who"][data-who="others"]');
+      await page.selectOption('select[data-filter="due"]', 'none');
+      await page.waitForSelector('[data-action="tasks-clear"]');
+      const undated = await page.locator('.ws-task-board [data-task]').evaluateAll(cards => cards.map(c => c.dataset.task).sort());
+      assert(undated.join() === 'task-hr,task-pilot', `owed to me, no date: ${undated}`);
+      await page.click('[data-action="tasks-clear"]');
+      await page.waitForSelector('[data-action="tasks-clear"]', { state: 'detached' });
+
+      // Quick add in In progress: Enter adds, the form stays for the next one.
+      await page.click('.ws-task-col[data-col="doing"] .ws-task-col-add');
+      await page.fill('[data-form="task-quick"] textarea', 'Write the release notes');
+      await page.keyboard.press('Enter');
+      await page.waitForSelector('.ws-task-col[data-col="doing"] .ws-task:has-text("Write the release notes")');
+      await page.waitForFunction(() => document.activeElement?.matches('[data-form="task-quick"] textarea'));
+      const added = await lastSave(page);
+      assert(added.status === 'doing' && added.owner === 'taylor.morgan@example.test' && added.ownerName === 'Taylor Morgan', JSON.stringify(added));
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-form="task-quick"]', { state: 'detached' });
+
+      // The list: I owe, Owed to me, Nobody named.
+      await page.click('[data-action="tasks-view"][data-view="list"]');
+      await page.waitForSelector('.ws-task-list');
+      const groups = await page.locator('.ws-task-group .ws-card-title').evaluateAll(hs => hs.map(h => h.firstChild.textContent));
+      assert(groups.join() === 'I owe,Owed to me,Nobody named', groups.join());
+      await noOverflow(page, 'list');
+      await renderSettled(page);
+      await shot(page, `${tag}-tasks-list`);
+      await page.click('[data-action="tasks-view"][data-view="board"]');
+      await page.waitForSelector('.ws-task-board');
+
+      // New task: the dialog adds it to the chosen column for the chosen person.
+      await page.click('[data-action="task-new"]');
+      await page.waitForSelector('.ws-modal[open] textarea[name="text"]');
+      await page.waitForTimeout(250);
+      await noOverflow(page, 'new task dialog');
+      await shot(page, `${tag}-task-new`);
+      await page.fill('.ws-modal[open] textarea[name="text"]', 'Book the review room');
+      await page.selectOption('.ws-modal[open] select[name="owner"]', 'jordan.lee@example.test');
+      await page.selectOption('.ws-modal[open] select[name="status"]', 'waiting');
+      await page.click('.ws-modal[open] button[type=submit]');
+      await page.waitForSelector('.ws-task-col[data-col="waiting"] .ws-task:has-text("Book the review room")');
+      const made = await lastSave(page);
+      assert(made.ownerName === 'Jordan Lee' && made.status === 'waiting' && !made.id, JSON.stringify(made));
+
+      // A click on the due-today notification opens Tasks.
+      await page.click('.ws-nav button[data-route=today]');
+      await page.waitForSelector('.ws-commitments .ws-card-title:has-text("Tasks")');
+      assert(await page.locator('.ws-commitments .ws-today-review:has-text("1 task from meeting notes to review")').count() === 1, 'review row on Today');
+      await page.locator('.ws-commitments').scrollIntoViewIfNeeded();
+      await noOverflow(page, 'Today');
+      await elementShot(page, '.ws-commitments', `${tag}-today-tasks.png`);
+      await page.evaluate(() => window.__emitNative('workspace:notification-open', { workspaceId: 'personal', route: 'tasks' }));
+      await page.waitForSelector('.ws-page-tasks .ws-task-board');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+    currentPage = null;
+  }
+}
+
 // Plugins (DESIGN 7.3, Tasks 23–24): add a marketplace, install the synthetic hello plugin, its
 // page and Settings section in their sandboxed frame, Today's plugin widgets, turn it off.
 if (process.env.WORKSPACE_E2E_ONLY !== 'plugins') await pluginChecks({ open, check, assert, shot, OUT });
 
 // Narrow and wide windows keep layouts intact.
 for (const width of [1000, 1680]) {
-  const { page, context } = await open({ theme: 'light', width, height: 820 });
+  const { page, context } = await open({ theme: 'light', width, height: 820, tasks: true });
   await check(`layout ${width}px: no horizontal overflow on primary routes`, async () => {
-    for (const route of ['today', 'calendar', 'inbox', 'settings']) {
+    for (const route of ['today', 'calendar', 'tasks', 'inbox', 'settings']) {
       await page.click(`.ws-nav button[data-route=${route}]`);
       await page.waitForTimeout(150);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

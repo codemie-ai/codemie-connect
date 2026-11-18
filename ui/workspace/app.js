@@ -23,6 +23,9 @@ import { createSetupSession } from './codemie/setup-session.js';
 import { startSetup, cancelSetup } from '../setup-driver.js';
 import { automations, AUTOMATION_TABS } from './view-automations.js';
 import { createAutomationsController, notificationTarget } from './automations-controller.js';
+import { tasksPage } from './view-tasks.js';
+import { createTasksController, attachBoardDrag } from './tasks-controller.js';
+import { newTasksView } from './tasks-model.js';
 import { renderShell } from './shell.js';
 import { nextAiSettings, withCodemieSignIn, LOGIN_STEPS } from './settings-ai.js';
 import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
@@ -36,7 +39,7 @@ import { createPluginHost, internalRoute } from '../plugins/host.js';
 import { createPluginsController } from './settings-plugins.js';
 import { pluginWidgetCatalog, parseLayoutId, heldText, textOfHtml } from './today-plugins.js';
 
-const ROUTES = ['today', 'calendar', 'inbox', 'automations', 'settings'];
+const ROUTES = ['today', 'calendar', 'tasks', 'inbox', 'automations', 'settings'];
 const root = document.getElementById('workspace-app');
 const legacy = document.getElementById('app');
 const rawInvoke = window.__TAURI__?.core?.invoke;
@@ -65,6 +68,8 @@ const state = {
   drafts: {}, summaryUi: {}, draftPopover: null, draftDismissed: localJson('codemie.draft.dismissed', []),
   // Automations: the open tab and the Run log pages read with `automation_runs` (null until read).
   automations: { tab: 'automations', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } },
+  // Tasks: board or list, filters, the open drawer and quick add (view state only; tasks are native's).
+  tasks: newTasksView(localPref('codemie.tasks.view', 'board')),
   // Plugins: the page open under #/p/<id>/<activity>/<route>, the Settings → Plugins path
   // ({id, section}), what is installed, and the text of page widgets their frames drew.
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
@@ -126,6 +131,9 @@ let deferredNotification;
 let calendarScrollKey = '';
 let noteTimer;
 let searchTimer;
+let taskSearchTimer;
+// A card is being dragged on the Tasks board: updates wait until it is dropped.
+let taskDrag = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
 const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle']);
@@ -228,12 +236,17 @@ function captureScroll() {
     nav: q('.ws-settings-sidebar')?.scrollTop || 0,
     panels: q('.ws-settings-panels')?.scrollTop || 0,
     tab: q('.ws-settings-nav [aria-current=page]')?.dataset.tab,
+    board: q('.ws-task-board')?.scrollLeft || 0,
+    drawer: q('.ws-task-drawer-body')?.scrollTop || 0,
+    drawerId: state.tasks.drawer,
   };
 }
 
 function restoreScroll(saved) {
   const q = sel => root.querySelector(sel);
   if (q('.ws-main')) q('.ws-main').scrollTop = saved.main;
+  if (q('.ws-task-board')) q('.ws-task-board').scrollLeft = saved.board;
+  if (q('.ws-task-drawer-body') && saved.drawerId === state.tasks.drawer) q('.ws-task-drawer-body').scrollTop = saved.drawer;
   const grid = q('.ws-tg-scroll');
   if (grid) {
     const key = `${state.calendarMode}|${dayKey(state.calendarDate, undefined)}`;
@@ -283,6 +296,7 @@ async function render() {
     : state.route === 'calendar' ? calendar(s, ctx)
       : state.route === 'inbox' ? inbox(s, ctx)
         : state.route === 'automations' ? automations(s, ctx)
+          : state.route === 'tasks' ? tasksPage(s, ctx)
           : state.route === 'plugin' ? pluginPageHtml()
             : settings(s, ctx);
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
@@ -979,19 +993,51 @@ const automationsUi = store && createAutomationsController({
 });
 const runLogOpen = () => !!automationsUi?.runLogOpen();
 
+// ---------------------------------------------------------------- tasks (spec "Tasks page")
+
+const tasksUi = store && createTasksController({
+  state, snap, mutate, render, openModal, toast,
+  openMeeting: (id, tab, line) => openMeeting(id, tab, line),
+  openMessage: id => handle('open-message', { dataset: { id } }),
+  focus: selector => root.querySelector(selector)?.focus({ preventScroll: true }),
+  setPref: setLocalPref,
+});
+if (tasksUi) {
+  attachBoardDrag(document, tasksUi, {
+    dragging: on => {
+      taskDrag = on;
+      if (!on && heldRender && !modalOpen()) render().catch(fail);
+    },
+    fail,
+  });
+}
+
+/**
+ * Opens a meeting (`#/meetings/<id>/<tab>`, `line` for the transcript). Until the Meetings page
+ * is there (it takes `tab` and `line`), the meeting's calendar event opens instead, on its day.
+ */
+async function openMeeting(id, tab = 'notes', line = null) {
+  const ev = getRecord('event', id);
+  if (!ev) return toast('This meeting is no longer in your calendar.', 'error');
+  state.calendarDate = dateFromKey(dayKey(ev.data.start, snap().settings.timeZone));
+  await route('calendar');
+  return eventDialog(getRecord('event', id));
+}
+
 // ---------------------------------------------------------------- dialogs
 
+/** Add a task from an Inbox message: it lands in To do, with the message it came from. */
 function commitmentDialog(source) {
   openModal({
-    title: 'Add a commitment',
+    title: 'Add a task',
     subtitle: source ? `From ${source.data.from || 'a message'}` : '',
-    body: `${field('What will you do?', textArea(source ? `Reply to ${source.data.from || 'sender'}: ${messageTitle(source, snap())}` : '', { name: 'text', required: true, maxlength: 20000, rows: 3 }))}
-      <div class="ws-form-row">${field('Owner', textInput({ name: 'owner', value: 'You', required: true }))}${field('Due date', textInput({ name: 'due', type: 'date' }), 'Optional')}</div>
+    body: `${field('What needs doing?', textArea(source ? `Reply to ${source.data.from || 'sender'}: ${messageTitle(source, snap())}` : '', { name: 'text', required: true, maxlength: 2000, rows: 3 }))}
+      <div class="ws-form-row">${field('Owner', textInput({ name: 'owner', value: 'You', required: true, maxlength: 320 }))}${field('Due date', textInput({ name: 'due', type: 'date' }), 'Optional')}</div>
       ${source?.data.text ? `<blockquote class="ws-quote">${e(source.data.text.slice(0, 400))}</blockquote>` : ''}`,
-    submit: 'Add commitment',
+    submit: 'Add task',
     onSubmit: async f => {
-      await mutate('local_save', { kind: 'commitment', text: f.get('text'), owner: f.get('owner'), due: f.get('due'), sourceId: source?.id, sourceRevision: source?.revision, quote: source?.data.text });
-      toast('Commitment added.', 'success');
+      await mutate('task_save', { text: f.get('text'), owner: f.get('owner'), due: f.get('due') || null, status: 'todo', sourceId: source?.id || null, sourceRevision: source?.revision || null, quote: source?.data.text ? String(source.data.text).slice(0, 2000) : null });
+      toast('Task added to To do.', 'success', { label: 'Open', run: () => route('tasks') });
     },
   });
 }
@@ -1186,6 +1232,12 @@ async function handle(action, el) {
   // Data location works from the recovery page too, where there is no snapshot.
   if (action.startsWith('data-')) return storageAction(action, el);
   if (action.startsWith('automation') || action.startsWith('run-')) return automationsUi.handle(action, el);
+  // Today's task rows open the task on the Tasks page.
+  if (action === 'task-open-today') {
+    await route('tasks');
+    return tasksUi.openDrawer(el.dataset.id);
+  }
+  if (action.startsWith('task')) return tasksUi.handle(action, el);
   if (action.startsWith('plugin') || action.startsWith('market-')) return pluginAction(action, el);
   if (action.startsWith('cm-') && await codemie.handle(action, el)) return undefined;
   const id = el.dataset.id;
@@ -1435,11 +1487,11 @@ async function handle(action, el) {
       if (getRecord('commitment', id) || asksSaving.has(id)) return;
       asksSaving.add(id);
       try {
-        await mutate('local_save', askCommitment(key, ask));
+        await mutate('task_save', askCommitment(key, ask));
       } finally {
         asksSaving.delete(id);
       }
-      toast('Added to your commitments.', 'success');
+      toast('Added to your tasks, in To do.', 'success');
       return;
     }
     case 'ai-draft-keep': case 'ai-draft-replace': case 'ai-draft-restore': case 'ai-draft-forget': {
@@ -1496,10 +1548,8 @@ async function handle(action, el) {
     }
 
     // Commitments & notes
-    case 'commitment-toggle': {
-      const r = getRecord('commitment', id);
-      return mutate('local_save', { kind: 'commitment', id, text: r.data.text, done: el.checked, due: r.data.due, owner: r.data.owner, sourceId: r.data.sourceId, quote: r.data.quote });
-    }
+    // Today's checkbox: done, or back to To do.
+    case 'commitment-toggle': return mutate('task_save', { id, status: el.checked ? 'done' : 'todo' });
     case 'local-delete': return mutate('local_delete', { kind: el.dataset.kind, id });
 
     // Layout
@@ -1541,10 +1591,11 @@ async function submitForm(form) {
     case 'commitment-add': {
       const text = String(f.get('text') || '').trim();
       if (!text) return form.querySelector('[name=text]').focus();
-      await mutate('local_save', { kind: 'commitment', text, owner: 'You', due: f.get('due') || null });
+      await mutate('task_save', { text, owner: 'You', due: f.get('due') || null, status: 'todo' });
       root.querySelector('[data-form=commitment-add] [name=text]')?.focus();
       return;
     }
+    case 'task-quick': return tasksUi.quickAdd(form.dataset.col, Object.fromEntries(f));
     case 'plugin-addresses': return pluginsUi.submit(form);
     case 'time-zone': await mutate('settings_update', { timeZone: String(f.get('timeZone')).trim() }); return toast('Time zone saved.', 'success');
     case 'quiet-hours': await mutate('settings_update', { quietStart: f.get('quietStart'), quietEnd: f.get('quietEnd') }); return toast('Quiet hours saved.', 'success');
@@ -1599,10 +1650,16 @@ document.addEventListener('click', async ev => {
 
 document.addEventListener('change', async ev => {
   const el = ev.target;
+  // Where the control is, read now: a field that changes as its panel closes (the task drawer on
+  // Escape or Close) is gone from the page by the time the CodeMie check below answers.
+  const inApp = !!el.closest?.('#workspace-app');
   try {
     if (el.closest?.('#workspace-app,.ws-modal,#cm-sheet-host') && await codemie.change(el)) return;
     if (el.matches('[data-action]') && (el.type === 'checkbox' || el.tagName === 'SELECT') && el.closest('#workspace-app,.ws-modal')) {
       await handle(el.dataset.action, el);
+    } else if (el.dataset?.change && inApp) {
+      // Fields that save when they change (the task drawer's title, due date and notes).
+      await handle(el.dataset.change, el);
     }
   } catch (err) {
     fail(err);
@@ -1635,6 +1692,17 @@ document.addEventListener('input', ev => {
       state.selectedMessage = null;
       await render();
       const input = document.getElementById('inbox-search');
+      input?.focus();
+      input?.setSelectionRange(pos, pos);
+    }, 220);
+  }
+  if (ev.target.id === 'tasks-search') {
+    state.tasks.filters.q = ev.target.value;
+    clearTimeout(taskSearchTimer);
+    const pos = ev.target.selectionStart;
+    taskSearchTimer = setTimeout(async () => {
+      await render();
+      const input = document.getElementById('tasks-search');
       input?.focus();
       input?.setSelectionRange(pos, pos);
     }, 220);
@@ -1691,6 +1759,21 @@ document.addEventListener('mousedown', ev => {
 }, true);
 window.addEventListener('resize', placeDraftPopover);
 document.addEventListener('scroll', placeDraftPopover, true);
+
+// Tasks: Escape closes an open ⋯ menu, then quick add, then the drawer; Enter adds a quick task.
+document.addEventListener('keydown', ev => {
+  if (!ready || state.route !== 'tasks' || modalOpen() || sheetOpen() || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const menu = ev.key === 'Escape' && root.querySelector('details.ws-menu[open]');
+  if (menu) {
+    ev.preventDefault();
+    menu.removeAttribute('open');
+    menu.querySelector('summary')?.focus();
+    return;
+  }
+  // A drawer field being edited saves (on its change) before the drawer closes.
+  if (ev.key === 'Escape' && document.activeElement?.dataset?.change) document.activeElement.blur();
+  tasksUi.key(ev).catch(fail);
+});
 
 document.addEventListener('keydown', ev => {
   if (!ready || modalOpen() || sheetOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
@@ -1765,6 +1848,8 @@ async function openNotification(payload) {
     await route('calendar');
     return eventDialog(getRecord('event', payload.eventId));
   }
+  // Tasks due today.
+  if (payload.route === 'tasks') return route('tasks');
   // An automation's result or failure: its run, open in the Run log.
   const run = notificationTarget(payload);
   if (run) return automationsUi.openRun(run.expanded[0], run.filter);
@@ -2019,7 +2104,7 @@ async function boot() {
     // A draft that arrived for the open reply box is applied first, whatever is on screen.
     const arrived = applyArrivedDraft(result.snapshot);
     if (modalOpen()) return;
-    if (state.draftPopover) {
+    if (state.draftPopover || taskDrag) {
       heldRender = true;
       return;
     }
