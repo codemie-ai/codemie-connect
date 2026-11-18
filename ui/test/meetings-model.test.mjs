@@ -58,13 +58,14 @@ test('lanes: All hides no-transcript meetings unless showNone; To do counts avai
   const ids = (filter, q = '', showNone = false) => meetingRows(s, filter, q, showNone, NOW).map(m => m.id);
   assert.deepEqual(LANES.map(([id]) => id), ['all', 'process', 'ready', 'attention', 'upcoming']);
   const all = ids('all');
-  for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-release', 'mtg-vendor', 'mtg-sprint', 'mtg-northwind', 'mtg-critique', 'ev-standup']) assert.ok(all.includes(id), `All shows ${id}`);
-  for (const id of ['mtg-planning', 'mtg-lunch', 'ev-next', 'ev-current']) assert.ok(!all.includes(id), `All hides ${id}`);
+  for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-release', 'mtg-vendor', 'mtg-northwind', 'mtg-critique']) assert.ok(all.includes(id), `All shows ${id}`);
+  // Still waiting for Teams (mtg-sprint) or done waiting (ev-standup, ended over two hours ago): no transcript.
+  for (const id of ['mtg-planning', 'mtg-lunch', 'mtg-sprint', 'ev-standup', 'ev-next', 'ev-current']) assert.ok(!all.includes(id), `All hides ${id}`);
   // Newest first.
   const starts = meetingRows(s, 'all', '', false, NOW).map(m => m.start);
   assert.deepEqual(starts, [...starts].sort((a, b) => b - a));
   const withNone = ids('all', '', true);
-  assert.ok(withNone.includes('mtg-planning') && withNone.includes('mtg-lunch'), 'showNone lists them');
+  for (const id of ['mtg-planning', 'mtg-lunch', 'mtg-sprint', 'ev-standup']) assert.ok(withNone.includes(id), `showNone lists ${id}`);
   assert.ok(!withNone.includes('ev-next'), 'upcoming ones stay in Upcoming');
   assert.deepEqual(ids('process').sort(), ['mtg-release', 'mtg-roadmap', 'mtg-vendor']);
   assert.deepEqual(ids('ready'), ['mtg-philips']);
@@ -73,7 +74,7 @@ test('lanes: All hides no-transcript meetings unless showNone; To do counts avai
   assert.ok(upcoming.includes('ev-next') && upcoming.includes('ev-current') && upcoming.includes('ev-week-1'), upcoming.join());
   assert.ok(upcoming.indexOf('ev-current') < upcoming.indexOf('ev-next'), 'upcoming soonest first');
   // Counts for the filters: To do and Needs you; none for the switch.
-  assert.deepEqual(meetingCounts(s, NOW), { process: 3, attention: 2, none: 2 });
+  assert.deepEqual(meetingCounts(s, NOW), { process: 3, attention: 2, none: 4 });
   // Search: titles and people.
   assert.deepEqual(ids('all', 'PHILIPS'), ['mtg-philips']);
   assert.deepEqual(ids('all', 'hannah'), ['mtg-northwind']);
@@ -156,7 +157,7 @@ test('an in-person meeting with an imported transcript is in All and To do, not 
   const ids = (filter, showNone = false) => meetingRows(s, filter, '', showNone, NOW).map(m => m.id);
   assert.ok(ids('all').includes('mtg-lunch'), 'All shows the imported in-person meeting');
   assert.ok(ids('process').includes('mtg-lunch'), 'To do shows it');
-  assert.deepEqual(meetingCounts(s, NOW), { process: 4, attention: 2, none: 1 });
+  assert.deepEqual(meetingCounts(s, NOW), { process: 4, attention: 2, none: 3 });
   // A meeting nobody transcribed stays out of All, behind the switch.
   assert.ok(!ids('all').includes('mtg-planning') && ids('all', true).includes('mtg-planning'));
 });

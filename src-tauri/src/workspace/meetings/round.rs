@@ -33,8 +33,11 @@ pub(super) const ROUND_LIMIT: usize = 25;
 /// `transcript_missing`, a save the person stopped, …) wait for the person.
 pub(super) const RETRYABLE: [&str; 4] = ["throttled", "offline", "provider", "needs_login"];
 
+/// How long after a meeting ended the round still tries a failed save of a found transcript.
+pub(super) const RETRY_FOR: i64 = 24 * 3600;
+
 /// An ended Teams meeting worth asking Teams about: not declined, cancelled or all-day, with a
-/// join link, ended at least 10 minutes and less than a day ago.
+/// join link, ended at least 10 minutes and less than two hours ago.
 pub(super) fn checkable(event: &Record, now: i64) -> bool {
     let d = &event.data;
     let declined = d["response"]
@@ -51,21 +54,21 @@ pub(super) fn checkable(event: &Record, now: i64) -> bool {
 }
 
 /// Whether the round may still try a failed save again: its last error is one that passes
-/// ([`RETRYABLE`]) and the meeting is within the check window (a day after it ended). After
+/// ([`RETRYABLE`]) and the meeting ended less than [`RETRY_FOR`] ago. After
 /// that only Try again / Download again run it.
 pub(super) fn retry_due(m: &MeetingRecord, now: i64) -> bool {
     let Some(e) = &m.save_error else {
         return true;
     };
     let end = graph::timestamp(&m.end);
-    RETRYABLE.contains(&e.code.as_str()) && end > 0 && now - end < transcripts::STOP_AFTER
+    RETRYABLE.contains(&e.code.as_str()) && end > 0 && now - end < RETRY_FOR
 }
 
 /// The background look at meetings, every 15 seconds: queues a check for every ended Teams
 /// meeting still waiting for its transcript (once per slot, at most 25 a round), queues a save
 /// for every transcript found but not saved (a failed one again only while [`retry_due`], and
 /// not while notes for it are saving it), queues automatic notes for saved transcripts that ask
-/// for them (see `notes_job::auto_due`), and gives up on meetings that waited a day. Finished
+/// for them (see `notes_job::auto_due`), and gives up on meetings that waited two hours. Finished
 /// check and save jobs older than two days are deleted first.
 pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
     if !workspace_id_active(PERSONAL) {

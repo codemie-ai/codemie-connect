@@ -147,11 +147,15 @@ let taskSearchTimer;
 let meetingSearchTimer;
 // A card is being dragged on the Tasks board: updates wait until it is dropped.
 let taskDrag = false;
+// The mouse button is down: an update redrawn between a click's mousedown and mouseup would
+// replace the control under the pointer and lose the click, so it waits for the mouseup.
+let pressing = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
 const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle']);
 let lastDraftSignature = '';
-// Updates that arrived while the draft options popover was open; shown once it closes.
+// Updates that arrived while held (the draft options popover open, a card dragged, the mouse
+// button down); shown once that ends.
 let heldRender = false;
 
 function localPref(key, fallback) {
@@ -1948,8 +1952,18 @@ document.addEventListener('keydown', ev => {
 }, true);
 
 document.addEventListener('mousedown', ev => {
+  if (ev.button === 0) pressing = true;
   if (state.draftPopover && !ev.target.closest('#draft-options, [data-action="ai-draft-options"]')) closeDraftPopover(false);
 }, true);
+// The click lands first; the updates held while the button was down render after it.
+const released = () => {
+  if (!pressing) return;
+  pressing = false;
+  setTimeout(() => { if (heldRender && !taskDrag) flushHeldRender(); }, 0);
+};
+document.addEventListener('mouseup', released, true);
+window.addEventListener('blur', released);
+document.addEventListener('dragstart', released, true);
 window.addEventListener('resize', placeDraftPopover);
 document.addEventListener('scroll', placeDraftPopover, true);
 
@@ -2355,7 +2369,7 @@ async function boot() {
     const arrived = applyArrivedDraft(result.snapshot);
     refreshEventDialog();
     if (modalOpen()) return;
-    if (state.draftPopover || taskDrag) {
+    if (state.draftPopover || taskDrag || pressing) {
       heldRender = true;
       return;
     }

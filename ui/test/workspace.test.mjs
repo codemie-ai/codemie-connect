@@ -724,7 +724,7 @@ test('meetings list: rows show time, title, coloured status; spinner only while 
   assert.match(html, /data-action="meeting-filter" data-filter="all" aria-selected="true">All</);
   assert.match(html, /data-filter="process"[^>]*>To do<span class="ws-segmented-count">3<\/span>/);
   assert.match(html, /data-filter="attention"[^>]*>Needs you<span class="ws-segmented-count ws-mtg-count-alert">2<\/span>/);
-  assert.match(html, /Show meetings without a transcript \(2\)/);
+  assert.match(html, /Show meetings without a transcript \(4\)/);
   // A row: time, title, status in its colour and what goes with it; selected; no icon at all.
   const philips = rowOf(html, 'mtg-philips');
   assert.match(philips, /class="ws-mtg-row ws-mtg-on" role="option" aria-selected="true"/);
@@ -733,11 +733,16 @@ test('meetings list: rows show time, title, coloured status; spinner only while 
   assert.match(philips, /<em class="ws-tone-success">Notes ready<\/em><i>·<\/i>2 documents<i>·<\/i><span class="ws-mtg-accent">2 to review<\/span>/);
   for (const [id, tone, label] of [
     ['mtg-roadmap', 'purple', 'No notes yet'], ['mtg-release', 'info', 'Saving the transcript'], ['mtg-vendor', 'error', 'Couldn’t get the transcript'],
-    ['mtg-sprint', 'info', 'Waiting for Teams'], ['mtg-northwind', 'warning', 'Teams blocked access'], ['mtg-critique', 'error', 'Notes failed'],
+    ['mtg-northwind', 'warning', 'Teams blocked access'], ['mtg-critique', 'error', 'Notes failed'],
   ]) assert.match(rowOf(html, id), new RegExp(`<em class="ws-tone-${tone}">${label}</em>`), id);
+  // Waiting for Teams is no transcript yet: only behind the switch.
+  assert.equal(rowOf(html, 'mtg-sprint'), '', 'a meeting waiting for Teams stays out of All');
+  const withNone = meetings(s, meetingsCtx({ selected: 'mtg-philips', showNone: true }));
+  assert.match(rowOf(withNone, 'mtg-sprint'), /<em class="ws-tone-info">Waiting for Teams<\/em>/);
+  assert.match(withNone, /role="switch" checked data-action="meeting-show-none"/);
   assert.match(rowOf(html, 'mtg-roadmap'), /<strong>Roadmap &lt;b&gt;review&lt;\/b&gt;<\/strong>/, 'titles are escaped');
   assert.match(rowOf(html, 'mtg-roadmap'), /<i>·<\/i>Meeting notes/, 'the template it would use');
-  for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-sprint', 'mtg-critique']) assert.doesNotMatch(rowOf(html, id), /<svg/, `${id} has no status icon`);
+  for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-critique']) assert.doesNotMatch(rowOf(html, id), /<svg/, `${id} has no status icon`);
   assert.doesNotMatch(html, /ws-mtg-row-spin/, 'nothing runs: no spinner');
   // Grouped by day, newest first.
   assert.match(html, /<div class="ws-mtg-day">Today<span>[^<]+<\/span><\/div>/);
@@ -932,7 +937,7 @@ test('notes asked for during a failed save are promised after the transcript; wi
 test('stored available and pending meetings show as waiting, with why, while transcripts are off', () => {
   const s = meetingsSnapshot();
   s.connection.enabled = s.connection.enabled.filter(c => c !== 'transcripts');
-  const html = meetings(s, meetingsCtx({ selected: 'mtg-release' }));
+  const html = meetings(s, meetingsCtx({ selected: 'mtg-release', showNone: true }));
   for (const id of ['mtg-release', 'mtg-sprint']) assert.match(rowOf(html, id), /<em class="ws-tone-warning">Waiting: transcripts are off<\/em>/, id);
   const strip = stripOf(detailOf(html));
   assert.doesNotMatch(strip, /ws-spin|saving it from Teams/);
@@ -952,7 +957,7 @@ test('a meeting waiting for Teams offers "Make notes as soon as it arrives", whi
   assert.match(calls.toasts.at(-1).message, /as soon as Teams has the transcript/);
   // Once on, the switch is on and the row says so.
   s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-sprint').data.auto = true;
-  const after = meetings(s, meetingsCtx({ selected: 'mtg-sprint' }));
+  const after = meetings(s, meetingsCtx({ selected: 'mtg-sprint', showNone: true }));
   assert.match(after, /role="switch" checked data-action="meeting-auto" data-id="mtg-sprint"/);
   assert.match(rowOf(after, 'mtg-sprint'), /notes when it arrives/);
 });

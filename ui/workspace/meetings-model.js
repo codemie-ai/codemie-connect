@@ -73,8 +73,8 @@ const hasLink = d => typeof d?.joinUrl === 'string' && d.joinUrl.trim() !== '';
 /** A Teams (online) meeting: Graph says so, or it has a join link. */
 export const isOnline = d => hasLink(d) || d?.isOnlineMeeting === true;
 
-/** Native stops waiting for a transcript a day after the meeting ended. */
-export const STOP_AFTER_MS = 24 * 3_600_000;
+/** Native stops waiting for a transcript two hours after the meeting ended (transcripts.rs `STOP_AFTER`). */
+export const STOP_AFTER_MS = 2 * 3_600_000;
 
 /**
  * Where a meeting's transcript stands. A record says (`event`, `record`: records or their data);
@@ -234,7 +234,8 @@ export function meetingItems(s, now = Date.now()) {
 
 const IN_LANE = {
   // By state, not by `online`: an in-person meeting whose transcript was imported has one too.
-  all: (m, showNone) => m.ended && (showNone || !['none', 'offline', 'upcoming'].includes(m.state)),
+  // A meeting still waiting for Teams has no transcript yet: it shows with the switch, as `none`.
+  all: (m, showNone) => m.ended && (showNone || !['none', 'offline', 'upcoming', 'pending'].includes(m.state)),
   process: m => (m.state === 'available' || m.state === 'downloaded') && !m.paused,
   ready: m => m.state === 'ready',
   attention: m => m.state === 'failed' || m.state === 'blocked' || !!m.paused,

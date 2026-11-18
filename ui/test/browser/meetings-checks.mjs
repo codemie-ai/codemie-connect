@@ -219,6 +219,22 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         assert(/Jordan Lee/.test(await page.locator('.ws-mtg-lines').innerText()), 'the line has its name');
       });
 
+      await check(`${tag}: the switch shows meetings without a transcript, and hides them again`, async () => {
+        await page.click('[data-action="meeting-filter"][data-filter="all"]');
+        await settled(page);
+        assert(await page.locator(row('mtg-sprint')).count() === 0, 'a meeting waiting for Teams is out of All');
+        const label = () => page.locator('.ws-mtg-list-foot .ws-switch-label').innerText();
+        assert(/Show meetings without a transcript \(\d+\)/.test(await label()), await label());
+        await page.click('.ws-mtg-list-foot .ws-switch');
+        await page.waitForSelector(row('mtg-sprint'));
+        assert(await page.locator('.ws-mtg-list-foot input[data-action="meeting-show-none"]').isChecked(), 'the switch is on');
+        await page.click('.ws-mtg-list-foot .ws-switch');
+        await page.waitForSelector(row('mtg-sprint'), { state: 'detached' });
+        assert(!(await page.locator('.ws-mtg-list-foot input[data-action="meeting-show-none"]').isChecked()), 'the switch is off');
+        await page.click('.ws-mtg-list-foot .ws-switch');
+        await page.waitForSelector(row('mtg-sprint'));
+      });
+
       await check(`${tag}: waiting meeting → Make notes as soon as it arrives → Check now → saved and notes made`, async () => {
         await select(page, 'mtg-sprint');
         await page.click('[data-action="meeting-tab"][data-tab="notes"]');

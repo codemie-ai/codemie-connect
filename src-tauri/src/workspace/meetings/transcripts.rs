@@ -10,7 +10,8 @@ const MARGIN: i64 = 30 * 60;
 /// How long after its start an occurrence without an end still claims transcripts.
 const NO_END: i64 = 3 * 3600;
 /// Checks stop this long after the meeting ended; a meeting still without a transcript is `none`.
-pub const STOP_AFTER: i64 = 24 * 3600;
+/// Teams posts a transcript within minutes of the end, so a later one is not coming.
+pub const STOP_AFTER: i64 = 2 * 3600;
 
 /// Percent-encodes all but the unreserved characters (RFC 3986): a space is `%20`, never `+`.
 fn encode(s: &str) -> String {
@@ -101,7 +102,7 @@ pub fn pick_transcripts(list: &Value, start: i64, end: Option<i64>) -> Vec<Trans
 
 /// The state a check leaves a meeting in: `available` when Teams has transcripts; `blocked`
 /// (with Microsoft's reason) when it refused them (403, or no meeting for this account);
-/// otherwise still `pending` until a day after the meeting ended, then `none`. A read that did
+/// otherwise still `pending` until two hours after the meeting ended, then `none`. A read that did
 /// not get through (offline, throttled, a token Graph refused with 401) keeps its reason, and
 /// the next slot checks again.
 pub fn state_after_check(
@@ -249,8 +250,12 @@ mod tests {
             (MeetingState::Available, None)
         );
         assert_eq!(
-            state_after_check(Ok(vec![]), ended, ended + 2 * 3600),
+            state_after_check(Ok(vec![]), ended, ended + 3600),
             (MeetingState::Pending, None)
+        );
+        assert_eq!(
+            state_after_check(Ok(vec![]), ended, ended + 2 * 3600),
+            (MeetingState::None, None)
         );
         assert_eq!(
             state_after_check(Ok(vec![]), ended, ended + 25 * 3600),
