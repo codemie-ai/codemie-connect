@@ -689,7 +689,15 @@ impl Core {
     }
     pub async fn request(self: &Arc<Self>, req: Request) -> Result<Value> {
         if req.op == Operation::Snapshot {
-            let snapshot = self.repo()?.snapshot()?;
+            let mut snapshot = self.repo()?.snapshot()?;
+            // A setting, not account data: shown whatever the account may read.
+            snapshot.meetings_root =
+                self.meetings_root(&snapshot.settings.meetings)
+                    .ok()
+                    .map(|(path, is_default)| meetings::model::MeetingsRoot {
+                        path: path.to_string_lossy().into_owned(),
+                        is_default,
+                    });
             return Ok(
                 json!({"snapshot":snapshot,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
             );

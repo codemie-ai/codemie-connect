@@ -1122,6 +1122,198 @@ async fn failed_save_retries_in_the_next_slot() {
 }
 
 #[tokio::test]
+async fn save_of_a_deleted_transcript_is_not_retried() {
+    let e = env();
+    let record = ended("m1", 15, json!({}));
+    let created = rfc(graph::timestamp(record.data["start"].as_str().unwrap()) + 60);
+    put(&e.core, record);
+    teams(&e.graph, &created, VTT);
+    // Teams deleted the transcript between the check and the save: reading it is a 404.
+    let gone = || graph::graph_text_response(404, "60", b"").unwrap_err();
+    e.graph.fail(&content_url(ONLINE, "t1"), gone());
+    let at = now();
+    meetings_round_at(&e.core, at).unwrap();
+    let ran = run_jobs(&e.core).await;
+    let save = ran
+        .iter()
+        .find(|j| j.kind == "transcript_download")
+        .unwrap();
+    assert_eq!(save.state, "failed");
+    assert_eq!(save.error_code.as_deref(), Some("transcript_missing"));
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Available, "Try again stays on offer");
+    let error = m.last_error.unwrap();
+    assert_eq!(error.code, "transcript_missing");
+    assert!(
+        error
+            .message
+            .contains("Teams no longer has this transcript"),
+        "{}",
+        error.message
+    );
+    // Never again by itself, in any later slot.
+    for later in [600, 1200, 3600] {
+        meetings_round_at(&e.core, at + later).unwrap();
+    }
+    assert_eq!(jobs(&e.core, "transcript_download").len(), 1);
+    // The list read is a 404 too, or no longer lists it: the same answer.
+    e.graph.fail(&list_url(ONLINE), gone());
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(
+        meeting(&e.core, "m1").last_error.unwrap().code,
+        "transcript_missing"
+    );
+    e.graph.answer(&list_url(ONLINE), json!({"value": []}));
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    let ran = run_jobs(&e.core).await;
+    assert_eq!(ran[0].error_code.as_deref(), Some("transcript_missing"));
+    meetings_round_at(&e.core, at + 4200).unwrap();
+    assert_eq!(jobs(&e.core, "transcript_download").len(), 3);
+    // Teams has it again: Try again saves it.
+    e.graph.answer(
+        &list_url(ONLINE),
+        json!({"value": [{"id": "t1", "createdDateTime": created}]}),
+    );
+    e.graph.answer_text(&content_url(ONLINE, "t1"), VTT);
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    run_jobs(&e.core).await;
+    let m = meeting(&e.core, "m1");
+    assert_eq!(m.state, MeetingState::Downloaded);
+    assert!(m.last_error.is_none());
+}
+
+#[tokio::test]
+async fn automatic_retries_stop_after_the_check_window() {
+    let e = env();
+    let record = ended("m1", 15, json!({}));
+    let end = graph::timestamp(record.data["end"].as_str().unwrap());
+    let created = rfc(end - 1800 + 60);
+    put(&e.core, record);
+    teams(&e.graph, &created, VTT);
+    e.graph.fail(
+        &content_url(ONLINE, "t1"),
+        WorkspaceError::new(
+            "throttled",
+            "Microsoft returned 429. Retry after at least 60 seconds.",
+        ),
+    );
+    let at = now();
+    meetings_round_at(&e.core, at).unwrap();
+    run_jobs(&e.core).await;
+    // Within the day after the meeting, every slot tries again.
+    meetings_round_at(&e.core, at + 600).unwrap();
+    assert_eq!(jobs(&e.core, "transcript_download").len(), 2);
+    run_jobs_ahead(&e.core, 600).await;
+    assert_eq!(meeting(&e.core, "m1").last_error.unwrap().code, "throttled");
+    // Once the check window is over, it waits for the person.
+    for late in [end + 24 * 3600, end + 25 * 3600, end + 3 * 24 * 3600] {
+        meetings_round_at(&e.core, late).unwrap();
+    }
+    assert_eq!(jobs(&e.core, "transcript_download").len(), 2);
+    // Try again still runs it.
+    e.graph.answer_text(&content_url(ONLINE, "t1"), VTT);
+    op(
+        &e.core,
+        Operation::MeetingDownload,
+        json!({"meetingId": "m1"}),
+    )
+    .await
+    .unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(meeting(&e.core, "m1").state, MeetingState::Downloaded);
+    // Found days later by Check now: its failed save is not retried by the round either.
+    put(
+        &e.core,
+        event(
+            "m2",
+            SYNC,
+            START,
+            END,
+            json!({"joinUrl": "https://teams.microsoft.com/l/m2"}),
+        ),
+    );
+    e.graph.answer(
+        &lookup_url("https://teams.microsoft.com/l/m2"),
+        json!({"value": [{"id": "ONLINE2"}]}),
+    );
+    e.graph.answer(
+        &list_url("ONLINE2"),
+        json!({"value": [{"id": "t2", "createdDateTime": CREATED}]}),
+    );
+    e.graph.fail(
+        &content_url("ONLINE2", "t2"),
+        WorkspaceError::new("offline", "Microsoft read timed out."),
+    );
+    op(&e.core, Operation::MeetingCheck, json!({"meetingId": "m2"}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(meeting(&e.core, "m2").last_error.unwrap().code, "offline");
+    let before = jobs(&e.core, "transcript_download").len();
+    meetings_round_at(&e.core, now() + 600).unwrap();
+    assert_eq!(jobs(&e.core, "transcript_download").len(), before);
+}
+
+#[tokio::test]
+async fn snapshot_carries_the_meetings_root() {
+    let e = env();
+    let root = |core: &Arc<Core>| {
+        let core = core.clone();
+        async move {
+            core.request(read(Operation::Snapshot, json!({})))
+                .await
+                .unwrap()["snapshot"]["meetingsRoot"]
+                .clone()
+        }
+    };
+    let default = json!({"path": default_root(&e.core).to_string_lossy(), "isDefault": true});
+    assert_eq!(root(&e.core).await, default);
+    // It is a setting, not account data: shown with calendar and transcripts off too.
+    connect(&e.core, &["mail"]);
+    assert_eq!(root(&e.core).await, default);
+    let chosen = e.core.paths.data.join("Chosen");
+    std::fs::create_dir(&chosen).unwrap();
+    op(
+        &e.core,
+        Operation::SettingsUpdate,
+        json!({"meetings": {"root": chosen.to_string_lossy()}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        root(&e.core).await,
+        json!({"path": chosen.to_string_lossy(), "isDefault": false})
+    );
+    op(
+        &e.core,
+        Operation::SettingsUpdate,
+        json!({"meetings": {"root": ""}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(root(&e.core).await, default);
+}
+
+#[tokio::test]
 async fn meeting_records_follow_the_calendar_capability_and_disconnect() {
     let e = env();
     put(&e.core, event("m1", SYNC, START, END, json!({})));

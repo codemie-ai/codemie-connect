@@ -109,6 +109,15 @@ pub struct Doc {
     pub updated_at: i64,
 }
 
+/// The meetings folder as the snapshot carries it (`meetingsRoot`): `settings.meetings.root`
+/// resolved, the default one when that is empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingsRoot {
+    pub path: String,
+    pub is_default: bool,
+}
+
 /// The local record kind of a meeting; its id is the event record's id.
 pub const KIND: &str = "meeting";
 

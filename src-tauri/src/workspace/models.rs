@@ -309,6 +309,9 @@ pub struct Snapshot {
     pub records: Vec<Record>,
     pub jobs: Vec<Job>,
     pub available: bool,
+    /// The resolved meetings folder (Settings › Meetings). Filled by `Core` for the window's
+    /// snapshot; `None` elsewhere, and when Connect can't find the home folder.
+    pub meetings_root: Option<super::meetings::model::MeetingsRoot>,
 }
 
 pub fn required<'a>(data: &'a Value, key: &str, max: usize) -> Result<&'a str> {

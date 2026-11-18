@@ -1115,6 +1115,8 @@ fn graph_error(status: u16, retry: &str, bytes: &[u8]) -> WorkspaceError {
     let code = match status {
         401 => "needs_login",
         403 => "permission_required",
+        // Gone: a deleted transcript, a removed calendar.
+        404 => "not_found",
         410 => "resync",
         429 => "throttled",
         _ => "provider",
@@ -1955,7 +1957,8 @@ mod tests {
         for (status, code) in [
             (403, "permission_required"),
             (410, "resync"),
-            (404, "provider"),
+            (404, "not_found"),
+            (500, "provider"),
         ] {
             assert_eq!(
                 graph_text_response(status, "60", b"").unwrap_err().code,

@@ -402,6 +402,7 @@ impl Repository {
             records,
             jobs,
             available,
+            meetings_root: None,
         })
     }
     /// The account workspace `w` shows: the active connection while it is connected and `w` is

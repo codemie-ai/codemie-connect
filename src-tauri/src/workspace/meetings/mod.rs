@@ -39,8 +39,9 @@ const ROUND_LIMIT: usize = 25;
 const IMPORT_MAX: usize = 5 * 1024 * 1024;
 /// `meeting_read` returns files up to this size.
 const READ_MAX: u64 = 8 * 1024 * 1024;
-/// A save that failed with one of these is tried again by the round in its next slot; the rest
-/// (`folder_unwritable`, `needs_login`, …) wait for the person.
+/// A save that failed with one of these is tried again by the round in its next slot, within
+/// the check window; the rest (`folder_unwritable`, `needs_login`, `transcript_missing`, …) wait
+/// for the person.
 const RETRYABLE: [&str; 3] = ["throttled", "offline", "provider"];
 
 /// One writer of meeting records and transcript files at a time (the round, the jobs and the
@@ -89,6 +90,22 @@ fn transcript_missing() -> WorkspaceError {
         "transcript_missing",
         "Teams has no transcript of this meeting for Connect to save. Check again later.",
     )
+}
+/// A save found the transcript gone from Teams (a 404, or no longer listed). Not retried by
+/// itself; Try again stays on offer.
+fn transcript_gone() -> WorkspaceError {
+    WorkspaceError::new(
+        "transcript_missing",
+        "Teams no longer has this transcript. It may have been deleted; try again later or import a file.",
+    )
+}
+/// A read during a save that Teams answered with a 404 means the transcript is gone.
+fn gone_if_not_found(e: WorkspaceError) -> WorkspaceError {
+    if e.code == "not_found" {
+        transcript_gone()
+    } else {
+        e
+    }
 }
 fn transcripts_off() -> WorkspaceError {
     WorkspaceError::new(
@@ -955,16 +972,21 @@ async fn fetch_and_write(core: &Core, c: &Connection, id: &str) -> Result<Meetin
         .ok_or_else(transcript_missing)?;
     let start = graph::timestamp(&m.start);
     let end = Some(graph::timestamp(&m.end)).filter(|e| *e > 0);
-    let list = core.graph_reads.get(core, c, &list_url(&external)).await?;
+    let list = core
+        .graph_reads
+        .get(core, c, &list_url(&external))
+        .await
+        .map_err(gone_if_not_found)?;
     let refs = pick_transcripts(&list, start, end);
-    let first = refs.first().ok_or_else(transcript_missing)?.created;
+    let first = refs.first().ok_or_else(transcript_gone)?.created;
     let mut cues = Vec::new();
     let mut originals = Vec::new();
     for t in &refs {
         let text = core
             .graph_reads
             .get_text(core, c, &content_url(&external, &t.id))
-            .await?;
+            .await
+            .map_err(gone_if_not_found)?;
         let offset = (t.created - first) as f64;
         cues.extend(vtt::parse_vtt(&text).into_iter().map(|mut cue| {
             cue.start += offset;
@@ -1008,10 +1030,21 @@ async fn fetch_and_write(core: &Core, c: &Connection, id: &str) -> Result<Meetin
     Ok(m)
 }
 
+/// Whether the round may still try a failed save again: its last error is one that passes
+/// (`throttled`, `offline`, `provider`) and the meeting is within the check window (a day
+/// after it ended). After that only Try again / Download again run it.
+fn retry_due(m: &MeetingRecord, now: i64) -> bool {
+    let Some(e) = &m.last_error else {
+        return true;
+    };
+    let end = graph::timestamp(&m.end);
+    RETRYABLE.contains(&e.code.as_str()) && end > 0 && now - end < transcripts::STOP_AFTER
+}
+
 /// The background look at meetings, every 15 seconds: queues a check for every ended Teams
 /// meeting still waiting for its transcript (once per slot, at most 25 a round), queues a save
-/// for every transcript found but not saved (unless its last save failed in a way only the
-/// person can fix), and gives up on meetings that waited a day.
+/// for every transcript found but not saved (a failed one again only while [`retry_due`]), and
+/// gives up on meetings that waited a day.
 pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
     if !workspace_id_active(PERSONAL) {
         return Ok(());
@@ -1090,9 +1123,7 @@ pub(crate) fn meetings_round_at(core: &Core, now: i64) -> Result<()> {
         .iter()
         .filter(|(id, (_, m))| {
             m.state == MeetingState::Available
-                && m.last_error
-                    .as_ref()
-                    .is_none_or(|e| RETRYABLE.contains(&e.code.as_str()))
+                && retry_due(m, now)
                 && !busy("transcript_download", id)
         })
         .map(|(id, (_, m))| (id, m))
