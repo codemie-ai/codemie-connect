@@ -92,3 +92,5 @@ assets/windows/bin/runtime-key
 /.playwright-cli/
 /.playwright-mcp/
 /output/
+prototypes/
+.idea
