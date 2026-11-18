@@ -44,6 +44,9 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ("calendar_write", "Calendars.ReadWrite"),
     ("mail_send", "Mail.Send"),
     ("chat_send", "ChatMessage.Send"),
+    // Find a Teams meeting by its join link, then list and read its transcripts (opt-in).
+    ("meetings", "OnlineMeetings.Read"),
+    ("transcripts", "OnlineMeetingTranscript.Read.All"),
 ];
 
 #[derive(Default)]
@@ -110,8 +113,33 @@ pub fn permitted(c: &Connection, cap: &str) -> bool {
                     || cap == "calendar" && s.eq_ignore_ascii_case("Calendars.ReadWrite")
                     || cap == "mail" && s.eq_ignore_ascii_case("Mail.ReadWrite")
                     || cap == "chats" && s.eq_ignore_ascii_case("Chat.ReadWrite")
+                    || cap == "meetings" && s.eq_ignore_ascii_case("OnlineMeetings.ReadWrite")
             })
         })
+}
+/// Teams transcripts can be read: both the meeting lookup and the transcript reads are allowed.
+pub fn transcripts_permitted(c: &Connection) -> bool {
+    permitted(c, "meetings") && permitted(c, "transcripts")
+}
+/// What a background read is refreshing, for the job's progress line.
+fn read_label(path: &str) -> &'static str {
+    if path.contains("/mailFolders/inbox/") {
+        "Outlook Inbox"
+    } else if path.contains("/mailFolders/sentitems/") {
+        "Outlook Sent"
+    } else if path.contains("calendarView") {
+        "Calendar events"
+    } else if path.ends_with("/calendars") {
+        "Calendar list"
+    } else if path.contains("/onlineMeetings") {
+        "Teams transcripts"
+    } else if path.ends_with("/messages") {
+        "Teams conversations"
+    } else if path.ends_with("/chats") {
+        "Teams chat list"
+    } else {
+        "Microsoft sources"
+    }
 }
 pub fn validate_graph_url(input: &str) -> Result<Url> {
     let u = Url::parse(input)
@@ -435,33 +463,7 @@ impl Core {
     pub async fn graph_get_prefer(&self, c: &Connection, url: &str, prefer: &str) -> Result<Value> {
         self.check_backoff(c)?;
         let url = validate_graph_url(url)?;
-        if let Some((jid, attempt)) = &c.job_fence {
-            let path = url.path();
-            let label = if path.contains("/mailFolders/inbox/") {
-                "Outlook Inbox"
-            } else if path.contains("/mailFolders/sentitems/") {
-                "Outlook Sent"
-            } else if path.contains("calendarView") {
-                "Calendar events"
-            } else if path.ends_with("/calendars") {
-                "Calendar list"
-            } else if path.ends_with("/messages") {
-                "Teams conversations"
-            } else if path.ends_with("/chats") {
-                "Teams chat list"
-            } else {
-                "Microsoft sources"
-            };
-            {
-                let mut r = self.repo()?;
-                r.check_claim(jid, *attempt)?;
-                if let Some(mut job) = r.jobs()?.into_iter().find(|j| j.id == *jid) {
-                    job.result = Some(format!("Refreshing {label}…"));
-                    r.save_job(&job)?;
-                }
-            }
-            self.emit("workspace:changed");
-        }
+        self.note_read(c, &url)?;
         let token = self.access(c).await?;
         check_connection(&self.repo()?.connection(&c.id)?, c)?;
         #[cfg(target_os = "macos")]
@@ -478,6 +480,45 @@ impl Core {
         .await;
         self.remember_backoff(c, &result)?;
         result
+    }
+    /// A read whose answer is text, not JSON (a transcript's WebVTT content). Fenced, throttled
+    /// and labelled like [`Core::graph_get`].
+    pub async fn graph_get_text(&self, c: &Connection, url: &str) -> Result<String> {
+        self.check_backoff(c)?;
+        let url = validate_graph_url(url)?;
+        self.note_read(c, &url)?;
+        let token = self.access(c).await?;
+        check_connection(&self.repo()?.connection(&c.id)?, c)?;
+        #[cfg(target_os = "macos")]
+        let result = super::curl::get_text(self, c, url.as_str(), &token, PREFER).await;
+        #[cfg(not(target_os = "macos"))]
+        let result = read_text(
+            client()?
+                .get(url)
+                .bearer_auth(token)
+                .header("Prefer", PREFER)
+                .send()
+                .await,
+        )
+        .await;
+        self.remember_backoff(c, &result)?;
+        result
+    }
+    /// Says on a job's row what its read refreshes, while its claim still holds.
+    fn note_read(&self, c: &Connection, url: &Url) -> Result<()> {
+        if let Some((jid, attempt)) = &c.job_fence {
+            let label = read_label(url.path());
+            {
+                let mut r = self.repo()?;
+                r.check_claim(jid, *attempt)?;
+                if let Some(mut job) = r.jobs()?.into_iter().find(|j| j.id == *jid) {
+                    job.result = Some(format!("Refreshing {label}…"));
+                    r.save_job(&job)?;
+                }
+            }
+            self.emit("workspace:changed");
+        }
+        Ok(())
     }
     pub async fn graph_post(
         &self,
@@ -521,7 +562,7 @@ impl Core {
         }
         Ok(())
     }
-    fn remember_backoff(&self, c: &Connection, result: &Result<Value>) -> Result<()> {
+    fn remember_backoff<T>(&self, c: &Connection, result: &Result<T>) -> Result<()> {
         if let Err(error) = result {
             if let Some(seconds) = error.retry_after {
                 let mut r = self.repo()?;
@@ -1043,17 +1084,47 @@ async fn token_request(tenant: &str, form: &[(&str, &str)]) -> Result<Token> {
         )
     })
 }
-pub(super) fn graph_response(status: u16, retry: &str, bytes: &[u8]) -> Result<Value> {
-    if !(200..300).contains(&status) {
-        let code = match status {
-            401 => "needs_login",
-            403 => "permission_required",
-            410 => "resync",
-            429 => "throttled",
-            _ => "provider",
-        };
-        let mut error = WorkspaceError::new(
-            code,
+/// The most of Microsoft's own error text kept in a message.
+const GRAPH_REASON_MAX: usize = 500;
+/// Microsoft's `{"error":{"code","message"}}` as `"<code>: <message>"`, on one line and short.
+fn graph_reason(bytes: &[u8]) -> Option<String> {
+    let body: Value = serde_json::from_slice(bytes).ok()?;
+    let part = |key: &str| {
+        body["error"][key]
+            .as_str()
+            .map(|s| {
+                s.chars()
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|s| !s.is_empty())
+    };
+    let reason = match (part("code"), part("message")) {
+        (Some(code), Some(message)) => format!("{code}: {message}"),
+        (Some(one), None) | (None, Some(one)) => one,
+        (None, None) => return None,
+    };
+    Some(reason.chars().take(GRAPH_REASON_MAX).collect())
+}
+/// The error for a status outside 2xx. A 401 or 403 says why in Microsoft's words (a tenant
+/// that turned transcripts off says so); other bodies are never shown.
+fn graph_error(status: u16, retry: &str, bytes: &[u8]) -> WorkspaceError {
+    let code = match status {
+        401 => "needs_login",
+        403 => "permission_required",
+        410 => "resync",
+        429 => "throttled",
+        _ => "provider",
+    };
+    let reason = matches!(status, 401 | 403)
+        .then(|| graph_reason(bytes))
+        .flatten();
+    let mut error = WorkspaceError::new(
+        code,
+        reason.unwrap_or_else(|| {
             format!(
                 "Microsoft returned {status}. {}",
                 if code == "throttled" {
@@ -1061,12 +1132,17 @@ pub(super) fn graph_response(status: u16, retry: &str, bytes: &[u8]) -> Result<V
                 } else {
                     "Check connection permissions and retry.".into()
                 }
-            ),
-        );
-        if code == "throttled" {
-            error.retry_after = Some(retry.parse::<i64>().unwrap_or(60).clamp(1, 3600));
-        }
-        return Err(error);
+            )
+        }),
+    );
+    if code == "throttled" {
+        error.retry_after = Some(retry.parse::<i64>().unwrap_or(60).clamp(1, 3600));
+    }
+    error
+}
+pub(super) fn graph_response(status: u16, retry: &str, bytes: &[u8]) -> Result<Value> {
+    if !(200..300).contains(&status) {
+        return Err(graph_error(status, retry, bytes));
     }
     if status == 202 || status == 204 {
         return Ok(json!({"accepted":true}));
@@ -1074,9 +1150,21 @@ pub(super) fn graph_response(status: u16, retry: &str, bytes: &[u8]) -> Result<V
     serde_json::from_slice(bytes)
         .map_err(|_| WorkspaceError::new("provider", "Microsoft returned invalid resource data."))
 }
-async fn read_json(
+/// [`graph_response`] for a read whose answer is text: the same status mapping; text that is
+/// not UTF-8 is a `provider` error.
+pub(super) fn graph_text_response(status: u16, retry: &str, bytes: &[u8]) -> Result<String> {
+    if !(200..300).contains(&status) {
+        return Err(graph_error(status, retry, bytes));
+    }
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| WorkspaceError::new("provider", "Microsoft returned text Connect can’t read."))
+}
+/// A 401 or 403 body is read (a little of it) for Microsoft's reason.
+const ERROR_BODY_MAX: usize = 64 * 1024;
+/// The status, `Retry-After` and body of a response; a body over the page limit is refused.
+async fn read_body(
     response: std::result::Result<reqwest::Response, reqwest::Error>,
-) -> Result<Value> {
+) -> Result<(u16, String, Vec<u8>)> {
     let mut response = response.map_err(|error| {
         WorkspaceError::new(
             if error.is_timeout() {
@@ -1088,24 +1176,28 @@ async fn read_json(
         )
     })?;
     let status = response.status().as_u16();
-    if !(200..300).contains(&status) || status == 202 || status == 204 {
-        return graph_response(
-            status,
-            response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("60"),
-            b"",
-        );
-    }
+    let retry = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("60")
+        .to_string();
+    let limit = match status {
+        200..=299 if status != 202 && status != 204 => 16 * 1024 * 1024,
+        401 | 403 => ERROR_BODY_MAX,
+        _ => return Ok((status, retry, Vec::new())),
+    };
     let mut bytes = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|_| WorkspaceError::new("offline", "Microsoft response was interrupted."))?
     {
-        if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
+        if bytes.len() + chunk.len() > limit {
+            if limit == ERROR_BODY_MAX {
+                // Only the reason was wanted; a huge error body has none worth showing.
+                return Ok((status, retry, Vec::new()));
+            }
             return Err(WorkspaceError::new(
                 "provider",
                 "Microsoft response exceeded the safe page limit.",
@@ -1113,7 +1205,20 @@ async fn read_json(
         }
         bytes.extend_from_slice(&chunk);
     }
-    graph_response(status, "60", &bytes)
+    Ok((status, retry, bytes))
+}
+async fn read_json(
+    response: std::result::Result<reqwest::Response, reqwest::Error>,
+) -> Result<Value> {
+    let (status, retry, bytes) = read_body(response).await?;
+    graph_response(status, &retry, &bytes)
+}
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+async fn read_text(
+    response: std::result::Result<reqwest::Response, reqwest::Error>,
+) -> Result<String> {
+    let (status, retry, bytes) = read_body(response).await?;
+    graph_text_response(status, &retry, &bytes)
 }
 
 pub fn timestamp(v: &str) -> i64 {
@@ -1199,7 +1304,7 @@ fn normalize_event(cid: &str, source: &str, v: Value) -> Record {
         source,
         "event",
         &v,
-        json!({"title":v["subject"],"start":if start.ends_with('Z'){start.to_string()}else{format!("{start}Z")},"end":if end.ends_with('Z'){end.to_string()}else{format!("{end}Z")},"originalTimeZone":v["originalStartTimeZone"],"allDay":v["isAllDay"],"cancelled":v["isCancelled"],"location":v["location"]["displayName"],"organizer":v["organizer"]["emailAddress"],"attendees":attendees,"attendeeCount":all_attendees.len(),"showAs":v["showAs"],"response":v["responseStatus"]["response"],"isOnlineMeeting":v["isOnlineMeeting"]==true,"onlineProvider":v["onlineMeetingProvider"],"categories":v["categories"].as_array().cloned().unwrap_or_default(),"importance":v["importance"],"isOrganizer":v["isOrganizer"]==true,"private":v["sensitivity"]=="private","url":v["webLink"],"joinUrl":v["onlineMeeting"]["joinUrl"],"preview":v["bodyPreview"],"calendarId":source.trim_start_matches("calendar:")}),
+        json!({"title":v["subject"],"start":if start.ends_with('Z'){start.to_string()}else{format!("{start}Z")},"end":if end.ends_with('Z'){end.to_string()}else{format!("{end}Z")},"originalTimeZone":v["originalStartTimeZone"],"allDay":v["isAllDay"],"cancelled":v["isCancelled"],"location":v["location"]["displayName"],"organizer":v["organizer"]["emailAddress"],"attendees":attendees,"attendeeCount":all_attendees.len(),"showAs":v["showAs"],"response":v["responseStatus"]["response"],"isOnlineMeeting":v["isOnlineMeeting"]==true,"onlineProvider":v["onlineMeetingProvider"],"categories":v["categories"].as_array().cloned().unwrap_or_default(),"importance":v["importance"],"isOrganizer":v["isOrganizer"]==true,"private":v["sensitivity"]=="private","url":v["webLink"],"joinUrl":v["onlineMeeting"]["joinUrl"],"preview":v["bodyPreview"],"calendarId":source.trim_start_matches("calendar:"),"seriesId":v["seriesMasterId"]}),
     );
     if v["isAllDay"] == true {
         let original = v["originalStartTimeZone"].as_str().unwrap_or("UTC");
@@ -1777,6 +1882,131 @@ mod tests {
         assert_eq!(mail.data["flagged"], true);
     }
     #[test]
+    fn normalize_event_keeps_series_id() {
+        let occurrence = normalize_event(
+            "a",
+            "calendar:primary",
+            json!({"id":"e","subject":"Weekly sync","start":{"dateTime":"2026-11-16T10:00:00"},"end":{"dateTime":"2026-11-16T10:30:00"},
+                "type":"occurrence","seriesMasterId":"series-1"}),
+        );
+        assert_eq!(occurrence.data["seriesId"], "series-1");
+        let single = normalize_event(
+            "a",
+            "calendar:primary",
+            json!({"id":"s","subject":"One-off","start":{"dateTime":"2026-11-16T10:00:00"},"end":{"dateTime":"2026-11-16T10:30:00"}}),
+        );
+        assert!(single.data["seriesId"].is_null());
+    }
+    #[test]
+    fn graph_response_keeps_the_graph_error_on_403() {
+        let body = br#"{"error":{"code":"Forbidden","message":"GraphAccessToTranscriptsDisabled: transcripts are off."}}"#;
+        let e = graph_response(403, "60", body).unwrap_err();
+        assert_eq!(e.code, "permission_required");
+        assert_eq!(
+            e.message,
+            "Forbidden: GraphAccessToTranscriptsDisabled: transcripts are off."
+        );
+        let e = graph_text_response(401, "60", br#"{"error":{"code":"InvalidAuthenticationToken","message":"Access token is empty."}}"#).unwrap_err();
+        assert_eq!(e.code, "needs_login");
+        assert_eq!(
+            e.message,
+            "InvalidAuthenticationToken: Access token is empty."
+        );
+        // Only one of the two, control characters dropped, kept short.
+        let e = graph_response(403, "60", br#"{"error":{"code":"Forbidden"}}"#).unwrap_err();
+        assert_eq!(e.message, "Forbidden");
+        let long = format!(
+            r#"{{"error":{{"code":"X","message":"line\nbreak {}"}}}}"#,
+            "y".repeat(2000)
+        );
+        let e = graph_response(403, "60", long.as_bytes()).unwrap_err();
+        assert!(e.message.starts_with("X: line break y"), "{}", e.message);
+        assert!(e.message.chars().count() <= 500);
+        // Anything else keeps the plain message, and other statuses never show the body.
+        for body in [&b"PRIVATE_PROVIDER_ERROR"[..], b"{\"error\":{}}", b""] {
+            let e = graph_response(403, "60", body).unwrap_err();
+            assert_eq!(
+                e.message,
+                "Microsoft returned 403. Check connection permissions and retry."
+            );
+        }
+        let e = graph_response(
+            503,
+            "60",
+            br#"{"error":{"code":"ServiceUnavailable","message":"PRIVATE"}}"#,
+        )
+        .unwrap_err();
+        assert!(!e.message.contains("PRIVATE"));
+    }
+    #[test]
+    fn graph_text_response_maps_statuses_like_json_reads() {
+        assert_eq!(
+            graph_text_response(
+                200,
+                "60",
+                "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHi ✓".as_bytes()
+            )
+            .unwrap(),
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHi ✓"
+        );
+        assert_eq!(graph_text_response(204, "60", b"").unwrap(), "");
+        let e = graph_text_response(200, "60", &[0xff, 0xfe, 0x00]).unwrap_err();
+        assert_eq!(e.code, "provider");
+        for (status, code) in [
+            (403, "permission_required"),
+            (410, "resync"),
+            (404, "provider"),
+        ] {
+            assert_eq!(
+                graph_text_response(status, "60", b"").unwrap_err().code,
+                code
+            );
+        }
+        let e = graph_text_response(429, "17", b"").unwrap_err();
+        assert_eq!((e.code.as_str(), e.retry_after), ("throttled", Some(17)));
+    }
+    #[test]
+    fn transcript_reads_are_labelled_and_allowed() {
+        assert!(
+            validate_graph_url(&crate::workspace::meetings::transcripts::lookup_url(
+                "https://teams.microsoft.com/l/meetup-join/x"
+            ))
+            .is_ok()
+        );
+        assert_eq!(scope_for("meetings"), Some("OnlineMeetings.Read"));
+        assert_eq!(
+            scope_for("transcripts"),
+            Some("OnlineMeetingTranscript.Read.All")
+        );
+        let mut c = Connection {
+            enabled: vec!["meetings".into(), "transcripts".into()],
+            scopes: vec![
+                "OnlineMeetings.Read".into(),
+                "OnlineMeetingTranscript.Read.All".into(),
+            ],
+            ..Default::default()
+        };
+        assert!(transcripts_permitted(&c));
+        c.scopes = vec![
+            "OnlineMeetings.ReadWrite".into(),
+            "OnlineMeetingTranscript.Read.All".into(),
+        ];
+        assert!(transcripts_permitted(&c), "read-write covers reading");
+        c.enabled = vec!["meetings".into()];
+        assert!(!transcripts_permitted(&c));
+        c.enabled = vec!["meetings".into(), "transcripts".into()];
+        c.scopes = vec!["OnlineMeetings.Read".into()];
+        assert!(!transcripts_permitted(&c));
+        assert_eq!(
+            read_label("/v1.0/me/onlineMeetings/x/transcripts"),
+            "Teams transcripts"
+        );
+        assert_eq!(
+            read_label("/v1.0/me/calendars/x/calendarView"),
+            "Calendar events"
+        );
+    }
+    #[test]
     fn callback_page_escapes_text_and_binds_nonce_to_csp() {
         let page = callback_page(true, "n0nce_-");
         assert!(page.contains("nonce=\"n0nce_-\""));
@@ -1917,6 +2147,23 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.retry_after, Some(17));
+        // A 403 says why in Microsoft's words; an error body too large to be a reason is not read.
+        let e = local_response(
+            "403 Forbidden",
+            "",
+            br#"{"error":{"code":"Forbidden","message":"GraphAccessToTranscriptsDisabled"}}"#
+                .to_vec(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.message, "Forbidden: GraphAccessToTranscriptsDisabled");
+        let e = local_response("403 Forbidden", "", vec![b' '; ERROR_BODY_MAX + 1])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e.message,
+            "Microsoft returned 403. Check connection permissions and retry."
+        );
     }
     #[tokio::test]
     async fn controlled_http_rejects_redirect_invalid_json_and_oversized_pages() {

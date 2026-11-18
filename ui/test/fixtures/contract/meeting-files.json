@@ -1,0 +1,29 @@
+{
+  "files": [
+    {
+      "modified": 1795000500,
+      "name": "meeting.json",
+      "size": 746
+    },
+    {
+      "modified": 1795000500,
+      "name": "meta.json",
+      "size": 221
+    },
+    {
+      "modified": 1795000500,
+      "name": "segments.json",
+      "size": 778
+    },
+    {
+      "modified": 1795000500,
+      "name": "transcript.md",
+      "size": 354
+    },
+    {
+      "modified": 1795000500,
+      "name": "transcript.vtt",
+      "size": 295
+    }
+  ]
+}

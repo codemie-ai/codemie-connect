@@ -51,6 +51,23 @@ impl CorePaths {
     }
 }
 
+/// The user's home folder: `HOME`, or `USERPROFILE` on Windows. `None` when it is unset or
+/// not an absolute path, so nothing is ever written relative to the working directory.
+#[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
+pub(super) fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+
+/// The default meetings root: `~/CodeMie Connect/Meetings` (`%USERPROFILE%\CodeMie
+/// Connect\Meetings`), visible and outside `~/Documents`, so macOS asks no folder-access question.
+pub(super) fn default_meetings_root(home: &Path) -> PathBuf {
+    home.join("CodeMie Connect").join("Meetings")
+}
+
 /// How long startup waits for `owner.lock` and `connect.lock`: a relaunch can start before the
 /// process it replaces has exited.
 pub(super) const LOCK_WAIT: Duration = Duration::from_secs(5);

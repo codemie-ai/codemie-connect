@@ -314,6 +314,10 @@ pub enum Place {
     Logs,
     /// The data folder Connect used before the last change (`previous` in the pointer).
     Previous,
+    /// The meetings root (Settings › Meetings), opened so its meeting folders are in view.
+    Meetings,
+    /// One meeting's folder, opened so its files are in view.
+    Meeting,
 }
 impl Place {
     pub fn parse(which: &str) -> Result<Self> {
@@ -327,11 +331,11 @@ impl Place {
     }
 }
 
-/// `open -R` selects a data folder in its parent's Finder window; the logs folder opens, so its
-/// files are in view.
+/// `open -R` selects a data folder in its parent's Finder window; the logs folder and meeting
+/// folders open, so their files are in view.
 pub fn reveal_command(place: Place, path: &Path) -> (PathBuf, Vec<OsString>) {
     let mut args = Vec::new();
-    if place != Place::Logs {
+    if !matches!(place, Place::Logs | Place::Meetings | Place::Meeting) {
         args.push(OsString::from("-R"));
     }
     args.push(path.as_os_str().to_owned());
@@ -538,6 +542,10 @@ pub fn place_path(place: Place, private_root: &Path, logs: &Path) -> Result<Path
         Place::Previous => location::read_location(private_root)
             .previous
             .ok_or_else(|| WorkspaceError::new("not_found", "There is no previous data folder."))?,
+        // Meeting folders come from the workspace (`meetings_reveal`), never from here.
+        Place::Meetings | Place::Meeting => {
+            return Err(WorkspaceError::new("validation", "Unknown folder."))
+        }
     })
 }
 
@@ -602,7 +610,7 @@ pub(crate) async fn pick_folder(
 }
 
 #[cfg(target_os = "macos")]
-fn reveal(place: Place, path: &Path) -> Result<()> {
+pub(crate) fn reveal(place: Place, path: &Path) -> Result<()> {
     if !path.exists() {
         return Err(WorkspaceError::new(
             "not_found",
@@ -621,7 +629,7 @@ fn reveal(place: Place, path: &Path) -> Result<()> {
     }
 }
 #[cfg(not(target_os = "macos"))]
-fn reveal(_place: Place, _path: &Path) -> Result<()> {
+pub(crate) fn reveal(_place: Place, _path: &Path) -> Result<()> {
     Err(WorkspaceError::new(
         "unsupported",
         "Showing folders is available on macOS.",
@@ -895,6 +903,19 @@ mod tests {
         let logs = Path::new("/Users/u/Library/Logs/CodeMie");
         let (_, args) = reveal_command(Place::Logs, logs);
         assert_eq!(args, vec![logs.as_os_str().to_owned()]);
+        // Meeting folders and their root open too; the UI can't name them through `parse`.
+        let meeting = Path::new("/Users/u/CodeMie Connect/Meetings/2026-11-04_160426-sync");
+        let (_, args) = reveal_command(Place::Meeting, meeting);
+        assert_eq!(args, vec![meeting.as_os_str().to_owned()]);
+        let (_, args) = reveal_command(Place::Meetings, meeting.parent().unwrap());
+        assert_eq!(args.len(), 1);
+        assert_eq!(Place::parse("meetings").unwrap_err().code, "validation");
+        assert_eq!(
+            place_path(Place::Meeting, Path::new("/x"), Path::new("/y"))
+                .unwrap_err()
+                .code,
+            "validation"
+        );
         assert_eq!(Place::parse("data").unwrap(), Place::Data);
         assert_eq!(Place::parse("private").unwrap(), Place::Private);
         assert_eq!(Place::parse("logs").unwrap(), Place::Logs);

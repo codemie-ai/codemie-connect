@@ -380,6 +380,16 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       return { runs: page, next };
     },
   });
+  // Meetings: minimal stand-ins for the transcript operations (the Meetings page builds on
+  // them). Nothing is opened or written; `meeting_read` answers as a meeting with no files.
+  Object.assign(ops, {
+    meeting_check: d => { calls.push(['meeting_check', d]); return { queued: true, jobId: crypto.randomUUID() }; },
+    meeting_download: d => { calls.push(['meeting_download', d]); return { queued: true, jobId: crypto.randomUUID() }; },
+    meeting_import: d => { calls.push(['meeting_import', { meetingId: d.meetingId, fileName: d.fileName }]); return { saved: true }; },
+    meeting_speakers: d => { calls.push(['meeting_speakers', d]); return { saved: true }; },
+    meetings_reveal: d => { calls.push(['meetings_reveal', d]); return { opened: true }; },
+    meeting_read: d => (d.part === 'transcript' ? { segments: [] } : d.part === 'files' ? { files: [] } : { text: '' }),
+  });
   // Plugins (`plugins_request`, `plugin_call`): an in-memory registry over the contract answers.
   // `__pluginCalls` records what reached native, with the plugin id it went out with.
   const pl = {
@@ -527,7 +537,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'automation_runs'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'automation_runs', 'meeting_read', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },

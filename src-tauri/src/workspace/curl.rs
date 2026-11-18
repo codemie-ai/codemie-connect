@@ -35,30 +35,55 @@ fn config(url: &str, token: &str, prefer: &str) -> Result<String> {
         quote(&format!("Prefer: {prefer}"))
     ))
 }
-fn decode(output: &[u8], headers: &str) -> Result<Value> {
-    if output.len() < 4 || output[output.len() - 4] != b'\n' {
-        return Err(WorkspaceError::new(
-            "offline",
-            "Microsoft read did not return a complete response.",
-        ));
-    }
-    let status = std::str::from_utf8(&output[output.len() - 3..])
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .filter(|s| (100..=599).contains(s))
-        .ok_or_else(|| {
-            WorkspaceError::new("offline", "Microsoft read did not return an HTTP status.")
-        })?;
-    let retry = headers
-        .lines()
-        .rev()
-        .find_map(|line| {
-            line.split_once(':')
-                .filter(|(key, _)| key.eq_ignore_ascii_case("retry-after"))
-                .map(|(_, value)| value.trim())
+/// One answer from curl: its HTTP status, response headers and body.
+pub(super) struct Response {
+    pub status: u16,
+    pub headers: String,
+    pub body: Vec<u8>,
+}
+impl Response {
+    /// Splits curl's output, the body followed by `\n%{http_code}`.
+    fn framed(mut output: Vec<u8>, headers: String) -> Result<Self> {
+        if output.len() < 4 || output[output.len() - 4] != b'\n' {
+            return Err(WorkspaceError::new(
+                "offline",
+                "Microsoft read did not return a complete response.",
+            ));
+        }
+        let status = std::str::from_utf8(&output[output.len() - 3..])
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .filter(|s| (100..=599).contains(s))
+            .ok_or_else(|| {
+                WorkspaceError::new("offline", "Microsoft read did not return an HTTP status.")
+            })?;
+        output.truncate(output.len() - 4);
+        Ok(Self {
+            status,
+            headers,
+            body: output,
         })
-        .unwrap_or("60");
-    graph::graph_response(status, retry, &output[..output.len() - 4])
+    }
+    /// The last `Retry-After` (proxies add their own header blocks first).
+    fn retry(&self) -> &str {
+        self.headers
+            .lines()
+            .rev()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(key, _)| key.eq_ignore_ascii_case("retry-after"))
+                    .map(|(_, value)| value.trim())
+            })
+            .unwrap_or("60")
+    }
+}
+/// A JSON answer.
+fn decode(response: &Response) -> Result<Value> {
+    graph::graph_response(response.status, response.retry(), &response.body)
+}
+/// A text answer (a transcript's WebVTT).
+fn decode_text(response: &Response) -> Result<String> {
+    graph::graph_text_response(response.status, response.retry(), &response.body)
 }
 pub(super) fn cleanup(dir: &std::path::Path) {
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -82,6 +107,26 @@ pub(super) async fn get(
     token: &str,
     prefer: &str,
 ) -> Result<Value> {
+    decode(&get_bytes(core, c, url, token, prefer).await?)
+}
+pub(super) async fn get_text(
+    core: &Core,
+    c: &Connection,
+    url: &str,
+    token: &str,
+    prefer: &str,
+) -> Result<String> {
+    decode_text(&get_bytes(core, c, url, token, prefer).await?)
+}
+/// One Graph GET through `/usr/bin/curl`: the bearer goes in on stdin, never on the command
+/// line, and the read stops with the job that made it.
+pub(super) async fn get_bytes(
+    core: &Core,
+    c: &Connection,
+    url: &str,
+    token: &str,
+    prefer: &str,
+) -> Result<Response> {
     if core.stopping() {
         return Err(WorkspaceError::new("cancelled", "Microsoft reads stopped."));
     }
@@ -201,7 +246,7 @@ pub(super) async fn get(
             };
             return Err(WorkspaceError::new("offline", message));
         }
-        decode(&bytes, &String::from_utf8_lossy(&header_bytes))
+        Response::framed(bytes, String::from_utf8_lossy(&header_bytes).into_owned())
     })
     .await
     .map_err(|_| {
@@ -218,18 +263,38 @@ mod tests {
     use super::*;
     #[test]
     fn response_framing_preserves_backoff_and_never_displays_provider_error_body() {
+        let framed =
+            |output: &[u8], headers: &str| Response::framed(output.to_vec(), headers.to_string());
         let e = decode(
-            b"PRIVATE_ERROR\n429",
-            "HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 429\r\nretry-after: 17\r\n",
+            &framed(
+                b"PRIVATE_ERROR\n429",
+                "HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 429\r\nretry-after: 17\r\n",
+            )
+            .unwrap(),
         )
         .unwrap_err();
         assert_eq!(e.retry_after, Some(17));
         assert!(!e.message.contains("PRIVATE_ERROR"));
         assert_eq!(
-            decode(b"{\"value\":[]}\n200", "").unwrap()["value"],
+            decode(&framed(b"{\"value\":[]}\n200", "").unwrap()).unwrap()["value"],
             serde_json::json!([])
         );
-        assert!(decode(b"truncated", "").is_err());
+        assert!(framed(b"truncated", "").is_err());
+        // Text answers share the framing and status mapping; a 403 keeps Microsoft's reason.
+        assert_eq!(
+            decode_text(&framed(b"WEBVTT\n\n200", "").unwrap()).unwrap(),
+            "WEBVTT\n"
+        );
+        let e = decode_text(
+            &framed(
+                b"{\"error\":{\"code\":\"Forbidden\",\"message\":\"GraphAccessToTranscriptsDisabled\"}}\n403",
+                "",
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "permission_required");
+        assert_eq!(e.message, "Forbidden: GraphAccessToTranscriptsDisabled");
     }
     #[test]
     fn bearer_config_rejects_newline_injection() {

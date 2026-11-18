@@ -1,0 +1,40 @@
+{
+  "segments": [
+    {
+      "address": "jeroen@example.test",
+      "end": 4.0,
+      "name": "Jeroen de Vries",
+      "speaker": "remote",
+      "start": 1.0,
+      "text": "Welcome to the sync.",
+      "voice": "Jeroen de Vries"
+    },
+    {
+      "address": "marek.novak@example.test",
+      "end": 9.0,
+      "name": "Marek Novak",
+      "speaker": "remote",
+      "start": 5.0,
+      "text": "Thanks. The demo is ready.",
+      "voice": "Novak, Marek"
+    },
+    {
+      "address": null,
+      "end": 15.0,
+      "name": "Speaker 1",
+      "speaker": "remote",
+      "start": 12.0,
+      "text": "Can I join late?",
+      "voice": "@1"
+    },
+    {
+      "address": "taylor@example.test",
+      "end": 24.0,
+      "name": "Taylor Morgan",
+      "speaker": "me",
+      "start": 20.0,
+      "text": "I'll send the notes.",
+      "voice": "Taylor Morgan"
+    }
+  ]
+}

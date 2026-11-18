@@ -23,8 +23,9 @@ fn invalid(message: &str) -> WorkspaceError {
     WorkspaceError::new("validation", message)
 }
 
-/// One read-only Microsoft Graph GET made for an AI run. The app reads through
-/// [`Core::graph_get_prefer`] (the curl helper on macOS); tests answer from a map.
+/// One read-only Microsoft Graph GET made for an AI run or a transcript. The app reads through
+/// [`Core::graph_get_prefer`] and [`Core::graph_get_text`] (the curl helper on macOS); tests
+/// answer from a map.
 pub(super) trait GraphReads: Send + Sync {
     fn get<'a>(
         &'a self,
@@ -32,6 +33,13 @@ pub(super) trait GraphReads: Send + Sync {
         c: &'a Connection,
         url: &'a str,
     ) -> BoxFuture<'a, Result<Value>>;
+    /// A read whose answer is text (a transcript's WebVTT).
+    fn get_text<'a>(
+        &'a self,
+        core: &'a Core,
+        c: &'a Connection,
+        url: &'a str,
+    ) -> BoxFuture<'a, Result<String>>;
 }
 
 pub(super) struct LiveGraph;
@@ -45,21 +53,63 @@ impl GraphReads for LiveGraph {
     ) -> BoxFuture<'a, Result<Value>> {
         Box::pin(core.graph_get_prefer(c, url, graph::PREFER_TEXT_BODY))
     }
+    fn get_text<'a>(
+        &'a self,
+        core: &'a Core,
+        c: &'a Connection,
+        url: &'a str,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(core.graph_get_text(c, url))
+    }
 }
 
-/// Answers Graph reads from a map (URL -> JSON); anything else fails like an offline read.
+/// Answers Graph reads from maps (URL -> JSON, URL -> text, URL -> error); anything else
+/// fails like an offline read.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub(crate) struct FakeGraph {
     answers: std::sync::Mutex<std::collections::HashMap<String, Value>>,
+    texts: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    failures: std::sync::Mutex<std::collections::HashMap<String, WorkspaceError>>,
     delays: std::sync::Mutex<std::collections::HashMap<String, Duration>>,
     calls: std::sync::Mutex<Vec<String>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl FakeGraph {
+    /// The answer for `url`, or why it fails, or `None` (offline).
+    fn reply<T: Clone>(
+        &self,
+        url: &str,
+        map: &std::sync::Mutex<std::collections::HashMap<String, T>>,
+    ) -> (
+        Option<std::result::Result<T, WorkspaceError>>,
+        Option<Duration>,
+    ) {
+        self.calls.lock().unwrap().push(url.into());
+        let delay = self.delays.lock().unwrap().get(url).copied();
+        if let Some(e) = self.failures.lock().unwrap().get(url) {
+            return (Some(Err(e.clone())), delay);
+        }
+        (map.lock().unwrap().get(url).cloned().map(Ok), delay)
+    }
+}
+
 #[cfg(test)]
 impl FakeGraph {
+    /// Answers `url` with JSON from now on (and stops failing it).
     pub(crate) fn answer(&self, url: &str, value: Value) {
+        self.failures.lock().unwrap().remove(url);
         self.answers.lock().unwrap().insert(url.into(), value);
+    }
+    /// Answers `url` with text from now on (and stops failing it).
+    pub(crate) fn answer_text(&self, url: &str, text: &str) {
+        self.failures.lock().unwrap().remove(url);
+        self.texts.lock().unwrap().insert(url.into(), text.into());
+    }
+    /// Makes every read of `url` fail with `error` until it is answered again.
+    pub(crate) fn fail(&self, url: &str, error: WorkspaceError) {
+        self.failures.lock().unwrap().insert(url.into(), error);
     }
     /// Makes the read of `url` take `delay` before it answers.
     pub(crate) fn slow(&self, url: &str, delay: Duration) {
@@ -78,14 +128,26 @@ impl GraphReads for FakeGraph {
         _c: &'a Connection,
         url: &'a str,
     ) -> BoxFuture<'a, Result<Value>> {
-        self.calls.lock().unwrap().push(url.into());
-        let answer = self.answers.lock().unwrap().get(url).cloned();
-        let delay = self.delays.lock().unwrap().get(url).copied();
+        let (answer, delay) = self.reply(url, &self.answers);
         Box::pin(async move {
             if let Some(delay) = delay {
                 tokio::time::sleep(delay).await;
             }
-            answer.ok_or_else(|| WorkspaceError::new("offline", "No synthetic answer."))
+            answer.unwrap_or_else(|| Err(WorkspaceError::new("offline", "No synthetic answer.")))
+        })
+    }
+    fn get_text<'a>(
+        &'a self,
+        _core: &'a Core,
+        _c: &'a Connection,
+        url: &'a str,
+    ) -> BoxFuture<'a, Result<String>> {
+        let (answer, delay) = self.reply(url, &self.texts);
+        Box::pin(async move {
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
+            answer.unwrap_or_else(|| Err(WorkspaceError::new("offline", "No synthetic answer.")))
         })
     }
 }

@@ -1,0 +1,157 @@
+[
+  {
+    "connectionId": "7f1c2a4e-0000-4000-8000-000000000001",
+    "data": {
+      "auto": null,
+      "checkedAt": 1795000400,
+      "docs": [],
+      "end": "2026-11-04T09:30:00Z",
+      "error": null,
+      "eventId": "m-pending",
+      "external": "ONLINE-P",
+      "folder": null,
+      "imported": null,
+      "lastError": null,
+      "main": null,
+      "speakers": {},
+      "start": "2026-11-04T09:00:00Z",
+      "state": "pending",
+      "template": null,
+      "title": "Daily stand-up",
+      "transcriptIds": [],
+      "transcriptStart": null
+    },
+    "id": "m-pending",
+    "kind": "meeting",
+    "revision": "rev-0",
+    "source": "calendar:cal-1",
+    "updatedAt": 1795000500,
+    "workspaceId": null
+  },
+  {
+    "connectionId": "7f1c2a4e-0000-4000-8000-000000000001",
+    "data": {
+      "auto": null,
+      "checkedAt": 1795000400,
+      "docs": [],
+      "end": "2026-11-04T14:30:00Z",
+      "error": null,
+      "eventId": "m-available",
+      "external": "ONLINE-A",
+      "folder": null,
+      "imported": null,
+      "lastError": {
+        "code": "folder_unwritable",
+        "message": "Connect can’t write to /Users/taylor/Work/Chosen. Choose the folder again in Settings › Meetings."
+      },
+      "main": null,
+      "speakers": {},
+      "start": "2026-11-04T14:00:00Z",
+      "state": "available",
+      "template": null,
+      "title": "Roadmap review",
+      "transcriptIds": [
+        "t-a"
+      ],
+      "transcriptStart": "2026-11-04T14:04:26Z"
+    },
+    "id": "m-available",
+    "kind": "meeting",
+    "revision": "rev-1",
+    "source": "calendar:cal-1",
+    "updatedAt": 1795000500,
+    "workspaceId": null
+  },
+  {
+    "connectionId": "7f1c2a4e-0000-4000-8000-000000000001",
+    "data": {
+      "auto": null,
+      "checkedAt": 1795000400,
+      "docs": [],
+      "end": "2026-11-04T14:30:00Z",
+      "error": null,
+      "eventId": "m-downloaded",
+      "external": "MSo1N2Y5ZGFj",
+      "folder": "/Users/taylor/CodeMie Connect/Meetings/2026-11-04_160426-philips-codemie-conversations-syncup",
+      "imported": null,
+      "lastError": null,
+      "main": null,
+      "speakers": {},
+      "start": "2026-11-04T14:00:00Z",
+      "state": "downloaded",
+      "template": null,
+      "title": "Philips CodeMie conversations syncup",
+      "transcriptIds": [
+        "t1"
+      ],
+      "transcriptStart": "2026-11-04T14:04:26Z"
+    },
+    "id": "m-downloaded",
+    "kind": "meeting",
+    "revision": "rev-2",
+    "source": "calendar:cal-1",
+    "updatedAt": 1795000500,
+    "workspaceId": null
+  },
+  {
+    "connectionId": "7f1c2a4e-0000-4000-8000-000000000001",
+    "data": {
+      "auto": null,
+      "checkedAt": 1795000400,
+      "docs": [],
+      "end": "2026-11-04T09:30:00Z",
+      "error": {
+        "code": "transcript_blocked",
+        "message": "Forbidden: GraphAccessToTranscriptsDisabled: The organizer's organization does not allow transcript access."
+      },
+      "eventId": "m-blocked",
+      "external": "ONLINE-B",
+      "folder": null,
+      "imported": null,
+      "lastError": null,
+      "main": null,
+      "speakers": {},
+      "start": "2026-11-04T09:00:00Z",
+      "state": "blocked",
+      "template": null,
+      "title": "Vendor review",
+      "transcriptIds": [],
+      "transcriptStart": null
+    },
+    "id": "m-blocked",
+    "kind": "meeting",
+    "revision": "rev-3",
+    "source": "calendar:cal-1",
+    "updatedAt": 1795000500,
+    "workspaceId": null
+  },
+  {
+    "connectionId": "7f1c2a4e-0000-4000-8000-000000000001",
+    "data": {
+      "auto": null,
+      "checkedAt": 1795000400,
+      "docs": [],
+      "end": "2026-11-04T09:30:00Z",
+      "error": null,
+      "eventId": "m-none",
+      "external": "ONLINE-N",
+      "folder": null,
+      "imported": null,
+      "lastError": null,
+      "main": null,
+      "speakers": {},
+      "start": "2026-11-04T09:00:00Z",
+      "state": "none",
+      "template": null,
+      "title": "Planning",
+      "transcriptIds": [],
+      "transcriptStart": null
+    },
+    "id": "m-none",
+    "kind": "meeting",
+    "revision": "rev-4",
+    "source": "calendar:cal-1",
+    "updatedAt": 1795000500,
+    "workspaceId": null
+  }
+]

@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 pub type Result<T> = std::result::Result<T, WorkspaceError>;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceError {
     pub code: String,
@@ -122,6 +122,12 @@ pub enum Operation {
     AutomationToggle,
     AutomationRunNow,
     AutomationRuns,
+    MeetingCheck,
+    MeetingDownload,
+    MeetingImport,
+    MeetingSpeakers,
+    MeetingsReveal,
+    MeetingRead,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +208,8 @@ pub struct Settings {
     pub notification_permission: String,
     pub focus_until: Option<i64>,
     pub ai: AiSettings,
+    /// Settings › Meetings.
+    pub meetings: super::meetings::model::MeetingSettings,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -223,6 +231,7 @@ impl Default for Settings {
             notification_permission: "not_requested".into(),
             focus_until: None,
             ai: AiSettings::default(),
+            meetings: Default::default(),
         }
     }
 }

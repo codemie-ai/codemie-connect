@@ -10,6 +10,7 @@ pub mod geometry;
 pub mod graph;
 mod inbox;
 pub(crate) mod markdown;
+pub mod meetings;
 pub mod models;
 mod paths;
 pub(crate) mod plugin_data;
@@ -95,6 +96,9 @@ pub struct Core {
     events: std::sync::OnceLock<Arc<dyn EventSink>>,
     /// The meetings plugins were told of (`meeting_soon`), with their start.
     meetings_told: Mutex<std::collections::HashMap<String, i64>>,
+    /// The user's home folder, where the default meetings root lives. Tests use a folder inside
+    /// their temp data folder, so they never write into the real home.
+    home: Option<PathBuf>,
 }
 
 fn poisoned() -> WorkspaceError {
@@ -173,6 +177,10 @@ impl Core {
         // Earlier builds left `graph-read-*.headers` files in what is now the private folder.
         #[cfg(target_os = "macos")]
         curl::cleanup(&paths.private);
+        #[cfg(not(any(test, feature = "test-support")))]
+        let home = paths::home_dir();
+        #[cfg(any(test, feature = "test-support"))]
+        let home = Some(paths.data.join("home"));
         Ok(Arc::new(Self {
             repository: Mutex::new(Repository::open(&paths.database())?),
             paths: paths.clone(),
@@ -200,6 +208,7 @@ impl Core {
             plugin_ops: AtomicUsize::new(0),
             events: std::sync::OnceLock::new(),
             meetings_told: Default::default(),
+            home,
         }))
     }
     /// Counts a plugin request as running, or refuses it while the workspace is held for a
@@ -416,6 +425,9 @@ impl Core {
         if ticks.is_multiple_of(automations::ROUND_TICKS) {
             if let Err(e) = self.automations_round() {
                 eprintln!("automations: schedule round failed: {}", e.message);
+            }
+            if let Err(e) = meetings::meetings_round_at(self, now()) {
+                eprintln!("meetings: transcript round failed: {}", e.message);
             }
         }
         for _ in 0..8 {
@@ -638,6 +650,8 @@ impl Core {
             "ai_summarize" => self.run_ai_summary(job).await,
             "reminder" | "notification" => self.deliver_notification(job),
             "automation_run" => self.run_automation(job).await,
+            "transcript_check" => self.run_transcript_check(job).await,
+            "transcript_download" => self.run_transcript_download(job).await,
             _ => Err(WorkspaceError::new("validation", "Unsupported job type.")),
         }
     }
@@ -689,6 +703,13 @@ impl Core {
         }
         if req.op == Operation::AutomationRuns {
             return self.automation_runs(&req);
+        }
+        if req.op == Operation::MeetingRead {
+            return self.meeting_read(&req);
+        }
+        // Shows a folder in Finder: nothing stored changes.
+        if req.op == Operation::MeetingsReveal {
+            return self.meetings_reveal(&req);
         }
         // Read-style: a Test can take a minute and must not queue other edits behind it. It
         // writes only its own `ai_run` record, so there is no operation id or revision fence.
@@ -1132,6 +1153,10 @@ impl Core {
             | Operation::AutomationDelete
             | Operation::AutomationToggle
             | Operation::AutomationRunNow => self.automation_op(&req)?,
+            Operation::MeetingCheck
+            | Operation::MeetingDownload
+            | Operation::MeetingImport
+            | Operation::MeetingSpeakers => self.meeting_op(&req)?,
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
         self.repo()?
@@ -1143,6 +1168,10 @@ impl Core {
     fn update_settings(&self, data: &Value) -> Result<()> {
         let mut r = self.repo()?;
         let mut s = r.settings()?;
+        // First: a refused meeting setting leaves everything else untouched too.
+        if let Some(meetings) = data.get("meetings") {
+            s.meetings.apply(meetings)?;
+        }
         let old_registration = (s.client_id.clone(), s.tenant.clone());
         if let Some(theme) = data["theme"].as_str() {
             if !matches!(theme, "light" | "dark" | "system") {
