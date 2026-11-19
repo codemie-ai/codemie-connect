@@ -5,7 +5,7 @@
 // menu, both menus shrunk to icons, and no horizontal overflow. `layout_save` calls are read from
 // the mock (`calls`), and a reload keeps the workspaces (the mock holds them in sessionStorage). It
 // proves the window's side, not native storage.
-import { PRESETS, todayOf } from '../../workspace/today-grid.js';
+import { PRESETS, compact, todayOf } from '../../workspace/today-grid.js';
 import { SETTINGS_GROUPS } from '../../workspace/view-settings.js';
 
 // The Default layout as todayOf builds it for a workspace never customized.
@@ -288,17 +288,23 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
     {
       await page.waitForSelector('[data-today-grid]');
       await settled(page);
-      const mine = [{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }, { id: 'commitments', x: 0, y: 4, w: 8, h: 6 }, { id: 'notes', x: 8, y: 4, w: 4, h: 6 }, { id: 'inbox', x: 0, y: 10, w: 6, h: 7 }];
-      assert(sameAs(await tilesNow(page), mine), `My layout drawn as ${JSON.stringify(await tilesNow(page))}`);
+      // The old rows filled left to right at the old order and widths (Tasks 8 with Notes 4 after
+      // it, then Needs your reply 6), then packed upward like every layout (Ruling R11).
+      const mine = compact([{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }, { id: 'commitments', x: 0, y: 4, w: 8, h: 6 }, { id: 'notes', x: 8, y: 4, w: 4, h: 6 }, { id: 'inbox', x: 0, y: 10, w: 6, h: 7 }]);
+      const opened = await tilesNow(page);
+      assert(sameAs(opened, mine), `My layout drawn as ${JSON.stringify(opened)}`);
       assert((await page.locator('.ws-today-layout-pill').innerText()).includes('My layout'), 'the layout in use is not My layout');
       assert(await page.locator('[data-tile="meetings"]').count() === 0, 'From your meetings shows although it was hidden');
       assert((await saves(page)).length === 0, 'opening Today saved the layout');
       await shot(page, 'layout-e5-my-layout');
-      // Focus, with Focus timer moved onto Up next's place.
+      // Focus: the switch's save keeps "My layout" exactly as it opened.
       await layoutMenu(page, '[data-action="today-layout-use"][data-name="Focus"]');
       await page.waitForSelector('.ws-toast:has-text("Switched to “Focus”")');
       await page.waitForSelector('[data-tile="timer"]');
       assert(sameAs(await tilesNow(page), PRESETS.Focus), `Focus drawn as ${JSON.stringify(await tilesNow(page))}`);
+      const switched = await lastSave(page);
+      assert(switched.today.active === 'Focus' && sameAs(opened, switched.today.layouts['My layout']), `the switch saved My layout as ${JSON.stringify(switched.today.layouts['My layout'])}`);
+      // Focus timer moved onto Up next's place.
       const n = (await saves(page)).length;
       await page.evaluate(() => { document.getElementById('workspace-main').scrollTop = 0; });
       const head = await box(page, '[data-tile="timer"] .ws-tile-head h2');
@@ -311,13 +317,12 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await savedAfter(page, n);
       await page.waitForSelector('[data-tile="timer"][style^="--x:0;--y:0;"]');
       const moved = await tilesNow(page);
-      // Back to My layout: its widgets at their widths (packed upward by the switch's save), and
-      // Focus says it changed.
+      // Back to My layout: as it opened, and Focus says it changed.
       await layoutMenu(page, '[data-action="today-layout-use"][data-name="My layout"]');
       await page.waitForSelector('.ws-toast:has-text("Switched to “My layout”")');
       await page.waitForSelector('[data-today-grid]:not(:has([data-tile="timer"]))');
       const back = await tilesNow(page);
-      assert(Object.keys(back).length === mine.length && mine.every(i => back[i.id]?.w === i.w), `My layout came back as ${JSON.stringify(back)}`);
+      assert(JSON.stringify(back) === JSON.stringify(opened), `My layout came back as ${JSON.stringify(back)}, opened as ${JSON.stringify(opened)}`);
       const pill = '.ws-today-actions details[data-menu="today-layouts"]';
       await page.click(`${pill} > summary`);
       await page.waitForSelector(`${pill}[open]`);

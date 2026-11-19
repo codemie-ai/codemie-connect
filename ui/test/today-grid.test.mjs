@@ -87,7 +87,11 @@ test('todayOf turns a customized layout into My layout with Notes after Tasks', 
   const w = { layout: ['brief', 'commitments', 'inbox'], widgetWidths: { brief: 8, commitments: 8, inbox: 6 }, today: {} };
   const t = todayOf(w, defs);
   assert.equal(t.active, 'My layout');
-  assert.deepEqual(t.items.map(i => [i.id, ...box(i)]), [['brief', 0, 0, 8, 4], ['commitments', 0, 4, 8, 6], ['notes', 8, 4, 4, 6], ['inbox', 0, 10, 6, 7]]);
+  // Rows filled left to right in the old order and widths, then packed upward like every layout,
+  // so the first save keeps what opened: Notes floats up beside Up next.
+  assert.deepEqual(t.items.map(i => [i.id, i.w]), [['brief', 8], ['commitments', 8], ['notes', 4], ['inbox', 6]]);
+  assert.deepEqual(compact(t.items.map(i => ({ ...i }))), t.items, 'a resting grid: packing moves nothing');
+  assert.deepEqual(t.items.map(i => [i.id, ...box(i)]), [['brief', 0, 0, 8, 4], ['commitments', 0, 4, 8, 6], ['notes', 8, 0, 4, 6], ['inbox', 0, 10, 6, 7]]);
   assert.deepEqual(t.layouts, { 'My layout': t.items });
   // A width that isn't a whole number of columns falls back to the widget's default.
   assert.deepEqual(box(fromLegacy(['calendar'], { calendar: 5.5 }, defs)[0]), [0, 0, 6, 7]);

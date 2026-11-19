@@ -95,8 +95,9 @@ export function removeItem(items, id) {
 }
 
 /** The grid an old `layout` (ordered ids) and `widgetWidths` (columns per id) stand for: the same
- *  order and widths, filling each row left to right at the widgets' default heights. Tasks is 8
- *  wide with Notes after it, since Notes used to be part of it. `defs` are `tileDefs`. */
+ *  order and widths, filling each row left to right at the widgets' default heights, then packed
+ *  upward like every layout, so the first save keeps what opened. Tasks is 8 wide with Notes after
+ *  it, since Notes used to be part of it. `defs` are `tileDefs`. */
 export function fromLegacy(layout, widgetWidths, defs) {
   const width = (id, fallback) => {
     const v = own(widgetWidths, id) ? widgetWidths[id] : undefined;
@@ -129,7 +130,7 @@ export function fromLegacy(layout, widgetWidths, defs) {
     x += w;
     rowH = Math.max(rowH, h);
   }
-  return items;
+  return compact(items);
 }
 
 /** The Today grid of workspace `w`: its saved `today`, or, before the first save, the one its old
