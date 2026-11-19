@@ -11,60 +11,61 @@ import { PLUGINS_CARD, parseLayoutId, pluginWidgetCard, pluginsCard, showPlugins
 import { isMine, meOf, ownerOf, sortTasks, taskStatus } from './tasks-model.js';
 import { showMeetingsCard, todayMeetingsCard } from './view-meetings.js';
 import { GRID, autoCards, optionsOf, todayOf } from './today-grid.js';
+import { addTile, editBar, gallery, layoutMenu, optionsPanel, widgetMenu } from './today-edit-view.js';
 
 const toggle = (key, label, def) => ({ key, type: 'toggle', label, def });
 const choice = (key, label, choices, def) => ({ key, type: 'select', label, choices, def });
 const checks = (key, label, choices, def) => ({ key, type: 'checks', label, choices, def });
 
 /** Today's widgets: default size `width` × `h` in grid columns and rows, the smallest size, and the
- *  options each one offers (the saved value of `key`, or `def`). */
+ *  options each one offers (the saved value of `key`, or `def`). `icon` is the gallery's. */
 export const WIDGETS = {
   brief: {
-    title: 'Up next', width: 8, h: 4, minW: 3, minH: 2, description: 'Your current or next meeting with a one-click join.',
+    icon: 'calendar-clock', title: 'Up next', width: 8, h: 4, minW: 3, minH: 2, description: 'Your current or next meeting with a one-click join.',
     options: [toggle('later', 'Show “Later today”', true), toggle('people', 'Show who is invited', true)],
   },
   focus: {
-    title: 'Day at a glance', width: 4, h: 4, minW: 2, minH: 2, description: 'Meetings, free time, replies and a focus timer.',
+    icon: 'activity', title: 'Day at a glance', width: 4, h: 4, minW: 2, minH: 2, description: 'Meetings, free time, replies and a focus timer.',
     options: [
       checks('stats', 'Numbers', [['left', 'Meetings left'], ['busy', 'In meetings'], ['free', 'Free time'], ['reply', 'Need reply'], ['tasks', 'Open tasks']], ['left', 'busy', 'free', 'reply']),
       toggle('focus', 'Focus session buttons', true),
     ],
   },
   calendar: {
-    title: 'Schedule', width: 6, h: 7, minW: 2, minH: 3, description: "Today's timeline with free time between meetings.",
+    icon: 'calendar', title: 'Schedule', width: 6, h: 7, minW: 2, minH: 3, description: "Today's timeline with free time between meetings.",
     options: [toggle('free', 'Show free time', true), choice('start', 'Day starts at', [['7', '07:00'], ['8', '08:00'], ['9', '09:00']], '8')],
   },
   inbox: {
-    title: 'Needs your reply', width: 6, h: 7, minW: 2, minH: 3, description: 'Outlook and Teams messages waiting for you.',
+    icon: 'reply', title: 'Needs your reply', width: 6, h: 7, minW: 2, minH: 3, description: 'Outlook and Teams messages waiting for you.',
     options: [choice('max', 'Messages shown', [['3', '3'], ['6', '6'], ['10', '10']], '6'), checks('sources', 'Sources', [['mail', 'Outlook'], ['chat', 'Teams']], ['mail', 'chat'])],
   },
   commitments: {
-    title: 'Tasks', width: 8, h: 6, minW: 3, minH: 3, description: 'Your open tasks with a quick-add box.',
+    icon: 'tasks', title: 'Tasks', width: 8, h: 6, minW: 3, minH: 3, description: 'Your open tasks with a quick-add box.',
     options: [toggle('add', 'Quick add box', true), toggle('mine', 'Only my tasks', false), toggle('done', 'Show completed', true)],
   },
   notes: {
-    title: 'Notes', width: 4, h: 6, minW: 2, minH: 2, description: 'A scratchpad for thoughts, plans and things to remember.',
+    icon: 'note', title: 'Notes', width: 4, h: 6, minW: 2, minH: 2, description: 'A scratchpad for thoughts, plans and things to remember.',
     options: [choice('size', 'Text size', [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']], 'small')],
   },
   meetings: {
-    title: 'From your meetings', width: 6, h: 5, minW: 3, minH: 2, description: 'Meetings that need you and transcripts waiting for notes.',
+    icon: 'meetings', title: 'From your meetings', width: 6, h: 5, minW: 3, minH: 2, description: 'Meetings that need you and transcripts waiting for notes.',
     options: [toggle('needsMe', 'Only meetings that need me', false)],
   },
   automations: {
-    title: 'Automation results', width: 6, h: 5, minW: 3, minH: 2, description: 'The latest result of each automation, with its sources.',
+    icon: 'automations', title: 'Automation results', width: 6, h: 5, minW: 3, minH: 2, description: 'The latest result of each automation, with its sources.',
     options: [toggle('failures', 'Only failures', false)],
   },
   timer: {
-    title: 'Focus timer', width: 4, h: 3, minW: 2, minH: 2, description: 'A focus session that quiets non-critical reminders.',
+    icon: 'target', title: 'Focus timer', width: 4, h: 3, minW: 2, minH: 2, description: 'A focus session that quiets non-critical reminders.',
     options: [choice('minutes', 'Default length', [['25', '25 min'], ['50', '50 min']], '25')],
   },
-  [PLUGINS_CARD]: { title: 'From plugins', width: 12, h: 3, minW: 4, minH: 2, description: 'Decisions, deliveries and held messages your plugins prepare.', options: [] },
+  [PLUGINS_CARD]: { icon: 'puzzle', title: 'From plugins', width: 12, h: 3, minW: 4, minH: 2, description: 'Decisions, deliveries and held messages your plugins prepare.', options: [] },
 };
 export const WIDGET_IDS = Object.keys(WIDGETS);
 
 /** What the grid knows of each widget, by id: Today's own and the ones the enabled plugins declare
- *  (`pluginCatalog`, from `pluginWidgetCatalog`), as {id, title, description, w, h, minW, minH,
- *  options, plugin?}. A plugin widget is its plugin's width × 4 rows, and at least 2 × 2. */
+ *  (`pluginCatalog`, from `pluginWidgetCatalog`), as {id, icon, title, description, w, h, minW,
+ *  minH, options, plugin?}. A plugin widget is its plugin's width × 4 rows, and at least 2 × 2. */
 export function tileDefs(pluginCatalog = []) {
   const defs = {};
   for (const id of WIDGET_IDS) {
@@ -72,21 +73,34 @@ export function tileDefs(pluginCatalog = []) {
     defs[id] = { id, ...def, w: width };
   }
   for (const p of pluginCatalog) {
-    defs[p.id] = { id: p.id, title: p.title, description: p.description, w: p.width, h: 4, minW: 2, minH: 2, options: [], plugin: p.plugin };
+    defs[p.id] = { id: p.id, icon: 'puzzle', title: p.title, description: p.description, w: p.width, h: 4, minW: 2, minH: 2, options: [], plugin: p.plugin };
   }
   return defs;
 }
 
-/** What Customize lists, in the layout's order then the rest: Today's cards and the widgets the
- *  enabled plugins declare (`pluginCatalog`, from `pluginWidgetCatalog`). */
-export function customizeEntries(w, pluginCatalog = []) {
-  const all = [
-    ...WIDGET_IDS.map(id => ({ id, ...WIDGETS[id] })),
-    ...pluginCatalog.map(p => ({ id: p.id, title: p.title, description: p.description, width: p.width, plugin: p.plugin })),
-  ];
-  const byId = new Map(all.map(x => [x.id, x]));
-  const order = [...w.layout.filter(id => byId.has(id)), ...all.map(x => x.id).filter(id => !w.layout.includes(id))];
-  return order.map(id => byId.get(id));
+const byPlace = (a, b) => a.y - b.y || a.x - b.x;
+
+/**
+ * What Today draws of grid `t` (the active workspace's): `placed`, the saved widgets that are
+ * there; `away`, the saved ones that aren't (a plugin widget whose plugin is off, once the plugin
+ * catalog is known: kept, not drawn); `below`, the cards the grid doesn't place, full width at
+ * their default height under it; and `rows`, where they end. `defs` are `tileDefs`.
+ */
+export function drawnGrid(s, t, defs, { pluginsKnown = false, nowMs = Date.now() } = {}) {
+  const w = active(s);
+  const there = id => Object.hasOwn(WIDGETS, id) || (!!parseLayoutId(id) && (!pluginsKnown || Object.hasOwn(defs, id)));
+  const placed = t.items.filter(it => there(it.id));
+  const away = t.items.filter(it => !there(it.id));
+  let rows = placed.reduce((bottom, it) => Math.max(bottom, it.y + it.h), 0);
+  // "From your meetings" while a meeting waits, "From plugins" while a plugin has something, and
+  // ids native put in `layout`.
+  const wanted = [showMeetingsCard(w, s, nowMs) && 'meetings', showPluginsCard(w, s) && PLUGINS_CARD].filter(Boolean);
+  const below = autoCards(w, t, wanted).filter(there).map(id => {
+    const it = { id, x: 0, y: rows, w: GRID.cols, h: defs[id]?.h || 4 };
+    rows += it.h;
+    return it;
+  });
+  return { placed, away, below, rows };
 }
 
 const WORKDAY_START = 9 * 60;
@@ -144,22 +158,24 @@ export function today(s, ctx) {
   const draw = id => (Object.hasOwn(widgets, id)
     ? widgets[id](optionsOf(t, id, defs[id]))
     : pluginWidgetCard(s, id, { catalog, drawn: ctx.plugins?.drawn, zone: m.zone }));
+  // Customize mode and the open panels (`state.today` with `locked`; none in tests that leave it out).
+  const ui = ctx.today || {};
+  const editing = !!ui.editing;
   // A plugin widget counts as there until the plugin catalog is known; after that, only while its
-  // plugin is on. One that isn't there is not drawn but keeps its place in the saved grid.
-  const there = id => Object.hasOwn(widgets, id) || (!!parseLayoutId(id) && (!ctx.pluginsKnown || Object.hasOwn(defs, id)));
-  const placed = t.items.filter(it => there(it.id));
-  let rows = placed.reduce((bottom, it) => Math.max(bottom, it.y + it.h), 0);
-  // Cards the grid doesn't place show themselves below it, full width: "From your meetings" while
-  // a meeting waits, "From plugins" while a plugin has something, and ids native put in `layout`.
-  const wanted = [showMeetingsCard(w, s, m.nowMs) && 'meetings', showPluginsCard(w, s) && PLUGINS_CARD].filter(Boolean);
-  const below = autoCards(w, t, wanted).filter(there).map(id => {
-    const it = { id, x: 0, y: rows, w: GRID.cols, h: defs[id]?.h || 4 };
-    rows += it.h;
-    return it;
-  });
-  const tiles = [...placed, ...below].sort((a, b) => a.y - b.y || a.x - b.x)
-    .map((it, order) => tile(draw(it.id), it, order, t.titles[it.id])).join('');
-  return `<div class="ws-today ws-today-page">
+  // plugin is on. One that isn't there is not drawn but keeps its place in the saved grid. Cards
+  // the grid doesn't place show themselves below it.
+  const { placed, below, rows } = drawnGrid(s, t, defs, { pluginsKnown: ctx.pluginsKnown, nowMs: m.nowMs });
+  const laid = [...placed, ...below].sort(byPlace);
+  const tiles = laid.map((it, order) => tile(draw(it.id), it, order, t.titles[it.id], { editing, renaming: ui.renaming === it.id })).join('');
+  const at = laid.findIndex(it => it.id === ui.options);
+  const panel = at >= 0 && defs[ui.options] ? optionsPanel(laid[at], defs[ui.options], t, at) : '';
+  // Customize mode leaves room under the widgets for the add tile and for dropping.
+  const grid = tiles || editing
+    ? `<div class="ws-tiles" data-today-grid style="--rows:${rows + (editing ? 3 : 0)}">${tiles}${panel}${editing ? addTile(rows) : ''}</div>`
+    : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want on Today.', actions: button('Choose cards', { action: 'today-customize', variant: 'primary' }) });
+  const locked = !!ui.locked;
+  const actions = editing ? '' : `${layoutMenu(t)}${button('', { action: 'today-lock', iconName: 'lock', title: locked ? 'Unlock layouts' : 'Lock layouts so nothing moves', attrs: { 'aria-label': 'Lock layouts', 'aria-pressed': String(locked) } })}${button('Add widget', { action: 'today-customize', iconName: 'plus', attrs: { 'data-focus': 'gallery' } })}${button('Customize', { action: 'today-customize', variant: 'primary', iconName: 'sliders' })}`;
+  return `<div class="ws-today ws-today-page${editing ? ' ws-today-editing' : ''}">
     <header class="ws-today-head">
       ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 56, className: 'ws-today-avatar' })}
       <div class="ws-today-title">
@@ -167,38 +183,42 @@ export function today(s, ctx) {
         <h1>${e(greeting(hour))}${name ? `, ${e(name)}` : ''}</h1>
         <p class="ws-description">${e(summary)}</p>
       </div>
-      <div class="ws-actions">${button('Customize', { action: 'customize', iconName: 'sliders' })}</div>
+      <div class="ws-actions ws-today-actions">${actions}</div>
     </header>
+    ${editing ? editBar(t, { canUndo: !!ui.history?.length, canRedo: !!ui.future?.length }) : ''}
     ${banners}
     ${ctx.codemieCard || ''}
     ${state === 'none' || state === 'authorizing' ? connectHero(state) : ''}
-    ${tiles ? `<div class="ws-tiles" data-today-grid style="--rows:${rows}">${tiles}</div>` : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want on Today.', actions: button('Choose cards', { action: 'today-customize', variant: 'primary' }) })}
+    ${editing ? `<div class="ws-today-edit">${grid}${gallery(defs, new Set(laid.map(it => it.id)), ui.gallery || '', t.titles)}</div>` : grid}
   </div>`;
 }
 
 const CARD_TITLE = /<h2 class="ws-card-title">([^]*?)<\/h2>/;
 const HANDLES = [['r', 'Drag to change the width'], ['b', 'Drag to change the height'], ['c', 'Drag to resize']]
   .map(([edge, title]) => `<span class="ws-rz" data-edge="${edge}" title="${title}" aria-hidden="true"></span>`).join('');
-const tool = (action, iconName, title, label, id, extra = '') => `<button type="button" class="ws-btn ws-btn-ghost ws-btn-sm ws-btn-icon" data-action="${action}" data-id="${e(id)}" title="${title}" aria-label="${label}"${extra}>${icon(iconName)}</button>`;
 
 /**
  * A widget's card as a grid tile placed at `it`. Cards come from `card()`, whose markup is fixed:
- * the tile keeps the card's classes and attributes, its header gets the grip and the widget
- * buttons, its body becomes the part that scrolls and the resize handles go last. `title` is the
- * name the user gave the widget, shown instead of the card's own.
+ * the tile keeps the card's classes and attributes, its header gets the grip, the options button
+ * and the ⋯ menu, its body becomes the part that scrolls and the resize handles go last. `title`
+ * is the name the user gave the widget, shown instead of the card's own; while `renaming`, the
+ * title is a field. In Customize mode (`editing`) the tile gets an ×.
  */
-function tile(html, it, order, title) {
+function tile(html, it, order, title, { editing = false, renaming = false } = {}) {
   let name = '';
   const named = html.replace(CARD_TITLE, (_, inner) => {
     const text = inner.lastIndexOf('>') + 1;
     name = title ? e(title) : inner.slice(text);
-    return `<h2 class="ws-card-title">${inner.slice(0, text)}${name}</h2>`;
+    const shown = renaming ? `<input class="ws-input ws-tile-rename" name="title" data-commit="today-title" data-id="${e(it.id)}" value="${name}" maxlength="40" aria-label="Title" autocomplete="off">` : name;
+    return `<h2 class="ws-card-title">${inner.slice(0, text)}${shown}</h2>`;
   });
   const open = named.indexOf('>');
   const place = `--x:${e(it.x)};--y:${e(it.y)};--w:${e(it.w)};--h:${e(it.h)};--order:${order}`;
-  const grip = `<button type="button" class="ws-tile-grip" aria-label="Move ${name}. Arrow keys move it, Shift and arrow keys resize it." title="Drag to move">${icon('grip')}</button>`;
-  const tools = `<div class="ws-tile-tools">${tool('today-options', 'sliders', 'Customize this widget', `Customize ${name}`, it.id)}${tool('today-menu', 'dots', 'More', `More for ${name}`, it.id, ' aria-haspopup="menu"')}</div>`;
-  return `${named.slice(0, open).replace('class="ws-card', () => `class="ws-card ws-tile${it.collapsed ? ' ws-tile-collapsed' : ''}`)} data-tile="${e(it.id)}" style="${place}"${named.slice(open)}`
+  const grip = `<button type="button" class="ws-tile-grip" data-grip="${e(it.id)}" aria-label="Move ${name}. Arrow keys move it, Shift and arrow keys resize it." title="Drag to move">${icon('grip')}</button>`;
+  const options = `<button type="button" class="ws-btn ws-btn-ghost ws-btn-sm ws-btn-icon" data-action="today-options" data-id="${e(it.id)}" title="Customize this widget" aria-label="Customize ${name}">${icon('sliders')}</button>`;
+  const tools = `<div class="ws-tile-tools">${options}${widgetMenu(it, name)}</div>`;
+  const remove = editing ? `<button type="button" class="ws-tile-remove" data-action="today-remove" data-id="${e(it.id)}" title="Remove from Today" aria-label="Remove ${name} from Today">${icon('close')}</button>` : '';
+  return `${named.slice(0, open).replace('class="ws-card', () => `class="ws-card ws-tile${it.collapsed ? ' ws-tile-collapsed' : ''}`)} data-tile="${e(it.id)}" style="${place}">${remove}${named.slice(open + 1)}`
     .replace('<header class="ws-card-header">', () => `<header class="ws-card-header ws-tile-head">${grip}`)
     .replace('<div class="ws-card-actions">', '<div class="ws-card-actions ws-tile-extra">')
     .replace('</header>', () => `${tools}</header>`)

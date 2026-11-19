@@ -408,10 +408,10 @@ test('Today draws tiles from the grid with their positions', () => {
     [['brief', 0], ['focus', 1], ['calendar', 2], ['inbox', 3], ['commitments', 4], ['notes', 5], ['meetings', 6], ['automations', 7]]);
   // A tile: the grip, its title, the widget buttons, a body and three resize handles.
   const tile = tileOf(html, 'focus');
-  assert.match(tile, /<header class="ws-card-header ws-tile-head"><button type="button" class="ws-tile-grip" aria-label="Move Day at a glance\. Arrow keys move it, Shift and arrow keys resize it\."/);
+  assert.match(tile, /<header class="ws-card-header ws-tile-head"><button type="button" class="ws-tile-grip" data-grip="focus" aria-label="Move Day at a glance\. Arrow keys move it, Shift and arrow keys resize it\."/);
   assert.match(tile, /<h2 class="ws-card-title"><span class="ws-card-icon">[^]*?<\/span>Day at a glance<\/h2>/);
   assert.match(tile, /data-action="today-options" data-id="focus"[^>]*aria-label="Customize Day at a glance"/);
-  assert.match(tile, /data-action="today-menu" data-id="focus"[^>]*aria-label="More for Day at a glance"/);
+  assert.match(tile, /<details class="ws-menu ws-menu-right ws-tile-menu" data-menu="today-w-focus">\s*<summary[^>]*aria-label="More for Day at a glance"/);
   assert.match(tile, /<div class="ws-card-body ws-tile-body">/);
   assert.deepEqual([...tile.matchAll(/class="ws-rz" data-edge="([a-z])"/g)].map(m => m[1]), ['r', 'b', 'c']);
   assert.match(tileOf(html, 'calendar'), /<div class="ws-card-actions ws-tile-extra">[^]*?data-route="calendar"/, 'header extras are marked');

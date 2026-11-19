@@ -4,12 +4,14 @@
 import { createStore, escapeHtml as e } from './store.js';
 import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
-import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, toggle, controlSelector, soleMatch } from './ui.js';
+import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, controlSelector, soleMatch } from './ui.js';
 import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calendarColors } from './calendar-model.js';
 import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
 import { askCommitment, askCommitmentId } from './summary-state.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
-import { today, customizeEntries } from './view-today.js';
+import { today } from './view-today.js';
+import { createTodayController, attachTodayDrag, newTodayView } from './today-controller.js';
+import { GRID } from './today-grid.js';
 import { calendar, eventDetails, eventActions, HOUR_HEIGHT } from './view-calendar.js';
 import { inbox, filteredMessages, snoozeUntil, draftChecks } from './view-inbox.js';
 import {
@@ -82,6 +84,8 @@ const state = {
   // Settings › Meetings: the template being edited, refusals by field, the glossary and tags as
   // typed, the rule tester (view state only; settings, templates and rules are native's).
   meetingsSettings: newMeetingsSettingsView(),
+  // Today: Customize mode, undo and redo, the open options panel, the gallery search, renaming.
+  today: newTodayView(),
   // Plugins: the page open under #/p/<id>/<activity>/<route>, the Settings → Plugins path
   // ({id, section}), what is installed, and the text of page widgets their frames drew.
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
@@ -145,17 +149,21 @@ let noteTimer;
 let searchTimer;
 let taskSearchTimer;
 let meetingSearchTimer;
+let gallerySearchTimer;
 // A card is being dragged on the Tasks board: updates wait until it is dropped.
 let taskDrag = false;
+// A Today widget is being moved, resized or dragged in: every render waits until its drop has
+// been saved (or refused), so the tiles moved by hand are not redrawn under the pointer.
+let layoutDrag = false;
 // The mouse button is down: an update redrawn between a click's mousedown and mouseup would
 // replace the control under the pointer and lose the click, so it waits for the mouseup.
 let pressing = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle']);
+const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle']);
 let lastDraftSignature = '';
-// Updates that arrived while held (the draft options popover open, a card dragged, the mouse
-// button down); shown once that ends.
+// Updates that arrived while held (the draft options popover open, a card or widget dragged, the
+// mouse button down); shown once that ends.
 let heldRender = false;
 
 function localPref(key, fallback) {
@@ -296,7 +304,42 @@ function restoreScroll(saved) {
   if (q('.ws-settings-panels') && saved.tab === state.settingsTab) q('.ws-settings-panels').scrollTop = saved.panels;
 }
 
+// Layout preferences of this Mac: locked layouts hide the grips and handles; the handles show on
+// hover (the default), always, or only in Customize.
+function applyLayoutPrefs(locked) {
+  const handles = localPref('codemie.layout.handles', 'hover');
+  root.classList.toggle('ws-locked', locked);
+  root.classList.toggle('ws-handles-always', handles === 'always');
+  root.classList.toggle('ws-handles-customize', handles === 'customize');
+}
+
+// Narrower than 640 px, Today's widgets stack in one column (its CSS asks the page's width): no
+// moves or resizes there.
+function measureToday() {
+  const page = root.querySelector('.ws-today-page');
+  state.today.stacked = !!page && page.clientWidth < GRID.stackBelow;
+}
+
+/** Says `text` in a polite live region (a widget moved or resized). */
+function announce(text) {
+  let live = document.getElementById('ws-live');
+  if (!live) {
+    live = document.createElement('div');
+    live.id = 'ws-live';
+    live.className = 'ws-sr';
+    live.setAttribute('role', 'status');
+    live.setAttribute('aria-live', 'polite');
+    document.body.append(live);
+  }
+  live.textContent = '';
+  setTimeout(() => { live.textContent = text; }, 30);
+}
+
 async function render() {
+  if (layoutDrag) {
+    heldRender = true;
+    return;
+  }
   if (!store?.get() || recovering) return;
   const note = document.getElementById('today-note');
   const unsavedNote = note && note.value !== note.defaultValue ? { workspaceId: note.dataset.workspaceId, text: note.value } : null;
@@ -316,8 +359,11 @@ async function render() {
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
+  const locked = !!todayUi?.locked();
+  applyLayoutPrefs(locked);
   const ctx = {
     state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(), pluginsKnown: state.pluginsKnown,
+    today: { ...state.today, locked },
     codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots(), signIn: codemie.signIn() },
     codemieCard: codemie.todayCard(),
   };
@@ -360,6 +406,7 @@ async function render() {
   for (const menu of openMenus) root.querySelector(`details.ws-menu[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
   if (state.route === 'inbox') rememberDraftBaseline(s);
   restoreScroll(saved);
+  measureToday();
   // A background update keeps keyboard focus on the same control, and only on that one: when
   // the control is gone or no longer told apart from a sibling, focus is left alone.
   if (refocus && !root.contains(document.activeElement)) {
@@ -1100,6 +1147,24 @@ if (tasksUi) {
   });
 }
 
+// ---------------------------------------------------------------- Today layout (spec "Interactions")
+
+const todayUi = store && createTodayController({
+  state, snap, mutate, render, toast, announce,
+  prefs: { get: localPref, json: localJson, set: setLocalPref },
+  focus: focusFirst,
+});
+if (todayUi) {
+  // `dragging(false)` comes once the drop's save has settled; the updates held meanwhile show then.
+  attachTodayDrag(document, todayUi, {
+    dragging: on => {
+      layoutDrag = on;
+      if (!on && heldRender && !modalOpen()) render().catch(fail);
+    },
+    fail,
+  });
+}
+
 // ---------------------------------------------------------------- meetings (spec "Meetings page")
 
 /** Saves `text` as a file in Downloads (the browser's download). */
@@ -1275,31 +1340,6 @@ function reviewAction(result, { onSent } = {}) {
   });
 }
 
-function customizeDialog() {
-  const w = current();
-  const entries = customizeEntries(w, pluginWidgetCatalog(state.installedPlugins));
-  // "From plugins" shows itself until a saved layout says otherwise (showPluginsCard).
-  const shown = x => w.layout.includes(x.id)
-    || (x.id === 'plugins' && !('plugins' in (w.widgetWidths || {})) && !!root.querySelector('.ws-plugins-card'))
-    || (x.id === 'meetings' && !('meetings' in (w.widgetWidths || {})) && !!root.querySelector('.ws-mtg-today'));
-  const dialog = openModal({
-    title: 'Customize Today',
-    subtitle: `Cards for ${w.name}. Drag the arrows to reorder.`,
-    body: `<div class="ws-widget-list" id="widget-order">${entries.map(x => `<div class="ws-widget-row" data-widget="${e(x.id)}"${x.plugin ? ` data-plugin-id="${e(x.plugin)}"` : ''}>
-      ${toggle({ name: 'widget', attrs: { value: x.id, 'aria-label': `Show ${x.title}` }, checked: shown(x) })}
-      <div class="ws-widget-copy"><strong>${e(x.title)}${x.plugin ? ` ${badge('Plugin', 'neutral', 'puzzle')}` : ''}</strong><span>${e(x.description)}</span></div>
-      ${select([[4, '⅓ width'], [6, '½ width'], [8, '⅔ width'], [12, 'Full width']], w.widgetWidths?.[x.id] || x.width, { name: `width-${x.id}`, 'aria-label': `${x.title} width` })}
-      <span class="ws-reorder">${button('', { action: 'widget-up', iconName: 'chevron-up', variant: 'ghost', title: 'Move up' })}${button('', { action: 'widget-down', iconName: 'chevron-down', variant: 'ghost', title: 'Move down' })}</span>
-    </div>`).join('')}</div>`,
-    submit: 'Save layout',
-    onSubmit: async f => {
-      const layout = [...dialog.querySelectorAll('[data-widget]')].map(row => row.dataset.widget).filter(id => f.getAll('widget').includes(id));
-      const widgetWidths = Object.fromEntries(entries.map(x => [x.id, Number(f.get(`width-${x.id}`))]));
-      await mutate('layout_save', { layout, widgetWidths });
-    },
-  });
-}
-
 function scheduleDialog() {
   const s = snap();
   openModal({
@@ -1392,8 +1432,9 @@ function selectMessage(id) {
   return render().then(() => root.querySelector('.ws-inbox-row.ws-selected')?.scrollIntoView({ block: 'nearest' }));
 }
 
-async function handle(action, el) {
+async function handle(action, el, ev) {
   if (action.startsWith('recovery-')) return recoveryAction(action);
+  if (action.startsWith('today-')) return todayUi.handle(action, el, ev);
   // Data location works from the recovery page too, where there is no snapshot.
   if (action.startsWith('data-')) return storageAction(action, el);
   if (action.startsWith('automation') || action.startsWith('run-')) return automationsUi.handle(action, el);
@@ -1740,16 +1781,6 @@ async function handle(action, el) {
     case 'commitment-toggle': return mutate('task_save', { id, status: el.checked ? 'done' : 'todo' });
     case 'local-delete': return mutate('local_delete', { kind: el.dataset.kind, id });
 
-    // Layout
-    case 'customize': return customizeDialog();
-    case 'widget-up': case 'widget-down': {
-      const row = el.closest('[data-widget]');
-      if (action === 'widget-up' && row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling);
-      if (action === 'widget-down' && row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row);
-      el.focus();
-      return;
-    }
-
     // Rules, schedules, jobs, notifications, data
     case 'rule-new': return ruleDialog();
     case 'schedule-new': return scheduleDialog();
@@ -1784,6 +1815,9 @@ async function submitForm(form) {
       return;
     }
     case 'task-quick': return tasksUi.quickAdd(form.dataset.col, Object.fromEntries(f));
+    case 'today-layout-save':
+      form.closest('details')?.removeAttribute('open');
+      return todayUi.handle('today-layout-save', { dataset: { name: String(f.get('name') || '') } });
     case 'meeting-notes': case 'meeting-task': return meetingsUi.submit(form, f);
     case 'plugin-addresses': return pluginsUi.submit(form);
     case 'time-zone': await mutate('settings_update', { timeZone: String(f.get('timeZone')).trim() }); return toast('Time zone saved.', 'success');
@@ -1829,7 +1863,7 @@ document.addEventListener('click', async ev => {
   const keepFocus = KEEP_FOCUS.has(el.dataset.action);
   if (!keepFocus) el.disabled = true;
   try {
-    await handle(el.dataset.action, el);
+    await handle(el.dataset.action, el, ev);
   } catch (err) {
     fail(err);
   } finally {
@@ -1909,6 +1943,11 @@ document.addEventListener('input', ev => {
       input?.setSelectionRange(pos, pos);
     }, 220);
   }
+  if (ev.target.id === 'today-gallery-search') {
+    const value = ev.target.value;
+    clearTimeout(gallerySearchTimer);
+    gallerySearchTimer = setTimeout(() => todayUi.handle('today-gallery-search', { dataset: {}, value }).catch(fail), 150);
+  }
   if (meetingsUi?.input(ev.target)) return;
   if (meetingsSettingsUi?.input(ev.target)) return;
   if (ev.target.id === 'reply-body') syncReplyBox(ev.target);
@@ -1972,6 +2011,7 @@ document.addEventListener('mouseup', released, true);
 window.addEventListener('blur', released);
 document.addEventListener('dragstart', released, true);
 window.addEventListener('resize', placeDraftPopover);
+window.addEventListener('resize', measureToday);
 document.addEventListener('scroll', placeDraftPopover, true);
 
 // ⋯ and the other ws-menu menus: one open at a time; a click anywhere else closes it, and so
@@ -2026,6 +2066,13 @@ document.addEventListener('keydown', ev => {
     ev.preventDefault();
     field.blur();
   }
+});
+
+// Today: ⌘Z undoes the last layout change and ⇧⌘Z redoes it, outside text fields.
+document.addEventListener('keydown', ev => {
+  if (!ready || state.route !== 'today' || modalOpen() || sheetOpen() || editing() || ev.altKey || !(ev.metaKey || ev.ctrlKey) || ev.key.toLowerCase() !== 'z') return;
+  ev.preventDefault();
+  (ev.shiftKey ? todayUi.redo() : todayUi.undo()).catch(fail);
 });
 
 // A field that saves when it is left (the drawer's typed due date): one save, with what it holds.
@@ -2376,7 +2423,7 @@ async function boot() {
     const arrived = applyArrivedDraft(result.snapshot);
     refreshEventDialog();
     if (modalOpen()) return;
-    if (state.draftPopover || taskDrag || pressing) {
+    if (state.draftPopover || taskDrag || layoutDrag || pressing) {
       heldRender = true;
       return;
     }

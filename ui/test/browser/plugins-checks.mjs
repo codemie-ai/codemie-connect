@@ -173,12 +173,12 @@ export async function pluginChecks({ open, check, assert, shot, quiet }) {
       const card = await page.locator('.ws-plugins-card').innerText();
       assert(card.includes('Not sent — Connect never sends for plugins'), 'held message note');
       assert(card.includes('<img src=x'), 'plugin text shown as text');
-      await page.click('[data-action="customize"]');
-      await page.waitForSelector(`${dialog} [data-widget="plugin:hello:greeting"]`);
-      await page.locator(`${dialog} [data-widget="plugin:hello:greeting"] .ws-switch`).click();
-      await page.locator(`${dialog} [data-widget="plugin:hello:board"] .ws-switch`).click();
-      await page.waitForTimeout(450);
-      await page.click(submit);
+      await page.click('.ws-today-actions [data-action="today-customize"]:has-text("Customize")');
+      await page.click('.ws-gallery [data-action="today-add"][data-id="plugin:hello:greeting"]');
+      await page.waitForSelector('[data-tile="plugin:hello:greeting"]');
+      await page.click('.ws-gallery [data-action="today-add"][data-id="plugin:hello:board"]');
+      await page.waitForSelector('[data-tile="plugin:hello:board"]');
+      await page.click('.ws-today-editbar [data-action="today-done"]');
       await page.waitForSelector('[data-widget="plugin:hello:greeting"]');
       assert((await page.locator('[data-widget="plugin:hello:greeting"]').innerText()).includes('A card from the host half'), 'widget data');
       // A page widget is drawn by its client half in its frame; Today shows the text of it.

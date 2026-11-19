@@ -393,12 +393,6 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .ws-swatch span{display:block;width:24px;height:24px;border-radius:50%;background:var(--swatch);box-shadow:inset 0 0 0 1px rgba(0,0,0,.15)}
 .ws-swatch input:checked+span{box-shadow:0 0 0 2px var(--ws-card),0 0 0 4px var(--swatch)}
 .ws-swatch input:focus-visible+span{outline:2px solid var(--ws-focus);outline-offset:4px}
-.ws-widget-list{display:grid;gap:8px}
-.ws-widget-row{display:grid;grid-template-columns:auto minmax(0,1fr) 128px auto;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--ws-border);border-radius:8px;background:var(--ws-card-2)}
-.ws-widget-copy{display:grid;line-height:18px}
-.ws-widget-copy strong{font-size:13px}
-.ws-widget-copy span{font-size:12px;color:var(--ws-muted)}
-.ws-reorder{display:flex}
 .ws-review{display:grid;gap:12px}
 
 /* ------------------------------------------------------------------ Today */
@@ -434,10 +428,136 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .ws-tile .ws-card-footer{flex-shrink:0}
 .ws-tile-collapsed .ws-tile-head{border-bottom-color:transparent}
 .ws-tile-collapsed .ws-tile-body,.ws-tile-collapsed .ws-card-footer{display:none}
-/* Narrower than 640 px: one column in reading order, each tile still the height of its rows. */
+/* Arranging by hand (spec "Interactions"). Other widgets glide aside while one is held; the held
+   one follows the pointer lifted, a dashed placeholder shows where it lands and the column guides
+   show. The grip and the handles show on hover, always, or only in Customize (Settings); locked
+   layouts have neither. */
+.ws-today-head{flex-wrap:wrap}
+.ws-today-title{flex:1 1 320px}
+.ws-today-actions{justify-content:flex-end}
+.ws-tiles.ws-guides>.ws-tile{transition:left .2s cubic-bezier(.2,.8,.2,1),top .2s cubic-bezier(.2,.8,.2,1),width .2s cubic-bezier(.2,.8,.2,1),height .2s cubic-bezier(.2,.8,.2,1),box-shadow .15s}
+.ws-tile-head{cursor:grab;touch-action:none}
+.ws-tiles.ws-guides>.ws-tile-lifted{transition:box-shadow .15s,transform .15s}
+.ws-tile-lifted{z-index:40;cursor:grabbing;transform:scale(1.015) rotate(-.4deg);box-shadow:0 18px 40px rgba(0,0,0,.55),0 0 0 1px color-mix(in srgb,var(--ws-accent) 40%,transparent)}
+.ws-tiles.ws-guides>.ws-tile-resizing{transition:none}
+.ws-tile-resizing{z-index:40;box-shadow:0 18px 40px rgba(0,0,0,.55),0 0 0 1px color-mix(in srgb,var(--ws-accent) 40%,transparent)}
+.light :is(.ws-tile-lifted,.ws-tile-resizing){box-shadow:0 18px 40px rgba(20,30,60,.22),0 0 0 1px color-mix(in srgb,var(--ws-accent) 33%,transparent)}
+.ws-tile:has(.ws-menu[open]){z-index:30}
+.ws-tile-ph{position:absolute;box-sizing:border-box;display:none;z-index:0;pointer-events:none;left:calc((100% - 11 * 16px) / 12 * var(--x) + 16px * var(--x));top:calc(var(--y) * 72px);width:calc((100% - 11 * 16px) / 12 * var(--w) + 16px * (var(--w) - 1));height:calc(var(--h) * 56px + (var(--h) - 1) * 16px);border:2px dashed var(--ws-accent);border-radius:var(--ws-radius-lg);background:color-mix(in srgb,var(--ws-accent) 10%,transparent);transition:left .12s,top .12s,width .12s,height .12s}
+.ws-tile-ph.ws-on{display:block}
+.ws-tiles.ws-guides::before,.ws-today-editing .ws-tiles::before{content:"";position:absolute;inset:0;pointer-events:none;border-radius:12px;background-image:repeating-linear-gradient(90deg,color-mix(in srgb,var(--ws-accent) 7%,transparent) 0 calc((100% - 176px) / 12),transparent calc((100% - 176px) / 12) calc((100% - 176px) / 12 + 16px))}
+.ws-rz{position:absolute;z-index:4;touch-action:none}
+.ws-rz[data-edge=r]{top:14px;bottom:14px;right:-6px;width:12px;cursor:ew-resize}
+.ws-rz[data-edge=b]{left:14px;right:14px;bottom:-6px;height:12px;cursor:ns-resize}
+.ws-rz[data-edge=c]{right:-3px;bottom:-3px;width:22px;height:22px;cursor:nwse-resize}
+.ws-rz::after{content:"";position:absolute;opacity:0;transition:opacity .12s}
+.ws-rz[data-edge=r]::after{top:50%;left:4px;width:4px;height:36px;margin-top:-18px;border-radius:4px;background:var(--ws-accent)}
+.ws-rz[data-edge=b]::after{left:50%;top:4px;width:36px;height:4px;margin-left:-18px;border-radius:4px;background:var(--ws-accent)}
+.ws-rz[data-edge=c]::after{right:6px;bottom:6px;width:10px;height:10px;border-right:2px solid var(--ws-faint);border-bottom:2px solid var(--ws-faint);border-bottom-right-radius:4px}
+.ws-tile:hover .ws-rz[data-edge=c]::after,.ws-handles-always .ws-rz[data-edge=c]::after{opacity:1}
+.ws-rz:hover::after,.ws-tile-resizing .ws-rz::after,.ws-today-editing .ws-rz::after{opacity:.85}
+.ws-rz[data-edge=c]:hover::after{border-color:var(--ws-accent)}
+.ws-tile-collapsed .ws-rz:not([data-edge=r]){display:none}
+.ws-today-editing .ws-tile-grip,.ws-handles-always .ws-tile-grip{opacity:1}
+.ws-handles-customize .ws-today-page:not(.ws-today-editing) :is(.ws-tile-grip,.ws-rz){display:none}
+.ws-locked :is(.ws-tile-grip,.ws-rz){display:none}
+.ws-locked .ws-tile-head{cursor:default;touch-action:auto}
+.ws-tile-badge{position:absolute;right:10px;bottom:10px;z-index:6;display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:8px;background:var(--ws-text);color:var(--ws-bg);font-size:12px;font-weight:600;pointer-events:none}
+.ws-tile-badge span{font-weight:400;opacity:.75}
+.ws-tile-rename{flex:1;min-width:0;height:28px;padding:0 6px;font-size:14px;font-weight:600}
+body.ws-dragging,body.ws-dragging *{user-select:none!important;-webkit-user-select:none!important}
+body.ws-drag-move,body.ws-drag-move *{cursor:grabbing!important}
+body.ws-drag-ew,body.ws-drag-ew *{cursor:ew-resize!important}
+body.ws-drag-ns,body.ws-drag-ns *{cursor:ns-resize!important}
+body.ws-drag-nwse,body.ws-drag-nwse *{cursor:nwse-resize!important}
+
+/* The widget ⋯ menu and the saved layouts menu. */
+.ws-tile-menu .ws-menu-panel{min-width:230px;z-index:35}
+.ws-tile-menu .ws-menu-item{width:100%;white-space:nowrap}
+.ws-tile-seg{display:flex;margin:2px 4px 6px;border:1px solid var(--ws-border);border-radius:8px;overflow:hidden}
+.ws-tile-seg button{flex:1;height:28px;padding:0 6px;border:0;background:transparent;color:var(--ws-muted);font-size:12px}
+.ws-tile-seg button+button{border-left:1px solid var(--ws-border)}
+.ws-tile-seg button:hover{background:var(--ws-hover);color:var(--ws-text)}
+.ws-tile-seg button[aria-pressed=true]{background:var(--ws-selected);color:var(--ws-text)}
+.ws-today-layout-pill{gap:6px}
+.ws-today-changed{font-style:normal;font-size:11px;font-weight:500;color:var(--ws-amber)}
+.ws-today-layouts .ws-menu-panel{min-width:260px}
+.ws-today-layouts .ws-menu-item{width:100%;white-space:nowrap}
+.ws-today-layouts .ws-menu-item[aria-checked=true]::after{content:"✓";margin-left:auto;color:var(--ws-accent)}
+.ws-today-layout-row{display:flex;align-items:center;gap:2px}
+.ws-today-layout-row .ws-menu-item{flex:1;min-width:0}
+.ws-today-layout-save{display:flex;gap:6px;padding:2px}
+.ws-today-layout-save .ws-input{height:28px;font-size:12px}
+
+/* Customize mode: the toolbar, the dashed widgets with their ×, the add tile and the gallery. */
+.ws-today-editbar{position:sticky;top:8px;z-index:50;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:-8px 0 16px;padding:10px 12px 10px 14px;border-radius:12px;border:1px solid transparent;background:linear-gradient(var(--ws-card),var(--ws-card)) padding-box,var(--ws-primary-border) border-box;box-shadow:var(--ws-shadow)}
+.ws-today-hint{display:flex;align-items:center;gap:10px;flex:1;min-width:220px;font-size:12px;line-height:17px;color:var(--ws-muted)}
+.ws-today-hint>span{display:grid}
+.ws-today-hint strong{font-size:13px;color:var(--ws-text)}
+.ws-today-hint>.ws-icon{width:20px;height:20px;color:var(--ws-accent)}
+.ws-today-sep{width:1px;height:20px;background:var(--ws-border)}
+.ws-today-editing .ws-tile{outline:1px dashed color-mix(in srgb,var(--ws-accent) 45%,transparent);outline-offset:-1px}
+.ws-today-editing :is(.ws-tile-lifted,.ws-tile-resizing){outline:none}
+.ws-tile-remove{position:absolute;top:-9px;left:-9px;z-index:5;display:grid;place-items:center;width:24px;height:24px;padding:0;border-radius:50%;border:1px solid var(--ws-border-strong);background:var(--ws-card);color:var(--ws-text);box-shadow:var(--ws-shadow-sm)}
+.ws-tile-remove:hover{background:var(--ws-red);border-color:var(--ws-red);color:#fff}
+.ws-tile-remove .ws-icon{width:13px;height:13px}
+.ws-tile-add{position:absolute;left:0;width:100%;top:calc(var(--y) * 72px);height:128px;display:flex;align-items:center;justify-content:center;gap:8px;border:1.5px dashed var(--ws-border-strong);border-radius:12px;background:transparent;color:var(--ws-muted);font-size:13px}
+.ws-tile-add:hover{border-color:var(--ws-accent);color:var(--ws-accent);background:color-mix(in srgb,var(--ws-accent) 6%,transparent)}
+.ws-today-edit{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:start}
+.ws-gallery{position:sticky;top:84px;max-height:calc(100vh - 170px);display:flex;flex-direction:column;border:1px solid var(--ws-border);border-radius:12px;background:var(--ws-card);overflow:hidden}
+.ws-gallery-head{padding:14px 16px 10px;border-bottom:1px solid var(--ws-border)}
+.ws-gallery-head h2{display:flex;align-items:center;gap:8px;font-size:14px}
+.ws-gallery-head p{margin-top:4px;font-size:12px;line-height:17px;color:var(--ws-muted)}
+.ws-gallery-head .ws-input{margin-top:10px;height:30px;font-size:13px}
+.ws-gallery-list{overflow:auto;padding:8px 10px 14px;display:grid;gap:8px;align-content:start}
+.ws-gallery-group{padding:10px 6px 2px;font-size:11px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;color:var(--ws-faint)}
+.ws-gallery-card{display:grid;grid-template-columns:44px minmax(0,1fr);gap:10px;align-items:start;padding:10px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);cursor:grab;touch-action:none;transition:border-color .12s,background .12s}
+.ws-gallery-card:hover{border-color:var(--ws-border-strong);background:var(--ws-hover)}
+.ws-gallery-thumb{position:relative;width:44px;height:44px;border-radius:8px;display:grid;place-items:center;background:var(--ws-raised)}
+.ws-gallery-thumb .ws-icon{width:20px;height:20px}
+.ws-gallery-thumb small{position:absolute;right:-6px;bottom:-6px;padding:0 4px;border-radius:4px;background:var(--ws-text);color:var(--ws-bg);font-size:9px;font-weight:700;line-height:14px}
+.ws-gallery-copy{min-width:0}
+.ws-gallery-copy strong{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13px}
+.ws-gallery-copy p{margin-top:2px;font-size:12px;line-height:17px;color:var(--ws-muted)}
+.ws-gallery-row{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;color:var(--ws-faint)}
+.ws-gallery-on{grid-template-columns:32px minmax(0,1fr) auto;align-items:center;padding:6px 8px;cursor:default;touch-action:auto}
+.ws-gallery-on .ws-gallery-thumb{width:32px;height:32px}
+.ws-gallery-on .ws-gallery-thumb .ws-icon{width:16px;height:16px}
+.ws-gallery-on strong{min-width:0;font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-drag-ghost{position:fixed;z-index:1100;left:0;top:0;width:240px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;border:1px solid var(--ws-accent);background:var(--ws-card);color:var(--ws-text);box-shadow:var(--ws-shadow);font-family:var(--font-ui);font-size:13px;font-weight:600;pointer-events:none}
+.ws-drag-ghost small{display:block;font-size:11px;font-weight:400;color:var(--ws-muted)}
+.ws-drag-ghost.ws-over{opacity:.85}
+
+/* A widget's options panel, next to it: on its right, its left, or over its right side. */
+.ws-today-options{--ow:300px;position:absolute;z-index:45;box-sizing:border-box;width:var(--ow);max-width:100%;left:clamp(0px,var(--ol),calc(100% - var(--ow)));top:calc(var(--y) * 72px);display:grid;gap:14px;padding:14px 16px;border:1px solid var(--ws-border-strong);border-radius:10px;background:var(--ws-card);box-shadow:var(--ws-shadow)}
+.ws-today-options-right{--ol:calc((100% - 176px) / 12 * (var(--x) + var(--w)) + 16px * (var(--x) + var(--w)) - 6px)}
+.ws-today-options-left{--ol:calc((100% - 176px) / 12 * var(--x) + 16px * var(--x) - var(--ow) - 10px)}
+.ws-today-options-inside{--ol:calc((100% - 176px) / 12 * (var(--x) + var(--w)) + 16px * (var(--x) + var(--w) - 1) - var(--ow) - 10px);top:calc(var(--y) * 72px + 52px)}
+.ws-today-options-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.ws-today-options-head strong{display:flex;align-items:center;gap:8px;font-size:13px}
+.ws-today-checks{min-width:0;margin:0;padding:0;border:0}
+.ws-today-checks legend{padding:0;margin-bottom:6px}
+.ws-today-checks .ws-check{margin:0 16px 6px 0;font-size:13px}
+.ws-today-options-note{color:var(--ws-faint);font-size:11px;line-height:16px}
+.ws-today-options-foot{display:flex;justify-content:space-between;gap:8px}
+
+/* Narrower than 640 px: one column in reading order, each tile still the height of its rows;
+   widgets don't move or resize there, and the saved positions stay as they are. */
 @container ws-today (max-width:639px){
   .ws-tiles{display:flex;flex-direction:column;gap:16px;height:auto}
   .ws-tile{position:relative;left:auto;top:auto;width:auto;order:var(--order)}
+  .ws-tile-head{cursor:default;touch-action:auto}
+  :is(.ws-tile-grip,.ws-rz,.ws-tile-ph,.ws-tile-sizes,.ws-tile-menu [data-action=today-top]){display:none}
+  .ws-today-options{position:relative;left:auto;top:auto;width:auto;order:var(--order)}
+  .ws-tile-add{position:relative;top:auto;order:9999}
+}
+@container ws-today (max-width:819px){
+  .ws-today-edit{grid-template-columns:minmax(0,1fr)}
+  .ws-gallery{position:relative;top:0;max-height:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .ws-tiles.ws-guides>.ws-tile,.ws-tile-ph{transition:none}
+  .ws-tile-lifted{transform:none}
 }
 
 .ws-upnext .ws-card-body{padding:18px}

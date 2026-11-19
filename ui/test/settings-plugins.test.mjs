@@ -8,7 +8,8 @@ import {
   createPluginsController, UNVERIFIED, KNOWLEDGE_LATER, PROXY_NOTE,
 } from '../workspace/settings-plugins.js';
 import { pluginNav, renderShell } from '../workspace/shell.js';
-import { customizeEntries, today } from '../workspace/view-today.js';
+import { tileDefs, today } from '../workspace/view-today.js';
+import { gallery } from '../workspace/today-edit-view.js';
 import { pluginWidgetCatalog, pluginWidgetCard, pluginsCard, showPluginsCard, heldText, parseLayoutId } from '../workspace/today-plugins.js';
 import { settings } from '../workspace/view-settings.js';
 import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
@@ -240,11 +241,14 @@ test('today_customize_lists_plugin_widgets', () => {
   ];
   const catalog = pluginWidgetCatalog(installed);
   assert.deepEqual(catalog.map(w => [w.id, w.width]), [['plugin:github:ci', 4], ['plugin:github:repos', 12]]);
-  const w = { layout: ['brief', 'plugin:github:repos'], widgetWidths: {} };
-  const entries = customizeEntries(w, catalog);
-  assert.deepEqual(entries.slice(0, 2).map(x => x.id), ['brief', 'plugin:github:repos']);
-  assert.ok(entries.some(x => x.id === 'plugin:github:ci' && x.plugin === 'github'));
-  assert.ok(entries.some(x => x.id === 'plugins'), 'the From plugins card is offered');
+  // The gallery offers what isn't on Today, plugin widgets marked, and lists what is.
+  const html = gallery(tileDefs(catalog), new Set(['brief', 'plugin:github:repos']));
+  const offered = html.slice(html.indexOf('Add to Today'), html.indexOf('On Today'));
+  assert.match(offered, /data-gid="plugin:github:ci" data-w="4" data-h="4"[^]*?GitHub CI <span class="ws-badge ws-badge-purple">Plugin<\/span>/);
+  assert.match(offered, /data-gid="plugins"/, 'the From plugins card is offered');
+  assert.doesNotMatch(offered, /data-gid="brief"/);
+  assert.match(html, /On Today · 2<\/div>[^]*?data-gid="brief"[^]*?data-gid="plugin:github:repos"/);
+  assert.ok(escaped(html), 'a plugin widget title is text');
   assert.deepEqual(parseLayoutId('plugin:github:ci'), { plugin: 'github', widget: 'ci' });
   assert.equal(parseLayoutId('plugin:../x:y'), null);
 });

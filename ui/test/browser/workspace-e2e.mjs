@@ -1297,24 +1297,44 @@ for (const theme of ['dark', 'light']) {
     await page.waitForSelector('.ws-focus:not(.ws-focus-on)');
   });
 
-  await check(`${theme}: Customize dialog uses CodeMie switches and reorders`, async () => {
-    await page.click('button:has-text("Customize")');
-    await page.waitForSelector('.ws-modal[open] .ws-switch');
-    await page.waitForTimeout(300);
-    const box = await page.locator('.ws-modal[open] .ws-switch-track').first().boundingBox();
-    assert(Math.round(box.width) === 32 && Math.round(box.height) === 16, `switch ${box.width}x${box.height}`);
-    const overlay = await page.evaluate(() => getComputedStyle(document.querySelector('.ws-modal[open]'), '::backdrop').backgroundColor);
-    assert(overlay === 'rgba(0, 0, 0, 0.5)', `scrim ${overlay}`);
+  await check(`${theme}: Customize moves a widget by its header, undoes it, and removes and adds through the gallery`, async () => {
+    const saves = () => page.evaluate(() => window.__bridgeCalls.filter(([op]) => op === 'layout_save').map(([, d]) => d));
+    const before = (await saves()).length;
+    await page.click('.ws-today-actions [data-action="today-customize"]:has-text("Customize")');
+    await page.waitForSelector('.ws-today-editbar:has-text("Customizing Today")');
+    await page.waitForSelector('.ws-gallery .ws-gallery-group:has-text("On Today")');
     await shot(page, `${theme}-customize`);
-    await page.locator('.ws-modal[open] [data-widget=focus] .ws-switch').click();
-    const checked = await page.locator('.ws-modal[open] [data-widget=focus] input[name=widget]').isChecked();
-    assert(!checked, 'focus switch did not turn off');
-    await page.click('.ws-modal[open] button[type=submit]');
-    await page.waitForTimeout(100);
-    const layout = await page.evaluate(() => window.__workspace?.store.get().snapshot.workspaces[0].layout);
-    assert(!layout.includes('focus'), `layout ${layout}`);
-    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
-    assert(await page.locator('.ws-glance').count() === 0, 'focus card still visible');
+    // Day at a glance dragged by its title to the top left lands there, saved once on the drop.
+    await page.evaluate(() => { document.querySelector('.ws-main').scrollTop = 0; });
+    const title = await page.locator('[data-tile="focus"] .ws-tile-head h2').boundingBox();
+    const tile = await page.locator('[data-tile="focus"]').boundingBox();
+    const grid = await page.locator('[data-today-grid]').boundingBox();
+    const from = { x: title.x + 30, y: title.y + title.height / 2 };
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x - 10, from.y + 4, { steps: 2 });
+    await page.mouse.move(grid.x + (from.x - tile.x), grid.y + (from.y - tile.y), { steps: 12 });
+    await page.waitForSelector('.ws-tile-ph.ws-on');
+    await page.mouse.up();
+    await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op === 'layout_save').length === n + 1, before);
+    let saved = (await saves()).at(-1);
+    assert(saved.layout[0] === 'focus' && saved.today.items.some(i => i.id === 'focus' && i.x === 0 && i.y === 0), `layout ${saved.layout}`);
+    assert(saved.widgetWidths === undefined, 'widths are no longer sent');
+    await page.waitForSelector('[data-tile="focus"][style^="--x:0;--y:0;"]');
+    // Undo saves it back where it was.
+    await page.click('.ws-today-editbar [data-action="today-undo"]');
+    await page.waitForSelector('[data-tile="focus"][style^="--x:8;--y:0;"]');
+    // Its × takes it off Today with Undo in the toast; the gallery's Add puts it at the top left.
+    await page.click('[data-tile="focus"] .ws-tile-remove');
+    await page.waitForSelector('[data-tile="focus"]', { state: 'detached' });
+    await page.waitForSelector('.ws-toast:has-text("Day at a glance removed from Today") .ws-toast-action:has-text("Undo")');
+    saved = (await saves()).at(-1);
+    assert(!saved.layout.includes('focus'), `layout ${saved.layout}`);
+    await page.click('.ws-gallery [data-action="today-add"][data-id="focus"]');
+    await page.waitForSelector('[data-tile="focus"][style^="--x:0;--y:0;"]');
+    await page.click('.ws-today-editbar [data-action="today-done"]');
+    await page.waitForSelector('.ws-today-editing', { state: 'detached' });
+    await page.waitForSelector('.ws-toast:has-text("Today is saved")');
   });
 
   await check(`${theme}: Calendar week grid shows hours, overlaps and now line`, async () => {
