@@ -438,7 +438,9 @@ export function createMeetingsController({
   async function makeAll() {
     const s = snap();
     const rules = rulesOf(s);
-    const todo = meetingItems(s, now()).filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run && !m.paused && !isHidden(m, v().hidden));
+    // What the Needs you card's "Make notes for N" counts: its transcripts without notes, so a
+    // search or a hidden meeting narrows the run as it narrows the label.
+    const todo = model().needs.filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run && !m.paused);
     const result = await eachMeeting(todo, m => makeNotes(m.id, { templateId: resolveTemplate(m.ev, m.rec, s, rules).id, wishes: '', findTasks: true, remember: false, batch: true }));
     batchToast(result, todo.length, { verb: 'Making notes for', noun: 'meeting', all: n => `Making notes for ${plural(n, 'meeting')}. Each uses its own template.` });
   }
@@ -678,7 +680,7 @@ export function createMeetingsController({
         return render();
       case 'meeting-people-all': view.peopleAll = id; return render();
       // "Who is this?" on a transcript line: that voice in the speaker list above the lines.
-      case 'meeting-name-speaker': return focus(`select[data-action="meeting-speaker"][data-voice="${quoted(el.dataset.voice || '')}"]`);
+      case 'meeting-name-speaker': return focus(`select[data-action="meeting-speaker"][data-voice="${quoted(el.dataset.voice || '')}"]`, { scroll: true });
       case 'meeting-compare': setCompare(el.dataset.v === '1'); return render();
       case 'meeting-open': return open(id);
       case 'meeting-make-notes': return makeNotesDialog(id);

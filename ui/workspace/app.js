@@ -512,6 +512,7 @@ async function saveNote(el) {
 
 async function route(name, tab, pluginPath = null) {
   await savePendingNote();
+  state.meetings.rowMenu = null;
   state.route = ROUTES.includes(name) ? name : 'today';
   if (tab && state.route === 'settings') state.settingsTab = settingsTabFor(tab);
   const onPluginsTab = state.route === 'settings' && state.settingsTab === 'plugins';
@@ -1169,12 +1170,14 @@ const runLogOpen = () => !!automationsUi?.runLogOpen();
 
 /** The first of the selectors that finds a control takes focus. The page scrolls to it only for
  *  keyboard focus: a click (Accept, Delete) doesn't make the board jump. */
-function focusFirst(selectors) {
+function focusFirst(selectors, { scroll = false } = {}) {
   for (const selector of [].concat(selectors)) {
     const el = root.querySelector(selector);
     el?.focus({ preventScroll: true });
     if (el && document.activeElement === el) {
-      if (el.matches(':focus-visible')) el.scrollIntoView({ block: 'nearest' });
+      // `scroll`: the place itself is the point (e.g. "Who is this?" → the speaker list).
+      if (scroll) el.scrollIntoView({ block: 'center' });
+      else if (el.matches(':focus-visible')) el.scrollIntoView({ block: 'nearest' });
       return;
     }
   }
@@ -1938,9 +1941,10 @@ document.addEventListener('contextmenu', ev => {
   meetingsUi.contextMenu(row.dataset.id, x, y).catch(fail);
 });
 document.addEventListener('click', ev => {
-  if (!state.meetings.rowMenu || ev.target.closest?.('.ws-mtg-rowmenu,[data-action]')) return;
+  if (!state.meetings.rowMenu || ev.target.closest?.('.ws-mtg-rowmenu')) return;
   state.meetings.rowMenu = null;
-  render().catch(fail);
+  // After the click's own action and default (a menu opening, a switch) have run.
+  setTimeout(() => render().catch(fail), 0);
 });
 
 document.addEventListener('click', async ev => {

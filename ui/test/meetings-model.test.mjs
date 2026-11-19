@@ -292,3 +292,15 @@ test('tabsOf gives four tabs with a transcript and none without', () => {
 test('a #/meetings/<id>/people hash opens notes', () => {
   assert.deepEqual(parseHash('#/meetings/x/people'), { route: 'meetings', meetingId: 'x', tab: null });
 });
+
+test('hiddenCount counts what Show would bring back', () => {
+  const s = snapshot();
+  for (const id of ['mtg-philips', 'mtg-planning', 'ev-week-1']) s.records.find(r => r.kind === 'event' && r.id === id).data.seriesId = 'series-sync';
+  const hidden = { ids: [], series: ['series-sync'] };
+  // Philips is in All; Quarterly planning has no transcript (behind its own switch); the
+  // upcoming one is later this week (in Coming up).
+  assert.equal(modelOf(s, { hidden }).hiddenCount, 1);
+  assert.equal(modelOf(s, { hidden, showNone: true }).hiddenCount, 2);
+  assert.equal(modelOf(s, { hidden, filter: 'upcoming' }).hiddenCount, 1, 'Coming up counts its own');
+  assert.equal(modelOf(s, { hidden, q: 'zzz' }).hiddenCount, 0, 'a search counts what matches');
+});

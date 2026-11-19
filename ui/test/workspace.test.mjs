@@ -1309,3 +1309,20 @@ test('tasks: "2 to review · 1 on the board", Accept only on tasks to review', (
   for (const t of s.records.filter(r => r.kind === 'commitment' && r.data.meetingId === 'mtg-philips')) t.data.status = 'todo';
   assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'tasks' }))), /<h3>3 tasks<\/h3>/);
 });
+
+test('a meeting without a transcript keeps its tasks and the add form under its card', () => {
+  const s = meetingsSnapshot();
+  for (const id of ['mtg-northwind', 'ev-next']) {
+    const d = detailOf(meetings(s, meetingsCtx({ selected: id })));
+    assert.doesNotMatch(d, /ws-mtg-tabs/, id);
+    assert.match(d, /form class="ws-mtg-add-task" data-form="meeting-task" data-id="[^"]+"/, `${id}: Add a task`);
+    assert.doesNotMatch(d, /Tasks come from the notes/, `${id}: no empty state under the card`);
+  }
+  // A task already linked to it shows there.
+  const t = s.records.find(r => r.kind === 'commitment' && r.data.meetingId === 'mtg-philips');
+  t.data.meetingId = 'mtg-northwind';
+  const d = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-northwind' })));
+  assert.match(d, new RegExp(`data-action="task-open-today" data-id="${t.id}"`));
+  // The people popover names a person's tasks, without a link to a tab that isn't there.
+  assert.doesNotMatch(d.match(/<details class="ws-menu[^"]*ws-mtg-stack[^"]*"[^]*?<\/details>/)?.[0] || '', /data-action="meeting-tab"/);
+});

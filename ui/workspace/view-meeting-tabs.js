@@ -9,7 +9,7 @@ import { avatar, badge, button, card, emptyState, toggle } from './ui.js';
 import { agoLabel, durationLabel, formatTime } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { columnName, isMine, meOf, ownerOf, peopleFor, taskStatus } from './tasks-model.js';
-import { meetingErrors, meetingTasks, peopleOf, resolveTemplate, ruleText, templatesOf } from './meetings-model.js';
+import { meetingErrors, meetingTasks, peopleOf, resolveTemplate, ruleText, tabsOf, templatesOf } from './meetings-model.js';
 
 export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const option = (value, label, selected) => `<option value="${e(value)}"${selected ? ' selected' : ''}>${e(label)}</option>`;
@@ -513,7 +513,9 @@ function ownerSelect(p, t) {
   return `<span class="ws-mtg-owner">${owner.key ? avatar({ name: owner.name, size: 20, seed: owner.seed }) : `<span class="ws-task-nobody" style="--size:20px" aria-hidden="true">${icon('user')}</span>`}${selectBox(`data-action="task-owner" data-id="${e(t.id)}" aria-label="Owner of ${e(t.data.text)}"`, body)}</span>`;
 }
 
-export function tasksTab(p, mc) {
+/** The Tasks tab; `alone` under the explainer of a meeting without a transcript: its tasks and
+ *  Add a task, no empty state. */
+export function tasksTab(p, mc, { alone = false } = {}) {
   const { m } = mc;
   const order = t => (taskStatus(t) === 'review' ? 0 : taskStatus(t) === 'done' ? 2 : 1);
   const tasks = [...mc.tasks].sort((a, b) => order(a) - order(b) || (Number(a.data.line) || 0) - (Number(b.data.line) || 0));
@@ -545,14 +547,14 @@ export function tasksTab(p, mc) {
     : selectBox(`data-action="task-status" data-id="${e(t.id)}" aria-label="Status of ${e(t.data.text)}"`, ['todo', 'doing', 'waiting', 'done'].map(c => option(c, columnName(c, p.s.settings), status === c)).join(''), 'ws-mtg-status')}
     </div>`;
   };
-  const empty = m.state === 'ready'
+  const empty = alone ? '' : m.state === 'ready'
     ? emptyState({ iconName: 'tasks', title: 'No tasks in this meeting', text: 'The notes didn’t name any concrete next steps. Add one yourself if something was agreed.' })
     : emptyState({ iconName: 'tasks', title: 'Tasks come from the notes', text: 'Make notes first: Connect finds the tasks and matches each owner to someone in the meeting.', actions: ['available', 'downloaded', 'failed'].includes(m.state) ? button('Make notes', { action: 'meeting-make-notes', variant: 'primary', iconName: 'sparkles', attrs: { 'data-id': m.id } }) : '' });
   const people = mc.people.filter(x => x.address && !x.me);
   const mine = me.address || 'You';
   const board = mc.tasks.length - review;
   const heading = review ? `<h3>${review} to review</h3>${board ? `<small>· ${board} on the board</small>` : ''}` : `<h3>${mc.tasks.length ? plural(mc.tasks.length, 'task') : 'Tasks'}</h3>`;
-  return `<section class="ws-mtg-tasks">
+  return `<section class="ws-mtg-tasks${alone ? ' ws-mtg-tasks-alone' : ''}">
     <header class="ws-mtg-tasks-head">${heading}<span class="ws-spacer"></span>${review > 1 ? button(`Accept all ${review}`, { action: 'meeting-tasks-accept', iconName: 'check', size: 'sm', attrs: { 'data-id': m.id } }) : ''}${button('Open board', { action: 'meeting-board', variant: 'ghost', size: 'sm', iconRight: 'arrow', attrs: { 'data-id': m.id } })}</header>
     ${review ? '<p class="ws-mtg-tasks-hint">Found in the notes. Check the owner and the date, then accept.</p>' : ''}
     <div class="ws-mtg-tasks-body">${tasks.length ? `<div class="ws-mtg-trows">${tasks.map(row).join('')}</div>` : empty}
@@ -624,7 +626,7 @@ export function peopleList(p, mc) {
       ${avatar({ name: x.name, size: 24, seed: address || x.name })}
       <span class="ws-mtg-person-copy"><strong>${e(x.name)}</strong>${note ? `<small>${e(note)}</small>` : ''}</span>
       <span class="ws-mtg-talk">${share === null ? '' : chars ? `${share}% talking` : 'didn’t speak'}</span>
-      <span class="ws-mtg-person-tasks">${tasks ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-tab" data-tab="tasks">${plural(tasks, 'task')}</button>` : ''}</span>
+      <span class="ws-mtg-person-tasks">${tasks ? (tabsOf(mc.m).length ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-tab" data-tab="tasks">${plural(tasks, 'task')}</button>` : `<small>${plural(tasks, 'task')}</small>`) : ''}</span>
     </div>`;
   }).join('');
   const more = mc.people.length > shown.length ? `<button type="button" class="ws-link ws-mtg-linkbtn ws-mtg-people-more" data-action="meeting-people-all" data-id="${e(mc.m.id)}">+${mc.people.length - shown.length} more</button>` : '';

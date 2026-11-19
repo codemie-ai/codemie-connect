@@ -472,6 +472,45 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForSelector('.ws-mtg-rowmenu');
         await page.click('.ws-mtg-list-title h1');
         await page.waitForSelector('.ws-mtg-rowmenu', { state: 'detached' });
+        // Another page in between: the menu doesn't come back with Meetings.
+        await page.click(row('mtg-critique'), { button: 'right' });
+        await page.waitForSelector('.ws-mtg-rowmenu');
+        await page.click('.ws-nav button[data-route=today]');
+        await page.waitForSelector('.ws-mtg-layout', { state: 'detached' });
+        await page.click('.ws-nav button[data-route=meetings]');
+        await page.waitForSelector('.ws-mtg-layout');
+        await settled(page);
+        assert(await page.locator('.ws-mtg-rowmenu').count() === 0, 'the row menu stays closed');
+        // With the menu open, a click on Filter opens Filter.
+        await page.click(row('mtg-critique'), { button: 'right' });
+        await page.waitForSelector('.ws-mtg-rowmenu');
+        await page.click('[data-menu="meetings-filter"] > summary');
+        await page.waitForSelector('.ws-mtg-rowmenu', { state: 'detached' });
+        await settled(page);
+        assert(await page.locator('[data-menu="meetings-filter"][open]').count() === 1, 'the filter menu opened');
+        await page.keyboard.press('Escape');
+      });
+
+      await check(`${tag}: “Who is this?” on a scrolled transcript goes to the speaker list`, async () => {
+        const size = page.viewportSize();
+        await page.setViewportSize({ width: size.width, height: 520 });
+        try {
+          await select(page, 'mtg-philips', 'all', 'transcript');
+          const who = '.ws-mtg-name-it[data-voice="@1"]';
+          await page.waitForSelector(who);
+          await page.evaluate(() => { const d = document.querySelector('.ws-mtg-detail'); d.scrollTop = d.scrollHeight; });
+          await page.click(who);
+          const target = 'select[data-action="meeting-speaker"][data-voice="@1"]';
+          await page.waitForFunction(sel => document.activeElement === document.querySelector(sel), target);
+          const inView = await page.evaluate(sel => {
+            const r = document.querySelector(sel).getBoundingClientRect();
+            const d = document.querySelector('.ws-mtg-detail').getBoundingClientRect();
+            return r.top >= d.top && r.bottom <= d.bottom;
+          }, target);
+          assert(inView, 'the speaker list is in view');
+        } finally {
+          await page.setViewportSize(size);
+        }
       });
 
       await check(`${tag}: Hide every “<series>” → N hidden meetings · Show → Show again`, async () => {
@@ -481,9 +520,11 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.click(row('mtg-philips'), { button: 'right' });
         await page.click('.ws-mtg-rowmenu [data-action="meeting-hide-series"]');
         await page.waitForSelector(row('mtg-philips'), { state: 'detached' });
-        await page.waitForSelector('.ws-mtg-hid-foot:has-text("2 hidden meetings")');
+        // The footer counts what Show brings back.
+        const said = Number((await page.locator('.ws-mtg-hid-foot').innerText()).match(/(\d+) hidden meeting/)[1]);
         await page.click('.ws-mtg-hid-foot');
         await page.waitForSelector(`${row('mtg-philips')}.ws-mtg-hid`);
+        assert(await page.locator('.ws-mtg-row.ws-mtg-hid').count() === said, `the footer said ${said}`);
         await noOverflow(page, 'hidden meetings shown');
         await shot(page, `${tag}-meetings-hidden-shown`);
         await page.click(row('mtg-philips'));

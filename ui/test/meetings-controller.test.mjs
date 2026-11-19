@@ -32,7 +32,7 @@ function harness({ answers = {}, s = snapshot(), view = {} } = {}) {
     toast: (message, tone, action) => calls.toasts.push({ message, tone, action }),
     writeText: async text => { calls.copied.push(text); },
     downloadText: (name, text) => calls.saved.push([name, text]),
-    focus: selector => calls.focus.push(selector),
+    focus: (selector, opts) => { calls.focus.push(selector); if (opts) calls.focusOpts = opts; },
     setPref: (key, value) => calls.prefs.push([key, value]),
     now: () => NOW,
   });
@@ -461,4 +461,17 @@ test('"Who is this?" on an unnamed line goes to that voice in the transcript\'s 
   const { ctl, calls } = harness({ view: { selected: 'mtg-philips', tab: 'transcript' } });
   await ctl.handle('meeting-name-speaker', control({ voice: '@1' }));
   assert.equal(calls.focus.at(-1), 'select[data-action="meeting-speaker"][data-voice="@1"]');
+});
+
+test('Make notes for all takes the card’s meetings: a search narrows both the label and the run', async () => {
+  const { ctl, calls } = harness({ view: { selected: 'mtg-philips', q: 're' } });
+  await ctl.handle('meeting-make-all', control());
+  const made = calls.mutate.filter(([op]) => op === 'meeting_notes').map(([, d]) => d.meetingId).sort();
+  assert.deepEqual(made, ['mtg-release', 'mtg-roadmap'], 'Vendor onboarding is not on screen');
+});
+
+test('"Who is this?" scrolls the speaker list into view', async () => {
+  const { ctl, calls } = harness({ view: { selected: 'mtg-philips', tab: 'transcript' } });
+  await ctl.handle('meeting-name-speaker', control({ voice: '@1' }));
+  assert.deepEqual(calls.focusOpts, { scroll: true });
 });

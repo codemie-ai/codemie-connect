@@ -326,7 +326,8 @@ export function meetingCounts(s, now = Date.now(), items = meetingItems(s, now),
  * The list as it shows: in All, the Needs you card (hidden meetings left out, newest first),
  * then the rest of the lane by day (`dayKey` in `zone`), newest first; All adds today's meetings
  * still to come at the top of today, and Coming up runs soonest first. Hidden meetings show only
- * when `v.showHidden`, a search or the selection asks for them. `hiddenCount` counts them all.
+ * when `v.showHidden`, a search or the selection asks for them. `hiddenCount` counts the hidden
+ * meetings of this lane and search, the ones "Show" brings back.
  */
 export function listModel(s, v, { now = Date.now(), zone = s.settings?.timeZone || 'UTC', items = meetingItems(s, now) } = {}) {
   const hidden = v.hidden || null;
@@ -338,8 +339,9 @@ export function listModel(s, v, { now = Date.now(), zone = s.settings?.timeZone 
   const needs = lane === 'all' ? items.filter(m => IN_LANE.needs(m) && !isHidden(m, hidden) && matches(m, q)).sort(newest) : [];
   const inCard = new Set(needs.map(m => m.id));
   const today = dayKey(now, zone);
-  const rest = items.filter(m => !inCard.has(m.id) && visible(m)
-    && (inLane(m, lane, v.showNone) || (lane === 'all' && m.state === 'upcoming' && dayKey(m.start, zone) === today)))
+  // In this lane: its meetings, and in All today's meetings still to come.
+  const inView = m => inLane(m, lane, v.showNone) || (lane === 'all' && m.state === 'upcoming' && dayKey(m.start, zone) === today);
+  const rest = items.filter(m => !inCard.has(m.id) && visible(m) && inView(m))
     .sort(lane === 'upcoming' ? (a, b) => a.start - b.start || String(a.id).localeCompare(String(b.id)) : newest);
   const days = [];
   for (const m of rest) {
@@ -348,7 +350,8 @@ export function listModel(s, v, { now = Date.now(), zone = s.settings?.timeZone 
     if (!d || d.key !== key) days.push(d = { key, start: m.start, items: [] });
     d.items.push(m);
   }
-  return { needs, days, hiddenCount: items.filter(m => isHidden(m, hidden)).length };
+  // Hidden meetings this lane (and the search) would show: what "Show" brings back.
+  return { needs, days, hiddenCount: items.filter(m => isHidden(m, hidden) && matches(m, q) && inView(m)).length };
 }
 
 /** The meetings' ids in the order the list shows them: the card unless folded, then each day

@@ -2017,6 +2017,7 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-mtg-runline small{flex:0 1 auto;min-width:0;color:var(--ws-muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-mtg-tab-alert{background:var(--ws-accent)!important;color:#fff!important;opacity:1!important}
 .ws-mtg-panel-alone{margin-top:6px}
+.ws-mtg-tasks-alone{margin-top:22px}
 .ws-runbar{display:block;flex:0 0 120px;height:3px;border-radius:2px;background:var(--ws-raised);overflow:hidden}
 .ws-runbar>span{display:block;height:100%;background:var(--ws-magic);transition:width .4s ease}
 .ws-runbar-busy>span{width:35%;animation:ws-mtg-slide 1.4s ease-in-out infinite}
