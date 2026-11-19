@@ -3043,7 +3043,7 @@ for (const theme of ['dark', 'light']) {
       for (const tab of ['ai', 'privacy', 'plugins', 'cm-overview', 'cm-profiles', 'cm-agents', 'cm-apps', 'cm-health']) assert(tabs.includes(tab), `no ${tab} tab`);
       for (const tab of ['installation', 'tools', 'desktop', 'health', 'usage']) assert(!tabs.includes(tab), `legacy ${tab} tab`);
       await page.click('.ws-nav button[data-route=today]');
-      await page.waitForSelector('.ws-page-today .ws-grid');
+      await page.waitForSelector('.ws-page-today .ws-tiles');
       await page.waitForTimeout(400);
       assert(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, 'Today overflows');
       await shot(page, `${theme}-merge-today-${width}`);

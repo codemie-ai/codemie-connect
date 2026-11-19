@@ -259,6 +259,8 @@ function captureScroll() {
     meetingList: q('.ws-mtg-list-body')?.scrollTop || 0,
     meetingDetail: q('.ws-mtg-detail')?.scrollTop || 0,
     meetingView: q('.ws-mtg-meeting') ? `${q('.ws-mtg-meeting').dataset.meeting}|${q('.ws-mtg-panel')?.dataset.panel}` : null,
+    // Today: each tile's body scrolls on its own, kept by the tile's widget id.
+    tiles: Object.fromEntries([...root.querySelectorAll('[data-tile] > .ws-tile-body')].map(body => [body.parentElement.dataset.tile, body.scrollTop])),
   };
 }
 
@@ -279,6 +281,10 @@ function restoreScroll(saved) {
   }
   const schedule = q('.ws-schedule-scroll');
   if (schedule) schedule.scrollTop = saved.schedule !== undefined ? saved.schedule : Number(schedule.dataset.scrollTo || 0);
+  for (const body of root.querySelectorAll('[data-tile] > .ws-tile-body')) {
+    const top = saved.tiles[body.parentElement.dataset.tile];
+    if (top) body.scrollTop = top;
+  }
   if (q('.ws-inbox-items')) q('.ws-inbox-items').scrollTop = saved.list;
   const reader = q('.ws-reader');
   if (reader && saved.readerId && q('.ws-read')?.dataset.messageId === saved.readerId) reader.scrollTop = saved.reader;

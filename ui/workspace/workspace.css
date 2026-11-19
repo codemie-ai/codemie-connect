@@ -585,6 +585,17 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 @container ws-tile (max-height:199px){
   .ws-glance .ws-focus{display:none}
 }
+/* A narrow Day at a glance (a third of a 1000 px window is about 280 px): the numbers drop their
+   icons and the focus row its line of text, so no number or label is cut. */
+@container ws-tile (max-width:359px){
+  .ws-glance .ws-tile-body{gap:10px;padding:14px}
+  .ws-glance .ws-stat{grid-template-columns:minmax(0,1fr);padding:8px 10px}
+  .ws-glance .ws-stat-icon,.ws-glance .ws-focus>div:first-child>span{display:none}
+}
+/* Narrower still (2 or 3 columns): one number per row. */
+@container ws-tile (max-width:239px){
+  .ws-glance .ws-stats{grid-template-columns:minmax(0,1fr)}
+}
 @container ws-tile (max-width:419px){
   .ws-attention .ws-msg-preview,.ws-commitments .ws-todo-owner,.ws-commitments .ws-quick-add .ws-date{display:none}
 }
