@@ -1321,7 +1321,7 @@ for (const theme of ['dark', 'light']) {
     assert(saved.layout[0] === 'focus' && saved.today.items.some(i => i.id === 'focus' && i.x === 0 && i.y === 0), `layout ${saved.layout}`);
     assert(saved.widgetWidths === undefined, 'widths are no longer sent');
     await page.waitForSelector('[data-tile="focus"][style^="--x:0;--y:0;"]');
-    // Undo saves it back where it was.
+    // Undo, clicked right after the drop, saves it back where it was.
     await page.click('.ws-today-editbar [data-action="today-undo"]');
     await page.waitForSelector('[data-tile="focus"][style^="--x:8;--y:0;"]');
     // Its × takes it off Today with Undo in the toast; the gallery's Add puts it at the top left.

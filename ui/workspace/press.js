@@ -6,22 +6,29 @@
 
 const CURSORS = ['ws-drag-move', 'ws-drag-ew', 'ws-drag-ns', 'ws-drag-nwse'];
 
-/** Swallows the click the browser sends right after a drag ends. */
-function swallowClick(win) {
+/**
+ * Swallows the click the browser may send for the release that ended a drag (`at`). Only a click
+ * at that point counts: the browser often sends none (Chromium doesn't when the pointer ended on
+ * another element), and the next click, such as Undo right after a drop, must land.
+ */
+function swallowClick(win, at) {
   const swallow = ev => {
+    if (Math.abs(ev.clientX - at.clientX) > 1 || Math.abs(ev.clientY - at.clientY) > 1) return;
     ev.stopPropagation();
     ev.preventDefault();
+    win.removeEventListener('click', swallow, { capture: true });
   };
-  win.addEventListener('click', swallow, { capture: true, once: true });
+  win.addEventListener('click', swallow, { capture: true });
   setTimeout(() => win.removeEventListener('click', swallow, { capture: true }), 60);
 }
 
 /**
  * Tracks the press `ev` (a pointerdown). `onStart(ev, {sx, sy})` runs when the drag starts, with
  * where the press began; `onMove(ev, {dx, dy})` and `onEnd(ev, {dx, dy})` get the distance from
- * there; `onCancel()` runs on Escape or a cancelled pointer. `cursor` (move, ew, ns, nwse) is
- * shown everywhere while dragging. A release point that differs from the last move counts as a
- * final move, since some pointers skip it.
+ * there; `onCancel()` runs on Escape or a cancelled pointer. `onStart` returning false drops the
+ * press (what it would drag is gone). `cursor` (move, ew, ns, nwse) is shown everywhere while
+ * dragging. A release point that differs from the last move counts as a final move, since some
+ * pointers skip it.
  */
 export function trackPress(ev, { threshold = 4, longPress = 0, cursor, onStart, onMove, onEnd, onCancel } = {}) {
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
@@ -35,12 +42,17 @@ export function trackPress(ev, { threshold = 4, longPress = 0, cursor, onStart, 
   let last = ev;
   let timer = null;
 
+  /** Starts the drag; false when `onStart` dropped the press. */
   const begin = at => {
+    if (onStart?.(at, { sx, sy }) === false) {
+      cleanup();
+      return false;
+    }
     started = true;
     doc.body.classList.add('ws-dragging');
     if (cursor) doc.body.classList.add(`ws-drag-${cursor}`);
     if (held) win.navigator?.vibrate?.(8);
-    onStart?.(at, { sx, sy });
+    return true;
   };
   const cleanup = () => {
     done = true;
@@ -62,8 +74,7 @@ export function trackPress(ev, { threshold = 4, longPress = 0, cursor, onStart, 
         if (distance > 10) cleanup();
         return;
       }
-      if (distance < threshold) return;
-      begin(at);
+      if (distance < threshold || !begin(at)) return;
     }
     at.preventDefault();
     onMove?.(at, delta(at));
@@ -72,7 +83,7 @@ export function trackPress(ev, { threshold = 4, longPress = 0, cursor, onStart, 
     const was = started;
     cleanup();
     if (!was) return;
-    swallowClick(win);
+    swallowClick(win, at);
     if (at.clientX !== last.clientX || at.clientY !== last.clientY) onMove?.(at, delta(at));
     onEnd?.(at, delta(at));
   }
@@ -86,13 +97,12 @@ export function trackPress(ev, { threshold = 4, longPress = 0, cursor, onStart, 
     at.preventDefault();
     at.stopPropagation();
     cleanup();
-    swallowClick(win);
+    swallowClick(win, last);
     onCancel?.();
   }
   if (held) {
     timer = setTimeout(() => {
-      if (done) return;
-      begin(last);
+      if (done || !begin(last)) return;
       onMove?.(last, { dx: 0, dy: 0 });
     }, longPress);
   }

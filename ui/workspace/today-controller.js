@@ -449,8 +449,8 @@ const cssEscape = value => String(value).replace(/["\\]/g, '\\$&');
 /**
  * Wires Today's pointer and keyboard to controller `ui` on `doc`: a widget moves by its header
  * (not its buttons), resizes by its edges and corner (`.ws-rz`), a gallery card drags onto the
- * grid, a grip takes the arrow keys, and a double-click on a title renames it. While a drag is on,
- * `dragging(true)` holds re-renders; `dragging(false)` runs once its save has settled.
+ * grid, a grip takes the arrow keys, and a double-click on a title renames it. When a drag starts,
+ * `dragging(true)` holds re-renders; `dragging(false)` runs once no drag or drop's save is left.
  * The tiles move in the DOM as the pointer goes; the grid is saved once, on the drop.
  */
 export function attachTodayDrag(doc, ui, { dragging = () => {}, fail = () => {} } = {}) {
@@ -503,11 +503,26 @@ export function attachTodayDrag(doc, ui, { dragging = () => {}, fail = () => {} 
   const scroller = onScroll => autoScroll(doc.getElementById('workspace-main'), onScroll);
   // The guides (and the tiles' transitions with them) stay until the dropped tile has glided in.
   const release = grid => setTimeout(() => grid.classList.remove('ws-guides'), 250);
+  // Drags from their start until their save settles. Re-renders are held while there is one, and
+  // a new press waits for none: it would start on tiles a held render is about to replace.
+  let active = 0;
+  const hold = on => {
+    active = Math.max(0, active + (on ? 1 : -1));
+    if (on && active === 1) dragging(true);
+    if (!on && !active) dragging(false);
+  };
   /** The drop's save; re-renders wait until it has settled. */
   const settle = (saving, grid) => Promise.resolve(saving).catch(fail).finally(() => {
-    dragging(false);
+    hold(false);
     release(grid);
   });
+  /** The grid and widget `id`'s tile as the page shows them now: a render may have replaced the
+   *  ones pressed while the press waited to become a drag. Null when the widget is gone. */
+  const fresh = id => {
+    const grid = gridOf();
+    const tile = grid && tileOf(grid, id);
+    return tile && !isStacked(grid) ? { grid, tile } : null;
+  };
 
   function startMove(ev, grid, tile) {
     const id = tile.dataset.tile;
@@ -552,7 +567,10 @@ export function attachTodayDrag(doc, ui, { dragging = () => {}, fail = () => {} 
       longPress: editing ? 0 : 380,
       cursor: 'move',
       onStart: (at, { sx, sy }) => {
-        dragging(true);
+        const now = fresh(id);
+        if (!now) return false;
+        ({ grid, tile } = now);
+        hold(true);
         undoDom = remember(grid);
         rows = rowsOf(grid);
         const r = tile.getBoundingClientRect();
@@ -576,7 +594,7 @@ export function attachTodayDrag(doc, ui, { dragging = () => {}, fail = () => {} 
       onCancel: () => {
         finish();
         undoDom();
-        dragging(false);
+        hold(false);
         release(grid);
       },
     });
@@ -604,7 +622,10 @@ export function attachTodayDrag(doc, ui, { dragging = () => {}, fail = () => {} 
       threshold: 2,
       cursor: edge === 'r' ? 'ew' : edge === 'b' ? 'ns' : 'nwse',
       onStart: () => {
-        dragging(true);
+        const now = fresh(id);
+        if (!now) return false;
+        ({ grid, tile } = now);
+        hold(true);
         undoDom = remember(grid);
         rows = rowsOf(grid);
         m = metrics(grid);
@@ -648,14 +669,14 @@ export function attachTodayDrag(doc, ui, { dragging = () => {}, fail = () => {} 
       onCancel: () => {
         finish();
         undoDom();
-        dragging(false);
+        hold(false);
         release(grid);
       },
     });
   }
 
   function startGalleryDrag(ev, card) {
-    const grid = gridOf();
+    let grid = gridOf();
     if (!grid || isStacked(grid)) return;
     const id = card.dataset.gid;
     const w = Number(card.dataset.w) || 4;
@@ -706,7 +727,10 @@ export function attachTodayDrag(doc, ui, { dragging = () => {}, fail = () => {} 
       longPress: 220,
       cursor: 'move',
       onStart: at => {
-        dragging(true);
+        // The grid as the page shows it now (a render may have replaced the one pressed over).
+        grid = gridOf();
+        if (!grid || isStacked(grid)) return false;
+        hold(true);
         undoDom = remember(grid);
         rows = rowsOf(grid);
         m = metrics(grid);
@@ -734,13 +758,14 @@ export function attachTodayDrag(doc, ui, { dragging = () => {}, fail = () => {} 
       onCancel: () => {
         finish();
         leave();
-        dragging(false);
+        hold(false);
         release(grid);
       },
     });
   }
 
   doc.addEventListener('pointerdown', ev => {
+    if (active) return;
     const target = ev.target;
     const card = target.closest?.('.ws-gallery-card:not(.ws-gallery-on)');
     if (card) {
