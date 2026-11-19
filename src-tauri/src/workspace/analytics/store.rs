@@ -2,7 +2,7 @@
 //! (`{meta, sessions}`), and the fetch state beside them. Every write is atomic.
 use crate::storage::location::write_atomic;
 use crate::workspace::models::{Result, WorkspaceError};
-use chrono::{TimeZone, Utc};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -81,8 +81,11 @@ impl Store {
     }
 
     /// Upserts the sessions of `export` by `sessionId`; a stored row that ended later than the
-    /// incoming one stays (a stale window never undoes a fresher read). Sets `meta.periodStart` to
-    /// the oldest stored day. Returns how many sessions were added or changed.
+    /// incoming one stays (a stale window never undoes a fresher read). `meta.periodStart` becomes
+    /// the earlier of the stored value and the export's own (a missing or unreadable one is
+    /// ignored), so it is the earliest day fetched, as the CLI's `--compare` coverage check
+    /// expects. Returns how many sessions were added or changed. There is no lock in here:
+    /// callers must serialize merges (the single-fetch guard does).
     pub fn merge(&self, export: &Value) -> Result<usize> {
         let stored = self.load()?;
         let mut rows: BTreeMap<String, Value> = BTreeMap::new();
@@ -111,20 +114,43 @@ impl Store {
                 r["sessionId"].to_string(),
             )
         });
+        let period = [period_day(&stored["meta"]), period_day(&export["meta"])]
+            .into_iter()
+            .flatten()
+            .min();
         let mut meta = stored["meta"].clone();
         if !meta.is_object() {
             meta = json!({});
         }
-        meta["periodStart"] = sessions
-            .iter()
-            .filter_map(|r| r["startTime"].as_i64())
-            .min()
-            .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
-            .map(|t| json!(format!("{}T00:00:00.000Z", t.format("%Y-%m-%d"))))
-            .unwrap_or(Value::Null);
+        meta["periodStart"] = period.map_or(Value::Null, period_json);
         self.write(&json!({"meta": meta, "sessions": sessions}))?;
         Ok(changed)
     }
+
+    /// Moves `meta.periodStart` back to `from` when that is earlier than it (or it is null). For a
+    /// window the CLI answered with no file: nothing to merge, but the days were read. Writes
+    /// only when something changes.
+    pub fn extend_period(&self, from: NaiveDate) -> Result<()> {
+        let mut stored = self.load()?;
+        if period_day(&stored["meta"]).is_some_and(|d| d <= from) {
+            return Ok(());
+        }
+        if !stored["meta"].is_object() {
+            stored["meta"] = json!({});
+        }
+        stored["meta"]["periodStart"] = period_json(from);
+        self.write(&stored)
+    }
+}
+
+/// The day of an export's `meta.periodStart` (`YYYY-MM-DDT...`).
+fn period_day(meta: &Value) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(meta["periodStart"].as_str()?.get(..10)?, "%Y-%m-%d").ok()
+}
+
+/// The CLI export's own format for a day start.
+fn period_json(day: NaiveDate) -> Value {
+    json!(format!("{}T00:00:00.000Z", day.format("%Y-%m-%d")))
 }
 
 /// When the session's record stops: the log's last line, or start plus duration.
@@ -246,14 +272,51 @@ mod tests {
         );
     }
 
+    fn with_period(period: Value, sessions: Vec<Value>) -> Value {
+        json!({"meta": {"periodStart": period}, "sessions": sessions})
+    }
+    fn day(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
     #[test]
-    fn merge_sets_period_start_to_the_oldest_stored_day() {
+    fn merge_keeps_the_earliest_fetched_day_as_period_start() {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(d.path());
-        s.merge(&export(vec![session("a", NOV18, 1, 1.0)])).unwrap();
-        assert_eq!(read(&s)["meta"]["periodStart"], "2026-11-18T00:00:00.000Z");
-        s.merge(&export(vec![session("c", NOV10, 1, 1.0)])).unwrap();
-        assert_eq!(read(&s)["meta"]["periodStart"], "2026-11-10T00:00:00.000Z");
+        // The window began long before the only session in it.
+        s.merge(&with_period(
+            json!("2026-08-21T00:00:00.000Z"),
+            vec![session("a", NOV18, 1, 1.0)],
+        ))
+        .unwrap();
+        assert_eq!(read(&s)["meta"]["periodStart"], "2026-08-21T00:00:00.000Z");
+        // A later, newer window does not move it forward; a missing or odd one is ignored.
+        for p in [
+            json!("2026-11-17T00:00:00.000Z"),
+            Value::Null,
+            json!("soon"),
+        ] {
+            s.merge(&with_period(p, vec![session("c", NOV10, 1, 1.0)]))
+                .unwrap();
+            assert_eq!(read(&s)["meta"]["periodStart"], "2026-08-21T00:00:00.000Z");
+        }
+        // An older window moves it back.
+        s.merge(&with_period(json!("2026-08-01T00:00:00.000Z"), vec![]))
+            .unwrap();
+        assert_eq!(read(&s)["meta"]["periodStart"], "2026-08-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn extend_period_moves_back_only() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path());
+        s.extend_period(day("2026-11-17")).unwrap();
+        assert_eq!(read(&s)["meta"]["periodStart"], "2026-11-17T00:00:00.000Z");
+        s.extend_period(day("2026-11-19")).unwrap();
+        assert_eq!(read(&s)["meta"]["periodStart"], "2026-11-17T00:00:00.000Z");
+        s.extend_period(day("2026-10-01")).unwrap();
+        assert_eq!(read(&s)["meta"]["periodStart"], "2026-10-01T00:00:00.000Z");
+        assert_eq!(read(&s)["sessions"], json!([]));
     }
 
     #[test]
@@ -279,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_are_atomic() {
+    fn a_leftover_temp_file_is_removed_and_the_store_rewritten() {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(d.path());
         s.merge(&export(vec![session("a", NOV18, 1, 1.0)])).unwrap();
