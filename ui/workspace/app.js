@@ -155,9 +155,11 @@ let meetingSearchTimer;
 let gallerySearchTimer;
 // A card is being dragged on the Tasks board: updates wait until it is dropped.
 let taskDrag = false;
-// A Today widget is being moved, resized or dragged in: every render waits until its drop has
-// been saved (or refused), so the tiles moved by hand are not redrawn under the pointer.
+// A Today widget is being moved, resized or dragged in, a section's divider or tab is held, or a
+// menu edge is: every render waits until its drop has been saved (or refused) and drawn, so what
+// was moved by hand is not redrawn under the pointer. Set by holdLayout, which counts the holds.
 let layoutDrag = false;
+let layoutHolds = 0;
 // The mouse button is down: an update redrawn between a click's mousedown and mouseup would
 // replace the control under the pointer and lose the click, so it waits for the mouseup.
 let pressing = false;
@@ -168,6 +170,15 @@ let lastDraftSignature = '';
 // Updates that arrived while held (the draft options popover open, a card or widget dragged, the
 // mouse button down); shown once that ends.
 let heldRender = false;
+
+/** Holds renders while a layout drag is on (`on`) and lets one go (`!on`). Holds are counted
+ *  across Today, the page sections and the menu edges, so letting one go doesn't let renders
+ *  through under another; when the last is let go, the render held meanwhile runs. */
+function holdLayout(on) {
+  layoutHolds = Math.max(0, layoutHolds + (on ? 1 : -1));
+  layoutDrag = layoutHolds > 0;
+  if (!layoutDrag && heldRender && !modalOpen()) render().catch(fail);
+}
 
 function localPref(key, fallback) {
   try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
@@ -1192,13 +1203,7 @@ const todayUi = store && createTodayController({
 });
 if (todayUi) {
   // `dragging(false)` comes once the drop's save has settled; the updates held meanwhile show then.
-  attachTodayDrag(document, todayUi, {
-    dragging: on => {
-      layoutDrag = on;
-      if (!on && heldRender && !modalOpen()) render().catch(fail);
-    },
-    fail,
-  });
+  attachTodayDrag(document, todayUi, { dragging: holdLayout, fail });
 }
 
 // ---------------------------------------------------------------- page sections (spec "Page sections")
@@ -1262,10 +1267,7 @@ const dockUi = store && attachDock(document, {
     },
   },
   // A divider or tab held: updates wait, as for Today's widgets, until the drop is drawn.
-  dragging: on => {
-    layoutDrag = on;
-    if (!on && heldRender && !modalOpen()) render().catch(fail);
-  },
+  dragging: holdLayout,
   locked: () => !!todayUi?.locked(),
   nudge: () => todayUi.handle('today-locked'),
   pin: id => todayUi.handle('today-add', { dataset: { id } }),
@@ -1344,27 +1346,28 @@ async function foldAll() {
   await render();
 }
 
-// A menu edge held: updates wait (as for a Today widget) until the drop is drawn.
+// A menu edge held: updates wait (as for a Today widget) until the drop is drawn. The drop asks
+// for its render while the edge is still held, so it is drawn once, when the last hold lets go.
 function dragSidebarEdge(ev, edge) {
   const was = sidebarCollapsed();
   const done = () => {
-    layoutDrag = false;
     edge.classList.remove('ws-active');
+    holdLayout(false);
   };
   trackPress(ev, {
     cursor: 'ew',
     onStart: () => {
-      layoutDrag = true;
+      holdLayout(true);
       edge.classList.add('ws-active');
     },
     onEnd: (_, { dx }) => {
-      done();
       if (was ? dx >= SIDEBAR_DRAG : dx <= -SIDEBAR_DRAG) toggleSidebar(!was).catch(fail);
       else render().catch(fail);
+      done();
     },
     onCancel: () => {
-      done();
       render().catch(fail);
+      done();
     },
   });
 }
@@ -1381,7 +1384,7 @@ function dragSettingsEdge(ev, edge) {
   trackPress(ev, {
     threshold: 1, cursor: 'ew',
     onStart: () => {
-      layoutDrag = true;
+      holdLayout(true);
       layout.classList.add('ws-resizing');
     },
     onMove: (_, { dx }) => {
@@ -1391,14 +1394,14 @@ function dragSettingsEdge(ev, edge) {
       layout.style.setProperty('--ws-settings-w', `${rail ? SETTINGS_MENU.rail : clampWidth(width)}px`);
     },
     onEnd: () => {
-      layoutDrag = false;
       if (rail !== before.collapsed) announce(rail ? 'Settings menu shrunk to icons' : 'Settings menu expanded');
       saveMenu({ collapsed: rail, width: rail ? before.width : clampWidth(width) });
       render().catch(fail);
+      holdLayout(false);
     },
     onCancel: () => {
-      layoutDrag = false;
       render().catch(fail);
+      holdLayout(false);
     },
   });
 }
