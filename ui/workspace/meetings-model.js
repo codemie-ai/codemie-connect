@@ -5,6 +5,7 @@
 // glossary reading (`parseGlossary`, `parseTags`, meetings/glossary.rs), which must give the same
 // answers as the contract fixtures native writes. Also the page's hash, `#/meetings/<id>/<tab>`.
 import { can } from './selectors.js';
+import { dayKey } from './format.js';
 
 export const TABS = ['notes', 'transcript', 'tasks', 'files', 'people'];
 export const TAB_LABELS = { notes: 'Notes', transcript: 'Transcript', tasks: 'Tasks', files: 'Files', people: 'People' };
@@ -25,8 +26,8 @@ export const STATES = {
   offline: { label: 'Not a Teams meeting', tone: 'muted' },
 };
 
-/** The list's filters: [id, label]. */
-export const LANES = [['all', 'All'], ['process', 'To do'], ['ready', 'Ready'], ['attention', 'Needs you'], ['upcoming', 'Upcoming']];
+/** The list's filter menu: [id, label]. */
+export const FILTERS = [['all', 'All meetings'], ['needs', 'Needs you'], ['ready', 'With notes'], ['upcoming', 'Coming up']];
 
 /** The transcript badge the calendar and Today show: [id, label, icon]. */
 export const LEGEND = [
@@ -50,9 +51,30 @@ export function legendOf(state, { busy = false, auto = false, paused = false } =
   return null;
 }
 
+/** The meetings hidden from the list (`codemie.meetings.hidden`, a window preference): ids and
+ *  the series of recurring meetings (the event's `seriesId`). Anything else reads as none. */
+export function readHidden(value) {
+  const list = x => (Array.isArray(x) ? [...new Set(x.filter(v => typeof v === 'string' && v))] : []);
+  const v = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return { ids: list(v.ids), series: list(v.series) };
+}
+
+/** The series of a recurring meeting (Graph's `seriesMasterId`), or null. */
+export const seriesOf = m => m?.ev?.data?.seriesId || m?.rec?.data?.seriesId || null;
+
+/** Whether a meeting is hidden from the list, by its id or its series. */
+export function isHidden(m, hidden) {
+  if (!m || !hidden) return false;
+  const series = seriesOf(m);
+  return (hidden.ids || []).includes(m.id) || (!!series && (hidden.series || []).includes(series));
+}
+
 /** The Meetings page's view state (only view state lives in the window: meetings are native's). */
-export const newMeetingsView = ({ wide = false } = {}) => ({
+export const newMeetingsView = ({ wide = false, hidden = null } = {}) => ({
   filter: 'all', q: '', selected: null, tab: 'notes', showNone: false, wide: !!wide, compare: false, focusLine: null,
+  // Hidden meetings (a preference) and whether they show greyed; the search field; folded days
+  // (day key → true) and the folded Needs you card, for the session; the row's right-click menu.
+  hidden: readHidden(hidden), showHidden: false, searchOpen: false, folded: {}, needsFolded: false, rowMenu: null,
   // The document editor ({meetingId, docId, version, rev, draft, conflict, mine}), the document
   // shown per meeting, the second one in Side by side, an earlier version being read, the
   // transcript's search and speaker filter, and the meeting whose whole guest list is shown.
@@ -258,6 +280,8 @@ const IN_LANE = {
   attention: m => m.state === 'failed' || m.state === 'blocked' || !!m.paused,
   upcoming: m => m.state === 'upcoming',
 };
+// Needs you: a transcript without notes, or something only the person can sort out.
+IN_LANE.needs = m => IN_LANE.process(m) || IN_LANE.attention(m);
 
 /** Whether a meeting shows in a lane. */
 export const inLane = (m, filter, showNone = false) => (IN_LANE[filter] || IN_LANE.all)(m, showNone);
@@ -278,14 +302,53 @@ export function meetingRows(s, filter = 'all', q = '', showNone = false, now = D
     .sort((a, b) => (lane === 'upcoming' ? a.start - b.start : b.start - a.start) || String(a.id).localeCompare(String(b.id)));
 }
 
-/** What the filters and the switch count: to do, needs you, and past meetings without a transcript. */
-export function meetingCounts(s, now = Date.now(), items = meetingItems(s, now)) {
+/** What the menus, the sidebar and Today count: to do, needs you, and past meetings without a
+ *  transcript, hidden meetings left out; and how many are hidden. */
+export function meetingCounts(s, now = Date.now(), items = meetingItems(s, now), hidden = null) {
+  const shown = items.filter(m => !isHidden(m, hidden));
   return {
-    process: items.filter(m => IN_LANE.process(m)).length,
-    attention: items.filter(m => IN_LANE.attention(m)).length,
-    none: items.filter(m => m.ended && !IN_LANE.all(m, false)).length,
+    process: shown.filter(m => IN_LANE.process(m)).length,
+    attention: shown.filter(m => IN_LANE.attention(m)).length,
+    none: shown.filter(m => m.ended && !IN_LANE.all(m, false)).length,
+    hidden: items.length - shown.length,
   };
 }
+
+/**
+ * The list as it shows: in All, the Needs you card (hidden meetings left out, newest first),
+ * then the rest of the lane by day (`dayKey` in `zone`), newest first; All adds today's meetings
+ * still to come at the top of today, and Coming up runs soonest first. Hidden meetings show only
+ * when `v.showHidden`, a search or the selection asks for them. `hiddenCount` counts them all.
+ */
+export function listModel(s, v, { now = Date.now(), zone = s.settings?.timeZone || 'UTC', items = meetingItems(s, now) } = {}) {
+  const hidden = v.hidden || null;
+  const q = v.q || '';
+  // The old To do and Needs you filters are both Needs you now.
+  const lane = { process: 'needs', attention: 'needs' }[v.filter] || (IN_LANE[v.filter] ? v.filter : 'all');
+  const newest = (a, b) => b.start - a.start || String(a.id).localeCompare(String(b.id));
+  const visible = m => matches(m, q) && (!isHidden(m, hidden) || v.showHidden || !!q.trim() || m.id === v.selected);
+  const needs = lane === 'all' ? items.filter(m => IN_LANE.needs(m) && !isHidden(m, hidden) && matches(m, q)).sort(newest) : [];
+  const inCard = new Set(needs.map(m => m.id));
+  const today = dayKey(now, zone);
+  const rest = items.filter(m => !inCard.has(m.id) && visible(m)
+    && (inLane(m, lane, v.showNone) || (lane === 'all' && m.state === 'upcoming' && dayKey(m.start, zone) === today)))
+    .sort(lane === 'upcoming' ? (a, b) => a.start - b.start || String(a.id).localeCompare(String(b.id)) : newest);
+  const days = [];
+  for (const m of rest) {
+    const key = dayKey(m.start, zone);
+    let d = days.at(-1);
+    if (!d || d.key !== key) days.push(d = { key, start: m.start, items: [] });
+    d.items.push(m);
+  }
+  return { needs, days, hiddenCount: items.filter(m => isHidden(m, hidden)).length };
+}
+
+/** The meetings' ids in the order the list shows them: the card unless folded, then each day
+ *  that isn't folded. ↑/↓, the first selection and hiding the open meeting go by it. */
+export const listOrder = (model, v) => [
+  ...(v.needsFolded ? [] : model.needs),
+  ...model.days.filter(d => !v.folded?.[d.key]).flatMap(d => d.items),
+].map(m => m.id);
 
 /** The lane that shows a meeting, keeping `current` when it already does. */
 export function laneFor(m, current = 'all', showNone = false) {

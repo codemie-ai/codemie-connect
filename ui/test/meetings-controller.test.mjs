@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMeetingsController } from '../workspace/meetings-controller.js';
-import { meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
+import { listModel, listOrder, meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
 import { newTasksView } from '../workspace/tasks-model.js';
 import { buildSnapshot, withMeetings, meetingContract } from './fixtures/workspace-fixture.mjs';
 
@@ -326,4 +326,133 @@ test('Delete and Use this version say which version was shown, so a newer one is
   const notes = shown('meeting-notes');
   await ctl.handle('doc-use-version', control({ id: 'mtg-philips', doc: 'meeting-notes', version: '1' }));
   assert.deepEqual(calls.mutate.at(-1), ['meeting_doc', { meetingId: 'mtg-philips', docId: 'meeting-notes', action: 'version', version: 1, baseVersion: notes.version, baseRev: notes.rev }]);
+});
+
+// ---------------------------------------------------------------- the calmer list: hiding and folding
+
+const HIDDEN_KEY = 'codemie.meetings.hidden';
+const lastPref = calls => JSON.parse(calls.prefs.filter(([k]) => k === HIDDEN_KEY).at(-1)?.[1] || 'null');
+const withSeries = (s, ids, series = 'series-review') => {
+  for (const id of ids) s.records.find(r => r.kind === 'event' && r.id === id).data.seriesId = series;
+  return s;
+};
+
+test('hide saves the preference and Undo brings it back', async () => {
+  const { ctl, state, calls } = harness({ view: { selected: 'mtg-philips' } });
+  await ctl.handle('meeting-hide', control({ id: 'mtg-roadmap' }));
+  assert.deepEqual(lastPref(calls), { ids: ['mtg-roadmap'], series: [] });
+  assert.deepEqual(state.meetings.hidden.ids, ['mtg-roadmap']);
+  const t = calls.toasts.at(-1);
+  assert.match(t.message, /Roadmap review/);
+  assert.equal(t.action?.label, 'Undo');
+  await t.action.run();
+  assert.deepEqual(lastPref(calls), { ids: [], series: [] });
+  assert.deepEqual(state.meetings.hidden.ids, []);
+});
+
+test('hide every in a series, and show again takes the id and its series', async () => {
+  const s = withSeries(snapshot(), ['mtg-roadmap', 'mtg-critique']);
+  const { ctl, state, calls } = harness({ s, view: { selected: 'mtg-philips' } });
+  await ctl.handle('meeting-hide-series', control({ id: 'mtg-roadmap' }));
+  assert.deepEqual(lastPref(calls), { ids: [], series: ['series-review'] });
+  assert.match(calls.toasts.at(-1).message, /Every “Roadmap review” is hidden/);
+  await ctl.handle('meeting-hide', control({ id: 'mtg-critique' }));
+  await ctl.handle('meeting-unhide', control({ id: 'mtg-critique' }));
+  assert.deepEqual(state.meetings.hidden, { ids: [], series: [] }, 'both the id and its series');
+  assert.deepEqual(lastPref(calls), { ids: [], series: [] });
+});
+
+test('hiding the selected meeting opens the next visible one', async () => {
+  const { ctl, state, s } = harness({ view: { selected: 'mtg-release' } });
+  const order = listOrder(listModel(s, state.meetings, { now: NOW, zone: 'UTC' }), state.meetings);
+  const at = order.indexOf('mtg-release');
+  await ctl.handle('meeting-hide', control({ id: 'mtg-release' }));
+  assert.equal(state.meetings.selected, order[at + 1]);
+  // The last one: the one before it.
+  const last = listOrder(listModel(s, state.meetings, { now: NOW, zone: 'UTC' }), state.meetings);
+  state.meetings.selected = last.at(-1);
+  await ctl.handle('meeting-hide', control({ id: last.at(-1) }));
+  assert.equal(state.meetings.selected, last.at(-2));
+  // Shown greyed: the selection stays.
+  state.meetings.showHidden = true;
+  const keep = state.meetings.selected;
+  await ctl.handle('meeting-hide', control({ id: keep }));
+  assert.equal(state.meetings.selected, keep);
+});
+
+test('a day folds; alt keeps only that day open; fold all and unfold all', async () => {
+  const { ctl, state, s } = harness({ view: { selected: 'mtg-philips' } });
+  const keys = listModel(s, state.meetings, { now: NOW, zone: 'UTC' }).days.map(d => d.key);
+  assert.ok(keys.length >= 2, keys.join());
+  await ctl.handle('meeting-day-fold', control({ day: keys[0] }));
+  assert.deepEqual(state.meetings.folded, { [keys[0]]: true });
+  await ctl.handle('meeting-day-fold', control({ day: keys[0] }));
+  assert.deepEqual(state.meetings.folded, {});
+  await ctl.handle('meeting-day-fold', control({ day: keys[1] }), { alt: true });
+  assert.deepEqual(Object.keys(state.meetings.folded).sort(), keys.filter(k => k !== keys[1]).sort());
+  await ctl.handle('meeting-unfold-all', control());
+  assert.deepEqual(state.meetings.folded, {});
+  await ctl.handle('meeting-fold-all', control());
+  assert.deepEqual(Object.keys(state.meetings.folded).sort(), [...keys].sort());
+  await ctl.handle('meeting-needs-fold', control());
+  assert.equal(state.meetings.needsFolded, true);
+});
+
+test('the filter menu keeps the selection visible; the switches toggle', async () => {
+  const { ctl, state } = harness({ view: { selected: 'mtg-roadmap' } });
+  await ctl.handle('meeting-filter', control({ filter: 'ready' }));
+  assert.equal(state.meetings.filter, 'ready');
+  assert.equal(state.meetings.selected, 'mtg-philips');
+  await ctl.handle('meeting-filter', control({ filter: 'needs' }));
+  assert.ok(['mtg-release', 'mtg-vendor', 'mtg-northwind', 'mtg-roadmap', 'mtg-critique'].includes(state.meetings.selected));
+  await ctl.handle('meeting-show-none', control());
+  assert.equal(state.meetings.showNone, true);
+  await ctl.handle('meeting-show-none', control());
+  assert.equal(state.meetings.showNone, false);
+  await ctl.handle('meeting-show-hidden', control());
+  assert.equal(state.meetings.showHidden, true);
+  await ctl.handle('meeting-search-open', control());
+  assert.equal(state.meetings.searchOpen, true);
+});
+
+test('contextMenu opens the row menu and Escape closes it', async () => {
+  const { ctl, state, calls } = harness({ view: { selected: 'mtg-philips' } });
+  await ctl.contextMenu('mtg-roadmap', 40, 120);
+  assert.deepEqual(state.meetings.rowMenu, { id: 'mtg-roadmap', x: 40, y: 120 });
+  assert.ok(calls.render > 0);
+  assert.equal(await ctl.key({ key: 'Escape', target: { closest: () => null } }), true);
+  assert.equal(state.meetings.rowMenu, null);
+  await ctl.contextMenu('mtg-roadmap', 40, 120);
+  await ctl.handle('meeting-hide', control({ id: 'mtg-roadmap' }));
+  assert.equal(state.meetings.rowMenu, null, 'any menu action closes it');
+});
+
+test('↑/↓ skips folded days and hidden meetings', async () => {
+  const { ctl, state, s } = harness({ view: { selected: null } });
+  const model = listModel(s, state.meetings, { now: NOW, zone: 'UTC' });
+  const lastNeed = model.needs.at(-1).id;
+  state.meetings.selected = lastNeed;
+  state.meetings.folded = { [model.days[0].key]: true };
+  await ctl.key({ key: 'ArrowDown', target: { closest: () => null } });
+  assert.equal(state.meetings.selected, model.days[1].items[0].id, 'past the folded day');
+  state.meetings.hidden = { ids: [model.days[1].items[0].id], series: [] };
+  state.meetings.selected = lastNeed;
+  await ctl.key({ key: 'ArrowDown', target: { closest: () => null } });
+  assert.notEqual(state.meetings.selected, model.days[1].items[0].id, 'past the hidden one');
+});
+
+test('Make notes for all leaves hidden meetings alone', async () => {
+  const { ctl, calls } = harness({ view: { selected: 'mtg-philips', hidden: { ids: ['mtg-roadmap'], series: [] } } });
+  await ctl.handle('meeting-make-all', control());
+  const made = calls.mutate.filter(([op]) => op === 'meeting_notes').map(([, d]) => d.meetingId).sort();
+  assert.deepEqual(made, ['mtg-release', 'mtg-vendor']);
+});
+
+test('/ opens the search field, not while typing', async () => {
+  const { ctl, state, calls } = harness({ view: { selected: 'mtg-philips' } });
+  assert.equal(await ctl.key({ key: '/', target: { closest: sel => (sel.includes('input') ? { tagName: 'INPUT' } : null) } }), false);
+  assert.equal(state.meetings.searchOpen, false);
+  assert.equal(await ctl.key({ key: '/', target: { closest: () => null } }), true);
+  assert.equal(state.meetings.searchOpen, true);
+  assert.deepEqual(calls.focus.at(-1), '#meetings-search');
 });

@@ -748,49 +748,135 @@ function meetingsHarness(s, view = {}, answers = {}) {
 }
 const notesJob = (meetingId, extra = {}) => ({ ...meetingContract().job, id: `job-${meetingId}`, payload: { ...meetingContract().job.payload, meetingId, ...extra } });
 
-test('meetings list: rows show time, title, coloured status; spinner only while a job runs; no status icons', () => {
+test('meetings list: one header row with search, filter and more; no segmented filter, no bulk banner, no footer switch', () => {
+  const s = meetingsSnapshot();
+  const html = meetings(s, meetingsCtx({ selected: 'mtg-philips' }));
+  const head = html.match(/<header class="ws-mtg-list-head"[^]*?<\/header>/)?.[0] || '';
+  assert.match(head, /<h1>Meetings<\/h1>/);
+  assert.match(head, /data-action="meeting-search-open"/);
+  const filter = head.match(/<details class="ws-menu[^"]*" data-menu="meetings-filter"[^]*?<\/details>/)?.[0] || '';
+  for (const label of ['All meetings', 'Needs you', 'With notes', 'Coming up', 'Meetings without a transcript (4)', 'Hidden meetings (0)']) assert.ok(filter.includes(label), label);
+  assert.match(filter, /data-action="meeting-filter" data-filter="all"[^>]*aria-checked="true"/);
+  assert.match(filter, /data-action="meeting-show-none"/);
+  assert.match(filter, /data-action="meeting-show-hidden"/);
+  const more = head.match(/<details class="ws-menu[^"]*" data-menu="meetings-more"[^]*?<\/details>/)?.[0] || '';
+  for (const [label, action] of [['Fold all days', 'meeting-fold-all'], ['Unfold all days', 'meeting-unfold-all'], ['Import a transcript file…', 'meeting-import'], ['Check Teams for new transcripts', 'meeting-check-all'], ['Meetings settings', 'settings-tab']]) {
+    assert.match(more, new RegExp(`data-action="${action}"[^]*?${label}`), label);
+  }
+  assert.doesNotMatch(html, /ws-mtg-filters|ws-mtg-bulk|ws-mtg-list-foot|ws-segmented-count/);
+  assert.doesNotMatch(html, /id="meetings-search"/, 'the search field opens when asked');
+  assert.match(meetings(s, meetingsCtx({ searchOpen: true })), /id="meetings-search"/);
+  assert.match(meetings(s, meetingsCtx({ q: 'zzz' })), /id="meetings-search"[^>]*value="zzz"/, 'it stays while it has text');
+  assert.match(meetings(s, meetingsCtx({ q: 'zzz' })), /Nothing matches “zzz”/);
+});
+
+test('meetings list: Needs you card with Make notes for N, rows without buttons', () => {
   const s = meetingsSnapshot();
   s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-roadmap').data.title = 'Roadmap <b>review</b>';
   s.records.find(r => r.kind === 'event' && r.id === 'mtg-roadmap').data.title = 'Roadmap <b>review</b>';
   let html = meetings(s, meetingsCtx({ selected: 'mtg-philips' }));
-  assert.match(html, /<h1>Meetings<\/h1>/);
-  // Filters: All · To do (3) · Ready · Needs you (2) · Upcoming, and the switch for meetings without a transcript.
-  assert.match(html, /data-action="meeting-filter" data-filter="all" aria-selected="true">All</);
-  assert.match(html, /data-filter="process"[^>]*>To do<span class="ws-segmented-count">3<\/span>/);
-  assert.match(html, /data-filter="attention"[^>]*>Needs you<span class="ws-segmented-count ws-mtg-count-alert">2<\/span>/);
-  assert.match(html, /Show meetings without a transcript \(4\)/);
-  // A row: time, title, status in its colour and what goes with it; selected; no icon at all.
+  const card = html.match(/<section class="ws-mtg-needs"[^]*?<\/section>/)?.[0] || '';
+  assert.match(card, /Needs you/);
+  const inCard = [...card.matchAll(/class="ws-mtg-row[^"]*"[^>]*data-id="([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual([...inCard].sort(), ['mtg-critique', 'mtg-northwind', 'mtg-release', 'mtg-roadmap', 'mtg-vendor']);
+  assert.match(card, /data-action="meeting-make-all"[^>]*>(<span>)?Make notes for 3/);
+  assert.match(card, /data-action="meeting-needs-fold"/);
+  // Each row is one button holding no other control.
+  for (const id of ['mtg-philips', ...inCard]) {
+    const row = rowOf(html, id);
+    assert.ok(row, id);
+    assert.equal((row.match(/<button/g) || []).length, 1, `${id} holds no button`);
+    assert.equal((row.match(/data-action=/g) || []).length, 1, `${id} holds no other control`);
+  }
+  // Colour only for what needs the person; a ready meeting says its documents in grey.
   const philips = rowOf(html, 'mtg-philips');
   assert.match(philips, /class="ws-mtg-row ws-mtg-on" role="option" aria-selected="true"/);
-  assert.ok(philips.includes(`<span class="ws-mtg-row-time">${formatTime(Date.UTC(2026, 10, 16, 13), 'UTC')}</span>`), philips);
+  assert.ok(philips.includes(formatTime(Date.UTC(2026, 10, 16, 13), 'UTC')), philips);
   assert.match(philips, /<strong>Philips CodeMie conversations syncup<\/strong>/);
-  assert.match(philips, /<em class="ws-tone-success">Notes ready<\/em><i>·<\/i>2 documents<i>·<\/i><span class="ws-mtg-accent">2 to review<\/span>/);
+  assert.doesNotMatch(philips, /ws-tone-|Notes ready/);
+  assert.match(philips, /2 documents<i>·<\/i><span class="ws-mtg-accent">2 to review<\/span>/);
   for (const [id, tone, label] of [
-    ['mtg-roadmap', 'purple', 'No notes yet'], ['mtg-release', 'info', 'Saving the transcript'], ['mtg-vendor', 'error', 'Couldn’t get the transcript'],
+    ['mtg-roadmap', 'info', 'No notes yet'], ['mtg-vendor', 'error', 'Couldn’t get the transcript'],
     ['mtg-northwind', 'warning', 'Teams blocked access'], ['mtg-critique', 'error', 'Notes failed'],
-  ]) assert.match(rowOf(html, id), new RegExp(`<em class="ws-tone-${tone}">${label}</em>`), id);
-  // Waiting for Teams is no transcript yet: only behind the switch.
-  assert.equal(rowOf(html, 'mtg-sprint'), '', 'a meeting waiting for Teams stays out of All');
-  const withNone = meetings(s, meetingsCtx({ selected: 'mtg-philips', showNone: true }));
-  assert.match(rowOf(withNone, 'mtg-sprint'), /<em class="ws-tone-info">Waiting for Teams<\/em>/);
-  assert.match(withNone, /role="switch" checked data-action="meeting-show-none"/);
+  ]) assert.match(rowOf(html, id), new RegExp(`<em class="ws-tone-${tone}"><i class="ws-mtg-dot"></i>${label}</em>`), id);
+  // In the card each row says its day.
+  assert.match(rowOf(html, 'mtg-roadmap'), /Yesterday/);
   assert.match(rowOf(html, 'mtg-roadmap'), /<strong>Roadmap &lt;b&gt;review&lt;\/b&gt;<\/strong>/, 'titles are escaped');
-  assert.match(rowOf(html, 'mtg-roadmap'), /<i>·<\/i>Meeting notes/, 'the template it would use');
   for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-critique']) assert.doesNotMatch(rowOf(html, id), /<svg/, `${id} has no status icon`);
   assert.doesNotMatch(html, /ws-mtg-row-spin/, 'nothing runs: no spinner');
-  // Grouped by day, newest first.
-  assert.match(html, /<div class="ws-mtg-day">Today<span>[^<]+<\/span><\/div>/);
-  assert.match(html, /<div class="ws-mtg-day">Yesterday<span>/);
-  // A run: the row shows its step and the one spinner.
+  // Waiting for Teams is no transcript yet: only with Meetings without a transcript.
+  assert.equal(rowOf(html, 'mtg-sprint'), '', 'a meeting waiting for Teams stays out of All');
+  const withNone = meetings(s, meetingsCtx({ selected: 'mtg-philips', showNone: true }));
+  assert.match(rowOf(withNone, 'mtg-sprint'), /Waiting for Teams/);
+  // A run: the row shows its step in purple and the one spinner; Make notes for all counts the rest.
   s.jobs.push(notesJob('mtg-roadmap'));
   html = meetings(s, meetingsCtx({ selected: 'mtg-philips' }));
   assert.match(rowOf(html, 'mtg-roadmap'), /<em class="ws-tone-purple">Writing notes with Meeting notes…<\/em>/);
   assert.match(rowOf(html, 'mtg-roadmap'), /<span class="ws-spinner ws-mtg-row-spin" role="status" aria-label="In progress"><\/span>/);
   assert.equal((html.match(/ws-mtg-row-spin/g) || []).length, 1);
-  // Make notes for all: the to-do meetings that aren't running.
-  assert.match(html, /2 transcripts without notes[^]*?data-action="meeting-make-all"[^>]*><span>Make notes for all 2<\/span>/);
-  // Search and an empty lane.
-  assert.match(meetings(s, meetingsCtx({ q: 'zzz' })), /Nothing matches “zzz”/);
+  assert.match(html, /data-action="meeting-make-all"[^>]*>(<span>)?Make notes for 2/);
+  // Today's meetings still to come open today's day, greyed.
+  assert.match(html, /data-action="meeting-day-fold" data-day="2026-11-18"[^>]*>[^]*?Today/);
+  assert.match(rowOf(html, 'ev-next'), /class="ws-mtg-row ws-mtg-future/);
+});
+
+test('meetings list: a folded day shows its count and a dot for what needs you', () => {
+  const s = meetingsSnapshot();
+  const html = meetings(s, meetingsCtx({ selected: 'mtg-roadmap', folded: { '2026-11-16': true } }));
+  const day = html.match(/<div class="ws-mtg-group"[^>]*data-day="2026-11-16"[^]*?<\/div>\s*<\/div>/)?.[0] || '';
+  assert.match(day, /data-action="meeting-day-fold" data-day="2026-11-16" aria-expanded="false"/);
+  assert.equal(rowOf(html, 'mtg-philips'), '', 'a folded day shows no rows');
+  assert.match(day, /1 meeting/);
+  assert.match(day, /class="ws-mtg-day-dot"[^>]*>● 1</, 'the Philips sync has tasks to review');
+  const open = meetings(s, meetingsCtx({ selected: 'mtg-roadmap' }));
+  assert.match(open, /data-action="meeting-day-fold" data-day="2026-11-16" aria-expanded="true"/);
+  assert.doesNotMatch(open, /ws-mtg-day-dot/);
+  // The folded card keeps its header and count.
+  const folded = meetings(s, meetingsCtx({ selected: 'mtg-philips', needsFolded: true }));
+  const card = folded.match(/<section class="ws-mtg-needs"[^]*?<\/section>/)?.[0] || '';
+  assert.match(card, /aria-expanded="false"/);
+  assert.equal(rowOf(card, 'mtg-roadmap'), '');
+  assert.match(card, />5</);
+});
+
+test('meetings list: hidden meetings leave the list and come back greyed', () => {
+  const s = meetingsSnapshot();
+  s.records.find(r => r.kind === 'event' && r.id === 'mtg-philips').data.seriesId = 'series-philips';
+  const hidden = { ids: ['mtg-critique'], series: ['series-philips'] };
+  let html = meetings(s, meetingsCtx({ selected: 'mtg-roadmap', hidden }));
+  assert.equal(rowOf(html, 'mtg-critique'), '');
+  assert.equal(rowOf(html, 'mtg-philips'), '', 'hidden by its series');
+  assert.match(html, /data-action="meeting-show-hidden"[^>]*>[^]*?2 hidden meetings · <u>Show<\/u>/);
+  assert.match(html, /Hidden meetings \(2\)/);
+  html = meetings(s, meetingsCtx({ selected: 'mtg-roadmap', hidden, showHidden: true }));
+  assert.match(rowOf(html, 'mtg-critique'), /class="ws-mtg-row ws-mtg-hid/);
+  assert.match(rowOf(html, 'mtg-critique'), /Hidden/);
+  assert.match(html, /Showing 2 hidden meetings · <u>Hide them<\/u>/);
+  assert.doesNotMatch(html.match(/<section class="ws-mtg-needs"[^]*?<\/section>/)?.[0] || '', /mtg-critique/, 'never back in Needs you');
+  // The row's right-click menu.
+  html = meetings(s, meetingsCtx({ selected: 'mtg-roadmap', rowMenu: { id: 'mtg-roadmap', x: 40, y: 120 } }));
+  const menu = html.match(/<div class="ws-menu-panel ws-mtg-rowmenu"[^]*?<\/div>/)?.[0] || '';
+  assert.match(menu, /style="left:40px;top:120px"/);
+  assert.match(menu, /data-action="meeting-select" data-id="mtg-roadmap"[^]*?Open/);
+  assert.match(menu, /data-action="meeting-hide" data-id="mtg-roadmap"[^]*?Hide from the list/);
+  assert.doesNotMatch(menu, /meeting-hide-series/, 'not a recurring meeting');
+  assert.match(menu, /data-action="meeting-calendar" data-id="mtg-roadmap"[^]*?Show in calendar/);
+  s.records.find(r => r.kind === 'event' && r.id === 'mtg-roadmap').data.seriesId = 'series-roadmap';
+  html = meetings(s, meetingsCtx({ selected: 'mtg-roadmap', rowMenu: { id: 'mtg-roadmap', x: 40, y: 120 } }));
+  assert.match(html, /data-action="meeting-hide-series" data-id="mtg-roadmap"[^>]*>[^]*?Hide every “Roadmap review”/);
+  html = meetings(s, meetingsCtx({ selected: 'mtg-roadmap', hidden, showHidden: true, rowMenu: { id: 'mtg-philips', x: 0, y: 0 } }));
+  assert.match(html, /data-action="meeting-unhide" data-id="mtg-philips"[^>]*>[^]*?Show every “Philips CodeMie conversations syncup” again/);
+});
+
+test('sidebar count and Today card leave hidden meetings out', () => {
+  const s = meetingsSnapshot();
+  const hidden = { ids: ['mtg-critique'], series: [] };
+  const count = html => html.match(/title="Transcripts waiting for you">(\d+)</)?.[1];
+  assert.equal(count(renderShell({ snapshot: s, route: 'meetings', resolvedDark: false, now: MEET_NOW })), '5');
+  assert.equal(count(renderShell({ snapshot: s, route: 'meetings', resolvedDark: false, now: MEET_NOW, meetingsHidden: hidden })), '4');
+  const ctx = { auth: {}, hidden: new Set(), banners: '', state: {}, now: MEET_NOW };
+  assert.match(today(s, ctx), /data-action="meeting-open" data-id="mtg-critique"/);
+  assert.doesNotMatch(today(s, { ...ctx, meetingsHidden: hidden }), /data-action="meeting-open" data-id="mtg-critique"/);
 });
 
 test('meeting detail: people by name with organizer/you/company, dimmed when they never spoke, status strip, five tabs', () => {
@@ -954,7 +1040,7 @@ test('a save that needs a Microsoft sign-in offers Sign in again, then Try again
   // Stopped by the person: said so, and only they start it again.
   vendor.saveError = { code: 'cancelled', message: 'You stopped saving the transcript, so Connect won’t try again by itself.' };
   html = meetings(s, meetingsCtx({ selected: 'mtg-vendor' }));
-  assert.match(rowOf(html, 'mtg-vendor'), /<em class="ws-tone-muted">Saving stopped<\/em>/);
+  assert.match(rowOf(html, 'mtg-vendor'), /<i>·<\/i><span>Saving stopped<\/span>/, 'a save the person stopped is grey');
   assert.match(stripOf(detailOf(html)), /saving stopped[^]*?data-action="meeting-download"[^>]*>[^]*?Try again/);
 });
 
@@ -972,12 +1058,12 @@ test('stored available and pending meetings show as waiting, with why, while tra
   const s = meetingsSnapshot();
   s.connection.enabled = s.connection.enabled.filter(c => c !== 'transcripts');
   const html = meetings(s, meetingsCtx({ selected: 'mtg-release', showNone: true }));
-  for (const id of ['mtg-release', 'mtg-sprint']) assert.match(rowOf(html, id), /<em class="ws-tone-warning">Waiting: transcripts are off<\/em>/, id);
+  for (const id of ['mtg-release', 'mtg-sprint']) assert.match(rowOf(html, id), /<em class="ws-tone-warning"><i class="ws-mtg-dot"><\/i>Waiting: transcripts are off<\/em>/, id);
   const strip = stripOf(detailOf(html));
   assert.doesNotMatch(strip, /ws-spin|saving it from Teams/);
   assert.match(strip, /transcripts are off[^]*?data-action="meeting-transcripts-on"/);
-  // Not "Make notes for all" (it can't save them now).
-  assert.match(html, /1 transcript without notes[^]*?Make notes for all 1/);
+  // Not "Make notes for all" (it can't save them now), and one meeting left needs no batch.
+  assert.doesNotMatch(html, /data-action="meeting-make-all"/);
 });
 
 test('a meeting waiting for Teams offers "Make notes as soon as it arrives", which sends meeting_set {auto:true}', async () => {

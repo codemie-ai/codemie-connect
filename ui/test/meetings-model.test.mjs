@@ -4,8 +4,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  meetingState, meetingRows, meetingCounts, parseHash, meetingHash, resolveTemplate, parseGlossary, parseTags, runOf, legendOf, lineAt, LANES,
+  meetingState, meetingRows, meetingCounts, parseHash, meetingHash, resolveTemplate, parseGlossary, parseTags, runOf, legendOf, lineAt, FILTERS,
+  readHidden, isHidden, seriesOf, listModel, listOrder, newMeetingsView, meetingItems,
 } from '../workspace/meetings-model.js';
+import { dayKey } from '../workspace/format.js';
 import { buildSnapshot, withMeetings, meetingContract } from './fixtures/workspace-fixture.mjs';
 
 const NOW = Date.UTC(2026, 10, 18, 15, 20);
@@ -56,7 +58,7 @@ test('boot opens #/meetings/<encoded id>/transcript', () => {
 test('lanes: All hides no-transcript meetings unless showNone; To do counts available+downloaded', () => {
   const s = snapshot();
   const ids = (filter, q = '', showNone = false) => meetingRows(s, filter, q, showNone, NOW).map(m => m.id);
-  assert.deepEqual(LANES.map(([id]) => id), ['all', 'process', 'ready', 'attention', 'upcoming']);
+  assert.deepEqual(FILTERS, [['all', 'All meetings'], ['needs', 'Needs you'], ['ready', 'With notes'], ['upcoming', 'Coming up']]);
   const all = ids('all');
   for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-release', 'mtg-vendor', 'mtg-northwind', 'mtg-critique']) assert.ok(all.includes(id), `All shows ${id}`);
   // Still waiting for Teams (mtg-sprint) or done waiting (ev-standup, ended over two hours ago): no transcript.
@@ -74,7 +76,7 @@ test('lanes: All hides no-transcript meetings unless showNone; To do counts avai
   assert.ok(upcoming.includes('ev-next') && upcoming.includes('ev-current') && upcoming.includes('ev-week-1'), upcoming.join());
   assert.ok(upcoming.indexOf('ev-current') < upcoming.indexOf('ev-next'), 'upcoming soonest first');
   // Counts for the filters: To do and Needs you; none for the switch.
-  assert.deepEqual(meetingCounts(s, NOW), { process: 3, attention: 2, none: 4 });
+  assert.deepEqual(meetingCounts(s, NOW), { process: 3, attention: 2, none: 4, hidden: 0 });
   // Search: titles and people.
   assert.deepEqual(ids('all', 'PHILIPS'), ['mtg-philips']);
   assert.deepEqual(ids('all', 'hannah'), ['mtg-northwind']);
@@ -83,6 +85,118 @@ test('lanes: All hides no-transcript meetings unless showNone; To do counts avai
   const row = meetingRows(s, 'process', '', false, NOW).find(m => m.id === 'mtg-roadmap');
   assert.equal(row.run.kind, 'meeting_notes');
   assert.deepEqual([row.run.index, row.run.total, row.run.step], [0, 3, 'Writing notes with Meeting notes']);
+});
+
+// ---------------------------------------------------------------- the calmer list: hiding and days
+
+const NO_HIDDEN = { ids: [], series: [] };
+/** The fixture with the Roadmap review and the Design critique as two occurrences of one series. */
+const seriesSnapshot = () => {
+  const s = snapshot();
+  for (const id of ['mtg-roadmap', 'mtg-critique']) s.records.find(r => r.kind === 'event' && r.id === id).data.seriesId = 'series-review';
+  return s;
+};
+const view = (extra = {}) => ({ ...newMeetingsView(), ...extra });
+const modelOf = (s, extra = {}) => listModel(s, view(extra), { now: NOW, zone: 'UTC' });
+const idsOf = model => ({ needs: model.needs.map(m => m.id), days: model.days.flatMap(d => d.items.map(m => m.id)) });
+
+test('readHidden survives bad values', () => {
+  assert.deepEqual(readHidden(null), NO_HIDDEN);
+  assert.deepEqual(readHidden('x'), NO_HIDDEN);
+  assert.deepEqual(readHidden([1, 2]), NO_HIDDEN);
+  assert.deepEqual(readHidden({ ids: [1, 'a', 'a', '', null], series: 'series-x' }), { ids: ['a'], series: [] });
+  assert.deepEqual(readHidden({ ids: ['a'], series: ['s', 's', 7] }), { ids: ['a'], series: ['s'] });
+  assert.deepEqual(newMeetingsView({ hidden: 'broken' }).hidden, NO_HIDDEN, 'the view state starts empty on a broken value');
+});
+
+test('isHidden by id and by series', () => {
+  const items = meetingItems(seriesSnapshot(), NOW);
+  const byId = id => items.find(m => m.id === id);
+  assert.equal(seriesOf(byId('mtg-roadmap')), 'series-review');
+  assert.equal(seriesOf(byId('mtg-philips')), null);
+  assert.equal(isHidden(byId('mtg-philips'), { ids: ['mtg-philips'], series: [] }), true);
+  assert.equal(isHidden(byId('mtg-roadmap'), { ids: ['mtg-philips'], series: [] }), false);
+  const series = { ids: [], series: ['series-review'] };
+  assert.equal(isHidden(byId('mtg-roadmap'), series), true);
+  assert.equal(isHidden(byId('mtg-critique'), series), true, 'every occurrence of the series');
+  assert.equal(isHidden(byId('mtg-philips'), series), false);
+  assert.equal(isHidden(byId('mtg-philips'), undefined), false);
+});
+
+test('meetingCounts leaves hidden meetings out', () => {
+  const s = snapshot();
+  const counts = meetingCounts(s, NOW, undefined, { ids: ['mtg-critique'], series: [] });
+  assert.deepEqual(counts, { process: 3, attention: 1, none: 4, hidden: 1 });
+});
+
+test('listModel puts the needs lane in a card and the rest in days', () => {
+  const s = snapshot();
+  const model = modelOf(s);
+  const { needs, days } = idsOf(model);
+  assert.deepEqual([...needs].sort(), ['mtg-critique', 'mtg-northwind', 'mtg-release', 'mtg-roadmap', 'mtg-vendor']);
+  const starts = model.needs.map(m => m.start);
+  assert.deepEqual(starts, [...starts].sort((a, b) => b - a), 'newest first');
+  for (const id of needs) assert.ok(!days.includes(id), `${id} is only in the card`);
+  assert.ok(days.includes('mtg-philips'));
+  // Today's meetings still to come (ev-current is going on, ev-next later) open today's day.
+  const today = model.days.find(d => d.key === dayKey(NOW, 'UTC'));
+  assert.ok(today, 'a day for today');
+  assert.equal(today.items[0].state, 'upcoming', 'the latest of today comes first');
+  assert.ok(today.items.some(m => m.id === 'ev-next') && today.items.some(m => m.id === 'ev-current'));
+  assert.ok(!modelOf(s, { filter: 'ready' }).days.some(d => d.items.some(m => m.state === 'upcoming')), 'only All adds them');
+  assert.ok(!days.includes('ev-week-1') || model.days.find(d => d.items.some(m => m.id === 'ev-week-1')).key === dayKey(NOW, 'UTC'), 'upcoming meetings of later days stay in Coming up');
+  // Days newest first; every item sits under its own day.
+  const keys = model.days.map(d => d.key);
+  assert.deepEqual(keys, [...keys].sort().reverse());
+  for (const d of model.days) for (const m of d.items) assert.equal(dayKey(m.start, 'UTC'), d.key);
+  assert.equal(model.hiddenCount, 0);
+});
+
+test('hidden meetings leave the card and the days unless shown', () => {
+  const s = snapshot();
+  const hidden = { ids: ['mtg-critique', 'mtg-philips'], series: [] };
+  const model = modelOf(s, { hidden });
+  const { needs, days } = idsOf(model);
+  assert.ok(!needs.includes('mtg-critique') && !days.includes('mtg-critique') && !days.includes('mtg-philips'));
+  assert.equal(model.hiddenCount, 2);
+  const shown = idsOf(modelOf(s, { hidden, showHidden: true }));
+  assert.ok(!shown.needs.includes('mtg-critique'), 'a hidden meeting never goes back into Needs you');
+  assert.ok(shown.days.includes('mtg-critique') && shown.days.includes('mtg-philips'), 'shown greyed in their days');
+});
+
+test('listModel keeps the selected hidden meeting', () => {
+  const s = snapshot();
+  const model = modelOf(s, { hidden: { ids: ['mtg-philips'], series: [] }, selected: 'mtg-philips' });
+  assert.ok(idsOf(model).days.includes('mtg-philips'));
+  assert.equal(model.hiddenCount, 1);
+});
+
+test('search finds hidden meetings', () => {
+  const s = snapshot();
+  const model = modelOf(s, { hidden: { ids: ['mtg-philips'], series: [] }, q: 'philips' });
+  assert.deepEqual(idsOf(model).days, ['mtg-philips']);
+});
+
+test('with filter needs, there is no card', () => {
+  const s = snapshot();
+  const model = modelOf(s, { filter: 'needs' });
+  assert.deepEqual(model.needs, []);
+  assert.deepEqual(idsOf(model).days.sort(), ['mtg-critique', 'mtg-northwind', 'mtg-release', 'mtg-roadmap', 'mtg-vendor']);
+  assert.deepEqual(idsOf(modelOf(s, { filter: 'ready' })).days, ['mtg-philips']);
+});
+
+test('listOrder follows the screen', () => {
+  const s = snapshot();
+  const model = modelOf(s);
+  const order = listOrder(model, view());
+  assert.deepEqual(order, [...model.needs.map(m => m.id), ...model.days.flatMap(d => d.items.map(m => m.id))]);
+  const first = model.days[0];
+  const folded = listOrder(model, view({ folded: { [first.key]: true } }));
+  for (const m of first.items) assert.ok(!folded.includes(m.id), `${m.id} is folded away`);
+  const noCard = listOrder(model, view({ needsFolded: true }));
+  for (const m of model.needs) assert.ok(!noCard.includes(m.id), `${m.id} is in the folded card`);
+  const hiddenModel = modelOf(s, { hidden: { ids: ['mtg-philips'], series: [] } });
+  assert.ok(!listOrder(hiddenModel, view()).includes('mtg-philips'));
 });
 
 test('runOf gives the running job and its step; legendOf groups states for the badges', () => {
@@ -157,7 +271,7 @@ test('an in-person meeting with an imported transcript is in All and To do, not 
   const ids = (filter, showNone = false) => meetingRows(s, filter, '', showNone, NOW).map(m => m.id);
   assert.ok(ids('all').includes('mtg-lunch'), 'All shows the imported in-person meeting');
   assert.ok(ids('process').includes('mtg-lunch'), 'To do shows it');
-  assert.deepEqual(meetingCounts(s, NOW), { process: 4, attention: 2, none: 3 });
+  assert.deepEqual(meetingCounts(s, NOW), { process: 4, attention: 2, none: 3, hidden: 0 });
   // A meeting nobody transcribed stays out of All, behind the switch.
   assert.ok(!ids('all').includes('mtg-planning') && ids('all', true).includes('mtg-planning'));
 });

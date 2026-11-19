@@ -1929,39 +1929,54 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 
 /* the list */
 .ws-mtg-list{display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px solid var(--ws-border);background:var(--ws-card-2)}
-.ws-mtg-list-head{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;padding:20px 16px 12px;min-width:0}
+.ws-mtg-list-head{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:18px 12px 8px 16px;min-width:0}
 .ws-mtg-list-title{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .ws-mtg-list-title h1{font-size:22px;line-height:28px;letter-spacing:-.5px}
 .ws-mtg-list-title .ws-actions{gap:2px;flex-wrap:nowrap}
-.ws-mtg-filters{width:100%;box-sizing:border-box;display:flex;overflow-x:auto;scrollbar-width:none}
-.ws-mtg-filters::-webkit-scrollbar{display:none}
-.ws-mtg-filters button{flex:1 0 auto;justify-content:center;gap:4px;padding:0 6px;white-space:nowrap}
+/* The filter button says when the list is narrowed, without a word. */
+.ws-mtg-filtered{color:var(--ws-accent)!important;background:var(--ws-primary-fill)!important}
 .ws-mtg-list{container-type:inline-size}
-@container (max-width:320px){.ws-mtg-list-head{padding:16px 12px 10px}.ws-mtg-filters button{padding:0 3px;gap:2px;font-size:11px}.ws-mtg-bulk,.ws-mtg-off{font-size:11px;margin:0 8px 8px}.ws-mtg-bulk-text{display:none}.ws-mtg-bulk .ws-btn{flex:1;justify-content:flex-start}}
-.ws-mtg-count-alert{color:var(--ws-red)!important;opacity:1!important}
-.ws-mtg-off,.ws-mtg-bulk{display:flex;align-items:center;gap:8px;margin:0 12px 8px;padding:6px 6px 6px 12px;border-radius:8px;font-size:12px;line-height:16px}
-.ws-mtg-off{background:var(--ws-blue-bg);color:var(--ws-text-2)}
+@container (max-width:320px){.ws-mtg-list-head{padding:16px 10px 8px 12px}.ws-mtg-off{font-size:11px;margin:0 8px 8px}}
+.ws-mtg-off{display:flex;align-items:center;gap:8px;margin:0 12px 8px;padding:6px 6px 6px 12px;border-radius:8px;font-size:12px;line-height:16px;background:var(--ws-blue-bg);color:var(--ws-text-2)}
 .ws-mtg-off>.ws-icon{color:var(--ws-blue);width:14px;height:14px}
-.ws-mtg-bulk{background:var(--ws-purple-bg);color:var(--ws-purple)}
-.ws-mtg-off>span,.ws-mtg-bulk>span{flex:1;min-width:0}
-.ws-mtg-bulk>.ws-icon{width:13px;height:13px}
-.ws-mtg-bulk .ws-btn{color:var(--ws-purple);font-weight:600;flex-shrink:0}
+.ws-mtg-off>span{flex:1;min-width:0}
+/* Needs you: one card on top, its rows say their day. */
+.ws-mtg-needs{margin:4px 0 6px;padding:6px 4px 4px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card)}
+.ws-mtg-needs-head{display:flex;align-items:center;gap:6px;padding:0 4px 4px 4px;min-height:28px}
+.ws-mtg-needs-head .ws-btn{color:var(--ws-accent);font-weight:600;padding:0 6px}
+.ws-mtg-count{font-size:11px;color:var(--ws-faint);white-space:nowrap}
+.ws-mtg-fold{display:inline-flex;align-items:center;gap:6px;min-width:0;padding:2px 6px 2px 2px;border:0;border-radius:6px;background:none;color:var(--ws-text);font:inherit;font-size:12px;cursor:pointer}
+.ws-mtg-fold:hover{background:var(--ws-hover)}
+.ws-mtg-fold strong{font-weight:700}
+.ws-mtg-fold span{font-weight:400;color:var(--ws-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-mtg-fold>.ws-icon{width:13px;height:13px;color:var(--ws-faint);transition:transform .15s}
+.ws-mtg-fold[aria-expanded="false"]>.ws-icon{transform:rotate(-90deg)}
+.ws-mtg-day-dot{font-size:11px;color:var(--ws-accent);white-space:nowrap}
 .ws-mtg-list-body{flex:1;min-height:0;overflow:auto;padding:0 8px 12px;outline:none}
-.ws-mtg-day{position:sticky;top:0;z-index:2;display:flex;align-items:baseline;gap:8px;padding:12px 8px 6px;font-size:12px;font-weight:700;color:var(--ws-text);background:var(--ws-card-2)}
-.ws-mtg-day span{font-weight:400;color:var(--ws-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ws-mtg-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;width:100%;padding:8px 10px 8px 8px;margin:1px 0;border:1px solid transparent;border-radius:10px;background:none;text-align:left;color:var(--ws-text)}
+.ws-mtg-day{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;padding:10px 6px 4px;background:var(--ws-card-2)}
+.ws-mtg-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;width:100%;padding:7px 10px 8px 12px;margin:1px 0;border:1px solid transparent;border-radius:10px;background:none;text-align:left;color:var(--ws-text)}
 .ws-mtg-row:hover{background:var(--ws-hover)}
 .ws-mtg-row.ws-mtg-on{background:var(--ws-card);border-color:var(--ws-border-strong);box-shadow:var(--ws-shadow-sm)}
 .light .ws-mtg-row.ws-mtg-on{background:var(--ws-selected);border-color:transparent}
-.ws-mtg-row-time{min-width:44px;font-size:12px;font-weight:600;color:var(--ws-muted);align-self:start;padding-top:1px;white-space:nowrap}
+.ws-mtg-row-time{white-space:nowrap}
 .ws-mtg-row-main{display:grid;gap:2px;min-width:0}
-.ws-mtg-row-main strong{font-size:13px;font-weight:600;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-mtg-row-main strong{font-family:var(--font-sans);font-size:14px;font-weight:500;line-height:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-mtg-row-main small{display:block;font-size:11px;line-height:16px;color:var(--ws-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-mtg-row-main small i{font-style:normal;color:var(--ws-faint);margin:0 5px}
-.ws-mtg-row-main small em{font-style:normal;font-weight:600}
+.ws-mtg-row-main small em{font-style:normal;font-weight:500}
+.ws-mtg-row-main small i.ws-mtg-dot{display:inline-block;width:6px;height:6px;margin:0 5px 0 0;border-radius:50%;background:currentColor;vertical-align:1px}
+/* Still to come, or hidden: greyed. */
+.ws-mtg-row.ws-mtg-future strong,.ws-mtg-row.ws-mtg-hid strong{color:var(--ws-muted);font-weight:400}
+.ws-mtg-row.ws-mtg-hid small{opacity:.8}
+.ws-mtg-hid-tag{color:var(--ws-faint)}
+.ws-mtg-hid-foot{display:flex;align-items:center;gap:6px;margin:18px 6px 4px;padding:4px;border:0;background:none;font:inherit;font-size:11px;color:var(--ws-faint);cursor:pointer}
+.ws-mtg-hid-foot:hover{color:var(--ws-text)}
+.ws-mtg-hid-foot .ws-icon{width:13px;height:13px}
+.ws-mtg-hid-foot u{text-underline-offset:2px}
+.ws-mtg-rowmenu{position:fixed;top:auto;z-index:40;min-width:240px}
 .ws-mtg-row-spin{width:14px;height:14px}
 .ws-mtg-empty{padding:32px 8px}
-.ws-mtg-list-foot{padding:10px 16px;border-top:1px solid var(--ws-border)}
+
 .ws-mtg-list-foot .ws-switch-label{font-size:12px}
 
 /* the meeting */

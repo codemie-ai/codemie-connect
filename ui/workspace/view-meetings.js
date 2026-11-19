@@ -14,10 +14,10 @@ import { avatar, button, card, emptyState, select, toggle } from './ui.js';
 import { addDaysToKey, agoLabel, dayKey, durationLabel, formatDate, formatTime } from './format.js';
 import { taskStatus } from './tasks-model.js';
 import {
-  LANES, LEGEND, STATES, TABS, TAB_LABELS, callOfMeeting, legendOf, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, tasksByMeeting, transcriptsAllowed,
+  FILTERS, LEGEND, STATES, TABS, TAB_LABELS, callOfMeeting, inLane, isHidden, legendOf, listModel, listOrder, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, seriesOf, tasksByMeeting, transcriptsAllowed,
 } from './meetings-model.js';
 import {
-  dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, notesTab, peopleTab, plural, PAUSED, pausedFix, saveFixAction, saveNextStep, tasksTab, tplChip, tplColor, transcriptTab,
+  dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, menuItems, notesTab, peopleTab, plural, PAUSED, pausedFix, saveFixAction, saveNextStep, tasksTab, tplChip, tplColor, transcriptTab,
 } from './view-meeting-tabs.js';
 
 const PILL_TONE = { muted: 'neutral', info: 'info', purple: 'purple', success: 'success', error: 'error', warning: 'warning' };
@@ -28,9 +28,12 @@ function pageOf(s, ctx = {}) {
   const now = ctx.now ?? Date.now();
   const v = { ...newMeetingsView(), ...(ctx.state?.meetings || {}) };
   const items = ctx.items || meetingItems(s, now);
+  const zone = s.settings.timeZone;
   return {
-    s, v, now, zone: s.settings.timeZone, items, byId: new Map(items.map(m => [m.id, m])), reads: ctx.reads || (() => ({})), glossary: ctx.glossary || null,
+    s, v, now, zone, items, byId: new Map(items.map(m => [m.id, m])), reads: ctx.reads || (() => ({})), glossary: ctx.glossary || null,
     rules: rulesOf(s), tasksBy: tasksByMeeting(s), callSlots: Array.isArray(ctx.callSlots) ? ctx.callSlots : [],
+    // The list as it shows: the Needs you card and the days.
+    model: listModel(s, v, { now, zone, items }),
   };
 }
 
@@ -158,25 +161,43 @@ export function calendarMeetings(s, now = Date.now()) {
 
 // ---------------------------------------------------------------- the list
 
-function rowExtra(m, mc) {
-  if (m.run && m.run.kind !== 'transcript_check') return [];
-  if (m.state === 'ready') {
-    const docs = mc.docs.length;
-    return [docs > 1 ? `${docs} documents` : e(mc.docs[0]?.name || ''), mc.review.length ? `<span class="ws-mtg-accent">${mc.review.length} to review</span>` : ''];
+/** The hide items of a meeting's menus (the row's right-click menu and the meeting's ⋯):
+ *  hide it or its whole series, or show it again. */
+export function hideMenuItems(m, hidden) {
+  const id = { 'data-id': m.id };
+  const series = seriesOf(m);
+  if (isHidden(m, hidden)) {
+    return [series && (hidden?.series || []).includes(series) ? [`Show every “${m.title}” again`, 'meeting-unhide', id, 'eye'] : ['Show in the list again', 'meeting-unhide', id, 'eye']];
   }
-  if (['available', 'downloaded', 'failed'].includes(m.state)) return [e(mc.tpl.template.name)];
-  if (m.state === 'pending' && mc.tpl.auto) return ['notes when it arrives'];
-  return [];
+  return [['Hide from the list', 'meeting-hide', id, 'eye-off'], series ? [`Hide every “${m.title}”`, 'meeting-hide-series', id, 'eye-off'] : null];
 }
 
-function row(p, m) {
-  const mc = meetingContext({ ...p, reads: () => ({}) }, m);
+/** A row's status: grey for the usual, a colour and a dot only for what needs the person, purple
+ *  while notes are being made; a ready meeting says its documents and what waits for review. */
+function rowStatus(m, mc) {
+  if (m.run && m.run.kind === 'meeting_notes') return `<i>·</i><em class="ws-tone-purple">${e(runText(m.run))}…</em>`;
+  if (m.state === 'ready' && !m.run) {
+    const docs = mc.docs.length > 1 ? `${mc.docs.length} documents` : e(mc.docs[0]?.name || 'Notes');
+    return `<i>·</i>${docs}${mc.review.length ? `<i>·</i><span class="ws-mtg-accent">${mc.review.length} to review</span>` : ''}`;
+  }
   const st = statusOf(m, mc);
+  // A meeting waiting for Teams that makes its notes by itself says so.
+  const after = m.state === 'pending' && mc.tpl.auto && !m.paused ? '<i>·</i><span>notes when it arrives</span>' : '';
+  if (!inLane(m, 'needs') || st.tone === 'muted') return `<i>·</i><span>${e(st.label)}</span>${after}`;
+  // "No notes yet" asks for a click, not an alarm: blue.
+  const tone = st.tone === 'purple' && !m.run ? 'info' : st.tone;
+  return `<i>·</i><em class="ws-tone-${tone}"><i class="ws-mtg-dot"></i>${e(st.label)}</em>`;
+}
+
+function row(p, m, { withDay = false } = {}) {
+  const mc = meetingContext({ ...p, reads: () => ({}) }, m);
   const on = p.selectedId === m.id;
-  const extra = rowExtra(m, mc).filter(Boolean);
-  return `<button type="button" class="ws-mtg-row${on ? ' ws-mtg-on' : ''}" role="option" aria-selected="${on}" data-action="meeting-select" data-id="${e(m.id)}">
-    <span class="ws-mtg-row-time">${e(formatTime(m.start, p.zone))}</span>
-    <span class="ws-mtg-row-main"><strong>${mc.d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</strong><small><em class="ws-tone-${st.tone}">${e(st.label)}</em>${extra.map(x => `<i>·</i>${x}`).join('')}</small></span>
+  const hid = isHidden(m, p.v.hidden);
+  const time = formatTime(m.start, p.zone);
+  const when = withDay ? `${relDay(m.start, p.zone, p.now) || shortDay(m.start, p.zone)}, ${time}` : time;
+  const cls = ['ws-mtg-row', on && 'ws-mtg-on', m.state === 'upcoming' && 'ws-mtg-future', hid && 'ws-mtg-hid'].filter(Boolean).join(' ');
+  return `<button type="button" class="${cls}" role="option" aria-selected="${on}" data-action="meeting-select" data-id="${e(m.id)}">
+    <span class="ws-mtg-row-main"><strong>${mc.d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</strong><small>${hid ? '<span class="ws-mtg-hid-tag">Hidden</span><i>·</i>' : ''}<span class="ws-mtg-row-time">${e(when)}</span>${rowStatus(m, mc)}</small></span>
     ${m.run ? '<span class="ws-spinner ws-mtg-row-spin" role="status" aria-label="In progress"></span>' : ''}
   </button>`;
 }
@@ -184,47 +205,75 @@ function row(p, m) {
 function listEmpty(p) {
   const { v } = p;
   if (v.q.trim()) return emptyState({ iconName: 'search', title: `Nothing matches “${v.q.trim()}”`, text: 'Try another word, or another filter.' });
-  if (v.filter === 'attention') return emptyState({ iconName: 'check-circle', title: 'Nothing needs you', text: 'No failed notes and no blocked transcripts.' });
-  if (v.filter === 'process') return emptyState({ iconName: 'check-circle', title: 'Every transcript has notes', text: 'New transcripts appear here as Teams makes them.' });
+  if (v.filter === 'needs') return emptyState({ iconName: 'check-circle', title: 'Nothing needs you', text: 'Every transcript has notes, and nothing failed.' });
   if (v.filter === 'ready') return emptyState({ iconName: 'note', title: 'No notes yet', text: 'Notes you make show here.' });
   if (v.filter === 'upcoming') return emptyState({ iconName: 'calendar', title: 'Nothing coming up', text: 'Your next meetings appear here.' });
   return emptyState({ iconName: 'meetings', title: 'No meetings here', text: 'Past Teams meetings with a transcript show here.' });
 }
 
+/** The row's right-click menu, at the pointer: open it, hide it (or its series), the calendar. */
+function rowMenu(p) {
+  const r = p.v.rowMenu;
+  const m = r && p.byId.get(r.id);
+  if (!m) return '';
+  const id = { 'data-id': m.id };
+  return `<div class="ws-menu-panel ws-mtg-rowmenu" role="menu" aria-label="${e(m.title)}" style="left:${Math.round(Number(r.x)) || 0}px;top:${Math.round(Number(r.y)) || 0}px">${menuItems([
+    ['Open', 'meeting-select', id, 'arrow'],
+    ...hideMenuItems(m, p.v.hidden),
+    m.ev ? '-' : null,
+    m.ev ? ['Show in calendar', 'meeting-calendar', id, 'calendar'] : null,
+  ])}</div>`;
+}
+
+const foldButton = (attrs, open, inner, title) => `<button type="button" class="ws-mtg-fold" ${attrs} aria-expanded="${open}"${title ? ` title="${e(title)}"` : ''}>${icon('chevron-down')}${inner}</button>`;
+
 function list(p) {
-  const { v, s } = p;
-  const rows = meetingRows(s, v.filter, v.q, v.showNone, p.now, p.items);
-  const counts = meetingCounts(s, p.now, p.items);
-  const toDo = p.items.filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run && !m.paused);
-  const groups = [];
-  for (const m of rows) {
-    const key = dayKey(m.start, p.zone);
-    let g = groups.at(-1);
-    if (!g || g.key !== key) {
-      g = { key, start: m.start, items: [] };
-      groups.push(g);
-    }
-    g.items.push(m);
-  }
-  const lanes = LANES.map(([id, label]) => {
-    const n = id === 'process' ? counts.process : id === 'attention' ? counts.attention : 0;
-    return `<button type="button" role="tab" data-action="meeting-filter" data-filter="${id}" aria-selected="${v.filter === id}">${e(label)}${n ? `<span class="ws-segmented-count${id === 'attention' ? ' ws-mtg-count-alert' : ''}">${n}</span>` : ''}</button>`;
+  const { v, s, model } = p;
+  const counts = meetingCounts(s, p.now, p.items, v.hidden);
+  const lane = { process: 'needs', attention: 'needs' }[v.filter] || (FILTERS.some(([id]) => id === v.filter) ? v.filter : 'all');
+  const toDo = model.needs.filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run && !m.paused);
+  const filtered = lane !== 'all' || v.showNone || v.showHidden;
+  const filterMenu = menu('meetings-filter', `<summary class="ws-btn ws-btn-ghost ws-btn-icon${filtered ? ' ws-mtg-filtered' : ''}" aria-label="Filter" title="Filter">${icon('sliders')}</summary>`, [
+    ['#', 'Show'],
+    ...FILTERS.map(([id, label]) => [label, 'meeting-filter', { 'data-filter': id, 'aria-checked': String(lane === id) }]),
+    '-',
+    [`Meetings without a transcript (${counts.none})`, 'meeting-show-none', { 'aria-checked': String(!!v.showNone) }],
+    [`Hidden meetings (${model.hiddenCount})`, 'meeting-show-hidden', { 'aria-checked': String(!!v.showHidden) }],
+  ]);
+  const moreMenu = menu('meetings-more', dotsSummary('More'), [
+    ['Fold all days', 'meeting-fold-all', {}, 'chevron-up'],
+    ['Unfold all days', 'meeting-unfold-all', {}, 'chevron-down'],
+    '-',
+    ['Import a transcript file…', 'meeting-import', {}, 'upload'],
+    transcriptsAllowed(s) ? ['Check Teams for new transcripts', 'meeting-check-all', {}, 'refresh'] : null,
+    '-',
+    ['Meetings settings', 'settings-tab', { 'data-tab': 'meetings-transcripts' }, 'settings'],
+  ]);
+  const card = model.needs.length ? `<section class="ws-mtg-needs" aria-label="Needs you">
+      <div class="ws-mtg-needs-head">${foldButton('data-action="meeting-needs-fold"', !v.needsFolded, '<strong>Needs you</strong>')}<span class="ws-mtg-count">${model.needs.length}</span><span class="ws-spacer"></span>${toDo.length > 1 ? button(`Make notes for ${toDo.length}`, { action: 'meeting-make-all', variant: 'ghost', size: 'sm' }) : ''}</div>
+      ${v.needsFolded ? '' : model.needs.map(m => row(p, m, { withDay: true })).join('')}
+    </section>` : '';
+  const days = model.days.map(d => {
+    const closed = !!v.folded?.[d.key];
+    const rel = relDay(d.start, p.zone, p.now);
+    const waiting = closed ? d.items.filter(m => inLane(m, 'needs') || (p.tasksBy.get(m.id) || []).some(t => taskStatus(t) === 'review')).length : 0;
+    const head = foldButton(`data-action="meeting-day-fold" data-day="${e(d.key)}"`, !closed, `<strong>${e(rel || shortDay(d.start, p.zone))}</strong>${rel ? `<span>${e(shortDay(d.start, p.zone))}</span>` : ''}`, 'Fold or unfold this day (⌥-click keeps only this day open)');
+    const tail = closed ? `<span class="ws-spacer"></span>${waiting ? `<span class="ws-mtg-day-dot" title="Need you or have tasks to review">● ${waiting}</span>` : ''}<span class="ws-mtg-count">${plural(d.items.length, 'meeting')}</span>` : '';
+    return `<div class="ws-mtg-group" role="group" aria-label="${e(longDay(d.start, p.zone))}" data-day="${e(d.key)}"><div class="ws-mtg-day">${head}${tail}</div>${closed ? '' : d.items.map(m => row(p, m)).join('')}</div>`;
   }).join('');
-  const body = groups.length ? groups.map(g => {
-    const rel = relDay(g.start, p.zone, p.now);
-    return `<div class="ws-mtg-group" role="group" aria-label="${e(longDay(g.start, p.zone))}"><div class="ws-mtg-day">${e(rel || shortDay(g.start, p.zone))}${rel ? `<span>${e(longDay(g.start, p.zone))}</span>` : ''}</div>${g.items.map(m => row(p, m)).join('')}</div>`;
-  }).join('') : `<div class="ws-mtg-empty">${listEmpty(p)}</div>`;
+  const n = model.hiddenCount;
+  const hiddenFoot = n ? `<button type="button" class="ws-mtg-hid-foot" data-action="meeting-show-hidden">${icon(v.showHidden ? 'eye' : 'eye-off')}<span>${v.showHidden ? `Showing ${plural(n, 'hidden meeting')} · <u>Hide them</u>` : `${plural(n, 'hidden meeting')} · <u>Show</u>`}</span></button>` : '';
+  const body = card || days ? `${card}${days}` : `<div class="ws-mtg-empty">${listEmpty(p)}</div>`;
   const off = s.connection && s.connection.status === 'connected' && !transcriptsAllowed(s);
+  const search = v.searchOpen || v.q ? `<label class="ws-search">${icon('search')}<input id="meetings-search" type="search" placeholder="Search titles and people" value="${e(v.q)}" aria-label="Search meetings" autocomplete="off"></label>` : '';
   return `<section class="ws-mtg-list" aria-label="Meetings list">
     <header class="ws-mtg-list-head">
-      <div class="ws-mtg-list-title"><h1>Meetings</h1><span class="ws-actions">${button('', { action: 'meeting-import', iconName: 'upload', variant: 'ghost', title: 'Import a transcript file' })}${button('', { action: 'meeting-check-all', iconName: 'refresh', variant: 'ghost', title: 'Check Teams for new transcripts', disabled: !transcriptsAllowed(s) })}</span></div>
-      <label class="ws-search">${icon('search')}<input id="meetings-search" type="search" placeholder="Search titles and people" value="${e(v.q)}" aria-label="Search meetings" autocomplete="off"></label>
-      <div class="ws-segmented ws-mtg-filters" role="tablist" aria-label="Filter meetings">${lanes}</div>
+      <div class="ws-mtg-list-title"><h1>Meetings</h1><span class="ws-actions">${button('', { action: 'meeting-search-open', iconName: 'search', variant: 'ghost', title: 'Search (/)', attrs: { 'aria-pressed': String(!!(v.searchOpen || v.q)) } })}${filterMenu}${moreMenu}</span></div>
+      ${search}
     </header>
     ${off ? `<div class="ws-mtg-off">${icon('info')}<span>Connect isn’t reading Teams transcripts yet.</span>${button('Turn on', { action: 'meeting-transcripts-on', variant: 'ghost', size: 'sm' })}${button('', { action: 'settings-tab', iconName: 'settings', variant: 'ghost', size: 'sm', title: 'Settings › Meetings › Transcripts & folders', attrs: { 'data-tab': 'meetings-transcripts' } })}</div>` : ''}
-    ${toDo.length && ['all', 'process'].includes(v.filter) ? `<div class="ws-mtg-bulk">${icon('sparkles')}<span class="ws-mtg-bulk-text">${plural(toDo.length, 'transcript')} without notes</span>${button(`Make notes for all ${toDo.length}`, { action: 'meeting-make-all', variant: 'ghost', size: 'sm' })}</div>` : ''}
-    <div class="ws-mtg-list-body" role="listbox" aria-label="Meetings" tabindex="-1">${body}</div>
-    ${v.filter === 'all' ? `<footer class="ws-mtg-list-foot">${toggle({ action: 'meeting-show-none', checked: v.showNone, label: `Show meetings without a transcript (${counts.none})` })}</footer>` : ''}
+    <div class="ws-mtg-list-body" role="listbox" aria-label="Meetings" tabindex="-1">${body}${hiddenFoot}</div>
+    ${rowMenu(p)}
   </section>`;
 }
 
@@ -353,7 +402,7 @@ function emptyDetail(s) {
 
 /** The meeting the Meetings page shows: the one picked, else the list's first. */
 function selectedOf(p) {
-  return p.byId.get(p.v.selected) || meetingRows(p.s, p.v.filter, p.v.q, p.v.showNone, p.now, p.items)[0] || null;
+  return p.byId.get(p.v.selected) || p.byId.get(listOrder(p.model, p.v)[0]) || null;
 }
 
 /** The meeting the Meetings page shows, as plugins' call slots get it (Echo's call), or null. */
@@ -410,18 +459,19 @@ const TODAY_TEXT = { available: 'Saving the transcript from Teams', downloaded: 
 
 /** Whether Today shows "From your meetings": when the layout has it, or until a saved layout
  *  hides it, whenever a meeting needs the person or has a transcript without notes. */
-export function showMeetingsCard(w, s, now = Date.now()) {
+export function showMeetingsCard(w, s, now = Date.now(), hidden = null) {
   if ((w.layout || []).includes('meetings')) return true;
   if (w.widgetWidths && 'meetings' in w.widgetWidths) return false;
-  const c = meetingCounts(s, now);
+  const c = meetingCounts(s, now, undefined, hidden);
   return c.process + c.attention > 0;
 }
 
 /** Today's "From your meetings": what needs the person first, then transcripts without notes;
  *  each row opens the meeting on the Meetings page. */
-export function todayMeetingsCard(s, now = Date.now()) {
+export function todayMeetingsCard(s, now = Date.now(), hidden = null) {
   const zone = s.settings.timeZone;
-  const items = meetingItems(s, now);
+  // Meetings hidden from the Meetings list don't ask for the person here either.
+  const items = meetingItems(s, now).filter(m => !isHidden(m, hidden));
   const attention = meetingRows(s, 'attention', '', false, now, items);
   const toDo = meetingRows(s, 'process', '', false, now, items);
   const rows = [...attention, ...toDo].slice(0, 5).map(m => {

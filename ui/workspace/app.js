@@ -80,7 +80,7 @@ const state = {
   // Meetings: the list's filter and search, the selected meeting and tab, the hidden list, Side by
   // side, the document editor (view state only; meetings are native's). The calendar's "Only
   // meetings with transcripts" and the legend groups turned off.
-  meetings: newMeetingsView({ wide: localPref('codemie.meetings.wide', 'false') === 'true' }),
+  meetings: newMeetingsView({ wide: localPref('codemie.meetings.wide', 'false') === 'true', hidden: localJson('codemie.meetings.hidden', null) }),
   calendarTranscripts: localPref('codemie.calendar.transcripts', 'false') === 'true', calendarLegend: {},
   // Settings › Meetings: the template being edited, refusals by field, the glossary and tags as
   // typed, the rule tester (view state only; settings, templates and rules are native's).
@@ -220,6 +220,7 @@ const shellMarkup = () => renderShell({
   terminals: terminalDock?.state(),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
   settingsDot: codemie.settingsDot(),
+  meetingsHidden: state.meetings.hidden,
 });
 
 function shell() {
@@ -319,7 +320,7 @@ async function render() {
   const s = snap();
   applyTheme(s.settings.theme);
   const ctx = {
-    state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(),
+    state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(), meetingsHidden: state.meetings.hidden,
     codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots(), signIn: codemie.signIn() },
     codemieCard: codemie.todayCard(),
   };
@@ -1497,7 +1498,7 @@ function selectMessage(id) {
   return render().then(() => root.querySelector('.ws-inbox-row.ws-selected')?.scrollIntoView({ block: 'nearest' }));
 }
 
-async function handle(action, el) {
+async function handle(action, el, opts = {}) {
   if (action.startsWith('recovery-')) return recoveryAction(action);
   // Data location works from the recovery page too, where there is no snapshot.
   if (action.startsWith('data-')) return storageAction(action, el);
@@ -1512,7 +1513,7 @@ async function handle(action, el) {
     // From the calendar's event card, a step that opens a dialog or the page closes the card first.
     const card = el.closest?.('.ws-event-modal');
     if (card && ['meeting-make-notes', 'meeting-import', 'meeting-open', 'meeting-retry', 'meeting-calendar'].includes(action)) card.close();
-    await meetingsUi.handle(action, el);
+    await meetingsUi.handle(action, el, opts);
     if (card?.open) refreshEventDialog();
     return undefined;
   }
@@ -1926,6 +1927,22 @@ async function prepareReply(id, body) {
 
 // ---------------------------------------------------------------- events
 
+// The Meetings list: right-click a row for its menu (Open, Hide, Show in calendar), kept inside
+// the window; a click anywhere but an action closes it (an action closes it by itself).
+document.addEventListener('contextmenu', ev => {
+  const row = ev.target.closest?.('#workspace-app .ws-mtg-row[data-id]');
+  if (!row || !meetingsUi) return;
+  ev.preventDefault();
+  const x = Math.max(8, Math.min(ev.clientX, window.innerWidth - 280));
+  const y = Math.max(8, Math.min(ev.clientY, window.innerHeight - 180));
+  meetingsUi.contextMenu(row.dataset.id, x, y).catch(fail);
+});
+document.addEventListener('click', ev => {
+  if (!state.meetings.rowMenu || ev.target.closest?.('.ws-mtg-rowmenu,[data-action]')) return;
+  state.meetings.rowMenu = null;
+  render().catch(fail);
+});
+
 document.addEventListener('click', async ev => {
   const el = ev.target.closest('[data-action]');
   if (!el || !el.closest('#workspace-app,.ws-modal,#cm-sheet-host')) return;
@@ -1935,7 +1952,8 @@ document.addEventListener('click', async ev => {
   const keepFocus = KEEP_FOCUS.has(el.dataset.action);
   if (!keepFocus) el.disabled = true;
   try {
-    await handle(el.dataset.action, el);
+    // ⌥-click on a day of the Meetings list keeps only that day open.
+    await handle(el.dataset.action, el, { alt: ev.altKey });
   } catch (err) {
     fail(err);
   } finally {

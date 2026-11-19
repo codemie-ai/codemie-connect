@@ -78,14 +78,14 @@ export function today(s, ctx) {
     calendar: () => scheduleCard(s, m, connected),
     inbox: () => attentionCard(s, m, connected, ctx.state?.ai),
     commitments: () => commitmentsCard(s, m, w),
-    meetings: () => todayMeetingsCard(s, m.nowMs),
+    meetings: () => todayMeetingsCard(s, m.nowMs, ctx.meetingsHidden),
     automations: () => automationResultsCard(s, ctx.state?.ai),
     [PLUGINS_CARD]: () => pluginsCard(s, { zone: m.zone, routeOf: ctx.plugins?.routeOf }),
   };
   const catalog = ctx.plugins?.catalog || [];
   const layout = w.layout.filter(id => widgets[id] || parseLayoutId(id));
   // "From your meetings" shows itself while a meeting waits, until a saved layout hides it.
-  if (!layout.includes('meetings') && showMeetingsCard(w, s, m.nowMs)) layout.push('meetings');
+  if (!layout.includes('meetings') && showMeetingsCard(w, s, m.nowMs, ctx.meetingsHidden)) layout.push('meetings');
   if (!layout.includes(PLUGINS_CARD) && showPluginsCard(w, s)) layout.push(PLUGINS_CARD);
   const grid = layout.map(id => {
     const fallback = WIDGETS[id]?.width || catalog.find(x => x.id === id)?.width || 6;

@@ -11,7 +11,7 @@ import { DEFAULT_FILTERS } from './tasks-model.js';
 import { quoted } from './tasks-controller.js';
 import { formatDate, formatTime } from './format.js';
 import {
-  TABS, failedNotesJob, laneFor, lineAt, meetingItems, meetingRows, meetingTasks, parseGlossary, resolveTemplate, rulesOf,
+  TABS, failedNotesJob, isHidden, laneFor, lineAt, listModel, listOrder, meetingItems, meetingTasks, parseGlossary, readHidden, resolveTemplate, rulesOf, seriesOf,
 } from './meetings-model.js';
 import { importBody, makeNotesBody } from './view-meetings.js';
 import { plural } from './view-meeting-tabs.js';
@@ -53,6 +53,9 @@ export function createMeetingsController({
   const docOf = (id, docId) => (record(id)?.data?.docs || []).find(d => d.id === docId) || null;
   const titleOf = id => item(id)?.title || record(id)?.data?.title || 'this meeting';
   const missing = () => new Error('This meeting is no longer in your calendar. Refresh and try again.');
+  /** The list as it shows now (the Needs you card and the days), and its rows in screen order. */
+  const model = () => listModel(snap(), v(), { now: now(), zone: snap().settings?.timeZone || 'UTC' });
+  const order = () => listOrder(model(), v());
 
   // ---------------------------------------------------------------- reads
 
@@ -117,7 +120,7 @@ export function createMeetingsController({
     const s = snap();
     const all = meetingItems(s, now());
     if (v().selected && all.some(m => m.id === v().selected)) return v().selected;
-    v().selected = meetingRows(s, v().filter, v().q, v().showNone, now(), all)[0]?.id || null;
+    v().selected = order()[0] || null;
     return v().selected;
   }
 
@@ -209,11 +212,25 @@ export function createMeetingsController({
 
   /** ↑/↓ on the list moves the selection (not while typing, in a dialog or in the meeting). */
   async function key(ev) {
+    if (ev.key === 'Escape' && v().rowMenu) {
+      v().rowMenu = null;
+      await render();
+      return true;
+    }
+    // "/" opens the search field (not while typing somewhere).
+    if (ev.key === '/' && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+      if (ev.target?.closest?.('input, textarea, select, dialog, [contenteditable]')) return false;
+      ev.preventDefault?.();
+      v().searchOpen = true;
+      await render();
+      focus('#meetings-search');
+      return true;
+    }
     if (!['ArrowDown', 'ArrowUp'].includes(ev.key) || ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey) return false;
     const target = ev.target;
     if (target?.closest?.('input, textarea, select, dialog, .ws-mtg-detail, details[open]')) return false;
     const view = v();
-    const rows = meetingRows(snap(), view.filter, view.q, view.showNone, now()).map(m => m.id);
+    const rows = order();
     if (!rows.length) return false;
     ev.preventDefault?.();
     const at = rows.indexOf(view.selected);
@@ -221,6 +238,63 @@ export function createMeetingsController({
     if (next !== view.selected) await select(next);
     focus([`[data-action="meeting-select"][data-id="${quoted(next)}"]`]);
     return true;
+  }
+
+  // ---------------------------------------------------------------- hiding and the row menu
+
+  /** Keeps the hidden meetings in the view state and the window's preference. */
+  function saveHidden(next) {
+    v().hidden = readHidden(next);
+    setPref('codemie.meetings.hidden', JSON.stringify(v().hidden));
+  }
+
+  /** The open meeting just left the list: the next row of `before` opens, else the one above. */
+  function moveOff(before) {
+    const view = v();
+    const gone = id => isHidden(item(id), view.hidden);
+    if (view.showHidden || !gone(view.selected)) return;
+    const at = before.indexOf(view.selected);
+    const next = before.slice(at + 1).find(id => !gone(id)) || before.slice(0, Math.max(0, at)).reverse().find(id => !gone(id)) || null;
+    leave(view.selected);
+    view.selected = next;
+  }
+
+  /** Hides a meeting, or every meeting of its series, from the list; Undo puts it back. */
+  async function hide(id, { series = false } = {}) {
+    const m = item(id);
+    if (!m) return;
+    const key = series ? seriesOf(m) : null;
+    if (series && !key) return;
+    const before = order();
+    const prev = v().hidden;
+    saveHidden(series ? { ...prev, series: [...prev.series, key] } : { ...prev, ids: [...prev.ids, id] });
+    moveOff(before);
+    await rerender();
+    toast(series ? `Every “${m.title}” is hidden` : `Hidden from the list: “${m.title}”`, 'info', {
+      label: 'Undo',
+      run: async () => {
+        saveHidden(prev);
+        v().selected = id;
+        await rerender();
+      },
+    });
+  }
+
+  /** Shows a meeting again, with its series when that is what hid it. */
+  async function unhide(id) {
+    const m = item(id);
+    const prev = v().hidden;
+    const key = seriesOf(m);
+    saveHidden({ ids: prev.ids.filter(x => x !== id), series: prev.series.filter(x => x !== key) });
+    await rerender();
+    toast(key && prev.series.includes(key) ? `Every “${m?.title || titleOf(id)}” is back in the list` : `Back in the list: “${m?.title || titleOf(id)}”`, 'success');
+  }
+
+  /** Right-click on a row: its menu, at the pointer. */
+  async function contextMenu(id, x, y) {
+    if (!item(id)) return;
+    v().rowMenu = { id, x: Number(x) || 0, y: Number(y) || 0 };
+    await render();
   }
 
   // ---------------------------------------------------------------- errors and Claude
@@ -364,7 +438,7 @@ export function createMeetingsController({
   async function makeAll() {
     const s = snap();
     const rules = rulesOf(s);
-    const todo = meetingItems(s, now()).filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run && !m.paused);
+    const todo = meetingItems(s, now()).filter(m => (m.state === 'available' || m.state === 'downloaded') && !m.run && !m.paused && !isHidden(m, v().hidden));
     const result = await eachMeeting(todo, m => makeNotes(m.id, { templateId: resolveTemplate(m.ev, m.rec, s, rules).id, wishes: '', findTasks: true, remember: false, batch: true }));
     batchToast(result, todo.length, { verb: 'Making notes for', noun: 'meeting', all: n => `Making notes for ${plural(n, 'meeting')}. Each uses its own template.` });
   }
@@ -549,23 +623,48 @@ export function createMeetingsController({
   }
 
   /** The `meeting-*` and `doc-*` actions; `el` is the control (its dataset, value, checked). */
-  async function handle(action, el) {
+  async function handle(action, el, { alt = false } = {}) {
     const id = el.dataset?.id || v().selected;
     const docId = el.dataset?.doc;
     el.closest?.('details')?.removeAttribute('open');
     const view = v();
+    // Any step taken closes the row's right-click menu.
+    view.rowMenu = null;
     switch (action) {
       case 'meeting-select': return select(id);
       case 'meeting-filter': {
         view.filter = el.dataset.filter || 'all';
-        const rows = meetingRows(snap(), view.filter, view.q, view.showNone, now());
-        if (!rows.some(m => m.id === view.selected)) {
+        const rows = order();
+        if (!rows.includes(view.selected)) {
           leave(view.selected);
-          view.selected = rows[0]?.id || null;
+          view.selected = rows[0] || null;
         }
         return rerender();
       }
-      case 'meeting-show-none': view.showNone = !!el.checked; return render();
+      case 'meeting-show-none': view.showNone = !view.showNone; return render();
+      case 'meeting-show-hidden': {
+        const before = order();
+        view.showHidden = !view.showHidden;
+        if (!view.showHidden) moveOff(before);
+        return rerender();
+      }
+      case 'meeting-search-open':
+        view.searchOpen = true;
+        await render();
+        return focus('#meetings-search');
+      case 'meeting-day-fold': {
+        const day = el.dataset.day;
+        if (alt) view.folded = Object.fromEntries(model().days.map(d => d.key).filter(k => k !== day).map(k => [k, true]));
+        else if (view.folded[day]) view.folded = Object.fromEntries(Object.entries(view.folded).filter(([k]) => k !== day));
+        else view.folded = { ...view.folded, [day]: true };
+        return render();
+      }
+      case 'meeting-fold-all': view.folded = Object.fromEntries(model().days.map(d => [d.key, true])); return render();
+      case 'meeting-unfold-all': view.folded = {}; return render();
+      case 'meeting-needs-fold': view.needsFolded = !view.needsFolded; return render();
+      case 'meeting-hide': return hide(id);
+      case 'meeting-hide-series': return hide(id, { series: true });
+      case 'meeting-unhide': return unhide(id);
       case 'meeting-tab': {
         if (el.dataset.id) view.selected = el.dataset.id;
         view.tab = TABS.includes(el.dataset.tab) ? el.dataset.tab : 'notes';
@@ -783,5 +882,5 @@ export function createMeetingsController({
     return undefined;
   }
 
-  return { open, handle, input, submit, key, load, data, glossary, ensureSelection, makeNotesDialog, importDialog, problem, guarded, makeNotes, transcriptsOn, forgetGlossary };
+  return { open, handle, input, submit, key, load, data, glossary, ensureSelection, makeNotesDialog, importDialog, problem, guarded, makeNotes, transcriptsOn, forgetGlossary, contextMenu };
 }

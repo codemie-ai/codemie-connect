@@ -27,14 +27,14 @@ export function pluginNav(activities = [], current = null) {
 }
 
 // state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot, now } — settingsDot: CodeMie needs the person.
-export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, terminals = null, now = Date.now() }) {
+export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, terminals = null, now = Date.now(), meetingsHidden = null }) {
   const w = active(s);
   const c = s.connection;
   const replies = attentionMessages(s).length;
   const pendingDecisions = decisions(s).length;
   const toReview = s.records.filter(r => r.kind === 'commitment' && taskStatus(r) === 'review').length;
   // Meetings: transcripts to make notes from, and meetings that need the person.
-  const meetingsWaiting = (({ process, attention }) => process + attention)(meetingCounts(s, now));
+  const meetingsWaiting = (({ process, attention }) => process + attention)(meetingCounts(s, now, undefined, meetingsHidden));
   const count = id => (id === 'inbox' && replies ? `<small class="ws-count">${replies}</small>`
     : id === 'tasks' && toReview ? `<small class="ws-count" title="Tasks to review">${toReview}</small>`
       : id === 'meetings' && meetingsWaiting ? `<small class="ws-count" title="Transcripts waiting for you">${meetingsWaiting}</small>` : '');
