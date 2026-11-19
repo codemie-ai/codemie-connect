@@ -911,8 +911,9 @@ test('the_frames_refusals_match_the_regexes_knowledge_reads_them_by', async () =
 });
 
 test('echo_in_a_plugins_own_words_reads_connect_and_a_users_notes_stay_as_written', () => {
-  // The host's name in Echo's plugins: Connect; Claude Code opens in Terminal, not Echo's panel.
-  assert.equal(hostWords("Claude Code opens in Echo's panel with this vault"), 'Claude Code opens in Terminal with this vault');
+  // The host's name in Echo's plugins: Connect; Claude Code opens in Connect's terminal, as in Echo's panel.
+  assert.equal(hostWords("Claude Code opens in Echo's panel with this vault"), "Claude Code opens in Connect's terminal with this vault");
+  assert.equal(hostWords('Run it in Echo’s terminal'), 'Run it in Connect’s terminal');
   assert.equal(hostWords('What Echo read; Echo’s index'), 'What Connect read; Connect’s index');
   assert.equal(hostWords('Echoes and echo stay'), 'Echoes and echo stay');
   const table = renameTable([
@@ -929,7 +930,7 @@ test('echo_in_a_plugins_own_words_reads_connect_and_a_users_notes_stay_as_writte
     'Each vault is a folder of Markdown you own; Connect changes nothing in it until you save something.',
   );
   assert.equal(renameHost("✦ Claude Code opens in Echo's panel with this vault as its project — its CLAUDE.md", table),
-    '✦ Claude Code opens in Terminal with this vault as its project — its CLAUDE.md');
+    "✦ Claude Code opens in Connect's terminal with this vault as its project — its CLAUDE.md");
   // White space as the page lays it out.
   assert.equal(renameHost('  What  Echo\n read ', table), ' What Connect read ');
   // A short phrase only as the whole text; Echo in a user's own words, never.
@@ -951,5 +952,5 @@ test('echo_in_a_plugins_own_words_reads_connect_and_a_users_notes_stay_as_writte
   assert.ok(checkFromWindow(connect(answer.phrases)));
   const fromRust = renameTable(answer.phrases);
   assert.equal(renameHost('Echo posts your standup when the meeting ends', fromRust), 'Connect posts your standup when the meeting ends');
-  assert.equal(renameHost("Ask in Echo's panel", fromRust), 'Ask in Terminal');
+  assert.equal(renameHost("Ask in Echo's panel", fromRust), "Ask in Connect's terminal");
 });

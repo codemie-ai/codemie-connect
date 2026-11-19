@@ -27,7 +27,7 @@ export function pluginNav(activities = [], current = null) {
 }
 
 // state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot, now } — settingsDot: CodeMie needs the person.
-export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, now = Date.now() }) {
+export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, terminals = null, now = Date.now() }) {
   const w = active(s);
   const c = s.connection;
   const replies = attentionMessages(s).length;
@@ -54,10 +54,18 @@ export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, se
     <header class="ws-topbar">
       <div class="ws-topbar-right">
         ${syncStatus(s)}
+        ${terminals?.count ? terminalButton(terminals) : ''}
         ${button('', { action: 'sync', iconName: 'refresh', variant: 'ghost', title: 'Sync now', disabled: !c || c.status !== 'connected' })}
         ${button('', { action: 'theme-toggle', iconName: resolvedDark ? 'sun' : 'moon', variant: 'ghost', title: resolvedDark ? 'Switch to light theme' : 'Switch to dark theme' })}
         <button type="button" class="ws-btn ws-btn-ghost ws-btn-icon ws-bell" data-action="route" data-route="inbox" data-lane="decisions" aria-label="Decisions${pendingDecisions ? `: ${pendingDecisions}` : ''}" title="Decisions and failed work">${icon('bell')}${pendingDecisions ? `<span class="ws-bell-dot">${pendingDecisions}</span>` : ''}</button>
       </div>
     </header>
     <main class="ws-main" id="workspace-main"><div class="ws-page" id="workspace-page"></div></main>`;
+}
+
+/** The topbar's Terminal button (once a session has opened): shows or hides the dock; while it is
+ *  hidden, a green count says how many sessions still run. */
+export function terminalButton({ count = 0, running = 0, shown = false } = {}) {
+  const label = `Terminal: ${count} ${count === 1 ? 'session' : 'sessions'}${running ? `, ${running} running` : ''}`;
+  return `<button type="button" class="ws-btn ws-btn-ghost ws-btn-icon ws-term-toggle" data-action="terminal-toggle" aria-pressed="${shown}" aria-label="${e(label)}" title="${shown ? 'Hide the terminal' : 'Show the terminal'} (⌃\`)">${icon('terminal')}${!shown && running ? `<span class="ws-term-count" aria-hidden="true">${running}</span>` : ''}</button>`;
 }

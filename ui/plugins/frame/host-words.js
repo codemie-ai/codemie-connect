@@ -6,10 +6,11 @@
 /** A phrase shorter than this changes only when it is a text node's whole text. */
 const SHORT_PHRASE = 12;
 
-/** Echo's name as Connect's: Claude Code opens in Terminal, not in Echo's panel. */
+/** Echo's name as Connect's: Claude Code opens in Connect's terminal (the dock), as it did in
+ *  Echo's panel. */
 export function hostWords(text) {
   return String(text ?? '')
-    .replace(/\bEcho['’]s (panel|terminal)\b/g, 'Terminal')
+    .replace(/\bEcho(['’])s (panel|terminal)\b/g, (_, q) => `Connect${q}s terminal`)
     .replace(/\bEcho(['’]s)?\b/g, (_, s) => `Connect${s || ''}`);
 }
 

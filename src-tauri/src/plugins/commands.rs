@@ -390,8 +390,10 @@ fn frame_request(
             let (dir, argv) =
                 window::session(services, &a.id, &a.folder, &a.path, &a.mode, &a.profile)
                     .map_err(host_error)?;
-            crate::commands::terminal_launch::open_session(app, &dir, &argv)
-                .map_err(|e| WorkspaceError::new("io", e.to_string()))?;
+            let name = services.granted(&a.id).map_err(host_error)?.name.clone();
+            // In Connect's terminal dock, as in Echo's terminal panel.
+            crate::commands::terminal::open_claude(app, &a.id, &name, &dir, argv)
+                .map_err(|e| WorkspaceError::new("io", e))?;
             log::info!(
                 "[plugin:{}] opened Claude Code in a folder it was given",
                 a.id

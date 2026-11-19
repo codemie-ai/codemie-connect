@@ -25,13 +25,16 @@ const PREF = {
   setupDismissed: 'codemie.setup.dismissed',
   dismissed: 'codemie.attention.dismissed',
   folders: 'codemie.start.folders',
+  where: 'codemie.start.where',
 };
+/** Connect's own terminal runs on macOS; elsewhere an agent starts in the system's terminal. */
+const OWN_TERMINAL = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent || '');
 const RENDER_EVERY_MS = 250;
 
 export function createCodemieController(deps) {
   const {
     state, service, session, runLog, render, route, openModal, confirmModal, toast, writeText,
-    localPref, setLocalPref, store, invoke, canRender = () => true, editing = () => false, now = Date.now,
+    localPref, setLocalPref, store, invoke, canRender = () => true, editing = () => false, now = Date.now, ownTerminal = OWN_TERMINAL,
     // A Claude already ready on this Mac (Settings → Claude): Today then waits for setup to start.
     claudeReady = () => false,
   } = deps;
@@ -522,13 +525,25 @@ export function createCodemieController(deps) {
     setLocalPref(PREF.folders, JSON.stringify([folder, ...recentFolders().filter((p) => p !== folder)].slice(0, 5)));
   }
 
-  async function launch(command, folder) {
+  /** Where an agent starts: a tab in Connect's terminal (the default) or the Terminal app, as
+   *  the person last chose. */
+  function startWhere() {
+    return ownTerminal && localPref(PREF.where, 'connect') !== 'app' ? 'connect' : 'app';
+  }
+
+  async function launch(command, folder, where = startWhere()) {
     const row = startableAgents(cm).find((a) => a.command === command);
     if (!row) return;
     const d = agentDisplay(row);
-    await service.openInTerminal({ folder, launcher: d.launcher, profile: cm.config.active });
+    if (ownTerminal && where === 'connect') {
+      // The dock opens on the new tab: nothing more to say.
+      await service.openInConnect({ folder, launcher: d.launcher, profile: cm.config.active, agent: d.name });
+    } else {
+      await service.openInTerminal({ folder, launcher: d.launcher, profile: cm.config.active });
+      toast(`Terminal opened in ${folder} with ${d.name}`, 'success');
+    }
     rememberFolder(folder);
-    toast(`Terminal opened in ${folder} with ${d.name}`, 'success');
+    if (ownTerminal) setLocalPref(PREF.where, where);
   }
 
   function openTerminal(command) {
@@ -544,21 +559,31 @@ export function createCodemieController(deps) {
     const list = folders.length
       ? `<div class="cm-choices">${folders.map((p, i) => `<label class="cm-choice"><input type="radio" name="folder" value="${e(p)}" ${i === 0 ? 'checked' : ''}><span class="cm-choice-mark"></span>${icon('folder')}<span class="cm-choice-copy"><strong>${e(base(p))}</strong><span>${e(p)}</span></span></label>`).join('')}</div>`
       : '<p class="ws-muted ws-hint">Pick the folder of the project you want to work on.</p>';
+    const where = startWhere();
+    const whereChoice = (value, iconName, title, sub) => `<label class="cm-choice"><input type="radio" name="where" value="${value}" ${where === value ? 'checked' : ''}><span class="cm-choice-mark"></span>${icon(iconName)}<span class="cm-choice-copy"><strong>${title}</strong><span>${sub}</span></span></label>`;
+    const whereRow = ownTerminal
+      ? `<fieldset class="cm-where"><legend>Open it in</legend><div class="cm-choices cm-choices-2">
+          ${whereChoice('connect', 'terminal', 'Connect', 'A tab in Connect’s terminal, under your pages')}
+          ${whereChoice('app', 'external', 'Terminal app', 'A window of macOS Terminal')}
+        </div></fieldset>`
+      : '';
     openModal({
       title: `Start ${d.name}`, subtitle: 'Choose the project folder to work in.', size: 'md',
-      submit: folders.length ? 'Open in Terminal' : '',
+      submit: folders.length ? 'Start' : '',
       body: `${list}
         <p style="margin-top:10px">${button('Choose another folder…', { action: 'cm-folder-pick', variant: folders.length ? 'ghost' : 'primary', iconName: 'folder', attrs: { 'data-id': row.command } })}</p>
-        <p class="ws-muted ws-hint" style="margin-top:8px">Terminal opens in that folder and runs ${code(`${d.launcher} --profile ${cm.config.active}`)}. Type what you want done when it starts.</p>`,
-      onSubmit: (form) => launch(row.command, String(form.get('folder') || '')),
+        ${whereRow}
+        <p class="ws-muted ws-hint" style="margin-top:8px">A terminal opens in that folder and runs ${code(`${d.launcher} --profile ${cm.config.active}`)}. Type what you want done when it starts.</p>`,
+      onSubmit: (form) => launch(row.command, String(form.get('folder') || ''), String(form.get('where') || where)),
     });
   }
 
   async function pickAndLaunch(el) {
+    const where = el?.closest?.('.ws-modal')?.querySelector?.('input[name="where"]:checked')?.value;
     const folder = await service.pickFolder();
     if (!folder) return;
     el?.closest?.('.ws-modal')?.close();
-    await launch(el?.dataset?.id, folder);
+    await launch(el?.dataset?.id, folder, where || startWhere());
   }
 
   // ---------------------------------------------------------------- Coding agents

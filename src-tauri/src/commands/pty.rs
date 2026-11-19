@@ -72,7 +72,7 @@ fn pty_env_pairs_for(home: &str, existing_path: &str, windows: bool) -> Vec<(Str
 /// environment for home-dir resolution. `spawn_pty` is a spawn path
 /// independent of `runner.rs::shell_cmd`, so it needs the shared npm_env
 /// helper wired in separately.
-fn pty_env_pairs(existing_path: &str) -> Vec<(String, String)> {
+pub(crate) fn pty_env_pairs(existing_path: &str) -> Vec<(String, String)> {
     #[cfg(not(windows))]
     let home = std::env::var("HOME").unwrap_or_default();
     #[cfg(windows)]

@@ -30,7 +30,10 @@ import { meetings, shownCall } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
-import { renderShell } from './shell.js';
+import { renderShell, terminalButton } from './shell.js';
+import { createTerminalDock } from './terminal-dock.js';
+import { Terminal } from '../vendor/xterm.mjs';
+import { FitAddon } from '../vendor/addon-fit.mjs';
 import { nextAiSettings, withCodemieSignIn, LOGIN_STEPS } from './settings-ai.js';
 import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from './boot.js';
@@ -87,6 +90,8 @@ const state = {
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
 };
 let pluginHost = null;
+// Connect's terminal dock (terminal-dock.js), made with the plugin host.
+let terminalDock = null;
 /** The meeting the Meetings page shows, as plugins' call slots get it (Echo's call), or null. */
 let pluginCall = null;
 let lastPluginTheme = '';
@@ -212,6 +217,7 @@ function applyTheme(theme) {
 
 const shellMarkup = () => renderShell({
   snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark'),
+  terminals: terminalDock?.state(),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
   settingsDot: codemie.settingsDot(),
 });
@@ -442,6 +448,14 @@ function renderSheet() {
 
 const sheetOpen = () => !!document.querySelector('#cm-sheet-host .cm-sheet');
 
+// ⌃` shows or hides the terminal (VS Code's key), from anywhere in the window.
+document.addEventListener('keydown', ev => {
+  if (!ev.ctrlKey || ev.metaKey || ev.altKey || (ev.code !== 'Backquote' && ev.key !== '`') || modalOpen()) return;
+  if (!terminalDock?.state().count) return;
+  ev.preventDefault();
+  terminalDock.toggle();
+});
+
 // A click anywhere outside an open CodeMie ⋯ menu closes it.
 document.addEventListener('click', ev => {
   for (const menu of document.querySelectorAll('details.cm-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
@@ -658,6 +672,37 @@ function confirmPluginLink(url, name, id) {
       <p class="ws-link-confirm"><code class="ws-storage-path">${e(url)}</code></p>`,
     onSubmit: () => invoke('plugins_request', { op: 'open_link', data: { id, url } }),
   });
+}
+
+/** Closing a tab whose program still runs ends it: Connect asks first. Resolves to the answer. */
+function confirmTerminalStop(info) {
+  return new Promise(resolve => {
+    let answered = false;
+    openModal({
+      title: `Stop ${info.program}?`, size: 'sm', submit: 'Stop and close', variant: 'danger', initialFocus: 'cancel',
+      body: `<p class="ws-modal-text">${e(info.program)} is still running in ${e(info.title)}. Closing the tab stops it${info.resumable ? '; its conversation stays in Claude Code’s history' : ''}.</p>`,
+      onSubmit: () => { answered = true; resolve(true); },
+      onClose: () => { if (!answered) resolve(false); },
+    });
+  });
+}
+
+/** The dock showed, hid, resized or changed its tabs: the plugin frames follow the page, and the
+ *  topbar's Terminal button says how many sessions run (the shell is drawn again only when the
+ *  button comes or goes). */
+let terminalHadTabs = false;
+function terminalLayout() {
+  pluginHost?.placeSoon();
+  const t = terminalDock?.state();
+  if (!t) return;
+  const has = t.count > 0;
+  if (has !== terminalHadTabs) {
+    terminalHadTabs = has;
+    if (ready) render().catch(fail);
+    return;
+  }
+  const btn = root.querySelector('.ws-term-toggle');
+  if (btn) btn.outerHTML = terminalButton(t);
 }
 
 /** A plugin's page asks to add a skill to the user's own Claude Code (or take out one it added):
@@ -1554,6 +1599,7 @@ async function handle(action, el) {
     // Appearance & settings
     case 'theme': return mutate('settings_update', { theme: el.dataset.theme });
     case 'theme-toggle': return mutate('settings_update', { theme: document.documentElement.classList.contains('dark') ? 'light' : 'dark' });
+    case 'terminal-toggle': return terminalDock?.toggle();
     case 'setting-toggle': return mutate('settings_update', { [el.dataset.key]: el.checked }).catch(err => { el.checked = !el.checked; throw err; });
     case 'zone-detect': await mutate('settings_update', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }); return toast('Time zone updated.', 'success');
     case 'focus': {
@@ -2045,7 +2091,7 @@ document.addEventListener('click', ev => {
   for (const menu of document.querySelectorAll('details.ws-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
 }, true);
 document.addEventListener('keydown', ev => {
-  if (ev.key !== 'Escape' || ev.isComposing) return;
+  if (ev.key !== 'Escape' || ev.isComposing || ev.target?.closest?.('.ws-term')) return;
   const menu = document.querySelector('details.ws-menu[open]');
   if (!menu || (modalOpen() && !menu.closest('.ws-modal'))) return;
   ev.preventDefault();
@@ -2416,6 +2462,13 @@ async function boot() {
     onSlots: () => { if (state.route === 'meetings') pluginsChanged(); },
     onCall: folder => openMeetingFolder(folder),
   }).mount(document.body);
+  // Connect's terminal: Claude Code sessions (a plugin's "Ask the vault", a coding agent) in a
+  // dock under the page, outside what the app redraws.
+  terminalDock = createTerminalDock({
+    invoke, listen: (name, fn) => window.__TAURI__.event.listen(name, fn), Terminal, FitAddon,
+    confirmStop: confirmTerminalStop, toast, onLayout: terminalLayout,
+  });
+  terminalDock.mount(document.body).catch(() => {});
   lastPluginTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
   pluginsUi.loadInstalled().catch(() => {
     // Settings → Plugins says why; a plugin page opened at start says it isn't available.
