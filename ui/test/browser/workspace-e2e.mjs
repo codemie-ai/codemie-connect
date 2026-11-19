@@ -1000,6 +1000,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   window.__emitNative = (name, payload) => (listeners[name] || []).forEach(fn => fn({ payload }));
   // A background refresh, as the loop or a sync sends one (nothing in the snapshot changes).
   window.__refresh = () => { s.revision++; emit('workspace:changed'); };
+  // A sync changes an event (e.g. Graph names its series): the window reads the new snapshot.
+  window.__eventData = (id, data) => { const ev = s.records.find(r => r.kind === 'event' && r.id === id); Object.assign(ev.data, data); s.revision++; emit('workspace:changed'); };
   window.__setSummaryStale = value => { for (const r of s.records) if (r.kind === 'summary') r.data.stale = value; s.revision++; emit('workspace:changed'); };
   window.__bridgeCalls = calls;
   // What detection finds next time (Claude signed in or set up meanwhile).
