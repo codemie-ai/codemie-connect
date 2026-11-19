@@ -728,11 +728,62 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
   .ws-attention .ws-msg-avatar{display:none}
 }
 
+/* ------------------------------------------------------------------ Page sections */
+/* A page is a row of sections (spec "Page sections"). A section's width is its flex-grow and its
+   minimum its min-width, so the row scrolls sideways when the minimums don't fit. A section has a
+   tab strip and a body that scrolls, or, collapsed, a 42 px rail. A divider sits between two
+   sections. While a tab is dragged, a zone or a bar shows where it lands. */
+.ws-dock{position:relative;display:flex;align-items:stretch;height:100%;min-height:0;box-sizing:border-box;padding:12px;overflow-x:auto;overflow-y:hidden}
+.ws-pane{position:relative;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;border:1px solid var(--ws-border);border-radius:12px;background:var(--ws-card);overflow:hidden}
+.ws-pane-collapsed{flex:0 0 42px!important;min-width:42px!important}
+.ws-pane-collapsed>:not(.ws-pane-rail){display:none}
+.ws-pane-strip{display:flex;align-items:stretch;gap:2px;flex-shrink:0;height:42px;box-sizing:border-box;padding:0 4px 0 6px;border-bottom:1px solid var(--ws-border);background:var(--ws-card-2)}
+.ws-pane-tabs{display:flex;align-items:stretch;gap:2px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none}
+.ws-pane-tabs::-webkit-scrollbar{display:none}
+.ws-dock-tab{position:relative;display:inline-flex;align-items:center;gap:7px;flex-shrink:0;padding:0 10px 0 8px;border:0;border-radius:8px 8px 0 0;background:none;color:var(--ws-muted);font-size:13px;font-weight:500;white-space:nowrap;cursor:grab;touch-action:none}
+.ws-dock-tab:hover{color:var(--ws-text);background:var(--ws-hover)}
+.ws-dock-tab:focus-visible{outline:2px solid var(--ws-focus);outline-offset:-2px}
+.ws-dock-tab[aria-selected=true]{color:var(--ws-text)}
+.ws-dock-tab[aria-selected=true]::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;border-radius:2px;background:var(--ws-accent)}
+.ws-dock-tab>.ws-icon{width:15px;height:15px}
+.ws-dock-tab-held{opacity:.35}
+.ws-dock-grip{display:grid;place-items:center;width:12px;margin-right:-3px;color:var(--ws-faint);opacity:0;transition:opacity .12s}
+.ws-dock-grip .ws-icon{width:12px;height:16px}
+.ws-dock-tab:hover .ws-dock-grip,.ws-dock-tab:focus-visible .ws-dock-grip,.ws-handles-always .ws-dock-grip{opacity:1}
+.ws-handles-customize .ws-dock-grip{display:none}
+.ws-dock-locked .ws-dock-tab{cursor:pointer;touch-action:auto}
+.ws-pane-tools{display:flex;align-items:center;gap:2px;flex-shrink:0}
+.ws-pane-tools .ws-btn{color:var(--ws-muted)}
+.ws-pane-tools .ws-btn:hover{color:var(--ws-text)}
+.ws-dock-menu .ws-menu-panel{min-width:240px;z-index:35}
+.ws-dock-menu .ws-menu-item{width:100%;white-space:nowrap}
+.ws-dock-menu .ws-menu-item:disabled{opacity:.42;cursor:default;pointer-events:none}
+.ws-dock-menu .ws-menu-item[hidden],.ws-dock-zone[hidden],.ws-dock-bar[hidden]{display:none}
+.ws-pane-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto}
+.ws-pane-rail{display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;box-sizing:border-box;padding:8px 0;cursor:pointer}
+.ws-pane-rail:hover{background:var(--ws-hover)}
+.ws-pane-rail-tab{display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:none;color:var(--ws-muted)}
+.ws-pane-rail-tab:hover{background:var(--ws-raised);color:var(--ws-text)}
+.ws-pane-rail-tab .ws-icon{width:16px;height:16px}
+.ws-pane-vlabel{margin-top:6px;writing-mode:vertical-rl;transform:rotate(180deg);font-size:12px;color:var(--ws-muted);white-space:nowrap}
+.ws-split{position:relative;flex:0 0 12px;display:flex;align-items:center;justify-content:center;cursor:col-resize;touch-action:none;outline:none}
+.ws-split::before{content:"";position:absolute;top:8px;bottom:8px;left:5px;width:2px;border-radius:2px;background:transparent;transition:background .12s}
+.ws-split::after{content:"";width:4px;height:32px;border-radius:4px;background:var(--ws-border-strong);opacity:0;transition:opacity .12s}
+.ws-split:hover::before,.ws-split.ws-active::before,.ws-split:focus-visible::before{background:var(--ws-accent)}
+.ws-split:hover::after,.ws-split.ws-active::after,.ws-split:focus-visible::after{opacity:1;background:var(--ws-accent)}
+.ws-split.ws-collapse-hint::before{background:var(--ws-amber)}
+.ws-dock-locked .ws-split{cursor:default}
+.ws-dock-locked .ws-split:not(:focus-visible)::before,.ws-dock-locked .ws-split:not(:focus-visible)::after{display:none}
+.ws-split-badge{position:absolute;top:50%;left:14px;z-index:20;transform:translateY(-50%);padding:4px 8px;border-radius:8px;background:var(--ws-text);color:var(--ws-bg);font-size:12px;font-weight:600;white-space:nowrap;pointer-events:none}
+.ws-dock-zone{position:absolute;z-index:30;display:flex;align-items:center;justify-content:center;box-sizing:border-box;border:2px solid var(--ws-accent);border-radius:10px;background:color-mix(in srgb,var(--ws-accent) 14%,transparent);pointer-events:none;transition:left .1s,top .1s,width .1s,height .1s}
+.ws-dock-zone span{padding:5px 10px;border-radius:8px;background:var(--ws-accent);color:#fff;font-size:12px;font-weight:600;white-space:nowrap}
+.ws-dock-bar{position:absolute;z-index:30;width:3px;border-radius:3px;background:var(--ws-accent);pointer-events:none}
+.ws-dock-ghost{position:fixed;z-index:1100;left:0;top:0;display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--ws-accent);background:var(--ws-card);color:var(--ws-text);box-shadow:var(--ws-shadow);font-family:var(--font-ui);font-size:13px;font-weight:500;white-space:nowrap;pointer-events:none}
+.ws-dock-ghost .ws-icon{width:15px;height:15px}
+@media (prefers-reduced-motion:reduce){.ws-dock-zone,.ws-dock-grip,.ws-split::before,.ws-split::after{transition:none}}
+
 /* ------------------------------------------------------------------ Calendar */
-.ws-calendar-page{display:grid;grid-template-columns:248px minmax(0,1fr);height:100%;min-height:0}
-.ws-calendar-page.ws-cal-collapsed{grid-template-columns:0 minmax(0,1fr)}
-.ws-cal-collapsed .ws-cal-side{visibility:hidden;padding:0;border:0}
-.ws-cal-side{display:flex;flex-direction:column;gap:20px;padding:20px 16px;border-right:1px solid var(--ws-border);overflow:auto;min-height:0;background:color-mix(in srgb,var(--ws-card) 55%,transparent)}
+.ws-cal-side{display:flex;flex-direction:column;gap:20px;padding:16px 14px}
 .ws-mini-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .ws-mini-head strong{font-size:13px;font-weight:600}
 .ws-mini-head span{display:flex}
@@ -757,7 +808,7 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-cal-toggle input:focus-visible+.ws-cal-swatch{outline:2px solid var(--ws-focus);outline-offset:2px}
 .ws-cal-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-cal-toggle small{font-size:10px;color:var(--ws-faint)}
-.ws-cal-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.ws-cal-main{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
 .ws-cal-main>.ws-banner{margin:12px 20px 0}
 .ws-cal-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-bottom:1px solid var(--ws-border);flex-wrap:wrap}
 .ws-cal-nav{display:flex;align-items:center;gap:4px;min-width:0}
@@ -858,8 +909,7 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-event-preview{padding:12px 14px;border-radius:8px;background:var(--ws-card-2);border:1px solid var(--ws-border);font-family:var(--font-sans);font-size:13px;line-height:20px;color:var(--ws-text-2);white-space:pre-wrap;max-height:220px;overflow:auto;overflow-wrap:anywhere}
 
 /* ------------------------------------------------------------------ Inbox */
-.ws-inbox-page{display:grid;grid-template-columns:minmax(360px,440px) minmax(0,1fr);height:100%;min-height:0}
-.ws-inbox-pane{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--ws-border);background:color-mix(in srgb,var(--ws-card) 55%,transparent)}
+.ws-inbox-pane{display:flex;flex-direction:column;flex:1;min-height:0}
 .ws-inbox-pane>.ws-banner{margin:10px 12px 0}
 .ws-inbox-head{display:grid;gap:12px;padding:18px 16px 12px;border-bottom:1px solid var(--ws-border)}
 .ws-inbox-title{display:flex;align-items:center;justify-content:space-between}
@@ -891,7 +941,7 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-decision{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px;border-bottom:1px solid var(--ws-border)}
 .ws-decision p{font-size:12px;color:var(--ws-muted)}
 
-.ws-reader{overflow:auto;min-height:0;min-width:0}
+.ws-reader{flex:1;overflow:auto;min-height:0;min-width:0}
 .ws-reader-empty,.ws-reader>.ws-empty{height:100%;display:grid;place-items:center}
 .ws-read{max-width:880px;margin:0 auto;padding:24px 32px 40px;display:grid;gap:16px}
 .ws-read-head{display:grid;gap:14px}
@@ -1089,10 +1139,6 @@ ul.ws-draft-context[hidden]{display:none}
 
 /* ------------------------------------------------------------------ responsive */
 @media (max-width:1180px){
-  .ws-calendar-page{grid-template-columns:0 minmax(0,1fr)}
-  .ws-cal-side{visibility:hidden;padding:0;border:0}
-  .ws-calendar-page:not(.ws-cal-collapsed).ws-cal-forced{grid-template-columns:220px minmax(0,1fr)}
-  .ws-inbox-page{grid-template-columns:minmax(300px,360px) minmax(0,1fr)}
   .ws-settings-layout{--ws-settings-w:220px}
 }
 @media (max-width:1050px){

@@ -1,6 +1,8 @@
-// Inbox: Outlook + Teams in one list with a reading pane. Lanes are Connect-only decisions;
-// nothing here changes the mailbox or chat.
+// Inbox: Outlook + Teams in one list with a reading pane, each a page section. Lanes are
+// Connect-only decisions; nothing here changes the mailbox or chat.
 import { escapeHtml as e } from './store.js';
+import { normalizeDock } from './dock-model.js';
+import { renderDock } from './dock-view.js';
 import { icon, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, badge, button, emptyState, segmented, checkbox, select, textArea } from './ui.js';
 import { LANES, laneLabel, visibleMessages, decisions, connectionState, messageTitle, conversation, can, collapseChats, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryFor, summaryJob, records, tasksDueJob } from './selectors.js';
@@ -22,7 +24,26 @@ export function filteredMessages(s, state) {
     && (!q || [m.data.title, m.data.text, m.data.from, m.data.fromAddress].some(v => String(v || '').toLowerCase().includes(q))));
 }
 
+/** Inbox's sections (spec "Page sections"): the messages, pinned to Today as "Needs your reply"
+ *  (the `inbox` widget), and the message being read. */
+export const INBOX_DOCK = {
+  title: 'Inbox',
+  tabs: {
+    'inbox-list': { title: 'Messages', icon: 'mail', min: 320, w: 420, pin: 'inbox', pinTitle: 'Needs your reply' },
+    'inbox-reader': { title: 'Message', icon: 'reply', min: 380, w: 720 },
+  },
+  initial: [['inbox-list'], ['inbox-reader']],
+};
+
+/** Inbox drawn in its sections as `ctx.dock` (`{layouts, locked}`) has them. */
 export function inbox(s, ctx) {
+  const sections = inboxSections(s, ctx);
+  const layout = ctx.dock?.layouts?.inbox || normalizeDock(INBOX_DOCK, null);
+  return renderDock('inbox', INBOX_DOCK, layout, id => sections[id], { locked: !!ctx.dock?.locked });
+}
+
+/** The body of each Inbox section: the list with its search, lanes and filters, and the reader. */
+export function inboxSections(s, ctx) {
   const { state, auth, banners } = ctx;
   const zone = s.settings.timeZone;
   const conn = connectionState(s, auth);
@@ -42,8 +63,8 @@ export function inbox(s, ctx) {
         ? { iconName: state.lane === 'reply' ? 'check-circle' : 'inbox', title: state.search ? 'No matches' : state.lane === 'reply' ? "You're all caught up" : 'Nothing here', text: state.search ? 'Try another search or filter.' : `No ${laneLabel(state.lane).toLowerCase()} items${state.channel !== 'all' ? ` in ${state.channel === 'chat' ? 'Teams' : 'Outlook'}` : ''}.` }
         : { iconName: 'inbox', title: 'Connect Outlook and Teams', text: 'Sign in with Microsoft 365 — every message that needs you lands here automatically.', actions: conn === 'authorizing' ? '' : button('Sign in with Microsoft', { action: 'graph-connect', variant: 'primary' }) })}</div>`;
 
-  return `<div class="ws-inbox-page">
-    <section class="ws-inbox-pane">
+  return {
+    'inbox-list': `<div class="ws-inbox-pane">
       <header class="ws-inbox-head">
         <div class="ws-inbox-title"><h1>Inbox</h1>${button('', { action: 'sync', iconName: 'refresh', variant: 'ghost', title: 'Refresh Outlook and Teams' })}</div>
         <label class="ws-search">${icon('search')}<input id="inbox-search" type="search" value="${e(state.search)}" placeholder="Search people, subjects, text" aria-label="Search Inbox" autocomplete="off"></label>
@@ -59,9 +80,9 @@ export function inbox(s, ctx) {
       </header>
       ${banners}
       ${list}
-    </section>
-    <section class="ws-reader" aria-label="Reading pane">${selected ? reader(s, selected, zone, state) : readerEmpty(state, items.length)}</section>
-  </div>`;
+    </div>`,
+    'inbox-reader': `<section class="ws-reader" aria-label="Reading pane">${selected ? reader(s, selected, zone, state) : readerEmpty(state, items.length)}</section>`,
+  };
 }
 
 function listRow(s, m, zone, isSelected, count = 0, drafting = false) {

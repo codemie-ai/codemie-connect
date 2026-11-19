@@ -10,10 +10,12 @@ import {
   dayKey, addDaysToKey, minutesOfDay, initials, firstName, relativeAge, agoLabel, countdownLabel, durationLabel, greeting, colorFor, formatTime, formatDate,
 } from '../workspace/format.js';
 import { attentionMessages, messageTitle, connectionState, decisions, sourceCounts, conversation, collapseChats } from '../workspace/selectors.js';
-import { snoozeUntil, filteredMessages, inbox } from '../workspace/view-inbox.js';
+import { snoozeUntil, filteredMessages, inbox, inboxSections, INBOX_DOCK } from '../workspace/view-inbox.js';
 import { today, todayModel, WIDGETS } from '../workspace/view-today.js';
 import { PRESETS } from '../workspace/today-grid.js';
-import { calendar, periodTitle, eventDetails, eventActions } from '../workspace/view-calendar.js';
+import { calendar, periodTitle, eventDetails, eventActions, CALENDAR_DOCK } from '../workspace/view-calendar.js';
+import { normalizeDock, swapPanes } from '../workspace/dock-model.js';
+import { attachDock } from '../workspace/dock-controller.js';
 import { settings, jobLabel } from '../workspace/view-settings.js';
 import { renderShell, NAV } from '../workspace/shell.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from '../workspace/boot.js';
@@ -545,6 +547,83 @@ test('Inbox reader escapes untrusted mail and offers provider actions', () => {
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(html, /Open in Outlook/);
   assert.match(html, /Snooze/);
+});
+
+test('Inbox draws its two sections in the saved order', () => {
+  // The spec's ids, minimum and default widths, and the pin to Today.
+  assert.deepEqual(INBOX_DOCK.initial, [['inbox-list'], ['inbox-reader']]);
+  assert.deepEqual(Object.entries(INBOX_DOCK.tabs).map(([id, t]) => [id, t.title, t.min, t.w, t.pin]), [['inbox-list', 'Messages', 320, 420, 'inbox'], ['inbox-reader', 'Message', 380, 720, undefined]]);
+  assert.equal(INBOX_DOCK.tabs['inbox-list'].pinTitle, WIDGETS.inbox.title);
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const sections = inboxSections(s, ctx());
+  assert.deepEqual(Object.keys(sections), ['inbox-list', 'inbox-reader']);
+  assert.match(sections['inbox-list'], /id="inbox-search"[^]*class="ws-inbox-items"/);
+  assert.match(sections['inbox-reader'], /^<section class="ws-reader"/);
+  const at = (html, id) => html.indexOf(`data-tab="${id}"`);
+  // Without a stored layout: Messages, then Message.
+  const plain = inbox(s, ctx());
+  assert.match(plain, /^<div class="ws-dock" data-page="inbox">/);
+  assert.ok(at(plain, 'inbox-list') > 0 && at(plain, 'inbox-list') < at(plain, 'inbox-reader'));
+  // Message moved left: it is drawn first, with both bodies.
+  const swapped = swapPanes(normalizeDock(INBOX_DOCK, null), 'p2', -1);
+  const html = inbox(s, { ...ctx(), dock: { layouts: { inbox: swapped }, locked: false } });
+  assert.ok(at(html, 'inbox-reader') > 0 && at(html, 'inbox-reader') < at(html, 'inbox-list'));
+  assert.ok(html.indexOf('class="ws-reader"') < html.indexOf('class="ws-inbox-items"'));
+  assert.match(html, /ws-dock-grip/);
+  assert.doesNotMatch(inbox(s, { ...ctx(), dock: { layouts: { inbox: swapped }, locked: true } }), /ws-dock-grip/, 'locked: no grips');
+});
+
+test("Calendar's sidebar toggle collapses the Calendars section", async () => {
+  assert.deepEqual(CALENDAR_DOCK.initial, [['cal-side'], ['cal-main']]);
+  assert.deepEqual(Object.entries(CALENDAR_DOCK.tabs).map(([id, t]) => [id, t.title, t.min, t.w, t.pin]), [['cal-side', 'Calendars', 220, 260, undefined], ['cal-main', 'Calendar', 480, 1000, 'calendar']]);
+  assert.equal(CALENDAR_DOCK.tabs['cal-main'].pinTitle, WIDGETS.calendar.title);
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const open = calendar(s, ctx());
+  assert.match(open, /class="ws-mini"/);
+  assert.match(open, /data-action="calendar-sidebar"/);
+  assert.doesNotMatch(open, /ws-cal-collapsed/);
+  // The toolbar's toggle collapses the Calendars section through the page's sections.
+  const saved = {};
+  let renders = 0;
+  const dock = attachDock({ addEventListener() {} }, {
+    defs: { calendar: CALENDAR_DOCK },
+    layouts: { get: page => saved[page] || normalizeDock(CALENDAR_DOCK, null), set: (page, layout) => { saved[page] = layout; } },
+    render: async () => { renders++; },
+  });
+  await dock.setCollapsed('calendar', 'cal-side', true);
+  assert.equal(renders, 1);
+  const html = calendar(s, { ...ctx(), dock: { layouts: saved, locked: false } });
+  assert.match(html, /<section class="ws-pane ws-pane-collapsed" data-pane="p1"[^>]*>\s*<div class="ws-pane-rail"[^]*?Calendars/);
+  assert.doesNotMatch(html, /class="ws-mini"/, 'the collapsed section draws no mini month');
+  assert.match(html, /data-action="calendar-sidebar"/);
+  await dock.setCollapsed('calendar', 'cal-side', false);
+  assert.match(calendar(s, { ...ctx(), dock: { layouts: saved, locked: false } }), /class="ws-mini"/);
+});
+
+test('the section menu moves a section, resets the page with Undo and keeps one section open', async () => {
+  const saved = {};
+  const toasts = [];
+  const said = [];
+  const dock = attachDock({ addEventListener() {} }, {
+    defs: { inbox: INBOX_DOCK },
+    layouts: { get: page => saved[page] || normalizeDock(INBOX_DOCK, null), set: (page, layout) => { saved[page] = layout; } },
+    render: async () => {},
+    toast: (message, tone, action) => toasts.push({ message, action }),
+    announce: text => said.push(text),
+  });
+  const el = dataset => ({ dataset: { page: 'inbox', ...dataset } });
+  await dock.handle('dock-move', el({ pane: 'p2', dir: '-1' }));
+  assert.deepEqual(saved.inbox.panes.map(p => p.tabs[0]), ['inbox-reader', 'inbox-list']);
+  await dock.handle('dock-collapse', el({ pane: 'p2' }));
+  assert.equal(said.at(-1), 'Message collapsed to a rail');
+  await dock.handle('dock-collapse', el({ pane: 'p1' }));
+  assert.equal(toasts.at(-1).message, 'Keep at least one section open');
+  assert.deepEqual(saved.inbox.panes.map(p => p.collapsed), [true, false]);
+  await dock.handle('dock-reset', el({}));
+  assert.deepEqual(saved.inbox, normalizeDock(INBOX_DOCK, null));
+  assert.equal(toasts.at(-1).message, 'Inbox is back to its original layout');
+  await toasts.at(-1).action.run();
+  assert.deepEqual(saved.inbox.panes.map(p => [p.tabs[0], p.collapsed]), [['inbox-reader', true], ['inbox-list', false]], 'Undo brings the layout back');
 });
 
 test('old_ai_pin_controls_are_gone', async () => {
@@ -1142,7 +1221,7 @@ test('files tab offers download again when the folder is missing', () => {
 
 test('calendar badge appears on online meetings only and the event card offers Show in Meetings', () => {
   const s = meetingsSnapshot();
-  const state = { calendarMode: 'week', calendarDate: new Date(MEET_NOW), calendarSidebar: true, meetings: newMeetingsView() };
+  const state = { calendarMode: 'week', calendarDate: new Date(MEET_NOW), meetings: newMeetingsView() };
   const html = calendar(s, { state, auth: {}, hidden: new Set(), banners: '', now: MEET_NOW });
   const block = id => html.match(new RegExp(`<button type="button" class="ws-ev[^"]*" data-action="event" data-id="${id}"[^]*?</button>`))?.[0] || '';
   assert.match(block('mtg-philips'), /<span class="ws-tb ws-tb-ready" title="Notes ready · Meeting notes">/);

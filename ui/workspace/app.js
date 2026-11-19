@@ -9,11 +9,13 @@ import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calenda
 import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
 import { askCommitment, askCommitmentId } from './summary-state.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
-import { today } from './view-today.js';
+import { today, drawnGrid, tileDefs } from './view-today.js';
 import { createTodayController, attachTodayDrag, newTodayView } from './today-controller.js';
-import { GRID } from './today-grid.js';
-import { calendar, eventDetails, eventActions, HOUR_HEIGHT } from './view-calendar.js';
-import { inbox, filteredMessages, snoozeUntil, draftChecks } from './view-inbox.js';
+import { GRID, todayOf } from './today-grid.js';
+import { loadDock, saveDock } from './dock-model.js';
+import { attachDock } from './dock-controller.js';
+import { calendar, eventDetails, eventActions, HOUR_HEIGHT, CALENDAR_DOCK } from './view-calendar.js';
+import { inbox, filteredMessages, snoozeUntil, draftChecks, INBOX_DOCK } from './view-inbox.js';
 import {
   optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
 } from './draft-state.js';
@@ -63,7 +65,7 @@ const store = invoke ? createStore(watched) : null;
 
 const state = {
   route: 'today', settingsTab: 'general',
-  calendarMode: localPref('codemie.calendar.mode', 'week'), calendarDate: new Date(), calendarSidebar: localPref('codemie.calendar.sidebar', 'true') !== 'false',
+  calendarMode: localPref('codemie.calendar.mode', 'week'), calendarDate: new Date(),
   lane: 'reply', channel: 'all', search: '', showArchived: false, showSnoozed: false, inboxLimit: 200, selectedMessage: null, selectedKey: null,
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
   ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, usage: null, error: '', tests: {}, testModels: {} },
@@ -160,7 +162,7 @@ let layoutDrag = false;
 let pressing = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle']);
+const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab']);
 let lastDraftSignature = '';
 // Updates that arrived while held (the draft options popover open, a card or widget dragged, the
 // mouse button down); shown once that ends.
@@ -364,6 +366,7 @@ async function render() {
   const ctx = {
     state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(), pluginsKnown: state.pluginsKnown,
     today: { ...state.today, locked },
+    dock: { layouts: Object.fromEntries(Object.keys(DOCKS).map(page => [page, docks.get(page)])), locked },
     codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots(), signIn: codemie.signIn() },
     codemieCard: codemie.todayCard(),
   };
@@ -1165,6 +1168,45 @@ if (todayUi) {
   });
 }
 
+// ---------------------------------------------------------------- page sections (spec "Page sections")
+
+// Each page's sections are a preference of this Mac (`codemie.layout.<page>.v1`), read once and
+// kept here. With nothing stored yet, Calendar takes the old calendar list choice
+// (`codemie.calendar.sidebar`), which is no longer written.
+const DOCKS = { inbox: INBOX_DOCK, calendar: CALENDAR_DOCK };
+const DOCK_LEGACY = {
+  calendar: () => (localPref('codemie.calendar.sidebar', 'true') === 'false' ? { collapse: ['cal-side'] } : null),
+};
+const dockStorage = { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) };
+const dockLayouts = {};
+const docks = {
+  get: page => (dockLayouts[page] ||= loadDock(dockStorage, page, DOCKS[page], DOCK_LEGACY[page]?.() || null)),
+  set: (page, layout) => {
+    dockLayouts[page] = layout;
+    saveDock(dockStorage, page, layout);
+  },
+};
+
+/** Whether Today shows widget `id` now: in its grid, or as a card under it. */
+function onToday(id) {
+  const defs = tileDefs(pluginWidgetCatalog(state.installedPlugins || []));
+  const drawn = drawnGrid(snap(), todayOf(current(), defs), defs, { pluginsKnown: !!state.pluginsKnown });
+  return [...drawn.placed, ...drawn.below].some(it => it.id === id);
+}
+
+const dockUi = store && attachDock(document, {
+  defs: DOCKS, layouts: docks, render, toast, announce,
+  // A divider or tab held: updates wait, as for Today's widgets, until the drop is drawn.
+  dragging: on => {
+    layoutDrag = on;
+    if (!on && heldRender && !modalOpen()) render().catch(fail);
+  },
+  locked: () => !!todayUi?.locked(),
+  nudge: () => todayUi.handle('today-locked'),
+  pin: id => todayUi.handle('today-add', { dataset: { id } }),
+  onToday,
+});
+
 // ---------------------------------------------------------------- meetings (spec "Meetings page")
 
 /** Saves `text` as a file in Downloads (the browser's download). */
@@ -1435,6 +1477,7 @@ function selectMessage(id) {
 async function handle(action, el, ev) {
   if (action.startsWith('recovery-')) return recoveryAction(action);
   if (action.startsWith('today-')) return todayUi.handle(action, el, ev);
+  if (action.startsWith('dock-')) return dockUi.handle(action, el, ev);
   // Data location works from the recovery page too, where there is no snapshot.
   if (action.startsWith('data-')) return storageAction(action, el);
   if (action.startsWith('automation') || action.startsWith('run-')) return automationsUi.handle(action, el);
@@ -1554,10 +1597,11 @@ async function handle(action, el, ev) {
       return setCalendar(d);
     }
     case 'calendar-refresh': await ensureCalendarWindow(true); return;
-    case 'calendar-sidebar':
-      state.calendarSidebar = !state.calendarSidebar;
-      setLocalPref('codemie.calendar.sidebar', String(state.calendarSidebar));
-      return render();
+    case 'calendar-sidebar': {
+      // The calendar list is the Calendars section: the button collapses or expands it.
+      const side = docks.get('calendar').panes.find(p => p.tabs.includes('cal-side'));
+      return dockUi.setCollapsed('calendar', 'cal-side', !side.collapsed);
+    }
     case 'calendar-visibility': {
       const hidden = hiddenCalendars();
       if (el.checked) hidden.delete(id); else hidden.add(id);
@@ -2089,6 +2133,8 @@ document.addEventListener('keydown', ev => {
   if (!ready || modalOpen() || sheetOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
   if (state.route === 'calendar') {
     const keys = { t: () => setCalendar(todayDate()), ArrowLeft: () => stepCalendar(-1), ArrowRight: () => stepCalendar(1), d: () => setCalendar(state.calendarDate, 'day'), w: () => setCalendar(state.calendarDate, 'week'), m: () => setCalendar(state.calendarDate, 'month'), a: () => setCalendar(state.calendarDate, 'agenda') };
+    // ←/→ on a divider, a section tab or a widget grip move that, not the week.
+    if (ev.key.startsWith('Arrow') && ev.target.closest?.('.ws-split, [role=tab], .ws-tile-grip')) return;
     if (keys[ev.key]) {
       ev.preventDefault();
       keys[ev.key]().catch(fail);

@@ -1,5 +1,8 @@
-// Calendar: Outlook-grade day/week time grid, month grid and agenda, all in the workspace zone.
+// Calendar: Outlook-grade day/week time grid, month grid and agenda, all in the workspace zone,
+// beside the calendar list; each is a page section.
 import { escapeHtml as e } from './store.js';
+import { normalizeDock } from './dock-model.js';
+import { renderDock } from './dock-view.js';
 import { icon, teamsGlyph } from './icons.js';
 import { button, segmented, emptyState, avatar, badge, toggle } from './ui.js';
 import {
@@ -27,7 +30,27 @@ export function periodTitle(date, mode) {
   return `${start} – ${end}, ${last.getFullYear()}`;
 }
 
+/** Calendar's sections (spec "Page sections"): the calendar list with the mini month and the
+ *  meeting notes legend, and the calendar itself, pinned to Today as "Schedule" (the `calendar`
+ *  widget). The toolbar's list button collapses and expands the Calendars section. */
+export const CALENDAR_DOCK = {
+  title: 'Calendar',
+  tabs: {
+    'cal-side': { title: 'Calendars', icon: 'calendar-check', min: 220, w: 260 },
+    'cal-main': { title: 'Calendar', icon: 'calendar', min: 480, w: 1000, pin: 'calendar', pinTitle: 'Schedule' },
+  },
+  initial: [['cal-side'], ['cal-main']],
+};
+
+/** Calendar drawn in its sections as `ctx.dock` (`{layouts, locked}`) has them. */
 export function calendar(s, ctx) {
+  const sections = calendarSections(s, ctx);
+  const layout = ctx.dock?.layouts?.calendar || normalizeDock(CALENDAR_DOCK, null);
+  return renderDock('calendar', CALENDAR_DOCK, layout, id => sections[id], { locked: !!ctx.dock?.locked });
+}
+
+/** The body of each Calendar section: the calendar list, and the toolbar with the view. */
+export function calendarSections(s, ctx) {
   const { state, auth, hidden, banners } = ctx;
   const zone = s.settings.timeZone;
   const conn = connectionState(s, auth);
@@ -64,8 +87,8 @@ export function calendar(s, ctx) {
   const status = !covered && loadingJob ? `<span class="ws-cal-status">${icon('refresh', 'ws-spin')}Loading…</span>`
     : !covered && conn === 'connected' && synced.size ? `<span class="ws-cal-status">${button('Load this period', { action: 'calendar-refresh', variant: 'ghost', iconName: 'refresh' })}</span>` : '';
 
-  return `<div class="ws-calendar-page${state.calendarSidebar === false ? ' ws-cal-collapsed' : ''}">
-    <aside class="ws-cal-side" aria-label="Calendar navigation">
+  return {
+    'cal-side': `<div class="ws-cal-side">
       ${miniMonth(state.calendarDate, mode === 'month' ? [] : days, events, zone, todayKey)}
       ${legendPanel(mtg, mode)}
       <div class="ws-cal-list">
@@ -73,8 +96,8 @@ export function calendar(s, ctx) {
         ${catalog.length ? catalog.map(cal => `<label class="ws-cal-toggle" style="--event-color:${e(colors.get(cal.id))}"><input type="checkbox" data-action="calendar-visibility" data-id="${e(cal.id)}" ${hidden.has(cal.id) ? '' : 'checked'}><span class="ws-cal-swatch" aria-hidden="true">${icon('check')}</span><span class="ws-cal-name">${e(cal.name || 'Calendar')}</span>${cal.isDefaultCalendar ? '<small>Default</small>' : ''}</label>`).join('')
     : `<p class="ws-muted ws-hint">${conn === 'connected' ? 'Discovering your calendars…' : 'Calendars appear after you sign in.'}</p>`}
       </div>
-    </aside>
-    <section class="ws-cal-main">
+    </div>`,
+    'cal-main': `<div class="ws-cal-main">
       <header class="ws-cal-toolbar">
         <div class="ws-cal-nav">
           ${button('', { action: 'calendar-sidebar', iconName: 'list', variant: 'ghost', title: 'Toggle calendar list' })}
@@ -91,8 +114,8 @@ export function calendar(s, ctx) {
       </header>
       ${banners}
       <div class="ws-cal-view ws-cal-${mode}">${content}</div>
-    </section>
-  </div>`;
+    </div>`,
+  };
 }
 
 // ---------------------------------------------------------------- transcripts on the calendar
