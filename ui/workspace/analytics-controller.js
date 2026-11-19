@@ -37,11 +37,13 @@ export function createAnalyticsController({
   let statusReads = 0;
   let viewReads = 0;
   let subscribed = null;
-  // The progress step last read for, the fetch the person asked for (a toast when it ends), and
-  // how many fetches have ended (a start answered after its end doesn't count as running).
+  // The progress step last read for, the fetch the person asked for (a toast when it ends), how
+  // many fetches have ended (a start answered after its end doesn't count as running) and how many
+  // were asked to start (a status read before a start can't end it).
   let lastDone = null;
   let asked = null;
   let finished = 0;
+  let starts = 0;
   let reloading = null;
   let again = false;
 
@@ -53,11 +55,21 @@ export function createAnalyticsController({
     subscribed = Promise.resolve(listen(PROGRESS_EVENT, event => progressed(event?.payload))).catch(() => { subscribed = null; });
   }
 
+  /** Reads the status. A status with no fetch running ends the one this page follows, should its
+   *  end event never have come; one read before a fetch started can't. */
   async function readStatus() {
     const read = ++statusReads;
+    const startsBefore = starts;
     try {
       const status = await query('analytics_status', {});
-      if (read === statusReads) data.status = status;
+      if (read !== statusReads) return;
+      data.status = status;
+      data.error = '';
+      if (status?.state !== 'running' && starts === startsBefore) {
+        data.refreshing = false;
+        data.progress = null;
+        lastDone = null;
+      }
     } catch (err) {
       if (read === statusReads && !data.status) data.error = messageOf(err);
     }
@@ -93,7 +105,7 @@ export function createAnalyticsController({
       do {
         again = false;
         await readStatus();
-        if (data.status?.state === 'needs_cli') {
+        if (!data.status || data.status.state === 'needs_cli') {
           await redraw();
           return;
         }
@@ -127,6 +139,7 @@ export function createAnalyticsController({
   /** Starts a fetch (or follows the one already running); `told` toasts when it ends. */
   async function startFetch(op, body, told) {
     const before = finished;
+    starts++;
     const answer = await query(op, body);
     if (answer?.needsCli) {
       await readStatus();
@@ -232,7 +245,8 @@ export function createAnalyticsController({
         return redraw();
       case 'analytics-refresh': return startFetch('analytics_refresh', {}, true);
       case 'analytics-retry': return startFetch('analytics_retry', { day: value }, true);
-      case 'analytics-reload': return loadView();
+      // Try again: the summary, or everything from the status when that couldn't be read.
+      case 'analytics-reload': return data.status ? loadView() : open();
       case 'analytics-report':
         await query('analytics_report', reportRequest(v, now(), zone));
         toast('The CLI report opened in your browser.', 'success');

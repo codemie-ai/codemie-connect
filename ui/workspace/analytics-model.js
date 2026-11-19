@@ -261,6 +261,13 @@ export function modelLabel(id) {
   return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ''}` : String(id ?? '');
 }
 
+/** The ids of the sessions Connect's terminal started: `analytics_view`'s `connect.startedInConnect`,
+ *  Connect's own match of its terminal launches (the CLI summary has no such field). */
+export function startedInConnect(summary) {
+  const ids = summary?.connect?.startedInConnect;
+  return new Set(Array.isArray(ids) ? ids.filter(id => typeof id === 'string') : []);
+}
+
 /** The last folder of a project path. */
 export const projectName = path => String(path ?? '').split('/').filter(Boolean).pop() || String(path ?? '');
 

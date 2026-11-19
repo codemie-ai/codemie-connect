@@ -14,7 +14,7 @@ import { columns, tipHtml } from './analytics-charts.js';
 import {
   PRESETS, VIEWS, SORT_LABELS, presetRange, readSoFar, pendingBefore, isBusy, delta, listSessions,
   usd, usdAxis, tok, dur, pct, pctPoints, n0, plural, dShort, dLong, weekday, hm, dayName, dayKeyIn, dayKeyLabel,
-  agentLabel, modelLabel, projectName,
+  agentLabel, modelLabel, projectName, startedInConnect,
 } from './analytics-model.js';
 
 /** Rows a card lists before "Show all". */
@@ -326,9 +326,9 @@ function stepsText(r) {
   return [st.agents && `${n0(st.agents)} ${plural(st.agents, 'subagent')}`, st.skills && `${n0(st.skills)} ${plural(st.skills, 'skill')}`].filter(Boolean).join(' · ');
 }
 
-function sessionRow(r, ui, zone) {
-  // `open` and `launchedBy` aren't in summary/1 rows yet; the tags show once a row carries them.
-  const tags = `<span class="ws-an-tag">${e(agentLabel(r.agentName))}</span>${r.open === true ? '<span class="ws-an-tag ws-an-tag-live">Running</span>' : ''}${r.launchedBy === 'connect-terminal' ? `<span class="ws-an-tag ws-an-tag-connect" title="Started in Connect&#39;s terminal">${icon('terminal')}Connect</span>` : ''}`;
+/** A session row; `connect` holds the ids Connect's terminal started (`startedInConnect`). */
+function sessionRow(r, ui, zone, connect) {
+  const tags = `<span class="ws-an-tag">${e(agentLabel(r.agentName))}</span>${connect.has(r.sessionId) ? `<span class="ws-an-tag ws-an-tag-connect" title="Started in Connect&#39;s terminal">${icon('terminal')}Connect</span>` : ''}`;
   const meta = [projectName(r.project), r.branch, (r.models || []).map(modelLabel).join(' → '), stepsText(r)].filter(Boolean).join(' · ');
   const changes = r.filesChanged ? `<span class="ws-an-plus">+${n0(r.linesAdded)}</span> <span class="ws-an-minus">−${n0(r.linesRemoved)}</span>` : '<span class="ws-an-faint">none</span>';
   const cost = !r.hadLog && !r.costUSD ? '<span class="ws-an-c ws-an-cost" title="No log to price">—</span>' : `<span class="ws-an-c ws-an-cost">${e(usd(r.costUSD))}</span>`;
@@ -340,6 +340,7 @@ function sessionsList(ui, data) {
   const zone = data.zone;
   const rows = listSessions(s.sessions, ui.q, ui.sort);
   const shown = rows.slice(0, ui.shown);
+  const connect = startedInConnect(s);
   const sortLabel = (SORT_LABELS.find(([v]) => v === ui.sort) || SORT_LABELS[0])[1];
   const sort = `<details class="ws-menu ws-an-menu" data-menu="analytics-sort"><summary class="ws-an-fbtn">${icon('sliders')}<span class="ws-an-v">${e(sortLabel)}</span>${icon('chevron-down', 'ws-an-caret')}</summary><div class="ws-menu-panel ws-an-pop">${SORT_LABELS.map(([v, l]) => menuItem('analytics-sort', v, l, ui.sort === v)).join('')}</div></details>`;
   const total = ui.q.trim() ? `${n0(rows.length)} of ${n0(s.totals.sessions)} sessions` : `${n0(s.totals.sessions)} ${plural(s.totals.sessions, 'session')} · ${e(usd(s.totals.costUSD, true))}`;
@@ -358,10 +359,10 @@ function sessionsList(ui, data) {
         const b = s.range?.bucket === 'day' && !ui.q.trim() ? (s.series || []).find(x => x.from <= r.startTime && r.startTime <= x.to) : null;
         body += `<div class="ws-an-sday"><b>${e(dayName(r.startTime, data.now, zone))}</b>${b ? `<span>${n0(b.sessions)} ${plural(b.sessions, 'session')}</span><span class="ws-spacer"></span><span>${e(usd(b.costUSD))}</span>` : ''}</div>`;
       }
-      body += sessionRow(r, ui, zone);
+      body += sessionRow(r, ui, zone, connect);
     }
   } else {
-    body = shown.map(r => sessionRow(r, ui, zone)).join('');
+    body = shown.map(r => sessionRow(r, ui, zone, connect)).join('');
   }
   const more = rows.length > shown.length ? `<div class="ws-an-more-row"><button type="button" class="ws-btn ws-btn-secondary" ${act('analytics-more', 'sessions')}>Show ${n0(Math.min(40, rows.length - shown.length))} more</button></div>` : '';
   return `${toolbar}<div class="ws-an-slist">${head}${body}</div>${more}`;

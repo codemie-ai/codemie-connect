@@ -72,7 +72,9 @@ test('changing the range calls analytics_view with the new from/to once', async 
 });
 
 test('refresh calls analytics_refresh and shows progress from workspace:analytics events', async () => {
-  const { ctl, calls, emit, html } = harness();
+  // The status says `running` while the fetch runs, as native's does.
+  let current = status;
+  const { ctl, calls, emit, html } = harness({ answers: { analytics_status: () => current } });
   await ctl.open();
   assert.ok(!ops(calls).includes('analytics_refresh'), 'fresh data is not fetched again on open');
   assert.match(html(), /<button [^>]*data-action="analytics-refresh"(?![^>]*disabled)/);
@@ -80,6 +82,7 @@ test('refresh calls analytics_refresh and shows progress from workspace:analytic
   assert.deepEqual(calls.query.at(-1), ['analytics_refresh', {}]);
   assert.match(html(), /<button [^>]*data-action="analytics-refresh"[^>]*disabled/);
   assert.ok(html().includes('Updating…'));
+  current = { ...status, state: 'running', progress: { done: progress.done, total: progress.total, label: progress.label } };
   calls.query.length = 0;
   await emit(progress);
   assert.ok(html().includes(`${progress.done} of ${progress.total} days`));
@@ -89,6 +92,7 @@ test('refresh calls analytics_refresh and shows progress from workspace:analytic
   await emit(progress);
   assert.equal(calls.query.length, 2);
   const rendersBefore = calls.render;
+  current = status;
   await emit({ ...progress, running: false, done: progress.total });
   assert.ok(calls.render > rendersBefore);
   assert.deepEqual(ops(calls).slice(2), ['analytics_status', 'analytics_view']);
@@ -100,6 +104,53 @@ test('refresh calls analytics_refresh and shows progress from workspace:analytic
   await other.ctl.open();
   await other.ctl.handle('analytics-refresh', control());
   assert.match(other.html(), /<button [^>]*data-action="analytics-refresh"[^>]*disabled/);
+});
+
+test('a status saying nothing runs ends a refresh whose end event never came', async () => {
+  let current = status;
+  const refreshOn = /<button [^>]*data-action="analytics-refresh"(?![^>]*disabled)/;
+  const refreshOff = /<button [^>]*data-action="analytics-refresh"[^>]*disabled/;
+  const { ctl, html } = harness({ answers: { analytics_status: () => current } });
+  await ctl.open();
+  await ctl.handle('analytics-refresh', control());
+  assert.match(html(), refreshOff);
+  // The end event is lost; the next status read (the page opened again) says nothing runs.
+  await ctl.open();
+  assert.match(html(), refreshOn);
+  assert.equal(ctl.data.refreshing, false);
+  assert.equal(ctl.data.progress, null);
+  assert.ok(!html().includes('Checking for new sessions…') && !html().includes('Updating…'));
+  // A status read that was on its way before a refresh started can't end that refresh.
+  let release;
+  current = new Promise(resolve => { release = () => resolve(status); });
+  const reopening = ctl.open();
+  await ctl.handle('analytics-refresh', control());
+  release();
+  await reopening;
+  assert.equal(ctl.data.refreshing, true);
+  assert.match(html(), refreshOff);
+});
+
+test('Try again after the status couldn\'t be read reads everything again', async () => {
+  let failures = 1;
+  const { ctl, calls, html } = harness({
+    answers: {
+      analytics_status: () => {
+        if (failures-- > 0) throw Object.assign(new Error('Workspace storage could not complete the operation.'), { code: 'io' });
+        return status;
+      },
+    },
+  });
+  await ctl.open();
+  assert.equal(ctl.data.status, null);
+  assert.ok(html().includes('Workspace storage could not complete the operation.'));
+  assert.ok(html().includes('data-action="analytics-reload"'));
+  calls.query.length = 0;
+  await ctl.handle('analytics-reload', control());
+  assert.deepEqual(ops(calls), ['analytics_status', 'analytics_view']);
+  assert.equal(ctl.data.status, status);
+  assert.equal(ctl.data.error, '');
+  assert.ok(html().includes('ws-an-kpis') && !html().includes('analytics-reload'));
 });
 
 test('opening the page refreshes on its own when lastFetchAt is older than 15 minutes', async () => {

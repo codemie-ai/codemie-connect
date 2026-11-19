@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  presetRange, viewRequest, delta, usd, tok, dur, pct, pctPoints, n0, loadPrefs, savePrefs, newAnalyticsView, isStale, PREFS_KEY, STALE_MS,
+  presetRange, viewRequest, delta, usd, tok, dur, pct, pctPoints, n0, loadPrefs, savePrefs, newAnalyticsView, isStale, startedInConnect, PREFS_KEY, STALE_MS,
 } from '../workspace/analytics-model.js';
 
 const fixture = name => JSON.parse(readFileSync(new URL(`fixtures/contract/${name}`, import.meta.url), 'utf8'));
@@ -36,9 +36,9 @@ test('the view request carries the range, the filters that are set and asks for 
 });
 
 test('a delta is shown only when the CLI sent previous and change', () => {
-  // The fixture was asked without a comparison: no previous, no change, no delta.
-  assert.equal(summary.change, null);
-  assert.equal(delta(summary, 'costUSD'), null);
+  // Asked without a comparison (or not stored that far back): no previous, no change, no delta.
+  const plain = { ...summary, previous: null, change: null };
+  assert.equal(delta(plain, 'costUSD'), null);
   const withPrevious = { ...summary, previous: summary.totals, change: { costUSD: 0.25, sessions: -0.5, durationMs: null } };
   assert.deepEqual(delta(withPrevious, 'costUSD'), { up: true, text: '↑ 25%' });
   assert.deepEqual(delta(withPrevious, 'sessions'), { up: false, text: '↓ 50%' });
@@ -46,7 +46,7 @@ test('a delta is shown only when the CLI sent previous and change', () => {
   assert.equal(delta(withPrevious, 'durationMs'), null);
   assert.deepEqual(delta({ ...withPrevious, change: { costUSD: 0.004 } }, 'costUSD'), { up: true, text: '↑ <1%' });
   // A change without the previous totals isn't shown either.
-  assert.equal(delta({ ...summary, change: { costUSD: 0.25 } }, 'costUSD'), null);
+  assert.equal(delta({ ...plain, change: { costUSD: 0.25 } }, 'costUSD'), null);
 });
 
 test('formatters: usd under a cent, tokens in K/M, durations', () => {
@@ -54,7 +54,7 @@ test('formatters: usd under a cent, tokens in K/M, durations', () => {
   assert.equal(usd(0.004, true), '<$0.01');
   assert.equal(usd(0), '$0.00');
   assert.equal(usd(null), '—');
-  assert.equal(usd(summary.totals.costUSD, true), '$104.79');
+  assert.equal(usd(104.788, true), '$104.79');
   assert.equal(usd(19.4096), '$19.41');
   assert.equal(usd(104.788), '$105');
   assert.equal(usd(1234.5), '$1.2K');
@@ -101,4 +101,14 @@ test('the data is stale 15 minutes after the last fetch, or when nothing was fet
   assert.equal(isStale(status, status.lastFetchAt + STALE_MS - 1), false);
   assert.equal(isStale(status, status.lastFetchAt + STALE_MS + 1), true);
   assert.equal(isStale({ ...status, lastFetchAt: null }, status.lastFetchAt), true);
+});
+
+test('sessions started in Connect come from analytics_view\'s connect key, guarded', () => {
+  const id = summary.sessions[0].sessionId;
+  assert.deepEqual([...startedInConnect({ ...summary, connect: { startedInConnect: [id] } })], [id]);
+  const { connect, ...cliOnly } = summary;
+  assert.equal(startedInConnect(cliOnly).size, 0);
+  assert.equal(startedInConnect({ ...summary, connect: { startedInConnect: 'not a list' } }).size, 0);
+  assert.deepEqual([...startedInConnect({ connect: { startedInConnect: [id, 7, null] } })], [id]);
+  assert.equal(startedInConnect(null).size, 0);
 });

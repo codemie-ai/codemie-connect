@@ -2794,8 +2794,6 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-an-minus{color:var(--ws-red)}
 .ws-an-tag{display:inline-flex;align-items:center;gap:4px;flex:none;height:18px;padding:0 6px;border-radius:4px;background:var(--ws-raised);color:var(--ws-muted);font-size:10.5px;white-space:nowrap}
 .ws-an-tag .ws-icon{width:11px;height:11px}
-.ws-an-tag-live{background:var(--ws-green-bg);color:var(--ws-green)}
-.ws-an-tag-live::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;animation:ws-an-pulse 1.4s ease-in-out infinite}
 .ws-an-tag-connect{background:var(--ws-blue-bg);color:var(--ws-accent)}
 .ws-an-more-row{margin-top:12px;text-align:center}
 /* the tooltip layer (outside the page, over everything) */
@@ -2807,6 +2805,6 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-an-tip .ws-an-key{width:10px;height:2px;border-radius:1px;flex:none}
 .ws-an-tip .ws-an-note{margin-top:4px;color:var(--ws-faint);font-size:11px}
 .ws-an-tip .ws-an-tx{font-family:var(--font-sans);font-size:12.5px;line-height:1.45;letter-spacing:0}
-@media (prefers-reduced-motion:reduce){.ws-an-busy .ws-an-dot,.ws-an-tag-live::before{animation:none}.ws-an-prog>span,.ws-an-bar{transition:none}}
+@media (prefers-reduced-motion:reduce){.ws-an-busy .ws-an-dot{animation:none}.ws-an-prog>span,.ws-an-bar{transition:none}}
 @media (max-width:1180px){.ws-an-g3{grid-template-columns:repeat(2,minmax(0,1fr))}.ws-an-g3>.ws-an-card:first-child{grid-column:1/-1}.ws-an-kpi-v{font-size:22px}}
 @media (max-width:980px){.ws-an-g2,.ws-an-g3{grid-template-columns:minmax(0,1fr)}.ws-an-g3>.ws-an-card:first-child{grid-column:auto}.ws-an-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.ws-an-kpi:nth-child(3){border-left:0}.ws-an-kpi:nth-child(n+3){border-top:1px solid var(--ws-border)}.ws-an-sh,.ws-an-srow{grid-template-columns:minmax(0,1fr) 72px 72px}.ws-an-hide-n{display:none}.ws-an-search{flex:1;width:auto}}
