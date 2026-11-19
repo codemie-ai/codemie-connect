@@ -175,6 +175,43 @@ mod tests {
             "hidden":["plugins"]})
     }
 
+    /// `n` valid, non-overlapping plugin cards, one row each.
+    fn plugin_items(n: i64) -> Value {
+        Value::Array(
+            (0..n)
+                .map(|i| json!({"id": format!("plugin:pp:w{i}"), "x": 0, "y": i, "w": 4, "h": 1}))
+                .collect(),
+        )
+    }
+
+    /// Options of valid short values, grown until they serialize to at least `bytes`.
+    fn options_of_size(bytes: usize) -> Value {
+        let mut card = serde_json::Map::new();
+        let mut options = json!({"inbox": {}});
+        while serde_json::to_vec(&options).unwrap().len() < bytes {
+            card.insert(format!("key{:03}", card.len()), json!("v".repeat(30)));
+            options = json!({"inbox": card});
+        }
+        options
+    }
+
+    #[tokio::test]
+    async fn layout_accepts_the_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let under = options_of_size(8 * 1024 - 60);
+        let size = serde_json::to_vec(&under).unwrap().len();
+        assert!(size <= 8 * 1024 && size > 8 * 1024 - 120, "{size}");
+        let today = json!({"items": plugin_items(16), "options": under});
+        core.request(mutation(
+            &core,
+            Operation::LayoutSave,
+            json!({"today": today}),
+        ))
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn layout_saves_the_today_grid() {
         let dir = tempfile::tempdir().unwrap();
@@ -199,13 +236,11 @@ mod tests {
         let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
         let item = |id: &str, x: i64, w: i64| json!({"id": id, "x": x, "y": 0, "w": w, "h": 4});
         let with = |k: &str, v: Value| json!({ k: v });
-        let seventeen: Vec<Value> = (0..17)
-            .map(|n| json!({"id": format!("plugin:p:w{n}"), "x": 0, "y": n * 2, "w": 4, "h": 1}))
-            .collect();
+        let seventeen = plugin_items(17);
         let layouts16: serde_json::Map<String, Value> = (0..16)
             .map(|n| (format!("L{n}"), json!([item("brief", 0, 4)])))
             .collect();
-        let big = "a".repeat(9 * 1024);
+        let over_8kb = options_of_size(8 * 1024 + 1);
         let cases = vec![
             with("items", json!([item("brief", 0, 6), item("focus", 4, 6)])),
             with("items", json!([item("brief", 7, 6)])),
@@ -213,7 +248,7 @@ mod tests {
             with("items", json!([{"id":"brief","x":0,"y":0,"w":4,"h":0}])),
             with("items", json!([{"id":"brief","x":0,"y":0,"w":4,"h":25}])),
             with("items", json!([{"id":"brief","x":0,"y":401,"w":4,"h":4}])),
-            with("items", Value::Array(seventeen)),
+            with("items", seventeen),
             with("items", json!([item("brief", 0, 4), item("brief", 4, 4)])),
             with("items", json!([item("weather", 0, 4)])),
             with("titles", json!({"brief": "t".repeat(41)})),
@@ -224,10 +259,7 @@ mod tests {
                 "options",
                 json!({"inbox": {"a": ["1","2","3","4","5","6","7","8","9"]}}),
             ),
-            with(
-                "options",
-                json!({"inbox": {"a": big.clone()}, "brief": {"a": big}}),
-            ),
+            with("options", over_8kb),
             with("items", json!({"id": "brief"})),
         ];
         for (n, today) in cases.into_iter().enumerate() {
