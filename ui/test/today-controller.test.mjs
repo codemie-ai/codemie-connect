@@ -74,16 +74,18 @@ test('moving a widget saves the grid once with the layout order', async () => {
 });
 
 test('undo saves the layout from before the change and redo the one after', async () => {
-  const { ctl, saved, state } = harness();
+  const { ctl, saved, state, calls } = harness();
   await ctl.commit(ctl.moveTo('focus', 0, 0));
   assert.equal(state.today.history.length, 1);
   await ctl.undo();
   assert.deepEqual(saved()[1].layout.slice(0, 2), ['brief', 'focus']);
   assert.deepEqual(box(saved()[1].today.items, 'focus'), [8, 0, 4, 4]);
   assert.deepEqual([state.today.history.length, state.today.future.length], [0, 1]);
+  assert.equal(calls.announced.at(-1), 'Layout change undone', 'the live region says so');
   await ctl.redo();
   assert.deepEqual(saved()[2].layout.slice(0, 2), ['focus', 'brief']);
   assert.deepEqual([state.today.history.length, state.today.future.length], [1, 0]);
+  assert.equal(calls.announced.at(-1), 'Layout change redone');
   // Nothing left to redo.
   await ctl.redo();
   assert.equal(saved().length, 3);

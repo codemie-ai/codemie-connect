@@ -133,13 +133,14 @@ export function createTodayController({
     return made ? save(made.next, cur, made) : false;
   });
 
+  // Said in the live region too: ⌘Z after a key's Delete has no toast or focus to show it.
   const undo = () => serial(async () => {
     const prev = ui().history.at(-1);
-    return prev ? save(prev, current(), { step: 'undo' }) : false;
+    return prev ? save(prev, current(), { step: 'undo', say: () => 'Layout change undone' }) : false;
   });
   const redo = () => serial(async () => {
     const next = ui().future.at(-1);
-    return next ? save(next, current(), { step: 'redo' }) : false;
+    return next ? save(next, current(), { step: 'redo', say: () => 'Layout change redone' }) : false;
   });
 
   /** The grid with widget `id` held at `x`, `y` while the others start from `orig` (by default
