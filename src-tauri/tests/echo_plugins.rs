@@ -184,10 +184,18 @@ fn knowledge_installs_with_an_honest_sheet() {
     assert!(line("network")
         .text
         .ends_with("fetch one web page from an address you type in Connect's box"));
-    assert!(line("events")
-        .text
-        .contains("Connect doesn't have: recording_started, recording_stopped"));
+    // Every event it hears that can happen in Connect is sent; recordings never happen there.
+    assert!(line("events").text.contains(
+        "Never happen in Connect, which records no calls and keeps no threads: recording_started, recording_stopped"
+    ));
+    assert_eq!(line("events").support, Support::Supported);
     assert!(line("echo").text.contains("your name and email address"));
+    // Connect has no clients or threads; Claude outside a vault only answers.
+    assert_eq!(
+        line("echo").support,
+        Support::Partial("Connect has no clients or threads, so they read as empty".into())
+    );
+    assert!(matches!(line("claude").support, Support::Partial(_)));
     assert!(offer
         .sheet
         .iter()

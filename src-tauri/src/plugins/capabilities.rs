@@ -8,14 +8,15 @@
 use super::manifest::{Manifest, ManifestError};
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 
 /// How far Connect supports a capability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", content = "limit", rename_all = "snake_case")]
 pub enum Support {
     Supported,
-    /// Works, with the limit stated.
-    Partial(&'static str),
+    /// Works, with the limit stated (for some keys, what this plugin's request misses).
+    Partial(Cow<'static, str>),
     /// Installable with a warning; its calls fail with "unsupported" (DESIGN 7.2).
     Unsupported,
     /// The plugin can't be installed; the reason is shown on its sheet.
@@ -35,12 +36,12 @@ pub const CATALOG: &[(&str, Support)] = &[
     ("knowledge", Support::Blocking("Needs Connect's Knowledge engine (coming later)")),
     (
         "claude",
-        Support::Partial("Claude reads the folders you gave the plugin and edits only where it may write; never the web, a terminal command or an MCP server"),
+        Support::Partial(Cow::Borrowed("In a folder you gave it, Claude works as in Echo; anywhere else it only answers, with no tools")),
     ),
     ("schedule", Support::Supported),
     (
         "deliver",
-        Support::Partial("Teams and mail messages wait for your review in Connect; nothing is sent on its own"),
+        Support::Partial(Cow::Borrowed("Teams and mail messages wait for your review in Connect; nothing is sent on its own")),
     ),
     ("deliver_provider", Support::Supported),
     ("network", Support::Supported),
@@ -51,15 +52,17 @@ pub const CATALOG: &[(&str, Support)] = &[
     ("folders", Support::Supported),
     (
         "echo",
-        Support::Partial("Connect fills this from your mail, chat and calendar; thread stages, tasks and Echo's background jobs aren't provided"),
+        // Per plugin (`echo_support`): what it asks for that Connect doesn't have.
+        Support::Partial(Cow::Borrowed("Connect fills this from your mail, chat and calendar; thread stages, tasks and Echo's background jobs aren't provided")),
     ),
     (
         "events",
-        Support::Partial("Only meeting_soon, minutes_written, transcribed, sources_changed and shared_changed are sent"),
+        // Per plugin (`events_support`): what it hears that Connect doesn't send.
+        Support::Partial(Cow::Borrowed("Only meeting_soon, minutes_written, transcribed, sources_changed and shared_changed are sent")),
     ),
     ("files", Support::Unsupported),
     ("work", Support::Supported),
-    ("signin", Support::Partial("Only GitHub sign-in is available")),
+    ("signin", Support::Partial(Cow::Borrowed("Only GitHub sign-in is available"))),
     ("scripts", Support::Unsupported),
     ("ai", Support::Unsupported),
     ("skills", Support::Supported),
@@ -67,7 +70,86 @@ pub const CATALOG: &[(&str, Support)] = &[
 ];
 
 pub fn support_of(key: &str) -> Option<Support> {
-    CATALOG.iter().find(|(k, _)| *k == key).map(|(_, s)| *s)
+    CATALOG
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, s)| s.clone())
+}
+
+/// How far Connect supports what this plugin asks under `key`, where that depends on the request
+/// (`events`, `echo`); the catalog's status otherwise.
+fn support_for(key: &str, v: &Value) -> Option<Support> {
+    match key {
+        "events" => Some(events_support(v)),
+        "echo" => Some(echo_support(v)),
+        _ => support_of(key),
+    }
+}
+
+/// `events`: supported when every event it hears that can happen in Connect is sent; partial,
+/// naming them, for those Connect doesn't send, or when nothing it hears happens in Connect.
+fn events_support(v: &Value) -> Support {
+    let on = words(v, "on", 20, is_name).unwrap_or_default();
+    let missing: Vec<&str> = on
+        .iter()
+        .map(String::as_str)
+        .filter(|e| !SENT.contains(e) && !NEVER.contains(e))
+        .collect();
+    if !missing.is_empty() {
+        return Support::Partial(format!("Connect doesn't send {}", missing.join(", ")).into());
+    }
+    if !on.iter().any(|e| SENT.contains(&e.as_str())) {
+        return Support::Partial(Cow::Borrowed("None of what it hears happens in Connect"));
+    }
+    Support::Supported
+}
+
+/// `echo`: supported when Connect answers every read and write it asks for; partial, naming
+/// what it lacks, or saying clients and threads read as empty (Connect has neither).
+fn echo_support(v: &Value) -> Support {
+    let read = words(v, "read", 20, is_name).unwrap_or_default();
+    let write = words(v, "write", 20, is_name).unwrap_or_default();
+    let mut lacking: Vec<String> = read
+        .iter()
+        .filter(|k| !ECHO_READS.iter().any(|(x, _)| x == k))
+        .cloned()
+        .collect();
+    for k in &write {
+        match k.as_str() {
+            "dictionary" => {}
+            "thread_stage" => lacking.push("thread stages".into()),
+            "tasks" => lacking.push("tasks".into()),
+            other => lacking.push(other.to_string()),
+        }
+    }
+    if flag(v, "jobs").unwrap_or(false) {
+        lacking.push("background jobs".into());
+    }
+    let empty = read.iter().any(|k| k == "clients" || k == "threads");
+    const EMPTY: &str = "Connect has no clients or threads, so they read as empty";
+    match (lacking.is_empty(), empty) {
+        (true, false) => Support::Supported,
+        (true, true) => Support::Partial(Cow::Borrowed(EMPTY)),
+        (false, false) => {
+            Support::Partial(format!("Connect doesn't provide {}", or_words(&lacking)).into())
+        }
+        (false, true) => Support::Partial(
+            format!(
+                "Connect doesn't provide {}; it has no clients or threads, so they read as empty",
+                or_words(&lacking)
+            )
+            .into(),
+        ),
+    }
+}
+
+/// "a", "a or b", "a, b or c".
+fn or_words(w: &[String]) -> String {
+    match w {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
 }
 
 /// The sheet for a manifest, one line per `uses` key: Blocking, Unsupported, Partial, then
@@ -77,7 +159,8 @@ pub fn sheet(m: &Manifest) -> Result<Vec<SheetLine>, ManifestError> {
         .uses
         .iter()
         .map(|(key, value)| {
-            let support = support_of(key).ok_or_else(|| ManifestError::UnknownKey(key.clone()))?;
+            let support =
+                support_for(key, value).ok_or_else(|| ManifestError::UnknownKey(key.clone()))?;
             let bad = |why: String| ManifestError::BadValue {
                 key: key.clone(),
                 why,
@@ -195,7 +278,7 @@ fn title_case(k: &str) -> String {
 const ECHO_READS: &[(&str, &str)] = &[
     ("clients", "the names of your clients"),
     ("threads", "your threads' names and stages"),
-    ("people", "who the people in your threads are"),
+    ("people", "who the people in your mail and meetings are"),
     ("dictionary", "your dictionary"),
     ("sources", "your calls, mail and chat"),
     ("source", "your calls, mail and chat"),
@@ -227,8 +310,23 @@ const EVENTS: &[(&str, &str)] = &[
     ("threads_changed", "a thread is renamed, merged or deleted"),
     ("shared_changed", "a value its plugins share changes"),
 ];
-/** Events Echo defines that Connect never sends: it doesn't record calls. */
-const NOT_SENT: &[&str] = &["recording_started", "recording_stopped"];
+/** The events Connect sends. */
+const SENT: &[&str] = &[
+    "meeting_soon",
+    "transcribed",
+    "minutes_written",
+    "sources_changed",
+    "shared_changed",
+];
+/** Events Echo defines for things Connect doesn't have: it records no calls and keeps no
+ *  threads, so these never happen there. (`call_started`, `call_ended`: calls happen, but Connect
+ *  doesn't watch them, so those are missed.) */
+const NEVER: &[&str] = &[
+    "recording_started",
+    "recording_stopped",
+    "thread_synced",
+    "threads_changed",
+];
 /** What `m365.read` names mean. */
 const M365_READS: &[(&str, &str)] = &[("mail", "your Outlook mail"), ("chats", "Teams chats")];
 
@@ -407,25 +505,35 @@ fn describe(key: &str, v: &Value) -> Result<String, String> {
             if on.is_empty() {
                 return Err("it hears nothing".into());
             }
-            let sent = |k: &str| !NOT_SENT.contains(&k);
             let known: Vec<String> = EVENTS
                 .iter()
-                .filter(|(k, _)| sent(k) && on.iter().any(|o| o == k))
+                .filter(|(k, _)| SENT.contains(k) && on.iter().any(|o| o == k))
                 .map(|(_, w)| (*w).to_string())
                 .collect();
-            let unknown: Vec<String> = on
+            let never: Vec<String> = on
                 .iter()
-                .filter(|o| !sent(o) || !EVENTS.iter().any(|(k, _)| k == o))
+                .filter(|o| NEVER.contains(&o.as_str()))
+                .cloned()
+                .collect();
+            let missing: Vec<String> = on
+                .iter()
+                .filter(|o| !SENT.contains(&o.as_str()) && !NEVER.contains(&o.as_str()))
                 .cloned()
                 .collect();
             let mut lines = vec![];
             if !known.is_empty() {
                 lines.push(format!("Know when {}", join_words(&known)));
             }
-            if !unknown.is_empty() {
+            if !never.is_empty() {
                 lines.push(format!(
-                    "Ask to hear about things Connect doesn't have: {}",
-                    unknown.join(", ")
+                    "Never happen in Connect, which records no calls and keeps no threads: {}",
+                    never.join(", ")
+                ));
+            }
+            if !missing.is_empty() {
+                lines.push(format!(
+                    "Ask to hear about things Connect doesn't send: {}",
+                    missing.join(", ")
                 ));
             }
             Ok(lines.join(". "))
@@ -530,7 +638,7 @@ mod tests {
             "Connect to api.github.com and github.com"
         );
         assert!(
-            matches!(by("claude").support, Support::Partial(l) if l.starts_with("Claude reads the folders"))
+            matches!(by("claude").support, Support::Partial(ref l) if l.starts_with("In a folder you gave it"))
         );
         assert_eq!(by("sessions").support, Support::Unsupported);
         assert_eq!(
@@ -586,7 +694,7 @@ mod tests {
         let text = |k: &str| lines.iter().find(|l| l.key == k).unwrap().text.clone();
         assert!(text("deliver").contains("Telegram (through the plugin that adds it)"));
         assert!(text("network").contains("the addresses you enter in its setting \"server\""));
-        assert!(text("events").contains("doesn't have: from_the_future"));
+        assert!(text("events").contains("doesn't send: from_the_future"));
         assert_eq!(
             text("folders"),
             "Read files in the Obsidian vaults you choose"
@@ -644,7 +752,7 @@ mod tests {
         json!({
             "folders": {"what": "folders of notes (Knowledge vaults)", "write": true},
             "claude": {},
-            "echo": {"read": ["clients", "threads", "source", "sources", "calls", "me", "recording", "dictionary"]},
+            "echo": {"read": ["clients", "threads", "source", "sources", "calls", "people", "me", "recording", "dictionary"]},
             "network": {"hosts_from": ["web_sites"], "ask": true},
             "skills": true,
             "sessions": {"skills": true, "read": true, "hints": true, "commands": ["search", "info"]},
@@ -682,11 +790,25 @@ mod tests {
             "{echo}"
         );
         assert!(!echo.contains("doesn't have"), "{echo}");
+        // Everything Knowledge hears that can happen in Connect is sent: recordings and threads
+        // never happen there, so they are named but cost nothing.
         assert_eq!(
             by("events").text,
             "Know when a call's transcript is ready, a call's minutes are written and your mail, \
-             chat or calendar change. Ask to hear about things Connect doesn't have: \
-             recording_started, recording_stopped"
+             chat or calendar change. Never happen in Connect, which records no calls and keeps no \
+             threads: recording_started, recording_stopped"
+        );
+        assert_eq!(by("events").support, Support::Supported);
+        // Its reads are there, but Connect has no clients or threads: those read as empty.
+        assert_eq!(
+            by("echo").support,
+            Support::Partial("Connect has no clients or threads, so they read as empty".into())
+        );
+        // Claude in a vault is as in Echo; only a run outside a folder has no tools.
+        assert!(
+            matches!(by("claude").support, Support::Partial(ref l) if l == "In a folder you gave it, Claude works as in Echo; anywhere else it only answers, with no tools"),
+            "{:?}",
+            by("claude").support
         );
         assert_eq!(by("sessions").support, Support::Unsupported);
         // `skills` is `true` or an object; anything else can't be read.
@@ -728,6 +850,76 @@ mod tests {
             echo.contains("stage (not provided in Connect)")
                 && echo.contains("threads (not provided in Connect)")
         );
-        assert!(matches!(support_of("echo"), Some(Support::Partial(l)) if l.contains("tasks")));
+        assert!(matches!(
+            lines.iter().find(|l| l.key == "echo").unwrap().support,
+            Support::Partial(ref l) if l.contains("thread stages") && l.contains("tasks")
+        ));
+    }
+
+    #[test]
+    fn events_and_echo_lines_are_partial_only_for_what_the_plugin_misses() {
+        let line = |uses: Value, k: &str| {
+            sheet(&manifest_with(uses))
+                .unwrap()
+                .into_iter()
+                .find(|l| l.key == k)
+                .unwrap()
+        };
+        // Events Connect sends: supported.
+        let sent = line(
+            json!({"events": {"on": ["meeting_soon", "minutes_written"]}}),
+            "events",
+        );
+        assert_eq!(sent.support, Support::Supported);
+        assert!(!sent.text.contains("Never happen"), "{}", sent.text);
+        // Calls happen, but Connect doesn't watch them: partial, named.
+        let calls = line(
+            json!({"events": {"on": ["minutes_written", "call_started", "call_ended"]}}),
+            "events",
+        );
+        assert_eq!(
+            calls.support,
+            Support::Partial("Connect doesn't send call_started, call_ended".into())
+        );
+        assert!(
+            calls.text.ends_with(
+                "Ask to hear about things Connect doesn't send: call_started, call_ended"
+            ),
+            "{}",
+            calls.text
+        );
+        // Only things that never happen in Connect: nothing will ever come.
+        let never = line(
+            json!({"events": {"on": ["recording_started", "threads_changed"]}}),
+            "events",
+        );
+        assert_eq!(
+            never.support,
+            Support::Partial("None of what it hears happens in Connect".into())
+        );
+        // A name Echo doesn't define.
+        let odd = line(
+            json!({"events": {"on": ["minutes_written", "lunch"]}}),
+            "events",
+        );
+        assert_eq!(
+            odd.support,
+            Support::Partial("Connect doesn't send lunch".into())
+        );
+        // Echo reads Connect answers in full: supported.
+        let reads = line(
+            json!({"echo": {"read": ["calls", "source", "people", "me", "dictionary"], "write": ["dictionary"]}}),
+            "echo",
+        );
+        assert_eq!(reads.support, Support::Supported);
+        // A calendar read and background jobs aren't provided.
+        let more = line(
+            json!({"echo": {"read": ["calls", "calendar"], "jobs": true}}),
+            "echo",
+        );
+        assert_eq!(
+            more.support,
+            Support::Partial("Connect doesn't provide calendar or background jobs".into())
+        );
     }
 }

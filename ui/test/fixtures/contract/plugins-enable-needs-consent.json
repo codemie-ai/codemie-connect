@@ -4,7 +4,7 @@
     {
       "key": "claude",
       "support": {
-        "limit": "Claude reads the folders you gave the plugin and edits only where it may write; never the web, a terminal command or an MCP server",
+        "limit": "In a folder you gave it, Claude works as in Echo; anywhere else it only answers, with no tools",
         "status": "partial"
       },
       "text": "Ask Claude questions on your behalf"
@@ -37,7 +37,7 @@
     {
       "key": "claude",
       "support": {
-        "limit": "Claude reads the folders you gave the plugin and edits only where it may write; never the web, a terminal command or an MCP server",
+        "limit": "In a folder you gave it, Claude works as in Echo; anywhere else it only answers, with no tools",
         "status": "partial"
       },
       "text": "Ask Claude questions on your behalf"
