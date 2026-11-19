@@ -1250,3 +1250,62 @@ test('an unnamed speaker\'s line asks "Who is this?" without leaving the transcr
   assert.match(transcript, /data-action="meeting-name-speaker" data-voice="@1"[^>]*>Who is this\?/);
   assert.doesNotMatch(transcript, /data-tab="people"/);
 });
+
+test('notes: one toolbar, no document chips, no One/Side by side switch', () => {
+  const s = meetingsSnapshot();
+  const detail = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'notes' })));
+  const tools = detail.match(/<div class="ws-mtg-doctools">[^]*?<\/div>(?=\s*<div class="ws-mtg-docpage")/)?.[0] || '';
+  assert.ok(tools, 'the toolbar');
+  const picker = tools.match(/<details class="ws-menu[^"]*ws-mtg-doc-picker[^"]*"[^]*?<\/details>/)?.[0] || '';
+  assert.match(picker, /<summary[^>]*>[^]*?Meeting notes[^]*?<small>1 of 2<\/small>/);
+  assert.match(picker, /data-action="doc-view" data-id="mtg-philips" data-doc="meeting-notes"[^>]*aria-checked="true"[^>]*>[^]*?Meeting notes \(main\)/);
+  assert.match(picker, /data-action="doc-view" data-id="mtg-philips" data-doc="short-summary"[^>]*aria-checked="false"/);
+  assert.match(picker, /data-action="meeting-compare" data-v="1"[^>]*>[^]*?Compare side by side/);
+  assert.match(tools, /data-action="meeting-make-notes"[^>]*data-id="mtg-philips"[^>]*>[^]*?New summary/);
+  assert.match(tools, /data-action="meeting-compare"[^>]*data-v="1"[^>]*aria-pressed="false"/, 'the side-by-side toggle');
+  for (const action of ['doc-copy', 'doc-save', 'doc-edit']) assert.match(tools, new RegExp(`data-action="${action}"`), action);
+  assert.match(tools, /data-action="doc-delete"/, 'the document’s ⋯ menu');
+  assert.doesNotMatch(detail, /ws-mtg-doctab|aria-label="Documents"|aria-label="Layout"|Another summary/);
+  // Side by side: two columns, each with its own document select.
+  const compare = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'notes', compare: true })));
+  assert.equal((compare.match(/data-action="doc-compare-pick"/g) || []).length, 2);
+  assert.match(compare, /data-action="meeting-compare"[^>]*data-v="0"[^>]*aria-pressed="true"/);
+  // A run making another document: said once, by the line under the header; the notes stay.
+  s.jobs.push(notesJob('mtg-philips', { templateId: 'short-summary' }));
+  const busy = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'notes' })));
+  assert.equal((busy.match(/Making Short summary/g) || []).length, 1);
+  assert.match(busy, /class="ws-mtg-runline"[^]*?Making Short summary/);
+  assert.match(busy, /<div class="ws-mtg-docpage"/);
+});
+
+test('notes: the document reads as a page', () => {
+  const s = meetingsSnapshot();
+  const detail = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'notes' })));
+  const page = detail.match(/<div class="ws-mtg-docpage"[^]*$/)?.[0] || '';
+  assert.ok(page, 'the page');
+  assert.doesNotMatch(page, /ws-md-front|<dl/, 'no properties table');
+  assert.match(page, /<p class="ws-md-tags"><span class="ws-md-tag">meeting<\/span><span class="ws-md-tag">philips<\/span><span class="ws-md-tag">pilot<\/span><\/p>/);
+  assert.doesNotMatch(page, /<h2>Philips CodeMie conversations syncup<\/h2>/, 'the title isn’t repeated');
+  assert.match(page, /<h3>TL;DR<\/h3>/);
+  const foot = page.match(/<p class="ws-mtg-docfoot">[^]*?<\/p>/)?.[0] || '';
+  assert.match(foot, /Built-in template · made [^·]+ automatically/);
+  assert.match(foot, /You asked: “[^”]+”/);
+  assert.match(foot, /\d+ words · notes\.md/);
+  assert.doesNotMatch(detail, /ws-mtg-doc-meta|ws-mtg-wishes/, 'no provenance line or banner above the notes');
+  // The other document: its own words, and a way to make it the main notes.
+  const other = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'notes', docView: { 'mtg-philips': 'short-summary' } })));
+  assert.match(other.match(/<p class="ws-mtg-docfoot">[^]*?<\/p>/)?.[0] || '', /data-action="doc-main" data-id="mtg-philips" data-doc="short-summary"[^>]*>make it the main notes/);
+});
+
+test('tasks: "2 to review · 1 on the board", Accept only on tasks to review', () => {
+  const s = meetingsSnapshot();
+  const tab = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'tasks' })));
+  assert.match(tab, /<h3>2 to review<\/h3><small>· 1 on the board<\/small>/);
+  assert.match(tab, /data-action="meeting-tasks-accept"[^>]*>[^]*?Accept all 2/);
+  assert.match(tab, /data-action="meeting-board"[^>]*>[^]*?Open board/);
+  assert.equal((tab.match(/data-action="task-accept"/g) || []).length, 2);
+  assert.doesNotMatch(tab, /Tasks from this meeting/);
+  // Nothing to review: just how many.
+  for (const t of s.records.filter(r => r.kind === 'commitment' && r.data.meetingId === 'mtg-philips')) t.data.status = 'todo';
+  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'tasks' }))), /<h3>3 tasks<\/h3>/);
+});

@@ -24,16 +24,37 @@ export function inline(text) {
     : format(e(part)))).join('');
 }
 
-function frontMatter(lines) {
+const tagSpans = v => v.replace(/^\[|\]$/g, '').split(',').map(t => t.trim()).filter(Boolean).map(t => `<span class="ws-md-tag">${e(t)}</span>`).join('');
+
+/** Front matter as a `<dl>`, or with `front: 'tags'` only its tags as chips (the page already
+ *  shows the title, the date and the people). */
+function frontMatter(lines, front = 'all') {
   const rows = lines.filter(l => l.includes(':')).map(l => {
     const at = l.indexOf(':');
     return [l.slice(0, at).trim(), l.slice(at + 1).trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1')];
   });
+  if (front === 'tags') {
+    const tags = tagSpans(rows.find(([k]) => k === 'tags')?.[1] || '');
+    return tags ? `<p class="ws-md-tags">${tags}</p>` : '';
+  }
   if (!rows.length) return '';
-  const value = (k, v) => (k === 'tags' || /^\[.*\]$/.test(v)
-    ? v.replace(/^\[|\]$/g, '').split(',').map(t => t.trim()).filter(Boolean).map(t => `<span class="ws-md-tag">${e(t)}</span>`).join('')
-    : e(v));
+  const value = (k, v) => (k === 'tags' || /^\[.*\]$/.test(v) ? tagSpans(v) : e(v));
   return `<dl class="ws-md-front">${rows.map(([k, v]) => `<dt>${e(k)}</dt><dd>${value(k, v)}</dd>`).join('')}</dl>`;
+}
+
+/** The lines without their first `# ` heading when it says `title` (any case): the page shows it. */
+function withoutTitle(lines, title) {
+  const want = String(title || '').trim().toLowerCase();
+  if (!want) return lines;
+  let fenced = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].trim();
+    if (l.startsWith('```')) fenced = !fenced;
+    if (fenced) continue;
+    const h1 = /^#\s+(.*?)\s*#*$/.exec(l);
+    if (h1) return h1[1].trim().toLowerCase() === want ? [...lines.slice(0, i), ...lines.slice(i + 1)] : lines;
+  }
+  return lines;
 }
 
 const cells = row => row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
@@ -135,12 +156,14 @@ function blocks(lines) {
   return out.join('');
 }
 
-/** The notes as HTML: front matter between the first two `---` lines, then the blocks. */
-export function renderMarkdown(md) {
+/** The notes as HTML: front matter between the first two `---` lines, then the blocks.
+ *  `front: 'tags'` draws only the front matter's tags; `dropTitle` leaves out a first `# `
+ *  heading that repeats it. */
+export function renderMarkdown(md, { front = 'all', dropTitle = '' } = {}) {
   const lines = String(md ?? '').replace(/\r\n?/g, '\n').split('\n');
   if (lines[0]?.trim() === '---') {
     const end = lines.findIndex((l, i) => i > 0 && l.trim() === '---');
-    if (end > 0) return frontMatter(lines.slice(1, end)) + blocks(lines.slice(end + 1));
+    if (end > 0) return frontMatter(lines.slice(1, end), front) + blocks(withoutTitle(lines.slice(end + 1), dropTitle));
   }
-  return blocks(lines);
+  return blocks(withoutTitle(lines, dropTitle));
 }

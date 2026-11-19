@@ -85,3 +85,42 @@ test('renders front matter, tables, checkboxes and [mm:ss] buttons', () => {
   assert.match(html, /<hr>/);
   assert.match(html, /<ol start="3"><li>third<\/li><li>fourth<\/li><\/ol>/);
 });
+
+// ---------------------------------------------------------------- the notes as a page
+
+const NOTE = `---
+title: Philips sync
+date: 2026-11-16
+tags: [meeting, philips]
+summary: "Agreed the export."
+---
+# Philips sync
+
+## TL;DR
+- Done.`;
+
+test('renderMarkdown with front tags draws only the tags', () => {
+  const html = renderMarkdown(NOTE, { front: 'tags' });
+  assert.match(html, /<p class="ws-md-tags"><span class="ws-md-tag">meeting<\/span><span class="ws-md-tag">philips<\/span><\/p>/);
+  assert.doesNotMatch(html, /<dl|Agreed the export|2026-11-16/);
+  assert.equal(renderMarkdown('---\ntitle: x\n---\nText', { front: 'tags' }).includes('ws-md-tags'), false, 'no tags: nothing at all');
+});
+
+test('renderMarkdown drops the first heading equal to the title', () => {
+  const html = renderMarkdown(NOTE, { front: 'tags', dropTitle: '  philips SYNC ' });
+  assert.doesNotMatch(html, /<h2>Philips sync<\/h2>/);
+  assert.match(html, /<h3>TL;DR<\/h3>/);
+  assert.match(renderMarkdown('# Philips sync\n\nText\n\n# Philips sync', { dropTitle: 'Philips sync' }), /<p>Text<\/p><h2>Philips sync<\/h2>/, 'only the first one');
+});
+
+test('renderMarkdown keeps a heading that is not the title, and text without front matter', () => {
+  assert.match(renderMarkdown(NOTE, { front: 'tags', dropTitle: 'Another meeting' }), /<h2>Philips sync<\/h2>/);
+  assert.match(renderMarkdown('# Short summary\n\nText', { front: 'tags', dropTitle: 'Philips sync' }), /<h2>Short summary<\/h2><p>Text<\/p>/);
+  assert.match(renderMarkdown('## Only a section\n- a', { dropTitle: 'Philips sync' }), /<h3>Only a section<\/h3>/);
+});
+
+test('the default still draws the whole front matter', () => {
+  const html = renderMarkdown(NOTE);
+  assert.match(html, /<dl class="ws-md-front">[^]*?<dt>summary<\/dt><dd>Agreed the export\.<\/dd>/);
+  assert.match(html, /<h2>Philips sync<\/h2>/);
+});
