@@ -190,12 +190,18 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
       if (width === 1440) {
         await check(`${tag}: Edit the template from a document opens that template`, async () => {
           await page.click('.ws-nav button[data-route=meetings]');
-          await page.click('[data-action="meeting-filter"][data-filter="all"]');
+          await page.click('[data-menu="meetings-filter"] > summary');
+          await page.click('[data-menu="meetings-filter"] [data-action="meeting-filter"][data-filter="all"]');
           await page.click('.ws-mtg-row[data-id="mtg-philips"]');
-          await page.waitForSelector('.ws-mtg-doc[data-doc="meeting-notes"] .ws-menu > summary');
+          const notesTab = '.ws-mtg-tabs [data-action="meeting-tab"][data-tab="notes"]';
+          await page.waitForSelector(notesTab);
+          if (await page.locator(`${notesTab}[aria-selected="true"]`).count() === 0) await page.click(notesTab);
+          // The document's ⋯ is the last menu of the toolbar over the notes.
+          const docMenu = '.ws-mtg-doctools [data-menu="doc-mtg-philips-meeting-notes-left"]';
+          await page.waitForSelector(`${docMenu} > summary`);
           await settled(page);
-          await page.click('.ws-mtg-doc[data-doc="meeting-notes"] .ws-menu > summary');
-          await page.click('.ws-mtg-doc[data-doc="meeting-notes"] [data-action="settings-tab"][data-template="meeting-notes"]');
+          await page.click(`${docMenu} > summary`);
+          await page.click(`${docMenu} [data-action="settings-tab"][data-template="meeting-notes"]`);
           await page.waitForSelector('.ws-ms-editor [data-ms-input="tpl-name"]');
           assert(await page.$eval('[data-ms-input="tpl-name"]', el => el.value) === 'Meeting notes', 'that template');
           assert(await page.evaluate(() => location.hash) === '#/settings/meetings-templates', 'the hash');

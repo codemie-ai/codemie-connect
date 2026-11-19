@@ -1,4 +1,4 @@
-// The meeting's five tabs on the Meetings page (Notes · Transcript · Tasks · Files · People), the
+// The meeting's four tabs on the Meetings page (Notes · Transcript · Tasks · Files), the people popover, the
 // explainers for meetings without a transcript, the template chip and the Make notes form the
 // dialog and the Notes tab share. Pure: each takes the page (`p`, see view-meetings.js) and one
 // meeting's context (`meetingContext`) and returns HTML; every meeting- or transcript-sourced
@@ -9,7 +9,7 @@ import { avatar, badge, button, card, emptyState, toggle } from './ui.js';
 import { agoLabel, durationLabel, formatTime } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { columnName, isMine, meOf, ownerOf, peopleFor, taskStatus } from './tasks-model.js';
-import { meetingErrors, meetingTasks, peopleOf, resolveTemplate, ruleText, templatesOf } from './meetings-model.js';
+import { meetingErrors, meetingTasks, peopleOf, resolveTemplate, ruleText, tabsOf, templatesOf } from './meetings-model.js';
 
 export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const option = (value, label, selected) => `<option value="${e(value)}"${selected ? ' selected' : ''}>${e(label)}</option>`;
@@ -209,7 +209,8 @@ function docBody(p, mc, doc, version, compact) {
     const missing = read.error.code === 'folder_missing';
     return `<div class="ws-mtg-doc-error">${emptyState({ iconName: missing ? 'folder' : 'alert', title: missing ? 'The meeting folder is gone' : 'This document couldn’t be read', text: DOC_TEXT[read.error.code] || read.error.message || '', actions: missing ? folderFix(mc) : button('Try again', { action: 'meeting-reload', attrs: { 'data-id': mc.m.id } }) })}</div>`;
   }
-  return `<article class="ws-md${compact ? ' ws-md-compact' : ''}">${renderMarkdown(read.text)}</article>`;
+  // The page already shows the title, the date and the people: only the tags, no repeated title.
+  return `<article class="ws-md${compact ? ' ws-md-compact' : ''}">${renderMarkdown(read.text, { front: 'tags', dropTitle: mc.d.title || mc.m.title })}</article>`;
 }
 
 function docEditor(p, mc, doc, ed) {
@@ -218,7 +219,10 @@ function docEditor(p, mc, doc, ed) {
   return `${conflict}${mine}<textarea id="meeting-doc-editor" class="ws-textarea ws-mtg-editor" spellcheck="true" aria-label="Edit ${e(doc.name)} (Markdown)">${e(ed.draft)}</textarea>`;
 }
 
-function docCard(p, mc, doc, { compare = false, side = 'left' } = {}) {
+/** What a document shows, computed once: its template, the version select, its tools (Cancel
+ *  and Save while edited; Copy, Save a copy, Edit and ⋯ otherwise; Copy and Save a copy in Side by
+ *  side), the grey line saying who made it, the earlier-version bar and the body. */
+function docParts(p, mc, doc, { compare = false, side = 'left' } = {}) {
   const { m, r } = mc;
   const t = templatesOf(p.s).find(x => x.id === doc.template) || { name: doc.name, kind: 'builtin', color: '#5677C8' };
   const ed = p.v.editing && p.v.editing.meetingId === m.id && p.v.editing.docId === doc.id && !compare ? p.v.editing : null;
@@ -228,9 +232,6 @@ function docCard(p, mc, doc, { compare = false, side = 'left' } = {}) {
   const ids = { 'data-id': m.id, 'data-doc': doc.id };
   const isMain = doc.id === r.main;
   const vSelect = versions.length > 1 && !ed ? selectBox(`data-action="doc-version" data-id="${e(m.id)}" data-doc="${e(doc.id)}" aria-label="Version of ${e(doc.name)}"`, versions.map(v => option(v.current ? '' : v.version, `Version ${v.version}${v.current ? ' (current)' : ''} · ${agoLabel(v.at, p.zone, p.now)}${v.edited ? ' · edited' : ''}`, v.current ? !earlier : Number(v.version) === viewing)).join(''), 'ws-mtg-ver-select') : '';
-  const picker = compare
-    ? selectBox(`data-action="doc-compare-pick" data-id="${e(m.id)}" data-side="${side}" aria-label="Document on the ${side}"`, mc.docs.map(x => option(x.id, `${x.name}${x.id === r.main ? ' (main)' : ''}`, x.id === doc.id)).join(''), 'ws-mtg-doc-pick')
-    : `<span class="ws-mtg-doc-name" style="--tpl:${tplColor(t)}"><span class="ws-tpl-dot"></span>${e(doc.name)}</span>`;
   const more = menu(`doc-${m.id}-${doc.id}-${side}`, dotsSummary('Document actions', 'ws-btn-sm'), [
     !isMain ? ['Make it the main notes', 'doc-main', ids, 'check'] : null,
     ['Make again (new version)', 'doc-again', { 'data-id': m.id, 'data-template': doc.template }, 'refresh'],
@@ -245,19 +246,42 @@ function docCard(p, mc, doc, { compare = false, side = 'left' } = {}) {
   const made = earlier || doc;
   const kind = t.kind === 'skill' ? 'Skill' : t.kind === 'custom' ? 'Your template' : 'Built-in template';
   const who = [profileLabel(made.profile), made.model].filter(Boolean).join(' · ');
-  const meta = compare ? '' : `<p class="ws-mtg-doc-meta">${e(kind)} · made ${e(agoLabel(made.at || made.updatedAt, p.zone, p.now))} ${made.auto ? 'automatically' : 'by you'}${who ? ` · ${e(who)}` : ''}${made.edited ? ' · edited' : ''}${versions.length > 1 ? ` · version ${e(made.version)} of ${versions.length}` : ''}${!isMain && !earlier ? ` · <button type="button" class="ws-link ws-mtg-linkbtn" data-action="doc-main" data-id="${e(m.id)}" data-doc="${e(doc.id)}">make it the main notes</button>` : ''}</p>`;
+  const facts = [
+    kind, `made ${agoLabel(made.at || made.updatedAt, p.zone, p.now)} ${made.auto ? 'automatically' : 'by you'}`, who, made.edited ? 'edited' : '',
+    versions.length > 1 ? `version ${made.version} of ${versions.length}` : '', read?.text ? `${words(read.text)} words` : '', doc.file || '',
+  ].filter(Boolean).map(e).join(' · ');
+  const foot = `<p class="ws-mtg-docfoot">${facts}${!isMain && !earlier ? ` · <button type="button" class="ws-link ws-mtg-linkbtn" data-action="doc-main" data-id="${e(m.id)}" data-doc="${e(doc.id)}">make it the main notes</button>` : ''}${made.wishes ? ` · You asked: “${e(made.wishes)}”` : ''}</p>`;
   const earlierBar = earlier ? `<div class="ws-mtg-version-bar">${icon('history')}<span>You’re reading version ${e(viewing)}, from ${e(agoLabel(earlier.at, p.zone, p.now))}. The current one is version ${e(doc.version)}.</span>${button('Back to the current one', { action: 'doc-version-current', variant: 'ghost', size: 'sm', attrs: ids })}${button('Use this version', { action: 'doc-use-version', size: 'sm', attrs: { ...ids, 'data-version': viewing } })}</div>` : '';
-  const wishes = made.wishes ? `<p class="ws-mtg-wishes">${icon('quote')}<span>You asked: “${e(made.wishes)}”</span></p>` : '';
-  const count = read?.text ? `${words(read.text)} words · ` : '';
-  return `<section class="ws-card ws-mtg-doc${compare ? ' ws-mtg-doc-compare' : ''}" data-doc="${e(doc.id)}">
-    <header class="ws-mtg-doc-bar">${picker}${isMain && !compare ? '<em class="ws-mtg-main">Main</em>' : ''}${vSelect}<span class="ws-muted ws-mtg-small ws-mtg-hide-narrow">${count}${e(doc.file || '')}</span><span class="ws-spacer"></span>${tools}</header>
-    ${meta}${earlierBar}${wishes}
-    ${ed ? docEditor(p, mc, doc, ed) : docBody(p, mc, doc, earlier ? viewing : null, compare)}
-  </section>`;
+  const body = ed ? docEditor(p, mc, doc, ed) : docBody(p, mc, doc, earlier ? viewing : null, compare);
+  return { t, ed, vSelect, tools, foot, earlierBar, body };
+}
+
+/** One column of Side by side: its document select, Copy and Save a copy, the notes. */
+function docCard(p, mc, doc, side) {
+  const x = docParts(p, mc, doc, { compare: true, side });
+  const picker = selectBox(`data-action="doc-compare-pick" data-id="${e(mc.m.id)}" data-side="${side}" aria-label="Document on the ${side}"`, mc.docs.map(d => option(d.id, `${d.name}${d.id === mc.r.main ? ' (main)' : ''}`, d.id === doc.id)).join(''), 'ws-mtg-doc-pick');
+  return `<section class="ws-mtg-doc ws-mtg-doc-compare" data-doc="${e(doc.id)}"><header class="ws-mtg-doc-bar">${picker}<span class="ws-spacer"></span>${x.tools}</header>${x.body}</section>`;
+}
+
+/** The one toolbar over the notes: the document picker (each document, Side by side), New
+ *  summary, the version select, the Side by side toggle, then the document's own tools. */
+function docToolbar(p, mc, view, compare, x) {
+  const { m, r, docs } = mc;
+  const n = docs.length;
+  const summary = `<summary class="ws-mtg-doc-pick-sum" style="--tpl:${tplColor(x.t)}" title="This meeting’s documents"><span class="ws-tpl-dot"></span><span class="ws-mtg-doc-pick-name">${compare ? 'Side by side' : e(view.name)}</span>${n > 1 && !compare ? `<small>${docs.indexOf(view) + 1} of ${n}</small>` : ''}${icon('chevron-down')}</summary>`;
+  const picker = menu(`docs-${m.id}`, summary, [
+    ['#', 'Documents'],
+    ...docs.map(doc => [`${doc.name}${doc.id === r.main ? ' (main)' : ''}`, 'doc-view', { 'data-id': m.id, 'data-doc': doc.id, 'aria-checked': String(!compare && doc.id === view.id) }, null]),
+    n > 1 ? '-' : null,
+    n > 1 ? [compare ? 'Show one at a time' : 'Compare side by side', 'meeting-compare', { 'data-v': compare ? '0' : '1' }, 'board'] : null,
+  ], { right: false, cls: 'ws-mtg-doc-picker' });
+  const side = n > 1 ? button('', { action: 'meeting-compare', iconName: 'board', variant: 'ghost', size: 'sm', title: compare ? 'Show one at a time' : 'Side by side', attrs: { 'data-v': compare ? '0' : '1', 'aria-pressed': String(compare) } }) : '';
+  const another = button('New summary', { action: 'meeting-make-notes', iconName: 'plus', variant: 'ghost', size: 'sm', attrs: { 'data-id': m.id } });
+  return `<div class="ws-mtg-doctools">${picker}${another}<span class="ws-spacer"></span>${compare ? '' : x.vSelect}${side}${compare ? '' : x.tools}</div>`;
 }
 
 export function notesTab(p, mc) {
-  const { m, r, docs, run } = mc;
+  const { m, docs, run } = mc;
   const notesRun = run?.kind === 'meeting_notes' ? run : null;
   const saving = run?.kind === 'transcript_download';
   if ((notesRun || saving) && !docs.length) return card({ className: 'ws-mtg-busy-card', body: skeleton() });
@@ -275,20 +299,15 @@ export function notesTab(p, mc) {
   }
   const view = docs.find(x => x.id === p.v.docView?.[m.id]) || mc.main || docs[0];
   const compare = !!p.v.compare && docs.length > 1;
-  const chips = docs.map(doc => {
-    const t = templatesOf(p.s).find(x => x.id === doc.template) || {};
-    const mark = doc.auto ? icon('automations', 'ws-mtg-doctab-icon') : t.kind === 'skill' ? icon('skill', 'ws-mtg-doctab-icon') : t.kind === 'custom' ? icon('user', 'ws-mtg-doctab-icon') : '';
-    return `<button type="button" role="tab" class="ws-mtg-doctab" data-action="doc-view" data-id="${e(m.id)}" data-doc="${e(doc.id)}" aria-selected="${!compare && doc.id === view.id}" style="--tpl:${tplColor(t)}"><span class="ws-tpl-dot"></span><span>${e(doc.name)}</span>${doc.id === r.main ? '<em class="ws-mtg-main">Main</em>' : ''}${mark}</button>`;
-  }).join('');
-  const busy = notesRun ? `<span class="ws-mtg-doctab ws-mtg-doctab-busy" role="status">${icon('refresh', 'ws-spin')}<span>Making ${e((templatesOf(p.s).find(t => t.id === notesRun.templateId) || {}).name || 'notes')}…</span></span>`
-    : `<button type="button" class="ws-mtg-doctab ws-mtg-doctab-add" data-action="meeting-make-notes" data-id="${e(m.id)}">${icon('plus')}<span>Another summary</span></button>`;
-  const layout = docs.length > 1 ? `<div class="ws-segmented" role="tablist" aria-label="Layout"><button type="button" role="tab" data-action="meeting-compare" data-v="0" aria-selected="${!compare}">${icon('note')}One</button><button type="button" role="tab" data-action="meeting-compare" data-v="1" aria-selected="${compare}">${icon('board')}Side by side</button></div>` : '';
-  const bar = `<div class="ws-mtg-docbar"><div class="ws-mtg-doctabs" role="tablist" aria-label="Documents">${chips}${busy}</div>${layout}</div>`;
+  const x = docParts(p, mc, view);
+  const toolbar = docToolbar(p, mc, view, compare, x);
   if (compare) {
-    const right = docs.find(x => x.id === p.v.compareWith?.[m.id] && x.id !== view.id) || docs.find(x => x.id !== view.id);
-    return `${failedBanner}${bar}<div class="ws-mtg-compare">${docCard(p, mc, view, { compare: true, side: 'left' })}${docCard(p, mc, right, { compare: true, side: 'right' })}</div>`;
+    const right = docs.find(d => d.id === p.v.compareWith?.[m.id] && d.id !== view.id) || docs.find(d => d.id !== view.id);
+    return `${failedBanner}${toolbar}<div class="ws-mtg-compare">${docCard(p, mc, view, 'left')}${docCard(p, mc, right, 'right')}</div>`;
   }
-  return `${failedBanner}${bar}${docCard(p, mc, view)}`;
+  // A run making another document is said once, by the line under the header.
+  return `${failedBanner}${toolbar}
+    <div class="ws-mtg-docpage" data-doc="${e(view.id)}">${x.earlierBar}${x.body}${x.ed ? '' : x.foot}</div>`;
 }
 
 /** Why a found or awaited transcript waits (`mc.paused`, see meetingItems), in the words each
@@ -454,7 +473,7 @@ export function transcriptTab(p, mc) {
     return `<div class="ws-mtg-line${same ? ' ws-mtg-cont' : ''}${p.v.focusLine === i ? ' ws-mtg-focus' : ''}${tasks.length ? ' ws-mtg-has-task' : ''}" id="meeting-line-${i}" data-line="${i}">
       <span class="ws-mtg-line-time" title="${e(`${durationLabel(Math.floor(Number(seg.start || 0) / 60))} into the meeting`)}">${e(formatTime(at, p.zone))}</span>
       <span class="ws-mtg-line-face">${same ? '' : named ? avatar({ name: seg.name, size: 28, seed: String(seg.address).toLowerCase() }) : `<span class="ws-mtg-unknown" aria-hidden="true">${icon('user')}</span>`}</span>
-      <div class="ws-mtg-line-body">${same ? '' : `<strong>${e(seg.name)}${!named ? ' <button type="button" class="ws-mtg-name-it" data-action="meeting-tab" data-tab="people">Who is this?</button>' : ''}</strong>`}<p>${highlight(seg.text, pairs, q)}</p>
+      <div class="ws-mtg-line-body">${same ? '' : `<strong>${e(seg.name)}${!named ? ` <button type="button" class="ws-mtg-name-it" data-action="meeting-name-speaker" data-voice="${e(seg.voice)}">Who is this?</button>` : ''}</strong>`}<p>${highlight(seg.text, pairs, q)}</p>
         ${tasks.map(t => `<button type="button" class="ws-mtg-line-task" data-action="task-open-today" data-id="${e(t.id)}">${icon('tasks')}<span>Task for ${e(ownerOf(t, me).first)}: ${e(t.data.text)}</span></button>`).join('')}
       </div>
     </div>`;
@@ -494,7 +513,9 @@ function ownerSelect(p, t) {
   return `<span class="ws-mtg-owner">${owner.key ? avatar({ name: owner.name, size: 20, seed: owner.seed }) : `<span class="ws-task-nobody" style="--size:20px" aria-hidden="true">${icon('user')}</span>`}${selectBox(`data-action="task-owner" data-id="${e(t.id)}" aria-label="Owner of ${e(t.data.text)}"`, body)}</span>`;
 }
 
-export function tasksTab(p, mc) {
+/** The Tasks tab; `alone` under the explainer of a meeting without a transcript: its tasks and
+ *  Add a task, no empty state. */
+export function tasksTab(p, mc, { alone = false } = {}) {
   const { m } = mc;
   const order = t => (taskStatus(t) === 'review' ? 0 : taskStatus(t) === 'done' ? 2 : 1);
   const tasks = [...mc.tasks].sort((a, b) => order(a) - order(b) || (Number(a.data.line) || 0) - (Number(b.data.line) || 0));
@@ -526,15 +547,17 @@ export function tasksTab(p, mc) {
     : selectBox(`data-action="task-status" data-id="${e(t.id)}" aria-label="Status of ${e(t.data.text)}"`, ['todo', 'doing', 'waiting', 'done'].map(c => option(c, columnName(c, p.s.settings), status === c)).join(''), 'ws-mtg-status')}
     </div>`;
   };
-  const empty = m.state === 'ready'
+  const empty = alone ? '' : m.state === 'ready'
     ? emptyState({ iconName: 'tasks', title: 'No tasks in this meeting', text: 'The notes didn’t name any concrete next steps. Add one yourself if something was agreed.' })
     : emptyState({ iconName: 'tasks', title: 'Tasks come from the notes', text: 'Make notes first: Connect finds the tasks and matches each owner to someone in the meeting.', actions: ['available', 'downloaded', 'failed'].includes(m.state) ? button('Make notes', { action: 'meeting-make-notes', variant: 'primary', iconName: 'sparkles', attrs: { 'data-id': m.id } }) : '' });
   const people = mc.people.filter(x => x.address && !x.me);
   const mine = me.address || 'You';
-  return `<section class="ws-card ws-mtg-tasks">
-    <header class="ws-card-header"><div class="ws-mtg-card-head"><h2 class="ws-card-title"><span class="ws-card-icon">${icon('tasks')}</span>Tasks from this meeting</h2>${review ? `<p>${plural(review, 'task')} found in the notes ${review === 1 ? 'waits' : 'wait'} for your review — check the owner and the date, then accept.</p>` : tasks.length ? '<p>From every document of this meeting, without duplicates. Changes show on your Tasks board too.</p>' : ''}</div>
-      <div class="ws-card-actions">${review > 1 ? button(`Accept all ${review}`, { action: 'meeting-tasks-accept', iconName: 'check', size: 'sm', attrs: { 'data-id': m.id } }) : ''}${button('Open on board', { action: 'meeting-board', variant: 'ghost', size: 'sm', iconRight: 'arrow', attrs: { 'data-id': m.id } })}</div></header>
-    <div class="ws-card-body">${tasks.length ? `<div class="ws-mtg-trows">${tasks.map(row).join('')}</div>` : empty}
+  const board = mc.tasks.length - review;
+  const heading = review ? `<h3>${review} to review</h3>${board ? `<small>· ${board} on the board</small>` : ''}` : `<h3>${mc.tasks.length ? plural(mc.tasks.length, 'task') : 'Tasks'}</h3>`;
+  return `<section class="ws-mtg-tasks${alone ? ' ws-mtg-tasks-alone' : ''}">
+    <header class="ws-mtg-tasks-head">${heading}<span class="ws-spacer"></span>${review > 1 ? button(`Accept all ${review}`, { action: 'meeting-tasks-accept', iconName: 'check', size: 'sm', attrs: { 'data-id': m.id } }) : ''}${button('Open board', { action: 'meeting-board', variant: 'ghost', size: 'sm', iconRight: 'arrow', attrs: { 'data-id': m.id } })}</header>
+    ${review ? '<p class="ws-mtg-tasks-hint">Found in the notes. Check the owner and the date, then accept.</p>' : ''}
+    <div class="ws-mtg-tasks-body">${tasks.length ? `<div class="ws-mtg-trows">${tasks.map(row).join('')}</div>` : empty}
       <form class="ws-mtg-add-task" data-form="meeting-task" data-id="${e(m.id)}">${icon('plus')}<input class="ws-input" name="text" maxlength="2000" placeholder="Add a task from this meeting…" aria-label="New task from this meeting" autocomplete="off">${selectBox('name="owner" aria-label="Owner of the new task"', `${option(mine, 'Me', true)}${people.map(x => option(x.address, x.name, false)).join('')}${option('', 'Nobody yet', false)}`)}${button('Add', { type: 'submit' })}</form>
     </div>
   </section>`;
@@ -584,32 +607,28 @@ export function filesTab(p, mc) {
 
 // ---------------------------------------------------------------- people
 
-export function peopleTab(p, mc) {
-  const { m, r } = mc;
+/** Who was invited, as the meeting's people popover lists them: who each one is (organizer, you,
+ *  company), how much they talked (dimmed when they didn't), and their tasks; "+n more" past 12. */
+export function peopleList(p, mc) {
   const segs = mc.segments || [];
   const total = segs.reduce((n, x) => n + String(x.text || '').length, 0) || 1;
   const spoke = address => segs.filter(x => String(x.address || '').toLowerCase() === address).reduce((n, x) => n + String(x.text || '').length, 0);
-  const unnamed = [];
-  const seen = new Set();
-  for (const seg of segs) if (!seg.address && !seen.has(seg.voice)) { seen.add(seg.voice); unnamed.push(seg); }
-  const was = address => Object.entries(r.speakers || {}).filter(([, a]) => String(a).toLowerCase() === address).map(([voice]) => voice);
   const me = meOf(p.s);
-  const rows = mc.people.map(x => {
+  const all = p.v.peopleAll === mc.m.id;
+  const shown = all ? mc.people : mc.people.slice(0, 12);
+  const rows = shown.map(x => {
     const address = String(x.address || '').toLowerCase();
     const chars = mc.segments ? spoke(address) : null;
     const share = chars === null ? null : Math.round((chars / total) * 100);
+    const note = [x.organizer ? 'organizer' : '', x.me ? 'you' : '', x.company].filter(Boolean).join(' · ');
     const tasks = mc.tasks.filter(t => String(t.data.owner || '').toLowerCase() === address || (x.me && isMine(t, me))).length;
-    return `<div class="ws-mtg-person">
-      ${avatar({ name: x.name, size: 36, seed: address || x.name })}
-      <div class="ws-mtg-person-copy"><strong>${e(x.name)}</strong>${x.me ? '<small class="ws-mtg-you">you</small>' : ''}<small>${e([x.address, x.company].filter(Boolean).join(' · '))}</small></div>
-      <span class="ws-mtg-person-badges">${x.organizer ? badge('Organizer', 'info') : ''}${was(address).map(v => badge(`was “${v}”`, 'purple')).join('')}</span>
-      <span class="ws-mtg-talk">${share === null ? '' : chars ? `<i style="--w:${share}%"></i><small>${share}% talking</small>` : '<small class="ws-muted">didn’t speak</small>'}</span>
-      <span class="ws-mtg-person-tasks">${tasks ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-tab" data-tab="tasks">${plural(tasks, 'task')}</button>` : '<small class="ws-muted">no tasks</small>'}</span>
+    return `<div class="ws-mtg-person${chars === 0 ? ' ws-mtg-quiet' : ''}" title="${e(x.address || x.name)}">
+      ${avatar({ name: x.name, size: 24, seed: address || x.name })}
+      <span class="ws-mtg-person-copy"><strong>${e(x.name)}</strong>${note ? `<small>${e(note)}</small>` : ''}</span>
+      <span class="ws-mtg-talk">${share === null ? '' : chars ? `${share}% talking` : 'didn’t speak'}</span>
+      <span class="ws-mtg-person-tasks">${tasks ? (tabsOf(mc.m).length ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-tab" data-tab="tasks">${plural(tasks, 'task')}</button>` : `<small>${plural(tasks, 'task')}</small>`) : ''}</span>
     </div>`;
   }).join('');
-  return `${unnamed.length ? speakerMap(p, mc, unnamed, ['Match the unnamed speakers', 'Pick who each voice is. Connect remembers it for this meeting and rewrites the transcript, so tasks get the right owner.']) : ''}
-  <section class="ws-card ws-mtg-people-card">
-    <header class="ws-card-header"><div class="ws-mtg-card-head"><h2 class="ws-card-title"><span class="ws-card-icon">${icon('users')}</span>${plural(mc.people.length, 'person', 'people')} invited</h2><p>Tasks go only to people who were in the meeting, unless you pick someone else.</p></div></header>
-    <div class="ws-card-body"><div class="ws-mtg-people">${rows || '<p class="ws-muted ws-hint">The calendar lists nobody for this meeting.</p>'}</div></div>
-  </section>`;
+  const more = mc.people.length > shown.length ? `<button type="button" class="ws-link ws-mtg-linkbtn ws-mtg-people-more" data-action="meeting-people-all" data-id="${e(mc.m.id)}">+${mc.people.length - shown.length} more</button>` : '';
+  return rows ? `<div class="ws-mtg-people">${rows}</div>${more}` : '<p class="ws-muted ws-hint">The calendar lists nobody for this meeting.</p>';
 }
