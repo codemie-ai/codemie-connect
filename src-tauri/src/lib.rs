@@ -103,6 +103,8 @@ pub fn run() {
                 existing_cli_detected,
                 ..AppState::default()
             });
+            // Connect's terminal dock: the Claude Code sessions it runs (commands::terminal).
+            app.manage(commands::terminal::Terminals::default());
             // Register lifecycle plugins only after all process PATH mutations above.
             app.handle().plugin(tauri_plugin_single_instance::init(|app, _, _| {
                 if let Some(window) = app.get_webview_window("main") {
@@ -200,6 +202,14 @@ pub fn run() {
             commands::terminal_launch::pick_project_folder,
             commands::terminal_launch::open_agent_in_terminal,
             commands::terminal_launch::open_app_download,
+            commands::terminal::terminal_list,
+            commands::terminal::terminal_input,
+            commands::terminal::terminal_resize,
+            commands::terminal::terminal_restart,
+            commands::terminal::terminal_close,
+            commands::terminal::terminal_move_out,
+            commands::terminal::terminal_open_agent,
+            commands::terminal::terminal_open_link,
             commands::installer::get_platform_info,
             commands::installer::temp_dir,
             commands::installer::latest_lts_node_version,
@@ -247,6 +257,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app,event|{
+            // Quitting ends the dock's sessions, as closing Terminal.app does.
+            if matches!(event,tauri::RunEvent::Exit) {
+                if let Some(t)=app.try_state::<commands::terminal::Terminals>(){t.close_all();}
+            }
             if let tauri::RunEvent::ExitRequested{api,..}=event {
                 if let Some(state)=app.try_state::<workspace::WorkspaceState>(){if let Some(core)=&state.core{
                     if core.installer_busy.load(std::sync::atomic::Ordering::Relaxed){api.prevent_exit();core.emit("workspace:quit-request");if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();}}

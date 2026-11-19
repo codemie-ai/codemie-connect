@@ -58,6 +58,9 @@ portable-pty = "0.8"
 # Plugin host halves (DESIGN 7.2): QuickJS only (no quickjs-libc, so no std/os modules). Promises
 # are QuickJS's own, settled by the host thread, so rquickjs's async executor isn't needed.
 rquickjs = "0.14"
+# `ctx.web.read` (plugins/services/web_page.rs): an HTML5 parse of a page (html5ever). The version
+# tauri-utils already locks; its own Markdown output is off, Connect writes the contract's.
+dom_query = { version = "0.28.0", default-features = false }
 
 # The data-folder picker (DESIGN 8). Used directly rather than through tauri-plugin-dialog, whose
 # window script replaces window.alert/confirm (ruling R23).

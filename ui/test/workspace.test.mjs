@@ -20,9 +20,9 @@ import { controlSelector, soleMatch } from '../workspace/ui.js';
 import { tasksPage } from '../workspace/view-tasks.js';
 import { createTasksController } from '../workspace/tasks-controller.js';
 import { newTasksView } from '../workspace/tasks-model.js';
-import { meetings, makeNotesBody } from '../workspace/view-meetings.js';
+import { meetings, makeNotesBody, shownCall } from '../workspace/view-meetings.js';
 import { createMeetingsController } from '../workspace/meetings-controller.js';
-import { meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
+import { callOfMeeting, meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
 import { active } from '../workspace/selectors.js';
 import { buildSnapshot, withTasks, withMeetings, meetingFolders, meetingContract } from './fixtures/workspace-fixture.mjs';
 import { readFileSync } from 'node:fs';
@@ -1097,4 +1097,37 @@ test('meeting operations survive a background sync: they rebase once on a stale 
   await store.refresh();
   assert.deepEqual(await store.mutate('meeting_doc', { action: 'edit' }), { saved: true });
   assert.deepEqual(sent, [7, 8]);
+});
+
+test('a meeting is Echo\'s call for plugins, and their call slots show as text on its page', () => {
+  const s = meetingsSnapshot();
+  const rec = s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-philips');
+  const name = rec.data.folder.split('/').pop();
+  const call = shownCall(s, meetingsCtx({ selected: 'mtg-philips' }));
+  assert.deepEqual(Object.keys(call), ['name', 'stamp', 'title', 'started_at', 'notes', 'profile', 'memo', 'threads', 'client']);
+  assert.equal(call.name, name);
+  assert.equal(call.title, 'Philips CodeMie conversations syncup');
+  assert.equal(call.notes, true, 'it has notes');
+  assert.match(call.started_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.equal(callOfMeeting({ rec: { data: { folder: '/m/2026-11-04_160426-sync/' } }, title: 'Sync', start: NaN }).stamp, '2026-11-04_160426');
+  assert.equal(callOfMeeting({ rec: { data: { folder: '/m/Atlas' } }, title: 'A', start: 0 }).stamp, 'Atlas');
+  assert.equal(callOfMeeting({ rec: null, title: 'No folder' }), null);
+  assert.equal(callOfMeeting(null), null);
+  // What plugins' slots say, for this meeting only: a chip, ⋯ items, a line while notes run.
+  const callSlots = [
+    { plugin: 'obsidian', pluginName: 'Knowledge', call: name, header: ['Minutes → Work <b>'], menu: ['Save to Knowledge…', 'Open in Work'], minutes: ['Then saved to Work, with a row in the index.'] },
+    { plugin: 'other', pluginName: 'Other', call: 'another-folder', header: ['Not this one'], menu: ['Nope'], minutes: [] },
+  ];
+  const html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }, { callSlots })));
+  assert.match(html, /<span class="ws-mtg-plugin-chip" title="Knowledge: Minutes → Work &lt;b&gt;">.*<span>Minutes → Work &lt;b&gt;<\/span><\/span>/, 'text, escaped');
+  assert.match(html, /data-action="plugin-call-menu" data-plugin-id="obsidian" data-index="0"[^>]*>.*<span>Save to Knowledge…<\/span>/);
+  assert.match(html, /data-action="plugin-call-menu" data-plugin-id="obsidian" data-index="1"[^>]*>.*<span>Open in Work<\/span>/);
+  assert.doesNotMatch(html, /Not this one|Nope/, 'another meeting\'s slots');
+  assert.doesNotMatch(html, /ws-mtg-plugin-line/, 'the line shows only while notes are made');
+  s.jobs.push(notesJob('mtg-philips', { step: 'Finding tasks' }));
+  const running = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }, { callSlots })));
+  assert.match(running, /<p class="ws-mtg-plugin-line" title="Knowledge">.*<span>Then saved to Work, with a row in the index\.<\/span><\/p>/);
+  // No slots: the page as before.
+  const plain = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' })));
+  assert.doesNotMatch(plain, /ws-mtg-plugin|plugin-call-menu/);
 });

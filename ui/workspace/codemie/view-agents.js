@@ -81,7 +81,7 @@ function agentCard(cm, row, ui, runLog) {
   } else if (status !== 'busy') {
     actions = [
       ['update', 'too_old'].includes(status) ? button(row.latest ? `Update to ${row.latest}` : 'Update', { action: 'cm-agent-update', variant: 'primary', iconName: 'download', attrs: { 'data-id': row.command } }) : '',
-      button('Open in Terminal…', { action: 'cm-open-terminal', variant: 'ghost', iconName: 'terminal', attrs: { 'data-id': row.command } }),
+      button('Start…', { action: 'cm-open-terminal', variant: 'ghost', iconName: 'terminal', attrs: { 'data-id': row.command } }),
       menu(`cm-agent-${row.command}`, `More for ${d.name}`, [['copy', `Copy ${d.launcher}`, 'cm-agent-copy', row.command], ['refresh', 'Reinstall', 'cm-agent-update', row.command], null, ['trash', 'Remove…', 'cm-agent-remove', row.command, false, true]]),
     ].join('');
   }

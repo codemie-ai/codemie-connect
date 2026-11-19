@@ -416,6 +416,7 @@ impl Core {
             timeout: NOTES_TIMEOUT,
             cap_usd: None,
             staging_root: self.paths.ensure_staging()?,
+            folder: None,
         };
         let requested = spec.model.clone();
         let lines = segments.len();
@@ -583,6 +584,8 @@ impl Core {
                 history_taken,
             },
         );
+        // Whether the main document is being replaced (plugins hear `rewritten`).
+        let had_main = dir.join("notes.md").is_file();
         // Nothing has changed yet: a failure here leaves the documents as they were.
         let kept = docs::write_change(&dir, &m, &change, &settings.time_zone)?;
         #[cfg(test)]
@@ -669,6 +672,9 @@ impl Core {
         }
         drop(r);
         self.emit("workspace:changed");
+        if change.file == "notes.md" {
+            self.tell_minutes_written(id, had_main);
+        }
         Ok("Notes ready".into())
     }
 

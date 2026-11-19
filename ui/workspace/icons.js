@@ -68,6 +68,9 @@ const ICONS = {
   drive: '<rect x="2.5" y="13" width="19" height="7.5" rx="2"/><path d="M5 13 7.4 5.3A2 2 0 0 1 9.3 4h5.4a2 2 0 0 1 1.9 1.3L19 13"/><path d="M6.5 16.8h.01M10 16.8h.01"/>',
   // Settings → CodeMie
   terminal: '<rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/>',
+  // The terminal dock: fill the window with it, give the page back.
+  maximize: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+  restore: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
   package: '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
   plug: '<path d="M9 2.5v5M15 2.5v5M6 7.5h12v3.5a6 6 0 0 1-12 0zM12 17v4.5"/>',
   cpu: '<rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',

@@ -89,6 +89,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "chrono-tz",
+ "dom_query 0.28.0",
  "dunce",
  "fs2",
  "futures-util",

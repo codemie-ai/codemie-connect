@@ -6,6 +6,11 @@
 //!   (`channel`) and meetings (`meeting`), ids `mail:<id>`, `chat:<id>`, `event:<id>`;
 //! - `source(id)`: one of them with its text;
 //! - `threads`: `[]` (Connect has none);
+//! - `calls` (`{q, since, until, limit}`): the meetings with a saved folder, as Echo's calls, and
+//!   `source('call:<folder or stamp>', {transcript, chat})` one with its minutes
+//!   (`workspace::plugin_calls`);
+//! - `me`: the signed-in Microsoft account's `{name, email}` (`null`s when no one is);
+//! - `recording`: always `{state: 'idle'}` (Connect doesn't record calls);
 //! - `clients` and `dictionary`: kept by Connect for the plugin, in
 //!   `<data>/plugins/data/<id>/echo/`; `dictionary.add` (with `uses.echo.write: ["dictionary"]`)
 //!   adds to it.
@@ -36,10 +41,38 @@ pub fn read(s: &Services, p: &Granted, args: &Value) -> Result<Value, HostError>
     }
     match kind {
         "threads" => Ok(json!([])),
+        "calls" => s
+            .core()?
+            .plugin_calls(at(args, 1))
+            .map_err(|e| HostError::new(ErrorCode::PluginError, e.message)),
+        "me" => {
+            let me = s.core().ok().and_then(|c| c.plugin_me());
+            Ok(match me {
+                Some((name, email)) => json!({"name": name, "email": email}),
+                None => json!({"name": null, "email": null}),
+            })
+        }
+        "recording" => Ok(json!({"state": "idle", "call": null, "stamp": null})),
         "clients" => Ok(read_json(&echo_dir(s, &p.id).join("clients.json"), json!([]))),
-        "dictionary" => Ok(json!({"terms": terms(s, &p.id)})),
+        "dictionary" => {
+            // The meetings glossary's names, then those the plugin added (`dictionary.add`).
+            let mut all = s.core().map(|c| c.plugin_glossary_terms()).unwrap_or_default();
+            for t in terms(s, &p.id) {
+                if !all.iter().any(|x| x["name"] == t["name"]) {
+                    all.push(t);
+                }
+            }
+            Ok(json!({"terms": all}))
+        }
         "people" => Ok(people(&sources(s)?)),
         "sources" => Ok(list(&sources(s)?, at(args, 1))),
+        "source" if text(args, 1, "a source's id")?.starts_with("call:") => {
+            let id = text(args, 1, "a source's id")?;
+            s.core()?.plugin_call_source(id, at(args, 2)).map_err(|e| {
+                let code = if e.code == "not_found" { ErrorCode::NotFound } else { ErrorCode::PluginError };
+                HostError::new(code, e.message)
+            })
+        }
         "source" => {
             let id = text(args, 1, "a source's id")?;
             sources(s)?
@@ -50,7 +83,7 @@ pub fn read(s: &Services, p: &Granted, args: &Value) -> Result<Value, HostError>
         }
         other => Err(HostError::new(
             ErrorCode::Unsupported,
-            format!("Connect doesn't share “{other}” (people, sources, source, clients, dictionary, threads)"),
+            format!("Connect doesn't share “{other}” (people, sources, source, clients, dictionary, threads, calls, me, recording)"),
         )),
     }
 }
@@ -145,9 +178,13 @@ fn people(records: &[Record]) -> Value {
         if key.is_empty() || by_key.len() >= MAX_PEOPLE {
             return;
         }
+        // Echo 0.10.1's row (onetest-ai/echo#813): Connect has no threads, so nobody has a
+        // place, a role or a reporting line in one, and no person page to link to.
         by_key.entry(key.clone()).or_insert_with(|| {
             json!({"key": key, "name": if name.is_empty() { address } else { name },
-                   "organisation": null, "title": null, "threads": [], "link": null})
+                   "aliases": [], "email": if address.is_empty() { Value::Null } else { json!(address.to_lowercase()) },
+                   "also": [], "organisation": null, "client": null, "title": null, "threads": [],
+                   "places": [], "reports_to": null, "reports": [], "link": null})
         });
     };
     for r in records {
@@ -328,6 +365,42 @@ mod tests {
         assert_eq!(names, ["Ann Lee", "Bo Chen", "Sam Ortiz"], "{people}");
         assert_eq!(people[0]["key"], "ann@example.test");
         assert_eq!(people[0]["threads"], json!([]));
+        // Echo 0.10.1's row (onetest-ai/echo#813), every field, empty where Connect knows
+        // nothing: it has no threads, so nobody has a place, a role or a reporting line in one.
+        let mut keys: Vec<&String> = people[0].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "aliases",
+                "also",
+                "client",
+                "email",
+                "key",
+                "link",
+                "name",
+                "organisation",
+                "places",
+                "reports",
+                "reports_to",
+                "threads",
+                "title"
+            ]
+        );
+        assert_eq!(people[0]["email"], "ann@example.test");
+        for p in people.as_array().unwrap() {
+            assert_eq!(
+                (
+                    &p["aliases"],
+                    &p["also"],
+                    &p["places"],
+                    &p["reports"],
+                    &p["reports_to"]
+                ),
+                (&json!([]), &json!([]), &json!([]), &json!([]), &Value::Null),
+                "{p}"
+            );
+        }
 
         let all = read(json!(["sources"]));
         let ids: Vec<&str> = all
@@ -361,6 +434,22 @@ mod tests {
         assert_eq!(read(json!(["source", "event:e1"]))["text"], "Agenda: Q3");
         // Threads are always empty; clients and the dictionary are the plugin's own.
         assert_eq!(read(json!(["threads"])), json!([]));
+        // Echo 0.10's calls (none until meetings are shared), me and recording (never).
+        env.plugin(
+            "knowledge",
+            json!({"echo": {"read": ["calls", "me", "recording"]}}),
+            json!([]),
+        );
+        let k = |kind: &str| env.call("knowledge", "echo.read", json!([kind])).unwrap();
+        assert_eq!(k("calls"), json!([]));
+        assert_eq!(
+            k("me"),
+            json!({"name": "Taylor Reed", "email": "taylor@example.test"})
+        );
+        assert_eq!(
+            k("recording"),
+            json!({"state": "idle", "call": null, "stamp": null})
+        );
         assert_eq!(read(json!(["clients"])), json!([]));
         let added = env
             .call(
@@ -401,6 +490,297 @@ mod tests {
         );
         let e = env
             .call("narrow", "echo.dictionary.add", json!([{"name": "x"}]))
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Permission);
+    }
+}
+
+#[cfg(test)]
+mod meetings_tests {
+    use super::super::testing::Env;
+    use super::*;
+    use crate::ai::fake::FakeRunner;
+    use crate::workspace::plugin_data::tests::{seed, source};
+    use crate::workspace::test_core;
+    use std::sync::Arc;
+
+    /// A core with a meeting saved into a folder (notes, transcript, tasks), its calendar event,
+    /// a mail thread and a Teams chat; Knowledge's grants on it.
+    fn world() -> (tempfile::TempDir, Env) {
+        let dir = tempfile::Builder::new()
+            .prefix("connect-")
+            .tempdir()
+            .unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), vec![]);
+        seed(&core);
+        let folder = dir.path().join("Meetings/2026-11-18_093000-atlas-sync");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("notes.md"), "# Atlas sync\n\n## Summary\n\nThe beta ships in May.\n\n## Decisions\n\n- Ship in May\n").unwrap();
+        std::fs::write(folder.join("transcript.md"), "**Ann:** We ship in May.\n").unwrap();
+        std::fs::write(folder.join("tasks.json"), r#"[{"id":"t1","task":"Draft the plan","owner":"Ann Lee","due":"2026-11-25","status":"open"}]"#).unwrap();
+        let empty = dir.path().join("Meetings/2026-11-19_100000-pricing");
+        std::fs::create_dir_all(&empty).unwrap();
+        let base = 1_795_000_000;
+        let mut r = core.repo().unwrap();
+        r.put_record(&source("ev1", "event", "calendar:cal-1", base, json!({
+            "title": "Atlas sync", "start": "2026-11-18T09:30:00Z", "end": "2026-11-18T10:15:00Z",
+            "organizer": {"name": "Ann Lee", "address": "ann@example.test"},
+            "attendees": [{"name": "Bo Chen", "address": "bo@example.test"}, {"name": "Ann Lee", "address": "ann@example.test"}]}))).unwrap();
+        r.put_record(&source(
+            "ev1",
+            "meeting",
+            "calendar:cal-1",
+            base,
+            json!({
+            "title": "Atlas sync", "start": "2026-11-18T09:30:00Z", "end": "2026-11-18T10:15:00Z",
+            "folder": folder.display().to_string(), "state": "ready", "main": "meeting-notes"}),
+        ))
+        .unwrap();
+        r.put_record(&source(
+            "ev2",
+            "meeting",
+            "calendar:cal-1",
+            base + 90_000,
+            json!({
+            "title": "Pricing", "start": "2026-11-19T10:00:00Z", "end": "2026-11-19T10:30:00Z",
+            "folder": empty.display().to_string(), "state": "downloaded"}),
+        ))
+        .unwrap();
+        for (id, at, text, from, mine) in [
+            ("m1", base, "Can you send the Atlas plan?", "Ann Lee", false),
+            (
+                "m2",
+                base + 60,
+                "Here is the Atlas plan.",
+                "Taylor Reed",
+                true,
+            ),
+        ] {
+            r.put_record(&source(id, "message", "mail:inbox", at, json!({
+                "channel": "mail", "title": "Atlas plan", "text": text, "from": from,
+                "fromAddress": format!("{}@example.test", from.split(' ').next().unwrap().to_lowercase()),
+                "to": [{"emailAddress": {"name": "Bo Chen", "address": "bo@example.test"}}],
+                "isMine": mine, "at": at, "conversationId": "conv-1", "providerId": format!("g-{id}"),
+                "url": format!("https://outlook/{id}")}))).unwrap();
+        }
+        r.put_record(&source(
+            "c1",
+            "message",
+            "chat:19:ops",
+            base + 120,
+            json!({
+            "channel": "chat", "title": "Ops", "chatId": "19:ops", "text": "Atlas deploy at 5",
+            "from": "Sam Ortiz", "isMine": false, "at": base + 120, "url": "https://teams/c1"}),
+        ))
+        .unwrap();
+        drop(r);
+        let env = Env::with(Some(core), super::super::http::Client::new());
+        env.plugin(
+            "obsidian",
+            json!({"echo": {"read": ["calls", "source", "dictionary"]}, "m365": {"read": ["mail", "chats"]}}),
+            json!([]),
+        );
+        (dir, env)
+    }
+
+    #[test]
+    fn meetings_with_a_folder_are_echos_calls() {
+        let (_d, env) = world();
+        let read = |args: Value| env.call("obsidian", "echo.read", args);
+        let calls = read(json!(["calls", {}])).unwrap();
+        let ids: Vec<&str> = calls
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "call:2026-11-19_100000-pricing",
+                "call:2026-11-18_093000-atlas-sync"
+            ]
+        );
+        let atlas = &calls[1];
+        assert_eq!(atlas["stamp"], "2026-11-18_093000");
+        assert_eq!(atlas["title"], "Atlas sync");
+        assert_eq!(atlas["started_at"], "2026-11-18T09:30:00Z");
+        assert_eq!(atlas["duration_min"], 45);
+        assert_eq!(atlas["app"], "teams");
+        assert_eq!(atlas["minutes"], true);
+        assert_eq!(atlas["transcript"], true);
+        assert_eq!(atlas["people"], json!(["Ann Lee", "Bo Chen"]));
+        assert_eq!(atlas["threads"], json!([]));
+        assert_eq!(calls[0]["minutes"], false);
+        assert_eq!(
+            read(json!(["calls", {"q": "atlas bo"}]))
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            read(json!(["calls", {"thread": "atlas"}])).unwrap(),
+            json!([]),
+            "Connect has no threads: no call is in one"
+        );
+        assert_eq!(
+            read(json!(["calls", {"since": "2026-11-19"}]))
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            read(json!(["calls", {"until": "2026-11-18", "limit": 1}])).unwrap()[0]["title"],
+            "Atlas sync"
+        );
+
+        // A call's source: its minutes from the main notes and tasks.json, its transcript.
+        let src = read(json!(["source", "call:2026-11-18_093000", {"chat": false}])).unwrap();
+        assert_eq!(
+            src["id"], "call:2026-11-18_093000-atlas-sync",
+            "read by its stamp"
+        );
+        assert_eq!(src["link"], "echo://call/2026-11-18_093000-atlas-sync");
+        assert!(src["text"].as_str().unwrap().starts_with("# Atlas sync"));
+        assert_eq!(src["minutes"]["summary"], "The beta ships in May.");
+        assert_eq!(src["minutes"]["decisions"], json!(["Ship in May"]));
+        assert_eq!(
+            src["minutes"]["actions"],
+            json!([{"id": "t1", "text": "Draft the plan", "owner": "Ann Lee", "due": "2026-11-25", "done": false}])
+        );
+        assert_eq!(src["minutes"]["revision"].as_str().unwrap().len(), 16);
+        assert_eq!(src["transcript"], "**Ann:** We ship in May.\n");
+        assert!(src.get("chat").is_none());
+        let none = read(json!(["source", "call:2026-11-19_100000-pricing"])).unwrap_err();
+        assert_eq!(none.message, "Pricing: no minutes yet");
+        assert_eq!(
+            read(json!(["source", "call:nope"])).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn the_glossary_is_the_dictionary() {
+        let (d, env) = world();
+        // The meetings root's glossary (`~/CodeMie Connect/Meetings` by default): its own here.
+        let core = env.services.core().unwrap().clone();
+        let mut r = core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.meetings.root = Some(d.path().join("Meetings").display().to_string());
+        r.settings_update(&s).unwrap();
+        drop(r);
+        std::fs::write(
+            d.path().join("Meetings/glossary.md"),
+            "# Glossary\n\n## Products and tools\n- **LiteLLM** — the gateway; heard as “light LLM”\n\n## People\n- **Ann Lee** — design lead\n",
+        )
+        .unwrap();
+        let terms = env
+            .call("obsidian", "echo.read", json!(["dictionary"]))
+            .unwrap()["terms"]
+            .clone();
+        let names: Vec<&str> = terms
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"LiteLLM") && names.contains(&"Ann Lee"),
+            "{terms}"
+        );
+        let ann = terms
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "Ann Lee")
+            .unwrap();
+        assert_eq!(ann["kind"], "person");
+        let lite = terms
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "LiteLLM")
+            .unwrap();
+        assert_eq!(lite["kind"], "term");
+        assert!(
+            lite["spellings"].to_string().contains("light LLM"),
+            "{lite}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mail_and_chats_are_read_from_what_connect_synced() {
+        let (_d, env) = world();
+        async fn call(env: &Env, name: &str, args: Value) -> Result<Value, HostError> {
+            env.call_async("obsidian", name, args).await
+        }
+        let found = call(&env, "m365.search", json!(["atlas", {"days": 3650}]))
+            .await
+            .unwrap();
+        let results = found["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "{found}");
+        assert_eq!(
+            results.iter().filter(|r| r["kind"] == "mail").count(),
+            1,
+            "one per conversation"
+        );
+        let mail = results.iter().find(|r| r["kind"] == "mail").unwrap();
+        assert_eq!(mail["id"], "g-m2", "the newest message's Graph id");
+        let chat = results.iter().find(|r| r["kind"] == "chats").unwrap();
+        assert_eq!(chat["chat"], "19:ops");
+        assert_eq!(chat["channel"], Value::Null);
+        assert_eq!(
+            call(&env, "m365.search", json!(["", {}])).await.unwrap()["results"],
+            json!([])
+        );
+        // The thread, oldest first; offline here, so each message's synced preview stands in.
+        let thread = call(&env, "m365.mailThread", json!(["g-m2"]))
+            .await
+            .unwrap();
+        assert_eq!(thread["picked"], "g-m2");
+        let texts: Vec<&str> = thread["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            ["Can you send the Atlas plan?", "Here is the Atlas plan."]
+        );
+        assert_eq!(thread["messages"][0]["from"]["name"], "Ann Lee");
+        let teams = call(
+            &env,
+            "m365.chat",
+            json!(["19:ops", {"since": "2026-11-01", "until": "2026-11-30"}]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(teams["messages"][0]["text"], "Atlas deploy at 5");
+        assert_eq!(teams["topic"], "Ops");
+        // Signed out: Echo's words.
+        let core = env.services.core().unwrap().clone();
+        {
+            let mut r = core.repo().unwrap();
+            let mut c = r
+                .connection(crate::workspace::plugin_data::tests::ACCT)
+                .unwrap();
+            c.status = "needs_login".into();
+            r.save_connection(&c).unwrap();
+        }
+        let e = call(&env, "m365.search", json!(["atlas"]))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("Microsoft 365 isn't connected"), "{e}");
+        // A kind the sheet didn't name.
+        env.plugin("mailonly", json!({"m365": {"read": ["mail"]}}), json!([]));
+        let e = env
+            .call_async("mailonly", "m365.chat", json!(["19:ops"]))
+            .await
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::Permission);
     }

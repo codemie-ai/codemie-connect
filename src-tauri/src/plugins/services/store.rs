@@ -25,14 +25,15 @@ pub fn call(s: &Services, p: &Granted, name: &str, args: &Value) -> Result<Value
             let content = at(args, 1)
                 .as_str()
                 .ok_or_else(|| bad("ctx.store.write takes text: JSON.stringify an object first"))?;
+            let guard = super::cas::guard_of(at(args, 2))?;
             plain_top(rel)?;
             let path = inside(&store, rel, false)?;
             if path.is_dir() {
                 return Err(bad(format!("“{rel}” is a folder")));
             }
             ensure_dirs(&store, &path)?;
-            crate::storage::location::write_atomic(&path, content.as_bytes())
-                .map_err(|e| io_failed(&format!("write “{rel}”"), &e))?;
+            let _order = super::lock(&s.writes);
+            super::cas::write(&path, rel, content.as_bytes(), &guard)?;
             Ok(Value::Null)
         }
         "store.list" => {
@@ -51,6 +52,7 @@ pub fn call(s: &Services, p: &Granted, name: &str, args: &Value) -> Result<Value
             removed.map_err(|e| io_failed(&format!("remove “{rel}”"), &e))?;
             Ok(Value::Null)
         }
+        "store.walk" => Err(bad("ctx.store.walk answers a promise")),
         "store.path" => {
             let path = inside(&store, at(args, 0).as_str().unwrap_or(""), true)?;
             ensure_dirs(&store, &store.join("_"))?;
@@ -69,6 +71,28 @@ pub fn call(s: &Services, p: &Granted, name: &str, args: &Value) -> Result<Value
         }
         _ => Err(super::unsupported(name)),
     }
+}
+
+/// `store.walk(path, {ext, hidden, max, sha})`: the store's files under `path`, relative to the
+/// store, `[{path, size, mtime, sha?}]`, off the plugin's thread.
+pub async fn walk(
+    s: std::sync::Arc<Services>,
+    p: std::sync::Arc<Granted>,
+    args: Value,
+) -> Result<Value, HostError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = root(&s, &p.id);
+        let start = inside(&store, at(&args, 0).as_str().unwrap_or(""), true)?;
+        if !start.is_dir() {
+            return Ok(json!([]));
+        }
+        let o = super::fs::WalkOpts::of(at(&args, 1), 20_000, 100_000);
+        let base = dunce::canonicalize(&store).unwrap_or(store);
+        let start = dunce::canonicalize(&start).unwrap_or(start);
+        Ok(json!(super::fs::file_rows(&base, &start, &o)))
+    })
+    .await
+    .map_err(|e| bad(e.to_string()))?
 }
 
 /// The components of a relative path of plain names: no root, no `.`/`..`, no NUL or
@@ -187,8 +211,115 @@ fn inside_package(p: &Granted, rel: &str) -> Result<Option<PathBuf>, HostError> 
 #[cfg(test)]
 mod tests {
     use super::super::testing::Env;
-    use crate::plugins::host::ErrorCode;
+    use crate::plugins::host::{ErrorCode, Grants, PluginHost};
     use serde_json::{json, Value};
+    use std::sync::Arc;
+
+    #[test]
+    fn store_write_compares_and_creates_with_echos_words() {
+        let env = Env::new();
+        env.plugin("alpha", json!({}), json!([]));
+        let call = |args: Value| env.call("alpha", "store.write", args);
+        call(json!(["vaults.json", "[1]", {"createNew": true}])).unwrap();
+        let e = call(json!(["vaults.json", "[2]", {"ifSha": null}])).unwrap_err();
+        assert_eq!(e.message, "“vaults.json” is there already");
+        let sha = super::super::cas::sha_hex(b"[0]");
+        let e = call(json!(["vaults.json", "[2]", { "ifSha": sha }])).unwrap_err();
+        assert_eq!(e.code, ErrorCode::PluginError);
+        assert_eq!(
+            e.message,
+            "“vaults.json” changed since you read it: read it again"
+        );
+        let sha = super::super::cas::sha_hex(b"[1]");
+        call(json!(["vaults.json", "[2]", { "ifSha": sha }])).unwrap();
+        assert_eq!(
+            env.call("alpha", "store.read", json!(["vaults.json"]))
+                .unwrap(),
+            json!("[2]")
+        );
+        assert_eq!(
+            env.call("alpha", "crypto.sha256", json!(["abc"])).unwrap(),
+            json!("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+    }
+
+    #[tokio::test]
+    async fn store_walk_lists_files_with_their_shas() {
+        let env = Env::new();
+        env.plugin("alpha", json!({}), json!([]));
+        for (p, t) in [
+            ("cache/snapshots/ab/x.md", "x"),
+            ("cache/snapshots/ab/.obsidian/app.json", "{}"),
+            ("cache/web/i.png", "png"),
+            ("vaults.json", "[]"),
+        ] {
+            env.call("alpha", "store.write", json!([p, t])).unwrap();
+        }
+        let walk = |args: Value| {
+            let env = &env;
+            async move { env.call_async("alpha", "store.walk", args).await.unwrap() }
+        };
+        let all = walk(json!(["cache", {"sha": true}])).await;
+        let paths: Vec<&str> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, ["cache/snapshots/ab/x.md", "cache/web/i.png"]);
+        assert_eq!(all[0]["size"], 1);
+        assert_eq!(all[0]["sha"], super::super::cas::sha_hex(b"x"));
+        let hidden = walk(json!(["cache/snapshots", {"hidden": true}])).await;
+        assert_eq!(hidden.as_array().unwrap().len(), 2);
+        assert!(hidden[0].get("sha").is_none());
+        let md = walk(json!(["", {"ext": ["md"]}])).await;
+        assert_eq!(md.as_array().unwrap().len(), 1);
+        assert_eq!(walk(json!(["nothing", {}])).await, json!([]));
+        assert!(env
+            .call_async("alpha", "store.walk", json!(["../x", {}]))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn store_update_reads_changes_and_writes_once() {
+        let env = Env::new();
+        let host = Arc::new(PluginHost::new(env.services.clone()));
+        env.services.set_host(&host);
+        env.plugin("alpha", json!({}), json!([]));
+        let main = env.dir.path().join("main.js");
+        std::fs::write(
+            &main,
+            r#"
+            export function apply(ctx) {
+              ctx.command('bump', () => [
+                ctx.store.update('n.txt', (t) => String(Number(t || 0) + 1)),
+                ctx.store.update('n.txt', (t) => String(Number(t) + 1)),
+                ctx.store.update('n.txt', (t) => t),
+                ctx.store.update('n.txt', () => undefined),
+                ctx.crypto.sha256('abc'),
+              ])
+            }
+            "#,
+        )
+        .unwrap();
+        host.load("alpha", &main, Grants::default()).await.unwrap();
+        let out = host.call("alpha", "bump", Value::Null).await.unwrap();
+        assert_eq!(
+            out,
+            json!([
+                "1",
+                "2",
+                "2",
+                "2",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            ])
+        );
+        assert_eq!(
+            env.call("alpha", "store.read", json!(["n.txt"])).unwrap(),
+            json!("2")
+        );
+    }
 
     #[test]
     fn store_reads_writes_lists_and_removes_inside_its_own_folder() {

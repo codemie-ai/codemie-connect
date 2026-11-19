@@ -17,6 +17,7 @@ pub mod install;
 pub mod manager;
 pub mod manifest;
 pub mod market;
+pub mod phrases;
 pub mod protocol;
 pub mod registry;
 pub mod services;

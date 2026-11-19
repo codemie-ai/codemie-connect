@@ -256,6 +256,7 @@ impl Core {
             timeout: AUTOMATION_TIMEOUT,
             cap_usd: a.cap_usd,
             staging_root: self.paths.ensure_staging()?,
+            folder: None,
         };
         let (reported, answer) = self
             .run_claude_reported(&started, spec, &profile, &log.id, |answer| {

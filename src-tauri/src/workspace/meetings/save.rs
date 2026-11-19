@@ -560,5 +560,6 @@ async fn fetch_and_write(
         store(&mut r, c, &source, &m)?;
     }
     core.emit("workspace:changed");
+    core.tell_transcribed(id);
     Ok((m, true))
 }

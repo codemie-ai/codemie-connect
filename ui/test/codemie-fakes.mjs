@@ -33,14 +33,14 @@ export function fakeService(over = {}) {
     refreshGateway: record('refreshGateway'), refreshApps: record('refreshApps'), connectApps: record('connectApps'),
     disconnectApp: record('disconnectApp'), startGateway: record('startGateway'), restartGateway: record('restartGateway'),
     openDownload: record('openDownload'), runDoctor: record('runDoctor'), updateCli: record('updateCli'), checkCli: record('checkCli'),
-    openInTerminal: record('openInTerminal'), pickFolder: async () => null, clearError: () => {},
+    openInTerminal: record('openInTerminal'), openInConnect: record('openInConnect'), pickFolder: async () => null, clearError: () => {},
     checkUrl: async () => ({ verdict: 'codemie', status: 302, detail: '' }), hold: async (fn) => fn(),
     ...over,
   };
   return svc;
 }
 
-export function controllerHarness({ service = fakeService(), session, prefs = {}, claudeReady, state = { route: 'settings', settingsTab: 'cm-overview' }, render = async () => {} } = {}) {
+export function controllerHarness({ service = fakeService(), session, prefs = {}, claudeReady, ownTerminal = false, state = { route: 'settings', settingsTab: 'cm-overview' }, render = async () => {} } = {}) {
   const invoked = [];
   const toasts = [];
   const modals = [];
@@ -61,6 +61,7 @@ export function controllerHarness({ service = fakeService(), session, prefs = {}
     setLocalPref: (k, v) => store.set(k, v),
     store: { query: async () => ({ ok: true }) },
     invoke: async (name, args) => { invoked.push([name, args]); return null; },
+    ownTerminal,
     ...(claudeReady ? { claudeReady } : {}),
   });
   return { c, service, invoked, toasts, modals, prefs: store };

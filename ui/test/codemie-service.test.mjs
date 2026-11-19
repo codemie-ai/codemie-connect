@@ -224,3 +224,13 @@ test('remove_notes_a_copy_outside_codemie', async () => {
   const claude = h.svc.state.agents.find((a) => a.command === 'claude');
   assert.match(claude.note, /still installed at \/opt\/homebrew\/bin\/claude, outside CodeMie/);
 });
+
+test('an_agent_starts_in_connects_terminal_or_the_terminal_app', async () => {
+  const h = harness();
+  await h.svc.openInConnect({ folder: '/Users/taylor/atlas', launcher: 'codemie-claude', profile: 'prod', agent: 'Claude Code' });
+  await h.svc.openInTerminal({ folder: '/Users/taylor/atlas', launcher: 'codemie-claude', profile: 'prod' });
+  assert.deepEqual(h.calls.slice(-2), [
+    { name: 'terminal_open_agent', args: { start: { folder: '/Users/taylor/atlas', launcher: 'codemie-claude', profile: 'prod', agent: 'Claude Code' } } },
+    { name: 'open_agent_in_terminal', args: { folder: '/Users/taylor/atlas', launcher: 'codemie-claude', profile: 'prod' } },
+  ]);
+});

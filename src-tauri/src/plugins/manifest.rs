@@ -2,7 +2,8 @@
 //! plugin, read and checked without running anything. Parsing never judges `uses`, the engine
 //! range or `requires`: the permission sheet (`capabilities::sheet`) and `check_compat` do, so a
 //! package can still be listed and described when Connect can't install it. The manifest's `echo`
-//! (the Echo version it needs) is Echo's alone: Connect ignores it.
+//! (the Echo version it needs) is compared with the Echo plugin API Connect provides
+//! (`ECHO_COMPAT`); a range Connect can't read is Echo's own business and ignored.
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -12,6 +13,9 @@ use std::path::{Component, Path};
 pub const MANIFEST_FILE: &str = "echo-plugin.json";
 /// The plugin engine Connect provides (PLUGIN-ENGINE.md §9), as `ctx.host.engine` reports it.
 pub const ENGINE: &str = "1.0";
+/// The Echo release whose plugin API Connect provides: a plugin made for a newer Echo is listed
+/// as needing a newer Connect instead of installing and failing.
+pub const ECHO_COMPAT: &str = "0.10.1";
 /// The optional features (`requires`, PLUGIN-ENGINE.md §6) Connect has.
 const FEATURES: [&str; 4] = ["work", "deliver", "deliver_provider", "echo"];
 const SETTING_KINDS: [&str; 4] = ["string", "bool", "folder", "secret"];
@@ -36,6 +40,8 @@ pub enum ManifestError {
     Incompatible { needs: String },
     #[error("it needs {}, which Connect doesn't have", .0.join(" and "))]
     Lacking(Vec<String>),
+    #[error("needs a newer Connect: it is made for Echo {needs}, and Connect gives plugins what Echo {ECHO_COMPAT} does")]
+    NeedsNewerConnect { needs: String },
     #[error("needs {0}, which Connect doesn't know")]
     UnknownKey(String),
     #[error("\"{key}\" is asked for in a way Connect can't read: {why}")]
@@ -92,6 +98,8 @@ pub struct Manifest {
     pub version: Version,
     /// The plugin engine it needs (`>=1.0` when it doesn't say).
     pub engine: VersionReq,
+    /// The Echo it is made for, when it says so in a way Connect can read.
+    pub echo: Option<VersionReq>,
     /// The optional features it can't work without.
     pub requires: Vec<String>,
     pub summary: String,
@@ -113,6 +121,8 @@ struct Raw {
     version: String,
     #[serde(default)]
     engine: Option<String>,
+    #[serde(default)]
+    echo: Option<Value>,
     #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
@@ -254,6 +264,11 @@ pub fn parse_manifest(dir: &Path) -> Result<Manifest, ManifestError> {
         name: raw.name,
         version,
         engine,
+        echo: raw
+            .echo
+            .as_ref()
+            .and_then(Value::as_str)
+            .and_then(|t| parse_min_req("echo", t).ok()),
         requires: raw.requires,
         summary: raw.summary,
         uses: raw.uses,
@@ -271,13 +286,20 @@ fn is_feature(f: &str) -> bool {
     (1..=40).contains(&f.len()) && f.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
 
-/// Refuses a plugin whose engine range excludes Connect's engine (`ENGINE`), or that requires a
-/// feature Connect lacks (PLUGIN-ENGINE.md §3, §6). The manifest's `echo` isn't looked at.
+/// Refuses a plugin whose engine range excludes Connect's engine (`ENGINE`), whose `echo` range
+/// excludes the Echo API Connect provides (`ECHO_COMPAT`), or that requires a feature Connect
+/// lacks (PLUGIN-ENGINE.md §3, §6).
 pub fn check_compat(m: &Manifest) -> Result<(), ManifestError> {
     let have = Version::parse(&format!("{ENGINE}.0")).expect("ENGINE is a version");
     if !m.engine.matches(&have) {
         return Err(ManifestError::Incompatible {
             needs: m.engine.to_string(),
+        });
+    }
+    let echo = Version::parse(ECHO_COMPAT).expect("ECHO_COMPAT is a version");
+    if let Some(needs) = m.echo.as_ref().filter(|r| !r.matches(&echo)) {
+        return Err(ManifestError::NeedsNewerConnect {
+            needs: needs.to_string(),
         });
     }
     // Anything else (`threads`, `slots`, `scripts`, `sessions`, `channel`, or a name from a
@@ -493,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_range_and_requires_are_checked_and_echo_is_ignored() {
+    fn engine_range_requires_and_echo_range_are_checked() {
         let with = |field: &str, v: Value| {
             let mut j = base();
             j[field] = v;
@@ -517,12 +539,29 @@ mod tests {
                 format!("it needs plugin engine {shown}, and Connect provides engine 1.0")
             );
         }
-        // No engine: 1.0 will do. `echo` is Echo's: whatever it says (even nonsense), it is ignored.
+        // No engine: 1.0 will do.
         let mut j = base();
         j.as_object_mut().unwrap().remove("engine");
         assert!(check_compat(&parse_manifest(package(j).path()).unwrap()).is_ok());
-        for echo in [">=0.9.13", "99.0.0", "not a version", "<0.1"] {
+        // `echo`: a range Connect's Echo API (ECHO_COMPAT) meets passes, one above it needs a newer
+        // Connect, and one that isn't a version is Echo's own business (ignored).
+        for echo in [">=0.9.13", ">=0.10.0", ">=0.10.1", "0.10", "not a version"] {
             assert!(with("echo", json!(echo)).is_ok(), "{echo}");
+        }
+        for (echo, shown) in [(">=0.11.0", ">=0.11.0"), ("99.0.0", ">=99.0.0")] {
+            let e = with("echo", json!(echo)).unwrap_err();
+            assert_eq!(
+                e,
+                ManifestError::NeedsNewerConnect {
+                    needs: shown.into()
+                }
+            );
+            assert_eq!(
+                e.to_string(),
+                format!(
+                    "needs a newer Connect: it is made for Echo {shown}, and Connect gives plugins what Echo {ECHO_COMPAT} does"
+                )
+            );
         }
         assert!(matches!(
             with("engine", json!("soon")),

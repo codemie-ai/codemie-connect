@@ -1239,6 +1239,14 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .dark .ws-plugin-frame{color-scheme:dark}
 .light .ws-plugin-frame{color-scheme:light}
 .ws-plugin-frame[hidden]{display:none}
+/* A plugin's sheet opened from a meeting's page: its frame over the whole window, a modal (the
+   scrim is the frame's own); toasts stay above it. */
+.ws-plugin-layer:has(.ws-plugin-sheet:not([hidden])){z-index:950}
+/* What plugins' meeting slots say (text only): a chip by the title, a line while notes run. */
+.ws-mtg-plugin-chip{display:inline-flex;align-items:center;gap:4px;max-width:280px;height:24px;padding:0 8px;border:1px solid var(--ws-border);border-radius:12px;color:var(--ws-muted);font-size:12px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-mtg-plugin-chip svg{flex:none;width:12px;height:12px}
+.ws-mtg-plugin-line{display:flex;align-items:center;gap:6px;margin:8px 0 0;color:var(--ws-muted);font-size:12px;line-height:16px}
+.ws-mtg-plugin-line svg{flex:none;width:12px;height:12px}
 #workspace-app[data-route=plugin] .ws-main{overflow:hidden}
 .ws-page-plugin{max-width:none;padding:0;height:100%}
 .ws-plugin-page{height:100%;min-height:0}
@@ -2547,3 +2555,72 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
   .ws-ms-paths{grid-template-columns:minmax(0,1fr)}
   .ws-ms-sec-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+
+/* ------------------------------------------------------------------ terminal dock */
+/* Connect's terminal (terminal-dock.js): a panel under the content area, outside the page the app
+   redraws. Its height is --ws-term-h (0 while hidden): the grid gives it the last row, so the page
+   and the plugin frames above it shrink rather than hide behind it. */
+:root{--ws-term-h:0px;--ws-term-left:196px}
+@media (max-width:1050px){:root{--ws-term-left:64px}}
+#workspace-app{grid-template-rows:var(--ws-topbar-h) minmax(0,1fr) var(--ws-term-h)}
+.ws-task-scrim,.ws-task-drawer{bottom:var(--ws-term-h)}
+.ws-toasts{bottom:calc(20px + var(--ws-term-h))}
+.ws-term{position:fixed;z-index:5;left:var(--ws-term-left);right:0;bottom:0;height:var(--ws-term-h);display:flex;flex-direction:column;min-height:0;background:var(--ws-card);border-top:1px solid var(--ws-border);box-shadow:0 -12px 32px rgba(0,0,0,.24);color:var(--ws-text);font-family:var(--font-ui);font-size:13px}
+:root.light .ws-term{box-shadow:0 -10px 28px rgba(20,30,60,.10)}
+.ws-term[hidden]{display:none}
+.ws-term.is-resizing{user-select:none;-webkit-user-select:none}
+.ws-term-grip{position:absolute;z-index:2;left:0;right:0;top:-5px;height:10px;cursor:ns-resize;outline:none}
+.ws-term-grip::after{content:"";position:absolute;left:50%;top:3px;width:40px;height:4px;margin-left:-20px;border-radius:2px;background:var(--ws-border-strong);opacity:0;transition:opacity .15s ease}
+.ws-term-grip:hover::after,.ws-term-grip:focus-visible::after,.ws-term.is-resizing .ws-term-grip::after{opacity:1}
+.ws-term-bar{display:flex;align-items:center;gap:12px;height:42px;flex:none;padding:0 10px 0 16px;border-bottom:1px solid var(--ws-border);background:var(--ws-card)}
+.ws-term-brand{display:inline-flex;align-items:center;gap:7px;flex:none;color:var(--ws-muted);font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.ws-term-brand .ws-icon{width:15px;height:15px}
+.ws-term-tabs{display:flex;align-items:center;gap:4px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none}
+.ws-term-tabs::-webkit-scrollbar{display:none}
+.ws-term-tab{display:flex;align-items:center;flex:none;max-width:300px;height:30px;border:1px solid transparent;border-radius:8px;color:var(--ws-muted);transition:background .12s ease,color .12s ease}
+.ws-term-tab:hover{background:var(--ws-hover);color:var(--ws-text)}
+.ws-term-tab.is-on{color:var(--ws-primary-text);border-color:transparent;background:linear-gradient(var(--ws-primary-fill),var(--ws-primary-fill)) padding-box,var(--ws-primary-border) border-box}
+.ws-term-tab-main{display:flex;align-items:center;gap:8px;min-width:0;height:100%;padding:0 4px 0 10px;border:0;border-radius:8px;background:none;color:inherit;font:inherit;font-size:12px;cursor:pointer}
+.ws-term-tab-main:focus-visible{outline:2px solid var(--ws-focus);outline-offset:1px}
+.ws-term-tab-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-term-tab-detail{color:var(--ws-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-term-tab.is-on .ws-term-tab-detail{color:var(--ws-muted)}
+.ws-term-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--ws-faint)}
+.ws-term-tab[data-state=running] .ws-term-dot{background:var(--ws-green);box-shadow:0 0 0 3px color-mix(in srgb,var(--ws-green) 24%,transparent)}
+.ws-term-tab[data-state=failed] .ws-term-dot{background:var(--ws-red)}
+.ws-term-tab-close{display:grid;place-items:center;flex:none;width:22px;height:22px;margin-right:4px;padding:0;border:0;border-radius:6px;background:none;color:inherit;opacity:.55;cursor:pointer}
+.ws-term-tab-close .ws-icon{width:12px;height:12px}
+.ws-term-tab-close:hover,.ws-term-tab-close:focus-visible{opacity:1;background:color-mix(in srgb,var(--ws-text) 10%,transparent)}
+.ws-term-actions{display:flex;align-items:center;gap:2px;flex:none}
+.ws-term-btn,.ws-term-icon{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;border:0;border-radius:8px;background:none;color:var(--ws-muted);font:inherit;font-size:12px;cursor:pointer;transition:background .12s ease,color .12s ease}
+.ws-term-btn{padding:0 10px}
+.ws-term-btn[hidden]{display:none}
+.ws-term-icon{width:28px;padding:0}
+.ws-term-btn:hover,.ws-term-icon:hover{background:var(--ws-hover);color:var(--ws-text)}
+.ws-term-btn .ws-icon{width:14px;height:14px}
+.ws-term-icon .ws-icon{width:15px;height:15px}
+.ws-term-body{position:relative;flex:1;min-height:0}
+.ws-term-pane{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--ws-term-screen,#161718)}
+.ws-term-pane[hidden]{display:none}
+.ws-term-screen{position:relative;flex:1;min-height:0;overflow:hidden;padding:10px 4px 4px 16px}
+.ws-term-screen .xterm{height:100%}
+.ws-term-screen .xterm .xterm-viewport{scrollbar-width:thin}
+.ws-term-ended{position:relative;z-index:6;display:flex;align-items:center;gap:12px;flex:none;margin:4px 14px 14px;padding:10px 12px;border:1px solid var(--ws-border);border-radius:var(--ws-radius-lg);background:var(--ws-card);box-shadow:var(--ws-shadow-sm);color:var(--ws-text)}
+.ws-term-ended[hidden]{display:none}
+.ws-term-ended-icon{display:grid;place-items:center;flex:none;width:30px;height:30px;border-radius:8px;background:var(--ws-raised);color:var(--ws-muted)}
+.ws-term-ended-icon .ws-icon{width:16px;height:16px}
+.ws-term-ended[data-tone=quiet] .ws-term-ended-icon{background:var(--ws-green-bg);color:var(--ws-green)}
+.ws-term-ended[data-tone=warning] .ws-term-ended-icon{background:var(--ws-amber-bg);color:var(--ws-amber)}
+.ws-term-ended[data-tone=error] .ws-term-ended-icon{background:var(--ws-red-bg);color:var(--ws-red)}
+.ws-term-ended-copy{display:grid;gap:2px;flex:1;min-width:0}
+.ws-term-ended-copy strong{font-size:13px;font-weight:600}
+.ws-term-ended-copy span{font-size:12px;color:var(--ws-muted)}
+.ws-term-ended-actions{display:flex;gap:6px;flex:none}
+/* The topbar's Terminal button: how many sessions run while the dock is hidden. */
+.ws-term-toggle{position:relative}
+.ws-term-toggle[aria-pressed=true]{background:var(--ws-hover);color:var(--ws-text)}
+.ws-term-toggle .ws-term-count{position:absolute;top:1px;right:0;min-width:15px;height:15px;padding:0 4px;border-radius:8px;display:grid;place-items:center;background:var(--ws-green);color:#fff;font-size:10px;font-weight:700;line-height:15px}
+@media (prefers-reduced-motion:reduce){.ws-term-grip::after,.ws-term-tab,.ws-term-btn,.ws-term-icon{transition:none}}
+/* Settings → CodeMie, Start coding: where the agent opens. */
+.cm-where{margin:14px 0 0;padding:0;border:0;min-width:0}
+.cm-where legend{margin:0 0 8px;padding:0;color:var(--ws-muted);font-size:12px;font-weight:600}

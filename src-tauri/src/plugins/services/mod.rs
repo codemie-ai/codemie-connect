@@ -14,18 +14,30 @@
 //! The services: `store` (with `package`), `settings`, `fs` (with `system`), `http`, `notify`
 //! (with `log`), `markdown`; `claude` (with `profiles`), `deliver`, `today` (inbox, widgets,
 //! work rows), `echo_read`, `events` (shared values) and `signin`.
+pub mod cas;
 pub mod claude;
+#[cfg(test)]
+mod contract_tests;
 pub mod deliver;
 pub mod echo_read;
 pub mod events;
+pub mod files;
 pub mod fs;
+pub mod hidden;
 pub mod http;
+pub mod m365;
 pub mod markdown;
 pub mod notify;
 pub mod settings;
 pub mod signin;
+pub mod skills;
+pub mod snapshot;
 pub mod store;
 pub mod today;
+pub mod vault_git;
+pub mod web;
+pub mod web_page;
+pub mod window;
 
 use super::host::{ErrorCode, HostError, HostServices, PluginHost};
 use super::manifest::{parse_manifest, SettingDef, WidgetDef};
@@ -116,10 +128,28 @@ impl Granted {
     }
 }
 
-/// The folder picker `system.pickFolder` opens: the native one in the app, a stand-in in tests.
+/// The pickers `system.pickFolder` and `system.pickFiles` open: the native ones in the app,
+/// stand-ins in tests.
 pub trait FolderPicker: Send + Sync {
     /// The folder the user chose, or `None` when they cancelled.
     fn pick(&self, title: String) -> BoxFuture<'static, Option<PathBuf>>;
+
+    /// The address of one web page the user types in Connect's own box for plugin `name`
+    /// (`http.askAddress`), `None` when they cancel.
+    fn ask_address(&self, _name: String) -> BoxFuture<'static, Option<String>> {
+        Box::pin(async { None })
+    }
+
+    /// The files the user chose (one unless `multiple`; only `exts` when given), none when they
+    /// cancelled.
+    fn pick_files(
+        &self,
+        _title: String,
+        _multiple: bool,
+        _exts: Vec<String>,
+    ) -> BoxFuture<'static, Vec<PathBuf>> {
+        Box::pin(async { Vec::new() })
+    }
 }
 
 /// What the services reach outside Connect: the native ones in the app, stand-ins in tests.
@@ -146,6 +176,14 @@ pub struct Services {
     today: Mutex<today::Provided>,
     /// `ctx.profiles()`, refreshed by the plugin manager (detection is too slow for a turn).
     profiles: RwLock<Value>,
+    /// Orders guarded writes (`{ifSha, createNew}`): a comparison and its write are one step.
+    pub(crate) writes: Mutex<()>,
+    /// The file handles plugins were given (`pickFiles`, dropped files).
+    pub(crate) files: Mutex<files::Handles>,
+    /// The Claude runs going on under a key (`claude.run({key})`, `claude.stop(key)`).
+    pub(crate) runs: Mutex<claude::Keyed>,
+    /// The addresses the user typed for plugins (`http.askAddress`), each good for one read.
+    pub(crate) asked: Mutex<web::Asked>,
 }
 
 impl Services {
@@ -160,6 +198,10 @@ impl Services {
             providers: Mutex::default(),
             today: Mutex::default(),
             profiles: RwLock::new(serde_json::json!({"default": null, "profiles": []})),
+            writes: Mutex::new(()),
+            files: Mutex::default(),
+            runs: Mutex::default(),
+            asked: Mutex::default(),
         })
     }
 
@@ -181,6 +223,14 @@ impl Services {
             .profiles
             .write()
             .unwrap_or_else(PoisonError::into_inner) = profiles;
+    }
+
+    /// What `ctx.profiles()` answers now.
+    pub(crate) fn profiles_now(&self) -> Value {
+        self.profiles
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// The providers plugins registered, for the plugin manager to ask.
@@ -268,7 +318,12 @@ impl HostServices for Services {
         match name {
             "log" => notify::log(&p, &args),
             "notify" => notify::notify(self, &p, &args),
-            "markdown" => markdown::render(&args),
+            "markdown" => markdown::render(&p.id, &args),
+            "markdown.links" => markdown::links(&args),
+            "claude.stop" => claude::stop(self, &p, text(&args, 0, "a run's key")?),
+            "crypto.sha256" => Ok(Value::from(cas::sha_hex(
+                text(&args, 0, "the text to hash")?.as_bytes(),
+            ))),
             n if n.starts_with("store.") || n.starts_with("package.") => {
                 store::call(self, &p, n, &args)
             }
@@ -312,8 +367,19 @@ impl HostServices for Services {
         let name = name.to_string();
         Box::pin(async move {
             match name.as_str() {
-                "fs.readMany" | "fs.walk" => fs::call_async(me, p, &name, args).await,
+                "fs.readMany" | "fs.walk" | "fs.search" => fs::call_async(me, p, &name, args).await,
+                "store.walk" => store::walk(me, p, args).await,
+                "web.read" => web::read(&me, &p, &args).await,
+                n if n.starts_with("m365.") => m365::call(&me, &p, n, &args).await,
+                "http.askAddress" => web::ask_address(&me, &p).await,
+                n if n.starts_with("git.") => git(me, p, n, args).await,
                 "system.pickFolder" => fs::pick_folder(&me, &p, &args).await,
+                "system.pickFiles" => files::pick(&me, &p, &args).await,
+                "fs.copyIn" => {
+                    tauri::async_runtime::spawn_blocking(move || files::copy_in(&me, &p, &args))
+                        .await
+                        .map_err(|e| bad(e.to_string()))?
+                }
                 "http.fetch" => {
                     let url = text(&args, 0, "an address")?.to_string();
                     let listed = settings::listed_addresses(&me, &p);
@@ -329,6 +395,26 @@ impl HostServices for Services {
             }
         })
     }
+}
+
+/// `ctx.git.<name>(root, …)` in a folder the user gave the plugin (`init` and `commit` change it:
+/// `folders.write`), off the async runtime.
+async fn git(
+    s: Arc<Services>,
+    p: Arc<Granted>,
+    name: &str,
+    args: Value,
+) -> Result<Value, HostError> {
+    let op = name.trim_start_matches("git.").to_string();
+    let root = text(&args, 0, "a folder")?.to_string();
+    let dir = if vault_git::writes(&op) {
+        fs::writable_root(&s, &p, &root)?
+    } else {
+        fs::root_of(&s, &p, &root)?
+    };
+    tauri::async_runtime::spawn_blocking(move || vault_git::call(&dir, &p.id, &op, &args))
+        .await
+        .map_err(|e| bad(e.to_string()))?
 }
 
 // ------------------------------------------------------------------ shared helpers
@@ -414,7 +500,11 @@ pub(crate) mod testing {
         }
 
         pub fn with(core: Option<Arc<Core>>, http: http::Client) -> Env {
-            let dir = tempfile::tempdir().unwrap();
+            // Not a hidden folder (`.tmpXXXX`): folders given to plugins never are.
+            let dir = tempfile::Builder::new()
+                .prefix("connect-")
+                .tempdir()
+                .unwrap();
             let data = dir.path().join("data");
             std::fs::create_dir_all(&data).unwrap();
             let paths = PluginPaths::new(&data, &dir.path().join("private"));
@@ -480,6 +570,38 @@ pub(crate) mod testing {
             args: Value,
         ) -> Result<Value, HostError> {
             self.services.spawn_async(id, name, args).await
+        }
+    }
+
+    /// A JSON answer's shape, to compare with what Echo gives: an object's keys with their
+    /// shapes, a list's first item's shape (`"empty"` for none), else the type's name.
+    pub fn shape(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                Value::Object(m.iter().map(|(k, x)| (k.clone(), shape(x))).collect())
+            }
+            Value::Array(a) => json!([a.first().map(shape).unwrap_or(json!("empty"))]),
+            Value::String(_) => json!("str"),
+            Value::Number(_) => json!("num"),
+            Value::Bool(_) => json!("bool"),
+            Value::Null => json!("null"),
+        }
+    }
+
+    /// Whether `v` has at least the keys of `want` (a `shape`), each of its shape: Echo's answer,
+    /// which may say more. `"empty"` takes any list.
+    pub fn has_shape(v: &Value, want: &Value) -> bool {
+        match (v, want) {
+            (_, Value::String(t)) if t == "empty" => v.is_array(),
+            (Value::Object(m), Value::Object(w)) => w
+                .iter()
+                .all(|(k, x)| m.get(k).is_some_and(|y| has_shape(y, x))),
+            (Value::Array(a), Value::Array(w)) => match (a.first(), w.first()) {
+                (Some(x), Some(y)) => has_shape(x, y),
+                (None, _) => true,
+                _ => false,
+            },
+            _ => shape(v) == *want,
         }
     }
 }

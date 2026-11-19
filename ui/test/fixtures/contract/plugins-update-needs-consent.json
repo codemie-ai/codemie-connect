@@ -14,7 +14,7 @@
     {
       "key": "claude",
       "support": {
-        "limit": "Claude runs without tools in Connect",
+        "limit": "In a folder you gave it, Claude works as in Echo; anywhere else it only answers, with no tools",
         "status": "partial"
       },
       "text": "Ask Claude questions on your behalf"

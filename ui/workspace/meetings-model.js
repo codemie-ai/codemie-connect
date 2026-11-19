@@ -70,6 +70,23 @@ const timeOf = v => {
 const lower = v => (typeof v === 'string' ? v : '').trim().toLowerCase();
 const hasLink = d => typeof d?.joinUrl === 'string' && d.joinUrl.trim() !== '';
 
+/** A meeting as plugins' call slots get it (Echo's call): `{name, stamp, title, started_at, notes,
+ *  profile, memo, threads, client}`, named by its saved folder (`name`, its folder's own name;
+ *  `stamp`, the folder's `YYYY-MM-DD_HHMMSS` start as Connect names folders), or null before the
+ *  meeting has a folder. `notes`: it has notes to read. */
+export function callOfMeeting(m) {
+  const folder = typeof m?.rec?.data?.folder === 'string' ? m.rec.data.folder : '';
+  const name = folder.split('/').filter(Boolean).pop() || '';
+  if (!name || name.length > 600) return null;
+  const stamp = /^\d{4}-\d{2}-\d{2}_\d{6}/.exec(name)?.[0] || name;
+  const docs = Array.isArray(m.rec.data.docs) ? m.rec.data.docs : [];
+  return {
+    name, stamp, title: String(m.title || '').slice(0, 2000),
+    started_at: Number.isFinite(m.start) ? new Date(m.start).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
+    notes: docs.length > 0, profile: null, memo: false, threads: [], client: null,
+  };
+}
+
 /** A Teams (online) meeting: Graph says so, or it has a join link. */
 export const isOnline = d => hasLink(d) || d?.isOnlineMeeting === true;
 

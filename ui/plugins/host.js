@@ -16,6 +16,8 @@
 //   plugin's own facts, Connect's name and version, the theme, where the window is, its stored
 //   values, and command answers.
 // - `go` reaches internal routes only (`internalRoute`), and only from the frame on screen.
+// - A meeting's page draws what a plugin's `call.*` slots say as text only (`callSlots`), never its
+//   HTML; a frame whose page isn't on screen comes over the window only while it shows a sheet.
 import { V, checkFromFrame, errorOf } from './frame/messages.js';
 
 const SANDBOX = 'allow-scripts';
@@ -50,6 +52,19 @@ export function internalRoute(plugin, hash) {
   return null;
 }
 
+/** The meeting folder an `echo://call/<folder>` link names (Echo's link to a call), or null. */
+export function callLink(raw) {
+  const m = /^echo:\/\/call\/([^/?#]+)$/i.exec(String(raw ?? '').trim());
+  if (!m) return null;
+  let folder;
+  try {
+    folder = decodeURIComponent(m[1]);
+  } catch {
+    return null;
+  }
+  return folder && folder.length <= 600 && !/[/\\\u0000-\u001f]/.test(folder) && folder !== '.' && folder !== '..' ? folder : null;
+}
+
 /**
  * What a plugin's link may open (ruling R41): an `https:` address without a user name or password,
  * or an `obsidian:` one, as its normalized text; null for anything else (`javascript:`, `file:`,
@@ -77,12 +92,16 @@ export function createPluginHost({
   invoke, frameUrl, doc = document, win = window, about = () => ({ name: 'CodeMie Connect', version: '', engine: '1.0' }),
   theme = () => 'light', whereNow = () => ({ view: 'today', section: '', route: '' }),
   onChange = () => {}, onGo = () => {}, onNotice = () => {}, onCopy = () => {}, onOpen = () => {}, now = () => Date.now(),
+  confirmSkill = async () => false, onSlots = () => {}, onCall = () => {},
 }) {
   /** plugin id → {id, name, version, client, key, el, port, contrib, calls, nextId, height, error, errors, ready, shown, paletteAt} */
   const frames = new Map();
   let target = null;
   let layer = null;
   let placing = false;
+  /** The meeting the Meetings page shows, as Echo's call (or null), and as JSON. */
+  let call = null;
+  let callJson = 'null';
 
   function mount(container) {
     layer = doc.createElement('div');
@@ -115,9 +134,12 @@ export function createPluginHost({
     const rec = {
       id: p.id, name: String(p.name || p.id), version: String(p.version || ''), client: String(p.client), key: keyOf(p),
       el: null, port: null, contrib: EMPTY, calls: new Map(), nextId: 1, height: 0, error: '', errors: [], ready: false, shown: false,
-      paletteAt: 0, generation: 0,
+      paletteAt: 0, generation: 0, slots: null, sheet: false,
       storage: Promise.resolve(invoke('plugins_request', { op: 'client_storage', data: { id: p.id } }))
         .then(r => (r && r.items && typeof r.items === 'object' ? r.items : {}), () => ({})),
+      // Its own phrases that name Echo, which its frame says in Connect's words.
+      phrases: Promise.resolve(invoke('plugins_request', { op: 'host_phrases', data: { id: p.id } }))
+        .then(r => (Array.isArray(r?.phrases) ? r.phrases.filter(x => typeof x === 'string').slice(0, 3000) : []), () => []),
     };
     frames.set(p.id, rec);
     let src;
@@ -146,7 +168,10 @@ export function createPluginHost({
     rec.contrib = EMPTY;
     rec.ready = false;
     rec.error = '';
+    rec.slots = null;
+    rec.sheet = false;
     const storage = await rec.storage;
+    const phrases = await rec.phrases;
     if (generation !== rec.generation || frames.get(rec.id) !== rec || !rec.el?.contentWindow) return;
     const channel = new MessageChannel();
     const port = channel.port1;
@@ -154,10 +179,11 @@ export function createPluginHost({
     port.onmessage = event => receive(rec, port, event.data);
     rec.el.contentWindow.postMessage({
       v: V, id: 0, kind: 'event', type: 'connect',
-      plugin: { id: rec.id, name: rec.name, version: rec.version, client: rec.client },
+      plugin: { id: rec.id, name: rec.name, version: rec.version, client: rec.client, phrases },
       host: about(), theme: theme(), where: whereFor(rec.shown ? target : null), storage,
     }, '*', [channel.port2]);
     if (rec.shown) send(rec, { kind: 'event', type: 'show', target: frameTarget(target), where: whereFor(target) });
+    if (call) send(rec, { kind: 'event', type: 'call', call, where: whereFor(rec.shown ? target : null) });
     onChange();
   }
 
@@ -215,12 +241,35 @@ export function createPluginHost({
     }
   }
 
+  /** What a frame asks of the window: its commands, its stored values, and (the frame on screen
+   *  only, after the user's click there) a reveal in Finder or a Claude Code session. */
+  function ask(rec, m) {
+    if (m.method === 'command') return invoke('plugin_call', { id: rec.id, command: m.command, args: m.args ?? null, ...(m.files ? { files: m.files } : {}) });
+    if (m.method === 'storage') return invoke('plugins_request', { op: 'client_storage', data: { id: rec.id, items: m.items } }).then(() => null);
+    if (!onScreen(rec)) return Promise.reject(Object.assign(new Error('Only the page on screen can do that.'), { code: 'permission' }));
+    if (m.method === 'skill') return skill(rec, m);
+    if (m.method === 'session') {
+      return invoke('plugins_request', { op: 'frame_session', data: { id: rec.id, folder: m.folder, path: m.path, mode: m.mode, profile: m.profile } });
+    }
+    return invoke('plugins_request', { op: 'frame_reveal', data: { id: rec.id, root: m.root, path: m.path } });
+  }
+
+  /** A skill in the user's own Claude Code, after Connect's own confirmation: what it adds (its
+   *  name, description and place, checked in Rust), or what it takes out. */
+  async function skill(rec, m) {
+    const data = { id: rec.id, name: m.name, md: m.md };
+    const shown = m.op === 'install'
+      ? await invoke('plugins_request', { op: 'frame_skill_check', data })
+      : { name: m.name, path: `~/.claude/skills/${m.name}/SKILL.md` };
+    const yes = await confirmSkill({ op: m.op, plugin: rec.name, ...shown });
+    if (!yes) throw Object.assign(new Error(m.op === 'install' ? `You chose not to add /${m.name}.` : `You chose to keep /${m.name}.`), { code: 'cancelled' });
+    return invoke('plugins_request', { op: m.op === 'install' ? 'frame_skill_install' : 'frame_skill_remove', data });
+  }
+
   async function answer(rec, port, m) {
     let reply;
     try {
-      const value = m.method === 'command'
-        ? await invoke('plugin_call', { id: rec.id, command: m.command, args: m.args ?? null })
-        : (await invoke('plugins_request', { op: 'client_storage', data: { id: rec.id, items: m.items } }), null);
+      const value = await ask(rec, m);
       reply = { ok: true, value: value === undefined ? null : value };
     } catch (e) {
       reply = { ok: false, error: errorOf(e) };
@@ -228,8 +277,11 @@ export function createPluginHost({
     if (rec.port === port) port.postMessage({ v: V, id: m.id, kind: 'reply', ...reply });
   }
 
-  /** The frame on screen, or one whose palette entry the window ran just now, may lead the window. */
-  const mayLead = rec => rec.shown || now() - rec.paletteAt < PALETTE_GRACE_MS;
+  /** The frame on screen: its page, or its sheet over the window. */
+  const onScreen = rec => rec.shown || rec.sheet;
+  /** The frame on screen, or one whose palette entry or ⋯ item the window ran just now, may lead
+   *  the window. */
+  const mayLead = rec => onScreen(rec) || now() - rec.paletteAt < PALETTE_GRACE_MS;
 
   function event(rec, m) {
     switch (m.type) {
@@ -243,19 +295,37 @@ export function createPluginHost({
         return placeSoon();
       case 'go': {
         const hash = mayLead(rec) ? internalRoute(rec.id, m.hash) : null;
-        if (hash) onGo(hash, rec.id);
+        if (hash) onGo(hash, rec.id, { replace: m.replace === true });
         return;
       }
       case 'notice': if (mayLead(rec)) onNotice(m.text, rec.name); return;
-      case 'copy': if (rec.shown) onCopy(m.text, rec.name); return;
+      case 'copy': if (onScreen(rec)) onCopy(m.text, rec.name); return;
       case 'open': {
         // Only the frame on screen, where the user clicked; the window asks before opening.
-        if (!rec.shown) return;
+        if (!onScreen(rec)) return;
+        // Echo's link to a call opens that meeting in Connect.
+        const folder = callLink(m.url);
+        if (folder) return onCall(folder, rec.id);
         const url = openableUrl(m.url);
         if (url) onOpen(url, rec.name, rec.id);
         else onNotice('Connect opens only https:// and obsidian:// links.', rec.name);
         return;
       }
+      case 'slots': {
+        // The text of its call slots, for the meeting the window shows now only.
+        if (m.call !== (call?.name || '')) return;
+        const had = JSON.stringify(rec.slots);
+        rec.slots = m.call && (m.header.length || m.menu.length || m.minutes.length)
+          ? { call: m.call, header: m.header, menu: m.menu, minutes: m.minutes } : null;
+        if (JSON.stringify(rec.slots) !== had) onSlots();
+        return;
+      }
+      case 'sheet':
+        rec.sheet = m.open;
+        place();
+        // Keys go to the sheet over the window (Esc closes it there).
+        if (m.open && !rec.shown) rec.el?.focus?.();
+        return;
       default:
     }
   }
@@ -318,6 +388,14 @@ export function createPluginHost({
         const el = rec.el;
         if (!el) continue;
         const slot = rec.shown ? doc.querySelector(`[data-plugin-slot="${rec.id}"]`) : null;
+        // A frame whose page isn't on screen shows its sheet over the whole window, a modal.
+        const over = !rec.shown && rec.sheet;
+        el.className = over ? 'ws-plugin-frame ws-plugin-sheet' : 'ws-plugin-frame';
+        if (over) {
+          Object.assign(el.style, { left: '0px', top: '0px', width: '100%', height: '100%', clipPath: '' });
+          el.hidden = false;
+          continue;
+        }
         if (!slot) {
           if (!el.hidden) el.hidden = true;
           continue;
@@ -371,10 +449,48 @@ export function createPluginHost({
     });
   }
 
+  /** Files dropped on the window while plugin `id`'s page is on screen, as its handles, for its
+   *  `onFileDrop`. Any other frame gets none. */
+  function dropFiles(id, files) {
+    const rec = frames.get(id);
+    if (!rec?.shown || target?.view !== 'activity' || !Array.isArray(files) || !files.length) return false;
+    send(rec, { kind: 'event', type: 'files', files: files.map(f => ({ file: String(f.file), name: String(f.name), size: Number(f.size) || 0 })) });
+    return true;
+  }
+
   const list = key => [...frames.values()].flatMap(rec => rec.contrib[key].map(x => ({ ...x, plugin: rec.id, pluginName: rec.name })));
 
+  /** The meeting the Meetings page shows, as Echo's call (`{name, stamp, title, started_at, notes,
+   *  profile, memo, threads, client}`), or null: each frame is told, with where the window is. */
+  function setCall(next) {
+    const json = JSON.stringify(next ?? null);
+    if (json === callJson) return;
+    call = next ? { ...next } : null;
+    callJson = json;
+    for (const rec of frames.values()) {
+      rec.slots = null;
+      send(rec, { kind: 'event', type: 'call', call, where: whereFor(rec.shown ? target : null) });
+    }
+  }
+
+  /** What plugins' `call.*` slots say for that meeting, as text:
+   *  [{plugin, pluginName, call, header: [text], menu: [label], minutes: [text]}]. */
+  function callSlots() {
+    if (!call) return [];
+    return [...frames.values()].filter(rec => rec.slots?.call === call.name)
+      .map(rec => ({ plugin: rec.id, pluginName: rec.name, ...rec.slots }));
+  }
+
+  /** Runs a plugin's `index`th ⋯ item for the meeting shown (in its frame). */
+  function runSlot(id, index) {
+    const rec = frames.get(id);
+    if (!rec?.slots || !Number.isInteger(index) || index < 0 || index >= rec.slots.menu.length) return;
+    rec.paletteAt = now();
+    send(rec, { kind: 'event', type: 'slot', slot: 'call.menu', index });
+  }
+
   const api = {
-    mount, sync, show, place, placeSoon, setTheme, runPalette, draw, unload,
+    mount, sync, show, place, placeSoon, setTheme, runPalette, draw, unload, dropFiles, setCall, callSlots, runSlot,
     /** The pages plugins add, for the sidebar: [{plugin, pluginName, id, label}]. */
     activities: () => list('activities'),
     /** Their Settings sections: [{plugin, pluginName, id, label, badge}]. */

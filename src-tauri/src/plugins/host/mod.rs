@@ -287,6 +287,19 @@ impl PluginHost {
         self.request(id, Kind::Command, command, args).await
     }
 
+    /// Runs the plugin's command with `args` and the files the user handed it (`fn(args, {files})`):
+    /// `files` are its own handles `{file, name, size}`, checked by the caller.
+    pub async fn call_with_files(
+        &self,
+        id: &str,
+        command: &str,
+        args: Value,
+        files: Vec<Value>,
+    ) -> Result<Value, HostError> {
+        let both = serde_json::json!({"args": args, "files": files});
+        self.request(id, Kind::CommandFiles, command, both).await
+    }
+
     /// Asks one of the plugin's providers: `widget:<id>` (`ctx.widgets.provide`), `work`
     /// (`ctx.work.provide`) or `deliver:<kind>` (`ctx.deliver.provide`).
     pub async fn ask(&self, id: &str, provider: &str, args: Value) -> Result<Value, HostError> {

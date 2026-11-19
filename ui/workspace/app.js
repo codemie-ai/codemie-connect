@@ -26,11 +26,14 @@ import { createAutomationsController, notificationTarget } from './automations-c
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { newTasksView } from './tasks-model.js';
-import { meetings } from './view-meetings.js';
+import { meetings, shownCall } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
-import { renderShell } from './shell.js';
+import { renderShell, terminalButton } from './shell.js';
+import { createTerminalDock } from './terminal-dock.js';
+import { Terminal } from '../vendor/xterm.mjs';
+import { FitAddon } from '../vendor/addon-fit.mjs';
 import { nextAiSettings, withCodemieSignIn, LOGIN_STEPS } from './settings-ai.js';
 import { chooserBody, CHOOSER_TITLE } from './ai-chooser.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from './boot.js';
@@ -87,6 +90,10 @@ const state = {
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
 };
 let pluginHost = null;
+// Connect's terminal dock (terminal-dock.js), made with the plugin host.
+let terminalDock = null;
+/** The meeting the Meetings page shows, as plugins' call slots get it (Echo's call), or null. */
+let pluginCall = null;
 let lastPluginTheme = '';
 const drawnWidgets = new Map();
 // Settings → CodeMie: the CLI state behind it, "What CodeMie ran", the guided-setup session
@@ -210,6 +217,7 @@ function applyTheme(theme) {
 
 const shellMarkup = () => renderShell({
   snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark'),
+  terminals: terminalDock?.state(),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
   settingsDot: codemie.settingsDot(),
 });
@@ -328,7 +336,7 @@ async function render() {
       : state.route === 'inbox' ? inbox(s, ctx)
         : state.route === 'automations' ? automations(s, ctx)
           : state.route === 'tasks' ? tasksPage(s, ctx)
-          : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary() })
+          : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [] })
           : state.route === 'plugin' ? pluginPageHtml()
             : settings(s, ctx);
   const next = keepReply && state.route === 'inbox' ? document.createElement('div') : null;
@@ -364,6 +372,13 @@ async function render() {
     }
   }
   placeDraftPopover();
+  // Plugins' call slots follow the meeting the Meetings page shows (Echo's call page), told when
+  // it changes.
+  const call = state.route === 'meetings' ? shownCall(s, ctx) : null;
+  if (JSON.stringify(call) !== JSON.stringify(pluginCall)) {
+    pluginCall = call;
+    pluginHost?.setCall(call);
+  }
   showPluginView();
   if (state.route === 'today') drawPageWidgets(s);
   if (state.route === 'meetings') {
@@ -432,6 +447,14 @@ function renderSheet() {
 }
 
 const sheetOpen = () => !!document.querySelector('#cm-sheet-host .cm-sheet');
+
+// ⌃` shows or hides the terminal (VS Code's key), from anywhere in the window.
+document.addEventListener('keydown', ev => {
+  if (!ev.ctrlKey || ev.metaKey || ev.altKey || (ev.code !== 'Backquote' && ev.key !== '`') || modalOpen()) return;
+  if (!terminalDock?.state().count) return;
+  ev.preventDefault();
+  terminalDock.toggle();
+});
 
 // A click anywhere outside an open CodeMie ⋯ menu closes it.
 document.addEventListener('click', ev => {
@@ -651,12 +674,91 @@ function confirmPluginLink(url, name, id) {
   });
 }
 
+/** Closing a tab whose program still runs ends it: Connect asks first. Resolves to the answer. */
+function confirmTerminalStop(info) {
+  return new Promise(resolve => {
+    let answered = false;
+    openModal({
+      title: `Stop ${info.program}?`, size: 'sm', submit: 'Stop and close', variant: 'danger', initialFocus: 'cancel',
+      body: `<p class="ws-modal-text">${e(info.program)} is still running in ${e(info.title)}. Closing the tab stops it${info.resumable ? '; its conversation stays in Claude Code’s history' : ''}.</p>`,
+      onSubmit: () => { answered = true; resolve(true); },
+      onClose: () => { if (!answered) resolve(false); },
+    });
+  });
+}
+
+/** The dock showed, hid, resized or changed its tabs: the plugin frames follow the page, and the
+ *  topbar's Terminal button says how many sessions run (the shell is drawn again only when the
+ *  button comes or goes). */
+let terminalHadTabs = false;
+function terminalLayout() {
+  pluginHost?.placeSoon();
+  const t = terminalDock?.state();
+  if (!t) return;
+  const has = t.count > 0;
+  if (has !== terminalHadTabs) {
+    terminalHadTabs = has;
+    if (ready) render().catch(fail);
+    return;
+  }
+  const btn = root.querySelector('.ws-term-toggle');
+  if (btn) btn.outerHTML = terminalButton(t);
+}
+
+/** A plugin's page asks to add a skill to the user's own Claude Code (or take out one it added):
+ *  Connect asks first, showing the skill's name, description and place. Resolves to the answer. */
+function confirmPluginSkill({ op, plugin, name, description = '', path = '', replaces = false }) {
+  return new Promise(resolve => {
+    if (recovering) return resolve(false);
+    let answered = false;
+    const done = yes => { if (!answered) { answered = true; resolve(yes); } };
+    const adding = op === 'install';
+    openModal({
+      title: adding ? `Add /${name} to Claude Code?` : `Remove /${name} from Claude Code?`,
+      size: 'sm', submit: adding ? (replaces ? 'Update skill' : 'Add skill') : 'Remove skill', variant: adding ? 'primary' : 'danger',
+      initialFocus: 'cancel', guard: true,
+      body: `<p class="ws-modal-text">${e(plugin)} ${adding ? 'wants to add a skill to your own Claude Code, for every session.' : 'wants to take out the skill it added to your Claude Code.'}</p>
+        ${description ? `<p class="ws-modal-text"><strong>/${e(name)}</strong>: ${e(description)}</p>` : ''}
+        <p class="ws-link-confirm"><code class="ws-storage-path">${e(path)}</code></p>`,
+      onSubmit: () => done(true),
+      onClose: () => done(false),
+    });
+  });
+}
+
+/** A plugin asks for the address of one web page to read (`http.askAddress`): Connect's own box,
+ *  never the plugin's page. The answer goes to Rust, which lets that one read through. */
+function askPluginAddress({ ask, plugin }) {
+  let answered = false;
+  const answer = url => {
+    if (answered) return;
+    answered = true;
+    invoke('plugins_request', { op: 'address_answer', data: { ask, url } }).catch(() => {});
+  };
+  if (recovering) return answer(null);
+  openModal({
+    title: 'Read a web page', size: 'sm', submit: 'Read it', guard: true,
+    body: `<p class="ws-modal-text">${e(plugin)} asks for the address of a web page to fetch once. Type or paste it:</p>
+      <label class="ws-field"><span class="ws-field-label">Address</span><input class="ws-input" name="url" type="url" required maxlength="2000" autocomplete="off" spellcheck="false" placeholder="https://"></label>`,
+    onSubmit: form => {
+      const url = String(form.get('url') || '').trim();
+      if (!/^https?:\/\/[^\s@]+$/i.test(url)) throw new Error('Type an address that starts with https:// or http://.');
+      answer(url);
+    },
+    onClose: () => answer(null),
+  });
+}
+
 async function pluginAction(action, el) {
   const id = el.dataset.pluginId;
   switch (action) {
     case 'plugin-page': return routePlugin(id, el.dataset.activity);
     case 'plugin-go': return goHash(el.dataset.go);
     case 'plugin-palette': return pluginHost?.runPalette(id, Number(el.dataset.index));
+    case 'plugin-call-menu':
+      // The ⋯ menu closes as the plugin's item runs in its page.
+      el.closest('details.ws-menu')?.removeAttribute('open');
+      return pluginHost?.runSlot(id, Number(el.dataset.index));
     case 'plugin-copy': {
       const text = heldText(snap(), el.dataset.id);
       if (text === null) return;
@@ -1158,6 +1260,15 @@ const meetingsSettingsUi = store && createMeetingsSettingsController({
   },
 });
 
+/** Opens the meeting saved in folder `folder` (a plugin's `echo://call/<folder>` link), or says
+ *  Connect has no such meeting. */
+function openMeetingFolder(folder) {
+  const m = (snap().records || []).find(r => r.kind === 'meeting' && typeof r.data?.folder === 'string'
+    && r.data.folder.split('/').filter(Boolean).pop() === folder);
+  if (!m) return toast('Connect has no meeting saved in that folder.', 'error');
+  return openMeeting(m.id).catch(fail);
+}
+
 /** Opens a meeting on the Meetings page (`#/meetings/<id>/<tab>`; `line`: a transcript line). */
 function openMeeting(id, tab = 'notes', line = null) {
   return meetingsUi.open(id, tab, line);
@@ -1488,6 +1599,7 @@ async function handle(action, el) {
     // Appearance & settings
     case 'theme': return mutate('settings_update', { theme: el.dataset.theme });
     case 'theme-toggle': return mutate('settings_update', { theme: document.documentElement.classList.contains('dark') ? 'light' : 'dark' });
+    case 'terminal-toggle': return terminalDock?.toggle();
     case 'setting-toggle': return mutate('settings_update', { [el.dataset.key]: el.checked }).catch(err => { el.checked = !el.checked; throw err; });
     case 'zone-detect': await mutate('settings_update', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }); return toast('Time zone updated.', 'success');
     case 'focus': {
@@ -1979,7 +2091,7 @@ document.addEventListener('click', ev => {
   for (const menu of document.querySelectorAll('details.ws-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
 }, true);
 document.addEventListener('keydown', ev => {
-  if (ev.key !== 'Escape' || ev.isComposing) return;
+  if (ev.key !== 'Escape' || ev.isComposing || ev.target?.closest?.('.ws-term')) return;
   const menu = document.querySelector('details.ws-menu[open]');
   if (!menu || (modalOpen() && !menu.closest('.ws-modal'))) return;
   ev.preventDefault();
@@ -2339,13 +2451,24 @@ async function boot() {
     frameUrl,
     about: () => ({ name: 'CodeMie Connect', version: state.appVersion, engine: '1.0' }),
     theme: () => (document.documentElement.classList.contains('dark') ? 'dark' : 'light'),
-    whereNow: () => ({ view: state.route, section: state.route === 'settings' ? state.settingsTab : '', route: '' }),
+    // A meeting's page is Echo's call page (`calls`) for plugins.
+    whereNow: () => ({ view: state.route === 'meetings' && pluginCall ? 'calls' : state.route, section: state.route === 'settings' ? state.settingsTab : '', route: '' }),
     onChange: pluginsChanged,
     onGo: hash => { goHash(hash).catch(fail); },
     onNotice: (text, name) => toast(`${name}: ${text}`),
     onCopy: text => navigator.clipboard.writeText(text).then(() => toast('Copied.', 'success'), fail),
     onOpen: confirmPluginLink,
+    confirmSkill: confirmPluginSkill,
+    onSlots: () => { if (state.route === 'meetings') pluginsChanged(); },
+    onCall: folder => openMeetingFolder(folder),
   }).mount(document.body);
+  // Connect's terminal: Claude Code sessions (a plugin's "Ask the vault", a coding agent) in a
+  // dock under the page, outside what the app redraws.
+  terminalDock = createTerminalDock({
+    invoke, listen: (name, fn) => window.__TAURI__.event.listen(name, fn), Terminal, FitAddon,
+    confirmStop: confirmTerminalStop, toast, onLayout: terminalLayout,
+  });
+  terminalDock.mount(document.body).catch(() => {});
   lastPluginTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
   pluginsUi.loadInstalled().catch(() => {
     // Settings → Plugins says why; a plugin page opened at start says it isn't available.
@@ -2414,6 +2537,17 @@ async function boot() {
   });
   await listen('workspace:notification-open', event => openNotification(event.payload || {}).catch(fail));
   await listen('workspace:installer-settled', flushNotification);
+  await listen('plugins:ask-address', event => askPluginAddress(event.payload || {}));
+  // Files dropped on a plugin's page (its `ctx.onFileDrop`): Rust makes handles of that plugin's,
+  // and the page gets those, never the paths.
+  await listen('tauri://drag-drop', event => {
+    const shown = pluginHost?.shown();
+    const paths = Array.isArray(event.payload?.paths) ? event.payload.paths.filter(p => typeof p === 'string').slice(0, 50) : [];
+    if (state.route !== 'plugin' || shown?.view !== 'activity' || !paths.length) return;
+    invoke('plugins_request', { op: 'frame_files', data: { id: shown.id, paths } })
+      .then(files => { if (pluginHost?.shown()?.id === shown.id) pluginHost.dropFiles(shown.id, files); })
+      .catch(fail);
+  });
   // Focus that only moved into a plugin's frame and back never left Connect: refreshing then would
   // redraw the page between a click's mousedown and mouseup, and the click would be lost.
   let focusInPluginFrame = false;

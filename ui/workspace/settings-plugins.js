@@ -10,6 +10,7 @@ import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { badge, button, card, emptyState, settingRow, toggle, spinner } from './ui.js';
 import { agoLabel } from './format.js';
+import { hostWords } from '../plugins/frame/host-words.js';
 
 export const UNVERIFIED = 'Unverified package · installs run with the access you approve';
 export const KNOWLEDGE_LATER = 'Coming later — needs Connect’s Knowledge engine';
@@ -106,7 +107,7 @@ function stateBadges(p, status) {
 function installedRow(p, status, busy) {
   return `<div class="ws-row ws-plugin-row" data-plugin-id="${e(p.id)}">
     <span class="ws-plugin-icon" aria-hidden="true">${icon('puzzle')}</span>
-    <button type="button" class="ws-row-main ws-plugin-open" data-action="plugin-open" data-plugin-id="${e(p.id)}"><strong>${e(p.name)} <span class="ws-muted">${e(p.version)}</span> ${stateBadges(p, status)}</strong><span class="ws-ellipsis">${e(p.problem || (p.enabled && p.loadError) || p.summary || '')}</span></button>
+    <button type="button" class="ws-row-main ws-plugin-open" data-action="plugin-open" data-plugin-id="${e(p.id)}"><strong>${e(p.name)} <span class="ws-muted">${e(p.version)}</span> ${stateBadges(p, status)}</strong><span class="ws-ellipsis">${e(p.problem || (p.enabled && p.loadError) || hostWords(p.summary || ''))}</span></button>
     <div class="ws-actions">
       ${p.update ? button(busy[`update:${p.id}`] ? 'Updating…' : 'Update', { action: 'plugin-update', iconName: 'update', disabled: !!busy[`update:${p.id}`], attrs: { 'data-plugin-id': p.id } }) : ''}
       ${toggle({ action: 'plugin-enable', checked: p.enabled, attrs: { 'data-plugin-id': p.id, 'aria-label': `${p.name} on`, disabled: !!p.problem || !!busy[`enable:${p.id}`] } })}
@@ -123,7 +124,7 @@ function offerCard(o, market) {
   return `<article class="ws-offer${o.installable ? '' : ' ws-offer-off'}" data-plugin-id="${e(o.id)}" data-market="${e(market)}">
     <button type="button" class="ws-offer-open" data-action="plugin-offer" data-plugin-id="${e(o.id)}" data-market="${e(market)}" aria-label="${e(`${o.name || o.id}: details`)}"></button>
     <header><span class="ws-plugin-icon" aria-hidden="true">${icon('puzzle')}</span><div class="ws-offer-name"><strong>${e(o.name || o.id)}</strong><span class="ws-muted">${e(o.version || '')}</span></div>${o.featured ? badge('Featured', 'info', 'spark') : ''}</header>
-    <p class="ws-offer-summary">${e(o.summary || '')}</p>
+    <p class="ws-offer-summary">${e(hostWords(o.summary || ''))}</p>
     ${!o.installable ? `<p class="ws-offer-reason">${e(later ? KNOWLEDGE_LATER : o.reason || 'Connect can’t install it.')}</p>` : ''}
     <footer>${state}${(o.categories || []).slice(0, 3).map(c => `<span class="ws-chip">${e(c)}</span>`).join('')}</footer>
   </article>`;
@@ -211,7 +212,7 @@ export function offerDetail(ui) {
         <div class="ws-plugin-title"><h3>${e(o.name || id)} <span class="ws-muted">${e(o.version || '')}</span></h3><p class="ws-muted">From ${e(market)}${d?.source ? ` · ${e(d.source)}` : ''}${d?.commit ? ` · ${e(shortCommit(d.commit))}` : ''}</p></div>
         <div class="ws-actions">${action}</div></header>
       <div class="ws-card-body">
-        ${o.summary ? `<p class="ws-plugin-summary">${e(o.summary)}</p>` : ''}
+        ${o.summary ? `<p class="ws-plugin-summary">${e(hostWords(o.summary))}</p>` : ''}
         ${!o.installable && o.reason !== undefined ? `<p class="ws-inline-note ${later ? 'ws-info-note' : 'ws-warning'}">${icon(later ? 'clock' : 'alert')}<span>${e(later ? KNOWLEDGE_LATER : o.reason || 'Connect can’t install it.')}</span></p>` : ''}
         ${unverified()}
         <h4 class="ws-sheet-title">What it asks for</h4>
@@ -262,7 +263,7 @@ export function installedDetail(ui, id, status) {
   });
   return `${backButton()}
     <section class="ws-card ws-plugin-detail" data-plugin-id="${e(p.id)}">${head}<div class="ws-card-body">
-      ${p.summary ? `<p class="ws-plugin-summary">${e(p.summary)}</p>` : ''}${notes}
+      ${p.summary ? `<p class="ws-plugin-summary">${e(hostWords(p.summary))}</p>` : ''}${notes}
       ${own}
       ${sections || actions ? `<div class="ws-plugin-links">${sections}${actions}</div>` : ''}
     </div></section>

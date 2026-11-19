@@ -302,6 +302,8 @@ impl Reply {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     Command,
+    /// A command with files the user handed the plugin: `{args, files}`.
+    CommandFiles,
     Provider,
     Event,
     Timer,
@@ -311,6 +313,7 @@ impl Kind {
     fn as_str(self) -> &'static str {
         match self {
             Kind::Command => "command",
+            Kind::CommandFiles => "command+files",
             Kind::Provider => "provider",
             Kind::Event => "event",
             Kind::Timer => "timer",

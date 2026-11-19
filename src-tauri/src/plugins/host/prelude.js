@@ -153,6 +153,30 @@
     return p
   }
 
+  // `ctx.store.update(path, f)` (Echo 0.10): read, change with `f(text | null)`, and write only
+  // over what was read; another writer in between means read again, 50 times at most. `f`
+  // giving undefined, null or the same text writes nothing. Answers the text now stored.
+  const UPDATE_TRIES = 50
+  const sha256 = (t) => read(bridge.host('crypto.sha256', stringify([Str(t)])))
+  const storeUpdate = (path, f) => {
+    fn('ctx.store.update', f)
+    const name = Str(path)
+    for (let i = 0; i < UPDATE_TRIES; i += 1) {
+      const now = read(bridge.host('store.read', stringify([name])))
+      const next = f(now)
+      if (next === undefined || next === null) return now
+      const text = Str(next)
+      if (text === now) return now
+      const guard = now === null ? { createNew: true } : { ifSha: sha256(now) }
+      const wire = bridge.host('store.write', stringify([name, text, guard]))
+      if (wire[0] !== '!') return text
+      const e = fromWire(wire)
+      const message = madeGet(made, e)[1]
+      if (indexOf(message, 'changed since') < 0 && indexOf(message, 'there already') < 0) throw e
+    }
+    throw hostError('plugin_error', `“${name}” kept changing while it was updated`)
+  }
+
   const commands = new Map()
   const providers = new Map()
   const listeners = new Map()
@@ -191,6 +215,8 @@
     store: {
       read: direct('store.read'),
       write: direct('store.write'),
+      update: storeUpdate,
+      walk: deferred('store.walk'),
       list: direct('store.list'),
       remove: direct('store.remove'),
       path: direct('store.path'),
@@ -204,18 +230,43 @@
       read: direct('fs.read'),
       readMany: deferred('fs.readMany'),
       walk: deferred('fs.walk'),
+      stat: direct('fs.stat'),
+      search: deferred('fs.search'),
+      append: direct('fs.append'),
+      copyIn: deferred('fs.copyIn'),
       write: direct('fs.write'),
       move: direct('fs.move'),
       remove: direct('fs.remove'),
       forget: direct('fs.forget'),
     },
-    system: { pickFolder: deferred('system.pickFolder'), which: direct('system.which') },
-    http: { fetch: deferred('http.fetch') },
-    claude: noting({ run: deferred('claude.run') }, 'ctx.claude.', ECHO_ONLY_CLAUDE),
+    system: {
+      pickFolder: deferred('system.pickFolder'),
+      pickFiles: deferred('system.pickFiles'),
+      which: direct('system.which'),
+    },
+    http: { fetch: deferred('http.fetch'), askAddress: deferred('http.askAddress') },
+    web: { read: deferred('web.read') },
+    m365: {
+      search: deferred('m365.search'),
+      mailThread: deferred('m365.mailThread'),
+      chat: deferred('m365.chat'),
+    },
+    git: {
+      info: deferred('git.info'),
+      status: deferred('git.status'),
+      log: deferred('git.log'),
+      show: deferred('git.show'),
+      commit: deferred('git.commit'),
+      init: deferred('git.init'),
+    },
+    claude: noting({ run: deferred('claude.run'), stop: direct('claude.stop') }, 'ctx.claude.', ECHO_ONLY_CLAUDE),
     profiles: direct('profiles'),
 
     notify: direct('notify'),
-    markdown: direct('markdown'),
+    // `ctx.markdown(md[, {breaks, links, images}])`, and `ctx.markdown.links(md[, {detail}])`, the
+    // destinations a page has, resolved by the plugin before it renders.
+    markdown: Object.assign(direct('markdown'), { links: direct('markdown.links') }),
+    crypto: { sha256 },
     inbox: { set: direct('inbox.set'), clear: direct('inbox.clear') },
     widgets: {
       provide: (id, f) => {
@@ -296,14 +347,17 @@
   const dispatch = (kind, name, json, call) => {
     touched = ''
     const args = json === undefined ? undefined : parse(json)
-    if (kind === 'command' || kind === 'provider') {
-      const target = (kind === 'command' ? commands : providers).get(name)
+    if (kind === 'command' || kind === 'command+files' || kind === 'provider') {
+      const target = (kind === 'provider' ? providers : commands).get(name)
       if (!target) {
-        const what = kind === 'command' ? 'no command' : 'nothing provides'
+        const what = kind === 'provider' ? 'nothing provides' : 'no command'
         bridge.answer(call, `!not_found ${what} “${name}”`)
         return
       }
-      answerWith(call, () => target(args))
+      // A command hears the files the user handed it with the call, as in Echo: `fn(args, {files})`.
+      if (kind === 'provider') answerWith(call, () => target(args))
+      else if (kind === 'command') answerWith(call, () => target(args, { files: [] }))
+      else answerWith(call, () => target(args.args, { files: args.files }))
     } else if (kind === 'event') {
       for (const f of listeners.get(name) || []) runAlone(name, f, args)
     } else if (kind === 'timer' && timers.has(Num(name))) {

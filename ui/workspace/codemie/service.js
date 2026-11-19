@@ -441,6 +441,8 @@ export function createCodemieService({ invoke, listen, runLog, platform, now = D
     updateCli,
     checkCli,
     openInTerminal: ({ folder, launcher, profile }) => invoke('open_agent_in_terminal', { folder, launcher, profile }),
+    /** A coding agent in a tab of Connect's own terminal (the dock opens on it). */
+    openInConnect: ({ folder, launcher, profile, agent }) => invoke('terminal_open_agent', { start: { folder, launcher, profile, agent } }),
     pickFolder: () => invoke('pick_project_folder'),
     clearError(key) { delete cm.errors[key]; notify(); },
   };

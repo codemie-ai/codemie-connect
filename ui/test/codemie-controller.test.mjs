@@ -138,3 +138,32 @@ test('today_redraws_only_when_codemie_changes_what_today_shows', async () => {
   await notify();
   assert.equal(renders, first + 1, 'a sign-in that expired did not reach Today');
 });
+
+// Start coding: a coding agent opens in a tab of Connect's terminal (macOS), or the Terminal app.
+const formOf = (values) => ({ get: (k) => values[k] ?? null });
+
+test('start_coding_opens_in_connects_terminal_and_remembers_the_choice', async () => {
+  const { c, service, modals, toasts, prefs } = controllerHarness({ ownTerminal: true, prefs: { 'codemie.start.folders': JSON.stringify(['/Users/taylor/atlas']) } });
+  assert.equal(await c.handle('cm-open-terminal', el({ id: 'claude' })), true);
+  const m = modals.at(-1);
+  assert.equal(m.submit, 'Start');
+  assert.match(m.body, /name="where" value="connect" checked/);
+  assert.match(m.body, /A tab in Connect’s terminal/);
+  await m.onSubmit(formOf({ folder: '/Users/taylor/atlas', where: 'connect' }));
+  assert.deepEqual(service.calls.at(-1), ['openInConnect', { folder: '/Users/taylor/atlas', launcher: 'codemie-claude', profile: 'prod', agent: 'Claude Code' }]);
+  assert.deepEqual(toasts, [], 'the dock shows the new tab');
+  // The Terminal app, once chosen, is the next default.
+  await m.onSubmit(formOf({ folder: '/Users/taylor/atlas', where: 'app' }));
+  assert.deepEqual(service.calls.at(-1), ['openInTerminal', { folder: '/Users/taylor/atlas', launcher: 'codemie-claude', profile: 'prod' }]);
+  assert.equal(prefs.get('codemie.start.where'), 'app');
+  await c.handle('cm-open-terminal', el({ id: 'claude' }));
+  assert.match(modals.at(-1).body, /name="where" value="app" checked/);
+});
+
+test('start_coding_off_a_mac_opens_the_system_terminal_without_asking_where', async () => {
+  const { c, service, modals } = controllerHarness({ ownTerminal: false, prefs: { 'codemie.start.folders': JSON.stringify(['C:\\work\\atlas']) } });
+  await c.handle('cm-open-terminal', el({ id: 'claude' }));
+  assert.doesNotMatch(modals.at(-1).body, /name="where"/);
+  await modals.at(-1).onSubmit(formOf({ folder: 'C:\\work\\atlas' }));
+  assert.equal(service.calls.at(-1)[0], 'openInTerminal');
+});

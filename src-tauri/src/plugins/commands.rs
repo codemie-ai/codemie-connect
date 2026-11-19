@@ -22,6 +22,13 @@
 //! | `signout` | `{id, host}` | `{signedIn: false, host}` |
 //! | `pick_folder` | | `{path}`: the folder the user chose for a marketplace, `null` when they cancelled |
 //! | `open_link` | `{id, url}` | `{opened: true}`: the user pressed Open in Connect's confirmation of a link plugin `id`'s page asked to open; only `https:` and `obsidian:` addresses (ruling R41) |
+//! | `frame_files` | `{id, paths}` | `[{file, name, size}]`: files dropped on plugin `id`'s page, as its handles (`services::window`) |
+//! | `frame_reveal` | `{id, root, path}` | `{revealed: true}`: its page's `ctx.system.reveal`, on the user's click |
+//! | `frame_session` | `{id, folder, path, mode, profile}` | `{opened: true}`: its page's `ctx.claude.session`, Claude Code in Terminal in that folder |
+//! | `frame_skill_check` | `{id, name, md}` | `{name, description, path, replaces}`: what its page's `ctx.claude.installSkill` would add, for Connect's confirmation |
+//! | `frame_skill_install` | `{id, name, md}` | `{installed, path}`: after the user said yes in Connect's window |
+//! | `frame_skill_remove` | `{id, name}` | `{removed: true}`: its page's `ctx.claude.removeSkill`, after the user said yes |
+//! | `address_answer` | `{ask, url}` | `{answered}`: what the user typed in Connect's box for a plugin's `http.askAddress` (`url` null: cancelled) |
 //!
 //! `agreed` is every key of the sheet the user was shown and `sheetHash` that sheet's hash (from
 //! `inspect` or `needs_consent`): a sheet that changed since is refused as `changed`.
@@ -86,6 +93,24 @@ pub async fn plugins_request(
         })
         .await?;
     }
+    if op == "address_answer" {
+        let a: AnswerArg = arg(data.unwrap_or(Value::Null))?;
+        let answered = super::manager::answer_address(a.ask, a.url);
+        return Ok(json!({"answered": answered}));
+    }
+    if let Some(action) = op.strip_prefix("frame_") {
+        let services = manager_of(&window)?.services().clone();
+        let action = action.to_string();
+        let app = {
+            use tauri::Manager;
+            window.app_handle().clone()
+        };
+        return blocking(move || {
+            let _running = running;
+            frame_request(&app, &services, &action, data.unwrap_or(Value::Null))
+        })
+        .await?;
+    }
     if matches!(op.as_str(), "signin" | "signout") {
         let a: SigninArg = arg(data.unwrap_or(Value::Null))?;
         return manager_of(&window)?
@@ -142,11 +167,13 @@ pub async fn plugin_call(
     id: String,
     command: String,
     args: Option<Value>,
+    files: Option<Vec<String>>,
 ) -> Result<Value> {
     require_main_frame(&call)?;
     main_window_only(window.label())?;
+    let files = files.unwrap_or_default();
     manager_of(&window)?
-        .call(&id, &command, args.unwrap_or(Value::Null))
+        .call_with_files(&id, &command, args.unwrap_or(Value::Null), &files)
         .await
         .map_err(host_error)
 }
@@ -229,6 +256,10 @@ struct StorageArg {
     items: Option<Value>,
 }
 #[derive(Deserialize)]
+struct IdArg {
+    id: String,
+}
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoveArg {
     id: String,
@@ -284,6 +315,108 @@ fn open_link(id: &str, url: &str, open: impl FnOnce(&str) -> Result<()>) -> Resu
     })?;
     log::info!("[plugin:{id}] opened a {} link", link.scheme());
     Ok(json!({"opened": true}))
+}
+
+#[derive(Deserialize)]
+struct FilesArg {
+    id: String,
+    paths: Vec<String>,
+}
+#[derive(Deserialize)]
+struct AnswerArg {
+    ask: u64,
+    #[serde(default)]
+    url: Option<String>,
+}
+#[derive(Deserialize)]
+struct SkillArg {
+    id: String,
+    name: String,
+    #[serde(default)]
+    md: String,
+}
+#[derive(Deserialize)]
+struct SessionArg {
+    id: String,
+    folder: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    profile: String,
+}
+#[derive(Deserialize)]
+struct RevealArg {
+    id: String,
+    root: String,
+    #[serde(default)]
+    path: String,
+}
+
+/// What the window asks for the plugin page on screen (`services::window`).
+fn frame_request(
+    app: &tauri::AppHandle,
+    services: &crate::plugins::services::Services,
+    action: &str,
+    data: Value,
+) -> Result<Value> {
+    use crate::plugins::services::{skills, window};
+    let skill = |data: Value| -> Result<(
+        SkillArg,
+        std::sync::Arc<crate::plugins::services::Granted>,
+        std::path::PathBuf,
+    )> {
+        let a: SkillArg = arg(data)?;
+        let p = services.granted(&a.id).map_err(host_error)?;
+        let home = skills::home().map_err(host_error)?;
+        Ok((a, p, home))
+    };
+    match action {
+        "skill_check" => {
+            let (a, p, home) = skill(data)?;
+            skills::check(services, &p, &a.name, &a.md, &home).map_err(host_error)
+        }
+        "skill_install" => {
+            let (a, p, home) = skill(data)?;
+            skills::install(services, &p, &a.name, &a.md, &home).map_err(host_error)
+        }
+        "skill_remove" => {
+            let (a, p, home) = skill(data)?;
+            skills::remove(services, &p, &a.name, &home).map_err(host_error)
+        }
+        "session" => {
+            let a: SessionArg = arg(data)?;
+            let (dir, argv) =
+                window::session(services, &a.id, &a.folder, &a.path, &a.mode, &a.profile)
+                    .map_err(host_error)?;
+            let name = services.granted(&a.id).map_err(host_error)?.name.clone();
+            // In Connect's terminal dock, as in Echo's terminal panel.
+            crate::commands::terminal::open_claude(app, &a.id, &name, &dir, argv)
+                .map_err(|e| WorkspaceError::new("io", e))?;
+            log::info!(
+                "[plugin:{}] opened Claude Code in a folder it was given",
+                a.id
+            );
+            Ok(json!({"opened": true}))
+        }
+        "files" => {
+            let a: FilesArg = arg(data)?;
+            window::hand_files(services, &a.id, &a.paths).map_err(host_error)
+        }
+        "reveal" => {
+            let a: RevealArg = arg(data)?;
+            window::reveal(services, &a.id, &a.root, &a.path, window::open_in_finder)
+                .map_err(host_error)
+        }
+        other => Err(WorkspaceError::new(
+            "invalid",
+            format!(
+                "Connect doesn’t know the plugin request “frame_{}”.",
+                other.escape_debug()
+            ),
+        )),
+    }
 }
 
 fn arg<T: DeserializeOwned>(data: Value) -> Result<T> {
@@ -367,6 +500,10 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
             let a: AddressArg = arg(data)?;
             extras::set_addresses(paths, &a.id, &a.key, &a.value)?;
             to_json(installed_view(paths, &a.id)?)
+        }
+        "host_phrases" => {
+            let a: IdArg = arg(data)?;
+            extras::host_phrases(paths, &a.id)
         }
         "client_storage" => {
             let a: StorageArg = arg(data)?;
@@ -793,6 +930,23 @@ mod tests {
         .unwrap();
         assert_eq!(installed["status"], "installed");
         assert_eq!(installed["plugin"]["version"], "1.0.0");
+        // Its own words that name Echo, which its frame says in Connect's. The script is taken
+        // away again, so the package the rest of the flow hashes is the one installed.
+        let view = env.paths.installed().join("standup/1.0.0/view.js");
+        std::fs::write(
+            &view,
+            "say(`Echo posts your standup when the meeting ends`)\nsay('Ask in Echo\\'s panel')\n",
+        )
+        .unwrap();
+        let phrases = run("host_phrases", json!({"id": "standup"})).unwrap();
+        std::fs::remove_file(&view).unwrap();
+        assert_eq!(
+            phrases["phrases"],
+            json!([
+                "Echo posts your standup when the meeting ends",
+                "Ask in Echo's panel"
+            ])
+        );
 
         // The marketplace publishes 1.1.0, which also wants a folder.
         let mut newer = standup("1.1.0");
@@ -831,6 +985,7 @@ mod tests {
             ("plugins-markets.json", markets),
             ("plugins-catalog.json", catalog),
             ("plugins-inspect.json", inspect),
+            ("plugins-host-phrases.json", phrases),
             ("plugins-installed.json", installed_list),
             ("plugins-update-needs-consent.json", needs),
             ("plugins-registry-unreadable.json", unreadable),

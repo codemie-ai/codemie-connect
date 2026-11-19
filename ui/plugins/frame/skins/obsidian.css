@@ -1,0 +1,153 @@
+/* Knowledge (plugin `obsidian`, 1.0.x and 1.1.x) in CodeMie Connect's look: loaded by the frame's
+   shim after the plugin's own knowledge.css, for those versions only (`skinFor`). It only restyles
+   what the plugin draws (sizes, spacing, radii, borders, colours, the dialog), to match Connect's
+   Today, Meetings and Settings pages; it never hides, moves or reorders anything, so a selector a
+   later release renames degrades the look, not what Knowledge does. ui/test/knowledge-skin.test.mjs
+   checks that every class named here is still in the installed knowledge.css. Colours and fonts
+   come from echo-compat.css (Connect's tokens under Echo's names).
+
+   Knowledge marks everything it picks with its accent (a blue fill and blue text); Connect keeps
+   colour for links and states, and draws a pick as its selected row or a gradient-outlined
+   segment. Its AI marks are Connect's purple. */
+
+/* The page's header and tabs: Connect's page title and tab bar. */
+.kn-head { padding: 16px 24px 0; gap: 12px; }
+.kn-h2 { font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -.5px; }
+.kn-tabs { padding: 4px 18px 0; }
+.kn-tabs .tab { font-size: 14px; padding: 8px 8px 12px; }
+.kn-tabs .tab .kn-cnt { background: var(--raised); color: var(--text-2); }
+.kn-switch { height: 28px; border-radius: var(--r-control); border-color: var(--line); background: var(--surface); font-weight: 500; }
+.kn-switch:hover { background: var(--hover); border-color: var(--line-strong); }
+.kn-switch-menu { border-radius: var(--r-control); }
+.kn-mi.on { color: var(--text); }
+
+/* A vault's mark and a first-run icon: Connect's card icon, a raised square. */
+.kn-gem, .kn-first-ic { background: var(--raised); color: var(--text); }
+.kn-gem.big { border-radius: var(--r-panel); }
+
+/* Empty states: Connect's empty page. */
+.kn-empty h2 { font-size: 18px; font-weight: 600; }
+.kn-empty-lead { color: var(--text-2); line-height: 20px; }
+
+/* Cards: Connect's filled card on the page, its inner blocks a step darker. */
+.kn-card, .kn-flist, .kn-ledgers, .kn-runh, .kn-tools, .kn-choice, .kn-vs > div, .kn-quote {
+  background: var(--surface); border-color: var(--line); border-radius: var(--r-panel); box-shadow: var(--shadow);
+}
+.kn-card { padding: 16px 18px; gap: 12px; }
+.kn-card-h h3 { font-size: 14px; line-height: 20px; font-weight: 600; }
+.kn-h-ask, .kn-h-welcome { background: var(--surface); border-color: var(--line); }
+.kn-h-welcome { border-radius: var(--r-panel); }
+.kn-h-step h3 .n { background: var(--raised); color: var(--text); }
+.kn-h-ask .kn-card-h h3 svg { color: var(--purple); }
+.kn-h-sg, .kn-h-step { background: var(--surface-2); border-color: var(--line); }
+.kn-h-sg:hover { background: var(--hover); }
+.kn-h-sg svg, .kn-drop > svg { color: var(--text-2); }
+.kn-choice:hover { border-color: var(--line-strong); }
+.kn-choice h3 svg { color: var(--text); }
+
+/* Health: the score ring and bars in Connect's primary gradient. */
+.kn-ring { background: conic-gradient(var(--chart-2) 0, var(--accent) var(--p), var(--line) var(--p) 100%); }
+.kn-ring span { background: var(--surface); }
+.kn-hbar { background: var(--raised); }
+.kn-hbar i { background: var(--primary-border); }
+
+/* Picks in lists: Connect's selected row (a neutral fill, the text as it was). */
+.kn-tr.on, .kn-fi.on, .kn-sr.on, .kn-pl.on, button.kn-pl.on:hover, .kn-q-run.on { background: var(--selected); color: var(--text); }
+.kn-tr.on svg { color: var(--text); }
+.kn-fx.on { border-color: var(--line-strong); }
+.kn-hist.on i, .kn-dot.on i { background: var(--text); }
+.kn-dot.on { border-color: var(--text); }
+
+/* Filters and pressed choices: Connect's segment, outlined in its primary gradient. */
+.kn-filters button, .kn-h-mini button { border: 1px solid transparent; border-radius: 6px; padding: 1px 8px; font-weight: 600; }
+.kn-filters button.on, .kn-h-mini button.on, .kn-fx-ch .btn[aria-pressed="true"] {
+  border-color: transparent; color: var(--primary-text);
+  background: linear-gradient(var(--primary-fill), var(--primary-fill)) padding-box, var(--primary-border) border-box;
+}
+
+/* Tags, chips and marks: Connect's neutral pill; AI is purple, new is info blue. */
+.kn-tag, .tag.acc { background: var(--raised); color: var(--text-2); border-color: var(--line); }
+.kn-chip { border-color: var(--line); background: var(--raised); color: var(--text); }
+.kn-chip:hover { background: var(--hover); border-color: var(--line-strong); }
+.kn-chip.done { background: var(--selected); }
+.kn-mtag.ai { background: var(--purple-bg); color: var(--purple); }
+.kn-st.new { background: var(--info-bg); color: var(--info); }
+.kn-sr .k.echo, .kn-idet-h .k.echo, .kn-h-who.echo { background: var(--purple-bg); color: var(--purple); }
+.kn-aibox { background: var(--purple-bg); border-color: color-mix(in srgb, var(--purple) 45%, transparent); }
+.kn-then { background: var(--raised); }
+.kn-then svg { color: var(--text-2); }
+
+/* The rails and the tree: Connect's sidebar panel. */
+.kn-tree { background: var(--sidebar); }
+.kn-tree-top .search { height: 32px; font-size: 13px; border-radius: var(--r-control); }
+.kn-tree-foot { font-size: 12px; }
+
+/* The page bar and the reader: a page reads like a meeting's notes in Connect. */
+.kn-bar { padding: 8px 24px; }
+.kn-doc { padding: 20px 40px 64px; font-family: var(--sans); font-size: 14px; line-height: 22px; }
+.kn-doc h1 { font-size: 24px; line-height: 32px; font-weight: 600; letter-spacing: -.6px; }
+.kn-doc h2 { font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -.3px; }
+.kn-doc h3 { font-size: 15px; line-height: 22px; font-weight: 600; }
+.kn-doc code { background: var(--raised); padding: 0 5px; }
+.kn-doc pre { background: var(--surface-2); }
+.kn-doc blockquote { border-left-color: var(--line-strong); background: var(--raised); }
+.kn-props { background: var(--surface-2); }
+
+/* Notices: Connect's 8 px inline notes. */
+.kn-warn, .kn-info { border-radius: var(--r-control); padding: 10px 12px; font-size: 13px; line-height: 20px; }
+
+/* Its own dialog (`.kn-sheet`): Connect's modal, 8 px corners over a 50 % scrim, its header,
+   body and footer spacing. */
+.kn-sheet-back { background: var(--scrim); align-items: center; padding: 32px 24px; }
+.kn-sheet { border-radius: 8px; border-color: var(--line); box-shadow: 0 16px 48px rgba(0, 0, 0, .28); }
+.kn-sheet-h { padding: 18px 20px 12px; }
+.kn-sheet-h h2 { font-size: 16px; font-weight: 600; }
+.kn-sheet-h .kn-gem { border-radius: var(--r-control); }
+.kn-steps-bar { padding: 0 20px; gap: 20px; }
+.kn-steps-bar span.on { border-bottom-color: var(--text); }
+.kn-steps-bar span.on i { color: var(--primary-text); background: var(--primary-fill); }
+.kn-steps-bar span.done i { background: var(--raised); color: var(--text-2); }
+.kn-sheet-b { padding: 16px 20px; gap: 14px; }
+.kn-sheet-f { padding: 12px 20px; background: var(--surface); }
+.kn-field > span:first-child { color: var(--text-2); font-size: 12px; line-height: 16px; font-weight: 600; }
+
+/* In Connect's dialog (`.kn-framed`: a meeting's "Save to Knowledge…"): the sheet takes the
+   dialog's side padding (echo-compat.css) back into its own parts, so the footer's line runs edge
+   to edge, as in Connect's modals. */
+.kn-sheet.kn-framed { margin: 0 -20px; }
+.kn-sheet.kn-framed .kn-sheet-h { padding: 16px 20px 6px; }
+.kn-sheet.kn-framed .kn-sheet-b { padding: 14px 20px 18px; gap: 16px; }
+.kn-sheet.kn-framed .kn-sheet-f { padding: 12px 20px; border-top-color: var(--line); background: var(--surface); }
+
+/* Fields: a label beside a block sits at its top; the index row reads as a code block. */
+.kn-field:has(> .kn-rowpre) { align-items: start; }
+.kn-field:has(> .kn-rowpre) > span:first-child { padding-top: 9px; }
+/* The index the row goes to, under its row. */
+.kn-field:has(> .kn-rowpre) + .kn-field { margin-top: -8px; }
+.kn-rowpre { font: 12px/18px var(--mono); padding: 8px 12px; border-color: var(--line); border-radius: var(--r-control); background: var(--surface-2); color: var(--text-2); }
+
+/* A dialog's fields line up: a choice spans its column like the field under it. */
+.kn-sheet-b .kn-field > select { width: 100%; max-width: none; }
+
+/* A note's file name: its folder and `.md` inside one field, as a path. */
+.kn-inline:has(> .kn-stem) { flex-wrap: nowrap; gap: 0; height: 32px; padding: 0 12px; border: 1px solid var(--input-line); border-radius: var(--r-control); background: var(--input); color: var(--text-3); font-family: var(--mono); font-size: 12px; transition: border-color .12s ease; }
+.kn-inline:has(> .kn-stem):hover { border-color: var(--input-hover); }
+.kn-inline:has(> .kn-stem):focus-within { border-color: var(--input-focus); }
+.kn-inline > .kn-dim { flex: none; padding: 0; background: none; color: var(--text-3); font-size: 12px; }
+.kn-inline > .kn-stem, .kn-inline > .kn-stem:hover, .kn-inline > .kn-stem:focus { flex: 1; min-width: 0; height: 30px; padding: 0 1px; border: 0; background: transparent; color: var(--text); }
+
+/* Paths in a dialog's text: Connect's code chips, not blue. */
+.kn-sheet-b .set-sub code, .kn-sheet-b p code { padding: 1px 5px; border-radius: 4px; background: var(--raised); color: var(--text); }
+
+/* Cancel and the other plain buttons of a footer: Connect's secondary button. */
+.kn-sheet-f .btn:not(.primary) { border-color: var(--line); background: var(--surface); color: var(--text); }
+.kn-sheet-f .btn:not(.primary):hover { border-color: var(--line-strong); background: var(--hover); }
+
+/* Pop-overs and found-lists: Connect's menus and cards. */
+.kn-pop { border-radius: var(--r-control); border-color: var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
+.kn-found { border-radius: var(--r-panel); }
+.kn-found-r { padding: 8px 12px; }
+
+/* Checkboxes: Connect's 16 px box. */
+.kn-check { gap: 8px; font-size: 13px; line-height: 20px; }
+.kn-check input { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--check-fill); }

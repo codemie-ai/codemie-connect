@@ -198,6 +198,16 @@ pub fn set_addresses(paths: &PluginPaths, id: &str, key: &str, value: &str) -> R
 }
 
 /// What plugin `id`'s client half keeps in its `localStorage` stand-in: text by text key.
+/// The phrases of plugin `id`'s own scripts that name Echo (`phrases::echo_phrases`), for its
+/// frame to say Connect there: `{phrases}`.
+pub fn host_phrases(paths: &PluginPaths, id: &str) -> Result<Value> {
+    installed_with_manifest(paths, id)?;
+    let phrases = super::registry::active_version(paths, id)
+        .map(|v| super::phrases::echo_phrases(&paths.installed().join(id).join(v)))
+        .unwrap_or_default();
+    Ok(json!({ "phrases": phrases }))
+}
+
 pub fn client_storage(paths: &PluginPaths, id: &str) -> Result<Value> {
     installed_with_manifest(paths, id)?;
     let items: Map<String, Value> = object(read_json(&storage_file(paths, id), json!({})))

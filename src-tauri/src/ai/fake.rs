@@ -17,11 +17,15 @@ pub struct Gate {
     pub release: Arc<Notify>,
 }
 
+/// What a scripted run does besides answering (Claude editing files in its folder).
+type OnRun = Box<dyn Fn(&RunSpec) + Send + Sync>;
+
 #[derive(Default)]
 pub struct FakeRunner {
     script: Mutex<VecDeque<Result<RunOutcome, AiError>>>,
     calls: Mutex<Vec<RunSpec>>,
     gate: Option<Gate>,
+    on_run: Mutex<Option<OnRun>>,
 }
 
 impl FakeRunner {
@@ -30,7 +34,14 @@ impl FakeRunner {
             script: Mutex::new(script.into()),
             calls: Mutex::new(Vec::new()),
             gate: None,
+            on_run: Mutex::new(None),
         }
+    }
+
+    /// Every run calls `f` with its spec before it answers (as Claude would change files in
+    /// the run's folder).
+    pub fn on_run(&self, f: impl Fn(&RunSpec) + Send + Sync + 'static) {
+        *self.on_run.lock().unwrap() = Some(Box::new(f));
     }
 
     /// A runner whose runs wait at the returned [`Gate`].
@@ -57,6 +68,9 @@ impl ClaudeRunner for FakeRunner {
         cancel: CancellationToken,
         on_event: Box<dyn Fn(RunEvent) + Send>,
     ) -> BoxFuture<'a, Result<RunOutcome, AiError>> {
+        if let Some(f) = self.on_run.lock().unwrap().as_ref() {
+            f(&spec);
+        }
         self.calls.lock().unwrap().push(spec);
         let next = self.script.lock().unwrap().pop_front();
         let gate = self.gate.clone();

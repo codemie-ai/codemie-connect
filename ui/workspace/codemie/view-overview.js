@@ -85,12 +85,12 @@ function startCoding(cm, ui) {
   const launcher = agentDisplay(pick).launcher;
   return card({
     title: 'Start coding', iconName: 'rocket',
-    body: `<p class="ws-muted ws-hint" style="margin-bottom:12px">Coding agents run in Terminal, inside your project folder. Connect can open it for you with CodeMie already signed in.</p>
+    body: `<p class="ws-muted ws-hint" style="margin-bottom:12px">Coding agents run in a terminal, inside your project folder. Connect starts one for you with CodeMie already signed in: in its own terminal or in the Terminal app.</p>
       <div class="cm-agent-run">
         ${select(agents.map((a) => [a.command, agentDisplay(a).name]), pick.command, { 'data-action': 'cm-start-agent', 'aria-label': 'Agent to start' })}
         <span>runs ${code(launcher)} with profile <strong>${e(cm.config.active)}</strong></span>
         ${button('Copy', { action: 'cm-copy', iconName: 'copy', variant: 'ghost', attrs: { 'data-copy': `${launcher} --profile ${cm.config.active}` } })}
-        ${button('Open in Terminal…', { action: 'cm-open-terminal', iconName: 'terminal', variant: 'primary', attrs: { 'data-id': pick.command } })}
+        ${button('Start coding…', { action: 'cm-open-terminal', iconName: 'terminal', variant: 'primary', attrs: { 'data-id': pick.command } })}
       </div>`,
   });
 }

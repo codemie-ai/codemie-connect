@@ -3,10 +3,11 @@
 // (ui/test/fixtures/plugins/hello/). DOM drawing itself is covered by the browser E2E.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createShim, startFrame, createStorage } from '../plugins/frame/shim.js';
+import { readFileSync } from 'node:fs';
+import { createShim, startFrame, createStorage, textOf, hostWords, renameTable, renameHost } from '../plugins/frame/shim.js';
 import { checkFromFrame, checkFromWindow, V } from '../plugins/frame/messages.js';
 import { esc, setRow, setCard, sw, relDay, ago } from '../plugins/frame/kit.js';
-import { createPluginHost, internalRoute, openableUrl } from '../plugins/host.js';
+import { createPluginHost, internalRoute, openableUrl, callLink } from '../plugins/host.js';
 
 const HELLO = new URL('./fixtures/plugins/hello/', import.meta.url);
 const settle = (ms = 20) => new Promise(resolve => setTimeout(resolve, ms));
@@ -27,10 +28,16 @@ test.afterEach(() => {
 function element(tag = 'div') {
   const attrs = {};
   return {
-    tag, innerHTML: '', hidden: false, style: {}, removed: false, attrs,
+    tag, innerHTML: '', hidden: false, style: {}, removed: false, attrs, children: [], listeners: {},
     setAttribute(k, v) { attrs[k] = String(v); },
     getAttribute(k) { return attrs[k] ?? null; },
     remove() { this.removed = true; },
+    appendChild(child) { this.children.push(child); },
+    addEventListener(type, fn) { this.listeners[type] = fn; },
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    contains: () => false,
+    focus() {},
     getBoundingClientRect: () => ({ left: 0, top: 0, right: 600, bottom: 120, width: 600, height: 120 }),
   };
 }
@@ -45,14 +52,45 @@ function frameWindow() {
   const head = [];
   const doc = new EventTarget();
   const classes = new Set();
-  doc.documentElement = { classList: { add: c => classes.add(c), remove: (...c) => c.forEach(x => classes.delete(x)), contains: c => classes.has(c) }, style: {} };
+  const htmlAttrs = {};
+  doc.documentElement = { classList: { add: c => classes.add(c), remove: (...c) => c.forEach(x => classes.delete(x)), contains: c => classes.has(c) }, style: {}, attrs: htmlAttrs, setAttribute(k, v) { htmlAttrs[k] = String(v); } };
   doc.body = element('body');
-  doc.body.appendChild = () => {};
+  // The frame's own address: a new hash is a `hashchange`, as in a browser; `replaceState`
+  // changes it quietly. A fragment navigation (`replace`) would make WebKit tell the window the
+  // frame loaded again, so the shim never uses one.
+  const replaced = [];
+  const moveTo = hash => {
+    if (location.hash === hash) return;
+    location.hash = hash;
+    setTimeout(() => win.dispatchEvent(new Event('hashchange')), 0);
+  };
+  const location = { hash: '', replace() { throw new Error('a navigation'); } };
+  win.location = location;
+  win.history = { replaceState(state, title, url) { replaced.push(url); location.hash = url; } };
+  win.moveTo = moveTo;
   doc.head = { appendChild: el => head.push(el) };
   doc.getElementById = id => els[id] || null;
   doc.createElement = tag => element(tag);
   doc.execCommand = () => false;
-  return { win, doc, parent, els, head, classes };
+  return { win, doc, parent, els, head, classes, replaced };
+}
+
+/** A shim connected straight to a test port, its client half `apply`; `got` is what it posts. */
+async function connected(apply, { theme = 'light', id = 'obsidian' } = {}) {
+  const fw = frameWindow();
+  const shim = shimOf(fw, { importClient: async () => ({ apply }) });
+  const { port1, port2 } = new MessageChannel();
+  const got = [];
+  port1.onmessage = event => got.push(event.data);
+  shim.onWindowMessage({
+    source: fw.parent, ports: [port2],
+    data: { v: V, id: 0, kind: 'event', type: 'connect', plugin: { id, name: 'Knowledge', version: '1.0.1', client: 'client.js' }, host: { name: 'CodeMie Connect' }, theme, where: { view: '', section: '', route: '' }, storage: {} },
+  });
+  await settle(30);
+  const send = m => port1.postMessage({ v: V, id: 0, ...m });
+  const where = { view: `${id}:knowledge`, section: '', route: '' };
+  const show = route => send({ kind: 'event', type: 'show', target: { view: 'activity', activity: 'knowledge', route }, where: { ...where, route } });
+  return { fw, shim, got, send, show, ctx: shim.ctx, events: () => got.filter(m => m.kind === 'event').map(({ v, id: _, kind, ...rest }) => rest) };
 }
 
 function shimOf(fw, extra = {}) {
@@ -66,7 +104,7 @@ function shimOf(fw, extra = {}) {
 }
 
 /** The window's bridge over a stand-in document whose iframes hand their messages to a shim. */
-function wired({ invoke } = {}) {
+function wired({ invoke, confirmSkill } = {}) {
   const calls = [];
   const fw = frameWindow();
   let shim = null;
@@ -94,7 +132,7 @@ function wired({ invoke } = {}) {
     querySelector: () => null,
     addEventListener() {},
   };
-  const events = { go: [], notices: [], copies: [], opens: [], changes: 0 };
+  const events = { go: [], goOpts: [], notices: [], copies: [], opens: [], changes: 0, slots: 0, calls: [] };
   const host = createPluginHost({
     invoke: invoke || (async (cmd, args) => {
       calls.push([cmd, args]);
@@ -109,10 +147,14 @@ function wired({ invoke } = {}) {
     about: () => ({ name: 'CodeMie Connect', version: '2.2.0', engine: '1.0' }),
     theme: () => 'dark',
     onChange: () => { events.changes++; },
-    onGo: hash => events.go.push(hash),
+    onGo: (hash, id, opts) => { events.go.push(hash); events.goOpts.push(opts); },
     onNotice: text => events.notices.push(text),
     onCopy: text => events.copies.push(text),
     onOpen: (url, name, id) => events.opens.push([url, name, id]),
+    onSlots: () => { events.slots++; },
+    onCall: (folder, id) => events.calls.push([folder, id]),
+    whereNow: () => ({ view: 'calls', section: '', route: '' }),
+    ...(confirmSkill ? { confirmSkill } : {}),
   });
   host.mount({ appendChild() {} });
   return { host, calls, fw, frames, events, get shim() { return shim; } };
@@ -149,8 +191,7 @@ test('frame_ctx_call_round_trips_and_rejects_unknown_source', async () => {
   const ctx = w.shim.ctx;
   assert.equal(ctx.id, 'hello');
   assert.deepEqual(ctx.host, { name: 'CodeMie Connect', version: '2.2.0', engine: '1.0' });
-  assert.equal(ctx.slots, undefined, 'members Connect lacks are left out');
-  assert.equal(ctx.openEchoPanel, undefined);
+  assert.equal(ctx.openEchoPanel, undefined, 'members Connect lacks are left out');
   const answer = await ctx.call('greet', { name: 'Ana' });
   assert.deepEqual(answer, { text: 'Hello, Ana' });
   const sent = w.calls.find(([cmd]) => cmd === 'plugin_call');
@@ -178,7 +219,7 @@ test('frame_ctx_call_round_trips_and_rejects_unknown_source', async () => {
 
 test('settings_section_and_palette_contributions_reach_main', async () => {
   const w = await helloLoaded();
-  assert.deepEqual(w.host.activities(), [{ id: 'home', label: 'Hello', plugin: 'hello', pluginName: 'Hello' }]);
+  assert.deepEqual(w.host.activities(), [{ id: 'home', label: 'Hello', badge: '', plugin: 'hello', pluginName: 'Hello' }]);
   assert.deepEqual(w.host.sections(), [{ id: 'main', label: 'Hello', badge: '', plugin: 'hello', pluginName: 'Hello' }]);
   const status = w.host.status('hello');
   assert.equal(status.ready, true);
@@ -414,10 +455,12 @@ test('a link clicked in a plugin frame, or window.open, asks the window to open 
     ['obsidian://open?path=%2FVault%2Fa.md', 'Hello', 'hello'],
     ['https://example.com/x', 'Hello', 'hello'],
   ]);
-  // A place on the plugin's own page, a link the plugin handled itself and a javascript: "button"
-  // are left alone; nothing reaches the window.
+  // A place on the plugin's own page is followed in the frame without a navigation (WebKit would
+  // tell the window the frame loaded again); a link the plugin handled itself and a javascript:
+  // "button" are left alone; nothing reaches the window.
   const local = clickIn(w.fw, anchor('#top', 'connect-plugin://hello/__host/frame.html#top'));
-  assert.equal(local.defaultPrevented, false);
+  assert.equal(local.defaultPrevented, true);
+  assert.equal(w.fw.win.location.hash, '#top');
   const handled = new Event('click', { cancelable: true });
   Object.defineProperty(handled, 'target', { value: anchor('https://example.com/y') });
   handled.preventDefault();
@@ -466,4 +509,448 @@ test('an open message carries one address of at most 2000 characters', () => {
   for (const bad of [{ ...ok, url: '' }, { ...ok, url: 42 }, { ...ok, url: 'x'.repeat(2001) }, { ...ok, plugin: 'other' }, { ...ok, target: '_blank' }]) {
     assert.equal(checkFromFrame(bad), null, JSON.stringify(bad).slice(0, 80));
   }
+});
+
+// ---------------------------------------------------------------- Echo 0.10's client members (Knowledge)
+
+test('slots_take_echos_names_and_file_drops_register', async () => {
+  const { ctx, shim } = await connected(() => {});
+  ctx.slots.add('call.header', { id: 'chip', render: () => 'x' });
+  for (const name of ['call.menu', 'call.minutes', 'thread.profile', 'client.profile']) ctx.slots.add(name, { id: 'a', render: () => '' });
+  assert.throws(() => ctx.slots.add('nope', {}), /CodeMie Connect has no slot “nope”/);
+  assert.deepEqual(ctx.slots.list(), ['call.header', 'call.menu', 'call.minutes'], 'the slots a meeting\'s page draws');
+  const dropped = () => {};
+  ctx.onFileDrop(dropped);
+  assert.deepEqual(shim.state.drops, [dropped]);
+  assert.throws(() => ctx.onFileDrop('x'), /needs a function/);
+});
+
+test('a_sheet_is_one_modal_whose_close_is_told_once', async () => {
+  const { ctx, fw, shim } = await connected(() => {});
+  let closed = 0;
+  const box = ctx.ui.sheet('<p>Save the minutes</p>', { label: 'Save', onClose: () => { closed++; } });
+  assert.equal(box.innerHTML, '<p>Save the minutes</p>');
+  assert.equal(box.attrs.role, 'dialog');
+  assert.equal(box.attrs['aria-modal'], 'true');
+  assert.equal(box.attrs['aria-label'], 'Save');
+  const scrim = fw.doc.body.children.at(-1);
+  assert.equal(scrim.className, 'td-modal plug-scrim');
+  assert.equal(scrim.children[0], box);
+  // Opened again while open: the same box, drawn anew.
+  assert.equal(ctx.ui.sheet('<p>Step 2</p>', { label: 'Save', onClose: () => { closed++; } }), box);
+  assert.equal(box.innerHTML, '<p>Step 2</p>');
+  // Esc closes it and tells onClose, once.
+  fw.doc.dispatchEvent(Object.assign(new Event('keydown', { cancelable: true }), { key: 'Escape' }));
+  fw.doc.dispatchEvent(Object.assign(new Event('keydown', { cancelable: true }), { key: 'Escape' }));
+  assert.equal(closed, 1);
+  assert.equal(scrim.removed, true);
+  assert.equal(shim.state.sheet, null);
+  // A click on the scrim closes it; one inside it doesn't.
+  const again = ctx.ui.sheet('<p>x</p>', { onClose: () => { closed++; } });
+  const scrim2 = fw.doc.body.children.at(-1);
+  scrim2.listeners.click({ target: again });
+  assert.equal(closed, 1);
+  scrim2.listeners.click({ target: scrim2 });
+  assert.equal(closed, 2);
+  // closeSheet(), the plugin's own close, tells nobody.
+  ctx.ui.sheet('<p>y</p>', { onClose: () => { closed++; } });
+  ctx.ui.closeSheet();
+  assert.equal(closed, 2);
+  assert.equal(shim.state.sheet, null);
+});
+
+test('show_mirrors_the_route_into_the_frames_hash_before_drawing', async () => {
+  const seen = [];
+  const t = await connected(ctx => {
+    ctx.activities.add({ id: 'knowledge', label: 'Knowledge', render: () => { seen.push(globalThis.__frameHash()); return `<b>${globalThis.__frameHash()}</b>`; } });
+  });
+  globalThis.__frameHash = () => t.fw.win.location.hash;
+  t.show('v/pages/People%2FAnn.md');
+  await settle(30);
+  assert.equal(seen.at(-1), '#obsidian:knowledge/v/pages/People%2FAnn.md');
+  assert.deepEqual(t.fw.replaced, ['#obsidian:knowledge/v/pages/People%2FAnn.md'], 'replaced: no history entry');
+  assert.equal(t.fw.els['cx-main'].innerHTML, '<b>#obsidian:knowledge/v/pages/People%2FAnn.md</b>');
+  // Its own mirroring isn't sent back as `go`.
+  assert.deepEqual(t.events().filter(e => e.type === 'go'), []);
+  // A page's hash the plugin moves the frame to itself goes to the window, and is drawn.
+  t.fw.win.moveTo('#obsidian:knowledge/v/graph');
+  await settle(30);
+  assert.deepEqual(t.events().filter(e => e.type === 'go'), [{ type: 'go', hash: '#obsidian:knowledge/v/graph', replace: true }]);
+  assert.equal(seen.at(-1), '#obsidian:knowledge/v/graph');
+  // The same route shown again changes nothing.
+  t.show('v/graph');
+  await settle(30);
+  assert.equal(t.fw.replaced.length, 1);
+  // A `#<plugin>:…` link clicked in the page is followed without a navigation.
+  const link = { getAttribute: () => '#obsidian:knowledge/v/pages/Atlas.md', href: 'x', closest: () => link };
+  const click = Object.assign(new Event('click', { cancelable: true }), {});
+  Object.defineProperty(click, 'target', { value: link });
+  t.fw.win.dispatchEvent(click);
+  await settle(30);
+  assert.equal(click.defaultPrevented, true);
+  assert.equal(t.fw.replaced.at(-1), '#obsidian:knowledge/v/pages/Atlas.md');
+  assert.deepEqual(t.events().filter(e => e.type === 'go').at(-1), { type: 'go', hash: '#obsidian:knowledge/v/pages/Atlas.md', replace: true });
+  assert.equal(seen.at(-1), '#obsidian:knowledge/v/pages/Atlas.md');
+  // A place on the page isn't a route: nothing goes to the window.
+  const before = t.events().filter(e => e.type === 'go').length;
+  t.fw.win.moveTo('#notes');
+  await settle(30);
+  assert.equal(t.events().filter(e => e.type === 'go').length, before);
+  delete globalThis.__frameHash;
+});
+
+test('a_new_channel_from_the_window_takes_over_without_a_reload', async () => {
+  const t = await connected(ctx => { ctx.activities.add({ id: 'knowledge', label: 'K', render: () => '<p>k</p>' }); });
+  const pending = t.ctx.call('kn', {});
+  const { port1, port2 } = new MessageChannel();
+  const got = [];
+  port1.onmessage = event => got.push(event.data);
+  // Only Connect's window may hand it one.
+  const data = { v: V, id: 0, kind: 'event', type: 'connect', plugin: { id: 'obsidian', client: 'client.js' }, host: { name: 'CodeMie Connect' }, theme: 'dark', where: { view: '', section: '', route: '' }, storage: {} };
+  t.shim.onWindowMessage({ source: { name: 'another frame' }, data, ports: [port2] });
+  await settle(20);
+  assert.deepEqual(got, []);
+  t.shim.onWindowMessage({ source: t.fw.parent, data, ports: [port2] });
+  await assert.rejects(pending, /try again/);
+  await settle(30);
+  assert.ok(got.some(m => m.kind === 'event' && m.type === 'ready'), 'told the window it is ready');
+  assert.ok(got.some(m => m.kind === 'contribution' && m.activities[0].id === 'knowledge'), 'and what it adds');
+  assert.equal(t.fw.doc.documentElement.attrs['data-theme'], 'dark');
+  port1.close();
+});
+
+test('go_keeps_replace_and_theme_sets_data_theme', async () => {
+  const t = await connected(ctx => { ctx.activities.add({ id: 'knowledge', label: 'K', render: () => '' }); }, { theme: 'dark' });
+  assert.equal(t.fw.doc.documentElement.attrs['data-theme'], 'dark');
+  t.send({ kind: 'event', type: 'theme', theme: 'light' });
+  await settle(20);
+  assert.equal(t.fw.doc.documentElement.attrs['data-theme'], 'light');
+  t.ctx.go('#obsidian:knowledge/v/health', { replace: true });
+  t.ctx.go('#obsidian:knowledge/v/home');
+  await settle(20);
+  assert.deepEqual(t.events().filter(e => e.type === 'go'), [
+    { type: 'go', hash: '#obsidian:knowledge/v/health', replace: true },
+    { type: 'go', hash: '#obsidian:knowledge/v/home', replace: false },
+  ]);
+  // The window's side passes `replace` on, for the frame on screen.
+  const w = await helloLoaded();
+  w.host.show({ id: 'hello', view: 'activity', activity: 'home', route: '' });
+  await settle(20);
+  w.shim.ctx.go('home/x', { replace: true });
+  w.shim.ctx.go('home/y');
+  await settle(30);
+  assert.deepEqual(w.events.go, ['#/p/hello/home/x', '#/p/hello/home/y']);
+  assert.deepEqual(w.events.goOpts, [{ replace: true }, { replace: false }]);
+  assert.equal(checkFromFrame({ v: V, id: 0, kind: 'event', type: 'go', hash: 'x', replace: 'yes' }), null);
+  assert.ok(checkFromFrame({ v: V, id: 0, kind: 'event', type: 'go', hash: 'x', replace: true }));
+  assert.ok(checkFromFrame({ v: V, id: 0, kind: 'event', type: 'go', hash: 'x' }));
+});
+
+test('a_page_being_typed_in_is_left_alone_and_its_badge_reaches_the_window', async () => {
+  let editing = true;
+  let count = 3;
+  const t = await connected(ctx => {
+    ctx.activities.add({ id: 'knowledge', label: 'K', render: () => `<p>${count}</p>`, editing: () => editing, badge: () => count });
+  });
+  t.show('');
+  await settle(30);
+  assert.equal(t.fw.els['cx-main'].innerHTML, '', 'held while editing()');
+  editing = false;
+  t.ctx.render();
+  await settle(30);
+  assert.equal(t.fw.els['cx-main'].innerHTML, '<p>3</p>');
+  const last = () => t.got.filter(m => m.kind === 'contribution').at(-1);
+  assert.deepEqual(last().activities, [{ id: 'knowledge', label: 'K', badge: '3' }]);
+  count = 150;
+  t.ctx.render();
+  await settle(30);
+  assert.equal(last().activities[0].badge, '99+');
+  assert.ok(checkFromFrame(last()), 'the window takes it');
+});
+
+test('reveal_and_dropped_files_reach_only_the_page_on_screen', async () => {
+  const w = await helloLoaded();
+  const dropped = [];
+  w.shim.ctx.onFileDrop(files => dropped.push(files));
+  // Not on screen: no reveal, no files.
+  await assert.rejects(w.shim.ctx.system.reveal('/v', 'a.md'), /page on screen/);
+  assert.equal(w.host.dropFiles('hello', [{ file: 'h1', name: 'a.pdf', size: 3 }]), false);
+  w.host.show({ id: 'hello', view: 'activity', activity: 'home', route: '' });
+  await settle(20);
+  const answer = await w.shim.ctx.system.reveal('/Users/taylor/Vault', 'notes/a.md');
+  assert.ok(answer);
+  const asked = w.calls.filter(([cmd, a]) => cmd === 'plugins_request' && a.op === 'frame_reveal');
+  assert.deepEqual(asked.at(-1)[1].data, { id: 'hello', root: '/Users/taylor/Vault', path: 'notes/a.md' }, 'the id is the frame’s own');
+  // Only on the user's click.
+  w.fw.win.navigator.userActivation.isActive = false;
+  await assert.rejects(w.shim.ctx.system.reveal('/v', ''), /your click/);
+  w.fw.win.navigator.userActivation.isActive = true;
+  // Dropped while its page shows: the handles, nothing else.
+  assert.equal(w.host.dropFiles('hello', [{ file: 'h1', name: 'Brief.pdf', size: 12, path: '/Users/taylor/Brief.pdf' }]), true);
+  await settle(20);
+  assert.deepEqual(dropped, [[{ file: 'h1', name: 'Brief.pdf', size: 12 }]]);
+  // The schema keeps the window from sending anything else.
+  assert.equal(checkFromWindow({ v: V, id: 0, kind: 'event', type: 'files', files: [{ file: 'h', name: 'x', size: 1, path: '/x' }] }), null);
+  assert.equal(checkFromFrame({ v: V, id: 3, kind: 'call', method: 'reveal', root: '', path: 'x' }), null);
+  // A Settings section of the same plugin isn't a page files are dropped on.
+  w.host.show({ id: 'hello', view: 'section', section: 'main' });
+  await settle(20);
+  assert.equal(w.host.dropFiles('hello', [{ file: 'h2', name: 'b', size: 1 }]), false);
+});
+
+test('files_handed_to_the_page_go_with_a_call_by_their_ids', async () => {
+  const w = await helloLoaded();
+  await w.shim.ctx.call('source_add', { kind: 'files' }, { files: [{ file: 'h1', name: 'a.pdf', size: 1 }, 'h2'] });
+  await w.shim.ctx.call('greet', {});
+  const sent = w.calls.filter(([cmd]) => cmd === 'plugin_call').map(([, a]) => a);
+  assert.deepEqual(sent.at(-2), { id: 'hello', command: 'source_add', args: { kind: 'files' }, files: ['h1', 'h2'] });
+  assert.deepEqual(sent.at(-1), { id: 'hello', command: 'greet', args: {} }, 'no files: none sent');
+  assert.equal(checkFromFrame({ v: V, id: 9, kind: 'call', method: 'command', command: 'x', args: {}, files: [{ file: 'h1' }] }), null);
+});
+
+test('a_claude_code_session_is_asked_for_only_by_the_page_on_screen_on_a_click', async () => {
+  const w = await helloLoaded();
+  const sessions = () => w.calls.filter(([cmd, a]) => cmd === 'plugins_request' && a.op === 'frame_session').map(([, a]) => a.data);
+  // Not on screen: told as a notice, nothing reaches native.
+  assert.equal(await w.shim.ctx.claude.session({ folder: '/Users/taylor/Vault' }), null);
+  assert.deepEqual(sessions(), []);
+  w.host.show({ id: 'hello', view: 'activity', activity: 'home', route: '' });
+  await settle(20);
+  await w.shim.ctx.claude.session({ folder: '/Users/taylor/Vault', profile: 'codemie:prod', mode: 'yolo' });
+  assert.deepEqual(sessions(), [{ id: 'hello', folder: '/Users/taylor/Vault', path: '', mode: '', profile: 'codemie:prod' }]);
+  w.fw.win.navigator.userActivation.isActive = false;
+  assert.throws(() => w.shim.ctx.claude.session({ folder: '/v' }), /your click/);
+  w.fw.win.navigator.userActivation.isActive = true;
+  assert.equal(checkFromFrame({ v: V, id: 4, kind: 'call', method: 'session', folder: '/v', path: '', mode: 'admin', profile: '' }), null);
+});
+
+test('a_skill_is_added_only_after_connects_own_confirmation', async () => {
+  const asked = [];
+  let yes = true;
+  const calls = [];
+  const fw = frameWindow();
+  // The wired window with a confirmation of its own.
+  const w = wired({
+    invoke: async (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'plugins_request' && args.op === 'frame_skill_check') return { name: args.data.name, description: 'My twin', path: `~/.claude/skills/${args.data.name}/SKILL.md`, replaces: false };
+      if (cmd === 'plugins_request' && args.op === 'frame_skill_install') return { installed: true };
+      if (cmd === 'plugins_request' && args.op === 'frame_skill_remove') return { removed: true };
+      if (cmd === 'plugins_request') return { items: {} };
+      return null;
+    },
+    confirmSkill: async details => { asked.push(details); return yes; },
+  });
+  assert.ok(fw);
+  w.host.sync([HELLO_INSTALLED]);
+  w.frames[0].load();
+  await settle(60);
+  const ctx = w.shim.ctx;
+  // Not on screen: refused before anything is checked.
+  await assert.rejects(ctx.claude.installSkill('twin-me', '---\nname: twin-me\n---\n'), /page on screen/);
+  w.host.show({ id: 'hello', view: 'activity', activity: 'home', route: '' });
+  await settle(20);
+  assert.deepEqual(await ctx.claude.installSkill('twin-me', '---\nname: twin-me\n---\n'), { installed: true });
+  assert.deepEqual(asked[0], { op: 'install', plugin: 'Hello', name: 'twin-me', description: 'My twin', path: '~/.claude/skills/twin-me/SKILL.md', replaces: false });
+  const ops = () => calls.filter(([cmd]) => cmd === 'plugins_request').map(([, a]) => a.op).filter(op => op.startsWith('frame_skill'));
+  assert.deepEqual(ops(), ['frame_skill_check', 'frame_skill_install']);
+  // The user says no: nothing is written.
+  yes = false;
+  await assert.rejects(ctx.claude.installSkill('twin-me', 'x'), /You chose not to add \/twin-me/);
+  await assert.rejects(ctx.claude.removeSkill('twin-me'), /You chose to keep/);
+  assert.deepEqual(ops(), ['frame_skill_check', 'frame_skill_install', 'frame_skill_check']);
+  yes = true;
+  assert.deepEqual(await ctx.claude.removeSkill('twin-me'), { removed: true });
+  // Only on the user's click, in Echo's words; never a name that isn't a skill's.
+  w.fw.win.navigator.userActivation.isActive = false;
+  await assert.rejects(ctx.claude.installSkill('twin-me', 'x'), /only on your click/);
+  w.fw.win.navigator.userActivation.isActive = true;
+  assert.equal(checkFromFrame({ v: V, id: 5, kind: 'call', method: 'skill', op: 'install', name: '../x', md: '' }), null);
+});
+
+const CALL = { name: '2026-11-04_160426-sync', stamp: '2026-11-04_160426', title: 'Sync', started_at: '2026-11-04T16:00:00Z', notes: true, profile: null, memo: false, threads: [], client: null };
+
+test('a_slots_html_becomes_one_line_of_text', () => {
+  assert.equal(textOf('<span class="kn-rel"><button title="a>b"><svg><path d="M1"/></svg> Minutes → Work &amp; co ▾</button></span>'), 'Minutes → Work & co ▾');
+  assert.equal(textOf('<p class="kn-then"><svg></svg><span>Then saved to <b>Work</b>, with a row.</span></p>'), 'Then saved to Work, with a row.');
+  assert.equal(textOf('<script>alert(1)</script><style>p{}</style>ok &#x2192; &#8599; &bogus;'), 'ok → ↗ &bogus;');
+  assert.equal(textOf(null), '');
+  assert.equal(textOf('x'.repeat(400)).length, 300);
+});
+
+test('call_slots_reach_the_window_as_text_and_a_chosen_item_runs_in_the_frame', async () => {
+  const seen = { after: [], runs: [] };
+  const t = await connected(ctx => {
+    ctx.slots.add('call.header', { id: 'chip', render: c => `<button class="kn-chip">${ctx.ui.esc(c.title)} → <b>Work</b> ▾</button>`, after: (box, c) => seen.after.push([box.innerHTML, c.name]) });
+    for (const id of ['open', 'save']) {
+      ctx.slots.add('call.menu', { label: () => (id === 'open' ? 'Open in Work' : 'Save to Knowledge…'), when: tt => tt.kind === 'call' && (id === 'save' || tt.call.notes), run: tt => seen.runs.push([id, tt]) });
+    }
+    ctx.slots.add('call.menu', { label: 'Broken', when: () => { throw new Error('when broke'); }, run: () => {} });
+    ctx.slots.add('call.minutes', { id: 'then', label: 'Knowledge', render: () => '<p>Then saved to <b>Work</b>.</p>' });
+  });
+  const slots = () => t.events().filter(m => m.type === 'slots');
+  assert.equal(slots().length, 1, 'no meeting yet: empty slots, once');
+  assert.deepEqual(slots()[0], { type: 'slots', call: '', header: [], menu: [], minutes: [] });
+  t.send({ kind: 'event', type: 'call', call: CALL, where: { view: 'calls', section: '', route: '' } });
+  await settle(20);
+  assert.deepEqual(t.ctx.where(), { view: 'calls', section: '', route: '' });
+  assert.deepEqual(slots().at(-1), { type: 'slots', call: CALL.name, header: ['Sync → Work'], menu: ['Open in Work', 'Save to Knowledge…'], minutes: ['Then saved to Work.'] });
+  assert.deepEqual(seen.after.at(-1), ['<button class="kn-chip">Sync → <b>Work</b> ▾</button>', CALL.name], 'after() gets a box with its HTML');
+  assert.ok(t.events().some(m => m.type === 'error' && /when broke/.test(m.message)), 'a broken item is told, the rest drawn');
+  // Drawn again with nothing new: not sent again.
+  const before = slots().length;
+  t.ctx.render();
+  await settle(20);
+  assert.equal(slots().length, before);
+  // The user chose the second ⋯ item the window listed: it runs here, with Echo's `t`.
+  t.send({ kind: 'event', type: 'slot', slot: 'call.menu', index: 1 });
+  await settle(20);
+  assert.deepEqual(seen.runs, [['save', { kind: 'call', call: CALL }]]);
+  // A meeting without notes: the item that needs them goes.
+  t.send({ kind: 'event', type: 'call', call: { ...CALL, notes: false }, where: { view: 'calls', section: '', route: '' } });
+  await settle(20);
+  assert.deepEqual(slots().at(-1).menu, ['Save to Knowledge…']);
+  t.send({ kind: 'event', type: 'slot', slot: 'call.menu', index: 0 });
+  await settle(20);
+  assert.equal(seen.runs.at(-1)[0], 'save', 'the index is of the items listed now');
+  // No meeting: empty again; a stale index runs nothing.
+  t.send({ kind: 'event', type: 'call', call: null, where: { view: 'meetings', section: '', route: '' } });
+  await settle(20);
+  assert.deepEqual(slots().at(-1), { type: 'slots', call: '', header: [], menu: [], minutes: [] });
+  t.send({ kind: 'event', type: 'slot', slot: 'call.menu', index: 0 });
+  await settle(20);
+  assert.equal(seen.runs.length, 2);
+  // A sheet tells the window it opened and closed.
+  t.ctx.ui.sheet('<p>Save</p>', { label: 'Save the minutes to Knowledge' });
+  t.ctx.ui.closeSheet();
+  await settle(20);
+  assert.deepEqual(t.events().filter(m => m.type === 'sheet'), [{ type: 'sheet', open: true }, { type: 'sheet', open: false }]);
+});
+
+test('the_window_tells_frames_the_meeting_shows_their_slots_and_lays_a_sheet_over_itself', async () => {
+  const w = await helloLoaded();
+  const runs = [];
+  w.shim.ctx.slots.add('call.header', { id: 'chip', render: c => `<b>${c.title}</b> chip` });
+  w.shim.ctx.slots.add('call.menu', { label: 'Save to Hello…', run: tt => runs.push(tt.call.name) });
+  w.host.setCall(CALL);
+  await settle(30);
+  assert.deepEqual(w.shim.state.call, CALL);
+  assert.deepEqual(w.shim.ctx.where(), { view: 'calls', section: '', route: '' }, 'a meeting\'s page is Echo\'s call page');
+  assert.deepEqual(w.host.callSlots(), [{ plugin: 'hello', pluginName: 'Hello', call: CALL.name, header: ['Sync chip'], menu: ['Save to Hello…'], minutes: [] }]);
+  assert.ok(w.events.slots >= 1);
+  // The same meeting again tells nobody; the user's choice runs in the frame.
+  const told = w.events.slots;
+  w.host.setCall({ ...CALL });
+  await settle(20);
+  assert.equal(w.events.slots, told);
+  w.host.runSlot('hello', 0);
+  w.host.runSlot('hello', 5);
+  w.host.runSlot('nobody', 0);
+  await settle(20);
+  assert.deepEqual(runs, [CALL.name]);
+  // Its page isn't on screen: no reveal; once it shows a sheet, the frame covers the window and may.
+  await assert.rejects(w.shim.ctx.system.reveal('/v', 'a.md'), /page on screen/);
+  w.shim.ctx.ui.sheet('<p>Save the minutes</p>', { label: 'Save' });
+  await settle(20);
+  assert.equal(w.el.hidden, false);
+  assert.equal(w.el.className, 'ws-plugin-frame ws-plugin-sheet');
+  assert.deepEqual([w.el.style.left, w.el.style.top, w.el.style.width, w.el.style.height], ['0px', '0px', '100%', '100%']);
+  assert.ok(await w.shim.ctx.system.reveal('/v', 'a.md'));
+  // An Echo link to a call opens that meeting; any other link is asked about as before.
+  w.shim.ctx.ui.sheet('<p>x</p>');
+  w.fw.win.open('echo://call/2026-11-04_160426-sync');
+  w.fw.win.open('echo://call/..%2F..%2Fetc');
+  await settle(20);
+  assert.deepEqual(w.events.calls, [['2026-11-04_160426-sync', 'hello']]);
+  w.shim.ctx.ui.closeSheet();
+  await settle(20);
+  assert.equal(w.el.hidden, true);
+  assert.equal(w.el.className, 'ws-plugin-frame');
+  w.fw.win.open('echo://call/x');
+  await settle(20);
+  assert.equal(w.events.calls.length, 1, 'not from a page that isn\'t on screen');
+  // Another meeting: the old slots go until the frame draws the new ones; none at all clears them.
+  w.host.setCall(null);
+  await settle(20);
+  assert.deepEqual(w.host.callSlots(), []);
+  assert.equal(w.shim.state.call, null);
+});
+
+test('the_schema_takes_a_call_its_slots_and_a_sheet_only_as_named', () => {
+  const where = { view: 'calls', section: '', route: '' };
+  const ok = m => checkFromWindow({ v: V, id: 0, kind: 'event', ...m });
+  assert.ok(ok({ type: 'call', call: CALL, where }));
+  assert.ok(ok({ type: 'call', call: null, where }));
+  assert.equal(ok({ type: 'call', call: { ...CALL, name: '../x' }, where }), null, 'a folder\'s own name only');
+  assert.equal(ok({ type: 'call', call: { ...CALL, extra: 1 }, where }), null);
+  const { client: _, ...noClient } = CALL;
+  assert.equal(ok({ type: 'call', call: noClient, where }), null);
+  assert.equal(ok({ type: 'call', call: { ...CALL, notes: 'yes' }, where }), null);
+  assert.ok(ok({ type: 'slot', slot: 'call.menu', index: 0 }));
+  assert.equal(ok({ type: 'slot', slot: 'call.header', index: 0 }), null);
+  assert.equal(ok({ type: 'slot', slot: 'call.menu', index: 99 }), null);
+  const fromFrame = m => checkFromFrame({ v: V, id: 0, kind: 'event', ...m });
+  assert.ok(fromFrame({ type: 'slots', call: 'x', header: ['a'], menu: [], minutes: [] }));
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: Array(9).fill('a'), menu: [], minutes: [] }), null);
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: ['<b>' + 'a'.repeat(300)], menu: [], minutes: [] }), null);
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: [' '], menu: [], minutes: [] }), null);
+  assert.ok(fromFrame({ type: 'sheet', open: true }));
+  assert.equal(fromFrame({ type: 'sheet', open: 1 }), null);
+  assert.equal(callLink('echo://call/2026-11-04_160426-sync'), '2026-11-04_160426-sync');
+  for (const bad of ['echo://call/', 'echo://call/a/b', 'echo://call/a%2Fb', 'echo://call/..', 'https://call/x', 'echo://thread/x']) assert.equal(callLink(bad), null, bad);
+});
+
+test('the_frames_refusals_match_the_regexes_knowledge_reads_them_by', async () => {
+  const { ctx, fw } = await connected(() => {});
+  fw.win.navigator.userActivation.isActive = false;
+  // Knowledge's KN_CLICK_GONE: the click was spent before Connect could ask.
+  await assert.rejects(ctx.claude.installSkill('twin-vault', '---\nname: twin-vault\n---\n'), /only on your click/);
+  await assert.rejects(ctx.claude.removeSkill('twin-vault'), /only on your click/);
+  assert.throws(() => ctx.claude.session({ folder: '/v' }), /only on your click/);
+  await assert.rejects(ctx.system.reveal('/v', 'a.md'), /only on your click/);
+});
+
+test('echo_in_a_plugins_own_words_reads_connect_and_a_users_notes_stay_as_written', () => {
+  // The host's name in Echo's plugins: Connect; Claude Code opens in Connect's terminal, as in Echo's panel.
+  assert.equal(hostWords("Claude Code opens in Echo's panel with this vault"), "Claude Code opens in Connect's terminal with this vault");
+  assert.equal(hostWords('Run it in Echo’s terminal'), 'Run it in Connect’s terminal');
+  assert.equal(hostWords('What Echo read; Echo’s index'), 'What Connect read; Connect’s index');
+  assert.equal(hostWords('Echoes and echo stay'), 'Echoes and echo stay');
+  const table = renameTable([
+    'Each vault is a folder of Markdown you own; Echo changes nothing in it until you save something.',
+    "Claude Code opens in Echo's panel with this vault as its project — its",
+    'What Echo read',
+    'Echo',
+    'not about Echo at all, no phrase',
+    42,
+  ]);
+  // A phrase of the plugin's own, inside a longer text: changed there only.
+  assert.equal(
+    renameHost('Each vault is a folder of Markdown you own; Echo changes nothing in it until you save something.', table),
+    'Each vault is a folder of Markdown you own; Connect changes nothing in it until you save something.',
+  );
+  assert.equal(renameHost("✦ Claude Code opens in Echo's panel with this vault as its project — its CLAUDE.md", table),
+    "✦ Claude Code opens in Connect's terminal with this vault as its project — its CLAUDE.md");
+  // White space as the page lays it out.
+  assert.equal(renameHost('  What  Echo\n read ', table), ' What Connect read ');
+  // A short phrase only as the whole text; Echo in a user's own words, never.
+  assert.equal(renameHost('Echo', table), 'Connect');
+  assert.equal(renameHost('  Echo ', table), '  Connect ');
+  assert.equal(renameHost('Echo is our client app', table), 'Echo is our client app');
+  assert.equal(renameHost('Notes on Echo and Atlas', table), 'Notes on Echo and Atlas');
+  assert.equal(renameHost('no host here', table), 'no host here');
+  assert.equal(renameHost('What Echo read', []), 'What Echo read', 'no phrases, no change');
+  // The window hands the phrases over with the plugin; anything else is refused.
+  const connect = phrases => ({ v: V, id: 0, kind: 'event', type: 'connect', plugin: { id: 'kn', phrases }, host: {}, theme: 'dark', where: { view: '', section: '', route: '' }, storage: {} });
+  assert.ok(checkFromWindow(connect(['What Echo read'])));
+  assert.ok(checkFromWindow(connect(undefined)));
+  assert.equal(checkFromWindow(connect('What Echo read')), null);
+  assert.equal(checkFromWindow(connect([7])), null);
+  assert.equal(checkFromWindow(connect(['x'.repeat(401)])), null);
+  // What Rust answers for a package (`host_phrases`, plugins-host-phrases.json) is what it renames by.
+  const answer = JSON.parse(readFileSync(new URL('./fixtures/contract/plugins-host-phrases.json', import.meta.url), 'utf8'));
+  assert.ok(checkFromWindow(connect(answer.phrases)));
+  const fromRust = renameTable(answer.phrases);
+  assert.equal(renameHost('Echo posts your standup when the meeting ends', fromRust), 'Connect posts your standup when the meeting ends');
+  assert.equal(renameHost("Ask in Echo's panel", fromRust), "Ask in Connect's terminal");
 });

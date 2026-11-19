@@ -236,6 +236,25 @@ impl PluginManager {
     /// Runs a plugin's command for the window (its client half, a widget's or an Inbox item's
     /// button).
     pub async fn call(&self, id: &str, command: &str, args: Value) -> Result<Value, HostError> {
+        self.call_with_files(id, command, args, &[]).await
+    }
+
+    /// `call`, with the files the user handed the plugin (`ctx.call(cmd, args, {files})`): ids of
+    /// its own handles, each checked again here.
+    pub async fn call_with_files(
+        &self,
+        id: &str,
+        command: &str,
+        args: Value,
+        files: &[String],
+    ) -> Result<Value, HostError> {
+        let handed = {
+            let handles = lock(&self.services.files);
+            files
+                .iter()
+                .map(|f| handles.handle_of(id, f))
+                .collect::<Result<Vec<_>, _>>()?
+        };
         if !lock(&self.loaded).contains_key(id) {
             // A frame made on install, update, turning on or at start can call before the reload
             // that loads its host half is done (it detects Claude first): it waits for it.
@@ -248,10 +267,19 @@ impl PluginManager {
                 format!("“{id}” isn't on in Connect"),
             ));
         }
-        self.host.call(id, command, args).await
+        if handed.is_empty() {
+            self.host.call(id, command, args).await
+        } else {
+            self.host.call_with_files(id, command, args, handed).await
+        }
     }
 
     /// The user pressed Choose folder for a marketplace on this computer: the folder they chose.
+    /// Connect's services for the plugins, for what the window asks for a plugin's page.
+    pub fn services(&self) -> &Arc<Services> {
+        &self.services
+    }
+
     pub async fn pick_market_folder(&self) -> Option<PathBuf> {
         self.services
             .pick_folder("Choose a plugin marketplace folder")
@@ -411,6 +439,23 @@ fn widget_args(p: &Granted, widget: &str) -> Value {
     })
 }
 
+/// The address boxes Connect's window has open for plugins (`http.askAddress`), by ask.
+type Asks =
+    std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Option<String>>>>;
+fn asks() -> &'static Asks {
+    static ASKS: std::sync::OnceLock<Asks> = std::sync::OnceLock::new();
+    ASKS.get_or_init(Default::default)
+}
+/// An address box goes unanswered this long at most.
+const ASK_WAIT: Duration = Duration::from_secs(600);
+
+/// What the user typed in the window's address box `ask` (`None`: cancelled). Whether a box was
+/// waiting for it.
+pub fn answer_address(ask: u64, url: Option<String>) -> bool {
+    let waiting = lock(asks()).remove(&ask);
+    waiting.is_some_and(|tx| tx.send(url).is_ok())
+}
+
 /// The folder picker over the main window (the data-folder picker's way, DESIGN 8).
 struct NativePicker(tauri::AppHandle);
 
@@ -423,10 +468,11 @@ impl FolderPicker for NativePicker {
             let window = app.get_webview_window("main")?;
             let (tx, rx) = tokio::sync::oneshot::channel();
             app.run_on_main_thread(move || {
+                // The user may make a new folder in it (a new vault), as in Echo.
                 let picking = rfd::AsyncFileDialog::new()
                     .set_parent(&window)
                     .set_title(&title)
-                    .set_can_create_directories(false)
+                    .set_can_create_directories(true)
                     .pick_folder();
                 tauri::async_runtime::spawn(async move {
                     let _ = tx.send(picking.await);
@@ -443,6 +489,74 @@ impl FolderPicker for NativePicker {
     #[cfg(not(any(target_os = "macos", windows)))]
     fn pick(&self, _title: String) -> BoxFuture<'static, Option<PathBuf>> {
         Box::pin(async { None })
+    }
+
+    /// Connect's own box in the main window (`plugins:ask-address`), answered by
+    /// `plugins_request address_answer`.
+    fn ask_address(&self, name: String) -> BoxFuture<'static, Option<String>> {
+        use tauri::Emitter;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let app = self.0.clone();
+        Box::pin(async move {
+            let ask = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            lock(asks()).insert(ask, tx);
+            if app
+                .emit_to(
+                    "main",
+                    "plugins:ask-address",
+                    json!({"ask": ask, "plugin": name}),
+                )
+                .is_err()
+            {
+                lock(asks()).remove(&ask);
+                return None;
+            }
+            let answer = tokio::time::timeout(ASK_WAIT, rx).await;
+            lock(asks()).remove(&ask);
+            answer.ok().and_then(Result::ok).flatten()
+        })
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn pick_files(
+        &self,
+        title: String,
+        multiple: bool,
+        exts: Vec<String>,
+    ) -> BoxFuture<'static, Vec<PathBuf>> {
+        use tauri::Manager;
+        let app = self.0.clone();
+        Box::pin(async move {
+            let Some(window) = app.get_webview_window("main") else {
+                return Vec::new();
+            };
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let shown = app.run_on_main_thread(move || {
+                let mut dialog = rfd::AsyncFileDialog::new()
+                    .set_parent(&window)
+                    .set_title(&title);
+                if !exts.is_empty() {
+                    dialog = dialog.add_filter("Files", &exts);
+                }
+                tauri::async_runtime::spawn(async move {
+                    let picked = if multiple {
+                        dialog.pick_files().await.unwrap_or_default()
+                    } else {
+                        dialog.pick_file().await.into_iter().collect()
+                    };
+                    let _ = tx.send(picked);
+                });
+            });
+            if shown.is_err() {
+                return Vec::new();
+            }
+            rx.await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        })
     }
 }
 

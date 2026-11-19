@@ -375,6 +375,7 @@ mod tests {
             timeout,
             cap_usd: None,
             staging_root: root.to_path_buf(),
+            folder: None,
         }
     }
 
@@ -742,6 +743,7 @@ mod live {
             timeout: Duration::from_secs(120),
             cap_usd: None,
             staging_root: std::env::temp_dir().join("codemie-ai-live"),
+            folder: None,
         }
     }
 
