@@ -1,8 +1,9 @@
-// Meetings (spec "Meetings page"): one page — a compact list of meetings grouped by day on the
-// left (time, title, a coloured status, a spinner only while something runs; filters All · To do ·
-// Ready · Needs you · Upcoming, search, Make notes for all) and the whole meeting on the right
-// (when, who by name, the Transcript › Notes › Tasks strip with a button only where something is
-// needed, a slim progress line during a run, and the five tabs from view-meeting-tabs.js). Also
+// Meetings (spec "Meetings page", redesigned in docs/superpowers/specs/2026-11-19-meetings-calm-design.md):
+// one page — the list on the left (one header row with search, a filter menu and ⋯; the Needs you
+// card; days that fold; rows with no controls inside, colour only for what needs the person;
+// hidden meetings and the row's right-click menu) and the whole meeting on the right (the title
+// once, when and the people as faces, a slim progress line during a run, the four tabs from
+// view-meeting-tabs.js, or the explainer alone before there is a transcript). Also
 // the transcript badge and the "Transcript & notes" section the calendar uses, Today's "From
 // your meetings" card, and the Make notes and Import dialogs' bodies. Pure: takes the snapshot
 // and the page's view state (`ctx.state.meetings`), plus what the controller read of meeting
@@ -11,13 +12,13 @@
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { avatar, button, card, emptyState, select, toggle } from './ui.js';
-import { addDaysToKey, agoLabel, dayKey, durationLabel, formatDate, formatTime } from './format.js';
+import { addDaysToKey, agoLabel, dayKey, formatDate, formatTime } from './format.js';
 import { taskStatus } from './tasks-model.js';
 import {
-  FILTERS, LEGEND, STATES, TABS, TAB_LABELS, callOfMeeting, inLane, isHidden, legendOf, listModel, listOrder, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, seriesOf, tasksByMeeting, transcriptsAllowed,
+  FILTERS, LEGEND, STATES, TAB_LABELS, callOfMeeting, inLane, isHidden, legendOf, listModel, listOrder, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, seriesOf, tabsOf, tasksByMeeting, transcriptsAllowed,
 } from './meetings-model.js';
 import {
-  dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, menuItems, notesTab, peopleTab, plural, PAUSED, pausedFix, saveFixAction, saveNextStep, tasksTab, tplChip, tplColor, transcriptTab,
+  dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, menuItems, notesTab, peopleList, plural, PAUSED, pausedFix, saveNextStep, tasksTab, tplChip, tplColor, transcriptTab,
 } from './view-meeting-tabs.js';
 
 const PILL_TONE = { muted: 'neutral', info: 'info', purple: 'purple', success: 'success', error: 'error', warning: 'warning' };
@@ -279,77 +280,29 @@ function list(p) {
 
 // ---------------------------------------------------------------- the meeting
 
-function peopleLine(p, mc) {
-  const spoke = mc.segments ? new Set(mc.segments.map(x => String(x.address || '').toLowerCase()).filter(Boolean)) : null;
-  const all = p.v.peopleAll === mc.m.id;
-  const limit = all ? mc.people.length : 6;
-  const chip = x => {
-    const note = [x.organizer ? 'organizer' : '', x.me ? 'you' : '', x.company].filter(Boolean).join(' · ');
-    const quiet = spoke && !spoke.has(String(x.address || '').toLowerCase());
-    return `<button type="button" class="ws-mtg-pchip${quiet ? ' ws-mtg-quiet' : ''}" data-action="meeting-tab" data-tab="people" title="${e(`${x.name}${x.company ? ` · ${x.company}` : ''}${quiet ? ' · didn’t speak' : ''}`)}">${avatar({ name: x.name, size: 20, seed: String(x.address || x.name).toLowerCase() })}<span>${e(x.name)}</span>${note ? `<small>${e(note)}</small>` : ''}</button>`;
-  };
-  const more = mc.people.length > limit ? `<button type="button" class="ws-mtg-pchip ws-mtg-pchip-more" data-action="meeting-people-all" data-id="${e(mc.m.id)}">+${mc.people.length - limit} more</button>` : '';
-  return mc.people.length ? `<div class="ws-mtg-people-line" aria-label="People">${mc.people.slice(0, limit).map(chip).join('')}${more}</div>` : '';
+/** The people in the header: up to four faces and "N people"; the popover lists who they are. */
+function peopleStack(p, mc) {
+  if (!mc.people.length) return '';
+  const faces = mc.people.slice(0, 4).map(x => avatar({ name: x.name, size: 22, seed: String(x.address || x.name).toLowerCase() })).join('');
+  const label = plural(mc.people.length, 'person', 'people');
+  return `<details class="ws-menu ws-mtg-stack" data-menu="people-${e(mc.m.id)}"><summary class="ws-mtg-stack-sum" aria-label="${e(label)}" title="Who was invited"><span class="ws-mtg-faces">${faces}</span><span>${e(label)}</span></summary><div class="ws-menu-panel ws-mtg-people-pop">${peopleList(p, mc)}</div></details>`;
 }
 
-function seg(tone, label, text, action = '') {
-  const ico = { done: 'check', now: 'clock', busy: 'refresh', error: 'alert', blocked: 'lock', todo: 'minus' }[tone];
-  return `<span class="ws-mtg-seg ws-mtg-seg-${tone}"><span class="ws-mtg-seg-ico">${icon(ico, tone === 'busy' ? 'ws-spin' : '')}</span><strong>${e(label)}</strong><small>${text}</small>${action}</span>`;
-}
-const segBtn = (label, action, attrs, variant = 'ghost') => button(label, { action, size: 'sm', variant, attrs, className: 'ws-mtg-seg-btn' });
-
-/** The slim line on where the transcript, the notes and the tasks stand, with a button only on
- *  the step that needs one; during a run, the run's progress instead. */
-export function statusStrip(p, mc) {
-  const { m, r, tpl } = mc;
-  const id = { 'data-id': m.id };
+/** While notes are being made or the transcript saved: one slim line under the header with the
+ *  step, a progress bar and Cancel. Nothing otherwise. */
+export function runLine(p, mc) {
+  const { m, tpl } = mc;
   const run = m.run;
   if (run && run.kind === 'meeting_notes') {
     const total = Math.max(1, run.total);
     const pct = Math.round(((run.index + 0.5) / total) * 100);
     const name = (p.s.noteTemplates || []).find(t => t.id === run.templateId)?.name || tpl.template.name;
-    return `<div class="ws-mtg-strip ws-mtg-strip-run" aria-live="polite">${icon('sparkles')}<strong>Making ${e(name)}</strong><small>${e(runText(run))}… · step ${run.index + 1} of ${total}</small><span class="ws-runbar" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></span>${button('Cancel', { action: 'meeting-cancel', variant: 'ghost', size: 'sm', attrs: { 'data-id': run.id } })}</div>`;
+    return `<div class="ws-mtg-runline" aria-live="polite">${icon('sparkles')}<strong>Making ${e(name)}</strong><small>${e(runText(run))}… · step ${run.index + 1} of ${total}</small><span class="ws-runbar" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></span>${button('Cancel', { action: 'meeting-cancel', variant: 'ghost', size: 'sm', attrs: { 'data-id': run.id } })}</div>`;
   }
   if (run && run.kind === 'transcript_download') {
-    return `<div class="ws-mtg-strip ws-mtg-strip-run" aria-live="polite">${icon('download')}<strong>Saving the transcript</strong><small>Getting it from Teams…</small><span class="ws-runbar ws-runbar-busy" role="progressbar" aria-label="Saving the transcript"><span></span></span>${button('Cancel', { action: 'meeting-cancel', variant: 'ghost', size: 'sm', attrs: { 'data-id': run.id } })}</div>`;
+    return `<div class="ws-mtg-runline" aria-live="polite">${icon('download')}<strong>Saving the transcript</strong><small>Getting it from Teams…</small><span class="ws-runbar ws-runbar-busy" role="progressbar" aria-label="Saving the transcript"><span></span></span>${button('Cancel', { action: 'meeting-cancel', variant: 'ghost', size: 'sm', attrs: { 'data-id': run.id } })}</div>`;
   }
-  const lines = mc.segments ? plural(mc.segments.length, 'line') : 'saved';
-  const checking = run?.kind === 'transcript_check';
-  const org = mc.people.find(x => x.organizer);
-  const saveError = m.state === 'available' && !mc.paused ? mc.saveError : null;
-  const fix = err => {
-    const [label, action, attrs] = saveFixAction(mc, err.code);
-    return segBtn(label.replace(' transcript file', ''), action, attrs);
-  };
-  const off = mc.paused ? segBtn(...PAUSED[mc.paused].fix, {}) : '';
-  // A Download again that failed on a saved transcript says so here (the saved one stays); its
-  // banner has the details.
-  const resave = mc.saved && mc.saveError && !run;
-  const t = mc.saved ? seg('done', 'Transcript', resave ? '<span class="ws-mtg-err">download again failed</span>' : `${lines}${mc.imported ? ' · from a file' : ''}`)
-    : mc.paused ? seg('todo', 'Transcript', PAUSED[mc.paused].seg, off)
-      : m.state === 'available' ? seg(!saveError ? 'busy' : saveError.code === 'cancelled' ? 'now' : 'error', 'Transcript', !saveError ? 'saving it from Teams' : saveError.code === 'cancelled' ? 'saving stopped' : 'couldn’t get it from Teams', saveError ? fix(saveError) : '')
-        : m.state === 'pending' ? seg('busy', 'Transcript', checking ? 'checking Teams…' : 'Teams is still processing', checking ? '' : segBtn('Check now', 'meeting-check', id))
-          : m.state === 'blocked' ? seg('blocked', 'Transcript', `blocked by ${e(org?.company ? `${org.company}’s Teams` : 'the organizer’s Teams')}`, segBtn('Import', 'meeting-import', id))
-            : m.state === 'upcoming' ? seg('todo', 'Transcript', m.online ? 'after the meeting' : 'in person, none')
-              : seg('todo', 'Transcript', m.state === 'offline' ? 'in person, none' : 'nobody transcribed', m.ended ? segBtn('Import', 'meeting-import', id) : '');
-  const docs = mc.docs.length;
-  // Notes are promised after the transcript only when they will be made: the person asked
-  // while the save failed (`pending`), or the meeting makes them by itself.
-  const n = m.state === 'ready' ? seg('done', 'Notes', docs > 1 ? `${docs} documents` : e(mc.docs[0]?.name || 'made'))
-    : m.state === 'failed' ? seg('error', 'Notes', e(mc.notesError?.message || 'the run failed'), segBtn('Try again', 'meeting-retry', id, 'primary'))
-      : mc.paused ? seg('todo', 'Notes', `${e(tpl.template.name)} · ${mc.paused === 'off' ? 'once transcripts are on' : 'once you sign in again'}`)
-        : mc.pending && m.state === 'available' ? seg('todo', 'Notes', `${e(mc.pending.name)} · after the transcript`)
-          : m.state === 'downloaded' || (m.state === 'available' && !saveError) ? seg('now', 'Notes', `not made · ${e(tpl.template.name)}`, segBtn('Make notes', 'meeting-make-notes', id, 'primary'))
-            : m.state === 'available' ? seg('todo', 'Notes', `not made · ${e(tpl.template.name)}`)
-              : ['upcoming', 'pending'].includes(m.state) && m.online ? seg('todo', 'Notes', `${e(tpl.template.name)} · ${tpl.auto ? (m.state === 'pending' ? 'as soon as it arrives' : 'automatic') : 'you start them'}`)
-                : seg('todo', 'Notes', '—');
-  const total = mc.tasks.length;
-  const review = mc.review.length;
-  const k = total ? seg(review ? 'now' : 'done', 'Tasks', review ? `<span class="ws-mtg-accent">${review} to review</span> of ${total}` : `${total} on the board`, review ? segBtn('Review', 'meeting-tab', { 'data-tab': 'tasks' }) : '')
-    : seg('todo', 'Tasks', m.state === 'ready' ? 'none found' : 'from the notes');
-  const folder = r.folder ? `<span class="ws-mtg-strip-folder">${button('', { action: 'meeting-reveal', iconName: 'folder-open', variant: 'ghost', size: 'sm', title: `Show in Finder — ${r.folder}`, attrs: id })}${button('', { action: 'meeting-copy-folder', iconName: 'copy', variant: 'ghost', size: 'sm', title: 'Copy folder path', attrs: id })}</span>` : '';
-  const sep = `<span class="ws-mtg-seg-sep" aria-hidden="true">${icon('chevron-right')}</span>`;
-  return `<div class="ws-mtg-strip">${t}${sep}${n}${sep}${k}${folder}</div>`;
+  return '';
 }
 
 function meetingMenu(p, mc, slots = []) {
@@ -359,6 +312,8 @@ function meetingMenu(p, mc, slots = []) {
   // A plugin's ⋯ items for this meeting (`call.menu`), each run in its own page.
   const fromPlugins = slots.flatMap(x => x.menu.map((label, i) => [label, 'plugin-call-menu', { 'data-plugin-id': x.plugin, 'data-index': String(i) }, 'puzzle']));
   return menu(`meeting-${m.id}`, dotsSummary('More for this meeting'), [
+    ...hideMenuItems(m, p.v.hidden),
+    '-',
     mc.r.folder ? ['Show folder in Finder', 'meeting-reveal', id, 'folder-open'] : null,
     mc.r.folder ? ['Copy folder path', 'meeting-copy-folder', id, 'copy'] : null,
     mc.saved && mc.fromTeams && !mc.imported ? ['Download again from Teams', 'meeting-download', id, 'refresh'] : null,
@@ -372,25 +327,28 @@ function meetingMenu(p, mc, slots = []) {
   ]);
 }
 
+const PANELS = { notes: notesTab, transcript: transcriptTab, tasks: tasksTab, files: filesTab };
+
 function detail(p, m) {
   const mc = meetingContext(p, m);
-  const tab = TABS.includes(p.v.tab) ? p.v.tab : 'notes';
+  const tabs = tabsOf(m);
+  const tab = tabs.includes(p.v.tab) ? p.v.tab : 'notes';
   const { d } = mc;
   const rel = relDay(m.start, p.zone, p.now);
-  const minutes = Math.round((m.end - m.start) / 60000);
-  const where = m.online ? 'Microsoft Teams' : d.location || 'In person';
-  const counts = { notes: mc.docs.length > 1 ? mc.docs.length : null, transcript: mc.segments?.length || null, tasks: mc.tasks.length || null, files: null, people: mc.people.length || null };
-  const panel = { notes: notesTab, transcript: transcriptTab, tasks: tasksTab, files: filesTab, people: peopleTab }[tab](p, mc);
+  const where = m.online ? 'Teams' : d.location || 'In person';
+  const when = `${rel || shortDay(m.start, p.zone)} · ${formatTime(m.start, p.zone)}–${formatTime(m.end, p.zone)} · ${where}`;
   const slots = slotsOf(p, m);
+  const review = mc.review.length && tab !== 'tasks' && tabs.length ? button(`Review ${plural(mc.review.length, 'task')}`, { action: 'meeting-tab', size: 'sm', attrs: { 'data-tab': 'tasks' } }) : '';
+  const hidden = isHidden(m, p.v.hidden) ? `<span class="ws-mtg-hid-note">${icon('eye-off')}<span>Hidden from the list</span><button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-unhide" data-id="${e(m.id)}">Show again</button></span>` : '';
+  const bar = tabs.length ? `<div class="ws-tabs ws-mtg-tabs" role="tablist" aria-label="Meeting">${tabs.map(id => `<button type="button" role="tab" data-action="meeting-tab" data-tab="${id}" aria-selected="${tab === id}">${TAB_LABELS[id]}${id === 'tasks' && mc.review.length ? `<span class="ws-tab-count ws-mtg-tab-alert" title="To review">${mc.review.length}</span>` : ''}</button>`).join('')}</div>` : '';
+  const panel = tabs.length ? `<div class="ws-mtg-panel" data-panel="${tab}">${PANELS[tab](p, mc)}</div>` : `<div class="ws-mtg-panel ws-mtg-panel-alone">${explainer(p, mc)}</div>`;
   return `<div class="ws-mtg-meeting" data-meeting="${e(m.id)}">
     <header class="ws-mtg-head">
-      <div class="ws-mtg-head-row">${button('', { action: 'meeting-list-toggle', iconName: 'list', variant: 'ghost', size: 'sm', title: p.v.wide ? 'Show the meeting list' : 'Hide the meeting list — more room for notes', attrs: { 'aria-pressed': String(!p.v.wide) } })}<p class="ws-eyebrow">${rel ? `${e(rel)} · ` : ''}${e(longDay(m.start, p.zone))} · ${e(formatTime(m.start, p.zone))}–${e(formatTime(m.end, p.zone))} · ${e(durationLabel(minutes))} · ${e(where)}</p></div>
-      <div class="ws-mtg-head-title"><h2>${d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</h2><div class="ws-actions">${pluginChips(slots)}${primaryAction(m, mc)}${meetingMenu(p, mc, slots)}</div></div>
-      ${peopleLine(p, mc)}
+      <div class="ws-mtg-head-title">${button('', { action: 'meeting-list-toggle', iconName: 'list', variant: 'ghost', size: 'sm', title: p.v.wide ? 'Show the meeting list' : 'Hide the meeting list — more room for notes', attrs: { 'aria-pressed': String(!p.v.wide) } })}<div class="ws-mtg-head-copy"><h2>${d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</h2><div class="ws-mtg-meta"><span class="ws-mtg-when">${e(when)}</span>${peopleStack(p, mc)}${hidden}</div></div><div class="ws-actions">${review}${pluginChips(slots)}${meetingMenu(p, mc, slots)}</div></div>
     </header>
-    ${statusStrip(p, mc)}${pluginLines(slots, m)}
-    <div class="ws-tabs ws-mtg-tabs" role="tablist" aria-label="Meeting">${TABS.map(id => `<button type="button" role="tab" data-action="meeting-tab" data-tab="${id}" aria-selected="${tab === id}">${TAB_LABELS[id]}${counts[id] ? `<span class="ws-tab-count">${counts[id]}</span>` : ''}</button>`).join('')}</div>
-    <div class="ws-mtg-panel" data-panel="${tab}">${panel}</div>
+    ${runLine(p, mc)}${pluginLines(slots, m)}
+    ${bar}
+    ${panel}
   </div>`;
 }
 

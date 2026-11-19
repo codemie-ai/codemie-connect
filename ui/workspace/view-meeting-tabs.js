@@ -1,4 +1,4 @@
-// The meeting's five tabs on the Meetings page (Notes · Transcript · Tasks · Files · People), the
+// The meeting's four tabs on the Meetings page (Notes · Transcript · Tasks · Files), the people popover, the
 // explainers for meetings without a transcript, the template chip and the Make notes form the
 // dialog and the Notes tab share. Pure: each takes the page (`p`, see view-meetings.js) and one
 // meeting's context (`meetingContext`) and returns HTML; every meeting- or transcript-sourced
@@ -454,7 +454,7 @@ export function transcriptTab(p, mc) {
     return `<div class="ws-mtg-line${same ? ' ws-mtg-cont' : ''}${p.v.focusLine === i ? ' ws-mtg-focus' : ''}${tasks.length ? ' ws-mtg-has-task' : ''}" id="meeting-line-${i}" data-line="${i}">
       <span class="ws-mtg-line-time" title="${e(`${durationLabel(Math.floor(Number(seg.start || 0) / 60))} into the meeting`)}">${e(formatTime(at, p.zone))}</span>
       <span class="ws-mtg-line-face">${same ? '' : named ? avatar({ name: seg.name, size: 28, seed: String(seg.address).toLowerCase() }) : `<span class="ws-mtg-unknown" aria-hidden="true">${icon('user')}</span>`}</span>
-      <div class="ws-mtg-line-body">${same ? '' : `<strong>${e(seg.name)}${!named ? ' <button type="button" class="ws-mtg-name-it" data-action="meeting-tab" data-tab="people">Who is this?</button>' : ''}</strong>`}<p>${highlight(seg.text, pairs, q)}</p>
+      <div class="ws-mtg-line-body">${same ? '' : `<strong>${e(seg.name)}${!named ? ` <button type="button" class="ws-mtg-name-it" data-action="meeting-name-speaker" data-voice="${e(seg.voice)}">Who is this?</button>` : ''}</strong>`}<p>${highlight(seg.text, pairs, q)}</p>
         ${tasks.map(t => `<button type="button" class="ws-mtg-line-task" data-action="task-open-today" data-id="${e(t.id)}">${icon('tasks')}<span>Task for ${e(ownerOf(t, me).first)}: ${e(t.data.text)}</span></button>`).join('')}
       </div>
     </div>`;
@@ -584,32 +584,28 @@ export function filesTab(p, mc) {
 
 // ---------------------------------------------------------------- people
 
-export function peopleTab(p, mc) {
-  const { m, r } = mc;
+/** Who was invited, as the meeting's people popover lists them: who each one is (organizer, you,
+ *  company), how much they talked (dimmed when they didn't), and their tasks; "+n more" past 12. */
+export function peopleList(p, mc) {
   const segs = mc.segments || [];
   const total = segs.reduce((n, x) => n + String(x.text || '').length, 0) || 1;
   const spoke = address => segs.filter(x => String(x.address || '').toLowerCase() === address).reduce((n, x) => n + String(x.text || '').length, 0);
-  const unnamed = [];
-  const seen = new Set();
-  for (const seg of segs) if (!seg.address && !seen.has(seg.voice)) { seen.add(seg.voice); unnamed.push(seg); }
-  const was = address => Object.entries(r.speakers || {}).filter(([, a]) => String(a).toLowerCase() === address).map(([voice]) => voice);
   const me = meOf(p.s);
-  const rows = mc.people.map(x => {
+  const all = p.v.peopleAll === mc.m.id;
+  const shown = all ? mc.people : mc.people.slice(0, 12);
+  const rows = shown.map(x => {
     const address = String(x.address || '').toLowerCase();
     const chars = mc.segments ? spoke(address) : null;
     const share = chars === null ? null : Math.round((chars / total) * 100);
+    const note = [x.organizer ? 'organizer' : '', x.me ? 'you' : '', x.company].filter(Boolean).join(' · ');
     const tasks = mc.tasks.filter(t => String(t.data.owner || '').toLowerCase() === address || (x.me && isMine(t, me))).length;
-    return `<div class="ws-mtg-person">
-      ${avatar({ name: x.name, size: 36, seed: address || x.name })}
-      <div class="ws-mtg-person-copy"><strong>${e(x.name)}</strong>${x.me ? '<small class="ws-mtg-you">you</small>' : ''}<small>${e([x.address, x.company].filter(Boolean).join(' · '))}</small></div>
-      <span class="ws-mtg-person-badges">${x.organizer ? badge('Organizer', 'info') : ''}${was(address).map(v => badge(`was “${v}”`, 'purple')).join('')}</span>
-      <span class="ws-mtg-talk">${share === null ? '' : chars ? `<i style="--w:${share}%"></i><small>${share}% talking</small>` : '<small class="ws-muted">didn’t speak</small>'}</span>
-      <span class="ws-mtg-person-tasks">${tasks ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-tab" data-tab="tasks">${plural(tasks, 'task')}</button>` : '<small class="ws-muted">no tasks</small>'}</span>
+    return `<div class="ws-mtg-person${chars === 0 ? ' ws-mtg-quiet' : ''}" title="${e(x.address || x.name)}">
+      ${avatar({ name: x.name, size: 24, seed: address || x.name })}
+      <span class="ws-mtg-person-copy"><strong>${e(x.name)}</strong>${note ? `<small>${e(note)}</small>` : ''}</span>
+      <span class="ws-mtg-talk">${share === null ? '' : chars ? `${share}% talking` : 'didn’t speak'}</span>
+      <span class="ws-mtg-person-tasks">${tasks ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-tab" data-tab="tasks">${plural(tasks, 'task')}</button>` : ''}</span>
     </div>`;
   }).join('');
-  return `${unnamed.length ? speakerMap(p, mc, unnamed, ['Match the unnamed speakers', 'Pick who each voice is. Connect remembers it for this meeting and rewrites the transcript, so tasks get the right owner.']) : ''}
-  <section class="ws-card ws-mtg-people-card">
-    <header class="ws-card-header"><div class="ws-mtg-card-head"><h2 class="ws-card-title"><span class="ws-card-icon">${icon('users')}</span>${plural(mc.people.length, 'person', 'people')} invited</h2><p>Tasks go only to people who were in the meeting, unless you pick someone else.</p></div></header>
-    <div class="ws-card-body"><div class="ws-mtg-people">${rows || '<p class="ws-muted ws-hint">The calendar lists nobody for this meeting.</p>'}</div></div>
-  </section>`;
+  const more = mc.people.length > shown.length ? `<button type="button" class="ws-link ws-mtg-linkbtn ws-mtg-people-more" data-action="meeting-people-all" data-id="${e(mc.m.id)}">+${mc.people.length - shown.length} more</button>` : '';
+  return rows ? `<div class="ws-mtg-people">${rows}</div>${more}` : '<p class="ws-muted ws-hint">The calendar lists nobody for this meeting.</p>';
 }

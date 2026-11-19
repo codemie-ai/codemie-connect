@@ -7,8 +7,16 @@
 import { can } from './selectors.js';
 import { dayKey } from './format.js';
 
-export const TABS = ['notes', 'transcript', 'tasks', 'files', 'people'];
-export const TAB_LABELS = { notes: 'Notes', transcript: 'Transcript', tasks: 'Tasks', files: 'Files', people: 'People' };
+export const TABS = ['notes', 'transcript', 'tasks', 'files'];
+export const TAB_LABELS = { notes: 'Notes', transcript: 'Transcript', tasks: 'Tasks', files: 'Files' };
+
+/** A meeting's tabs: all four once it has a transcript (saved, being saved, or found in Teams),
+ *  none before (its explainer card says why and what to do). Who was there is the header's popover. */
+export function tabsOf(m) {
+  if (!m) return [];
+  const saving = m.run?.kind === 'transcript_download' || m.run?.kind === 'meeting_notes';
+  return saving || ['available', 'downloaded', 'ready', 'failed'].includes(m.state) ? TABS : [];
+}
 
 /** Every state a meeting shows, with the label and tone of its status text. `downloading` and
  *  `processing` are never stored: they are a meeting whose save or notes job is running. */

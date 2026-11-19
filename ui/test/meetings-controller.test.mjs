@@ -456,3 +456,9 @@ test('/ opens the search field, not while typing', async () => {
   assert.equal(state.meetings.searchOpen, true);
   assert.deepEqual(calls.focus.at(-1), '#meetings-search');
 });
+
+test('"Who is this?" on an unnamed line goes to that voice in the transcript\'s speaker list', async () => {
+  const { ctl, calls } = harness({ view: { selected: 'mtg-philips', tab: 'transcript' } });
+  await ctl.handle('meeting-name-speaker', control({ voice: '@1' }));
+  assert.equal(calls.focus.at(-1), 'select[data-action="meeting-speaker"][data-voice="@1"]');
+});

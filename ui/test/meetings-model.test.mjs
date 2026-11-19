@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   meetingState, meetingRows, meetingCounts, parseHash, meetingHash, resolveTemplate, parseGlossary, parseTags, runOf, legendOf, lineAt, FILTERS,
-  readHidden, isHidden, seriesOf, listModel, listOrder, newMeetingsView, meetingItems,
+  readHidden, isHidden, seriesOf, listModel, listOrder, newMeetingsView, meetingItems, tabsOf, TABS,
 } from '../workspace/meetings-model.js';
 import { dayKey } from '../workspace/format.js';
 import { buildSnapshot, withMeetings, meetingContract } from './fixtures/workspace-fixture.mjs';
@@ -274,4 +274,21 @@ test('an in-person meeting with an imported transcript is in All and To do, not 
   assert.deepEqual(meetingCounts(s, NOW), { process: 4, attention: 2, none: 3, hidden: 0 });
   // A meeting nobody transcribed stays out of All, behind the switch.
   assert.ok(!ids('all').includes('mtg-planning') && ids('all', true).includes('mtg-planning'));
+});
+
+test('tabsOf gives four tabs with a transcript and none without', () => {
+  const s = snapshot();
+  const items = meetingItems(s, NOW);
+  const byId = id => items.find(m => m.id === id);
+  const FOUR = ['notes', 'transcript', 'tasks', 'files'];
+  assert.deepEqual(TABS, FOUR);
+  for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-release', 'mtg-vendor', 'mtg-critique']) assert.deepEqual(tabsOf(byId(id)), FOUR, id);
+  for (const id of ['mtg-sprint', 'mtg-northwind', 'mtg-planning', 'mtg-lunch', 'ev-next']) assert.deepEqual(tabsOf(byId(id)), [], id);
+  // A save running for a waiting meeting: its tabs show what comes in.
+  assert.deepEqual(tabsOf({ ...byId('mtg-sprint'), run: { kind: 'transcript_download' } }), FOUR);
+  assert.deepEqual(tabsOf({ ...byId('mtg-sprint'), run: { kind: 'transcript_check' } }), []);
+});
+
+test('a #/meetings/<id>/people hash opens notes', () => {
+  assert.deepEqual(parseHash('#/meetings/x/people'), { route: 'meetings', meetingId: 'x', tab: null });
 });

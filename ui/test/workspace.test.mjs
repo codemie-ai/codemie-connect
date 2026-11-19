@@ -733,7 +733,9 @@ const meetingsCtx = (view = {}, extra = {}) => ({ state: { meetings: { ...newMee
 /** One list row, from its button to the next. */
 const rowOf = (html, id) => html.match(new RegExp(`<button type="button" class="ws-mtg-row[^"]*"[^>]*data-id="${id}"[^]*?</button>`))?.[0] || '';
 const detailOf = html => html.match(/<section class="ws-mtg-detail"[^]*$/)?.[0] || '';
-const stripOf = html => html.match(/<div class="ws-mtg-strip[^"]*"[^]*?<\/div>(?=\s*<div class="ws-tabs)/)?.[0] || '';
+const headOf = html => html.match(/<header class="ws-mtg-head"[^]*?<\/header>/)?.[0] || '';
+/** A part of the page without its menus (what is on screen before a menu opens). */
+const outsideMenus = html => html.replace(/<details[^]*?<\/details>/g, '');
 /** A meetings controller over fakes: `calls` records what it sent and showed. */
 function meetingsHarness(s, view = {}, answers = {}) {
   const calls = { mutate: [], toasts: [], modals: [] };
@@ -879,31 +881,34 @@ test('sidebar count and Today card leave hidden meetings out', () => {
   assert.doesNotMatch(today(s, { ...ctx, meetingsHidden: hidden }), /data-action="meeting-open" data-id="mtg-critique"/);
 });
 
-test('meeting detail: people by name with organizer/you/company, dimmed when they never spoke, status strip, five tabs', () => {
+test('meeting detail: the title once, one meta line with faces, no strip, four tabs', () => {
   const s = meetingsSnapshot();
   const html = meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'notes' }));
   const detail = detailOf(html);
-  assert.match(detail, /<h2>Philips CodeMie conversations syncup<\/h2>/);
-  const when = `${formatDate(Date.UTC(2026, 10, 16, 12), 'UTC', { weekday: 'long', month: 'long', day: 'numeric' })} · ${formatTime(Date.UTC(2026, 10, 16, 13), 'UTC')}–${formatTime(Date.UTC(2026, 10, 16, 14), 'UTC')} · 1 h · Microsoft Teams`;
-  assert.ok(detail.includes(when), when);
-  // People by name: the organizer first, me, the company of guests; who never spoke is dimmed.
-  assert.match(detail, /<button type="button" class="ws-mtg-pchip"[^>]*>[^]*?<span>Jeroen de Vries<\/span><small>organizer · Philips<\/small><\/button>/);
-  assert.match(detail, /<span>Taylor Morgan<\/span><small>you<\/small>/);
-  assert.match(detail, /<span>Anouk Bakker<\/span><small>Philips<\/small>/);
-  assert.match(detail, /class="ws-mtg-pchip ws-mtg-quiet"[^>]*title="Jordan Lee · didn’t speak"/);
-  assert.doesNotMatch(detail, /class="ws-mtg-pchip ws-mtg-quiet"[^>]*title="Priya/);
-  // The strip: Transcript › Notes › Tasks, and the folder.
-  const strip = stripOf(detail);
-  assert.match(strip, /ws-mtg-seg-done[^]*?<strong>Transcript<\/strong><small>10 lines<\/small>/);
-  assert.match(strip, /ws-mtg-seg-done[^]*?<strong>Notes<\/strong><small>2 documents<\/small>/);
-  assert.match(strip, /ws-mtg-seg-now[^]*?<strong>Tasks<\/strong><small><span class="ws-mtg-accent">2 to review<\/span> of 3<\/small>/);
-  assert.match(strip, /data-action="meeting-reveal"[^>]*data-id="mtg-philips"/);
-  // Five tabs with their counts.
-  const tabs = [...detail.matchAll(/role="tab" data-action="meeting-tab" data-tab="([a-z]+)" aria-selected="(true|false)">([A-Za-z]+)(?:<span class="ws-tab-count">(\d+)<\/span>)?/g)].map(m => [m[1], m[2], m[3], m[4] || '']);
-  assert.deepEqual(tabs, [['notes', 'true', 'Notes', '2'], ['transcript', 'false', 'Transcript', '10'], ['tasks', 'false', 'Tasks', '3'], ['files', 'false', 'Files', ''], ['people', 'false', 'People', '6']]);
-  // Notes: document chips, One / Side by side, the main document rendered, escaped.
-  assert.match(detail, /data-action="doc-view" data-id="mtg-philips" data-doc="meeting-notes" aria-selected="true"[^>]*>[^]*?Meeting notes<\/span><em class="ws-mtg-main">Main<\/em>/);
-  assert.match(detail, /data-action="meeting-compare" data-v="1"/);
+  const head = headOf(detail);
+  assert.match(head, /<h2>Philips CodeMie conversations syncup<\/h2>/);
+  assert.equal((head.match(/Philips CodeMie conversations syncup/g) || []).length, 1, 'the title once');
+  const when = `${formatDate(Date.UTC(2026, 10, 16, 12), 'UTC', { weekday: 'short', month: 'short', day: 'numeric' })} · ${formatTime(Date.UTC(2026, 10, 16, 13), 'UTC')}–${formatTime(Date.UTC(2026, 10, 16, 14), 'UTC')} · Teams`;
+  assert.ok(head.includes(when), `${when} in ${head}`);
+  // People as faces: the stack says how many; its popover lists them with who they are.
+  const stack = head.match(/<details class="ws-menu[^"]*ws-mtg-stack[^"]*"[^]*?<\/details>/)?.[0] || '';
+  assert.match(stack, /<summary[^>]*>[^]*?6 people[^]*?<\/summary>/);
+  assert.equal((stack.match(/<summary[^]*?<\/summary>/)[0].match(/class="ws-avatar/g) || []).length, 4, 'four faces');
+  assert.match(stack, /<strong>Jeroen de Vries<\/strong><small>organizer · Philips<\/small>/);
+  assert.match(stack, /<strong>Taylor Morgan<\/strong><small>you<\/small>/);
+  assert.match(stack, /<strong>Anouk Bakker<\/strong><small>Philips<\/small>/);
+  assert.match(stack, /class="ws-mtg-person ws-mtg-quiet"[^>]*>[^]*?Jordan Lee[^]*?didn’t speak/);
+  assert.doesNotMatch(stack, /class="ws-mtg-person ws-mtg-quiet"[^>]*>[^]*?Priya Natarajan<\/strong>/);
+  assert.match(stack, /% talking/);
+  // No chip row, no strip, no People tab.
+  assert.doesNotMatch(detail, /ws-mtg-pchip|ws-mtg-strip|data-tab="people"/);
+  // Four tabs; a count only where tasks wait for review.
+  const tabs = [...detail.matchAll(/role="tab" data-action="meeting-tab" data-tab="([a-z]+)" aria-selected="(true|false)">([A-Za-z]+)(?:<span class="ws-tab-count[^"]*"[^>]*>(\d+)<\/span>)?/g)].map(m => [m[1], m[2], m[3], m[4] || '']);
+  assert.deepEqual(tabs, [['notes', 'true', 'Notes', ''], ['transcript', 'false', 'Transcript', ''], ['tasks', 'false', 'Tasks', '2'], ['files', 'false', 'Files', '']]);
+  // The header asks only for what waits: Review 2 tasks; no Another summary, no Make notes.
+  const buttons = outsideMenus(head);
+  assert.match(buttons, /data-action="meeting-tab"[^>]*data-tab="tasks"[^>]*>[^]*?Review 2 tasks/);
+  assert.doesNotMatch(buttons, /Another summary|meeting-make-notes/);
   assert.match(detail, /<article class="ws-md">[^]*?<h3>TL;DR<\/h3>/);
   assert.match(detail, /data-action="meeting-goto-line" data-t="00:01"/);
   // Transcript: speaker filter, a line with its task, the unnamed guest to match, glossary underline.
@@ -913,10 +918,32 @@ test('meeting detail: people by name with organizer/you/company, dimmed when the
   assert.match(transcript, /<mark class="ws-mtg-fix" title="Written as “CodeMie” in notes \(your glossary\)">Code me<\/mark>/);
   assert.match(transcript, /data-action="task-open-today" data-id="task-endpoint"[^>]*>[^]*?Task for You: Add the by-id endpoint/);
   assert.match(transcript, /id="meeting-line-3"/);
-  // People: talk share and tasks per person.
-  const people = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'people' })));
-  assert.match(people, /<strong>Jeroen de Vries<\/strong><small>jeroen\.devries@philips\.test · Philips<\/small>[^]*?Organizer[^]*?% talking/);
-  assert.match(people, /Jordan Lee[^]*?<small class="ws-muted">didn’t speak<\/small>/);
+  // An old link to the People tab opens Notes.
+  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'people' }))), /data-tab="notes" aria-selected="true"/);
+});
+
+test('an upcoming, blocked, pending or untranscribed meeting shows its explainer and no tabs', () => {
+  const s = meetingsSnapshot();
+  for (const [id, text, action] of [
+    ['mtg-sprint', 'Teams is still preparing the transcript', 'meeting-check'],
+    ['mtg-northwind', 'doesn’t share this transcript with you', 'meeting-import'],
+    ['mtg-planning', 'Nobody transcribed this meeting', 'meeting-import'],
+    ['ev-next', 'After this meeting', null],
+  ]) {
+    const d = detailOf(meetings(s, meetingsCtx({ selected: id, showNone: true })));
+    assert.doesNotMatch(d, /ws-mtg-tabs/, id);
+    assert.match(d, new RegExp(text), id);
+    if (action) assert.match(d, new RegExp(`data-action="${action}"`), id);
+  }
+});
+
+test("the meeting's ⋯ menu offers Hide from the list, and a hidden meeting says so", () => {
+  const s = meetingsSnapshot();
+  let d = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' })));
+  assert.match(d, /data-action="meeting-hide" data-id="mtg-philips"/);
+  assert.doesNotMatch(d, /Hidden from the list/);
+  d = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', hidden: { ids: ['mtg-philips'], series: [] } })));
+  assert.match(headOf(d), /Hidden from the list[^]*?data-action="meeting-unhide" data-id="mtg-philips"[^>]*>Show again/);
 });
 
 test('make notes for all queues one meeting_notes per to-do meeting with its own template', async () => {
@@ -931,36 +958,39 @@ test('make notes for all queues one meeting_notes per to-do meeting with its own
   assert.match(calls.toasts.at(-1).message, /Making notes for 2 meetings/);
 });
 
-test('status strip shows a button only for the actionable step', () => {
+test('the meeting asks only where something waits: Review in the header, the rest in its tab or card', () => {
   const s = meetingsSnapshot();
-  const buttons = id => [...stripOf(detailOf(meetings(s, meetingsCtx({ selected: id })))).matchAll(/class="ws-btn [^"]*ws-mtg-seg-btn"[^>]*data-action="([a-z-]+)"/g)].map(m => m[1]);
-  assert.deepEqual(buttons('mtg-roadmap'), ['meeting-make-notes']);
-  assert.deepEqual(buttons('mtg-philips'), ['meeting-tab'], 'Review the tasks');
-  assert.deepEqual(buttons('mtg-sprint'), ['meeting-check']);
-  assert.deepEqual(buttons('mtg-critique'), ['meeting-retry']);
-  assert.deepEqual(buttons('mtg-northwind'), ['meeting-import']);
-  assert.deepEqual(buttons('mtg-vendor'), ['meeting-download'], 'Try again after a failed save');
-  assert.deepEqual(buttons('mtg-release'), ['meeting-make-notes']);
-  // Everything done: no button at all.
+  const detail = id => detailOf(meetings(s, meetingsCtx({ selected: id, showNone: true })));
+  for (const id of ['mtg-philips', 'mtg-roadmap', 'mtg-sprint', 'mtg-critique', 'mtg-northwind', 'mtg-vendor', 'mtg-release']) {
+    assert.doesNotMatch(outsideMenus(headOf(detail(id))), /data-action="meeting-(make-notes|retry|import|check|download)"/, `${id}: no step in the header`);
+  }
+  assert.match(detail('mtg-roadmap'), /data-form="meeting-notes" data-id="mtg-roadmap"/, 'Make notes: the Notes tab form');
+  assert.match(detail('mtg-sprint'), /data-action="meeting-check"/, 'Check now: the waiting card');
+  assert.match(detail('mtg-critique'), /data-action="meeting-retry"/, 'Try again: the failed run banner');
+  assert.match(detail('mtg-northwind'), /data-action="meeting-import"/, 'Import: the blocked card');
+  assert.match(detail('mtg-vendor'), /ws-mtg-run-failed[^]*?data-action="meeting-download"/, 'Try again: the failed save banner');
+  assert.doesNotMatch(outsideMenus(headOf(detail('mtg-roadmap'))), /Review/);
+  // Every task reviewed: no Review button.
   for (const t of s.records.filter(r => r.kind === 'commitment' && r.data.meetingId === 'mtg-philips')) t.data.status = 'todo';
-  assert.deepEqual(buttons('mtg-philips'), []);
-  // A run: the strip is the progress line with Cancel.
+  assert.doesNotMatch(headOf(detail('mtg-philips')), /Review \d task/);
+  // A run: one slim line under the header with its progress and Cancel.
   s.jobs.push(notesJob('mtg-roadmap', { step: 'Finding tasks' }));
-  const run = stripOf(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap' }))));
-  assert.match(run, /class="ws-mtg-strip ws-mtg-strip-run" aria-live="polite"/);
-  assert.match(run, /<strong>Making Meeting notes<\/strong><small>Finding tasks… · step 2 of 3<\/small>/);
-  assert.match(run, /<span class="ws-runbar" role="progressbar"[^>]*aria-valuenow="50"/);
-  assert.match(run, /data-action="meeting-cancel" data-id="job-mtg-roadmap"/);
+  const run = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap' })));
+  const line = run.match(/<div class="ws-mtg-runline"[^]*?<\/div>/)?.[0] || '';
+  assert.match(line, /aria-live="polite"/);
+  assert.match(line, /<strong>Making Meeting notes<\/strong><small>Finding tasks… · step 2 of 3<\/small>/);
+  assert.match(line, /<span class="ws-runbar" role="progressbar"[^>]*aria-valuenow="50"/);
+  assert.match(line, /data-action="meeting-cancel" data-id="job-mtg-roadmap"/);
+  assert.equal((run.match(/role="progressbar"/g) || []).length, 1);
 });
 
 test('no Download button: available reads "Saving the transcript", a failed save shows Try again, Make notes works from available', async () => {
   const s = meetingsSnapshot();
   const release = meetings(s, meetingsCtx({ selected: 'mtg-release' }));
   assert.doesNotMatch(release, />Download</);
-  assert.match(stripOf(detailOf(release)), /ws-mtg-seg-busy[^]*?<strong>Transcript<\/strong><small>saving it from Teams<\/small>/);
+  assert.match(detailOf(release), /Connect gets the transcript from Teams first, then writes the notes\./);
   assert.match(detailOf(release), /data-action="meeting-make-notes" data-id="mtg-release"/);
   const vendor = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor', tab: 'transcript' })));
-  assert.match(stripOf(vendor), /ws-mtg-seg-error[^]*?couldn’t get it from Teams[^]*?<span>Try again<\/span>/);
   assert.match(vendor, /Couldn’t get the transcript from Teams[^]*?Teams didn’t answer in time\.[^]*?data-action="meeting-download"/);
   // Make notes from a transcript still in Teams: the dialog says it saves it first.
   const { ctl, calls } = meetingsHarness(s);
@@ -1024,33 +1054,29 @@ test('a save that needs a Microsoft sign-in offers Sign in again, then Try again
   vendor.saveError = { code: 'needs_login', message: 'Microsoft authorization expired.' };
   s.connection.status = 'needs_login';
   let html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' })));
-  assert.match(stripOf(html), /data-action="graph-connect"[^>]*>[^]*?Sign in again/);
+  assert.match(html, /ws-mtg-paused[^]*?data-action="graph-connect"[^>]*>[^]*?Sign in again/, 'the waiting banner signs in again');
   // Signed in again: no Sign in again anywhere; Try again saves it, and the round will too.
   s.connection.status = 'connected';
   html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' })));
   assert.doesNotMatch(html, /Sign in again|graph-connect/);
-  assert.match(stripOf(html), /data-action="meeting-download"[^>]*data-id="mtg-vendor"[^>]*>[^]*?Try again/);
+  assert.match(html, /ws-mtg-run-failed[^]*?data-action="meeting-download"[^>]*data-id="mtg-vendor"[^>]*>[^]*?Try again/);
   assert.match(html, /You’re signed in again: Connect tries again by itself in a few minutes\./);
   // A meetings folder Connect can't write to: the button goes where the text says.
   vendor.saveError = { code: 'folder_unwritable', message: 'Connect can’t write to /Volumes/Gone/Meetings. Choose the folder again in Settings › Meetings.' };
   html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' })));
-  assert.match(stripOf(html), /data-action="settings-tab"[^>]*data-tab="meetings-transcripts"/);
   assert.match(html, /ws-mtg-run-failed[^]*?data-action="settings-tab"[^>]*data-tab="meetings-transcripts"[^>]*>[^]*?Open Settings › Meetings/);
   assert.doesNotMatch(html, /data-action="meeting-download"/);
   // Stopped by the person: said so, and only they start it again.
   vendor.saveError = { code: 'cancelled', message: 'You stopped saving the transcript, so Connect won’t try again by itself.' };
   html = meetings(s, meetingsCtx({ selected: 'mtg-vendor' }));
   assert.match(rowOf(html, 'mtg-vendor'), /<i>·<\/i><span>Saving stopped<\/span>/, 'a save the person stopped is grey');
-  assert.match(stripOf(detailOf(html)), /saving stopped[^]*?data-action="meeting-download"[^>]*>[^]*?Try again/);
+  assert.match(detailOf(html), /Saving the transcript stopped[^]*?data-action="meeting-download"[^>]*>[^]*?Try again/);
 });
 
 test('notes asked for during a failed save are promised after the transcript; without a request nothing is promised', () => {
   const s = meetingsSnapshot();
-  let strip = stripOf(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' }))));
-  assert.doesNotMatch(strip, /after the transcript/);
+  assert.doesNotMatch(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' }))), /is made as soon as it’s saved/);
   meetingData(s, 'mtg-vendor').pendingNotes = { templateId: 'short-summary', wishes: 'Only decisions', findTasks: true, workspaceId: 'personal', jobId: 'job-1' };
-  strip = stripOf(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' }))));
-  assert.match(strip, /<strong>Notes<\/strong><small>Short summary · after the transcript<\/small>/);
   assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-vendor' }))), /Short summary is made as soon as it’s saved\./);
 });
 
@@ -1059,9 +1085,9 @@ test('stored available and pending meetings show as waiting, with why, while tra
   s.connection.enabled = s.connection.enabled.filter(c => c !== 'transcripts');
   const html = meetings(s, meetingsCtx({ selected: 'mtg-release', showNone: true }));
   for (const id of ['mtg-release', 'mtg-sprint']) assert.match(rowOf(html, id), /<em class="ws-tone-warning"><i class="ws-mtg-dot"><\/i>Waiting: transcripts are off<\/em>/, id);
-  const strip = stripOf(detailOf(html));
-  assert.doesNotMatch(strip, /ws-spin|saving it from Teams/);
-  assert.match(strip, /transcripts are off[^]*?data-action="meeting-transcripts-on"/);
+  const detail = detailOf(html);
+  assert.doesNotMatch(detail, /ws-spin|ws-mtg-runline/);
+  assert.match(detail, /Reading Teams transcripts is off[^]*?data-action="meeting-transcripts-on"/);
   // Not "Make notes for all" (it can't save them now), and one meeting left needs no batch.
   assert.doesNotMatch(html, /data-action="meeting-make-all"/);
 });
@@ -1216,4 +1242,11 @@ test('a meeting is Echo\'s call for plugins, and their call slots show as text o
   // No slots: the page as before.
   const plain = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' })));
   assert.doesNotMatch(plain, /ws-mtg-plugin|plugin-call-menu/);
+});
+
+test('an unnamed speaker\'s line asks "Who is this?" without leaving the transcript', () => {
+  const s = meetingsSnapshot();
+  const transcript = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'transcript' })));
+  assert.match(transcript, /data-action="meeting-name-speaker" data-voice="@1"[^>]*>Who is this\?/);
+  assert.doesNotMatch(transcript, /data-tab="people"/);
 });

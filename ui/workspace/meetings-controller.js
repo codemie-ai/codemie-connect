@@ -1,5 +1,5 @@
 // The Meetings controller (spec "Meetings page"): opening a meeting from anywhere (`open`), the
-// list's filters, selection and ↑/↓, the five tabs, Make notes (one meeting, for all, Try again),
+// list (filters, search, folding days, hiding meetings, the row menu), selection and ↑/↓, the four tabs, Make notes (one meeting, for all, Try again),
 // Check now, Download again, Import, speakers, the template and automatic notes, documents (view,
 // Side by side, versions, main, delete, edit against the version it was opened on), files, and
 // the right next step for every error. It keeps a per-meeting cache of `meeting_read` answers
@@ -677,6 +677,8 @@ export function createMeetingsController({
         setPref('codemie.meetings.wide', String(view.wide));
         return render();
       case 'meeting-people-all': view.peopleAll = id; return render();
+      // "Who is this?" on a transcript line: that voice in the speaker list above the lines.
+      case 'meeting-name-speaker': return focus(`select[data-action="meeting-speaker"][data-voice="${quoted(el.dataset.voice || '')}"]`);
       case 'meeting-compare': setCompare(el.dataset.v === '1'); return render();
       case 'meeting-open': return open(id);
       case 'meeting-make-notes': return makeNotesDialog(id);
