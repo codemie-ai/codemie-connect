@@ -2386,7 +2386,10 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-mtg-speakers-banner>.ws-icon{color:var(--ws-purple);margin-top:2px}
 .ws-mtg-speakers-banner>div:nth-child(2){flex:1;min-width:220px}
 .ws-mtg-speaker-map{display:flex;gap:10px;flex-wrap:wrap}
-.ws-mtg-speaker-map label{display:grid;gap:4px;font-size:11px;color:var(--ws-muted);min-width:180px}
+/* Not the banner's 0 basis: in a narrow section it takes a row of its own instead of squeezing in
+   beside the text with its controls spilling past the card. */
+.ws-mtg-speakers-banner>div.ws-mtg-speaker-map{flex:1 1 180px;max-width:100%}
+.ws-mtg-speaker-map label{display:grid;gap:4px;font-size:11px;color:var(--ws-muted);min-width:min(180px,100%)}
 .ws-mtg-tr-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .ws-mtg-tr-toolbar .ws-search{width:240px;max-width:100%}
 .ws-mtg-speakers{display:flex;gap:6px;flex-wrap:wrap;min-width:0}

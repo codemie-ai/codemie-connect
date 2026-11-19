@@ -467,6 +467,16 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForSelector('.ws-toast:has-text("Meetings collapsed to a rail")');
       row = await panes();
       assert(row[0].collapsed && row[0].width === 42, `the list: ${JSON.stringify(row[0])}`);
+      // In the Transcript section, about 320 px now, the "speaker without a name" card keeps its
+      // name and "Who is it?" control inside it.
+      const speakers = await page.evaluate(sel => {
+        const pane = document.querySelector(`${sel} > .ws-pane:has(.ws-dock-tab[data-tab="mtg-transcript"])`);
+        const card = pane.querySelector('.ws-mtg-speakers-banner').getBoundingClientRect();
+        const parts = [...pane.querySelectorAll('.ws-mtg-speakers-banner .ws-mtg-speaker-map :is(label, label > span, .ws-select-wrap)')];
+        const out = parts.map(el => [el.tagName, el.getBoundingClientRect()]).filter(([, r]) => r.left < card.left + 1 || r.right > card.right - 1).map(([tag, r]) => `${tag} ${Math.round(r.left)}–${Math.round(r.right)}`);
+        return { pane: Math.round(pane.getBoundingClientRect().width), card: `${Math.round(card.left)}–${Math.round(card.right)}`, parts: parts.length, out };
+      }, dock);
+      assert(speakers.pane <= 340 && speakers.parts > 0 && !speakers.out.length, `the speaker card in the Transcript section: ${JSON.stringify(speakers)}`);
       await shot(page, 'layout-e7-rail');
       const stored = await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v1'));
       // Kept after a reload, then Reset brings the page back with a toast.
