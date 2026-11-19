@@ -86,14 +86,19 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForSelector('[data-tile="focus"].ws-tile-lifted');
       await pointer(page, 'pointermove', half, 'pen');
       await page.evaluate(() => { window.__heldTile = document.querySelector('[data-tile="focus"]'); });
-      // A sync's snapshot arrives mid-drag: the store's refresh, which re-renders when nothing is held.
-      await page.evaluate(() => window.__workspace.store.refresh());
-      const held = await page.evaluate(({ x, y }) => {
+      const stillHeld = () => page.evaluate(({ x, y }) => {
         const el = window.__heldTile;
         const r = el.getBoundingClientRect();
         return { same: document.querySelector('[data-tile="focus"]') === el, lifted: el.classList.contains('ws-tile-lifted'), under: el.contains(document.elementFromPoint(x, y)), left: Math.round(r.left), top: Math.round(r.top) };
       }, half);
+      // A sync's snapshot arrives mid-drag: the store's refresh, which re-renders when nothing is held.
+      await page.evaluate(() => window.__workspace.store.refresh());
+      let held = await stillHeld();
       assert(held.same && held.lifted && held.under, `the tile left the pen after the refresh: ${JSON.stringify(held)}`);
+      // A redraw called directly, as plugin widgets and the plugins page do: render() holds it too.
+      await page.evaluate(() => window.__workspace.render());
+      held = await stillHeld();
+      assert(held.same && held.lifted && held.under, `the tile left the pen after a direct render: ${JSON.stringify(held)}`);
       await shot(page, 'layout-e1-held');
       await pointer(page, 'pointermove', to, 'pen');
       await pointer(page, 'pointerup', to, 'pen');
