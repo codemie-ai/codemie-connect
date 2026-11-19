@@ -137,6 +137,9 @@ export function createPluginHost({
       paletteAt: 0, generation: 0, slots: null, sheet: false,
       storage: Promise.resolve(invoke('plugins_request', { op: 'client_storage', data: { id: p.id } }))
         .then(r => (r && r.items && typeof r.items === 'object' ? r.items : {}), () => ({})),
+      // Its own phrases that name Echo, which its frame says in Connect's words.
+      phrases: Promise.resolve(invoke('plugins_request', { op: 'host_phrases', data: { id: p.id } }))
+        .then(r => (Array.isArray(r?.phrases) ? r.phrases.filter(x => typeof x === 'string').slice(0, 3000) : []), () => []),
     };
     frames.set(p.id, rec);
     let src;
@@ -168,6 +171,7 @@ export function createPluginHost({
     rec.slots = null;
     rec.sheet = false;
     const storage = await rec.storage;
+    const phrases = await rec.phrases;
     if (generation !== rec.generation || frames.get(rec.id) !== rec || !rec.el?.contentWindow) return;
     const channel = new MessageChannel();
     const port = channel.port1;
@@ -175,7 +179,7 @@ export function createPluginHost({
     port.onmessage = event => receive(rec, port, event.data);
     rec.el.contentWindow.postMessage({
       v: V, id: 0, kind: 'event', type: 'connect',
-      plugin: { id: rec.id, name: rec.name, version: rec.version, client: rec.client },
+      plugin: { id: rec.id, name: rec.name, version: rec.version, client: rec.client, phrases },
       host: about(), theme: theme(), where: whereFor(rec.shown ? target : null), storage,
     }, '*', [channel.port2]);
     if (rec.shown) send(rec, { kind: 'event', type: 'show', target: frameTarget(target), where: whereFor(target) });

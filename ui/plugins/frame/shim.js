@@ -12,6 +12,9 @@
 // `openEchoPanel` is left out (the spec's rule 3).
 import { V, checkFromWindow, errorOf } from './messages.js';
 import { esc, setRow, setCard, sw, ICON, relDay, ago, patch as domPatch } from './kit.js';
+import { hostWords, renameTable, renameHost } from './host-words.js';
+
+export { hostWords, renameTable, renameHost };
 
 /** The most a client half keeps in its `localStorage` stand-in (as JSON). */
 export const STORAGE_MAX = 1024 * 1024;
@@ -60,6 +63,10 @@ export function textOf(html) {
     .trim();
   return text.length > SLOT_TEXT ? `${text.slice(0, SLOT_TEXT - 1)}…` : text;
 }
+
+/** Where a plugin shows the user's own text: never renamed (host-words.js), phrase or not. */
+const OWN_TEXT = 'textarea, input, pre, code, [contenteditable]';
+const OWN_TEXT_OF = { obsidian: '.kn-doc, .kn-props, .kn-tree' };
 
 /** A hash that names a plugin's page (`#<plugin>:<page>…`), as opposed to a place on this page. */
 const PAGE_HASH = /^#[a-z][a-z0-9-]{1,40}:[a-z0-9]/i;
@@ -119,6 +126,8 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     // The meeting the window's Meetings page shows (Echo's call), its slots' text as last sent,
     // and the ⋯ items that text lists, in order.
     call: null, slotsSent: '', menuShown: [],
+    // The plugin's own phrases that name Echo (`renameTable`), and what watches the page for them.
+    rename: [], renamer: null,
   };
   let ctx = null;
   let graph = null;
@@ -251,8 +260,10 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     s.plugin = m.plugin;
     s.host = m.host;
     s.where = m.where;
+    s.rename = renameTable(m.plugin.phrases);
     setTheme(m.theme);
     installStorage(m.storage);
+    watchHostWords();
     for (const text of s.early.splice(0)) post({ kind: 'event', type: 'error', message: text });
     ctx = makeCtx();
     boot();
@@ -342,7 +353,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     if (graphs && !graph) graph = graphs(win, doc);
     const ui = {
       esc, patch, setRow, setCard, sw, ICON, relDay, ago,
-      notice: text => post({ kind: 'event', type: 'notice', text: String(text ?? '').slice(0, 2000) }),
+      notice: text => post({ kind: 'event', type: 'notice', text: renameHost(String(text ?? ''), s.rename).slice(0, 2000) }),
       copy,
       stylesheet,
       sheet: openSheet,
@@ -620,7 +631,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
         for (const item of s.slots.get('call.header') || []) {
           const html = slotHtml('call.header', item, { ...call });
           // A chip here is text, not a button: an arrow promising a menu or a link goes.
-          const text = textOf(html).replace(/\s*[▾▴▸↗]+$/u, '');
+          const text = renameHost(textOf(html), s.rename).replace(/\s*[▾▴▸↗]+$/u, '');
           if (text && out.header.length < SLOT_ITEMS) out.header.push(text);
           if (typeof item.after === 'function') {
             const box = doc.createElement('div');
@@ -631,7 +642,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
         for (const item of s.slots.get('call.menu') || []) {
           try {
             if (typeof item.when === 'function' && !item.when(t)) continue;
-            const label = textOf(typeof item.label === 'function' ? item.label(t) : item.label);
+            const label = renameHost(textOf(typeof item.label === 'function' ? item.label(t) : item.label), s.rename);
             if (label && typeof item.run === 'function' && out.menu.length < SLOT_ITEMS) {
               out.menu.push(label);
               shown.push(item);
@@ -641,7 +652,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
           }
         }
         for (const item of s.slots.get('call.minutes') || []) {
-          const text = textOf(slotHtml('call.minutes', item, { ...call }));
+          const text = renameHost(textOf(slotHtml('call.minutes', item, { ...call })), s.rename);
           if (text && out.minutes.length < SLOT_ITEMS) out.minutes.push(text);
         }
       } finally {
@@ -806,6 +817,49 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     }
   }
 
+  // ------------------------------------------------------------ Echo's name in the plugin's words
+
+  /** Renames the plugin's own phrases as the page draws them, and keeps doing so: a text node,
+   *  and `title`, `aria-label` and `placeholder`, outside where the plugin shows the user's own
+   *  text. Only in a real page (the browser's DOM and MutationObserver). */
+  function watchHostWords() {
+    if (!s.rename.length || !doc.body || typeof win.MutationObserver !== 'function' || typeof doc.createTreeWalker !== 'function') return;
+    const skip = [OWN_TEXT, OWN_TEXT_OF[s.plugin.id]].filter(Boolean).join(', ');
+    const ATTRS = ['title', 'aria-label', 'placeholder'];
+    const textNode = t => {
+      if (!t.data || !t.data.includes('Echo') || !t.parentElement || t.parentElement.closest(skip)) return;
+      const next = renameHost(t.data, s.rename);
+      if (next !== t.data) t.data = next;
+    };
+    const attrs = el => {
+      if (!el.getAttribute || el.closest(skip)) return;
+      for (const a of ATTRS) {
+        const v = el.getAttribute(a);
+        if (v && v.includes('Echo')) {
+          const next = renameHost(v, s.rename);
+          if (next !== v) el.setAttribute(a, next);
+        }
+      }
+    };
+    const within = node => {
+      if (node.nodeType === 3) return textNode(node);
+      if (node.nodeType !== 1) return;
+      attrs(node);
+      const walk = doc.createTreeWalker(node, 4 /* NodeFilter.SHOW_TEXT */);
+      for (let t = walk.nextNode(); t; t = walk.nextNode()) textNode(t);
+      for (const el of node.querySelectorAll('[title], [aria-label], [placeholder]')) attrs(el);
+    };
+    s.renamer = new win.MutationObserver(list => {
+      for (const m of list) {
+        if (m.type === 'childList') m.addedNodes.forEach(within);
+        else if (m.type === 'characterData') textNode(m.target);
+        else if (m.type === 'attributes') attrs(m.target);
+      }
+    });
+    s.renamer.observe(doc.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ATTRS });
+    within(doc.body);
+  }
+
   // ------------------------------------------------------------ theme and storage
 
   function setTheme(theme) {
@@ -866,6 +920,8 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
     s.palette = [];
     s.card = null;
     s.slots.clear();
+    s.renamer?.disconnect();
+    s.renamer = null;
     s.call = null;
     s.menuShown = [];
     s.drops = [];

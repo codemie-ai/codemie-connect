@@ -3,7 +3,8 @@
 // (ui/test/fixtures/plugins/hello/). DOM drawing itself is covered by the browser E2E.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createShim, startFrame, createStorage, textOf } from '../plugins/frame/shim.js';
+import { readFileSync } from 'node:fs';
+import { createShim, startFrame, createStorage, textOf, hostWords, renameTable, renameHost } from '../plugins/frame/shim.js';
 import { checkFromFrame, checkFromWindow, V } from '../plugins/frame/messages.js';
 import { esc, setRow, setCard, sw, relDay, ago } from '../plugins/frame/kit.js';
 import { createPluginHost, internalRoute, openableUrl, callLink } from '../plugins/host.js';
@@ -907,4 +908,48 @@ test('the_frames_refusals_match_the_regexes_knowledge_reads_them_by', async () =
   await assert.rejects(ctx.claude.removeSkill('twin-vault'), /only on your click/);
   assert.throws(() => ctx.claude.session({ folder: '/v' }), /only on your click/);
   await assert.rejects(ctx.system.reveal('/v', 'a.md'), /only on your click/);
+});
+
+test('echo_in_a_plugins_own_words_reads_connect_and_a_users_notes_stay_as_written', () => {
+  // The host's name in Echo's plugins: Connect; Claude Code opens in Terminal, not Echo's panel.
+  assert.equal(hostWords("Claude Code opens in Echo's panel with this vault"), 'Claude Code opens in Terminal with this vault');
+  assert.equal(hostWords('What Echo read; Echo’s index'), 'What Connect read; Connect’s index');
+  assert.equal(hostWords('Echoes and echo stay'), 'Echoes and echo stay');
+  const table = renameTable([
+    'Each vault is a folder of Markdown you own; Echo changes nothing in it until you save something.',
+    "Claude Code opens in Echo's panel with this vault as its project — its",
+    'What Echo read',
+    'Echo',
+    'not about Echo at all, no phrase',
+    42,
+  ]);
+  // A phrase of the plugin's own, inside a longer text: changed there only.
+  assert.equal(
+    renameHost('Each vault is a folder of Markdown you own; Echo changes nothing in it until you save something.', table),
+    'Each vault is a folder of Markdown you own; Connect changes nothing in it until you save something.',
+  );
+  assert.equal(renameHost("✦ Claude Code opens in Echo's panel with this vault as its project — its CLAUDE.md", table),
+    '✦ Claude Code opens in Terminal with this vault as its project — its CLAUDE.md');
+  // White space as the page lays it out.
+  assert.equal(renameHost('  What  Echo\n read ', table), ' What Connect read ');
+  // A short phrase only as the whole text; Echo in a user's own words, never.
+  assert.equal(renameHost('Echo', table), 'Connect');
+  assert.equal(renameHost('  Echo ', table), '  Connect ');
+  assert.equal(renameHost('Echo is our client app', table), 'Echo is our client app');
+  assert.equal(renameHost('Notes on Echo and Atlas', table), 'Notes on Echo and Atlas');
+  assert.equal(renameHost('no host here', table), 'no host here');
+  assert.equal(renameHost('What Echo read', []), 'What Echo read', 'no phrases, no change');
+  // The window hands the phrases over with the plugin; anything else is refused.
+  const connect = phrases => ({ v: V, id: 0, kind: 'event', type: 'connect', plugin: { id: 'kn', phrases }, host: {}, theme: 'dark', where: { view: '', section: '', route: '' }, storage: {} });
+  assert.ok(checkFromWindow(connect(['What Echo read'])));
+  assert.ok(checkFromWindow(connect(undefined)));
+  assert.equal(checkFromWindow(connect('What Echo read')), null);
+  assert.equal(checkFromWindow(connect([7])), null);
+  assert.equal(checkFromWindow(connect(['x'.repeat(401)])), null);
+  // What Rust answers for a package (`host_phrases`, plugins-host-phrases.json) is what it renames by.
+  const answer = JSON.parse(readFileSync(new URL('./fixtures/contract/plugins-host-phrases.json', import.meta.url), 'utf8'));
+  assert.ok(checkFromWindow(connect(answer.phrases)));
+  const fromRust = renameTable(answer.phrases);
+  assert.equal(renameHost('Echo posts your standup when the meeting ends', fromRust), 'Connect posts your standup when the meeting ends');
+  assert.equal(renameHost("Ask in Echo's panel", fromRust), 'Ask in Terminal');
 });

@@ -256,6 +256,10 @@ struct StorageArg {
     items: Option<Value>,
 }
 #[derive(Deserialize)]
+struct IdArg {
+    id: String,
+}
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoveArg {
     id: String,
@@ -494,6 +498,10 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
             let a: AddressArg = arg(data)?;
             extras::set_addresses(paths, &a.id, &a.key, &a.value)?;
             to_json(installed_view(paths, &a.id)?)
+        }
+        "host_phrases" => {
+            let a: IdArg = arg(data)?;
+            extras::host_phrases(paths, &a.id)
         }
         "client_storage" => {
             let a: StorageArg = arg(data)?;
@@ -920,6 +928,23 @@ mod tests {
         .unwrap();
         assert_eq!(installed["status"], "installed");
         assert_eq!(installed["plugin"]["version"], "1.0.0");
+        // Its own words that name Echo, which its frame says in Connect's. The script is taken
+        // away again, so the package the rest of the flow hashes is the one installed.
+        let view = env.paths.installed().join("standup/1.0.0/view.js");
+        std::fs::write(
+            &view,
+            "say(`Echo posts your standup when the meeting ends`)\nsay('Ask in Echo\\'s panel')\n",
+        )
+        .unwrap();
+        let phrases = run("host_phrases", json!({"id": "standup"})).unwrap();
+        std::fs::remove_file(&view).unwrap();
+        assert_eq!(
+            phrases["phrases"],
+            json!([
+                "Echo posts your standup when the meeting ends",
+                "Ask in Echo's panel"
+            ])
+        );
 
         // The marketplace publishes 1.1.0, which also wants a folder.
         let mut newer = standup("1.1.0");
@@ -958,6 +983,7 @@ mod tests {
             ("plugins-markets.json", markets),
             ("plugins-catalog.json", catalog),
             ("plugins-inspect.json", inspect),
+            ("plugins-host-phrases.json", phrases),
             ("plugins-installed.json", installed_list),
             ("plugins-update-needs-consent.json", needs),
             ("plugins-registry-unreadable.json", unreadable),

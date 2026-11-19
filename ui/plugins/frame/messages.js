@@ -25,7 +25,8 @@
 //                  panels: [{id, label}], palette: [{label, keywords}], widgets: [id]}
 //   reply         {ok, value} | {ok: false, error: {code, message}}   to the window's call
 // Window → frame
-//   event         {type: 'connect', plugin, host, theme, where, storage}   (posted with the port)
+//   event         {type: 'connect', plugin, host, theme, where, storage}   (posted with the port;
+//                                       `plugin.phrases`: its own phrases that name Echo)
 //                 {type: 'theme', theme} {type: 'show', target, where} {type: 'palette', index}
 //                 {type: 'files', files: [{file, name, size}]}   files dropped on its page, as handles
 //                 {type: 'call', call, where}   the meeting the Meetings page shows, as Echo's call
@@ -151,6 +152,9 @@ function where(w) {
   return isObject(w) && exactly(w, ['view', 'section', 'route']) && text(w.view, HASH) && text(w.section, HASH) && text(w.route, HASH);
 }
 
+/** A plugin's own phrases that name Echo (`plugins::phrases`), when the window sends them. */
+const phrases = p => p === undefined || (Array.isArray(p) && p.length <= 3000 && p.every(x => text(x, 400)));
+
 const CALL_KEYS = ['name', 'stamp', 'title', 'started_at', 'notes', 'profile', 'memo', 'threads', 'client'];
 const orNull = (v, max) => v === null || text(v, max);
 
@@ -170,7 +174,7 @@ export function checkFromWindow(m) {
       switch (m.type) {
         case 'connect':
           return exactly(m, ['v', 'id', 'kind', 'type', 'plugin', 'host', 'theme', 'where', 'storage'])
-            && isObject(m.plugin) && text(m.plugin.id, 64) && isObject(m.host) && THEMES.includes(m.theme) && where(m.where)
+            && isObject(m.plugin) && text(m.plugin.id, 64) && phrases(m.plugin.phrases) && isObject(m.host) && THEMES.includes(m.theme) && where(m.where)
             && isObject(m.storage) ? m : null;
         case 'theme': return exactly(m, ['v', 'id', 'kind', 'type', 'theme']) && THEMES.includes(m.theme) ? m : null;
         case 'show':
