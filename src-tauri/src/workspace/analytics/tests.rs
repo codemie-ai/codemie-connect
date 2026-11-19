@@ -406,7 +406,9 @@ async fn view_passes_filters_to_the_cli_and_returns_its_json_unchanged() {
         json!({"from": FROM, "to": TO, "agent": "claude", "compare": true}),
     )
     .await;
-    assert_eq!(answer, summary());
+    let mut expected = summary();
+    expected["connect"] = json!({"startedInConnect": []});
+    assert_eq!(answer, expected);
     assert_eq!(
         last_view(&cli),
         (
@@ -459,6 +461,104 @@ async fn view_passes_filters_to_the_cli_and_returns_its_json_unchanged() {
         .await
         .unwrap_err();
     assert_eq!(e.code, "timeout");
+}
+
+/// A summary whose `sessions` rows are `(id, startTime, project)`.
+fn summary_with(rows: &[(&str, i64, &str)]) -> Value {
+    let mut s = summary();
+    s["sessions"] = json!(rows
+        .iter()
+        .map(
+            |(id, start, project)| json!({"sessionId": id, "startTime": start, "project": project})
+        )
+        .collect::<Vec<_>>());
+    s
+}
+
+async fn view_answer(core: &Arc<Core>) -> Value {
+    ask(
+        core,
+        Operation::AnalyticsView,
+        json!({"from": FROM, "to": TO}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn view_reads_the_cli_output_from_a_file_not_stdout() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    // A CLI that prints a banner before anything else and writes its JSON to the -o file.
+    let script = dir.path().join("codemie");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho 'Migrating settings...'\necho '{\"junk\": true}'\nwhile [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then out=\"$2\"; fi; shift; done\nprintf '%s' '{\"schema\":\"codemie.analytics.summary/1\",\"sessions\":[]}' > \"$out\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let paths = CorePaths {
+        data: dir.path().join("data"),
+        private: dir.path().join("private"),
+    };
+    std::fs::create_dir_all(&paths.data).unwrap();
+    std::fs::create_dir_all(&paths.private).unwrap();
+    let core = Core::open_with(
+        None,
+        &paths,
+        Arc::new(FakeRunner::new(vec![])),
+        ProfileCache::fixed(vec![]),
+        Arc::new(FakeGraph::default()),
+        Arc::new(super::cli::CodemieCli::with_program(script)),
+    )
+    .unwrap();
+    let answer = view_answer(&core).await;
+    assert_eq!(answer["schema"], "codemie.analytics.summary/1");
+    assert!(answer.get("junk").is_none());
+    let left: Vec<String> = std::fs::read_dir(paths.analytics_dir())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("view-"))
+        .collect();
+    assert!(left.is_empty(), "the temp file is removed: {left:?}");
+}
+
+#[tokio::test]
+async fn view_lists_sessions_started_in_connect() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let t = 1_795_000_000_000i64;
+    let folder = "/Users/taylor/work/sync-engine";
+    cli.script_view(Ok(summary_with(&[
+        ("near", t + 119_000, folder),
+        ("far", t + 400_000, folder),
+        ("elsewhere", t + 1_000, "/Users/taylor/other"),
+    ])));
+    // Two launches: the first matches "near" (119 s); the second, 121 s from "far", matches nothing.
+    let log = format!(
+        "{}\n{}\n",
+        json!({"at": t, "folder": folder, "program": "claude"}),
+        json!({"at": t + 400_000 + 121_000, "folder": folder, "program": "claude"}),
+    );
+    std::fs::write(dir.path().join("terminal-launches.jsonl"), log).unwrap();
+    let core = core(dir.path(), &cli);
+    let answer = view_answer(&core).await;
+    assert_eq!(answer["connect"], json!({"startedInConnect": ["near"]}));
+    assert_eq!(
+        answer["schema"],
+        summary()["schema"],
+        "the CLI JSON is kept"
+    );
+}
+
+#[tokio::test]
+async fn view_without_a_launch_log_lists_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    cli.script_view(Ok(summary_with(&[("a", 1_795_000_000_000, "/x")])));
+    let core = core(dir.path(), &cli);
+    let answer = view_answer(&core).await;
+    assert_eq!(answer["connect"], json!({"startedInConnect": []}));
 }
 
 #[tokio::test]

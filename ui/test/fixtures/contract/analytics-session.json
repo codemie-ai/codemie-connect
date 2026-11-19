@@ -4941,7 +4941,7 @@
       "key": "toolu_0166swYcJwF1YqaGg8zwedGT",
       "kind": "agent",
       "label": "sdlc-factory:review-lens-blind",
-      "level": 2,
+      "level": 1,
       "name": "sdlc-factory:review-lens-blind",
       "parentKey": "toolu_013tpQQUjAQT3g7Eo8EZVD8v"
     },
@@ -4951,7 +4951,7 @@
       "key": "toolu_01NtcPf5UUZgvRzvSKoj7UWW",
       "kind": "agent",
       "label": "sdlc-factory:review-lens-edge-case",
-      "level": 2,
+      "level": 1,
       "name": "sdlc-factory:review-lens-edge-case",
       "parentKey": "toolu_013tpQQUjAQT3g7Eo8EZVD8v"
     },
@@ -4961,7 +4961,7 @@
       "key": "toolu_01YRfcsB7gi8RhX1FL6f3S1F",
       "kind": "agent",
       "label": "sdlc-factory:review-lens-verification-gap",
-      "level": 2,
+      "level": 1,
       "name": "sdlc-factory:review-lens-verification-gap",
       "parentKey": "toolu_013tpQQUjAQT3g7Eo8EZVD8v"
     },
@@ -4971,7 +4971,7 @@
       "key": "toolu_01UPiXB1hLehPuEuC3t4pjeQ",
       "kind": "agent",
       "label": "sdlc-factory:review-standards",
-      "level": 2,
+      "level": 1,
       "name": "sdlc-factory:review-standards",
       "parentKey": "toolu_013tpQQUjAQT3g7Eo8EZVD8v"
     },
@@ -4981,7 +4981,7 @@
       "key": "toolu_01AKd114NeBgKL1ZYcdHEX15",
       "kind": "agent",
       "label": "sdlc-factory:review-triage",
-      "level": 2,
+      "level": 1,
       "name": "sdlc-factory:review-triage",
       "parentKey": "toolu_013tpQQUjAQT3g7Eo8EZVD8v"
     },

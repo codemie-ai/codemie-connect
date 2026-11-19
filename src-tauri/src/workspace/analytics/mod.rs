@@ -43,7 +43,7 @@ impl Core {
                 if req.data["compare"].as_bool() == Some(true) {
                     args.push("--compare".into());
                 }
-                self.analytics_view(&args).await
+                self.analytics_summary(&args).await
             }
             Operation::AnalyticsSession => {
                 let id = argument(required(&req.data, "id", 200)?)?;
@@ -79,6 +79,21 @@ impl Core {
             "failedDays": state.failed_days,
             "progress": progress,
         }))
+    }
+
+    /// The CLI's summary plus `connect.startedInConnect`: the ids of its sessions that Connect's
+    /// terminal started, by the same launch-log match the App tab uses.
+    async fn analytics_summary(&self, args: &[String]) -> Result<Value> {
+        let mut summary = self.analytics_view(args).await?;
+        let rows = summary["sessions"].as_array().cloned().unwrap_or_default();
+        let started: Vec<Value> = app::matched_indices(&self.launches(), &rows)
+            .into_iter()
+            .filter_map(|i| rows[i]["sessionId"].as_str().map(|id| json!(id)))
+            .collect();
+        if let Some(object) = summary.as_object_mut() {
+            object.insert("connect".into(), json!({"startedInConnect": started}));
+        }
+        Ok(summary)
     }
 
     /// `codemie analytics view --input <store> <args>`: its JSON as it is. An empty store goes to

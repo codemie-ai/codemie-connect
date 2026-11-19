@@ -125,7 +125,7 @@ impl Core {
     }
 
     /// The terminal dock's launches, `(at ms, folder)`; a missing or damaged log is no launches.
-    fn launches(&self) -> Vec<(i64, String)> {
+    pub(super) fn launches(&self) -> Vec<(i64, String)> {
         let text = std::fs::read_to_string(self.paths.private.join(LAUNCH_LOG)).unwrap_or_default();
         text.lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -195,6 +195,18 @@ fn ledger(repo: &Repository, from_ms: i64, to_ms: i64) -> Result<Ledger> {
 /// Each launch takes at most one session and each session serves at most one launch: the closest
 /// pairs first. A pair is a session in the launch's folder that began within [`MATCH_MS`].
 fn match_sessions(launches: &[(i64, String)], sessions: &[Value]) -> Vec<Matched> {
+    matched_indices(launches, sessions)
+        .into_iter()
+        .map(|s| Matched {
+            start: sessions[s]["startTime"].as_i64().unwrap_or(0),
+            cost: sessions[s]["costUSD"].as_f64().unwrap_or(0.0),
+            duration: sessions[s]["durationMs"].as_f64().unwrap_or(0.0),
+        })
+        .collect()
+}
+
+/// The indices of the `sessions` that matched a launch.
+pub(super) fn matched_indices(launches: &[(i64, String)], sessions: &[Value]) -> Vec<usize> {
     let mut pairs = Vec::new();
     for (l, (at, folder)) in launches.iter().enumerate() {
         for (s, session) in sessions.iter().enumerate() {
@@ -218,11 +230,7 @@ fn match_sessions(launches: &[(i64, String)], sessions: &[Value]) -> Vec<Matched
         }
         used_l.insert(l);
         used_s.insert(s);
-        matched.push(Matched {
-            start: sessions[s]["startTime"].as_i64().unwrap_or(0),
-            cost: sessions[s]["costUSD"].as_f64().unwrap_or(0.0),
-            duration: sessions[s]["durationMs"].as_f64().unwrap_or(0.0),
-        });
+        matched.push(s);
     }
     matched
 }

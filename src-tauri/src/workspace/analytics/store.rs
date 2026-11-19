@@ -1,5 +1,6 @@
 //! The sessions Connect has read from the CLI, in the CLI's own export shape
 //! (`{meta, sessions}`), and the fetch state beside them. Every write is atomic.
+use super::cli::VIEW_PREFIX;
 use crate::storage::location::write_atomic;
 use crate::workspace::models::{Result, WorkspaceError};
 use chrono::NaiveDate;
@@ -188,7 +189,8 @@ fn remove_leftovers(dir: &Path) {
             name.ends_with(".tmp") && (name.starts_with(SESSIONS) || name.starts_with(STATE));
         // What a killed export call left.
         let export = name.starts_with(EXPORT_PREFIX) && name.ends_with(".json");
-        if crashed_write || export {
+        let view = name.starts_with(VIEW_PREFIX) && name.ends_with(".json");
+        if crashed_write || export || view {
             let _ = std::fs::remove_file(e.path());
         }
     }

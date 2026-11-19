@@ -15,6 +15,8 @@ use tokio::process::Command;
 const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 /// `export` of three days peaks near 4.2 GB; the default heap is 4 GB.
 const NODE_OPTIONS: &str = "--max-old-space-size=6144";
+/// `view` writes its JSON to `view-<unique>.json` beside the store.
+pub(super) const VIEW_PREFIX: &str = "view-";
 /// How much of a failed call's stderr is kept for the message.
 const STDERR_TAIL_LINES: usize = 20;
 const STDERR_TAIL_CHARS: usize = 2000;
@@ -246,10 +248,26 @@ impl AnalyticsCli for CodemieCli {
         args: &'a [String],
     ) -> BoxFuture<'a, Result<Value, CliError>> {
         Box::pin(async move {
-            let stdout = self.run(&view_args(input, args)).await?;
-            serde_json::from_slice(&stdout).map_err(|e| CliError::Failed {
+            // The CLI can print start-up or migration text on stdout before its JSON, so the JSON
+            // goes through a file only this call reads.
+            let out = input
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(format!("{VIEW_PREFIX}{}.json", uuid::Uuid::new_v4()));
+            let mut all = view_args(input, args);
+            all.push("-o".into());
+            all.push(out.to_string_lossy().into_owned());
+            let ran = self.run(&all).await;
+            let bytes = std::fs::read(&out);
+            let _ = std::fs::remove_file(&out);
+            ran?;
+            let bytes = bytes.map_err(|e| CliError::Failed {
                 code: 0,
-                stderr_tail: format!("view printed no JSON: {e}"),
+                stderr_tail: format!("view wrote no output file: {e}"),
+            })?;
+            serde_json::from_slice(&bytes).map_err(|e| CliError::Failed {
+                code: 0,
+                stderr_tail: format!("view wrote no JSON: {e}"),
             })
         })
     }
@@ -666,32 +684,34 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let cli = CodemieCli::with_program(fake_cli(
             d.path(),
-            "if [ \"$3\" = --input ]; then echo '{\"schema\":\"s\"}'; fi",
+            "echo banner; for a; do last=\"$a\"; done; echo '{\"schema\":\"s\"}' > \"$last\"",
         ));
+        let input = d.path().join("sessions.json");
         let v = cli
-            .view(
-                Path::new("/s/sessions.json"),
-                &["--last".into(), "7d".into()],
-            )
+            .view(&input, &["--last".into(), "7d".into()])
             .await
             .unwrap();
         assert_eq!(v["schema"], "s");
         let argv = std::fs::read_to_string(d.path().join("argv")).unwrap();
+        let argv: Vec<&str> = argv.lines().collect();
         assert_eq!(
-            argv.lines().collect::<Vec<_>>(),
+            argv[..6],
             [
                 "analytics",
                 "view",
                 "--input",
-                "/s/sessions.json",
+                input.to_str().unwrap(),
                 "--last",
                 "7d"
             ]
         );
+        assert_eq!(argv[6], "-o");
+        assert!(argv[7].starts_with(d.path().join("view-").to_str().unwrap()));
+        assert!(!Path::new(argv[7]).exists(), "the output file is removed");
         cli.report(
             Path::new("/s/sessions.json"),
             &["--agent".into(), "claude".into()],
-            Path::new("/o/r.html"),
+            &d.path().join("r.html"),
         )
         .await
         .unwrap();
@@ -708,7 +728,7 @@ mod tests {
                 "--export",
                 "html",
                 "-o",
-                "/o/r.html"
+                d.path().join("r.html").to_str().unwrap()
             ]
         );
         let bad = CodemieCli::with_program(fake_cli(d.path(), "echo not json"));
