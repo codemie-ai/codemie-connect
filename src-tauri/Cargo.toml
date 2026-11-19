@@ -15,6 +15,17 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# Keep target/debug small. On macOS the default ("unpacked") leaves a new set of
+# loose .o files in target/debug/deps on every rebuild that Cargo never removes.
+# Backtraces keep file:line; for full variables in lldb build once with
+# CARGO_PROFILE_DEV_DEBUG=true.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "packed"
+
+[profile.dev.package."*"]
+debug = false
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
