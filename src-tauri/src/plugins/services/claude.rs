@@ -29,13 +29,42 @@ const MAX_PROMPT: usize = 200_000;
 const DEFAULT_MINUTES: u64 = 20;
 const MAX_MINUTES: u64 = 60;
 /// Settings a folder's own `.claude/settings*.json` may not have: each can send a run elsewhere.
-const REDIRECTING: [&str; 5] = [
-    "env",
+/// Claude settings keys that run a program of the folder's own to sign Claude in or send its
+/// requests: always refused.
+const REDIRECTING: [&str; 4] = [
     "apiKeyHelper",
     "awsAuthRefresh",
     "awsCredentialExport",
     "otelHeadersHelper",
 ];
+
+/// Whether an `env` name routes Claude's requests elsewhere or as another account (Echo: "a
+/// routing variable in its env"): Anthropic's endpoint, keys and models, the cloud providers and
+/// their credentials, a proxy, another config folder, an OAuth token, the TLS trust. A folder's
+/// own telemetry (`OTEL_*`, `CLAUDE_CODE_ENABLE_TELEMETRY`) and other settings aren't routing.
+fn routing_variable(name: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    const PREFIXES: [&str; 7] = [
+        "ANTHROPIC_",
+        "AWS_",
+        "CLAUDE_CODE_USE_",
+        "CLAUDE_CODE_SKIP_",
+        "CLOUD_ML_",
+        "GOOGLE_",
+        "VERTEX_",
+    ];
+    const NAMES: [&str; 8] = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "NODE_EXTRA_CA_CERTS",
+        "NODE_TLS_REJECT_UNAUTHORIZED",
+    ];
+    PREFIXES.iter().any(|p| n.starts_with(p)) || NAMES.contains(&n.as_str())
+}
 
 /// The runs going on under a key, by plugin and key (lowercase): their stop tokens.
 #[derive(Default)]
@@ -90,13 +119,26 @@ pub(crate) fn refuse_redirecting(dir: &Path) -> Result<(), HostError> {
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
         };
-        let found: Vec<&str> = match serde_json::from_str::<Value>(&text) {
-            Ok(Value::Object(m)) => REDIRECTING
-                .iter()
-                .copied()
-                .filter(|k| m.contains_key(*k))
-                .collect(),
-            _ => vec!["(settings Connect can't read)"],
+        let found: Vec<String> = match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(m)) => {
+                let mut found: Vec<String> = REDIRECTING
+                    .iter()
+                    .filter(|k| m.contains_key(**k))
+                    .map(|k| (*k).to_string())
+                    .collect();
+                match m.get("env") {
+                    None => {}
+                    Some(Value::Object(env)) => found.extend(
+                        env.keys()
+                            .filter(|k| routing_variable(k))
+                            .map(|k| format!("env {k}")),
+                    ),
+                    // An `env` Connect can't read could hold anything.
+                    Some(_) => found.push("env".into()),
+                }
+                found
+            }
+            _ => vec!["(settings Connect can't read)".into()],
         };
         if !found.is_empty() {
             return Err(HostError::new(
@@ -487,10 +529,51 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(e.code, ErrorCode::Permission);
         assert!(
-            e.message.contains(".claude/settings.local.json: env"),
+            e.message
+                .contains(".claude/settings.local.json: env ANTHROPIC_BASE_URL"),
             "{e}"
         );
         assert!(runner.calls().is_empty());
+        // A proxy, another account's folder, a cloud provider: each sends the run elsewhere.
+        for (k, v) in [
+            ("HTTPS_PROXY", "http://proxy.example:8080"),
+            ("CLAUDE_CONFIG_DIR", "/elsewhere"),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("AWS_PROFILE", "other"),
+            ("https_proxy", "http://proxy.example:8080"),
+        ] {
+            std::fs::write(
+                Path::new(&root).join(".claude/settings.json"),
+                json!({"env": {k: v}}).to_string(),
+            )
+            .unwrap();
+            std::fs::remove_file(Path::new(&root).join(".claude/settings.local.json")).ok();
+            assert!(
+                super::refuse_redirecting(Path::new(&root)).is_err(),
+                "{k} routes the run"
+            );
+        }
+    }
+
+    #[test]
+    fn a_folders_own_telemetry_and_other_settings_are_not_routing() {
+        // A twin vault as CodeMie sets one up: its own telemetry, plugins and permissions.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/settings.local.json"),
+            json!({"env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "1", "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+                           "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json", "OTEL_LOGS_EXPORTER": "otlp",
+                           "OTEL_METRICS_EXPORTER": "otlp", "OTEL_METRICS_INCLUDE_SESSION_ID": "true",
+                           "MAX_THINKING_TOKENS": "8000"},
+                   "enabledPlugins": {"x@y": true}, "permissions": {"allow": ["Read"]}})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(super::refuse_redirecting(dir.path()), Ok(()));
+        // Settings that aren't JSON are still refused: Connect can't tell what they do.
+        std::fs::write(dir.path().join(".claude/settings.json"), "{ not json").unwrap();
+        assert!(super::refuse_redirecting(dir.path()).is_err());
     }
 
     #[tokio::test]
