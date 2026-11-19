@@ -358,6 +358,8 @@ impl Core {
         self.stop.store(true, Ordering::Relaxed);
         self.ai_cancel.cancel();
         self.kill_graph_reads();
+        // The process exits without dropping tasks: an analytics export would outlive it.
+        self.analytics_cli.stop();
         #[cfg(target_os = "macos")]
         curl::cleanup(&self.paths.private);
     }

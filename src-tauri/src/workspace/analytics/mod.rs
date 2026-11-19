@@ -161,6 +161,7 @@ fn cli_error(e: CliError) -> WorkspaceError {
             "timeout",
             "The CodeMie CLI took too long to answer. Try again.",
         ),
+        CliError::Stopped => WorkspaceError::new("busy", "Connect is quitting."),
         CliError::Failed { code, stderr_tail } => {
             log::warn!("analytics: the CLI ended with {code}: {stderr_tail}");
             let last = stderr_tail.lines().map(str::trim).rfind(|l| !l.is_empty());

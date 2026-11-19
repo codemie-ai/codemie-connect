@@ -4,14 +4,15 @@
 //! day, and a day that still fails waits for its own retry (`failed_days`). Days are UTC, because
 //! the CLI reads a date-only `--from`/`--to` as UTC days.
 use super::cli::{CliError, ExportOutcome};
-use super::store::State;
-use crate::workspace::models::Result;
+use super::store::{State, EXPORT_PREFIX};
+use crate::workspace::models::{id, Result, WorkspaceError};
 use crate::workspace::{poisoned, Core};
 use chrono::{Days, NaiveDate, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::Emitter;
 
@@ -19,8 +20,6 @@ use tauri::Emitter;
 const FIRST_OPEN_DAYS: u32 = 90;
 /// Days per CLI call: three days peak near 4.2 GB, within the raised heap.
 const WINDOW_DAYS: i64 = 3;
-/// Where a call's export is written before it is merged.
-const EXPORT: &str = "export.json";
 /// Progress to the window: `{running, done, total, label, failedDays}`.
 const EVENT: &str = "workspace:analytics";
 
@@ -121,13 +120,19 @@ impl Core {
         today: NaiveDate,
         retry: Option<NaiveDate>,
     ) -> Result<Value> {
+        let running = || Ok::<_, WorkspaceError>(json!({"running": true}));
+        // First: `--help` is a CLI process too, and none starts while a fetch runs.
+        if self.analytics_run.lock().map_err(|_| poisoned())?.is_some() {
+            return running();
+        }
         if !self.analytics_cli.supports_view().await {
             return Ok(json!({"needsCli": true}));
         }
         let (windows, progress) = {
             let mut run = self.analytics_run.lock().map_err(|_| poisoned())?;
+            // Again: one may have started while `--help` ran.
             if run.is_some() {
-                return Ok(json!({"running": true}));
+                return running();
             }
             // Opened before planning: a store found unreadable is set aside with its state, so
             // the plan starts over. Opening also makes the folder the CLI exports into.
@@ -158,7 +163,8 @@ impl Core {
         self.emit_progress(true, &p);
         let mut finished = true;
         for window in windows {
-            if self.read_window(window, today).await.is_break() {
+            if self.stop.load(Ordering::Relaxed) || self.read_window(window, today).await.is_break()
+            {
                 finished = false;
                 break;
             }
@@ -207,14 +213,24 @@ impl Core {
     }
 
     /// One CLI call, merged into the store; then its days are marked read. The fetch stops when
-    /// the CLI is gone or the files can't be written.
+    /// Connect quits, the CLI is gone or the files can't be written.
     async fn read_days(self: &Arc<Self>, window: Window, today: NaiveDate) -> Read {
         let (from, to) = window;
-        let out = self.paths.analytics_dir().join(EXPORT);
-        let outcome = match self.analytics_cli.export(from, to, &out).await {
+        let out = self
+            .paths
+            .analytics_dir()
+            .join(format!("{EXPORT_PREFIX}{}.json", id()));
+        let outcome = self.analytics_cli.export(from, to, &out).await;
+        let export = std::fs::read(&out);
+        let _ = std::fs::remove_file(&out);
+        // A call Connect stopped as it quits: nothing of it is read, failed or marked.
+        if self.stop.load(Ordering::Relaxed) {
+            return Read::Stop;
+        }
+        let outcome = match outcome {
             Ok(outcome) => outcome,
-            Err(CliError::NotFound) => {
-                log::warn!("analytics: no CodeMie CLI; the fetch stops");
+            Err(CliError::NotFound | CliError::Stopped) => {
+                log::warn!("analytics: no CodeMie CLI to run; the fetch stops");
                 return Read::Stop;
             }
             Err(e) => {
@@ -234,10 +250,9 @@ impl Core {
         let store = self.analytics_store();
         let stored = match outcome {
             ExportOutcome::Written => {
-                let export = std::fs::read(&out)
+                let export = export
                     .ok()
                     .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-                let _ = std::fs::remove_file(&out);
                 let Some(export) = export else {
                     log::warn!("analytics: the export of {} isn't JSON", key(from));
                     return Read::Failed;

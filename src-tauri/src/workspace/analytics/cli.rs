@@ -1,5 +1,6 @@
 //! The `codemie` CLI as the analytics source: one process per call, with an argument array and
-//! no shell. A call that runs past the timeout is killed with its whole process group.
+//! no shell. A call that runs past the timeout, or is still running when Connect quits, is killed
+//! with its whole process group.
 use crate::ai::profiles::DetectEnv;
 use chrono::NaiveDate;
 use futures_util::future::BoxFuture;
@@ -29,7 +30,12 @@ pub enum ExportOutcome {
 pub enum CliError {
     NotFound,
     Timeout,
-    Failed { code: i32, stderr_tail: String },
+    Failed {
+        code: i32,
+        stderr_tail: String,
+    },
+    /// Connect is quitting: [`AnalyticsCli::stop`] ran, and no call starts any more.
+    Stopped,
 }
 
 /// What the analytics page needs from the CLI. Object safe, like `ClaudeRunner`: Core holds an
@@ -57,6 +63,9 @@ pub trait AnalyticsCli: Send + Sync {
         args: &'a [String],
         out: &'a Path,
     ) -> BoxFuture<'a, Result<(), CliError>>;
+    /// Kills every call still running, with its process group, and refuses new ones. Called as
+    /// Connect quits: the process exits without dropping tasks, so nothing else would.
+    fn stop(&self);
 }
 
 type Resolver = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
@@ -65,6 +74,8 @@ type Resolver = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 pub struct CodemieCli {
     resolve: Resolver,
     timeout: Duration,
+    /// The process groups of the calls running; `None` once [`AnalyticsCli::stop`] ran.
+    running: std::sync::Mutex<Option<Vec<u32>>>,
 }
 
 impl CodemieCli {
@@ -83,6 +94,7 @@ impl CodemieCli {
         Self {
             resolve,
             timeout: CALL_TIMEOUT,
+            running: std::sync::Mutex::new(Some(Vec::new())),
         }
     }
     #[cfg_attr(not(test), allow(dead_code))] // tests run a fake `codemie` script
@@ -97,6 +109,9 @@ impl CodemieCli {
 
     /// Runs the CLI with `args`; its stdout when it exits 0.
     async fn run(&self, args: &[String]) -> Result<Vec<u8>, CliError> {
+        if self.groups().is_none() {
+            return Err(CliError::Stopped);
+        }
         let program = (self.resolve)().ok_or(CliError::NotFound)?;
         let mut cmd = Command::new(program);
         cmd.args(args)
@@ -115,12 +130,23 @@ impl CodemieCli {
             },
         })?;
         let pid = child.id();
-        match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
+        if let Some(pid) = pid {
+            // Under the lock `stop` takes: a call that starts as Connect quits is killed too.
+            match self.groups().as_mut() {
+                Some(groups) => groups.push(pid),
+                None => kill_group(pid),
+            }
+        }
+        let waited = tokio::time::timeout(self.timeout, child.wait_with_output()).await;
+        if let Some(pid) = pid {
+            if let Some(groups) = self.groups().as_mut() {
+                groups.retain(|p| *p != pid);
+            }
+        }
+        match waited {
             Err(_) => {
-                #[cfg(unix)]
                 if let Some(pid) = pid {
-                    // SAFETY: killpg only signals the process group the child leads.
-                    unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+                    kill_group(pid);
                 }
                 Err(CliError::Timeout)
             }
@@ -135,6 +161,25 @@ impl CodemieCli {
             }),
         }
     }
+}
+
+impl CodemieCli {
+    fn groups(&self) -> std::sync::MutexGuard<'_, Option<Vec<u32>>> {
+        self.running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Kills the process group `pid` leads: the CLI and what it started.
+fn kill_group(pid: u32) {
+    #[cfg(unix)]
+    // SAFETY: killpg only signals the process group the child leads.
+    unsafe {
+        libc::killpg(pid as libc::pid_t, libc::SIGKILL)
+    };
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 
 /// The last lines of `stderr`, capped, without the trailing newline.
@@ -222,6 +267,12 @@ impl AnalyticsCli for CodemieCli {
             self.run(&all).await.map(|_| ())
         })
     }
+
+    fn stop(&self) {
+        for pid in self.groups().take().into_iter().flatten() {
+            kill_group(pid);
+        }
+    }
 }
 
 /// Test double for [`AnalyticsCli`]: plays back scripted outcomes (an empty script answers
@@ -229,14 +280,28 @@ impl AnalyticsCli for CodemieCli {
 #[cfg(any(test, feature = "test-support"))]
 pub struct FakeAnalyticsCli {
     supports: std::sync::atomic::AtomicBool,
-    /// Each export's outcome, and the file it writes to `out` first.
-    #[allow(clippy::type_complexity)]
-    exports: std::sync::Mutex<
-        std::collections::VecDeque<(Result<ExportOutcome, CliError>, Option<Value>)>,
-    >,
+    exports: std::sync::Mutex<std::collections::VecDeque<ScriptedExport>>,
     views: std::sync::Mutex<std::collections::VecDeque<Result<Value, CliError>>>,
     reports: std::sync::Mutex<std::collections::VecDeque<Result<(), CliError>>>,
     calls: std::sync::Mutex<Vec<FakeCall>>,
+    /// What held exports wait for: [`HELD`], [`RELEASED`] or [`STOPPED`].
+    gate: Arc<std::sync::atomic::AtomicU8>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+const HELD: u8 = 0;
+#[cfg(any(test, feature = "test-support"))]
+const RELEASED: u8 = 1;
+#[cfg(any(test, feature = "test-support"))]
+const STOPPED: u8 = 2;
+
+/// One scripted export.
+#[cfg(any(test, feature = "test-support"))]
+enum ScriptedExport {
+    /// Writes the JSON to `out`, when there is one, then answers.
+    Answer(Result<ExportOutcome, CliError>, Option<Value>),
+    /// Runs until [`FakeAnalyticsCli::release`] (then finds nothing) or until `stop` kills it.
+    Held,
 }
 
 /// One call a [`FakeAnalyticsCli`] answered.
@@ -258,6 +323,7 @@ pub enum FakeCall {
         args: Vec<String>,
         out: PathBuf,
     },
+    Stop,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -269,6 +335,7 @@ impl Default for FakeAnalyticsCli {
             views: Default::default(),
             reports: Default::default(),
             calls: Default::default(),
+            gate: Default::default(),
         }
     }
 }
@@ -283,14 +350,33 @@ impl FakeAnalyticsCli {
             .store(yes, std::sync::atomic::Ordering::SeqCst);
     }
     pub fn script_export(&self, r: Result<ExportOutcome, CliError>) {
-        self.exports.lock().unwrap().push_back((r, None));
+        self.exports
+            .lock()
+            .unwrap()
+            .push_back(ScriptedExport::Answer(r, None));
     }
     /// The next export writes `export` to its `out` file, as the CLI does.
     pub fn script_export_json(&self, export: Value) {
         self.exports
             .lock()
             .unwrap()
-            .push_back((Ok(ExportOutcome::Written), Some(export)));
+            .push_back(ScriptedExport::Answer(
+                Ok(ExportOutcome::Written),
+                Some(export),
+            ));
+    }
+    /// The next export keeps running until [`Self::release`] or `stop`.
+    pub fn script_export_held(&self) {
+        self.exports.lock().unwrap().push_back(ScriptedExport::Held);
+    }
+    /// Held exports end, finding no sessions.
+    pub fn release(&self) {
+        let _ = self.gate.compare_exchange(
+            HELD,
+            RELEASED,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        );
     }
     pub fn script_view(&self, r: Result<Value, CliError>) {
         self.views.lock().unwrap().push_back(r);
@@ -322,16 +408,34 @@ impl AnalyticsCli for FakeAnalyticsCli {
             to,
             out: out.into(),
         });
-        let (r, file) = self
-            .exports
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or((Ok(ExportOutcome::Empty), None));
-        if let Some(export) = file {
-            std::fs::write(out, serde_json::to_vec(&export).unwrap()).unwrap();
+        let gate = self.gate.clone();
+        if gate.load(std::sync::atomic::Ordering::SeqCst) == STOPPED {
+            return Box::pin(async { Err(CliError::Stopped) });
         }
-        Box::pin(async move { r })
+        let scripted = self.exports.lock().unwrap().pop_front();
+        match scripted.unwrap_or(ScriptedExport::Answer(Ok(ExportOutcome::Empty), None)) {
+            ScriptedExport::Answer(r, file) => {
+                if let Some(export) = file {
+                    std::fs::write(out, serde_json::to_vec(&export).unwrap()).unwrap();
+                }
+                Box::pin(async move { r })
+            }
+            ScriptedExport::Held => Box::pin(async move {
+                loop {
+                    match gate.load(std::sync::atomic::Ordering::SeqCst) {
+                        RELEASED => return Ok(ExportOutcome::Empty),
+                        // What a process killed by a signal answers.
+                        STOPPED => {
+                            return Err(CliError::Failed {
+                                code: -1,
+                                stderr_tail: String::new(),
+                            })
+                        }
+                        _ => tokio::time::sleep(Duration::from_millis(2)).await,
+                    }
+                }
+            }),
+        }
     }
     fn view<'a>(
         &'a self,
@@ -363,6 +467,11 @@ impl AnalyticsCli for FakeAnalyticsCli {
         });
         let r = self.reports.lock().unwrap().pop_front().unwrap_or(Ok(()));
         Box::pin(async move { r })
+    }
+    fn stop(&self) {
+        self.calls.lock().unwrap().push(FakeCall::Stop);
+        self.gate
+            .store(STOPPED, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -493,6 +602,63 @@ mod tests {
             .await;
         assert_eq!(r, Err(CliError::Timeout));
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// Whether `pid` has ended (a process that can't be signalled for another reason has not).
+    fn gone(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the process exists.
+        let answer = unsafe { libc::kill(pid, 0) };
+        answer == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+
+    #[tokio::test]
+    async fn stop_kills_running_calls_with_their_children_and_refuses_new_ones() {
+        let d = tempfile::tempdir().unwrap();
+        // The CLI starts a child of its own, as node does; both must end.
+        let body = format!(
+            "sleep 30 & echo $! > \"{}/child\"; wait",
+            d.path().display()
+        );
+        let cli = Arc::new(CodemieCli::with_program(fake_cli(d.path(), &body)));
+        let out = d.path().join("o");
+        let running = tokio::spawn({
+            let cli = cli.clone();
+            async move {
+                cli.export(date("2026-11-17"), date("2026-11-17"), &out)
+                    .await
+            }
+        });
+        let child = d.path().join("child");
+        for _ in 0..500 {
+            if std::fs::read_to_string(&child).is_ok_and(|s| s.ends_with('\n')) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let child: i32 = std::fs::read_to_string(&child)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        cli.stop();
+        let r = tokio::time::timeout(Duration::from_secs(5), running)
+            .await
+            .expect("the call ended when Connect stopped")
+            .unwrap();
+        assert!(matches!(r, Err(CliError::Failed { .. })), "{r:?}");
+        let mut waited = 0;
+        while !gone(child) && waited < 200 {
+            std::thread::sleep(Duration::from_millis(10));
+            waited += 1;
+        }
+        assert!(gone(child), "the CLI's own child ended too");
+        // Nothing starts after stop.
+        std::fs::remove_file(d.path().join("argv")).unwrap();
+        assert_eq!(
+            cli.view(Path::new("x.json"), &[]).await,
+            Err(CliError::Stopped)
+        );
+        assert!(!d.path().join("argv").exists(), "no process was started");
     }
 
     #[tokio::test]

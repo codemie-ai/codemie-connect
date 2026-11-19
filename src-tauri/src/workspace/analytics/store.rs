@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 
 const SESSIONS: &str = "sessions.json";
 const STATE: &str = "state.json";
+/// Each CLI call writes its export to `export-<unique>.json` beside the store, so a CLI left
+/// running by an earlier Connect can never write the file the current fetch reads.
+pub(super) const EXPORT_PREFIX: &str = "export-";
 
 fn io(e: std::io::Error) -> WorkspaceError {
     log::warn!("analytics: storage error: {e}");
@@ -25,9 +28,9 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens the store in `dir`: leftovers of a crashed write are removed, and a missing
-    /// `sessions.json` is written empty, so `view` always has an input. Only the leaf folder is
-    /// created; a data folder that went away is not recreated.
+    /// Opens the store in `dir`: leftovers of a crashed write or a killed export are removed,
+    /// and a missing `sessions.json` is written empty, so `view` always has an input. Only the
+    /// leaf folder is created; a data folder that went away is not recreated.
     pub fn open(dir: &Path) -> Store {
         let store = Store {
             path: dir.join(SESSIONS),
@@ -181,7 +184,11 @@ fn remove_leftovers(dir: &Path) {
     };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.ends_with(".tmp") && (name.starts_with(SESSIONS) || name.starts_with(STATE)) {
+        let crashed_write =
+            name.ends_with(".tmp") && (name.starts_with(SESSIONS) || name.starts_with(STATE));
+        // What a killed export call left.
+        let export = name.starts_with(EXPORT_PREFIX) && name.ends_with(".json");
+        if crashed_write || export {
             let _ = std::fs::remove_file(e.path());
         }
     }

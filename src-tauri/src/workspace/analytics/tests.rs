@@ -3,7 +3,7 @@
 //! depend on when the tests run.
 use super::cli::{CliError, ExportOutcome, FakeAnalyticsCli, FakeCall};
 use super::fetch::{plan_first_open, plan_refresh};
-use super::store::State;
+use super::store::{State, Store};
 use crate::ai::fake::FakeRunner;
 use crate::ai::profiles::ProfileCache;
 use crate::workspace::ai_jobs::FakeGraph;
@@ -102,6 +102,38 @@ fn exports(cli: &FakeAnalyticsCli) -> Vec<(NaiveDate, NaiveDate)> {
         .into_iter()
         .filter_map(|c| match c {
             FakeCall::Export { from, to, .. } => Some((from, to)),
+            _ => None,
+        })
+        .collect()
+}
+/// Every call the fake answered, by kind.
+fn kinds(cli: &FakeAnalyticsCli) -> Vec<&'static str> {
+    cli.calls()
+        .iter()
+        .map(|c| match c {
+            FakeCall::SupportsView => "supports_view",
+            FakeCall::Export { .. } => "export",
+            FakeCall::View { .. } => "view",
+            FakeCall::Report { .. } => "report",
+            FakeCall::Stop => "stop",
+        })
+        .collect()
+}
+/// Waits until the fake has been asked for `n` exports.
+async fn exports_reach(cli: &FakeAnalyticsCli, n: usize) {
+    for _ in 0..2000 {
+        if exports(cli).len() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the fetch never asked for export {n}");
+}
+fn export_outs(cli: &FakeAnalyticsCli) -> Vec<PathBuf> {
+    cli.calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            FakeCall::Export { out, .. } => Some(out),
             _ => None,
         })
         .collect()
@@ -279,9 +311,11 @@ async fn a_second_refresh_while_one_runs_starts_nothing() {
     let dir = tempfile::tempdir().unwrap();
     read_until_yesterday(dir.path());
     let cli = Arc::new(FakeAnalyticsCli::new());
+    cli.script_export_held();
     let core = core(dir.path(), &cli);
     assert_eq!(refresh(&core).await, json!({"started": true}));
-    // The fetch was spawned and hasn't run yet: these all find it running.
+    exports_reach(&cli, 1).await;
+    // The export is running: these all find it, and start no CLI process of any kind.
     assert_eq!(refresh(&core).await, json!({"running": true}));
     assert_eq!(
         ask(&core, Operation::AnalyticsRefresh, json!({})).await,
@@ -296,14 +330,20 @@ async fn a_second_refresh_while_one_runs_starts_nothing() {
         .await,
         json!({"running": true})
     );
+    assert_eq!(kinds(&cli), ["supports_view", "export"]);
     let status = ask(&core, Operation::AnalyticsStatus, json!({})).await;
     assert_eq!(status["state"], "running");
     assert_eq!(
         status["progress"],
         json!({"done": 0, "total": 2, "label": "Reading yesterday and today"})
     );
+    cli.release();
     idle(&core).await;
-    assert_eq!(exports(&cli).len(), 1, "one CLI process, not four");
+    assert_eq!(
+        kinds(&cli),
+        ["supports_view", "export", "supports_view"],
+        "one export; the only other call is the status's own check"
+    );
     let status = ask(&core, Operation::AnalyticsStatus, json!({})).await;
     assert_eq!(status["state"], "empty");
 }
@@ -576,6 +616,101 @@ async fn an_unreadable_store_starts_a_fresh_first_open() {
 }
 
 #[tokio::test]
+async fn stopping_connect_during_a_fetch_kills_the_cli_and_marks_nothing_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    cli.script_export_held();
+    let first = core(dir.path(), &cli);
+    refresh(&first).await;
+    exports_reach(&cli, 1).await;
+    // Quitting stops the CLI at once: the process exits without dropping the fetch's task.
+    first.stop_background();
+    assert_eq!(kinds(&cli).last(), Some(&"stop"));
+    idle(&first).await;
+    assert_eq!(
+        exports(&cli),
+        [window("2026-11-17", TODAY)],
+        "nothing more is read"
+    );
+    let state = State::load(&first.paths.analytics_dir());
+    assert!(
+        state.days_done.is_empty(),
+        "the interrupted window stays unread"
+    );
+    assert!(state.failed_days.is_empty(), "and isn't listed as failed");
+    assert_eq!(state.last_fetch_at, None);
+    // What a killed CLI left half written is swept away at the next start.
+    let leftover = export_outs(&cli)[0].clone();
+    std::fs::write(&leftover, "{\"meta\":").unwrap();
+    drop(first);
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let next = core(dir.path(), &cli);
+    refresh(&next).await;
+    idle(&next).await;
+    assert!(!leftover.exists());
+    assert_eq!(exports(&cli)[0], window("2026-11-17", TODAY));
+    let outs = export_outs(&cli);
+    assert!(
+        outs.iter().all(|out| *out != leftover),
+        "every call writes a file of its own"
+    );
+    assert_eq!(outs.iter().collect::<BTreeSet<_>>().len(), outs.len());
+    assert!(
+        outs.iter().all(|out| !out.exists()),
+        "each is removed once read"
+    );
+}
+
+#[tokio::test]
+async fn a_data_folder_move_takes_the_analytics_along() {
+    use crate::storage::migrate::{tests::Fixture, Mode};
+    use crate::storage::old_copy::remove_old;
+    let f = Fixture::new();
+    // A first open that finished: its sessions and the days it read.
+    let analytics = f.default.join("analytics");
+    Store::open(&analytics).merge(&export_day()).unwrap();
+    State {
+        days_done: (1..90).map(key).collect(),
+        ..Default::default()
+    }
+    .save(&analytics)
+    .unwrap();
+    let sessions = std::fs::read(analytics.join("sessions.json")).unwrap();
+    let state = std::fs::read(analytics.join("state.json")).unwrap();
+    let target = f.change(Mode::Move).unwrap();
+    assert_eq!(
+        std::fs::read(target.join("analytics/sessions.json")).unwrap(),
+        sessions
+    );
+    assert_eq!(
+        std::fs::read(target.join("analytics/state.json")).unwrap(),
+        state
+    );
+    // The next start opens the new folder and reads only yesterday and today.
+    f.core.release_for_restart();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let moved = crate::workspace::startup(&f.default, |paths| Ok(core_on(paths, &cli)))
+        .core
+        .unwrap();
+    assert_eq!(moved.paths.analytics_dir(), target.join("analytics"));
+    refresh(&moved).await;
+    idle(&moved).await;
+    assert_eq!(
+        exports(&cli),
+        [window("2026-11-18", TODAY)],
+        "no new first open"
+    );
+    assert_eq!(
+        ask(&moved, Operation::AnalyticsStatus, json!({})).await["sessions"],
+        3
+    );
+    // Remove old copy takes the analytics the move left behind.
+    remove_old(&f.default).unwrap();
+    assert!(!analytics.exists());
+    assert!(target.join("analytics/sessions.json").is_file());
+}
+
+#[tokio::test]
 async fn contract_fixtures_match_the_real_analytics() {
     let dir = tempfile::tempdir().unwrap();
     let (core, cli) = first_open_with_a_bad_day(dir.path()).await;
@@ -598,7 +733,29 @@ async fn contract_fixtures_match_the_real_analytics() {
         json!({"id": SESSION_ID}),
     )
     .await;
+    // A fetch in its second window, and a refresh pressed meanwhile.
+    let running_dir = tempfile::tempdir().unwrap();
+    let running_cli = Arc::new(FakeAnalyticsCli::new());
+    running_cli.script_export(Ok(ExportOutcome::Empty));
+    running_cli.script_export_held();
+    let running = self::core(running_dir.path(), &running_cli);
+    refresh(&running).await;
+    exports_reach(&running_cli, 2).await;
+    let status_running = ask(&running, Operation::AnalyticsStatus, json!({})).await;
+    assert_eq!(status_running["progress"]["done"], 3);
+    let refresh_running = ask(&running, Operation::AnalyticsRefresh, json!({})).await;
+    running_cli.release();
+    idle(&running).await;
+    // A CLI without `analytics view`.
+    let old_dir = tempfile::tempdir().unwrap();
+    let old_cli = Arc::new(FakeAnalyticsCli::new());
+    old_cli.set_supports_view(false);
+    let old = self::core(old_dir.path(), &old_cli);
+    let refresh_needs_cli = ask(&old, Operation::AnalyticsRefresh, json!({})).await;
     use crate::plugins::testkit::contract_fixture;
+    contract_fixture("analytics-status-running.json", &status_running);
+    contract_fixture("analytics-refresh-running.json", &refresh_running);
+    contract_fixture("analytics-refresh-needs-cli.json", &refresh_needs_cli);
     contract_fixture("analytics-status.json", &status);
     contract_fixture("analytics-progress.json", &progress);
     contract_fixture("analytics-summary.json", &summary);

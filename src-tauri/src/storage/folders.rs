@@ -10,7 +10,7 @@ use std::path::Path;
 
 pub(super) const DATABASE: &str = "workspace.sqlite";
 /// Folders that move with the database. `ai-staging/` is transient: it starts empty.
-pub(super) const MOVING_FOLDERS: [&str; 2] = ["plugins", "automations"];
+pub(super) const MOVING_FOLDERS: [&str; 3] = ["plugins", "automations", "analytics"];
 pub(super) const AI_STAGING: &str = "ai-staging";
 
 /// What a move copies out of a data folder: the database and the folders that move. This is
