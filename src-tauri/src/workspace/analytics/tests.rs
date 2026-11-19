@@ -17,8 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const TODAY: &str = "2026-11-19";
-const FROM: &str = "2026-11-18T00:00:00+02:00";
-const TO: &str = "2026-11-19T23:59:59.999+02:00";
+pub(super) const FROM: &str = "2026-11-18T00:00:00+02:00";
+pub(super) const TO: &str = "2026-11-19T23:59:59.999+02:00";
 const SESSION_ID: &str = "0076e846-e3ce-4547-84a2-40b65c8f9503";
 
 fn day(s: &str) -> NaiveDate {
@@ -63,7 +63,7 @@ fn core_on(paths: &CorePaths, cli: &Arc<FakeAnalyticsCli>) -> Arc<Core> {
     )
     .unwrap()
 }
-fn core(dir: &Path, cli: &Arc<FakeAnalyticsCli>) -> Arc<Core> {
+pub(super) fn core(dir: &Path, cli: &Arc<FakeAnalyticsCli>) -> Arc<Core> {
     core_on(
         &CorePaths {
             data: dir.into(),
@@ -72,7 +72,7 @@ fn core(dir: &Path, cli: &Arc<FakeAnalyticsCli>) -> Arc<Core> {
         cli,
     )
 }
-fn read(op: Operation, data: Value) -> Request {
+pub(super) fn read(op: Operation, data: Value) -> Request {
     Request {
         op,
         workspace_id: None,
@@ -81,7 +81,7 @@ fn read(op: Operation, data: Value) -> Request {
         data,
     }
 }
-async fn ask(core: &Arc<Core>, op: Operation, data: Value) -> Value {
+pub(super) async fn ask(core: &Arc<Core>, op: Operation, data: Value) -> Value {
     core.request(read(op, data)).await.unwrap()
 }
 async fn refresh(core: &Arc<Core>) -> Value {

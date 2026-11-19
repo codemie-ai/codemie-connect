@@ -519,11 +519,18 @@ impl Repository {
         tx.commit()?;
         Ok(())
     }
-    #[cfg(any(test, feature = "test-support"))]
     pub fn records_of_kind(&self, kind: &str) -> Result<Vec<Record>> {
         let mut stmt = self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE kind=?1")?;
         let rows = stmt
             .query_map([kind], record_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+    /// Records of `kind` last updated from `from` to `to` (seconds), newest first.
+    pub fn records_updated_between(&self, kind: &str, from: i64, to: i64) -> Result<Vec<Record>> {
+        let mut stmt = self.db.prepare("SELECT id,kind,connection_id,workspace_id,source,revision,updated_at,body FROM records WHERE kind=?1 AND updated_at BETWEEN ?2 AND ?3 ORDER BY updated_at DESC")?;
+        let rows = stmt
+            .query_map(params![kind, from, to], record_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }

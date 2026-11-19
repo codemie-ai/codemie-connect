@@ -748,6 +748,7 @@ impl Core {
                 | Operation::AnalyticsView
                 | Operation::AnalyticsSession
                 | Operation::AnalyticsReport
+                | Operation::AnalyticsApp
         ) {
             return self.analytics_request(&req).await;
         }

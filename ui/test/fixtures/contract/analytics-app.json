@@ -1,0 +1,218 @@
+{
+  "features": [
+    {
+      "avgMs": 41000,
+      "costUsd": 0.42,
+      "failed": 0,
+      "key": "meeting",
+      "runs": 1
+    },
+    {
+      "avgMs": 5150,
+      "costUsd": 0.13,
+      "failed": 0,
+      "key": "draft",
+      "runs": 2
+    },
+    {
+      "avgMs": 2000,
+      "costUsd": 0.02,
+      "failed": 1,
+      "key": "summary",
+      "runs": 1
+    },
+    {
+      "avgMs": 18000,
+      "costUsd": 0.31,
+      "failed": 0,
+      "key": "automation",
+      "runs": 1
+    },
+    {
+      "avgMs": 0,
+      "costUsd": 0.0,
+      "failed": 0,
+      "key": "plugin",
+      "runs": 0
+    },
+    {
+      "avgMs": 900000,
+      "costUsd": 3.25,
+      "failed": 0,
+      "key": "terminal",
+      "runs": 1
+    }
+  ],
+  "outcomes": {
+    "autoOk": 1,
+    "autoRuns": 1,
+    "drafts": 2,
+    "inboxHandled": 1,
+    "meetings": 2,
+    "noted": 1,
+    "perNoteUsd": 0.42,
+    "perSentUsd": 0.13,
+    "sent": 1,
+    "tasks": 2,
+    "tasksDone": 1,
+    "transcribed": 2
+  },
+  "profiles": [
+    {
+      "costUsd": 0.56,
+      "model": "claude-sonnet-5-5",
+      "profile": "claude",
+      "runs": 4
+    },
+    {
+      "costUsd": 0.33,
+      "model": "claude-haiku-5",
+      "profile": "bedrock",
+      "runs": 2
+    }
+  ],
+  "recent": [
+    {
+      "at": 1795045800,
+      "costUsd": 0.01,
+      "durationMs": 900,
+      "id": "r6",
+      "model": "claude-sonnet-5-5",
+      "month": "2026-11",
+      "profile": "claude",
+      "purpose": "test",
+      "refId": null,
+      "status": "ok",
+      "tokens": {
+        "cacheCreation": 0,
+        "cacheRead": 0,
+        "input": 120,
+        "output": 40
+      }
+    },
+    {
+      "at": 1795044800,
+      "costUsd": 0.31,
+      "durationMs": 18000,
+      "id": "r5",
+      "model": "claude-haiku-5",
+      "month": "2026-11",
+      "profile": "bedrock",
+      "purpose": "automation",
+      "refId": null,
+      "status": "ok",
+      "tokens": {
+        "cacheCreation": 0,
+        "cacheRead": 0,
+        "input": 120,
+        "output": 40
+      }
+    },
+    {
+      "at": 1795043800,
+      "costUsd": 0.02,
+      "durationMs": 2000,
+      "id": "r4",
+      "model": "claude-haiku-5",
+      "month": "2026-11",
+      "profile": "bedrock",
+      "purpose": "summary",
+      "refId": null,
+      "status": "failed",
+      "tokens": {
+        "cacheCreation": 0,
+        "cacheRead": 0,
+        "input": 120,
+        "output": 40
+      }
+    },
+    {
+      "at": 1795042800,
+      "costUsd": 0.05,
+      "durationMs": 4100,
+      "id": "r3",
+      "model": "claude-sonnet-5-5",
+      "month": "2026-11",
+      "profile": "claude",
+      "purpose": "chat_draft",
+      "refId": null,
+      "status": "ok",
+      "tokens": {
+        "cacheCreation": 0,
+        "cacheRead": 0,
+        "input": 120,
+        "output": 40
+      }
+    },
+    {
+      "at": 1794960000,
+      "costUsd": 0.08,
+      "durationMs": 6200,
+      "id": "r2",
+      "model": "claude-sonnet-5-5",
+      "month": "2026-11",
+      "profile": "claude",
+      "purpose": "mail_draft",
+      "refId": null,
+      "status": "ok",
+      "tokens": {
+        "cacheCreation": 0,
+        "cacheRead": 0,
+        "input": 120,
+        "output": 40
+      }
+    },
+    {
+      "at": 1794956400,
+      "costUsd": 0.42,
+      "durationMs": 41000,
+      "id": "r1",
+      "model": "claude-sonnet-5-5",
+      "month": "2026-11",
+      "profile": "claude",
+      "purpose": "meeting",
+      "refId": null,
+      "status": "ok",
+      "tokens": {
+        "cacheCreation": 0,
+        "cacheRead": 0,
+        "input": 120,
+        "output": 40
+      }
+    }
+  ],
+  "series": [
+    {
+      "by": {
+        "automation": 0.0,
+        "draft": 0.08,
+        "meeting": 0.42,
+        "plugin": 0.0,
+        "summary": 0.0,
+        "terminal": 3.25
+      },
+      "from": 1794952800000,
+      "to": 1795039199999
+    },
+    {
+      "by": {
+        "automation": 0.31,
+        "draft": 0.05,
+        "meeting": 0.0,
+        "plugin": 0.0,
+        "summary": 0.02,
+        "terminal": 0.0
+      },
+      "from": 1795039200000,
+      "to": 1795125599999
+    }
+  ],
+  "totals": {
+    "costUsd": 0.89,
+    "failed": 1,
+    "runs": 6,
+    "shareOfAll": 0.12781722753936398,
+    "terminalCostUsd": 3.25,
+    "terminalSessions": 1
+  }
+}

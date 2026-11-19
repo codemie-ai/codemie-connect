@@ -147,6 +147,7 @@ pub enum Operation {
     AnalyticsView,
     AnalyticsSession,
     AnalyticsReport,
+    AnalyticsApp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,10 +2,13 @@
 //! folder (`store`), and the background fetch that fills the store (`fetch`). The operations here
 //! are read-only: every number comes from `codemie analytics view` over the store and goes to
 //! the page unchanged.
+pub(crate) mod app;
 pub(crate) mod cli;
 pub(crate) mod fetch;
 pub(crate) mod store;
 
+#[cfg(test)]
+mod app_tests;
 #[cfg(test)]
 mod tests;
 
@@ -47,6 +50,7 @@ impl Core {
                 self.analytics_view(&["--session".into(), id.into()]).await
             }
             Operation::AnalyticsReport => self.analytics_report(&req.data, open_report).await,
+            Operation::AnalyticsApp => self.analytics_app(&req.data).await,
             _ => Err(WorkspaceError::new("validation", "Unsupported operation.")),
         }
     }
