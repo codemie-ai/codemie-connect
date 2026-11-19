@@ -2,6 +2,7 @@
    classes, drawn in CodeMie's look, light and dark. The window sets <html class="light|dark">.
    A plugin's own CSS (ctx.ui.style) builds on these variables. */
 @font-face{font-family:GeistMono;src:url('fonts/GeistMono.ttf') format('truetype');font-display:swap;font-weight:100 900}
+@font-face{font-family:Geist;src:url('fonts/Geist.ttf') format('truetype');font-display:swap;font-weight:100 900}
 
 /* ------------------------------------------------------------------ tokens */
 html.dark{
@@ -17,6 +18,7 @@ html.dark{
   --shadow:0 1px 3px rgba(0,0,0,.25);
   --chart-1:#4F9CF9;--chart-2:#C084FC;--chart-3:#259F4C;--chart-4:#F5A534;--chart-5:#FE3B4C;--chart-6:#2DD4BF;
   --spk2:#C084FC;--spk3:#2DD4BF;--spk4:#F5A534;--sidebar:#1C1D1F;--scrim:rgba(0,0,0,.5);
+  --selected:#2E3240;--purple:#C084FC;--purple-bg:#2D1B3D;--info:#2297F6;--info-bg:#0D2338;
 }
 html.light{
   color-scheme:light;
@@ -31,11 +33,14 @@ html.light{
   --shadow:0 1px 3px rgba(0,0,0,.06);
   --chart-1:#007AFF;--chart-2:#7C3AED;--chart-3:#1E8E41;--chart-4:#C27C0E;--chart-5:#E5293A;--chart-6:#0D9488;
   --spk2:#7C3AED;--spk3:#0D9488;--spk4:#C27C0E;--sidebar:#FBFBFB;--scrim:rgba(0,0,0,.5);
+  --selected:#D5E7FC;--purple:#7C3AED;--purple-bg:#F3E8FF;--info:#007AFF;--info-bg:#E6F1FF;
 }
 :root{
-  /* The window's own stacks (codemie-tokens.css): GeistMono for text and code. */
+  /* The window's own stacks (codemie-tokens.css): GeistMono for text and code, Geist for
+     documents (a meeting's notes). */
   --font:'GeistMono',monospace;
   --mono:'GeistMono',monospace;
+  --sans:'Geist',Arial,Helvetica,sans-serif;
   --r-control:8px;--r-panel:12px;
 }
 
