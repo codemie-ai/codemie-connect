@@ -491,7 +491,7 @@ export function lineAt(segments, ref) {
 // ---------------------------------------------------------------- hash (R6)
 
 /** The app's routes, as hashes name them. */
-export const HASH_ROUTES = ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations', 'settings'];
+export const HASH_ROUTES = ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations', 'analytics', 'settings'];
 
 /** `#/route/tab`, and `#/meetings/<encoded id>/<tab>` for a meeting: `{route, meetingId, tab}`;
  *  an unknown route is Today, an empty hash `route: null`. */

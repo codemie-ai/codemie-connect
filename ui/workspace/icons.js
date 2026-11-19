@@ -65,6 +65,9 @@ const ICONS = {
   folder: '<path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h3.8a2 2 0 0 1 1.6.8l1.2 1.6a2 2 0 0 0 1.6.8h5.8A2.5 2.5 0 0 1 22 9.7v8.8a2.5 2.5 0 0 1-2.5 2.5h-14A2.5 2.5 0 0 1 3 18.5z"/>',
   puzzle: '<path d="M5.5 6.75h3.5a2 2 0 1 1 4 0h3.5a1 1 0 0 1 1 1v3.5a2 2 0 1 1 0 4v3a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-10.5a1 1 0 0 1 1-1z"/>',
   automations: '<path d="M13.2 2.5 4.5 13.6h6.6l-1.3 7.9 8.7-11.1h-6.6z"/>',
+  // Analytics: the page, and a card's chart shown as a table.
+  analytics: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+  table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M3 9h18M3 15h18"/>',
   drive: '<rect x="2.5" y="13" width="19" height="7.5" rx="2"/><path d="M5 13 7.4 5.3A2 2 0 0 1 9.3 4h5.4a2 2 0 0 1 1.9 1.3L19 13"/><path d="M6.5 16.8h.01M10 16.8h.01"/>',
   // Settings → CodeMie
   terminal: '<rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/>',
