@@ -61,7 +61,7 @@ fn ensure_log_readable(path: &str) -> CmdResult<()> {
 }
 
 #[cfg(not(windows))]
-fn spawn_open(path: &str) -> CmdResult<()> {
+pub(crate) fn spawn_open(path: &str) -> CmdResult<()> {
     std::process::Command::new("open")
         .arg(path)
         .spawn()
@@ -69,7 +69,7 @@ fn spawn_open(path: &str) -> CmdResult<()> {
     Ok(())
 }
 #[cfg(windows)]
-fn spawn_open(path: &str) -> CmdResult<()> {
+pub(crate) fn spawn_open(path: &str) -> CmdResult<()> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 

@@ -24,7 +24,6 @@ pub struct Store {
     path: PathBuf,
 }
 
-#[allow(dead_code)] // used from Task 2
 impl Store {
     /// Opens the store in `dir`: leftovers of a crashed write are removed, and a missing
     /// `sessions.json` is written empty, so `view` always has an input. Only the leaf folder is
@@ -49,6 +48,20 @@ impl Store {
         self.path.clone()
     }
 
+    /// How many sessions are stored, read past their bodies without building them.
+    pub fn count(&self) -> Result<usize> {
+        #[derive(Deserialize)]
+        struct Count {
+            sessions: Vec<serde::de::IgnoredAny>,
+        }
+        if let Ok(bytes) = std::fs::read(&self.path) {
+            if let Ok(count) = serde_json::from_slice::<Count>(&bytes) {
+                return Ok(count.sessions.len());
+            }
+        }
+        Ok(self.load()?["sessions"].as_array().map_or(0, Vec::len))
+    }
+
     /// The stored export. A file that is missing is written empty; one that cannot be read as an
     /// export is renamed to `sessions.json.bad` and replaced by an empty one.
     fn load(&self) -> Result<Value> {
@@ -66,6 +79,8 @@ impl Store {
                     bad.display()
                 );
                 std::fs::rename(&self.path, &bad).map_err(io)?;
+                // The days it held go with it: the state is dropped, so they are read again.
+                let _ = std::fs::remove_file(self.path.with_file_name(STATE));
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(io(e)),
@@ -175,10 +190,9 @@ fn remove_leftovers(dir: &Path) {
 /// What the fetcher knows between runs (`state.json`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-#[allow(dead_code)] // used from Task 2
 pub struct State {
     pub cli_version: Option<String>,
-    /// The oldest day (YYYY-MM-DD) the first open reads back to.
+    /// The oldest day (YYYY-MM-DD) read so far; the first open reads back 90 days.
     pub stored_from: Option<String>,
     pub days_done: BTreeSet<String>,
     pub failed_days: BTreeSet<String>,
@@ -186,7 +200,6 @@ pub struct State {
     pub last_fetch_at: Option<i64>,
 }
 
-#[allow(dead_code)] // used from Task 2
 impl State {
     /// The saved state, or an empty one when there is none or it can't be read: the days are
     /// then read again, which costs time and loses nothing.

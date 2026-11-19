@@ -80,8 +80,14 @@ pub struct Core {
     /// The Microsoft reads an AI run makes (full Outlook text); faked in tests.
     graph_reads: Arc<dyn ai_jobs::GraphReads>,
     /// Runs the `codemie` CLI for the analytics page; faked in tests.
-    #[allow(dead_code)] // used from Task 2
     analytics_cli: Arc<dyn analytics::cli::AnalyticsCli>,
+    /// The one analytics fetch that may run, with how far it got (`analytics::fetch`).
+    analytics_run: Mutex<Option<analytics::fetch::Progress>>,
+    /// The analytics store in this Core's data root, opened on first use.
+    analytics_store: std::sync::OnceLock<analytics::store::Store>,
+    /// What `workspace:analytics` carried; tests have no window to hear it.
+    #[cfg(test)]
+    analytics_events: Mutex<Vec<Value>>,
     graph_children: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
     /// `{connectionId}:{calendarId}` -> last full calendarView refresh (unix seconds).
     calendar_refreshed: Mutex<std::collections::HashMap<String, i64>>,
@@ -209,6 +215,10 @@ impl Core {
             ai_jobs: Default::default(),
             graph_reads,
             analytics_cli,
+            analytics_run: Default::default(),
+            analytics_store: Default::default(),
+            #[cfg(test)]
+            analytics_events: Default::default(),
             graph_children: Default::default(),
             calendar_refreshed: Default::default(),
             mutations: Default::default(),
@@ -726,6 +736,18 @@ impl Core {
         }
         if req.op == Operation::AiUsage {
             return self.ai_usage(&req);
+        }
+        // The CodeMie CLI answers over the analytics store; a fetch runs in the background.
+        if matches!(
+            req.op,
+            Operation::AnalyticsStatus
+                | Operation::AnalyticsRefresh
+                | Operation::AnalyticsRetry
+                | Operation::AnalyticsView
+                | Operation::AnalyticsSession
+                | Operation::AnalyticsReport
+        ) {
+            return self.analytics_request(&req).await;
         }
         if req.op == Operation::AutomationRuns {
             return self.automation_runs(&req);

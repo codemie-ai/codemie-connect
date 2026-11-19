@@ -34,7 +34,6 @@ pub enum CliError {
 
 /// What the analytics page needs from the CLI. Object safe, like `ClaudeRunner`: Core holds an
 /// `Arc<dyn AnalyticsCli>`, and tests hold a [`FakeAnalyticsCli`].
-#[allow(dead_code)] // used from Task 2
 pub trait AnalyticsCli: Send + Sync {
     /// `codemie analytics view --help` exits 0. False too when there is no CLI.
     fn supports_view(&self) -> BoxFuture<'_, bool>;
@@ -68,7 +67,6 @@ pub struct CodemieCli {
     timeout: Duration,
 }
 
-#[allow(dead_code)] // used from Task 2
 impl CodemieCli {
     /// Finds `codemie` the same way profile detection finds its programs.
     pub fn new(env: DetectEnv) -> Self {
@@ -87,9 +85,11 @@ impl CodemieCli {
             timeout: CALL_TIMEOUT,
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))] // tests run a fake `codemie` script
     pub fn with_program(program: PathBuf) -> Self {
         Self::with_resolver(Arc::new(move || Some(program.clone())))
     }
+    #[cfg_attr(not(test), allow(dead_code))] // tests run a fake `codemie` script
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -229,7 +229,11 @@ impl AnalyticsCli for CodemieCli {
 #[cfg(any(test, feature = "test-support"))]
 pub struct FakeAnalyticsCli {
     supports: std::sync::atomic::AtomicBool,
-    exports: std::sync::Mutex<std::collections::VecDeque<Result<ExportOutcome, CliError>>>,
+    /// Each export's outcome, and the file it writes to `out` first.
+    #[allow(clippy::type_complexity)]
+    exports: std::sync::Mutex<
+        std::collections::VecDeque<(Result<ExportOutcome, CliError>, Option<Value>)>,
+    >,
     views: std::sync::Mutex<std::collections::VecDeque<Result<Value, CliError>>>,
     reports: std::sync::Mutex<std::collections::VecDeque<Result<(), CliError>>>,
     calls: std::sync::Mutex<Vec<FakeCall>>,
@@ -270,7 +274,6 @@ impl Default for FakeAnalyticsCli {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-#[allow(dead_code)] // the scripting side is used from Task 2
 impl FakeAnalyticsCli {
     pub fn new() -> Self {
         Self::default()
@@ -280,7 +283,14 @@ impl FakeAnalyticsCli {
             .store(yes, std::sync::atomic::Ordering::SeqCst);
     }
     pub fn script_export(&self, r: Result<ExportOutcome, CliError>) {
-        self.exports.lock().unwrap().push_back(r);
+        self.exports.lock().unwrap().push_back((r, None));
+    }
+    /// The next export writes `export` to its `out` file, as the CLI does.
+    pub fn script_export_json(&self, export: Value) {
+        self.exports
+            .lock()
+            .unwrap()
+            .push_back((Ok(ExportOutcome::Written), Some(export)));
     }
     pub fn script_view(&self, r: Result<Value, CliError>) {
         self.views.lock().unwrap().push_back(r);
@@ -312,12 +322,15 @@ impl AnalyticsCli for FakeAnalyticsCli {
             to,
             out: out.into(),
         });
-        let r = self
+        let (r, file) = self
             .exports
             .lock()
             .unwrap()
             .pop_front()
-            .unwrap_or(Ok(ExportOutcome::Empty));
+            .unwrap_or((Ok(ExportOutcome::Empty), None));
+        if let Some(export) = file {
+            std::fs::write(out, serde_json::to_vec(&export).unwrap()).unwrap();
+        }
         Box::pin(async move { r })
     }
     fn view<'a>(

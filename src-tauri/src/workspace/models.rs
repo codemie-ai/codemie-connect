@@ -141,6 +141,12 @@ pub enum Operation {
     MeetingRuleOrder,
     TaskSave,
     TaskDelete,
+    AnalyticsStatus,
+    AnalyticsRefresh,
+    AnalyticsRetry,
+    AnalyticsView,
+    AnalyticsSession,
+    AnalyticsReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

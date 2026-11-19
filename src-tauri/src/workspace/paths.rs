@@ -26,7 +26,6 @@ impl CorePaths {
         self.data.join("workspace.sqlite")
     }
     /// The analytics store (`sessions.json`) and its fetch state: they move with the data.
-    #[allow(dead_code)] // used from Task 2
     pub fn analytics_dir(&self) -> PathBuf {
         self.data.join("analytics")
     }

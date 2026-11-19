@@ -1,0 +1,10 @@
+{
+  "failedDays": [
+    "2026-11-15"
+  ],
+  "lastFetchAt": 1795132800000,
+  "progress": null,
+  "sessions": 3,
+  "state": "ready",
+  "storedFrom": "2026-08-22"
+}

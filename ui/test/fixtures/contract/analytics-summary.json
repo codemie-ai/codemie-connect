@@ -1,0 +1,380 @@
+{
+  "agents": [
+    {
+      "calls": 1,
+      "name": "general-purpose",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:code-review-orchestrator",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-lens-blind",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-lens-edge-case",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-lens-verification-gap",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-standards",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-triage",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "agent",
+      "sessions": 1
+    }
+  ],
+  "agentsUsed": [
+    {
+      "agentName": "claude",
+      "costUSD": 104.788,
+      "sessions": 3
+    }
+  ],
+  "change": null,
+  "commands": [
+    {
+      "calls": 1,
+      "name": "demo:process-call",
+      "sessions": 1
+    }
+  ],
+  "coverage": [
+    {
+      "agentName": "claude",
+      "priced": 3,
+      "sessions": 3,
+      "withLog": 2
+    }
+  ],
+  "efficiency": {
+    "cacheReadCostShare": 0.5922,
+    "contextPerTurn": 162787,
+    "costPerFileUSD": 1.3788,
+    "dead": {
+      "costUSD": 0,
+      "sessions": 0,
+      "shareOfCost": 0,
+      "shareOfSessions": 0,
+      "top": []
+    },
+    "depth": {
+      "average": 636.0,
+      "buckets": [
+        {
+          "label": "1",
+          "sessions": 0
+        },
+        {
+          "label": "2–5",
+          "sessions": 0
+        },
+        {
+          "label": "6–10",
+          "sessions": 1
+        },
+        {
+          "label": "11–25",
+          "sessions": 0
+        },
+        {
+          "label": "26–50",
+          "sessions": 0
+        },
+        {
+          "label": "51+",
+          "sessions": 2
+        }
+      ],
+      "median": 451
+    },
+    "heavy": [
+      {
+        "agentName": "claude",
+        "bloatPct": 0.6125,
+        "branch": "fix/flaky-sync",
+        "contextPerTurn": 131802,
+        "costUSD": 19.4096,
+        "durationMs": 46551887,
+        "filesChanged": 2,
+        "hadLog": true,
+        "linesAdded": 41,
+        "linesRemoved": 0,
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "project": "/Users/taylor/work/sync-engine",
+        "sessionId": "9ce3a7b3-fd31-499f-91dd-51822d57d1d2",
+        "sessionSource": "Pure chat",
+        "startTime": 1795033724655,
+        "steps": {
+          "agents": 0,
+          "commands": 0,
+          "skills": 0
+        },
+        "title": "Fix the flaky sync test",
+        "turns": 451
+      }
+    ],
+    "toolSuccessRate": 0.9482
+  },
+  "filter": {
+    "agent": null,
+    "branch": null,
+    "project": null
+  },
+  "models": [
+    {
+      "costUSD": 104.0445,
+      "model": "claude-opus-5-5",
+      "sessions": 2,
+      "share": 0.9929,
+      "tokens": 314157595
+    },
+    {
+      "costUSD": 0.7435,
+      "model": "claude-sonnet-5-5",
+      "sessions": 2,
+      "share": 0.0071,
+      "tokens": 829097
+    }
+  ],
+  "previous": null,
+  "projects": [
+    {
+      "costUSD": 85.0318,
+      "netLines": 7556,
+      "project": "/Users/taylor/work/orbit-app",
+      "sessions": 1
+    },
+    {
+      "costUSD": 19.4096,
+      "netLines": 41,
+      "project": "/Users/taylor/work/sync-engine",
+      "sessions": 1
+    },
+    {
+      "costUSD": 0.3466,
+      "netLines": 55,
+      "project": "/Users/taylor/work/notes-site",
+      "sessions": 1
+    }
+  ],
+  "range": {
+    "bucket": "day",
+    "from": 1794960000000,
+    "to": 1795046399999
+  },
+  "schema": "codemie.analytics.summary/1",
+  "series": [
+    {
+      "costUSD": 104.788,
+      "durationMs": 81278897,
+      "from": 1794960000000,
+      "sessions": 3,
+      "to": 1795046399999,
+      "tokens": 314986692
+    }
+  ],
+  "sessions": [
+    {
+      "agentName": "claude",
+      "branch": "fix/flaky-sync",
+      "costUSD": 19.4096,
+      "durationMs": 46551887,
+      "filesChanged": 2,
+      "hadLog": true,
+      "linesAdded": 41,
+      "linesRemoved": 0,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "project": "/Users/taylor/work/sync-engine",
+      "sessionId": "9ce3a7b3-fd31-499f-91dd-51822d57d1d2",
+      "sessionSource": "Pure chat",
+      "startTime": 1795033724655,
+      "steps": {
+        "agents": 0,
+        "commands": 0,
+        "skills": 0
+      },
+      "title": "Fix the flaky sync test",
+      "turns": 451
+    },
+    {
+      "agentName": "claude",
+      "branch": "main",
+      "costUSD": 0.3466,
+      "durationMs": 41618,
+      "filesChanged": 2,
+      "hadLog": false,
+      "linesAdded": 55,
+      "linesRemoved": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "project": "/Users/taylor/work/notes-site",
+      "sessionId": "89404630-965d-4f17-8fc5-54c2edc2f248",
+      "sessionSource": "Pure chat",
+      "startTime": 1795018589507,
+      "steps": {
+        "agents": 0,
+        "commands": 1,
+        "skills": 0
+      },
+      "title": "Draft a one-page visit summary",
+      "turns": 10
+    },
+    {
+      "agentName": "claude",
+      "branch": "feat/release-checklist",
+      "costUSD": 85.0318,
+      "durationMs": 34685392,
+      "filesChanged": 72,
+      "hadLog": true,
+      "linesAdded": 7802,
+      "linesRemoved": 246,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "project": "/Users/taylor/work/orbit-app",
+      "sessionId": "0076e846-e3ce-4547-84a2-40b65c8f9503",
+      "sessionSource": "CodeMie AI Factory",
+      "startTime": 1794996752885,
+      "steps": {
+        "agents": 8,
+        "commands": 0,
+        "skills": 3
+      },
+      "title": "Tidy the release checklist",
+      "turns": 1447
+    }
+  ],
+  "skills": [
+    {
+      "calls": 1,
+      "name": "report-writer",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "anthropic-skills:chrome-browser",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:code-review",
+      "sessions": 1
+    }
+  ],
+  "tools": [
+    {
+      "calls": 481,
+      "failure": 39,
+      "name": "Bash",
+      "success": 442,
+      "successRate": 0.9189
+    },
+    {
+      "calls": 124,
+      "failure": 0,
+      "name": "Edit",
+      "success": 124,
+      "successRate": 1.0
+    },
+    {
+      "calls": 99,
+      "failure": 1,
+      "name": "Read",
+      "success": 98,
+      "successRate": 0.9899
+    },
+    {
+      "calls": 81,
+      "failure": 0,
+      "name": "mcp__ccd_turn__update_plan",
+      "success": 81,
+      "successRate": 1.0
+    },
+    {
+      "calls": 76,
+      "failure": 1,
+      "name": "Write",
+      "success": 75,
+      "successRate": 0.9868
+    },
+    {
+      "calls": 25,
+      "failure": 0,
+      "name": "mcp__ccd_turn__wrap_up",
+      "success": 25,
+      "successRate": 1.0
+    },
+    {
+      "calls": 21,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__javascript_tool",
+      "success": 21,
+      "successRate": 1.0
+    },
+    {
+      "calls": 15,
+      "failure": 2,
+      "name": "mcp__computer-use__app_batch",
+      "success": 13,
+      "successRate": 0.8667
+    },
+    {
+      "calls": 14,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__browser_batch",
+      "success": 14,
+      "successRate": 1.0
+    },
+    {
+      "calls": 10,
+      "failure": 0,
+      "name": "mcp__Claude_Browser__browser_batch",
+      "success": 10,
+      "successRate": 1.0
+    }
+  ],
+  "totals": {
+    "cacheReadCostUSD": 62.0573,
+    "costUSD": 104.788,
+    "durationMs": 81278897,
+    "filesChanged": 76,
+    "linesAdded": 7898,
+    "linesRemoved": 246,
+    "netLines": 7652,
+    "pricedSessions": 3,
+    "sessions": 3,
+    "tokens": {
+      "cacheCreation": 3395905,
+      "cacheRead": 310597906,
+      "input": 1852,
+      "output": 991029,
+      "total": 314986692
+    },
+    "toolCalls": 1042,
+    "toolSuccessRate": 0.9482,
+    "turns": 1908
+  }
+}
