@@ -78,7 +78,7 @@ b,strong{font-weight:600}
 ::selection{background:var(--accent-soft)}
 
 /* ------------------------------------------------------------------ buttons */
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;min-width:0;padding:0 12px;border-radius:var(--r-control);border:1px solid var(--line);background:var(--surface);color:var(--text);font:inherit;font-size:12px;line-height:24px;font-weight:500;white-space:nowrap;cursor:pointer;transition:background .12s ease,border-color .12s ease}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;border-radius:var(--r-control);border:1px solid var(--line);background:var(--surface);color:var(--text);font:inherit;font-size:12px;line-height:24px;font-weight:500;white-space:nowrap;cursor:pointer;transition:background .12s ease,border-color .12s ease}
 .btn:hover{background:var(--hover);border-color:var(--line-strong)}
 .btn:disabled,.btn[aria-disabled=true]{opacity:.5;cursor:default;pointer-events:none}
 .btn svg{width:14px;height:14px;flex:none}

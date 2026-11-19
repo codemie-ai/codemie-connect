@@ -619,7 +619,8 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
       try {
         for (const item of s.slots.get('call.header') || []) {
           const html = slotHtml('call.header', item, { ...call });
-          const text = textOf(html);
+          // A chip here is text, not a button: an arrow promising a menu or a link goes.
+          const text = textOf(html).replace(/\s*[▾▴▸↗]+$/u, '');
           if (text && out.header.length < SLOT_ITEMS) out.header.push(text);
           if (typeof item.after === 'function') {
             const box = doc.createElement('div');

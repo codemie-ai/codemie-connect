@@ -780,7 +780,7 @@ test('a_slots_html_becomes_one_line_of_text', () => {
 test('call_slots_reach_the_window_as_text_and_a_chosen_item_runs_in_the_frame', async () => {
   const seen = { after: [], runs: [] };
   const t = await connected(ctx => {
-    ctx.slots.add('call.header', { id: 'chip', render: c => `<button class="kn-chip">${ctx.ui.esc(c.title)} → <b>Work</b></button>`, after: (box, c) => seen.after.push([box.innerHTML, c.name]) });
+    ctx.slots.add('call.header', { id: 'chip', render: c => `<button class="kn-chip">${ctx.ui.esc(c.title)} → <b>Work</b> ▾</button>`, after: (box, c) => seen.after.push([box.innerHTML, c.name]) });
     for (const id of ['open', 'save']) {
       ctx.slots.add('call.menu', { label: () => (id === 'open' ? 'Open in Work' : 'Save to Knowledge…'), when: tt => tt.kind === 'call' && (id === 'save' || tt.call.notes), run: tt => seen.runs.push([id, tt]) });
     }
@@ -794,7 +794,7 @@ test('call_slots_reach_the_window_as_text_and_a_chosen_item_runs_in_the_frame', 
   await settle(20);
   assert.deepEqual(t.ctx.where(), { view: 'calls', section: '', route: '' });
   assert.deepEqual(slots().at(-1), { type: 'slots', call: CALL.name, header: ['Sync → Work'], menu: ['Open in Work', 'Save to Knowledge…'], minutes: ['Then saved to Work.'] });
-  assert.deepEqual(seen.after.at(-1), ['<button class="kn-chip">Sync → <b>Work</b></button>', CALL.name], 'after() gets a box with its HTML');
+  assert.deepEqual(seen.after.at(-1), ['<button class="kn-chip">Sync → <b>Work</b> ▾</button>', CALL.name], 'after() gets a box with its HTML');
   assert.ok(t.events().some(m => m.type === 'error' && /when broke/.test(m.message)), 'a broken item is told, the rest drawn');
   // Drawn again with nothing new: not sent again.
   const before = slots().length;
