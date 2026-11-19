@@ -228,8 +228,13 @@ impl Core {
         })
     }
 
-    /// `echo.read('calls', {q, since, until, limit})`: newest first, with or without minutes.
+    /// `echo.read('calls', {q, since, until, thread, client, limit})`: newest first, with or
+    /// without minutes. Connect has no threads or clients, so asking for one's calls finds none.
     pub(crate) fn plugin_calls(&self, opts: &Value) -> Result<Value> {
+        let named = |k: &str| opts[k].as_str().is_some_and(|v| !v.trim().is_empty());
+        if named("thread") || named("client") {
+            return Ok(json!([]));
+        }
         let words: Vec<String> = opts["q"]
             .as_str()
             .unwrap_or("")

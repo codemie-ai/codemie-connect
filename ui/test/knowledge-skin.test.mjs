@@ -20,10 +20,9 @@ function knowledgeCss() {
   return null;
 }
 
-test('the skin is for Knowledge 1.0.x only', () => {
-  assert.equal(skinFor('obsidian', '1.0.1'), 'skins/obsidian.css');
-  assert.equal(skinFor('obsidian', '1.0.17'), 'skins/obsidian.css');
-  for (const [id, v] of [['obsidian', '1.1.0'], ['obsidian', '2.0.0'], ['obsidian', ''], ['github', '1.0.1'], ['obsidian', '1.0.1-beta']]) {
+test('the skin is for Knowledge 1.0.x and 1.1.x only (its knowledge.css is the same)', () => {
+  for (const v of ['1.0.1', '1.0.17', '1.1.0', '1.1.4']) assert.equal(skinFor('obsidian', v), 'skins/obsidian.css', v);
+  for (const [id, v] of [['obsidian', '1.2.0'], ['obsidian', '2.0.0'], ['obsidian', ''], ['github', '1.0.1'], ['obsidian', '1.0.1-beta']]) {
     assert.equal(skinFor(id, v), null, `${id} ${v}`);
   }
 });

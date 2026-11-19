@@ -30,7 +30,7 @@ export const ECHO_SLOTS = ['call.header', 'call.menu', 'call.minutes', 'thread.p
 /** Connect's skin for a plugin's own components, by plugin and the versions it was checked
  *  against (`skins/<id>.css`): loaded after the plugin's stylesheets; a newer version gets
  *  Connect's colours and controls only, until its skin is checked against it. */
-const SKINS = { obsidian: /^1\.0\.\d+$/ };
+const SKINS = { obsidian: /^1\.[01]\.\d+$/ };
 export function skinFor(id, version) {
   const fits = SKINS[String(id)];
   return fits && fits.test(String(version ?? '')) ? `skins/${id}.css` : null;

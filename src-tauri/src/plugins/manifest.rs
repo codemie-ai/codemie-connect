@@ -15,7 +15,7 @@ pub const MANIFEST_FILE: &str = "echo-plugin.json";
 pub const ENGINE: &str = "1.0";
 /// The Echo release whose plugin API Connect provides: a plugin made for a newer Echo is listed
 /// as needing a newer Connect instead of installing and failing.
-pub const ECHO_COMPAT: &str = "0.10.0";
+pub const ECHO_COMPAT: &str = "0.10.1";
 /// The optional features (`requires`, PLUGIN-ENGINE.md §6) Connect has.
 const FEATURES: [&str; 4] = ["work", "deliver", "deliver_provider", "echo"];
 const SETTING_KINDS: [&str; 4] = ["string", "bool", "folder", "secret"];
@@ -545,7 +545,7 @@ mod tests {
         assert!(check_compat(&parse_manifest(package(j).path()).unwrap()).is_ok());
         // `echo`: a range Connect's Echo API (ECHO_COMPAT) meets passes, one above it needs a newer
         // Connect, and one that isn't a version is Echo's own business (ignored).
-        for echo in [">=0.9.13", ">=0.10.0", "0.10", "not a version"] {
+        for echo in [">=0.9.13", ">=0.10.0", ">=0.10.1", "0.10", "not a version"] {
             assert!(with("echo", json!(echo)).is_ok(), "{echo}");
         }
         for (echo, shown) in [(">=0.11.0", ">=0.11.0"), ("99.0.0", ">=99.0.0")] {

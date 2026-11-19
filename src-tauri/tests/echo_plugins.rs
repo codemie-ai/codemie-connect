@@ -81,7 +81,7 @@ fn knowledge_needs_the_echo_api_connect_provides() {
     };
     let m = parse_manifest(&dir.join("obsidian")).unwrap();
     assert_eq!(m.name, "Knowledge");
-    // Knowledge says `"echo": ">=0.10.0"`; Connect gives plugins Echo 0.10's API.
+    // Knowledge 1.1.0 says `"echo": ">=0.10.1"`; Connect gives plugins Echo 0.10.1's API.
     let echo = m.echo.clone().expect("Knowledge names the Echo it needs");
     assert!(echo.matches(&semver::Version::parse(ECHO_COMPAT).unwrap()));
     check_compat(&m).unwrap();
@@ -201,7 +201,12 @@ fn knowledge_installs_with_an_honest_sheet() {
     let out = install::install(&paths, &m.name, "obsidian", agreement).unwrap();
     assert!(matches!(out, Outcome::Installed(ref got) if got == "obsidian"));
     let reg = Registry::load(&paths).unwrap();
-    assert_eq!(reg.installed["obsidian"].version, "1.0.1");
+    // The version the marketplace publishes (1.0.1, 1.1.0 …), as installed.
+    let published = parse_manifest(&dir.join("obsidian")).unwrap();
+    assert_eq!(
+        reg.installed["obsidian"].version,
+        published.version.to_string()
+    );
 }
 
 // ------------------------------------------------------------------ the plugins running (Task 25)
@@ -1393,6 +1398,14 @@ async fn knowledge_saves_connects_meeting_minutes_into_a_vault() {
         "minutes_written saved the new meeting: {:?}",
         lines_of("obsidian")
     );
+    // Knowledge 1.1.0's person pages (Echo 0.10.1's `echo.read('people')`): Connect's people
+    // (who wrote and who was in the meetings) have no place in a thread, so no page is written.
+    let version = parse_manifest(&dir.join("obsidian")).unwrap().version;
+    if version >= semver::Version::new(1, 1, 0) {
+        let synced = c.call("obsidian", "people_sync", json!({"id": id})).await;
+        assert_eq!(synced["added"], 0, "{synced}");
+        assert!(notes_holding(&vault, "echo://person/").is_empty());
+    }
     let logged = lines_of("obsidian");
     assert!(
         logged

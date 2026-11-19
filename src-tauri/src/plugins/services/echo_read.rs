@@ -178,9 +178,13 @@ fn people(records: &[Record]) -> Value {
         if key.is_empty() || by_key.len() >= MAX_PEOPLE {
             return;
         }
+        // Echo 0.10.1's row (onetest-ai/echo#813): Connect has no threads, so nobody has a
+        // place, a role or a reporting line in one, and no person page to link to.
         by_key.entry(key.clone()).or_insert_with(|| {
             json!({"key": key, "name": if name.is_empty() { address } else { name },
-                   "organisation": null, "title": null, "threads": [], "link": null})
+                   "aliases": [], "email": if address.is_empty() { Value::Null } else { json!(address.to_lowercase()) },
+                   "also": [], "organisation": null, "client": null, "title": null, "threads": [],
+                   "places": [], "reports_to": null, "reports": [], "link": null})
         });
     };
     for r in records {
@@ -361,6 +365,42 @@ mod tests {
         assert_eq!(names, ["Ann Lee", "Bo Chen", "Sam Ortiz"], "{people}");
         assert_eq!(people[0]["key"], "ann@example.test");
         assert_eq!(people[0]["threads"], json!([]));
+        // Echo 0.10.1's row (onetest-ai/echo#813), every field, empty where Connect knows
+        // nothing: it has no threads, so nobody has a place, a role or a reporting line in one.
+        let mut keys: Vec<&String> = people[0].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "aliases",
+                "also",
+                "client",
+                "email",
+                "key",
+                "link",
+                "name",
+                "organisation",
+                "places",
+                "reports",
+                "reports_to",
+                "threads",
+                "title"
+            ]
+        );
+        assert_eq!(people[0]["email"], "ann@example.test");
+        for p in people.as_array().unwrap() {
+            assert_eq!(
+                (
+                    &p["aliases"],
+                    &p["also"],
+                    &p["places"],
+                    &p["reports"],
+                    &p["reports_to"]
+                ),
+                (&json!([]), &json!([]), &json!([]), &json!([]), &Value::Null),
+                "{p}"
+            );
+        }
 
         let all = read(json!(["sources"]));
         let ids: Vec<&str> = all
@@ -579,6 +619,11 @@ mod meetings_tests {
                 .unwrap()
                 .len(),
             1
+        );
+        assert_eq!(
+            read(json!(["calls", {"thread": "atlas"}])).unwrap(),
+            json!([]),
+            "Connect has no threads: no call is in one"
         );
         assert_eq!(
             read(json!(["calls", {"since": "2026-11-19"}]))
