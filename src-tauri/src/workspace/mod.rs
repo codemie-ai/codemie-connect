@@ -2,6 +2,7 @@
 mod actions;
 mod ai;
 mod ai_jobs;
+pub(crate) mod analytics;
 mod automations;
 mod credentials;
 #[cfg(target_os = "macos")]
@@ -78,6 +79,9 @@ pub struct Core {
     ai_jobs: Mutex<std::collections::HashMap<String, CancellationToken>>,
     /// The Microsoft reads an AI run makes (full Outlook text); faked in tests.
     graph_reads: Arc<dyn ai_jobs::GraphReads>,
+    /// Runs the `codemie` CLI for the analytics page; faked in tests.
+    #[allow(dead_code)] // used from Task 2
+    analytics_cli: Arc<dyn analytics::cli::AnalyticsCli>,
     graph_children: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
     /// `{connectionId}:{calendarId}` -> last full calendarView refresh (unix seconds).
     calendar_refreshed: Mutex<std::collections::HashMap<String, i64>>,
@@ -150,9 +154,10 @@ impl Core {
         Self::open_with(
             Some(app),
             paths,
-            Arc::new(CliRunner::new(env)),
+            Arc::new(CliRunner::new(env.clone())),
             ProfileCache::system(extra_dirs),
             Arc::new(ai_jobs::LiveGraph),
+            Arc::new(analytics::cli::CodemieCli::new(env)),
         )
     }
     fn open_with(
@@ -161,6 +166,7 @@ impl Core {
         runner: Arc<dyn ClaudeRunner>,
         profiles: ProfileCache,
         graph_reads: Arc<dyn ai_jobs::GraphReads>,
+        analytics_cli: Arc<dyn analytics::cli::AnalyticsCli>,
     ) -> Result<Arc<Self>> {
         // Only the private folder is created and made owner-only. A custom data folder is the
         // user's: it is never created or chmodded here.
@@ -202,6 +208,7 @@ impl Core {
             ai_cancel: CancellationToken::new(),
             ai_jobs: Default::default(),
             graph_reads,
+            analytics_cli,
             graph_children: Default::default(),
             calendar_refreshed: Default::default(),
             mutations: Default::default(),
@@ -2205,6 +2212,7 @@ fn test_core_with_graph(
         runner,
         ProfileCache::fixed(profiles),
         graph,
+        Arc::new(analytics::cli::FakeAnalyticsCli::default()),
     )
     .unwrap()
 }
@@ -2228,6 +2236,7 @@ pub(crate) fn test_core_slow(
         runner,
         ProfileCache::fixed_slow(profiles, delay),
         Arc::new(ai_jobs::FakeGraph::default()),
+        Arc::new(analytics::cli::FakeAnalyticsCli::default()),
     )
     .unwrap()
 }

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 pub use crate::ai::fake::{FakeRunner, Gate};
 pub use crate::plugins::services::http::{Client as HttpClient, Recorded};
+pub use crate::workspace::analytics::cli::{FakeAnalyticsCli, FakeCall};
 pub use crate::workspace::Core;
 
 /// A ready Claude Code profile on the user's own subscription.
