@@ -2,7 +2,7 @@
 //! [`FakeAnalyticsCli`]. The window is `FROM`..`TO` (two local days at +02:00); records sit at
 //! `FROM_S + n` seconds.
 use super::cli::{CliError, FakeAnalyticsCli};
-use super::tests::{ask, core, FROM, TO};
+use super::tests::{core, FROM, TO};
 use crate::workspace::models::{id, Operation, Record};
 use crate::workspace::Core;
 use chrono::DateTime;
@@ -61,12 +61,10 @@ fn run_with(
     );
 }
 async fn ask_app(core: &Arc<Core>) -> Value {
-    ask(
-        core,
-        Operation::AnalyticsApp,
-        json!({"from": FROM, "to": TO}),
-    )
-    .await
+    // Cut in Kyiv's zone (+02:00 in November), not the machine's, so tests don't depend on TZ.
+    core.analytics_app_in(&chrono_tz::Europe::Kyiv, &json!({"from": FROM, "to": TO}))
+        .await
+        .unwrap()
 }
 fn log_launches(dir: &Path, launches: &[(i64, &str)]) {
     let text: String = launches
@@ -281,6 +279,15 @@ async fn outcomes_count_meetings_tasks_sent_replies_inbox_and_automations() {
     put(&core, task(Some("m2"), "doing"));
     put(&core, task(Some("old"), "done"));
     put(&core, task(None, "done"));
+    // A task from before the board has no status, only `done`.
+    put(
+        &core,
+        rec(
+            "commitment",
+            s,
+            json!({"meetingId": "m2", "done": true, "text": "x"}),
+        ),
+    );
     let action =
         |kind: &str, state: &str, at: i64| rec("action", at, json!({"kind": kind, "state": state}));
     put(&core, action("mail_reply", "accepted", s + 10));
@@ -319,8 +326,8 @@ async fn outcomes_count_meetings_tasks_sent_replies_inbox_and_automations() {
     assert_eq!(o["meetings"], 3);
     assert_eq!(o["transcribed"], 2);
     assert_eq!(o["noted"], 1);
-    assert_eq!(o["tasks"], 3);
-    assert_eq!(o["tasksDone"], 1);
+    assert_eq!(o["tasks"], 4);
+    assert_eq!(o["tasksDone"], 2);
     assert_eq!(o["drafts"], 1);
     assert_eq!(o["sent"], 2);
     assert_eq!(o["inboxHandled"], 2);
@@ -508,4 +515,52 @@ async fn contract_fixture_analytics_app() {
     )));
     let app = ask_app(&core).await;
     crate::plugins::testkit::contract_fixture("analytics-app.json", &app);
+}
+
+fn kyiv_ms(date: &str, hour: u32) -> i64 {
+    use chrono::TimeZone;
+    let t = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .unwrap()
+        .and_hms_opt(hour, 0, 0)
+        .unwrap();
+    chrono_tz::Europe::Kyiv
+        .from_local_datetime(&t)
+        .earliest()
+        .unwrap()
+        .timestamp_millis()
+}
+
+/// The zone is injected (`buckets` takes it) so the test doesn't depend on the machine's TZ.
+#[test]
+fn day_buckets_are_local_midnights_across_a_dst_change() {
+    // Kyiv leaves summer time on 2026-10-25: that day has 25 hours.
+    let (from, to) = (kyiv_ms("2026-10-20", 0), kyiv_ms("2026-10-31", 0) - 1);
+    let b = super::app::buckets(&chrono_tz::Europe::Kyiv, from, to);
+    assert_eq!(b.len(), 11);
+    for (i, (start, end)) in b.iter().enumerate() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 20 + i as u32).unwrap();
+        assert_eq!(*start, kyiv_ms(&day.to_string(), 0), "{day}");
+        if i > 0 {
+            assert_eq!(*start, b[i - 1].1 + 1);
+        }
+        assert!(end >= start);
+    }
+    assert_eq!(b[5].1 - b[5].0 + 1, 25 * 3_600_000);
+    assert_eq!(b[10].1, to);
+}
+
+#[test]
+fn a_long_range_is_monday_weeks_with_clamped_ends() {
+    // Wednesday 2026-09-02 to Sunday 2026-11-01 (61 days).
+    let (from, to) = (kyiv_ms("2026-09-02", 8), kyiv_ms("2026-11-02", 0) - 1);
+    let b = super::app::buckets(&chrono_tz::Europe::Kyiv, from, to);
+    assert_eq!(b[0].0, from, "the first week starts where the range does");
+    assert_eq!(b[0].1, kyiv_ms("2026-09-07", 0) - 1, "and ends on Sunday");
+    assert_eq!(b[1].0, kyiv_ms("2026-09-07", 0), "a Monday");
+    assert_eq!(b[b.len() - 1].1, to);
+    assert_eq!(b[b.len() - 1].0, kyiv_ms("2026-10-26", 0));
+    assert_eq!(b.len(), 9);
+    for w in b.windows(2) {
+        assert_eq!(w[1].0, w[0].1 + 1);
+    }
 }

@@ -6,7 +6,7 @@ use super::range_args;
 use crate::workspace::models::{Record, Result, WorkspaceError};
 use crate::workspace::repository::Repository;
 use crate::workspace::{graph, Core};
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, Datelike, Days, FixedOffset, NaiveDate, TimeZone};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 
@@ -22,8 +22,7 @@ const FEATURES: [&str; 6] = [
 /// A CLI session counts as started in Connect when it began this close to a launch.
 const MATCH_MS: i64 = 120_000;
 const RECENT: usize = 50;
-const DAY_MS: i64 = 86_400_000;
-/// Ranges longer than this many days are drawn by week, as the CLI's own series are.
+/// Windows longer than this many days are drawn by Monday weeks, as the CLI's own series are.
 const WEEK_AFTER_DAYS: i64 = 35;
 const LAUNCH_LOG: &str = "terminal-launches.jsonl";
 
@@ -70,6 +69,15 @@ impl Core {
     /// `analytics_app {from, to}`. The CLI is asked for its totals and sessions of the same
     /// window; when it can't answer, the terminal fields are zero and `shareOfAll` is `null`.
     pub(super) async fn analytics_app(&self, data: &Value) -> Result<Value> {
+        self.analytics_app_in(&chrono::Local, data).await
+    }
+
+    /// [`Core::analytics_app`] with the zone the day buckets are cut in (the Mac's own).
+    pub(super) async fn analytics_app_in<Tz: TimeZone>(
+        &self,
+        tz: &Tz,
+        data: &Value,
+    ) -> Result<Value> {
         // Only the window goes to the CLI: the page's agent and project filters are AI tab ones.
         let window = json!({"from": data["from"], "to": data["to"]});
         let args = range_args(&window)?;
@@ -89,6 +97,7 @@ impl Core {
         };
         let matched = match_sessions(&launches, &sessions);
         Ok(answer(
+            tz,
             &ledger,
             &matched,
             cli.is_some().then_some(cli_total),
@@ -218,7 +227,8 @@ fn match_sessions(launches: &[(i64, String)], sessions: &[Value]) -> Vec<Matched
     matched
 }
 
-fn answer(
+fn answer<Tz: TimeZone>(
+    tz: &Tz,
     ledger: &Ledger,
     matched: &[Matched],
     cli_total: Option<f64>,
@@ -300,7 +310,7 @@ fn answer(
             .count(),
         "noted": noted,
         "tasks": ledger.tasks.len(),
-        "tasksDone": ledger.tasks.iter().filter(|t| t.data["status"] == "done").count(),
+        "tasksDone": ledger.tasks.iter().filter(|t| crate::workspace::tasks::status_of(&t.data) == "done").count(),
         "drafts": drafts,
         "sent": ledger.sent,
         "inboxHandled": ledger.inbox,
@@ -332,7 +342,7 @@ fn answer(
             "terminalCostUsd": terminal,
             "shareOfAll": share,
         },
-        "series": series(ledger, matched, from.timestamp_millis(), to.timestamp_millis()),
+        "series": series_in(tz, ledger, matched, from.timestamp_millis(), to.timestamp_millis()),
         "features": features,
         "profiles": profiles,
         "outcomes": outcomes,
@@ -340,33 +350,70 @@ fn answer(
     })
 }
 
-/// Cost per feature in day buckets from the window's start (weeks when it is longer than 35
-/// days). A bucket's `to` is its last millisecond.
-fn series(ledger: &Ledger, matched: &[Matched], from: i64, to: i64) -> Vec<Value> {
-    let days = (to - from + 1 + DAY_MS - 1) / DAY_MS;
-    let step = if days > WEEK_AFTER_DAYS {
-        7 * DAY_MS
-    } else {
-        DAY_MS
+/// The window's buckets in the Mac's time zone, as the CLI's `view` makes them: local calendar
+/// days, or Monday weeks when the window is longer than 35 days. The first and last are cut to
+/// the window; a bucket's `to` is its last millisecond.
+pub(super) fn buckets<Tz: TimeZone>(tz: &Tz, from: i64, to: i64) -> Vec<(i64, i64)> {
+    let local = |ms: i64| {
+        tz.timestamp_millis_opt(ms)
+            .earliest()
+            .map(|d| d.date_naive())
     };
-    let mut buckets = Vec::new();
-    let mut start = from;
-    while start <= to {
-        let end = (start + step - 1).min(to);
-        let mut by: BTreeMap<&str, f64> = FEATURES.iter().map(|k| (*k, 0.0)).collect();
-        for r in &ledger.runs {
-            let at = at_of(r) * 1000;
-            if (start..=end).contains(&at) {
-                if let Some(key) = feature_of(r.data["purpose"].as_str().unwrap_or("")) {
-                    *by.entry(key).or_default() += cost_of(r);
+    let (Some(first), Some(last)) = (local(from), local(to)) else {
+        return vec![(from, to)];
+    };
+    // Midnight starting `date`; where a zone skips midnight, the first hour that exists.
+    let midnight = |date: NaiveDate| {
+        (0..4)
+            .find_map(|h| {
+                let t = date.and_hms_opt(h, 0, 0)?;
+                tz.from_local_datetime(&t).earliest()
+            })
+            .map_or(i64::MAX, |d| d.timestamp_millis())
+    };
+    let weekly = (last - first).num_days() + 1 > WEEK_AFTER_DAYS;
+    let mut out = Vec::new();
+    let mut start = first;
+    while start <= last {
+        let end = if weekly {
+            start + Days::new(6 - u64::from(start.weekday().num_days_from_monday()))
+        } else {
+            start
+        }
+        .min(last);
+        out.push((
+            midnight(start).max(from),
+            (midnight(end + Days::new(1)) - 1).min(to),
+        ));
+        start = end + Days::new(1);
+    }
+    out
+}
+
+/// Cost per feature in each bucket of the window.
+fn series_in<Tz: TimeZone>(
+    tz: &Tz,
+    ledger: &Ledger,
+    matched: &[Matched],
+    from: i64,
+    to: i64,
+) -> Vec<Value> {
+    buckets(tz, from, to)
+        .into_iter()
+        .map(|(start, end)| {
+            let mut by: BTreeMap<&str, f64> = FEATURES.iter().map(|k| (*k, 0.0)).collect();
+            for r in &ledger.runs {
+                let at = at_of(r) * 1000;
+                if (start..=end).contains(&at) {
+                    if let Some(key) = feature_of(r.data["purpose"].as_str().unwrap_or("")) {
+                        *by.entry(key).or_default() += cost_of(r);
+                    }
                 }
             }
-        }
-        for m in matched.iter().filter(|m| (start..=end).contains(&m.start)) {
-            *by.entry("terminal").or_default() += m.cost;
-        }
-        buckets.push(json!({"from": start, "to": end, "by": by}));
-        start = end + 1;
-    }
-    buckets
+            for m in matched.iter().filter(|m| (start..=end).contains(&m.start)) {
+                *by.entry("terminal").or_default() += m.cost;
+            }
+            json!({"from": start, "to": end, "by": by})
+        })
+        .collect()
 }
