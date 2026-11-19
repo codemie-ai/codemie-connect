@@ -377,7 +377,7 @@ export function automations(s, ctx = {}) {
       <div class="ws-actions">${heading}</div>
     </header>
     ${ctx.banners || ''}
-    ${renderDock('automations', AUTOMATIONS_DOCK, layout, id => `<div class="ws-auto-panel">${panels[id]()}</div>`, { locked: !!ctx.dock?.locked })}
+    ${renderDock('automations', AUTOMATIONS_DOCK, layout, id => `<div class="ws-auto-panel">${panels[id]()}</div>`, { locked: !!ctx.dock?.locked, count: id => (id === 'auto-list' ? list.length : null) })}
   </div>`;
 }
 

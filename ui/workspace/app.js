@@ -271,8 +271,10 @@ function captureScroll() {
     meetingTabs: Object.fromEntries([...root.querySelectorAll('.ws-mtg-detail[data-panel]')].map(el => [`${el.dataset.meeting}|${el.dataset.panel}`, el.scrollTop])),
     // Today: each tile's body scrolls on its own, kept by the tile's widget id.
     tiles: Object.fromEntries([...root.querySelectorAll('[data-tile] > .ws-tile-body')].map(body => [body.parentElement.dataset.tile, body.scrollTop])),
-    // A row of page sections wider than the page scrolls sideways, kept by page.
+    // A row of page sections wider than the page scrolls sideways, kept by page; a section's body
+    // scrolls on its own, kept by the page and tab it shows (the tab that labels it).
     dockRows: Object.fromEntries([...root.querySelectorAll('.ws-dock[data-page]')].map(row => [row.dataset.page, row.scrollLeft])),
+    sections: Object.fromEntries([...root.querySelectorAll('.ws-dock .ws-pane-body')].map(body => [body.getAttribute('aria-labelledby'), body.scrollTop])),
   };
 }
 
@@ -310,6 +312,10 @@ function restoreScroll(saved) {
   for (const row of root.querySelectorAll('.ws-dock[data-page]')) {
     const left = saved.dockRows[row.dataset.page];
     if (left) row.scrollLeft = left;
+  }
+  for (const body of root.querySelectorAll('.ws-dock .ws-pane-body')) {
+    const top = saved.sections[body.getAttribute('aria-labelledby')];
+    if (top) body.scrollTop = top;
   }
   if (q('.ws-settings-panels') && saved.tab === state.settingsTab) q('.ws-settings-panels').scrollTop = saved.panels;
 }

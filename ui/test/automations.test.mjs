@@ -55,7 +55,7 @@ test('automations_list_shows_trigger_summary_last_run_and_cost', () => {
     assert.ok(tagWith(html, `data-action="${action}"[^>]*data-id="auto-brief"`), action);
   }
   // The list, the Run log and the templates are the tabs of one section.
-  assert.match(html, /data-action="dock-tab" data-page="automations" data-tab="auto-list" aria-selected="true"/);
+  assert.match(html, /data-action="dock-tab" data-page="automations" data-tab="auto-list" aria-selected="true"[^>]*>[^]*?<span>Automations<\/span><span class="ws-tab-count">2<\/span><\/button>/, 'with the number of automations');
   assert.match(html, /data-tab="auto-runs" aria-selected="false"/);
   assert.match(html, /data-tab="auto-templates" aria-selected="false"/);
 
@@ -73,6 +73,7 @@ test('automations_list_shows_trigger_summary_last_run_and_cost', () => {
   const empty = buildSnapshot(NOW, { photo: false });
   const none = page(empty);
   assert.match(none, /No automations yet/);
+  assert.doesNotMatch(none, /ws-tab-count/, 'no count without automations');
   assert.ok(tagWith(none, 'data-action="automations-tab"[^>]*data-tab="templates"'));
   assert.match(none, /Start from a template/);
   // One primary action (the template), one secondary (New automation); the heading adds none.

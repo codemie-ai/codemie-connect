@@ -2709,6 +2709,19 @@ for (const theme of ['dark', 'light']) {
     await page.reload();
     await page.waitForSelector('.ws-auto-list .ws-auto-row');
     await page.waitForSelector('.ws-run-log .ws-run');
+    // A section scrolls on its own and keeps its place through a render (the minute tick, a run
+    // opened): every run open in a short window.
+    await page.setViewportSize({ width: 1440, height: 600 });
+    for (const row of await page.locator('.ws-run-row').all()) await row.click();
+    await page.waitForFunction(() => document.querySelectorAll('.ws-run.ws-open').length === 3);
+    const runs = '.ws-pane:has(.ws-dock-tab[data-tab="auto-runs"]) > .ws-pane-body';
+    const top = await page.evaluate(sel => { const body = document.querySelector(sel); body.scrollTop = body.scrollHeight; return body.scrollTop; }, runs);
+    assert(top > 0, `the Run log scrolls: ${top}`);
+    await page.evaluate(() => window.__workspace.render());
+    assert(await page.evaluate(sel => document.querySelector(sel).scrollTop, runs) === top, 'a render keeps the Run log’s place');
+    await page.locator('.ws-run-row').first().dispatchEvent('click');
+    await page.waitForFunction(() => document.querySelectorAll('.ws-run.ws-open').length === 2);
+    assert(await page.evaluate(sel => document.querySelector(sel).scrollTop, runs) > 0, 'a run closed keeps the Run log scrolled');
     assert(errors.length === 0, errors.join(' | '));
   });
   await context.close().catch(() => {});

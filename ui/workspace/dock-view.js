@@ -14,11 +14,12 @@ const toolButton = (action, iconName, label, attrs = {}) => `<button type="butto
 /**
  * Page `page` drawn from `layout` (checked against definition `def`): `renderTab(id)` gives the
  * body of each open section's active tab, and `before(pane, index)` HTML above an open
- * section's tab strip. `locked` layouts draw no grips on the tabs.
+ * section's tab strip. `locked` layouts draw no grips on the tabs. `count(id)` is a number shown
+ * after a tab's title (none for 0 or null).
  */
-export function renderDock(page, def, layout, renderTab, { locked = false, before = () => '' } = {}) {
+export function renderDock(page, def, layout, renderTab, { locked = false, before = () => '', count = () => null } = {}) {
   const changed = JSON.stringify(layout) !== JSON.stringify(normalizeDock(def, null));
-  const ctx = { page, def, layout, locked, changed, renderTab, before };
+  const ctx = { page, def, layout, locked, changed, renderTab, before, count };
   const row = layout.panes.map((p, i) => `${i ? divider(ctx, i - 1) : ''}${pane(ctx, p, i)}`).join('');
   return `<div class="ws-dock${locked ? ' ws-dock-locked' : ''}" data-page="${e(page)}">${row}</div>`;
 }
@@ -39,7 +40,8 @@ function pane(ctx, p, i) {
   const body = `dock-${page}-${p.id}-body`;
   const tabs = p.tabs.map(t => {
     const on = t === p.active;
-    return `<button type="button" class="ws-dock-tab" role="tab" id="dock-${e(page)}-tab-${e(t)}" data-action="dock-tab" data-page="${e(page)}" data-tab="${e(t)}" aria-selected="${on}" tabindex="${on ? 0 : -1}"${on ? ` aria-controls="${e(body)}"` : ''} title="${e(ctx.locked ? T[t].title : `${T[t].title} — drag to move this tab`)}">${ctx.locked ? '' : `<span class="ws-dock-grip" aria-hidden="true">${icon('grip')}</span>`}${icon(T[t].icon)}<span>${e(T[t].title)}</span></button>`;
+    const n = ctx.count(t);
+    return `<button type="button" class="ws-dock-tab" role="tab" id="dock-${e(page)}-tab-${e(t)}" data-action="dock-tab" data-page="${e(page)}" data-tab="${e(t)}" aria-selected="${on}" tabindex="${on ? 0 : -1}"${on ? ` aria-controls="${e(body)}"` : ''} title="${e(ctx.locked ? T[t].title : `${T[t].title} — drag to move this tab`)}">${ctx.locked ? '' : `<span class="ws-dock-grip" aria-hidden="true">${icon('grip')}</span>`}${icon(T[t].icon)}<span>${e(T[t].title)}</span>${n ? `<span class="ws-tab-count">${e(n)}</span>` : ''}</button>`;
   }).join('');
   const collapse = layout.panes.length > 1 ? toolButton('dock-collapse', last ? 'chevron-right' : 'chevron-left', `Collapse ${title}`, ids) : '';
   return `${open}${ctx.before(p, i)}<div class="ws-pane-strip">

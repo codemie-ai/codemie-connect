@@ -425,6 +425,25 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
     assert(await page.evaluate(() => localStorage.getItem('codemie.meetings.wide')) === 'true', 'the old key is no longer written');
     await page.reload();
     await page.waitForSelector('.ws-dock[data-page="meetings"] .ws-mtg-list');
+    // The meeting's ⋯ menu opens over its section's tabs and tab, each item on top and inside the section.
+    await page.click('.ws-mtg-head .ws-menu > summary');
+    await page.waitForSelector('.ws-mtg-head .ws-menu[open] .ws-menu-panel');
+    const headerMenu = await page.evaluate(() => {
+      const panel = document.querySelector('.ws-mtg-head .ws-menu[open] .ws-menu-panel');
+      const pane = panel.closest('.ws-pane');
+      const box = pane.getBoundingClientRect();
+      const hidden = [...panel.querySelectorAll('.ws-menu-item')].map(item => {
+        const r = item.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { item: item.textContent.trim(), onTop: !!hit && item.contains(hit), inside: r.top >= box.top && r.bottom <= box.bottom };
+      }).filter(x => !x.onTop || !x.inside);
+      return { hidden, overTabs: panel.getBoundingClientRect().bottom > pane.querySelector(':scope > .ws-pane-strip').getBoundingClientRect().top };
+    });
+    assert(headerMenu.overTabs, 'the menu reaches over the section’s tabs');
+    assert(headerMenu.hidden.length === 0, `menu items hidden: ${JSON.stringify(headerMenu.hidden)}`);
+    await shot(page, 'dark-1000-meetings-header-menu');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.ws-mtg-head .ws-menu[open]', { state: 'detached' });
     // A tab chosen in the sections is the one the hash names.
     await page.click('.ws-dock-tab[data-tab="mtg-notes"]');
     await page.waitForFunction(() => location.hash === '#/meetings/mtg-philips/notes');
@@ -437,6 +456,14 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
     assert(await page.locator('.ws-mtg-head').count() === 1, 'one header');
     assert(await page.locator('.ws-pane:has(.ws-dock-tab[data-tab="mtg-transcript"]) .ws-mtg-head').count() === 1, 'above the first section with a meeting tab');
     await shot(page, 'dark-1000-meetings-sections');
+    // In that narrow section the people scroll within three rows and the tab keeps its room.
+    const room = await page.evaluate(() => {
+      const pane = document.querySelector('.ws-pane:has(.ws-mtg-head)');
+      const people = pane.querySelector('.ws-mtg-people-line');
+      return { people: people.clientHeight, scrolls: people.scrollHeight > people.clientHeight, body: pane.querySelector(':scope > .ws-pane-body').clientHeight };
+    });
+    assert(room.people <= 96 && room.scrolls, `the people line scrolls within three rows: ${JSON.stringify(room)}`);
+    assert(room.body >= 200, `the tab below the header keeps its room: ${JSON.stringify(room)}`);
     // Three sections are wider than the window: the row scrolls sideways and an update (a minute
     // tick, a tab chosen) keeps its place.
     const left = await page.evaluate(() => { const row = document.querySelector('.ws-dock[data-page="meetings"]'); row.scrollLeft = row.scrollWidth; return row.scrollLeft; });

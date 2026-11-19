@@ -367,9 +367,12 @@ export function meetings(s, ctx = {}) {
   const head = layout.panes.find(x => !x.collapsed && x.tabs.some(meetingTab));
   const top = head || layout.panes.find(x => !x.collapsed);
   const header = `${ctx.banners || ''}${head && selected ? meetingHeader(p, selected, mc) : ''}`;
+  // The selected meeting's tabs say how many documents (from two), lines, tasks and people.
+  const counts = mc ? { 'mtg-notes': mc.docs.length > 1 ? mc.docs.length : null, 'mtg-transcript': mc.segments?.length, 'mtg-tasks': mc.tasks.length, 'mtg-people': mc.people.length } : {};
   return renderDock('meetings', MEETINGS_DOCK, layout, id => (id === 'mtg-list' ? list(p) : tabBody(p, selected, mc, id.slice(4))), {
     locked: !!ctx.dock?.locked,
     before: pane => (pane.id === top?.id && header ? `<div class="ws-mtg-top">${header}</div>` : ''),
+    count: id => counts[id],
   });
 }
 

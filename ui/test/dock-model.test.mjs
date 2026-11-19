@@ -211,3 +211,14 @@ test('renderDock draws separators with aria-valuenow, rails for collapsed sectio
   assert.ok(tagOf(rail, 'data-split="0"').includes('aria-valuenow="300"'));
   assert.doesNotMatch(rail, /ws-dock-grip/);
 });
+
+test('renderDock shows a count on a tab when the page gives one', () => {
+  const tabOf = (html, id) => html.match(new RegExp(`<button [^>]*data-tab="${id}"[^]*?</button>`))?.[0] || '';
+  const counts = { a: 12, b: 0, c: null };
+  const html = renderDock('meetings', DEF, normalizeDock(DEF, null), id => id, { count: id => counts[id] });
+  assert.match(tabOf(html, 'a'), /<span>Alpha<\/span><span class="ws-tab-count">12<\/span><\/button>$/);
+  assert.doesNotMatch(tabOf(html, 'b'), /ws-tab-count/, 'no count for 0');
+  assert.doesNotMatch(tabOf(html, 'c'), /ws-tab-count/, 'no count for none');
+  // Without the option, as Inbox and Calendar draw: no counts.
+  assert.doesNotMatch(renderDock('meetings', DEF, normalizeDock(DEF, null), id => id), /ws-tab-count/);
+});

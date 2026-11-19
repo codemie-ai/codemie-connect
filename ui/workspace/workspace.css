@@ -2192,6 +2192,8 @@ button.ws-task-src:hover span{color:var(--ws-link)}
    which scrolls on its own */
 .ws-mtg-top{display:grid;gap:10px;flex-shrink:0;padding:12px 20px;border-bottom:1px solid var(--ws-border);container-type:inline-size}
 .ws-mtg-top>.ws-banner{max-width:1100px;margin:0}
+/* Every guest ("+N more") scrolls within three rows, so the tab below keeps its height. */
+.ws-mtg-top .ws-mtg-people-line{max-height:96px;overflow-y:auto}
 .ws-mtg-detail{flex:1;min-height:0;min-width:0;overflow:auto;padding:16px 20px 40px;container-type:inline-size}
 .ws-mtg-detail-empty{display:grid;place-items:center;min-height:60%}
 .ws-mtg-meeting{max-width:1100px}
