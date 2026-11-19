@@ -13,6 +13,7 @@ import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folde
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
 import { meetingSettingsChecks } from './meetings-settings-checks.mjs';
+import { layoutChecks } from './layout-checks.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -1191,11 +1192,14 @@ const shot = async (page, name) => {
   return page.screenshot({ path: join(OUT, `${name}.png`) });
 };
 const text = (page, selector) => page.locator(selector).first().innerText();
+/** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
+const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-settings'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`, `layout`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-settings', 'layout'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'layout') await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
   server.close();
@@ -2937,6 +2941,10 @@ for (const theme of ['dark', 'light']) {
 // Meetings (Task 4): the list and the meeting, the calendar's badges and event card, Today's card,
 // import, speakers, Make notes as soon as it arrives, Try again, a task's quote, ↑/↓.
 await meetingChecks({ open, check, assert, shot, settled, OUT });
+
+// Flexible layout (spec docs/superpowers/specs/2026-11-19-flexible-layout-design.md, E1–E8): Today
+// arranged by pen, mouse, touch and keys, saved layouts, page sections, the folding menus.
+await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
 
 // Settings › Meetings (Task 5): transcripts and folders, note templates and skills, rules and the
 // tester, the glossary typed and linked, tasks.
