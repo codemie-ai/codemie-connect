@@ -40,7 +40,7 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
 
       await check(`${tag}: settings meetings transcripts and folders`, async () => {
         await page.waitForSelector('.ws-ms-location');
-        assert(await page.locator('.ws-settings-nav .ws-nav-label', { hasText: 'Meetings' }).count() === 1, 'the Meetings group');
+        assert(await page.locator('.ws-settings-nav .ws-nav-group', { hasText: 'Meetings' }).count() === 1, 'the Meetings group');
         const order = await page.locator('.ws-settings-nav button[data-tab^="meetings-"]').evaluateAll(els => els.map(b => b.dataset.tab));
         assert(order.join() === 'meetings-transcripts,meetings-templates,meetings-rules,meetings-glossary,meetings-tasks', order.join());
         const toggle = '[data-action="meetings-settings-transcripts"]';

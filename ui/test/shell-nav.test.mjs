@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyOnboardingNav } from '../shell-nav.js';
+import { renderShell } from '../workspace/shell.js';
+import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
 
 // A root holding the four sidebar entries, queried the way the module does.
 function makeRoot() {
@@ -72,4 +74,22 @@ test('finishing the checklist unlocks every entry', () => {
 test('a root missing an entry is not an error', () => {
   assert.doesNotThrow(() => applyOnboardingNav({ querySelector: () => null }, { done: false }));
   assert.doesNotThrow(() => applyOnboardingNav(undefined, { done: true }));
+});
+
+const shell = (opts = {}) => renderShell({ snapshot: buildSnapshot(Date.UTC(2026, 10, 19, 9), { photo: false }), route: 'today', resolvedDark: true, ...opts });
+
+test('the collapsed main menu draws the rail with dots for counts', () => {
+  const full = shell();
+  assert.doesNotMatch(full, /ws-sidebar-rail/);
+  assert.match(full, /data-action="sidebar-toggle"[^>]*aria-expanded="true"[^>]*>[^]*?Collapse menu/);
+  const rail = shell({ sidebarCollapsed: true });
+  assert.match(rail, /<aside class="ws-sidebar ws-sidebar-rail"/);
+  assert.match(rail, /data-action="route" data-tip="Meetings" data-route="meetings"/);
+  assert.match(rail, /data-action="route" data-tip="Settings" data-route="settings"/);
+  assert.match(rail, /class="ws-count ws-count-dot"/, 'a count becomes a dot');
+  assert.doesNotMatch(full, /ws-count-dot/);
+  assert.match(rail, /data-action="sidebar-toggle"[^>]*aria-expanded="false"[^>]*data-tip="Expand menu/);
+  assert.match(rail, /<div class="ws-sidebar-edge"/);
+  // The top bar has the same button at the left.
+  assert.match(rail, /<header class="ws-topbar">\s*<button[^>]*data-action="sidebar-toggle"/);
 });

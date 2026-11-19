@@ -22,11 +22,12 @@ export function syncStatus(s) {
  *  [{plugin, id, label}]), `current` the one open ({plugin, id}). Labels are the plugin's text. */
 export function pluginNav(activities = [], current = null) {
   if (!activities.length) return '';
-  return `<div class="ws-nav-group ws-plugin-nav"><div class="ws-nav-label">Plugins</div><nav class="ws-nav" aria-label="Plugins">${activities.map(a => `<button type="button" data-action="plugin-page" data-plugin-id="${e(a.plugin)}" data-activity="${e(a.id)}" title="${e(a.label)}" ${current && current.plugin === a.plugin && current.id === a.id ? 'aria-current="page"' : ''}>${icon('puzzle')}<span>${e(a.label)}</span></button>`).join('')}</nav></div>`;
+  return `<div class="ws-nav-group ws-plugin-nav"><div class="ws-nav-label">Plugins</div><nav class="ws-nav" aria-label="Plugins">${activities.map(a => `<button type="button" data-action="plugin-page" data-plugin-id="${e(a.plugin)}" data-activity="${e(a.id)}" title="${e(a.label)}" data-tip="${e(a.label)}" ${current && current.plugin === a.plugin && current.id === a.id ? 'aria-current="page"' : ''}>${icon('puzzle')}<span>${e(a.label)}</span></button>`).join('')}</nav></div>`;
 }
 
-// state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot, now } — settingsDot: CodeMie needs the person.
-export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, now = Date.now() }) {
+// state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot, sidebarCollapsed, now } — settingsDot: CodeMie needs the person;
+// sidebarCollapsed: the menu is the 64 px rail of icons (a count becomes a dot).
+export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, sidebarCollapsed = false, now = Date.now() }) {
   const w = active(s);
   const c = s.connection;
   const replies = attentionMessages(s).length;
@@ -34,23 +35,28 @@ export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, se
   const toReview = s.records.filter(r => r.kind === 'commitment' && taskStatus(r) === 'review').length;
   // Meetings: transcripts to make notes from, and meetings that need the person.
   const meetingsWaiting = (({ process, attention }) => process + attention)(meetingCounts(s, now));
-  const count = id => (id === 'inbox' && replies ? `<small class="ws-count">${replies}</small>`
-    : id === 'tasks' && toReview ? `<small class="ws-count" title="Tasks to review">${toReview}</small>`
-      : id === 'meetings' && meetingsWaiting ? `<small class="ws-count" title="Transcripts waiting for you">${meetingsWaiting}</small>` : '');
+  const cls = sidebarCollapsed ? 'ws-count ws-count-dot' : 'ws-count';
+  const count = id => (id === 'inbox' && replies ? `<small class="${cls}">${replies}</small>`
+    : id === 'tasks' && toReview ? `<small class="${cls}" title="Tasks to review">${toReview}</small>`
+      : id === 'meetings' && meetingsWaiting ? `<small class="${cls}" title="Transcripts waiting for you">${meetingsWaiting}</small>` : '');
+  const shortcut = `⌘\\`;
+  const toggleTitle = `${sidebarCollapsed ? 'Expand' : 'Collapse'} menu`;
   const connected = c && c.status !== 'disconnected';
-  return `<aside class="ws-sidebar">
+  return `<aside class="ws-sidebar${sidebarCollapsed ? ' ws-sidebar-rail' : ''}">
       <div class="ws-brand" aria-label="EPAM AI/Run CodeMie Connect"><img class="ws-logo-dark" src="workspace/assets/logo-full-dark.svg" alt=""><img class="ws-logo-light" src="workspace/assets/logo-full-light.svg" alt=""></div>
-      <nav class="ws-nav" aria-label="Main navigation">${NAV.map(([id, label]) => `<button type="button" data-action="route" data-route="${id}" ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${count(id)}</button>`).join('')}</nav>
+      <nav class="ws-nav" aria-label="Main navigation">${NAV.map(([id, label]) => `<button type="button" data-action="route" data-tip="${label}" data-route="${id}" ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${count(id)}</button>`).join('')}</nav>
       ${pluginNav(plugins.activities, plugins.current)}
       <div class="ws-sidebar-bottom">
-        <nav class="ws-nav" aria-label="Application"><button type="button" data-action="route" data-route="settings" ${route === 'settings' ? 'aria-current="page"' : ''}>${icon('settings')}<span>Settings</span>${(c && c.status !== 'connected' && c.status !== 'disconnected') || settingsDot ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button></nav>
+        <nav class="ws-nav" aria-label="Application"><button type="button" data-action="route" data-tip="Settings" data-route="settings" ${route === 'settings' ? 'aria-current="page"' : ''}>${icon('settings')}<span>Settings</span>${(c && c.status !== 'connected' && c.status !== 'disconnected') || settingsDot ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button><button type="button" data-action="sidebar-toggle" aria-expanded="${!sidebarCollapsed}" title="${toggleTitle} (${shortcut})" data-tip="${toggleTitle}">${icon(sidebarCollapsed ? 'sidebar-open' : 'sidebar-close')}<span>${toggleTitle}</span></button></nav>
         <button type="button" class="ws-user" data-action="settings-tab" data-tab="microsoft" title="${connected ? 'Microsoft 365 account' : 'Connect Microsoft 365'}">
           ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 32 })}
           <span class="ws-user-copy"><strong>${e(connected ? c.displayName : 'Personal workspace')}</strong><span>${e(connected ? (c.jobTitle || c.email) : 'Connect Microsoft 365')}</span></span>
         </button>
       </div>
+      <div class="ws-sidebar-edge" title="Drag to collapse or expand the menu" aria-hidden="true"></div>
     </aside>
     <header class="ws-topbar">
+      ${button('', { action: 'sidebar-toggle', iconName: sidebarCollapsed ? 'sidebar-open' : 'sidebar-close', variant: 'ghost', title: `${toggleTitle} (${shortcut})`, attrs: { 'aria-expanded': String(!sidebarCollapsed) } })}
       <div class="ws-topbar-right">
         ${syncStatus(s)}
         ${button('', { action: 'sync', iconName: 'refresh', variant: 'ghost', title: 'Sync now', disabled: !c || c.status !== 'connected' })}

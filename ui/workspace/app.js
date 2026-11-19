@@ -19,7 +19,8 @@ import { inbox, filteredMessages, snoozeUntil, draftChecks, INBOX_DOCK } from '.
 import {
   optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
 } from './draft-state.js';
-import { settings, settingsTabFor } from './view-settings.js';
+import { settings, settingsTabFor, SETTINGS_GROUPS, SETTINGS_MENU } from './view-settings.js';
+import { trackPress } from './press.js';
 import { createCodemieService } from './codemie/service.js';
 import { createCodemieController } from './codemie/controller.js';
 import { createRunLog } from './codemie/run-log.js';
@@ -64,7 +65,7 @@ const watched = invoke && (async (cmd, args) => {
 const store = invoke ? createStore(watched) : null;
 
 const state = {
-  route: 'today', settingsTab: 'general',
+  route: 'today', settingsTab: 'general', settingsQuery: '',
   calendarMode: localPref('codemie.calendar.mode', 'week'), calendarDate: new Date(),
   lane: 'reply', channel: 'all', search: '', showArchived: false, showSnoozed: false, inboxLimit: 200, selectedMessage: null, selectedKey: null,
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
@@ -162,7 +163,7 @@ let layoutDrag = false;
 let pressing = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab']);
+const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles']);
 let lastDraftSignature = '';
 // Updates that arrived while held (the draft options popover open, a card or widget dragged, the
 // mouse button down); shown once that ends.
@@ -221,7 +222,7 @@ function applyTheme(theme) {
 const shellMarkup = () => renderShell({
   snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark'),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
-  settingsDot: codemie.settingsDot(),
+  settingsDot: codemie.settingsDot(), sidebarCollapsed: sidebarCollapsed(),
 });
 
 function shell() {
@@ -327,6 +328,7 @@ function applyLayoutPrefs(locked) {
   root.classList.toggle('ws-locked', locked);
   root.classList.toggle('ws-handles-always', handles === 'always');
   root.classList.toggle('ws-handles-customize', handles === 'customize');
+  root.classList.toggle('ws-sidebar-collapsed', sidebarCollapsed());
 }
 
 // Narrower than 640 px, Today's widgets stack in one column (its CSS asks the page's width): no
@@ -377,11 +379,15 @@ async function render() {
   applyTheme(s.settings.theme);
   const locked = !!todayUi?.locked();
   applyLayoutPrefs(locked);
+  // Find a setting starts empty each time Settings opens.
+  if (state.route !== 'settings') state.settingsQuery = '';
   const ctx = {
     state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(), pluginsKnown: state.pluginsKnown,
     today: { ...state.today, locked },
     dock: { layouts: Object.fromEntries(Object.keys(DOCKS).map(page => [page, docks.get(page)])), locked },
     codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots(), signIn: codemie.signIn() },
+    menu: { ...settingsMenu(), folded: foldedGroups(), query: state.settingsQuery },
+    layout: layoutContext(),
     codemieCard: codemie.todayCard(),
   };
   if (state.route === 'inbox') ensureSelection(s);
@@ -446,6 +452,7 @@ async function render() {
   if (state.route === 'settings' && state.settingsTab.startsWith('meetings-')) meetingsSettingsUi.load().catch(fail);
   lastDraftSignature = draftSignature(s);
   renderSheet();
+  hideTip();
 }
 
 /** A transcript line a task quote or a note's time opened: scrolled to and highlighted a moment. */
@@ -1265,6 +1272,210 @@ const dockUi = store && attachDock(document, {
   onToday,
 });
 
+// ---------------------------------------------------------------- menus (spec "Menus")
+
+// The main menu collapses to its 64 px icon rail, the Settings menu folds its groups and shrinks
+// to a 58 px rail, and both are preferences of this Mac: `codemie.sidebar.collapsed` ("1"/"0"),
+// `codemie.settings.folded` (the folded group names) and `codemie.settings.menu` ({collapsed,
+// width}). The pages only read them (the views are pure); the changes below store and draw them.
+const SIDEBAR_KEY = 'codemie.sidebar.collapsed';
+const FOLDED_KEY = 'codemie.settings.folded';
+const MENU_KEY = 'codemie.settings.menu';
+/** The main menu edge is dragged this far (px) to collapse or expand it. */
+const SIDEBAR_DRAG = 60;
+/** The Settings menu edge dragged under this width (px) shrinks the menu to its rail. */
+const SETTINGS_RAIL_AT = 150;
+
+const sidebarCollapsed = () => localPref(SIDEBAR_KEY, '0') === '1';
+const clampWidth = w => Math.min(SETTINGS_MENU.max, Math.max(SETTINGS_MENU.min, Math.round(Number(w)) || SETTINGS_MENU.def));
+function settingsMenu() {
+  const saved = localJson(MENU_KEY, null);
+  return { collapsed: saved?.collapsed === true, width: clampWidth(saved?.width) };
+}
+function foldedGroups() {
+  const saved = localJson(FOLDED_KEY, []);
+  return Array.isArray(saved) ? saved.filter(name => SETTINGS_GROUPS.some(g => g.name === name)) : [];
+}
+const saveMenu = patch => setLocalPref(MENU_KEY, JSON.stringify({ ...settingsMenu(), ...patch }));
+const saveFolded = names => setLocalPref(FOLDED_KEY, JSON.stringify(names));
+
+/** What Settings → Layout shows: the preferences, the page layouts and the Today grid. */
+function layoutContext() {
+  if (state.route !== 'settings' || state.settingsTab !== 'layout') return undefined;
+  const defs = tileDefs(pluginWidgetCatalog(state.installedPlugins || []));
+  return {
+    prefs: { locked: !!todayUi?.locked(), handles: localPref('codemie.layout.handles', 'hover'), sidebarCollapsed: sidebarCollapsed(), menuCollapsed: settingsMenu().collapsed },
+    docks: { defs: DOCKS, layouts: Object.fromEntries(Object.keys(DOCKS).map(page => [page, docks.get(page)])) },
+    today: todayOf(current(), defs),
+  };
+}
+
+async function toggleSidebar(on = !sidebarCollapsed()) {
+  setLocalPref(SIDEBAR_KEY, on ? '1' : '0');
+  announce(on ? 'Main menu collapsed to icons' : 'Main menu expanded');
+  await render();
+}
+
+async function setSettingsMenu(patch, say) {
+  saveMenu(patch);
+  if (say) announce(say);
+  await render();
+}
+const shrinkSettingsMenu = (on = !settingsMenu().collapsed) => setSettingsMenu({ collapsed: on }, on ? 'Settings menu shrunk to icons' : 'Settings menu expanded');
+const focusEdge = () => document.querySelector('.ws-settings-edge')?.focus();
+
+/** Folds or unfolds Settings group `name`; with `only` (⌥-click) every other group folds. */
+async function foldGroup(name, only) {
+  const all = SETTINGS_GROUPS.map(g => g.name);
+  if (!all.includes(name)) return;
+  const folded = foldedGroups();
+  const next = only ? all.filter(n => n !== name) : folded.includes(name) ? folded.filter(n => n !== name) : [...folded, name];
+  saveFolded(next);
+  announce(only ? `${name} is the only open group` : `${name} ${next.includes(name) ? 'folded' : 'unfolded'}`);
+  await render();
+}
+
+/** Folds every group, or, when all are folded, unfolds them. */
+async function foldAll() {
+  const folded = foldedGroups();
+  const fold = SETTINGS_GROUPS.some(g => !folded.includes(g.name));
+  saveFolded(fold ? SETTINGS_GROUPS.map(g => g.name) : []);
+  announce(fold ? 'All groups folded' : 'All groups unfolded');
+  await render();
+}
+
+// A menu edge held: updates wait (as for a Today widget) until the drop is drawn.
+function dragSidebarEdge(ev, edge) {
+  const was = sidebarCollapsed();
+  const done = () => {
+    layoutDrag = false;
+    edge.classList.remove('ws-active');
+  };
+  trackPress(ev, {
+    cursor: 'ew',
+    onStart: () => {
+      layoutDrag = true;
+      edge.classList.add('ws-active');
+    },
+    onEnd: (_, { dx }) => {
+      done();
+      if (was ? dx >= SIDEBAR_DRAG : dx <= -SIDEBAR_DRAG) toggleSidebar(!was).catch(fail);
+      else render().catch(fail);
+    },
+    onCancel: () => {
+      done();
+      render().catch(fail);
+    },
+  });
+}
+
+// The Settings menu follows the pointer between 200 and 400 px and turns into the rail under 150.
+function dragSettingsEdge(ev, edge) {
+  const layout = edge.closest('.ws-settings-layout');
+  const aside = layout?.querySelector('.ws-settings-sidebar');
+  if (!layout || !aside) return;
+  const before = settingsMenu();
+  const start = before.collapsed ? SETTINGS_MENU.rail : before.width;
+  let width = start;
+  let rail = before.collapsed;
+  trackPress(ev, {
+    threshold: 1, cursor: 'ew',
+    onStart: () => {
+      layoutDrag = true;
+      layout.classList.add('ws-resizing');
+    },
+    onMove: (_, { dx }) => {
+      width = start + dx;
+      rail = width < SETTINGS_RAIL_AT;
+      aside.classList.toggle('ws-settings-rail', rail);
+      layout.style.setProperty('--ws-settings-w', `${rail ? SETTINGS_MENU.rail : clampWidth(width)}px`);
+    },
+    onEnd: () => {
+      layoutDrag = false;
+      if (rail !== before.collapsed) announce(rail ? 'Settings menu shrunk to icons' : 'Settings menu expanded');
+      saveMenu({ collapsed: rail, width: rail ? before.width : clampWidth(width) });
+      render().catch(fail);
+    },
+    onCancel: () => {
+      layoutDrag = false;
+      render().catch(fail);
+    },
+  });
+}
+
+document.addEventListener('pointerdown', ev => {
+  const edge = ready && ev.target.closest?.('.ws-sidebar-edge, .ws-settings-edge');
+  if (!edge) return;
+  if (edge.classList.contains('ws-sidebar-edge')) dragSidebarEdge(ev, edge);
+  else dragSettingsEdge(ev, edge);
+});
+
+document.addEventListener('dblclick', ev => {
+  if (!ready || !ev.target.closest?.('.ws-settings-edge')) return;
+  setSettingsMenu({ collapsed: false, width: SETTINGS_MENU.def }, 'Settings menu width reset').then(focusEdge).catch(fail);
+});
+
+// ⌘\ collapses the main menu, ⌘⇧\ shrinks the Settings menu; on the Settings menu's edge,
+// Enter toggles it and ← → resize it.
+document.addEventListener('keydown', ev => {
+  if (!ready || modalOpen() || sheetOpen() || ev.isComposing) return;
+  if (ev.code === 'Backslash' && (ev.metaKey || ev.ctrlKey) && !ev.altKey) {
+    if (!ev.shiftKey) {
+      ev.preventDefault();
+      toggleSidebar().catch(fail);
+    } else if (state.route === 'settings') {
+      ev.preventDefault();
+      shrinkSettingsMenu().catch(fail);
+    }
+    return;
+  }
+  if (!ev.target.closest?.('.ws-settings-edge') || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const menu = settingsMenu();
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault();
+    shrinkSettingsMenu().then(focusEdge).catch(fail);
+  } else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
+    ev.preventDefault();
+    const step = ev.key === 'ArrowLeft' ? -24 : 24;
+    const next = menu.collapsed ? (step > 0 ? { collapsed: false } : null)
+      : menu.width + step < SETTINGS_MENU.min ? { collapsed: true } : { width: clampWidth(menu.width + step) };
+    if (next) setSettingsMenu(next, next.collapsed === undefined ? '' : next.collapsed ? 'Settings menu shrunk to icons' : 'Settings menu expanded').then(focusEdge).catch(fail);
+  }
+});
+
+// A rail has no labels: a tooltip names the icon under the pointer (or the one focused by key).
+let tipEl = null;
+function hideTip() {
+  tipEl?.remove();
+  tipEl = null;
+}
+function showTip(target) {
+  const inRail = target.closest('.ws-sidebar-rail, .ws-settings-rail') || (target.closest('.ws-sidebar') && matchMedia('(max-width:1050px)').matches);
+  if (!inRail || !target.dataset.tip) return hideTip();
+  const box = target.getBoundingClientRect();
+  hideTip();
+  tipEl = document.createElement('div');
+  tipEl.className = 'ws-tooltip';
+  tipEl.setAttribute('role', 'tooltip');
+  tipEl.textContent = target.dataset.tip;
+  tipEl.style.left = `${Math.round(box.right + 8)}px`;
+  tipEl.style.top = `${Math.round(box.top + box.height / 2)}px`;
+  document.body.append(tipEl);
+}
+document.addEventListener('pointerover', ev => {
+  if (ev.pointerType === 'touch') return;
+  const target = ev.target.closest?.('[data-tip]');
+  if (target) showTip(target);
+  else hideTip();
+});
+document.addEventListener('focusin', ev => {
+  const target = ev.target.closest?.('[data-tip]');
+  if (target?.matches(':focus-visible')) showTip(target);
+});
+document.addEventListener('focusout', hideTip);
+document.addEventListener('pointerdown', hideTip, true);
+document.documentElement.addEventListener('mouseleave', hideTip);
+
 // ---------------------------------------------------------------- meetings (spec "Meetings page")
 
 /** Saves `text` as a file in Downloads (the browser's download). */
@@ -1565,6 +1776,14 @@ async function handle(action, el, ev) {
         state.selectedMessage = null;
       }
       return route(el.dataset.route || 'today');
+    case 'sidebar-toggle': return toggleSidebar();
+    case 'settings-group': return foldGroup(el.dataset.group, !!ev?.altKey);
+    case 'settings-groups-all': return foldAll();
+    case 'settings-menu-toggle': return shrinkSettingsMenu();
+    case 'layout-lock': return todayUi.handle('today-lock');
+    case 'layout-handles':
+      if (['hover', 'always', 'customize'].includes(el.dataset.value)) setLocalPref('codemie.layout.handles', el.dataset.value);
+      return render();
     case 'settings-tab':
       // A document's “Edit the template” opens that template; Note templates again leaves a clean editor.
       // From a dialog (Make notes) or the event card, the dialog closes first.
@@ -2009,6 +2228,11 @@ document.addEventListener('submit', async ev => {
 
 document.addEventListener('input', ev => {
   if (codemie.input(ev.target)) return;
+  if (ev.target.matches?.('[data-settings-find]') && !ev.isComposing) {
+    state.settingsQuery = ev.target.value;
+    render().catch(fail);
+    return;
+  }
   if (ev.target.id === 'inbox-search') {
     state.search = ev.target.value;
     clearTimeout(searchTimer);
