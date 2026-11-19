@@ -23,7 +23,7 @@
 - Summary JSON schema strings are exactly `codemie.analytics.summary/1` and `codemie.analytics.session/1`.
 - Week buckets apply when the range is longer than 35 days. Buckets are local calendar days, and a week starts on Monday.
 - Depth bucket labels are exactly `1`, `2–5`, `6–10`, `11–25`, `26–50`, `51+` (en dash).
-- Dead session: `costUSD > 0 && filesChanged === 0 && netLines === 0`. Bloat: `cacheReadCostUSD / costUSD`. Context per turn: `Σ cacheRead / Σ turns` over sessions with `tokens.cacheRead > 0`. Tool success: `Σ success / Σ calls`.
+- Dead session: `costUSD > 0 && filesChanged === 0 && netLines === 0`. Bloat: `cacheReadCostUSD / costUSD`. Context per turn: the report's own "Avg context / call" expression from `app.js` (Efficiency view). (Corrected 2026-11-20: the first text divided over sessions with cache reads only, which differs from the report.) Tool success: `Σ success / Σ calls`.
 - Branch `feat/analytics-view` (or `EPMCDME-<NNNN>_analytics-view` if a ticket exists). PR title `feat(analytics): add view command and stop parsing dropped native logs`.
 - Gates: `npm run typecheck`, `npm run lint`, `npx vitest run --project unit`, `npx vitest run --project cli`, `npm run build`.
 

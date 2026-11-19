@@ -23,13 +23,14 @@ The page has to be calm and readable. A refresh reads only what changed. A notic
 ## Decisions
 
 1. **One CLI PR**, made only of additions and a fix that leaves output unchanged:
-   - **Fix:** skip parsing logs that are dropped anyway, and free each parsed log once it's priced. Output is identical.
+   - **Fix:** skip parsing logs that are dropped anyway. Output is identical. (Freeing parsed logs after pricing was tried and dropped: the peak is reached while parsing, so it changed nothing measurable.)
    - **New subcommand** `codemie analytics view --input <export.json>`. It computes the page's numbers (`--export summary`), one session with its trace (`--session <id>`), or the full HTML report (`--export html`) from an existing export, without reading any agent logs.
    - **Unchanged:** `report/client/app.js`, the template, and the existing outputs.
 2. **Connect owns fetching and storage. The CLI owns every number.**
    - Connect fetches with the existing `codemie analytics --from D --to D --include-external always --export json` and upserts the sessions by `sessionId` into `<data root>/analytics/sessions.json`, which is the CLI's own export shape.
    - For every view Connect calls `codemie analytics view --input <that file>` with the filters and renders the JSON it gets back.
-   - **Every session on this Mac counts**, including agents run without CodeMie (`--include-external always`, user's call 2026-11-19). The CLI fix's skip doesn't apply to these calls, because nothing is dropped; the freeing of parsed logs and the 3-day windows keep memory in bounds (see the measured facts).
+   - **Every session on this Mac counts**, including agents run without CodeMie (`--include-external always`, user's call 2026-11-19). The CLI fix's skip doesn't apply to these calls, because nothing is dropped; the 3-day windows and the 6 GB heap keep memory in bounds (see the measured facts).
+   - **Known limit:** a session that continues an older one (`claude --resume`) shares replies with it. The CLI's cross-session dedup works only inside one export, so when the two land in different fetch windows the newer one is priced with the older replies too (measured: one session $3.80 in a 7-day export, $1.55 in a 30-day one). The CLI's own reports have the same window effect. A later CLI change can export ownership keys so `view` dedupes across merged windows.
 3. **Refresh** reads from the start of yesterday (UTC) to now in one call, which catches sessions that were still running. **First open** reads 90 days back, newest first, 3 days per call. A failed call splits into single days, and a day that still fails is listed with a retry. Opening the page refreshes on its own when the data is more than 15 minutes old.
 4. **The CLI binary** is the same `codemie` that Settings → CodeMie uses, found with `ai::discover::find_program_in`. Connect runs it without a shell (an argument array), with `NODE_OPTIONS=--max-old-space-size=6144` and a 10-minute timeout per call. It checks for support with `codemie analytics view --help` (exit 0); otherwise the page shows the "needs a newer CLI" state.
 5. **App analytics** is Connect's own logic over Connect's own records: `ai_run`, `meeting`, `commitment`, `action`, `decision` and `automation_run`.
@@ -80,7 +81,7 @@ trace      [{ key, kind, name, label, level, parentKey | null, childKeys: [], is
 The formulas are the report's own, from `app.js`:
 - **Dead session:** `costUSD > 0 && filesChanged === 0 && netLines === 0`
 - **Bloat %:** `cacheReadCostUSD / costUSD`
-- **Context per turn:** `cacheRead / turns`, over sessions with cache reads
+- **Context per turn:** exactly the report's "Avg context / call" expression in `app.js` (its Efficiency view)
 - **Depth buckets:** `1, 2–5, 6–10, 11–25, 26–50, 51+`
 - **Tool success:** `success / calls`
 
