@@ -163,7 +163,7 @@ let taskDrag = false;
 let pressing = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle']);
+const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
 let lastDraftSignature = '';
 // Updates that arrived while held (the draft options popover open, a card dragged, the mouse
 // button down); shown once that ends.
@@ -268,6 +268,10 @@ function captureScroll() {
     board: q('.ws-task-board')?.scrollLeft || 0,
     drawer: q('.ws-task-drawer-body')?.scrollTop || 0,
     drawerId: state.tasks.drawer,
+    // The Analytics session drawer and its side panel keep their place while the same session shows.
+    anDrawer: q('.ws-an-db')?.scrollTop || 0,
+    anSide: q('.ws-an-side')?.scrollTop || 0,
+    anSession: q('.ws-an-drawer') ? analyticsUi?.data.session?.id : null,
     meetingList: q('.ws-mtg-list-body')?.scrollTop || 0,
     meetingDetail: q('.ws-mtg-detail')?.scrollTop || 0,
     meetingView: q('.ws-mtg-meeting') ? `${q('.ws-mtg-meeting').dataset.meeting}|${q('.ws-mtg-panel')?.dataset.panel}` : null,
@@ -279,6 +283,10 @@ function restoreScroll(saved) {
   if (q('.ws-main')) q('.ws-main').scrollTop = saved.main;
   if (q('.ws-task-board')) q('.ws-task-board').scrollLeft = saved.board;
   if (q('.ws-task-drawer-body') && saved.drawerId === state.tasks.drawer) q('.ws-task-drawer-body').scrollTop = saved.drawer;
+  if (saved.anSession && saved.anSession === analyticsUi?.data.session?.id) {
+    if (q('.ws-an-db')) q('.ws-an-db').scrollTop = saved.anDrawer;
+    if (q('.ws-an-side')) q('.ws-an-side').scrollTop = saved.anSide;
+  }
   const grid = q('.ws-tg-scroll');
   if (grid) {
     const key = `${state.calendarMode}|${dayKey(state.calendarDate, undefined)}`;
@@ -339,7 +347,7 @@ async function render() {
     : state.route === 'calendar' ? calendar(s, ctx)
       : state.route === 'inbox' ? inbox(s, ctx)
         : state.route === 'automations' ? automations(s, ctx)
-          : state.route === 'analytics' ? analyticsView(state.analytics, { ...analyticsUi.viewData(), banners: ctx.banners })
+          : state.route === 'analytics' ? analyticsView(state.analytics, { ...analyticsUi.viewData(), banners: ctx.banners, profileNames: state.ai.profiles })
           : state.route === 'tasks' ? tasksPage(s, ctx)
           : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [] })
           : state.route === 'plugin' ? pluginPageHtml()
@@ -1174,8 +1182,10 @@ const runLogOpen = () => !!automationsUi?.runLogOpen();
 // ---------------------------------------------------------------- analytics (spec 2026-11-19 analytics)
 
 const analyticsUi = store && createAnalyticsController({
-  state, query: (op, data) => store.query(op, data), render, toast, openModal,
+  state, query: (op, data) => store.query(op, data), render, toast,
   listen: (event, fn) => window.__TAURI__.event.listen(event, fn),
+  writeText: text => navigator.clipboard.writeText(text),
+  focus: focusFirst,
 });
 if (analyticsUi) attachAnalyticsTips(document);
 
@@ -2163,6 +2173,12 @@ document.addEventListener('keydown', ev => {
   // A drawer field being edited saves (on its change or when it is left) before the drawer closes.
   if (ev.key === 'Escape' && (field?.dataset?.change || field?.dataset?.commit)) field.blur();
   tasksUi.key(ev).catch(fail);
+});
+
+// Analytics: Escape closes the session drawer (an open menu has closed first, above).
+document.addEventListener('keydown', ev => {
+  if (!ready || state.route !== 'analytics' || modalOpen() || sheetOpen()) return;
+  analyticsUi.key(ev).catch(fail);
 });
 
 // Settings › Meetings: Enter saves a typed field (a rule's text, a column name, a file path) by

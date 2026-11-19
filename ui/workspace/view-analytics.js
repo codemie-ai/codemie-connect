@@ -1,16 +1,20 @@
 // The Analytics page (docs/superpowers/specs/2026-11-19-analytics-design.md), ported from the
 // prototype in prototypes/analytics/: the header with the AI / App switch, one filter row, the
-// local-only notice, the fetch progress, and AI analytics' Overview, Efficiency and Sessions.
+// local-only notice, the fetch progress, and AI analytics' Overview, Efficiency and Sessions; the
+// App tab (view-analytics-app.js) and the session drawer (view-analytics-session.js) are mounted here.
 // Pure: `analyticsView(ui, data)` returns HTML and `analyticsCharts(ui, data)` the charts app.js
 // draws into the `[data-chart]` boxes once their width is known. Every number is the CLI's
 // `codemie.analytics.summary/1`, formatted; every provider text goes through `escapeHtml`.
 // `ui` is the view state (analytics-model.js `newAnalyticsView`); `data` is what the operations
-// answered: `{status, summary, progress, refreshing, loading, error, now, zone, banners}`.
+// answered: `{status, summary, progress, refreshing, loading, error, session, app, now, zone,
+// banners, profileNames}`.
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { button, emptyState, spinner } from './ui.js';
 import { agoLabel } from './format.js';
 import { columns, tipHtml } from './analytics-charts.js';
+import { sessionDrawer, sessionCharts } from './view-analytics-session.js';
+import { appTab, appCharts } from './view-analytics-app.js';
 import {
   PRESETS, VIEWS, SORT_LABELS, presetRange, readSoFar, pendingBefore, isBusy, delta, listSessions,
   usd, usdAxis, tok, dur, pct, pctPoints, n0, plural, dShort, dLong, weekday, hm, dayName, dayKeyIn, dayKeyLabel,
@@ -380,14 +384,35 @@ function aiBody(ui, data) {
   return overview(ui, data);
 }
 
-/** The whole page. In App mode the body is a container the App tab fills. */
+/** App analytics: Connect's own records, read on the App tab (`data.app`). */
+function appBody(ui, data) {
+  const app = data.app;
+  let inner;
+  if (app?.answer) inner = `<div class="${app.loading ? 'ws-an-loading' : ''}">${appTab({ ...app.answer, now: data.now, zone: data.zone, profileNames: data.profileNames }, ui)}</div>`;
+  else if (app?.error) inner = errorState(app.error);
+  else inner = `<div class="ws-an-state">${spinner('Reading App analytics')}<span>Reading App analytics…</span></div>`;
+  return `<div class="ws-an-app">${inner}</div>`;
+}
+
+/** The session drawer's view of `data.session`, with its tab, step and collapsed steps. */
+function drawerOf(ui, data) {
+  const open = data.session;
+  if (!open) return '';
+  const d = ui.drawer || {};
+  return sessionDrawer(open.detail, {
+    tab: d.tab, selected: d.selected, collapsed: d.collapsed, zone: data.zone, now: data.now,
+    inConnect: startedInConnect(data.summary).has(open.id), loading: open.loading, error: open.error, id: open.id,
+  });
+}
+
+/** The whole page. In App mode the body is the App tab; an open session adds its drawer. */
 export function analyticsView(ui, data) {
   const ai = ui.mode !== 'app';
   const st = data.status;
   const needsCli = st?.state === 'needs_cli';
   const empty = st?.state === 'empty' && !isBusy(data);
   let body;
-  if (!ai) body = '<div class="ws-an-app"></div>';
+  if (!ai) body = appBody(ui, data);
   else if (!st) body = data.error ? errorState(data.error) : loadingState();
   else if (needsCli) body = '';
   else if (empty) body = emptyMac();
@@ -401,13 +426,18 @@ export function analyticsView(ui, data) {
     ${ai ? notice(ui, data) : ''}
     ${ai && st && !needsCli ? progressLine(data) : ''}
     <div class="ws-an-body${ai && data.loading && data.summary ? ' ws-an-loading' : ''}">${body}</div>
+    ${drawerOf(ui, data)}
   </div>`;
 }
 
 /** The charts on the page as it is now, by `data-chart` id: `width => svg`. */
 export function analyticsCharts(ui, data) {
-  if (ui.mode === 'app' || !data.summary || data.status?.state === 'needs_cli') return {};
-  if (ui.view === 'overview' && !ui.tables.trend) return { trend: width => trendChart(width, ui, data) };
-  if (ui.view === 'efficiency' && !ui.tables.depth) return { depth: width => depthChart(width, data) };
-  return {};
+  const open = data.session?.detail && !data.session.error
+    ? sessionCharts(data.session.detail, { ...(ui.drawer || {}), zone: data.zone })
+    : {};
+  if (ui.mode === 'app') return { ...(data.app?.answer ? appCharts({ ...data.app.answer, zone: data.zone }, ui) : {}), ...open };
+  if (!data.summary || data.status?.state === 'needs_cli') return open;
+  if (ui.view === 'overview' && !ui.tables.trend) return { trend: width => trendChart(width, ui, data), ...open };
+  if (ui.view === 'efficiency' && !ui.tables.depth) return { depth: width => depthChart(width, data), ...open };
+  return open;
 }

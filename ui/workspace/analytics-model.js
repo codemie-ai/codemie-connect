@@ -11,6 +11,8 @@ export const PREFS_KEY = 'codemie.analytics';
 export const STALE_MS = 15 * 60_000;
 /** Sessions shown at first, and added by Show more. */
 export const SESSIONS_PAGE = 40;
+/** App analytics' recent runs shown at first, and added by Show more. */
+export const RUNS_PAGE = 10;
 export const MODES = ['ai', 'app'];
 export const VIEWS = [['overview', 'Overview'], ['efficiency', 'Efficiency'], ['sessions', 'Sessions']];
 export const PRESETS = [
@@ -54,11 +56,14 @@ export function savePrefs(storage, ui) {
   } catch { /* a preference only */ }
 }
 
-/** The page's view state: the kept preferences, the filters and the per-card choices. */
+/** The page's view state: the kept preferences, the filters and the per-card choices; App
+ *  analytics' own (feature, All/Failed, the terminal switch, runs shown); and the session drawer's
+ *  `{tab, selected, collapsed}` while one is open. */
 export function newAnalyticsView(prefs = DEFAULT_PREFS) {
   return {
     ...DEFAULT_PREFS, ...prefs, tables: { ...(prefs.tables || {}) },
     agent: '', project: '', metric: 'cost', inv: 'tools', list: 'dead', sort: 'newest', q: '', shown: SESSIONS_PAGE, all: {},
+    appFeature: '', appList: 'all', appTerm: false, appShown: RUNS_PAGE, drawer: null,
   };
 }
 

@@ -1,11 +1,13 @@
 // The Analytics page's controller (docs/superpowers/specs/2026-11-19-analytics-design.md): it reads
 // `analytics_status` and `analytics_view` through `query`, starts and follows a fetch
-// (`analytics_refresh`, `analytics_retry` and the `workspace:analytics` progress event) and
-// handles the `analytics-*` actions app.js routes here. Everything it touches is injected, so
-// node:test drives it without a browser. `attachAnalyticsTips` is the page's tooltip layer.
+// (`analytics_refresh`, `analytics_retry` and the `workspace:analytics` progress event), reads one
+// session for the drawer (`analytics_session`) and App analytics (`analytics_app`), and handles the
+// `analytics-*` actions app.js routes here. Everything it touches is injected, so node:test drives
+// it without a browser. `attachAnalyticsTips` is the page's tooltip layer.
 import {
-  MODES, VIEWS, PRESETS, SESSIONS_PAGE, loadPrefs, savePrefs, newAnalyticsView, viewRequest, reportRequest, isStale, isBusy, dayKeyLabel, projectName, plural,
+  MODES, VIEWS, PRESETS, SESSIONS_PAGE, RUNS_PAGE, loadPrefs, savePrefs, newAnalyticsView, presetRange, viewRequest, reportRequest, isStale, isBusy, dayKeyLabel, projectName, plural,
 } from './analytics-model.js';
+import { SESSION_TABS } from './view-analytics-session.js';
 
 export const PROGRESS_EVENT = 'workspace:analytics';
 
@@ -16,26 +18,30 @@ const systemZone = () => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; }
 };
 const messageOf = err => err?.message || String(err);
+const quoted = value => String(value).replace(/["\\]/g, '\\$&');
 
 /**
  * `state` is the app state: the page's view state lives in `state.analytics`, and `state.route`
  * says whether the page is open. `query(op, data)` is a read-only workspace request; `render()`
- * redraws; `toast(message, tone)`; `listen(event, fn)` subscribes to a native event. app.js also
- * passes `openModal`, which the session drawer will use. `storage` keeps the preferences (localStorage); `now` and `zone`
- * (the Mac's own, as the CLI's day buckets are) are for tests.
+ * redraws; `toast(message, tone)`; `listen(event, fn)` subscribes to a native event;
+ * `writeText(text)` copies to the clipboard; `focus(selectors)` moves focus after a render (into
+ * the drawer, and back to the session that opened it). `storage` keeps the preferences
+ * (localStorage); `now` and `zone` (the Mac's own, as the CLI's day buckets are) are for tests.
  *
  * `data` holds what the operations answered: `{status, summary, loading, error, progress,
- * refreshing, session}`; `viewData()` adds `now` and `zone` for the renderer.
+ * refreshing, session, app}`, `session` as `{id, loading, detail, error}` and `app` as
+ * `{loading, answer, error}`; `viewData()` adds `now` and `zone` for the renderer.
  */
 export function createAnalyticsController({
-  state, query, render, toast, listen, storage = localStore(), now = () => Date.now(), zone = systemZone(),
+  state, query, render, toast, listen, writeText = null, focus = () => {}, storage = localStore(), now = () => Date.now(), zone = systemZone(),
 }) {
   state.analytics = newAnalyticsView(loadPrefs(storage));
   const ui = () => state.analytics;
   const onPage = () => state.route === 'analytics';
-  const data = { status: null, summary: null, loading: false, error: '', progress: null, refreshing: false, session: null };
+  const data = { status: null, summary: null, loading: false, error: '', progress: null, refreshing: false, session: null, app: null };
   let statusReads = 0;
   let viewReads = 0;
+  let appReads = 0;
   let subscribed = null;
   // The progress step last read for, the fetch the person asked for (a toast when it ends), how
   // many fetches have ended (a start answered after its end doesn't count as running) and how many
@@ -95,6 +101,24 @@ export function createAnalyticsController({
     await redraw();
   }
 
+  /** App analytics for the range: Connect's own records, read whatever the CLI can do. What was
+   *  shown stays (dimmed) until the new answer comes; a later read wins. */
+  async function loadApp() {
+    const read = ++appReads;
+    data.app = { loading: true, answer: data.app?.answer ?? null, error: '' };
+    await redraw();
+    const { from, to } = presetRange(ui().range, now(), zone);
+    try {
+      const answer = await query('analytics_app', { from, to });
+      if (read !== appReads) return undefined;
+      data.app = { loading: false, answer, error: '' };
+    } catch (err) {
+      if (read !== appReads) return undefined;
+      data.app = { loading: false, answer: null, error: messageOf(err) };
+    }
+    return redraw();
+  }
+
   /** Status, then the summary; reads asked for while one runs are folded into one more. */
   async function reload() {
     if (reloading) {
@@ -121,11 +145,17 @@ export function createAnalyticsController({
   }
 
   /** The page opened: status first; a CLI too old stops there. Data older than 15 minutes is
-   *  refreshed (quietly) before the summary is read. */
+   *  refreshed (quietly) before the summary is read. On the App tab, App analytics is read too. */
   async function open() {
     subscribe();
     data.progress = null;
     lastDone = null;
+    const app = ui().mode === 'app' ? loadApp() : null;
+    await openAi();
+    await app;
+  }
+
+  async function openAi() {
     await readStatus();
     await redraw();
     const status = data.status;
@@ -179,7 +209,9 @@ export function createAnalyticsController({
   async function openSession(id) {
     if (!id) return undefined;
     data.session = { id, loading: true, detail: null, error: '' };
+    ui().drawer = { tab: 'trace', selected: 'session', collapsed: new Set() };
     await redraw();
+    focus(['.ws-an-drawer .ws-an-close']);
     try {
       const detail = await query('analytics_session', { id });
       if (data.session?.id === id) data.session = { id, loading: false, detail, error: '' };
@@ -187,6 +219,33 @@ export function createAnalyticsController({
       if (data.session?.id === id) data.session = { id, loading: false, detail: null, error: messageOf(err) };
     }
     return redraw();
+  }
+
+  /** Closes the drawer; focus goes back to the session that opened it. */
+  async function closeSession() {
+    const id = data.session?.id;
+    data.session = null;
+    ui().drawer = null;
+    await redraw();
+    if (id) focus(`button[data-action="analytics-open-session"][data-value="${quoted(id)}"]`);
+  }
+
+  /** The drawer's own state, changed and redrawn. */
+  function drawer(change) {
+    const d = ui().drawer;
+    if (!d || !data.session) return undefined;
+    change(d);
+    return redraw();
+  }
+
+  /** Keys on the Analytics page: Escape closes the session drawer (an open menu closes first, in
+   *  app.js). True when it took the key. */
+  async function key(ev) {
+    if (ev.key !== 'Escape' || ev.isComposing || ev.keyCode === 229 || ev.target?.closest?.('.ws-term')) return false;
+    if (!data.session) return false;
+    ev.preventDefault();
+    await closeSession();
+    return true;
   }
 
   /** The `analytics-*` actions; `el` is the control (its `data-value`). */
@@ -199,7 +258,9 @@ export function createAnalyticsController({
       case 'analytics-mode':
         if (MODES.includes(value)) v.mode = value;
         save();
-        return redraw();
+        if (v.mode === 'app') return loadApp();
+        // Back on the AI tabs: a range changed meanwhile is read now.
+        return data.summary || !data.status ? redraw() : reload();
       case 'analytics-view':
         if (VIEWS.some(([id]) => id === value)) v.view = value;
         v.shown = SESSIONS_PAGE;
@@ -208,7 +269,12 @@ export function createAnalyticsController({
       case 'analytics-range':
         if (PRESETS.some(p => p.id === value)) v.range = value;
         save();
-        return loadView();
+        if (v.mode !== 'app') return loadView();
+        // The AI summary is read again when its tabs are back; one still on its way is dropped.
+        data.summary = null;
+        viewReads++;
+        data.loading = false;
+        return loadApp();
       case 'analytics-agent':
         v.agent = value;
         return loadView();
@@ -230,6 +296,7 @@ export function createAnalyticsController({
         return redraw();
       case 'analytics-more':
         if (value === 'sessions') v.shown += SESSIONS_PAGE;
+        else if (value === 'runs') v.appShown += RUNS_PAGE;
         else v.all = { ...v.all, [value]: !v.all[value] };
         return redraw();
       case 'analytics-table':
@@ -245,19 +312,55 @@ export function createAnalyticsController({
         return redraw();
       case 'analytics-refresh': return startFetch('analytics_refresh', {}, true);
       case 'analytics-retry': return startFetch('analytics_retry', { day: value }, true);
-      // Try again: the summary, or everything from the status when that couldn't be read.
-      case 'analytics-reload': return data.status ? loadView() : open();
+      // Try again: App analytics on its tab; the summary, or everything from the status when that
+      // couldn't be read.
+      case 'analytics-reload':
+        if (v.mode === 'app') return loadApp();
+        return data.status ? loadView() : open();
       case 'analytics-report':
         await query('analytics_report', reportRequest(v, now(), zone));
         toast('The CLI report opened in your browser.', 'success');
         return undefined;
       case 'analytics-open-session': return openSession(value);
+      // The session drawer.
+      case 'analytics-close': return closeSession();
+      case 'analytics-session-tab':
+        return drawer(d => { if (SESSION_TABS.some(([id]) => id === value)) d.tab = value; });
+      case 'analytics-step': return drawer(d => { d.selected = value || 'session'; });
+      case 'analytics-step-toggle':
+        return drawer(d => {
+          d.collapsed = new Set(d.collapsed);
+          if (d.collapsed.has(value)) d.collapsed.delete(value);
+          else d.collapsed.add(value);
+        });
+      case 'analytics-copy':
+        if (!value || !writeText) return undefined;
+        try {
+          await writeText(value);
+          toast('Copied.', 'success');
+        } catch {
+          toast('Couldn’t copy. Select the text and copy it instead.', 'error');
+        }
+        return undefined;
+      // App analytics: a feature filters Recent runs (again: all of them), All or Failed, the
+      // terminal sessions in the cost chart.
+      case 'analytics-app-feature':
+        v.appFeature = value && value !== v.appFeature ? value : '';
+        v.appShown = RUNS_PAGE;
+        return redraw();
+      case 'analytics-app-list':
+        v.appList = value === 'failed' ? 'failed' : 'all';
+        v.appShown = RUNS_PAGE;
+        return redraw();
+      case 'analytics-app-terminal':
+        v.appTerm = value === 'on';
+        return redraw();
       default: return undefined;
     }
   }
 
   return {
-    data, open, handle, reload, loadView,
+    data, open, handle, key, reload, loadView,
     viewData: () => ({ ...data, now: now(), zone }),
   };
 }

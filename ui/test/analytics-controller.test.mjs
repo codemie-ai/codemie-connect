@@ -245,7 +245,8 @@ test('tabs, the notice and tables are kept; progress off the page renders nothin
   await ctl.handle('analytics-mode', control('app'));
   await ctl.handle('analytics-table', control('trend'));
   await ctl.handle('analytics-notice', control('hide'));
-  assert.deepEqual(calls.query, [], 'one summary feeds every tab');
+  assert.deepEqual(ops(calls), ['analytics_app'], 'one summary feeds every AI tab; the App tab reads its own');
+  calls.query.length = 0;
   assert.deepEqual(JSON.parse(store.get(PREFS_KEY)), { mode: 'app', view: 'sessions', range: '30d', noticeHidden: true, tables: { depth: true, trend: true } });
   assert.equal(calls.toasts.length, 1);
   await ctl.handle('analytics-notice', control('show'));
