@@ -187,16 +187,26 @@ export function createMeetingsController({
     });
     if (!same || Number.isInteger(line)) Object.assign(view, { tq: '', speaker: '' });
     if (!same) view.peopleAll = null;
+    // A meeting opened from elsewhere shows in the list: its day (or the card) unfolds.
+    const shown = model();
+    const day = shown.days.find(d => d.items.some(x => x.id === id));
+    if (day && view.folded[day.key]) view.folded = Object.fromEntries(Object.entries(view.folded).filter(([k]) => k !== day.key));
+    if (shown.needs.some(x => x.id === id)) view.needsFolded = false;
     await route('meetings');
     focus([`[data-action="meeting-select"][data-id="${quoted(id)}"]`]);
   }
 
-  async function select(id) {
+  /** Makes `id` the open meeting, without the last one's transcript search, speaker, line and
+   *  guest list. */
+  function pick(id) {
     const view = v();
-    if (view.selected !== id) {
-      leave(view.selected);
-      Object.assign(view, { selected: id, tq: '', speaker: '', focusLine: null, peopleAll: null });
-    }
+    if (view.selected === id) return;
+    leave(view.selected);
+    Object.assign(view, { selected: id, tq: '', speaker: '', focusLine: null, peopleAll: null });
+  }
+
+  async function select(id) {
+    pick(id);
     await rerender();
   }
 
@@ -233,8 +243,17 @@ export function createMeetingsController({
     const rows = order();
     if (!rows.length) return false;
     ev.preventDefault?.();
+    const step = ev.key === 'ArrowDown' ? 1 : -1;
     const at = rows.indexOf(view.selected);
-    const next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + (ev.key === 'ArrowDown' ? 1 : -1)))];
+    let next = rows[at < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, at + step))];
+    if (at < 0) {
+      // The open meeting sits in a folded day (or the folded card): go on from there.
+      const all = listOrder(model(), { ...view, folded: {}, needsFolded: false });
+      const from = all.indexOf(view.selected);
+      const shown = new Set(rows);
+      const ahead = from < 0 ? [] : step > 0 ? all.slice(from + 1) : all.slice(0, from).reverse();
+      next = ahead.find(id => shown.has(id)) || (from < 0 ? rows[0] : step > 0 ? rows.at(-1) : rows[0]);
+    }
     if (next !== view.selected) await select(next);
     focus([`[data-action="meeting-select"][data-id="${quoted(next)}"]`]);
     return true;
@@ -255,8 +274,7 @@ export function createMeetingsController({
     if (view.showHidden || !gone(view.selected)) return;
     const at = before.indexOf(view.selected);
     const next = before.slice(at + 1).find(id => !gone(id)) || before.slice(0, Math.max(0, at)).reverse().find(id => !gone(id)) || null;
-    leave(view.selected);
-    view.selected = next;
+    pick(next);
   }
 
   /** Hides a meeting, or every meeting of its series, from the list; Undo puts it back. */
@@ -272,9 +290,11 @@ export function createMeetingsController({
     await rerender();
     toast(series ? `Every “${m.title}” is hidden` : `Hidden from the list: “${m.title}”`, 'info', {
       label: 'Undo',
+      // Takes back this hide only: meetings hidden since stay hidden.
       run: async () => {
-        saveHidden(prev);
-        v().selected = id;
+        const now = v().hidden;
+        saveHidden(series ? { ...now, series: now.series.filter(x => x !== key) } : { ...now, ids: now.ids.filter(x => x !== id) });
+        pick(id);
         await rerender();
       },
     });
@@ -628,7 +648,8 @@ export function createMeetingsController({
   async function handle(action, el, { alt = false } = {}) {
     const id = el.dataset?.id || v().selected;
     const docId = el.dataset?.doc;
-    el.closest?.('details')?.removeAttribute('open');
+    // A step taken in a menu closes it; "+n more" grows the people list in place.
+    if (action !== 'meeting-people-all') el.closest?.('details')?.removeAttribute('open');
     const view = v();
     // Any step taken closes the row's right-click menu.
     view.rowMenu = null;

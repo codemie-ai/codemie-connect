@@ -475,3 +475,64 @@ test('"Who is this?" scrolls the speaker list into view', async () => {
   await ctl.handle('meeting-name-speaker', control({ voice: '@1' }));
   assert.deepEqual(calls.focusOpts, { scroll: true });
 });
+
+// ---------------------------------------------------------------- polish after the review
+
+test('hiding the open meeting clears its transcript filters for the next one, and Undo too', async () => {
+  const filters = { tq: 'pilot', speaker: 'sam@example.test', focusLine: 3, peopleAll: 'mtg-release' };
+  const { ctl, state, calls } = harness({ view: { selected: 'mtg-release', ...filters } });
+  await ctl.handle('meeting-hide', control({ id: 'mtg-release' }));
+  assert.notEqual(state.meetings.selected, 'mtg-release');
+  assert.deepEqual([state.meetings.tq, state.meetings.speaker, state.meetings.focusLine, state.meetings.peopleAll], ['', '', null, null]);
+  Object.assign(state.meetings, filters);
+  await calls.toasts.at(-1).action.run();
+  assert.equal(state.meetings.selected, 'mtg-release');
+  assert.deepEqual([state.meetings.tq, state.meetings.speaker, state.meetings.focusLine, state.meetings.peopleAll], ['', '', null, null]);
+});
+
+test('Undo on an earlier hide keeps the later ones', async () => {
+  const s = withSeries(snapshot(), ['mtg-roadmap', 'mtg-critique']);
+  const { ctl, state, calls } = harness({ s, view: { selected: 'mtg-philips' } });
+  await ctl.handle('meeting-hide', control({ id: 'mtg-vendor' }));
+  const undoVendor = calls.toasts.at(-1).action;
+  await ctl.handle('meeting-hide-series', control({ id: 'mtg-roadmap' }));
+  const undoSeries = calls.toasts.at(-1).action;
+  await ctl.handle('meeting-hide', control({ id: 'mtg-northwind' }));
+  await undoVendor.run();
+  assert.deepEqual(state.meetings.hidden, { ids: ['mtg-northwind'], series: ['series-review'] });
+  await undoSeries.run();
+  assert.deepEqual(state.meetings.hidden, { ids: ['mtg-northwind'], series: [] });
+  assert.deepEqual(lastPref(calls), { ids: ['mtg-northwind'], series: [] });
+});
+
+test('↑/↓ from a meeting inside a folded day goes on from where it sits', async () => {
+  const { ctl, state, s } = harness({ view: { selected: null } });
+  const model = listModel(s, state.meetings, { now: NOW, zone: 'UTC' });
+  const [first, second] = model.days;
+  state.meetings.selected = first.items[0].id;
+  state.meetings.folded = { [first.key]: true };
+  await ctl.key({ key: 'ArrowDown', target: { closest: () => null } });
+  assert.equal(state.meetings.selected, second.items[0].id, 'the next row after the folded day');
+  state.meetings.selected = first.items[0].id;
+  await ctl.key({ key: 'ArrowUp', target: { closest: () => null } });
+  assert.equal(state.meetings.selected, model.needs.at(-1).id, 'the row above the folded day');
+});
+
+test('opening a meeting unfolds the day or the card that holds it', async () => {
+  const { ctl, state, s } = harness({ view: { selected: 'mtg-roadmap' } });
+  const day = listModel(s, state.meetings, { now: NOW, zone: 'UTC' }).days.find(d => d.items.some(m => m.id === 'mtg-philips')).key;
+  state.meetings.folded = { [day]: true, other: true };
+  await ctl.open('mtg-philips');
+  assert.deepEqual(state.meetings.folded, { other: true });
+  state.meetings.needsFolded = true;
+  await ctl.open('mtg-critique');
+  assert.equal(state.meetings.needsFolded, false);
+});
+
+test('"+n more" keeps the people list open', async () => {
+  const { ctl, state } = harness({ view: { selected: 'mtg-philips' } });
+  let closed = false;
+  await ctl.handle('meeting-people-all', control({ id: 'mtg-philips' }, { closest: () => ({ removeAttribute: () => { closed = true; } }) }));
+  assert.equal(state.meetings.peopleAll, 'mtg-philips');
+  assert.equal(closed, false);
+});
