@@ -422,6 +422,8 @@ export function attachDock(doc, {
   async function resetPair(page, i) {
     const def = defs[page];
     if (!def) return;
+    // Locked, the widths stay, as for ←/→ on the divider.
+    if (locked()) return nudge();
     const cur = layouts.get(page);
     const base = synced(cur, dockOf(page));
     const A = base.panes[i];

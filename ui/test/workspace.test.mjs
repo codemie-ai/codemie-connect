@@ -14,7 +14,7 @@ import { snoozeUntil, filteredMessages, inbox, inboxSections, INBOX_DOCK } from 
 import { today, todayModel, WIDGETS } from '../workspace/view-today.js';
 import { PRESETS } from '../workspace/today-grid.js';
 import { calendar, periodTitle, eventDetails, eventActions, CALENDAR_DOCK } from '../workspace/view-calendar.js';
-import { normalizeDock, swapPanes } from '../workspace/dock-model.js';
+import { normalizeDock, resizePair, swapPanes } from '../workspace/dock-model.js';
 import { attachDock } from '../workspace/dock-controller.js';
 import { settings, jobLabel } from '../workspace/view-settings.js';
 import { renderShell, NAV } from '../workspace/shell.js';
@@ -624,6 +624,35 @@ test('the section menu moves a section, resets the page with Undo and keeps one 
   assert.equal(toasts.at(-1).message, 'Inbox is back to its original layout');
   await toasts.at(-1).action.run();
   assert.deepEqual(saved.inbox.panes.map(p => [p.tabs[0], p.collapsed]), [['inbox-reader', true], ['inbox-list', false]], 'Undo brings the layout back');
+});
+
+test('locked: a double-click on a divider keeps the widths and says the layouts are locked', async () => {
+  const saved = {};
+  const on = {};
+  const nudged = [];
+  let locked = true;
+  attachDock({ addEventListener: (type, fn) => { on[type] = fn; } }, {
+    defs: { inbox: INBOX_DOCK },
+    layouts: { get: page => saved[page] || normalizeDock(INBOX_DOCK, null), set: (page, layout) => { saved[page] = layout; } },
+    render: async () => {},
+    locked: () => locked,
+    nudge: () => { nudged.push('Layouts are locked'); },
+  });
+  // Messages pulled 200 px wider than its default.
+  saved.inbox = resizePair(normalizeDock(INBOX_DOCK, null), INBOX_DOCK, 0, 420, 720, 200);
+  const split = { dataset: { page: 'inbox', split: '0' } };
+  const dblclick = async () => {
+    on.dblclick({ target: { closest: sel => (sel === '.ws-dock > .ws-split' ? split : null) } });
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  await dblclick();
+  assert.deepEqual(saved.inbox.panes.map(p => p.w), [620, 520], 'the widths are kept');
+  assert.equal(nudged.length, 1, 'the lock says so, with Unlock');
+  // Unlocked, the same double-click gives both sections their default widths.
+  locked = false;
+  await dblclick();
+  assert.deepEqual(saved.inbox.panes.map(p => p.w), [420, 720]);
+  assert.equal(nudged.length, 1);
 });
 
 test('old_ai_pin_controls_are_gone', async () => {

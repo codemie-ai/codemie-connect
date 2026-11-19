@@ -737,7 +737,7 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-pane{position:relative;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;border:1px solid var(--ws-border);border-radius:12px;background:var(--ws-card);overflow:hidden}
 .ws-pane-collapsed{flex:0 0 42px!important;min-width:42px!important}
 .ws-pane-collapsed>:not(.ws-pane-rail){display:none}
-.ws-pane-strip{display:flex;align-items:stretch;gap:2px;flex-shrink:0;height:42px;box-sizing:border-box;padding:0 4px 0 6px;border-bottom:1px solid var(--ws-border);background:var(--ws-card-2)}
+.ws-pane-strip{position:relative;display:flex;align-items:stretch;gap:2px;flex-shrink:0;height:42px;box-sizing:border-box;padding:0 4px 0 6px;border-bottom:1px solid var(--ws-border);background:var(--ws-card-2)}
 .ws-pane-tabs{display:flex;align-items:stretch;gap:2px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none}
 .ws-pane-tabs::-webkit-scrollbar{display:none}
 .ws-dock-tab{position:relative;display:inline-flex;align-items:center;gap:7px;flex-shrink:0;padding:0 10px 0 8px;border:0;border-radius:8px 8px 0 0;background:none;color:var(--ws-muted);font-size:13px;font-weight:500;white-space:nowrap;cursor:grab;touch-action:none}
@@ -755,8 +755,12 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-pane-tools{display:flex;align-items:center;gap:2px;flex-shrink:0}
 .ws-pane-tools .ws-btn{color:var(--ws-muted)}
 .ws-pane-tools .ws-btn:hover{color:var(--ws-text)}
-.ws-dock-menu .ws-menu-panel{min-width:240px;z-index:35}
-.ws-dock-menu .ws-menu-item{width:100%;white-space:nowrap}
+/* The section clips what sticks out, so its ⋯ menu hangs from the strip (6 px under the button)
+   and is never wider than the section: in a narrow one the labels wrap instead. */
+.ws-dock-menu{position:static}
+.ws-dock-menu .ws-menu-panel{top:calc(100% - 2px);right:4px;box-sizing:border-box;min-width:min(240px,calc(100% - 8px));max-width:calc(100% - 8px);grid-template-columns:minmax(0,1fr);z-index:35}
+.ws-dock-menu .ws-menu-item{width:100%;height:auto;min-height:32px;box-sizing:border-box;padding-block:7px}
+.ws-dock-menu .ws-menu-panel .ws-menu-item>span{white-space:normal}
 .ws-dock-menu .ws-menu-item:disabled{opacity:.42;cursor:default;pointer-events:none}
 .ws-dock-menu .ws-menu-item[hidden],.ws-dock-zone[hidden],.ws-dock-bar[hidden]{display:none}
 .ws-pane-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto}

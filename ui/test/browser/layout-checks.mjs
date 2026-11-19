@@ -516,10 +516,29 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForSelector('.ws-toast:has-text("Meetings is back to its original layout")');
       row = await panes();
       assert(row.length === 2 && !row[0].collapsed && row[0].tabs.join() === 'mtg-list' && row[1].tabs.length === 5, `after Reset ${JSON.stringify(row)}`);
-      // Calendar: ← on a focused divider moves it, not the week.
+      // Calendar at 1000 px: the Calendars section is at its 220 px minimum, and its ⋯ menu stays
+      // inside it (the section clips what sticks out).
       await page.click('.ws-nav button[data-route=calendar]');
       const calSplit = '.ws-dock[data-page="calendar"] > .ws-split[data-split="0"]';
       await page.waitForSelector(calSplit);
+      await page.setViewportSize({ width: 1000, height: 900 });
+      const sideMenu = '.ws-dock[data-page="calendar"] > .ws-pane:has(.ws-dock-tab[data-tab="cal-side"]) .ws-dock-menu';
+      await page.click(`${sideMenu} > summary`);
+      await page.waitForSelector(`${sideMenu}[open] .ws-menu-panel`);
+      const fit = await page.evaluate(sel => {
+        const menu = document.querySelector(`${sel} .ws-menu-panel`).getBoundingClientRect();
+        const pane = document.querySelector(sel).closest('.ws-pane').getBoundingClientRect();
+        const shown = [...document.querySelectorAll(`${sel} .ws-menu-item:not([hidden])`)];
+        const items = shown.map(el => el.getBoundingClientRect());
+        // A label too long for the section wraps; none is cut.
+        const cut = shown.map(el => el.querySelector('span')).filter(s => s.scrollWidth > s.clientWidth + 1 || s.scrollHeight > s.clientHeight + 1).map(s => s.textContent);
+        return { pane: [Math.round(pane.left), Math.round(pane.right)], menu: [Math.round(menu.left), Math.round(menu.right)], cut, inside: menu.left >= pane.left && menu.right <= pane.right && items.every(r => r.left >= menu.left && r.right <= menu.right) };
+      }, sideMenu);
+      assert(fit.pane[1] - fit.pane[0] <= 222 && fit.inside && !fit.cut.length, `the Calendars menu at 1000 px: ${JSON.stringify(fit)}`);
+      await shot(page, 'layout-e7-calendar-menu-1000');
+      await page.click(`${sideMenu} > summary`);
+      await page.waitForSelector(`${sideMenu}:not([open])`);
+      await page.setViewportSize({ width: 1440, height: 900 });
       const week = await page.locator('.ws-cal-title').innerText();
       const value = Number(await page.getAttribute(calSplit, 'aria-valuenow'));
       await page.focus(calSplit);
