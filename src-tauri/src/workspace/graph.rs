@@ -1663,7 +1663,27 @@ pub fn open_url(url: &str) -> Result<()> {
             "Only secure provider links can be opened.",
         ));
     }
+    // A Teams link goes to the Teams app first; when nothing owns `msteams:` (Teams is not
+    // installed), `open` fails and the link goes to the browser as before. Windows keeps the
+    // browser: `rundll32` reports success even when no app owns the scheme, so the fallback
+    // would never run.
+    if !cfg!(windows) {
+        if let Some(app) = teams_app_link(&parsed) {
+            if launch_url(&app).is_ok() {
+                return Ok(());
+            }
+        }
+    }
     launch_url(url)
+}
+
+/// `https://teams.microsoft.com/l/…` (a meeting's join link, a chat message's link) as the
+/// `msteams:/l/…` address the Teams app opens directly; `None` for any other link.
+fn teams_app_link(link: &Url) -> Option<String> {
+    (link.host_str() == Some("teams.microsoft.com")
+        && link.port().is_none()
+        && link.path().starts_with("/l/"))
+    .then(|| format!("msteams:{}", &link[url::Position::BeforePath..]))
 }
 
 /// Opens an address with the system's handler (the browser, or the app that owns its scheme).
