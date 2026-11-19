@@ -1,19 +1,49 @@
 // The Meetings controller with its store, dialogs and navigation faked: opening a meeting from
-// anywhere, the Make notes dialog, Side by side and editing a document against its version.
+// anywhere, the Make notes dialog, Side by side, editing a document against its version, and the
+// page's sections (the list's section, the meeting's tabs side by side, the header above them).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMeetingsController } from '../workspace/meetings-controller.js';
 import { meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
+import { meetings, MEETINGS_DOCK } from '../workspace/view-meetings.js';
+import { activateTab, loadDock, moveTab, normalizeDock, paneOf, saveDock, setCollapsed, visibleTabs } from '../workspace/dock-model.js';
+import { WIDGETS } from '../workspace/view-today.js';
 import { newTasksView } from '../workspace/tasks-model.js';
-import { buildSnapshot, withMeetings, meetingContract } from './fixtures/workspace-fixture.mjs';
+import { buildSnapshot, withMeetings, meetingContract, meetingFolders } from './fixtures/workspace-fixture.mjs';
 
 const NOW = Date.UTC(2026, 10, 18, 15, 20);
 const snapshot = () => withMeetings(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), NOW);
 
+/** The page's sections as app.js keeps them, over `layout`: `collapse` and `show` change it the
+ *  way the section controller and the hash do; `calls` lists what was collapsed or expanded. */
+function fakeDock(layout = normalizeDock(MEETINGS_DOCK, null)) {
+  const calls = [];
+  const dock = {
+    layout: () => layout,
+    collapse: async (id, on) => {
+      calls.push([id, on]);
+      layout = setCollapsed(layout, MEETINGS_DOCK, id, on).layout;
+      return true;
+    },
+    visible: () => visibleTabs(layout),
+    show: id => { layout = setCollapsed(activateTab(layout, id), MEETINGS_DOCK, id, false).layout; },
+  };
+  return { dock, calls, get layout() { return layout; } };
+}
+/** What the controller has read for a meeting: its transcript and documents, as native answers. */
+const FOLDERS = meetingFolders(NOW);
+const reads = id => ({ transcript: FOLDERS[id] ? { segments: FOLDERS[id].segments } : undefined, docs: Object.fromEntries(Object.entries(FOLDERS[id]?.docs || {}).map(([doc, text]) => [doc, { text }])) });
+/** The Meetings page drawn with `layout` as its sections. */
+const page = (s, view, layout) => meetings(s, { state: { meetings: { ...newMeetingsView(), ...view }, tasks: newTasksView() }, now: NOW, banners: '', reads, dock: { layouts: { meetings: layout }, locked: false } });
+/** One section of a drawn page, from its tag to the next divider. */
+const sectionOf = (html, id) => html.match(new RegExp(`<section class="ws-pane[^"]*" data-pane="${id}"[^]*?(?=<div class="ws-split"|$)`))?.[0] || '';
+/** Transcript dragged out of the meeting's section, onto `side` of it. */
+const transcriptApart = side => moveTab(normalizeDock(MEETINGS_DOCK, null), MEETINGS_DOCK, 'mtg-transcript', { type: 'split', pane: 'p2', side }).layout;
+
 /** A controller over fakes; `answers` maps an op to what it returns (a function of the data, a
  *  value, or an error to throw). */
-function harness({ answers = {}, s = snapshot(), view = {} } = {}) {
-  const calls = { mutate: [], query: [], render: 0, toasts: [], modals: [], routes: [], focus: [], copied: [], saved: [], prefs: [] };
+function harness({ answers = {}, s = snapshot(), view = {}, dock } = {}) {
+  const calls = { mutate: [], query: [], render: 0, toasts: [], modals: [], routes: [], focus: [], copied: [], saved: [] };
   const state = { route: 'meetings', meetings: { ...newMeetingsView(), ...view }, tasks: newTasksView() };
   const answer = (op, data) => {
     const a = answers[op];
@@ -33,8 +63,8 @@ function harness({ answers = {}, s = snapshot(), view = {} } = {}) {
     writeText: async text => { calls.copied.push(text); },
     downloadText: (name, text) => calls.saved.push([name, text]),
     focus: selector => calls.focus.push(selector),
-    setPref: (key, value) => calls.prefs.push([key, value]),
     now: () => NOW,
+    ...(dock ? { dock } : {}),
   });
   const record = id => s.records.find(r => r.kind === 'meeting' && r.id === id);
   return { ctl, state, calls, s, record };
@@ -99,21 +129,130 @@ test('make notes dialog preselects a template without a document when the meetin
   assert.deepEqual(calls.mutate.at(-1), ['meeting_notes', { meetingId: 'mtg-roadmap', templateId: 'short-summary', wishes: '', findTasks: false, remember: true }]);
 });
 
-test('side by side hides the list and turning it off restores it', async () => {
-  const { ctl, state, calls } = harness({ view: { selected: 'mtg-philips', tab: 'notes', wide: false } });
-  await ctl.handle('meeting-compare', control({ v: '1' }));
-  assert.deepEqual([state.meetings.compare, state.meetings.wide], [true, true]);
-  await ctl.handle('meeting-compare', control({ v: '0' }));
-  assert.deepEqual([state.meetings.compare, state.meetings.wide], [false, false]);
-  // A list hidden before stays hidden.
-  state.meetings.wide = true;
-  await ctl.handle('meeting-compare', control({ v: '1' }));
-  await ctl.handle('meeting-compare', control({ v: '0' }));
-  assert.deepEqual([state.meetings.compare, state.meetings.wide], [false, true]);
-  // The list toggle is remembered.
+test('the meeting header shows once, above the first section holding a meeting tab', () => {
+  // The spec's ids, minimum and default widths, and the pin to Today.
+  assert.deepEqual(MEETINGS_DOCK.initial, [['mtg-list'], ['mtg-notes', 'mtg-transcript', 'mtg-tasks', 'mtg-files', 'mtg-people']]);
+  assert.deepEqual(Object.entries(MEETINGS_DOCK.tabs).map(([id, t]) => [id, t.title, t.min, t.w, t.pin]), [
+    ['mtg-list', 'Meetings', 260, 340, 'meetings'], ['mtg-notes', 'Notes', 340, 760, undefined], ['mtg-transcript', 'Transcript', 320, 520, undefined],
+    ['mtg-tasks', 'Tasks', 300, 420, undefined], ['mtg-files', 'Files', 300, 420, undefined], ['mtg-people', 'People', 260, 320, undefined],
+  ]);
+  assert.equal(MEETINGS_DOCK.tabs['mtg-list'].pinTitle, WIDGETS.meetings.title);
+  const s = snapshot();
+  // Transcript dragged to the left of Notes: Meetings | Transcript | Notes, Tasks, Files, People.
+  const split = transcriptApart('left');
+  const [list, transcript, notes] = split.panes;
+  assert.deepEqual(split.panes.map(p => p.active), ['mtg-list', 'mtg-transcript', 'mtg-notes']);
+  const html = page(s, { selected: 'mtg-philips', tab: 'notes' }, split);
+  assert.equal((html.match(/<header class="ws-mtg-head">/g) || []).length, 1, 'one header');
+  assert.match(sectionOf(html, transcript.id), /<header class="ws-mtg-head">[^]*<h2>Philips CodeMie conversations syncup<\/h2>[^]*class="ws-mtg-strip[^]*<div class="ws-pane-strip">/, 'above the Transcript section’s tabs');
+  assert.doesNotMatch(sectionOf(html, notes.id), /ws-mtg-head/);
+  assert.doesNotMatch(sectionOf(html, list.id), /ws-mtg-head/);
+  // Both tabs in view are drawn, each in its section.
+  assert.match(sectionOf(html, transcript.id), /data-panel="transcript"[^]*id="meeting-line-3"/);
+  assert.match(sectionOf(html, notes.id), /data-panel="notes"[^]*<article class="ws-md">/);
+  // That section collapsed: the header moves to the next one holding a meeting tab.
+  const folded = page(s, { selected: 'mtg-philips' }, setCollapsed(split, MEETINGS_DOCK, transcript.id, true).layout);
+  assert.equal((folded.match(/<header class="ws-mtg-head">/g) || []).length, 1);
+  assert.match(sectionOf(folded, notes.id), /<header class="ws-mtg-head">[^]*<div class="ws-pane-strip">/);
+});
+
+test('the list toggle collapses and expands the meeting list section', async () => {
+  const d = fakeDock();
+  const { ctl, s } = harness({ dock: d.dock, view: { selected: 'mtg-philips' } });
+  const toggle = html => html.match(/<button [^>]*data-action="meeting-list-toggle"[^>]*>/)?.[0] || '';
+  assert.match(toggle(page(s, { selected: 'mtg-philips' }, d.layout)), /title="Hide the meeting list — more room for notes" aria-label="[^"]*" aria-pressed="true"/);
   await ctl.handle('meeting-list-toggle', control());
-  assert.equal(state.meetings.wide, false);
-  assert.deepEqual(calls.prefs.at(-1), ['codemie.meetings.wide', 'false']);
+  assert.deepEqual(d.calls, [['mtg-list', true]]);
+  assert.equal(paneOf(d.layout, 'mtg-list').collapsed, true);
+  assert.match(toggle(page(s, { selected: 'mtg-philips' }, d.layout)), /title="Show the meeting list" aria-label="[^"]*" aria-pressed="false"/);
+  await ctl.handle('meeting-list-toggle', control());
+  assert.deepEqual(d.calls.at(-1), ['mtg-list', false]);
+  assert.equal(paneOf(d.layout, 'mtg-list').collapsed, false);
+});
+
+test('compare mode collapses the list and gives it back afterwards', async () => {
+  const d = fakeDock();
+  const { ctl, state, calls } = harness({ dock: d.dock, view: { selected: 'mtg-philips', tab: 'notes' } });
+  const listCollapsed = () => paneOf(d.layout, 'mtg-list').collapsed;
+  await ctl.handle('meeting-compare', control({ v: '1' }));
+  assert.deepEqual([state.meetings.compare, listCollapsed()], [true, true]);
+  await ctl.handle('meeting-compare', control({ v: '0' }));
+  assert.deepEqual([state.meetings.compare, listCollapsed()], [false, false]);
+  // A list collapsed before stays collapsed.
+  await d.dock.collapse('mtg-list', true);
+  await ctl.handle('meeting-compare', control({ v: '1' }));
+  await ctl.handle('meeting-compare', control({ v: '0' }));
+  assert.deepEqual([state.meetings.compare, listCollapsed()], [false, true]);
+  // Showing the list ends Side by side.
+  await ctl.handle('meeting-compare', control({ v: '1' }));
+  await ctl.handle('meeting-list-toggle', control());
+  assert.deepEqual([state.meetings.compare, listCollapsed()], [false, false]);
+  // Picking one document ends it too, and the list comes back.
+  await ctl.handle('meeting-compare', control({ v: '1' }));
+  await ctl.handle('doc-view', control({ id: 'mtg-philips', doc: 'short-summary' }));
+  assert.deepEqual([state.meetings.compare, listCollapsed()], [false, false]);
+  // The list sharing the Notes section: Side by side leaves that section open.
+  const shared = fakeDock(moveTab(normalizeDock(MEETINGS_DOCK, null), MEETINGS_DOCK, 'mtg-list', { type: 'merge', pane: 'p2' }).layout);
+  const h = harness({ dock: shared.dock, view: { selected: 'mtg-philips', tab: 'notes' } });
+  await h.ctl.handle('meeting-compare', control({ v: '1' }));
+  await h.ctl.handle('meeting-compare', control({ v: '0' }));
+  assert.deepEqual(shared.calls, []);
+  assert.deepEqual(calls.toasts.concat(h.calls.toasts), []);
+});
+
+test('with Notes and Transcript side by side both load', async () => {
+  const d = fakeDock(transcriptApart('right'));
+  const answers = { meeting_read: data => (data.part === 'transcript' ? { segments: [] } : data.part === 'files' ? { files: [] } : { text: '# Notes' }), meeting_text: { text: '' } };
+  // Transcript was chosen last; Notes is in view too.
+  const { ctl, calls } = harness({ dock: d.dock, answers, view: { selected: 'mtg-philips', tab: 'transcript' } });
+  await ctl.load();
+  const reads = () => calls.query.filter(([op]) => op === 'meeting_read').map(([, x]) => (x.docId ? `${x.part}:${x.docId}` : x.part));
+  assert.deepEqual(reads().sort(), ['doc:meeting-notes', 'transcript']);
+  assert.ok(calls.query.some(([op]) => op === 'meeting_text'), 'the glossary, for the transcript');
+  assert.ok(calls.render > 0, 'drawn once read');
+  // Files brought into view beside them: read too.
+  d.dock.show('mtg-files');
+  await ctl.load();
+  assert.deepEqual(reads().sort(), ['doc:meeting-notes', 'files', 'transcript']);
+});
+
+test('opening #/meetings/<id>/transcript activates Transcript in the section that holds it', async () => {
+  // Transcript in a section of its own, collapsed to a rail.
+  const apart = transcriptApart('right');
+  const d = fakeDock(setCollapsed(apart, MEETINGS_DOCK, 'mtg-transcript', true).layout);
+  const { ctl, state, calls } = harness({ dock: d.dock });
+  assert.ok(!d.dock.visible().includes('mtg-transcript'));
+  await ctl.open('mtg-philips', 'transcript');
+  assert.deepEqual([state.meetings.selected, state.meetings.tab, calls.routes.at(-1)], ['mtg-philips', 'transcript', ['meetings']]);
+  assert.deepEqual(visibleTabs(d.layout), ['mtg-list', 'mtg-notes', 'mtg-transcript'], 'its section is open again');
+  // In the designed layout it becomes the tab shown in the meeting's section.
+  const plain = fakeDock();
+  const h = harness({ dock: plain.dock });
+  await h.ctl.open('mtg-philips', 'transcript');
+  assert.equal(paneOf(plain.layout, 'mtg-transcript').active, 'mtg-transcript');
+  // A person's chip or Review does the same with its tab.
+  await h.ctl.handle('meeting-tab', control({ tab: 'people' }));
+  assert.deepEqual([h.state.meetings.tab, paneOf(plain.layout, 'mtg-people').active], ['people', 'mtg-people']);
+  assert.match(h.calls.focus.at(-1), /data-action="dock-tab"\]\[data-page="meetings"\]\[data-tab="mtg-people"\]/);
+  // A tab brought into view in the sections is the one the hash names; one gone from view is not.
+  plain.dock.show('mtg-tasks');
+  h.ctl.follow(['mtg-tasks']);
+  assert.equal(h.state.meetings.tab, 'tasks');
+  plain.dock.show('mtg-files');
+  h.ctl.follow();
+  assert.equal(h.state.meetings.tab, 'files', 'Tasks is no longer in view');
+});
+
+test('the old wide preference collapses the list once', () => {
+  const kept = new Map([['codemie.meetings.wide', 'true']]);
+  const storage = { getItem: key => (kept.has(key) ? kept.get(key) : null), setItem: (key, value) => kept.set(key, value) };
+  // What app.js reads from codemie.meetings.wide = "true" when nothing is stored yet.
+  const legacy = { collapse: ['mtg-list'] };
+  const first = loadDock(storage, 'meetings', MEETINGS_DOCK, legacy);
+  assert.equal(paneOf(first, 'mtg-list').collapsed, true);
+  // Expanded and kept: the old preference no longer applies.
+  saveDock(storage, 'meetings', setCollapsed(first, MEETINGS_DOCK, 'mtg-list', false).layout);
+  assert.equal(paneOf(loadDock(storage, 'meetings', MEETINGS_DOCK, legacy), 'mtg-list').collapsed, false);
 });
 
 test('doc edit saves with the version it was opened on', async () => {

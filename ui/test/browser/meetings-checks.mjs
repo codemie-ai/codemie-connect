@@ -40,7 +40,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
   };
   const toMeetings = async page => {
     await page.click('.ws-nav button[data-route=meetings]');
-    await page.waitForSelector('.ws-mtg-layout');
+    await page.waitForSelector('.ws-dock[data-page="meetings"]');
   };
 
   for (const theme of ['dark', 'light']) {
@@ -50,7 +50,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
       await page.evaluate(() => { navigator.clipboard.writeText = async text => { window.__copied = text; }; });
 
       await check(`${tag}: meetings list and the Philips sync: two documents, side by side, make main`, async () => {
-        await page.waitForSelector('.ws-mtg-layout');
+        await page.waitForSelector('.ws-dock[data-page="meetings"]');
         assert(await page.locator('.ws-nav button[data-route=meetings][aria-current=page]').count() === 1, 'Meetings is current');
         assert((await page.locator('.ws-nav button[data-route=meetings] .ws-count').innerText()) === '5', 'five meetings wait in the sidebar');
         assert(/^#\/meetings\/[^/]+\/notes$/.test(await hash(page)), `the first meeting is selected: ${await hash(page)}`);
@@ -69,15 +69,15 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         assert(await page.evaluate(() => window.__xss) === undefined, 'notes are escaped');
         await noOverflow(page, 'meeting notes');
         await shot(page, `${tag}-meetings-notes`);
-        // Side by side hides the list; One brings it back.
+        // Side by side collapses the list's section; One brings it back.
         await page.click('[data-action="meeting-compare"][data-v="1"]');
         await page.waitForSelector('.ws-mtg-compare .ws-mtg-doc:nth-child(2) .ws-md');
-        assert(await page.locator('.ws-mtg-layout.ws-mtg-wide').count() === 1, 'the list is hidden');
+        assert(await page.locator('[data-action="meeting-list-toggle"][aria-pressed="false"]').count() === 1, 'the list is collapsed');
         assert(!(await page.locator('.ws-mtg-list').isVisible()), 'the list is out of sight');
         await noOverflow(page, 'side by side');
         await shot(page, `${tag}-meetings-side-by-side`);
         await page.click('[data-action="meeting-compare"][data-v="0"]');
-        await page.waitForSelector('.ws-mtg-layout:not(.ws-mtg-wide)');
+        await page.waitForSelector('.ws-mtg-list');
         // Short summary becomes the main notes.
         await page.click('[data-action="doc-view"][data-doc="short-summary"]');
         await page.click('.ws-mtg-doc-meta [data-action="doc-main"]');
@@ -103,7 +103,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         const edits = (await calls(page, 'meeting_doc')).filter(x => x.action === 'edit');
         assert(edits.length === 2 && edits[1].baseRev === edits[0].baseRev + 1 && edits[1].baseVersion === edits[0].baseVersion, JSON.stringify(edits.map(x => [x.baseVersion, x.baseRev])));
         await page.waitForSelector('.ws-mtg-doc .ws-md:has-text("My own words.")');
-        await page.click('[data-action="meeting-tab"][data-tab="files"]');
+        await page.click('[data-action="dock-tab"][data-tab="mtg-files"]');
         await page.waitForSelector('.ws-mtg-file:has-text("notes.md") >> text=Short summary — the main notes');
         assert(/#\/meetings\/mtg-philips\/files$/.test(await hash(page)), 'the tab is in the hash');
         await noOverflow(page, 'files');
@@ -192,7 +192,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
       await check(`${tag}: blocked meeting → import a .vtt → name the speaker`, async () => {
         await toMeetings(page);
         await select(page, 'mtg-northwind', 'attention');
-        await page.click('[data-action="meeting-tab"][data-tab="notes"]');
+        await page.click('[data-action="dock-tab"][data-tab="mtg-notes"]');
         await page.waitForSelector('.ws-mtg-explain:has-text("doesn’t share this transcript")');
         await page.click('[data-action="meeting-copy-ask"]');
         assert(/^Hi Hannah, could you send me the transcript of “Northwind partnership call”/.test(await page.evaluate(() => window.__copied)), 'the message to the organizer');
@@ -237,7 +237,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
 
       await check(`${tag}: waiting meeting → Make notes as soon as it arrives → Check now → saved and notes made`, async () => {
         await select(page, 'mtg-sprint');
-        await page.click('[data-action="meeting-tab"][data-tab="notes"]');
+        await page.click('[data-action="dock-tab"][data-tab="mtg-notes"]');
         await page.waitForSelector('.ws-mtg-explain:has-text("still preparing the transcript")');
         await shot(page, `${tag}-meetings-waiting`);
         await page.click('.ws-mtg-explain .ws-switch');
@@ -247,7 +247,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.evaluate(() => { window.__notesPlan = { outcome: 'ok', stepMs: 350 }; });
         await page.click('.ws-mtg-strip [data-action="meeting-check"]');
         await page.waitForSelector(`${row('mtg-sprint')} .ws-tone-success`, { timeout: 12000 });
-        await page.click('[data-action="meeting-tab"][data-tab="notes"]');
+        await page.click('[data-action="dock-tab"][data-tab="mtg-notes"]');
         await page.waitForSelector('.ws-mtg-doctab[data-doc="meeting-notes"] .ws-mtg-doctab-icon');
         assert(await page.locator(`${row('mtg-sprint')}:has-text("Notes ready")`).count() === 1, 'notes ready, nothing else clicked');
         await noOverflow(page, 'notes made');
@@ -380,7 +380,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.click('.ws-task-drawer a[data-action="task-quote"]');
         await page.waitForSelector('#meeting-line-3.ws-mtg-focus');
         // And a time in the notes.
-        await page.click('[data-action="meeting-tab"][data-tab="notes"]');
+        await page.click('[data-action="dock-tab"][data-tab="mtg-notes"]');
         await page.click('[data-action="doc-view"][data-doc="meeting-notes"]');
         await page.waitForSelector('.ws-md [data-action="meeting-goto-line"][data-t="00:02"]');
         await page.click('.ws-md [data-action="meeting-goto-line"][data-t="00:02"]');
@@ -407,4 +407,46 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
       await context.close().catch(() => {});
     }
   }
+
+  // Page sections (spec "Page sections"), once, at 1000 px: the old hidden list, the hash's tab,
+  // Notes beside Transcript, and a row of sections wider than the window keeping its scroll.
+  const { page, context, errors } = await open({ theme: 'dark', width: 1000, height: 760, hash: '#/meetings/mtg-philips/transcript', meetings: true, localPrefs: { 'codemie.meetings.wide': 'true' } });
+  await check('meetings sections: the old hidden list once, the hash’s tab, Notes beside Transcript, the row’s scroll', async () => {
+    await page.waitForSelector('.ws-dock[data-page="meetings"]');
+    // codemie.meetings.wide = "true" with nothing stored: the list's section is a rail.
+    assert(await page.locator('.ws-mtg-list').count() === 0, 'the list is collapsed');
+    assert(await page.locator('[data-action="meeting-list-toggle"][aria-pressed="false"]').count() === 1, 'the toggle says so');
+    // The hash's tab is the one shown.
+    await page.waitForSelector('.ws-dock-tab[data-tab="mtg-transcript"][aria-selected="true"]');
+    await page.waitForSelector('.ws-mtg-detail[data-panel="transcript"] #meeting-line-3');
+    // The toggle opens the list, and that is kept: the old preference doesn't come back.
+    await page.click('[data-action="meeting-list-toggle"]');
+    await page.waitForSelector('.ws-mtg-list');
+    assert(await page.evaluate(() => localStorage.getItem('codemie.meetings.wide')) === 'true', 'the old key is no longer written');
+    await page.reload();
+    await page.waitForSelector('.ws-dock[data-page="meetings"] .ws-mtg-list');
+    // A tab chosen in the sections is the one the hash names.
+    await page.click('.ws-dock-tab[data-tab="mtg-notes"]');
+    await page.waitForFunction(() => location.hash === '#/meetings/mtg-philips/notes');
+    // Notes beside Transcript: both are read and drawn, under one header on the first of them.
+    const menu = '.ws-pane:has(.ws-dock-tab[data-tab="mtg-notes"]) .ws-dock-menu';
+    await page.click(`${menu} > summary`);
+    await page.click(`${menu} [data-action="dock-beside"]`);
+    await page.waitForSelector('.ws-mtg-detail[data-panel="notes"] .ws-md h3');
+    await page.waitForSelector('.ws-mtg-detail[data-panel="transcript"] #meeting-line-3');
+    assert(await page.locator('.ws-mtg-head').count() === 1, 'one header');
+    assert(await page.locator('.ws-pane:has(.ws-dock-tab[data-tab="mtg-transcript"]) .ws-mtg-head').count() === 1, 'above the first section with a meeting tab');
+    await shot(page, 'dark-1000-meetings-sections');
+    // Three sections are wider than the window: the row scrolls sideways and an update (a minute
+    // tick, a tab chosen) keeps its place.
+    const left = await page.evaluate(() => { const row = document.querySelector('.ws-dock[data-page="meetings"]'); row.scrollLeft = row.scrollWidth; return row.scrollLeft; });
+    assert(left > 0, `the row scrolls sideways: ${left}`);
+    await page.evaluate(() => window.__workspace.render());
+    assert(await page.evaluate(() => document.querySelector('.ws-dock[data-page="meetings"]').scrollLeft) === left, 'a render keeps the row’s scroll');
+    await page.locator('.ws-dock-tab[data-tab="mtg-tasks"]').dispatchEvent('click');
+    await page.waitForSelector('.ws-mtg-detail[data-panel="tasks"]');
+    assert(await page.evaluate(() => document.querySelector('.ws-dock[data-page="meetings"]').scrollLeft) === left, 'a tab chosen keeps the row’s scroll');
+    assert(errors.length === 0, errors.join('\n'));
+  });
+  await context.close().catch(() => {});
 }

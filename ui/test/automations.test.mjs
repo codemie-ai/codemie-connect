@@ -4,8 +4,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   automations, automationEditor, draftFromAutomation, editorDraft, toAutomation, fieldForError, runLog, outputText,
-  triggerSummary, newAutomationDraft, duplicateDraft, nextRunLabel, deliveriesSentence, errorTarget, needsSenders, TEMPLATES,
+  triggerSummary, newAutomationDraft, duplicateDraft, nextRunLabel, deliveriesSentence, errorTarget, needsSenders, TEMPLATES, AUTOMATIONS_DOCK,
 } from '../workspace/view-automations.js';
+import { createAutomationsController } from '../workspace/automations-controller.js';
+import { moveTab, normalizeDock, visibleTabs } from '../workspace/dock-model.js';
 import { draftError } from '../workspace/draft-state.js';
 import { today, WIDGETS, WIDGET_IDS } from '../workspace/view-today.js';
 import { inbox } from '../workspace/view-inbox.js';
@@ -52,9 +54,10 @@ test('automations_list_shows_trigger_summary_last_run_and_cost', () => {
   for (const action of ['automation-run', 'automation-edit', 'automation-duplicate', 'automation-delete']) {
     assert.ok(tagWith(html, `data-action="${action}"[^>]*data-id="auto-brief"`), action);
   }
-  assert.match(html, /data-tab="automations"[^>]*aria-selected="true"/);
-  assert.match(html, /data-tab="runs"/);
-  assert.match(html, /data-tab="templates"/);
+  // The list, the Run log and the templates are the tabs of one section.
+  assert.match(html, /data-action="dock-tab" data-page="automations" data-tab="auto-list" aria-selected="true"/);
+  assert.match(html, /data-tab="auto-runs" aria-selected="false"/);
+  assert.match(html, /data-tab="auto-templates" aria-selected="false"/);
 
   // A run in progress replaces the last run and Run now waits.
   s.jobs.push({ id: 'job-a', kind: 'automation_run', state: 'running', workspaceId: 'personal', connectionId: null, dueAt: nowSec, payload: { automationId: 'auto-brief', startedAt: nowSec - 4 }, policy: {} });
@@ -337,6 +340,47 @@ test('run_log_expands_output_sources_and_error', () => {
   const empty = page(buildSnapshot(NOW, { photo: false }), { tab: 'runs', runs: { items: [], next: null } });
   assert.match(empty, /No runs yet/);
   assert.match(page(s, { tab: 'runs', runs: { items: runs, next: null, filter: 'auto-brief' } }), /name="auto-runs-filter"[\s\S]*<option value="auto-brief" selected>/);
+});
+
+test('the Run log loads when it sits beside Automations', async () => {
+  // The spec's ids, minimum and default widths, and the pin to Today.
+  assert.deepEqual(AUTOMATIONS_DOCK.initial, [['auto-list', 'auto-runs', 'auto-templates']]);
+  assert.deepEqual(Object.entries(AUTOMATIONS_DOCK.tabs).map(([id, t]) => [id, t.title, t.min, t.w, t.pin]), [
+    ['auto-list', 'Automations', 420, 900, 'automations'], ['auto-runs', 'Run log', 380, 600, undefined], ['auto-templates', 'Templates', 380, 600, undefined],
+  ]);
+  assert.equal(AUTOMATIONS_DOCK.tabs['auto-list'].pinTitle, WIDGETS.automations.title);
+  // Run log dragged to the right of the list: both are drawn, under the page's heading.
+  const s = snapshot();
+  const { runsPage } = automationContract();
+  const beside = moveTab(normalizeDock(AUTOMATIONS_DOCK, null), AUTOMATIONS_DOCK, 'auto-runs', { type: 'split', pane: 'p1', side: 'right' }).layout;
+  assert.deepEqual(visibleTabs(beside), ['auto-list', 'auto-runs']);
+  const ui = { tab: 'automations', runs: { items: runsPage.first.runs, next: null } };
+  const html = automations(s, { state: { ai: AI, automations: ui }, banners: '', dock: { layouts: { automations: beside }, locked: false } });
+  assert.match(html, /^<div class="ws-automations">\s*<header class="ws-page-heading">[^]*<h1>Automations<\/h1>[^]*<\/header>\s*<div class="ws-dock" data-page="automations">/);
+  const [listAt, runsAt] = [html.indexOf('class="ws-card ws-auto-list"'), html.indexOf('name="auto-runs-filter"')];
+  assert.ok(listAt > 0 && listAt < runsAt, 'the list, then the Run log');
+  assert.match(html, /class="ws-dock-tab" role="tab" id="dock-automations-tab-auto-runs" data-action="dock-tab" data-page="automations" data-tab="auto-runs" aria-selected="true"/);
+  // The controller reads the Run log because it is in view, though Automations was chosen last.
+  let layout = normalizeDock(AUTOMATIONS_DOCK, null);
+  const state = { route: 'automations', ai: AI, automations: { tab: 'automations', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } } };
+  const queries = [];
+  const ctl = createAutomationsController({
+    state, store: { query: async (op, data) => { queries.push([op, data]); return runsPage.first; } }, snap: () => s,
+    mutate: async () => ({}), route: async () => {}, render: async () => {}, openModal: () => null, confirmModal: () => {}, toast: () => {},
+    ensureClaudeChoice: async () => null, writeText: async () => {},
+    dock: { visible: () => visibleTabs(layout) },
+  });
+  assert.equal(ctl.runLogOpen(), false, 'hidden behind the list');
+  layout = beside;
+  assert.equal(ctl.runLogOpen(), true);
+  await ctl.follow(['auto-runs']);
+  assert.deepEqual(queries.map(([op]) => op), ['automation_runs']);
+  assert.deepEqual(state.automations.runs.items.map(r => r.id), runsPage.first.runs.map(r => r.id));
+  assert.equal(state.automations.tab, 'runs', 'the hash names the tab brought into view');
+  // Out of view again: the tab in view is the one the hash names.
+  layout = normalizeDock(AUTOMATIONS_DOCK, null);
+  await ctl.follow();
+  assert.deepEqual([state.automations.tab, queries.length], ['automations', 1]);
 });
 
 // ---------------------------------------------------------------- Today

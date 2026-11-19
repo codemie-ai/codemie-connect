@@ -2484,7 +2484,7 @@ for (const theme of ['dark', 'light']) {
       assert(await page.locator('[data-action="automation-new"]').count() === 1, 'New automation offered twice');
       await noOverflow(page, 'empty list');
       await shot(page, `${tag}-automations-empty`);
-      await page.click('[data-action="automations-tab"][data-tab="templates"]');
+      await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
       await page.waitForSelector('[data-action="automation-template"][data-id="morning-brief"]');
       assert(await page.locator('.ws-auto-template').count() === 4, 'four templates');
       await noOverflow(page, 'templates');
@@ -2503,7 +2503,7 @@ for (const theme of ['dark', 'light']) {
       await page.click('.ws-modal[open] button[type=submit]');
       await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
       // Created: back on the list with the new row picked out.
-      await page.waitForSelector('[data-tab="automations"][aria-selected="true"]');
+      await page.waitForSelector('[data-tab="auto-list"][aria-selected="true"]');
       await page.waitForSelector('.ws-auto-row.ws-auto-highlight');
       await shot(page, `${tag}-automations-created`);
       const row = await text(page, '.ws-auto-row');
@@ -2534,7 +2534,7 @@ for (const theme of ['dark', 'light']) {
       await page.waitForSelector('.ws-run.ws-open .ws-run-output');
 
       await page.click('.ws-nav button[data-route=automations]');
-      await page.click('[data-action="automations-tab"][data-tab="automations"]');
+      await page.click('[data-action="dock-tab"][data-tab="auto-list"]');
       await renderSettled(page);
       await page.locator('.ws-auto-row .ws-switch').first().click();
       await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'automation_toggle' && d.enabled === false));
@@ -2544,7 +2544,7 @@ for (const theme of ['dark', 'light']) {
     });
 
     await check(`${tag}: the editor locks the conversation for reply drafts and shows backend sentences inline`, async () => {
-      await page.click('[data-action="automations-tab"][data-tab="templates"]');
+      await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
       await page.click('[data-action="automation-template"][data-id="draft-replies"]');
       await editorOpen(page);
       assert(await page.evaluate(() => document.activeElement?.id) === 'auto-senders', 'senders first');
@@ -2575,7 +2575,7 @@ for (const theme of ['dark', 'light']) {
     // A Teams message carries the sender's name and no address: its From asks for names only, and
     // the critical trigger's "Only from" takes addresses, domains or Teams names.
     await check(`${tag}: the Teams and critical sender fields say what they match`, async () => {
-      await page.click('[data-action="automations-tab"][data-tab="templates"]');
+      await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
       await page.click('[data-action="automation-template"][data-id="draft-replies"]');
       await editorOpen(page);
       const hintOf = () => page.evaluate(() => document.querySelector('.ws-modal[open] #auto-senders')?.closest('.ws-field')?.querySelector('.ws-field-hint')?.textContent || '');
@@ -2637,7 +2637,7 @@ for (const theme of ['dark', 'light']) {
     await check(`${tag}: the list and Today show both automations' latest results`, async () => {
       const p = logged.page;
       await p.click('.ws-nav button[data-route=automations]');
-      await p.click('[data-action="automations-tab"][data-tab="automations"]');
+      await p.click('[data-action="dock-tab"][data-tab="auto-list"]');
       await p.waitForSelector('.ws-auto-row >> nth=1');
       assert((await text(p, '.ws-auto-list')).includes('When mail arrives from @epam.com or ann@example.org about “budget”'), 'event trigger summary');
       await noOverflow(p, 'populated list');
@@ -2681,6 +2681,37 @@ for (const theme of ['dark', 'light']) {
     await check(`${tag}: run log no page errors`, async () => assert(logged.errors.length === 0, logged.errors.join(' | ')));
     await logged.context.close().catch(() => {});
   }
+}
+// Page sections (spec "Page sections"), once: the Run log beside the list reads its runs whenever
+// it comes into view, and the hash names the tab chosen last.
+{
+  const { page, context, errors } = await open({ theme: 'dark', width: 1440, height: 900, hash: '#/automations/runs', automations: true });
+  await check('automations sections: the Run log beside the list loads whenever it comes into view', async () => {
+    await page.waitForSelector('.ws-page-automations .ws-automations > .ws-dock .ws-run-log .ws-run');
+    assert(await page.locator('.ws-auto-list').count() === 0, 'the list is behind the Run log');
+    const menu = '.ws-pane:has(.ws-dock-tab[data-tab="auto-runs"]) .ws-dock-menu';
+    await page.click(`${menu} > summary`);
+    await page.click(`${menu} [data-action="dock-beside"]`);
+    await page.waitForSelector('.ws-auto-list .ws-auto-row');
+    assert(await page.locator('.ws-run-log .ws-run').count() === 3, 'the Run log beside it');
+    await page.waitForFunction(() => location.hash === '#/automations');
+    await noOverflow(page, 'Run log beside the list');
+    await shot(page, 'dark-1440-automations-sections');
+    // Collapsed, then opened again from its rail: it reads its newest page again (the runs read
+    // before are dropped meanwhile, so only a new read shows them).
+    await page.click('.ws-pane:has(.ws-dock-tab[data-tab="auto-runs"]) .ws-pane-tools [data-action="dock-collapse"]');
+    await page.waitForSelector('.ws-run-log', { state: 'detached' });
+    await page.evaluate(() => { window.__workspace.state.automations.runs.items = null; });
+    await page.click('.ws-pane-rail-tab[data-tab="auto-runs"]');
+    await page.waitForSelector('.ws-run-log .ws-run');
+    await page.waitForFunction(() => location.hash === '#/automations/runs');
+    // Kept: after a reload both are there, and the Run log is read at once.
+    await page.reload();
+    await page.waitForSelector('.ws-auto-list .ws-auto-row');
+    await page.waitForSelector('.ws-run-log .ws-run');
+    assert(errors.length === 0, errors.join(' | '));
+  });
+  await context.close().catch(() => {});
 }
 
 // Tasks (spec "Tasks page"): the board with the fixture's tasks (withTasks); accept, drag with the

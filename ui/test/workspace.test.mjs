@@ -939,8 +939,10 @@ const reads = (overrides = {}) => id => ({
 const meetingsCtx = (view = {}, extra = {}) => ({ state: { meetings: { ...newMeetingsView(), ...view }, tasks: newTasksView() }, now: MEET_NOW, banners: '', reads: reads(), ...extra });
 /** One list row, from its button to the next. */
 const rowOf = (html, id) => html.match(new RegExp(`<button type="button" class="ws-mtg-row[^"]*"[^>]*data-id="${id}"[^]*?</button>`))?.[0] || '';
-const detailOf = html => html.match(/<section class="ws-mtg-detail"[^]*$/)?.[0] || '';
-const stripOf = html => html.match(/<div class="ws-mtg-strip[^"]*"[^]*?<\/div>(?=\s*<div class="ws-tabs)/)?.[0] || '';
+/** The meeting: its header above the meeting's section, its tabs and the tab shown. */
+const detailOf = html => html.match(/<div class="ws-mtg-top">[^]*$/)?.[0] || '';
+/** The header's Transcript › Notes › Tasks strip, the header's last part. */
+const stripOf = html => html.match(/<div class="ws-mtg-strip[^"]*"[^]*?<\/div>(?=\s*<\/div>)/)?.[0] || '';
 /** A meetings controller over fakes: `calls` records what it sent and showed. */
 function meetingsHarness(s, view = {}, answers = {}) {
   const calls = { mutate: [], toasts: [], modals: [] };
@@ -1019,9 +1021,9 @@ test('meeting detail: people by name with organizer/you/company, dimmed when the
   assert.match(strip, /ws-mtg-seg-done[^]*?<strong>Notes<\/strong><small>2 documents<\/small>/);
   assert.match(strip, /ws-mtg-seg-now[^]*?<strong>Tasks<\/strong><small><span class="ws-mtg-accent">2 to review<\/span> of 3<\/small>/);
   assert.match(strip, /data-action="meeting-reveal"[^>]*data-id="mtg-philips"/);
-  // Five tabs with their counts.
-  const tabs = [...detail.matchAll(/role="tab" data-action="meeting-tab" data-tab="([a-z]+)" aria-selected="(true|false)">([A-Za-z]+)(?:<span class="ws-tab-count">(\d+)<\/span>)?/g)].map(m => [m[1], m[2], m[3], m[4] || '']);
-  assert.deepEqual(tabs, [['notes', 'true', 'Notes', '2'], ['transcript', 'false', 'Transcript', '10'], ['tasks', 'false', 'Tasks', '3'], ['files', 'false', 'Files', ''], ['people', 'false', 'People', '6']]);
+  // Five tabs, in the meeting's section.
+  const tabs = [...detail.matchAll(/data-action="dock-tab" data-page="meetings" data-tab="mtg-([a-z]+)" aria-selected="(true|false)"[^>]*>[^]*?<span>([A-Za-z]+)<\/span>/g)].map(m => [m[1], m[2], m[3]]);
+  assert.deepEqual(tabs, [['notes', 'true', 'Notes'], ['transcript', 'false', 'Transcript'], ['tasks', 'false', 'Tasks'], ['files', 'false', 'Files'], ['people', 'false', 'People']]);
   // Notes: document chips, One / Side by side, the main document rendered, escaped.
   assert.match(detail, /data-action="doc-view" data-id="mtg-philips" data-doc="meeting-notes" aria-selected="true"[^>]*>[^]*?Meeting notes<\/span><em class="ws-mtg-main">Main<\/em>/);
   assert.match(detail, /data-action="meeting-compare" data-v="1"/);

@@ -12,9 +12,11 @@ const { runsPage } = automationContract();
 const [run3, run2] = runsPage.first.runs;
 const [run1] = runsPage.next.runs;
 
-/** A controller over fakes. `pages` answer `store.query` in order (an Error is thrown). */
+/** A controller over fakes. `pages` answer `store.query` in order (an Error is thrown).
+ *  `shown.tabs` are the page's section tabs in view (the Run log at first). */
 function harness({ snapshot = snapshotOf(), ai = { status: 'ready', ...aiStatus('both') }, pages = [], ensure = async () => 'claude', onMutate } = {}) {
   const calls = { mutate: [], query: [], render: 0, route: [], toasts: [], confirms: [], copied: [], later: [] };
+  const shown = { tabs: ['auto-runs'] };
   const state = { route: 'automations', ai, automations: { tab: 'runs', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } } };
   const store = {
     query: async (op, data) => {
@@ -42,8 +44,9 @@ function harness({ snapshot = snapshotOf(), ai = { status: 'ready', ...aiStatus(
     ensureClaudeChoice: ensure,
     writeText: async text => { calls.copied.push(text); },
     later: (fn, ms) => calls.later.push([fn, ms]),
+    dock: { visible: () => shown.tabs },
   });
-  return { ctl, state, calls, snapshot };
+  return { ctl, state, calls, snapshot, shown };
 }
 const control = (dataset = {}, extra = {}) => ({ dataset, closest: () => null, ...extra });
 
@@ -88,7 +91,7 @@ test('a later Run log load wins over an earlier one still on its way', async () 
 });
 
 test('a new snapshot reloads the Run log only when its runs changed', async () => {
-  const { ctl, state, calls, snapshot } = harness({ pages: [{ runs: [run3], next: null }, { runs: [run3, run2], next: null }] });
+  const { ctl, calls, snapshot, shown } = harness({ pages: [{ runs: [run3], next: null }, { runs: [run3, run2], next: null }] });
   await ctl.loadRuns();
   assert.equal(ctl.snapshotChanged(snapshot), undefined, 'same runs, no reload');
   const changed = { ...snapshot, jobs: [...snapshot.jobs, { id: 'job-1', kind: 'automation_run', state: 'running', payload: { automationId: 'auto-brief' } }] };
@@ -96,8 +99,8 @@ test('a new snapshot reloads the Run log only when its runs changed', async () =
   await ctl.snapshotChanged(changed);
   assert.equal(calls.query.length, 2);
   assert.equal(ctl.snapshotChanged(changed), undefined, 'the reload took the new signature');
-  state.automations.tab = 'automations';
-  assert.equal(ctl.snapshotChanged({ ...changed, jobs: [] }), undefined, 'not on the Run log');
+  shown.tabs = ['auto-list'];
+  assert.equal(ctl.snapshotChanged({ ...changed, jobs: [] }), undefined, 'the Run log is out of view');
 });
 
 test('Run now asks which Claude first when nothing would choose one', async () => {

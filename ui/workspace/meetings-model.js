@@ -7,7 +7,6 @@
 import { can } from './selectors.js';
 
 export const TABS = ['notes', 'transcript', 'tasks', 'files', 'people'];
-export const TAB_LABELS = { notes: 'Notes', transcript: 'Transcript', tasks: 'Tasks', files: 'Files', people: 'People' };
 
 /** Every state a meeting shows, with the label and tone of its status text. `downloading` and
  *  `processing` are never stored: they are a meeting whose save or notes job is running. */
@@ -51,8 +50,8 @@ export function legendOf(state, { busy = false, auto = false, paused = false } =
 }
 
 /** The Meetings page's view state (only view state lives in the window: meetings are native's). */
-export const newMeetingsView = ({ wide = false } = {}) => ({
-  filter: 'all', q: '', selected: null, tab: 'notes', showNone: false, wide: !!wide, compare: false, focusLine: null,
+export const newMeetingsView = () => ({
+  filter: 'all', q: '', selected: null, tab: 'notes', showNone: false, compare: false, focusLine: null,
   // The document editor ({meetingId, docId, version, rev, draft, conflict, mine}), the document
   // shown per meeting, the second one in Side by side, an earlier version being read, the
   // transcript's search and speaker filter, and the meeting whose whole guest list is shown.

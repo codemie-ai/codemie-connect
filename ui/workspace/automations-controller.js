@@ -4,7 +4,7 @@
 // route, the dialogs), so node:test drives it without a browser; only the editor's own form is
 // DOM.
 import {
-  automationEditor, draftFromAutomation, editorDraft, toAutomation, errorTarget, outputText, newAutomationDraft, duplicateDraft, needsSenders, TEMPLATES,
+  automationEditor, draftFromAutomation, editorDraft, toAutomation, errorTarget, outputText, newAutomationDraft, duplicateDraft, needsSenders, AUTOMATION_TABS, TEMPLATES,
 } from './view-automations.js';
 import { records } from './selectors.js';
 import { controlSelector, soleMatch } from './ui.js';
@@ -31,14 +31,15 @@ export function notificationTarget(payload) {
  * snapshot; `mutate(op, data)` a fenced write that re-renders; `route(name, tab)` navigation;
  * `render()` a re-render; `openModal`, `confirmModal` and `toast` the dialogs; `ensureClaudeChoice()`
  * asks which Claude writes (null when cancelled); `writeText` copies; `modalOpen()` says whether
- * a dialog is open.
+ * a dialog is open; `dock.visible()` the page's section tabs in view.
  */
 export function createAutomationsController({
   state, store, snap, mutate, route, render, openModal, confirmModal, toast, ensureClaudeChoice, writeText,
-  modalOpen = () => false, later = (fn, ms) => setTimeout(fn, ms),
+  modalOpen = () => false, later = (fn, ms) => setTimeout(fn, ms), dock = { visible: () => [] },
 }) {
   const ui = () => state.automations;
-  const runLogOpen = () => state.route === 'automations' && ui().tab === 'runs';
+  /** The Run log is in view, in whichever section holds it. */
+  const runLogOpen = () => state.route === 'automations' && dock.visible().includes('auto-runs');
   const automation = id => snap().records.find(r => r.kind === 'automation' && r.id === id);
   const missing = () => new Error('This automation no longer exists. Refresh and try again.');
   let runLoads = 0;
@@ -71,6 +72,21 @@ export function createAutomationsController({
     }
     // The filter select keeps focus after a choice; render keeps it there.
     if (runLogOpen() && !modalOpen()) await render();
+  }
+
+  /**
+   * The page's sections changed: the tab the hash names is the one `fresh` brought into view (a
+   * tab chosen, moved or expanded there), or, when the one chosen last is out of view, the first
+   * in view; the Run log reads its newest page when it came into view.
+   */
+  function follow(fresh = []) {
+    const shown = dock.visible();
+    const nameOf = id => AUTOMATION_TABS.find(([, tab]) => tab === id)?.[0];
+    const came = fresh.filter(id => shown.includes(id));
+    const current = AUTOMATION_TABS.find(([id]) => id === ui().tab)?.[1];
+    if (came.length === 1) ui().tab = nameOf(came[0]);
+    else if (shown.length && !shown.includes(current)) ui().tab = nameOf(shown[0]);
+    return came.includes('auto-runs') && runLogOpen() ? loadRuns() : undefined;
   }
 
   /** A new snapshot: the Run log reloads when a run started, ended or was stored. */
@@ -217,6 +233,7 @@ export function createAutomationsController({
     el.closest?.('details')?.removeAttribute('open');
     const runs = ui().runs;
     switch (action) {
+      // The section tab of that page tab (`runs` is `auto-runs` …), wherever it sits.
       case 'automations-tab': return route('automations', el.dataset.tab);
       case 'automation-new': return openEditor(newAutomationDraft());
       case 'automation-template': {
@@ -270,5 +287,5 @@ export function createAutomationsController({
     }
   }
 
-  return { loadRuns, snapshotChanged, runNow, duplicate, confirmDelete, save, openEditor, openRun, handle, runLogOpen };
+  return { loadRuns, snapshotChanged, follow, runNow, duplicate, confirmDelete, save, openEditor, openRun, handle, runLogOpen };
 }

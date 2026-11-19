@@ -12,7 +12,7 @@ import { dayKey, dateFromKey, zonedParts } from './format.js';
 import { today, drawnGrid, tileDefs } from './view-today.js';
 import { createTodayController, attachTodayDrag, newTodayView } from './today-controller.js';
 import { GRID, todayOf } from './today-grid.js';
-import { loadDock, saveDock } from './dock-model.js';
+import { activateTab, loadDock, saveDock, setCollapsed, visibleTabs } from './dock-model.js';
 import { attachDock } from './dock-controller.js';
 import { calendar, eventDetails, eventActions, HOUR_HEIGHT, CALENDAR_DOCK } from './view-calendar.js';
 import { inbox, filteredMessages, snoozeUntil, draftChecks, INBOX_DOCK } from './view-inbox.js';
@@ -25,12 +25,12 @@ import { createCodemieController } from './codemie/controller.js';
 import { createRunLog } from './codemie/run-log.js';
 import { createSetupSession } from './codemie/setup-session.js';
 import { startSetup, cancelSetup } from '../setup-driver.js';
-import { automations, AUTOMATION_TABS } from './view-automations.js';
+import { automations, AUTOMATION_TABS, AUTOMATIONS_DOCK } from './view-automations.js';
 import { createAutomationsController, notificationTarget } from './automations-controller.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { newTasksView } from './tasks-model.js';
-import { meetings } from './view-meetings.js';
+import { meetings, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
@@ -78,10 +78,10 @@ const state = {
   automations: { tab: 'automations', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } },
   // Tasks: board or list, filters, the open drawer and quick add (view state only; tasks are native's).
   tasks: newTasksView(localPref('codemie.tasks.view', 'board')),
-  // Meetings: the list's filter and search, the selected meeting and tab, the hidden list, Side by
-  // side, the document editor (view state only; meetings are native's). The calendar's "Only
-  // meetings with transcripts" and the legend groups turned off.
-  meetings: newMeetingsView({ wide: localPref('codemie.meetings.wide', 'false') === 'true' }),
+  // Meetings: the list's filter and search, the selected meeting and tab, Side by side, the
+  // document editor (view state only; meetings are native's). The calendar's "Only meetings with
+  // transcripts" and the legend groups turned off.
+  meetings: newMeetingsView(),
   calendarTranscripts: localPref('codemie.calendar.transcripts', 'false') === 'true', calendarLegend: {},
   // Settings › Meetings: the template being edited, refusals by field, the glossary and tags as
   // typed, the rule tester (view state only; settings, templates and rules are native's).
@@ -267,10 +267,12 @@ function captureScroll() {
     drawer: q('.ws-task-drawer-body')?.scrollTop || 0,
     drawerId: state.tasks.drawer,
     meetingList: q('.ws-mtg-list-body')?.scrollTop || 0,
-    meetingDetail: q('.ws-mtg-detail')?.scrollTop || 0,
-    meetingView: q('.ws-mtg-meeting') ? `${q('.ws-mtg-meeting').dataset.meeting}|${q('.ws-mtg-panel')?.dataset.panel}` : null,
+    // Meetings: each meeting tab in view scrolls on its own, kept by meeting and tab.
+    meetingTabs: Object.fromEntries([...root.querySelectorAll('.ws-mtg-detail[data-panel]')].map(el => [`${el.dataset.meeting}|${el.dataset.panel}`, el.scrollTop])),
     // Today: each tile's body scrolls on its own, kept by the tile's widget id.
     tiles: Object.fromEntries([...root.querySelectorAll('[data-tile] > .ws-tile-body')].map(body => [body.parentElement.dataset.tile, body.scrollTop])),
+    // A row of page sections wider than the page scrolls sideways, kept by page.
+    dockRows: Object.fromEntries([...root.querySelectorAll('.ws-dock[data-page]')].map(row => [row.dataset.page, row.scrollLeft])),
   };
 }
 
@@ -299,10 +301,16 @@ function restoreScroll(saved) {
   const reader = q('.ws-reader');
   if (reader && saved.readerId && q('.ws-read')?.dataset.messageId === saved.readerId) reader.scrollTop = saved.reader;
   if (q('.ws-settings-sidebar')) q('.ws-settings-sidebar').scrollTop = saved.nav;
-  // Meetings: the list keeps its place; the meeting keeps its place unless another one (or tab) opened.
+  // Meetings: the list keeps its place; a meeting tab keeps its place unless another meeting opened.
   if (q('.ws-mtg-list-body')) q('.ws-mtg-list-body').scrollTop = saved.meetingList;
-  const meeting = q('.ws-mtg-meeting');
-  if (meeting && saved.meetingView === `${meeting.dataset.meeting}|${q('.ws-mtg-panel')?.dataset.panel}`) q('.ws-mtg-detail').scrollTop = saved.meetingDetail;
+  for (const el of root.querySelectorAll('.ws-mtg-detail[data-panel]')) {
+    const top = saved.meetingTabs[`${el.dataset.meeting}|${el.dataset.panel}`];
+    if (top) el.scrollTop = top;
+  }
+  for (const row of root.querySelectorAll('.ws-dock[data-page]')) {
+    const left = saved.dockRows[row.dataset.page];
+    if (left) row.scrollLeft = left;
+  }
   if (q('.ws-settings-panels') && saved.tab === state.settingsTab) q('.ws-settings-panels').scrollTop = saved.panels;
 }
 
@@ -371,11 +379,14 @@ async function render() {
     codemieCard: codemie.todayCard(),
   };
   if (state.route === 'inbox') ensureSelection(s);
+  // The hash names the meeting shown, also when the list picked it, and the tab chosen last, one
+  // in view (`#/meetings/<id>/<tab>`, `#/automations/<tab>`).
   if (state.route === 'meetings') {
-    // The meeting shown is the one in the hash (`#/meetings/<id>/<tab>`), also when the list picked it.
     meetingsUi.ensureSelection();
-    if (location.hash !== routeHash()) history.replaceState(null, '', routeHash());
+    meetingsUi.follow();
   }
+  if (state.route === 'automations') automationsUi.follow();
+  if (['meetings', 'automations'].includes(state.route) && location.hash !== routeHash()) history.replaceState(null, '', routeHash());
   if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
   const pageClass = `ws-page ws-page-${state.route}`;
   const html = state.route === 'today' ? today(s, ctx)
@@ -557,7 +568,7 @@ async function route(name, tab, pluginPath = null) {
     if (!section) pluginsUi.load().catch(fail);
     return;
   }
-  if (tab && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === tab) ? tab : 'automations';
+  if (tab && state.route === 'automations') showAutomationsTab(tab);
   if (state.route === 'meetings') meetingsUi.ensureSelection();
   history.replaceState(null, '', routeHash());
   await render();
@@ -1115,7 +1126,16 @@ function stepCalendar(direction) {
 const automationsUi = store && createAutomationsController({
   state, store, snap, mutate, route, render, openModal, confirmModal, toast, ensureClaudeChoice, modalOpen,
   writeText: text => navigator.clipboard.writeText(text),
+  dock: dockFor('automations'),
 });
+
+/** Automations' tab `tab` (`runs` …), as a hash names it: the tab chosen last, shown in whichever
+ *  section holds it. */
+function showAutomationsTab(tab) {
+  const [name, id] = AUTOMATION_TABS.find(([x]) => x === tab) || AUTOMATION_TABS[0];
+  state.automations.tab = name;
+  showDockTab('automations', id);
+}
 const runLogOpen = () => !!automationsUi?.runLogOpen();
 
 // ---------------------------------------------------------------- tasks (spec "Tasks page")
@@ -1172,10 +1192,12 @@ if (todayUi) {
 
 // Each page's sections are a preference of this Mac (`codemie.layout.<page>.v1`), read once and
 // kept here. With nothing stored yet, Calendar takes the old calendar list choice
-// (`codemie.calendar.sidebar`), which is no longer written.
-const DOCKS = { inbox: INBOX_DOCK, calendar: CALENDAR_DOCK };
+// (`codemie.calendar.sidebar`) and Meetings the old hidden list (`codemie.meetings.wide`), which
+// are no longer written.
+const DOCKS = { inbox: INBOX_DOCK, calendar: CALENDAR_DOCK, meetings: MEETINGS_DOCK, automations: AUTOMATIONS_DOCK };
 const DOCK_LEGACY = {
   calendar: () => (localPref('codemie.calendar.sidebar', 'true') === 'false' ? { collapse: ['cal-side'] } : null),
+  meetings: () => (localPref('codemie.meetings.wide', 'false') === 'true' ? { collapse: ['mtg-list'] } : null),
 };
 const dockStorage = { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) };
 const dockLayouts = {};
@@ -1187,6 +1209,24 @@ const docks = {
   },
 };
 
+/** Brings tab `tab` of `page` into view in the section that holds it, expanding that section;
+ *  the caller draws the page. */
+function showDockTab(page, tab) {
+  const layout = docks.get(page);
+  const shown = setCollapsed(activateTab(layout, tab), DOCKS[page], tab, false).layout;
+  if (shown !== layout) docks.set(page, shown);
+}
+
+/** The sections of `page` as its controller uses them (see createMeetingsController). */
+function dockFor(page) {
+  return {
+    layout: () => docks.get(page),
+    collapse: (id, on) => dockUi.setCollapsed(page, id, on),
+    visible: () => visibleTabs(docks.get(page)),
+    show: id => showDockTab(page, id),
+  };
+}
+
 /** Whether Today shows widget `id` now: in its grid, or as a card under it. */
 function onToday(id) {
   const defs = tileDefs(pluginWidgetCatalog(state.installedPlugins || []));
@@ -1195,7 +1235,19 @@ function onToday(id) {
 }
 
 const dockUi = store && attachDock(document, {
-  defs: DOCKS, layouts: docks, render, toast, announce,
+  defs: DOCKS, render, toast, announce,
+  // A tab a change brings into view (chosen, moved or expanded) is the page's tab chosen last,
+  // which the hash names; the Run log reads its runs then.
+  layouts: {
+    get: docks.get,
+    set: (page, layout) => {
+      const was = visibleTabs(docks.get(page));
+      docks.set(page, layout);
+      const fresh = visibleTabs(layout).filter(tab => !was.includes(tab));
+      if (page === 'meetings') meetingsUi.follow(fresh);
+      if (page === 'automations') automationsUi.follow(fresh)?.catch(fail);
+    },
+  },
   // A divider or tab held: updates wait, as for Today's widgets, until the drop is drawn.
   dragging: on => {
     layoutDrag = on;
@@ -1226,7 +1278,6 @@ const meetingsUi = store && createMeetingsController({
   writeText: text => navigator.clipboard.writeText(text),
   downloadText,
   focus: focusFirst,
-  setPref: setLocalPref,
   syncHash: () => { if (state.route === 'meetings') history.replaceState(null, '', routeHash()); },
   ensureClaudeChoice,
   moveTask: (id, status, options) => tasksUi.move(id, status, options),
@@ -1239,6 +1290,7 @@ const meetingsUi = store && createMeetingsController({
     return eventDialog(getRecord('event', id));
   },
   canRender: () => ready && !modalOpen() && !editing() && !taskDrag,
+  dock: dockFor('meetings'),
 });
 
 // ---------------------------------------------------------------- Settings › Meetings
@@ -2407,10 +2459,14 @@ async function boot() {
   } else {
     const target = parseHash(location.hash);
     if (target.route) state.route = target.route;
+    // The hash's tab is shown in whichever section holds it.
     if (target.route === 'meetings') {
       if (target.meetingId) state.meetings.selected = target.meetingId;
-      if (target.tab) state.meetings.tab = target.tab;
-    } else if (hash[2] && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === hash[2]) ? hash[2] : 'automations';
+      if (target.tab) {
+        state.meetings.tab = target.tab;
+        showDockTab('meetings', `mtg-${target.tab}`);
+      }
+    } else if (hash[2] && state.route === 'automations') showAutomationsTab(hash[2]);
     else if (hash[2]) state.settingsTab = settingsTabFor(hash[2]);
     if (state.route === 'settings' && hash[2] === 'plugins' && PLUGIN_ID.test(decodeURIComponent(hash[3] || ''))) {
       const section = decodeURIComponent(hash[4] || '');

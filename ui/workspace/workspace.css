@@ -1320,16 +1320,20 @@ ul.ws-draft-context[hidden]{display:none}
 @media (max-width:1180px){.ws-storage-row{flex-wrap:wrap}.ws-storage-row-actions{flex-direction:row;flex-wrap:wrap;align-items:center;width:100%;padding-left:32px}}
 
 /* ------------------------------------------------------------------ Automations (DESIGN 6.6) */
-.ws-tabs{display:flex;gap:8px;border-bottom:1px solid var(--ws-border);margin-bottom:16px}
-.ws-tabs button{display:inline-flex;align-items:center;gap:8px;padding:8px 8px 12px;margin-bottom:-1px;border:0;border-bottom:2px solid transparent;background:none;color:var(--ws-muted);font-size:14px;line-height:20px;white-space:nowrap;transition:color .15s ease,border-color .15s ease}
-.ws-tabs button:hover{color:var(--ws-text);border-bottom-color:var(--ws-border-strong)}
-.ws-tabs button[aria-selected=true]{color:var(--ws-text);font-weight:600;border-bottom-color:var(--ws-text);cursor:default}
 .ws-tab-count{min-width:20px;height:18px;padding:0 6px;border-radius:9px;display:inline-grid;place-items:center;font-size:11px;font-weight:600;background:var(--ws-raised);color:var(--ws-muted)}
 .ws-segmented button[aria-pressed=true]{color:var(--ws-primary-text);border-color:transparent;background:linear-gradient(var(--ws-primary-fill),var(--ws-primary-fill)) padding-box,var(--ws-primary-border) border-box}
 .ws-segmented button .ws-icon{width:13px;height:13px}
 .ws-menu-item.ws-menu-danger{color:var(--ws-red)}
 .ws-menu-item.ws-menu-danger:hover{color:var(--ws-red);background:color-mix(in srgb,var(--ws-red) 12%,transparent)}
 .ws-menu-item .ws-icon{width:14px;height:14px}
+
+/* the page: its heading, then its sections, which fill the rest of the window */
+#workspace-app[data-route=automations] .ws-main{overflow:hidden}
+.ws-page-automations{height:100%;box-sizing:border-box;padding-bottom:20px}
+.ws-automations{display:flex;flex-direction:column;height:100%;min-height:0}
+.ws-automations>.ws-page-heading,.ws-automations>.ws-banner{flex-shrink:0}
+.ws-automations>.ws-dock{flex:1;height:auto;padding:0}
+.ws-auto-panel{padding:16px;container-type:inline-size}
 
 /* list */
 .ws-auto-row{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(200px,auto) auto;align-items:center;gap:16px;padding:14px 16px 14px 18px;border-top:1px solid var(--ws-border)}
@@ -1452,7 +1456,8 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .ws-field-error{margin:6px 0 0;font-size:12px;line-height:16px;color:var(--ws-red)}
 :is(.ws-input,.ws-textarea)[aria-invalid=true]{border-color:var(--ws-red)}
 
-@media (max-width:1180px){
+/* A narrow section (or window): the last run under the name, tighter Run log columns. */
+@container (max-width:880px){
   .ws-auto-row{grid-template-columns:auto minmax(0,1fr) auto}
   .ws-auto-last{grid-column:2;grid-row:2;justify-content:flex-start;margin-top:-8px}
   .ws-auto-last-run{margin-left:-6px}
@@ -2133,9 +2138,6 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 /* ------------------------------------------------------------------ meetings (spec "Meetings page") */
 #workspace-app[data-route=meetings] .ws-main{overflow:hidden}
 .ws-page-meetings{max-width:none;height:100%;padding:0}
-.ws-mtg-layout{display:grid;grid-template-columns:minmax(290px,360px) minmax(0,1fr);height:100%;min-height:0}
-.ws-mtg-layout.ws-mtg-wide{grid-template-columns:0 minmax(0,1fr)}
-.ws-mtg-layout.ws-mtg-wide .ws-mtg-list{visibility:hidden;overflow:hidden;border:0}
 .ws-mtg-accent{color:var(--ws-purple);font-weight:600}
 .ws-mtg-err{color:var(--ws-red)}
 .ws-mtg-small{font-size:12px}
@@ -2150,7 +2152,7 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-tone-muted{color:var(--ws-muted)}
 
 /* the list */
-.ws-mtg-list{display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px solid var(--ws-border);background:var(--ws-card-2)}
+.ws-mtg-list{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;background:var(--ws-card-2)}
 .ws-mtg-list-head{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;padding:20px 16px 12px;min-width:0}
 .ws-mtg-list-title{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .ws-mtg-list-title h1{font-size:22px;line-height:28px;letter-spacing:-.5px}
@@ -2186,12 +2188,14 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-mtg-list-foot{padding:10px 16px;border-top:1px solid var(--ws-border)}
 .ws-mtg-list-foot .ws-switch-label{font-size:12px}
 
-/* the meeting */
-.ws-mtg-detail{min-height:0;min-width:0;overflow:auto;padding:18px 28px 48px;container-type:inline-size}
-.ws-mtg-detail>.ws-banner{max-width:1100px}
+/* the meeting: its header above the first section holding a meeting tab, and each tab's body,
+   which scrolls on its own */
+.ws-mtg-top{display:grid;gap:10px;flex-shrink:0;padding:12px 20px;border-bottom:1px solid var(--ws-border);container-type:inline-size}
+.ws-mtg-top>.ws-banner{max-width:1100px;margin:0}
+.ws-mtg-detail{flex:1;min-height:0;min-width:0;overflow:auto;padding:16px 20px 40px;container-type:inline-size}
 .ws-mtg-detail-empty{display:grid;place-items:center;min-height:60%}
 .ws-mtg-meeting{max-width:1100px}
-.ws-mtg-head{display:grid;gap:8px;margin-bottom:12px;min-width:0}
+.ws-mtg-head{display:grid;gap:8px;margin-bottom:10px;min-width:0}
 .ws-mtg-head-row{display:flex;align-items:center;gap:8px;margin-left:-6px;min-width:0}
 .ws-mtg-head-row .ws-eyebrow{margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-mtg-head-title{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
@@ -2229,8 +2233,6 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-runbar-busy>span{width:35%;animation:ws-mtg-slide 1.4s ease-in-out infinite}
 @keyframes ws-mtg-slide{0%{transform:translateX(-100%)}100%{transform:translateX(290%)}}
 @media (prefers-reduced-motion:reduce){.ws-runbar-busy>span{animation:none;width:100%;opacity:.5}}
-.ws-mtg-tabs{position:sticky;top:-18px;z-index:6;margin:8px -28px 16px;padding:6px 28px 0;background:var(--ws-bg)}
-.ws-mtg-panel{min-height:200px}
 .ws-mtg-card-head{display:grid;gap:2px;padding:12px 0;min-width:0}
 .ws-mtg-card-head p{font-size:12px;line-height:18px;color:var(--ws-muted)}
 .ws-mtg-card-head .ws-card-title{min-width:0}
@@ -2489,7 +2491,6 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
   .ws-mtg-head-title{flex-wrap:wrap}
   .ws-mtg-strip-folder{margin-left:0}
 }
-@media (max-width:1180px){.ws-mtg-layout{grid-template-columns:minmax(270px,300px) minmax(0,1fr)}.ws-mtg-detail{padding:16px 20px 40px}.ws-mtg-tabs{margin:8px -20px 16px;padding:6px 20px 0;top:-16px}}
 
 /* the event card's Transcript & notes, the calendar's badges and legend */
 .ws-pill{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:11px;font-size:11px;font-weight:600;white-space:nowrap;border:1px solid transparent;width:max-content}
