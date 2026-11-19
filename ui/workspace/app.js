@@ -2397,11 +2397,12 @@ document.addEventListener('keydown', ev => {
   }
 });
 
-// Today: ⌘Z undoes the last layout change and ⇧⌘Z redoes it, outside text fields.
+// Today: ⌘Z undoes the last layout change and ⇧⌘Z redoes it, outside text fields, as the edit
+// bar's Undo and Redo do (locked, they say so instead).
 document.addEventListener('keydown', ev => {
   if (!ready || state.route !== 'today' || modalOpen() || sheetOpen() || editing() || ev.altKey || !(ev.metaKey || ev.ctrlKey) || ev.key.toLowerCase() !== 'z') return;
   ev.preventDefault();
-  (ev.shiftKey ? todayUi.redo() : todayUi.undo()).catch(fail);
+  todayUi.handle(ev.shiftKey ? 'today-redo' : 'today-undo').catch(fail);
 });
 
 // A field that saves when it is left (the drawer's typed due date): one save, with what it holds.

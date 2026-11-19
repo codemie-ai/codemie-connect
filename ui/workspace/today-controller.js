@@ -137,15 +137,14 @@ export function createTodayController({
   });
 
   // Said in the live region too: ⌘Z after a key's Delete has no toast or focus to show it.
-  // Locked, nothing moves: ⌘Z, ⇧⌘Z and the buttons say so instead.
-  const undo = async () => (locked() ? nudge() : serial(async () => {
+  const undo = () => serial(async () => {
     const prev = ui().history.at(-1);
     return prev ? save(prev, current(), { step: 'undo', say: () => 'Layout change undone' }) : false;
-  }));
-  const redo = async () => (locked() ? nudge() : serial(async () => {
+  });
+  const redo = () => serial(async () => {
     const next = ui().future.at(-1);
     return next ? save(next, current(), { step: 'redo', say: () => 'Layout change redone' }) : false;
-  }));
+  });
 
   /** The grid with widget `id` held at `x`, `y` while the others start from `orig` (by default
    *  what the page draws). An id that isn't on Today yet comes in at its default size, as a
@@ -356,8 +355,11 @@ export function createTodayController({
         await render();
         toast('Today is saved — every change is kept as you make it', 'success');
         return true;
-      case 'today-undo': return undo();
-      case 'today-redo': return redo();
+      // ⌘Z, ⇧⌘Z and the edit bar's buttons. Locked, nothing moves, so they say so instead; a
+      // toast's Undo calls undo() and still takes back the change it announced, which the lock
+      // allowed (Remove, Add, a layout switch).
+      case 'today-undo': return locked() ? nudge() : undo();
+      case 'today-redo': return locked() ? nudge() : redo();
       case 'today-lock': {
         const on = !locked();
         await setLocked(on);

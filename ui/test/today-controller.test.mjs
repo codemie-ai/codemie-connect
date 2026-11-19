@@ -146,33 +146,37 @@ test('locked: moving does nothing and the toast offers Unlock', async () => {
   assert.equal(stored['codemie.layout.locked'], '1');
 });
 
-test('locked: ⌘Z, ⇧⌘Z, Undo and Redo change nothing and offer Unlock', async () => {
+test('locked: ⌘Z, ⇧⌘Z and the edit bar change nothing and offer Unlock; a toast’s Undo still takes back its change', async () => {
   const { ctl, calls, saved, state, stored } = harness();
   await ctl.commit(ctl.moveTo('focus', 0, 0));
-  await ctl.undo();
-  assert.deepEqual([saved().length, state.today.history.length, state.today.future.length], [2, 0, 1]);
-  await ctl.commit(ctl.moveTo('focus', 0, 0));
-  await ctl.undo();
-  await ctl.redo();
-  assert.deepEqual([saved().length, state.today.history.length, state.today.future.length], [5, 1, 0]);
-  await ctl.handle('today-lock', el());
-  const toasts = calls.toasts.length;
-  // The keys call undo and redo (app.js chains .catch on them); the edit bar's buttons come
-  // through handle.
-  const pending = ctl.undo();
-  assert.equal(typeof pending.catch, 'function', 'a promise, as when unlocked');
-  await pending;
   await ctl.handle('today-undo', el());
-  await ctl.redo();
   await ctl.handle('today-redo', el());
-  assert.equal(saved().length, 5, 'nothing is saved');
-  assert.deepEqual([state.today.history.length, state.today.future.length], [1, 0], 'the history is kept');
-  const nudges = calls.toasts.slice(toasts);
-  assert.deepEqual(nudges.map(t => [t.message, t.action?.label]), Array(4).fill(['Layouts are locked', 'Unlock']));
-  await nudges[0].action.run();
+  await ctl.handle('today-undo', el());
+  assert.deepEqual([saved().length, state.today.history.length, state.today.future.length], [4, 0, 1]);
+  await ctl.handle('today-lock', el());
+  let toasts = calls.toasts.length;
+  // ⌘Z and ⇧⌘Z come through these actions (app.js sends the keys there), as the edit bar does.
+  await ctl.handle('today-undo', el());
+  await ctl.handle('today-redo', el());
+  assert.equal(saved().length, 4, 'nothing is saved');
+  assert.deepEqual([state.today.history.length, state.today.future.length], [0, 1], 'the history is kept');
+  assert.deepEqual(calls.toasts.slice(toasts).map(t => [t.message, t.action?.label]), Array(2).fill(['Layouts are locked', 'Unlock']));
+  // Remove is allowed while locked, and its toast's Undo brings the widget back.
+  await ctl.handle('today-remove', el({ id: 'notes' }));
+  assert.equal(at(saved()[4].today.items, 'notes'), undefined);
+  toasts = calls.toasts.length;
+  await calls.toasts.at(-1).action.run();
+  assert.equal(saved().length, 6);
+  assert.deepEqual(box(saved()[5].today.items, 'notes'), [8, 11, 4, 6], 'Notes is back where it was');
+  assert.equal(calls.toasts.length, toasts, 'no lock toast');
+  assert.equal(stored['codemie.layout.locked'], '1', 'still locked');
+  // Unlocked from the nudge, ⇧⌘Z works again: it redoes the Remove.
+  await ctl.handle('today-redo', el());
+  await calls.toasts.at(-1).action.run();
   assert.equal(stored['codemie.layout.locked'], '0');
-  await ctl.undo();
-  assert.equal(saved().length, 6, 'unlocked, Undo works again');
+  await ctl.handle('today-redo', el());
+  assert.equal(saved().length, 7, 'unlocked, Redo works again');
+  assert.equal(at(saved()[6].today.items, 'notes'), undefined);
 });
 
 test('Add puts the widget at the top left and pushes the others down', async () => {
