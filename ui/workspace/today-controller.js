@@ -94,14 +94,17 @@ export function createTodayController({
   }
 
   /** Saves `next` (made from `before`). `step` says what the history does: a new change, an undo
-   *  or a redo. A refusal changes nothing: the page is drawn again and the message shown. */
-  async function save(next, before, { message, say, step = 'change' } = {}) {
+   *  or a redo. A refusal changes nothing: the page is drawn again and the message shown. With
+   *  `redraw` (a drop, whose tiles were moved by hand) a change that comes to nothing is drawn
+   *  again too. */
+  async function save(next, before, { message, say, step = 'change', redraw = false } = {}) {
     const packed = pack(next, before);
     const was = pack(before, before);
     const view = ui();
     if (stable(payloadOf(packed).today) === stable(payloadOf(was).today)) {
       if (step === 'undo') view.history = view.history.slice(0, -1);
       if (step === 'redo') view.future = view.future.slice(0, -1);
+      if (redraw) await render();
       return false;
     }
     const kept = { history: view.history, future: view.future };
@@ -134,14 +137,15 @@ export function createTodayController({
   });
 
   // Said in the live region too: ⌘Z after a key's Delete has no toast or focus to show it.
-  const undo = () => serial(async () => {
+  // Locked, nothing moves: ⌘Z, ⇧⌘Z and the buttons say so instead.
+  const undo = async () => (locked() ? nudge() : serial(async () => {
     const prev = ui().history.at(-1);
     return prev ? save(prev, current(), { step: 'undo', say: () => 'Layout change undone' }) : false;
-  });
-  const redo = () => serial(async () => {
+  }));
+  const redo = async () => (locked() ? nudge() : serial(async () => {
     const next = ui().future.at(-1);
     return next ? save(next, current(), { step: 'redo', say: () => 'Layout change redone' }) : false;
-  });
+  }));
 
   /** The grid with widget `id` held at `x`, `y` while the others start from `orig` (by default
    *  what the page draws). An id that isn't on Today yet comes in at its default size, as a
@@ -188,7 +192,7 @@ export function createTodayController({
     lastHeld = null;
     if (!next) return false;
     const say = held && (t => (find(t.items, held.id) ? (held.kind === 'move' ? moved(t, held.id) : sized(t, held.id)) : ''));
-    return save(next, before || current(), { message, say });
+    return save(next, before || current(), { message, say, redraw: true });
   });
 
   // ---------------------------------------------------------------- changes
@@ -380,7 +384,9 @@ export function createTodayController({
           return action === 'today-width' ? sizedTo(cur, id, Number(data.w), it.h) : sizedTo(cur, id, it.w, Number(data.h));
         });
       case 'today-collapse':
+        // Collapse and Expand resize the widget: refused while locked, as Width and Height are.
         closeMenu(el);
+        if (locked()) return nudge();
         return change(cur => collapsed(cur, id));
       case 'today-options': {
         closeMenu(el);

@@ -96,6 +96,23 @@ test('undo saves the layout from before the change and redo the one after', asyn
   assert.deepEqual(saved()[4].layout.slice(0, 2), ['focus', 'brief']);
 });
 
+test('a drop that changes nothing saves nothing and draws the grid again', async () => {
+  const { ctl, calls } = harness();
+  // The lowest widget held in the empty rows below the grid: the save packs it back up.
+  const next = ctl.moveTo('meetings', 0, 22);
+  assert.equal(at(next.items, 'meetings').y, 22, 'held where it is dropped');
+  assert.equal(await ctl.commit(next), false);
+  assert.equal(calls.mutate.length, 0);
+  assert.equal(calls.render, 1, 'the tile moved by hand is drawn back where the grid keeps it');
+  // A resize to the same size, and a gallery card's drop that changes nothing, the same.
+  assert.equal(await ctl.commit(ctl.resizeTo('focus', 4, 4)), false);
+  assert.equal(await ctl.commit(ctl.moveTo('focus', 8, 0), undefined, 'Day at a glance added to Today'), false);
+  assert.deepEqual([calls.mutate.length, calls.render, calls.toasts.length], [0, 3, 0]);
+  // A keyed change that changes nothing (a title left as it was) still draws nothing.
+  await ctl.handle('today-title', el({ id: 'calendar' }, { value: 'Schedule' }));
+  assert.equal(calls.render, 3);
+});
+
 test('a refused save puts the widgets back and shows the message', async () => {
   const refusal = { code: 'validation', message: 'Invalid Today layout.', field: 'today' };
   const { ctl, calls, w, state } = harness({ refuse: refusal });
@@ -127,6 +144,35 @@ test('locked: moving does nothing and the toast offers Unlock', async () => {
   // The header's lock button turns it back on.
   await ctl.handle('today-lock', el());
   assert.equal(stored['codemie.layout.locked'], '1');
+});
+
+test('locked: ⌘Z, ⇧⌘Z, Undo and Redo change nothing and offer Unlock', async () => {
+  const { ctl, calls, saved, state, stored } = harness();
+  await ctl.commit(ctl.moveTo('focus', 0, 0));
+  await ctl.undo();
+  assert.deepEqual([saved().length, state.today.history.length, state.today.future.length], [2, 0, 1]);
+  await ctl.commit(ctl.moveTo('focus', 0, 0));
+  await ctl.undo();
+  await ctl.redo();
+  assert.deepEqual([saved().length, state.today.history.length, state.today.future.length], [5, 1, 0]);
+  await ctl.handle('today-lock', el());
+  const toasts = calls.toasts.length;
+  // The keys call undo and redo (app.js chains .catch on them); the edit bar's buttons come
+  // through handle.
+  const pending = ctl.undo();
+  assert.equal(typeof pending.catch, 'function', 'a promise, as when unlocked');
+  await pending;
+  await ctl.handle('today-undo', el());
+  await ctl.redo();
+  await ctl.handle('today-redo', el());
+  assert.equal(saved().length, 5, 'nothing is saved');
+  assert.deepEqual([state.today.history.length, state.today.future.length], [1, 0], 'the history is kept');
+  const nudges = calls.toasts.slice(toasts);
+  assert.deepEqual(nudges.map(t => [t.message, t.action?.label]), Array(4).fill(['Layouts are locked', 'Unlock']));
+  await nudges[0].action.run();
+  assert.equal(stored['codemie.layout.locked'], '0');
+  await ctl.undo();
+  assert.equal(saved().length, 6, 'unlocked, Undo works again');
 });
 
 test('Add puts the widget at the top left and pushes the others down', async () => {
@@ -338,6 +384,30 @@ test('the widget menu sets width, height, collapses and moves to the top', async
   await ctl.handle('today-top', item({ id: 'notes' }));
   assert.deepEqual(box(saved()[4].today.items, 'notes').slice(0, 2), [0, 0]);
   assert.equal(overlaps(saved()[4].today.items), false);
+});
+
+test('locked: the widget menu refuses Collapse and Expand as it does Width and Height; Remove still works', async () => {
+  const { ctl, saved, calls } = harness({ prefs: { 'codemie.layout.locked': '1' } });
+  const closed = [];
+  const item = data => el(data, { closest: sel => (sel === 'details' ? { removeAttribute: name => closed.push(name) } : null) });
+  await ctl.handle('today-collapse', item({ id: 'inbox' }));
+  assert.equal(saved().length, 0, 'Collapse saves nothing');
+  assert.ok(closed.includes('open'), 'the menu closes');
+  assert.deepEqual([calls.toasts.at(-1).message, calls.toasts.at(-1).action.label], ['Layouts are locked', 'Unlock']);
+  // A widget collapsed before the lock stays collapsed: Expand is refused too.
+  await calls.toasts.at(-1).action.run();
+  await ctl.handle('today-collapse', item({ id: 'inbox' }));
+  assert.equal(at(saved()[0].today.items, 'inbox').collapsed, true);
+  await ctl.handle('today-lock', el());
+  const toasts = calls.toasts.length;
+  await ctl.handle('today-collapse', item({ id: 'inbox' }));
+  assert.equal(saved().length, 1, 'Expand saves nothing');
+  assert.equal(calls.toasts.at(-1).message, 'Layouts are locked');
+  assert.equal(calls.toasts.length, toasts + 1);
+  // Remove from Today neither moves nor resizes: it is not refused.
+  await ctl.handle('today-remove', item({ id: 'notes' }));
+  assert.equal(saved().length, 2);
+  assert.equal(at(saved()[1].today.items, 'notes'), undefined);
 });
 
 test('the options panel saves options as they change and Reset widget clears them', async () => {

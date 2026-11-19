@@ -121,6 +121,26 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await shot(page, 'layout-e1-reloaded');
       assert(errors.length === 0, errors.join(' | '));
     });
+    await check('layout E1: the lowest widget dropped into the empty rows below is drawn back where it packs, nothing saved', async () => {
+      const was = await placeOf(page, 'automations');
+      const n = (await saves(page)).length;
+      await intoView(page, '[data-tile="automations"]', 160);
+      const head = await box(page, '[data-tile="automations"] .ws-tile-head h2');
+      const from = { x: head.x + 30, y: head.y + head.height / 2 };
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(from.x, from.y + 3 * ROW, { steps: 12 });
+      const held = await page.evaluate(() => Number(document.querySelector('.ws-tile-ph.ws-on')?.style.getPropertyValue('--y')));
+      assert(held === was.y + 3, `the placeholder is at row ${held}, not ${was.y + 3}`);
+      await page.mouse.up();
+      // Drawn again from the grid right after the drop (a rendered tile's style has no spaces),
+      // not left where it was let go until the next minute's render.
+      await page.waitForSelector(`[data-tile="automations"][style^="--x:${was.x};--y:${was.y};"]:not(.ws-tile-lifted)`, { timeout: 2000 });
+      await settled(page);
+      assert((await saves(page)).length === n, 'a drop that changes nothing saved the layout');
+      assert(JSON.stringify(await placeOf(page, 'automations')) === JSON.stringify(was), `Automation results drawn at ${JSON.stringify(await placeOf(page, 'automations'))}`);
+      assert(errors.length === 0, errors.join(' | '));
+    });
     await context.close().catch(() => {});
   }
 
