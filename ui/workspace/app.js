@@ -710,7 +710,10 @@ async function pluginAction(action, el) {
     case 'plugin-page': return routePlugin(id, el.dataset.activity);
     case 'plugin-go': return goHash(el.dataset.go);
     case 'plugin-palette': return pluginHost?.runPalette(id, Number(el.dataset.index));
-    case 'plugin-call-menu': return pluginHost?.runSlot(id, Number(el.dataset.index));
+    case 'plugin-call-menu':
+      // The ⋯ menu closes as the plugin's item runs in its page.
+      el.closest('details.ws-menu')?.removeAttribute('open');
+      return pluginHost?.runSlot(id, Number(el.dataset.index));
     case 'plugin-copy': {
       const text = heldText(snap(), el.dataset.id);
       if (text === null) return;
