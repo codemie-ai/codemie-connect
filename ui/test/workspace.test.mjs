@@ -12,6 +12,7 @@ import {
 import { attentionMessages, messageTitle, connectionState, decisions, sourceCounts, conversation, collapseChats } from '../workspace/selectors.js';
 import { snoozeUntil, filteredMessages, inbox } from '../workspace/view-inbox.js';
 import { today, todayModel, WIDGETS } from '../workspace/view-today.js';
+import { PRESETS } from '../workspace/today-grid.js';
 import { calendar, periodTitle, eventDetails, eventActions } from '../workspace/view-calendar.js';
 import { settings, jobLabel } from '../workspace/view-settings.js';
 import { renderShell, NAV } from '../workspace/shell.js';
@@ -389,6 +390,133 @@ test('Today without Microsoft invites one sign-in and keeps local work', () => {
   assert.match(html, /Sign in with Microsoft/);
   assert.match(html, /Book the workshop room/);
   assert.doesNotMatch(html, /Happening now/);
+});
+
+const tileOf = (html, id) => html.match(new RegExp(`<section class="ws-card ws-tile[^"]*"[^>]*? data-tile="${id}"[^]*?</section>`))?.[0] || '';
+
+test('Today draws tiles from the grid with their positions', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const html = today(s, ctx());
+  assert.match(html, /<div class="ws-today ws-today-page">/);
+  assert.match(html, /<div class="ws-tiles" data-today-grid style="--rows:22">/, 'Default ends at row 22');
+  assert.doesNotMatch(html, /ws-span-|class="ws-grid"/);
+  const focus = html.match(/<section class="ws-card ws-tile[^"]*" data-tile="focus" style="([^"]*)"/);
+  assert.ok(focus, 'Day at a glance is a tile');
+  assert.match(focus[1], /^--x:8;--y:0;--w:4;--h:4;--order:1$/);
+  // The stacked layout reads them by row, then column.
+  assert.deepEqual([...html.matchAll(/data-tile="([^"]+)" style="[^"]*--order:(\d+)"/g)].map(m => [m[1], Number(m[2])]),
+    [['brief', 0], ['focus', 1], ['calendar', 2], ['inbox', 3], ['commitments', 4], ['notes', 5], ['meetings', 6], ['automations', 7]]);
+  // A tile: the grip, its title, the widget buttons, a body and three resize handles.
+  const tile = tileOf(html, 'focus');
+  assert.match(tile, /<header class="ws-card-header ws-tile-head"><button type="button" class="ws-tile-grip" aria-label="Move Day at a glance\. Arrow keys move it, Shift and arrow keys resize it\."/);
+  assert.match(tile, /<h2 class="ws-card-title"><span class="ws-card-icon">[^]*?<\/span>Day at a glance<\/h2>/);
+  assert.match(tile, /data-action="today-options" data-id="focus"[^>]*aria-label="Customize Day at a glance"/);
+  assert.match(tile, /data-action="today-menu" data-id="focus"[^>]*aria-label="More for Day at a glance"/);
+  assert.match(tile, /<div class="ws-card-body ws-tile-body">/);
+  assert.deepEqual([...tile.matchAll(/class="ws-rz" data-edge="([a-z])"/g)].map(m => m[1]), ['r', 'b', 'c']);
+  assert.match(tileOf(html, 'calendar'), /<div class="ws-card-actions ws-tile-extra">[^]*?data-route="calendar"/, 'header extras are marked');
+
+  // A saved grid: its positions, the user's titles (escaped) and a collapsed widget.
+  const w = active(s);
+  w.layout = ['calendar', 'brief'];
+  w.today = { active: 'Mine', items: [{ id: 'calendar', x: 0, y: 0, w: 4, h: 1, collapsed: true, prevH: 7 }, { id: 'brief', x: 4, y: 0, w: 8, h: 4 }], titles: { brief: 'Next <b>up</b>' } };
+  const saved = today(s, ctx());
+  assert.match(saved, /data-today-grid style="--rows:4"/);
+  assert.deepEqual([...saved.matchAll(/data-tile="([^"]+)"/g)].map(m => m[1]), ['calendar', 'brief']);
+  assert.match(saved, /class="ws-card ws-tile ws-tile-collapsed ws-schedule-card" data-tile="calendar" style="--x:0;--y:0;--w:4;--h:1;--order:0"/);
+  const brief = tileOf(saved, 'brief');
+  assert.match(brief, /<\/span>Next &lt;b&gt;up&lt;\/b&gt;<\/h2>/);
+  assert.match(brief, /aria-label="Move Next &lt;b&gt;up&lt;\/b&gt;\./);
+  assert.doesNotMatch(saved, /<b>up<\/b>/);
+  // Nothing on the grid: the empty state starts Customize.
+  w.layout = [];
+  w.today = { active: 'Mine', items: [] };
+  assert.match(today(s, ctx()), /Make Today your own[^]*?data-action="today-customize"/);
+});
+
+test('Schedule draws an agenda list for narrow sizes', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const tile = tileOf(today(s, ctx()), 'calendar');
+  const agenda = tile.slice(tile.indexOf('<div class="ws-tl-agenda">'));
+  assert.ok(tile.includes('<div class="ws-tl-agenda">'), tile);
+  assert.match(agenda, /<button type="button" class="ws-tl-agenda-item" data-action="event" data-id="ev-current"[^>]*><b>[^<]+<\/b><span>Architecture review: Connect sync<\/span><\/button>/);
+  assert.match(tile, /class="ws-timeline"/, 'the timeline is still there for wider sizes');
+});
+
+test('Needs your reply shows the number of messages its options ask for', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const ids = html => [...tileOf(html, 'inbox').matchAll(/class="ws-msg-row" data-action="open-message" data-id="([^"]+)"/g)].map(m => m[1]);
+  const waiting = attentionMessages(s);
+  assert.ok(waiting.length > 3, 'the fixture has more than 3 to show');
+  assert.equal(ids(today(s, ctx())).length, Math.min(6, waiting.length), '6 by default');
+  active(s).today = { active: 'Default', items: PRESETS.Default, options: { inbox: { max: '3' } } };
+  assert.equal(ids(today(s, ctx())).length, 3);
+  active(s).today.options.inbox = { sources: ['chat'] };
+  const chats = ids(today(s, ctx()));
+  assert.ok(chats.length > 0);
+  assert.ok(chats.every(id => s.records.find(r => r.id === id).data.channel === 'chat'), 'Teams only');
+});
+
+test('Tasks no longer draws Notes; Notes keeps the textarea id today-note', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const html = today(s, ctx());
+  assert.doesNotMatch(tileOf(html, 'commitments'), /today-note|ws-notes/);
+  const notes = tileOf(html, 'notes');
+  assert.match(notes, /<\/span>Notes<\/h2>/);
+  assert.match(notes, /id="note-state"/);
+  assert.match(notes, /<textarea id="today-note" class="ws-textarea ws-notes ws-notes-small" data-workspace-id="personal"/);
+  active(s).today = { active: 'Default', items: PRESETS.Default, options: { notes: { size: 'large' } } };
+  assert.match(tileOf(today(s, ctx()), 'notes'), /class="ws-textarea ws-notes ws-notes-large"/);
+});
+
+test('widgets honour their options', t => {
+  const now = Date.parse('2026-11-18T09:30:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const s = buildSnapshot(now, { photo: false });
+  const w = active(s);
+  const items = [...PRESETS.Default, { id: 'timer', x: 0, y: 22, w: 4, h: 3 }];
+  const before = today(s, ctx());
+  assert.match(tileOf(before, 'brief'), /ws-later-label[^]*?class="ws-people"|class="ws-people"[^]*?ws-later-label/);
+  assert.match(tileOf(before, 'calendar'), /ws-tl-free/);
+  assert.match(tileOf(before, 'commitments'), /data-form="commitment-add"/);
+  assert.match(tileOf(before, 'focus'), /class="ws-focus"/);
+  w.today = {
+    active: 'Default', items,
+    options: {
+      brief: { later: false, people: false },
+      focus: { stats: ['tasks', 'left'], focus: false },
+      calendar: { free: false },
+      commitments: { add: false, done: false },
+      timer: { minutes: '50' },
+    },
+  };
+  const html = today(s, ctx());
+  assert.doesNotMatch(tileOf(html, 'brief'), /ws-later-label|class="ws-people"/);
+  const glance = tileOf(html, 'focus');
+  assert.deepEqual([...glance.matchAll(/<strong>[^<]*<\/strong><span>([^<]+)<\/span>/g)].map(m => m[1]), ['Meetings left', 'Open tasks'], 'in their usual order');
+  assert.doesNotMatch(glance, /class="ws-focus/);
+  assert.doesNotMatch(tileOf(html, 'calendar'), /ws-tl-free/);
+  assert.doesNotMatch(tileOf(html, 'commitments'), /data-form="commitment-add"|ws-done-list/);
+  // Focus timer starts the length it is set to, through the same focus action as Day at a glance.
+  assert.match(tileOf(html, 'timer'), /<strong>50:00<\/strong>[^]*?data-action="focus" data-minutes="50"/);
+  s.settings.focusUntil = Math.floor(now / 1000) + 600;
+  assert.match(tileOf(today(s, ctx()), 'timer'), /data-countdown-end="[0-9]+"[^]*?data-action="focus" data-minutes="0"/);
+});
+
+test('before plugins load a plugin widget still draws', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const w = active(s);
+  w.layout = ['brief', 'plugin:github:ci'];
+  w.today = { active: 'Mine', items: [{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }, { id: 'plugin:github:ci', x: 8, y: 0, w: 4, h: 4 }] };
+  const draw = (pluginsKnown, catalog = []) => today(s, { ...ctx(), pluginsKnown, plugins: { catalog, drawn: {} } });
+  const loading = tileOf(draw(false), 'plugin:github:ci');
+  assert.match(loading, /data-widget="plugin:github:ci" data-tile="plugin:github:ci" style="--x:8;--y:0;--w:4;--h:4;--order:1"/);
+  assert.match(loading, /Its plugin is off/);
+  // Once the catalog is known, a widget whose plugin is off isn't drawn; the others stay put.
+  const off = draw(true);
+  assert.doesNotMatch(off, /data-tile="plugin:github:ci"/);
+  assert.match(off, /data-tile="brief" style="--x:0;--y:0;--w:8;--h:4;--order:0"/);
+  assert.match(draw(true, [{ id: 'plugin:github:ci', title: 'GitHub CI', description: '', width: 4, plugin: 'github' }]), /data-tile="plugin:github:ci"[^]*?Waiting for its first data/);
 });
 
 test('Calendar renders a time grid with hours, overlap columns and escaped titles', () => {
@@ -1045,9 +1173,13 @@ test('calendar badge appears on online meetings only and the event card offers S
 test('today meetings card lists needs-you before to-do and links to the meeting', () => {
   const s = meetingsSnapshot();
   const ctx = { auth: {}, hidden: new Set(), banners: '', state: {}, now: MEET_NOW };
-  // Not in the layout yet and never hidden: it shows itself while something waits.
+  const w = active(s);
+  // Not on the grid and never removed: it shows itself at the bottom, full width, while something waits.
+  w.layout = ['brief'];
+  w.today = { active: 'Mine', items: [{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }], hidden: [] };
   let html = today(s, ctx);
   const card = html.match(/<section class="ws-card[^"]*ws-mtg-today[^"]*"[^]*?<\/section>/)?.[0] || '';
+  assert.match(card, /data-tile="meetings" style="--x:0;--y:4;--w:12;--h:5;--order:1"/);
   assert.match(card, /From your meetings/);
   const rows = [...card.matchAll(/data-action="meeting-open" data-id="([^"]+)"/g)].map(m => m[1]);
   assert.deepEqual(rows.slice(0, 2).sort(), ['mtg-critique', 'mtg-northwind'], 'needs you first');
@@ -1056,11 +1188,19 @@ test('today meetings card lists needs-you before to-do and links to the meeting'
   assert.match(card, /Notes failed — try again/);
   assert.match(card, /Transcript saved, no notes yet/);
   assert.match(card, /data-action="route" data-route="meetings"/);
-  // Hidden in Customize: it stays hidden.
-  active(s).widgetWidths = { meetings: 6 };
+  // "Only meetings that need me": the to-do ones go.
+  w.today.options = { meetings: { needsMe: true } };
+  const needsMe = today(s, ctx).match(/<section class="ws-card[^"]*ws-mtg-today[^"]*"[^]*?<\/section>/)?.[0] || '';
+  assert.deepEqual([...needsMe.matchAll(/data-action="meeting-open" data-id="([^"]+)"/g)].map(m => m[1]).sort(), ['mtg-critique', 'mtg-northwind']);
+  // Removed from Today: it stays away.
+  w.today.hidden = ['meetings'];
   assert.doesNotMatch(today(s, ctx), /ws-mtg-today/);
-  // In the layout and nothing waiting: all caught up.
-  active(s).layout = [...active(s).layout, 'meetings'];
+  // No grid saved yet: the old Customize dialog's rule still hides it.
+  w.today = {};
+  w.widgetWidths = { brief: 8, meetings: 6 };
+  assert.doesNotMatch(today(s, ctx), /ws-mtg-today/);
+  // On the grid and nothing waiting: all caught up.
+  w.today = { active: 'Mine', items: [{ id: 'meetings', x: 0, y: 0, w: 6, h: 5 }] };
   for (const r of s.records.filter(x => x.kind === 'meeting')) r.data.state = 'ready';
   html = today(s, ctx);
   assert.match(html, /ws-mtg-today[^]*?All caught up[^]*?Every transcript has notes\./);

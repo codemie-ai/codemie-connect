@@ -444,7 +444,7 @@ function templatesPanel() {
  * failed or was skipped, a line above the result says so; an automation whose only runs failed
  * shows that line alone. `ai` is the `ai_status` answer, for the failure's action.
  */
-export function automationResultsCard(s, ai = {}) {
+export function automationResultsCard(s, ai = {}, { failuresOnly = false } = {}) {
   const zone = s.settings.timeZone;
   const results = automationList(s)
     .map(a => {
@@ -453,7 +453,7 @@ export function automationResultsCard(s, ai = {}) {
       const problem = latest && latest.id !== run?.id && ['failed', 'skipped'].includes(latest.data.status) && started(latest) >= started(run) ? latest : null;
       return { a, run, problem };
     })
-    .filter(x => x.run || x.problem)
+    .filter(x => (x.run || x.problem) && (!failuresOnly || [x.run, x.problem].some(r => r?.data.status === 'failed')))
     .sort((x, y) => started(y.problem || y.run) - started(x.problem || x.run))
     .slice(0, 4);
   const body = results.length

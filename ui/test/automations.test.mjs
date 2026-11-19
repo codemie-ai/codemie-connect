@@ -368,6 +368,12 @@ test('today_automation_card_shows_latest_results_with_sources', () => {
   assert.ok(tagWith(brief.slice(brief.indexOf('2 replies owed')), 'data-action="automation-open-run"[^>]*data-id="run-1"'));
   assert.ok(brief.indexOf('Latest run failed') < brief.indexOf('2 replies owed'), 'the failure is above the older result');
   assert.doesNotMatch(cardHtml.slice(cardHtml.indexOf('Draft replies to Ann')), /Latest run/, 'Ann’s latest run is fine');
+  // "Only failures": the automation whose latest run failed stays, Ann's goes.
+  s.workspaces[0].today = { active: 'Mine', items: [{ id: 'automations', x: 0, y: 0, w: 6, h: 5 }], options: { automations: { failures: true } } };
+  const failures = today(s, { state: { ai: AI }, auth: {}, hidden: new Set(), banners: '' });
+  assert.match(failures, /Morning brief[\s\S]*Latest run failed 5 min ago/);
+  assert.doesNotMatch(failures, /Draft replies to Ann/);
+  s.workspaces[0].today = {};
   // With no result on Today yet, the failure alone keeps the automation on the card.
   const failedOnly = snapshot();
   failedOnly.workspaces[0].layout = ['automations'];

@@ -294,15 +294,21 @@ test('Today draws plugin widgets from their data, escaped, and the From plugins 
   assert.match(card, /data-go="#\/p\/github\/repos"/);
   assert.equal(heldText(s, 'scheduler:held:1'), `Monday plan\n\nPlan ${HOSTILE}`);
   const w = s.workspaces.find(x => x.id === s.settings.activeWorkspace);
-  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: {} }, s), true, 'shown until a saved layout says otherwise');
-  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: { plugins: 12 } }, s), false);
+  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: {}, today: {} }, s), true, 'shown until a saved layout says otherwise');
+  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: { plugins: 12 }, today: {} }, s), false);
+  // With a saved grid: shown unless the grid places it (it is drawn there) or it was removed.
+  const grid = items => ({ active: 'Mine', items, layouts: {}, titles: {}, options: {}, hidden: [] });
+  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: { plugins: 12 }, today: grid([]) }, s), true, 'the old widths no longer count');
+  assert.equal(showPluginsCard({ ...w, layout: ['plugins'], today: grid([{ id: 'plugins', x: 0, y: 0, w: 12, h: 3 }]) }, s), false);
+  assert.equal(showPluginsCard({ ...w, layout: [], today: { ...grid([]), hidden: ['plugins'] } }, s), false);
 
-  // On Today: in the layout, and the From plugins card on its own.
+  // On Today: a plugin widget on the grid, and the From plugins card on its own at the bottom.
   w.layout = ['brief', 'plugin:github:ci'];
   w.widgetWidths = {};
+  w.today = grid([{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }, { id: 'plugin:github:ci', x: 8, y: 0, w: 4, h: 4 }]);
   const page = today(s, { auth: {}, hidden: new Set(), banners: '', state: {}, plugins: { catalog: [], drawn: {}, routeOf: () => null } });
-  assert.match(page, /data-widget="plugin:github:ci"/);
-  assert.match(page, /ws-plugins-card/);
+  assert.match(page, /data-widget="plugin:github:ci" data-tile="plugin:github:ci"/);
+  assert.match(page, /class="ws-card ws-tile ws-plugins-card" data-tile="plugins" style="--x:0;--y:4;--w:12;--h:3;--order:2"/);
   assert.ok(escaped(page));
 });
 

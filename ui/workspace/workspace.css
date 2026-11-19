@@ -310,8 +310,6 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .ws-avatar-photo{background:var(--ws-raised)}
 
 /* cards */
-.ws-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px;align-items:start}
-.ws-span-4{grid-column:span 4}.ws-span-6{grid-column:span 6}.ws-span-8{grid-column:span 8}.ws-span-12{grid-column:span 12}
 .ws-card{display:flex;flex-direction:column;min-width:0;border:1px solid var(--ws-border);border-radius:var(--ws-radius-lg);background:var(--ws-card);box-shadow:var(--ws-shadow-sm)}
 .ws-card+.ws-card{margin-top:0}
 .ws-settings-panels .ws-card+.ws-card{margin-top:16px}
@@ -418,6 +416,30 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .ws-connect-cta{display:flex;gap:8px;align-items:center;flex-shrink:0}
 .ws-pending{display:flex;align-items:center;gap:8px;color:var(--ws-muted);font-size:13px}
 
+/* The Today grid: 12 columns, 56 px rows, 16 px gaps. Each tile sits where its --x --y --w --h say,
+   so the view needs no measuring. Each tile is a size container (header and footer included). */
+.ws-today-page{container:ws-today / inline-size}
+.ws-tiles{position:relative;height:calc(var(--rows) * 72px - 16px)}
+.ws-tile{position:absolute;box-sizing:border-box;left:calc((100% - 11 * 16px) / 12 * var(--x) + 16px * var(--x));top:calc(var(--y) * 72px);width:calc((100% - 11 * 16px) / 12 * var(--w) + 16px * (var(--w) - 1));height:calc(var(--h) * 56px + (var(--h) - 1) * 16px);container:ws-tile / size}
+.ws-tile-head{flex-shrink:0;gap:8px;padding:0 8px 0 10px}
+.ws-tile-head .ws-card-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap}
+.ws-tile-grip{display:grid;place-items:center;flex-shrink:0;width:22px;height:28px;margin-right:-4px;padding:0;border:0;border-radius:6px;background:none;color:var(--ws-faint);opacity:0;transition:opacity .12s}
+.ws-tile-grip .ws-icon{width:16px;height:16px}
+.ws-tile-grip:hover{background:var(--ws-hover);color:var(--ws-text)}
+.ws-tile:hover .ws-tile-grip,.ws-tile-grip:focus-visible{opacity:1}
+.ws-tile-extra{flex-shrink:0}
+.ws-tile-tools{display:flex;align-items:center;gap:2px;flex-shrink:0}
+.ws-tile-tools .ws-btn{color:var(--ws-muted)}
+.ws-tile-body{min-height:0;overflow:auto}
+.ws-tile .ws-card-footer{flex-shrink:0}
+.ws-tile-collapsed .ws-tile-head{border-bottom-color:transparent}
+.ws-tile-collapsed .ws-tile-body,.ws-tile-collapsed .ws-card-footer{display:none}
+/* Narrower than 640 px: one column in reading order, each tile still the height of its rows. */
+@container ws-today (max-width:639px){
+  .ws-tiles{display:flex;flex-direction:column;gap:16px;height:auto}
+  .ws-tile{position:relative;left:auto;top:auto;width:auto;order:var(--order)}
+}
+
 .ws-upnext .ws-card-body{padding:18px}
 .ws-upnext-main{display:flex;gap:18px;align-items:stretch}
 .ws-upnext-time{display:flex;flex-direction:column;justify-content:center;gap:2px;min-width:76px;padding:6px 0 6px 14px;border-left:4px solid var(--event-color)}
@@ -467,6 +489,14 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 
 .ws-schedule-card .ws-card-body{padding:0}
 .ws-schedule-scroll{max-height:420px;overflow:auto;padding:12px 16px 14px 8px}
+.ws-schedule-card .ws-tile-body{display:flex;flex-direction:column}
+.ws-tile .ws-schedule-scroll{flex:1;min-height:0;max-height:none}
+.ws-tl-agenda{display:none;gap:2px}
+.ws-tl-agenda-item{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:baseline;width:100%;padding:6px 8px;border:0;border-left:3px solid var(--event-color);border-radius:6px;background:none;text-align:left;font-size:12px;line-height:16px;color:var(--ws-text)}
+.ws-tl-agenda-item:hover{background:var(--ws-hover)}
+.ws-tl-agenda-item.ws-past{opacity:.55}
+.ws-tl-agenda-item b{font-weight:600;color:var(--ws-muted)}
+.ws-tl-agenda-item span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-tl-allday{display:flex;flex-wrap:wrap;gap:6px;padding:0 0 10px 56px}
 .ws-timeline{position:relative;margin-left:0}
 .ws-tl-hour{position:absolute;left:0;right:0;height:0;border-top:1px solid var(--ws-border)}
@@ -515,7 +545,6 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-ellipsis{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ws-msg-preview{font-size:12px;line-height:18px;color:var(--ws-muted);display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;font-family:var(--font-sans)}
 
-.ws-two-col{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:24px}
 .ws-quick-add{display:flex;gap:8px;margin-bottom:10px}
 .ws-quick-add .ws-input:first-child{flex:1}
 .ws-quick-add .ws-date{width:150px;flex:0 0 150px}
@@ -530,10 +559,43 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-todo.ws-done .ws-todo-text span{text-decoration:line-through;color:var(--ws-muted)}
 .ws-done-list{margin-top:8px}
 .ws-done-list summary{cursor:pointer;font-size:12px;color:var(--ws-muted);padding:6px 4px}
-.ws-note-col{display:flex;flex-direction:column;gap:8px}
-.ws-note-head{display:flex;align-items:center;justify-content:space-between}
-.ws-note-state{font-size:11px;color:var(--ws-faint)}
-.ws-notes{flex:1;min-height:180px;font-size:14px}
+.ws-note-state{font-size:11px;color:var(--ws-faint);white-space:nowrap}
+.ws-notes-card .ws-tile-body{display:flex}
+.ws-notes{flex:1;min-height:0;resize:none}
+.ws-notes-small{font-size:13px}.ws-notes-medium{font-size:15px}.ws-notes-large{font-size:17px}
+
+.ws-timer-card .ws-tile-body{display:grid;place-items:center}
+.ws-timer{display:grid;justify-items:center;gap:8px;text-align:center}
+.ws-timer strong{font-size:34px;line-height:38px;font-weight:600;font-variant-numeric:tabular-nums}
+.ws-timer>span{font-size:12px;line-height:16px;color:var(--ws-muted)}
+
+/* What content does with the size of its tile: after the widget rules, which it overrides. */
+@container ws-tile (max-width:459px){
+  .ws-upnext-time,.ws-upnext .ws-face-stack,.ws-upnext-actions .ws-btn:not(.ws-btn-primary){display:none}
+}
+@container ws-tile (max-height:189px){
+  .ws-upnext .ws-card-footer,.ws-upnext .ws-face-stack{display:none}
+}
+@container ws-tile (max-height:109px){
+  .ws-upnext-actions{display:none}
+}
+@container ws-tile (min-width:520px){
+  .ws-glance .ws-stats{grid-template-columns:repeat(4,minmax(0,1fr))}
+}
+@container ws-tile (max-height:199px){
+  .ws-glance .ws-focus{display:none}
+}
+@container ws-tile (max-width:419px){
+  .ws-attention .ws-msg-preview,.ws-commitments .ws-todo-owner,.ws-commitments .ws-quick-add .ws-date{display:none}
+}
+@container ws-tile (max-width:299px){
+  .ws-tile-extra,.ws-schedule-card .ws-timeline{display:none}
+  .ws-schedule-card .ws-tl-agenda{display:grid}
+  .ws-schedule-card .ws-tl-allday{padding-left:0}
+}
+@container ws-tile (max-width:279px){
+  .ws-attention .ws-msg-avatar{display:none}
+}
 
 /* ------------------------------------------------------------------ Calendar */
 .ws-calendar-page{display:grid;grid-template-columns:248px minmax(0,1fr);height:100%;min-height:0}
@@ -895,12 +957,6 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-workspace-card .ws-ws-dot{background:var(--ws-color)}
 
 /* ------------------------------------------------------------------ responsive */
-@media (max-width:1280px){
-  .ws-span-4{grid-column:span 6}
-  .ws-span-8{grid-column:span 12}
-  .ws-glance{grid-column:span 12!important}
-  .ws-glance .ws-stats{grid-template-columns:repeat(4,minmax(0,1fr))}
-}
 @media (max-width:1180px){
   .ws-calendar-page{grid-template-columns:0 minmax(0,1fr)}
   .ws-cal-side{visibility:hidden;padding:0;border:0}
@@ -914,9 +970,6 @@ ul.ws-draft-context[hidden]{display:none}
   .ws-nav button span,.ws-user-copy,.ws-nav .ws-count{display:none}
   .ws-nav button{justify-content:center;padding:0}
   .ws-user{justify-content:center}
-  .ws-span-6,.ws-span-4{grid-column:span 12}
-  .ws-two-col{grid-template-columns:1fr}
-  .ws-glance .ws-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ws-sync-pill span{display:none}
   .ws-plugin-nav{padding-top:12px;border-top:1px solid #ffffff33}
   .light .ws-plugin-nav{border-top-color:#0000001f}

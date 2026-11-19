@@ -10,18 +10,72 @@ import { automationResultsCard } from './view-automations.js';
 import { PLUGINS_CARD, parseLayoutId, pluginWidgetCard, pluginsCard, showPluginsCard } from './today-plugins.js';
 import { isMine, meOf, ownerOf, sortTasks, taskStatus } from './tasks-model.js';
 import { showMeetingsCard, todayMeetingsCard } from './view-meetings.js';
+import { GRID, autoCards, optionsOf, todayOf } from './today-grid.js';
 
+const toggle = (key, label, def) => ({ key, type: 'toggle', label, def });
+const choice = (key, label, choices, def) => ({ key, type: 'select', label, choices, def });
+const checks = (key, label, choices, def) => ({ key, type: 'checks', label, choices, def });
+
+/** Today's widgets: default size `width` × `h` in grid columns and rows, the smallest size, and the
+ *  options each one offers (the saved value of `key`, or `def`). */
 export const WIDGETS = {
-  brief: { title: 'Up next', width: 8, description: 'Your current or next meeting with a one-click join.' },
-  focus: { title: 'Day at a glance', width: 4, description: 'Meetings, free time, replies and a focus timer.' },
-  calendar: { title: 'Schedule', width: 6, description: "Today's timeline with free time between meetings." },
-  inbox: { title: 'Needs your reply', width: 6, description: 'Outlook and Teams messages waiting for you.' },
-  commitments: { title: 'Tasks', width: 12, description: 'Your open tasks and a scratchpad for Connect.' },
-  meetings: { title: 'From your meetings', width: 6, description: 'Meetings that need you and transcripts waiting for notes.' },
-  automations: { title: 'Automation results', width: 6, description: 'The latest result of each automation, with its sources.' },
-  [PLUGINS_CARD]: { title: 'From plugins', width: 12, description: 'Decisions, deliveries and held messages your plugins prepare.' },
+  brief: {
+    title: 'Up next', width: 8, h: 4, minW: 3, minH: 2, description: 'Your current or next meeting with a one-click join.',
+    options: [toggle('later', 'Show “Later today”', true), toggle('people', 'Show who is invited', true)],
+  },
+  focus: {
+    title: 'Day at a glance', width: 4, h: 4, minW: 2, minH: 2, description: 'Meetings, free time, replies and a focus timer.',
+    options: [
+      checks('stats', 'Numbers', [['left', 'Meetings left'], ['busy', 'In meetings'], ['free', 'Free time'], ['reply', 'Need reply'], ['tasks', 'Open tasks']], ['left', 'busy', 'free', 'reply']),
+      toggle('focus', 'Focus session buttons', true),
+    ],
+  },
+  calendar: {
+    title: 'Schedule', width: 6, h: 7, minW: 2, minH: 3, description: "Today's timeline with free time between meetings.",
+    options: [toggle('free', 'Show free time', true), choice('start', 'Day starts at', [['7', '07:00'], ['8', '08:00'], ['9', '09:00']], '8')],
+  },
+  inbox: {
+    title: 'Needs your reply', width: 6, h: 7, minW: 2, minH: 3, description: 'Outlook and Teams messages waiting for you.',
+    options: [choice('max', 'Messages shown', [['3', '3'], ['6', '6'], ['10', '10']], '6'), checks('sources', 'Sources', [['mail', 'Outlook'], ['chat', 'Teams']], ['mail', 'chat'])],
+  },
+  commitments: {
+    title: 'Tasks', width: 8, h: 6, minW: 3, minH: 3, description: 'Your open tasks with a quick-add box.',
+    options: [toggle('add', 'Quick add box', true), toggle('mine', 'Only my tasks', false), toggle('done', 'Show completed', true)],
+  },
+  notes: {
+    title: 'Notes', width: 4, h: 6, minW: 2, minH: 2, description: 'A scratchpad for thoughts, plans and things to remember.',
+    options: [choice('size', 'Text size', [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']], 'small')],
+  },
+  meetings: {
+    title: 'From your meetings', width: 6, h: 5, minW: 3, minH: 2, description: 'Meetings that need you and transcripts waiting for notes.',
+    options: [toggle('needsMe', 'Only meetings that need me', false)],
+  },
+  automations: {
+    title: 'Automation results', width: 6, h: 5, minW: 3, minH: 2, description: 'The latest result of each automation, with its sources.',
+    options: [toggle('failures', 'Only failures', false)],
+  },
+  timer: {
+    title: 'Focus timer', width: 4, h: 3, minW: 2, minH: 2, description: 'A focus session that quiets non-critical reminders.',
+    options: [choice('minutes', 'Default length', [['25', '25 min'], ['50', '50 min']], '25')],
+  },
+  [PLUGINS_CARD]: { title: 'From plugins', width: 12, h: 3, minW: 4, minH: 2, description: 'Decisions, deliveries and held messages your plugins prepare.', options: [] },
 };
 export const WIDGET_IDS = Object.keys(WIDGETS);
+
+/** What the grid knows of each widget, by id: Today's own and the ones the enabled plugins declare
+ *  (`pluginCatalog`, from `pluginWidgetCatalog`), as {id, title, description, w, h, minW, minH,
+ *  options, plugin?}. A plugin widget is its plugin's width × 4 rows, and at least 2 × 2. */
+export function tileDefs(pluginCatalog = []) {
+  const defs = {};
+  for (const id of WIDGET_IDS) {
+    const { width, ...def } = WIDGETS[id];
+    defs[id] = { id, ...def, w: width };
+  }
+  for (const p of pluginCatalog) {
+    defs[p.id] = { id: p.id, title: p.title, description: p.description, w: p.width, h: 4, minW: 2, minH: 2, options: [], plugin: p.plugin };
+  }
+  return defs;
+}
 
 /** What Customize lists, in the layout's order then the rest: Today's cards and the widgets the
  *  enabled plugins declare (`pluginCatalog`, from `pluginWidgetCatalog`). */
@@ -72,28 +126,40 @@ export function today(s, ctx) {
   const name = firstName(c);
   const hour = zonedParts(m.nowMs, m.zone).hour;
   const summary = connected ? daySummary(m) : 'Your personal workspace. Connect Microsoft 365 to bring in your calendar, Outlook and Teams.';
+  const catalog = ctx.plugins?.catalog || [];
+  const defs = tileDefs(catalog);
+  const t = todayOf(w, defs);
   const widgets = {
-    brief: () => upNextCard(s, m, connected),
-    focus: () => glanceCard(s, m, connected),
-    calendar: () => scheduleCard(s, m, connected),
-    inbox: () => attentionCard(s, m, connected, ctx.state?.ai),
-    commitments: () => commitmentsCard(s, m, w),
-    meetings: () => todayMeetingsCard(s, m.nowMs),
-    automations: () => automationResultsCard(s, ctx.state?.ai),
+    brief: o => upNextCard(s, m, connected, o),
+    focus: o => glanceCard(s, m, connected, o),
+    calendar: o => scheduleCard(s, m, connected, o),
+    inbox: o => attentionCard(s, m, connected, ctx.state?.ai, o),
+    commitments: o => commitmentsCard(s, m, o),
+    notes: o => notesCard(s, m, w, o),
+    meetings: o => todayMeetingsCard(s, m.nowMs, { needsMe: o.needsMe }),
+    automations: o => automationResultsCard(s, ctx.state?.ai, { failuresOnly: o.failures }),
+    timer: o => timerCard(s, o),
     [PLUGINS_CARD]: () => pluginsCard(s, { zone: m.zone, routeOf: ctx.plugins?.routeOf }),
   };
-  const catalog = ctx.plugins?.catalog || [];
-  const layout = w.layout.filter(id => widgets[id] || parseLayoutId(id));
-  // "From your meetings" shows itself while a meeting waits, until a saved layout hides it.
-  if (!layout.includes('meetings') && showMeetingsCard(w, s, m.nowMs)) layout.push('meetings');
-  if (!layout.includes(PLUGINS_CARD) && showPluginsCard(w, s)) layout.push(PLUGINS_CARD);
-  const grid = layout.map(id => {
-    const fallback = WIDGETS[id]?.width || catalog.find(x => x.id === id)?.width || 6;
-    const width = [4, 6, 8, 12].includes(w.widgetWidths?.[id]) ? w.widgetWidths[id] : fallback;
-    const html = widgets[id] ? widgets[id]() : pluginWidgetCard(s, id, { catalog, drawn: ctx.plugins?.drawn, zone: m.zone });
-    return html.replace('class="ws-card', `class="ws-card ws-span-${width}`);
-  }).join('');
-  return `<div class="ws-today">
+  const draw = id => (Object.hasOwn(widgets, id)
+    ? widgets[id](optionsOf(t, id, defs[id]))
+    : pluginWidgetCard(s, id, { catalog, drawn: ctx.plugins?.drawn, zone: m.zone }));
+  // A plugin widget counts as there until the plugin catalog is known; after that, only while its
+  // plugin is on. One that isn't there is not drawn but keeps its place in the saved grid.
+  const there = id => Object.hasOwn(widgets, id) || (!!parseLayoutId(id) && (!ctx.pluginsKnown || Object.hasOwn(defs, id)));
+  const placed = t.items.filter(it => there(it.id));
+  let rows = placed.reduce((bottom, it) => Math.max(bottom, it.y + it.h), 0);
+  // Cards the grid doesn't place show themselves below it, full width: "From your meetings" while
+  // a meeting waits, "From plugins" while a plugin has something, and ids native put in `layout`.
+  const wanted = [showMeetingsCard(w, s, m.nowMs) && 'meetings', showPluginsCard(w, s) && PLUGINS_CARD].filter(Boolean);
+  const below = autoCards(w, t, wanted).filter(there).map(id => {
+    const it = { id, x: 0, y: rows, w: GRID.cols, h: defs[id]?.h || 4 };
+    rows += it.h;
+    return it;
+  });
+  const tiles = [...placed, ...below].sort((a, b) => a.y - b.y || a.x - b.x)
+    .map((it, order) => tile(draw(it.id), it, order, t.titles[it.id])).join('');
+  return `<div class="ws-today ws-today-page">
     <header class="ws-today-head">
       ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 56, className: 'ws-today-avatar' })}
       <div class="ws-today-title">
@@ -106,8 +172,38 @@ export function today(s, ctx) {
     ${banners}
     ${ctx.codemieCard || ''}
     ${state === 'none' || state === 'authorizing' ? connectHero(state) : ''}
-    ${layout.length ? `<div class="ws-grid">${grid}</div>` : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want on Today.', actions: button('Choose cards', { action: 'customize', variant: 'primary' }) })}
+    ${tiles ? `<div class="ws-tiles" data-today-grid style="--rows:${rows}">${tiles}</div>` : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want on Today.', actions: button('Choose cards', { action: 'today-customize', variant: 'primary' }) })}
   </div>`;
+}
+
+const CARD_TITLE = /<h2 class="ws-card-title">([^]*?)<\/h2>/;
+const HANDLES = [['r', 'Drag to change the width'], ['b', 'Drag to change the height'], ['c', 'Drag to resize']]
+  .map(([edge, title]) => `<span class="ws-rz" data-edge="${edge}" title="${title}" aria-hidden="true"></span>`).join('');
+const tool = (action, iconName, title, label, id, extra = '') => `<button type="button" class="ws-btn ws-btn-ghost ws-btn-sm ws-btn-icon" data-action="${action}" data-id="${e(id)}" title="${title}" aria-label="${label}"${extra}>${icon(iconName)}</button>`;
+
+/**
+ * A widget's card as a grid tile placed at `it`. Cards come from `card()`, whose markup is fixed:
+ * the tile keeps the card's classes and attributes, its header gets the grip and the widget
+ * buttons, its body becomes the part that scrolls and the resize handles go last. `title` is the
+ * name the user gave the widget, shown instead of the card's own.
+ */
+function tile(html, it, order, title) {
+  let name = '';
+  const named = html.replace(CARD_TITLE, (_, inner) => {
+    const text = inner.lastIndexOf('>') + 1;
+    name = title ? e(title) : inner.slice(text);
+    return `<h2 class="ws-card-title">${inner.slice(0, text)}${name}</h2>`;
+  });
+  const open = named.indexOf('>');
+  const place = `--x:${e(it.x)};--y:${e(it.y)};--w:${e(it.w)};--h:${e(it.h)};--order:${order}`;
+  const grip = `<button type="button" class="ws-tile-grip" aria-label="Move ${name}. Arrow keys move it, Shift and arrow keys resize it." title="Drag to move">${icon('grip')}</button>`;
+  const tools = `<div class="ws-tile-tools">${tool('today-options', 'sliders', 'Customize this widget', `Customize ${name}`, it.id)}${tool('today-menu', 'dots', 'More', `More for ${name}`, it.id, ' aria-haspopup="menu"')}</div>`;
+  return `${named.slice(0, open).replace('class="ws-card', () => `class="ws-card ws-tile${it.collapsed ? ' ws-tile-collapsed' : ''}`)} data-tile="${e(it.id)}" style="${place}"${named.slice(open)}`
+    .replace('<header class="ws-card-header">', () => `<header class="ws-card-header ws-tile-head">${grip}`)
+    .replace('<div class="ws-card-actions">', '<div class="ws-card-actions ws-tile-extra">')
+    .replace('</header>', () => `${tools}</header>`)
+    .replace('<div class="ws-card-body">', '<div class="ws-card-body ws-tile-body">')
+    .replace(/<\/section>$/, () => `${HANDLES}</section>`);
 }
 
 function daySummary(m) {
@@ -171,7 +267,7 @@ function eventActions(ev, { compact = false } = {}) {
   return `<div class="ws-actions">${d.joinUrl ? button('Join', { action: 'join', variant: 'primary', iconName: 'video', attrs: { 'data-id': ev.id } }) : ''}${button(compact ? '' : 'Details', { action: 'event', iconName: compact ? 'external' : undefined, title: 'Event details', attrs: { 'data-id': ev.id } })}</div>`;
 }
 
-function upNextCard(s, m, connected) {
+function upNextCard(s, m, connected, o) {
   if (!connected) {
     return card({ title: 'Up next', iconName: 'calendar-clock', className: 'ws-upnext', body: emptyState({ iconName: 'calendar', title: 'Your next meeting appears here', text: 'With a countdown and a one-click Join for Teams meetings.' }) });
   }
@@ -203,7 +299,7 @@ function upNextCard(s, m, connected) {
       <div class="ws-upnext-info">
         <h3><button type="button" class="ws-link-title" data-action="event" data-id="${e(ev.id)}">${e(d.title || 'Untitled event')}</button></h3>
         ${eventMeta(ev, m.zone)}
-        ${people(ev)}
+        ${o.people ? people(ev) : ''}
         <div class="ws-actions ws-upnext-actions">
           ${d.joinUrl ? button('Join Teams meeting', { action: 'join', variant: 'primary', iconName: 'video', attrs: { 'data-id': ev.id } }) : ''}
           ${d.url ? button('Open in Outlook', { action: 'source', iconName: 'external', attrs: { 'data-kind': 'event', 'data-id': ev.id } }) : ''}
@@ -212,44 +308,58 @@ function upNextCard(s, m, connected) {
       </div>
     </div>
     ${live ? `<div class="ws-progress" role="progressbar" aria-label="Meeting progress" aria-valuenow="${Math.round(progress)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${progress.toFixed(1)}%"></span></div>` : ''}`,
-    footer: later.length ? `<span class="ws-later-label">Later today</span>${later.map(t => `<button type="button" class="ws-later" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(t.record.data.calendarId) || 'var(--ws-accent)')}"><span>${e(formatTime(t.record.data.start, m.zone))}</span>${e(t.record.data.title || 'Untitled')}</button>`).join('')}` : '',
+    footer: o.later && later.length ? `<span class="ws-later-label">Later today</span>${later.map(t => `<button type="button" class="ws-later" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(t.record.data.calendarId) || 'var(--ws-accent)')}"><span>${e(formatTime(t.record.data.start, m.zone))}</span>${e(t.record.data.title || 'Untitled')}</button>`).join('')}` : '',
   });
 }
 
 // ---------------------------------------------------------------- Glance
 
-function glanceCard(s, m, connected) {
+function glanceCard(s, m, connected, o) {
   const now = Date.now() / 1000;
   const focusUntil = s.settings.focusUntil > now ? s.settings.focusUntil : null;
   const openCommitments = m.commitments.filter(c => ['todo', 'doing', 'waiting'].includes(taskStatus(c))).length;
   const stat = (value, label, iconName, action, attrs = {}) => `<${action ? `button type="button" data-action="${action}"` : 'div'} class="ws-stat" ${Object.entries(attrs).map(([k, v]) => `${k}="${e(v)}"`).join(' ')}><span class="ws-stat-icon">${icon(iconName)}</span><strong>${e(value)}</strong><span>${e(label)}</span></${action ? 'button' : 'div'}>`;
+  // The numbers the widget's options choose, always in this order.
+  const numbers = {
+    left: () => stat(`${m.remaining.length}/${m.timed.length}`, 'Meetings left', 'calendar', 'route', { 'data-route': 'calendar' }),
+    busy: () => stat(durationLabel(m.busyMinutes), 'In meetings', 'users'),
+    free: () => stat(m.nowMin >= WORKDAY_END ? '—' : durationLabel(m.freeMinutes), m.nowMin >= WORKDAY_END ? 'Workday over' : `Until ${formatTime(endOfWorkday(m), m.zone)}`, 'coffee'),
+    reply: () => stat(String(m.attention.length), 'Need reply', 'reply', 'route', { 'data-route': 'inbox', 'data-lane': 'reply' }),
+    tasks: () => stat(String(openCommitments), 'Open tasks', 'check-circle'),
+  };
   const stats = connected
-    ? [
-      stat(`${m.remaining.length}/${m.timed.length}`, 'Meetings left', 'calendar', 'route', { 'data-route': 'calendar' }),
-      stat(durationLabel(m.busyMinutes), 'In meetings', 'users'),
-      stat(m.nowMin >= WORKDAY_END ? '—' : durationLabel(m.freeMinutes), m.nowMin >= WORKDAY_END ? 'Workday over' : `Until ${formatTime(endOfWorkday(m), m.zone)}`, 'coffee'),
-      stat(String(m.attention.length), 'Need reply', 'reply', 'route', { 'data-route': 'inbox', 'data-lane': 'reply' }),
-    ]
+    ? Object.keys(numbers).filter(k => o.stats.includes(k)).map(k => numbers[k]())
     : [
       stat(String(openCommitments), 'Open tasks', 'check-circle'),
       stat(String(decisions(s).length), 'Decisions', 'shield'),
     ];
-  const focus = focusUntil
+  const focus = !o.focus ? '' : focusUntil
     ? `<div class="ws-focus ws-focus-on"><div><strong data-countdown-end="${focusUntil * 1000}">${e(countdownLabel(focusUntil * 1000).replace('in ', ''))}</strong><span>Focus on · ordinary reminders are quiet</span></div>${button('End', { action: 'focus', attrs: { 'data-minutes': '0' } })}</div>`
     : `<div class="ws-focus"><div><strong>Focus session</strong><span>Quiet non-critical reminders</span></div><div class="ws-actions">${button('25 min', { action: 'focus', variant: 'primary', iconName: 'target', attrs: { 'data-minutes': '25' } })}${button('50 min', { action: 'focus', attrs: { 'data-minutes': '50' } })}</div></div>`;
-  return card({ title: 'Day at a glance', iconName: 'activity', className: 'ws-glance', body: `<div class="ws-stats">${stats.join('')}</div>${focus}` });
+  return card({ title: 'Day at a glance', iconName: 'activity', className: 'ws-glance', body: `${stats.length ? `<div class="ws-stats">${stats.join('')}</div>` : ''}${focus}` });
+}
+
+// ---------------------------------------------------------------- Focus timer
+
+function timerCard(s, o) {
+  const now = Date.now() / 1000;
+  const focusUntil = s.settings.focusUntil > now ? s.settings.focusUntil : null;
+  const body = focusUntil
+    ? `<div class="ws-timer ws-timer-on"><strong data-countdown-end="${focusUntil * 1000}">${e(countdownLabel(focusUntil * 1000).replace('in ', ''))}</strong><span>Focus on · ordinary reminders are quiet</span>${button('End session', { action: 'focus', attrs: { 'data-minutes': '0' } })}</div>`
+    : `<div class="ws-timer"><strong>${e(o.minutes)}:00</strong><span>Quiet non-critical reminders</span>${button('Start', { action: 'focus', variant: 'primary', iconName: 'target', attrs: { 'data-minutes': o.minutes } })}</div>`;
+  return card({ title: 'Focus timer', iconName: 'target', className: 'ws-timer-card', body });
 }
 
 // ---------------------------------------------------------------- Schedule
 
-function scheduleCard(s, m, connected) {
+function scheduleCard(s, m, connected, o) {
   if (!connected) {
     return card({ title: 'Schedule', iconName: 'calendar', className: 'ws-schedule-card', body: emptyState({ iconName: 'calendar', title: 'Your schedule lives here', text: 'Meetings, rooms and free time for today.' }) });
   }
   const colors = calendarColors(s);
   const all = m.timed;
   const allDay = m.today.allDay;
-  const firstHour = Math.min(8, ...all.map(t => Math.floor(t.startMin / 60)));
+  const firstHour = Math.min(Number(o.start), ...all.map(t => Math.floor(t.startMin / 60)));
   const lastHour = Math.max(19, ...all.map(t => Math.ceil(t.endMin / 60)));
   const startHour = Math.max(0, Math.min(firstHour, Math.floor(m.nowMin / 60)));
   const endHour = Math.min(24, Math.max(lastHour, Math.ceil(m.nowMin / 60) + 1));
@@ -262,13 +372,19 @@ function scheduleCard(s, m, connected) {
     const past = new Date(d.end).getTime() <= m.nowMs;
     return `<button type="button" class="ws-tl-event${past ? ' ws-past' : ''}${height < 34 ? ' ws-compact' : ''}${d.showAs === 'tentative' || d.response === 'tentativelyAccepted' ? ' ws-tentative' : ''}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')};top:${top(t.startMin).toFixed(1)}px;height:${height.toFixed(1)}px;left:calc(${(t.col / t.cols) * 100}% + 2px);width:calc(${100 / t.cols}% - 4px)"><strong>${e(d.title || 'Untitled')}</strong><span>${e(formatTime(d.start, m.zone))}${d.joinUrl ? ' · Teams' : d.location ? ` · ${e(d.location)}` : ''}</span></button>`;
   }).join('');
-  const gaps = freeSlots(all, Math.max(startHour * 60, WORKDAY_START, m.nowMin), Math.min(endHour * 60, WORKDAY_END), 60, allDay)
+  const gaps = !o.free ? '' : freeSlots(all, Math.max(startHour * 60, WORKDAY_START, m.nowMin), Math.min(endHour * 60, WORKDAY_END), 60, allDay)
     .map(([a, b]) => `<div class="ws-tl-free" style="top:${top(a).toFixed(1)}px;height:${(top(b) - top(a)).toFixed(1)}px"><span>Free · ${e(durationLabel(b - a))}</span></div>`).join('');
+  // What a narrow Schedule shows instead of the timeline (the CSS picks one by the tile's width).
+  const agenda = all.map(t => {
+    const d = t.record.data;
+    const past = new Date(d.end).getTime() <= m.nowMs;
+    return `<button type="button" class="ws-tl-agenda-item${past ? ' ws-past' : ''}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')}"><b>${e(formatTime(d.start, m.zone))}</b><span>${e(d.title || 'Untitled')}</span></button>`;
+  }).join('');
   const hours = Array.from({ length: endHour - startHour }, (_, i) => `<div class="ws-tl-hour" style="top:${i * hourHeight}px"><span>${e(hourLabel(startHour + i))}</span></div>`).join('');
   const nowLine = m.nowMin >= startHour * 60 && m.nowMin <= endHour * 60 ? `<div class="ws-now-line" data-now-line data-start-hour="${startHour}" data-hour-height="${hourHeight}" style="top:${top(m.nowMin).toFixed(1)}px"><span></span></div>` : '';
   const body = all.length || allDay.length
     ? `${allDay.length ? `<div class="ws-tl-allday">${allDay.map(r => `<button type="button" class="ws-chip-event" data-action="event" data-id="${e(r.id)}" style="--event-color:${e(colors.get(r.data.calendarId) || 'var(--ws-accent)')}">${e(r.data.title || 'All-day event')}</button>`).join('')}</div>` : ''}
-      <div class="ws-timeline" data-scroll-now style="height:${(endHour - startHour) * hourHeight}px">${hours}<div class="ws-tl-lane">${gaps}${blocks}${nowLine}</div></div>`
+      <div class="ws-timeline" data-scroll-now style="height:${(endHour - startHour) * hourHeight}px">${hours}<div class="ws-tl-lane">${gaps}${blocks}${nowLine}</div></div>${agenda ? `<div class="ws-tl-agenda">${agenda}</div>` : ''}`
     : emptyState({ iconName: 'coffee', title: 'A clear day', text: 'No meetings on your calendars today.' });
   return card({
     title: 'Schedule', iconName: 'calendar', className: 'ws-schedule-card',
@@ -301,11 +417,11 @@ export function listTitle(msg, s) {
   return title;
 }
 
-function attentionCard(s, m, connected, ai) {
+function attentionCard(s, m, connected, ai, o) {
   if (!connected) {
     return card({ title: 'Needs your reply', iconName: 'reply', className: 'ws-attention', body: emptyState({ iconName: 'inbox', title: 'Replies you owe, in one list', text: 'Direct questions from Outlook and Teams, with the newest first.' }) });
   }
-  const items = m.attention.slice(0, 6);
+  const items = m.attention.filter(msg => o.sources.includes(msg.data.channel === 'chat' ? 'chat' : 'mail')).slice(0, Number(o.max));
   const canDraft = claudeAvailable(ai);
   return card({
     title: 'Needs your reply', iconName: 'reply', className: 'ws-attention',
@@ -314,43 +430,47 @@ function attentionCard(s, m, connected, ai) {
   });
 }
 
-// ---------------------------------------------------------------- Tasks & notes
+// ---------------------------------------------------------------- Tasks
 
-function commitmentsCard(s, m, w) {
+function commitmentsCard(s, m, o) {
   const me = meOf(s);
+  const shown = c => !o.mine || isMine(c, me);
   // Today lists what is on the board to do; To review and dismissed ones stay on the Tasks page.
-  const open = m.commitments.filter(c => ['todo', 'doing', 'waiting'].includes(taskStatus(c))).sort((a, b) => sortTasks(a, b, m.nowMs, m.zone));
-  const done = m.commitments.filter(c => taskStatus(c) === 'done').sort((a, b) => (b.data.doneAt || b.updatedAt) - (a.data.doneAt || a.updatedAt)).slice(0, 5);
+  const open = m.commitments.filter(c => ['todo', 'doing', 'waiting'].includes(taskStatus(c)) && shown(c)).sort((a, b) => sortTasks(a, b, m.nowMs, m.zone));
+  const done = !o.done ? [] : m.commitments.filter(c => taskStatus(c) === 'done' && shown(c)).sort((a, b) => (b.data.doneAt || b.updatedAt) - (a.data.doneAt || a.updatedAt)).slice(0, 5);
   const review = m.commitments.filter(c => taskStatus(c) === 'review').length;
-  const note = records(s, 'note')[0];
   const row = c => {
     const isDone = taskStatus(c) === 'done';
     const owner = isMine(c, me) ? '' : ownerOf(c, me).name;
     const due = c.data.due ? `${icon('calendar')}${e(formatDate(`${c.data.due}T12:00:00`, undefined, { month: 'short', day: 'numeric' }))}` : '';
     return `<div class="ws-todo${isDone ? ' ws-done' : ''}">
     <label class="ws-check"><input type="checkbox" data-action="commitment-toggle" data-id="${e(c.id)}" ${isDone ? 'checked' : ''} aria-label="Mark “${e(c.data.text)}” ${isDone ? 'open' : 'done'}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
-    <div class="ws-todo-text"><button type="button" class="ws-link-title" data-action="task-open-today" data-id="${e(c.id)}">${e(c.data.text)}</button>${due || owner ? `<small>${due}${due && owner ? ' · ' : ''}${e(owner)}</small>` : ''}</div>
+    <div class="ws-todo-text"><button type="button" class="ws-link-title" data-action="task-open-today" data-id="${e(c.id)}">${e(c.data.text)}</button>${due || owner ? `<small>${due}${owner ? `<span class="ws-todo-owner">${due ? ' · ' : ''}${e(owner)}</span>` : ''}</small>` : ''}</div>
     ${button('', { action: 'task-delete', iconName: 'trash', variant: 'ghost', title: 'Delete task', attrs: { 'data-id': c.id } })}
   </div>`;
   };
   return card({
     title: 'Tasks', iconName: 'tasks', className: 'ws-commitments',
     actions: button('Board', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'tasks' } }),
-    body: `<div class="ws-two-col">
-      <div class="ws-todo-col">
-        <form class="ws-quick-add" data-form="commitment-add">
-          <input class="ws-input" name="text" maxlength="2000" placeholder="Add a task… e.g. Send the roadmap to Anna" aria-label="New task" autocomplete="off">
-          <input class="ws-input ws-date" name="due" type="date" aria-label="Due date">
-          ${button('Add', { type: 'submit', variant: 'primary', iconName: 'plus' })}
-        </form>
-        ${review ? `<button type="button" class="ws-today-review" data-action="route" data-route="tasks">${icon('sparkles')}<span><strong>${review} ${review === 1 ? 'task' : 'tasks'} from meeting notes to review</strong><small>Check owners and dates, then accept</small></span>${icon('chevron-right')}</button>` : ''}
-        <div class="ws-todo-list">${open.map(row).join('') || '<p class="ws-muted ws-hint">No open tasks. Add one above or from any Inbox message.</p>'}</div>
-        ${done.length ? `<details class="ws-done-list"><summary>Completed · ${done.length}</summary>${done.map(row).join('')}</details>` : ''}
-      </div>
-      <div class="ws-note-col">
-        <div class="ws-note-head"><span class="ws-field-label">${icon('note')}Notes</span><span class="ws-note-state" id="note-state">${note ? `Saved ${e(relativeAge(note.updatedAt, m.zone))}` : 'Stored on this device'}</span></div>
-        <textarea id="today-note" class="ws-textarea ws-notes" data-workspace-id="${e(w.id)}" data-record-id="${e(note?.id || '')}" placeholder="A thought, a plan, something to remember…" aria-label="Workspace notes">${e(note?.data.text || '')}</textarea>
-      </div>
-    </div>`,
+    body: `${o.add ? `<form class="ws-quick-add" data-form="commitment-add">
+        <input class="ws-input" name="text" maxlength="2000" placeholder="Add a task… e.g. Send the roadmap to Anna" aria-label="New task" autocomplete="off">
+        <input class="ws-input ws-date" name="due" type="date" aria-label="Due date">
+        ${button('Add', { type: 'submit', variant: 'primary', iconName: 'plus' })}
+      </form>` : ''}
+      ${review ? `<button type="button" class="ws-today-review" data-action="route" data-route="tasks">${icon('sparkles')}<span><strong>${review} ${review === 1 ? 'task' : 'tasks'} from meeting notes to review</strong><small>Check owners and dates, then accept</small></span>${icon('chevron-right')}</button>` : ''}
+      <div class="ws-todo-list">${open.map(row).join('') || `<p class="ws-muted ws-hint">${o.add ? 'No open tasks. Add one above or from any Inbox message.' : 'No open tasks.'}</p>`}</div>
+      ${done.length ? `<details class="ws-done-list"><summary>Completed · ${done.length}</summary>${done.map(row).join('')}</details>` : ''}`,
+  });
+}
+
+// ---------------------------------------------------------------- Notes
+
+// The textarea keeps the id `today-note`: app.js autosaves it and keeps typed text through a render.
+function notesCard(s, m, w, o) {
+  const note = records(s, 'note')[0];
+  return card({
+    title: 'Notes', iconName: 'note', className: 'ws-notes-card',
+    actions: `<span class="ws-note-state" id="note-state">${note ? `Saved ${e(relativeAge(note.updatedAt, m.zone))}` : 'Stored on this device'}</span>`,
+    body: `<textarea id="today-note" class="ws-textarea ws-notes ws-notes-${e(o.size)}" data-workspace-id="${e(w.id)}" data-record-id="${e(note?.id || '')}" placeholder="A thought, a plan, something to remember…" aria-label="Workspace notes">${e(note?.data.text || '')}</textarea>`,
   });
 }

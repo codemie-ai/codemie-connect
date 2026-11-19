@@ -311,7 +311,7 @@ async function render() {
   const s = snap();
   applyTheme(s.settings.theme);
   const ctx = {
-    state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(),
+    state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(), pluginsKnown: state.pluginsKnown,
     codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots(), signIn: codemie.signIn() },
     codemieCard: codemie.todayCard(),
   };

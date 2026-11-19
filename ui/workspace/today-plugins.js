@@ -157,11 +157,14 @@ export function pluginItems(s) {
   return { items: items.filter(r => r.data.type !== 'held_message'), held, work };
 }
 
-/** Whether Today shows the "From plugins" card: when it is in the layout, or, until the layout was
- *  saved with it known (its width remembered), whenever a plugin has something there. */
+/** Whether Today shows the "From plugins" card below its grid: never when a saved grid places it
+ *  or the user removed it; otherwise when it is in the layout, or, until the old layout was saved
+ *  with it known (its width remembered), whenever a plugin has something there. */
 export function showPluginsCard(w, s) {
+  const grid = Array.isArray(w.today?.items) ? w.today : null;
+  if (grid && (grid.items.some(i => i.id === PLUGINS_CARD) || (grid.hidden || []).includes(PLUGINS_CARD))) return false;
   if ((w.layout || []).includes(PLUGINS_CARD)) return true;
-  if (w.widgetWidths && PLUGINS_CARD in w.widgetWidths) return false;
+  if (!grid && w.widgetWidths && PLUGINS_CARD in w.widgetWidths) return false;
   const { items, work } = pluginItems(s);
   return items.length > 0 || work.length > 0;
 }

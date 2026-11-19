@@ -378,19 +378,22 @@ const TODAY_TEXT = { available: 'Saving the transcript from Teams', downloaded: 
 /** Whether Today shows "From your meetings": when the layout has it, or until a saved layout
  *  hides it, whenever a meeting needs the person or has a transcript without notes. */
 export function showMeetingsCard(w, s, now = Date.now()) {
+  const grid = Array.isArray(w.today?.items) ? w.today : null;
+  // A saved Today grid draws the card where it placed it, and a card the user removed stays away.
+  if (grid && (grid.items.some(i => i.id === 'meetings') || (grid.hidden || []).includes('meetings'))) return false;
   if ((w.layout || []).includes('meetings')) return true;
-  if (w.widgetWidths && 'meetings' in w.widgetWidths) return false;
+  if (!grid && w.widgetWidths && 'meetings' in w.widgetWidths) return false;
   const c = meetingCounts(s, now);
   return c.process + c.attention > 0;
 }
 
-/** Today's "From your meetings": what needs the person first, then transcripts without notes;
- *  each row opens the meeting on the Meetings page. */
-export function todayMeetingsCard(s, now = Date.now()) {
+/** Today's "From your meetings": what needs the person first, then transcripts without notes
+ *  (unless `needsMe`); each row opens the meeting on the Meetings page. */
+export function todayMeetingsCard(s, now = Date.now(), { needsMe = false } = {}) {
   const zone = s.settings.timeZone;
   const items = meetingItems(s, now);
   const attention = meetingRows(s, 'attention', '', false, now, items);
-  const toDo = meetingRows(s, 'process', '', false, now, items);
+  const toDo = needsMe ? [] : meetingRows(s, 'process', '', false, now, items);
   const rows = [...attention, ...toDo].slice(0, 5).map(m => {
     const rel = relDay(m.start, zone, now);
     const saveError = m.state === 'available' ? meetingErrors(m.rec).save : null;
