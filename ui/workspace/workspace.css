@@ -2190,7 +2190,9 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 
 /* the meeting: its header above the first section holding a meeting tab, and each tab's body,
    which scrolls on its own */
-.ws-mtg-top{display:grid;gap:10px;flex-shrink:0;padding:12px 20px;border-bottom:1px solid var(--ws-border);container-type:inline-size}
+/* One column no wider than the section: an auto column would grow to the strip's one-line width
+   and push the title's actions and the strip's end past the section, which clips them. */
+.ws-mtg-top{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;flex-shrink:0;padding:12px 20px;border-bottom:1px solid var(--ws-border);container-type:inline-size}
 .ws-mtg-top>.ws-banner{max-width:1100px;margin:0}
 /* Every guest ("+N more") scrolls within three rows, so the tab below keeps its height. */
 .ws-mtg-top .ws-mtg-people-line{max-height:96px;overflow-y:auto}

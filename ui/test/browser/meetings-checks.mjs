@@ -26,6 +26,27 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
     const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-mtg-list, .ws-mtg-detail, .ws-mtg-list-body, .ws-modal[open] .ws-modal-body, .ws-mtg-legend')].filter(el => el.clientWidth > 0 && getComputedStyle(el).visibility !== 'hidden').map(el => el.scrollWidth - el.clientWidth)));
     assert(overflow <= 0, `${what} overflows by ${overflow}px`);
   };
+  /** The meeting's header fits the section it sits on: the title row's actions end inside it, and
+   *  the status strip ends inside it and either fits or scrolls sideways within itself. */
+  const headerFits = async (page, what) => {
+    const fit = await page.evaluate(() => {
+      const top = document.querySelector('.ws-dock[data-page="meetings"] .ws-mtg-top');
+      const pane = top.closest('.ws-pane').getBoundingClientRect();
+      const out = el => { const r = el.getBoundingClientRect(); return r.left < pane.left || r.right > pane.right - 1; };
+      const name = el => el.textContent.trim() || el.querySelector('[aria-label]')?.getAttribute('aria-label') || el.tagName;
+      const actions = [...top.querySelectorAll('.ws-mtg-head-title .ws-actions > *')];
+      const strip = top.querySelector('.ws-mtg-strip');
+      return {
+        pane: Math.round(pane.width),
+        actions: actions.map(name),
+        outside: actions.filter(out).map(name),
+        strip: strip && { out: out(strip), over: strip.scrollWidth - strip.clientWidth, scrolls: ['auto', 'scroll'].includes(getComputedStyle(strip).overflowX) },
+      };
+    });
+    assert(fit.actions.length && !fit.outside.length, `${what}: the header's actions leave the section ${JSON.stringify(fit)}`);
+    assert(fit.strip && !fit.strip.out && (fit.strip.over <= 0 || fit.strip.scrolls), `${what}: the status strip is clipped ${JSON.stringify(fit)}`);
+    return fit;
+  };
   const hash = page => page.evaluate(() => location.hash);
   /** A screenshot once a dialog has finished opening (its fade-in is 160 ms). */
   const dialogShot = async (page, name) => {
@@ -211,6 +232,8 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         assert((await lastCall(page, 'meeting_import')).fileName === 'northwind-partnership.vtt', 'imported');
         assert(await page.evaluate(() => window.__xss) === undefined, 'the transcript is escaped');
         await noOverflow(page, 'speakers');
+        // The header in the default sections: Make notes and the strip inside the section.
+        assert((await headerFits(page, 'speakers')).actions.some(a => /Make notes/.test(a)), 'Make notes is in the title row');
         await shot(page, `${tag}-meetings-speakers`);
         await page.selectOption('.ws-mtg-speakers-banner select', 'jordan.lee@example.test');
         await page.waitForSelector('.ws-mtg-speakers-banner', { state: 'detached' });
@@ -464,6 +487,9 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
     });
     assert(room.people <= 96 && room.scrolls, `the people line scrolls within three rows: ${JSON.stringify(room)}`);
     assert(room.body >= 200, `the tab below the header keeps its room: ${JSON.stringify(room)}`);
+    // There the title row's actions and the status strip stay inside the section.
+    const narrow = await headerFits(page, 'narrow section');
+    assert(narrow.pane <= 360, `the header's section is ${narrow.pane}px wide`);
     // Three sections are wider than the window: the row scrolls sideways and an update (a minute
     // tick, a tab chosen) keeps its place.
     const left = await page.evaluate(() => { const row = document.querySelector('.ws-dock[data-page="meetings"]'); row.scrollLeft = row.scrollWidth; return row.scrollLeft; });
@@ -473,6 +499,10 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
     await page.locator('.ws-dock-tab[data-tab="mtg-tasks"]').dispatchEvent('click');
     await page.waitForSelector('.ws-mtg-detail[data-panel="tasks"]');
     assert(await page.evaluate(() => document.querySelector('.ws-dock[data-page="meetings"]').scrollLeft) === left, 'a tab chosen keeps the row’s scroll');
+    // A meeting waiting for notes in the same narrow section: Make notes stays inside it too.
+    await select(page, 'mtg-roadmap');
+    assert((await headerFits(page, 'narrow section, Roadmap review')).actions.some(a => /Make notes/.test(a)), 'Make notes is in the title row');
+    await shot(page, 'dark-1000-meetings-sections-make-notes');
     assert(errors.length === 0, errors.join('\n'));
   });
   await context.close().catch(() => {});
