@@ -92,6 +92,7 @@ impl Repository {
                 "automations".into(),
             ],
             widget_widths: json!({}),
+            today: json!({}),
         };
         db.execute(
             "INSERT OR IGNORE INTO workspaces VALUES('personal',?1)",
@@ -1699,6 +1700,7 @@ mod tests {
             sources,
             layout: vec![],
             widget_widths: json!({}),
+            today: json!({}),
         }
     }
     #[test]

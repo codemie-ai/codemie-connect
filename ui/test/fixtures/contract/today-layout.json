@@ -1,0 +1,68 @@
+{
+  "layout": [
+    "brief",
+    "focus"
+  ],
+  "today": {
+    "active": "Default",
+    "hidden": [
+      "plugins"
+    ],
+    "items": [
+      {
+        "h": 4,
+        "id": "brief",
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      {
+        "collapsed": false,
+        "h": 4,
+        "id": "focus",
+        "w": 4,
+        "x": 8,
+        "y": 0
+      }
+    ],
+    "layouts": {
+      "Default": [
+        {
+          "h": 4,
+          "id": "brief",
+          "w": 8,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "h": 4,
+          "id": "focus",
+          "w": 4,
+          "x": 8,
+          "y": 0
+        }
+      ],
+      "Mine": [
+        {
+          "h": 6,
+          "id": "notes",
+          "w": 4,
+          "x": 0,
+          "y": 0
+        }
+      ]
+    },
+    "options": {
+      "inbox": {
+        "max": "3",
+        "sources": [
+          "mail"
+        ]
+      }
+    },
+    "titles": {
+      "brief": "Next up"
+    }
+  },
+  "widgetWidths": {}
+}

@@ -111,6 +111,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     }
   }
   const s = snapshot;
+  // Saved layouts survive page.reload(): the workspaces live in sessionStorage too.
+  try { const kept = sessionStorage.getItem('e2e.workspaces'); if (kept) s.workspaces = JSON.parse(kept); } catch {}
   // Automation runs live beside the snapshot, as in native: the snapshot shows each
   // automation's latest run and its latest run on Today; `automation_runs` pages through all.
   let allRuns = s.records.filter(r => r.kind === 'automation_run');
@@ -221,7 +223,15 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     },
     local_delete: d => { s.records = s.records.filter(r => !(r.kind === d.kind && r.id === d.id)); return { deleted: true }; },
     draft_save: (d, wid) => ops.local_save({ ...d, kind: 'draft', id: `manual:${d.sourceId}` }, wid),
-    layout_save: (d, wid) => { const w = active(wid); w.layout = [...new Set(d.layout)]; w.widgetWidths = d.widgetWidths; return { saved: true }; },
+    layout_save: (d, wid) => {
+      calls.push(['layout_save', clone(d)]);
+      const w = active(wid);
+      if (d.layout) w.layout = [...new Set(d.layout)];
+      if (d.today) w.today = clone(d.today);
+      if (d.widgetWidths) w.widgetWidths = d.widgetWidths;
+      try { sessionStorage.setItem('e2e.workspaces', JSON.stringify(s.workspaces)); } catch {}
+      return { saved: true };
+    },
     workspace_create: d => { const id = crypto.randomUUID(); s.workspaces.push({ id, name: d.name, color: d.color, archived: false, isDefault: false, connectionId: s.connection?.id || null, sources: { all: true }, layout: ['brief', 'calendar', 'inbox', 'commitments', 'focus'], widgetWidths: {} }); s.settings.activeWorkspace = id; return { id }; },
     workspace_update: (d, wid) => { Object.assign(active(wid), d); if (d.archived && s.settings.activeWorkspace === wid) s.settings.activeWorkspace = 'personal'; return { saved: true }; },
     workspace_select: d => { s.settings.activeWorkspace = d.id; return { selected: true }; },
@@ -1140,7 +1150,7 @@ const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve
   timer = setTimeout(done, 150);
 }), limit).catch(() => {});
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -1163,6 +1173,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
     connected.connection.scopes = connected.connection.scopes.filter(x => !/^OnlineMeeting/.test(x));
   }
   if (pluginRecords) connected.records.push(...pluginRecords(now));
+  if (workspace) Object.assign(connected.workspaces.find(w => w.id === connected.settings.activeWorkspace), workspace);
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
