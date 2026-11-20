@@ -119,7 +119,9 @@ function header(s, ui) {
   ].filter(Boolean).map((x, i) => `<span>${i ? '<span class="ws-an-sep">·</span>' : ''}${e(x)}</span>`).join('');
   const when = finite(s.startTime) ? `<span class="ws-an-when">${e(`${dayName(s.startTime, ui.now ?? Date.now(), zone)} ${hm(s.startTime, zone)}`)}</span>` : '';
   const ids = `${when}<button type="button" class="ws-an-idbtn" ${act('analytics-copy', s.sessionId)} title="Copy the session ID">ID ${e(shortId(String(s.sessionId ?? '')))}${icon('copy')}</button>${s.agentSessionFile ? `<button type="button" class="ws-an-idbtn" ${act('analytics-copy', s.agentSessionFile)} title="Copy the log path: ${e(s.agentSessionFile)}">Log ${e(midPath(String(s.agentSessionFile)))}${icon('copy')}</button>` : ''}`;
-  const report = `<button type="button" class="ws-btn ws-btn-secondary ws-btn-sm ws-an-dreport" data-action="analytics-report" title="The CLI&#39;s own HTML report for the page&#39;s dates and filters">${icon('external')}<span>Open the CLI report</span></button>`;
+  const report = ui.reporting
+    ? `<button type="button" class="ws-btn ws-btn-secondary ws-btn-sm ws-an-dreport" data-action="analytics-report" disabled aria-busy="true">${icon('refresh', 'ws-spin')}<span>Opening the report…</span></button>`
+    : `<button type="button" class="ws-btn ws-btn-secondary ws-btn-sm ws-an-dreport" data-action="analytics-report" title="The CLI&#39;s own HTML report for the page&#39;s dates and filters">${icon('external')}<span>Open the CLI report</span></button>`;
   return `<header class="ws-an-dh"><div class="ws-an-dh-t"><h2 title="${e(title)}">${e(title)}</h2><div class="ws-an-dh-m"><span class="ws-an-tag">${e(agentLabel(s.agentName))}</span>${source}${connect}${meta}</div><div class="ws-an-ids">${ids}</div></div>${report}${closeButton}</header>`;
 }
 

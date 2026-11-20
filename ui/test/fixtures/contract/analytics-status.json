@@ -1,10 +1,13 @@
 {
   "failedDays": [
-    "2026-11-15"
+    {
+      "day": "2026-11-15",
+      "reason": "out_of_memory"
+    }
   ],
   "lastFetchAt": 1795132800000,
   "progress": null,
   "sessions": 3,
   "state": "ready",
-  "storedFrom": "2026-08-22"
+  "storedFrom": "2026-08-21"
 }

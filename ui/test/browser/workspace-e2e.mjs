@@ -148,9 +148,11 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         fetchRun('Checking for new sessions', 3, an.status.failedDays || []);
         return { started: true };
       },
+      // `{day}` reads that day again, `{}` every failed day (`failedDays` is `[{day, reason}]`).
       analytics_retry: d => {
         calls.push(['analytics_retry', clone(d)]);
-        fetchRun(`Reading ${d.day} again`, 1, (an.status.failedDays || []).filter(x => x !== d.day));
+        const failed = an.status.failedDays || [];
+        fetchRun(d.day ? `Reading ${d.day}` : 'Reading the failed days again', Math.max(1, d.day ? 1 : failed.length), d.day ? failed.filter(x => x.day !== d.day) : []);
         return { started: true };
       },
     };

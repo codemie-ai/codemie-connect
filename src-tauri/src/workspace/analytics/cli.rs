@@ -13,6 +13,11 @@ use tokio::process::Command;
 
 /// Every call is killed after this long.
 const CALL_TIMEOUT: Duration = Duration::from_secs(600);
+/// `analytics view --help` only prints text: one that takes longer is stuck.
+const HELP_TIMEOUT: Duration = Duration::from_secs(30);
+/// The first line of the help only a CLI with `analytics view` prints. Older ones print the help
+/// of `analytics` for `analytics view --help`, and exit 0.
+const VIEW_USAGE: &str = "Usage: codemie analytics view";
 /// `export` of three days peaks near 4.2 GB; the default heap is 4 GB.
 const NODE_OPTIONS: &str = "--max-old-space-size=6144";
 /// `view` writes its JSON to `view-<unique>.json` beside the store.
@@ -40,10 +45,30 @@ pub enum CliError {
     Stopped,
 }
 
+impl CliError {
+    /// The short reason a day that couldn't be read carries: `timeout`, `out_of_memory` (the
+    /// heap ran out: exit 134 or the message), `exit <n>` or `not_found`. `Stopped` never fails
+    /// a day.
+    pub fn reason(&self) -> String {
+        match self {
+            CliError::NotFound => "not_found".into(),
+            CliError::Timeout => "timeout".into(),
+            CliError::Failed { code, stderr_tail }
+                if *code == 134 || stderr_tail.contains("heap out of memory") =>
+            {
+                "out_of_memory".into()
+            }
+            CliError::Failed { code, .. } => format!("exit {code}"),
+            CliError::Stopped => "stopped".into(),
+        }
+    }
+}
+
 /// What the analytics page needs from the CLI. Object safe, like `ClaudeRunner`: Core holds an
 /// `Arc<dyn AnalyticsCli>`, and tests hold a [`FakeAnalyticsCli`].
 pub trait AnalyticsCli: Send + Sync {
-    /// `codemie analytics view --help` exits 0. False too when there is no CLI.
+    /// `codemie analytics view --help` exits 0 and prints the usage of `view` itself. False too
+    /// when there is no CLI.
     fn supports_view(&self) -> BoxFuture<'_, bool>;
     /// Writes the sessions that started between `from` and `to` (UTC days, both included) to `out`.
     fn export<'a>(
@@ -111,6 +136,11 @@ impl CodemieCli {
 
     /// Runs the CLI with `args`; its stdout when it exits 0.
     async fn run(&self, args: &[String]) -> Result<Vec<u8>, CliError> {
+        self.run_for(args, self.timeout).await
+    }
+
+    /// [`Self::run`], killed after `timeout`.
+    async fn run_for(&self, args: &[String], timeout: Duration) -> Result<Vec<u8>, CliError> {
         if self.groups().is_none() {
             return Err(CliError::Stopped);
         }
@@ -139,7 +169,7 @@ impl CodemieCli {
                 None => kill_group(pid),
             }
         }
-        let waited = tokio::time::timeout(self.timeout, child.wait_with_output()).await;
+        let waited = tokio::time::timeout(timeout, child.wait_with_output()).await;
         if let Some(pid) = pid {
             if let Some(groups) = self.groups().as_mut() {
                 groups.retain(|p| *p != pid);
@@ -206,9 +236,10 @@ fn view_args(input: &Path, args: &[String]) -> Vec<String> {
 impl AnalyticsCli for CodemieCli {
     fn supports_view(&self) -> BoxFuture<'_, bool> {
         Box::pin(async move {
-            self.run(&strings(&["analytics", "view", "--help"]))
+            let help = strings(&["analytics", "view", "--help"]);
+            self.run_for(&help, HELP_TIMEOUT.min(self.timeout))
                 .await
-                .is_ok()
+                .is_ok_and(|out| String::from_utf8_lossy(&out).contains(VIEW_USAGE))
         })
     }
 
@@ -588,17 +619,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn view_support_is_the_help_exit_code() {
+    async fn view_support_needs_the_help_of_view_itself() {
         let d = tempfile::tempdir().unwrap();
-        let ok = CodemieCli::with_program(fake_cli(d.path(), "exit 0"));
+        let ok = CodemieCli::with_program(fake_cli(
+            d.path(),
+            "echo 'Usage: codemie analytics view [options]'; echo; echo 'Options:'",
+        ));
         assert!(ok.supports_view().await);
         let argv = std::fs::read_to_string(d.path().join("argv")).unwrap();
         assert_eq!(
             argv.lines().collect::<Vec<_>>(),
             ["analytics", "view", "--help"]
         );
-        let old = CodemieCli::with_program(fake_cli(d.path(), "exit 1"));
+        // CLI 0.17.0 has no `view`: Commander prints the help of `analytics` and exits 0.
+        let old = CodemieCli::with_program(fake_cli(
+            d.path(),
+            "echo 'Usage: codemie analytics [options] [command]'; exit 0",
+        ));
         assert!(!old.supports_view().await);
+        let silent = CodemieCli::with_program(fake_cli(d.path(), "exit 0"));
+        assert!(!silent.supports_view().await);
+        let failing = CodemieCli::with_program(fake_cli(
+            d.path(),
+            "echo 'Usage: codemie analytics view [options]'; exit 1",
+        ));
+        assert!(!failing.supports_view().await);
         let missing = CodemieCli::with_program(d.path().join("nope"));
         assert!(!missing.supports_view().await);
         let none = CodemieCli::with_resolver(Arc::new(|| None));

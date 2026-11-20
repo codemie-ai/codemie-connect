@@ -6,8 +6,8 @@
 // draws into the `[data-chart]` boxes once their width is known. Every number is the CLI's
 // `codemie.analytics.summary/1`, formatted; every provider text goes through `escapeHtml`.
 // `ui` is the view state (analytics-model.js `newAnalyticsView`); `data` is what the operations
-// answered: `{status, summary, progress, refreshing, loading, error, session, app, now, zone,
-// banners, profileNames}`.
+// answered: `{status, summary, progress, refreshing, loading, error, errorCode, reporting,
+// session, app, now, zone, banners, profileNames}`.
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { button, emptyState, spinner } from './ui.js';
@@ -18,8 +18,11 @@ import { appTab, appCharts } from './view-analytics-app.js';
 import {
   PRESETS, VIEWS, SORT_LABELS, presetRange, readSoFar, pendingBefore, isBusy, delta, listSessions,
   usd, usdAxis, tok, dur, pct, pctPoints, n0, plural, dShort, dLong, weekday, hm, dayName, dayKeyIn, dayKeyLabel,
-  agentLabel, modelLabel, projectName, startedInConnect,
+  agentLabel, modelLabel, projectName, startedInConnect, failedDays, failedReason,
 } from './analytics-model.js';
+
+/** Said when the CLI answers `view` in a shape this Connect wasn't built for (`cli_incompatible`). */
+export const INCOMPATIBLE = "This CodeMie CLI answers in a format this Connect doesn't read yet. Update Connect.";
 
 /** Rows a card lists before "Show all". */
 const TOP = { tools: 6, skills: 6, agents: 6, commands: 6, projects: 5 };
@@ -85,18 +88,22 @@ function header(ui, data) {
   return `<header class="ws-page-heading ws-an-head"><h1>Analytics</h1><div class="ws-an-mode" role="tablist" aria-label="Analytics area">${mode('ai', 'sparkles', 'AI analytics')}${mode('app', 'workspaces', 'App analytics')}</div><span class="ws-spacer"></span>${right}</header>`;
 }
 
-/** "Updated 4 min ago": what Connect has stored, and the CLI's own report. */
+/** "Updated 4 min ago": what Connect has stored, and the CLI's own report (busy while the CLI
+ *  writes it). */
 function freshMenu(data, busy) {
   const st = data.status;
   const ago = st.lastFetchAt ? agoLabel(st.lastFetchAt, data.zone, data.now) : '';
-  const label = busy ? 'Updating…' : ago ? `Updated ${ago}` : 'Not read yet';
-  return `<details class="ws-menu ws-menu-right ws-an-menu" data-menu="analytics-fresh"><summary class="ws-an-fresh${busy ? ' ws-an-busy' : ''}"><span class="ws-an-dot"></span><span>${e(label)}</span></summary><div class="ws-menu-panel ws-an-pop ws-an-pop-wide">
+  const label = data.reporting ? 'Opening the report…' : busy ? 'Updating…' : ago ? `Updated ${ago}` : 'Not read yet';
+  const report = data.reporting
+    ? `<button type="button" class="ws-menu-item" data-action="analytics-report" disabled aria-busy="true">${icon('refresh', 'ws-spin')}<span>Opening the CLI report…</span></button>`
+    : `<button type="button" class="ws-menu-item" data-action="analytics-report">${icon('external')}<span>Open the CLI report</span></button>`;
+  return `<details class="ws-menu ws-menu-right ws-an-menu" data-menu="analytics-fresh"><summary class="ws-an-fresh${busy || data.reporting ? ' ws-an-busy' : ''}"><span class="ws-an-dot"></span><span>${e(label)}</span></summary><div class="ws-menu-panel ws-an-pop ws-an-pop-wide">
     <div class="ws-an-pop-body"><h4>Stored in Connect</h4>
       <div class="ws-an-pop-row">History<span>${st.storedFrom ? `${e(dayKeyLabel(st.storedFrom))} – today` : 'nothing yet'}</span></div>
       <div class="ws-an-pop-row">Sessions<span>${n0(st.sessions)}</span></div>
       <div class="ws-an-pop-row">Last checked<span>${e(ago || 'never')}</span></div>
       <p>Refresh reads yesterday and today again. Opening Analytics does it on its own when the data is older than 15 minutes.</p></div>
-    <hr><button type="button" class="ws-menu-item" data-action="analytics-report">${icon('external')}<span>Open the CLI report</span></button>
+    <hr>${report}
   </div></details>`;
 }
 
@@ -150,7 +157,8 @@ function notice(ui, data) {
   return `<div class="ws-an-notice" role="note"><span class="ws-an-notice-ic">${icon('info')}</span><div class="ws-an-notice-tx"><b>Based on sessions saved on this Mac.</b> Numbers come from the coding-agent logs CodeMie finds here. Other computers, logs an agent has already deleted, and chats in the browser or IDE aren&#39;t counted, so your real usage can be higher.</div><div class="ws-an-notice-acts">${counted(ui, data, 'notice')}<button type="button" class="ws-btn ws-btn-ghost ws-btn-sm ws-btn-icon" ${act('analytics-notice', 'hide')} title="Hide the notice" aria-label="Hide the notice">${icon('close')}</button></div></div>`;
 }
 
-/** The fetch's progress, or the days it couldn't read with a Try again. */
+/** The fetch's progress, or the days it couldn't read: their count opens the list of them with
+ *  why, and Try again reads them all again. */
 function progressLine(data) {
   const p = data.progress?.running ? data.progress : data.status?.state === 'running' ? data.status.progress : null;
   if (p || data.refreshing) {
@@ -160,10 +168,12 @@ function progressLine(data) {
     const text = p ? `${p.label}${total > 1 ? ` · ${n0(done)} of ${n0(total)} days` : '…'}` : 'Checking for new sessions…';
     return `<div class="ws-an-progress" role="status"><span class="ws-an-prog"><span style="width:${width}%"></span></span><span>${e(text)}</span></div>`;
   }
-  const failed = data.progress?.failedDays || data.status?.failedDays || [];
+  const failed = failedDays(data.progress?.failedDays || data.status?.failedDays);
   if (!failed.length) return '';
-  const what = `${failed.length} ${plural(failed.length, 'day')} couldn't be read (${dayKeyLabel(failed[0])}${failed.length > 1 ? ' and others' : ''}). The rest is up to date.`;
-  return `<div class="ws-an-progress ws-an-failed">${icon('alert')}<span>${e(what)}</span><button type="button" class="ws-link" ${act('analytics-retry', failed[0])}>Try again</button></div>`;
+  const what = `${failed.length} ${plural(failed.length, 'day')} couldn't be read (${dayKeyLabel(failed[0].day)}${failed.length > 1 ? ' and others' : ''}).`;
+  const rows = failed.map(f => `<div class="ws-an-pop-row">${e(dayKeyLabel(f.day))}<span>${e(failedReason(f.reason))}</span></div>`).join('');
+  const days = `<details class="ws-menu ws-an-menu" data-menu="analytics-failed"><summary class="ws-an-failed-days" title="Which days, and why">${e(what)}</summary><div class="ws-menu-panel ws-an-pop ws-an-pop-wide"><div class="ws-an-pop-body"><h4>Days that couldn&#39;t be read</h4>${rows}<p class="ws-an-pop-gap">Days are UTC days, as the CodeMie CLI reads them. Try again reads them all once more.</p></div></div></details>`;
+  return `<div class="ws-an-progress ws-an-failed">${icon('alert')}${days}<span>The rest is up to date.</span><button type="button" class="ws-link" data-action="analytics-retry">Try again</button></div>`;
 }
 
 // ---------------------------------------------------------------- states
@@ -172,6 +182,11 @@ const loadingState = () => `<div class="ws-an-state">${spinner('Reading analytic
 
 function errorState(message) {
   return `<section class="ws-an-card ws-an-error">${emptyState({ iconName: 'alert', title: 'Analytics couldn’t be read', text: message, actions: button('Try again', { action: 'analytics-reload', iconName: 'refresh' }) })}</section>`;
+}
+
+/** The CLI answered in a format this Connect doesn't read: no numbers, nothing to try again. */
+function incompatibleState() {
+  return `<section class="ws-an-card ws-an-incompatible">${emptyState({ iconName: 'info', title: INCOMPATIBLE })}</section>`;
 }
 
 function emptyMac() {
@@ -376,6 +391,7 @@ function sessionsList(ui, data) {
 
 function aiBody(ui, data) {
   const s = data.summary;
+  if (data.errorCode === 'cli_incompatible') return incompatibleState();
   if (data.error) return errorState(data.error);
   if (!s) return loadingState();
   if (!s.totals?.sessions) return emptyRange(ui, data);
@@ -401,7 +417,7 @@ function drawerOf(ui, data) {
   const d = ui.drawer || {};
   return sessionDrawer(open.detail, {
     tab: d.tab, selected: d.selected, collapsed: d.collapsed, tables: ui.tables, zone: data.zone, now: data.now,
-    inConnect: startedInConnect(data.summary).has(open.id), loading: open.loading, error: open.error, id: open.id,
+    inConnect: startedInConnect(data.summary).has(open.id), loading: open.loading, error: open.error, id: open.id, reporting: !!data.reporting,
   });
 }
 

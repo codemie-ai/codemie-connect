@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { analyticsView, analyticsCharts } from '../workspace/view-analytics.js';
 import {
-  newAnalyticsView, usd, tok, dur, n0, pct, pctPoints, plural, modelLabel, projectName, agentLabel, dayKeyIn, dayKeyLabel,
+  newAnalyticsView, usd, tok, dur, n0, pct, pctPoints, plural, modelLabel, projectName, agentLabel, dayKeyIn, dayKeyLabel, failedReason,
 } from '../workspace/analytics-model.js';
 import { escapeHtml as e } from '../workspace/store.js';
 
@@ -175,14 +175,48 @@ test('a first open still reading says how many days are in and shades the rest',
   assert.ok(!done.includes('Still reading…'));
 });
 
-test('a day that could not be read is named with a Try again', () => {
-  const day = status.failedDays[0] ?? '2026-11-15';
-  const one = analyticsView(ui(), data({ status: { ...status, failedDays: [day] } }));
-  assert.ok(one.includes(`1 day couldn&#39;t be read (${e(dayKeyLabel(day))})`));
-  assert.ok(one.includes(`data-action="analytics-retry" data-value="${day}"`));
-  const two = analyticsView(ui(), data({ status: { ...status, failedDays: [day, '2026-11-01'] } }));
+test('the days that could not be read open a list with why, and Try again reads them all', () => {
+  // The fixture's failed day, as native lists it: `{day, reason}`.
+  const [first] = status.failedDays;
+  const day = first?.day ?? '2026-11-15';
+  const one = analyticsView(ui(), data({ status: { ...status, failedDays: [{ day, reason: 'out_of_memory' }] } }));
+  assert.ok(one.includes(`1 day couldn&#39;t be read (${e(dayKeyLabel(day))}).`));
+  assert.ok(one.includes('data-menu="analytics-failed"'));
+  assert.ok(one.includes(`${e(dayKeyLabel(day))}<span>${e(failedReason('out_of_memory'))}</span>`));
+  assert.match(one, /<button [^>]*data-action="analytics-retry">Try again<\/button>/, 'Try again names no day');
+  const two = analyticsView(ui(), data({ status: { ...status, failedDays: [{ day, reason: 'timeout' }, { day: '2026-11-01', reason: 'exit 3' }] } }));
   assert.ok(two.includes(`2 days couldn&#39;t be read (${e(dayKeyLabel(day))} and others)`));
+  for (const reason of ['timeout', 'exit 3']) assert.ok(two.includes(`<span>${e(failedReason(reason))}</span>`), reason);
+  // A reason is text from native: escaped.
+  const odd = analyticsView(ui(), data({ status: { ...status, failedDays: [{ day, reason: '<img src=x onerror=alert(1)>' }] } }));
+  assert.ok(!odd.includes('<img') && odd.includes('&lt;img src=x onerror=alert(1)&gt;'));
   assert.ok(!analyticsView(ui(), data({ status: { ...status, failedDays: [] } })).includes('analytics-retry'));
+  // The progress event's list wins over the status's, as the newer one.
+  const ended = analyticsView(ui(), data({ status: { ...status, failedDays: [] }, progress: { running: false, failedDays: [{ day, reason: 'not_found' }] } }));
+  assert.ok(ended.includes(e(failedReason('not_found'))));
+});
+
+test('a CLI answering in another format shows a calm state and no data', () => {
+  const copy = "This CodeMie CLI answers in a format this Connect doesn't read yet. Update Connect.";
+  const over = { summary: null, error: 'what native said', errorCode: 'cli_incompatible' };
+  let html = '';
+  assert.doesNotThrow(() => { html = analyticsView(ui(), data(over)); });
+  assert.ok(html.includes(e(copy)));
+  for (const card of ['ws-an-kpis', 'data-chart', 'analytics-reload', 'what native said', 'couldn’t be read']) assert.ok(!html.includes(card), card);
+  for (const view of ['overview', 'efficiency', 'sessions']) assert.doesNotThrow(() => analyticsView(ui({ view }), data(over)));
+  assert.deepEqual(Object.keys(analyticsCharts(ui(), data(over))), []);
+  // Any other error keeps the error state with its sentence and Try again.
+  const other = analyticsView(ui(), data({ summary: null, error: 'Connect couldn\'t read or write its analytics files.', errorCode: 'analytics_unavailable' }));
+  assert.ok(other.includes('data-action="analytics-reload"') && other.includes(e("Connect couldn't read or write its analytics files.")));
+});
+
+test('the CLI report shows busy while the CLI writes it', () => {
+  const idle = analyticsView(ui(), data());
+  assert.match(idle, /<button [^>]*data-action="analytics-report">/);
+  assert.ok(!idle.includes('aria-busy="true"'));
+  const busy = analyticsView(ui(), data({ reporting: true }));
+  assert.match(busy, /<button [^>]*data-action="analytics-report" disabled aria-busy="true">/);
+  assert.ok(busy.includes('Opening the report…'));
 });
 
 test('the notice hides into a "Local sessions only" chip', () => {

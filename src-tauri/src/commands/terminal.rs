@@ -201,14 +201,17 @@ impl Terminals {
     }
 
     /// Notes one start: `{"at":<ms>,"folder":..,"program":argv[0]}`, appended, the oldest lines
-    /// dropped past [`LAUNCH_LOG_MAX`] by an atomic rewrite. Never fails a start: a problem is
-    /// only logged.
+    /// dropped past [`LAUNCH_LOG_MAX`] by an atomic rewrite. The folder is noted with its
+    /// symlinks resolved (as given when it can't be), so Analytics matches the session the agent
+    /// notes for it. Never fails a start: a problem is only logged.
     fn log_launch(&self, launch: &Launch) {
         let guard = self.launch_log.lock().unwrap();
         let Some(path) = guard.as_ref() else { return };
+        let folder =
+            std::fs::canonicalize(&launch.folder).unwrap_or_else(|_| launch.folder.clone());
         let line = json!({
             "at": chrono::Utc::now().timestamp_millis(),
-            "folder": launch.folder.to_string_lossy(),
+            "folder": folder.to_string_lossy(),
             "program": launch.argv.first(),
         });
         if let Err(e) = append_line(path, &line.to_string()) {
@@ -897,12 +900,36 @@ mod tests {
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
         assert_eq!(lines.len(), 2);
+        let folder = dir.path().canonicalize().unwrap();
         for line in &lines {
-            assert_eq!(line["folder"], dir.path().to_string_lossy().as_ref());
+            assert_eq!(line["folder"], folder.to_string_lossy().as_ref());
             assert_eq!(line["program"], "/bin/cat");
             assert!(line["at"].as_i64().unwrap() > 1_700_000_000_000);
         }
         t.close_all();
+    }
+
+    #[test]
+    fn the_launch_log_notes_the_real_folder_behind_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let log = dir.path().join("terminal-launches.jsonl");
+        let t = Terminals::default();
+        t.set_launch_log(log.clone());
+        t.log_launch(&launch(&link, &["claude"], &[]));
+        // A folder that isn't there is noted as it was given.
+        t.log_launch(&launch(Path::new("/no/such/folder"), &["claude"], &[]));
+        let lines: Vec<Value> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let real = real.canonicalize().unwrap();
+        assert_eq!(lines[0]["folder"], real.to_string_lossy().as_ref());
+        assert_eq!(lines[1]["folder"], "/no/such/folder");
     }
 
     #[test]

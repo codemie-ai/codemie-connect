@@ -300,7 +300,8 @@ export async function analyticsChecks({ open, check, assert, shot, settled, OUT 
         assert(await n.page.locator('.ws-an-chart[data-chart=trend] .ws-an-wash').count() === 1, 'one shaded stretch');
         assert((await n.page.locator('.ws-an-chart[data-chart=trend] .ws-an-wash-label').textContent()) === 'Still reading…', 'the stretch says Still reading…');
         assert(await n.page.locator('.ws-an-chart[data-chart=trend] .ws-an-band').count() === growing.series.length, 'every day has its tooltip band');
-        assert(/of 90 days/.test(await n.page.locator('.ws-an-progress').innerText()), 'the progress line says 90 days');
+        const total = runningFx.progress.total;
+        assert(new RegExp(`of ${total} days`).test(await n.page.locator('.ws-an-progress').innerText()), `the progress line says ${total} days`);
         assert(await n.page.locator('.ws-an-refresh[disabled]').count() === 1, 'Refresh is disabled while it reads');
         await shot(n.page, `analytics-${theme}-a5-first-open`);
         clean(n.errors, 'A5');
@@ -310,16 +311,20 @@ export async function analyticsChecks({ open, check, assert, shot, settled, OUT 
 
     // ---------------------------------------------------------------- A6: a failed day
     {
-      const n = await openAnalytics(theme, 1440, 900, { status: { failedDays: ['2026-10-13'] } });
+      const n = await openAnalytics(theme, 1440, 900, { status: { failedDays: [{ day: '2026-10-13', reason: 'out_of_memory' }] } });
       await ready(n.page);
-      await check(`A6 ${theme}: a failed day is named, and Try again sends analytics_retry for it`, async () => {
+      await check(`A6 ${theme}: a failed day is named, its text lists why, and Try again sends analytics_retry for all`, async () => {
         const line = await n.page.locator('.ws-an-failed').innerText();
         assert(line.includes("1 day couldn't be read (Tue 13 Oct)"), `failed line ${JSON.stringify(line)}`);
+        await n.page.click('.ws-an-failed-days');
+        const list = await n.page.locator('details[data-menu="analytics-failed"] .ws-menu-panel').innerText();
+        assert(list.includes('Tue 13 Oct') && list.includes('ran out of memory'), `the list ${JSON.stringify(list)}`);
         await shot(n.page, `analytics-${theme}-a6-failed-day`);
+        await n.page.click('.ws-an-failed-days');
         await n.page.click('.ws-an-failed [data-action="analytics-retry"]');
         await n.page.waitForFunction(() => window.__bridgeCalls.some(([o]) => o === 'analytics_retry'));
         const retry = await calls(n.page, 'analytics_retry');
-        assert(retry.length === 1 && retry[0].day === '2026-10-13', `retry ${JSON.stringify(retry)}`);
+        assert(retry.length === 1 && JSON.stringify(retry[0]) === '{}', `retry ${JSON.stringify(retry)}`);
         await n.page.waitForFunction(() => !document.querySelector('.ws-an-failed') && !document.querySelector('.ws-an-progress'));
         assert((await toasts(n.page)).some(x => x.includes('Tue 13 Oct read.')), `toasts ${JSON.stringify(await toasts(n.page))}`);
         clean(n.errors, 'A6');

@@ -2,7 +2,7 @@
 //! `testdata/`. Fetches start with a fixed UTC today (`start_fetch`), so the planned days don't
 //! depend on when the tests run.
 use super::cli::{CliError, ExportOutcome, FakeAnalyticsCli, FakeCall};
-use super::fetch::{plan_first_open, plan_refresh};
+use super::fetch::{plan_first_open, plan_refresh, Fetch, FIRST_OPEN_DAYS};
 use super::store::{State, Store};
 use crate::ai::fake::FakeRunner;
 use crate::ai::profiles::ProfileCache;
@@ -85,7 +85,7 @@ pub(super) async fn ask(core: &Arc<Core>, op: Operation, data: Value) -> Value {
     core.request(read(op, data)).await.unwrap()
 }
 async fn refresh(core: &Arc<Core>) -> Value {
-    core.start_fetch(day(TODAY), None).await.unwrap()
+    core.start_fetch(day(TODAY), Fetch::Refresh).await.unwrap()
 }
 /// Waits for the background fetch to end.
 async fn idle(core: &Core) {
@@ -159,7 +159,7 @@ fn read_until_yesterday(data: &Path) {
     let dir = data.join("analytics");
     std::fs::create_dir_all(&dir).unwrap();
     State {
-        days_done: (2..90).map(key).collect(),
+        days_done: (2..91).map(key).collect(),
         ..Default::default()
     }
     .save(&dir)
@@ -179,15 +179,18 @@ async fn first_open_with_a_bad_day(dir: &Path) -> (Arc<Core>, Arc<FakeAnalyticsC
 }
 
 #[test]
-fn first_open_plans_three_day_windows_newest_first_and_skips_done_days() {
-    let plan = plan_first_open(day(TODAY), 90, &BTreeSet::new());
-    assert_eq!(plan.len(), 30);
+fn first_open_plans_91_utc_days_in_three_day_windows_newest_first_and_skips_done_days() {
+    // 91 UTC days hold the last 90 local days in any zone.
+    assert_eq!(FIRST_OPEN_DAYS, 91);
+    let plan = plan_first_open(day(TODAY), FIRST_OPEN_DAYS, &BTreeSet::new());
+    assert_eq!(plan.len(), 31);
     assert_eq!(plan[0], window("2026-11-17", TODAY));
     assert_eq!(plan[1], window("2026-11-14", "2026-11-16"));
     assert_eq!(plan[29], window("2026-08-22", "2026-08-24"));
+    assert_eq!(plan[30], window("2026-08-21", "2026-08-21"));
     // Days already read are skipped; one read in the middle of a window cuts it in two.
     let done = days(&["2026-11-19", "2026-11-18", "2026-11-17", "2026-11-15"]);
-    let plan = plan_first_open(day(TODAY), 90, &done);
+    let plan = plan_first_open(day(TODAY), FIRST_OPEN_DAYS, &done);
     assert_eq!(
         plan[..3],
         [
@@ -196,10 +199,10 @@ fn first_open_plans_three_day_windows_newest_first_and_skips_done_days() {
             window("2026-11-09", "2026-11-11"),
         ]
     );
-    assert_eq!(plan.last(), Some(&window("2026-08-22", "2026-08-22")));
+    assert_eq!(plan.last(), Some(&window("2026-08-21", "2026-08-22")));
     assert_eq!(plan.len(), 30);
-    let all: BTreeSet<String> = (0..90).map(key).collect();
-    assert!(plan_first_open(day(TODAY), 90, &all).is_empty());
+    let all: BTreeSet<String> = (0..91).map(key).collect();
+    assert!(plan_first_open(day(TODAY), FIRST_OPEN_DAYS, &all).is_empty());
     assert_eq!(plan_refresh(day(TODAY)), window("2026-11-18", TODAY));
 }
 
@@ -219,12 +222,13 @@ async fn a_failed_window_is_retried_day_by_day_and_only_the_bad_day_is_listed() 
             window("2026-11-11", "2026-11-13"),
         ]
     );
-    assert_eq!(calls.len(), 30 + 3);
+    assert_eq!(calls.len(), 31 + 3);
     let status = ask(&core, Operation::AnalyticsStatus, json!({})).await;
     assert_eq!(status["state"], "ready");
-    assert_eq!(status["failedDays"], json!(["2026-11-15"]));
+    let failed = json!([{"day": "2026-11-15", "reason": "out_of_memory"}]);
+    assert_eq!(status["failedDays"], failed);
     assert_eq!(status["sessions"], 3);
-    assert_eq!(status["storedFrom"], "2026-08-22");
+    assert_eq!(status["storedFrom"], "2026-08-21");
     assert_eq!(status["progress"], Value::Null);
     assert!(status["lastFetchAt"].as_i64().is_some());
     let state = State::load(&core.paths.analytics_dir());
@@ -239,15 +243,15 @@ async fn a_failed_window_is_retried_day_by_day_and_only_the_bad_day_is_listed() 
     let label = "Reading your history, newest first";
     assert_eq!(
         events[0],
-        json!({"running": true, "done": 0, "total": 90, "label": label, "failedDays": []})
+        json!({"running": true, "done": 0, "total": 91, "label": label, "failedDays": []})
     );
     assert_eq!(
         events[2],
-        json!({"running": true, "done": 6, "total": 90, "label": label, "failedDays": ["2026-11-15"]})
+        json!({"running": true, "done": 6, "total": 91, "label": label, "failedDays": failed})
     );
     assert_eq!(
         events.last().unwrap(),
-        &json!({"running": false, "done": 90, "total": 90, "label": label, "failedDays": ["2026-11-15"]})
+        &json!({"running": false, "done": 91, "total": 91, "label": label, "failedDays": failed})
     );
     // Try again reads that day alone and clears it.
     assert_eq!(
@@ -267,8 +271,8 @@ async fn a_failed_window_is_retried_day_by_day_and_only_the_bad_day_is_listed() 
     let status = ask(&core, Operation::AnalyticsStatus, json!({})).await;
     assert_eq!(status["failedDays"], json!([]));
     for bad in [
-        json!({}),
         json!({"day": "15.11.2026"}),
+        json!({"day": 15}),
         json!({"day": "2999-01-01"}),
     ] {
         let e = core
@@ -341,8 +345,8 @@ async fn a_second_refresh_while_one_runs_starts_nothing() {
     idle(&core).await;
     assert_eq!(
         kinds(&cli),
-        ["supports_view", "export", "supports_view"],
-        "one export; the only other call is the status's own check"
+        ["supports_view", "export"],
+        "one export; the status's own check was answered already"
     );
     let status = ask(&core, Operation::AnalyticsStatus, json!({})).await;
     assert_eq!(status["state"], "empty");
@@ -382,7 +386,7 @@ async fn a_restart_continues_with_the_days_not_yet_read() {
         plan[..2],
         [window(TODAY, TODAY), window("2026-11-11", "2026-11-13")]
     );
-    assert_eq!(plan.len(), 1 + 28);
+    assert_eq!(plan.len(), 1 + 29);
     assert!(State::load(&next.paths.analytics_dir())
         .last_fetch_at
         .is_some());
@@ -588,44 +592,6 @@ async fn session_returns_the_cli_trace_unchanged() {
 }
 
 #[tokio::test]
-async fn report_is_written_by_the_cli_into_the_data_root_and_opened() {
-    let dir = tempfile::tempdir().unwrap();
-    let cli = Arc::new(FakeAnalyticsCli::new());
-    let core = core(dir.path(), &cli);
-    let mut opened = Vec::new();
-    let answer = core
-        .analytics_report(
-            &json!({"from": FROM, "to": TO, "agent": "claude"}),
-            |p: &Path| {
-                opened.push(p.to_path_buf());
-                Ok(())
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(answer, json!({"opened": true}));
-    let out = core.paths.analytics_dir().join("report.html");
-    assert_eq!(opened, std::slice::from_ref(&out));
-    assert_eq!(
-        cli.calls().last(),
-        Some(&FakeCall::Report {
-            input: store_path(&core),
-            args: strings(&["--from", FROM, "--to", TO, "--agent", "claude"]),
-            out,
-        })
-    );
-    // A report the CLI couldn't write opens nothing.
-    cli.script_report(Err(out_of_memory()));
-    let e = core
-        .analytics_report(&json!({"from": FROM, "to": TO}), |p: &Path| {
-            panic!("opened {}", p.display())
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(e.code, "cli_failed");
-}
-
-#[tokio::test]
 async fn without_view_support_status_is_needs_cli_and_no_fetch_starts() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Arc::new(FakeAnalyticsCli::new());
@@ -711,7 +677,11 @@ async fn an_unreadable_store_starts_a_fresh_first_open() {
     idle(&core).await;
     assert!(dir.path().join("analytics/sessions.json.bad").exists());
     let plan = exports(&cli);
-    assert_eq!(plan.len(), 30, "the days it held are read again");
+    assert_eq!(
+        plan.len(),
+        31,
+        "the days it held are read again: 91 UTC days"
+    );
     assert_eq!(plan[0], window("2026-11-17", TODAY));
 }
 
@@ -768,9 +738,11 @@ async fn a_data_folder_move_takes_the_analytics_along() {
     let f = Fixture::new();
     // A first open that finished: its sessions and the days it read.
     let analytics = f.default.join("analytics");
-    Store::open(&analytics).merge(&export_day()).unwrap();
+    Store::open(&analytics)
+        .merge(export_day(), day(TODAY))
+        .unwrap();
     State {
-        days_done: (1..90).map(key).collect(),
+        days_done: (1..91).map(key).collect(),
         ..Default::default()
     }
     .save(&analytics)
@@ -860,4 +832,361 @@ async fn contract_fixtures_match_the_real_analytics() {
     contract_fixture("analytics-progress.json", &progress);
     contract_fixture("analytics-summary.json", &summary);
     contract_fixture("analytics-session.json", &session);
+}
+
+fn ms(rfc: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(rfc)
+        .unwrap()
+        .timestamp_millis()
+}
+/// Writes `state` (as `state.json` holds it) and a store of `rows` into `data`'s analytics folder.
+fn stored(data: &Path, state: Value, rows: Vec<Value>) {
+    let dir = data.join("analytics");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("state.json"), state.to_string()).unwrap();
+    let export = json!({"meta": {"periodStart": null}, "sessions": rows});
+    std::fs::write(dir.join("sessions.json"), export.to_string()).unwrap();
+}
+fn failed_days(core: &Core) -> Value {
+    serde_json::to_value(State::load(&core.paths.analytics_dir()).failed_days).unwrap()
+}
+
+#[tokio::test]
+async fn refresh_reads_again_the_start_days_of_sessions_active_before_the_last_fetch() {
+    let dir = tempfile::tempdir().unwrap();
+    let last = ms("2026-11-19T12:00:00Z");
+    let h = 3_600_000;
+    let row = |id: &str, start: &str, end: i64| json!({"sessionId": id, "startTime": ms(start), "durationMs": 60_000, "observedEnd": end});
+    let week = ms("2026-11-12T09:00:00Z");
+    stored(
+        dir.path(),
+        json!({"daysDone": (2..91).map(key).collect::<Vec<_>>(), "lastFetchAt": last}),
+        vec![
+            // Started 4 days ago and still active 10 h before the last fetch: it may have grown.
+            row("long", "2026-11-15T09:00:00Z", last - 10 * h),
+            // Quiet for 3 days before the last fetch.
+            row("quiet", "2026-11-14T09:00:00Z", last - 72 * h),
+            // 7 days back and active an hour before; with no log end, start plus duration counts.
+            json!({"sessionId": "week", "startTime": week, "durationMs": last - h - week}),
+            // Started more than 7 days ago: never read again.
+            row("old", "2026-11-11T23:00:00Z", last - h),
+            // Yesterday's: the refresh reads that day anyway.
+            row("recent", "2026-11-18T09:00:00Z", last - h),
+        ],
+    );
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let core = core(dir.path(), &cli);
+    assert_eq!(refresh(&core).await, json!({"started": true}));
+    idle(&core).await;
+    assert_eq!(
+        exports(&cli),
+        [
+            window("2026-11-18", TODAY),
+            window("2026-11-15", "2026-11-15"),
+            window("2026-11-12", "2026-11-12"),
+        ]
+    );
+    let events = core.analytics_events.lock().unwrap().clone();
+    assert_eq!(events.last().unwrap()["total"], 4);
+}
+
+#[tokio::test]
+async fn retry_without_a_day_reads_every_failed_day_newest_first_with_its_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let last = 1_795_000_000_000i64;
+    stored(
+        dir.path(),
+        json!({"daysDone": ["2026-11-11"], "lastFetchAt": last,
+            "failedDays": {"2026-11-10": "timeout", "2026-11-15": "exit 3", "2026-11-12": "out_of_memory"}}),
+        vec![],
+    );
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    cli.script_export(Ok(ExportOutcome::Empty)); // 11-15 is read now
+    cli.script_export(Err(CliError::Failed {
+        code: 2,
+        stderr_tail: "boom".into(),
+    })); // 11-12 fails again, for another reason
+    cli.script_export_json(json!({"meta": {"periodStart": null}})); // 11-10: no sessions array
+    let core = core(dir.path(), &cli);
+    let status = ask(&core, Operation::AnalyticsStatus, json!({})).await;
+    assert_eq!(
+        status["failedDays"],
+        json!([
+            {"day": "2026-11-10", "reason": "timeout"},
+            {"day": "2026-11-12", "reason": "out_of_memory"},
+            {"day": "2026-11-15", "reason": "exit 3"},
+        ])
+    );
+    assert_eq!(
+        ask(&core, Operation::AnalyticsRetry, json!({})).await,
+        json!({"started": true})
+    );
+    idle(&core).await;
+    assert_eq!(
+        exports(&cli),
+        [
+            window("2026-11-15", "2026-11-15"),
+            window("2026-11-12", "2026-11-12"),
+            window("2026-11-10", "2026-11-10"),
+        ]
+    );
+    let after = json!([
+        {"day": "2026-11-10", "reason": "bad_output"},
+        {"day": "2026-11-12", "reason": "exit 2"},
+    ]);
+    let status = ask(&core, Operation::AnalyticsStatus, json!({})).await;
+    assert_eq!(status["failedDays"], after);
+    let events = core.analytics_events.lock().unwrap().clone();
+    assert_eq!(events.last().unwrap()["failedDays"], after);
+    assert_eq!(
+        events[0]["label"], "Reading the failed days again",
+        "{events:?}"
+    );
+    let state = State::load(&core.paths.analytics_dir());
+    assert!(state.days_done.contains("2026-11-15"));
+    assert!(
+        !state.days_done.contains("2026-11-10"),
+        "an export without sessions marks nothing read"
+    );
+    assert_eq!(
+        state.last_fetch_at,
+        Some(last),
+        "a retry reads no new day, so the refresh clock stays"
+    );
+}
+
+#[tokio::test]
+async fn view_support_is_asked_once_until_a_cli_call_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    read_until_yesterday(dir.path());
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    cli.script_view(Ok(summary_with(&[])));
+    let core = core(dir.path(), &cli);
+    ask(&core, Operation::AnalyticsStatus, json!({})).await;
+    refresh(&core).await;
+    idle(&core).await;
+    ask(
+        &core,
+        Operation::AnalyticsApp,
+        json!({"from": FROM, "to": TO}),
+    )
+    .await;
+    assert_eq!(kinds(&cli), ["supports_view", "export", "view"]);
+    // A call that failed asks again: the CLI may have changed.
+    cli.script_view(Err(CliError::NotFound));
+    let e = core
+        .request(read(
+            Operation::AnalyticsView,
+            json!({"from": FROM, "to": TO}),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "needs_cli");
+    ask(&core, Operation::AnalyticsStatus, json!({})).await;
+    assert_eq!(kinds(&cli)[3..], ["view", "supports_view"]);
+}
+
+#[tokio::test]
+async fn two_timeouts_in_a_row_stop_the_run_and_leave_its_days_unread() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    cli.script_export(Err(CliError::Timeout)); // 11-17..11-19
+    cli.script_export(Err(CliError::Timeout)); // 11-19 alone
+    let core = core(dir.path(), &cli);
+    refresh(&core).await;
+    idle(&core).await;
+    assert_eq!(
+        exports(&cli),
+        [window("2026-11-17", TODAY), window(TODAY, TODAY)]
+    );
+    let state = State::load(&core.paths.analytics_dir());
+    assert!(state.days_done.is_empty());
+    assert!(state.failed_days.is_empty(), "no day is failed for good");
+    assert_eq!(state.last_fetch_at, None, "the run didn't finish");
+    let events = core.analytics_events.lock().unwrap().clone();
+    assert_eq!(events.last().unwrap()["running"], false);
+
+    // Timeouts that aren't in a row: one day fails, the run goes on until two come together.
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    cli.script_export(Ok(ExportOutcome::Empty)); // 11-17..11-19
+    cli.script_export(Err(CliError::Timeout)); // 11-14..11-16
+    cli.script_export(Ok(ExportOutcome::Empty)); // 11-16
+    cli.script_export(Err(CliError::Timeout)); // 11-15
+    cli.script_export(Err(CliError::Timeout)); // 11-14
+    let core = super::tests::core(dir.path(), &cli);
+    refresh(&core).await;
+    idle(&core).await;
+    assert_eq!(
+        exports(&cli).len(),
+        5,
+        "nothing after the second timeout in a row"
+    );
+    assert_eq!(failed_days(&core), json!({"2026-11-15": "timeout"}));
+    let state = State::load(&core.paths.analytics_dir());
+    assert!(state.days_done.contains("2026-11-16"));
+    assert!(!state.days_done.contains("2026-11-14"));
+    // The next refresh goes on with the days not read: today, then 11-14 and older.
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    drop(core);
+    let next = super::tests::core(dir.path(), &cli);
+    refresh(&next).await;
+    idle(&next).await;
+    assert_eq!(
+        exports(&cli)[..2],
+        [window(TODAY, TODAY), window("2026-11-12", "2026-11-14")]
+    );
+}
+
+#[tokio::test]
+async fn an_answer_in_another_format_is_cli_incompatible() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let core = core(dir.path(), &cli);
+    // A trace where a summary belongs, a summary where a trace belongs, and no schema at all.
+    cli.script_view(Ok(session()));
+    cli.script_view(Ok(summary()));
+    cli.script_view(Ok(json!({"totals": {"sessions": 1}})));
+    for (op, data) in [
+        (Operation::AnalyticsView, json!({"from": FROM, "to": TO})),
+        (Operation::AnalyticsSession, json!({"id": SESSION_ID})),
+        (Operation::AnalyticsView, json!({"from": FROM, "to": TO})),
+    ] {
+        let e = core.request(read(op, data)).await.unwrap_err();
+        assert_eq!(e.code, "cli_incompatible");
+        assert_eq!(
+            e.message,
+            "This CodeMie CLI answers in a format this Connect doesn't read yet. Update Connect."
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_broken_analytics_folder_is_the_pages_own_error_not_storage_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    // The folder is a file: nothing can be read or written there.
+    std::fs::write(dir.path().join("analytics"), "not a folder").unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let core = core(dir.path(), &cli);
+    let e = core
+        .request(read(Operation::AnalyticsStatus, json!({})))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "analytics_unavailable");
+    // A fetch over it stops without touching the rest of the workspace.
+    refresh(&core).await;
+    idle(&core).await;
+    assert!(core
+        .request(read(Operation::Snapshot, json!({})))
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn each_report_is_a_new_file_under_the_private_root_and_older_ones_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = CorePaths {
+        data: dir.path().join("data"),
+        private: dir.path().join("private"),
+    };
+    std::fs::create_dir_all(&paths.data).unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let core = core_on(&paths, &cli);
+    let mut opened: Vec<PathBuf> = Vec::new();
+    for _ in 0..2 {
+        let answer = core
+            .analytics_report(
+                &json!({"from": FROM, "to": TO, "agent": "claude"}),
+                |p: &Path| {
+                    // The CLI wrote it; the browser shows it.
+                    std::fs::write(p, "<html></html>").unwrap();
+                    opened.push(p.to_path_buf());
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, json!({"opened": true}));
+    }
+    assert_ne!(opened[0], opened[1], "each report is a file of its own");
+    for p in &opened {
+        assert_eq!(p.parent(), Some(paths.private.as_path()));
+        let name = p.file_name().unwrap().to_string_lossy();
+        assert!(
+            name.starts_with("report-") && name.ends_with(".html"),
+            "{name}"
+        );
+    }
+    assert!(!opened[0].exists(), "the older report is swept");
+    assert!(opened[1].exists());
+    assert!(!paths.analytics_dir().join("report.html").exists());
+    assert_eq!(
+        cli.calls().last(),
+        Some(&FakeCall::Report {
+            input: store_path(&core),
+            args: strings(&["--from", FROM, "--to", TO, "--agent", "claude"]),
+            out: opened[1].clone(),
+        })
+    );
+    // A report the CLI couldn't write opens nothing.
+    cli.script_report(Err(out_of_memory()));
+    let e = core
+        .analytics_report(&json!({"from": FROM, "to": TO}), |p: &Path| {
+            panic!("opened {}", p.display())
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "cli_failed");
+}
+
+#[tokio::test]
+async fn each_failed_cli_call_leaves_one_log_line_without_session_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, cli) = first_open_with_a_bad_day(dir.path()).await;
+    let heap = "exit 134: FATAL ERROR: JavaScript heap out of memory";
+    assert_eq!(
+        *core.analytics_log.lock().unwrap(),
+        [
+            format!("analytics: export 2026-11-14..2026-11-16 failed: {heap}"),
+            format!("analytics: export 2026-11-15..2026-11-15 failed: {heap}"),
+        ]
+    );
+    // Only the last stderr line, cut at 300 characters; the operation, not its arguments.
+    cli.script_view(Err(CliError::Failed {
+        code: 1,
+        stderr_tail: format!("Reading /Users/taylor/secret.jsonl\n{}\n", "é".repeat(400)),
+    }));
+    cli.script_view(Err(CliError::Timeout));
+    cli.script_view(Ok(json!({"schema": "codemie.analytics.summary/1"})));
+    cli.script_report(Err(CliError::NotFound));
+    let range = json!({"from": FROM, "to": TO, "project": "/Users/taylor/secret"});
+    let _ = core
+        .request(read(Operation::AnalyticsView, range.clone()))
+        .await;
+    let _ = core
+        .request(read(Operation::AnalyticsSession, json!({"id": SESSION_ID})))
+        .await;
+    let _ = core
+        .request(read(Operation::AnalyticsSession, json!({"id": SESSION_ID})))
+        .await;
+    let _ = core.analytics_report(&range, |_: &Path| Ok(())).await;
+    let lines = core.analytics_log.lock().unwrap()[2..].to_vec();
+    assert_eq!(
+        lines,
+        [
+            format!("analytics: analytics_view failed: exit 1: {}", "é".repeat(300)),
+            "analytics: analytics_session failed: timeout".to_string(),
+            "analytics: analytics_session failed: exit 0, but its answer is schema \"codemie.analytics.summary/1\"".to_string(),
+            "analytics: analytics_report failed: not_found".to_string(),
+        ]
+    );
+    // A call Connect stopped as it quit isn't a failure.
+    cli.script_view(Err(CliError::Stopped));
+    let _ = core
+        .request(read(
+            Operation::AnalyticsView,
+            json!({"from": FROM, "to": TO}),
+        ))
+        .await;
+    assert_eq!(core.analytics_log.lock().unwrap().len(), 6);
 }

@@ -291,17 +291,20 @@ async fn a_cli_session_counts_as_terminal_only_within_120_seconds_in_the_same_fo
 
 #[tokio::test]
 async fn without_the_cli_the_terminal_fields_are_zero_and_the_rest_still_answers() {
-    for old in [true, false] {
+    for case in ["old", "timeout", "incompatible"] {
         let dir = tempfile::tempdir().unwrap();
         let cli = Arc::new(FakeAnalyticsCli::new());
         let core = core(dir.path(), &cli);
         let t = ms(FROM) + 3_600_000;
         log_launches(dir.path(), &[(t, "/w/a")]);
         run(&core, 10, "meeting", "ok", 1.0);
-        if old {
-            cli.set_supports_view(false);
-        } else {
-            cli.script_view(Err(CliError::Timeout));
+        match case {
+            "old" => cli.set_supports_view(false),
+            "timeout" => cli.script_view(Err(CliError::Timeout)),
+            // An answer this Connect doesn't read, though it names a matching session.
+            _ => cli.script_view(Ok(json!({"schema": "codemie.analytics.other/1",
+                "totals": {"costUSD": 3.0},
+                "sessions": [{"sessionId": "s", "startTime": t + 1_000, "project": "/w/a", "costUSD": 2.0}]}))),
         }
         let app = ask_app(&core).await;
         assert_eq!(app["totals"]["terminalSessions"], 0);
@@ -311,6 +314,37 @@ async fn without_the_cli_the_terminal_fields_are_zero_and_the_rest_still_answers
         assert_eq!(app["totals"]["runs"], 1);
         near(&app["totals"]["costUsd"], 1.0);
     }
+}
+
+#[tokio::test]
+async fn a_launch_matches_its_session_through_a_symlinked_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("work");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let core = core(dir.path(), &cli);
+    let t = ms(FROM) + 3_600_000;
+    // The dock notes the real folder; the agent noted the folder by the link it was opened in.
+    let noted = real.canonicalize().unwrap();
+    log_launches(dir.path(), &[(t, noted.to_str().unwrap())]);
+    let row = json!([{"sessionId": "s", "startTime": t + 1_000, "project": link.to_str().unwrap(), "costUSD": 2.0}]);
+    cli.script_view(Ok(cli_summary(5.0, row.clone())));
+    let app = ask_app(&core).await;
+    assert_eq!(app["totals"]["terminalSessions"], 1);
+    near(&app["totals"]["terminalCostUsd"], 2.0);
+    // The AI tab's tag uses the same match.
+    let mut summary: Value = serde_json::from_str(include_str!("testdata/summary.json")).unwrap();
+    summary["sessions"] = row;
+    cli.script_view(Ok(summary));
+    let view = super::tests::ask(
+        &core,
+        Operation::AnalyticsView,
+        json!({"from": FROM, "to": TO}),
+    )
+    .await;
+    assert_eq!(view["connect"], json!({"startedInConnect": ["s"]}));
 }
 
 #[tokio::test]

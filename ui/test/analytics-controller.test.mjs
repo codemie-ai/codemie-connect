@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createAnalyticsController } from '../workspace/analytics-controller.js';
 import { analyticsView } from '../workspace/view-analytics.js';
-import { presetRange, PREFS_KEY, STALE_MS } from '../workspace/analytics-model.js';
+import { presetRange, dayKeyLabel, PREFS_KEY, STALE_MS } from '../workspace/analytics-model.js';
 
 const fixture = name => JSON.parse(readFileSync(new URL(`fixtures/contract/${name}`, import.meta.url), 'utf8'));
 const status = fixture('analytics-status.json');
@@ -219,10 +219,18 @@ test('opening a session loads its trace into the controller', async () => {
 test('retry, the CLI report and a failed view', async () => {
   const { ctl, calls, emit } = harness();
   await ctl.open();
-  await ctl.handle('analytics-retry', control(status.failedDays[0]));
-  assert.deepEqual(calls.query.at(-1), ['analytics_retry', { day: status.failedDays[0] }]);
+  // Try again reads every failed day again; the toast names what came of them.
+  await ctl.handle('analytics-retry', control());
+  assert.deepEqual(calls.query.at(-1), ['analytics_retry', {}]);
   await emit({ ...progress, running: false, failedDays: [] });
-  assert.equal(calls.toasts.length, 1);
+  assert.deepEqual(calls.toasts, [[`${dayKeyLabel(status.failedDays[0].day)} read.`, 'success']]);
+  // Two failed days, one of them still failing.
+  const two = [{ day: '2026-11-10', reason: 'timeout' }, { day: '2026-11-12', reason: 'exit 3' }];
+  const again = harness({ answers: { analytics_status: { ...status, failedDays: two } } });
+  await again.ctl.open();
+  await again.ctl.handle('analytics-retry', control());
+  await again.emit({ ...progress, running: false, failedDays: [two[1]] });
+  assert.deepEqual(again.calls.toasts, [[`${dayKeyLabel('2026-11-12')} still couldn't be read.`, 'info']]);
   await ctl.handle('analytics-report', control());
   const { from, to } = presetRange('30d', FRESH, 'UTC');
   assert.deepEqual(calls.query.at(-1), ['analytics_report', { from, to }]);
@@ -257,4 +265,59 @@ test('tabs, the notice and tables are kept; progress off the page renders nothin
   assert.equal(calls.render, renders);
   assert.deepEqual(calls.query, []);
   assert.equal(ctl.data.progress.done, progress.done);
+});
+
+test('the CLI report is busy until the CLI wrote it, and asked for once', async () => {
+  let done;
+  const { ctl, calls, html } = harness({ answers: { analytics_report: () => new Promise(resolve => { done = () => resolve({ opened: true }); }) } });
+  await ctl.open();
+  await ctl.handle('analytics-open-session', control(summary.sessions[0].sessionId));
+  const pending = ctl.handle('analytics-report', control());
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(ctl.data.reporting, true);
+  // The menu item and the drawer's button both say so.
+  assert.equal((html().match(/data-action="analytics-report" disabled aria-busy="true"/g) || []).length, 2);
+  await ctl.handle('analytics-report', control());
+  assert.equal(calls.query.filter(([op]) => op === 'analytics_report').length, 1, 'a second press asks for nothing');
+  done();
+  await pending;
+  assert.equal(ctl.data.reporting, false);
+  assert.ok(!html().includes('aria-busy="true"'));
+  assert.deepEqual(calls.toasts.at(-1), ['The CLI report opened in your browser.', 'success']);
+  // A report that failed isn't busy any more.
+  const failing = harness({ answers: { analytics_report: Object.assign(new Error('The CodeMie CLI stopped with exit code 1.'), { code: 'cli_failed' }) } });
+  await failing.ctl.open();
+  await assert.rejects(failing.ctl.handle('analytics-report', control()));
+  assert.equal(failing.ctl.data.reporting, false);
+});
+
+test('errors of the Analytics page stay on it: an unreadable folder, a CLI in another format', async () => {
+  const copy = "This CodeMie CLI answers in a format this Connect doesn't read yet. Update Connect.";
+  const incompatible = harness({ answers: { analytics_view: Object.assign(new Error(copy), { code: 'cli_incompatible' }) } });
+  await incompatible.ctl.open();
+  assert.equal(incompatible.ctl.data.errorCode, 'cli_incompatible');
+  const page = incompatible.html();
+  assert.ok(page.includes(copy.replace("'", '&#39;')));
+  assert.ok(!page.includes('ws-an-kpis') && !page.includes('analytics-reload'));
+  // The analytics folder can't be read: the page's own error state, with Try again.
+  const unreadable = "Connect couldn't read or write its analytics files. Check the disk and try again.";
+  const broken = harness({ answers: { analytics_status: Object.assign(new Error(unreadable), { code: 'analytics_unavailable' }) } });
+  await broken.ctl.open();
+  assert.equal(broken.ctl.data.errorCode, 'analytics_unavailable');
+  assert.ok(broken.html().includes(unreadable.replace("'", '&#39;')) && broken.html().includes('data-action="analytics-reload"'));
+  // Try again once the CLI answers in its format: the numbers are back.
+  let fails = 1;
+  const once = harness({
+    answers: {
+      analytics_view: () => {
+        if (fails-- > 0) throw Object.assign(new Error(copy), { code: 'cli_incompatible' });
+        return summary;
+      },
+    },
+  });
+  await once.ctl.open();
+  assert.equal(once.ctl.data.errorCode, 'cli_incompatible');
+  await once.ctl.handle('analytics-reload', control());
+  assert.equal(once.ctl.data.errorCode, '');
+  assert.ok(once.html().includes('ws-an-kpis'));
 });

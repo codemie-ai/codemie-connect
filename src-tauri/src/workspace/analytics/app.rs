@@ -2,13 +2,13 @@
 //! records (`ai_run`, `meeting`, `commitment`, `action`, `decision`, `automation_run`) and the
 //! launch log of the terminal dock. The one AI number taken from the CLI is the cost of the
 //! sessions the dock started (spec, decision 5).
-use super::range_args;
+use super::{range_args, SUMMARY_SCHEMA};
 use crate::workspace::models::{Record, Result, WorkspaceError};
 use crate::workspace::repository::Repository;
 use crate::workspace::{graph, Core};
 use chrono::{DateTime, Datelike, Days, FixedOffset, NaiveDate, TimeZone};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The features, in the order the page lists them.
 const FEATURES: [&str; 6] = [
@@ -108,22 +108,15 @@ impl Core {
         ))
     }
 
-    /// The CLI's summary of the window, `None` when it is too old or can't answer now.
+    /// The CLI's summary of the window, `None` when it is too old, can't answer now or answers
+    /// in a format this Connect doesn't read.
     async fn cli_summary(&self, args: &[String]) -> Option<Value> {
-        if !self.analytics_cli.supports_view().await {
+        if !self.cli_supports_view().await {
             return None;
         }
-        match self
-            .analytics_cli
-            .view(&self.analytics_store().path(), args)
+        self.analytics_view("analytics_app", args, SUMMARY_SCHEMA)
             .await
-        {
-            Ok(summary) => Some(summary),
-            Err(e) => {
-                log::warn!("analytics: the CLI couldn't answer the app view: {e:?}");
-                None
-            }
-        }
+            .ok()
     }
 
     /// The terminal dock's launches, `(at ms, folder)`; a missing or damaged log is no launches.
@@ -195,7 +188,9 @@ fn ledger(repo: &Repository, from_ms: i64, to_ms: i64) -> Result<Ledger> {
 }
 
 /// Each launch takes at most one session and each session serves at most one launch: the closest
-/// pairs first. A pair is a session in the launch's folder that began within [`MATCH_MS`].
+/// pairs first. A pair is a session in the launch's folder that began within [`MATCH_MS`]. The
+/// dock notes a launch's folder with its symlinks resolved, so a session's project is compared
+/// resolved too when it exists.
 fn match_sessions(launches: &[(i64, String)], sessions: &[Value]) -> Vec<Matched> {
     matched_indices(launches, sessions)
         .into_iter()
@@ -209,6 +204,10 @@ fn match_sessions(launches: &[(i64, String)], sessions: &[Value]) -> Vec<Matched
 
 /// The indices of the `sessions` that matched a launch.
 pub(super) fn matched_indices(launches: &[(i64, String)], sessions: &[Value]) -> Vec<usize> {
+    if launches.is_empty() {
+        return Vec::new();
+    }
+    let mut resolved: HashMap<&str, String> = HashMap::new();
     let mut pairs = Vec::new();
     for (l, (at, folder)) in launches.iter().enumerate() {
         for (s, session) in sessions.iter().enumerate() {
@@ -218,7 +217,16 @@ pub(super) fn matched_indices(launches: &[(i64, String)], sessions: &[Value]) ->
                 continue;
             };
             let gap = (start - at).abs();
-            if gap <= MATCH_MS && project == folder {
+            if gap > MATCH_MS {
+                continue;
+            }
+            let project = resolved.entry(project).or_insert_with(|| {
+                std::fs::canonicalize(project).map_or_else(
+                    |_| project.to_string(),
+                    |p| p.to_string_lossy().into_owned(),
+                )
+            });
+            if project == folder {
                 pairs.push((gap, l, s));
             }
         }

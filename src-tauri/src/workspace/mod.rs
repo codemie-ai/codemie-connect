@@ -85,9 +85,14 @@ pub struct Core {
     analytics_run: Mutex<Option<analytics::fetch::Progress>>,
     /// The analytics store in this Core's data root, opened on first use.
     analytics_store: std::sync::OnceLock<analytics::store::Store>,
+    /// The CLI answered `view`, and no call failed since (`Core::cli_supports_view`).
+    analytics_supported: AtomicBool,
     /// What `workspace:analytics` carried; tests have no window to hear it.
     #[cfg(test)]
     analytics_events: Mutex<Vec<Value>>,
+    /// The session-log lines of failed CLI calls; tests keep them here, not in the user's log.
+    #[cfg(test)]
+    analytics_log: Mutex<Vec<String>>,
     graph_children: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
     /// `{connectionId}:{calendarId}` -> last full calendarView refresh (unix seconds).
     calendar_refreshed: Mutex<std::collections::HashMap<String, i64>>,
@@ -217,8 +222,11 @@ impl Core {
             analytics_cli,
             analytics_run: Default::default(),
             analytics_store: Default::default(),
+            analytics_supported: AtomicBool::new(false),
             #[cfg(test)]
             analytics_events: Default::default(),
+            #[cfg(test)]
+            analytics_log: Default::default(),
             graph_children: Default::default(),
             calendar_refreshed: Default::default(),
             mutations: Default::default(),

@@ -1,7 +1,7 @@
 //! Live checks of the analytics backend, the headless real-app pass: a real `Core` with the real
 //! [`CodemieCli`], resolved as `Core::open` resolves it, against the CodeMie CLI on `PATH` and
 //! this Mac's own agent logs. Every test is `#[ignore]`, like the `live_*` Claude tests in
-//! `ai/runner.rs`: a first open reads 90 days of logs (minutes to tens of minutes, up to the
+//! `ai/runner.rs`: a first open reads 91 UTC days of logs (minutes to tens of minutes, up to the
 //! 6 GB heap per CLI call). Run them by hand, one at a time, with a `codemie` that has
 //! `analytics view` first on `PATH`:
 //!
@@ -20,6 +20,7 @@
 //! `$TMPDIR/connect-analytics-live/history` for the other tests, which make one there first when
 //! there is none. It is a copy of this Mac's sessions: delete the folder when done.
 use super::cli::CodemieCli;
+use super::fetch::FIRST_OPEN_DAYS;
 use super::store::State;
 use super::tests::{ask, read};
 use crate::ai::discover::find_program_in;
@@ -42,8 +43,9 @@ const FIRST_OPEN_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// How long a first open that other checks build on may take: each day the CLI can't read
 /// costs a failed call of its own.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
-/// A refresh is one call over two days.
-const REFRESH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// A refresh is one call over two days, and one more for each day of the last week a session
+/// still active at the last fetch started on.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// A difference smaller than this is the same amount of money.
 const CENT: f64 = 0.005;
 
@@ -181,7 +183,7 @@ fn days_so_far(dir: &Path) -> String {
         s.days_done.len(),
         s.failed_days.len(),
         s.days_done.first().map_or("-", String::as_str),
-        s.failed_days.last().map_or("-", String::as_str),
+        s.failed_days.keys().last().map_or("-", String::as_str),
     )
 }
 
@@ -320,7 +322,7 @@ async fn first_open(core: &Arc<Core>, cli_dir: &Path, timeout: Duration) -> Firs
         let s = State::load(&dir);
         first_days
             .iter()
-            .all(|d| s.days_done.contains(d) || s.failed_days.contains(d))
+            .all(|d| s.days_done.contains(d) || s.failed_days.contains_key(d))
     };
     let started = Instant::now();
     assert_eq!(
@@ -416,7 +418,7 @@ fn copy_of_history(history: &Path, tmp: &Path) -> PathBuf {
     data
 }
 
-/// M1: a first open reads 90 days, newest first, into a store with sessions and no temp files.
+/// M1: a first open reads 91 UTC days, newest first, into a store with sessions and no temp files.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn live_first_open_reads_history_newest_first() {
@@ -434,7 +436,7 @@ async fn live_first_open_reads_history_newest_first() {
         secs(run.total),
     );
     assert_eq!(status["state"], "ready");
-    assert!(sessions > 0, "the store is empty after reading 90 days");
+    assert!(sessions > 0, "the store is empty after a first open");
     assert!(state.last_fetch_at.is_some(), "the fetch didn't finish");
     // Newest first: no call reaches past the end of the one before it (a failed window is read
     // again day by day, newest first, inside itself).
@@ -450,8 +452,12 @@ async fn live_first_open_reads_history_newest_first() {
         );
     }
     let read = days_of(&run.windows);
-    assert_eq!(read.len(), 90, "the calls cover {} days", read.len());
-    assert_eq!(read.first(), Some(&(run.today - Days::new(89))));
+    let days = FIRST_OPEN_DAYS as usize;
+    assert_eq!(read.len(), days, "the calls cover {} days", read.len());
+    assert_eq!(
+        read.first(),
+        Some(&(run.today - Days::new(u64::from(FIRST_OPEN_DAYS) - 1)))
+    );
     let left = temp_files(&core.paths.analytics_dir());
     assert!(left.is_empty(), "the CLI's temp files are left: {left:?}");
     // The page heard the end of the run.
@@ -849,7 +855,7 @@ async fn live_a_stopped_first_open_continues_after_restart() {
     );
     while !first_days.iter().all(|d| {
         let s = State::load(&dir);
-        s.days_done.contains(d) || s.failed_days.contains(d)
+        s.days_done.contains(d) || s.failed_days.contains_key(d)
     }) {
         assert!(running(&first), "the fetch ended before its first window");
         assert!(started.elapsed() < REFRESH_TIMEOUT, "no first window");
@@ -871,7 +877,8 @@ async fn live_a_stopped_first_open_continues_after_restart() {
     let before = State::load(&dir);
     let handled: BTreeSet<String> = before
         .days_done
-        .union(&before.failed_days)
+        .iter()
+        .chain(before.failed_days.keys())
         .cloned()
         .collect();
     let stopped = Instant::now();
@@ -947,7 +954,12 @@ async fn live_a_stopped_first_open_continues_after_restart() {
         .map(|d| key(*d))
         .chain(handled)
         .collect();
-    assert_eq!(all.len(), 90, "the two runs read {} of 90 days", all.len());
+    assert_eq!(
+        all.len(),
+        FIRST_OPEN_DAYS as usize,
+        "the two runs read {} of {FIRST_OPEN_DAYS} days",
+        all.len()
+    );
     assert!(
         state.last_fetch_at.is_some(),
         "the next start didn't finish"

@@ -2689,6 +2689,8 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-an-prog{flex:0 0 220px;height:4px;border-radius:2px;background:var(--ws-raised);overflow:hidden}
 .ws-an-prog>span{display:block;height:100%;background:var(--ws-magic);transition:width .3s}
 .ws-an-failed>.ws-icon{width:14px;height:14px;color:var(--ws-amber)}
+.ws-an-failed-days{cursor:pointer;color:var(--ws-text);text-decoration:underline dotted;text-underline-offset:3px}
+.ws-an-failed-days:hover{text-decoration-style:solid}
 .ws-an-progress .ws-link{font-size:12px}
 /* body, states and cards */
 .ws-an-body{min-width:0}

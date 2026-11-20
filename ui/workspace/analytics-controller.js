@@ -6,6 +6,7 @@
 // it without a browser. `attachAnalyticsTips` is the page's tooltip layer.
 import {
   MODES, VIEWS, PRESETS, SESSIONS_PAGE, RUNS_PAGE, loadPrefs, savePrefs, newAnalyticsView, presetRange, viewRequest, reportRequest, isStale, isBusy, dayKeyLabel, projectName, plural,
+  failedDays,
 } from './analytics-model.js';
 import { SESSION_TABS } from './view-analytics-session.js';
 
@@ -28,9 +29,11 @@ const quoted = value => String(value).replace(/["\\]/g, '\\$&');
  * the drawer, and back to the session that opened it). `storage` keeps the preferences
  * (localStorage); `now` and `zone` (the Mac's own, as the CLI's day buckets are) are for tests.
  *
- * `data` holds what the operations answered: `{status, summary, loading, error, progress,
- * refreshing, session, app}`, `session` as `{id, loading, detail, error}` and `app` as
- * `{loading, answer, error}`; `viewData()` adds `now` and `zone` for the renderer.
+ * `data` holds what the operations answered: `{status, summary, loading, error, errorCode,
+ * progress, refreshing, reporting, session, app}`, `errorCode` the code of the error shown (the
+ * page has a state of its own for `cli_incompatible`), `reporting` while the CLI writes its
+ * report, `session` as `{id, loading, detail, error}` and `app` as `{loading, answer, error}`;
+ * `viewData()` adds `now` and `zone` for the renderer.
  */
 export function createAnalyticsController({
   state, query, render, toast, listen, writeText = null, focus = () => {}, storage = localStore(), now = () => Date.now(), zone = systemZone(),
@@ -38,7 +41,7 @@ export function createAnalyticsController({
   state.analytics = newAnalyticsView(loadPrefs(storage));
   const ui = () => state.analytics;
   const onPage = () => state.route === 'analytics';
-  const data = { status: null, summary: null, loading: false, error: '', progress: null, refreshing: false, session: null, app: null };
+  const data = { status: null, summary: null, loading: false, error: '', errorCode: '', progress: null, refreshing: false, reporting: false, session: null, app: null };
   let statusReads = 0;
   let viewReads = 0;
   let appReads = 0;
@@ -71,13 +74,17 @@ export function createAnalyticsController({
       if (read !== statusReads) return;
       data.status = status;
       data.error = '';
+      data.errorCode = '';
       if (status?.state !== 'running' && starts === startsBefore) {
         data.refreshing = false;
         data.progress = null;
         lastDone = null;
       }
     } catch (err) {
-      if (read === statusReads && !data.status) data.error = messageOf(err);
+      if (read === statusReads && !data.status) {
+        data.error = messageOf(err);
+        data.errorCode = err?.code || '';
+      }
     }
   }
 
@@ -86,6 +93,7 @@ export function createAnalyticsController({
     const read = ++viewReads;
     data.loading = true;
     data.error = '';
+    data.errorCode = '';
     await redraw();
     try {
       const summary = await query('analytics_view', viewRequest(ui(), now(), zone));
@@ -94,7 +102,10 @@ export function createAnalyticsController({
     } catch (err) {
       if (read !== viewReads) return;
       if (err?.code === 'needs_cli') data.status = { ...(data.status || {}), state: 'needs_cli' };
-      else data.error = messageOf(err);
+      else {
+        data.error = messageOf(err);
+        data.errorCode = err?.code || '';
+      }
       data.summary = null;
     }
     data.loading = false;
@@ -166,23 +177,30 @@ export function createAnalyticsController({
     await loadView();
   }
 
-  /** Starts a fetch (or follows the one already running); `told` toasts when it ends. */
+  /** Starts a fetch (or follows the one already running); `told` toasts when it ends. A retry
+   *  remembers the days it reads again, for its toast. */
   async function startFetch(op, body, told) {
     const before = finished;
     starts++;
+    const days = op === 'analytics_retry' ? failedDays(data.progress?.failedDays || data.status?.failedDays).map(f => f.day) : null;
     const answer = await query(op, body);
     if (answer?.needsCli) {
       await readStatus();
       return redraw();
     }
     if (finished === before) data.refreshing = true;
-    if (told) asked = op === 'analytics_retry' ? { day: body.day } : {};
+    if (told) asked = days ? { days } : {};
     return redraw();
   }
 
   function endedText(progress, told) {
-    const failed = Array.isArray(progress.failedDays) ? progress.failedDays : [];
-    if (told.day) return failed.includes(told.day) ? `${dayKeyLabel(told.day)} still couldn't be read.` : `${dayKeyLabel(told.day)} read.`;
+    const failed = failedDays(progress.failedDays).map(f => f.day);
+    if (told.days) {
+      const named = days => (days.length === 1 ? dayKeyLabel(days[0]) : `${days.length} days`);
+      const still = told.days.filter(day => failed.includes(day));
+      if (still.length) return `${named(still)} still couldn't be read.`;
+      return told.days.length ? `${named(told.days)} read.` : 'Analytics updated.';
+    }
     return failed.length ? `Analytics updated. ${failed.length} ${plural(failed.length, 'day')} couldn't be read.` : 'Analytics updated.';
   }
 
@@ -311,15 +329,25 @@ export function createAnalyticsController({
         if (v.noticeHidden) toast('Notice hidden. “Local sessions only” next to the filters brings it back.');
         return redraw();
       case 'analytics-refresh': return startFetch('analytics_refresh', {}, true);
-      case 'analytics-retry': return startFetch('analytics_retry', { day: value }, true);
+      // Try again reads every failed day again.
+      case 'analytics-retry': return startFetch('analytics_retry', {}, true);
       // Try again: App analytics on its tab; the summary, or everything from the status when that
       // couldn't be read.
       case 'analytics-reload':
         if (v.mode === 'app') return loadApp();
         return data.status ? loadView() : open();
+      // The CLI writes the report first, which can take a while: busy until then, once at a time.
       case 'analytics-report':
-        await query('analytics_report', reportRequest(v, now(), zone));
-        toast('The CLI report opened in your browser.', 'success');
+        if (data.reporting) return undefined;
+        data.reporting = true;
+        await redraw();
+        try {
+          await query('analytics_report', reportRequest(v, now(), zone));
+          toast('The CLI report opened in your browser.', 'success');
+        } finally {
+          data.reporting = false;
+          await redraw();
+        }
         return undefined;
       case 'analytics-open-session': return openSession(value);
       // The session drawer.

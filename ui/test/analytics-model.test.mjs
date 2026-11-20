@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  presetRange, viewRequest, delta, usd, tok, dur, pct, pctPoints, n0, loadPrefs, savePrefs, newAnalyticsView, isStale, startedInConnect, PREFS_KEY, STALE_MS,
+  presetRange, viewRequest, delta, usd, tok, dur, pct, pctPoints, n0, loadPrefs, savePrefs, newAnalyticsView, isStale, startedInConnect, failedDays, failedReason, PREFS_KEY, STALE_MS,
 } from '../workspace/analytics-model.js';
 
 const fixture = name => JSON.parse(readFileSync(new URL(`fixtures/contract/${name}`, import.meta.url), 'utf8'));
@@ -111,4 +111,21 @@ test('sessions started in Connect come from analytics_view\'s connect key, guard
   assert.equal(startedInConnect({ ...summary, connect: { startedInConnect: 'not a list' } }).size, 0);
   assert.deepEqual([...startedInConnect({ connect: { startedInConnect: [id, 7, null] } })], [id]);
   assert.equal(startedInConnect(null).size, 0);
+});
+
+test('failed days come as {day, reason}, and every reason native sends reads as words', () => {
+  // The contract fixture's list is in the shape native sends.
+  assert.deepEqual(failedDays(status.failedDays), status.failedDays);
+  assert.ok(status.failedDays.every(f => typeof f.day === 'string' && typeof f.reason === 'string'));
+  assert.deepEqual(failedDays(null), []);
+  assert.deepEqual(failedDays([{ day: '2026-11-15', reason: 'timeout' }, null, '2026-11-14', { reason: 'x' }]), [{ day: '2026-11-15', reason: 'timeout' }]);
+  assert.equal(failedReason('timeout'), 'took too long');
+  assert.equal(failedReason('out_of_memory'), 'ran out of memory');
+  assert.equal(failedReason('not_found'), 'no CodeMie CLI found');
+  assert.equal(failedReason('bad_output'), 'its answer couldn’t be read');
+  assert.equal(failedReason('exit 3'), 'stopped with exit code 3');
+  assert.equal(failedReason('exit -1'), 'stopped with exit code -1');
+  // Anything else is shown as it came (the view escapes it).
+  assert.equal(failedReason('toString'), 'toString');
+  assert.equal(failedReason(undefined), '');
 });

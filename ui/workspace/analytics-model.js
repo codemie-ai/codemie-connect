@@ -244,6 +244,24 @@ export function dayName(ms, now, zone) {
   if (key === addDays(today, -1)) return 'Yesterday';
   return dLong(ms, zone);
 }
+/** The failed days of a status or progress event: `[{day, reason}]` (UTC days), oldest first. */
+export const failedDays = list => (Array.isArray(list) ? list.filter(f => typeof f?.day === 'string') : []);
+
+const REASONS = {
+  timeout: 'took too long',
+  out_of_memory: 'ran out of memory',
+  not_found: 'no CodeMie CLI found',
+  bad_output: 'its answer couldn’t be read',
+};
+/** Why the CLI couldn't read a day, in words: native's `timeout`, `out_of_memory`, `not_found`,
+ *  `bad_output` or `exit <n>`; anything else as it is. */
+export function failedReason(reason) {
+  const r = String(reason ?? '');
+  if (Object.hasOwn(REASONS, r)) return REASONS[r];
+  const exit = /^exit (-?\d+)$/.exec(r);
+  return exit ? `stopped with exit code ${exit[1]}` : r;
+}
+
 /** A `YYYY-MM-DD` day as `Sun 15 Nov` (failed days, the first stored day). */
 export function dayKeyLabel(key) {
   const [y, m, d] = String(key).split('-').map(Number);
