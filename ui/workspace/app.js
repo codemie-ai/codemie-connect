@@ -2565,6 +2565,12 @@ document.addEventListener('toggle', ev => {
 document.addEventListener('click', ev => {
   for (const menu of document.querySelectorAll('details.ws-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
 }, true);
+// Today's "+ Add task" row: opened by the person (a click or a key), its field takes focus. Not on
+// the toggle a render's reopening fires, which would pull focus away from wherever it is.
+document.addEventListener('click', ev => {
+  const row = ev.target.closest?.('details.ws-task-add > summary');
+  if (row && !row.parentElement.open) setTimeout(() => row.parentElement.querySelector('input[name="text"]')?.focus(), 0);
+});
 document.addEventListener('keydown', ev => {
   if (ev.key !== 'Escape' || ev.isComposing || ev.target?.closest?.('.ws-term')) return;
   const menu = document.querySelector('details.ws-menu[open]');

@@ -56,6 +56,8 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
     assert(over.main <= 0 && over.page <= 0, `${what} overflows sideways: ${JSON.stringify(over)}`);
   };
   const overlaps = items => items.some((a, i) => items.some((b, j) => i < j && a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y));
+  /** The layout in use: the checked one in the header's ⋯ menu (open or not). */
+  const layoutInUse = page => page.locator('.ws-today-actions [data-action="today-layout-use"][aria-checked="true"]').textContent();
   const layoutMenu = async (page, item) => {
     await page.click('.ws-today-actions details[data-menu="today-layouts"] > summary');
     await page.click(`.ws-today-actions details[data-menu="today-layouts"] ${item}`);
@@ -301,7 +303,7 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForSelector('[data-today-grid]');
       await settled(page);
       assert(sameAs(await tilesNow(page), PRESETS.Default), `tiles ${JSON.stringify(await tilesNow(page))}`);
-      assert((await page.locator('.ws-today-layout-pill').innerText()).includes('Default'), 'the layout in use is not Default');
+      assert((await layoutInUse(page)).includes('Default'), 'the layout in use is not Default');
       assert((await saves(page)).length === 0, 'opening Today saved the layout');
       await shot(page, 'layout-e5-default');
       assert(errors.length === 0, errors.join(' | '));
@@ -318,7 +320,7 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       const mine = compact([{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }, { id: 'commitments', x: 0, y: 4, w: 8, h: 6 }, { id: 'notes', x: 8, y: 4, w: 4, h: 6 }, { id: 'inbox', x: 0, y: 10, w: 6, h: 7 }]);
       const opened = await tilesNow(page);
       assert(sameAs(opened, mine), `My layout drawn as ${JSON.stringify(opened)}`);
-      assert((await page.locator('.ws-today-layout-pill').innerText()).includes('My layout'), 'the layout in use is not My layout');
+      assert((await layoutInUse(page)).includes('My layout'), 'the layout in use is not My layout');
       assert(await page.locator('[data-tile="meetings"]').count() === 0, 'From your meetings shows although it was hidden');
       assert((await saves(page)).length === 0, 'opening Today saved the layout');
       await shot(page, 'layout-e5-my-layout');
@@ -377,8 +379,9 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
     const { page, context, errors } = await open({ width: 1440, height: 900, workspace: { today: DEFAULT_TODAY } });
     await check('layout E6: locked nothing moves; keys move, resize, remove and undo, said aloud; a touch long press moves Notes', async () => {
       // Locked: dragging Up next by its header moves nothing and offers Unlock.
-      await page.click('.ws-today-actions [data-action="today-lock"]');
-      await page.waitForSelector('.ws-today-actions [data-action="today-lock"][aria-pressed="true"]');
+      // Lock sits in the header's ⋯; while locked, a lock to undo it shows beside Customize.
+      await layoutMenu(page, '[data-action="today-lock"]');
+      await page.waitForSelector('.ws-today-actions > [data-action="today-lock"][aria-pressed="true"]');
       await page.evaluate(() => { document.getElementById('workspace-main').scrollTop = 0; });
       const head = await box(page, '[data-tile="brief"] .ws-tile-head h2');
       const from = { x: head.x + 30, y: head.y + head.height / 2 };
@@ -392,7 +395,8 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       assert(sameAs(await tilesNow(page), PRESETS.Default), 'the grid changed while locked');
       assert((await saves(page)).length === 0, 'a locked drag saved the layout');
       await page.click('.ws-toast:has-text("Layouts are locked") .ws-toast-action');
-      await page.waitForSelector('.ws-today-actions [data-action="today-lock"][aria-pressed="false"]');
+      await page.waitForSelector('.ws-today-actions [data-action="today-lock"][aria-pressed="false"]', { state: 'attached' });
+      assert(await page.locator('.ws-today-actions > [data-action="today-lock"]').count() === 0, 'the unlock button stays after unlocking');
       await shot(page, 'layout-e6-unlocked');
       // Keyboard: Tab reaches Schedule's grip.
       await page.focus('[data-tile="focus"] .ws-tile-grip');

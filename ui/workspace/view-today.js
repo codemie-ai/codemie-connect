@@ -22,7 +22,7 @@ const checks = (key, label, choices, def) => ({ key, type: 'checks', label, choi
 export const WIDGETS = {
   brief: {
     icon: 'calendar-clock', title: 'Up next', width: 8, h: 4, minW: 3, minH: 2, description: 'Your current or next meeting with a one-click join.',
-    options: [toggle('later', 'Show “Later today”', true), toggle('people', 'Show who is invited', true)],
+    options: [toggle('later', 'Show the next meeting', true), toggle('people', 'Show who is invited', true)],
   },
   focus: {
     icon: 'activity', title: 'Day at a glance', width: 4, h: 4, minW: 2, minH: 2, description: 'Meetings, free time, replies and a focus timer.',
@@ -41,7 +41,7 @@ export const WIDGETS = {
   },
   commitments: {
     icon: 'tasks', title: 'Tasks', width: 8, h: 6, minW: 3, minH: 3, description: 'Your open tasks with a quick-add box.',
-    options: [toggle('add', 'Quick add box', true), toggle('mine', 'Only my tasks', false), toggle('done', 'Show completed', true)],
+    options: [toggle('add', 'Add task row', true), toggle('mine', 'Only my tasks', false), toggle('done', 'Show completed', true)],
   },
   notes: {
     icon: 'note', title: 'Notes', width: 4, h: 6, minW: 2, minH: 2, description: 'A scratchpad for thoughts, plans and things to remember.',
@@ -175,10 +175,11 @@ export function today(s, ctx) {
     ? `<div class="ws-tiles" data-today-grid style="--rows:${rows + (editing ? 3 : 0)}">${tiles}${panel}${editing ? addTile(rows) : ''}</div>`
     : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want on Today.', actions: button('Choose cards', { action: 'today-customize', variant: 'primary' }) });
   const locked = !!ui.locked;
-  const actions = editing ? '' : `${layoutMenu(t)}${button('', { action: 'today-lock', iconName: 'lock', title: locked ? 'Unlock layouts' : 'Lock layouts so nothing moves', attrs: { 'aria-label': 'Lock layouts', 'aria-pressed': String(locked) } })}${button('Add widget', { action: 'today-customize', iconName: 'plus', attrs: { 'data-focus': 'gallery' } })}${button('Customize', { action: 'today-customize', variant: 'primary', iconName: 'sliders' })}`;
+  // Customize and a ⋯ (layouts, Add widget, Lock); while locked, a lock to undo it shows too.
+  const actions = editing ? '' : `${locked ? button('', { action: 'today-lock', iconName: 'lock', title: 'Unlock layouts', attrs: { 'aria-label': 'Unlock layouts', 'aria-pressed': 'true' } }) : ''}${button('Customize', { action: 'today-customize', iconName: 'sliders' })}${layoutMenu(t, { more: { locked } })}`;
   return `<div class="ws-today ws-today-page${editing ? ' ws-today-editing' : ''}">
     <header class="ws-today-head">
-      ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 56, className: 'ws-today-avatar' })}
+      ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 40, className: 'ws-today-avatar' })}
       <div class="ws-today-title">
         <p class="ws-eyebrow">${e(formatDate(m.nowMs, m.zone, { weekday: 'long', month: 'long', day: 'numeric' }))}</p>
         <h1>${e(greeting(hour))}${name ? `, ${e(name)}` : ''}</h1>
@@ -309,27 +310,29 @@ function upNextCard(s, m, connected, o) {
   const startMs = new Date(d.start).getTime();
   const endMs = new Date(d.end).getTime();
   const progress = live ? Math.min(100, Math.max(0, ((m.nowMs - startMs) / (endMs - startMs)) * 100)) : 0;
+  // The accent while a meeting runs; amber in its last five minutes. Red is kept for problems.
   const chip = live
-    ? `<span class="ws-live-chip" data-countdown-end="${endMs}">${icon('activity')}<span>Now · ends ${e(countdownLabel(endMs, m.nowMs))}</span></span>`
+    ? `<span class="ws-live-chip${endMs - m.nowMs <= 5 * 60_000 ? ' ws-ending' : ''}" data-countdown-end="${endMs}">${icon('activity')}<span>Now · ends ${e(countdownLabel(endMs, m.nowMs))}</span></span>`
     : `<span class="ws-soon-chip${startMs - m.nowMs < 15 * 60_000 ? ' ws-soon' : ''}" data-countdown-start="${startMs}">${icon('clock')}<span>Starts ${e(countdownLabel(startMs, m.nowMs))}</span></span>`;
-  const later = m.upcoming.filter(t => t.record.id !== ev.id).slice(0, 3);
+  // One line for what comes after it; the Schedule shows the rest of the day.
+  const after = m.upcoming.find(t => t.record.id !== ev.id)?.record;
   return card({
     title: live ? 'Happening now' : 'Up next', iconName: 'calendar-clock', className: 'ws-upnext', actions: chip,
-    body: `<div class="ws-upnext-main" style="--event-color:${e(color)}">
-      <div class="ws-upnext-time"><strong>${e(formatTime(d.start, m.zone))}</strong><span>${e(formatTime(d.end, m.zone))}</span></div>
+    body: `<div class="ws-upnext-main">
+      <div class="ws-upnext-time"><strong><span class="ws-upnext-dot" style="--event-color:${e(color)}" aria-hidden="true"></span>${e(formatTime(d.start, m.zone))}</strong><span>${e(formatTime(d.end, m.zone))}</span></div>
       <div class="ws-upnext-info">
         <h3><button type="button" class="ws-link-title" data-action="event" data-id="${e(ev.id)}">${e(d.title || 'Untitled event')}</button></h3>
         ${eventMeta(ev, m.zone)}
         ${o.people ? people(ev) : ''}
         <div class="ws-actions ws-upnext-actions">
           ${d.joinUrl ? button('Join Teams meeting', { action: 'join', variant: 'primary', iconName: 'video', attrs: { 'data-id': ev.id } }) : ''}
-          ${d.url ? button('Open in Outlook', { action: 'source', iconName: 'external', attrs: { 'data-kind': 'event', 'data-id': ev.id } }) : ''}
+          ${d.url ? button('Open in Outlook', { action: 'source', variant: 'ghost', iconRight: 'external', attrs: { 'data-kind': 'event', 'data-id': ev.id } }) : ''}
           ${!live ? button('Remind me', { action: 'event-reminder', iconName: 'bell', variant: 'ghost', attrs: { 'data-id': ev.id } }) : ''}
         </div>
       </div>
     </div>
     ${live ? `<div class="ws-progress" role="progressbar" aria-label="Meeting progress" aria-valuenow="${Math.round(progress)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${progress.toFixed(1)}%"></span></div>` : ''}`,
-    footer: o.later && later.length ? `<span class="ws-later-label">Later today</span>${later.map(t => `<button type="button" class="ws-later" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(t.record.data.calendarId) || 'var(--ws-accent)')}"><span>${e(formatTime(t.record.data.start, m.zone))}</span>${e(t.record.data.title || 'Untitled')}</button>`).join('')}` : '',
+    footer: o.later && after ? `<button type="button" class="ws-next" data-action="event" data-id="${e(after.id)}" style="--event-color:${e(colors.get(after.data.calendarId) || 'var(--ws-accent)')}"><span class="ws-next-label">Next</span><span class="ws-next-dot" aria-hidden="true"></span><time>${e(formatTime(after.data.start, m.zone))}</time><strong>${e(after.data.title || 'Untitled')}</strong><span class="ws-next-in">· ${e(countdownLabel(new Date(after.data.start).getTime(), m.nowMs))}</span></button>` : '',
   });
 }
 
@@ -391,7 +394,8 @@ function scheduleCard(s, m, connected, o) {
     const d = t.record.data;
     const height = Math.max(20, top(t.endMin) - top(t.startMin) - 2);
     const past = new Date(d.end).getTime() <= m.nowMs;
-    return `<button type="button" class="ws-tl-event${past ? ' ws-past' : ''}${height < 34 ? ' ws-compact' : ''}${d.showAs === 'tentative' || d.response === 'tentativelyAccepted' ? ' ws-tentative' : ''}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')};top:${top(t.startMin).toFixed(1)}px;height:${height.toFixed(1)}px;left:calc(${(t.col / t.cols) * 100}% + 2px);width:calc(${100 / t.cols}% - 4px)"><strong>${e(d.title || 'Untitled')}</strong><span>${e(formatTime(d.start, m.zone))}${d.joinUrl ? ' · Teams' : d.location ? ` · ${e(d.location)}` : ''}</span></button>`;
+    const current = !past && new Date(d.start).getTime() <= m.nowMs;
+    return `<button type="button" class="ws-tl-event${current ? ' ws-current' : ''}${past ? ' ws-past' : ''}${height < 34 ? ' ws-compact' : ''}${d.showAs === 'tentative' || d.response === 'tentativelyAccepted' ? ' ws-tentative' : ''}" data-action="event" data-id="${e(t.record.id)}" style="--event-color:${e(colors.get(d.calendarId) || 'var(--ws-accent)')};top:${top(t.startMin).toFixed(1)}px;height:${height.toFixed(1)}px;left:calc(${(t.col / t.cols) * 100}% + 2px);width:calc(${100 / t.cols}% - 4px)"><strong>${e(d.title || 'Untitled')}</strong><span>${e(formatTime(d.start, m.zone))}${d.joinUrl ? ' · Teams' : d.location ? ` · ${e(d.location)}` : ''}</span></button>`;
   }).join('');
   const gaps = !o.free ? '' : freeSlots(all, Math.max(startHour * 60, WORKDAY_START, m.nowMin), Math.min(endHour * 60, WORKDAY_END), 60, allDay)
     .map(([a, b]) => `<div class="ws-tl-free" style="top:${top(a).toFixed(1)}px;height:${(top(b) - top(a)).toFixed(1)}px"><span>Free · ${e(durationLabel(b - a))}</span></div>`).join('');
@@ -424,9 +428,8 @@ function messageRow(s, msg, zone, canDraft) {
     ? `<button type="button" class="ws-row-action" data-action="draft-reply" data-id="${e(msg.id)}" data-key="${e(draftKeyOf(msg))}" aria-label="Draft reply to ${e(d.from || 'this message')}" title="Draft a reply with Claude">${icon('spark')}<span>Draft reply</span></button>`
     : '';
   return `<div class="ws-msg-item${draft ? ' ws-has-action' : ''}"><button type="button" class="ws-msg-row" data-action="open-message" data-id="${e(msg.id)}">
-    <span class="ws-msg-avatar">${avatar({ name: d.from || '?', size: 32, seed: d.fromAddress || d.fromId || d.from })}<span class="ws-msg-glyph">${glyph}</span></span>
-    <span class="ws-msg-main"><span class="ws-msg-top"><strong>${e(d.from || 'Unknown sender')}</strong><time>${e(relativeAge(d.at, zone))}</time></span>
-    <span class="ws-msg-title">${d.lane === 'critical' ? badge('Critical', 'error') : ''}<span class="ws-ellipsis">${e(listTitle(msg, s))}</span></span>
+    <span class="ws-msg-avatar">${avatar({ name: d.from || '?', size: 28, seed: d.fromAddress || d.fromId || d.from })}<span class="ws-msg-glyph">${glyph}</span></span>
+    <span class="ws-msg-main"><span class="ws-msg-top"><strong>${e(d.from || 'Unknown sender')}</strong><span class="ws-msg-title">${d.lane === 'critical' ? badge('Critical', 'error') : ''}<span class="ws-ellipsis">${e(listTitle(msg, s))}</span></span><time>${e(relativeAge(d.at, zone))}</time></span>
     <span class="ws-msg-preview">${e(d.text || '')}</span></span>
   </button>${draft}</div>`;
 }
@@ -473,12 +476,14 @@ function commitmentsCard(s, m, o) {
   return card({
     title: 'Tasks', iconName: 'tasks', className: 'ws-commitments',
     actions: button('Board', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'tasks' } }),
-    body: `${o.add ? `<form class="ws-quick-add" data-form="commitment-add">
+    // One quiet line for what meetings found, then a row that opens the add form (a details that
+    // render keeps open, `data-menu`; app.js focuses the field as it opens).
+    body: `${review ? `<button type="button" class="ws-today-review" data-action="route" data-route="tasks">${icon('sparkles')}<span><strong>${review}</strong> ${review === 1 ? 'task' : 'tasks'} from meeting notes to review</span>${icon('arrow')}</button>` : ''}
+      ${o.add ? `<details class="ws-menu ws-task-add" data-menu="today-task-add"><summary class="ws-task-add-row">${icon('plus')}<span>Add task</span></summary><form class="ws-quick-add" data-form="commitment-add">
         <input class="ws-input" name="text" maxlength="2000" placeholder="Add a task… e.g. Send the roadmap to Anna" aria-label="New task" autocomplete="off">
         <input class="ws-input ws-date" name="due" type="date" aria-label="Due date">
         ${button('Add', { type: 'submit', variant: 'primary', iconName: 'plus' })}
-      </form>` : ''}
-      ${review ? `<button type="button" class="ws-today-review" data-action="route" data-route="tasks">${icon('sparkles')}<span><strong>${review} ${review === 1 ? 'task' : 'tasks'} from meeting notes to review</strong><small>Check owners and dates, then accept</small></span>${icon('chevron-right')}</button>` : ''}
+      </form></details>` : ''}
       <div class="ws-todo-list">${open.map(row).join('') || `<p class="ws-muted ws-hint">${o.add ? 'No open tasks. Add one above or from any Inbox message.' : 'No open tasks.'}</p>`}</div>
       ${done.length ? `<details class="ws-done-list"><summary>Completed · ${done.length}</summary>${done.map(row).join('')}</details>` : ''}`,
   });

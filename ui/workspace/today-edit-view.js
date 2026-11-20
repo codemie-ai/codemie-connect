@@ -15,8 +15,10 @@ const menuItem = (action, iconName, label, attrs = {}, danger = false) => `<butt
 const place = (it, order) => `--x:${e(it.x)};--y:${e(it.y)};--w:${e(it.w)};--h:${e(it.h)};--order:${e(order)}`;
 
 /** The saved layouts of grid `t`: the built-in ones, then the user's own (each can be deleted),
- *  Save as a new layout, and Reset while the layout in use is a changed built-in one. */
-export function layoutMenu(t, { small = false } = {}) {
+ *  Save as a new layout, and Reset while the layout in use is a changed built-in one. In the
+ *  edit bar the menu is a pill naming the layout in use; on the page header (`more`) it is a ⋯
+ *  that also holds Add widget and Lock (`more.locked`: the layouts are locked). */
+export function layoutMenu(t, { small = false, more = null } = {}) {
   const names = [...new Set([...BUILT_IN, ...Object.keys(t.layouts || {}), t.active])];
   const changed = layoutChanged(t, t.active);
   const row = name => {
@@ -24,11 +26,17 @@ export function layoutMenu(t, { small = false } = {}) {
     if (BUILT_IN.includes(name)) return use;
     return `<div class="ws-today-layout-row">${use}<button type="button" class="ws-btn ws-btn-ghost ws-btn-sm ws-btn-icon" data-action="today-layout-delete" data-name="${e(name)}" title="Delete this layout" aria-label="Delete “${e(name)}”">${icon('trash')}</button></div>`;
   };
+  const summary = more
+    ? `<summary class="ws-btn ws-btn-secondary ws-btn-icon ws-today-more" title="Layouts, Add widget, Lock" aria-label="Layouts and more" aria-haspopup="menu">${icon('dots')}</summary>`
+    : `<summary class="ws-btn ws-btn-secondary${small ? ' ws-btn-sm' : ''} ws-today-layout-pill" title="Saved layouts" aria-haspopup="menu">${icon('layout')}<span>${e(t.active)}</span>${changed ? '<em class="ws-today-changed">· changed</em>' : ''}${icon('chevron-down')}</summary>`;
+  const extra = more
+    ? `<hr>${menuItem('today-customize', 'plus', 'Add widget', { 'data-focus': 'gallery' })}<button type="button" class="ws-menu-item" role="menuitemcheckbox" aria-checked="${!!more.locked}" aria-pressed="${!!more.locked}" data-action="today-lock">${icon('lock')}<span>${more.locked ? 'Unlock layout' : 'Lock layout'}</span></button>`
+    : '';
   return `<details class="ws-menu ws-menu-right ws-today-layouts" data-menu="today-layouts">
-    <summary class="ws-btn ws-btn-secondary${small ? ' ws-btn-sm' : ''} ws-today-layout-pill" title="Saved layouts" aria-haspopup="menu">${icon('layout')}<span>${e(t.active)}</span>${changed ? '<em class="ws-today-changed">· changed</em>' : ''}${icon('chevron-down')}</summary>
+    ${summary}
     <div class="ws-menu-panel" role="menu"><div class="ws-menu-label">Layouts</div>${names.map(row).join('')}<hr>
       <form class="ws-today-layout-save" data-form="today-layout-save"><input class="ws-input" name="name" maxlength="40" required placeholder="Save as a new layout…" aria-label="Save as a new layout" autocomplete="off">${button('Save', { type: 'submit', variant: 'primary', size: 'sm' })}</form>
-      ${changed ? `<hr>${menuItem('today-layout-reset', 'undo', `Reset “${t.active}” to the original`, { 'data-name': t.active })}` : ''}
+      ${changed ? `<hr>${menuItem('today-layout-reset', 'undo', `Reset “${t.active}” to the original`, { 'data-name': t.active })}` : ''}${extra}
     </div></details>`;
 }
 
