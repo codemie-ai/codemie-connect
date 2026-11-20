@@ -138,31 +138,65 @@ body{font-family:var(--font-ui);-webkit-font-smoothing:antialiased;margin:0}
 /* ------------------------------------------------------------------ shell */
 #workspace-app{position:relative;isolation:isolate;z-index:2;height:100vh;display:grid;grid-template-columns:var(--ws-sidebar-w) minmax(0,1fr);grid-template-rows:var(--ws-topbar-h) minmax(0,1fr);color:var(--ws-text);background:var(--ws-bg);font-size:14px;line-height:20px;letter-spacing:-.2px}
 #workspace-app::before{content:"";position:absolute;inset:0 auto 0 0;width:var(--ws-sidebar-w);background-color:var(--color-bg-sidebar);background-image:var(--cm-navigation-gradient);background-position:left bottom;background-repeat:no-repeat;background-size:var(--cm-navigation-gradient-size);z-index:-1;pointer-events:none}
-.ws-sidebar{grid-row:1/-1;display:flex;flex-direction:column;background:var(--cm-navigation-overlay);border-right:1px solid var(--ws-border);padding:20px 12px 14px;gap:20px;min-height:0}
-.ws-brand{height:44px;display:flex;align-items:center;padding:0 4px;overflow:hidden;flex-shrink:0}
-.ws-brand img{width:156px;height:40px;max-width:none}
+/* The main menu (spec docs/superpowers/specs/2026-11-20-grouped-menu-design.md): the brand row with
+   its toggle, Today, the Work, AI and Plugins groups under small fold labels, 30 px rows, and the
+   account and Settings in one row. Its rail (collapsed, or the window at ≤ 1050 px) keys on the
+   menu's own width: the container query in "menus that collapse". */
+.ws-sidebar{grid-row:1/-1;display:flex;flex-direction:column;background:var(--cm-navigation-overlay);border-right:1px solid var(--ws-border);padding:18px 12px 12px;gap:14px;min-height:0;container:ws-menu/inline-size}
+.ws-brand{position:relative;height:36px;display:flex;align-items:center;justify-content:space-between;gap:4px;padding:0 0 0 4px;flex-shrink:0}
+.ws-brand-logo{display:flex;min-width:0;overflow:hidden}
+.ws-brand img{width:132px;height:34px;max-width:none}
+.ws-brand-toggle{width:24px;height:24px;flex:none;display:grid;place-items:center;padding:0;border:0;border-radius:6px;background:none;color:var(--ws-faint)}
+.ws-brand-toggle:hover{color:var(--ws-text);background:#ffffff1f}
+.light .ws-brand-toggle:hover{background:#0000000f}
+.ws-brand-toggle .ws-icon{width:16px;height:16px}
 .ws-logo-light{display:none}
 .light .ws-logo-dark{display:none}
 .light .ws-logo-light{display:block}
-.ws-nav{display:flex;flex-direction:column;gap:4px}
-.ws-nav button{position:relative;display:flex;align-items:center;gap:10px;color:#CCCCCC;background:none;border:0;text-align:left;border-radius:8px;padding:0 11px;height:36px;font-size:14px;line-height:20px;transition:background .12s ease,color .12s ease}
+.ws-nav{display:flex;flex-direction:column;gap:1px}
+.ws-main-nav{flex:1;min-height:0;overflow-y:auto;gap:10px;margin:0 -6px;padding:0 6px;scrollbar-width:thin}
+.ws-nav-group{display:flex;flex-direction:column;gap:1px}
+.ws-nav button{position:relative;flex:none;display:flex;align-items:center;gap:9px;width:100%;height:30px;padding:0 9px;color:#CCCCCC;background:none;border:0;text-align:left;border-radius:7px;font-size:13px;line-height:18px;white-space:nowrap;transition:background .12s ease,color .12s ease}
 .light .ws-nav button{color:#333}
 .ws-nav button:hover,.ws-nav button[aria-current=page]{background:#212224;color:#F2F0EF}
-.light .ws-nav button:hover{background:#D5E7FC;color:#007AFF}
-.light .ws-nav button[aria-current=page]{background:#D5E7FC;color:#007AFF}
-.ws-nav .ws-icon{width:18px;height:18px}
+.ws-nav button.ws-nav-in{color:#F2F0EF}
+.light .ws-nav button:hover,.light .ws-nav button[aria-current=page]{background:#D5E7FC;color:#007AFF}
+.light .ws-nav button.ws-nav-in{color:#007AFF}
+.ws-nav .ws-icon{width:17px;height:17px;flex:none}
+.ws-nav button>span:not([class]){min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ws-count{margin-left:auto;min-width:20px;height:18px;padding:0 6px;border-radius:9px;display:inline-grid;place-items:center;font-size:11px;font-weight:600;background:color-mix(in srgb,var(--ws-accent) 22%,transparent);color:var(--ws-text)}
 .light .ws-count{color:#007AFF;background:#E6F1FF}
+.ws-nav .ws-count{min-width:18px;height:16px;padding:0 5px;border-radius:8px;font-size:10.5px}
 .ws-nav button[aria-current=page] .ws-count{background:color-mix(in srgb,currentColor 18%,transparent)}
 .ws-dot-alert{margin-left:auto;width:8px;height:8px;border-radius:50%;background:var(--ws-amber);box-shadow:0 0 0 3px color-mix(in srgb,var(--ws-amber) 25%,transparent)}
-.ws-sidebar-bottom{margin-top:auto;display:grid;gap:12px;padding-top:12px;border-top:1px solid #ffffff33}
-.ws-sidebar-bottom .ws-nav button{color:var(--cm-bottom-label)}
-.ws-sidebar-bottom .ws-nav button:hover,.ws-sidebar-bottom .ws-nav button[aria-current=page]{color:var(--cm-bottom-label);background:#ffffff26}
-.ws-user{display:flex;align-items:center;gap:10px;padding:6px;border-radius:10px;border:0;background:none;text-align:left;color:var(--cm-bottom-label);min-width:0}
+/* A group's label: a 20 px line that folds the group; folded, it carries what the group hides. */
+.ws-nav button.ws-nav-head{height:20px;gap:5px;padding:0 6px 0 9px;margin-bottom:1px;border-radius:5px;font-size:10.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;color:#8A8A8A}
+.light .ws-nav button.ws-nav-head{color:#666}
+.ws-nav button.ws-nav-head:hover{background:none;color:var(--ws-text)}
+.ws-nav-head .ws-nav-head-icon{display:none}
+.ws-nav .ws-nav-head .ws-nav-chev{width:11px;height:11px;opacity:.75;transition:transform .14s}
+.ws-nav-head[aria-expanded=false] .ws-nav-chev{transform:rotate(-90deg)}
+.ws-nav-head .ws-count{letter-spacing:0;text-transform:none}
+/* A plugin's letter mark, and the marks a folded Plugins label shows. */
+.ws-nav-mark{width:17px;height:17px;flex:none;border-radius:5px;display:inline-grid;place-items:center;font:700 10px/1 var(--font-sans);letter-spacing:0;text-transform:none;color:#fff;background:hsl(var(--h) 52% 46%)}
+.ws-nav-marks{display:flex;align-items:center;margin-left:3px}
+.ws-nav-marks .ws-nav-mark{width:14px;height:14px;font-size:8.5px;border-radius:4px;box-shadow:0 0 0 1.5px var(--color-bg-sidebar)}
+.ws-nav-marks .ws-nav-mark+.ws-nav-mark{margin-left:-3px}
+.ws-nav-marks i{margin-left:4px;font-style:normal;font-weight:500;letter-spacing:0;color:var(--ws-faint)}
+/* A plugin's pages, under its row while one of them is open. */
+.ws-nav-subs{display:flex;flex-direction:column;gap:1px;margin:1px 0 3px 17px;padding-left:9px;border-left:1px solid var(--ws-border)}
+.ws-nav .ws-nav-subs button{height:26px;padding:0 8px;font-size:12.5px}
+/* The account and Settings, one row. */
+.ws-sidebar-bottom{margin-top:auto;flex-shrink:0;display:flex;align-items:center;gap:6px;padding-top:10px;border-top:1px solid #ffffff33}
+.ws-sidebar-foot{flex:none}
+.ws-nav button.ws-nav-gear{width:32px;height:32px;padding:0;justify-content:center;border-radius:8px;color:var(--cm-bottom-label)}
+.ws-nav button.ws-nav-gear:hover,.ws-nav button.ws-nav-gear[aria-current=page]{color:var(--cm-bottom-label);background:#ffffff26}
+.ws-nav-gear .ws-dot-alert{position:absolute;top:6px;right:6px;margin:0;width:7px;height:7px}
+.ws-user{flex:1;display:flex;align-items:center;gap:8px;padding:4px;border-radius:8px;border:0;background:none;text-align:left;color:var(--cm-bottom-label);min-width:0}
 .ws-user:hover{background:#ffffff1f}
-.ws-user-copy{display:grid;min-width:0;line-height:16px}
+.ws-user-copy{display:grid;min-width:0;line-height:15px}
 .ws-user-copy strong{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ws-user-copy span{font-size:11px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-user-copy span{font-size:10.5px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-user .ws-avatar{border-color:#ffffff55}
 
 .ws-topbar{display:flex;align-items:center;justify-content:space-between;padding:0 20px 0 24px;border-bottom:1px solid var(--ws-border);background:var(--color-bg-header);gap:16px;min-width:0}
@@ -1070,7 +1104,6 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-settings-heading h1{font-size:20px;line-height:28px}
 .ws-settings-heading p{font-size:12px;color:var(--ws-muted)}
 .ws-settings-nav{display:grid;gap:2px}
-.ws-nav-label{font-size:11px;font-weight:600;color:var(--ws-faint);letter-spacing:.6px;text-transform:uppercase;padding:14px 10px 6px}
 .ws-settings-nav button{display:flex;align-items:center;gap:10px;min-height:34px;padding:6px 10px;line-height:18px;border:0;border-radius:8px;background:none;color:var(--ws-text-2);font-size:13px;text-align:left}
 .ws-settings-nav button .ws-icon{color:var(--ws-muted)}
 .ws-settings-nav button:hover{background:var(--ws-hover)}
@@ -1147,14 +1180,7 @@ ul.ws-draft-context[hidden]{display:none}
 }
 @media (max-width:1050px){
   #workspace-app{--ws-sidebar-w:64px}
-  .ws-brand img{width:40px;object-fit:cover;object-position:left}
-  .ws-nav button span,.ws-user-copy,.ws-nav .ws-count{display:none}
-  .ws-nav button{justify-content:center;padding:0}
-  .ws-user{justify-content:center}
   .ws-sync-pill span{display:none}
-  .ws-plugin-nav{padding-top:12px;border-top:1px solid #ffffff33}
-  .light .ws-plugin-nav{border-top-color:#0000001f}
-  .ws-plugin-nav .ws-nav-label{display:none}
 }
 
 /* ------------------------------------------------------------------ Settings → Claude */
@@ -1491,10 +1517,6 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .ws-plugin-page{height:100%;min-height:0}
 .ws-plugin-missing{display:grid;place-items:center;height:100%;padding:32px}
 .ws-plugin-missing .ws-empty{max-width:420px}
-.ws-plugin-nav{display:grid;gap:4px;min-width:0;min-height:0;overflow-y:auto}
-.ws-plugin-nav .ws-nav-label{padding:0 11px 2px;color:#8A8A8A}
-.light .ws-plugin-nav .ws-nav-label{color:#666}
-.ws-plugin-nav .ws-nav button span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* Settings: a plugin's sections under Plugins, a section filling the panel, its card slot. */
 .ws-settings-subnav{display:grid;gap:2px;margin:2px 0 4px}
@@ -2889,22 +2911,43 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .cm-where legend{margin:0 0 8px;padding:0;color:var(--ws-muted);font-size:12px;font-weight:600}
 
 /* ------------------------------------------------------------------ menus that collapse (spec "Menus") */
-/* The main menu: the 64 px icon rail the app uses at ≤1050 px, chosen by hand. A count is a dot. */
+/* The main menu: the 64 px icon rail the app uses at ≤1050 px, chosen by hand. The rail keys on the
+   menu's width, so both draw alike: no names (a tooltip names an icon), a count is a dot, a group's
+   label is a hairline (a click folds it) and a folded group is its icon, a plugin's pages are dots,
+   the gear sits over the avatar, and the toggle shows over the logo on hover or focus. */
 .ws-sidebar{position:relative}
 .ws-sidebar-edge{position:absolute;top:0;right:-3px;bottom:0;width:6px;cursor:ew-resize;z-index:5;touch-action:none}
 .ws-sidebar-edge:hover,.ws-sidebar-edge.ws-active{background:linear-gradient(90deg,transparent 2px,var(--ws-accent) 2px,var(--ws-accent) 4px,transparent 4px)}
 #workspace-app.ws-sidebar-collapsed{--ws-sidebar-w:64px}
 /* Connect's terminal sits outside the app's grid: it starts where the collapsed menu ends. */
 :root:has(#workspace-app.ws-sidebar-collapsed){--ws-term-left:64px}
-.ws-sidebar-rail .ws-brand img{width:40px;object-fit:cover;object-position:left}
-.ws-sidebar-rail .ws-nav button span,.ws-sidebar-rail .ws-user-copy{display:none}
-.ws-sidebar-rail .ws-nav button{justify-content:center;padding:0}
-.ws-sidebar-rail .ws-user{justify-content:center}
-.ws-sidebar-rail .ws-plugin-nav{padding-top:12px;border-top:1px solid #ffffff33}
-.light .ws-sidebar-rail .ws-plugin-nav{border-top-color:#0000001f}
-.ws-sidebar-rail .ws-plugin-nav .ws-nav-label{display:none}
-.ws-sidebar-rail .ws-nav .ws-count.ws-count-dot{display:block;position:absolute;top:6px;right:10px;min-width:0;width:8px;height:8px;padding:0;font-size:0;background:var(--ws-accent)}
-.ws-sidebar-rail .ws-nav button .ws-dot-alert{display:block;position:absolute;top:6px;right:10px;margin:0}
+@container ws-menu (max-width:100px){
+  .ws-brand{justify-content:center;padding:0}
+  .ws-brand img{width:40px;object-fit:cover;object-position:left}
+  .ws-brand-toggle{position:absolute;top:3px;left:50%;width:30px;height:30px;margin-left:-15px;opacity:0;background:var(--color-bg-sidebar)}
+  .ws-brand:is(:hover,:focus-within) .ws-brand-toggle{opacity:1}
+  .ws-nav button{width:40px;justify-content:center;padding:0;margin:0 auto}
+  .ws-nav button>span:not([class]),.ws-user-copy{display:none}
+  .ws-nav .ws-count,.ws-nav button[aria-current=page] .ws-count{position:absolute;top:5px;right:6px;width:7px;height:7px;min-width:0;padding:0;margin:0;font-size:0;background:var(--ws-accent)}
+  .ws-nav button.ws-nav-head{width:100%;height:9px;padding:0;margin:0;border-radius:0}
+  .ws-nav-head::before{content:"";position:absolute;left:8px;right:8px;top:4px;height:1px;background:#ffffff33}
+  .light .ws-nav-head::before{background:#0000001f}
+  .ws-nav-head:hover::before{background:var(--ws-accent)}
+  .ws-nav-head>*{display:none}
+  .ws-nav button.ws-nav-head[aria-expanded=false]{width:40px;height:30px;margin:9px auto 0;border-radius:7px;color:#CCCCCC}
+  .light .ws-nav button.ws-nav-head[aria-expanded=false]{color:#333}
+  .ws-nav button.ws-nav-head[aria-expanded=false]:hover{background-color:#212224;color:#F2F0EF}
+  .light .ws-nav button.ws-nav-head[aria-expanded=false]:hover{background-color:#D5E7FC;color:#007AFF}
+  .ws-nav-head[aria-expanded=false]::before{top:-5px;left:-4px;right:-4px}
+  .ws-nav-head[aria-expanded=false] .ws-nav-head-icon{display:block}
+  .ws-nav-head[aria-expanded=false] .ws-count{display:block}
+  .ws-nav-home+.ws-nav-group{margin-top:-4px}
+  .ws-nav-subs{margin:1px 0 3px;padding:0;border:0}
+  .ws-nav .ws-nav-subs button{height:22px}
+  .ws-nav-subs button::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.55}
+  .ws-sidebar-bottom{flex-direction:column-reverse;gap:4px;padding-top:8px}
+  .ws-user{flex:none;padding:2px}
+}
 
 /* A rail has no labels: a tooltip names the icon. */
 .ws-tooltip{position:fixed;z-index:500;transform:translateY(-50%);pointer-events:none;padding:5px 9px;border-radius:6px;background:var(--ws-text);color:var(--ws-bg);font-size:12px;line-height:16px;white-space:nowrap;box-shadow:0 4px 14px #00000040}

@@ -38,7 +38,7 @@ import { meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
-import { renderShell, terminalButton } from './shell.js';
+import { renderShell, terminalButton, groupFolded, NAV_GROUPS } from './shell.js';
 import { createTerminalDock } from './terminal-dock.js';
 import { Terminal } from '../vendor/xterm.mjs';
 import { FitAddon } from '../vendor/addon-fit.mjs';
@@ -176,7 +176,7 @@ let layoutHolds = 0;
 let pressing = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
+const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'sidebar-fold', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
 let lastDraftSignature = '';
 // Updates that arrived while held (the draft options popover open, a card or widget dragged, the
 // mouse button down); shown once that ends.
@@ -245,7 +245,7 @@ const shellMarkup = () => renderShell({
   snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark'),
   terminals: terminalDock?.state(),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
-  settingsDot: codemie.settingsDot(), sidebarCollapsed: sidebarCollapsed(),
+  settingsDot: codemie.settingsDot(), sidebarCollapsed: sidebarCollapsed(), sidebarFolded: sidebarFolded(),
   meetingsHidden: state.meetings.hidden,
 });
 
@@ -286,6 +286,7 @@ function captureScroll() {
     reader: q('.ws-read')?.closest('.ws-reader')?.scrollTop || 0,
     readerId: q('.ws-read')?.dataset.messageId,
     nav: q('.ws-settings-sidebar')?.scrollTop || 0,
+    menu: q('.ws-main-nav')?.scrollTop || 0,
     panels: q('.ws-settings-panels')?.scrollTop || 0,
     tab: q('.ws-settings-nav [aria-current=page]')?.dataset.tab,
     board: q('.ws-task-board')?.scrollLeft || 0,
@@ -310,6 +311,7 @@ function captureScroll() {
 function restoreScroll(saved) {
   const q = sel => root.querySelector(sel);
   if (q('.ws-main')) q('.ws-main').scrollTop = saved.main;
+  if (q('.ws-main-nav')) q('.ws-main-nav').scrollTop = saved.menu;
   if (q('.ws-task-board')) q('.ws-task-board').scrollLeft = saved.board;
   if (q('.ws-task-drawer-body') && saved.drawerId === state.tasks.drawer) q('.ws-task-drawer-body').scrollTop = saved.drawer;
   if (saved.anSession && saved.anSession === analyticsUi?.data.session?.id) {
@@ -1422,11 +1424,14 @@ const dockUi = store && attachDock(document, {
 
 // ---------------------------------------------------------------- menus (spec "Menus")
 
-// The main menu collapses to its 64 px icon rail, the Settings menu folds its groups and shrinks
-// to a 58 px rail, and both are preferences of this Mac: `codemie.sidebar.collapsed` ("1"/"0"),
-// `codemie.settings.folded` (the folded group names) and `codemie.settings.menu` ({collapsed,
-// width}). The pages only read them (the views are pure); the changes below store and draw them.
+// The main menu folds its groups and collapses to its 64 px icon rail, the Settings menu folds its
+// groups and shrinks to a 58 px rail, and all are preferences of this Mac: `codemie.sidebar.collapsed`
+// ("1"/"0"), `codemie.sidebar.folded` ({work, ai, plugins}: the folds clicked), `codemie.settings.folded`
+// (the folded group names) and `codemie.settings.menu` ({collapsed, width}). The pages only read
+// them (the views are pure); the changes below store and draw them.
 const SIDEBAR_KEY = 'codemie.sidebar.collapsed';
+const SIDEBAR_FOLDED_KEY = 'codemie.sidebar.folded';
+const SIDEBAR_GROUPS = [...NAV_GROUPS.map(g => [g.id, g.label]), ['plugins', 'Plugins']];
 const FOLDED_KEY = 'codemie.settings.folded';
 const MENU_KEY = 'codemie.settings.menu';
 /** The main menu edge is dragged this far (px) to collapse or expand it. */
@@ -1435,6 +1440,11 @@ const SIDEBAR_DRAG = 60;
 const SETTINGS_RAIL_AT = 150;
 
 const sidebarCollapsed = () => localPref(SIDEBAR_KEY, '0') === '1';
+/** The main menu's folds clicked so far: {work, ai, plugins} booleans (a missing one is the default). */
+function sidebarFolded() {
+  const saved = localJson(SIDEBAR_FOLDED_KEY, {});
+  return Object.fromEntries(SIDEBAR_GROUPS.filter(([id]) => typeof saved?.[id] === 'boolean').map(([id]) => [id, saved[id]]));
+}
 const clampWidth = w => Math.min(SETTINGS_MENU.max, Math.max(SETTINGS_MENU.min, Math.round(Number(w)) || SETTINGS_MENU.def));
 function settingsMenu() {
   const saved = localJson(MENU_KEY, null);
@@ -1456,6 +1466,19 @@ function layoutContext() {
     docks: { defs: DOCKS, layouts: Object.fromEntries(Object.keys(DOCKS).map(page => [page, docks.get(page)])) },
     today: todayOf(current(), defs),
   };
+}
+
+/** Folds or unfolds main menu group `id`, from how it is drawn now (Plugins folds by default with
+ *  more than three plugins), and keeps the choice. */
+async function foldSidebarGroup(id) {
+  const label = SIDEBAR_GROUPS.find(([g]) => g === id)?.[1];
+  if (!label) return;
+  const saved = sidebarFolded();
+  const plugins = new Set((pluginHost?.activities() || []).map(a => a.plugin)).size;
+  const fold = !groupFolded(id, saved, plugins);
+  setLocalPref(SIDEBAR_FOLDED_KEY, JSON.stringify({ ...saved, [id]: fold }));
+  announce(`${label} ${fold ? 'folded' : 'unfolded'}`);
+  await render();
 }
 
 async function toggleSidebar(on = !sidebarCollapsed()) {
@@ -1938,6 +1961,7 @@ async function handle(action, el, ev) {
       }
       return route(el.dataset.route || 'today');
     case 'sidebar-toggle': return toggleSidebar();
+    case 'sidebar-fold': return foldSidebarGroup(el.dataset.group);
     case 'settings-group': return foldGroup(el.dataset.group, !!ev?.altKey);
     case 'settings-groups-all': return foldAll();
     case 'settings-menu-toggle': return shrinkSettingsMenu();

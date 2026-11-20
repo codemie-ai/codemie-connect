@@ -721,7 +721,7 @@ test('Settings shows the account profile and automatic sources, no source picker
 
 test('shell_has_no_workspaces_entry_or_switcher', () => {
   const html = renderShell({ snapshot: buildSnapshot(Date.now()), route: 'today', resolvedDark: false });
-  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations', 'analytics']);
+  assert.deepEqual(NAV.map(([id]) => id), ['today', 'inbox', 'calendar', 'meetings', 'tasks', 'automations', 'analytics']);
   assert.match(html, /data-route="automations"/);
   assert.doesNotMatch(html, /data-route="workspaces"/);
   assert.doesNotMatch(html, /workspace-select|ws-workspace-switch|ws-ws-dot|Active workspace/);
@@ -731,8 +731,8 @@ test('shell_has_no_workspaces_entry_or_switcher', () => {
   assert.match(html, /ws-sync-pill/);
 });
 
-test('NAV lists Today, Calendar, Meetings, Tasks, Inbox, Automations, Analytics', () => {
-  assert.deepEqual(NAV, [['today', 'Today'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations'], ['analytics', 'Analytics']]);
+test('NAV lists Today, then Work (Inbox, Calendar, Meetings, Tasks) and AI (Automations, Analytics)', () => {
+  assert.deepEqual(NAV, [['today', 'Today'], ['inbox', 'Inbox'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['automations', 'Automations'], ['analytics', 'Analytics']]);
   const now = Date.UTC(2026, 10, 18, 12);
   const html = renderShell({ snapshot: withTasks(buildSnapshot(now, { photo: false }), now), route: 'tasks', resolvedDark: true });
   assert.match(html, /data-route="tasks" aria-current="page"><svg[^]*?<span>Tasks<\/span><small class="ws-count" title="Tasks to review">2<\/small>/, 'Tasks is current and counts the tasks to review');
@@ -786,6 +786,8 @@ test('focus_returns_only_to_the_exact_control', () => {
     'button[data-action="ai-draft-choice"][data-option="Say \\"yes\\" \\\\ no"]', 'quotes and backslashes are escaped');
   assert.equal(controlSelector(control('textarea', { id: 'reply-body', name: 'body', class: 'ws-textarea' })), 'textarea[id="reply-body"][name="body"]');
   assert.equal(controlSelector(control('button', { class: 'ws-btn', type: 'button' })), null, 'nothing that tells it apart');
+  // A tooltip's text changes with the control's state (Fold AI, then AI: Automations, Analytics).
+  assert.equal(controlSelector(control('button', { 'data-action': 'sidebar-fold', 'data-group': 'ai', 'data-tip': 'Fold AI' })), 'button[data-action="sidebar-fold"][data-group="ai"]', 'data-tip is not part of the identity');
   assert.equal(controlSelector(null), null);
 
   // Focus goes back only when exactly one control matches.

@@ -85,7 +85,8 @@ const quoted = value => `"${String(value).replace(/["\\]/g, '\\$&').replace(/\n/
 export function controlSelector(el) {
   if (!el?.tagName) return null;
   const attrs = [...(el.attributes || [])];
-  const identity = attrs.filter(a => a.name === 'id' || a.name === 'name' || a.name.startsWith('data-'));
+  // A tooltip (`data-tip`) changes with the control's state, as `aria-*` does: not its identity.
+  const identity = attrs.filter(a => a.name === 'id' || a.name === 'name' || (a.name.startsWith('data-') && a.name !== 'data-tip'));
   // `type` alone ("button") tells nothing apart; with an identity it keeps inputs exact.
   if (!identity.length) return null;
   const parts = attrs.filter(a => identity.includes(a) || a.name === 'type').map(a => `[${a.name}=${quoted(a.value)}]`);
