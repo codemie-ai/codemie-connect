@@ -138,17 +138,22 @@ test('listModel puts the needs lane in a card and the rest in days', () => {
   assert.deepEqual(starts, [...starts].sort((a, b) => b - a), 'newest first');
   for (const id of needs) assert.ok(!days.includes(id), `${id} is only in the card`);
   assert.ok(days.includes('mtg-philips'));
-  // Today's meetings still to come (ev-current is going on, ev-next later) open today's day.
-  const today = model.days.find(d => d.key === dayKey(NOW, 'UTC'));
-  assert.ok(today, 'a day for today');
-  assert.equal(today.items[0].state, 'upcoming', 'the latest of today comes first');
-  assert.ok(today.items.some(m => m.id === 'ev-next') && today.items.some(m => m.id === 'ev-current'));
-  assert.ok(!modelOf(s, { filter: 'ready' }).days.some(d => d.items.some(m => m.state === 'upcoming')), 'only All adds them');
-  assert.ok(!days.includes('ev-week-1') || model.days.find(d => d.items.some(m => m.id === 'ev-week-1')).key === dayKey(NOW, 'UTC'), 'upcoming meetings of later days stay in Coming up');
+  // Today's meetings still to come (ev-current is going on, ev-next later) come first, in their own group, soonest first.
+  const [coming, ...past] = model.days;
+  assert.equal(coming.key, 'coming');
+  assert.equal(coming.label, 'Coming up');
+  const ids = coming.items.map(m => m.id);
+  assert.ok(ids.includes('ev-current') && ids.includes('ev-next') && ids.indexOf('ev-current') < ids.indexOf('ev-next'), ids.join());
+  const soon = coming.items.map(m => m.start);
+  assert.deepEqual(soon, [...soon].sort((a, b) => a - b), 'soonest first');
+  for (const m of coming.items) assert.ok(m.state === 'upcoming' && dayKey(m.start, 'UTC') === dayKey(NOW, 'UTC'), m.id);
+  assert.ok(!past.some(d => d.items.some(m => m.state === 'upcoming')), 'the days below hold past meetings only');
+  assert.ok(!modelOf(s, { filter: 'ready' }).days.some(d => d.key === 'coming' || d.items.some(m => m.state === 'upcoming')), 'only All adds them');
+  assert.ok(!days.includes('ev-week-1') || ids.includes('ev-week-1'), 'upcoming meetings of later days stay in Coming up');
   // Days newest first; every item sits under its own day.
-  const keys = model.days.map(d => d.key);
+  const keys = past.map(d => d.key);
   assert.deepEqual(keys, [...keys].sort().reverse());
-  for (const d of model.days) for (const m of d.items) assert.equal(dayKey(m.start, 'UTC'), d.key);
+  for (const d of past) for (const m of d.items) assert.equal(dayKey(m.start, 'UTC'), d.key);
   assert.equal(model.hiddenCount, 0);
 });
 

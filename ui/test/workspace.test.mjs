@@ -996,7 +996,7 @@ test('meetings list: one header row with search, filter and more; no segmented f
   assert.match(head, /<h1>Meetings<\/h1>/);
   assert.match(head, /data-action="meeting-search-open"/);
   const filter = head.match(/<details class="ws-menu[^"]*" data-menu="meetings-filter"[^]*?<\/details>/)?.[0] || '';
-  for (const label of ['All meetings', 'Needs you', 'With notes', 'Coming up', 'Meetings without a transcript (4)', 'Hidden meetings (0)']) assert.ok(filter.includes(label), label);
+  for (const label of ['All meetings', 'Needs you', 'With notes', 'Coming up', 'Without a transcript (4)', 'Hidden meetings (0)']) assert.ok(filter.includes(label), label);
   assert.match(filter, /data-action="meeting-filter" data-filter="all"[^>]*aria-checked="true"/);
   assert.match(filter, /data-action="meeting-show-none"/);
   assert.match(filter, /data-action="meeting-show-hidden"/);
@@ -1056,8 +1056,9 @@ test('meetings list: Needs you card with Make notes for N, rows without buttons'
   assert.match(rowOf(html, 'mtg-roadmap'), /<span class="ws-spinner ws-mtg-row-spin" role="status" aria-label="In progress"><\/span>/);
   assert.equal((html.match(/ws-mtg-row-spin/g) || []).length, 1);
   assert.match(html, /data-action="meeting-make-all"[^>]*>(<span>)?Make notes for 2/);
-  // Today's meetings still to come open today's day, greyed.
-  assert.match(html, /data-action="meeting-day-fold" data-day="2026-11-18"[^>]*>[^]*?Today/);
+  // Today's meetings still to come: their own group on top of the days, greyed.
+  assert.match(html, /aria-label="Coming up, [^"]*" data-day="coming"><div class="ws-mtg-day"><button type="button" class="ws-mtg-fold" data-action="meeting-day-fold" data-day="coming"[^>]*>[^]*?<strong>Coming up<\/strong><span>Today<\/span>/);
+  assert.ok(html.indexOf('data-day="coming"') < html.indexOf('data-day="2026-'), 'Coming up comes before the days');
   assert.match(rowOf(html, 'ev-next'), /class="ws-mtg-row ws-mtg-future/);
 });
 
@@ -1308,7 +1309,7 @@ test('a save that needs a Microsoft sign-in offers Sign in again, then Try again
   // Stopped by the person: said so, and only they start it again.
   vendor.saveError = { code: 'cancelled', message: 'You stopped saving the transcript, so Connect won’t try again by itself.' };
   html = meetings(s, meetingsCtx({ selected: 'mtg-vendor' }));
-  assert.match(rowOf(html, 'mtg-vendor'), /<i>·<\/i><span>Saving stopped<\/span>/, 'a save the person stopped is grey');
+  assert.match(rowOf(html, 'mtg-vendor'), /<small><span>Saving stopped<\/span><i>·<\/i><span class="ws-mtg-row-time">/, 'a save the person stopped is grey, first in the card');
   assert.match(detailOf(html), /Saving the transcript stopped[^]*?data-action="meeting-download"[^>]*>[^]*?Try again/);
 });
 

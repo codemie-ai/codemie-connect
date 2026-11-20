@@ -278,7 +278,11 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         assert(await page.locator(row('mtg-sprint')).count() === 0, 'a meeting waiting for Teams is out of All');
         const item = '[data-menu="meetings-filter"] [data-action="meeting-show-none"]';
         await page.click('[data-menu="meetings-filter"] > summary');
-        assert(/Meetings without a transcript \(\d+\)/.test(await page.locator(item).innerText()), await page.locator(item).innerText());
+        assert(/Without a transcript \(\d+\)/.test(await page.locator(item).innerText()), await page.locator(item).innerText());
+        // The menu stays inside the list, however narrow (it used to be cut off on the left).
+        const [pane, panel] = await Promise.all(['.ws-mtg-list', '[data-menu="meetings-filter"] .ws-menu-panel'].map(s => page.locator(s).boundingBox()));
+        assert(panel.x >= pane.x && panel.x + panel.width <= pane.x + pane.width + 0.5, `the filter menu fits the list: ${JSON.stringify({ pane, panel })}`);
+        await page.screenshot({ path: `${OUT}/${tag}-meetings-filter-menu.png` });
         await page.click(item);
         await page.waitForSelector(row('mtg-sprint'));
         assert(await page.locator(`${item}[aria-checked="true"]`).count() === 1, 'the switch is on');

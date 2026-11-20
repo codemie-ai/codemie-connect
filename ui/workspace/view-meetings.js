@@ -195,18 +195,18 @@ export function hideMenuItems(m, hidden) {
 /** A row's status: grey for the usual, a colour and a dot only for what needs the person, purple
  *  while notes are being made; a ready meeting says its documents and what waits for review. */
 function rowStatus(m, mc) {
-  if (m.run && m.run.kind === 'meeting_notes') return `<i>·</i><em class="ws-tone-purple">${e(runText(m.run))}…</em>`;
+  if (m.run && m.run.kind === 'meeting_notes') return `<em class="ws-tone-purple">${e(runText(m.run))}…</em>`;
   if (m.state === 'ready' && !m.run) {
     const docs = mc.docs.length > 1 ? `${mc.docs.length} documents` : e(mc.docs[0]?.name || 'Notes');
-    return `<i>·</i>${docs}${mc.review.length ? `<i>·</i><span class="ws-mtg-accent">${mc.review.length} to review</span>` : ''}`;
+    return `${docs}${mc.review.length ? `<i>·</i><span class="ws-mtg-accent">${mc.review.length} to review</span>` : ''}`;
   }
   const st = statusOf(m, mc);
   // A meeting waiting for Teams that makes its notes by itself says so.
   const after = m.state === 'pending' && mc.tpl.auto && !m.paused ? '<i>·</i><span>notes when it arrives</span>' : '';
-  if (!inLane(m, 'needs') || st.tone === 'muted') return `<i>·</i><span>${e(st.label)}</span>${after}`;
+  if (!inLane(m, 'needs') || st.tone === 'muted') return `<span>${e(st.label)}</span>${after}`;
   // "No notes yet" asks for a click, not an alarm: blue.
   const tone = st.tone === 'purple' && !m.run ? 'info' : st.tone;
-  return `<i>·</i><em class="ws-tone-${tone}"><i class="ws-mtg-dot"></i>${e(st.label)}</em>`;
+  return `<em class="ws-tone-${tone}"><i class="ws-mtg-dot"></i>${e(st.label)}</em>`;
 }
 
 function row(p, m, { withDay = false } = {}) {
@@ -216,8 +216,11 @@ function row(p, m, { withDay = false } = {}) {
   const time = formatTime(m.start, p.zone);
   const when = withDay ? `${relDay(m.start, p.zone, p.now) || shortDay(m.start, p.zone)}, ${time}` : time;
   const cls = ['ws-mtg-row', on && 'ws-mtg-on', m.state === 'upcoming' && 'ws-mtg-future', hid && 'ws-mtg-hid'].filter(Boolean).join(' ');
+  // In the Needs you card the status (why it's there) comes first, so a narrow list cuts the date, not the status.
+  const at = `<span class="ws-mtg-row-time">${e(when)}</span>`;
+  const meta = withDay ? `${rowStatus(m, mc)}<i>·</i>${at}` : `${at}<i>·</i>${rowStatus(m, mc)}`;
   return `<button type="button" class="${cls}" role="option" aria-selected="${on}" data-action="meeting-select" data-id="${e(m.id)}">
-    <span class="ws-mtg-row-main"><strong>${mc.d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</strong><small>${hid ? '<span class="ws-mtg-hid-tag">Hidden</span><i>·</i>' : ''}<span class="ws-mtg-row-time">${e(when)}</span>${rowStatus(m, mc)}</small></span>
+    <span class="ws-mtg-row-main"><strong>${mc.d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</strong><small>${hid ? '<span class="ws-mtg-hid-tag">Hidden</span><i>·</i>' : ''}${meta}</small></span>
     ${m.run ? '<span class="ws-spinner ws-mtg-row-spin" role="status" aria-label="In progress"></span>' : ''}
   </button>`;
 }
@@ -257,7 +260,7 @@ function list(p) {
     ['#', 'Show'],
     ...FILTERS.map(([id, label]) => [label, 'meeting-filter', { 'data-filter': id, 'aria-checked': String(lane === id) }]),
     '-',
-    [`Meetings without a transcript (${counts.none})`, 'meeting-show-none', { 'aria-checked': String(!!v.showNone) }],
+    [`Without a transcript (${counts.none})`, 'meeting-show-none', { 'aria-checked': String(!!v.showNone) }],
     [`Hidden meetings (${model.hiddenCount})`, 'meeting-show-hidden', { 'aria-checked': String(!!v.showHidden) }],
   ]);
   const moreMenu = menu('meetings-more', dotsSummary('More'), [
@@ -277,9 +280,13 @@ function list(p) {
     const closed = !!v.folded?.[d.key];
     const rel = relDay(d.start, p.zone, p.now);
     const waiting = closed ? d.items.filter(m => inLane(m, 'needs') || (p.tasksBy.get(m.id) || []).some(t => taskStatus(t) === 'review')).length : 0;
-    const head = foldButton(`data-action="meeting-day-fold" data-day="${e(d.key)}"`, !closed, `<strong>${e(rel || shortDay(d.start, p.zone))}</strong>${rel ? `<span>${e(shortDay(d.start, p.zone))}</span>` : ''}`, 'Fold or unfold this day (⌥-click keeps only this day open)');
+    // Today's meetings still to come have their own group (`d.label`), soonest first.
+    const title = d.label ? `<strong>${e(d.label)}</strong><span>${e(rel || shortDay(d.start, p.zone))}</span>`
+      : `<strong>${e(rel || shortDay(d.start, p.zone))}</strong>${rel ? `<span>${e(shortDay(d.start, p.zone))}</span>` : ''}`;
+    const head = foldButton(`data-action="meeting-day-fold" data-day="${e(d.key)}"`, !closed, title, 'Fold or unfold this day (⌥-click keeps only this day open)');
     const tail = closed ? `<span class="ws-spacer"></span>${waiting ? `<span class="ws-mtg-day-dot" title="Need you or have tasks to review">● ${waiting}</span>` : ''}<span class="ws-mtg-count">${plural(d.items.length, 'meeting')}</span>` : '';
-    return `<div class="ws-mtg-group" role="group" aria-label="${e(longDay(d.start, p.zone))}" data-day="${e(d.key)}"><div class="ws-mtg-day">${head}${tail}</div>${closed ? '' : d.items.map(m => row(p, m)).join('')}</div>`;
+    const label = d.label ? `${d.label}, ${longDay(d.start, p.zone)}` : longDay(d.start, p.zone);
+    return `<div class="ws-mtg-group" role="group" aria-label="${e(label)}" data-day="${e(d.key)}"><div class="ws-mtg-day">${head}${tail}</div>${closed ? '' : d.items.map(m => row(p, m)).join('')}</div>`;
   }).join('');
   const n = model.hiddenCount;
   const hiddenFoot = n ? `<button type="button" class="ws-mtg-hid-foot" data-action="meeting-show-hidden">${icon(v.showHidden ? 'eye' : 'eye-off')}<span>${v.showHidden ? `Showing ${plural(n, 'hidden meeting')} · <u>Hide them</u>` : `${plural(n, 'hidden meeting')} · <u>Show</u>`}</span></button>` : '';

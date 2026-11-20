@@ -323,8 +323,8 @@ export function meetingCounts(s, now = Date.now(), items = meetingItems(s, now),
 
 /**
  * The list as it shows: in All, the Needs you card (hidden meetings left out, newest first),
- * then the rest of the lane by day (`dayKey` in `zone`), newest first; All adds today's meetings
- * still to come at the top of today, and Coming up runs soonest first. Hidden meetings show only
+ * then today's meetings still to come in their own group (key `coming`), soonest first, then the
+ * rest of the lane by day (`dayKey` in `zone`), newest first; Coming up runs soonest first. Hidden meetings show only
  * when `v.showHidden`, a search or the selection asks for them. `hiddenCount` counts the hidden
  * meetings of this lane and search, the ones "Show" brings back.
  */
@@ -334,15 +334,18 @@ export function listModel(s, v, { now = Date.now(), zone = s.settings?.timeZone 
   // The old To do and Needs you filters are both Needs you now.
   const lane = { process: 'needs', attention: 'needs' }[v.filter] || (IN_LANE[v.filter] ? v.filter : 'all');
   const newest = (a, b) => b.start - a.start || String(a.id).localeCompare(String(b.id));
+  const soonest = (a, b) => a.start - b.start || String(a.id).localeCompare(String(b.id));
   const visible = m => matches(m, q) && (!isHidden(m, hidden) || v.showHidden || !!q.trim() || m.id === v.selected);
   const needs = lane === 'all' ? items.filter(m => IN_LANE.needs(m) && !isHidden(m, hidden) && matches(m, q)).sort(newest) : [];
   const inCard = new Set(needs.map(m => m.id));
   const today = dayKey(now, zone);
   // In this lane: its meetings, and in All today's meetings still to come.
-  const inView = m => inLane(m, lane, v.showNone) || (lane === 'all' && m.state === 'upcoming' && dayKey(m.start, zone) === today);
-  const rest = items.filter(m => !inCard.has(m.id) && visible(m) && inView(m))
-    .sort(lane === 'upcoming' ? (a, b) => a.start - b.start || String(a.id).localeCompare(String(b.id)) : newest);
-  const days = [];
+  const coming = m => lane === 'all' && m.state === 'upcoming' && dayKey(m.start, zone) === today;
+  const inView = m => inLane(m, lane, v.showNone) || coming(m);
+  const shown = items.filter(m => !inCard.has(m.id) && visible(m) && inView(m));
+  const next = shown.filter(coming).sort(soonest);
+  const rest = shown.filter(m => !coming(m)).sort(lane === 'upcoming' ? soonest : newest);
+  const days = next.length ? [{ key: 'coming', label: 'Coming up', start: next[0].start, items: next }] : [];
   for (const m of rest) {
     const key = dayKey(m.start, zone);
     let d = days.at(-1);
