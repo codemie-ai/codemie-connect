@@ -3,10 +3,11 @@
 //! this Mac's own agent logs. Every test is `#[ignore]`, like the `live_*` Claude tests in
 //! `ai/runner.rs`: a first open reads 91 UTC days of logs (minutes to tens of minutes, up to the
 //! 6 GB heap per CLI call). Run them by hand, one at a time, with a `codemie` that has
-//! `analytics view` first on `PATH`:
+//! `analytics view` first on `PATH` (a bare `live_` filter also runs the Claude live tests,
+//! which spend tokens):
 //!
 //! ```text
-//! cd src-tauri && PATH=<folder of that codemie>:$PATH cargo test live_ -- --ignored --nocapture --test-threads=1
+//! cd src-tauri && PATH=<folder of that codemie>:$PATH cargo test analytics::live_tests -- --ignored --nocapture --test-threads=1
 //! ```
 //!
 //! Nothing here starts Claude or a model: the runner is a `FakeRunner` with nothing scripted, a
