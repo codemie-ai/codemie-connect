@@ -1,0 +1,12 @@
+{
+  "failedDays": [],
+  "lastFetchAt": null,
+  "progress": {
+    "done": 3,
+    "label": "Reading your history, newest first",
+    "total": 91
+  },
+  "sessions": 0,
+  "state": "running",
+  "storedFrom": "2026-11-17"
+}

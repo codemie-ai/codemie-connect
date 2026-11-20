@@ -38,6 +38,8 @@ const START_COLS: u16 = 120;
 const START_ROWS: u16 = 32;
 /// A name shown on a tab: at most this many characters.
 const NAME_MAX: usize = 60;
+/// Starts kept in the launch log.
+const LAUNCH_LOG_MAX: usize = 2000;
 
 pub const OPENED: &str = "terminal:opened";
 pub const DATA: &str = "terminal:data";
@@ -163,14 +165,60 @@ struct Session {
     size: (u16, u16),
 }
 
+/// Appends `line` to `path` and, past [`LAUNCH_LOG_MAX`] lines, rewrites it with the newest ones
+/// through a temp file, so a crash leaves the old lines whole.
+fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")?;
+    drop(file);
+    let text = std::fs::read_to_string(path)?;
+    let count = text.lines().count();
+    if count > LAUNCH_LOG_MAX {
+        let kept: Vec<&str> = text.lines().skip(count - LAUNCH_LOG_MAX).collect();
+        let tmp = path.with_extension("jsonl.tmp");
+        std::fs::write(&tmp, format!("{}\n", kept.join("\n")))?;
+        std::fs::rename(&tmp, path)?;
+    }
+    Ok(())
+}
+
 /// Every session of the app (managed state). Clones share them.
 #[derive(Clone, Default)]
 pub struct Terminals {
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     next: Arc<AtomicU64>,
+    /// Where each start is noted for Analytics (`set_launch_log`); none until Core is open.
+    launch_log: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl Terminals {
+    /// Sets the file every start of a session is noted in, one JSON line each.
+    pub fn set_launch_log(&self, path: PathBuf) {
+        *self.launch_log.lock().unwrap() = Some(path);
+    }
+
+    /// Notes one start: `{"at":<ms>,"folder":..,"program":argv[0]}`, appended, the oldest lines
+    /// dropped past [`LAUNCH_LOG_MAX`] by an atomic rewrite. The folder is noted with its
+    /// symlinks resolved (as given when it can't be), so Analytics matches the session the agent
+    /// notes for it. Never fails a start: a problem is only logged.
+    fn log_launch(&self, launch: &Launch) {
+        let guard = self.launch_log.lock().unwrap();
+        let Some(path) = guard.as_ref() else { return };
+        let folder =
+            std::fs::canonicalize(&launch.folder).unwrap_or_else(|_| launch.folder.clone());
+        let line = json!({
+            "at": chrono::Utc::now().timestamp_millis(),
+            "folder": folder.to_string_lossy(),
+            "program": launch.argv.first(),
+        });
+        if let Err(e) = append_line(path, &line.to_string()) {
+            log::warn!("terminal: cannot note a launch: {e}");
+        }
+    }
+
     /// Shows the tab of `launch.key` if it runs; starts it again (going on) if it ended;
     /// otherwise starts a new tab. The window hears `terminal:opened` either way.
     pub fn open(&self, launch: Launch, emit: Emit) -> Result<Info, String> {
@@ -270,6 +318,7 @@ impl Terminals {
             s.info.theme = claude_theme(&home_dir());
             s.info.clone()
         };
+        self.log_launch(&launch);
 
         // Output: kept, then sent with the offset it starts at.
         let (id_r, emit_r) = (id.to_string(), emit.clone());
@@ -829,6 +878,79 @@ mod tests {
         assert!(t.list().is_empty());
         assert!(t.input(&info.id, b"x").is_err());
         drop(rx);
+    }
+
+    #[test]
+    fn terminal_open_and_restart_append_one_launch_line_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("terminal-launches.jsonl");
+        let (emit, _events, _rx) = recorder();
+        let t = Terminals::default();
+        t.set_launch_log(log.clone());
+        let info = t
+            .open(launch(dir.path(), &["/bin/cat"], &[]), emit.clone())
+            .unwrap();
+        // Showing the tab of a session that runs starts nothing.
+        t.open(launch(dir.path(), &["/bin/cat"], &[]), emit.clone())
+            .unwrap();
+        t.restart(&info.id, emit).unwrap();
+        let lines: Vec<Value> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        let folder = dir.path().canonicalize().unwrap();
+        for line in &lines {
+            assert_eq!(line["folder"], folder.to_string_lossy().as_ref());
+            assert_eq!(line["program"], "/bin/cat");
+            assert!(line["at"].as_i64().unwrap() > 1_700_000_000_000);
+        }
+        t.close_all();
+    }
+
+    #[test]
+    fn the_launch_log_notes_the_real_folder_behind_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let log = dir.path().join("terminal-launches.jsonl");
+        let t = Terminals::default();
+        t.set_launch_log(log.clone());
+        t.log_launch(&launch(&link, &["claude"], &[]));
+        // A folder that isn't there is noted as it was given.
+        t.log_launch(&launch(Path::new("/no/such/folder"), &["claude"], &[]));
+        let lines: Vec<Value> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let real = real.canonicalize().unwrap();
+        assert_eq!(lines[0]["folder"], real.to_string_lossy().as_ref());
+        assert_eq!(lines[1]["folder"], "/no/such/folder");
+    }
+
+    #[test]
+    fn the_launch_log_keeps_the_newest_2000_lines_and_a_bad_path_fails_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("terminal-launches.jsonl");
+        let old: String = (0..LAUNCH_LOG_MAX)
+            .map(|i| format!("{{\"at\":{i},\"folder\":\"/f\",\"program\":\"p\"}}\n"))
+            .collect();
+        std::fs::write(&log, old).unwrap();
+        let t = Terminals::default();
+        t.set_launch_log(log.clone());
+        t.log_launch(&launch(Path::new("/new"), &["claude"], &[]));
+        let text = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), LAUNCH_LOG_MAX);
+        assert!(lines[0].contains("\"at\":1,"), "the oldest line went");
+        assert!(lines[LAUNCH_LOG_MAX - 1].contains("/new"));
+        // A log that can't be written is only logged.
+        t.set_launch_log(dir.path().join("no/such/dir/x.jsonl"));
+        t.log_launch(&launch(Path::new("/new"), &["claude"], &[]));
     }
 
     #[test]

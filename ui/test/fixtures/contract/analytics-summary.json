@@ -1,0 +1,660 @@
+{
+  "agents": [
+    {
+      "calls": 1,
+      "name": "general-purpose",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:code-review-orchestrator",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-lens-blind",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-lens-edge-case",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-lens-verification-gap",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-standards",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:review-triage",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "agent",
+      "sessions": 1
+    }
+  ],
+  "agentsUsed": [
+    {
+      "agentName": "claude",
+      "costUSD": 104.7880241,
+      "sessions": 3
+    }
+  ],
+  "change": null,
+  "commands": [
+    {
+      "calls": 1,
+      "name": "demo:process-call",
+      "sessions": 1
+    }
+  ],
+  "connect": {
+    "startedInConnect": []
+  },
+  "coverage": [
+    {
+      "agentName": "claude",
+      "priced": 3,
+      "sessions": 3,
+      "withLog": 2
+    }
+  ],
+  "efficiency": {
+    "cacheReadCostShare": 0.592217790467909,
+    "contextPerTurn": 162787.16247379454,
+    "costPerFileUSD": 1.3787897907894735,
+    "dead": {
+      "costUSD": 0,
+      "sessions": 0,
+      "shareOfCost": 0,
+      "shareOfSessions": 0,
+      "top": []
+    },
+    "depth": {
+      "average": 636,
+      "buckets": [
+        {
+          "label": "1",
+          "sessions": 0
+        },
+        {
+          "label": "2–5",
+          "sessions": 0
+        },
+        {
+          "label": "6–10",
+          "sessions": 1
+        },
+        {
+          "label": "11–25",
+          "sessions": 0
+        },
+        {
+          "label": "26–50",
+          "sessions": 0
+        },
+        {
+          "label": "51+",
+          "sessions": 2
+        }
+      ],
+      "median": 451
+    },
+    "heavy": [
+      {
+        "agentName": "claude",
+        "bloatPct": 59,
+        "branch": "feat/release-checklist",
+        "contextPerTurn": 173381.48445058742,
+        "costUSD": 85.0318013,
+        "durationMs": 34685392,
+        "filesChanged": 72,
+        "hadLog": true,
+        "linesAdded": 7802,
+        "linesRemoved": 246,
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "project": "/Users/taylor/work/orbit-app",
+        "sessionId": "0076e846-e3ce-4547-84a2-40b65c8f9503",
+        "sessionSource": "CodeMie AI Factory",
+        "startTime": 1794996752885,
+        "steps": {
+          "agents": 8,
+          "commands": 0,
+          "skills": 3
+        },
+        "title": "Tidy the release checklist",
+        "turns": 1447
+      },
+      {
+        "agentName": "claude",
+        "bloatPct": 61.3,
+        "branch": "fix/flaky-sync",
+        "contextPerTurn": 131802.19512195123,
+        "costUSD": 19.409614,
+        "durationMs": 46551887,
+        "filesChanged": 2,
+        "hadLog": true,
+        "linesAdded": 41,
+        "linesRemoved": 0,
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "project": "/Users/taylor/work/sync-engine",
+        "sessionId": "9ce3a7b3-fd31-499f-91dd-51822d57d1d2",
+        "sessionSource": "Pure chat",
+        "startTime": 1795033724655,
+        "steps": {
+          "agents": 0,
+          "commands": 0,
+          "skills": 0
+        },
+        "title": "Fix the flaky sync test",
+        "turns": 451
+      },
+      {
+        "agentName": "claude",
+        "bloatPct": 7.9,
+        "branch": "main",
+        "contextPerTurn": 27210.8,
+        "costUSD": 0.34660880000000005,
+        "durationMs": 41618,
+        "filesChanged": 2,
+        "hadLog": false,
+        "linesAdded": 55,
+        "linesRemoved": 0,
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "project": "/Users/taylor/work/notes-site",
+        "sessionId": "89404630-965d-4f17-8fc5-54c2edc2f248",
+        "sessionSource": "Pure chat",
+        "startTime": 1795018589507,
+        "steps": {
+          "agents": 0,
+          "commands": 1,
+          "skills": 0
+        },
+        "title": "Draft a one-page visit summary",
+        "turns": 10
+      }
+    ],
+    "toolSuccessRate": 94.8
+  },
+  "filter": {
+    "agent": null,
+    "branch": null,
+    "project": null
+  },
+  "models": [
+    {
+      "costUSD": 104.044532,
+      "model": "claude-opus-5-5",
+      "sessions": 2,
+      "share": 0.9929047989368472,
+      "tokens": 314157595
+    },
+    {
+      "costUSD": 0.7434921000000001,
+      "model": "claude-sonnet-5-5",
+      "sessions": 2,
+      "share": 0.007095201063152789,
+      "tokens": 829097
+    }
+  ],
+  "previous": null,
+  "projects": [
+    {
+      "costUSD": 85.0318013,
+      "netLines": 7556,
+      "project": "/Users/taylor/work/orbit-app",
+      "sessions": 1
+    },
+    {
+      "costUSD": 19.409614,
+      "netLines": 41,
+      "project": "/Users/taylor/work/sync-engine",
+      "sessions": 1
+    },
+    {
+      "costUSD": 0.34660880000000005,
+      "netLines": 55,
+      "project": "/Users/taylor/work/notes-site",
+      "sessions": 1
+    }
+  ],
+  "range": {
+    "bucket": "day",
+    "from": 1794960000000,
+    "to": 1795046399999
+  },
+  "schema": "codemie.analytics.summary/1",
+  "series": [
+    {
+      "costUSD": 104.7880241,
+      "durationMs": 81278897,
+      "from": 1794952800000,
+      "sessions": 3,
+      "to": 1795039199999,
+      "tokens": 314986692
+    },
+    {
+      "costUSD": 0,
+      "durationMs": 0,
+      "from": 1795039200000,
+      "sessions": 0,
+      "to": 1795125599999,
+      "tokens": 0
+    }
+  ],
+  "sessions": [
+    {
+      "agentName": "claude",
+      "branch": "fix/flaky-sync",
+      "costUSD": 19.409614,
+      "durationMs": 46551887,
+      "filesChanged": 2,
+      "hadLog": true,
+      "linesAdded": 41,
+      "linesRemoved": 0,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "project": "/Users/taylor/work/sync-engine",
+      "sessionId": "9ce3a7b3-fd31-499f-91dd-51822d57d1d2",
+      "sessionSource": "Pure chat",
+      "startTime": 1795033724655,
+      "steps": {
+        "agents": 0,
+        "commands": 0,
+        "skills": 0
+      },
+      "title": "Fix the flaky sync test",
+      "turns": 451
+    },
+    {
+      "agentName": "claude",
+      "branch": "main",
+      "costUSD": 0.34660880000000005,
+      "durationMs": 41618,
+      "filesChanged": 2,
+      "hadLog": false,
+      "linesAdded": 55,
+      "linesRemoved": 0,
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "project": "/Users/taylor/work/notes-site",
+      "sessionId": "89404630-965d-4f17-8fc5-54c2edc2f248",
+      "sessionSource": "Pure chat",
+      "startTime": 1795018589507,
+      "steps": {
+        "agents": 0,
+        "commands": 1,
+        "skills": 0
+      },
+      "title": "Draft a one-page visit summary",
+      "turns": 10
+    },
+    {
+      "agentName": "claude",
+      "branch": "feat/release-checklist",
+      "costUSD": 85.0318013,
+      "durationMs": 34685392,
+      "filesChanged": 72,
+      "hadLog": true,
+      "linesAdded": 7802,
+      "linesRemoved": 246,
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "project": "/Users/taylor/work/orbit-app",
+      "sessionId": "0076e846-e3ce-4547-84a2-40b65c8f9503",
+      "sessionSource": "CodeMie AI Factory",
+      "startTime": 1794996752885,
+      "steps": {
+        "agents": 8,
+        "commands": 0,
+        "skills": 3
+      },
+      "title": "Tidy the release checklist",
+      "turns": 1447
+    }
+  ],
+  "skills": [
+    {
+      "calls": 1,
+      "name": "report-writer",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "anthropic-skills:chrome-browser",
+      "sessions": 1
+    },
+    {
+      "calls": 1,
+      "name": "sdlc-factory:code-review",
+      "sessions": 1
+    }
+  ],
+  "tools": [
+    {
+      "calls": 481,
+      "failure": 39,
+      "name": "Bash",
+      "success": 442,
+      "successRate": 92
+    },
+    {
+      "calls": 124,
+      "failure": 0,
+      "name": "Edit",
+      "success": 124,
+      "successRate": 100
+    },
+    {
+      "calls": 99,
+      "failure": 1,
+      "name": "Read",
+      "success": 98,
+      "successRate": 99
+    },
+    {
+      "calls": 81,
+      "failure": 0,
+      "name": "mcp__ccd_turn__update_plan",
+      "success": 81,
+      "successRate": 100
+    },
+    {
+      "calls": 76,
+      "failure": 1,
+      "name": "Write",
+      "success": 75,
+      "successRate": 99
+    },
+    {
+      "calls": 25,
+      "failure": 0,
+      "name": "mcp__ccd_turn__wrap_up",
+      "success": 25,
+      "successRate": 100
+    },
+    {
+      "calls": 21,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__javascript_tool",
+      "success": 21,
+      "successRate": 100
+    },
+    {
+      "calls": 15,
+      "failure": 2,
+      "name": "mcp__computer-use__app_batch",
+      "success": 13,
+      "successRate": 87
+    },
+    {
+      "calls": 14,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__browser_batch",
+      "success": 14,
+      "successRate": 100
+    },
+    {
+      "calls": 10,
+      "failure": 0,
+      "name": "mcp__Claude_Browser__browser_batch",
+      "success": 10,
+      "successRate": 100
+    },
+    {
+      "calls": 9,
+      "failure": 0,
+      "name": "ToolSearch",
+      "success": 9,
+      "successRate": 100
+    },
+    {
+      "calls": 7,
+      "failure": 0,
+      "name": "SendUserFile",
+      "success": 7,
+      "successRate": 100
+    },
+    {
+      "calls": 7,
+      "failure": 0,
+      "name": "mcp__computer-use__app_screenshot",
+      "success": 7,
+      "successRate": 100
+    },
+    {
+      "calls": 5,
+      "failure": 1,
+      "name": "mcp__Claude_Browser__resize_window",
+      "success": 4,
+      "successRate": 80
+    },
+    {
+      "calls": 5,
+      "failure": 0,
+      "name": "mcp__computer-use__list_apps",
+      "success": 5,
+      "successRate": 100
+    },
+    {
+      "calls": 4,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__computer",
+      "success": 4,
+      "successRate": 100
+    },
+    {
+      "calls": 4,
+      "failure": 1,
+      "name": "mcp__Claude_Browser__javascript_tool",
+      "success": 3,
+      "successRate": 75
+    },
+    {
+      "calls": 4,
+      "failure": 0,
+      "name": "mcp__computer-use__app_list_windows",
+      "success": 4,
+      "successRate": 100
+    },
+    {
+      "calls": 4,
+      "failure": 1,
+      "name": "mcp__computer-use__app_menu",
+      "success": 3,
+      "successRate": 75
+    },
+    {
+      "calls": 3,
+      "failure": 0,
+      "name": "Skill",
+      "success": 3,
+      "successRate": 100
+    },
+    {
+      "calls": 3,
+      "failure": 1,
+      "name": "mcp__claude-in-chrome__get_page_text",
+      "success": 2,
+      "successRate": 67
+    },
+    {
+      "calls": 3,
+      "failure": 2,
+      "name": "mcp__Claude_Browser__preview_start",
+      "success": 1,
+      "successRate": 33
+    },
+    {
+      "calls": 3,
+      "failure": 0,
+      "name": "Agent",
+      "success": 3,
+      "successRate": 100
+    },
+    {
+      "calls": 3,
+      "failure": 0,
+      "name": "mcp__Claude_Browser__computer",
+      "success": 3,
+      "successRate": 100
+    },
+    {
+      "calls": 3,
+      "failure": 1,
+      "name": "TaskStop",
+      "success": 2,
+      "successRate": 67
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__tabs_context_mcp",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__navigate",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__read_page",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__find",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "mcp__claude-in-chrome__tabs_close_mcp",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 2,
+      "name": "mcp__codegraph__codegraph_explore",
+      "success": 0,
+      "successRate": 0
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "WebSearch",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "AskUserQuestion",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "mcp__computer-use__request_access",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "mcp__computer-use__app_click",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "mcp__computer-use__app_ax_find",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 0,
+      "name": "mcp__computer-use__app_zoom",
+      "success": 2,
+      "successRate": 100
+    },
+    {
+      "calls": 2,
+      "failure": 2,
+      "name": "mcp__computer-use__app_focus",
+      "success": 0,
+      "successRate": 0
+    },
+    {
+      "calls": 1,
+      "failure": 0,
+      "name": "mcp__ccd_pr__get_status",
+      "success": 1,
+      "successRate": 100
+    },
+    {
+      "calls": 1,
+      "failure": 0,
+      "name": "mcp__Claude_Browser__find",
+      "success": 1,
+      "successRate": 100
+    },
+    {
+      "calls": 1,
+      "failure": 0,
+      "name": "mcp__computer-use__app_release",
+      "success": 1,
+      "successRate": 100
+    }
+  ],
+  "totals": {
+    "cacheReadCostUSD": 62.0573321,
+    "costUSD": 104.7880241,
+    "durationMs": 81278897,
+    "filesChanged": 76,
+    "linesAdded": 7898,
+    "linesRemoved": 246,
+    "netLines": 7652,
+    "pricedSessions": 3,
+    "sessions": 3,
+    "tokens": {
+      "cacheCreation": 3395905,
+      "cacheRead": 310597906,
+      "input": 1852,
+      "output": 991029,
+      "total": 314986692
+    },
+    "toolCalls": 1042,
+    "toolSuccessRate": 94.8,
+    "turns": 1908
+  }
+}

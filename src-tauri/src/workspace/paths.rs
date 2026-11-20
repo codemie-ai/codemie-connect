@@ -25,6 +25,10 @@ impl CorePaths {
     pub fn database(&self) -> PathBuf {
         self.data.join("workspace.sqlite")
     }
+    /// The analytics store (`sessions.json`) and its fetch state: they move with the data.
+    pub fn analytics_dir(&self) -> PathBuf {
+        self.data.join("analytics")
+    }
     pub fn staging(&self) -> PathBuf {
         self.data.join("ai-staging")
     }
@@ -170,6 +174,7 @@ pub(super) mod tests {
             Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
             ProfileCache::fixed(ready()),
             Arc::new(FakeGraph::default()),
+            Arc::new(crate::workspace::analytics::cli::FakeAnalyticsCli::default()),
         )
     }
     /// A marked custom data root under `parent` with the pointer in `default` aimed at it.

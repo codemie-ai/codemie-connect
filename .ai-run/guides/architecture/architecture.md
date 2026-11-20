@@ -199,7 +199,7 @@ Connect implements plugin engine 1.0 (PLUGIN-ENGINE.md §10) and gives plugins w
 ## Request flow
 
 Frontend→backend: `invoke('<command_name>', { arg })` via Tauri IPC; the workspace window's invoke is wrapped by `withAppOrigin`.
-Backend→frontend: `app.emit("<area>:<event>", payload)` events, e.g. `engine:cmd-line` from `src-tauri/src/commands/runner.rs::run_stream`.
+Backend→frontend: `app.emit("<area>:<event>", payload)` events, e.g. `engine:cmd-line` from `src-tauri/src/commands/runner.rs::run_stream`, and `workspace:analytics` (`{running, done, total, label, failedDays}`, the failed days as `[{day, reason}]`), which the analytics fetch sends after each window it reads and when it ends (`src-tauri/src/workspace/analytics/fetch.rs::Core.emit_progress`).
 
 Commands are registered in `src-tauri/src/lib.rs::run`, inside `plugins::caller::app_page_only(tauri::generate_handler![…])`.
 
@@ -211,10 +211,10 @@ Commands are registered in `src-tauri/src/lib.rs::run`, inside `plugins::caller:
 
 ### Rules
 - R1. Reach native workspace state with `store.mutate` or `store.query`, which call `invoke('workspace_request', {request})`; `withAppOrigin` adds the page's `Origin` header, which `require_main_frame` checks after Tauri falls back to postMessage. Evidence: `ui/workspace/app-invoke.js::withAppOrigin`
-- R2. `workspace_request` runs `require_main_frame(&call)?` first; `Core::request` then answers read-only operations (`snapshot`, `ai_status`, `ai_usage`, `meeting_read`, `meeting_text`, …) before it takes the mutation lock and the revision fence. Evidence: `src-tauri/src/workspace/mod.rs::Core.request`
+- R2. `workspace_request` runs `require_main_frame(&call)?` first; `Core::request` then answers read-only operations (`snapshot`, `ai_status`, `ai_usage`, `meeting_read`, `meeting_text`, the analytics operations `analytics_status`, `analytics_refresh`, `analytics_retry`, `analytics_view`, `analytics_session`, `analytics_report` and `analytics_app`, …) before it takes the mutation lock and the revision fence. The analytics ones carry no operation id: `analytics_refresh` and `analytics_retry` start the background fetch (one at a time) and answer at once. Evidence: `src-tauri/src/workspace/mod.rs::Core.request`
 - R3. A mutation reserves its operation id and bumps the revision in `check_request` before asynchronous work; a repeated id with the same content returns the stored result through `operation_result` instead of running again, and other content under that id is `conflict`. Evidence: `src-tauri/src/workspace/repository.rs::Repository.check_request`
 - R4. Queue Claude work as a job keyed by its source (`queue_ai_job` reuses a queued or running job with the same key) that the background loop claims; the operation returns at once and the UI follows the job in the snapshot. Evidence: `src-tauri/src/workspace/ai_jobs.rs::queue_ai_job`
-- R5. Branch on `code` of a workspace error in the UI (`stale_view`, `storage_unavailable`, `needs_login`, `validation`, `conflict`) and show `message` as written; `storage_unavailable` from a workspace call opens the recovery page. Evidence: `ui/workspace/app.js::watched`
+- R5. Branch on `code` of a workspace error in the UI (`stale_view`, `storage_unavailable`, `needs_login`, `validation`, `conflict`) and show `message` as written; `storage_unavailable` from a workspace call opens the recovery page. The Analytics page's errors stay on that page: `needs_cli`, `cli_incompatible` (the CLI answers in a format this Connect doesn't read), `analytics_unavailable` (its files in `<data root>/analytics/` can't be read or written), `cli_failed` and `timeout`. Evidence: `ui/workspace/app.js::watched`
 
 ### Constraints
 | Do not | Do instead | Why | Evidence |

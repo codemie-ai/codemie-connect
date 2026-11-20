@@ -721,7 +721,7 @@ test('Settings shows the account profile and automatic sources, no source picker
 
 test('shell_has_no_workspaces_entry_or_switcher', () => {
   const html = renderShell({ snapshot: buildSnapshot(Date.now()), route: 'today', resolvedDark: false });
-  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations']);
+  assert.deepEqual(NAV.map(([id]) => id), ['today', 'calendar', 'meetings', 'tasks', 'inbox', 'automations', 'analytics']);
   assert.match(html, /data-route="automations"/);
   assert.doesNotMatch(html, /data-route="workspaces"/);
   assert.doesNotMatch(html, /workspace-select|ws-workspace-switch|ws-ws-dot|Active workspace/);
@@ -731,8 +731,8 @@ test('shell_has_no_workspaces_entry_or_switcher', () => {
   assert.match(html, /ws-sync-pill/);
 });
 
-test('NAV lists Today, Calendar, Meetings, Tasks, Inbox, Automations', () => {
-  assert.deepEqual(NAV, [['today', 'Today'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations']]);
+test('NAV lists Today, Calendar, Meetings, Tasks, Inbox, Automations, Analytics', () => {
+  assert.deepEqual(NAV, [['today', 'Today'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations'], ['analytics', 'Analytics']]);
   const now = Date.UTC(2026, 10, 18, 12);
   const html = renderShell({ snapshot: withTasks(buildSnapshot(now, { photo: false }), now), route: 'tasks', resolvedDark: true });
   assert.match(html, /data-route="tasks" aria-current="page"><svg[^]*?<span>Tasks<\/span><small class="ws-count" title="Tasks to review">2<\/small>/, 'Tasks is current and counts the tasks to review');

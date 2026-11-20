@@ -14,9 +14,10 @@ use std::path::{Path, PathBuf};
 /// What Remove old copy deletes, in this order. In a custom folder the lock and then the
 /// marker go last, so an interrupted removal is still recognised as Connect's and can be
 /// retried.
-const OLD_COPY: [&str; 6] = [
+const OLD_COPY: [&str; 7] = [
     "plugins",
     "automations",
+    "analytics",
     AI_STAGING,
     "workspace.sqlite-wal",
     "workspace.sqlite-shm",
@@ -32,8 +33,8 @@ pub struct LocationInfo {
     pub private_root: PathBuf,
     pub logs: PathBuf,
     pub custom: bool,
-    /// What the data folder holds of Connect's movable data: the database, plugins and
-    /// automations. Private files and the transient AI staging folder don't count.
+    /// What the data folder holds of Connect's movable data: the database, plugins,
+    /// automations and analytics. Private files and the transient AI staging folder don't count.
     pub size_bytes: u64,
     pub previous: Option<PathBuf>,
     /// The old folder is still there and holds Connect files.
@@ -192,6 +193,7 @@ mod tests {
         for dir in [
             "plugins/echo",
             "automations",
+            "analytics",
             "ai-staging/run",
             "credentials",
         ] {
@@ -199,6 +201,7 @@ mod tests {
         }
         fs::write(f.default.join("plugins/echo/main.js"), "x".repeat(1000)).unwrap();
         fs::write(f.default.join("automations/run.json"), "{}").unwrap();
+        fs::write(f.default.join("analytics/sessions.json"), "{}").unwrap();
         fs::write(f.default.join("ai-staging/run/prompt"), "p").unwrap();
         fs::write(f.default.join("credentials/graph-a.json"), "secret").unwrap();
         fs::write(f.default.join("window.json"), "{}").unwrap();

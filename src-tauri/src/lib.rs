@@ -125,7 +125,13 @@ pub fn run() {
             } else { None }.unwrap_or(app.path().app_data_dir()?.join("workspace"));
             commands::plugin_smoke::arm_watchdog(app.handle());
             let handle = app.handle().clone();
-            let workspace_state = workspace::startup(&default_root, |paths| workspace::Core::open(handle, paths));
+            let terminals = app.state::<commands::terminal::Terminals>().inner().clone();
+            let workspace_state = workspace::startup(&default_root, |paths| {
+                // Analytics reads where the dock started its sessions; the private root stays put
+                // when the data folder moves.
+                terminals.set_launch_log(paths.private.join("terminal-launches.jsonl"));
+                workspace::Core::open(handle, paths)
+            });
             let core = workspace_state.core.clone();
             let storage_note = workspace_state.core.is_none().then(|| format!(
                 "Workspace not opened: data folder {:?} at {} {}",

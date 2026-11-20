@@ -1,0 +1,12 @@
+{
+  "done": 6,
+  "failedDays": [
+    {
+      "day": "2026-11-15",
+      "reason": "out_of_memory"
+    }
+  ],
+  "label": "Reading your history, newest first",
+  "running": true,
+  "total": 91
+}

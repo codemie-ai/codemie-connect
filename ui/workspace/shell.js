@@ -7,7 +7,7 @@ import { agoLabel } from './format.js';
 import { taskStatus } from './tasks-model.js';
 import { meetingCounts } from './meetings-model.js';
 
-export const NAV = [['today', 'Today'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations']];
+export const NAV = [['today', 'Today'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['inbox', 'Inbox'], ['automations', 'Automations'], ['analytics', 'Analytics']];
 
 export function syncStatus(s) {
   const c = s.connection;

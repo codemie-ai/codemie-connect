@@ -28,6 +28,9 @@ import { createSetupSession } from './codemie/setup-session.js';
 import { startSetup, cancelSetup } from '../setup-driver.js';
 import { automations, AUTOMATION_TABS, AUTOMATIONS_DOCK } from './view-automations.js';
 import { createAutomationsController, notificationTarget } from './automations-controller.js';
+import { analyticsView, analyticsCharts } from './view-analytics.js';
+import { createAnalyticsController, attachAnalyticsTips } from './analytics-controller.js';
+import { SESSIONS_PAGE } from './analytics-model.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { newTasksView } from './tasks-model.js';
@@ -160,6 +163,7 @@ let searchTimer;
 let taskSearchTimer;
 let meetingSearchTimer;
 let gallerySearchTimer;
+let analyticsSearchTimer;
 // A card is being dragged on the Tasks board: updates wait until it is dropped.
 let taskDrag = false;
 // A Today widget is being moved, resized or dragged in, a section's divider or tab is held, or a
@@ -172,7 +176,7 @@ let layoutHolds = 0;
 let pressing = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles']);
+const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles', 'analytics-step', 'analytics-step-toggle', 'analytics-session-tab']);
 let lastDraftSignature = '';
 // Updates that arrived while held (the draft options popover open, a card or widget dragged, the
 // mouse button down); shown once that ends.
@@ -287,6 +291,10 @@ function captureScroll() {
     board: q('.ws-task-board')?.scrollLeft || 0,
     drawer: q('.ws-task-drawer-body')?.scrollTop || 0,
     drawerId: state.tasks.drawer,
+    // The Analytics session drawer and its side panel keep their place while the same session shows.
+    anDrawer: q('.ws-an-db')?.scrollTop || 0,
+    anSide: q('.ws-an-side')?.scrollTop || 0,
+    anSession: q('.ws-an-drawer') ? analyticsUi?.data.session?.id : null,
     meetingList: q('.ws-mtg-list-body')?.scrollTop || 0,
     // Meetings: each meeting tab in view scrolls on its own, kept by meeting and tab.
     meetingTabs: Object.fromEntries([...root.querySelectorAll('.ws-mtg-detail[data-panel]')].map(el => [`${el.dataset.meeting}|${el.dataset.panel}`, el.scrollTop])),
@@ -304,6 +312,10 @@ function restoreScroll(saved) {
   if (q('.ws-main')) q('.ws-main').scrollTop = saved.main;
   if (q('.ws-task-board')) q('.ws-task-board').scrollLeft = saved.board;
   if (q('.ws-task-drawer-body') && saved.drawerId === state.tasks.drawer) q('.ws-task-drawer-body').scrollTop = saved.drawer;
+  if (saved.anSession && saved.anSession === analyticsUi?.data.session?.id) {
+    if (q('.ws-an-db')) q('.ws-an-db').scrollTop = saved.anDrawer;
+    if (q('.ws-an-side')) q('.ws-an-side').scrollTop = saved.anSide;
+  }
   const grid = q('.ws-tg-scroll');
   if (grid) {
     const key = `${state.calendarMode}|${dayKey(state.calendarDate, undefined)}`;
@@ -426,6 +438,7 @@ async function render() {
     : state.route === 'calendar' ? calendar(s, ctx)
       : state.route === 'inbox' ? inbox(s, ctx)
         : state.route === 'automations' ? automations(s, ctx)
+          : state.route === 'analytics' ? analyticsView(state.analytics, { ...analyticsUi.viewData(), banners: ctx.banners, profileNames: state.ai.profiles })
           : state.route === 'tasks' ? tasksPage(s, ctx)
           : state.route === 'meetings' ? meetings(s, { ...ctx, reads: meetingsUi.data, glossary: meetingsUi.glossary(), callSlots: pluginHost?.callSlots() || [] })
           : state.route === 'plugin' ? pluginPageHtml()
@@ -473,6 +486,7 @@ async function render() {
   }
   showPluginView();
   if (state.route === 'today') drawPageWidgets(s);
+  if (state.route === 'analytics') drawAnalyticsCharts();
   if (state.route === 'meetings') {
     showFocusLine();
     meetingsUi.load().catch(fail);
@@ -630,6 +644,7 @@ async function route(name, tab, pluginPath = null) {
   if (generalTabOpen()) loadStorage().catch(fail);
   if (runLogOpen()) automationsUi.loadRuns().catch(fail);
   if (onPluginsTab) pluginsUi.load().catch(fail);
+  if (state.route === 'analytics') analyticsUi.open().catch(fail);
 }
 
 /** The hash of the page open now: `#/route/tab`, `#/meetings/<id>/<tab>` for a meeting. */
@@ -1267,6 +1282,30 @@ function showAutomationsTab(tab) {
 }
 const runLogOpen = () => !!automationsUi?.runLogOpen();
 
+// ---------------------------------------------------------------- analytics (spec 2026-11-19 analytics)
+
+const analyticsUi = store && createAnalyticsController({
+  state, query: (op, data) => store.query(op, data), render, toast,
+  listen: (event, fn) => window.__TAURI__.event.listen(event, fn),
+  writeText: text => navigator.clipboard.writeText(text),
+  focus: focusFirst,
+});
+if (analyticsUi) attachAnalyticsTips(document);
+
+/** The Analytics page's charts, drawn at the width their boxes got. */
+function drawAnalyticsCharts() {
+  const charts = analyticsCharts(state.analytics, analyticsUi.viewData());
+  for (const box of root.querySelectorAll('.ws-an-chart[data-chart]')) {
+    const draw = charts[box.dataset.chart];
+    if (draw) box.innerHTML = draw(box.clientWidth);
+  }
+}
+let analyticsResize = null;
+window.addEventListener('resize', () => {
+  clearTimeout(analyticsResize);
+  analyticsResize = setTimeout(() => { if (state.route === 'analytics') drawAnalyticsCharts(); }, 120);
+});
+
 // ---------------------------------------------------------------- tasks (spec "Tasks page")
 
 /** The first of the selectors that finds a control takes focus. The page scrolls to it only for
@@ -1870,6 +1909,7 @@ async function handle(action, el, ev) {
   // Data location works from the recovery page too, where there is no snapshot.
   if (action.startsWith('data-')) return storageAction(action, el);
   if (action.startsWith('automation') || action.startsWith('run-')) return automationsUi.handle(action, el);
+  if (action.startsWith('analytics-')) return analyticsUi.handle(action, el);
   // Today's task rows open the task on the Tasks page.
   if (action === 'task-open-today') {
     await route('tasks');
@@ -2395,6 +2435,18 @@ document.addEventListener('input', ev => {
       input?.setSelectionRange(pos, pos);
     }, 220);
   }
+  if (ev.target.id === 'analytics-search') {
+    state.analytics.q = ev.target.value;
+    clearTimeout(analyticsSearchTimer);
+    const pos = ev.target.selectionStart;
+    analyticsSearchTimer = setTimeout(async () => {
+      state.analytics.shown = SESSIONS_PAGE;
+      await render();
+      const input = document.getElementById('analytics-search');
+      input?.focus();
+      input?.setSelectionRange(pos, pos);
+    }, 220);
+  }
   if (ev.target.id === 'meetings-search' || ev.target.id === 'meeting-transcript-search') {
     const which = ev.target.id;
     if (which === 'meetings-search') state.meetings.q = ev.target.value;
@@ -2522,6 +2574,12 @@ document.addEventListener('keydown', ev => {
   tasksUi.key(ev).catch(fail);
 });
 
+// Analytics: Escape closes the session drawer (an open menu has closed first, above).
+document.addEventListener('keydown', ev => {
+  if (!ready || state.route !== 'analytics' || modalOpen() || sheetOpen()) return;
+  analyticsUi.key(ev).catch(fail);
+});
+
 // Settings › Meetings: Enter saves a typed field (a rule's text, a column name, a file path) by
 // leaving it, as on the Tasks page. A Markdown editor keeps Enter for new lines.
 document.addEventListener('keydown', ev => {
@@ -2590,7 +2648,7 @@ let minuteTimer;
 function scheduleMinuteRender() {
   clearTimeout(minuteTimer);
   minuteTimer = setTimeout(async () => {
-    if (ready && ['today', 'calendar', 'automations', 'meetings'].includes(state.route) && !modalOpen() && !editing()) await render().catch(() => {});
+    if (ready && ['today', 'calendar', 'automations', 'meetings', 'analytics'].includes(state.route) && !modalOpen() && !editing()) await render().catch(() => {});
     scheduleMinuteRender();
   }, 60_000 - (Date.now() % 60_000) + 50);
 }
@@ -2927,6 +2985,7 @@ async function boot() {
   if (generalTabOpen()) loadStorage().catch(fail);
   if (runLogOpen()) automationsUi.loadRuns().catch(fail);
   if (state.route === 'settings' && state.settingsTab === 'plugins') pluginsUi.load().catch(fail);
+  if (state.route === 'analytics') analyticsUi.open().catch(fail);
   const listen = window.__TAURI__.event.listen;
   // A sync round emits one change per Graph request; reload the snapshot at most ~once a second.
   let refreshTimer = null;

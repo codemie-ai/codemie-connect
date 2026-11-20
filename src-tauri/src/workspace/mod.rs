@@ -2,6 +2,7 @@
 mod actions;
 mod ai;
 mod ai_jobs;
+pub(crate) mod analytics;
 mod automations;
 mod credentials;
 #[cfg(target_os = "macos")]
@@ -79,6 +80,20 @@ pub struct Core {
     ai_jobs: Mutex<std::collections::HashMap<String, CancellationToken>>,
     /// The Microsoft reads an AI run makes (full Outlook text); faked in tests.
     graph_reads: Arc<dyn ai_jobs::GraphReads>,
+    /// Runs the `codemie` CLI for the analytics page; faked in tests.
+    analytics_cli: Arc<dyn analytics::cli::AnalyticsCli>,
+    /// The one analytics fetch that may run, with how far it got (`analytics::fetch`).
+    analytics_run: Mutex<Option<analytics::fetch::Progress>>,
+    /// The analytics store in this Core's data root, opened on first use.
+    analytics_store: std::sync::OnceLock<analytics::store::Store>,
+    /// The CLI answered `view`, and no call failed since (`Core::cli_supports_view`).
+    analytics_supported: AtomicBool,
+    /// What `workspace:analytics` carried; tests have no window to hear it.
+    #[cfg(test)]
+    analytics_events: Mutex<Vec<Value>>,
+    /// The session-log lines of failed CLI calls; tests keep them here, not in the user's log.
+    #[cfg(test)]
+    analytics_log: Mutex<Vec<String>>,
     graph_children: Mutex<std::collections::HashMap<String, tokio::process::Child>>,
     /// `{connectionId}:{calendarId}` -> last full calendarView refresh (unix seconds).
     calendar_refreshed: Mutex<std::collections::HashMap<String, i64>>,
@@ -151,9 +166,10 @@ impl Core {
         Self::open_with(
             Some(app),
             paths,
-            Arc::new(CliRunner::new(env)),
+            Arc::new(CliRunner::new(env.clone())),
             ProfileCache::system(extra_dirs),
             Arc::new(ai_jobs::LiveGraph),
+            Arc::new(analytics::cli::CodemieCli::new(env)),
         )
     }
     fn open_with(
@@ -162,6 +178,7 @@ impl Core {
         runner: Arc<dyn ClaudeRunner>,
         profiles: ProfileCache,
         graph_reads: Arc<dyn ai_jobs::GraphReads>,
+        analytics_cli: Arc<dyn analytics::cli::AnalyticsCli>,
     ) -> Result<Arc<Self>> {
         // Only the private folder is created and made owner-only. A custom data folder is the
         // user's: it is never created or chmodded here.
@@ -203,6 +220,14 @@ impl Core {
             ai_cancel: CancellationToken::new(),
             ai_jobs: Default::default(),
             graph_reads,
+            analytics_cli,
+            analytics_run: Default::default(),
+            analytics_store: Default::default(),
+            analytics_supported: AtomicBool::new(false),
+            #[cfg(test)]
+            analytics_events: Default::default(),
+            #[cfg(test)]
+            analytics_log: Default::default(),
             graph_children: Default::default(),
             calendar_refreshed: Default::default(),
             mutations: Default::default(),
@@ -342,6 +367,8 @@ impl Core {
         self.stop.store(true, Ordering::Relaxed);
         self.ai_cancel.cancel();
         self.kill_graph_reads();
+        // The process exits without dropping tasks: an analytics export would outlive it.
+        self.analytics_cli.stop();
         #[cfg(target_os = "macos")]
         curl::cleanup(&self.paths.private);
     }
@@ -720,6 +747,19 @@ impl Core {
         }
         if req.op == Operation::AiUsage {
             return self.ai_usage(&req);
+        }
+        // The CodeMie CLI answers over the analytics store; a fetch runs in the background.
+        if matches!(
+            req.op,
+            Operation::AnalyticsStatus
+                | Operation::AnalyticsRefresh
+                | Operation::AnalyticsRetry
+                | Operation::AnalyticsView
+                | Operation::AnalyticsSession
+                | Operation::AnalyticsReport
+                | Operation::AnalyticsApp
+        ) {
+            return self.analytics_request(&req).await;
         }
         if req.op == Operation::AutomationRuns {
             return self.automation_runs(&req);
@@ -2212,6 +2252,7 @@ fn test_core_with_graph(
         runner,
         ProfileCache::fixed(profiles),
         graph,
+        Arc::new(analytics::cli::FakeAnalyticsCli::default()),
     )
     .unwrap()
 }
@@ -2235,6 +2276,7 @@ pub(crate) fn test_core_slow(
         runner,
         ProfileCache::fixed_slow(profiles, delay),
         Arc::new(ai_jobs::FakeGraph::default()),
+        Arc::new(analytics::cli::FakeAnalyticsCli::default()),
     )
     .unwrap()
 }

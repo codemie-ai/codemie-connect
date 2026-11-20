@@ -89,7 +89,7 @@ pub struct Check {
     /// The marker of the Connect data already there.
     pub existing: Option<Marker>,
     pub free_bytes: u64,
-    /// What a move copies: the database, plugins and automations.
+    /// What a move copies: the database, plugins, automations and analytics.
     pub required_bytes: u64,
     /// What a move needs free on that disk: see [`space_for_move`].
     pub needed_bytes: u64,
@@ -416,8 +416,8 @@ fn stale_staging(dir: &Path) -> bool {
             entries.all(|e| e.is_ok_and(|e| staging_entry(&e.file_name().to_string_lossy())))
         })
 }
-/// What a staging folder holds: the database copy, plugins, automations and the marker, with
-/// the temporary file `write_marker` renames into place.
+/// What a staging folder holds: the database copy, plugins, automations, analytics and the
+/// marker, with the temporary file `write_marker` renames into place.
 fn staging_entry(name: &str) -> bool {
     matches!(
         name,
@@ -426,15 +426,16 @@ fn staging_entry(name: &str) -> bool {
             | "workspace.sqlite-shm"
             | "plugins"
             | "automations"
+            | "analytics"
             | location::MARKER
     ) || name
         .strip_prefix(location::MARKER)
         .is_some_and(|rest| rest.starts_with('.') && rest.ends_with(".tmp"))
 }
 
-/// Copies what moves: a verified copy of the database, then plugins and automation output
-/// with their file modes. AI staging, sign-in data, the locks, `window.json`, the pointer and
-/// `plugins/tmp` (clones and copies being checked) are never copied.
+/// Copies what moves: a verified copy of the database, then plugins, automation output and the
+/// analytics sessions with their file modes. AI staging, sign-in data, the locks, `window.json`,
+/// the pointer and `plugins/tmp` (clones and copies being checked) are never copied.
 fn copy_data(source: &Path, staging: &Path) -> Result<()> {
     copy_database(&source.join(DATABASE), &staging.join(DATABASE))?;
     for name in MOVING_FOLDERS {
