@@ -10,8 +10,22 @@ import { badge, button, card, checkbox, emptyState, field, select, textArea, tex
 import { records } from './selectors.js';
 import { agoLabel, dateFromKey, dayKey, formatDateTime, formatTime, zonedParts } from './format.js';
 import { draftError, modelLabel, profileName, providerLabel } from './draft-state.js';
+import { activateTab, normalizeDock, visibleTabs } from './dock-model.js';
+import { renderDock } from './dock-view.js';
 
-export const AUTOMATION_TABS = [['automations', 'Automations'], ['runs', 'Run log'], ['templates', 'Templates']];
+/** The page's tabs as the hash names them (`#/automations/<tab>`), with their section tab. */
+export const AUTOMATION_TABS = [['automations', 'auto-list'], ['runs', 'auto-runs'], ['templates', 'auto-templates']];
+/** Automations' sections (spec "Page sections"): the list, pinned to Today as "Automation
+ *  results" (the `automations` widget), the Run log and the templates, in one section at first. */
+export const AUTOMATIONS_DOCK = {
+  title: 'Automations',
+  tabs: {
+    'auto-list': { title: 'Automations', icon: 'automations', min: 420, w: 900, pin: 'automations', pinTitle: 'Automation results' },
+    'auto-runs': { title: 'Run log', icon: 'history', min: 380, w: 600 },
+    'auto-templates': { title: 'Templates', icon: 'spark', min: 380, w: 600 },
+  },
+  initial: [['auto-list', 'auto-runs', 'auto-templates']],
+};
 export const NAME_MAX = 80;
 export const PROMPT_MAX = 4000;
 export const DAYS = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [7, 'Sun']];
@@ -340,15 +354,20 @@ export function runLog(runs, { s, expanded = [], ai = {}, next = null, loading =
 
 // ---------------------------------------------------------------- the page
 
+/** The Automations page: its heading, then its sections as `ctx.dock` (`{layouts, locked}`) has
+ *  them; without a stored layout, the designed one showing the tab chosen last. */
 export function automations(s, ctx = {}) {
   const ui = ctx.state?.automations || {};
-  const tab = AUTOMATION_TABS.some(([id]) => id === ui.tab) ? ui.tab : 'automations';
+  const tab = AUTOMATION_TABS.find(([id]) => id === ui.tab)?.[1] || 'auto-list';
+  const layout = ctx.dock?.layouts?.automations || activateTab(normalizeDock(AUTOMATIONS_DOCK, null), tab);
   const list = automationList(s);
-  const panel = tab === 'runs' ? runsPanel(s, list, ui.runs || {}, ctx.state?.ai)
-    : tab === 'templates' ? templatesPanel()
-      : listPanel(s, list, ui.highlight);
+  const panels = {
+    'auto-list': () => listPanel(s, list, ui.highlight),
+    'auto-runs': () => runsPanel(s, list, ui.runs || {}, ctx.state?.ai),
+    'auto-templates': () => templatesPanel(),
+  };
   // The empty list offers its own two buttons; the heading doesn't repeat one of them.
-  const heading = tab === 'automations' && !list.length ? '' : button('New automation', { action: 'automation-new', variant: 'primary', iconName: 'plus' });
+  const heading = visibleTabs(layout).includes('auto-list') && !list.length ? '' : button('New automation', { action: 'automation-new', variant: 'primary', iconName: 'plus' });
   return `<div class="ws-automations">
     <header class="ws-page-heading">
       <div>
@@ -358,8 +377,7 @@ export function automations(s, ctx = {}) {
       <div class="ws-actions">${heading}</div>
     </header>
     ${ctx.banners || ''}
-    <div class="ws-tabs" role="tablist" aria-label="Automations">${AUTOMATION_TABS.map(([id, label]) => `<button type="button" role="tab" data-action="automations-tab" data-tab="${id}" aria-selected="${id === tab}" id="automations-tab-${id}" aria-controls="automations-panel">${e(label)}${id === 'automations' && list.length ? `<span class="ws-tab-count">${list.length}</span>` : ''}</button>`).join('')}</div>
-    <section class="ws-auto-panel" id="automations-panel" role="tabpanel" aria-labelledby="automations-tab-${tab}">${panel}</section>
+    ${renderDock('automations', AUTOMATIONS_DOCK, layout, id => `<div class="ws-auto-panel">${panels[id]()}</div>`, { locked: !!ctx.dock?.locked, count: id => (id === 'auto-list' ? list.length : null) })}
   </div>`;
 }
 
@@ -444,7 +462,7 @@ function templatesPanel() {
  * failed or was skipped, a line above the result says so; an automation whose only runs failed
  * shows that line alone. `ai` is the `ai_status` answer, for the failure's action.
  */
-export function automationResultsCard(s, ai = {}) {
+export function automationResultsCard(s, ai = {}, { failuresOnly = false } = {}) {
   const zone = s.settings.timeZone;
   const results = automationList(s)
     .map(a => {
@@ -453,7 +471,7 @@ export function automationResultsCard(s, ai = {}) {
       const problem = latest && latest.id !== run?.id && ['failed', 'skipped'].includes(latest.data.status) && started(latest) >= started(run) ? latest : null;
       return { a, run, problem };
     })
-    .filter(x => x.run || x.problem)
+    .filter(x => (x.run || x.problem) && (!failuresOnly || [x.run, x.problem].some(r => r?.data.status === 'failed')))
     .sort((x, y) => started(y.problem || y.run) - started(x.problem || x.run))
     .slice(0, 4);
   const body = results.length

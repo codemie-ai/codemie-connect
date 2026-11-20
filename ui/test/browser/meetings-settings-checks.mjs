@@ -40,7 +40,7 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
 
       await check(`${tag}: settings meetings transcripts and folders`, async () => {
         await page.waitForSelector('.ws-ms-location');
-        assert(await page.locator('.ws-settings-nav .ws-nav-label', { hasText: 'Meetings' }).count() === 1, 'the Meetings group');
+        assert(await page.locator('.ws-settings-nav .ws-nav-group', { hasText: 'Meetings' }).count() === 1, 'the Meetings group');
         const order = await page.locator('.ws-settings-nav button[data-tab^="meetings-"]').evaluateAll(els => els.map(b => b.dataset.tab));
         assert(order.join() === 'meetings-transcripts,meetings-templates,meetings-rules,meetings-glossary,meetings-tasks', order.join());
         const toggle = '[data-action="meetings-settings-transcripts"]';
@@ -193,7 +193,7 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
           await page.click('[data-menu="meetings-filter"] > summary');
           await page.click('[data-menu="meetings-filter"] [data-action="meeting-filter"][data-filter="all"]');
           await page.click('.ws-mtg-row[data-id="mtg-philips"]');
-          const notesTab = '.ws-mtg-tabs [data-action="meeting-tab"][data-tab="notes"]';
+          const notesTab = '[data-action="dock-tab"][data-page="meetings"][data-tab="mtg-notes"]';
           await page.waitForSelector(notesTab);
           if (await page.locator(`${notesTab}[aria-selected="true"]`).count() === 0) await page.click(notesTab);
           // The document's ⋯ is the last menu of the toolbar over the notes.

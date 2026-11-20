@@ -8,7 +8,6 @@ import { can } from './selectors.js';
 import { dayKey } from './format.js';
 
 export const TABS = ['notes', 'transcript', 'tasks', 'files'];
-export const TAB_LABELS = { notes: 'Notes', transcript: 'Transcript', tasks: 'Tasks', files: 'Files' };
 
 /** A meeting's tabs: all four once it has a transcript (saved, being saved, or found in Teams),
  *  none before (its explainer card says why and what to do). Who was there is the header's popover. */
@@ -78,8 +77,8 @@ export function isHidden(m, hidden) {
 }
 
 /** The Meetings page's view state (only view state lives in the window: meetings are native's). */
-export const newMeetingsView = ({ wide = false, hidden = null } = {}) => ({
-  filter: 'all', q: '', selected: null, tab: 'notes', showNone: false, wide: !!wide, compare: false, focusLine: null,
+export const newMeetingsView = ({ hidden = null } = {}) => ({
+  filter: 'all', q: '', selected: null, tab: 'notes', showNone: false, compare: false, focusLine: null,
   // Hidden meetings (a preference) and whether they show greyed; the search field; folded days
   // (day key → true) and the folded Needs you card, for the session; the row's right-click menu.
   hidden: readHidden(hidden), showHidden: false, searchOpen: false, folded: {}, needsFolded: false, rowMenu: null,

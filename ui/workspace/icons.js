@@ -95,6 +95,17 @@ const ICONS = {
   'file-code': '<path d="M14.5 2.5H6a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2.5V8h6M10 12.5l-2 2 2 2M14 12.5l2 2-2 2"/>',
   skill: '<path d="M14 4.5a2 2 0 1 0-4 0V6H6a1 1 0 0 0-1 1v4h1.5a2 2 0 1 1 0 4H5v4a1 1 0 0 0 1 1h4v-1.5a2 2 0 1 1 4 0V20h4a1 1 0 0 0 1-1v-4h-1.5a2 2 0 1 1 0-4H19V7a1 1 0 0 0-1-1h-4z"/>',
   'calendar-check': '<rect x="3" y="4.5" width="18" height="16.5" rx="2.5"/><path d="M8 2.5v4M16 2.5v4M3 9.5h18M9 15l2 2 4-4"/>',
+  // Layout: saved layouts, Customize, undo/redo, collapsing, side menus, sections.
+  layout: '<rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M3 9h18M10 9v12"/>',
+  hand: '<path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"/>',
+  redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
+  collapse: '<path d="m7 15 5-5 5 5"/>',
+  expand: '<path d="m7 9 5 5 5-5"/>',
+  'sidebar-open': '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16M13 10l2 2-2 2"/>',
+  'sidebar-close': '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16M16 10l-2 2 2 2"/>',
+  split: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M12 4v16"/>',
+  max: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+  min: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
 };
 
 const FILLED = new Set(['dots', 'play']);

@@ -10,9 +10,12 @@ import {
   dayKey, addDaysToKey, minutesOfDay, initials, firstName, relativeAge, agoLabel, countdownLabel, durationLabel, greeting, colorFor, formatTime, formatDate,
 } from '../workspace/format.js';
 import { attentionMessages, messageTitle, connectionState, decisions, sourceCounts, conversation, collapseChats } from '../workspace/selectors.js';
-import { snoozeUntil, filteredMessages, inbox } from '../workspace/view-inbox.js';
+import { snoozeUntil, filteredMessages, inbox, inboxSections, INBOX_DOCK } from '../workspace/view-inbox.js';
 import { today, todayModel, WIDGETS } from '../workspace/view-today.js';
-import { calendar, periodTitle, eventDetails, eventActions } from '../workspace/view-calendar.js';
+import { PRESETS } from '../workspace/today-grid.js';
+import { calendar, periodTitle, eventDetails, eventActions, CALENDAR_DOCK } from '../workspace/view-calendar.js';
+import { normalizeDock, resizePair, swapPanes } from '../workspace/dock-model.js';
+import { attachDock } from '../workspace/dock-controller.js';
 import { settings, jobLabel } from '../workspace/view-settings.js';
 import { renderShell, NAV } from '../workspace/shell.js';
 import { bootWorkspace, notificationWorkspaceToSelect } from '../workspace/boot.js';
@@ -391,6 +394,133 @@ test('Today without Microsoft invites one sign-in and keeps local work', () => {
   assert.doesNotMatch(html, /Happening now/);
 });
 
+const tileOf = (html, id) => html.match(new RegExp(`<section class="ws-card ws-tile[^"]*"[^>]*? data-tile="${id}"[^]*?</section>`))?.[0] || '';
+
+test('Today draws tiles from the grid with their positions', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const html = today(s, ctx());
+  assert.match(html, /<div class="ws-today ws-today-page">/);
+  assert.match(html, /<div class="ws-tiles" data-today-grid style="--rows:22">/, 'Default ends at row 22');
+  assert.doesNotMatch(html, /ws-span-|class="ws-grid"/);
+  const focus = html.match(/<section class="ws-card ws-tile[^"]*" data-tile="focus" style="([^"]*)"/);
+  assert.ok(focus, 'Day at a glance is a tile');
+  assert.match(focus[1], /^--x:8;--y:0;--w:4;--h:4;--order:1$/);
+  // The stacked layout reads them by row, then column.
+  assert.deepEqual([...html.matchAll(/data-tile="([^"]+)" style="[^"]*--order:(\d+)"/g)].map(m => [m[1], Number(m[2])]),
+    [['brief', 0], ['focus', 1], ['calendar', 2], ['inbox', 3], ['commitments', 4], ['notes', 5], ['meetings', 6], ['automations', 7]]);
+  // A tile: the grip, its title, the widget buttons, a body and three resize handles.
+  const tile = tileOf(html, 'focus');
+  assert.match(tile, /<header class="ws-card-header ws-tile-head"><button type="button" class="ws-tile-grip" data-grip="focus" aria-label="Move Day at a glance\. Arrow keys move it, Shift and arrow keys resize it\."/);
+  assert.match(tile, /<h2 class="ws-card-title"><span class="ws-card-icon">[^]*?<\/span>Day at a glance<\/h2>/);
+  assert.match(tile, /data-action="today-options" data-id="focus"[^>]*aria-label="Customize Day at a glance"/);
+  assert.match(tile, /<details class="ws-menu ws-menu-right ws-tile-menu" data-menu="today-w-focus">\s*<summary[^>]*aria-label="More for Day at a glance"/);
+  assert.match(tile, /<div class="ws-card-body ws-tile-body">/);
+  assert.deepEqual([...tile.matchAll(/class="ws-rz" data-edge="([a-z])"/g)].map(m => m[1]), ['r', 'b', 'c']);
+  assert.match(tileOf(html, 'calendar'), /<div class="ws-card-actions ws-tile-extra">[^]*?data-route="calendar"/, 'header extras are marked');
+
+  // A saved grid: its positions, the user's titles (escaped) and a collapsed widget.
+  const w = active(s);
+  w.layout = ['calendar', 'brief'];
+  w.today = { active: 'Mine', items: [{ id: 'calendar', x: 0, y: 0, w: 4, h: 1, collapsed: true, prevH: 7 }, { id: 'brief', x: 4, y: 0, w: 8, h: 4 }], titles: { brief: 'Next <b>up</b>' } };
+  const saved = today(s, ctx());
+  assert.match(saved, /data-today-grid style="--rows:4"/);
+  assert.deepEqual([...saved.matchAll(/data-tile="([^"]+)"/g)].map(m => m[1]), ['calendar', 'brief']);
+  assert.match(saved, /class="ws-card ws-tile ws-tile-collapsed ws-schedule-card" data-tile="calendar" style="--x:0;--y:0;--w:4;--h:1;--order:0"/);
+  const brief = tileOf(saved, 'brief');
+  assert.match(brief, /<\/span>Next &lt;b&gt;up&lt;\/b&gt;<\/h2>/);
+  assert.match(brief, /aria-label="Move Next &lt;b&gt;up&lt;\/b&gt;\./);
+  assert.doesNotMatch(saved, /<b>up<\/b>/);
+  // Nothing on the grid: the empty state starts Customize.
+  w.layout = [];
+  w.today = { active: 'Mine', items: [] };
+  assert.match(today(s, ctx()), /Make Today your own[^]*?data-action="today-customize"/);
+});
+
+test('Schedule draws an agenda list for narrow sizes', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const tile = tileOf(today(s, ctx()), 'calendar');
+  const agenda = tile.slice(tile.indexOf('<div class="ws-tl-agenda">'));
+  assert.ok(tile.includes('<div class="ws-tl-agenda">'), tile);
+  assert.match(agenda, /<button type="button" class="ws-tl-agenda-item" data-action="event" data-id="ev-current"[^>]*><b>[^<]+<\/b><span>Architecture review: Connect sync<\/span><\/button>/);
+  assert.match(tile, /class="ws-timeline"/, 'the timeline is still there for wider sizes');
+});
+
+test('Needs your reply shows the number of messages its options ask for', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const ids = html => [...tileOf(html, 'inbox').matchAll(/class="ws-msg-row" data-action="open-message" data-id="([^"]+)"/g)].map(m => m[1]);
+  const waiting = attentionMessages(s);
+  assert.ok(waiting.length > 3, 'the fixture has more than 3 to show');
+  assert.equal(ids(today(s, ctx())).length, Math.min(6, waiting.length), '6 by default');
+  active(s).today = { active: 'Default', items: PRESETS.Default, options: { inbox: { max: '3' } } };
+  assert.equal(ids(today(s, ctx())).length, 3);
+  active(s).today.options.inbox = { sources: ['chat'] };
+  const chats = ids(today(s, ctx()));
+  assert.ok(chats.length > 0);
+  assert.ok(chats.every(id => s.records.find(r => r.id === id).data.channel === 'chat'), 'Teams only');
+});
+
+test('Tasks no longer draws Notes; Notes keeps the textarea id today-note', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const html = today(s, ctx());
+  assert.doesNotMatch(tileOf(html, 'commitments'), /today-note|ws-notes/);
+  const notes = tileOf(html, 'notes');
+  assert.match(notes, /<\/span>Notes<\/h2>/);
+  assert.match(notes, /id="note-state"/);
+  assert.match(notes, /<textarea id="today-note" class="ws-textarea ws-notes ws-notes-small" data-workspace-id="personal"/);
+  active(s).today = { active: 'Default', items: PRESETS.Default, options: { notes: { size: 'large' } } };
+  assert.match(tileOf(today(s, ctx()), 'notes'), /class="ws-textarea ws-notes ws-notes-large"/);
+});
+
+test('widgets honour their options', t => {
+  const now = Date.parse('2026-11-18T09:30:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const s = buildSnapshot(now, { photo: false });
+  const w = active(s);
+  const items = [...PRESETS.Default, { id: 'timer', x: 0, y: 22, w: 4, h: 3 }];
+  const before = today(s, ctx());
+  assert.match(tileOf(before, 'brief'), /ws-later-label[^]*?class="ws-people"|class="ws-people"[^]*?ws-later-label/);
+  assert.match(tileOf(before, 'calendar'), /ws-tl-free/);
+  assert.match(tileOf(before, 'commitments'), /data-form="commitment-add"/);
+  assert.match(tileOf(before, 'focus'), /class="ws-focus"/);
+  w.today = {
+    active: 'Default', items,
+    options: {
+      brief: { later: false, people: false },
+      focus: { stats: ['tasks', 'left'], focus: false },
+      calendar: { free: false },
+      commitments: { add: false, done: false },
+      timer: { minutes: '50' },
+    },
+  };
+  const html = today(s, ctx());
+  assert.doesNotMatch(tileOf(html, 'brief'), /ws-later-label|class="ws-people"/);
+  const glance = tileOf(html, 'focus');
+  assert.deepEqual([...glance.matchAll(/<strong>[^<]*<\/strong><span>([^<]+)<\/span>/g)].map(m => m[1]), ['Meetings left', 'Open tasks'], 'in their usual order');
+  assert.doesNotMatch(glance, /class="ws-focus/);
+  assert.doesNotMatch(tileOf(html, 'calendar'), /ws-tl-free/);
+  assert.doesNotMatch(tileOf(html, 'commitments'), /data-form="commitment-add"|ws-done-list/);
+  // Focus timer starts the length it is set to, through the same focus action as Day at a glance.
+  assert.match(tileOf(html, 'timer'), /<strong>50:00<\/strong>[^]*?data-action="focus" data-minutes="50"/);
+  s.settings.focusUntil = Math.floor(now / 1000) + 600;
+  assert.match(tileOf(today(s, ctx()), 'timer'), /data-countdown-end="[0-9]+"[^]*?data-action="focus" data-minutes="0"/);
+});
+
+test('before plugins load a plugin widget still draws', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const w = active(s);
+  w.layout = ['brief', 'plugin:github:ci'];
+  w.today = { active: 'Mine', items: [{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }, { id: 'plugin:github:ci', x: 8, y: 0, w: 4, h: 4 }] };
+  const draw = (pluginsKnown, catalog = []) => today(s, { ...ctx(), pluginsKnown, plugins: { catalog, drawn: {} } });
+  const loading = tileOf(draw(false), 'plugin:github:ci');
+  assert.match(loading, /data-widget="plugin:github:ci" data-tile="plugin:github:ci" style="--x:8;--y:0;--w:4;--h:4;--order:1"/);
+  assert.match(loading, /Its plugin is off/);
+  // Once the catalog is known, a widget whose plugin is off isn't drawn; the others stay put.
+  const off = draw(true);
+  assert.doesNotMatch(off, /data-tile="plugin:github:ci"/);
+  assert.match(off, /data-tile="brief" style="--x:0;--y:0;--w:8;--h:4;--order:0"/);
+  assert.match(draw(true, [{ id: 'plugin:github:ci', title: 'GitHub CI', description: '', width: 4, plugin: 'github' }]), /data-tile="plugin:github:ci"[^]*?Waiting for its first data/);
+});
+
 test('Calendar renders a time grid with hours, overlap columns and escaped titles', () => {
   const s = buildSnapshot(Date.now(), { photo: false });
   for (const mode of ['day', 'week', 'month', 'agenda']) {
@@ -417,6 +547,112 @@ test('Inbox reader escapes untrusted mail and offers provider actions', () => {
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(html, /Open in Outlook/);
   assert.match(html, /Snooze/);
+});
+
+test('Inbox draws its two sections in the saved order', () => {
+  // The spec's ids, minimum and default widths, and the pin to Today.
+  assert.deepEqual(INBOX_DOCK.initial, [['inbox-list'], ['inbox-reader']]);
+  assert.deepEqual(Object.entries(INBOX_DOCK.tabs).map(([id, t]) => [id, t.title, t.min, t.w, t.pin]), [['inbox-list', 'Messages', 320, 420, 'inbox'], ['inbox-reader', 'Message', 380, 720, undefined]]);
+  assert.equal(INBOX_DOCK.tabs['inbox-list'].pinTitle, WIDGETS.inbox.title);
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const sections = inboxSections(s, ctx());
+  assert.deepEqual(Object.keys(sections), ['inbox-list', 'inbox-reader']);
+  assert.match(sections['inbox-list'], /id="inbox-search"[^]*class="ws-inbox-items"/);
+  assert.match(sections['inbox-reader'], /^<section class="ws-reader"/);
+  const at = (html, id) => html.indexOf(`data-tab="${id}"`);
+  // Without a stored layout: Messages, then Message.
+  const plain = inbox(s, ctx());
+  assert.match(plain, /^<div class="ws-dock" data-page="inbox">/);
+  assert.ok(at(plain, 'inbox-list') > 0 && at(plain, 'inbox-list') < at(plain, 'inbox-reader'));
+  // Message moved left: it is drawn first, with both bodies.
+  const swapped = swapPanes(normalizeDock(INBOX_DOCK, null), 'p2', -1);
+  const html = inbox(s, { ...ctx(), dock: { layouts: { inbox: swapped }, locked: false } });
+  assert.ok(at(html, 'inbox-reader') > 0 && at(html, 'inbox-reader') < at(html, 'inbox-list'));
+  assert.ok(html.indexOf('class="ws-reader"') < html.indexOf('class="ws-inbox-items"'));
+  assert.match(html, /ws-dock-grip/);
+  assert.doesNotMatch(inbox(s, { ...ctx(), dock: { layouts: { inbox: swapped }, locked: true } }), /ws-dock-grip/, 'locked: no grips');
+});
+
+test("Calendar's sidebar toggle collapses the Calendars section", async () => {
+  assert.deepEqual(CALENDAR_DOCK.initial, [['cal-side'], ['cal-main']]);
+  assert.deepEqual(Object.entries(CALENDAR_DOCK.tabs).map(([id, t]) => [id, t.title, t.min, t.w, t.pin]), [['cal-side', 'Calendars', 220, 260, undefined], ['cal-main', 'Calendar', 480, 1000, 'calendar']]);
+  assert.equal(CALENDAR_DOCK.tabs['cal-main'].pinTitle, WIDGETS.calendar.title);
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const open = calendar(s, ctx());
+  assert.match(open, /class="ws-mini"/);
+  assert.match(open, /data-action="calendar-sidebar"/);
+  assert.doesNotMatch(open, /ws-cal-collapsed/);
+  // The toolbar's toggle collapses the Calendars section through the page's sections.
+  const saved = {};
+  let renders = 0;
+  const dock = attachDock({ addEventListener() {} }, {
+    defs: { calendar: CALENDAR_DOCK },
+    layouts: { get: page => saved[page] || normalizeDock(CALENDAR_DOCK, null), set: (page, layout) => { saved[page] = layout; } },
+    render: async () => { renders++; },
+  });
+  await dock.setCollapsed('calendar', 'cal-side', true);
+  assert.equal(renders, 1);
+  const html = calendar(s, { ...ctx(), dock: { layouts: saved, locked: false } });
+  assert.match(html, /<section class="ws-pane ws-pane-collapsed" data-pane="p1"[^>]*>\s*<div class="ws-pane-rail"[^]*?Calendars/);
+  assert.doesNotMatch(html, /class="ws-mini"/, 'the collapsed section draws no mini month');
+  assert.match(html, /data-action="calendar-sidebar"/);
+  await dock.setCollapsed('calendar', 'cal-side', false);
+  assert.match(calendar(s, { ...ctx(), dock: { layouts: saved, locked: false } }), /class="ws-mini"/);
+});
+
+test('the section menu moves a section, resets the page with Undo and keeps one section open', async () => {
+  const saved = {};
+  const toasts = [];
+  const said = [];
+  const dock = attachDock({ addEventListener() {} }, {
+    defs: { inbox: INBOX_DOCK },
+    layouts: { get: page => saved[page] || normalizeDock(INBOX_DOCK, null), set: (page, layout) => { saved[page] = layout; } },
+    render: async () => {},
+    toast: (message, tone, action) => toasts.push({ message, action }),
+    announce: text => said.push(text),
+  });
+  const el = dataset => ({ dataset: { page: 'inbox', ...dataset } });
+  await dock.handle('dock-move', el({ pane: 'p2', dir: '-1' }));
+  assert.deepEqual(saved.inbox.panes.map(p => p.tabs[0]), ['inbox-reader', 'inbox-list']);
+  await dock.handle('dock-collapse', el({ pane: 'p2' }));
+  assert.equal(said.at(-1), 'Message collapsed to a rail');
+  await dock.handle('dock-collapse', el({ pane: 'p1' }));
+  assert.equal(toasts.at(-1).message, 'Keep at least one section open');
+  assert.deepEqual(saved.inbox.panes.map(p => p.collapsed), [true, false]);
+  await dock.handle('dock-reset', el({}));
+  assert.deepEqual(saved.inbox, normalizeDock(INBOX_DOCK, null));
+  assert.equal(toasts.at(-1).message, 'Inbox is back to its original layout');
+  await toasts.at(-1).action.run();
+  assert.deepEqual(saved.inbox.panes.map(p => [p.tabs[0], p.collapsed]), [['inbox-reader', true], ['inbox-list', false]], 'Undo brings the layout back');
+});
+
+test('locked: a double-click on a divider keeps the widths and says the layouts are locked', async () => {
+  const saved = {};
+  const on = {};
+  const nudged = [];
+  let locked = true;
+  attachDock({ addEventListener: (type, fn) => { on[type] = fn; } }, {
+    defs: { inbox: INBOX_DOCK },
+    layouts: { get: page => saved[page] || normalizeDock(INBOX_DOCK, null), set: (page, layout) => { saved[page] = layout; } },
+    render: async () => {},
+    locked: () => locked,
+    nudge: () => { nudged.push('Layouts are locked'); },
+  });
+  // Messages pulled 200 px wider than its default.
+  saved.inbox = resizePair(normalizeDock(INBOX_DOCK, null), INBOX_DOCK, 0, 420, 720, 200);
+  const split = { dataset: { page: 'inbox', split: '0' } };
+  const dblclick = async () => {
+    on.dblclick({ target: { closest: sel => (sel === '.ws-dock > .ws-split' ? split : null) } });
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  await dblclick();
+  assert.deepEqual(saved.inbox.panes.map(p => p.w), [620, 520], 'the widths are kept');
+  assert.equal(nudged.length, 1, 'the lock says so, with Unlock');
+  // Unlocked, the same double-click gives both sections their default widths.
+  locked = false;
+  await dblclick();
+  assert.deepEqual(saved.inbox.panes.map(p => p.w), [420, 720]);
+  assert.equal(nudged.length, 1);
 });
 
 test('old_ai_pin_controls_are_gone', async () => {
@@ -732,7 +968,8 @@ const reads = (overrides = {}) => id => ({
 const meetingsCtx = (view = {}, extra = {}) => ({ state: { meetings: { ...newMeetingsView(), ...view }, tasks: newTasksView() }, now: MEET_NOW, banners: '', reads: reads(), ...extra });
 /** One list row, from its button to the next. */
 const rowOf = (html, id) => html.match(new RegExp(`<button type="button" class="ws-mtg-row[^"]*"[^>]*data-id="${id}"[^]*?</button>`))?.[0] || '';
-const detailOf = html => html.match(/<section class="ws-mtg-detail"[^]*$/)?.[0] || '';
+/** The meeting: its header above the meeting's section, its tabs and the tab shown. */
+const detailOf = html => html.match(/<div class="ws-mtg-top">[^]*$/)?.[0] || '';
 const headOf = html => html.match(/<header class="ws-mtg-head"[^]*?<\/header>/)?.[0] || '';
 /** A part of the page without its menus (what is on screen before a menu opens). */
 const outsideMenus = html => html.replace(/<details[^]*?<\/details>/g, '');
@@ -901,9 +1138,9 @@ test('meeting detail: the title once, one meta line with faces, no strip, four t
   assert.doesNotMatch(stack, /class="ws-mtg-person ws-mtg-quiet"[^>]*>[^]*?Priya Natarajan<\/strong>/);
   assert.match(stack, /% talking/);
   // No chip row, no strip, no People tab.
-  assert.doesNotMatch(detail, /ws-mtg-pchip|ws-mtg-strip|data-tab="people"/);
-  // Four tabs; a count only where tasks wait for review.
-  const tabs = [...detail.matchAll(/role="tab" data-action="meeting-tab" data-tab="([a-z]+)" aria-selected="(true|false)">([A-Za-z]+)(?:<span class="ws-tab-count[^"]*"[^>]*>(\d+)<\/span>)?/g)].map(m => [m[1], m[2], m[3], m[4] || '']);
+  assert.doesNotMatch(detail, /ws-mtg-pchip|ws-mtg-strip|data-tab="(mtg-)?people"/);
+  // Four tabs in the meeting's section; a count only where tasks wait for review.
+  const tabs = [...detail.matchAll(/data-action="dock-tab" data-page="meetings" data-tab="mtg-([a-z]+)" aria-selected="(true|false)"[^>]*>[^]*?<span>([A-Za-z]+)<\/span>(?:<span class="ws-tab-count">(\d+)<\/span>)?<\/button>/g)].map(m => [m[1], m[2], m[3], m[4] || '']);
   assert.deepEqual(tabs, [['notes', 'true', 'Notes', ''], ['transcript', 'false', 'Transcript', ''], ['tasks', 'false', 'Tasks', '2'], ['files', 'false', 'Files', '']]);
   // The header asks only for what waits: Review 2 tasks; no Another summary, no Make notes.
   const buttons = outsideMenus(head);
@@ -919,10 +1156,10 @@ test('meeting detail: the title once, one meta line with faces, no strip, four t
   assert.match(transcript, /data-action="task-open-today" data-id="task-endpoint"[^>]*>[^]*?Task for You: Add the by-id endpoint/);
   assert.match(transcript, /id="meeting-line-3"/);
   // An old link to the People tab opens Notes.
-  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'people' }))), /data-tab="notes" aria-selected="true"/);
+  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'people' }))), /data-tab="mtg-notes" aria-selected="true"/);
 });
 
-test('an upcoming, blocked, pending or untranscribed meeting shows its explainer and no tabs', () => {
+test('an upcoming, blocked, pending or untranscribed meeting shows its explainer instead of its tabs', () => {
   const s = meetingsSnapshot();
   for (const [id, text, action] of [
     ['mtg-sprint', 'Teams is still preparing the transcript', 'meeting-check'],
@@ -931,7 +1168,7 @@ test('an upcoming, blocked, pending or untranscribed meeting shows its explainer
     ['ev-next', 'After this meeting', null],
   ]) {
     const d = detailOf(meetings(s, meetingsCtx({ selected: id, showNone: true })));
-    assert.doesNotMatch(d, /ws-mtg-tabs/, id);
+    assert.match(d, /class="ws-mtg-panel-alone"/, id);
     assert.match(d, new RegExp(text), id);
     if (action) assert.match(d, new RegExp(`data-action="${action}"`), id);
   }
@@ -1126,7 +1363,7 @@ test('files tab offers download again when the folder is missing', () => {
 
 test('calendar badge appears on online meetings only and the event card offers Show in Meetings', () => {
   const s = meetingsSnapshot();
-  const state = { calendarMode: 'week', calendarDate: new Date(MEET_NOW), calendarSidebar: true, meetings: newMeetingsView() };
+  const state = { calendarMode: 'week', calendarDate: new Date(MEET_NOW), meetings: newMeetingsView() };
   const html = calendar(s, { state, auth: {}, hidden: new Set(), banners: '', now: MEET_NOW });
   const block = id => html.match(new RegExp(`<button type="button" class="ws-ev[^"]*" data-action="event" data-id="${id}"[^]*?</button>`))?.[0] || '';
   assert.match(block('mtg-philips'), /<span class="ws-tb ws-tb-ready" title="Notes ready · Meeting notes">/);
@@ -1157,9 +1394,13 @@ test('calendar badge appears on online meetings only and the event card offers S
 test('today meetings card lists needs-you before to-do and links to the meeting', () => {
   const s = meetingsSnapshot();
   const ctx = { auth: {}, hidden: new Set(), banners: '', state: {}, now: MEET_NOW };
-  // Not in the layout yet and never hidden: it shows itself while something waits.
+  const w = active(s);
+  // Not on the grid and never removed: it shows itself at the bottom, full width, while something waits.
+  w.layout = ['brief'];
+  w.today = { active: 'Mine', items: [{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }], hidden: [] };
   let html = today(s, ctx);
   const card = html.match(/<section class="ws-card[^"]*ws-mtg-today[^"]*"[^]*?<\/section>/)?.[0] || '';
+  assert.match(card, /data-tile="meetings" style="--x:0;--y:4;--w:12;--h:5;--order:1"/);
   assert.match(card, /From your meetings/);
   const rows = [...card.matchAll(/data-action="meeting-open" data-id="([^"]+)"/g)].map(m => m[1]);
   assert.deepEqual(rows.slice(0, 2).sort(), ['mtg-critique', 'mtg-northwind'], 'needs you first');
@@ -1168,11 +1409,19 @@ test('today meetings card lists needs-you before to-do and links to the meeting'
   assert.match(card, /Notes failed — try again/);
   assert.match(card, /Transcript saved, no notes yet/);
   assert.match(card, /data-action="route" data-route="meetings"/);
-  // Hidden in Customize: it stays hidden.
-  active(s).widgetWidths = { meetings: 6 };
+  // "Only meetings that need me": the to-do ones go.
+  w.today.options = { meetings: { needsMe: true } };
+  const needsMe = today(s, ctx).match(/<section class="ws-card[^"]*ws-mtg-today[^"]*"[^]*?<\/section>/)?.[0] || '';
+  assert.deepEqual([...needsMe.matchAll(/data-action="meeting-open" data-id="([^"]+)"/g)].map(m => m[1]).sort(), ['mtg-critique', 'mtg-northwind']);
+  // Removed from Today: it stays away.
+  w.today.hidden = ['meetings'];
   assert.doesNotMatch(today(s, ctx), /ws-mtg-today/);
-  // In the layout and nothing waiting: all caught up.
-  active(s).layout = [...active(s).layout, 'meetings'];
+  // No grid saved yet: the old Customize dialog's rule still hides it.
+  w.today = {};
+  w.widgetWidths = { brief: 8, meetings: 6 };
+  assert.doesNotMatch(today(s, ctx), /ws-mtg-today/);
+  // On the grid and nothing waiting: all caught up.
+  w.today = { active: 'Mine', items: [{ id: 'meetings', x: 0, y: 0, w: 6, h: 5 }] };
   for (const r of s.records.filter(x => x.kind === 'meeting')) r.data.state = 'ready';
   html = today(s, ctx);
   assert.match(html, /ws-mtg-today[^]*?All caught up[^]*?Every transcript has notes\./);
@@ -1314,7 +1563,7 @@ test('a meeting without a transcript keeps its tasks and the add form under its 
   const s = meetingsSnapshot();
   for (const id of ['mtg-northwind', 'ev-next']) {
     const d = detailOf(meetings(s, meetingsCtx({ selected: id })));
-    assert.doesNotMatch(d, /ws-mtg-tabs/, id);
+    assert.match(d, /class="ws-mtg-panel-alone"/, id);
     assert.match(d, /form class="ws-mtg-add-task" data-form="meeting-task" data-id="[^"]+"/, `${id}: Add a task`);
     assert.doesNotMatch(d, /Tasks come from the notes/, `${id}: no empty state under the card`);
   }

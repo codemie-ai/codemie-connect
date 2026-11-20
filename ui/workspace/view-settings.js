@@ -8,6 +8,7 @@ import { formatDateTime, agoLabel } from './format.js';
 import { aiPanel } from './settings-ai.js';
 import { storageCard } from './settings-storage.js';
 import { pluginsPage } from './settings-plugins.js';
+import { layoutPanel } from './settings-layout.js';
 import { meetingsSettingsHeader, meetingsSettingsPanel, newMeetingsSettingsView, TAB_TEXT as MEETINGS_TAB_TEXT } from './view-settings-meetings.js';
 
 export const SETTINGS_TABS = [
@@ -15,6 +16,7 @@ export const SETTINGS_TABS = [
   ['', 'ai', 'Claude', 'spark'],
   ['', 'microsoft', 'Microsoft 365', 'link'],
   ['', 'appearance', 'Appearance', 'palette'],
+  ['', 'layout', 'Layout', 'layout'],
   ['', 'notifications', 'Notifications', 'bell'],
   ['', 'queues', 'Rules & schedules', 'sliders'],
   ['', 'privacy', 'Data & privacy', 'shield'],
@@ -32,6 +34,15 @@ export const SETTINGS_TABS = [
   ['Application', 'activity', 'Activity', 'activity'],
   ['', 'updates', 'Updates & about', 'update'],
 ];
+/** The tabs by group, in order: [{name, items: [[id, text, icon]]}]. */
+export const SETTINGS_GROUPS = SETTINGS_TABS.reduce((groups, [name, id, text, ico]) => {
+  if (name) groups.push({ name, items: [] });
+  groups.at(-1).items.push([id, text, ico]);
+  return groups;
+}, []);
+/** The Settings menu's rail width, its limits and its default width, in px. */
+export const SETTINGS_MENU = { rail: 58, min: 200, max: 400, def: 272 };
+
 /** Tab ids from before the native CodeMie tabs (bookmarks, notifications, old hash links). */
 export const LEGACY_TAB_REDIRECTS = { installation: 'cm-overview', tools: 'cm-agents', desktop: 'cm-apps', health: 'cm-health', usage: 'cm-overview' };
 
@@ -68,6 +79,7 @@ export function settings(s, ctx) {
     ai: () => aiPanel(state.ai, { codemie: ctx.codemie?.signIn }),
     microsoft: () => microsoftPanel(s, auth),
     appearance: () => appearancePanel(s),
+    layout: () => layoutPanel(s, ctx.layout),
     notifications: () => notificationsPanel(s),
     queues: () => queuesPanel(s),
     privacy: () => privacyPanel(s),
@@ -98,11 +110,35 @@ export function settings(s, ctx) {
   const dot = id => (id === 'microsoft' && microsoftDot) || !!codemie?.tabDots?.has(id);
   // Header actions are markup from the CodeMie views, escaped there.
   const actions = tab.startsWith('cm-') || tab === 'ai' ? codemie?.headerActions?.(tab) || '' : ms?.actions || '';
-  return `<div class="ws-settings-layout">
-    <aside class="ws-settings-sidebar">
-      <div class="ws-settings-heading"><h1>Settings</h1><p>Preferences and connected services.</p></div>
-      <nav class="ws-settings-nav" aria-label="Settings">${SETTINGS_TABS.map(([group, id, text, ico]) => `${group ? `<div class="ws-nav-label">${e(group)}</div>` : ''}<button type="button" data-action="settings-tab" data-tab="${id}" ${tab === id && !(id === 'plugins' && path?.section) ? 'aria-current="page"' : ''}>${icon(ico)}<span>${e(text)}</span>${dot(id) ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button>${subnav(id)}`).join('')}</nav>
+  // The menu: groups that fold, Find a setting, and the shrunk rail of icons (device preferences).
+  const menu = { folded: [], collapsed: false, width: SETTINGS_MENU.def, query: '', ...ctx.menu };
+  const rail = menu.collapsed;
+  const q = rail ? '' : String(menu.query || '').trim().toLowerCase();
+  const item = (id, text, ico) => `<button type="button" data-action="settings-tab" data-tab="${id}" ${tab === id && !(id === 'plugins' && path?.section) ? 'aria-current="page"' : ''} data-tip="${e(text)}">${icon(ico)}<span>${e(text)}</span>${dot(id) ? '<span class="ws-dot-alert" aria-label="Needs attention"></span>' : ''}</button>${subnav(id)}`;
+  const menuGroup = g => {
+    const hits = q ? g.items.filter(([, text]) => `${text} ${g.name}`.toLowerCase().includes(q)) : g.items;
+    if (!hits.length) return '';
+    // The page you are on stays in a folded group, and a dot says something hidden needs you.
+    if (rail) return `<div class="ws-nav-rule" aria-hidden="true"></div>${hits.map(([id, text, ico]) => item(id, text, ico)).join('')}`;
+    const folded = !q && menu.folded.includes(g.name);
+    const shown = folded ? hits.filter(([id]) => id === tab) : hits;
+    const alert = folded && hits.some(([id]) => id !== tab && dot(id));
+    const gid = `ws-group-${g.name.toLowerCase()}`;
+    return `<div class="ws-nav-section${folded ? ' ws-folded' : ''}"><button type="button" class="ws-nav-group" data-action="settings-group" data-group="${e(g.name)}" aria-expanded="${!folded}" aria-controls="${gid}" title="${folded ? 'Show' : 'Hide'} ${e(g.name)} · ⌥-click keeps only this group open" ${q ? 'disabled' : ''}>${icon('chevron-down', 'ws-group-chev')}<span>${e(g.name)}</span>${folded ? `<small class="ws-count">${hits.length}</small>` : ''}${alert ? '<span class="ws-dot-alert" aria-label="Something here needs attention"></span>' : ''}</button><div class="ws-nav-items" id="${gid}">${shown.map(([id, text, ico]) => item(id, text, ico)).join('')}</div></div>`;
+  };
+  const anyOpen = SETTINGS_GROUPS.some(g => !menu.folded.includes(g.name));
+  const foldTitle = anyOpen ? 'Fold all groups' : 'Unfold all groups';
+  const shrinkTitle = `${rail ? 'Expand' : 'Shrink'} the Settings menu (⌘⇧\\)`;
+  const width = rail ? SETTINGS_MENU.rail : Math.min(SETTINGS_MENU.max, Math.max(SETTINGS_MENU.min, menu.width));
+  const sized = rail || width !== SETTINGS_MENU.def ? ` style="--ws-settings-w:${width}px"` : '';
+  const found = SETTINGS_GROUPS.map(menuGroup).join('');
+  return `<div class="ws-settings-layout"${sized}>
+    <aside class="ws-settings-sidebar${rail ? ' ws-settings-rail' : ''}">
+      <div class="ws-settings-heading"><div class="ws-settings-heading-copy"><h1>Settings</h1><p>Preferences and connected services.</p></div>${rail ? '' : button('', { action: 'settings-groups-all', iconName: anyOpen ? 'collapse' : 'expand', variant: 'ghost', size: 'sm', title: foldTitle })}${button('', { action: 'settings-menu-toggle', iconName: rail ? 'sidebar-open' : 'sidebar-close', variant: 'ghost', size: 'sm', title: shrinkTitle, attrs: { 'aria-expanded': String(!rail), 'data-tip': rail ? 'Expand menu' : undefined } })}</div>
+      ${rail ? '' : `<div class="ws-settings-find"><input class="ws-input" type="search" data-settings-find name="settings-find" placeholder="Find a setting" aria-label="Find a setting" autocomplete="off" spellcheck="false" value="${e(menu.query || '')}"></div>`}
+      <nav class="ws-settings-nav" aria-label="Settings">${found || `<p class="ws-muted ws-hint">No setting matches “${e(menu.query)}”.</p>`}</nav>
     </aside>
+    <div class="ws-settings-edge" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the Settings menu" aria-valuenow="${width}" aria-valuemin="${SETTINGS_MENU.rail}" aria-valuemax="${SETTINGS_MENU.max}" title="Drag to resize · drag far left to shrink to icons · double-click to reset"></div>
     <section class="ws-settings-content">
       <header class="ws-settings-header${actions ? ' ws-settings-header-actions' : ''}"><div>${ms?.back || ''}<h2${ms ? ' data-ms-title' : ''}>${e(label)}</h2>${description ? `<p>${e(description)}</p>` : ''}</div>${actions ? `<div class="ws-actions">${actions}</div>` : ''}</header>
       <div class="ws-settings-panels${plugins?.fill ? ' ws-settings-panels-fill' : ''}" data-plugin-clip>${content}</div>

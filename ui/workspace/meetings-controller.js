@@ -1,5 +1,6 @@
 // The Meetings controller (spec "Meetings page"): opening a meeting from anywhere (`open`), the
-// list (filters, search, folding days, hiding meetings, the row menu), selection and ↑/↓, the four tabs, Make notes (one meeting, for all, Try again),
+// list (filters, search, folding days, hiding meetings, the row menu), selection and ↑/↓, the four tabs (page sections,
+// which can sit side by side; the list's section collapses), Make notes (one meeting, for all, Try again),
 // Check now, Download again, Import, speakers, the template and automatic notes, documents (view,
 // Side by side, versions, main, delete, edit against the version it was opened on), files, and
 // the right next step for every error. It keeps a per-meeting cache of `meeting_read` answers
@@ -13,6 +14,7 @@ import { formatDate, formatTime } from './format.js';
 import {
   TABS, failedNotesJob, isHidden, laneFor, lineAt, listModel, listOrder, meetingItems, meetingTasks, parseGlossary, readHidden, resolveTemplate, rulesOf, seriesOf,
 } from './meetings-model.js';
+import { paneOf } from './dock-model.js';
 import { importBody, makeNotesBody } from './view-meetings.js';
 import { plural } from './view-meeting-tabs.js';
 
@@ -35,16 +37,20 @@ const ONE_MEETING = {
  * `store.query(op, data)` a read-only operation; `mutate(op, data)` a fenced write that
  * re-renders; `render()` a re-render; `route(name, tab)` navigation (it writes the hash); the
  * dialogs and `toast(message, tone, {label, run})`; `writeText` the clipboard; `downloadText(name,
- * text)` a file in Downloads; `focus(selectors)` focus after a render; `setPref` remembers whether
- * the list is hidden; `syncHash()` writes `#/meetings/<id>/<tab>` after a selection or tab change;
- * `ensureClaudeChoice()` asks which Claude writes (null when cancelled); `moveTask(id, status,
- * {log})` the Tasks board's move; `connect(capabilities)` a Microsoft sign-in for more access;
- * `showEvent(id)` the calendar's event card; `canRender()` whether a read may re-render now.
+ * text)` a file in Downloads; `focus(selectors)` focus after a render; `syncHash()` writes
+ * `#/meetings/<id>/<tab>` after a selection or tab change; `ensureClaudeChoice()` asks which
+ * Claude writes (null when cancelled); `moveTask(id, status, {log})` the Tasks board's move;
+ * `connect(capabilities)` a Microsoft sign-in for more access; `showEvent(id)` the calendar's
+ * event card; `canRender()` whether a read may re-render now. `dock` is the page's sections:
+ * `layout()`, `collapse(id, on)` (a section, or the one holding tab `id`; it re-renders),
+ * `visible()` the tabs in view, and `show(id)` brings tab `id` into view in the section that
+ * holds it (the caller re-renders).
  */
 export function createMeetingsController({
   state, store, snap, mutate, render, route = async () => {}, openModal = () => null, confirmModal = () => {}, toast = () => {},
   writeText = async () => {}, downloadText = () => {}, focus = () => {}, setPref = () => {}, syncHash = () => {}, now = () => Date.now(),
   ensureClaudeChoice = async () => null, moveTask = null, connect = null, showEvent = null, canRender = () => true,
+  dock = { layout: () => null, collapse: async () => false, visible: () => [], show: () => {} },
 }) {
   const v = () => state.meetings;
   const items = () => meetingItems(snap(), now());
@@ -124,7 +130,33 @@ export function createMeetingsController({
     return v().selected;
   }
 
-  /** Reads what the open meeting's tab shows that isn't read yet, then re-renders once. */
+  // ---------------------------------------------------------------- the sections
+
+  /** The meeting tabs in view (`notes` …), in every section. */
+  const shownTabs = () => dock.visible().map(id => id.replace(/^mtg-/, '')).filter(tab => TABS.includes(tab));
+  /** Brings meeting tab `tab` into view, in the section that holds it. */
+  const showTab = tab => dock.show(`mtg-${tab}`);
+
+  /**
+   * The tab the hash names follows the sections: the one meeting tab `fresh` brought into view
+   * (a tab chosen, moved or expanded there), or, when the one chosen last is out of view, the
+   * first meeting tab in view.
+   */
+  function follow(fresh = []) {
+    const shown = shownTabs();
+    const came = fresh.map(id => id.replace(/^mtg-/, '')).filter(tab => shown.includes(tab));
+    if (came.length === 1) v().tab = came[0];
+    else if (shown.length && !shown.includes(v().tab)) v().tab = shown[0];
+  }
+
+  /** The list's section collapsed (`on`) or expanded; it re-renders. */
+  const collapseList = on => dock.collapse('mtg-list', on);
+  const listSection = () => {
+    const layout = dock.layout();
+    return layout ? paneOf(layout, 'mtg-list') : null;
+  };
+
+  /** Reads what the open meeting's tabs in view show that isn't read yet, then re-renders once. */
   async function load() {
     if (state.route !== 'meetings') return;
     const id = v().selected;
@@ -133,11 +165,12 @@ export function createMeetingsController({
     const rec = m.rec?.data || {};
     const saved = ['downloaded', 'ready', 'failed'].includes(m.state) && !!rec.folder;
     const c = entry(id);
+    const shown = shownTabs();
     const jobs = [];
     if (saved && c.transcript === undefined) jobs.push(read(id, 'transcript', { part: 'transcript' }));
-    if (v().tab === 'transcript') jobs.push(loadGlossary());
-    if (v().tab === 'files' && rec.folder && c.files === undefined) jobs.push(read(id, 'files', { part: 'files' }));
-    if (v().tab === 'notes' && saved) {
+    if (shown.includes('transcript')) jobs.push(loadGlossary());
+    if (shown.includes('files') && rec.folder && c.files === undefined) jobs.push(read(id, 'files', { part: 'files' }));
+    if (shown.includes('notes') && saved) {
       const docs = rec.docs || [];
       const view = docs.find(d => d.id === v().docView[id]) || docs.find(d => d.id === rec.main) || docs[0];
       const shown = view ? [view] : [];
@@ -192,6 +225,7 @@ export function createMeetingsController({
     const day = shown.days.find(d => d.items.some(x => x.id === id));
     if (day && view.folded[day.key]) view.folded = Object.fromEntries(Object.entries(view.folded).filter(([k]) => k !== day.key));
     if (shown.needs.some(x => x.id === id)) view.needsFolded = false;
+    showTab(view.tab);
     await route('meetings');
     focus([`[data-action="meeting-select"][data-id="${quoted(id)}"]`]);
   }
@@ -210,14 +244,17 @@ export function createMeetingsController({
     await rerender();
   }
 
-  function setCompare(on) {
+  /** Side by side takes the list's room: its section collapses, unless it holds the notes too,
+   *  and opens again afterwards unless it was collapsed before. */
+  async function setCompare(on) {
     const view = v();
-    if (on && !view.compare) {
-      view.wideBefore = view.wide;
-      view.wide = true;
-    }
-    if (!on && view.compare) view.wide = !!view.wideBefore;
-    view.compare = on;
+    if (!!on === !!view.compare) return;
+    view.compare = !!on;
+    const list = listSection();
+    if (on) {
+      view.listBefore = !list || list.collapsed || list.tabs.includes('mtg-notes');
+      if (!view.listBefore) await collapseList(true);
+    } else if (view.listBefore === false && list?.collapsed) await collapseList(false);
   }
 
   /** ↑/↓ on the list moves the selection (not while typing, in a dialog or in the meeting). */
@@ -238,7 +275,8 @@ export function createMeetingsController({
     }
     if (!['ArrowDown', 'ArrowUp'].includes(ev.key) || ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey) return false;
     const target = ev.target;
-    if (target?.closest?.('input, textarea, select, dialog, .ws-mtg-detail, details[open]')) return false;
+    // Not while typing, in a dialog or an open menu, nor in another section than the list.
+    if (target?.closest?.('input, textarea, select, dialog, details[open]') || (target?.closest?.('.ws-dock') && !target.closest('.ws-mtg-list'))) return false;
     const view = v();
     const rows = order();
     if (!rows.length) return false;
@@ -572,7 +610,7 @@ export function createMeetingsController({
         await mutate('meeting_doc', { meetingId: id, docId, action: 'delete', ...base });
         const view = v();
         if (view.docView[id] === docId) delete view.docView[id];
-        if ((record(id)?.data?.docs || []).length < 2) setCompare(false);
+        if ((record(id)?.data?.docs || []).length < 2) await setCompare(false);
         toast(`“${doc.name}” moved to notes-history`, 'success');
       },
     });
@@ -611,6 +649,7 @@ export function createMeetingsController({
       index = at >= 0 ? at : null;
     }
     Object.assign(view, { selected: id, tab: 'transcript', tq: '', speaker: '', focusLine: index });
+    showTab('transcript');
     await rerender();
   }
 
@@ -689,20 +728,23 @@ export function createMeetingsController({
       case 'meeting-hide-series': return hide(id, { series: true });
       case 'meeting-unhide': return unhide(id);
       case 'meeting-tab': {
+        // A meeting tab (`notes` …) is the section tab `mtg-notes` …, wherever it sits.
         if (el.dataset.id) view.selected = el.dataset.id;
         view.tab = TABS.includes(el.dataset.tab) ? el.dataset.tab : 'notes';
+        showTab(view.tab);
         await rerender();
-        return focus(`[data-action="meeting-tab"][data-tab="${quoted(view.tab)}"][role="tab"]`);
+        return focus(`[data-action="dock-tab"][data-page="meetings"][data-tab="mtg-${quoted(view.tab)}"]`);
       }
-      case 'meeting-list-toggle':
-        view.wide = !view.wide;
-        if (!view.wide && view.compare) view.compare = false;
-        setPref('codemie.meetings.wide', String(view.wide));
-        return render();
+      case 'meeting-list-toggle': {
+        const hide = !listSection()?.collapsed;
+        // Showing the list ends Side by side.
+        if (!hide) view.compare = false;
+        return collapseList(hide);
+      }
       case 'meeting-people-all': view.peopleAll = id; return render();
       // "Who is this?" on a transcript line: that voice in the speaker list above the lines.
       case 'meeting-name-speaker': return focus(`select[data-action="meeting-speaker"][data-voice="${quoted(el.dataset.voice || '')}"]`, { scroll: true });
-      case 'meeting-compare': setCompare(el.dataset.v === '1'); return render();
+      case 'meeting-compare': await setCompare(el.dataset.v === '1'); return render();
       case 'meeting-open': return open(id);
       case 'meeting-make-notes': return makeNotesDialog(id);
       case 'meeting-make-all': return makeAll();
@@ -796,7 +838,7 @@ export function createMeetingsController({
       // Documents
       case 'doc-view':
         view.docView[id] = docId;
-        setCompare(false);
+        await setCompare(false);
         return render();
       case 'doc-compare-pick':
         if (el.dataset.side === 'left') view.docView[id] = el.value; else view.compareWith[id] = el.value;
@@ -907,5 +949,5 @@ export function createMeetingsController({
     return undefined;
   }
 
-  return { open, handle, input, submit, key, load, data, glossary, ensureSelection, makeNotesDialog, importDialog, problem, guarded, makeNotes, transcriptsOn, forgetGlossary, contextMenu };
+  return { open, handle, input, submit, key, load, follow, data, glossary, ensureSelection, makeNotesDialog, importDialog, problem, guarded, makeNotes, transcriptsOn, forgetGlossary, contextMenu };
 }

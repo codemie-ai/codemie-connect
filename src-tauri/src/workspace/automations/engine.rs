@@ -330,6 +330,9 @@ impl Core {
                         && w.layout.len() < MAX_WIDGETS
                     {
                         w.layout.push("automations".into());
+                        if let Some(h) = w.today.get_mut("hidden").and_then(Value::as_array_mut) {
+                            h.retain(|id| id != "automations");
+                        }
                         w.revision += 1;
                         card = Some(w);
                     }
@@ -824,6 +827,44 @@ mod engine_tests {
             assert_eq!(err.code, "validation");
             assert_eq!(err.field.as_deref(), Some(field), "{}", err.message);
         }
+    }
+
+    #[tokio::test]
+    async fn turning_today_delivery_on_brings_back_a_hidden_automations_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        {
+            let mut r = core.repo().unwrap();
+            let mut w = r.workspace(PERSONAL).unwrap();
+            w.layout = vec!["brief".into()];
+            w.today = json!({"hidden": ["automations"]});
+            r.save_workspace(&w).unwrap();
+        }
+        core.request(mutation(&core, Operation::AutomationSave, schedule_json()))
+            .await
+            .unwrap();
+        let w = core.repo().unwrap().workspace(PERSONAL).unwrap();
+        assert_eq!(w.layout, vec!["brief", "automations"]);
+        assert_eq!(w.today["hidden"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn adding_the_automations_card_leaves_an_empty_today_object_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        {
+            let mut r = core.repo().unwrap();
+            let mut w = r.workspace(PERSONAL).unwrap();
+            w.layout = vec!["brief".into()];
+            w.today = json!({});
+            r.save_workspace(&w).unwrap();
+        }
+        core.request(mutation(&core, Operation::AutomationSave, schedule_json()))
+            .await
+            .unwrap();
+        let w = core.repo().unwrap().workspace(PERSONAL).unwrap();
+        assert_eq!(w.layout, vec!["brief", "automations"]);
+        assert_eq!(w.today, json!({}));
     }
 
     #[tokio::test]

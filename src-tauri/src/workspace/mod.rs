@@ -21,6 +21,7 @@ pub mod repository;
 pub mod schedules;
 mod slots;
 pub(crate) mod tasks;
+mod today;
 
 use crate::ai::{
     profiles::{DetectEnv, ProfileCache},
@@ -836,6 +837,7 @@ impl Core {
                         "automations".into(),
                     ],
                     widget_widths: json!({}),
+                    today: json!({}),
                 };
                 r.save_workspace(&w)?;
                 let mut s = r.settings()?;
@@ -879,6 +881,9 @@ impl Core {
                         .filter(|s| seen.insert(*s))
                         .map(String::from)
                         .collect();
+                }
+                if let Some(t) = req.data.get("today") {
+                    w.today = today::valid_today(t)?;
                 }
                 if let Some(widths) = req.data.get("widgetWidths") {
                     let widths = widths.as_object().ok_or_else(|| {
@@ -1938,6 +1943,8 @@ pub const WIDGET_IDS: &[&str] = &[
     "plugins",
     // "From your meetings": meetings that need the person, transcripts waiting for notes.
     "meetings",
+    "notes",
+    "timer",
 ];
 /// The most cards a Today layout holds.
 pub(in crate::workspace) const MAX_WIDGETS: usize = 16;
@@ -1945,7 +1952,7 @@ pub(in crate::workspace) const MAX_WIDGETS: usize = 16;
 const MAX_WIDGET_WIDTHS: usize = 64;
 
 /// A built-in card id or a plugin card `plugin:<plugin id>:<widget id>` (DESIGN 7).
-fn valid_widget_id(v: &str) -> bool {
+pub(super) fn valid_widget_id(v: &str) -> bool {
     if WIDGET_IDS.contains(&v) {
         return true;
     }

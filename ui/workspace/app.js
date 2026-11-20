@@ -4,29 +4,34 @@
 import { createStore, escapeHtml as e } from './store.js';
 import { shouldCheckForAppUpdate } from '../app-updater-utils.mjs';
 import { icon } from './icons.js';
-import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, toggle, controlSelector, soleMatch } from './ui.js';
+import { badge, button, toast, openModal, confirmModal, onModalClose, field, textInput, textArea, select, checkbox, controlSelector, soleMatch } from './ui.js';
 import { calendarWindow, calendarCoverage, calendarIds, calendarCatalog, calendarColors } from './calendar-model.js';
 import { active, decisions, connectionState, records, LANES, messageTitle, collapseChats, messageKey, conversation, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryJob, summaryFor } from './selectors.js';
 import { askCommitment, askCommitmentId } from './summary-state.js';
 import { dayKey, dateFromKey, zonedParts } from './format.js';
-import { today, customizeEntries } from './view-today.js';
-import { calendar, eventDetails, eventActions, HOUR_HEIGHT } from './view-calendar.js';
-import { inbox, filteredMessages, snoozeUntil, draftChecks } from './view-inbox.js';
+import { today, drawnGrid, tileDefs } from './view-today.js';
+import { createTodayController, attachTodayDrag, newTodayView } from './today-controller.js';
+import { GRID, todayOf } from './today-grid.js';
+import { activateTab, loadDock, saveDock, setCollapsed, visibleTabs } from './dock-model.js';
+import { attachDock } from './dock-controller.js';
+import { calendar, eventDetails, eventActions, HOUR_HEIGHT, CALENDAR_DOCK } from './view-calendar.js';
+import { inbox, filteredMessages, snoozeUntil, draftChecks, INBOX_DOCK } from './view-inbox.js';
 import {
   optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
 } from './draft-state.js';
-import { settings, settingsTabFor } from './view-settings.js';
+import { settings, settingsTabFor, SETTINGS_GROUPS, SETTINGS_MENU } from './view-settings.js';
+import { trackPress } from './press.js';
 import { createCodemieService } from './codemie/service.js';
 import { createCodemieController } from './codemie/controller.js';
 import { createRunLog } from './codemie/run-log.js';
 import { createSetupSession } from './codemie/setup-session.js';
 import { startSetup, cancelSetup } from '../setup-driver.js';
-import { automations, AUTOMATION_TABS } from './view-automations.js';
+import { automations, AUTOMATION_TABS, AUTOMATIONS_DOCK } from './view-automations.js';
 import { createAutomationsController, notificationTarget } from './automations-controller.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { newTasksView } from './tasks-model.js';
-import { meetings, shownCall } from './view-meetings.js';
+import { meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
@@ -63,8 +68,8 @@ const watched = invoke && (async (cmd, args) => {
 const store = invoke ? createStore(watched) : null;
 
 const state = {
-  route: 'today', settingsTab: 'general',
-  calendarMode: localPref('codemie.calendar.mode', 'week'), calendarDate: new Date(), calendarSidebar: localPref('codemie.calendar.sidebar', 'true') !== 'false',
+  route: 'today', settingsTab: 'general', settingsQuery: '',
+  calendarMode: localPref('codemie.calendar.mode', 'week'), calendarDate: new Date(),
   lane: 'reply', channel: 'all', search: '', showArchived: false, showSnoozed: false, inboxLimit: 200, selectedMessage: null, selectedKey: null,
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
   ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, usage: null, error: '', tests: {}, testModels: {} },
@@ -77,14 +82,16 @@ const state = {
   automations: { tab: 'automations', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } },
   // Tasks: board or list, filters, the open drawer and quick add (view state only; tasks are native's).
   tasks: newTasksView(localPref('codemie.tasks.view', 'board')),
-  // Meetings: the list's filter and search, the selected meeting and tab, the hidden list, Side by
-  // side, the document editor (view state only; meetings are native's). The calendar's "Only
-  // meetings with transcripts" and the legend groups turned off.
-  meetings: newMeetingsView({ wide: localPref('codemie.meetings.wide', 'false') === 'true', hidden: localJson('codemie.meetings.hidden', null) }),
+  // Meetings: the list's filter and search, the selected meeting and tab, the hidden list, the
+  // document editor (view state only; meetings are native's). The calendar's "Only meetings with
+  // transcripts" and the legend groups turned off.
+  meetings: newMeetingsView({ hidden: localJson('codemie.meetings.hidden', null) }),
   calendarTranscripts: localPref('codemie.calendar.transcripts', 'false') === 'true', calendarLegend: {},
   // Settings › Meetings: the template being edited, refusals by field, the glossary and tags as
   // typed, the rule tester (view state only; settings, templates and rules are native's).
   meetingsSettings: newMeetingsSettingsView(),
+  // Today: Customize mode, undo and redo, the open options panel, the gallery search, renaming.
+  today: newTodayView(),
   // Plugins: the page open under #/p/<id>/<activity>/<route>, the Settings → Plugins path
   // ({id, section}), what is installed, and the text of page widgets their frames drew.
   pluginPage: null, pluginPath: null, installedPlugins: [], pluginsKnown: false, widgetText: {},
@@ -152,18 +159,33 @@ let noteTimer;
 let searchTimer;
 let taskSearchTimer;
 let meetingSearchTimer;
+let gallerySearchTimer;
 // A card is being dragged on the Tasks board: updates wait until it is dropped.
 let taskDrag = false;
+// A Today widget is being moved, resized or dragged in, a section's divider or tab is held, or a
+// menu edge is: every render waits until its drop has been saved (or refused) and drawn, so what
+// was moved by hand is not redrawn under the pointer. Set by holdLayout, which counts the holds.
+let layoutDrag = false;
+let layoutHolds = 0;
 // The mouse button is down: an update redrawn between a click's mousedown and mouseup would
 // replace the control under the pointer and lose the click, so it waits for the mouseup.
 let pressing = false;
 const replyInFlight = new Set();
 const asksSaving = new Set();
-const KEEP_FOCUS = new Set(['widget-up', 'widget-down', 'ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle']);
+const KEEP_FOCUS = new Set(['ai-draft-pick', 'ai-draft-context', 'summary-toggle', 'automation-kind', 'run-toggle', 'dock-tab', 'sidebar-toggle', 'settings-group', 'settings-groups-all', 'settings-menu-toggle', 'layout-handles']);
 let lastDraftSignature = '';
-// Updates that arrived while held (the draft options popover open, a card dragged, the mouse
-// button down); shown once that ends.
+// Updates that arrived while held (the draft options popover open, a card or widget dragged, the
+// mouse button down); shown once that ends.
 let heldRender = false;
+
+/** Holds renders while a layout drag is on (`on`) and lets one go (`!on`). Holds are counted
+ *  across Today, the page sections and the menu edges, so letting one go doesn't let renders
+ *  through under another; when the last is let go, the render held meanwhile runs. */
+function holdLayout(on) {
+  layoutHolds = Math.max(0, layoutHolds + (on ? 1 : -1));
+  layoutDrag = layoutHolds > 0;
+  if (!layoutDrag && heldRender && !modalOpen()) render().catch(fail);
+}
 
 function localPref(key, fallback) {
   try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
@@ -219,7 +241,7 @@ const shellMarkup = () => renderShell({
   snapshot: snap(), route: state.route, resolvedDark: document.documentElement.classList.contains('dark'),
   terminals: terminalDock?.state(),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
-  settingsDot: codemie.settingsDot(),
+  settingsDot: codemie.settingsDot(), sidebarCollapsed: sidebarCollapsed(),
   meetingsHidden: state.meetings.hidden,
 });
 
@@ -266,8 +288,14 @@ function captureScroll() {
     drawer: q('.ws-task-drawer-body')?.scrollTop || 0,
     drawerId: state.tasks.drawer,
     meetingList: q('.ws-mtg-list-body')?.scrollTop || 0,
-    meetingDetail: q('.ws-mtg-detail')?.scrollTop || 0,
-    meetingView: q('.ws-mtg-meeting') ? `${q('.ws-mtg-meeting').dataset.meeting}|${q('.ws-mtg-panel')?.dataset.panel}` : null,
+    // Meetings: each meeting tab in view scrolls on its own, kept by meeting and tab.
+    meetingTabs: Object.fromEntries([...root.querySelectorAll('.ws-mtg-detail[data-panel]')].map(el => [`${el.dataset.meeting}|${el.dataset.panel}`, el.scrollTop])),
+    // Today: each tile's body scrolls on its own, kept by the tile's widget id.
+    tiles: Object.fromEntries([...root.querySelectorAll('[data-tile] > .ws-tile-body')].map(body => [body.parentElement.dataset.tile, body.scrollTop])),
+    // A row of page sections wider than the page scrolls sideways, kept by page; a section's body
+    // scrolls on its own, kept by the page and tab it shows (the tab that labels it).
+    dockRows: Object.fromEntries([...root.querySelectorAll('.ws-dock[data-page]')].map(row => [row.dataset.page, row.scrollLeft])),
+    sections: Object.fromEntries([...root.querySelectorAll('.ws-dock .ws-pane-body')].map(body => [body.getAttribute('aria-labelledby'), body.scrollTop])),
   };
 }
 
@@ -288,18 +316,68 @@ function restoreScroll(saved) {
   }
   const schedule = q('.ws-schedule-scroll');
   if (schedule) schedule.scrollTop = saved.schedule !== undefined ? saved.schedule : Number(schedule.dataset.scrollTo || 0);
+  for (const body of root.querySelectorAll('[data-tile] > .ws-tile-body')) {
+    const top = saved.tiles[body.parentElement.dataset.tile];
+    if (top) body.scrollTop = top;
+  }
   if (q('.ws-inbox-items')) q('.ws-inbox-items').scrollTop = saved.list;
   const reader = q('.ws-reader');
   if (reader && saved.readerId && q('.ws-read')?.dataset.messageId === saved.readerId) reader.scrollTop = saved.reader;
   if (q('.ws-settings-sidebar')) q('.ws-settings-sidebar').scrollTop = saved.nav;
-  // Meetings: the list keeps its place; the meeting keeps its place unless another one (or tab) opened.
+  // Meetings: the list keeps its place; a meeting tab keeps its place unless another meeting opened.
   if (q('.ws-mtg-list-body')) q('.ws-mtg-list-body').scrollTop = saved.meetingList;
-  const meeting = q('.ws-mtg-meeting');
-  if (meeting && saved.meetingView === `${meeting.dataset.meeting}|${q('.ws-mtg-panel')?.dataset.panel}`) q('.ws-mtg-detail').scrollTop = saved.meetingDetail;
+  for (const el of root.querySelectorAll('.ws-mtg-detail[data-panel]')) {
+    const top = saved.meetingTabs[`${el.dataset.meeting}|${el.dataset.panel}`];
+    if (top) el.scrollTop = top;
+  }
+  for (const row of root.querySelectorAll('.ws-dock[data-page]')) {
+    const left = saved.dockRows[row.dataset.page];
+    if (left) row.scrollLeft = left;
+  }
+  for (const body of root.querySelectorAll('.ws-dock .ws-pane-body')) {
+    const top = saved.sections[body.getAttribute('aria-labelledby')];
+    if (top) body.scrollTop = top;
+  }
   if (q('.ws-settings-panels') && saved.tab === state.settingsTab) q('.ws-settings-panels').scrollTop = saved.panels;
 }
 
+// Layout preferences of this Mac: locked layouts hide the grips and handles; the handles show on
+// hover (the default), always, or only in Customize.
+function applyLayoutPrefs(locked) {
+  const handles = localPref('codemie.layout.handles', 'hover');
+  root.classList.toggle('ws-locked', locked);
+  root.classList.toggle('ws-handles-always', handles === 'always');
+  root.classList.toggle('ws-handles-customize', handles === 'customize');
+  root.classList.toggle('ws-sidebar-collapsed', sidebarCollapsed());
+}
+
+// Narrower than 640 px, Today's widgets stack in one column (its CSS asks the page's width): no
+// moves or resizes there.
+function measureToday() {
+  const page = root.querySelector('.ws-today-page');
+  state.today.stacked = !!page && page.clientWidth < GRID.stackBelow;
+}
+
+/** Says `text` in a polite live region (a widget moved or resized). */
+function announce(text) {
+  let live = document.getElementById('ws-live');
+  if (!live) {
+    live = document.createElement('div');
+    live.id = 'ws-live';
+    live.className = 'ws-sr';
+    live.setAttribute('role', 'status');
+    live.setAttribute('aria-live', 'polite');
+    document.body.append(live);
+  }
+  live.textContent = '';
+  setTimeout(() => { live.textContent = text; }, 30);
+}
+
 async function render() {
+  if (layoutDrag) {
+    heldRender = true;
+    return;
+  }
   if (!store?.get() || recovering) return;
   const note = document.getElementById('today-note');
   const unsavedNote = note && note.value !== note.defaultValue ? { workspaceId: note.dataset.workspaceId, text: note.value } : null;
@@ -319,17 +397,29 @@ async function render() {
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
+  const locked = !!todayUi?.locked();
+  applyLayoutPrefs(locked);
+  // Find a setting starts empty each time Settings opens.
+  if (state.route !== 'settings') state.settingsQuery = '';
   const ctx = {
-    state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(), meetingsHidden: state.meetings.hidden,
+    state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(), pluginsKnown: state.pluginsKnown,
+    meetingsHidden: state.meetings.hidden,
+    today: { ...state.today, locked },
+    dock: { layouts: Object.fromEntries(Object.keys(DOCKS).map(page => [page, docks.get(page)])), locked },
     codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots(), signIn: codemie.signIn() },
+    menu: { ...settingsMenu(), folded: foldedGroups(), query: state.settingsQuery },
+    layout: layoutContext(),
     codemieCard: codemie.todayCard(),
   };
   if (state.route === 'inbox') ensureSelection(s);
+  // The hash names the meeting shown, also when the list picked it, and the tab chosen last, one
+  // in view (`#/meetings/<id>/<tab>`, `#/automations/<tab>`).
   if (state.route === 'meetings') {
-    // The meeting shown is the one in the hash (`#/meetings/<id>/<tab>`), also when the list picked it.
     meetingsUi.ensureSelection();
-    if (location.hash !== routeHash()) history.replaceState(null, '', routeHash());
+    meetingsUi.follow();
   }
+  if (state.route === 'automations') automationsUi.follow();
+  if (['meetings', 'automations'].includes(state.route) && location.hash !== routeHash()) history.replaceState(null, '', routeHash());
   if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
   const pageClass = `ws-page ws-page-${state.route}`;
   const html = state.route === 'today' ? today(s, ctx)
@@ -363,6 +453,7 @@ async function render() {
   for (const menu of openMenus) root.querySelector(`details.ws-menu[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
   if (state.route === 'inbox') rememberDraftBaseline(s);
   restoreScroll(saved);
+  measureToday();
   // A background update keeps keyboard focus on the same control, and only on that one: when
   // the control is gone or no longer told apart from a sibling, focus is left alone.
   if (refocus && !root.contains(document.activeElement)) {
@@ -389,6 +480,7 @@ async function render() {
   if (state.route === 'settings' && state.settingsTab.startsWith('meetings-')) meetingsSettingsUi.load().catch(fail);
   lastDraftSignature = draftSignature(s);
   renderSheet();
+  hideTip();
 }
 
 /** A transcript line a task quote or a note's time opened: scrolled to and highlighted a moment. */
@@ -526,7 +618,7 @@ async function route(name, tab, pluginPath = null) {
     if (!section) pluginsUi.load().catch(fail);
     return;
   }
-  if (tab && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === tab) ? tab : 'automations';
+  if (tab && state.route === 'automations') showAutomationsTab(tab);
   if (state.route === 'meetings') meetingsUi.ensureSelection();
   history.replaceState(null, '', routeHash());
   await render();
@@ -1163,7 +1255,16 @@ function stepCalendar(direction) {
 const automationsUi = store && createAutomationsController({
   state, store, snap, mutate, route, render, openModal, confirmModal, toast, ensureClaudeChoice, modalOpen,
   writeText: text => navigator.clipboard.writeText(text),
+  dock: dockFor('automations'),
 });
+
+/** Automations' tab `tab` (`runs` …), as a hash names it: the tab chosen last, shown in whichever
+ *  section holds it. */
+function showAutomationsTab(tab) {
+  const [name, id] = AUTOMATION_TABS.find(([x]) => x === tab) || AUTOMATION_TABS[0];
+  state.automations.tab = name;
+  showDockTab('automations', id);
+}
 const runLogOpen = () => !!automationsUi?.runLogOpen();
 
 // ---------------------------------------------------------------- tasks (spec "Tasks page")
@@ -1200,6 +1301,291 @@ if (tasksUi) {
   });
 }
 
+// ---------------------------------------------------------------- Today layout (spec "Interactions")
+
+const todayUi = store && createTodayController({
+  state, snap, mutate, render, toast, announce,
+  prefs: { get: localPref, json: localJson, set: setLocalPref },
+  focus: focusFirst,
+});
+if (todayUi) {
+  // `dragging(false)` comes once the drop's save has settled; the updates held meanwhile show then.
+  attachTodayDrag(document, todayUi, { dragging: holdLayout, fail });
+}
+
+// ---------------------------------------------------------------- page sections (spec "Page sections")
+
+// Each page's sections are a preference of this Mac (`codemie.layout.<page>.v1`), read once and
+// kept here. With nothing stored yet, Calendar takes the old calendar list choice
+// (`codemie.calendar.sidebar`) and Meetings the old hidden list (`codemie.meetings.wide`), which
+// are no longer written.
+const DOCKS = { inbox: INBOX_DOCK, calendar: CALENDAR_DOCK, meetings: MEETINGS_DOCK, automations: AUTOMATIONS_DOCK };
+const DOCK_LEGACY = {
+  calendar: () => (localPref('codemie.calendar.sidebar', 'true') === 'false' ? { collapse: ['cal-side'] } : null),
+  meetings: () => (localPref('codemie.meetings.wide', 'false') === 'true' ? { collapse: ['mtg-list'] } : null),
+};
+const dockStorage = { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) };
+const dockLayouts = {};
+const docks = {
+  get: page => (dockLayouts[page] ||= loadDock(dockStorage, page, DOCKS[page], DOCK_LEGACY[page]?.() || null)),
+  set: (page, layout) => {
+    dockLayouts[page] = layout;
+    saveDock(dockStorage, page, layout);
+  },
+};
+
+/** Brings tab `tab` of `page` into view in the section that holds it, expanding that section;
+ *  the caller draws the page. */
+function showDockTab(page, tab) {
+  const layout = docks.get(page);
+  const shown = setCollapsed(activateTab(layout, tab), DOCKS[page], tab, false).layout;
+  if (shown !== layout) docks.set(page, shown);
+}
+
+/** The sections of `page` as its controller uses them (see createMeetingsController). */
+function dockFor(page) {
+  return {
+    layout: () => docks.get(page),
+    collapse: (id, on) => dockUi.setCollapsed(page, id, on),
+    visible: () => visibleTabs(docks.get(page)),
+    show: id => showDockTab(page, id),
+  };
+}
+
+/** Whether Today shows widget `id` now: in its grid, or as a card under it. */
+function onToday(id) {
+  const defs = tileDefs(pluginWidgetCatalog(state.installedPlugins || []));
+  const drawn = drawnGrid(snap(), todayOf(current(), defs), defs, { pluginsKnown: !!state.pluginsKnown, meetingsHidden: state.meetings.hidden });
+  return [...drawn.placed, ...drawn.below].some(it => it.id === id);
+}
+
+const dockUi = store && attachDock(document, {
+  defs: DOCKS, render, toast, announce,
+  // A tab a change brings into view (chosen, moved or expanded) is the page's tab chosen last,
+  // which the hash names; the Run log reads its runs then.
+  layouts: {
+    get: docks.get,
+    set: (page, layout) => {
+      const was = visibleTabs(docks.get(page));
+      docks.set(page, layout);
+      const fresh = visibleTabs(layout).filter(tab => !was.includes(tab));
+      if (page === 'meetings') meetingsUi.follow(fresh);
+      if (page === 'automations') automationsUi.follow(fresh)?.catch(fail);
+    },
+  },
+  // A divider or tab held: updates wait, as for Today's widgets, until the drop is drawn.
+  dragging: holdLayout,
+  locked: () => !!todayUi?.locked(),
+  nudge: () => todayUi.handle('today-locked'),
+  pin: id => todayUi.handle('today-add', { dataset: { id } }),
+  onToday,
+});
+
+// ---------------------------------------------------------------- menus (spec "Menus")
+
+// The main menu collapses to its 64 px icon rail, the Settings menu folds its groups and shrinks
+// to a 58 px rail, and both are preferences of this Mac: `codemie.sidebar.collapsed` ("1"/"0"),
+// `codemie.settings.folded` (the folded group names) and `codemie.settings.menu` ({collapsed,
+// width}). The pages only read them (the views are pure); the changes below store and draw them.
+const SIDEBAR_KEY = 'codemie.sidebar.collapsed';
+const FOLDED_KEY = 'codemie.settings.folded';
+const MENU_KEY = 'codemie.settings.menu';
+/** The main menu edge is dragged this far (px) to collapse or expand it. */
+const SIDEBAR_DRAG = 60;
+/** The Settings menu edge dragged under this width (px) shrinks the menu to its rail. */
+const SETTINGS_RAIL_AT = 150;
+
+const sidebarCollapsed = () => localPref(SIDEBAR_KEY, '0') === '1';
+const clampWidth = w => Math.min(SETTINGS_MENU.max, Math.max(SETTINGS_MENU.min, Math.round(Number(w)) || SETTINGS_MENU.def));
+function settingsMenu() {
+  const saved = localJson(MENU_KEY, null);
+  return { collapsed: saved?.collapsed === true, width: clampWidth(saved?.width) };
+}
+function foldedGroups() {
+  const saved = localJson(FOLDED_KEY, []);
+  return Array.isArray(saved) ? saved.filter(name => SETTINGS_GROUPS.some(g => g.name === name)) : [];
+}
+const saveMenu = patch => setLocalPref(MENU_KEY, JSON.stringify({ ...settingsMenu(), ...patch }));
+const saveFolded = names => setLocalPref(FOLDED_KEY, JSON.stringify(names));
+
+/** What Settings → Layout shows: the preferences, the page layouts and the Today grid. */
+function layoutContext() {
+  if (state.route !== 'settings' || state.settingsTab !== 'layout') return undefined;
+  const defs = tileDefs(pluginWidgetCatalog(state.installedPlugins || []));
+  return {
+    prefs: { locked: !!todayUi?.locked(), handles: localPref('codemie.layout.handles', 'hover'), sidebarCollapsed: sidebarCollapsed(), menuCollapsed: settingsMenu().collapsed },
+    docks: { defs: DOCKS, layouts: Object.fromEntries(Object.keys(DOCKS).map(page => [page, docks.get(page)])) },
+    today: todayOf(current(), defs),
+  };
+}
+
+async function toggleSidebar(on = !sidebarCollapsed()) {
+  setLocalPref(SIDEBAR_KEY, on ? '1' : '0');
+  announce(on ? 'Main menu collapsed to icons' : 'Main menu expanded');
+  await render();
+}
+
+async function setSettingsMenu(patch, say) {
+  saveMenu(patch);
+  if (say) announce(say);
+  await render();
+}
+const shrinkSettingsMenu = (on = !settingsMenu().collapsed) => setSettingsMenu({ collapsed: on }, on ? 'Settings menu shrunk to icons' : 'Settings menu expanded');
+const focusEdge = () => document.querySelector('.ws-settings-edge')?.focus();
+
+/** Folds or unfolds Settings group `name`; with `only` (⌥-click) every other group folds. */
+async function foldGroup(name, only) {
+  const all = SETTINGS_GROUPS.map(g => g.name);
+  if (!all.includes(name)) return;
+  const folded = foldedGroups();
+  const next = only ? all.filter(n => n !== name) : folded.includes(name) ? folded.filter(n => n !== name) : [...folded, name];
+  saveFolded(next);
+  announce(only ? `${name} is the only open group` : `${name} ${next.includes(name) ? 'folded' : 'unfolded'}`);
+  await render();
+}
+
+/** Folds every group, or, when all are folded, unfolds them. */
+async function foldAll() {
+  const folded = foldedGroups();
+  const fold = SETTINGS_GROUPS.some(g => !folded.includes(g.name));
+  saveFolded(fold ? SETTINGS_GROUPS.map(g => g.name) : []);
+  announce(fold ? 'All groups folded' : 'All groups unfolded');
+  await render();
+}
+
+// A menu edge held: updates wait (as for a Today widget) until the drop is drawn. The drop asks
+// for its render while the edge is still held, so it is drawn once, when the last hold lets go.
+function dragSidebarEdge(ev, edge) {
+  const was = sidebarCollapsed();
+  const done = () => {
+    edge.classList.remove('ws-active');
+    holdLayout(false);
+  };
+  trackPress(ev, {
+    cursor: 'ew',
+    onStart: () => {
+      holdLayout(true);
+      edge.classList.add('ws-active');
+    },
+    onEnd: (_, { dx }) => {
+      if (was ? dx >= SIDEBAR_DRAG : dx <= -SIDEBAR_DRAG) toggleSidebar(!was).catch(fail);
+      else render().catch(fail);
+      done();
+    },
+    onCancel: () => {
+      render().catch(fail);
+      done();
+    },
+  });
+}
+
+// The Settings menu follows the pointer between 200 and 400 px and turns into the rail under 150.
+function dragSettingsEdge(ev, edge) {
+  const layout = edge.closest('.ws-settings-layout');
+  const aside = layout?.querySelector('.ws-settings-sidebar');
+  if (!layout || !aside) return;
+  const before = settingsMenu();
+  const start = before.collapsed ? SETTINGS_MENU.rail : before.width;
+  let width = start;
+  let rail = before.collapsed;
+  trackPress(ev, {
+    threshold: 1, cursor: 'ew',
+    onStart: () => {
+      holdLayout(true);
+      layout.classList.add('ws-resizing');
+    },
+    onMove: (_, { dx }) => {
+      width = start + dx;
+      rail = width < SETTINGS_RAIL_AT;
+      aside.classList.toggle('ws-settings-rail', rail);
+      layout.style.setProperty('--ws-settings-w', `${rail ? SETTINGS_MENU.rail : clampWidth(width)}px`);
+    },
+    onEnd: () => {
+      if (rail !== before.collapsed) announce(rail ? 'Settings menu shrunk to icons' : 'Settings menu expanded');
+      saveMenu({ collapsed: rail, width: rail ? before.width : clampWidth(width) });
+      render().catch(fail);
+      holdLayout(false);
+    },
+    onCancel: () => {
+      render().catch(fail);
+      holdLayout(false);
+    },
+  });
+}
+
+document.addEventListener('pointerdown', ev => {
+  const edge = ready && ev.target.closest?.('.ws-sidebar-edge, .ws-settings-edge');
+  if (!edge) return;
+  if (edge.classList.contains('ws-sidebar-edge')) dragSidebarEdge(ev, edge);
+  else dragSettingsEdge(ev, edge);
+});
+
+document.addEventListener('dblclick', ev => {
+  if (!ready || !ev.target.closest?.('.ws-settings-edge')) return;
+  setSettingsMenu({ collapsed: false, width: SETTINGS_MENU.def }, 'Settings menu width reset').then(focusEdge).catch(fail);
+});
+
+// ⌘\ collapses the main menu, ⌘⇧\ shrinks the Settings menu; on the Settings menu's edge,
+// Enter toggles it and ← → resize it.
+document.addEventListener('keydown', ev => {
+  if (!ready || modalOpen() || sheetOpen() || ev.isComposing) return;
+  if (ev.code === 'Backslash' && (ev.metaKey || ev.ctrlKey) && !ev.altKey) {
+    if (!ev.shiftKey) {
+      ev.preventDefault();
+      toggleSidebar().catch(fail);
+    } else if (state.route === 'settings') {
+      ev.preventDefault();
+      shrinkSettingsMenu().catch(fail);
+    }
+    return;
+  }
+  if (!ev.target.closest?.('.ws-settings-edge') || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const menu = settingsMenu();
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault();
+    shrinkSettingsMenu().then(focusEdge).catch(fail);
+  } else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
+    ev.preventDefault();
+    const step = ev.key === 'ArrowLeft' ? -24 : 24;
+    const next = menu.collapsed ? (step > 0 ? { collapsed: false } : null)
+      : menu.width + step < SETTINGS_MENU.min ? { collapsed: true } : { width: clampWidth(menu.width + step) };
+    if (next) setSettingsMenu(next, next.collapsed === undefined ? '' : next.collapsed ? 'Settings menu shrunk to icons' : 'Settings menu expanded').then(focusEdge).catch(fail);
+  }
+});
+
+// A rail has no labels: a tooltip names the icon under the pointer (or the one focused by key).
+let tipEl = null;
+function hideTip() {
+  tipEl?.remove();
+  tipEl = null;
+}
+function showTip(target) {
+  const inRail = target.closest('.ws-sidebar-rail, .ws-settings-rail') || (target.closest('.ws-sidebar') && matchMedia('(max-width:1050px)').matches);
+  if (!inRail || !target.dataset.tip) return hideTip();
+  const box = target.getBoundingClientRect();
+  hideTip();
+  tipEl = document.createElement('div');
+  tipEl.className = 'ws-tooltip';
+  tipEl.setAttribute('role', 'tooltip');
+  tipEl.textContent = target.dataset.tip;
+  tipEl.style.left = `${Math.round(box.right + 8)}px`;
+  tipEl.style.top = `${Math.round(box.top + box.height / 2)}px`;
+  document.body.append(tipEl);
+}
+document.addEventListener('pointerover', ev => {
+  if (ev.pointerType === 'touch') return;
+  const target = ev.target.closest?.('[data-tip]');
+  if (target) showTip(target);
+  else hideTip();
+});
+document.addEventListener('focusin', ev => {
+  const target = ev.target.closest?.('[data-tip]');
+  if (target?.matches(':focus-visible')) showTip(target);
+});
+document.addEventListener('focusout', hideTip);
+document.addEventListener('pointerdown', hideTip, true);
+document.documentElement.addEventListener('mouseleave', hideTip);
+
 // ---------------------------------------------------------------- meetings (spec "Meetings page")
 
 /** Saves `text` as a file in Downloads (the browser's download). */
@@ -1232,6 +1618,7 @@ const meetingsUi = store && createMeetingsController({
     return eventDialog(getRecord('event', id));
   },
   canRender: () => ready && !modalOpen() && !editing() && !taskDrag,
+  dock: dockFor('meetings'),
 });
 
 // ---------------------------------------------------------------- Settings › Meetings
@@ -1384,31 +1771,6 @@ function reviewAction(result, { onSent } = {}) {
   });
 }
 
-function customizeDialog() {
-  const w = current();
-  const entries = customizeEntries(w, pluginWidgetCatalog(state.installedPlugins));
-  // "From plugins" shows itself until a saved layout says otherwise (showPluginsCard).
-  const shown = x => w.layout.includes(x.id)
-    || (x.id === 'plugins' && !('plugins' in (w.widgetWidths || {})) && !!root.querySelector('.ws-plugins-card'))
-    || (x.id === 'meetings' && !('meetings' in (w.widgetWidths || {})) && !!root.querySelector('.ws-mtg-today'));
-  const dialog = openModal({
-    title: 'Customize Today',
-    subtitle: `Cards for ${w.name}. Drag the arrows to reorder.`,
-    body: `<div class="ws-widget-list" id="widget-order">${entries.map(x => `<div class="ws-widget-row" data-widget="${e(x.id)}"${x.plugin ? ` data-plugin-id="${e(x.plugin)}"` : ''}>
-      ${toggle({ name: 'widget', attrs: { value: x.id, 'aria-label': `Show ${x.title}` }, checked: shown(x) })}
-      <div class="ws-widget-copy"><strong>${e(x.title)}${x.plugin ? ` ${badge('Plugin', 'neutral', 'puzzle')}` : ''}</strong><span>${e(x.description)}</span></div>
-      ${select([[4, '⅓ width'], [6, '½ width'], [8, '⅔ width'], [12, 'Full width']], w.widgetWidths?.[x.id] || x.width, { name: `width-${x.id}`, 'aria-label': `${x.title} width` })}
-      <span class="ws-reorder">${button('', { action: 'widget-up', iconName: 'chevron-up', variant: 'ghost', title: 'Move up' })}${button('', { action: 'widget-down', iconName: 'chevron-down', variant: 'ghost', title: 'Move down' })}</span>
-    </div>`).join('')}</div>`,
-    submit: 'Save layout',
-    onSubmit: async f => {
-      const layout = [...dialog.querySelectorAll('[data-widget]')].map(row => row.dataset.widget).filter(id => f.getAll('widget').includes(id));
-      const widgetWidths = Object.fromEntries(entries.map(x => [x.id, Number(f.get(`width-${x.id}`))]));
-      await mutate('layout_save', { layout, widgetWidths });
-    },
-  });
-}
-
 function scheduleDialog() {
   const s = snap();
   openModal({
@@ -1501,8 +1863,10 @@ function selectMessage(id) {
   return render().then(() => root.querySelector('.ws-inbox-row.ws-selected')?.scrollIntoView({ block: 'nearest' }));
 }
 
-async function handle(action, el, opts = {}) {
+async function handle(action, el, ev) {
   if (action.startsWith('recovery-')) return recoveryAction(action);
+  if (action.startsWith('today-')) return todayUi.handle(action, el, ev);
+  if (action.startsWith('dock-')) return dockUi.handle(action, el, ev);
   // Data location works from the recovery page too, where there is no snapshot.
   if (action.startsWith('data-')) return storageAction(action, el);
   if (action.startsWith('automation') || action.startsWith('run-')) return automationsUi.handle(action, el);
@@ -1516,7 +1880,8 @@ async function handle(action, el, opts = {}) {
     // From the calendar's event card, a step that opens a dialog or the page closes the card first.
     const card = el.closest?.('.ws-event-modal');
     if (card && ['meeting-make-notes', 'meeting-import', 'meeting-open', 'meeting-retry', 'meeting-calendar'].includes(action)) card.close();
-    await meetingsUi.handle(action, el, opts);
+    // ⌥-click on a day of the Meetings list keeps only that day open.
+    await meetingsUi.handle(action, el, { alt: !!ev?.altKey });
     if (card?.open) refreshEventDialog();
     return undefined;
   }
@@ -1532,6 +1897,14 @@ async function handle(action, el, opts = {}) {
         state.selectedMessage = null;
       }
       return route(el.dataset.route || 'today');
+    case 'sidebar-toggle': return toggleSidebar();
+    case 'settings-group': return foldGroup(el.dataset.group, !!ev?.altKey);
+    case 'settings-groups-all': return foldAll();
+    case 'settings-menu-toggle': return shrinkSettingsMenu();
+    case 'layout-lock': return todayUi.handle('today-lock');
+    case 'layout-handles':
+      if (['hover', 'always', 'customize'].includes(el.dataset.value)) setLocalPref('codemie.layout.handles', el.dataset.value);
+      return render();
     case 'settings-tab':
       // A document's “Edit the template” opens that template; Note templates again leaves a clean editor.
       // From a dialog (Make notes) or the event card, the dialog closes first.
@@ -1623,10 +1996,11 @@ async function handle(action, el, opts = {}) {
       return setCalendar(d);
     }
     case 'calendar-refresh': await ensureCalendarWindow(true); return;
-    case 'calendar-sidebar':
-      state.calendarSidebar = !state.calendarSidebar;
-      setLocalPref('codemie.calendar.sidebar', String(state.calendarSidebar));
-      return render();
+    case 'calendar-sidebar': {
+      // The calendar list is the Calendars section: the button collapses or expands it.
+      const side = docks.get('calendar').panes.find(p => p.tabs.includes('cal-side'));
+      return dockUi.setCollapsed('calendar', 'cal-side', !side.collapsed);
+    }
     case 'calendar-visibility': {
       const hidden = hiddenCalendars();
       if (el.checked) hidden.delete(id); else hidden.add(id);
@@ -1850,16 +2224,6 @@ async function handle(action, el, opts = {}) {
     case 'commitment-toggle': return mutate('task_save', { id, status: el.checked ? 'done' : 'todo' });
     case 'local-delete': return mutate('local_delete', { kind: el.dataset.kind, id });
 
-    // Layout
-    case 'customize': return customizeDialog();
-    case 'widget-up': case 'widget-down': {
-      const row = el.closest('[data-widget]');
-      if (action === 'widget-up' && row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling);
-      if (action === 'widget-down' && row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row);
-      el.focus();
-      return;
-    }
-
     // Rules, schedules, jobs, notifications, data
     case 'rule-new': return ruleDialog();
     case 'schedule-new': return scheduleDialog();
@@ -1894,6 +2258,9 @@ async function submitForm(form) {
       return;
     }
     case 'task-quick': return tasksUi.quickAdd(form.dataset.col, Object.fromEntries(f));
+    case 'today-layout-save':
+      form.closest('details')?.removeAttribute('open');
+      return todayUi.handle('today-layout-save', { dataset: { name: String(f.get('name') || '') } });
     case 'meeting-notes': case 'meeting-task': return meetingsUi.submit(form, f);
     case 'plugin-addresses': return pluginsUi.submit(form);
     case 'time-zone': await mutate('settings_update', { timeZone: String(f.get('timeZone')).trim() }); return toast('Time zone saved.', 'success');
@@ -1956,8 +2323,7 @@ document.addEventListener('click', async ev => {
   const keepFocus = KEEP_FOCUS.has(el.dataset.action);
   if (!keepFocus) el.disabled = true;
   try {
-    // ⌥-click on a day of the Meetings list keeps only that day open.
-    await handle(el.dataset.action, el, { alt: ev.altKey });
+    await handle(el.dataset.action, el, ev);
   } catch (err) {
     fail(err);
   } finally {
@@ -2001,6 +2367,11 @@ document.addEventListener('submit', async ev => {
 
 document.addEventListener('input', ev => {
   if (codemie.input(ev.target)) return;
+  if (ev.target.matches?.('[data-settings-find]') && !ev.isComposing) {
+    state.settingsQuery = ev.target.value;
+    render().catch(fail);
+    return;
+  }
   if (ev.target.id === 'inbox-search') {
     state.search = ev.target.value;
     clearTimeout(searchTimer);
@@ -2036,6 +2407,11 @@ document.addEventListener('input', ev => {
       input?.focus();
       input?.setSelectionRange(pos, pos);
     }, 220);
+  }
+  if (ev.target.id === 'today-gallery-search') {
+    const value = ev.target.value;
+    clearTimeout(gallerySearchTimer);
+    gallerySearchTimer = setTimeout(() => todayUi.handle('today-gallery-search', { dataset: {}, value }).catch(fail), 150);
   }
   if (meetingsUi?.input(ev.target)) return;
   if (meetingsSettingsUi?.input(ev.target)) return;
@@ -2100,6 +2476,7 @@ document.addEventListener('mouseup', released, true);
 window.addEventListener('blur', released);
 document.addEventListener('dragstart', released, true);
 window.addEventListener('resize', placeDraftPopover);
+window.addEventListener('resize', measureToday);
 document.addEventListener('scroll', placeDraftPopover, true);
 
 // ⋯ and the other ws-menu menus: one open at a time; a click anywhere else closes it, and so
@@ -2156,6 +2533,14 @@ document.addEventListener('keydown', ev => {
   }
 });
 
+// Today: ⌘Z undoes the last layout change and ⇧⌘Z redoes it, outside text fields, as the edit
+// bar's Undo and Redo do (locked, they say so instead).
+document.addEventListener('keydown', ev => {
+  if (!ready || state.route !== 'today' || modalOpen() || sheetOpen() || editing() || ev.altKey || !(ev.metaKey || ev.ctrlKey) || ev.key.toLowerCase() !== 'z') return;
+  ev.preventDefault();
+  todayUi.handle(ev.shiftKey ? 'today-redo' : 'today-undo').catch(fail);
+});
+
 // A field that saves when it is left (the drawer's typed due date): one save, with what it holds.
 document.addEventListener('focusout', ev => {
   const el = ev.target;
@@ -2170,6 +2555,8 @@ document.addEventListener('keydown', ev => {
   if (!ready || modalOpen() || sheetOpen() || editing() || state.draftPopover || ev.metaKey || ev.ctrlKey || ev.altKey) return;
   if (state.route === 'calendar') {
     const keys = { t: () => setCalendar(todayDate()), ArrowLeft: () => stepCalendar(-1), ArrowRight: () => stepCalendar(1), d: () => setCalendar(state.calendarDate, 'day'), w: () => setCalendar(state.calendarDate, 'week'), m: () => setCalendar(state.calendarDate, 'month'), a: () => setCalendar(state.calendarDate, 'agenda') };
+    // ←/→ on a divider, a section tab or a widget grip move that, not the week.
+    if (ev.key.startsWith('Arrow') && ev.target.closest?.('.ws-split, [role=tab], .ws-tile-grip')) return;
     if (keys[ev.key]) {
       ev.preventDefault();
       keys[ev.key]().catch(fail);
@@ -2442,10 +2829,14 @@ async function boot() {
   } else {
     const target = parseHash(location.hash);
     if (target.route) state.route = target.route;
+    // The hash's tab is shown in whichever section holds it.
     if (target.route === 'meetings') {
       if (target.meetingId) state.meetings.selected = target.meetingId;
-      if (target.tab) state.meetings.tab = target.tab;
-    } else if (hash[2] && state.route === 'automations') state.automations.tab = AUTOMATION_TABS.some(([id]) => id === hash[2]) ? hash[2] : 'automations';
+      if (target.tab) {
+        state.meetings.tab = target.tab;
+        showDockTab('meetings', `mtg-${target.tab}`);
+      }
+    } else if (hash[2] && state.route === 'automations') showAutomationsTab(hash[2]);
     else if (hash[2]) state.settingsTab = settingsTabFor(hash[2]);
     if (state.route === 'settings' && hash[2] === 'plugins' && PLUGIN_ID.test(decodeURIComponent(hash[3] || ''))) {
       const section = decodeURIComponent(hash[4] || '');
@@ -2515,7 +2906,7 @@ async function boot() {
     const arrived = applyArrivedDraft(result.snapshot);
     refreshEventDialog();
     if (modalOpen()) return;
-    if (state.draftPopover || taskDrag || pressing) {
+    if (state.draftPopover || taskDrag || layoutDrag || pressing) {
       heldRender = true;
       return;
     }

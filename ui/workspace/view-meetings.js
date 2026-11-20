@@ -1,25 +1,44 @@
-// Meetings (spec "Meetings page", redesigned in docs/superpowers/specs/2026-11-19-meetings-calm-design.md):
-// one page — the list on the left (one header row with search, a filter menu and ⋯; the Needs you
-// card; days that fold; rows with no controls inside, colour only for what needs the person;
-// hidden meetings and the row's right-click menu) and the whole meeting on the right (the title
-// once, when and the people as faces, a slim progress line during a run, the four tabs from
-// view-meeting-tabs.js, or the explainer alone before there is a transcript). Also
+// Meetings (spec "Meetings page", redesigned in docs/superpowers/specs/2026-11-19-meetings-calm-design.md,
+// and "Page sections"): page sections — the list (one header row with search, a filter menu and ⋯;
+// the Needs you card; days that fold; rows with no controls inside, colour only for what needs the
+// person; hidden meetings and the row's right-click menu) and the meeting's four tabs from
+// view-meeting-tabs.js, which can sit side by side. The meeting's header (the title once, when and
+// the people as faces, a slim progress line during a run) shows once, above the first section
+// holding a meeting tab; before there is a transcript that section shows the explainer alone. Also
 // the transcript badge and the "Transcript & notes" section the calendar uses, Today's "From
 // your meetings" card, and the Make notes and Import dialogs' bodies. Pure: takes the snapshot
-// and the page's view state (`ctx.state.meetings`), plus what the controller read of meeting
-// folders (`ctx.reads(id)`) and the parsed glossary (`ctx.glossary`), and what plugins' call
-// slots say for the meeting shown (`ctx.callSlots`, text only), and returns HTML.
+// and the page's view state (`ctx.state.meetings`), its sections (`ctx.dock`), plus what the
+// controller read of meeting folders (`ctx.reads(id)`) and the parsed glossary (`ctx.glossary`),
+// and what plugins' call slots say for the meeting shown (`ctx.callSlots`, text only), and returns
+// HTML.
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { avatar, button, card, emptyState, select, toggle } from './ui.js';
 import { addDaysToKey, agoLabel, dayKey, formatDate, formatTime } from './format.js';
 import { taskStatus } from './tasks-model.js';
+import { activateTab, normalizeDock, paneOf, visibleTabs } from './dock-model.js';
+import { renderDock } from './dock-view.js';
 import {
-  FILTERS, LEGEND, STATES, TAB_LABELS, callOfMeeting, inLane, isHidden, legendOf, listModel, listOrder, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, seriesOf, tabsOf, tasksByMeeting, transcriptsAllowed,
+  FILTERS, LEGEND, STATES, TABS, callOfMeeting, inLane, isHidden, legendOf, listModel, listOrder, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, seriesOf, tabsOf, tasksByMeeting, transcriptsAllowed,
 } from './meetings-model.js';
 import {
   dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, menuItems, notesTab, peopleList, plural, PAUSED, pausedFix, saveNextStep, tasksTab, tplChip, tplColor, transcriptTab,
 } from './view-meeting-tabs.js';
+
+/** Meetings' sections (spec "Page sections"): the list, pinned to Today as "From your meetings"
+ *  (the `meetings` widget), and the meeting's four tabs, `mtg-<tab>` for each of `TABS`. Who was
+ *  there is the header's popover. */
+export const MEETINGS_DOCK = {
+  title: 'Meetings',
+  tabs: {
+    'mtg-list': { title: 'Meetings', icon: 'meetings', min: 260, w: 340, pin: 'meetings', pinTitle: 'From your meetings' },
+    'mtg-notes': { title: 'Notes', icon: 'note', min: 340, w: 760 },
+    'mtg-transcript': { title: 'Transcript', icon: 'transcript', min: 320, w: 520 },
+    'mtg-tasks': { title: 'Tasks', icon: 'tasks', min: 300, w: 420 },
+    'mtg-files': { title: 'Files', icon: 'folder', min: 300, w: 420 },
+  },
+  initial: [['mtg-list'], ['mtg-notes', 'mtg-transcript', 'mtg-tasks', 'mtg-files']],
+};
 
 const PILL_TONE = { muted: 'neutral', info: 'info', purple: 'purple', success: 'success', error: 'error', warning: 'warning' };
 const STATE_ICON = { upcoming: 'clock', pending: 'refresh', available: 'transcript', downloaded: 'transcript', ready: 'sparkles', failed: 'alert', blocked: 'lock', none: 'minus', offline: 'pin' };
@@ -327,30 +346,39 @@ function meetingMenu(p, mc, slots = []) {
   ]);
 }
 
-const PANELS = { notes: notesTab, transcript: transcriptTab, tasks: tasksTab, files: filesTab };
-
-function detail(p, m) {
-  const mc = meetingContext(p, m);
-  const tabs = tabsOf(m);
-  const tab = tabs.includes(p.v.tab) ? p.v.tab : 'notes';
+/** The meeting's header: the list's toggle, the title once, when and the people as faces, a
+ *  hidden meeting's note, Review while the Tasks tab isn't shown, a plugin's chips and the ⋯ menu,
+ *  then a slim progress line during a run. `p.listHidden` says the list's section is collapsed,
+ *  `p.tasksShown` that an open section shows the Tasks tab. */
+export function meetingHeader(p, m, mc = meetingContext(p, m)) {
   const { d } = mc;
   const rel = relDay(m.start, p.zone, p.now);
   const where = m.online ? 'Teams' : d.location || 'In person';
   const when = `${rel || shortDay(m.start, p.zone)} · ${formatTime(m.start, p.zone)}–${formatTime(m.end, p.zone)} · ${where}`;
   const slots = slotsOf(p, m);
-  const review = mc.review.length && tab !== 'tasks' && tabs.length ? button(`Review ${plural(mc.review.length, 'task')}`, { action: 'meeting-tab', size: 'sm', attrs: { 'data-tab': 'tasks' } }) : '';
+  const review = mc.review.length && !p.tasksShown && tabsOf(m).length ? button(`Review ${plural(mc.review.length, 'task')}`, { action: 'meeting-tab', size: 'sm', attrs: { 'data-tab': 'tasks' } }) : '';
   const hidden = isHidden(m, p.v.hidden) ? `<span class="ws-mtg-hid-note">${icon('eye-off')}<span>Hidden from the list</span><button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-unhide" data-id="${e(m.id)}">Show again</button></span>` : '';
-  const bar = tabs.length ? `<div class="ws-tabs ws-mtg-tabs" role="tablist" aria-label="Meeting">${tabs.map(id => `<button type="button" role="tab" data-action="meeting-tab" data-tab="${id}" aria-selected="${tab === id}">${TAB_LABELS[id]}${id === 'tasks' && mc.review.length ? `<span class="ws-tab-count ws-mtg-tab-alert" title="To review">${mc.review.length}</span>` : ''}</button>`).join('')}</div>` : '';
-  // Before a transcript: the card that says why, and the meeting's tasks with Add a task.
-  const panel = tabs.length ? `<div class="ws-mtg-panel" data-panel="${tab}">${PANELS[tab](p, mc)}</div>` : `<div class="ws-mtg-panel ws-mtg-panel-alone">${explainer(p, mc)}${tasksTab(p, mc, { alone: true })}</div>`;
   return `<div class="ws-mtg-meeting" data-meeting="${e(m.id)}">
     <header class="ws-mtg-head">
-      <div class="ws-mtg-head-title">${button('', { action: 'meeting-list-toggle', iconName: 'list', variant: 'ghost', size: 'sm', title: p.v.wide ? 'Show the meeting list' : 'Hide the meeting list — more room for notes', attrs: { 'aria-pressed': String(!p.v.wide) } })}<div class="ws-mtg-head-copy"><h2>${d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</h2><div class="ws-mtg-meta"><span class="ws-mtg-when">${e(when)}</span>${peopleStack(p, mc)}${hidden}</div></div><div class="ws-actions">${review}${pluginChips(slots)}${meetingMenu(p, mc, slots)}</div></div>
+      <div class="ws-mtg-head-title">${button('', { action: 'meeting-list-toggle', iconName: 'list', variant: 'ghost', size: 'sm', title: p.listHidden ? 'Show the meeting list' : 'Hide the meeting list — more room for notes', attrs: { 'aria-pressed': String(!p.listHidden) } })}<div class="ws-mtg-head-copy"><h2>${d.private ? icon('lock', 'ws-mtg-lock') : ''}${e(m.title)}</h2><div class="ws-mtg-meta"><span class="ws-mtg-when">${e(when)}</span>${peopleStack(p, mc)}${hidden}</div></div><div class="ws-actions">${review}${pluginChips(slots)}${meetingMenu(p, mc, slots)}</div></div>
     </header>
     ${runLine(p, mc)}${pluginLines(slots, m)}
-    ${bar}
-    ${panel}
   </div>`;
+}
+
+const TAB_BODIES = { notes: notesTab, transcript: transcriptTab, tasks: tasksTab, files: filesTab };
+/** A meeting tab of the sections (`mtg-notes` …), not the list. */
+const meetingTab = id => id !== 'mtg-list' && Object.hasOwn(MEETINGS_DOCK.tabs, id);
+
+/** The body of meeting tab `tab` (`notes` …): that tab of meeting `m`, or, with none, what to do.
+ *  Before a transcript the meeting has no tabs: the `first` section holding one says why, with
+ *  the meeting's tasks and Add a task, and any other says it waits for the transcript. */
+function tabBody(p, m, mc, tab, first) {
+  const body = !m ? `<div class="ws-mtg-detail-empty">${emptyDetail(p.s)}</div>`
+    : tabsOf(m).length ? TAB_BODIES[tab](p, mc)
+      : first ? `<div class="ws-mtg-panel-alone">${explainer(p, mc)}${tasksTab(p, mc, { alone: true })}</div>`
+        : `<p class="ws-hint ws-muted ws-mtg-wait">Nothing here until the meeting has a transcript.</p>`;
+  return `<div class="ws-mtg-detail"${m ? ` data-meeting="${e(m.id)}"` : ''} data-panel="${tab}">${body}</div>`;
 }
 
 function emptyDetail(s) {
@@ -369,15 +397,28 @@ export function shownCall(s, ctx = {}) {
   return callOfMeeting(selectedOf(pageOf(s, ctx)));
 }
 
-/** The Meetings page. */
+/** The Meetings page in its sections as `ctx.dock` (`{layouts, locked}`) has them; without a
+ *  stored layout, the designed one showing the tab chosen last. */
 export function meetings(s, ctx = {}) {
   const p = pageOf(s, ctx);
   const selected = selectedOf(p);
   p.selectedId = selected?.id || null;
-  return `<div class="ws-mtg-layout${p.v.wide ? ' ws-mtg-wide' : ''}">
-    ${list(p)}
-    <section class="ws-mtg-detail" aria-label="Meeting details">${ctx.banners || ''}${selected ? detail(p, selected) : `<div class="ws-mtg-detail-empty">${emptyDetail(s)}</div>`}</section>
-  </div>`;
+  const layout = ctx.dock?.layouts?.meetings || activateTab(normalizeDock(MEETINGS_DOCK, null), `mtg-${TABS.includes(p.v.tab) ? p.v.tab : 'notes'}`);
+  p.listHidden = !!paneOf(layout, 'mtg-list')?.collapsed;
+  p.tasksShown = visibleTabs(layout).includes('mtg-tasks');
+  const mc = selected ? meetingContext(p, selected) : null;
+  // The header shows once, above the first open section holding a meeting tab; the banners go
+  // there too, or above the first open section when no meeting tab is open.
+  const head = layout.panes.find(x => !x.collapsed && x.tabs.some(meetingTab));
+  const top = head || layout.panes.find(x => !x.collapsed);
+  const header = `${ctx.banners || ''}${head && selected ? meetingHeader(p, selected, mc) : ''}`;
+  // Only the Tasks tab counts: the tasks to review.
+  const counts = mc && tabsOf(selected).length ? { 'mtg-tasks': mc.review.length } : {};
+  return renderDock('meetings', MEETINGS_DOCK, layout, id => (id === 'mtg-list' ? list(p) : tabBody(p, selected, mc, id.slice(4), id === head?.active)), {
+    locked: !!ctx.dock?.locked,
+    before: pane => (pane.id === top?.id && header ? `<div class="ws-mtg-top">${header}</div>` : ''),
+    count: id => counts[id],
+  });
 }
 
 // ---------------------------------------------------------------- calendar's event card
@@ -419,20 +460,24 @@ const TODAY_TEXT = { available: 'Saving the transcript from Teams', downloaded: 
 /** Whether Today shows "From your meetings": when the layout has it, or until a saved layout
  *  hides it, whenever a meeting needs the person or has a transcript without notes. */
 export function showMeetingsCard(w, s, now = Date.now(), hidden = null) {
+  const grid = Array.isArray(w.today?.items) ? w.today : null;
+  // A saved Today grid draws the card where it placed it, and a card the user removed stays away.
+  if (grid && (grid.items.some(i => i.id === 'meetings') || (grid.hidden || []).includes('meetings'))) return false;
   if ((w.layout || []).includes('meetings')) return true;
-  if (w.widgetWidths && 'meetings' in w.widgetWidths) return false;
+  if (!grid && w.widgetWidths && 'meetings' in w.widgetWidths) return false;
   const c = meetingCounts(s, now, undefined, hidden);
   return c.process + c.attention > 0;
 }
 
-/** Today's "From your meetings": what needs the person first, then transcripts without notes;
- *  each row opens the meeting on the Meetings page. */
-export function todayMeetingsCard(s, now = Date.now(), hidden = null) {
+/** Today's "From your meetings": what needs the person first, then transcripts without notes
+ *  (unless `needsMe`); each row opens the meeting on the Meetings page. Meetings `hidden` from the
+ *  Meetings list stay away. */
+export function todayMeetingsCard(s, now = Date.now(), { needsMe = false, hidden = null } = {}) {
   const zone = s.settings.timeZone;
   // Meetings hidden from the Meetings list don't ask for the person here either.
   const items = meetingItems(s, now).filter(m => !isHidden(m, hidden));
   const attention = meetingRows(s, 'attention', '', false, now, items);
-  const toDo = meetingRows(s, 'process', '', false, now, items);
+  const toDo = needsMe ? [] : meetingRows(s, 'process', '', false, now, items);
   const rows = [...attention, ...toDo].slice(0, 5).map(m => {
     const rel = relDay(m.start, zone, now);
     const saveError = m.state === 'available' ? meetingErrors(m.rec).save : null;

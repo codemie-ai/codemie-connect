@@ -78,7 +78,7 @@ test('settings has a Meetings group with the five tabs in order', () => {
   const s = snapshot();
   const ctx = tab => ({ state: { settingsTab: tab, meetingsSettings: newMeetingsSettingsView() }, auth: {}, now: NOW });
   const nav = settings(s, ctx('meetings-rules'));
-  assert.match(nav, /<div class="ws-nav-label">Meetings<\/div>/);
+  assert.match(nav, /class="ws-nav-group" data-action="settings-group" data-group="Meetings"/);
   for (const tab of MEETING_TABS) {
     assert.equal(settingsTabFor(tab), tab);
     const html = settings(s, ctx(tab));

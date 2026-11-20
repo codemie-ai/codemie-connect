@@ -8,7 +8,8 @@ import {
   createPluginsController, UNVERIFIED, KNOWLEDGE_LATER, PROXY_NOTE,
 } from '../workspace/settings-plugins.js';
 import { pluginNav, renderShell } from '../workspace/shell.js';
-import { customizeEntries, today } from '../workspace/view-today.js';
+import { tileDefs, today } from '../workspace/view-today.js';
+import { gallery } from '../workspace/today-edit-view.js';
 import { pluginWidgetCatalog, pluginWidgetCard, pluginsCard, showPluginsCard, heldText, parseLayoutId } from '../workspace/today-plugins.js';
 import { settings } from '../workspace/view-settings.js';
 import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
@@ -240,11 +241,14 @@ test('today_customize_lists_plugin_widgets', () => {
   ];
   const catalog = pluginWidgetCatalog(installed);
   assert.deepEqual(catalog.map(w => [w.id, w.width]), [['plugin:github:ci', 4], ['plugin:github:repos', 12]]);
-  const w = { layout: ['brief', 'plugin:github:repos'], widgetWidths: {} };
-  const entries = customizeEntries(w, catalog);
-  assert.deepEqual(entries.slice(0, 2).map(x => x.id), ['brief', 'plugin:github:repos']);
-  assert.ok(entries.some(x => x.id === 'plugin:github:ci' && x.plugin === 'github'));
-  assert.ok(entries.some(x => x.id === 'plugins'), 'the From plugins card is offered');
+  // The gallery offers what isn't on Today, plugin widgets marked, and lists what is.
+  const html = gallery(tileDefs(catalog), new Set(['brief', 'plugin:github:repos']));
+  const offered = html.slice(html.indexOf('Add to Today'), html.indexOf('On Today'));
+  assert.match(offered, /data-gid="plugin:github:ci" data-w="4" data-h="4"[^]*?GitHub CI <span class="ws-badge ws-badge-purple">Plugin<\/span>/);
+  assert.match(offered, /data-gid="plugins"/, 'the From plugins card is offered');
+  assert.doesNotMatch(offered, /data-gid="brief"/);
+  assert.match(html, /On Today · 2<\/div>[^]*?data-gid="brief"[^]*?data-gid="plugin:github:repos"/);
+  assert.ok(escaped(html), 'a plugin widget title is text');
   assert.deepEqual(parseLayoutId('plugin:github:ci'), { plugin: 'github', widget: 'ci' });
   assert.equal(parseLayoutId('plugin:../x:y'), null);
 });
@@ -294,15 +298,21 @@ test('Today draws plugin widgets from their data, escaped, and the From plugins 
   assert.match(card, /data-go="#\/p\/github\/repos"/);
   assert.equal(heldText(s, 'scheduler:held:1'), `Monday plan\n\nPlan ${HOSTILE}`);
   const w = s.workspaces.find(x => x.id === s.settings.activeWorkspace);
-  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: {} }, s), true, 'shown until a saved layout says otherwise');
-  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: { plugins: 12 } }, s), false);
+  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: {}, today: {} }, s), true, 'shown until a saved layout says otherwise');
+  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: { plugins: 12 }, today: {} }, s), false);
+  // With a saved grid: shown unless the grid places it (it is drawn there) or it was removed.
+  const grid = items => ({ active: 'Mine', items, layouts: {}, titles: {}, options: {}, hidden: [] });
+  assert.equal(showPluginsCard({ ...w, layout: [], widgetWidths: { plugins: 12 }, today: grid([]) }, s), true, 'the old widths no longer count');
+  assert.equal(showPluginsCard({ ...w, layout: ['plugins'], today: grid([{ id: 'plugins', x: 0, y: 0, w: 12, h: 3 }]) }, s), false);
+  assert.equal(showPluginsCard({ ...w, layout: [], today: { ...grid([]), hidden: ['plugins'] } }, s), false);
 
-  // On Today: in the layout, and the From plugins card on its own.
+  // On Today: a plugin widget on the grid, and the From plugins card on its own at the bottom.
   w.layout = ['brief', 'plugin:github:ci'];
   w.widgetWidths = {};
+  w.today = grid([{ id: 'brief', x: 0, y: 0, w: 8, h: 4 }, { id: 'plugin:github:ci', x: 8, y: 0, w: 4, h: 4 }]);
   const page = today(s, { auth: {}, hidden: new Set(), banners: '', state: {}, plugins: { catalog: [], drawn: {}, routeOf: () => null } });
-  assert.match(page, /data-widget="plugin:github:ci"/);
-  assert.match(page, /ws-plugins-card/);
+  assert.match(page, /data-widget="plugin:github:ci" data-tile="plugin:github:ci"/);
+  assert.match(page, /class="ws-card ws-tile ws-plugins-card" data-tile="plugins" style="--x:0;--y:4;--w:12;--h:3;--order:2"/);
   assert.ok(escaped(page));
 });
 

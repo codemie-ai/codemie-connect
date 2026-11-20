@@ -310,8 +310,6 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .ws-avatar-photo{background:var(--ws-raised)}
 
 /* cards */
-.ws-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px;align-items:start}
-.ws-span-4{grid-column:span 4}.ws-span-6{grid-column:span 6}.ws-span-8{grid-column:span 8}.ws-span-12{grid-column:span 12}
 .ws-card{display:flex;flex-direction:column;min-width:0;border:1px solid var(--ws-border);border-radius:var(--ws-radius-lg);background:var(--ws-card);box-shadow:var(--ws-shadow-sm)}
 .ws-card+.ws-card{margin-top:0}
 .ws-settings-panels .ws-card+.ws-card{margin-top:16px}
@@ -395,12 +393,6 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .ws-swatch span{display:block;width:24px;height:24px;border-radius:50%;background:var(--swatch);box-shadow:inset 0 0 0 1px rgba(0,0,0,.15)}
 .ws-swatch input:checked+span{box-shadow:0 0 0 2px var(--ws-card),0 0 0 4px var(--swatch)}
 .ws-swatch input:focus-visible+span{outline:2px solid var(--ws-focus);outline-offset:4px}
-.ws-widget-list{display:grid;gap:8px}
-.ws-widget-row{display:grid;grid-template-columns:auto minmax(0,1fr) 128px auto;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--ws-border);border-radius:8px;background:var(--ws-card-2)}
-.ws-widget-copy{display:grid;line-height:18px}
-.ws-widget-copy strong{font-size:13px}
-.ws-widget-copy span{font-size:12px;color:var(--ws-muted)}
-.ws-reorder{display:flex}
 .ws-review{display:grid;gap:12px}
 
 /* ------------------------------------------------------------------ Today */
@@ -417,6 +409,156 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .ws-connect-points li{display:flex;align-items:center;gap:6px}
 .ws-connect-cta{display:flex;gap:8px;align-items:center;flex-shrink:0}
 .ws-pending{display:flex;align-items:center;gap:8px;color:var(--ws-muted);font-size:13px}
+
+/* The Today grid: 12 columns, 56 px rows, 16 px gaps. Each tile sits where its --x --y --w --h say,
+   so the view needs no measuring. Each tile is a size container (header and footer included). */
+.ws-today-page{container:ws-today / inline-size}
+.ws-tiles{position:relative;height:calc(var(--rows) * 72px - 16px)}
+.ws-tile{position:absolute;box-sizing:border-box;left:calc((100% - 11 * 16px) / 12 * var(--x) + 16px * var(--x));top:calc(var(--y) * 72px);width:calc((100% - 11 * 16px) / 12 * var(--w) + 16px * (var(--w) - 1));height:calc(var(--h) * 56px + (var(--h) - 1) * 16px);container:ws-tile / size}
+.ws-tile-head{flex-shrink:0;gap:8px;padding:0 8px 0 10px}
+.ws-tile-head .ws-card-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap}
+.ws-tile-grip{display:grid;place-items:center;flex-shrink:0;width:22px;height:28px;margin-right:-4px;padding:0;border:0;border-radius:6px;background:none;color:var(--ws-faint);opacity:0;transition:opacity .12s}
+.ws-tile-grip .ws-icon{width:16px;height:16px}
+.ws-tile-grip:hover{background:var(--ws-hover);color:var(--ws-text)}
+.ws-tile:hover .ws-tile-grip,.ws-tile-grip:focus-visible{opacity:1}
+.ws-tile-extra{flex-shrink:0}
+.ws-tile-tools{display:flex;align-items:center;gap:2px;flex-shrink:0}
+.ws-tile-tools .ws-btn{color:var(--ws-muted)}
+.ws-tile-body{min-height:0;overflow:auto}
+.ws-tile .ws-card-footer{flex-shrink:0}
+.ws-tile-collapsed .ws-tile-head{border-bottom-color:transparent}
+.ws-tile-collapsed .ws-tile-body,.ws-tile-collapsed .ws-card-footer{display:none}
+/* Arranging by hand (spec "Interactions"). Other widgets glide aside while one is held; the held
+   one follows the pointer lifted, a dashed placeholder shows where it lands and the column guides
+   show. The grip and the handles show on hover, always, or only in Customize (Settings); locked
+   layouts have neither. */
+.ws-today-head{flex-wrap:wrap}
+.ws-today-title{flex:1 1 320px}
+.ws-today-actions{justify-content:flex-end}
+.ws-tiles.ws-guides>.ws-tile{transition:left .2s cubic-bezier(.2,.8,.2,1),top .2s cubic-bezier(.2,.8,.2,1),width .2s cubic-bezier(.2,.8,.2,1),height .2s cubic-bezier(.2,.8,.2,1),box-shadow .15s}
+.ws-tile-head{cursor:grab;touch-action:none}
+.ws-tiles.ws-guides>.ws-tile-lifted{transition:box-shadow .15s,transform .15s}
+.ws-tile-lifted{z-index:40;cursor:grabbing;transform:scale(1.015) rotate(-.4deg);box-shadow:0 18px 40px rgba(0,0,0,.55),0 0 0 1px color-mix(in srgb,var(--ws-accent) 40%,transparent)}
+.ws-tiles.ws-guides>.ws-tile-resizing{transition:none}
+.ws-tile-resizing{z-index:40;box-shadow:0 18px 40px rgba(0,0,0,.55),0 0 0 1px color-mix(in srgb,var(--ws-accent) 40%,transparent)}
+.light :is(.ws-tile-lifted,.ws-tile-resizing){box-shadow:0 18px 40px rgba(20,30,60,.22),0 0 0 1px color-mix(in srgb,var(--ws-accent) 33%,transparent)}
+.ws-tile:has(.ws-menu[open]){z-index:30}
+.ws-tile-ph{position:absolute;box-sizing:border-box;display:none;z-index:0;pointer-events:none;left:calc((100% - 11 * 16px) / 12 * var(--x) + 16px * var(--x));top:calc(var(--y) * 72px);width:calc((100% - 11 * 16px) / 12 * var(--w) + 16px * (var(--w) - 1));height:calc(var(--h) * 56px + (var(--h) - 1) * 16px);border:2px dashed var(--ws-accent);border-radius:var(--ws-radius-lg);background:color-mix(in srgb,var(--ws-accent) 10%,transparent);transition:left .12s,top .12s,width .12s,height .12s}
+.ws-tile-ph.ws-on{display:block}
+.ws-tiles.ws-guides::before,.ws-today-editing .ws-tiles::before{content:"";position:absolute;inset:0;pointer-events:none;border-radius:12px;background-image:repeating-linear-gradient(90deg,color-mix(in srgb,var(--ws-accent) 7%,transparent) 0 calc((100% - 176px) / 12),transparent calc((100% - 176px) / 12) calc((100% - 176px) / 12 + 16px))}
+.ws-rz{position:absolute;z-index:4;touch-action:none}
+.ws-rz[data-edge=r]{top:14px;bottom:14px;right:-6px;width:12px;cursor:ew-resize}
+.ws-rz[data-edge=b]{left:14px;right:14px;bottom:-6px;height:12px;cursor:ns-resize}
+.ws-rz[data-edge=c]{right:-3px;bottom:-3px;width:22px;height:22px;cursor:nwse-resize}
+.ws-rz::after{content:"";position:absolute;opacity:0;transition:opacity .12s}
+.ws-rz[data-edge=r]::after{top:50%;left:4px;width:4px;height:36px;margin-top:-18px;border-radius:4px;background:var(--ws-accent)}
+.ws-rz[data-edge=b]::after{left:50%;top:4px;width:36px;height:4px;margin-left:-18px;border-radius:4px;background:var(--ws-accent)}
+.ws-rz[data-edge=c]::after{right:6px;bottom:6px;width:10px;height:10px;border-right:2px solid var(--ws-faint);border-bottom:2px solid var(--ws-faint);border-bottom-right-radius:4px}
+.ws-tile:hover .ws-rz[data-edge=c]::after,.ws-handles-always .ws-rz[data-edge=c]::after{opacity:1}
+.ws-rz:hover::after,.ws-tile-resizing .ws-rz::after,.ws-today-editing .ws-rz::after{opacity:.85}
+.ws-rz[data-edge=c]:hover::after{border-color:var(--ws-accent)}
+.ws-tile-collapsed .ws-rz:not([data-edge=r]){display:none}
+.ws-today-editing .ws-tile-grip,.ws-handles-always .ws-tile-grip{opacity:1}
+.ws-handles-customize .ws-today-page:not(.ws-today-editing) :is(.ws-tile-grip,.ws-rz){display:none}
+.ws-locked :is(.ws-tile-grip,.ws-rz){display:none}
+.ws-locked .ws-tile-head{cursor:default;touch-action:auto}
+.ws-tile-badge{position:absolute;right:10px;bottom:10px;z-index:6;display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:8px;background:var(--ws-text);color:var(--ws-bg);font-size:12px;font-weight:600;pointer-events:none}
+.ws-tile-badge span{font-weight:400;opacity:.75}
+.ws-tile-rename{flex:1;min-width:0;height:28px;padding:0 6px;font-size:14px;font-weight:600}
+body.ws-dragging,body.ws-dragging *{user-select:none!important;-webkit-user-select:none!important}
+body.ws-drag-move,body.ws-drag-move *{cursor:grabbing!important}
+body.ws-drag-ew,body.ws-drag-ew *{cursor:ew-resize!important}
+body.ws-drag-ns,body.ws-drag-ns *{cursor:ns-resize!important}
+body.ws-drag-nwse,body.ws-drag-nwse *{cursor:nwse-resize!important}
+
+/* The widget ⋯ menu and the saved layouts menu. */
+.ws-tile-menu .ws-menu-panel{min-width:230px;z-index:35}
+.ws-tile-menu .ws-menu-item{width:100%;white-space:nowrap}
+.ws-tile-seg{display:flex;margin:2px 4px 6px;border:1px solid var(--ws-border);border-radius:8px;overflow:hidden}
+.ws-tile-seg button{flex:1;height:28px;padding:0 6px;border:0;background:transparent;color:var(--ws-muted);font-size:12px}
+.ws-tile-seg button+button{border-left:1px solid var(--ws-border)}
+.ws-tile-seg button:hover{background:var(--ws-hover);color:var(--ws-text)}
+.ws-tile-seg button[aria-pressed=true]{background:var(--ws-selected);color:var(--ws-text)}
+.ws-today-layout-pill{gap:6px}
+.ws-today-changed{font-style:normal;font-size:11px;font-weight:500;color:var(--ws-amber)}
+.ws-today-layouts .ws-menu-panel{min-width:260px}
+.ws-today-layouts .ws-menu-item{width:100%;white-space:nowrap}
+.ws-today-layouts .ws-menu-item[aria-checked=true]::after{content:"✓";margin-left:auto;color:var(--ws-accent)}
+.ws-today-layout-row{display:flex;align-items:center;gap:2px}
+.ws-today-layout-row .ws-menu-item{flex:1;min-width:0}
+.ws-today-layout-save{display:flex;gap:6px;padding:2px}
+.ws-today-layout-save .ws-input{height:28px;font-size:12px}
+
+/* Customize mode: the toolbar, the dashed widgets with their ×, the add tile and the gallery. */
+.ws-today-editbar{position:sticky;top:8px;z-index:50;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:-8px 0 16px;padding:10px 12px 10px 14px;border-radius:12px;border:1px solid transparent;background:linear-gradient(var(--ws-card),var(--ws-card)) padding-box,var(--ws-primary-border) border-box;box-shadow:var(--ws-shadow)}
+.ws-today-hint{display:flex;align-items:center;gap:10px;flex:1;min-width:220px;font-size:12px;line-height:17px;color:var(--ws-muted)}
+.ws-today-hint>span{display:grid}
+.ws-today-hint strong{font-size:13px;color:var(--ws-text)}
+.ws-today-hint>.ws-icon{width:20px;height:20px;color:var(--ws-accent)}
+.ws-today-sep{width:1px;height:20px;background:var(--ws-border)}
+.ws-today-editing .ws-tile{outline:1px dashed color-mix(in srgb,var(--ws-accent) 45%,transparent);outline-offset:-1px}
+.ws-today-editing :is(.ws-tile-lifted,.ws-tile-resizing){outline:none}
+.ws-tile-remove{position:absolute;top:-9px;left:-9px;z-index:5;display:grid;place-items:center;width:24px;height:24px;padding:0;border-radius:50%;border:1px solid var(--ws-border-strong);background:var(--ws-card);color:var(--ws-text);box-shadow:var(--ws-shadow-sm)}
+.ws-tile-remove:hover{background:var(--ws-red);border-color:var(--ws-red);color:#fff}
+.ws-tile-remove .ws-icon{width:13px;height:13px}
+.ws-tile-add{position:absolute;left:0;width:100%;top:calc(var(--y) * 72px);height:128px;display:flex;align-items:center;justify-content:center;gap:8px;border:1.5px dashed var(--ws-border-strong);border-radius:12px;background:transparent;color:var(--ws-muted);font-size:13px}
+.ws-tile-add:hover{border-color:var(--ws-accent);color:var(--ws-accent);background:color-mix(in srgb,var(--ws-accent) 6%,transparent)}
+.ws-today-edit{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:start}
+.ws-gallery{position:sticky;top:84px;max-height:calc(100vh - 170px);display:flex;flex-direction:column;border:1px solid var(--ws-border);border-radius:12px;background:var(--ws-card);overflow:hidden}
+.ws-gallery-head{padding:14px 16px 10px;border-bottom:1px solid var(--ws-border)}
+.ws-gallery-head h2{display:flex;align-items:center;gap:8px;font-size:14px}
+.ws-gallery-head p{margin-top:4px;font-size:12px;line-height:17px;color:var(--ws-muted)}
+.ws-gallery-head .ws-input{margin-top:10px;height:30px;font-size:13px}
+.ws-gallery-list{overflow:auto;padding:8px 10px 14px;display:grid;gap:8px;align-content:start}
+.ws-gallery-group{padding:10px 6px 2px;font-size:11px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;color:var(--ws-faint)}
+.ws-gallery-card{display:grid;grid-template-columns:44px minmax(0,1fr);gap:10px;align-items:start;padding:10px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2);cursor:grab;touch-action:none;transition:border-color .12s,background .12s}
+.ws-gallery-card:hover{border-color:var(--ws-border-strong);background:var(--ws-hover)}
+.ws-gallery-thumb{position:relative;width:44px;height:44px;border-radius:8px;display:grid;place-items:center;background:var(--ws-raised)}
+.ws-gallery-thumb .ws-icon{width:20px;height:20px}
+.ws-gallery-thumb small{position:absolute;right:-6px;bottom:-6px;padding:0 4px;border-radius:4px;background:var(--ws-text);color:var(--ws-bg);font-size:9px;font-weight:700;line-height:14px}
+.ws-gallery-copy{min-width:0}
+.ws-gallery-copy strong{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13px}
+.ws-gallery-copy p{margin-top:2px;font-size:12px;line-height:17px;color:var(--ws-muted)}
+.ws-gallery-row{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11px;color:var(--ws-faint)}
+.ws-gallery-on{grid-template-columns:32px minmax(0,1fr) auto;align-items:center;padding:6px 8px;cursor:default;touch-action:auto}
+.ws-gallery-on .ws-gallery-thumb{width:32px;height:32px}
+.ws-gallery-on .ws-gallery-thumb .ws-icon{width:16px;height:16px}
+.ws-gallery-on strong{min-width:0;font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-drag-ghost{position:fixed;z-index:1100;left:0;top:0;width:240px;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;border:1px solid var(--ws-accent);background:var(--ws-card);color:var(--ws-text);box-shadow:var(--ws-shadow);font-family:var(--font-ui);font-size:13px;font-weight:600;pointer-events:none}
+.ws-drag-ghost small{display:block;font-size:11px;font-weight:400;color:var(--ws-muted)}
+.ws-drag-ghost.ws-over{opacity:.85}
+
+/* A widget's options panel, next to it: on its right, its left, or over its right side. */
+.ws-today-options{--ow:300px;position:absolute;z-index:45;box-sizing:border-box;width:var(--ow);max-width:100%;left:clamp(0px,var(--ol),calc(100% - var(--ow)));top:calc(var(--y) * 72px);display:grid;gap:14px;padding:14px 16px;border:1px solid var(--ws-border-strong);border-radius:10px;background:var(--ws-card);box-shadow:var(--ws-shadow)}
+.ws-today-options-right{--ol:calc((100% - 176px) / 12 * (var(--x) + var(--w)) + 16px * (var(--x) + var(--w)) - 6px)}
+.ws-today-options-left{--ol:calc((100% - 176px) / 12 * var(--x) + 16px * var(--x) - var(--ow) - 10px)}
+.ws-today-options-inside{--ol:calc((100% - 176px) / 12 * (var(--x) + var(--w)) + 16px * (var(--x) + var(--w) - 1) - var(--ow) - 10px);top:calc(var(--y) * 72px + 52px)}
+.ws-today-options-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.ws-today-options-head strong{display:flex;align-items:center;gap:8px;font-size:13px}
+.ws-today-checks{min-width:0;margin:0;padding:0;border:0}
+.ws-today-checks legend{padding:0;margin-bottom:6px}
+.ws-today-checks .ws-check{margin:0 16px 6px 0;font-size:13px}
+.ws-today-options-note{color:var(--ws-faint);font-size:11px;line-height:16px}
+.ws-today-options-foot{display:flex;justify-content:space-between;gap:8px}
+
+/* Narrower than 640 px: one column in reading order, each tile still the height of its rows;
+   widgets don't move or resize there, and the saved positions stay as they are. */
+@container ws-today (max-width:639px){
+  .ws-tiles{display:flex;flex-direction:column;gap:16px;height:auto}
+  .ws-tile{position:relative;left:auto;top:auto;width:auto;order:var(--order)}
+  .ws-tile-head{cursor:default;touch-action:auto}
+  :is(.ws-tile-grip,.ws-rz,.ws-tile-ph,.ws-tile-sizes,.ws-tile-menu [data-action=today-top]){display:none}
+  .ws-today-options{position:relative;left:auto;top:auto;width:auto;order:var(--order)}
+  .ws-tile-add{position:relative;top:auto;order:9999}
+}
+@container ws-today (max-width:819px){
+  .ws-today-edit{grid-template-columns:minmax(0,1fr)}
+  .ws-gallery{position:relative;top:0;max-height:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .ws-tiles.ws-guides>.ws-tile,.ws-tile-ph{transition:none}
+  .ws-tile-lifted{transform:none}
+}
 
 .ws-upnext .ws-card-body{padding:18px}
 .ws-upnext-main{display:flex;gap:18px;align-items:stretch}
@@ -467,6 +609,14 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 
 .ws-schedule-card .ws-card-body{padding:0}
 .ws-schedule-scroll{max-height:420px;overflow:auto;padding:12px 16px 14px 8px}
+.ws-schedule-card .ws-tile-body{display:flex;flex-direction:column}
+.ws-tile .ws-schedule-scroll{flex:1;min-height:0;max-height:none}
+.ws-tl-agenda{display:none;gap:2px}
+.ws-tl-agenda-item{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:baseline;width:100%;padding:6px 8px;border:0;border-left:3px solid var(--event-color);border-radius:6px;background:none;text-align:left;font-size:12px;line-height:16px;color:var(--ws-text)}
+.ws-tl-agenda-item:hover{background:var(--ws-hover)}
+.ws-tl-agenda-item.ws-past{opacity:.55}
+.ws-tl-agenda-item b{font-weight:600;color:var(--ws-muted)}
+.ws-tl-agenda-item span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-tl-allday{display:flex;flex-wrap:wrap;gap:6px;padding:0 0 10px 56px}
 .ws-timeline{position:relative;margin-left:0}
 .ws-tl-hour{position:absolute;left:0;right:0;height:0;border-top:1px solid var(--ws-border)}
@@ -515,7 +665,6 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-ellipsis{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ws-msg-preview{font-size:12px;line-height:18px;color:var(--ws-muted);display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;font-family:var(--font-sans)}
 
-.ws-two-col{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:24px}
 .ws-quick-add{display:flex;gap:8px;margin-bottom:10px}
 .ws-quick-add .ws-input:first-child{flex:1}
 .ws-quick-add .ws-date{width:150px;flex:0 0 150px}
@@ -530,16 +679,115 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-todo.ws-done .ws-todo-text span{text-decoration:line-through;color:var(--ws-muted)}
 .ws-done-list{margin-top:8px}
 .ws-done-list summary{cursor:pointer;font-size:12px;color:var(--ws-muted);padding:6px 4px}
-.ws-note-col{display:flex;flex-direction:column;gap:8px}
-.ws-note-head{display:flex;align-items:center;justify-content:space-between}
-.ws-note-state{font-size:11px;color:var(--ws-faint)}
-.ws-notes{flex:1;min-height:180px;font-size:14px}
+.ws-note-state{font-size:11px;color:var(--ws-faint);white-space:nowrap}
+.ws-notes-card .ws-tile-body{display:flex}
+.ws-notes{flex:1;min-height:0;resize:none}
+.ws-notes-small{font-size:13px}.ws-notes-medium{font-size:15px}.ws-notes-large{font-size:17px}
+
+.ws-timer-card .ws-tile-body{display:grid;place-items:center}
+.ws-timer{display:grid;justify-items:center;gap:8px;text-align:center}
+.ws-timer strong{font-size:34px;line-height:38px;font-weight:600;font-variant-numeric:tabular-nums}
+.ws-timer>span{font-size:12px;line-height:16px;color:var(--ws-muted)}
+
+/* What content does with the size of its tile: after the widget rules, which it overrides. */
+@container ws-tile (max-width:459px){
+  .ws-upnext-time,.ws-upnext .ws-face-stack,.ws-upnext-actions .ws-btn:not(.ws-btn-primary){display:none}
+}
+@container ws-tile (max-height:189px){
+  .ws-upnext .ws-card-footer,.ws-upnext .ws-face-stack{display:none}
+}
+@container ws-tile (max-height:109px){
+  .ws-upnext-actions{display:none}
+}
+@container ws-tile (min-width:520px){
+  .ws-glance .ws-stats{grid-template-columns:repeat(4,minmax(0,1fr))}
+}
+@container ws-tile (max-height:199px){
+  .ws-glance .ws-focus{display:none}
+}
+/* A narrow Day at a glance (a third of a 1000 px window is about 280 px): the numbers drop their
+   icons and the focus row its line of text, so no number or label is cut. */
+@container ws-tile (max-width:359px){
+  .ws-glance .ws-tile-body{gap:10px;padding:14px}
+  .ws-glance .ws-stat{grid-template-columns:minmax(0,1fr);padding:8px 10px}
+  .ws-glance .ws-stat-icon,.ws-glance .ws-focus>div:first-child>span{display:none}
+}
+/* Narrower still (2 or 3 columns): one number per row. */
+@container ws-tile (max-width:239px){
+  .ws-glance .ws-stats{grid-template-columns:minmax(0,1fr)}
+}
+@container ws-tile (max-width:419px){
+  .ws-attention .ws-msg-preview,.ws-commitments .ws-todo-owner,.ws-commitments .ws-quick-add .ws-date{display:none}
+}
+@container ws-tile (max-width:299px){
+  .ws-tile-extra,.ws-schedule-card .ws-timeline{display:none}
+  .ws-schedule-card .ws-tl-agenda{display:grid}
+  .ws-schedule-card .ws-tl-allday{padding-left:0}
+}
+@container ws-tile (max-width:279px){
+  .ws-attention .ws-msg-avatar{display:none}
+}
+
+/* ------------------------------------------------------------------ Page sections */
+/* A page is a row of sections (spec "Page sections"). A section's width is its flex-grow and its
+   minimum its min-width, so the row scrolls sideways when the minimums don't fit. A section has a
+   tab strip and a body that scrolls, or, collapsed, a 42 px rail. A divider sits between two
+   sections. While a tab is dragged, a zone or a bar shows where it lands. */
+.ws-dock{position:relative;display:flex;align-items:stretch;height:100%;min-height:0;box-sizing:border-box;padding:12px;overflow-x:auto;overflow-y:hidden}
+.ws-pane{position:relative;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;border:1px solid var(--ws-border);border-radius:12px;background:var(--ws-card);overflow:hidden}
+.ws-pane-collapsed{flex:0 0 42px!important;min-width:42px!important}
+.ws-pane-collapsed>:not(.ws-pane-rail){display:none}
+.ws-pane-strip{position:relative;display:flex;align-items:stretch;gap:2px;flex-shrink:0;height:42px;box-sizing:border-box;padding:0 4px 0 6px;border-bottom:1px solid var(--ws-border);background:var(--ws-card-2)}
+.ws-pane-tabs{display:flex;align-items:stretch;gap:2px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none}
+.ws-pane-tabs::-webkit-scrollbar{display:none}
+.ws-dock-tab{position:relative;display:inline-flex;align-items:center;gap:7px;flex-shrink:0;padding:0 10px 0 8px;border:0;border-radius:8px 8px 0 0;background:none;color:var(--ws-muted);font-size:13px;font-weight:500;white-space:nowrap;cursor:grab;touch-action:none}
+.ws-dock-tab:hover{color:var(--ws-text);background:var(--ws-hover)}
+.ws-dock-tab:focus-visible{outline:2px solid var(--ws-focus);outline-offset:-2px}
+.ws-dock-tab[aria-selected=true]{color:var(--ws-text)}
+.ws-dock-tab[aria-selected=true]::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;border-radius:2px;background:var(--ws-accent)}
+.ws-dock-tab>.ws-icon{width:15px;height:15px}
+.ws-dock-tab-held{opacity:.35}
+.ws-dock-grip{display:grid;place-items:center;width:12px;margin-right:-3px;color:var(--ws-faint);opacity:0;transition:opacity .12s}
+.ws-dock-grip .ws-icon{width:12px;height:16px}
+.ws-dock-tab:hover .ws-dock-grip,.ws-dock-tab:focus-visible .ws-dock-grip,.ws-handles-always .ws-dock-grip{opacity:1}
+.ws-handles-customize .ws-dock-grip{display:none}
+.ws-dock-locked .ws-dock-tab{cursor:pointer;touch-action:auto}
+.ws-pane-tools{display:flex;align-items:center;gap:2px;flex-shrink:0}
+.ws-pane-tools .ws-btn{color:var(--ws-muted)}
+.ws-pane-tools .ws-btn:hover{color:var(--ws-text)}
+/* The section clips what sticks out, so its ⋯ menu hangs from the strip (6 px under the button)
+   and is never wider than the section: in a narrow one the labels wrap instead. */
+.ws-dock-menu{position:static}
+.ws-dock-menu .ws-menu-panel{top:calc(100% - 2px);right:4px;box-sizing:border-box;min-width:min(240px,calc(100% - 8px));max-width:calc(100% - 8px);grid-template-columns:minmax(0,1fr);z-index:35}
+.ws-dock-menu .ws-menu-item{width:100%;height:auto;min-height:32px;box-sizing:border-box;padding-block:7px}
+.ws-dock-menu .ws-menu-panel .ws-menu-item>span{white-space:normal}
+.ws-dock-menu .ws-menu-item:disabled{opacity:.42;cursor:default;pointer-events:none}
+.ws-dock-menu .ws-menu-item[hidden],.ws-dock-zone[hidden],.ws-dock-bar[hidden]{display:none}
+.ws-pane-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:auto}
+.ws-pane-rail{display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;box-sizing:border-box;padding:8px 0;cursor:pointer}
+.ws-pane-rail:hover{background:var(--ws-hover)}
+.ws-pane-rail-tab{display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:none;color:var(--ws-muted)}
+.ws-pane-rail-tab:hover{background:var(--ws-raised);color:var(--ws-text)}
+.ws-pane-rail-tab .ws-icon{width:16px;height:16px}
+.ws-pane-vlabel{margin-top:6px;writing-mode:vertical-rl;transform:rotate(180deg);font-size:12px;color:var(--ws-muted);white-space:nowrap}
+.ws-split{position:relative;flex:0 0 12px;display:flex;align-items:center;justify-content:center;cursor:col-resize;touch-action:none;outline:none}
+.ws-split::before{content:"";position:absolute;top:8px;bottom:8px;left:5px;width:2px;border-radius:2px;background:transparent;transition:background .12s}
+.ws-split::after{content:"";width:4px;height:32px;border-radius:4px;background:var(--ws-border-strong);opacity:0;transition:opacity .12s}
+.ws-split:hover::before,.ws-split.ws-active::before,.ws-split:focus-visible::before{background:var(--ws-accent)}
+.ws-split:hover::after,.ws-split.ws-active::after,.ws-split:focus-visible::after{opacity:1;background:var(--ws-accent)}
+.ws-split.ws-collapse-hint::before{background:var(--ws-amber)}
+.ws-dock-locked .ws-split{cursor:default}
+.ws-dock-locked .ws-split:not(:focus-visible)::before,.ws-dock-locked .ws-split:not(:focus-visible)::after{display:none}
+.ws-split-badge{position:absolute;top:50%;left:14px;z-index:20;transform:translateY(-50%);padding:4px 8px;border-radius:8px;background:var(--ws-text);color:var(--ws-bg);font-size:12px;font-weight:600;white-space:nowrap;pointer-events:none}
+.ws-dock-zone{position:absolute;z-index:30;display:flex;align-items:center;justify-content:center;box-sizing:border-box;border:2px solid var(--ws-accent);border-radius:10px;background:color-mix(in srgb,var(--ws-accent) 14%,transparent);pointer-events:none;transition:left .1s,top .1s,width .1s,height .1s}
+.ws-dock-zone span{padding:5px 10px;border-radius:8px;background:var(--ws-accent);color:#fff;font-size:12px;font-weight:600;white-space:nowrap}
+.ws-dock-bar{position:absolute;z-index:30;width:3px;border-radius:3px;background:var(--ws-accent);pointer-events:none}
+.ws-dock-ghost{position:fixed;z-index:1100;left:0;top:0;display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--ws-accent);background:var(--ws-card);color:var(--ws-text);box-shadow:var(--ws-shadow);font-family:var(--font-ui);font-size:13px;font-weight:500;white-space:nowrap;pointer-events:none}
+.ws-dock-ghost .ws-icon{width:15px;height:15px}
+@media (prefers-reduced-motion:reduce){.ws-dock-zone,.ws-dock-grip,.ws-split::before,.ws-split::after{transition:none}}
 
 /* ------------------------------------------------------------------ Calendar */
-.ws-calendar-page{display:grid;grid-template-columns:248px minmax(0,1fr);height:100%;min-height:0}
-.ws-calendar-page.ws-cal-collapsed{grid-template-columns:0 minmax(0,1fr)}
-.ws-cal-collapsed .ws-cal-side{visibility:hidden;padding:0;border:0}
-.ws-cal-side{display:flex;flex-direction:column;gap:20px;padding:20px 16px;border-right:1px solid var(--ws-border);overflow:auto;min-height:0;background:color-mix(in srgb,var(--ws-card) 55%,transparent)}
+.ws-cal-side{display:flex;flex-direction:column;gap:20px;padding:16px 14px}
 .ws-mini-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .ws-mini-head strong{font-size:13px;font-weight:600}
 .ws-mini-head span{display:flex}
@@ -564,7 +812,7 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-cal-toggle input:focus-visible+.ws-cal-swatch{outline:2px solid var(--ws-focus);outline-offset:2px}
 .ws-cal-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-cal-toggle small{font-size:10px;color:var(--ws-faint)}
-.ws-cal-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.ws-cal-main{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
 .ws-cal-main>.ws-banner{margin:12px 20px 0}
 .ws-cal-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-bottom:1px solid var(--ws-border);flex-wrap:wrap}
 .ws-cal-nav{display:flex;align-items:center;gap:4px;min-width:0}
@@ -665,8 +913,7 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-event-preview{padding:12px 14px;border-radius:8px;background:var(--ws-card-2);border:1px solid var(--ws-border);font-family:var(--font-sans);font-size:13px;line-height:20px;color:var(--ws-text-2);white-space:pre-wrap;max-height:220px;overflow:auto;overflow-wrap:anywhere}
 
 /* ------------------------------------------------------------------ Inbox */
-.ws-inbox-page{display:grid;grid-template-columns:minmax(360px,440px) minmax(0,1fr);height:100%;min-height:0}
-.ws-inbox-pane{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--ws-border);background:color-mix(in srgb,var(--ws-card) 55%,transparent)}
+.ws-inbox-pane{display:flex;flex-direction:column;flex:1;min-height:0}
 .ws-inbox-pane>.ws-banner{margin:10px 12px 0}
 .ws-inbox-head{display:grid;gap:12px;padding:18px 16px 12px;border-bottom:1px solid var(--ws-border)}
 .ws-inbox-title{display:flex;align-items:center;justify-content:space-between}
@@ -698,7 +945,7 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-decision{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px;border-bottom:1px solid var(--ws-border)}
 .ws-decision p{font-size:12px;color:var(--ws-muted)}
 
-.ws-reader{overflow:auto;min-height:0;min-width:0}
+.ws-reader{flex:1;overflow:auto;min-height:0;min-width:0}
 .ws-reader-empty,.ws-reader>.ws-empty{height:100%;display:grid;place-items:center}
 .ws-read{max-width:880px;margin:0 auto;padding:24px 32px 40px;display:grid;gap:16px}
 .ws-read-head{display:grid;gap:14px}
@@ -895,17 +1142,7 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-workspace-card .ws-ws-dot{background:var(--ws-color)}
 
 /* ------------------------------------------------------------------ responsive */
-@media (max-width:1280px){
-  .ws-span-4{grid-column:span 6}
-  .ws-span-8{grid-column:span 12}
-  .ws-glance{grid-column:span 12!important}
-  .ws-glance .ws-stats{grid-template-columns:repeat(4,minmax(0,1fr))}
-}
 @media (max-width:1180px){
-  .ws-calendar-page{grid-template-columns:0 minmax(0,1fr)}
-  .ws-cal-side{visibility:hidden;padding:0;border:0}
-  .ws-calendar-page:not(.ws-cal-collapsed).ws-cal-forced{grid-template-columns:220px minmax(0,1fr)}
-  .ws-inbox-page{grid-template-columns:minmax(300px,360px) minmax(0,1fr)}
   .ws-settings-layout{--ws-settings-w:220px}
 }
 @media (max-width:1050px){
@@ -914,9 +1151,6 @@ ul.ws-draft-context[hidden]{display:none}
   .ws-nav button span,.ws-user-copy,.ws-nav .ws-count{display:none}
   .ws-nav button{justify-content:center;padding:0}
   .ws-user{justify-content:center}
-  .ws-span-6,.ws-span-4{grid-column:span 12}
-  .ws-two-col{grid-template-columns:1fr}
-  .ws-glance .ws-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ws-sync-pill span{display:none}
   .ws-plugin-nav{padding-top:12px;border-top:1px solid #ffffff33}
   .light .ws-plugin-nav{border-top-color:#0000001f}
@@ -1090,16 +1324,20 @@ ul.ws-draft-context[hidden]{display:none}
 @media (max-width:1180px){.ws-storage-row{flex-wrap:wrap}.ws-storage-row-actions{flex-direction:row;flex-wrap:wrap;align-items:center;width:100%;padding-left:32px}}
 
 /* ------------------------------------------------------------------ Automations (DESIGN 6.6) */
-.ws-tabs{display:flex;gap:8px;border-bottom:1px solid var(--ws-border);margin-bottom:16px}
-.ws-tabs button{display:inline-flex;align-items:center;gap:8px;padding:8px 8px 12px;margin-bottom:-1px;border:0;border-bottom:2px solid transparent;background:none;color:var(--ws-muted);font-size:14px;line-height:20px;white-space:nowrap;transition:color .15s ease,border-color .15s ease}
-.ws-tabs button:hover{color:var(--ws-text);border-bottom-color:var(--ws-border-strong)}
-.ws-tabs button[aria-selected=true]{color:var(--ws-text);font-weight:600;border-bottom-color:var(--ws-text);cursor:default}
 .ws-tab-count{min-width:20px;height:18px;padding:0 6px;border-radius:9px;display:inline-grid;place-items:center;font-size:11px;font-weight:600;background:var(--ws-raised);color:var(--ws-muted)}
 .ws-segmented button[aria-pressed=true]{color:var(--ws-primary-text);border-color:transparent;background:linear-gradient(var(--ws-primary-fill),var(--ws-primary-fill)) padding-box,var(--ws-primary-border) border-box}
 .ws-segmented button .ws-icon{width:13px;height:13px}
 .ws-menu-item.ws-menu-danger{color:var(--ws-red)}
 .ws-menu-item.ws-menu-danger:hover{color:var(--ws-red);background:color-mix(in srgb,var(--ws-red) 12%,transparent)}
 .ws-menu-item .ws-icon{width:14px;height:14px}
+
+/* the page: its heading, then its sections, which fill the rest of the window */
+#workspace-app[data-route=automations] .ws-main{overflow:hidden}
+.ws-page-automations{height:100%;box-sizing:border-box;padding-bottom:20px}
+.ws-automations{display:flex;flex-direction:column;height:100%;min-height:0}
+.ws-automations>.ws-page-heading,.ws-automations>.ws-banner{flex-shrink:0}
+.ws-automations>.ws-dock{flex:1;height:auto;padding:0}
+.ws-auto-panel{padding:16px;container-type:inline-size}
 
 /* list */
 .ws-auto-row{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(200px,auto) auto;align-items:center;gap:16px;padding:14px 16px 14px 18px;border-top:1px solid var(--ws-border)}
@@ -1222,7 +1460,8 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .ws-field-error{margin:6px 0 0;font-size:12px;line-height:16px;color:var(--ws-red)}
 :is(.ws-input,.ws-textarea)[aria-invalid=true]{border-color:var(--ws-red)}
 
-@media (max-width:1180px){
+/* A narrow section (or window): the last run under the name, tighter Run log columns. */
+@container (max-width:880px){
   .ws-auto-row{grid-template-columns:auto minmax(0,1fr) auto}
   .ws-auto-last{grid-column:2;grid-row:2;justify-content:flex-start;margin-top:-8px}
   .ws-auto-last-run{margin-left:-6px}
@@ -1911,9 +2150,6 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 /* ------------------------------------------------------------------ meetings (spec "Meetings page") */
 #workspace-app[data-route=meetings] .ws-main{overflow:hidden}
 .ws-page-meetings{max-width:none;height:100%;padding:0}
-.ws-mtg-layout{display:grid;grid-template-columns:minmax(290px,360px) minmax(0,1fr);height:100%;min-height:0}
-.ws-mtg-layout.ws-mtg-wide{grid-template-columns:0 minmax(0,1fr)}
-.ws-mtg-layout.ws-mtg-wide .ws-mtg-list{visibility:hidden;overflow:hidden;border:0}
 .ws-mtg-accent{color:var(--ws-purple);font-weight:600}
 .ws-mtg-err{color:var(--ws-red)}
 .ws-mtg-small{font-size:12px}
@@ -1928,7 +2164,7 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-tone-muted{color:var(--ws-muted)}
 
 /* the list */
-.ws-mtg-list{display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px solid var(--ws-border);background:var(--ws-card-2)}
+.ws-mtg-list{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;background:var(--ws-card-2)}
 .ws-mtg-list-head{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:18px 12px 8px 16px;min-width:0}
 .ws-mtg-list-title{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .ws-mtg-list-title h1{font-size:22px;line-height:28px;letter-spacing:-.5px}
@@ -1979,9 +2215,13 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 
 .ws-mtg-list-foot .ws-switch-label{font-size:12px}
 
-/* the meeting */
-.ws-mtg-detail{min-height:0;min-width:0;overflow:auto;padding:18px 28px 48px;container-type:inline-size}
-.ws-mtg-detail>.ws-banner{max-width:1100px}
+/* the meeting: its header above the first section holding a meeting tab, and each tab's body,
+   which scrolls on its own */
+/* One column no wider than the section: an auto column would grow to the header's one-line width
+   and push the title's actions past the section, which clips them. */
+.ws-mtg-top{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;flex-shrink:0;padding:12px 20px;border-bottom:1px solid var(--ws-border);container-type:inline-size}
+.ws-mtg-top>.ws-banner{max-width:1100px;margin:0}
+.ws-mtg-detail{flex:1;min-height:0;min-width:0;overflow:auto;padding:16px 20px 40px;container-type:inline-size}
 .ws-mtg-detail-empty{display:grid;place-items:center;min-height:60%}
 .ws-mtg-meeting{max-width:1100px}
 .ws-mtg-head{display:grid;gap:8px;margin-bottom:10px;min-width:0}
@@ -2018,13 +2258,15 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-mtg-tab-alert{background:var(--ws-accent)!important;color:#fff!important;opacity:1!important}
 .ws-mtg-panel-alone{margin-top:6px}
 .ws-mtg-tasks-alone{margin-top:22px}
+/* In the sections: the Tasks tab's count is the tasks to review, so it is the alert colour; a
+   meeting section other than the first waits for the transcript. */
+.ws-dock[data-page=meetings] .ws-dock-tab[data-tab=mtg-tasks] .ws-tab-count{background:var(--ws-accent);color:#fff;opacity:1}
+.ws-mtg-wait{margin:6px 0 0}
 .ws-runbar{display:block;flex:0 0 120px;height:3px;border-radius:2px;background:var(--ws-raised);overflow:hidden}
 .ws-runbar>span{display:block;height:100%;background:var(--ws-magic);transition:width .4s ease}
 .ws-runbar-busy>span{width:35%;animation:ws-mtg-slide 1.4s ease-in-out infinite}
 @keyframes ws-mtg-slide{0%{transform:translateX(-100%)}100%{transform:translateX(290%)}}
 @media (prefers-reduced-motion:reduce){.ws-runbar-busy>span{animation:none;width:100%;opacity:.5}}
-.ws-mtg-tabs{position:sticky;top:-18px;z-index:6;margin:8px -28px 16px;padding:6px 28px 0;background:var(--ws-bg)}
-.ws-mtg-panel{min-height:200px}
 .ws-mtg-card-head{display:grid;gap:2px;padding:12px 0;min-width:0}
 .ws-mtg-card-head p{font-size:12px;line-height:18px;color:var(--ws-muted)}
 .ws-mtg-card-head .ws-card-title{min-width:0}
@@ -2179,7 +2421,10 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-mtg-speakers-banner>.ws-icon{color:var(--ws-purple);margin-top:2px}
 .ws-mtg-speakers-banner>div:nth-child(2){flex:1;min-width:220px}
 .ws-mtg-speaker-map{display:flex;gap:10px;flex-wrap:wrap}
-.ws-mtg-speaker-map label{display:grid;gap:4px;font-size:11px;color:var(--ws-muted);min-width:180px}
+/* Not the banner's 0 basis: in a narrow section it takes a row of its own instead of squeezing in
+   beside the text with its controls spilling past the card. */
+.ws-mtg-speakers-banner>div.ws-mtg-speaker-map{flex:1 1 180px;max-width:100%}
+.ws-mtg-speaker-map label{display:grid;gap:4px;font-size:11px;color:var(--ws-muted);min-width:min(180px,100%)}
 .ws-mtg-tr-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .ws-mtg-tr-toolbar .ws-search{width:240px;max-width:100%}
 .ws-mtg-speakers{display:flex;gap:6px;flex-wrap:wrap;min-width:0}
@@ -2286,7 +2531,6 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 @container (max-width:560px){
   .ws-mtg-head-title{flex-wrap:wrap}
 }
-@media (max-width:1180px){.ws-mtg-layout{grid-template-columns:minmax(270px,300px) minmax(0,1fr)}.ws-mtg-detail{padding:16px 20px 40px}.ws-mtg-tabs{margin:8px -20px 16px;padding:6px 20px 0;top:-16px}}
 
 /* the event card's Transcript & notes, the calendar's badges and legend */
 .ws-pill{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:11px;font-size:11px;font-weight:600;white-space:nowrap;border:1px solid transparent;width:max-content}
@@ -2643,3 +2887,56 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 /* Settings → CodeMie, Start coding: where the agent opens. */
 .cm-where{margin:14px 0 0;padding:0;border:0;min-width:0}
 .cm-where legend{margin:0 0 8px;padding:0;color:var(--ws-muted);font-size:12px;font-weight:600}
+
+/* ------------------------------------------------------------------ menus that collapse (spec "Menus") */
+/* The main menu: the 64 px icon rail the app uses at ≤1050 px, chosen by hand. A count is a dot. */
+.ws-sidebar{position:relative}
+.ws-sidebar-edge{position:absolute;top:0;right:-3px;bottom:0;width:6px;cursor:ew-resize;z-index:5;touch-action:none}
+.ws-sidebar-edge:hover,.ws-sidebar-edge.ws-active{background:linear-gradient(90deg,transparent 2px,var(--ws-accent) 2px,var(--ws-accent) 4px,transparent 4px)}
+#workspace-app.ws-sidebar-collapsed{--ws-sidebar-w:64px}
+/* Connect's terminal sits outside the app's grid: it starts where the collapsed menu ends. */
+:root:has(#workspace-app.ws-sidebar-collapsed){--ws-term-left:64px}
+.ws-sidebar-rail .ws-brand img{width:40px;object-fit:cover;object-position:left}
+.ws-sidebar-rail .ws-nav button span,.ws-sidebar-rail .ws-user-copy{display:none}
+.ws-sidebar-rail .ws-nav button{justify-content:center;padding:0}
+.ws-sidebar-rail .ws-user{justify-content:center}
+.ws-sidebar-rail .ws-plugin-nav{padding-top:12px;border-top:1px solid #ffffff33}
+.light .ws-sidebar-rail .ws-plugin-nav{border-top-color:#0000001f}
+.ws-sidebar-rail .ws-plugin-nav .ws-nav-label{display:none}
+.ws-sidebar-rail .ws-nav .ws-count.ws-count-dot{display:block;position:absolute;top:6px;right:10px;min-width:0;width:8px;height:8px;padding:0;font-size:0;background:var(--ws-accent)}
+.ws-sidebar-rail .ws-nav button .ws-dot-alert{display:block;position:absolute;top:6px;right:10px;margin:0}
+
+/* A rail has no labels: a tooltip names the icon. */
+.ws-tooltip{position:fixed;z-index:500;transform:translateY(-50%);pointer-events:none;padding:5px 9px;border-radius:6px;background:var(--ws-text);color:var(--ws-bg);font-size:12px;line-height:16px;white-space:nowrap;box-shadow:0 4px 14px #00000040}
+
+/* The Settings menu: folding groups, Find a setting, the 58 px rail, and its resizable edge. */
+.ws-settings-layout{position:relative}
+.ws-settings-heading{display:flex;align-items:flex-start;gap:4px;padding:0 4px 0 10px}
+.ws-settings-heading-copy{flex:1;min-width:0}
+.ws-settings-heading h1{white-space:nowrap}
+.ws-settings-heading p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-settings-heading .ws-btn{flex-shrink:0}
+.ws-settings-find{padding:0 4px}
+.ws-settings-find .ws-input{height:30px;width:100%}
+.ws-settings-nav .ws-nav-section{display:grid}
+.ws-settings-nav .ws-nav-items{display:grid;gap:2px}
+.ws-settings-nav button.ws-nav-group{display:flex;align-items:center;gap:6px;width:100%;min-height:0;margin-top:2px;padding:12px 10px 6px;border-radius:6px;background:none;font-size:11px;font-weight:600;color:var(--ws-faint);letter-spacing:.6px;text-transform:uppercase;white-space:nowrap}
+.ws-settings-nav button.ws-nav-group:hover{background:none;color:var(--ws-text)}
+.ws-settings-nav button.ws-nav-group:disabled{cursor:default}
+.ws-settings-nav .ws-nav-group .ws-icon{width:12px;height:12px;color:inherit;transition:transform .15s}
+.ws-settings-nav .ws-folded .ws-group-chev{transform:rotate(-90deg)}
+.ws-settings-nav .ws-nav-group .ws-count{letter-spacing:0;text-transform:none;height:16px;min-width:0;font-size:10px;line-height:16px}
+.ws-settings-nav .ws-nav-group .ws-count+.ws-dot-alert{margin-left:6px}
+.ws-settings-nav .ws-nav-rule{height:1px;margin:8px 6px;background:var(--ws-border)}
+.ws-settings-nav .ws-nav-rule:first-child{display:none}
+.ws-settings-nav button{position:relative}
+.ws-settings-rail{padding:24px 8px}
+.ws-settings-rail .ws-settings-heading{flex-direction:column;align-items:center;padding:0}
+.ws-settings-rail .ws-settings-heading-copy,.ws-settings-rail .ws-settings-find,.ws-settings-rail .ws-nav-group,.ws-settings-rail .ws-settings-nav button span{display:none}
+.ws-settings-rail .ws-settings-nav button{justify-content:center;padding:6px 0}
+.ws-settings-rail .ws-settings-nav button .ws-dot-alert{display:block;position:absolute;top:6px;right:8px;margin:0}
+.ws-settings-edge{position:absolute;top:0;bottom:0;left:calc(var(--ws-settings-w) - 4px);width:8px;cursor:col-resize;z-index:3;touch-action:none}
+.ws-settings-edge::before{content:"";position:absolute;top:0;bottom:0;left:3px;width:2px;background:transparent;transition:background .12s}
+.ws-settings-edge:hover::before,.ws-settings-edge:focus-visible::before,.ws-resizing .ws-settings-edge::before{background:var(--ws-accent)}
+.ws-settings-edge:focus-visible{outline:none}
+.ws-kbd{display:inline-block;min-width:24px;padding:2px 8px;border:1px solid var(--ws-border);border-bottom-width:2px;border-radius:6px;background:var(--ws-raised);color:var(--ws-text-2);font:12px/16px GeistMono,ui-monospace,monospace;text-align:center;white-space:nowrap}

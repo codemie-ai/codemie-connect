@@ -161,6 +161,8 @@ pub struct Workspace {
     pub layout: Vec<String>,
     #[serde(default = "empty_object")]
     pub widget_widths: Value,
+    #[serde(default = "empty_object")]
+    pub today: Value,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

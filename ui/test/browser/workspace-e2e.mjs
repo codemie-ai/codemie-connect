@@ -13,6 +13,7 @@ import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folde
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
 import { meetingSettingsChecks } from './meetings-settings-checks.mjs';
+import { layoutChecks } from './layout-checks.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -111,6 +112,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     }
   }
   const s = snapshot;
+  // Saved layouts survive page.reload(): the workspaces live in sessionStorage too.
+  try { const kept = sessionStorage.getItem('e2e.workspaces'); if (kept) s.workspaces = JSON.parse(kept); } catch {}
   // Automation runs live beside the snapshot, as in native: the snapshot shows each
   // automation's latest run and its latest run on Today; `automation_runs` pages through all.
   let allRuns = s.records.filter(r => r.kind === 'automation_run');
@@ -221,7 +224,15 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     },
     local_delete: d => { s.records = s.records.filter(r => !(r.kind === d.kind && r.id === d.id)); return { deleted: true }; },
     draft_save: (d, wid) => ops.local_save({ ...d, kind: 'draft', id: `manual:${d.sourceId}` }, wid),
-    layout_save: (d, wid) => { const w = active(wid); w.layout = [...new Set(d.layout)]; w.widgetWidths = d.widgetWidths; return { saved: true }; },
+    layout_save: (d, wid) => {
+      calls.push(['layout_save', clone(d)]);
+      const w = active(wid);
+      if (d.layout) w.layout = [...new Set(d.layout)];
+      if (d.today) w.today = clone(d.today);
+      if (d.widgetWidths) w.widgetWidths = d.widgetWidths;
+      try { sessionStorage.setItem('e2e.workspaces', JSON.stringify(s.workspaces)); } catch {}
+      return { saved: true };
+    },
     workspace_create: d => { const id = crypto.randomUUID(); s.workspaces.push({ id, name: d.name, color: d.color, archived: false, isDefault: false, connectionId: s.connection?.id || null, sources: { all: true }, layout: ['brief', 'calendar', 'inbox', 'commitments', 'focus'], widgetWidths: {} }); s.settings.activeWorkspace = id; return { id }; },
     workspace_update: (d, wid) => { Object.assign(active(wid), d); if (d.archived && s.settings.activeWorkspace === wid) s.settings.activeWorkspace = 'personal'; return { saved: true }; },
     workspace_select: d => { s.settings.activeWorkspace = d.id; return { selected: true }; },
@@ -1142,7 +1153,7 @@ const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve
   timer = setTimeout(done, 150);
 }), limit).catch(() => {});
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -1165,6 +1176,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
     connected.connection.scopes = connected.connection.scopes.filter(x => !/^OnlineMeeting/.test(x));
   }
   if (pluginRecords) connected.records.push(...pluginRecords(now));
+  if (workspace) Object.assign(connected.workspaces.find(w => w.id === connected.settings.activeWorkspace), workspace);
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
@@ -1182,11 +1194,14 @@ const shot = async (page, name) => {
   return page.screenshot({ path: join(OUT, `${name}.png`) });
 };
 const text = (page, selector) => page.locator(selector).first().innerText();
+/** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
+const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-settings'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`, `layout`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-settings', 'layout'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'layout') await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
   server.close();
@@ -1288,24 +1303,44 @@ for (const theme of ['dark', 'light']) {
     await page.waitForSelector('.ws-focus:not(.ws-focus-on)');
   });
 
-  await check(`${theme}: Customize dialog uses CodeMie switches and reorders`, async () => {
-    await page.click('button:has-text("Customize")');
-    await page.waitForSelector('.ws-modal[open] .ws-switch');
-    await page.waitForTimeout(300);
-    const box = await page.locator('.ws-modal[open] .ws-switch-track').first().boundingBox();
-    assert(Math.round(box.width) === 32 && Math.round(box.height) === 16, `switch ${box.width}x${box.height}`);
-    const overlay = await page.evaluate(() => getComputedStyle(document.querySelector('.ws-modal[open]'), '::backdrop').backgroundColor);
-    assert(overlay === 'rgba(0, 0, 0, 0.5)', `scrim ${overlay}`);
+  await check(`${theme}: Customize moves a widget by its header, undoes it, and removes and adds through the gallery`, async () => {
+    const saves = () => page.evaluate(() => window.__bridgeCalls.filter(([op]) => op === 'layout_save').map(([, d]) => d));
+    const before = (await saves()).length;
+    await page.click('.ws-today-actions [data-action="today-customize"]:has-text("Customize")');
+    await page.waitForSelector('.ws-today-editbar:has-text("Customizing Today")');
+    await page.waitForSelector('.ws-gallery .ws-gallery-group:has-text("On Today")');
     await shot(page, `${theme}-customize`);
-    await page.locator('.ws-modal[open] [data-widget=focus] .ws-switch').click();
-    const checked = await page.locator('.ws-modal[open] [data-widget=focus] input[name=widget]').isChecked();
-    assert(!checked, 'focus switch did not turn off');
-    await page.click('.ws-modal[open] button[type=submit]');
-    await page.waitForTimeout(100);
-    const layout = await page.evaluate(() => window.__workspace?.store.get().snapshot.workspaces[0].layout);
-    assert(!layout.includes('focus'), `layout ${layout}`);
-    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
-    assert(await page.locator('.ws-glance').count() === 0, 'focus card still visible');
+    // Day at a glance dragged by its title to the top left lands there, saved once on the drop.
+    await page.evaluate(() => { document.querySelector('.ws-main').scrollTop = 0; });
+    const title = await page.locator('[data-tile="focus"] .ws-tile-head h2').boundingBox();
+    const tile = await page.locator('[data-tile="focus"]').boundingBox();
+    const grid = await page.locator('[data-today-grid]').boundingBox();
+    const from = { x: title.x + 30, y: title.y + title.height / 2 };
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x - 10, from.y + 4, { steps: 2 });
+    await page.mouse.move(grid.x + (from.x - tile.x), grid.y + (from.y - tile.y), { steps: 12 });
+    await page.waitForSelector('.ws-tile-ph.ws-on');
+    await page.mouse.up();
+    await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op === 'layout_save').length === n + 1, before);
+    let saved = (await saves()).at(-1);
+    assert(saved.layout[0] === 'focus' && saved.today.items.some(i => i.id === 'focus' && i.x === 0 && i.y === 0), `layout ${saved.layout}`);
+    assert(saved.widgetWidths === undefined, 'widths are no longer sent');
+    await page.waitForSelector('[data-tile="focus"][style^="--x:0;--y:0;"]');
+    // Undo, clicked right after the drop, saves it back where it was.
+    await page.click('.ws-today-editbar [data-action="today-undo"]');
+    await page.waitForSelector('[data-tile="focus"][style^="--x:8;--y:0;"]');
+    // Its × takes it off Today with Undo in the toast; the gallery's Add puts it at the top left.
+    await page.click('[data-tile="focus"] .ws-tile-remove');
+    await page.waitForSelector('[data-tile="focus"]', { state: 'detached' });
+    await page.waitForSelector('.ws-toast:has-text("Day at a glance removed from Today") .ws-toast-action:has-text("Undo")');
+    saved = (await saves()).at(-1);
+    assert(!saved.layout.includes('focus'), `layout ${saved.layout}`);
+    await page.click('.ws-gallery [data-action="today-add"][data-id="focus"]');
+    await page.waitForSelector('[data-tile="focus"][style^="--x:0;--y:0;"]');
+    await page.click('.ws-today-editbar [data-action="today-done"]');
+    await page.waitForSelector('.ws-today-editing', { state: 'detached' });
+    await page.waitForSelector('.ws-toast:has-text("Today is saved")');
   });
 
   await check(`${theme}: Calendar week grid shows hours, overlaps and now line`, async () => {
@@ -2455,7 +2490,7 @@ for (const theme of ['dark', 'light']) {
       assert(await page.locator('[data-action="automation-new"]').count() === 1, 'New automation offered twice');
       await noOverflow(page, 'empty list');
       await shot(page, `${tag}-automations-empty`);
-      await page.click('[data-action="automations-tab"][data-tab="templates"]');
+      await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
       await page.waitForSelector('[data-action="automation-template"][data-id="morning-brief"]');
       assert(await page.locator('.ws-auto-template').count() === 4, 'four templates');
       await noOverflow(page, 'templates');
@@ -2474,7 +2509,7 @@ for (const theme of ['dark', 'light']) {
       await page.click('.ws-modal[open] button[type=submit]');
       await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
       // Created: back on the list with the new row picked out.
-      await page.waitForSelector('[data-tab="automations"][aria-selected="true"]');
+      await page.waitForSelector('[data-tab="auto-list"][aria-selected="true"]');
       await page.waitForSelector('.ws-auto-row.ws-auto-highlight');
       await shot(page, `${tag}-automations-created`);
       const row = await text(page, '.ws-auto-row');
@@ -2505,7 +2540,7 @@ for (const theme of ['dark', 'light']) {
       await page.waitForSelector('.ws-run.ws-open .ws-run-output');
 
       await page.click('.ws-nav button[data-route=automations]');
-      await page.click('[data-action="automations-tab"][data-tab="automations"]');
+      await page.click('[data-action="dock-tab"][data-tab="auto-list"]');
       await renderSettled(page);
       await page.locator('.ws-auto-row .ws-switch').first().click();
       await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'automation_toggle' && d.enabled === false));
@@ -2515,7 +2550,7 @@ for (const theme of ['dark', 'light']) {
     });
 
     await check(`${tag}: the editor locks the conversation for reply drafts and shows backend sentences inline`, async () => {
-      await page.click('[data-action="automations-tab"][data-tab="templates"]');
+      await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
       await page.click('[data-action="automation-template"][data-id="draft-replies"]');
       await editorOpen(page);
       assert(await page.evaluate(() => document.activeElement?.id) === 'auto-senders', 'senders first');
@@ -2546,7 +2581,7 @@ for (const theme of ['dark', 'light']) {
     // A Teams message carries the sender's name and no address: its From asks for names only, and
     // the critical trigger's "Only from" takes addresses, domains or Teams names.
     await check(`${tag}: the Teams and critical sender fields say what they match`, async () => {
-      await page.click('[data-action="automations-tab"][data-tab="templates"]');
+      await page.click('[data-action="dock-tab"][data-tab="auto-templates"]');
       await page.click('[data-action="automation-template"][data-id="draft-replies"]');
       await editorOpen(page);
       const hintOf = () => page.evaluate(() => document.querySelector('.ws-modal[open] #auto-senders')?.closest('.ws-field')?.querySelector('.ws-field-hint')?.textContent || '');
@@ -2608,7 +2643,7 @@ for (const theme of ['dark', 'light']) {
     await check(`${tag}: the list and Today show both automations' latest results`, async () => {
       const p = logged.page;
       await p.click('.ws-nav button[data-route=automations]');
-      await p.click('[data-action="automations-tab"][data-tab="automations"]');
+      await p.click('[data-action="dock-tab"][data-tab="auto-list"]');
       await p.waitForSelector('.ws-auto-row >> nth=1');
       assert((await text(p, '.ws-auto-list')).includes('When mail arrives from @epam.com or ann@example.org about “budget”'), 'event trigger summary');
       await noOverflow(p, 'populated list');
@@ -2652,6 +2687,50 @@ for (const theme of ['dark', 'light']) {
     await check(`${tag}: run log no page errors`, async () => assert(logged.errors.length === 0, logged.errors.join(' | ')));
     await logged.context.close().catch(() => {});
   }
+}
+// Page sections (spec "Page sections"), once: the Run log beside the list reads its runs whenever
+// it comes into view, and the hash names the tab chosen last.
+{
+  const { page, context, errors } = await open({ theme: 'dark', width: 1440, height: 900, hash: '#/automations/runs', automations: true });
+  await check('automations sections: the Run log beside the list loads whenever it comes into view', async () => {
+    await page.waitForSelector('.ws-page-automations .ws-automations > .ws-dock .ws-run-log .ws-run');
+    assert(await page.locator('.ws-auto-list').count() === 0, 'the list is behind the Run log');
+    const menu = '.ws-pane:has(.ws-dock-tab[data-tab="auto-runs"]) .ws-dock-menu';
+    await page.click(`${menu} > summary`);
+    await page.click(`${menu} [data-action="dock-beside"]`);
+    await page.waitForSelector('.ws-auto-list .ws-auto-row');
+    assert(await page.locator('.ws-run-log .ws-run').count() === 3, 'the Run log beside it');
+    await page.waitForFunction(() => location.hash === '#/automations');
+    await noOverflow(page, 'Run log beside the list');
+    await shot(page, 'dark-1440-automations-sections');
+    // Collapsed, then opened again from its rail: it reads its newest page again (the runs read
+    // before are dropped meanwhile, so only a new read shows them).
+    await page.click('.ws-pane:has(.ws-dock-tab[data-tab="auto-runs"]) .ws-pane-tools [data-action="dock-collapse"]');
+    await page.waitForSelector('.ws-run-log', { state: 'detached' });
+    await page.evaluate(() => { window.__workspace.state.automations.runs.items = null; });
+    await page.click('.ws-pane-rail-tab[data-tab="auto-runs"]');
+    await page.waitForSelector('.ws-run-log .ws-run');
+    await page.waitForFunction(() => location.hash === '#/automations/runs');
+    // Kept: after a reload both are there, and the Run log is read at once.
+    await page.reload();
+    await page.waitForSelector('.ws-auto-list .ws-auto-row');
+    await page.waitForSelector('.ws-run-log .ws-run');
+    // A section scrolls on its own and keeps its place through a render (the minute tick, a run
+    // opened): every run open in a short window.
+    await page.setViewportSize({ width: 1440, height: 600 });
+    for (const row of await page.locator('.ws-run-row').all()) await row.click();
+    await page.waitForFunction(() => document.querySelectorAll('.ws-run.ws-open').length === 3);
+    const runs = '.ws-pane:has(.ws-dock-tab[data-tab="auto-runs"]) > .ws-pane-body';
+    const top = await page.evaluate(sel => { const body = document.querySelector(sel); body.scrollTop = body.scrollHeight; return body.scrollTop; }, runs);
+    assert(top > 0, `the Run log scrolls: ${top}`);
+    await page.evaluate(() => window.__workspace.render());
+    assert(await page.evaluate(sel => document.querySelector(sel).scrollTop, runs) === top, 'a render keeps the Run log’s place');
+    await page.locator('.ws-run-row').first().dispatchEvent('click');
+    await page.waitForFunction(() => document.querySelectorAll('.ws-run.ws-open').length === 2);
+    assert(await page.evaluate(sel => document.querySelector(sel).scrollTop, runs) > 0, 'a run closed keeps the Run log scrolled');
+    assert(errors.length === 0, errors.join(' | '));
+  });
+  await context.close().catch(() => {});
 }
 
 // Tasks (spec "Tasks page"): the board with the fixture's tasks (withTasks); accept, drag with the
@@ -2865,6 +2944,10 @@ for (const theme of ['dark', 'light']) {
 // import, speakers, Make notes as soon as it arrives, Try again, a task's quote, ↑/↓.
 await meetingChecks({ open, check, assert, shot, settled, OUT });
 
+// Flexible layout (spec docs/superpowers/specs/2026-11-19-flexible-layout-design.md, E1–E8): Today
+// arranged by pen, mouse, touch and keys, saved layouts, page sections, the folding menus.
+await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
+
 // Settings › Meetings (Task 5): transcripts and folders, note templates and skills, rules and the
 // tester, the glossary typed and linked, tasks.
 await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
@@ -3034,7 +3117,7 @@ for (const theme of ['dark', 'light']) {
       for (const tab of ['ai', 'privacy', 'plugins', 'cm-overview', 'cm-profiles', 'cm-agents', 'cm-apps', 'cm-health']) assert(tabs.includes(tab), `no ${tab} tab`);
       for (const tab of ['installation', 'tools', 'desktop', 'health', 'usage']) assert(!tabs.includes(tab), `legacy ${tab} tab`);
       await page.click('.ws-nav button[data-route=today]');
-      await page.waitForSelector('.ws-page-today .ws-grid');
+      await page.waitForSelector('.ws-page-today .ws-tiles');
       await page.waitForTimeout(400);
       assert(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, 'Today overflows');
       await shot(page, `${theme}-merge-today-${width}`);
