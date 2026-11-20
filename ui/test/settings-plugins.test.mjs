@@ -208,7 +208,7 @@ test('Remove asks first and sends whether to delete its data', async () => {
 test('disabled_plugin_activity_leaves_sidebar_and_frame_unloads', () => {
   const s = buildSnapshot(Date.now(), { zone: 'Europe/Kyiv' });
   const on = renderShell({ snapshot: s, route: 'plugin', resolvedDark: true, plugins: { activities: [{ plugin: 'hello', id: 'home', label: `Hello ${HOSTILE}` }], current: { plugin: 'hello', id: 'home' } } });
-  assert.match(on, /<div class="ws-nav-label">Plugins<\/div>/);
+  assert.match(on, /data-group="plugins"[^>]*>[^]*?<span class="ws-nav-head-label">Plugins<\/span>/);
   assert.match(on, /data-action="plugin-page" data-plugin-id="hello" data-activity="home"[^>]*aria-current="page"/);
   assert.ok(escaped(on));
   const off = renderShell({ snapshot: s, route: 'today', resolvedDark: true, plugins: { activities: [] } });

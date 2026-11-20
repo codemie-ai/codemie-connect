@@ -645,4 +645,75 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await context.close().catch(() => {});
     }
   });
+  // ---------------------------------------------------------------- E9: the main menu's groups
+  for (const theme of ['dark', 'light']) {
+    const { page, context, errors } = await open({ theme, width: 1440, height: 900, meetings: true, tasks: true, hash: '#/tasks' });
+    await check(`layout E9 (${theme}): the main menu folds Work and AI, adds up what a fold hides, keeps the page open and the fold, and draws the rail`, async () => {
+      const head = id => `.ws-sidebar .ws-nav-head[data-group="${id}"]`;
+      const routes = () => page.evaluate(() => [...document.querySelectorAll('.ws-main-nav [data-route]')].map(b => b.dataset.route).join());
+      assert(await routes() === 'today,inbox,calendar,meetings,tasks,automations,analytics', `the menu: ${await routes()}`);
+      // 30 px rows under 20 px labels, Settings beside the account, and nothing to scroll.
+      const sizes = await page.evaluate(() => {
+        const r = sel => document.querySelector(sel).getBoundingClientRect();
+        const nav = document.querySelector('.ws-main-nav');
+        return { row: Math.round(r('.ws-main-nav [data-route=today]').height), head: Math.round(r('.ws-nav-head[data-group=work]').height), scrolls: nav.scrollHeight > nav.clientHeight, oneRow: Math.abs((r('.ws-nav-gear').top + r('.ws-nav-gear').bottom) / 2 - (r('.ws-user').top + r('.ws-user').bottom) / 2) < 2 };
+      });
+      assert(sizes.row === 30 && sizes.head === 20 && !sizes.scrolls && sizes.oneRow, `the menu's sizes: ${JSON.stringify(sizes)}`);
+      await shot(page, `layout-e9-${theme}-menu`);
+      // Work folds while Tasks is open: Tasks stays, the label adds up Inbox's and Meetings' counts.
+      const hidden = await page.evaluate(() => ['inbox', 'meetings'].reduce((n, id) => n + Number(document.querySelector(`.ws-main-nav [data-route=${id}] .ws-count`)?.textContent || 0), 0));
+      assert(hidden > 0, 'the fixture has nothing to add up');
+      await page.click(head('work'));
+      await page.waitForSelector(`${head('work')}[aria-expanded="false"]`);
+      await live(page, 'Work folded');
+      assert(await routes() === 'today,tasks,automations,analytics', `folded Work shows ${await routes()}`);
+      assert(await page.locator(`${head('work')} .ws-count`).innerText() === String(hidden), `the Work label doesn't say ${hidden}`);
+      await shot(page, `layout-e9-${theme}-work-folded`);
+      // The fold is kept: a reload draws it folded.
+      await page.reload();
+      await page.waitForSelector(`${head('work')}[aria-expanded="false"]`);
+      // AI folds from the keyboard, and focus stays on its label.
+      await page.focus(head('ai'));
+      await page.keyboard.press('Enter');
+      await page.waitForSelector(`${head('ai')}[aria-expanded="false"]`);
+      assert(await page.evaluate(() => document.activeElement?.dataset.group) === 'ai', 'focus left the AI label');
+      assert(await routes() === 'today,tasks', `with both folded the menu shows ${await routes()}`);
+      // ⌘\ : the 64 px rail; a folded group is one 40 px icon with its tooltip, and opens on click.
+      await page.keyboard.press('ControlOrMeta+Backslash');
+      await page.waitForSelector('.ws-sidebar.ws-sidebar-rail');
+      assert(Math.round((await box(page, '.ws-sidebar')).width) === 64, 'the main menu is not a 64 px rail');
+      const icon = await box(page, head('ai'));
+      assert(Math.round(icon.width) === 40, `the folded AI group is ${Math.round(icon.width)} px wide`);
+      await page.hover(head('ai'));
+      await page.waitForSelector('.ws-tooltip:text-is("AI: Automations, Analytics")');
+      await page.hover('.ws-sidebar .ws-nav-gear');
+      await page.waitForSelector('.ws-tooltip:text-is("Settings")');
+      await shot(page, `layout-e9-${theme}-rail`);
+      await page.click(head('ai'));
+      await page.waitForSelector(`${head('ai')}[aria-expanded="true"]`);
+      assert(await routes() === 'today,tasks,automations,analytics', `after AI opens on the rail: ${await routes()}`);
+      // The brand row's toggle (shown over the logo on hover) expands the menu again.
+      await page.hover('.ws-sidebar .ws-brand');
+      await page.click('.ws-sidebar .ws-brand-toggle');
+      await page.waitForSelector('.ws-sidebar:not(.ws-sidebar-rail)');
+      await page.click(head('work'));
+      await page.waitForSelector(`${head('work')}[aria-expanded="true"]`);
+      // At 1000 px the menu is the rail by its width alone: no names, the gear over the avatar.
+      await page.setViewportSize({ width: 1000, height: 640 });
+      await page.waitForFunction(() => Math.round(document.querySelector('.ws-sidebar').getBoundingClientRect().width) === 64);
+      const narrow = await page.evaluate(() => ({
+        names: [...document.querySelectorAll('.ws-main-nav button > span:not([class])')].filter(el => el.getClientRects().length).length,
+        gearAbove: document.querySelector('.ws-nav-gear').getBoundingClientRect().bottom <= document.querySelector('.ws-user').getBoundingClientRect().top,
+      }));
+      assert(narrow.names === 0 && narrow.gearAbove, `the menu at 1000 px: ${JSON.stringify(narrow)}`);
+      await noOverflow(page, `${theme} Tasks at 1000 px`);
+      await shot(page, `layout-e9-${theme}-1000`);
+      // The gear opens Settings and is marked current.
+      await page.click('.ws-sidebar .ws-nav button[data-route=settings]');
+      await page.waitForSelector('.ws-settings-layout');
+      assert(await page.locator('.ws-sidebar .ws-nav-gear[aria-current=page]').count() === 1, 'Settings is not current');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
 }
