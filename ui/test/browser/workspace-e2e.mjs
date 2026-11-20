@@ -13,6 +13,7 @@ import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folde
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
 import { meetingSettingsChecks } from './meetings-settings-checks.mjs';
+import { analyticsChecks } from './analytics-checks.mjs';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -62,7 +63,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '' }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // ---- CodeMie CLI, mocked by scenario: 'fresh' (nothing set up), 'ready', 'expired' (signed out).
@@ -109,6 +110,50 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       }
       default: return NOT_CODEMIE;
     }
+  }
+  // Analytics (analytics-checks.mjs hands over the contract answers as `analytics`). A fetch is
+  // acted out: the status says `running`, three `workspace:analytics` events follow, and the end
+  // stores `lastFetchAt` and the days read again.
+  function analyticsOps() {
+    const an = clone(analytics);
+    const fetchRun = (label, total, failedAfter) => {
+      an.status.state = 'running';
+      an.status.progress = { done: 0, total, label };
+      const emitStep = done => {
+        const last = done >= total;
+        if (last) {
+          Object.assign(an.status, { state: 'ready', progress: null, lastFetchAt: Date.now(), failedDays: failedAfter });
+          window.__emitNative('workspace:analytics', { running: false, done, total, label, failedDays: failedAfter });
+        } else {
+          an.status.progress = { done, total, label };
+          window.__emitNative('workspace:analytics', { running: true, done, total, label, failedDays: an.status.failedDays });
+        }
+      };
+      for (let i = 1; i <= total; i++) setTimeout(() => emitStep(i), 350 * i);
+    };
+    return {
+      analytics_status: () => { calls.push(['analytics_status', {}]); return clone(an.status); },
+      analytics_view: d => {
+        calls.push(['analytics_view', clone(d)]);
+        if (an.status.state === 'needs_cli') fail('needs_cli', 'Analytics needs a newer CodeMie CLI.');
+        return clone(an.summary);
+      },
+      analytics_session: d => { calls.push(['analytics_session', clone(d)]); return clone(an.session); },
+      analytics_app: d => { calls.push(['analytics_app', clone(d)]); return clone(an.app); },
+      analytics_report: d => { calls.push(['analytics_report', clone(d)]); return { opened: true }; },
+      analytics_refresh: () => {
+        calls.push(['analytics_refresh', {}]);
+        if (an.status.state === 'needs_cli') return clone(an.refreshNeedsCli);
+        if (an.status.state === 'running') return clone(an.refreshRunning);
+        fetchRun('Checking for new sessions', 3, an.status.failedDays || []);
+        return { started: true };
+      },
+      analytics_retry: d => {
+        calls.push(['analytics_retry', clone(d)]);
+        fetchRun(`Reading ${d.day} again`, 1, (an.status.failedDays || []).filter(x => x !== d.day));
+        return { started: true };
+      },
+    };
   }
   const s = snapshot;
   // Automation runs live beside the snapshot, as in native: the snapshot shows each
@@ -285,6 +330,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     export: () => ({ version: 1, workspaces: [], records: [] }),
     ai_status: () => ({ profiles: clone(ai.profiles), settings: clone(ai.settings) }),
     ai_usage: () => clone(usage),
+    // ---- Analytics (contract fixtures from the checks): the CLI's answers as the page's operations return them.
+    ...(analytics ? analyticsOps() : {}),
     ai_settings_save: d => {
       calls.push(['ai_settings_save', d]);
       const known = id => ai.profiles.some(p => p.id === id);
@@ -1073,7 +1120,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -1140,7 +1187,7 @@ const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve
   timer = setTimeout(done, 150);
 }), limit).catch(() => {});
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, analytics = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -1166,7 +1213,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n' })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   await page.goto(base + hash);
@@ -1181,9 +1228,10 @@ const shot = async (page, name) => {
 };
 const text = (page, selector) => page.locator(selector).first().innerText();
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-settings'].includes(process.env.WORKSPACE_E2E_ONLY)) {
-  if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, settled, OUT });
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`, `analytics`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-settings', 'analytics'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+  if (process.env.WORKSPACE_E2E_ONLY === 'analytics') await analyticsChecks({ open, check, assert, shot, settled, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
@@ -2866,6 +2914,10 @@ await meetingChecks({ open, check, assert, shot, settled, OUT });
 // Settings › Meetings (Task 5): transcripts and folders, note templates and skills, rules and the
 // tester, the glossary typed and linked, tasks.
 await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
+
+// Analytics: Overview, filters, the notice, Refresh and its progress, first open, failed days, an
+// old CLI and an empty Mac, sessions and the drawer, the App tab, and the looks in both themes.
+await analyticsChecks({ open, check, assert, shot, settled, OUT });
 
 // Plugins (DESIGN 7.3, Tasks 23–24): add a marketplace, install the synthetic hello plugin, its
 // page and Settings section in their sandboxed frame, Today's plugin widgets, turn it off.
