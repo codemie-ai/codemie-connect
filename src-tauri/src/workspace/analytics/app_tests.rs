@@ -449,6 +449,14 @@ async fn an_empty_range_answers_zeros() {
     }
     near(&app["totals"]["costUsd"], 0.0);
     near(&app["totals"]["terminalCostUsd"], 0.0);
+    // A sum of nothing is 0, not -0 (which the page would print as "$-0.00").
+    for cost in [
+        &app["totals"]["costUsd"],
+        &app["totals"]["terminalCostUsd"],
+        &app["features"][5]["costUsd"],
+    ] {
+        assert!(cost.as_f64().unwrap().is_sign_positive(), "{cost}");
+    }
     assert!(app["totals"]["shareOfAll"].is_null());
     assert!(app["totals"]["backgroundShareOfAll"].is_null());
     assert_eq!(app["series"].as_array().unwrap().len(), 2);

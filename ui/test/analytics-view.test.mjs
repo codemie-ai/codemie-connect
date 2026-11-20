@@ -175,6 +175,21 @@ test('a first open still reading says how many days are in and shades the rest',
   assert.ok(!done.includes('Still reading…'));
 });
 
+test('a range with no sessions yet says it is still reading, not that there are none', () => {
+  const none = { ...summary, totals: { ...summary.totals, sessions: 0 }, sessions: [] };
+  const progress = { running: true, ...running.progress, failedDays: [] };
+  // Nothing stored yet: the first window is still being read.
+  const first = analyticsView(ui(), data({ status: { ...running, storedFrom: null }, progress, summary: none }));
+  assert.ok(first.includes('Reading your sessions… 0 of 30 days so far'), first);
+  assert.ok(!first.includes('No sessions in'));
+  // Two days in, still none in them.
+  const twoDays = analyticsView(ui(), data({ status: { ...running, storedFrom: dayKeyIn(NOW - DAY, ZONE) }, progress, summary: none }));
+  assert.ok(twoDays.includes('Reading your sessions… 2 of 30 days so far'));
+  // The whole range read: then there are none.
+  const read = analyticsView(ui(), data({ summary: none }));
+  assert.ok(read.includes('No sessions in last 30 days') && !read.includes('Reading your sessions'));
+});
+
 test('the days that could not be read open a list with why, and Try again reads them all', () => {
   // The fixture's failed day, as native lists it: `{day, reason}`.
   const [first] = status.failedDays;

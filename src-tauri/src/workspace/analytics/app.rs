@@ -253,8 +253,9 @@ fn answer<Tz: TimeZone>(
     from: DateTime<FixedOffset>,
     to: DateTime<FixedOffset>,
 ) -> Value {
-    let background: f64 = ledger.runs.iter().map(cost_of).sum();
-    let terminal: f64 = matched.iter().map(|m| m.cost).sum();
+    // Folded from 0.0: `sum` of no f64 is -0.0, which the page would print as "$-0.00".
+    let background = ledger.runs.iter().map(cost_of).fold(0.0, |a, b| a + b);
+    let terminal = matched.iter().map(|m| m.cost).fold(0.0, |a, b| a + b);
     // All AI cost on this Mac: Connect's background runs plus every session the CLI counted (the
     // terminal ones among them). Unknown without the CLI, and no share of nothing.
     let all = cli_total
@@ -288,7 +289,7 @@ fn answer<Tz: TimeZone>(
             matched.len() as u64,
             terminal,
             0,
-            matched.iter().map(|m| m.duration).sum(),
+            matched.iter().map(|m| m.duration).fold(0.0, |a, b| a + b),
         ),
     );
     let features: Vec<Value> = FEATURES

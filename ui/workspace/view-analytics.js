@@ -180,6 +180,9 @@ function progressLine(data) {
 
 const loadingState = () => `<div class="ws-an-state">${spinner('Reading analytics')}<span>Reading analytics…</span></div>`;
 
+/** A range with no session yet while its days are still read. */
+const readingState = soFar => `<div class="ws-an-state">${spinner('Reading your sessions')}<span>Reading your sessions… ${n0(soFar.done)} of ${n0(soFar.total)} days so far</span></div>`;
+
 function errorState(message) {
   return `<section class="ws-an-card ws-an-error">${emptyState({ iconName: 'alert', title: 'Analytics couldn’t be read', text: message, actions: button('Try again', { action: 'analytics-reload', iconName: 'refresh' }) })}</section>`;
 }
@@ -394,7 +397,11 @@ function aiBody(ui, data) {
   if (data.errorCode === 'cli_incompatible') return incompatibleState();
   if (data.error) return errorState(data.error);
   if (!s) return loadingState();
-  if (!s.totals?.sessions) return emptyRange(ui, data);
+  if (!s.totals?.sessions) {
+    // While the range's days are still read, "no sessions" isn't known yet.
+    const soFar = readSoFar(ui.range, data.status, isBusy(data), data.now, data.zone);
+    return soFar ? readingState(soFar) : emptyRange(ui, data);
+  }
   if (ui.view === 'efficiency') return efficiency(ui, data);
   if (ui.view === 'sessions') return sessionsList(ui, data);
   return overview(ui, data);
