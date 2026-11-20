@@ -1336,6 +1336,9 @@ for (const theme of ['dark', 'light']) {
   });
 
   await check(`${theme}: commitments add inline and notes autosave`, async () => {
+    // The form sits behind "+ Add task", whose field takes focus as it opens.
+    await page.click('.ws-commitments .ws-task-add > summary');
+    await page.waitForFunction(() => document.activeElement?.matches('[data-form=commitment-add] [name=text]'));
     await page.fill('[data-form=commitment-add] [name=text]', 'Prepare release notes');
     await page.click('[data-form=commitment-add] button[type=submit]');
     await page.waitForSelector('.ws-todo:has-text("Prepare release notes")');
@@ -1822,11 +1825,15 @@ for (const theme of ['dark', 'light']) {
     await action.hover();
     await page.waitForTimeout(300);
     assert(await action.evaluate(el => el.querySelector('span').getBoundingClientRect().width > 40), 'label shows on hover');
+    // The text on the pill's line (the preview; the conversation sits on the name's line above it).
     const geo = await action.evaluate(el => {
       const item = el.closest('.ws-msg-item');
+      const pill = el.getBoundingClientRect();
       const r = sel => item.querySelector(sel).getBoundingClientRect();
-      return { pill: el.getBoundingClientRect().left, text: Math.max(r('.ws-msg-preview').right, r('.ws-msg-title').right), time: r('time').right, card: item.getBoundingClientRect().right };
+      const beside = ['.ws-msg-preview', '.ws-msg-title'].map(r).filter(t => t.bottom > pill.top && t.top < pill.bottom);
+      return { pill: pill.left, text: Math.max(0, ...beside.map(t => t.right)), lines: beside.length, time: r('time').right, card: item.getBoundingClientRect().right };
     });
+    assert(geo.lines >= 1, `nothing shares the pill's line ${JSON.stringify(geo)}`);
     assert(geo.pill >= geo.text, `the pill covers the preview ${JSON.stringify(geo)}`);
     assert(geo.card - geo.time <= 12, `the time left the card edge ${JSON.stringify(geo)}`);
     await shot(page, `${theme}-today-draft-reply`);
@@ -2087,6 +2094,7 @@ for (const theme of ['dark', 'light']) {
   await check(`${theme}: a drive that goes away while Connect runs shows the recovery page`, async () => {
     const { page, context, errors } = await open({ theme, storage: STORAGE.missing });
     await page.evaluate(() => { window.__storageFail = true; });
+    await page.click('.ws-commitments .ws-task-add > summary');
     await page.fill('[data-form=commitment-add] [name=text]', 'Prepare release notes');
     await page.click('[data-form=commitment-add] button[type=submit]');
     await page.waitForSelector('.ws-recovery-card[data-status="missing"]');

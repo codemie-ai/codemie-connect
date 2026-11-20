@@ -373,6 +373,42 @@ test('Today shows the live meeting, a join action, attention and commitments', (
   assert.ok(!m.timed.some(t => t.record.id === 'ev-cancelled'), 'cancelled events are hidden');
 });
 
+test('Today stays calm: the meeting on now is marked, the pill turns amber only near its end, Next is one line', () => {
+  const now = Date.now();
+  const s = buildSnapshot(now, { photo: false });
+  const at = ms => ({ ...ctx(), now: ms });
+  const html = today(s, at(now));
+  const schedule = tileOf(html, 'calendar');
+  assert.match(schedule, /class="ws-tl-event ws-current[^"]*"[^>]*data-id="ev-current"/, 'the event on now is marked');
+  assert.doesNotMatch(schedule, /ws-current"[^>]*data-id="ev-next"/);
+  const brief = tileOf(html, 'brief');
+  assert.match(brief, /class="ws-live-chip"/, '25 minutes left: the accent pill');
+  assert.match(brief, /<strong><span class="ws-upnext-dot" style="--event-color:[^"]+" aria-hidden="true"><\/span>/, 'the calendar colour is a dot before the time');
+  assert.match(brief, /class="ws-next" data-action="event" data-id="ev-next"[^>]*>[^]*?<span class="ws-next-label">Next<\/span>[^]*?<strong>1:1 with Jordan<\/strong>[^]*?<span class="ws-next-in">· in /);
+  assert.doesNotMatch(brief, /ws-later/, 'no Later today chips');
+  assert.match(brief, /data-action="source"[^>]*class="ws-btn ws-btn-ghost|class="ws-btn ws-btn-ghost[^"]*"[^>]*data-action="source"/, 'Open in Outlook is a quiet button');
+  // Four minutes before the end, the pill says so in amber.
+  assert.match(tileOf(today(s, at(now + 21 * 60_000)), 'brief'), /class="ws-live-chip ws-ending"/);
+});
+
+test('Today’s header is Customize and a ⋯; Tasks has one review line and an add row; replies keep the name and conversation on one line', () => {
+  const now = Date.now();
+  const s = withTasks(buildSnapshot(now, { photo: false }), now);
+  const html = today(s, { ...ctx(), now });
+  const actions = html.match(/<div class="ws-actions ws-today-actions">[^]*?<\/details><\/div>/)?.[0] || '';
+  assert.match(actions, /class="ws-btn ws-btn-secondary" data-action="today-customize"><svg[^]*?<span>Customize<\/span>/, 'Customize, not the primary button');
+  assert.match(actions, /<summary class="ws-btn ws-btn-secondary ws-btn-icon ws-today-more"[^>]*aria-label="Layouts and more"/);
+  assert.match(actions, /role="menuitemcheckbox" aria-checked="false" aria-pressed="false" data-action="today-lock">[^]*?Lock layout/);
+  assert.doesNotMatch(actions, /ws-today-layout-pill|<button[^>]*ws-btn[^>]*data-action="today-lock"/, 'no layout pill, no lock button while unlocked');
+  const locked = today(s, { ...ctx(), now, today: { locked: true } });
+  assert.match(locked, /<div class="ws-actions ws-today-actions"><button[^>]*data-action="today-lock"[^>]*aria-pressed="true"/, 'locked: a lock to undo it, first');
+  const tasks = tileOf(html, 'commitments');
+  assert.match(tasks, /class="ws-today-review" data-action="route" data-route="tasks"><svg[^]*?<span><strong>\d+<\/strong> tasks? from meeting notes to review<\/span>/);
+  assert.doesNotMatch(tasks, /Check owners and dates/);
+  assert.match(tasks, /<details class="ws-menu ws-task-add" data-menu="today-task-add"><summary class="ws-task-add-row">[^]*?Add task<\/span><\/summary><form class="ws-quick-add" data-form="commitment-add">/);
+  assert.match(tileOf(html, 'inbox'), /<span class="ws-msg-top"><strong>[^<]+<\/strong><span class="ws-msg-title">[^]*?<\/span><\/span><time>/, 'name, conversation, time on one line');
+});
+
 test('Day at a glance says when free time ends on the same clock as the header', t => {
   // 09:00 in Kyiv: the workday ends at 18:00 there.
   const now = Date.parse('2026-11-18T07:00:00Z');
@@ -478,7 +514,7 @@ test('widgets honour their options', t => {
   const w = active(s);
   const items = [...PRESETS.Default, { id: 'timer', x: 0, y: 22, w: 4, h: 3 }];
   const before = today(s, ctx());
-  assert.match(tileOf(before, 'brief'), /ws-later-label[^]*?class="ws-people"|class="ws-people"[^]*?ws-later-label/);
+  assert.match(tileOf(before, 'brief'), /class="ws-next"[^]*?class="ws-people"|class="ws-people"[^]*?class="ws-next"/);
   assert.match(tileOf(before, 'calendar'), /ws-tl-free/);
   assert.match(tileOf(before, 'commitments'), /data-form="commitment-add"/);
   assert.match(tileOf(before, 'focus'), /class="ws-focus"/);
@@ -493,7 +529,7 @@ test('widgets honour their options', t => {
     },
   };
   const html = today(s, ctx());
-  assert.doesNotMatch(tileOf(html, 'brief'), /ws-later-label|class="ws-people"/);
+  assert.doesNotMatch(tileOf(html, 'brief'), /class="ws-next"|class="ws-people"/);
   const glance = tileOf(html, 'focus');
   assert.deepEqual([...glance.matchAll(/<strong>[^<]*<\/strong><span>([^<]+)<\/span>/g)].map(m => m[1]), ['Meetings left', 'Open tasks'], 'in their usual order');
   assert.doesNotMatch(glance, /class="ws-focus/);
