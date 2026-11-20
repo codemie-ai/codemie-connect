@@ -1823,7 +1823,10 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('.ws-attention [data-action="draft-reply"]').count() === await page.locator('.ws-attention .ws-msg-row').count(), 'one action per row');
     const action = page.locator('.ws-attention [data-action="draft-reply"][data-id="c-reply-2"]');
     await action.hover();
-    await page.waitForTimeout(300);
+    // The pill fades in and its label slides open (a render under the pointer restarts both): wait
+    // for the label rather than a fixed time.
+    await page.waitForFunction(() => document.querySelector('.ws-attention [data-action="draft-reply"][data-id="c-reply-2"] span')?.getBoundingClientRect().width > 40, null, { timeout: 3000 }).catch(() => {});
+    await page.waitForTimeout(200);
     assert(await action.evaluate(el => el.querySelector('span').getBoundingClientRect().width > 40), 'label shows on hover');
     // The text on the pill's line (the preview; the conversation sits on the name's line above it).
     const geo = await action.evaluate(el => {
