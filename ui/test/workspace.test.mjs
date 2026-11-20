@@ -69,6 +69,148 @@ test('workspace mutations serialize against refreshed native revisions', async (
   assert.equal(store.get().snapshot.revision, 2);
 });
 
+/** A native stand-in whose snapshot reads wait until the test lets them go (`reads[i].go()`); a
+ *  read sees `value` as it was when the read was asked, as native does. */
+function slowReads() {
+  const bridge = { value: 0, reads: [], writes: [] };
+  bridge.invoke = (_, { request: r }) => {
+    if (r.op === 'snapshot') {
+      const seen = bridge.value;
+      return new Promise(resolve => bridge.reads.push({ seen, go: () => resolve({ snapshot: { revision: seen, value: seen, settings: { activeWorkspace: 'personal' } } }) }));
+    }
+    return new Promise(resolve => bridge.writes.push({ go: () => { bridge.value = r.data.value; resolve({ saved: true }); } }));
+  };
+  return bridge;
+}
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+test('a write settles on its own read, not on a background read asked after it', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke);
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  let settled = false;
+  const write = store.mutate('layout_save', { value: 1 }).then(() => { settled = true; });
+  await tick();
+  bridge.writes[0].go();
+  await tick();
+  // The write's own read is on its way when a workspace:changed starts another one.
+  assert.equal(bridge.reads.length, 2);
+  const background = store.refresh();
+  bridge.reads[1].go();
+  await tick();
+  await tick();
+  // Its own read has the write: shown and settled without waiting for the later read (a full
+  // snapshot of a real workspace takes about a second).
+  assert.equal(settled, true);
+  assert.equal(store.get().snapshot.value, 1);
+  assert.deepEqual(shown, [1]);
+  bridge.reads[2].go();
+  await write;
+  await background;
+  assert.equal(store.get().snapshot.value, 1);
+  assert.deepEqual(shown, [1, 1]);
+});
+
+test('a read that lands after a newer one is dropped: the view never goes back', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke);
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  const older = store.refresh();
+  bridge.value = 1;
+  const newer = store.refresh();
+  bridge.reads[1].go();
+  await newer;
+  bridge.reads[0].go();
+  // The overtaken read settles with the newer state.
+  assert.equal((await older).snapshot.value, 1);
+  assert.equal(store.get().snapshot.value, 1);
+  assert.deepEqual(shown, [1]);
+});
+
+test('a read asked while a write is sent, landing before the write’s own read, is not shown', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke);
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  const write = store.mutate('meeting_set', { value: 1 });
+  await tick();
+  // Native may answer this read before it applies the write.
+  const background = store.refresh();
+  bridge.writes[0].go();
+  await tick();
+  assert.equal(bridge.reads.length, 3);
+  bridge.reads[1].go();
+  await background;
+  // Drawn, it would put back the switch the person just turned on.
+  assert.deepEqual(shown, []);
+  bridge.reads[2].go();
+  await write;
+  assert.deepEqual(shown, [1]);
+  assert.equal(store.get().snapshot.value, 1);
+});
+
+test('a workspace:changed heard before a read was asked needs no read of its own', async () => {
+  let clock = 0;
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke, { now: () => clock });
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  // A write: native announces its change before it answers, then the write reads.
+  const write = store.mutate('task_save', { value: 1 });
+  await tick();
+  clock = 10;
+  const heard = clock;
+  bridge.writes[0].go();
+  clock = 20;
+  await tick();
+  assert.equal(bridge.reads.length, 2);
+  // The echo of the write's own change: its own read, asked after it, already brings it.
+  const echo = store.refreshAfter(heard);
+  assert.equal(bridge.reads.length, 2);
+  bridge.reads[1].go();
+  await write;
+  assert.equal((await echo).snapshot.value, 1);
+  // A change heard after the last read was asked is read.
+  clock = 30;
+  const later = store.refreshAfter(clock);
+  assert.equal(bridge.reads.length, 3);
+  bridge.reads[2].go();
+  await later;
+});
+
+test('a background read that lands while a write is being sent is not shown; the write’s own read is', async () => {
+  const bridge = slowReads();
+  const store = createStore(bridge.invoke);
+  const loaded = store.refresh();
+  bridge.reads[0].go();
+  await loaded;
+  const shown = [];
+  store.subscribe(r => shown.push(r.snapshot.value));
+  // A workspace:changed read asked before the write lands while the write is on its way: drawn,
+  // it would put back the switch the person just turned on.
+  const background = store.refresh();
+  const write = store.mutate('meeting_set', { value: 1 });
+  await tick();
+  bridge.reads[1].go();
+  await background;
+  assert.deepEqual(shown, []);
+  bridge.writes[0].go();
+  await tick();
+  bridge.reads[2].go();
+  await write;
+  assert.deepEqual(shown, [1]);
+  assert.equal(store.get().snapshot.value, 1);
+});
+
 test('a rejected mutation refreshes canonical state before the next write', async () => {
   let revision = 0;
   const store = createStore(async (_, { request: r }) => {

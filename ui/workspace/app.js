@@ -3018,14 +3018,17 @@ async function boot() {
   if (state.route === 'analytics') analyticsUi.open().catch(fail);
   const listen = window.__TAURI__.event.listen;
   // A sync round emits one change per Graph request; reload the snapshot at most ~once a second.
+  // Every write announces its own change too: the write's own read, asked after that, brings it.
   let refreshTimer = null;
   let lastRefresh = 0;
+  let heardAt = 0;
   const scheduleRefresh = () => {
+    heardAt = performance.now();
     if (refreshTimer) return;
     refreshTimer = setTimeout(() => {
       refreshTimer = null;
       lastRefresh = Date.now();
-      store.refresh().catch(fail);
+      store.refreshAfter(heardAt).catch(fail);
     }, Math.max(150, 1200 - (Date.now() - lastRefresh)));
   };
   for (const name of ['workspace:changed', 'connection:changed']) await listen(name, scheduleRefresh);

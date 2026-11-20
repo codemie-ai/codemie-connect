@@ -22,20 +22,50 @@ export const REBASE_SAFE = new Set(['action_prepare', 'action_confirm', 'sync_re
 /** How many times a rebase-safe operation is sent before a stale view is reported. */
 const REBASE_TRIES = 5;
 
-export function createStore(invoke) {
+/** `now()` is the clock `refreshAfter` compares with (the caller's `performance.now()`). */
+export function createStore(invoke, { now = () => performance.now() } = {}) {
   let state = null;
-  let latestRead = 0;
+  // Reads asked so far, and the one whose snapshot `state` holds.
+  let asked = 0;
+  let applied = 0;
+  let askedAt = -Infinity;
+  // The state once the read asked last has landed.
+  let lastRead = Promise.resolve(null);
+  // A write is on its way: its tries and its own read.
+  let writing = false;
   let chain = Promise.resolve();
   const listeners = new Set();
+  const tell = () => listeners.forEach(fn => fn(state));
+
+  // Reads can land out of order. One asked after the snapshot shown replaces it; an older one is
+  // dropped and settles with the newer state, so the view never goes back. A read never waits for
+  // a later one: a full snapshot of a real workspace takes about a second, and a write's own read
+  // waiting for the workspace:changed read its own change set off took two or more (Accept on the
+  // Meeting page looked broken). A read that lands while a write is on its way is kept (a rebase
+  // needs its revision) but not shown: it may not have the write yet, and drawing it would put
+  // back what the person just moved or switched. The write's own read shows it.
+  function read() {
+    const n = ++asked;
+    askedAt = now();
+    const landed = invoke('workspace_request', { request: { op: 'snapshot' } }).then(result => {
+      if (n <= applied) return false;
+      applied = n;
+      state = result;
+      return true;
+    });
+    lastRead = landed.then(() => state, () => state);
+    return landed;
+  }
 
   async function refresh() {
-    const read = ++latestRead;
-    const result = await invoke('workspace_request', { request: { op: 'snapshot' } });
-    if (read === latestRead) {
-      state = result;
-      listeners.forEach(fn => fn(result));
-    }
+    if (await read() && !writing) tell();
     return state;
+  }
+
+  /** A workspace:changed heard at `at` (`now()`): read again, unless a read asked since then
+   *  already brings that change (a write's own read brings the change the write announced). */
+  function refreshAfter(at) {
+    return askedAt >= at ? lastRead : refresh();
   }
 
   function mutate(op, data = {}, workspaceId, { retry = REBASE_SAFE.has(op) } = {}) {
@@ -51,6 +81,7 @@ export function createStore(invoke) {
           operationId,
         },
       });
+      writing = true;
       try {
         // A background sync moved the revision. Rebase onto the fresh snapshot with the same
         // operation ID; a sync writing record after record can move it again in between, so a
@@ -60,11 +91,16 @@ export function createStore(invoke) {
             return await send();
           } catch (error) {
             if (!retry || error?.code !== 'stale_view' || attempt >= REBASE_TRIES) throw error;
-            await refresh();
+            await read();
           }
         }
       } finally {
-        await refresh();
+        try {
+          await read();
+        } finally {
+          writing = false;
+        }
+        tell();
       }
     };
     const task = chain.then(run, run);
@@ -81,6 +117,7 @@ export function createStore(invoke) {
   return {
     get: () => state,
     refresh,
+    refreshAfter,
     mutate,
     query,
     subscribe(fn) {
