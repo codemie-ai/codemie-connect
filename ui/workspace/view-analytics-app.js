@@ -4,7 +4,8 @@
 // this view formats them as they are and adds nothing up. Pure: `appTab(data, ui)` returns HTML and
 // `appCharts(data, ui)` the cost chart app.js draws once its width is known. `data` is the
 // `analytics_app` answer plus `now`, `zone` and `profileNames` (the AI profiles' `{id, label}`,
-// when the AI settings were read); `ui` is the page's view state (analytics-model.js).
+// when the AI settings were read); `ui` is the page's view state (analytics-model.js). A recent
+// run's feature is the backend's own (`recent[].feature`).
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { stackedColumns, tipHtml } from './analytics-charts.js';
@@ -20,8 +21,6 @@ const FEATURES = {
   terminal: { label: 'Terminal sessions', icon: 'terminal', color: 'var(--ws-an-s6)' },
 };
 const BACKGROUND = ['meeting', 'draft', 'summary', 'automation', 'plugin'];
-/** The feature a run's purpose is filed under, as the backend files it (app.rs `feature_of`). */
-const FEATURE_OF = { meeting: 'meeting', mail_draft: 'draft', chat_draft: 'draft', summary: 'summary', automation: 'automation', plugin: 'plugin' };
 const PURPOSES = { meeting: 'Meeting notes', mail_draft: 'Mail reply', chat_draft: 'Chat reply', summary: 'Summary', automation: 'Automation', plugin: 'Plugin', test: 'Profile test' };
 const STATUS = { ok: ['check-circle', 'Done', 'ws-an-ok'], rate_limited: ['alert', 'Usage limit', 'ws-an-amber'], timeout: ['clock', 'Timed out', 'ws-an-amber'], cancelled: ['close', 'Stopped', 'ws-an-muted'] };
 const FAILED = ['alert', 'Failed', 'ws-an-bad'];
@@ -59,9 +58,12 @@ const cost = (b, k) => (finite(b.by?.[k]) ? b.by[k] : 0);
 function kpis(d) {
   const t = d.totals || {};
   const o = d.outcomes || {};
-  const share = finite(t.shareOfAll) ? `<span>${pct(t.shareOfAll)} of all AI cost on this Mac</span>` : '<span>share of all AI cost unknown</span>';
+  // The headline and its share are Connect's background runs; the share with the terminal sessions
+  // counted in is said apart, in the hint.
+  const share = finite(t.backgroundShareOfAll) ? `<span>${pct(t.backgroundShareOfAll)} of all AI cost on this Mac</span>` : '<span>share of all AI cost unknown</span>';
+  const withTerminal = finite(t.shareOfAll) ? ` Counting the Claude Code sessions started in Connect’s terminal as well, Connect’s share is ${pct(t.shareOfAll)} of all AI cost on this Mac.` : '';
   return `<div class="ws-an-kpis">
-    ${kpi('AI spent from Connect', e(usd(t.costUsd, true)), share, 'What Connect’s own background runs cost: meeting notes, drafts, summaries, automations and plugins, from its run log. The share also counts Claude Code sessions started in Connect’s terminal, out of everything CodeMie analytics found here.')}
+    ${kpi('AI spent from Connect', e(usd(t.costUsd, true)), share, `What Connect’s own background runs cost: meeting notes, drafts, summaries, automations and plugins, from its run log.${withTerminal}`)}
     ${kpi('Runs', n0(t.runs), `<span>+ ${n0(t.terminalSessions)} terminal ${plural(t.terminalSessions, 'session')} · ${e(usd(t.terminalCostUsd))}</span>`, 'Each time Connect asked Claude for something in the background. Terminal sessions are Claude Code sessions started in Connect’s terminal, found in CodeMie analytics.')}
     ${kpi('Runs that failed', n0(t.failed), `<span>${t.runs ? `of ${n0(t.runs)} ${plural(t.runs, 'run')}` : 'no runs'}</span>`, 'Runs that ended with an error. Failed runs that still used tokens keep their cost.')}
     ${kpi('Cost per meeting note', e(usd(o.perNoteUsd)), `<span>${finite(o.perSentUsd) ? `${e(usd(o.perSentUsd))} per sent reply` : 'no replies sent'}</span>`, 'Meeting-note cost divided by the notes made; reply-draft cost divided by the replies you sent.')}
@@ -122,13 +124,13 @@ function outcomesCard(d, ui, range) {
 function recentCard(d, ui, now, zone) {
   const feature = BACKGROUND.includes(ui.appFeature) ? ui.appFeature : '';
   let runs = Array.isArray(d.recent) ? d.recent : [];
-  if (feature) runs = runs.filter(r => FEATURE_OF[r.purpose] === feature);
+  if (feature) runs = runs.filter(r => r.feature === feature);
   if (ui.appList === 'failed') runs = runs.filter(r => r.status !== 'ok');
   const shown = runs.slice(0, ui.appShown || RUNS_PAGE);
   const rows = shown.map(r => {
     const at = finite(r.at) ? r.at * 1000 : null;
     const [ic, label, cls] = STATUS[r.status] || FAILED;
-    const f = FEATURE_OF[r.purpose];
+    const f = FEATURES[r.feature] && r.feature !== 'terminal' ? r.feature : '';
     return [
       at === null ? '—' : e(`${dayName(at, now, zone)} ${hm(at, zone)}`),
       `<span class="ws-an-runf">${icon(f ? FEATURES[f].icon : 'sparkles')}<span>${e(PURPOSES[r.purpose] || r.purpose || 'Run')}</span></span>`,

@@ -165,6 +165,54 @@ test('the Session row shows where the cost went and hides the subagent row when 
   assert.ok(sessionDrawer(alone, ui()).includes('The agent worked on its own'));
 });
 
+test('where the cost went has every subagent whose nearest agent ancestor is the session, under a skill too', () => {
+  // The fixture's top-level subagents, then one of them moved under a top-level skill.
+  const expected = detail.trace.filter(t => t.kind === 'agent' && !t.parentKey);
+  const moved = copy(detail);
+  const skill = moved.trace.find(t => t.kind === 'skill' && !t.parentKey);
+  const agent = moved.trace.find(t => t.kind === 'agent' && !t.parentKey && !t.childKeys.length);
+  Object.assign(agent, { parentKey: skill.key, level: 1 });
+  skill.childKeys = [agent.key];
+  const side = sideOf(sessionDrawer(moved, ui()));
+  assert.equal((side.match(/class="ws-an-where-agent"/g) || []).length, expected.length);
+  assert.ok(side.includes(`↳ ${e(agent.label)}</td>`));
+  // The rows are the record's own fields and still make up its total.
+  const own = expected.map(t => dispatchOf(t.key)).reduce((sum, d) => sum + (d.inclusiveCostUSD ?? d.costUSD), 0);
+  assert.ok(Math.abs(s.rootOwnCostUSD + own + (s.unlinkedCostUSD || 0) - s.costUSD) < 1e-6);
+  for (const t of expected) {
+    const d = dispatchOf(t.key);
+    assert.ok(side.includes(`<td class="ws-an-r">${e(usd(d.inclusiveCostUSD ?? d.costUSD, true))}</td></tr>`), t.label);
+  }
+  // A subagent under a skill under a subagent stays inside that subagent's row.
+  const deeper = copy(detail);
+  const inner = deeper.trace.find(t => t.key === parent.childKeys[0]);
+  const step = deeper.trace.find(t => t.kind === 'skill' && !t.parentKey);
+  Object.assign(step, { parentKey: parent.key, level: 1 });
+  Object.assign(inner, { parentKey: step.key, level: 2 });
+  assert.equal((sideOf(sessionDrawer(deeper, ui())).match(/class="ws-an-where-agent"/g) || []).length, expected.length);
+});
+
+test('the cost-over-the-session chart switches to a table of the CLI\'s own points', () => {
+  const chart = sessionDrawer(detail, ui({ tab: 'cost' }));
+  assert.ok(chart.includes('aria-pressed="false" data-action="analytics-table" data-value="sessionGrow"'));
+  assert.ok(chart.includes('data-chart="session-grow"'));
+  const on = ui({ tab: 'cost', tables: { sessionGrow: true } });
+  const html = sessionDrawer(detail, on);
+  assert.ok(html.includes('aria-pressed="true" data-action="analytics-table" data-value="sessionGrow"'));
+  assert.ok(!html.includes('data-chart="session-grow"'));
+  assert.deepEqual(Object.keys(sessionCharts(detail, on)), []);
+  const table = html.slice(html.indexOf('class="ws-an-tscroll ws-an-grow-table"'), html.indexOf('</table>', html.indexOf('ws-an-grow-table')));
+  const body = table.slice(table.indexOf('<tbody>'));
+  assert.equal((body.match(/<tr>/g) || []).length, s.costSeries.length);
+  for (const point of s.costSeries) assert.ok(body.includes(`<tr><td>${hms(point.t, ZONE)}</td><td class="ws-an-r">${e(usd(point.cost, true))}</td><td class="ws-an-r">${tok(point.tokens)}</td></tr>`), String(point.t));
+  // Points without tokens: no tokens column.
+  const bare = copy(detail);
+  bare.session.costSeries = bare.session.costSeries.map(({ t: at, cost }) => ({ t: at, cost }));
+  assert.ok(!sessionDrawer(bare, on).includes('Tokens so far'));
+  // The Trace tab's thin cost lane has no table switch.
+  assert.ok(!sessionDrawer(detail, ui()).includes('data-value="sessionGrow"'));
+});
+
 test('a session without a log shows the CLI reason instead of costs', () => {
   const reason = 'GitHub Copilot CLI <logs> keep no token usage';
   const nolog = copy(detail);
@@ -303,6 +351,12 @@ test('the drawer\'s actions: tabs, steps, collapse, copy, the CLI report and clo
   assert.equal(state.analytics.drawer.tab, 'tools');
   await ctl.handle('analytics-session-tab', control('nonsense'));
   assert.equal(state.analytics.drawer.tab, 'tools');
+  // Tokens & cost: the chart shown as a table, through the page's own table switch.
+  await ctl.handle('analytics-session-tab', control('cost'));
+  await ctl.handle('analytics-table', control('sessionGrow'));
+  assert.ok(html().includes('ws-an-grow-table') && !('session-grow' in analyticsCharts(state.analytics, ctl.viewData())));
+  await ctl.handle('analytics-table', control('sessionGrow'));
+  assert.ok('session-grow' in analyticsCharts(state.analytics, ctl.viewData()));
   await ctl.handle('analytics-session-tab', control('trace'));
   await ctl.handle('analytics-step', control(parent.key));
   assert.equal(state.analytics.drawer.selected, parent.key);

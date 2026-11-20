@@ -67,7 +67,9 @@ fn cost_of(r: &Record) -> f64 {
 
 impl Core {
     /// `analytics_app {from, to}`. The CLI is asked for its totals and sessions of the same
-    /// window; when it can't answer, the terminal fields are zero and `shareOfAll` is `null`.
+    /// window; when it can't answer, the terminal fields are zero and `shareOfAll` (terminal
+    /// sessions included) and `backgroundShareOfAll` (background runs only) are `null`. Each
+    /// `recent` row carries the `feature` its purpose belongs to (`null` for none).
     pub(super) async fn analytics_app(&self, data: &Value) -> Result<Value> {
         self.analytics_app_in(&chrono::Local, data).await
     }
@@ -245,10 +247,13 @@ fn answer<Tz: TimeZone>(
 ) -> Value {
     let background: f64 = ledger.runs.iter().map(cost_of).sum();
     let terminal: f64 = matched.iter().map(|m| m.cost).sum();
-    let share = cli_total
+    // All AI cost on this Mac: Connect's background runs plus every session the CLI counted (the
+    // terminal ones among them). Unknown without the CLI, and no share of nothing.
+    let all = cli_total
         .map(|cli| background + cli)
-        .filter(|all| *all > 0.0)
-        .map(|all| (background + terminal) / all);
+        .filter(|all| *all > 0.0);
+    let share = all.map(|all| (background + terminal) / all);
+    let background_share = all.map(|all| background / all);
 
     // Per feature: runs, cost, failures and total time.
     let mut by_feature: BTreeMap<&str, (u64, f64, u64, f64)> = BTreeMap::new();
@@ -337,6 +342,7 @@ fn answer<Tz: TimeZone>(
             let mut row = r.data.clone();
             row["id"] = json!(r.id);
             row["at"] = json!(at_of(r));
+            row["feature"] = json!(feature_of(r.data["purpose"].as_str().unwrap_or("")));
             row
         })
         .collect();
@@ -349,6 +355,7 @@ fn answer<Tz: TimeZone>(
             "terminalSessions": matched.len(),
             "terminalCostUsd": terminal,
             "shareOfAll": share,
+            "backgroundShareOfAll": background_share,
         },
         "series": series_in(tz, ledger, matched, from.timestamp_millis(), to.timestamp_millis()),
         "features": features,

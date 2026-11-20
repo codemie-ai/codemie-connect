@@ -6,7 +6,8 @@
 // `detail` is the CLI's `codemie.analytics.session/1` (`{session, trace}`). The tree is its
 // `trace[]` as it is (order, level, parent, `#n` labels), and a step's numbers are its dispatch's
 // own fields: nothing here adds up or divides the CLI's numbers; times are only placed on the
-// timeline. `ui` is `{tab, selected, collapsed: Set, zone, now, inConnect, loading, error, id}`.
+// timeline. `ui` is `{tab, selected, collapsed: Set, tables, zone, now, inConnect, loading, error,
+// id}`; `tables.sessionGrow` shows the cost-over-the-session chart as a table.
 import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { spinner } from './ui.js';
@@ -140,16 +141,25 @@ function strip(s, zone) {
 
 function sessionSide(s, steps, zone) {
   const p = priced(s);
-  const { trace, dispatchOf } = steps;
+  const { trace, byKey, dispatchOf } = steps;
   const grid = `<dl class="ws-an-sd-grid">${stat('Total cost', p ? e(usd(s.costUSD, true)) : '—', p ? 'API-equivalent estimate' : '')}${stat('Total tokens', p ? n0(s.tokens?.total) : '—')}${stat('Elapsed', e(tlDur(s.durationMs)), finite(s.durationMs) ? `${n0(s.durationMs)} ms` : '')}${stat('Turns', n0(s.turns))}</dl>`;
   let cost = '';
   if (!p) {
     cost = `<p class="ws-an-sd-note">${e(reasonOf(s))}</p>`;
   } else if (finite(s.rootOwnCostUSD)) {
-    // Each row is the CLI's own attribution: the session's own usage, every top-level subagent's
-    // total (its child steps included) and what no step claimed.
+    // Each row is the CLI's own attribution: the session's own usage, the total of every subagent
+    // whose nearest subagent above it is the session (its child steps included; a skill or command
+    // in between doesn't count) and what no step claimed.
     const row = (label, tokens, usdValue, cls = '') => `<tr${cls ? ` class="${cls}"` : ''}><td>${label}</td><td class="ws-an-r">${finite(tokens) ? tok(tokens) : '—'}</td><td class="ws-an-r">${e(usd(usdValue, true))}</td></tr>`;
-    const tops = trace.filter(t => t.kind === 'agent' && !t.parentKey);
+    const underSession = t => {
+      const seen = new Set();
+      for (let up = byKey.get(t.parentKey); up && !seen.has(up.key); up = byKey.get(up.parentKey)) {
+        if (up.kind === 'agent') return false;
+        seen.add(up.key);
+      }
+      return true;
+    };
+    const tops = trace.filter(t => t.kind === 'agent' && underSession(t));
     const agents = tops.map(t => {
       const d = dispatchOf(t.key) || {};
       return row(`↳ ${e(t.label)}`, (d.inclusiveTokens || d.tokens)?.total, finite(d.inclusiveCostUSD) ? d.inclusiveCostUSD : d.costUSD, 'ws-an-where-agent');
@@ -268,7 +278,8 @@ function traceTab(s, steps, ui) {
     </div><aside class="ws-an-side" aria-label="Step details">${chosen ? stepSide(s, chosen, steps, zone) : sessionSide(s, steps, zone)}</aside></div>`;
 }
 
-function costTab(s, zone) {
+function costTab(s, ui) {
+  const zone = ui.zone || 'UTC';
   if (!priced(s)) return `<div class="ws-an-none">${e(reasonOf(s))}</div>`;
   const t = s.tokens || {};
   const color = modelColors(s);
@@ -277,12 +288,18 @@ function costTab(s, zone) {
   const end = endOf(s);
   const tokens = `<dl class="ws-an-sd-grid ws-an-sd-g5">${TOKENS.map(([k, label, c]) => stat(label, `<i class="ws-an-swatch" style="background:${c}"></i>${tok(t[k])}`)).join('')}${stat('Total', tok(t.total))}</dl><div class="ws-an-thin ws-an-thin-l">${TOKENS.map(([k, , c]) => (t[k] > 0 ? `<span style="flex:${t[k]};background:${c}"></span>` : '')).join('')}</div>`;
   const byModel = `<div class="ws-an-rows">${models.map(m => `<div class="ws-an-row"><div class="ws-an-n"><i class="ws-an-swatch" style="background:${color(m.model)}"></i><span class="ws-an-t">${e(modelLabel(m.model))}</span></div><div class="ws-an-val">${e(usd(m.costUSD, true))}<small>${tok(m.tokens?.total)} tokens</small></div><div class="ws-an-track"><span style="width:${(((finite(m.costUSD) ? m.costUSD : 0) / max) * 100).toFixed(1)}%;background:${color(m.model)}"></span></div></div>`).join('')}</div>`;
-  const growth = s.costSeries?.length
-    ? `<div class="ws-an-chart" data-chart="session-grow"></div><div class="ws-an-axis-ends"><span>${hm(s.startTime, zone)}</span><span>${hm(end, zone)}</span></div>`
-    : '<p class="ws-an-sd-note">No per-turn data in this log.</p>';
+  // The CLI's own points, as a chart or (the page's table switch) as a table.
+  const points = Array.isArray(s.costSeries) ? s.costSeries : [];
+  const asTable = !!ui.tables?.sessionGrow;
+  const toggle = points.length ? `<button type="button" class="ws-btn ws-btn-ghost ws-btn-sm ws-btn-icon ws-an-table-btn" aria-pressed="${asTable}" ${act('analytics-table', 'sessionGrow')} title="${asTable ? 'Show the chart' : 'Show as a table'}" aria-label="${asTable ? 'Show the chart' : 'Show as a table'}">${icon(asTable ? 'chart' : 'table')}</button>` : '';
+  const withTokens = points.some(x => finite(x.tokens));
+  const growTable = `<div class="ws-an-tscroll ws-an-grow-table"><table class="ws-an-table"><thead><tr><th>Time</th><th class="ws-an-r">Cost so far</th>${withTokens ? '<th class="ws-an-r">Tokens so far</th>' : ''}</tr></thead><tbody>${points.map(x => `<tr><td>${finite(x.t) ? hms(x.t, zone) : '—'}</td><td class="ws-an-r">${e(usd(x.cost, true))}</td>${withTokens ? `<td class="ws-an-r">${tok(x.tokens)}</td>` : ''}</tr>`).join('')}</tbody></table></div>`;
+  const growth = !points.length ? '<p class="ws-an-sd-note">No per-turn data in this log.</p>'
+    : asTable ? growTable
+      : `<div class="ws-an-chart" data-chart="session-grow"></div><div class="ws-an-axis-ends"><span>${hm(s.startTime, zone)}</span><span>${hm(end, zone)}</span></div>`;
   return `<div class="ws-an-dsec"><div class="ws-an-sd-label">Tokens</div>${tokens}</div>
     <div class="ws-an-dsec"><div class="ws-an-sd-label">Cost by model</div>${models.length ? byModel : '<p class="ws-an-sd-note">No model was priced.</p>'}</div>
-    <div class="ws-an-dsec"><div class="ws-an-sd-label">Cost over the session <span class="ws-an-faint">· ${e(usd(s.costUSD, true))} by ${hm(end, zone)}</span></div>${growth}</div>
+    <div class="ws-an-dsec"><div class="ws-an-sd-label ws-an-grow-h"><span>Cost over the session <span class="ws-an-faint">· ${e(usd(s.costUSD, true))} by ${hm(end, zone)}</span></span><span class="ws-spacer"></span>${toggle}</div>${growth}</div>
     <p class="ws-an-sd-note">Estimated from the agent’s own log at standard API token rates. Cache reads cost ${e(usd(s.cacheReadCostUSD, true))} of it.</p>`;
 }
 
@@ -319,7 +336,7 @@ export function sessionDrawer(detail, ui = {}) {
   const steps = stepsOf(detail);
   const tab = SESSION_TABS.some(([id]) => id === ui.tab) ? ui.tab : 'trace';
   const tabs = `<div class="ws-tabs ws-an-dtabs" role="tablist" aria-label="Session">${SESSION_TABS.map(([id, label]) => `<button type="button" role="tab" aria-selected="${tab === id}" ${act('analytics-session-tab', id)}>${e(label)}</button>`).join('')}</div>`;
-  const body = tab === 'cost' ? costTab(s, zone) : tab === 'tools' ? toolsTab(s) : traceTab(s, steps, ui);
+  const body = tab === 'cost' ? costTab(s, ui) : tab === 'tools' ? toolsTab(s) : traceTab(s, steps, ui);
   return shell(header(s, ui), `${strip(s, zone)}${tabs}<div class="ws-an-dbody" data-tab="${tab}">${body}</div>`);
 }
 
@@ -336,7 +353,7 @@ export function sessionCharts(detail, ui = {}) {
     const span = Math.max(60_000, end - s.startTime);
     return { 'session-cost': width => area(width, { points, t0: s.startTime, t1: s.startTime + span, color: slot(0), height: 48, aria: 'Cost over the session', tipTitle: x => hm(x.t, zone), tipRows: rows }) };
   }
-  if (tab === 'cost' && priced(s)) {
+  if (tab === 'cost' && priced(s) && !ui.tables?.sessionGrow) {
     return { 'session-grow': width => area(width, { points, t0: s.startTime, t1: end, color: slot(0), height: 110, aria: 'Cost over the session', tipTitle: x => `${hm(x.t, zone)} · +${tlDur(x.t - s.startTime)}`, tipRows: rows }) };
   }
   return {};

@@ -2918,6 +2918,8 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-an-dgrid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 .ws-an-axis-ends{display:flex;justify-content:space-between;margin-top:4px;font-size:10.5px;color:var(--ws-an-tick)}
 .ws-an-chart[data-chart=session-grow]{min-height:110px}
+.ws-an-sd-label.ws-an-grow-h{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.ws-an-grow-table{max-height:320px}
 /* App analytics (view-analytics-app.js) */
 .ws-an-chart[data-chart=appTrend]{min-height:200px}
 .ws-an-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:8px;font-size:11.5px;color:var(--ws-muted)}

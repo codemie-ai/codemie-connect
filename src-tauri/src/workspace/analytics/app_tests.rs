@@ -171,6 +171,70 @@ async fn recent_is_newest_first_and_capped_at_50() {
 }
 
 #[tokio::test]
+async fn recent_rows_carry_the_feature_their_purpose_belongs_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let core = core(dir.path(), &cli);
+    let purposes = [
+        ("meeting", json!("meeting")),
+        ("mail_draft", json!("draft")),
+        ("chat_draft", json!("draft")),
+        ("summary", json!("summary")),
+        ("automation", json!("automation")),
+        ("plugin", json!("plugin")),
+        // The Settings test run fits no feature.
+        ("test", Value::Null),
+    ];
+    for (n, (purpose, _)) in purposes.iter().enumerate() {
+        run(&core, n as i64, purpose, "ok", 0.01);
+    }
+    let app = ask_app(&core).await;
+    let recent = app["recent"].as_array().unwrap();
+    assert_eq!(recent.len(), purposes.len());
+    for row in recent {
+        let purpose = row["purpose"].as_str().unwrap();
+        let (_, want) = purposes.iter().find(|(p, _)| *p == purpose).unwrap();
+        assert_eq!(&row["feature"], want, "{purpose}");
+    }
+}
+
+#[tokio::test]
+async fn background_share_counts_only_connects_own_runs_against_all_cost() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let core = core(dir.path(), &cli);
+    run(&core, 10, "meeting", "ok", 1.0);
+    let t = ms(FROM) + 3_600_000;
+    log_launches(dir.path(), &[(t, "/w/a")]);
+    // The CLI counted 3.0 in all, 2.0 of it a session started in Connect's terminal.
+    cli.script_view(Ok(cli_summary(
+        3.0,
+        json!([{"sessionId": id(), "startTime": t + 1_000, "project": "/w/a", "costUSD": 2.0}]),
+    )));
+    let app = ask_app(&core).await;
+    near(&app["totals"]["terminalCostUsd"], 2.0);
+    // Background runs only: 1 / (1 + 3); with the terminal: (1 + 2) / (1 + 3).
+    near(&app["totals"]["backgroundShareOfAll"], 1.0 / 4.0);
+    near(&app["totals"]["shareOfAll"], 3.0 / 4.0);
+    // Without the CLI there is no total to compare against.
+    let none_dir = tempfile::tempdir().unwrap();
+    let none_cli = Arc::new(FakeAnalyticsCli::new());
+    let none = super::tests::core(none_dir.path(), &none_cli);
+    run(&none, 10, "meeting", "ok", 1.0);
+    none_cli.set_supports_view(false);
+    let app = ask_app(&none).await;
+    assert!(app["totals"]["backgroundShareOfAll"].is_null());
+    assert!(app["totals"]["shareOfAll"].is_null());
+    // Nothing spent anywhere: no share of nothing.
+    let zero_dir = tempfile::tempdir().unwrap();
+    let zero_cli = Arc::new(FakeAnalyticsCli::new());
+    let zero = super::tests::core(zero_dir.path(), &zero_cli);
+    zero_cli.script_view(Ok(cli_summary(0.0, json!([]))));
+    let app = ask_app(&zero).await;
+    assert!(app["totals"]["backgroundShareOfAll"].is_null());
+}
+
+#[tokio::test]
 async fn a_cli_session_counts_as_terminal_only_within_120_seconds_in_the_same_folder() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Arc::new(FakeAnalyticsCli::new());
@@ -202,6 +266,7 @@ async fn a_cli_session_counts_as_terminal_only_within_120_seconds_in_the_same_fo
     near(&app["totals"]["terminalCostUsd"], 13.0);
     // (1 + 13) / (1 + 20)
     near(&app["totals"]["shareOfAll"], 14.0 / 21.0);
+    near(&app["totals"]["backgroundShareOfAll"], 1.0 / 21.0);
     let terminal = app["features"][5].clone();
     assert_eq!(terminal["key"], "terminal");
     assert_eq!(terminal["runs"], 3);
@@ -242,6 +307,7 @@ async fn without_the_cli_the_terminal_fields_are_zero_and_the_rest_still_answers
         assert_eq!(app["totals"]["terminalSessions"], 0);
         near(&app["totals"]["terminalCostUsd"], 0.0);
         assert!(app["totals"]["shareOfAll"].is_null());
+        assert!(app["totals"]["backgroundShareOfAll"].is_null());
         assert_eq!(app["totals"]["runs"], 1);
         near(&app["totals"]["costUsd"], 1.0);
     }
@@ -350,6 +416,7 @@ async fn an_empty_range_answers_zeros() {
     near(&app["totals"]["costUsd"], 0.0);
     near(&app["totals"]["terminalCostUsd"], 0.0);
     assert!(app["totals"]["shareOfAll"].is_null());
+    assert!(app["totals"]["backgroundShareOfAll"].is_null());
     assert_eq!(app["series"].as_array().unwrap().len(), 2);
     assert_eq!(app["features"].as_array().unwrap().len(), 6);
     assert!(app["features"]

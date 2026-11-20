@@ -16,8 +16,6 @@ const summary = fixture('analytics-summary.json');
 const ZONE = 'UTC';
 const NOW = status.lastFetchAt + 60_000;
 const copy = value => structuredClone(value);
-/** The backend's purpose → feature (analytics/app.rs `feature_of`). */
-const FEATURE_OF = { meeting: 'meeting', mail_draft: 'draft', chat_draft: 'draft', summary: 'summary', automation: 'automation', plugin: 'plugin' };
 const LABELS = { meeting: 'Meeting notes', draft: 'Reply drafts', summary: 'Summaries', automation: 'Automations', plugin: 'Plugins', terminal: 'Terminal sessions' };
 
 const ui = (over = {}) => ({ ...newAnalyticsView(), mode: 'app', ...over });
@@ -25,6 +23,18 @@ const data = (over = {}) => ({ ...app, now: NOW, zone: ZONE, ...over });
 const count = (html, needle) => html.split(needle).length - 1;
 const runsOf = html => [...html.matchAll(/data-run="([^"]+)"/g)].map(m => m[1]);
 const legendOf = html => html.slice(html.indexOf('class="ws-an-legend"'), html.indexOf('</div>', html.indexOf('class="ws-an-legend"')));
+/** One KPI of the strip: its HTML from the label to the next KPI, and its sub-line. */
+const kpiOf = (html, label) => {
+  const at = html.indexOf(`>${label}`);
+  const next = html.indexOf('<div class="ws-an-kpi">', at);
+  const all = html.slice(html.lastIndexOf('<div class="ws-an-kpi">', at), next < 0 ? undefined : next);
+  return { all, sub: all.slice(all.indexOf('class="ws-an-kpi-d"')) };
+};
+/** Waits for a pending fake answer to be asked for, at most 50 turns: a regression fails, never hangs. */
+async function asked(ready) {
+  for (let i = 0; i < 50 && !ready(); i++) await new Promise(resolve => setImmediate(resolve));
+  assert.ok(ready(), 'the operation was asked for');
+}
 const cardOf = (html, id) => {
   const at = html.indexOf(`data-card="${id}"`);
   return at < 0 ? '' : html.slice(at, html.indexOf('</section>', at));
@@ -70,7 +80,12 @@ test('app tab: KPIs, by feature, by profile and what Connect did come from analy
   const o = app.outcomes;
   const html = appTab(data(), ui());
   assert.ok(html.includes(e(usd(t.costUsd, true))));
-  assert.ok(html.includes(`${pct(t.shareOfAll)} of all AI cost on this Mac`));
+  // The headline is Connect's background runs, and so is its share; the share with the terminal
+  // sessions counted in says so, in the hint.
+  const headline = kpiOf(html, 'AI spent from Connect');
+  assert.ok(headline.sub.includes(`${pct(t.backgroundShareOfAll)} of all AI cost on this Mac`));
+  assert.ok(!headline.sub.includes(`${pct(t.shareOfAll)} `));
+  assert.ok(headline.all.includes(`terminal as well, Connect’s share is ${pct(t.shareOfAll)} of all AI cost on this Mac`));
   assert.ok(html.includes(`+ ${n0(t.terminalSessions)} terminal ${plural(t.terminalSessions, 'session')} · ${e(usd(t.terminalCostUsd))}`));
   assert.ok(html.includes(`of ${n0(t.runs)} ${plural(t.runs, 'run')}`));
   assert.ok(html.includes(e(usd(o.perNoteUsd))) && html.includes(`${e(usd(o.perSentUsd))} per sent reply`));
@@ -98,8 +113,9 @@ test('app tab: KPIs, by feature, by profile and what Connect did come from analy
   assert.ok(outcomes.includes(`>${n0(o.inboxHandled)}<`));
   assert.ok(outcomes.includes(`of ${n0(o.autoRuns)} finished`) && outcomes.includes(`>${n0(o.autoOk)}<`));
   // Nothing to compare against, or nothing to divide by: the backend's null shows as a dash.
-  const unknown = appTab(data({ totals: { ...t, shareOfAll: null }, outcomes: { ...o, perNoteUsd: null, perSentUsd: null } }), ui());
+  const unknown = appTab(data({ totals: { ...t, shareOfAll: null, backgroundShareOfAll: null }, outcomes: { ...o, perNoteUsd: null, perSentUsd: null } }), ui());
   assert.ok(!unknown.includes('of all AI cost on this Mac'));
+  assert.ok(kpiOf(unknown, 'AI spent from Connect').sub.includes('share of all AI cost unknown'));
   assert.ok(unknown.includes('no replies sent'));
   // Recent runs: when, what, profile and model, time and cost.
   const zero = app.recent[0];
@@ -151,10 +167,11 @@ test('app tab: a feature click filters Recent runs; Failed shows only failed run
   const { ctl, state, html } = harness({ saved: { mode: 'app' } });
   await ctl.open();
   assert.deepEqual(runsOf(html()), app.recent.map(r => r.id));
-  const feature = FEATURE_OF[app.recent.find(r => FEATURE_OF[r.purpose]).purpose];
+  // Each run's feature is the backend's (`recent[].feature`).
+  const { feature } = app.recent.find(r => r.feature);
   await ctl.handle('analytics-app-feature', control(feature));
   assert.equal(state.analytics.appFeature, feature);
-  assert.deepEqual(runsOf(html()), app.recent.filter(r => FEATURE_OF[r.purpose] === feature).map(r => r.id));
+  assert.deepEqual(runsOf(html()), app.recent.filter(r => r.feature === feature).map(r => r.id));
   // The filter shows as a chip that clears it; the same feature clicked again clears it too.
   assert.ok(cardOf(html(), 'recent').includes(`data-action="analytics-app-feature" data-value=""`));
   assert.ok(cardOf(html(), 'features').includes(`aria-pressed="true" data-action="analytics-app-feature" data-value="${feature}"`));
@@ -164,13 +181,20 @@ test('app tab: a feature click filters Recent runs; Failed shows only failed run
   // Failed: only the runs that didn't end ok; with a feature, both apply.
   await ctl.handle('analytics-app-list', control('failed'));
   assert.deepEqual(runsOf(html()), app.recent.filter(r => r.status !== 'ok').map(r => r.id));
-  const failed = app.recent.find(r => r.status !== 'ok' && FEATURE_OF[r.purpose]);
-  await ctl.handle('analytics-app-feature', control(FEATURE_OF[failed.purpose]));
-  assert.deepEqual(runsOf(html()), app.recent.filter(r => r.status !== 'ok' && FEATURE_OF[r.purpose] === FEATURE_OF[failed.purpose]).map(r => r.id));
+  const failed = app.recent.find(r => r.status !== 'ok' && r.feature);
+  await ctl.handle('analytics-app-feature', control(failed.feature));
+  assert.deepEqual(runsOf(html()), app.recent.filter(r => r.status !== 'ok' && r.feature === failed.feature).map(r => r.id));
   await ctl.handle('analytics-app-list', control('all'));
   // A feature without runs.
   await ctl.handle('analytics-app-feature', control('plugin'));
-  if (!app.recent.some(r => FEATURE_OF[r.purpose] === 'plugin')) assert.ok(html().includes('No runs match.'));
+  if (!app.recent.some(r => r.feature === 'plugin')) assert.ok(html().includes('No runs match.'));
+  // The filter is the backend's feature, not the purpose: a run filed under another feature follows it.
+  const refiled = copy(app);
+  refiled.recent[0].feature = 'plugin';
+  const moved = harness({ saved: { mode: 'app' }, answers: { analytics_app: refiled } });
+  await moved.ctl.open();
+  await moved.ctl.handle('analytics-app-feature', control('plugin'));
+  assert.deepEqual(runsOf(moved.html()), [refiled.recent[0].id]);
   // Show more: ten at a time.
   await ctl.handle('analytics-app-feature', control(''));
   const many = copy(app);
@@ -220,15 +244,15 @@ test('App analytics reads analytics_app for the range: on open, on the switch, o
   let releaseView;
   const racing = harness({ saved: { mode: 'app' }, answers: { analytics_view: () => new Promise(resolve => { releaseView = () => resolve(summary); }) } });
   const opening = racing.ctl.open();
-  while (!releaseView) await new Promise(resolve => setImmediate(resolve));
+  await asked(() => releaseView);
   await racing.ctl.handle('analytics-range', control('7d'));
   releaseView();
   await opening;
   racing.calls.query.length = 0;
   releaseView = null;
   const back = racing.ctl.handle('analytics-mode', control('ai'));
-  for (let i = 0; i < 50 && !releaseView; i++) await new Promise(resolve => setImmediate(resolve));
-  releaseView?.();
+  await asked(() => releaseView);
+  releaseView();
   await back;
   assert.deepEqual(racing.calls.query.filter(([op]) => op === 'analytics_view').map(([, body]) => body.from), [week.from]);
   // A read that fails says so, with Try again.
@@ -251,7 +275,7 @@ test('App analytics reads analytics_app for the range: on open, on the switch, o
   await slow.ctl.open();
   const switching = slow.ctl.handle('analytics-mode', control('app'));
   assert.ok(slow.html().includes('class="ws-an-app"') && slow.html().includes('Reading App analytics'));
-  while (!release) await new Promise(resolve => setImmediate(resolve));
+  await asked(() => release);
   release();
   await switching;
 });

@@ -400,7 +400,7 @@ function drawerOf(ui, data) {
   if (!open) return '';
   const d = ui.drawer || {};
   return sessionDrawer(open.detail, {
-    tab: d.tab, selected: d.selected, collapsed: d.collapsed, zone: data.zone, now: data.now,
+    tab: d.tab, selected: d.selected, collapsed: d.collapsed, tables: ui.tables, zone: data.zone, now: data.now,
     inConnect: startedInConnect(data.summary).has(open.id), loading: open.loading, error: open.error, id: open.id,
   });
 }
@@ -433,7 +433,7 @@ export function analyticsView(ui, data) {
 /** The charts on the page as it is now, by `data-chart` id: `width => svg`. */
 export function analyticsCharts(ui, data) {
   const open = data.session?.detail && !data.session.error
-    ? sessionCharts(data.session.detail, { ...(ui.drawer || {}), zone: data.zone })
+    ? sessionCharts(data.session.detail, { ...(ui.drawer || {}), tables: ui.tables, zone: data.zone })
     : {};
   if (ui.mode === 'app') return { ...(data.app?.answer ? appCharts({ ...data.app.answer, zone: data.zone }, ui) : {}), ...open };
   if (!data.summary || data.status?.state === 'needs_cli') return open;
