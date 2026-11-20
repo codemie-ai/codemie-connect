@@ -248,13 +248,18 @@ async fn codemie(args: &[&str]) {
         .output()
         .await
         .unwrap();
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let last = stderr.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("");
+    // Only the exit code: stderr can hold paths or log text.
+    let oom = String::from_utf8_lossy(&out.stderr).contains("heap out of memory");
     assert!(
         out.status.success(),
-        "codemie {} ended with {:?}: {last}",
+        "codemie {} ended with {:?}{}",
         args[..2].join(" "),
-        out.status.code()
+        out.status.code(),
+        if oom {
+            " (JavaScript heap out of memory)"
+        } else {
+            ""
+        }
     );
 }
 
@@ -874,6 +879,10 @@ async fn live_a_stopped_first_open_continues_after_restart() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert!(!gone(pid), "the second window's CLI isn't running");
+    // Else the group check after the stop would pass with no group to look at.
+    // SAFETY: getpgid only reads the process group of a process this test started.
+    let group = unsafe { libc::getpgid(pid) };
+    assert_eq!(group, pid, "the CLI doesn't lead its own process group");
     let before = State::load(&dir);
     let handled: BTreeSet<String> = before
         .days_done
@@ -984,6 +993,14 @@ async fn live_old_cli_shows_needs_cli() {
         .output()
         .unwrap();
     let version = String::from_utf8_lossy(&version.stdout).trim().to_string();
+    let help = std::process::Command::new(&old)
+        .args(["analytics", "view", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&help.stdout).contains("Usage: codemie analytics view"),
+        "precondition failed: ~/.npm-global/bin/codemie ({version}) has `analytics view`; this test needs a CLI without it"
+    );
     let tmp = tempfile::tempdir().unwrap();
     let cli_dir = tmp.path().join("cli");
     let core = live_core(&tmp.path().join("data"), &shim(&cli_dir, &old));
@@ -1010,9 +1027,10 @@ async fn live_old_cli_shows_needs_cli() {
     println!(
         "M7 codemie {version} from ~/.npm-global/bin: status {}, refresh {refresh}, {export_calls} export call(s); the page's view call answers {}",
         status["state"],
+        // The code only: a `cli_failed` message carries the CLI's last stderr line.
         match &view {
             Ok(_) => "a summary".to_string(),
-            Err(e) => format!("{} \"{}\"", e.code, e.message),
+            Err(e) => e.code.clone(),
         },
     );
     assert_eq!(
