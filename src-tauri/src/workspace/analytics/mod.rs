@@ -10,6 +10,8 @@ pub(crate) mod store;
 #[cfg(test)]
 mod app_tests;
 #[cfg(test)]
+mod live_tests;
+#[cfg(test)]
 mod tests;
 
 use crate::workspace::models::{required, Operation, Request, Result, WorkspaceError};
