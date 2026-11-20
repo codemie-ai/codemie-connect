@@ -178,10 +178,10 @@ impl Core {
 
     /// A CLI call failed: `view` support is asked again next time, and one line goes to the
     /// session log, which release builds keep. `what` is the operation or an export's UTC days,
-    /// `how` its end ([`how`]): never session content or paths.
+    /// `how` its end ([`how`]), with paths taken out ([`without_paths`]).
     pub(super) fn cli_failed(&self, what: &str, how: &str) {
         self.analytics_supported.store(false, Ordering::Relaxed);
-        let line = format!("analytics: {what} failed: {how}");
+        let line = format!("analytics: {what} failed: {}", without_paths(how));
         #[cfg(test)]
         if let Ok(mut lines) = self.analytics_log.lock() {
             lines.push(line);
@@ -289,6 +289,78 @@ pub(super) fn how(e: &CliError) -> String {
         },
         other => other.reason(),
     }
+}
+
+/// `text` for the session log, which release builds keep: a CLI's stderr can name the logs it
+/// read, and their folders name projects. The home folder becomes `~`; then every absolute path
+/// (`/…`, `~/…`, `C:\…`, `\\…`) that starts a word or follows a quote, a bracket, `=`, `,` or `:`
+/// becomes `<path>`. A quoted or bracketed path ends at its closing mark, spaces and all; any
+/// other ends at a space or a closing mark, unless the next word holds a `/` or `\` too.
+pub(super) fn without_paths(text: &str) -> String {
+    let mut text = text.to_string();
+    for var in ["HOME", "USERPROFILE"] {
+        let home = std::env::var(var).unwrap_or_default();
+        let home = home.trim_end_matches(['/', '\\']);
+        if !home.is_empty() {
+            for sep in ["/", "\\"] {
+                text = text.replace(&format!("{home}{sep}"), &format!("~{sep}"));
+            }
+        }
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let starts_path = |i: usize| match chars[i..] {
+        ['/', ..] | ['~', '/' | '\\', ..] | ['\\', '\\', ..] => true,
+        [drive, ':', '/' | '\\', ..] => drive.is_ascii_alphabetic(),
+        _ => false,
+    };
+    let word_end = |from: usize| {
+        from + chars[from..]
+            .iter()
+            .take_while(|c| !c.is_whitespace())
+            .count()
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let before = i.checked_sub(1).map(|j| chars[j]);
+        let after_break = before.is_none_or(|c| c.is_whitespace() || "'\"`(<[{=,:".contains(c));
+        if !(after_break && starts_path(i)) {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        out.push_str("<path>");
+        let close = match before {
+            Some(quote @ ('\'' | '"' | '`')) => Some(quote),
+            Some('(') => Some(')'),
+            Some('[') => Some(']'),
+            Some('<') => Some('>'),
+            Some('{') => Some('}'),
+            _ => None,
+        };
+        if let Some(close) = close {
+            while i < chars.len() && chars[i] != close {
+                i += 1;
+            }
+            continue;
+        }
+        loop {
+            while i < chars.len() && !chars[i].is_whitespace() && !"'\"`)>]}".contains(chars[i]) {
+                i += 1;
+            }
+            let next = i + chars[i..].iter().take_while(|c| c.is_whitespace()).count();
+            let continues = i < chars.len()
+                && chars[i].is_whitespace()
+                && chars[next..word_end(next)]
+                    .iter()
+                    .any(|c| matches!(c, '/' | '\\'));
+            if !continues {
+                break;
+            }
+            i = next;
+        }
+    }
+    out
 }
 
 /// Removes the reports earlier presses wrote; one the browser still shows has been read.

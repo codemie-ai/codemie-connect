@@ -1,12 +1,13 @@
 //! Reading sessions from the CLI into the store, in the background and one fetch at a time. The
 //! first open reads 91 UTC days back (90 local days in any zone), newest first, three days per
-//! call; once only yesterday and today are left, a refresh reads those two in one call, and the
-//! start days of sessions that were still active at the last fetch one by one. A call that fails
+//! call; once only yesterday and today are left, a refresh reads those two and the start days of
+//! sessions that were still active at the last fetch, grouped into calls of up to three days, as
+//! few as it can (each call reads every log written since its first day). A call that fails
 //! is made again day by day, and a day that still fails waits for a retry (`failed_days`, with
 //! why). Two calls in a row that run out of time end the run; its other days are read next time.
 //! Days are UTC, because the CLI reads a date-only `--from`/`--to` as UTC days.
 use super::cli::{CliError, ExportOutcome};
-use super::store::{unavailable, State, EXPORT_PREFIX};
+use super::store::{unavailable, State, EXPORT_PREFIX, KEEP_DAYS};
 use crate::workspace::models::{id, Result, WorkspaceError};
 use crate::workspace::{poisoned, Core};
 use chrono::{DateTime, Days, NaiveDate, Utc};
@@ -113,8 +114,9 @@ pub fn active_days(
 }
 
 /// What `analytics_refresh` reads, and its label: the first open's windows while a day before
-/// yesterday is unread, then [`plan_refresh`]; with either, the [`active_days`] no window holds,
-/// one by one, all newest first. Failed days wait for a retry.
+/// yesterday is unread, else yesterday and today ([`plan_refresh`]); with either, the
+/// [`active_days`] no window holds. Those days are [`group`]ed, all windows newest first. Failed
+/// days wait for a retry.
 fn next_fetch(
     today: NaiveDate,
     state: &State,
@@ -131,17 +133,44 @@ fn next_fetch(
     let (mut windows, label) = if backlog.iter().any(|&(from, _)| from < yesterday) {
         (backlog, "Reading your history, newest first")
     } else {
-        (vec![plan_refresh(today)], "Reading yesterday and today")
+        (Vec::new(), "Reading yesterday and today")
     };
-    for day in active_days(today, state.last_fetch_at, activity) {
-        let held = windows.iter().any(|&(from, to)| from <= day && day <= to);
-        if !held && !state.failed_days.contains_key(&key(day)) {
-            windows.push((day, day));
-        }
+    let mut again: BTreeSet<NaiveDate> = active_days(today, state.last_fetch_at, activity)
+        .into_iter()
+        .filter(|day| !state.failed_days.contains_key(&key(*day)))
+        .filter(|day| !windows.iter().any(|&(from, to)| from <= *day && *day <= to))
+        .collect();
+    if windows.is_empty() {
+        let (from, to) = plan_refresh(today);
+        again.extend([from, to]);
     }
+    windows.extend(group(&again, |day| state.days_done.contains(&key(day))));
     // The windows don't overlap: newest first is by their last day.
     windows.sort_by_key(|w| std::cmp::Reverse(w.1));
     (windows, label)
+}
+
+/// `days` newest first, in windows of up to [`WINDOW_DAYS`] days. A window takes in the days
+/// between two of them only when all of those were `read` already (they are read again, which
+/// loses nothing), so it never holds a failed day or one another window reads.
+fn group(days: &BTreeSet<NaiveDate>, read: impl Fn(NaiveDate) -> bool) -> Vec<Window> {
+    let mut windows: Vec<Window> = Vec::new();
+    for &day in days.iter().rev() {
+        match windows.last_mut() {
+            Some((from, to))
+                if (*to - day).num_days() < WINDOW_DAYS
+                    && day
+                        .iter_days()
+                        .skip(1)
+                        .take_while(|d| *d < *from)
+                        .all(&read) =>
+            {
+                *from = day;
+            }
+            _ => windows.push((day, day)),
+        }
+    }
+    windows
 }
 
 /// Every failed day, each a window of its own, newest first.
@@ -156,6 +185,7 @@ fn failed_windows(state: &State) -> Vec<Window> {
 }
 
 /// Marks `from..=to` read. Today isn't over, so it stays unread and the next fetch reads it again.
+/// Days older than the store keeps are forgotten, read or failed: their sessions are gone.
 fn mark_read(state: &mut State, (from, to): Window, today: NaiveDate) {
     for day in from.iter_days().take_while(|d| *d <= to) {
         state.failed_days.remove(&key(day));
@@ -163,6 +193,9 @@ fn mark_read(state: &mut State, (from, to): Window, today: NaiveDate) {
             state.days_done.insert(key(day));
         }
     }
+    let oldest = key(today - Days::new(KEEP_DAYS));
+    state.days_done.retain(|day| *day >= oldest);
+    state.failed_days.retain(|day, _| *day >= oldest);
     state.stored_from = state.days_done.first().cloned();
 }
 
@@ -384,7 +417,7 @@ impl Core {
         let store = self.analytics_store().clone();
         let stored = tokio::task::spawn_blocking(move || match export {
             Some(export) => store.merge(export, today).map(|_| ()),
-            None => store.extend_period(from),
+            None => store.extend_period(from, today),
         })
         .await
         .unwrap_or_else(|_| Err(unavailable()));

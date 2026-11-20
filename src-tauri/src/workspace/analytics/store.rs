@@ -17,7 +17,7 @@ const STATE: &str = "state.json";
 pub(super) const EXPORT_PREFIX: &str = "export-";
 /// Sessions that started longer ago than this are dropped at the next merge: the page shows at
 /// most 90 days, and their comparison reaches 90 more.
-const KEEP_DAYS: u64 = 180;
+pub(super) const KEEP_DAYS: u64 = 180;
 
 /// The analytics files can't be read or written. The Analytics page's own error: it never takes
 /// the app to the recovery page, as `storage_unavailable` would.
@@ -118,11 +118,13 @@ impl Store {
     /// more than [`KEEP_DAYS`] days before `today` (UTC) are dropped, stored or incoming.
     /// `meta.periodStart` becomes the earlier of the stored value and the export's own (a missing
     /// or unreadable one is ignored), so it is the earliest day fetched, as the CLI's `--compare`
-    /// coverage check expects. Returns how many sessions were added or changed. There is no lock
-    /// in here: callers must serialize merges (the single-fetch guard does).
+    /// coverage check expects; but never before the oldest day kept. Returns how many sessions
+    /// were added or changed. There is no lock in here: callers must serialize merges (the
+    /// single-fetch guard does).
     pub fn merge(&self, mut export: Value, today: NaiveDate) -> Result<usize> {
         let mut stored = self.load()?;
-        let since = (today - Days::new(KEEP_DAYS))
+        let oldest = today - Days::new(KEEP_DAYS);
+        let since = oldest
             .and_hms_opt(0, 0, 0)
             .map_or(i64::MIN, |t| t.and_utc().timestamp_millis());
         // A row without a start can't be told old: it stays.
@@ -139,7 +141,8 @@ impl Store {
         let period = [period_day(&stored["meta"]), period_day(&export["meta"])]
             .into_iter()
             .flatten()
-            .min();
+            .min()
+            .map(|day| day.max(oldest));
         for row in rows_of(&mut export) {
             let Some(id) = row["sessionId"].as_str().map(str::to_string) else {
                 continue;
@@ -174,12 +177,13 @@ impl Store {
     /// When each stored session started and was last active (its log's last line, or start plus
     /// duration), in ms, read past the rest of each row. Empty when the store can't be read.
     pub fn activity(&self) -> Vec<(i64, i64)> {
+        // Read as any value, so one row with an odd field skips that row, not the whole store.
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Row {
-            start_time: Option<f64>,
-            observed_end: Option<f64>,
-            duration_ms: Option<f64>,
+            start_time: Option<Value>,
+            observed_end: Option<Value>,
+            duration_ms: Option<Value>,
         }
         #[derive(Deserialize)]
         struct Rows {
@@ -194,27 +198,32 @@ impl Store {
         rows.sessions
             .into_iter()
             .filter_map(|r| {
-                let start = r.start_time?;
-                let end = r
-                    .observed_end
-                    .unwrap_or(start + r.duration_ms.unwrap_or(0.0));
+                let number = |v: Option<Value>| v.as_ref().and_then(Value::as_f64);
+                let start = number(r.start_time)?;
+                let end =
+                    number(r.observed_end).unwrap_or(start + number(r.duration_ms).unwrap_or(0.0));
                 Some((start as i64, end as i64))
             })
             .collect()
     }
 
-    /// Moves `meta.periodStart` back to `from` when that is earlier than it (or it is null). For a
-    /// window the CLI answered with no file: nothing to merge, but the days were read. Writes
-    /// only when something changes.
-    pub fn extend_period(&self, from: NaiveDate) -> Result<()> {
+    /// Moves `meta.periodStart` back to `from` when that is earlier than it (or it is null), but
+    /// never before the oldest day kept ([`KEEP_DAYS`] before `today`). For a window the CLI
+    /// answered with no file: nothing to merge, but the days were read. Writes only when
+    /// something changes.
+    pub fn extend_period(&self, from: NaiveDate, today: NaiveDate) -> Result<()> {
         let mut stored = self.load()?;
-        if period_day(&stored["meta"]).is_some_and(|d| d <= from) {
+        let stored_day = period_day(&stored["meta"]);
+        let day = stored_day
+            .map_or(from, |d| d.min(from))
+            .max(today - Days::new(KEEP_DAYS));
+        if stored_day == Some(day) {
             return Ok(());
         }
         if !stored["meta"].is_object() {
             stored["meta"] = json!({});
         }
-        stored["meta"]["periodStart"] = period_json(from);
+        stored["meta"]["periodStart"] = period_json(day);
         self.write(&stored)
     }
 }
@@ -464,13 +473,61 @@ mod tests {
     fn extend_period_moves_back_only() {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(d.path());
-        s.extend_period(day("2026-11-17")).unwrap();
+        s.extend_period(day("2026-11-17"), today()).unwrap();
         assert_eq!(read(&s)["meta"]["periodStart"], "2026-11-17T00:00:00.000Z");
-        s.extend_period(day("2026-11-19")).unwrap();
+        s.extend_period(day("2026-11-19"), today()).unwrap();
         assert_eq!(read(&s)["meta"]["periodStart"], "2026-11-17T00:00:00.000Z");
-        s.extend_period(day("2026-10-01")).unwrap();
+        s.extend_period(day("2026-10-01"), today()).unwrap();
         assert_eq!(read(&s)["meta"]["periodStart"], "2026-10-01T00:00:00.000Z");
         assert_eq!(read(&s)["sessions"], json!([]));
+    }
+
+    #[test]
+    fn the_period_never_starts_before_the_oldest_day_kept() {
+        // 180 days before 2026-11-19.
+        let oldest = "2026-05-23T00:00:00.000Z";
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path());
+        // A day read long ago, beyond what the store keeps: the period stops at the oldest kept.
+        s.extend_period(day("2026-01-01"), today()).unwrap();
+        assert_eq!(read(&s)["meta"]["periodStart"], oldest);
+        s.merge(
+            with_period(json!("2026-02-01T00:00:00.000Z"), vec![]),
+            today(),
+        )
+        .unwrap();
+        assert_eq!(read(&s)["meta"]["periodStart"], oldest);
+        // A store written by an older Connect, whose period is older still, is moved up at the
+        // next merge, as its old sessions are dropped.
+        std::fs::write(
+            s.path(),
+            with_period(json!("2026-03-01T00:00:00.000Z"), vec![]).to_string(),
+        )
+        .unwrap();
+        s.merge(export(vec![session("a", NOV18, 1, 1.0)]), today())
+            .unwrap();
+        assert_eq!(read(&s)["meta"]["periodStart"], oldest);
+        // A day later, the oldest kept moves on too.
+        s.extend_period(day("2026-11-17"), day("2026-11-20"))
+            .unwrap();
+        assert_eq!(read(&s)["meta"]["periodStart"], "2026-05-24T00:00:00.000Z");
+    }
+
+    #[test]
+    fn activity_skips_a_row_it_cannot_read_and_keeps_the_rest() {
+        let d = tempfile::tempdir().unwrap();
+        let rows = export(vec![
+            json!({"sessionId": "a", "startTime": NOV18, "durationMs": 60_000}),
+            json!({"sessionId": "odd", "startTime": "yesterday", "durationMs": 5}),
+            json!({"sessionId": "b", "startTime": NOV10, "durationMs": "long", "observedEnd": NOV10 + 9}),
+            json!({"sessionId": "c", "startTime": NOV10, "durationMs": "long"}),
+        ]);
+        std::fs::write(d.path().join("sessions.json"), rows.to_string()).unwrap();
+        let s = Store::open(d.path());
+        assert_eq!(
+            s.activity(),
+            [(NOV18, NOV18 + 60_000), (NOV10, NOV10 + 9), (NOV10, NOV10)]
+        );
     }
 
     #[test]

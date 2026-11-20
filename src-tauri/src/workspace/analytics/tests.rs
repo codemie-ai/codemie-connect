@@ -891,6 +891,74 @@ async fn refresh_reads_again_the_start_days_of_sessions_active_before_the_last_f
 }
 
 #[tokio::test]
+async fn refresh_groups_the_days_it_reads_again_into_calls_of_up_to_three_days() {
+    let dir = tempfile::tempdir().unwrap();
+    let last = ms("2026-11-19T12:00:00Z");
+    let row = |id: &str, start: &str| json!({"sessionId": id, "startTime": ms(start), "durationMs": 60_000, "observedEnd": last - 3_600_000});
+    // Every day is read but 11-15, which failed.
+    let done: Vec<String> = (1..91).filter(|&b| b != 4).map(key).collect();
+    stored(
+        dir.path(),
+        json!({"daysDone": done, "failedDays": {"2026-11-15": "exit 3"}, "lastFetchAt": last}),
+        vec![
+            row("a", "2026-11-17T09:00:00Z"),
+            row("b", "2026-11-16T09:00:00Z"),
+            row("c", "2026-11-14T09:00:00Z"),
+            row("d", "2026-11-12T09:00:00Z"),
+        ],
+    );
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let core = core(dir.path(), &cli);
+    refresh(&core).await;
+    idle(&core).await;
+    assert_eq!(
+        exports(&cli),
+        [
+            // 11-17 joins yesterday and today.
+            window("2026-11-17", TODAY),
+            // 11-16 and 11-14 are within three days, but the failed 11-15 lies between them.
+            window("2026-11-16", "2026-11-16"),
+            // 11-13, between them, was read already: it is read again with them.
+            window("2026-11-12", "2026-11-14"),
+        ]
+    );
+    let state = State::load(&core.paths.analytics_dir());
+    assert_eq!(
+        failed_days(&core),
+        json!({"2026-11-15": "exit 3"}),
+        "a failed day waits for a retry"
+    );
+    assert!(state.days_done.contains("2026-11-13"));
+}
+
+#[tokio::test]
+async fn days_older_than_the_store_keeps_are_forgotten() {
+    let dir = tempfile::tempdir().unwrap();
+    // 180 days before 2026-11-19 is 2026-05-23.
+    let mut done: Vec<String> = (2..91).map(key).collect();
+    done.extend([
+        "2026-01-01".to_string(),
+        "2026-05-22".to_string(),
+        "2026-05-23".to_string(),
+    ]);
+    stored(
+        dir.path(),
+        json!({"daysDone": done, "storedFrom": "2026-01-01", "lastFetchAt": ms("2026-11-19T00:00:00Z"),
+            "failedDays": {"2026-02-01": "timeout", "2026-06-01": "exit 3"}}),
+        vec![],
+    );
+    let cli = Arc::new(FakeAnalyticsCli::new());
+    let core = core(dir.path(), &cli);
+    refresh(&core).await;
+    idle(&core).await;
+    let state = State::load(&core.paths.analytics_dir());
+    assert_eq!(state.stored_from.as_deref(), Some("2026-05-23"));
+    assert!(!state.days_done.contains("2026-01-01"));
+    assert!(!state.days_done.contains("2026-05-22"));
+    assert_eq!(failed_days(&core), json!({"2026-06-01": "exit 3"}));
+}
+
+#[tokio::test]
 async fn retry_without_a_day_reads_every_failed_day_newest_first_with_its_reason() {
     let dir = tempfile::tempdir().unwrap();
     let last = 1_795_000_000_000i64;
@@ -1189,4 +1257,58 @@ async fn each_failed_cli_call_leaves_one_log_line_without_session_content() {
         ))
         .await;
     assert_eq!(core.analytics_log.lock().unwrap().len(), 6);
+    // A stderr line that names a file keeps its words, not the path.
+    cli.script_view(Err(CliError::Failed {
+        code: 1,
+        stderr_tail: "Error: EACCES: permission denied, open '/Users/taylor/My Work/s.jsonl'"
+            .into(),
+    }));
+    let _ = core
+        .request(read(
+            Operation::AnalyticsView,
+            json!({"from": FROM, "to": TO}),
+        ))
+        .await;
+    assert_eq!(
+        core.analytics_log.lock().unwrap().last().unwrap(),
+        "analytics: analytics_view failed: exit 1: Error: EACCES: permission denied, open '<path>'"
+    );
+}
+
+#[test]
+fn paths_are_taken_out_of_a_log_line() {
+    use super::without_paths;
+    for (line, logged) in [
+        (
+            "ENOENT: no such file or directory, open '/Users/taylor/My Projects/s.jsonl'",
+            "ENOENT: no such file or directory, open '<path>'",
+        ),
+        (
+            "at parse (/Users/taylor/app/dist/x.js:10:5)",
+            "at parse (<path>)",
+        ),
+        (
+            "Failed to read /Users/taylor/My Projects/a b/s.jsonl: bad line",
+            "Failed to read <path> bad line",
+        ),
+        (
+            "C:\\Users\\taylor\\.claude\\x.jsonl is not JSON",
+            "<path> is not JSON",
+        ),
+        ("cache at ~/.codemie/cache=stale", "cache at <path>"),
+        ("url=file:///Users/taylor/x", "url=file:<path>"),
+        // No path: as it was.
+        (
+            "FATAL ERROR: JavaScript heap out of memory",
+            "FATAL ERROR: JavaScript heap out of memory",
+        ),
+        ("ratio 3/4 at 10:30", "ratio 3/4 at 10:30"),
+    ] {
+        assert_eq!(without_paths(line), logged, "{line}");
+    }
+    // The home folder, spaces and all, goes before the paths are looked for.
+    if let Ok(home) = std::env::var("HOME") {
+        let line = format!("Reading {home}/Code Projects/x.jsonl now");
+        assert_eq!(without_paths(&line), "Reading <path> now");
+    }
 }
