@@ -2713,7 +2713,9 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-an-kpi-l{display:flex;align-items:center;gap:6px;color:var(--ws-muted);font-size:12px;line-height:16px}
 .ws-an-kpi-v{margin-top:6px;overflow:hidden;font-family:var(--font-sans);font-size:26px;line-height:1.15;font-weight:600;letter-spacing:-.02em;white-space:nowrap;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .ws-an-kpi-v small{margin-left:4px;font-size:14px;font-weight:500;letter-spacing:0;color:var(--ws-muted)}
-.ws-an-kpi-d{display:flex;align-items:center;gap:4px;margin-top:5px;overflow:hidden;font-size:11.5px;line-height:16px;color:var(--ws-faint);white-space:nowrap;text-overflow:ellipsis}
+/* A KPI's note wraps rather than being cut (narrow windows, long notes); its parts stay together where they fit. */
+.ws-an-kpi-d{display:flex;flex-wrap:wrap;align-items:center;gap:0 4px;margin-top:5px;font-size:11.5px;line-height:16px;color:var(--ws-faint)}
+.ws-an-kpi-d>*{min-width:0;overflow-wrap:anywhere}
 .ws-an-delta{color:var(--ws-muted)}
 .ws-an-hint{display:inline-grid;place-items:center;color:var(--ws-faint);cursor:help}
 .ws-an-hint .ws-icon{width:12px;height:12px}
