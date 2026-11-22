@@ -19,7 +19,7 @@ The user wants CodeMie Connect to be their primary app instead of Naya. Connect 
 
 ## Order
 
-Each step is its own design, plan and pull request into `workspace-app`.
+All steps go on one branch, `feat/naya-port`, cut from `workspace-app`, and reach it in one pull request at the end. Each step still gets its own design and plan, its own commits, and passes the definition of done before the next step starts.
 
 0. **Connect marketplace** — a public `codemie-ai/codemie-connect-marketplace` repo in the `echo-plugins` layout, added to Connect as a second built-in marketplace (listed first; `onetest` stays). Home of the Todoist, reply-context and Podervianskyi notes plugins.
 1. **Compact view** — view setting, size tokens, compact Inbox and Today, hiding menu items and Today's toolbar. Design: `2026-11-22-compact-view-design.md`.
