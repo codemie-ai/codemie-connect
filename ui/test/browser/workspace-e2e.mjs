@@ -383,9 +383,18 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       calls.push(['action_prepare', d]);
       const m = find('message', d.sourceId);
       if (!s.connection.enabled.includes(d.kind === 'chat_reply' ? 'chat_send' : 'mail_send')) fail('permission_required', 'Allow replies in Settings first.');
-      return { actionId: 'action-1', nonce: 'nonce-1', workspaceId: 'personal', account: s.connection.email, review: { title: `Reply to ${m.data.from}`, recipients: [{ emailAddress: { name: m.data.from, address: m.data.fromAddress || m.data.fromId } }], body: d.body } };
+      const address = m.data.fromAddress || m.data.fromId;
+      // actions.rs `new_recipients`: the Reply-To addresses the thread never showed, lower-case
+      // compared with the sender. `window.__replyTo` names the address the next mail prepare uses.
+      const replyTo = window.__replyTo;
+      const newRecipients = replyTo && String(replyTo).toLowerCase() !== String(address).toLowerCase() ? [replyTo] : [];
+      return { actionId: 'action-1', nonce: 'nonce-1', workspaceId: 'personal', account: s.connection.email, review: { title: `Reply to ${m.data.from}`, recipients: [{ emailAddress: { name: m.data.from, address } }], newRecipients, body: d.body } };
     },
-    action_confirm: d => { calls.push(['action_confirm', d]); return { message: 'Sent for delivery.' }; },
+    action_confirm: d => {
+      calls.push(['action_confirm', d]);
+      if (window.__replyToChanged) fail('conflict', 'The Outlook message or reply destination changed. Review a new reply.');
+      return { state: 'accepted', message: 'Sent for delivery.' };
+    },
     // AI drafts: queued → running (profile, model, startedAt) → a draft record, or the failure
     // in `window.__draftPlan`; `hold` keeps it running until `window.__finishDraft(plan)`.
     ai_draft: d => {

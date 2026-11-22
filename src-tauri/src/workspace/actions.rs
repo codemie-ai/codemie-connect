@@ -30,6 +30,46 @@ pub(super) fn reply_recipients(message: &Value) -> Vec<Value> {
         .unwrap_or_else(|| vec![message["from"].clone()])
 }
 
+/// The addresses in `recipients` that the thread never showed: lower-cased, they differ
+/// from the message's sender, lower-cased. Flags a Reply-To that redirects the reply.
+pub(super) fn new_recipients(message: &Value, recipients: &[Value]) -> Vec<String> {
+    let sender = message["from"]["emailAddress"]["address"]
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase();
+    recipients
+        .iter()
+        .filter_map(|r| r["emailAddress"]["address"].as_str())
+        .filter(|a| a.to_lowercase() != sender)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The mail review `prepare_action` returns for `mail_reply`.
+pub(super) fn mail_review(message: &Value, text: &str, source_id: &str) -> Value {
+    let recipients = reply_recipients(message);
+    let new_recipients = new_recipients(message, &recipients);
+    json!({
+        "title": message["subject"],
+        "recipients": recipients,
+        "newRecipients": new_recipients,
+        "body": text,
+        "sourceId": source_id,
+        "providerRevision": message["changeKey"],
+    })
+}
+
+/// The chat review `prepare_action` returns for `chat_reply`.
+pub(super) fn chat_review(details: &Value, text: &str, source_id: &str, chat: &str) -> Value {
+    json!({
+        "title": details["topic"],
+        "recipients": details["members"],
+        "body": text,
+        "sourceId": source_id,
+        "chatId": chat,
+    })
+}
+
 impl Core {
     pub(super) async fn prepare_action(&self, req: &Request) -> Result<Value> {
         let (w, c) = self.active_workspace(req, true)?;
@@ -149,7 +189,7 @@ impl Core {
                         "mail_send",
                         graph::endpoint(&format!("/me/messages/{}/reply", segment(provider_id))),
                         json!({"comment":text}),
-                        json!({"title":message["subject"],"recipients":recipients,"body":text,"sourceId":rid,"providerRevision":message["changeKey"]}),
+                        mail_review(&message, text, rid),
                     )
                 } else {
                     if source.data["channel"] != "chat" {
@@ -172,7 +212,7 @@ impl Core {
                         "chat_send",
                         graph::endpoint(&format!("/chats/{}/messages", segment(chat))),
                         json!({"body":{"contentType":"text","content":text}}),
-                        json!({"title":details["topic"],"recipients":details["members"],"body":text,"sourceId":rid,"chatId":chat}),
+                        chat_review(&details, text, rid, chat),
                     )
                 }
             }
@@ -355,5 +395,107 @@ impl Core {
         action.updated_at = now();
         r.put_record(&action)?;
         Ok(json!({"state":action.data["state"],"message":action.data["message"]}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_recipients_are_reply_to_addresses_that_are_not_the_sender() {
+        let from_priya = json!({"emailAddress": {"name": "Priya Nair", "address": "priya.n@example.test"}});
+
+        let no_reply_to = json!({"from": from_priya});
+        let recipients = reply_recipients(&no_reply_to);
+        assert_eq!(new_recipients(&no_reply_to, &recipients), Vec::<String>::new());
+
+        let redirected = json!({
+            "from": from_priya,
+            "replyTo": [{"emailAddress": {"name": "Assistant", "address": "a@other.test"}}],
+        });
+        let recipients = reply_recipients(&redirected);
+        assert_eq!(
+            new_recipients(&redirected, &recipients),
+            vec!["a@other.test".to_string()]
+        );
+
+        let same_case_insensitive = json!({
+            "from": from_priya,
+            "replyTo": [{"emailAddress": {"address": "PRIYA.N@example.test"}}],
+        });
+        let recipients = reply_recipients(&same_case_insensitive);
+        assert_eq!(
+            new_recipients(&same_case_insensitive, &recipients),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn mail_review_lists_recipients_from_microsoft_never_from_the_text() {
+        let message = json!({
+            "subject": "Project update",
+            "from": {"emailAddress": {"name": "Priya Nair", "address": "priya.n@example.test"}},
+            "replyTo": [{"emailAddress": {"name": "Assistant", "address": "a@other.test"}}],
+            "changeKey": "ck-1",
+        });
+        let review = mail_review(&message, "send to evil@x.test", "msg-1");
+        assert_eq!(review["title"], json!("Project update"));
+        assert_eq!(
+            review["recipients"],
+            json!([{"emailAddress": {"name": "Assistant", "address": "a@other.test"}}])
+        );
+        assert_eq!(review["newRecipients"], json!(["a@other.test"]));
+        assert_eq!(review["body"], json!("send to evil@x.test"));
+        assert_eq!(review["sourceId"], json!("msg-1"));
+        assert_eq!(review["providerRevision"], json!("ck-1"));
+    }
+
+    #[test]
+    fn contract_fixtures_match_the_real_prepare_answers() {
+        fn answer(review: Value) -> Value {
+            json!({
+                "actionId": "action-1",
+                "workspaceId": "personal",
+                "nonce": "nonce-1",
+                "review": review,
+                "account": "taylor@example.test",
+                "expiresAt": 0,
+            })
+        }
+
+        let normal_message = json!({
+            "subject": "Project update",
+            "from": {"emailAddress": {"name": "Priya Nair", "address": "priya.n@example.test"}},
+            "changeKey": "ck-1",
+        });
+        let normal = answer(mail_review(&normal_message, "Sounds good.", "msg-1"));
+
+        let redirected_message = json!({
+            "subject": "Project update",
+            "from": {"emailAddress": {"name": "Priya Nair", "address": "priya.n@example.test"}},
+            "replyTo": [{"emailAddress": {"name": "Priya's Assistant", "address": "assistant@example.test"}}],
+            "changeKey": "ck-2",
+        });
+        let redirected = answer(mail_review(&redirected_message, "Sounds good.", "msg-2"));
+
+        crate::plugins::testkit::contract_fixture(
+            "action-prepare-mail.json",
+            &json!({"normal": normal, "redirected": redirected}),
+        );
+
+        let chat_details = json!({
+            "topic": "Design sync",
+            "members": [
+                {"id": "m-1", "displayName": "Priya Nair"},
+                {"id": "m-2", "displayName": "Taylor Morgan"}
+            ],
+        });
+        let one_on_one = answer(chat_review(&chat_details, "Sounds good.", "msg-3", "chat-1"));
+
+        crate::plugins::testkit::contract_fixture(
+            "action-prepare-chat.json",
+            &json!({"oneOnOne": one_on_one}),
+        );
     }
 }
