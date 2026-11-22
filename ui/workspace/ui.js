@@ -157,8 +157,14 @@ export const COMMIT_GUARD_MS = 400;
  * 'cancel'` focuses Cancel, so Enter never commits by default, and `guard` ignores a submit within
  * `COMMIT_GUARD_MS` of opening or of `dialog.arm()` (a step change) and a held-down Enter, so a
  * double click or a repeated key can't commit.
+ *
+ * `returnCancels` is for a dialog Return must never confirm (the mail send review): it implies
+ * `initialFocus: 'cancel'` and `guard`, and a capturing keydown closes the dialog as Cancel would
+ * on Enter anywhere inside it, rather than letting it reach the form's submit. Space on a
+ * focused submit button is unaffected and still submits.
  */
-export function openModal({ title, subtitle = '', body = '', submit = 'Save', cancel = 'Cancel', onSubmit, size = 'md', variant = 'primary', workspaceId, onClose, footerExtra = '', initialFocus = 'auto', guard = false }) {
+export function openModal({ title, subtitle = '', body = '', submit = 'Save', cancel = 'Cancel', onSubmit, size = 'md', variant = 'primary', workspaceId, onClose, footerExtra = '', initialFocus = 'auto', guard = false, returnCancels = false }) {
+  if (returnCancels) { initialFocus = 'cancel'; guard = true; }
   const restore = document.activeElement;
   const dialog = document.createElement('dialog');
   dialog.className = `ws-modal ws-modal-${size}`;
@@ -192,6 +198,13 @@ export function openModal({ title, subtitle = '', body = '', submit = 'Save', ca
   if (guard) {
     dialog.addEventListener('keydown', ev => {
       if (ev.key === 'Enter' && ev.repeat) ev.preventDefault();
+    }, true);
+  }
+  if (returnCancels) {
+    dialog.addEventListener('keydown', ev => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      requestClose().catch(err => toast(err.message || String(err), 'error'));
     }, true);
   }
   form.onsubmit = async ev => {

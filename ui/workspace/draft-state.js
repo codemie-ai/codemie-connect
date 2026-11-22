@@ -5,6 +5,8 @@ export const INTENTS = [['reply', 'Reply'], ['acknowledge', 'Acknowledge'], ['de
 export const TONES = [['neutral', 'Neutral'], ['friendly', 'Friendly'], ['formal', 'Formal']];
 export const LENGTHS = [['short', 'Short'], ['medium', 'Medium'], ['detailed', 'Detailed']];
 export const MAX_INSTRUCTIONS = 1000;
+/** A "change this" ask revises at most this much text (DESIGN 6.4). */
+export const MAX_REVISE_CHARS = 20_000;
 /** CodeMie takes 12–18 s to start; until then the composer says so instead of "Drafting". */
 export const CODEMIE_STARTUP_SECONDS = 12;
 
@@ -52,6 +54,11 @@ export function draftRequest(message, options, instructions = '') {
   const text = String(instructions || '').trim().slice(0, MAX_INSTRUCTIONS);
   if (text) request.instructions = text;
   return request;
+}
+
+/** The `ai_draft` request for a "change this" ask: the draft request plus the text to revise. */
+export function changeRequest(message, options, instructions, text) {
+  return { ...draftRequest(message, options, instructions), revise: String(text || '').trim().slice(0, MAX_REVISE_CHARS) };
 }
 
 // ---------------------------------------------------------------- labels
@@ -235,18 +242,29 @@ export function restoreText(state) {
 }
 
 /**
+ * Starts a "change this" request (DESIGN 6.4): the box's current text becomes both the baseline
+ * a later draft compares itself against and the text a Restore (once the change arrives) would
+ * bring back.
+ */
+export function startChange(ui, live) {
+  return { ...ui, baseline: live, changeFrom: live, confirm: null, kept: null };
+}
+
+/**
  * A draft that arrived for the open reply box (`live` is the box's current text): fill the box
  * when it is empty or still holds Claude's earlier text untouched (`ui.baseline`), otherwise
- * ask. A Restore offered for an earlier replace ends here. Returns the next `ui`, the action,
- * the box text and the text to save (the saved reply follows a fill), or null when nothing is
- * new.
+ * ask. A Restore offered for an earlier replace ends here — unless this fill answers a change
+ * request (`ui.changeFrom`), in which case it offers to restore the text the change started
+ * from instead. Returns the next `ui`, the action, the box text and the text to save (the saved
+ * reply follows a fill), or null when nothing is new.
  */
 export function reconcile({ ui = {}, ai, manual, live }) {
   if (!ai || live == null || [ui.seen, ui.confirm, ui.kept].includes(ai.revision)) return null;
   const { action, text } = applyDraftResult({ current: live, dirty: live !== (ui.baseline ?? ''), result: ai.data });
   if (action === 'confirm') return { ui: { ...ui, confirm: ai.revision, restore: null }, action, text: live, save: null };
   const saved = manual?.data?.text;
-  return { ui: { ...ui, seen: ai.revision, confirm: null, kept: null, restore: null, baseline: text }, action, text, save: saved != null && saved !== text ? text : null };
+  const changed = ui.changeFrom != null ? { restore: { previous: ui.changeFrom }, changeFrom: null } : { restore: null };
+  return { ui: { ...ui, seen: ai.revision, confirm: null, kept: null, baseline: text, ...changed }, action, text, save: saved != null && saved !== text ? text : null };
 }
 
 /**

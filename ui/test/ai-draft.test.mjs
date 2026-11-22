@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import {
   applyDraftResult, restoreText, claudeCheck, replyBox, runningLabel, provenanceLabel, modelLabel, providerLabel, reconcile, answer,
   draftError, choicesIn, gapsIn, chooseOption, unfinishedParts, draftChoices, readOptions, pickOption, draftRequest, defaultOptions,
+  startChange, changeRequest,
 } from '../workspace/draft-state.js';
 import { draftJob, latestDraft, draftKeyOf, decisions, conversation } from '../workspace/selectors.js';
 import { REBASE_SAFE } from '../workspace/store.js';
@@ -340,6 +341,24 @@ test('a_draft_that_arrives_while_the_user_types_asks_instead_of_replacing', () =
   assert.deepEqual([again.action, again.save, again.ui.seen], ['fill', ai.data.text, ai.revision]);
   assert.equal(reconcile({ ui: {}, ai: null, manual, live: 'x' }), null);
   assert.equal(reconcile({ ui: {}, ai, manual, live: null }), null, 'nothing to do without an open reply box');
+});
+
+test('a change fills the box and offers Restore of the text it changed', () => {
+  const ui = startChange({}, 'Sure, 14:30');
+  assert.deepEqual(ui, { baseline: 'Sure, 14:30', changeFrom: 'Sure, 14:30', confirm: null, kept: null });
+  const ai = { revision: 'r2', data: { text: 'Sure, 15:00' } };
+  const filled = reconcile({ ui, ai, manual: null, live: 'Sure, 14:30' });
+  assert.equal(filled.action, 'fill');
+  assert.equal(filled.ui.restore.previous, 'Sure, 14:30');
+  assert.equal(filled.ui.changeFrom, null);
+  const edited = reconcile({ ui, ai, manual: null, live: 'Sure, 14:30 ok' });
+  assert.equal(edited.action, 'confirm');
+
+  const s = snapshot();
+  assert.deepEqual(changeRequest(message(s, 'm-reply-1'), defaultOptions('mail'), 'Say 15:00 instead', 'Sure, 14:30, see you then.'), {
+    sourceId: 'm-reply-1', intent: 'reply', tone: 'neutral', length: 'medium', includeFreeTimes: false,
+    instructions: 'Say 15:00 instead', revise: 'Sure, 14:30, see you then.',
+  });
 });
 
 test('without_send_permission_the_reply_can_be_copied', () => {
