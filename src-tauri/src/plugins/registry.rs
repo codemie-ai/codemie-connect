@@ -302,7 +302,11 @@ impl Registry {
         for b in &BUILT_INS {
             let source = Source::built_in(b.repo);
             if reg.markets.iter().all(|m| m.source != source) {
-                let name = unique_name(&reg, b.name)?;
+                // With every name taken the built-in is left out, rather than failing every read.
+                let Ok(name) = unique_name(&reg, b.name) else {
+                    log::warn!("plugins: no free name for the built-in {}", b.name);
+                    continue;
+                };
                 reg.markets.push(Market {
                     name,
                     source,
@@ -524,6 +528,21 @@ mod tests {
         assert_eq!((ours[0].name.as_str(), ours[0].built_in), ("connect", true));
         let names: Vec<_> = reg.markets.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, ["connect", "onetest", "acme"]);
+    }
+
+    #[test]
+    fn a_built_in_with_no_free_name_is_left_out_and_the_rest_still_load() {
+        let taken: Vec<_> = std::iter::once("codemie".to_string())
+            .chain((2..=9).map(|n| format!("codemie-{n}")))
+            .map(|n| git_market(&n, &format!("https://github.com/acme/{n}"), false))
+            .collect();
+        let reg = load_written(json!({"format": 1, "markets": taken}));
+        assert!(reg
+            .markets
+            .iter()
+            .all(|m| m.source != Source::built_in(CODEMIE)));
+        assert_eq!(reg.markets[0].name, "onetest");
+        assert_eq!(reg.markets.len(), 10);
     }
 
     #[test]
