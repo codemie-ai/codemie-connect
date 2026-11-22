@@ -2,7 +2,7 @@
 // one list, rows open in place, selected and open kept apart.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clickRow, enterRow, escRow, nextAfter, followOpen } from '../workspace/inbox-open.js';
+import { clickRow, enterRow, escRow, nextAfter, followOpen, retrySource } from '../workspace/inbox-open.js';
 import { inbox } from '../workspace/view-inbox.js';
 import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
 
@@ -38,6 +38,16 @@ test('the open row follows its chat when a newer message arrives, and closes whe
   assert.deepEqual(followOpen([{ id: 'm1', key: 'mail' }], { open: null, openKey: null }, keyOf), { open: null, openKey: null });
 });
 
+test('a retry runs for the row that holds its button, not for the selection', () => {
+  // Compact: row A open, the selection moved to B with j/k, Retry clicked in A's reply or summary.
+  assert.equal(retrySource({ sourceId: null, rowId: 'A', compact: true, selected: 'B', open: 'A' }), 'A');
+  // No row to read: the open message in Compact, the selected one in Default.
+  assert.equal(retrySource({ sourceId: null, rowId: null, compact: true, selected: 'B', open: 'A' }), 'A');
+  assert.equal(retrySource({ sourceId: null, rowId: null, compact: false, selected: 'B', open: 'A' }), 'B');
+  // The job's own request wins.
+  assert.equal(retrySource({ sourceId: 'C', rowId: 'A', compact: true, selected: 'B', open: 'A' }), 'C');
+});
+
 test('Compact Inbox: one list, every row closed and one line, no reading pane', () => {
   const s = buildSnapshot(Date.now(), { photo: false });
   const html = inbox(s, ctx({ selectedMessage: 'm-reply-1' }));
@@ -58,7 +68,7 @@ test('the open row: Done, Snooze, Acknowledge on an unacknowledged critical, ⋯
   const s = buildSnapshot(Date.now(), { photo: false });
   const html = inbox(s, ctx({ lane: 'critical', selectedMessage: 'm-critical', openMessage: 'm-critical' }));
   assert.match(html, /aria-expanded="true" aria-controls="crow-m-critical"/);
-  assert.match(html, /<div class="ws-crow-body" id="crow-m-critical">/);
+  assert.match(html, /<div class="ws-crow-body" id="crow-m-critical" data-message-id="m-critical">/);
   assert.match(html, /ws-crow-actions[^]*?data-action="message-archive"[^]*?message-snooze[^]*?data-action="message-ack"[^]*?data-menu="crow-more"/);
   // The ⋯ holds Open in Outlook, Move to lane and Add a task; Acknowledge stays outside it.
   const more = html.slice(html.indexOf('data-menu="crow-more"'));

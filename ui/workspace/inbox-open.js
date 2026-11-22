@@ -25,3 +25,7 @@ export function followOpen(items, { open, openKey }, keyOf) {
   const pick = items.find(m => m.id === open) || (openKey ? items.find(m => keyOf(m) === openKey) : null);
   return pick ? { open: pick.id, openKey: keyOf(pick) } : { open: null, openKey: null };
 }
+
+/** The message a failed draft's or summary's Retry runs for: the job's own request, else the row
+ *  that holds the button, else the open row in Compact and the selected one in Default. */
+export const retrySource = ({ sourceId, rowId, compact, selected, open }) => sourceId || rowId || (compact ? open : selected) || null;

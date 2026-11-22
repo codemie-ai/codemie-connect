@@ -400,6 +400,35 @@ async function c6(theme, page, { open, assert, shot, settled }) {
   assert(eq(await selectedIds(), [reply[3]]), `after Snooze: ${JSON.stringify(r)}`);
   assert(eq(await openIds(), []), 'a row opened after Snooze');
 
+  // A thread taller than its 260 px box opens scrolled to the newest messages with the current one
+  // in view, and keeps the place the user scrolled to through a snapshot re-render.
+  const { page: t, context: tContext } = await open({ theme, width: 1440, height: 900, now: FIXED_NOW, settings: { view: 'compact' }, hash: '#/inbox', longThread: true });
+  try {
+    await settled(t);
+    await t.click('.ws-inbox-row[data-id="m-reply-1"]');
+    await settled(t);
+    const box = () => t.evaluate(() => {
+      const el = document.querySelector('.ws-thread-compact');
+      const cur = el.querySelector('.ws-current').getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      return { top: el.scrollTop, max: el.scrollHeight - el.clientHeight, current: cur.top >= r.top - 1 && cur.bottom <= r.bottom + 1 };
+    });
+    const opened = await box();
+    assert(opened.max > 0, `the thread does not overflow its box: ${JSON.stringify(opened)}`);
+    assert(opened.top > 0 && opened.current, `the open thread starts at its oldest message or hides the current one: ${JSON.stringify(opened)}`);
+    await t.evaluate(() => { document.querySelector('.ws-thread-compact').scrollTop = 5; });
+    await t.fill('.ws-crow-body #reply-body', 'typing while it syncs');
+    await t.evaluate(() => window.__workspace.store.refresh());
+    await settled(t);
+    await t.evaluate(() => window.__workspace.render());
+    await settled(t);
+    const kept = await box();
+    assert(kept.top === 5, `a re-render moved the thread box: ${JSON.stringify(kept)}`);
+    await shot(t, `compact-c6-${theme}-long-thread`);
+  } finally {
+    await tContext.close().catch(() => {});
+  }
+
   // A reply typed in Default survives Compact and back (Review Focus 1).
   const { page: d, context } = await open({ theme, width: 1440, height: 900, now: FIXED_NOW, hash: '#/inbox' });
   try {

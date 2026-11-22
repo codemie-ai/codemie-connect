@@ -155,7 +155,7 @@ function openRow(s, m, zone, state, bodyId) {
     `<label class="ws-menu-field"><span>Move to lane</span>${laneSelect(m)}</label>`,
     item('commitment', 'check-circle', 'Add a task', { 'data-id': m.id }),
   ].join('');
-  return `<div class="ws-crow-body" id="${e(bodyId)}">
+  return `<div class="ws-crow-body" id="${e(bodyId)}" data-message-id="${e(m.id)}">
     <div class="ws-crow-actions">
       ${doneButton(m)}
       ${snoozeMenu(m, { compact: true })}
@@ -164,7 +164,7 @@ function openRow(s, m, zone, state, bodyId) {
     </div>
     ${unavailable ? `<p class="ws-inline-note ws-warning">${icon('alert')}This item moved or was deleted in Microsoft 365. The cached text stays for your decisions.</p>` : ''}
     ${summarySection(s, m, zone, state)}
-    <div class="ws-thread ws-thread-compact">${!all && fullThread.length > 12 ? `<button type="button" class="ws-thread-earlier" data-action="inbox-earlier" data-id="${e(m.id)}">Earlier</button>` : ''}${bubbles(s, m, thread, zone)}</div>
+    <div class="ws-thread ws-thread-compact" data-id="${e(m.id)}">${!all && fullThread.length > 12 ? `<button type="button" class="ws-thread-earlier" data-action="inbox-earlier" data-id="${e(m.id)}">Earlier</button>` : ''}${bubbles(s, m, thread, zone)}</div>
     ${replyForm(s, m, zone, state)}
   </div>`;
 }

@@ -54,7 +54,7 @@ import { createPluginHost, internalRoute } from '../plugins/host.js';
 import { createPluginsController } from './settings-plugins.js';
 import { pluginWidgetCatalog, parseLayoutId, heldText, textOfHtml } from './today-plugins.js';
 import { viewOf, readViewMirror, writeViewMirror } from './view-mode.js';
-import { clickRow, enterRow, escRow, nextAfter, followOpen } from './inbox-open.js';
+import { clickRow, enterRow, escRow, nextAfter, followOpen, retrySource } from './inbox-open.js';
 
 const ROUTES = HASH_ROUTES;
 const root = document.getElementById('workspace-app');
@@ -307,6 +307,9 @@ function captureScroll() {
     grid: q('.ws-tg-scroll')?.scrollTop,
     schedule: q('.ws-schedule-scroll')?.scrollTop,
     list: q('.ws-inbox-items')?.scrollTop || 0,
+    // The open Compact row's thread box keeps its place while the same row stays open.
+    thread: q('.ws-thread-compact')?.scrollTop || 0,
+    threadId: q('.ws-thread-compact')?.dataset.id,
     reader: q('.ws-read')?.closest('.ws-reader')?.scrollTop || 0,
     readerId: q('.ws-read')?.dataset.messageId,
     nav: q('.ws-settings-sidebar')?.scrollTop || 0,
@@ -359,6 +362,9 @@ function restoreScroll(saved) {
     if (top) body.scrollTop = top;
   }
   if (q('.ws-inbox-items')) q('.ws-inbox-items').scrollTop = saved.list;
+  const thread = q('.ws-thread-compact');
+  if (thread && thread.dataset.id === saved.threadId) thread.scrollTop = saved.thread;
+  else if (thread) showLatest(thread);
   const reader = q('.ws-reader');
   if (reader && saved.readerId && q('.ws-read')?.dataset.messageId === saved.readerId) reader.scrollTop = saved.reader;
   if (q('.ws-settings-sidebar')) q('.ws-settings-sidebar').scrollTop = saved.nav;
@@ -377,6 +383,16 @@ function restoreScroll(saved) {
     if (top) body.scrollTop = top;
   }
   if (q('.ws-settings-panels') && saved.tab === state.settingsTab) q('.ws-settings-panels').scrollTop = saved.panels;
+}
+
+/** A Compact row's thread box, just opened: scrolled to its newest messages, but never past the
+ *  message the row stands for (`.ws-current`), which stays in view. */
+function showLatest(box) {
+  box.scrollTop = box.scrollHeight;
+  const current = box.querySelector('.ws-current');
+  if (!current) return;
+  const top = current.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+  if (top < box.scrollTop) box.scrollTop = Math.max(0, top - 4);
 }
 
 // Layout preferences of this Mac: locked layouts hide the grips and handles; the handles show on
@@ -628,6 +644,13 @@ function ensureSelection(s) {
 }
 
 const compactView = () => viewOf(snap().settings) === 'compact';
+
+/** The message a Retry in the reply box or summary of `el`'s row is for (inbox-open.js). */
+const retrySourceOf = (sourceId, el) => retrySource({
+  sourceId: sourceId && getRecord('message', sourceId) ? sourceId : null,
+  rowId: el?.closest?.('form[data-form="reply"]')?.dataset.id || el?.closest?.('[data-message-id]')?.dataset.messageId || null,
+  compact: compactView(), selected: state.selectedMessage, open: state.openMessage,
+});
 
 /** Closes the open Compact row. */
 function closeRow() {
@@ -2284,7 +2307,7 @@ async function handle(action, el, ev) {
       const request = s.jobs.find(j => j.id === id)?.payload?.request || {};
       if (action === 'ai-draft-choose' && !(await ensureClaudeChoice())) return;
       dismissDraftError(id);
-      return startDraft(getRecord('message', request.sourceId) || getRecord('message', state.selectedMessage), request, request.instructions);
+      return startDraft(getRecord('message', retrySourceOf(request.sourceId, el)), request, request.instructions);
     }
     case 'ai-draft-dismiss': dismissDraftError(id); return render();
     case 'ai-summarize': return startSummary(getRecord('message', id));
@@ -2292,7 +2315,7 @@ async function handle(action, el, ev) {
       const job = s.jobs.find(j => j.id === id);
       if (action === 'ai-summarize-choose' && !(await ensureClaudeChoice())) return;
       dismissDraftError(id);
-      return startSummary(getRecord('message', job?.payload?.request?.sourceId) || getRecord('message', state.selectedMessage));
+      return startSummary(getRecord('message', retrySourceOf(job?.payload?.request?.sourceId, el)));
     }
     case 'summary-toggle': {
       const ui = (state.summaryUi[el.dataset.key] ||= {});
