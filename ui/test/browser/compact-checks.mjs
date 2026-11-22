@@ -80,9 +80,10 @@ const gotoRoute = (page, route) => page.evaluate(route => {
   return window.__workspace.route(name, tab);
 }, route);
 
-/** Elements whose overflow or clipped text would be invisible to the user in Compact. Task 7 adds
- *  its own rows here. */
-export const CLIP_SELECTORS = ['.ws-btn', '.ws-nav button', '.ws-menu-item', '.ws-lane', '.ws-segmented button', '.ws-inbox-row', '.ws-input'];
+/** Elements whose overflow or clipped text would be invisible to the user in Compact, with the
+ *  Compact Inbox's one-line rows and the parts of an open row. */
+export const CLIP_SELECTORS = ['.ws-btn', '.ws-nav button', '.ws-menu-item', '.ws-lane', '.ws-segmented button', '.ws-inbox-row', '.ws-input',
+  '.ws-inbox-row-compact', '.ws-crow-from', '.ws-crow-title', '.ws-crow-actions', '.ws-thread-earlier', '.ws-menu-field'];
 
 /** Selectors (with a short description) of elements matching CLIP_SELECTORS whose content
  *  overflows vertically, or is cut off horizontally without an ellipsis. Elements the user
@@ -292,6 +293,147 @@ async function c5(view, page, { open, assert, shot, calls, settled }) {
   }
 }
 
+/** C6: the Compact Inbox's rows open in place, selected and open kept apart (spec "Compact
+ *  Inbox", Review Focus 1 and 4). `page` is already on the Inbox in Compact at 1440. */
+async function c6(theme, page, { open, assert, shot, settled }) {
+  const rows = () => page.evaluate(() => [...document.querySelectorAll('.ws-inbox-row')].map(r => ({ id: r.dataset.id, open: r.getAttribute('aria-expanded') === 'true', selected: r.classList.contains('ws-selected') })));
+  const openIds = async () => (await rows()).filter(r => r.open).map(r => r.id);
+  const selectedIds = async () => (await rows()).filter(r => r.selected).map(r => r.id);
+  const row = i => page.locator('.ws-inbox-row').nth(i);
+  const blur = () => page.evaluate(() => document.activeElement?.blur());
+  const press = async key => { await page.keyboard.press(key); await settled(page); };
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  // Loads with every row closed, one selected, no reading pane.
+  await settled(page);
+  let r = await rows();
+  assert(r.length >= 4, `the Needs reply lane has ${r.length} rows`);
+  assert(r.every(x => !x.open), `a row is open on load: ${JSON.stringify(r)}`);
+  assert(r.filter(x => x.selected).length === 1, `selected rows on load: ${JSON.stringify(r)}`);
+  assert(await page.locator('.ws-reader').count() === 0, 'Compact draws the reading pane');
+  await shot(page, `compact-c6-${theme}-closed`);
+  const ids = r.map(x => x.id);
+
+  // A click opens the row; another row's click moves the open row; a second click closes it.
+  await row(1).click();
+  await settled(page);
+  assert(eq(await openIds(), [ids[1]]), `row 2 did not open: ${JSON.stringify(await rows())}`);
+  assert(await page.locator('.ws-crow-body #reply-body').count() === 1, 'the open row has no reply box');
+  const maxH = await page.evaluate(() => getComputedStyle(document.querySelector('.ws-thread-compact')).maxHeight);
+  assert(maxH === '260px', `.ws-thread-compact max-height: ${maxH}`);
+  const clipped = await noClip(page);
+  assert(clipped.length === 0, `the open row clips: ${clipped.join(' | ')}`);
+  await shot(page, `compact-c6-${theme}-open`);
+  await row(2).click();
+  await settled(page);
+  assert(eq(await openIds(), [ids[2]]), `row 3 did not take over: ${JSON.stringify(await rows())}`);
+  await row(2).click();
+  await settled(page);
+  assert(eq(await openIds(), []), 'a second click did not close row 3');
+  assert(eq(await selectedIds(), [ids[2]]), `row 3 is not selected after closing: ${JSON.stringify(await rows())}`);
+
+  // j/k move the selection only; ↵ opens the selected row, Esc closes it.
+  await blur();
+  await press('j');
+  assert(eq(await selectedIds(), [ids[3]]) && eq(await openIds(), []), `j: ${JSON.stringify(await rows())}`);
+  await press('k');
+  assert(eq(await selectedIds(), [ids[2]]) && eq(await openIds(), []), `k: ${JSON.stringify(await rows())}`);
+  await blur();
+  await press('Enter');
+  assert(eq(await openIds(), [ids[2]]), `Enter on the page did not open the selected row: ${JSON.stringify(await rows())}`);
+  await press('Escape');
+  assert(eq(await openIds(), []), 'Escape did not close the row');
+
+  // ↵ on a focused row button toggles it once; Escape with ⋯ open closes only the menu.
+  await row(1).focus();
+  await press('Enter');
+  assert(eq(await openIds(), [ids[1]]), `Enter on the row button: ${JSON.stringify(await rows())}`);
+  const more = '.ws-crow-body details[data-menu="crow-more"]';
+  await page.click(`${more} > summary`);
+  await page.waitForSelector(`${more}[open]`);
+  await press('Escape');
+  assert(await page.locator(`${more}[open]`).count() === 0, 'Escape left the ⋯ menu open');
+  assert(eq(await openIds(), [ids[1]]), 'Escape with the ⋯ menu open closed the row');
+
+  // j and k typed in the search box are letters.
+  const before = await selectedIds();
+  await page.click('#inbox-search');
+  await page.keyboard.type('jk');
+  const during = await selectedIds();
+  assert((await page.inputValue('#inbox-search')) === 'jk', 'the search box did not take j and k');
+  assert(eq(during, before), `typing jk moved the selection: ${JSON.stringify(before)} → ${JSON.stringify(during)}`);
+  await page.fill('#inbox-search', '');
+  await settled(page);
+
+  // Acknowledge stays a visible button on an unacknowledged critical message.
+  await page.click('.ws-lane[data-lane="critical"]');
+  await settled(page);
+  await row(0).click();
+  await settled(page);
+  const ack = await page.evaluate(() => {
+    const b = document.querySelector('.ws-crow-body [data-action="message-ack"]');
+    return !!b && !b.closest('details') && b.checkVisibility();
+  });
+  assert(ack, 'Acknowledge is not a visible button on the open critical message');
+  await shot(page, `compact-c6-${theme}-critical`);
+
+  // Done, then Snooze › Later today: the row leaves, the one after it is selected, none opens.
+  await page.click('.ws-lane[data-lane="reply"]');
+  await settled(page);
+  r = await rows();
+  const reply = r.map(x => x.id);
+  await row(1).click();
+  await settled(page);
+  await page.click('.ws-crow-body [data-action="message-archive"]');
+  await settled(page);
+  r = await rows();
+  assert(!r.some(x => x.id === reply[1]), 'Done left the row in the list');
+  assert(eq(await selectedIds(), [reply[2]]), `after Done: ${JSON.stringify(r)}`);
+  assert(eq(await openIds(), []), 'a row opened after Done');
+  await row(1).click();
+  await settled(page);
+  await page.click('.ws-crow-body details[data-menu="crow-snooze"] > summary');
+  await page.click('.ws-crow-body [data-action="message-snooze"][data-preset="3h"]');
+  await settled(page);
+  r = await rows();
+  assert(!r.some(x => x.id === reply[2]), 'Snooze left the row in the list');
+  assert(eq(await selectedIds(), [reply[3]]), `after Snooze: ${JSON.stringify(r)}`);
+  assert(eq(await openIds(), []), 'a row opened after Snooze');
+
+  // A reply typed in Default survives Compact and back (Review Focus 1).
+  const { page: d, context } = await open({ theme, width: 1440, height: 900, now: FIXED_NOW, hash: '#/inbox' });
+  try {
+    await settled(d);
+    await d.click('.ws-inbox-row[data-id="m-reply-2"]');
+    await settled(d);
+    await d.fill('#reply-body', 'carry me');
+    await gotoRoute(d, 'settings/appearance');
+    await settled(d);
+    await d.click('[data-action="view-set"][data-view="compact"]');
+    await settled(d);
+    await gotoRoute(d, 'inbox');
+    await settled(d);
+    const sel = await d.evaluate(() => [...document.querySelectorAll('.ws-inbox-row.ws-selected')].map(x => x.dataset.id));
+    assert(eq(sel, ['m-reply-2']), `in Compact the selected row is ${JSON.stringify(sel)}`);
+    assert(await d.locator('.ws-inbox-row[aria-expanded="true"]').count() === 0, 'a row is open after switching to Compact');
+    await d.click('.ws-inbox-row[data-id="m-reply-2"]');
+    await settled(d);
+    const carried = await d.inputValue('.ws-crow-body #reply-body');
+    assert(carried === 'carry me', `the open row's reply: ${JSON.stringify(carried)}`);
+    await gotoRoute(d, 'settings/appearance');
+    await settled(d);
+    await d.click('[data-action="view-set"][data-view="default"]');
+    await settled(d);
+    await gotoRoute(d, 'inbox');
+    await settled(d);
+    assert(await d.locator('.ws-reader [data-message-id="m-reply-2"]').count() === 1, 'the reading pane does not show the selected message');
+    const back = await d.inputValue('.ws-reader #reply-body');
+    assert(back === 'carry me', `the reading pane's reply: ${JSON.stringify(back)}`);
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
 /** C1: Settings › Appearance → View. Compact applies at once (attributes, mirror, no reload) and
  *  is recorded; it survives a reload. `page` is already on the Appearance screen. */
 async function c1(theme, page, { assert, shot, settled, calls }) {
@@ -422,6 +564,12 @@ export async function compactChecks({ open, check, assert, shot, settled, calls,
     const settings = view === 'compact' ? { view: 'compact' } : null;
     const { page, context } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, tasks: true, meetings: true, automations: true, settings, hash: '#/settings/layout' });
     await check(`compact C5 (${view}): hidden pages leave the menu and still open by route`, () => c5(view, page, { open, assert, shot, calls, settled }));
+    await context.close().catch(() => {});
+  }
+
+  for (const theme of ['dark', 'light']) {
+    const { page, context } = await open({ theme, width: 1440, height: 900, now: FIXED_NOW, settings: { view: 'compact' }, hash: '#/inbox' });
+    await check(`compact C6 (${theme}): Inbox rows open in place`, () => c6(theme, page, { open, assert, shot, settled }));
     await context.close().catch(() => {});
   }
 }

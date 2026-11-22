@@ -54,6 +54,7 @@ import { createPluginHost, internalRoute } from '../plugins/host.js';
 import { createPluginsController } from './settings-plugins.js';
 import { pluginWidgetCatalog, parseLayoutId, heldText, textOfHtml } from './today-plugins.js';
 import { viewOf, readViewMirror, writeViewMirror } from './view-mode.js';
+import { clickRow, enterRow, escRow, nextAfter, followOpen } from './inbox-open.js';
 
 const ROUTES = HASH_ROUTES;
 const root = document.getElementById('workspace-app');
@@ -81,6 +82,10 @@ const state = {
   route: 'today', settingsTab: 'general', settingsQuery: '',
   calendarMode: localPref('codemie.calendar.mode', 'week'), calendarDate: new Date(),
   lane: 'reply', channel: 'all', search: '', showArchived: false, showSnoozed: false, inboxLimit: 200, selectedMessage: null, selectedKey: null,
+  // Compact Inbox: the row shown open (apart from the selected one) and its conversation, the row
+  // to select after a decision takes the open one away, threads shown whole ("Earlier"), and
+  // reply text typed in a box that left the screen, per draft key (both views).
+  openMessage: null, openKey: null, selectAfter: null, threadAll: new Set(), replyCarry: {},
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
   ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, usage: null, error: '', tests: {}, testModels: {} },
   // Settings → General → Data location: the `data_location_get` answer (null until read).
@@ -254,6 +259,7 @@ function applyView(view) {
 
 function setView(view) {
   applyView(view);
+  closeRow();
   return mutate('settings_update', { view });
 }
 
@@ -482,7 +488,15 @@ async function render() {
     if (fresh) fresh.value = unsavedNote.text;
   }
   const freshReply = document.getElementById('reply-body');
-  if (freshReply !== keepReply && unsavedReply && freshReply?.closest('form')?.dataset.key === unsavedReply.key) freshReply.value = unsavedReply.text;
+  const freshKey = freshReply?.closest('form')?.dataset.key;
+  if (freshReply !== keepReply && unsavedReply && freshKey === unsavedReply.key) freshReply.value = unsavedReply.text;
+  // Text typed in a box that left the screen (another row, another page, a view switch) is kept
+  // for that conversation and put back the next time its box is drawn with nothing newer in it.
+  if (unsavedReply && freshKey !== unsavedReply.key) state.replyCarry[unsavedReply.key] = unsavedReply.text;
+  if (freshReply && freshReply !== keepReply && freshReply.value === freshReply.defaultValue && Object.hasOwn(state.replyCarry, freshKey)) {
+    freshReply.value = state.replyCarry[freshKey];
+    delete state.replyCarry[freshKey];
+  }
   syncReplyBox(freshReply);
   for (const menu of openMenus) root.querySelector(`details.ws-menu[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
   if (state.route === 'inbox') rememberDraftBaseline(s);
@@ -600,10 +614,40 @@ document.addEventListener('keydown', ev => {
 function ensureSelection(s) {
   if (state.lane === 'decisions') return;
   const items = collapseChats(filteredMessages(s, state).filter(m => m.data.lane === state.lane)).items;
-  // Follow the conversation when a chat's newest message changes under the selection.
-  const pick = items.find(m => m.id === state.selectedMessage) || items.find(m => messageKey(m) === state.selectedKey) || items[0];
+  // After Done, Snooze or a lane move in Compact: the row that followed the one that left.
+  const after = state.selectAfter && items.find(m => m.id === state.selectAfter);
+  state.selectAfter = null;
+  // Follow the conversation when a chat's newest message changes under the selection (and the
+  // open row the same way).
+  const pick = after || items.find(m => m.id === state.selectedMessage) || items.find(m => messageKey(m) === state.selectedKey) || items[0];
   state.selectedMessage = pick?.id || null;
   state.selectedKey = pick ? messageKey(pick) : null;
+  const { open, openKey } = followOpen(items, { open: state.openMessage, openKey: state.openKey }, messageKey);
+  state.openMessage = open;
+  state.openKey = openKey;
+}
+
+const compactView = () => viewOf(snap().settings) === 'compact';
+
+/** Closes the open Compact row. */
+function closeRow() {
+  state.openMessage = null;
+  state.openKey = null;
+}
+
+/** Applies a Compact `{selected, open}` move (inbox-open.js) and draws it. */
+function moveRows({ selected, open }) {
+  const keyOf = id => { const m = id && getRecord('message', id); return m ? messageKey(m) : null; };
+  Object.assign(state, { selectedMessage: selected, selectedKey: keyOf(selected), openMessage: open, openKey: keyOf(open) });
+  return render().then(() => root.querySelector('.ws-inbox-row.ws-selected')?.scrollIntoView({ block: 'nearest' }));
+}
+
+/** Before Done, Snooze or a lane move takes row `id` away in Compact: nothing stays open and the
+ *  row after it (else before it) is selected next. */
+function leaveRow(id) {
+  if (!compactView()) return;
+  state.selectAfter = nextAfter([...root.querySelectorAll('.ws-inbox-row[data-id]')].map(r => r.dataset.id), id);
+  closeRow();
 }
 
 // ---------------------------------------------------------------- navigation
@@ -640,6 +684,8 @@ async function saveNote(el) {
 async function route(name, tab, pluginPath = null) {
   await savePendingNote();
   state.meetings.rowMenu = null;
+  // Arriving at the Inbox without a target finds every row closed.
+  if (state.route === 'inbox' && name !== 'inbox') closeRow();
   state.route = ROUTES.includes(name) ? name : 'today';
   if (tab && state.route === 'settings') state.settingsTab = settingsTabFor(tab);
   const onPluginsTab = state.route === 'settings' && state.settingsTab === 'plugins';
@@ -683,6 +729,7 @@ const PLUGIN_ITEM = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
 async function routePlugin(id, activity, rest = '') {
   if (!PLUGIN_ID.test(id) || !PLUGIN_ITEM.test(activity)) return route('today');
   await savePendingNote();
+  if (state.route === 'inbox') closeRow();
   state.route = 'plugin';
   state.pluginPage = { id, activity, route: rest };
   state.pluginPath = null;
@@ -1067,7 +1114,11 @@ function renderAround(container, next, keep) {
 
 const draftUi = key => (state.drafts[key] ||= {});
 const rememberedOptions = channel => readOptions(localPref(optionsKey(channel), null), channel);
-const inboxMessage = s => (state.route === 'inbox' && state.selectedMessage ? s.records.find(r => r.kind === 'message' && r.id === state.selectedMessage) : null);
+/** The message whose reply box is on screen: the open row in Compact, the selected one in Default. */
+const inboxMessage = s => {
+  const id = state.route !== 'inbox' ? null : viewOf(s.settings) === 'compact' ? state.openMessage : state.selectedMessage;
+  return id ? s.records.find(r => r.kind === 'message' && r.id === id) : null;
+};
 
 /** What re-renders the open reply box even while the user types in it: its draft job and draft. */
 function draftSignature(s) {
@@ -1977,6 +2028,7 @@ async function handle(action, el, ev) {
       if (el.dataset.lane) {
         state.lane = el.dataset.lane;
         state.selectedMessage = null;
+        closeRow();
       }
       return route(el.dataset.route || 'today');
     case 'sidebar-toggle': return toggleSidebar();
@@ -2110,9 +2162,11 @@ async function handle(action, el, ev) {
     case 'new-event': return newEventDialog();
 
     // Inbox
-    case 'lane': state.lane = el.dataset.lane; state.selectedMessage = null; return render();
-    case 'channel': state.channel = el.dataset.channel; state.selectedMessage = null; return render();
-    case 'select-message': return selectMessage(id);
+    case 'lane': state.lane = el.dataset.lane; state.selectedMessage = null; closeRow(); return render();
+    case 'channel': state.channel = el.dataset.channel; state.selectedMessage = null; closeRow(); return render();
+    case 'select-message':
+      if (compactView()) return moveRows(clickRow({ selected: state.selectedMessage, open: state.openMessage }, id));
+      return selectMessage(id);
     case 'open-message': {
       const m = getRecord('message', id);
       if (m) {
@@ -2121,15 +2175,19 @@ async function handle(action, el, ev) {
         state.search = '';
         state.selectedMessage = id;
         state.selectedKey = messageKey(m);
+        // A message opened from elsewhere opens in place in Compact too.
+        if (compactView()) Object.assign(state, { openMessage: id, openKey: messageKey(m) });
       }
       return route('inbox');
     }
     case 'inbox-more': state.inboxLimit += 200; return render();
+    case 'inbox-earlier': state.threadAll.add(id); return render();
     case 'show-archived': state.showArchived = el.checked; return render();
     case 'show-snoozed': state.showSnoozed = el.checked; return render();
     case 'message-archive': {
       const m = getRecord('message', id);
       const restore = m?.data.lifecycle === 'archived';
+      if (!restore) leaveRow(id);
       await decideRow(id, { action: restore ? 'restore' : 'archive' });
       return toast(restore ? 'Moved back to the Inbox.' : 'Marked done.', 'success');
     }
@@ -2137,7 +2195,10 @@ async function handle(action, el, ev) {
       const until = snoozeUntil(el.dataset.preset);
       el.closest('details')?.removeAttribute('open');
       const critical = rowMessages(id).some(m => m.data.lane === 'critical');
-      const run = () => decideRow(id, { action: 'snooze', until }, m => (m.data.lane === 'critical' ? { confirmGlobal: true } : {}));
+      const run = () => {
+        leaveRow(id);
+        return decideRow(id, { action: 'snooze', until }, m => (m.data.lane === 'critical' ? { confirmGlobal: true } : {}));
+      };
       if (critical) {
         return confirmModal({ title: 'Pause critical reminders?', text: 'This pauses reminders for this incident until the chosen time. It does not acknowledge it.', confirm: 'Pause reminders', onConfirm: run });
       }
@@ -2147,7 +2208,10 @@ async function handle(action, el, ev) {
     case 'message-lane': {
       const m = getRecord('message', id);
       const lane = el.value;
-      const run = () => decideRow(id, { action: 'lane', lane }, x => (x.data.lane === 'critical' && lane !== 'critical' ? { acknowledge: true } : {}));
+      const run = () => {
+        leaveRow(id);
+        return decideRow(id, { action: 'lane', lane }, x => (x.data.lane === 'critical' && lane !== 'critical' ? { acknowledge: true } : {}));
+      };
       if (m?.data.lane === 'critical' && lane !== 'critical') {
         el.value = m.data.lane;
         return confirmModal({ title: 'Acknowledge and move?', text: 'Acknowledging stops this incident’s pending reminders. The move applies to Connect.', confirm: 'Acknowledge and move', onConfirm: run });
@@ -2162,6 +2226,7 @@ async function handle(action, el, ev) {
       // One draft per conversation: replaces any draft kept against an older message of this chat.
       await saveReply(getRecord('message', id), field.value);
       field.defaultValue = field.value;
+      delete state.replyCarry[field.closest('form')?.dataset.key];
       return toast('Draft saved on this device.', 'success');
     }
 
@@ -2170,6 +2235,7 @@ async function handle(action, el, ev) {
       const m = getRecord('message', id);
       if (!m) return toast('This message is no longer available. Refresh and try again.', 'error');
       Object.assign(state, { lane: m.data.lane || 'reply', channel: 'all', search: '', selectedMessage: id, selectedKey: messageKey(m) });
+      if (compactView()) Object.assign(state, { openMessage: id, openKey: messageKey(m) });
       await route('inbox');
       await startDraft(m, rememberedOptions(m.data.channel));
       document.getElementById('reply-body')?.focus({ preventScroll: true });
@@ -2377,7 +2443,12 @@ async function prepareReply(id, body) {
   await mutate('draft_save', { text: body, sourceId: id, sourceRevision: m.revision });
   const result = await mutate('action_prepare', { kind: m.data.channel === 'mail' ? 'mail_reply' : 'chat_reply', sourceId: id, body });
   // Once the reply is sent there is nothing left to restore.
-  return reviewAction(result, { onSent: () => { if (state.drafts[draftKeyOf(m)]) state.drafts[draftKeyOf(m)].restore = null; } });
+  return reviewAction(result, {
+    onSent: () => {
+      if (state.drafts[draftKeyOf(m)]) state.drafts[draftKeyOf(m)].restore = null;
+      delete state.replyCarry[draftKeyOf(m)];
+    },
+  });
 }
 
 // ---------------------------------------------------------------- events
@@ -2463,6 +2534,7 @@ document.addEventListener('input', ev => {
     const pos = ev.target.selectionStart;
     searchTimer = setTimeout(async () => {
       state.selectedMessage = null;
+      closeRow();
       await render();
       const input = document.getElementById('inbox-search');
       input?.focus();
@@ -2673,6 +2745,20 @@ document.addEventListener('keydown', ev => {
     const next = rows[Math.min(rows.length - 1, Math.max(0, index + (['ArrowDown', 'j'].includes(ev.key) ? 1 : -1)))];
     ev.preventDefault();
     selectMessage(next.dataset.id).catch(fail);
+  } else if (state.route === 'inbox' && compactView() && ev.key === 'Enter' && state.selectedMessage
+    && !ev.target.closest?.('button, a, summary, input, select, textarea, [contenteditable]')) {
+    // ↵ opens the selected row (a focused control keeps its own Enter: a row button toggles once).
+    ev.preventDefault();
+    moveRows(enterRow({ selected: state.selectedMessage, open: state.openMessage })).catch(fail);
+  } else if (state.route === 'inbox' && compactView() && ev.key === 'Escape' && state.openMessage) {
+    // Esc closes the open row (an open ⋯ menu has already taken Escape for itself).
+    ev.preventDefault();
+    // Focus inside the closing row goes back to its line, not to the page.
+    const openId = state.openMessage;
+    const inside = root.querySelector('.ws-crow-body')?.contains(document.activeElement);
+    moveRows(escRow({ selected: state.selectedMessage, open: openId }))
+      .then(() => { if (inside) root.querySelector(`.ws-inbox-row[data-id="${CSS.escape(openId)}"]`)?.focus({ preventScroll: true }); })
+      .catch(fail);
   }
 });
 
@@ -2724,6 +2810,7 @@ async function openNotification(payload) {
       Object.assign(state, { lane: m.data.lane || 'critical', channel: 'all', search: '', showArchived: m.data.lifecycle === 'archived', showSnoozed: m.data.snoozedUntil > Date.now() / 1000 });
       state.selectedMessage = m.id;
       state.selectedKey = messageKey(m);
+      if (compactView()) Object.assign(state, { openMessage: m.id, openKey: messageKey(m) });
     }
     return route('inbox');
   }

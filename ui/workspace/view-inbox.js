@@ -38,6 +38,8 @@ export const INBOX_DOCK = {
 /** Inbox drawn in its sections as `ctx.dock` (`{layouts, locked}`) has them. */
 export function inbox(s, ctx) {
   const sections = inboxSections(s, ctx);
+  // Compact: the list alone, its rows open in place; no dock frame, so the Default layout stays.
+  if (ctx.view === 'compact') return `<div class="ws-inbox-compact">${sections['inbox-list']}</div>`;
   const layout = ctx.dock?.layouts?.inbox || normalizeDock(INBOX_DOCK, null);
   return renderDock('inbox', INBOX_DOCK, layout, id => sections[id], { locked: !!ctx.dock?.locked });
 }
@@ -45,6 +47,7 @@ export function inbox(s, ctx) {
 /** The body of each Inbox section: the list with its search, lanes and filters, and the reader. */
 export function inboxSections(s, ctx) {
   const { state, auth, banners } = ctx;
+  const compact = ctx.view === 'compact';
   const zone = s.settings.timeZone;
   const conn = connectionState(s, auth);
   const base = filteredMessages(s, state);
@@ -55,10 +58,13 @@ export function inboxSections(s, ctx) {
   const selected = state.lane !== 'decisions' ? items.find(m => m.id === state.selectedMessage) || null : null;
 
   const drafting = new Set(s.jobs.filter(j => j.kind === 'ai_draft' && ['queued', 'running'].includes(j.state)).map(j => j.payload?.draftKey));
+  const more = items.length > state.inboxLimit ? button(`Show ${Math.min(200, items.length - state.inboxLimit)} more`, { action: 'inbox-more' }) : '';
   const list = state.lane === 'decisions'
     ? decisionList(pending, zone)
+    : items.length && compact
+      ? `<div class="ws-inbox-items" role="list" aria-label="${e(laneLabel(state.lane))}">${items.slice(0, state.inboxLimit).map(m => compactRow(s, m, zone, state, { isSelected: m.id === selected?.id, isOpen: m.id === state.openMessage, count: collapsed.counts.get(m.id), drafting: drafting.has(draftKeyOf(m)) })).join('')}${more ? `<div class="ws-list-more" role="listitem">${more}</div>` : ''}</div>`
     : items.length
-      ? `<div class="ws-inbox-items" role="listbox" aria-label="${e(laneLabel(state.lane))}">${items.slice(0, state.inboxLimit).map(m => listRow(s, m, zone, m.id === selected?.id, collapsed.counts.get(m.id), drafting.has(draftKeyOf(m)))).join('')}${items.length > state.inboxLimit ? `<div class="ws-list-more">${button(`Show ${Math.min(200, items.length - state.inboxLimit)} more`, { action: 'inbox-more' })}</div>` : ''}</div>`
+      ? `<div class="ws-inbox-items" role="listbox" aria-label="${e(laneLabel(state.lane))}">${items.slice(0, state.inboxLimit).map(m => listRow(s, m, zone, m.id === selected?.id, collapsed.counts.get(m.id), drafting.has(draftKeyOf(m)))).join('')}${more ? `<div class="ws-list-more">${more}</div>` : ''}</div>`
       : `<div class="ws-inbox-empty">${emptyState(conn === 'connected'
         ? { iconName: state.lane === 'reply' ? 'check-circle' : 'inbox', title: state.search ? 'No matches' : state.lane === 'reply' ? "You're all caught up" : 'Nothing here', text: state.search ? 'Try another search or filter.' : `No ${laneLabel(state.lane).toLowerCase()} items${state.channel !== 'all' ? ` in ${state.channel === 'chat' ? 'Teams' : 'Outlook'}` : ''}.` }
         : { iconName: 'inbox', title: 'Connect Outlook and Teams', text: 'Sign in with Microsoft 365 — every message that needs you lands here automatically.', actions: conn === 'authorizing' ? '' : button('Sign in with Microsoft', { action: 'graph-connect', variant: 'primary' }) })}</div>`;
@@ -81,7 +87,8 @@ export function inboxSections(s, ctx) {
       ${banners}
       ${list}
     </div>`,
-    'inbox-reader': `<section class="ws-reader" aria-label="Reading pane">${selected ? reader(s, selected, zone, state) : readerEmpty(state, items.length)}</section>`,
+    // Compact never draws the reading pane.
+    ...(compact ? {} : { 'inbox-reader': `<section class="ws-reader" aria-label="Reading pane">${selected ? reader(s, selected, zone, state) : readerEmpty(state, items.length)}</section>` }),
   };
 }
 
@@ -108,6 +115,60 @@ function listRow(s, m, zone, isSelected, count = 0, drafting = false) {
   </button>`;
 }
 
+/** A Compact row: one line (unread dot, sender, title with marks, thread count, time), and under
+ *  it, while it is the open one, the message's actions, summary, thread and reply. */
+function compactRow(s, m, zone, state, { isSelected, isOpen, count = 0, drafting = false }) {
+  const d = m.data;
+  const unread = d.channel === 'mail' && d.isRead === false;
+  const snoozed = d.snoozedUntil > Date.now() / 1000;
+  const mark = (name, label) => `<span class="ws-crow-mark" role="img" title="${label}" aria-label="${label}">${icon(name)}</span>`;
+  const marks = [
+    drafting ? mark('spark', 'Drafting…') : '',
+    snoozed ? mark('snooze', 'Snoozed') : '',
+    d.acknowledgedAt ? mark('check', 'Acknowledged') : '',
+    d.hasAttachments ? mark('attachment', 'Attachment') : '',
+    d.flagged ? mark('flag', 'Flagged') : '',
+  ].join('');
+  const body = `crow-${m.id}`;
+  return `<div class="ws-crow${isOpen ? ' ws-crow-open' : ''}" role="listitem"><button type="button" class="ws-inbox-row ws-inbox-row-compact${isSelected ? ' ws-selected' : ''}${unread ? ' ws-unread' : ''}" data-action="select-message" data-id="${e(m.id)}" aria-expanded="${isOpen}" aria-controls="${e(body)}"${isSelected ? ' aria-current="true"' : ''}>
+    ${unread ? '<span class="ws-unread-dot" aria-label="Unread"></span>' : ''}
+    <strong class="ws-crow-from">${e(d.isMine ? 'You' : d.from || 'Unknown sender')}</strong>
+    <span class="ws-crow-title">${d.importance === 'high' ? `<span class="ws-imp" title="High importance">!</span>` : ''}<span class="ws-ellipsis">${e(listTitle(m, s))}</span>${marks}</span>
+    ${count > 1 ? `<span class="ws-thread-count" title="${count} messages in this chat">${count}</span>` : ''}
+    <time title="${e(formatDateTime(d.at, zone))}">${e(relativeAge(d.at, zone))}</time>
+  </button>${isOpen ? openRow(s, m, zone, state, body) : ''}</div>`;
+}
+
+/** The open Compact row's body: Done, Snooze ▾, Acknowledge (an unacknowledged critical message
+ *  only) and ⋯ with the rest of the reader's actions; the summary; the last messages; the reply. */
+function openRow(s, m, zone, state, bodyId) {
+  const d = m.data;
+  const isChat = d.channel === 'chat';
+  const fullThread = conversation(s, m);
+  const all = state.threadAll?.has(m.id);
+  const thread = all ? fullThread : fullThread.slice(-12);
+  const unavailable = d.unavailable || d.deleted;
+  const item = (action, iconName, label, attrs = {}) => `<button type="button" class="ws-menu-item" role="menuitem" data-action="${action}"${Object.entries(attrs).map(([k, v]) => ` ${k}="${e(v)}"`).join('')}>${icon(iconName)}<span>${e(label)}</span></button>`;
+  const menu = [
+    d.url ? item('source', 'external', isChat ? 'Open in Teams' : 'Open in Outlook', { 'data-kind': 'message', 'data-id': m.id }) : '',
+    summaryOffer(s, m, state, { thread: fullThread, unavailable }) ? item('ai-summarize', 'spark', 'Summarize', { 'data-id': m.id }) : '',
+    `<label class="ws-menu-field"><span>Move to lane</span>${laneSelect(m)}</label>`,
+    item('commitment', 'check-circle', 'Add a task', { 'data-id': m.id }),
+  ].join('');
+  return `<div class="ws-crow-body" id="${e(bodyId)}">
+    <div class="ws-crow-actions">
+      ${doneButton(m)}
+      ${snoozeMenu(m, { compact: true })}
+      ${ackButton(m)}
+      <details class="ws-menu" data-menu="crow-more"><summary class="ws-btn ws-btn-ghost ws-btn-icon" aria-label="More actions" aria-haspopup="menu">${icon('dots')}</summary><div class="ws-menu-panel" role="menu">${menu}</div></details>
+    </div>
+    ${unavailable ? `<p class="ws-inline-note ws-warning">${icon('alert')}This item moved or was deleted in Microsoft 365. The cached text stays for your decisions.</p>` : ''}
+    ${summarySection(s, m, zone, state)}
+    <div class="ws-thread ws-thread-compact">${!all && fullThread.length > 12 ? `<button type="button" class="ws-thread-earlier" data-action="inbox-earlier" data-id="${e(m.id)}">Earlier</button>` : ''}${bubbles(s, m, thread, zone)}</div>
+    ${replyForm(s, m, zone, state)}
+  </div>`;
+}
+
 function readerEmpty(state, count) {
   if (state.lane === 'decisions') return emptyState({ iconName: 'shield', title: 'Decisions', text: 'Review prepared replies and events, or retry work that could not finish.' });
   return `<div class="ws-reader-empty">${emptyState({ iconName: 'mail', title: count ? 'Select a message' : 'Nothing selected', text: count ? 'Pick a conversation on the left to read it, move it or draft a reply.' : 'Messages you select appear here.' })}</div>`;
@@ -125,6 +186,16 @@ export function snoozeUntil(preset, nowMs = Date.now()) {
   return Math.floor(d.getTime() / 1000);
 }
 
+// The reader's actions and thread, shared with the open Compact row.
+const doneButton = m => button(m.data.lifecycle === 'archived' ? 'Restore' : 'Done', { action: 'message-archive', iconName: m.data.lifecycle === 'archived' ? 'inbox' : 'check', attrs: { 'data-id': m.id }, title: m.data.lifecycle === 'archived' ? 'Move back to the Inbox' : 'Archive in Connect' });
+const snoozeMenu = (m, { compact = false } = {}) => `<details class="ws-menu"${compact ? ' data-menu="crow-snooze"' : ''}><summary class="ws-btn ws-btn-secondary">${icon('snooze')}<span>Snooze</span>${compact ? icon('chevron-down') : ''}</summary><div class="ws-menu-panel">${SNOOZE.map(([value, label]) => `<button type="button" class="ws-menu-item" data-action="message-snooze" data-id="${e(m.id)}" data-preset="${value}">${e(label)}</button>`).join('')}</div></details>`;
+const ackButton = m => (m.data.lane === 'critical' && !m.data.acknowledgedAt ? button('Acknowledge', { action: 'message-ack', variant: 'danger', iconName: 'bell', attrs: { 'data-id': m.id } }) : '');
+const laneSelect = m => select(LANES.filter(([k]) => k !== 'decisions'), m.data.lane, { 'data-action': 'message-lane', 'data-id': m.id, 'aria-label': 'Move to lane' });
+const bubbles = (s, m, thread, zone) => thread.map(t => `<div class="ws-bubble${t.id === m.id ? ' ws-current' : ''}${t.data.isMine ? ' ws-mine' : ''}">
+      <div class="ws-bubble-head">${avatar({ name: t.data.isMine ? (s.connection?.displayName || 'You') : t.data.from || '?', photo: t.data.isMine ? s.connection?.photo : null, size: 24, seed: t.data.fromAddress || t.data.fromId || t.data.from })}<strong>${e(t.data.isMine ? 'You' : t.data.from || 'Unknown')}</strong><time>${e(formatDateTime(t.data.at, zone))}</time></div>
+      <div class="ws-bubble-body">${e(t.data.text || '(No preview available — open the original for full content.)')}</div>
+    </div>`).join('');
+
 function reader(s, m, zone, state = {}) {
   const d = m.data;
   const isChat = d.channel === 'chat';
@@ -132,7 +203,6 @@ function reader(s, m, zone, state = {}) {
   const thread = fullThread.slice(-12);
   const unavailable = d.unavailable || d.deleted;
   const recipients = (d.to || []).map(r => r.emailAddress?.name || r.emailAddress?.address).filter(Boolean);
-  const laneOptions = LANES.filter(([k]) => k !== 'decisions');
   return `<article class="ws-read" data-message-id="${e(m.id)}">
     <header class="ws-read-head">
       <div class="ws-read-badges">${badge(laneLabel(d.lane), LANE_TONE[d.lane] || 'neutral')}${badge(isChat ? 'Teams' : 'Outlook', 'neutral')}${d.lifecycle === 'archived' ? badge('Archived', 'neutral', 'archive') : ''}${d.snoozedUntil > Date.now() / 1000 ? badge(`Snoozed until ${formatDateTime(d.snoozedUntil, zone)}`, 'warning', 'snooze') : ''}</div>
@@ -144,20 +214,17 @@ function reader(s, m, zone, state = {}) {
       </div>
       <div class="ws-read-actions">
         ${d.url ? button(isChat ? 'Open in Teams' : 'Open in Outlook', { action: 'source', iconName: 'external', variant: 'primary', attrs: { 'data-kind': 'message', 'data-id': m.id } }) : ''}
-        ${button(d.lifecycle === 'archived' ? 'Restore' : 'Done', { action: 'message-archive', iconName: d.lifecycle === 'archived' ? 'inbox' : 'check', attrs: { 'data-id': m.id }, title: d.lifecycle === 'archived' ? 'Move back to the Inbox' : 'Archive in Connect' })}
-        <details class="ws-menu"><summary class="ws-btn ws-btn-secondary">${icon('snooze')}<span>Snooze</span></summary><div class="ws-menu-panel">${SNOOZE.map(([value, label]) => `<button type="button" class="ws-menu-item" data-action="message-snooze" data-id="${e(m.id)}" data-preset="${value}">${e(label)}</button>`).join('')}</div></details>
+        ${doneButton(m)}
+        ${snoozeMenu(m)}
         ${summaryButton(s, m, state, { thread: fullThread, unavailable })}
-        <span class="ws-read-lane">${select(laneOptions, d.lane, { 'data-action': 'message-lane', 'data-id': m.id, 'aria-label': 'Move to lane' })}${button('', { action: 'commitment', iconName: 'check-circle', variant: 'ghost', title: 'Add a task from this message', attrs: { 'data-id': m.id } })}</span>
-        ${d.lane === 'critical' && !d.acknowledgedAt ? button('Acknowledge', { action: 'message-ack', variant: 'danger', iconName: 'bell', attrs: { 'data-id': m.id } }) : ''}
+        <span class="ws-read-lane">${laneSelect(m)}${button('', { action: 'commitment', iconName: 'check-circle', variant: 'ghost', title: 'Add a task from this message', attrs: { 'data-id': m.id } })}</span>
+        ${ackButton(m)}
       </div>
     </header>
     ${unavailable ? `<p class="ws-inline-note ws-warning">${icon('alert')}This item moved or was deleted in Microsoft 365. The cached text stays for your decisions.</p>` : ''}
     ${d.reason ? `<p class="ws-inline-note">${icon('info')}<span><strong>Why it's here:</strong> ${e(d.reason)}</span></p>` : ''}
     ${summarySection(s, m, zone, state)}
-    <div class="ws-thread">${thread.map(t => `<div class="ws-bubble${t.id === m.id ? ' ws-current' : ''}${t.data.isMine ? ' ws-mine' : ''}">
-      <div class="ws-bubble-head">${avatar({ name: t.data.isMine ? (s.connection?.displayName || 'You') : t.data.from || '?', photo: t.data.isMine ? s.connection?.photo : null, size: 24, seed: t.data.fromAddress || t.data.fromId || t.data.from })}<strong>${e(t.data.isMine ? 'You' : t.data.from || 'Unknown')}</strong><time>${e(formatDateTime(t.data.at, zone))}</time></div>
-      <div class="ws-bubble-body">${e(t.data.text || '(No preview available — open the original for full content.)')}</div>
-    </div>`).join('')}</div>
+    <div class="ws-thread">${bubbles(s, m, thread, zone)}</div>
     ${replyForm(s, m, zone, state)}
   </article>`;
 }
@@ -177,10 +244,14 @@ function summaryParts(s, m, state) {
 }
 
 /** Summarize: only on a long conversation with no summary yet (a summary shows its card instead). */
-function summaryButton(s, m, state, { thread, unavailable }) {
-  if (unavailable || !claudeAvailable(state.ai) || !summaryOffered(thread)) return '';
+function summaryOffer(s, m, state, { thread, unavailable }) {
+  if (unavailable || !claudeAvailable(state.ai) || !summaryOffered(thread)) return false;
   const { summary, running, failure } = summaryParts(s, m, state);
-  if (summary || running || failure) return '';
+  return !(summary || running || failure);
+}
+
+function summaryButton(s, m, state, opts) {
+  if (!summaryOffer(s, m, state, opts)) return '';
   return button('Summarize', { action: 'ai-summarize', variant: 'magic', iconName: 'spark', title: 'Summarize this conversation with Claude', attrs: { 'data-id': m.id } });
 }
 
