@@ -355,7 +355,12 @@ impl Core {
             ));
         }
         let made = provenance(&profile, &outcome, requested_model, &ctx);
-        let record = ai_draft_record(&of, &text, &questions, json!(opts), made);
+        // The reply being changed is only for this run; the stored draft keeps its own options.
+        let mut options = json!(opts);
+        if let Some(obj) = options.as_object_mut() {
+            obj.remove("revise");
+        }
+        let record = ai_draft_record(&of, &text, &questions, options, made);
         let stored = stored_job(&r, job)?;
         r.commit_job_record(&stored, &record)?;
         Ok("AI draft ready for review".into())
@@ -1248,6 +1253,55 @@ mod tests {
         assert_eq!(chat.data["draftKey"], "chat:chat:19:ops");
         assert_eq!(chat.data["provenance"]["model"], "claude-haiku-4-5");
         assert_eq!(chat.data["provenance"]["partialText"], false);
+    }
+
+    /// "Tell AI what to change": the user's current reply travels with the job (so Try again
+    /// repeats the change) but never ends up on the stored draft's own options.
+    #[tokio::test]
+    async fn a_change_keeps_revise_in_the_job_but_not_in_the_draft_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(answer(
+            json!({"draft": "Sure, 15:00 works.", "questions": []}),
+            "claude-sonnet-4-5",
+            2100,
+            0.003,
+        ))]));
+        let graph = Arc::new(FakeGraph::default());
+        let core = test_core_with_graph(dir.path(), fake.clone(), ready(), graph.clone());
+        seed(&core);
+        budget_thread(&core, Some(&graph));
+        let queued = core
+            .request(draft_request(
+                &core,
+                json!({"sourceId": "m3", "instructions": "Say 15:00 instead",
+                    "revise": "Sure, 14:30, see you then."}),
+            ))
+            .await
+            .unwrap();
+        let before = job(&core, &queued["jobId"]);
+        assert_eq!(
+            before.payload["request"]["revise"],
+            "Sure, 14:30, see you then."
+        );
+        let mut fixture = serde_json::to_value(&before).unwrap();
+        fixture["id"] = "job-1".into();
+        fixture["key"] = format!("{}:op-1", fixture["kind"].as_str().unwrap()).into();
+        fixture["dueAt"] = 1_795_000_400.into();
+        crate::plugins::testkit::contract_fixture("job-ai-draft-change.json", &fixture);
+
+        run_jobs(&core).await;
+        let spec = &fake.calls()[0];
+        assert_eq!(
+            spec.input["draft"],
+            "<draft>\nSure, 14:30, see you then.\n</draft>"
+        );
+
+        let draft_record = draft(&core, "ai:m3").expect("the m3 draft");
+        assert!(draft_record.data["options"].get("revise").is_none());
+        assert_eq!(
+            draft_record.data["options"]["instructions"],
+            "Say 15:00 instead"
+        );
     }
 
     #[tokio::test]

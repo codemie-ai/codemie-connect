@@ -431,7 +431,11 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
           const thread = s.records.filter(r => r.kind === 'message' && r.data.conversationId === m.data.conversationId).sort((a, b) => a.data.at - b.data.at).slice(-12);
           // A Teams draft is short with no greeting or sign-off; an Outlook draft is a letter.
           const t = clone(chat ? chatDraft : mailDraft);
-          const record = { ...t, id: `ai:${key}`, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, text: result.text || t.data.text, questions: result.questions || t.data.questions, channel: m.data.channel, sourceId: m.id, draftKey: key, conversationKey: key, options: { ...d }, provenance: { ...t.data.provenance, profile, model: job.payload.runModel || job.payload.model || t.data.provenance.model, messageIds: thread.map(x => x.id), partialText: !!result.partialText } } };
+          // "Tell AI what to change": the changed text says so, so checks can tell it from a
+          // fresh draft; the job's "revise" never ends up on the stored draft's own options.
+          const { revise, ...options } = { ...d };
+          const text = revise ? `${revise} (changed: ${d.instructions})` : (result.text || t.data.text);
+          const record = { ...t, id: `ai:${key}`, connectionId: s.connection.id, workspaceId: 'personal', source: m.source, revision: crypto.randomUUID(), updatedAt: now(), data: { ...t.data, text, questions: result.questions || t.data.questions, channel: m.data.channel, sourceId: m.id, draftKey: key, conversationKey: key, options, provenance: { ...t.data.provenance, profile, model: job.payload.runModel || job.payload.model || t.data.provenance.model, messageIds: thread.map(x => x.id), partialText: !!result.partialText } } };
           s.records = s.records.filter(r => r.id !== record.id).concat(record);
           job.state = 'succeeded';
           job.result = 'AI draft ready for review';
