@@ -272,6 +272,22 @@ async function c5(view, page, { open, assert, shot, calls, settled }) {
     await byRouteContext.close().catch(() => {});
   }
 
+  // A notification still opens its page when that page is hidden, greyed in the menu while open.
+  const notifySettings = view === 'compact' ? { view: 'compact', hiddenPages: ['inbox'] } : { hiddenPages: ['inbox'] };
+  const { page: notified, context: notifiedContext } = await open({ theme: 'dark', width: 1440, height: 900, settings: notifySettings, hash: '#/today' });
+  try {
+    await settled(notified);
+    assert(await notified.locator('.ws-sidebar [data-route="inbox"]').count() === 0, 'Inbox is still in the menu');
+    await notified.evaluate(() => window.__emitNative('workspace:notification-open', { workspaceId: 'personal', itemId: 'm-reply-1' }));
+    await notified.waitForSelector('.ws-page-inbox');
+    await settled(notified);
+    assert((await notified.evaluate(() => location.hash)) === '#/inbox', 'the notification did not route to the Inbox');
+    assert(await notified.locator('.ws-inbox-row.ws-selected[data-id="m-reply-1"]').count() === 1, 'the notification’s message is not selected');
+    assert(await notified.locator('[data-route="inbox"].ws-nav-hidden').count() === 1, 'the Inbox opened by a notification is not greyed in the menu');
+  } finally {
+    await notifiedContext.close().catch(() => {});
+  }
+
   // Hide everything but Inbox (the page is still on Settings › Layout, with Calendar off).
   for (const id of ['today', 'meetings', 'tasks', 'automations', 'analytics']) {
     await switchOf(id).click();
@@ -295,7 +311,7 @@ async function c5(view, page, { open, assert, shot, calls, settled }) {
 
 /** C6: the Compact Inbox's rows open in place, selected and open kept apart (spec "Compact
  *  Inbox", Review Focus 1 and 4). `page` is already on the Inbox in Compact at 1440. */
-async function c6(theme, page, { open, assert, shot, settled }) {
+async function c6(theme, page, { open, assert, shot, calls, settled }) {
   const rows = () => page.evaluate(() => [...document.querySelectorAll('.ws-inbox-row')].map(r => ({ id: r.dataset.id, open: r.getAttribute('aria-expanded') === 'true', selected: r.classList.contains('ws-selected') })));
   const openIds = async () => (await rows()).filter(r => r.open).map(r => r.id);
   const selectedIds = async () => (await rows()).filter(r => r.selected).map(r => r.id);
@@ -343,6 +359,29 @@ async function c6(theme, page, { open, assert, shot, settled }) {
   assert(eq(await openIds(), [ids[2]]), `Enter on the page did not open the selected row: ${JSON.stringify(await rows())}`);
   await press('Escape');
   assert(eq(await openIds(), []), 'Escape did not close the row');
+
+  // ↵ after j/k acts on the selected row even with keyboard focus on a control (no blur): j/k
+  // carry the focus to the selected row's line. Row 1 is selected and holds the focus first.
+  await press('k');
+  await press('k');
+  assert(eq(await selectedIds(), [ids[0]]), `k k: ${JSON.stringify(await rows())}`);
+  await row(0).focus();
+  await press('j');
+  await press('Enter');
+  assert(eq(await openIds(), [ids[1]]), `focus on row 1, j, Enter: ${JSON.stringify(await rows())}`);
+  const decisionsBefore = (await calls(page, 'inbox_decision')).length;
+  await page.focus('.ws-crow-body [data-action="message-archive"]');
+  await press('j');
+  await press('Enter');
+  assert((await calls(page, 'inbox_decision')).length === decisionsBefore, `j then Enter from Done decided a row: ${JSON.stringify(await calls(page, 'inbox_decision'))}`);
+  assert((await rows()).some(x => x.id === ids[1]), 'j then Enter from Done marked row 2 done');
+  assert(eq(await openIds(), [ids[2]]), `focus on Done, j, Enter: ${JSON.stringify(await rows())}`);
+  await press('Escape');
+  assert(eq(await openIds(), []), `Escape did not close row 3: ${JSON.stringify(await rows())}`);
+  await press('j');
+  await press('Enter');
+  assert(eq(await openIds(), [ids[3]]), `Escape, j, Enter: ${JSON.stringify(await rows())}`);
+  await press('Escape');
 
   // ↵ on a focused row button toggles it once; Escape with ⋯ open closes only the menu.
   await row(1).focus();
@@ -598,7 +637,7 @@ export async function compactChecks({ open, check, assert, shot, settled, calls,
 
   for (const theme of ['dark', 'light']) {
     const { page, context } = await open({ theme, width: 1440, height: 900, now: FIXED_NOW, settings: { view: 'compact' }, hash: '#/inbox' });
-    await check(`compact C6 (${theme}): Inbox rows open in place`, () => c6(theme, page, { open, assert, shot, settled }));
+    await check(`compact C6 (${theme}): Inbox rows open in place`, () => c6(theme, page, { open, assert, shot, calls, settled }));
     await context.close().catch(() => {});
   }
 }

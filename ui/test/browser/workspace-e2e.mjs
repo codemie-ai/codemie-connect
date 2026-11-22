@@ -302,6 +302,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     workspace_update: (d, wid) => { Object.assign(active(wid), d); if (d.archived && s.settings.activeWorkspace === wid) s.settings.activeWorkspace = 'personal'; return { saved: true }; },
     workspace_select: d => { s.settings.activeWorkspace = d.id; return { selected: true }; },
     inbox_decision: d => {
+      calls.push(['inbox_decision', clone(d)]);
       const m = find('message', d.id);
       if (d.action === 'lane') m.data.lane = d.lane;
       if (d.action === 'archive') m.data.lifecycle = 'archived';

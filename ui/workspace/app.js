@@ -2767,7 +2767,10 @@ document.addEventListener('keydown', ev => {
     const index = rows.findIndex(r => r.dataset.id === state.selectedMessage);
     const next = rows[Math.min(rows.length - 1, Math.max(0, index + (['ArrowDown', 'j'].includes(ev.key) ? 1 : -1)))];
     ev.preventDefault();
-    selectMessage(next.dataset.id).catch(fail);
+    // In Compact the focus follows the selection to its row's line, so ↵ next acts on that row
+    // and not on the control that had the focus (Default keeps its focus where it was).
+    const moved = selectMessage(next.dataset.id);
+    (compactView() ? moved.then(() => root.querySelector(`.ws-inbox-row[data-id="${CSS.escape(next.dataset.id)}"]`)?.focus({ preventScroll: true })) : moved).catch(fail);
   } else if (state.route === 'inbox' && compactView() && ev.key === 'Enter' && state.selectedMessage
     && !ev.target.closest?.('button, a, summary, input, select, textarea, [contenteditable]')) {
     // ↵ opens the selected row (a focused control keeps its own Enter: a row button toggles once).
