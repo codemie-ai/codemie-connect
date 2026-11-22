@@ -511,6 +511,103 @@ async function c6(theme, page, { open, assert, shot, calls, settled }) {
   }
 }
 
+/** C7: the composer in the open row (spec 2026-11-22-reply-design.md, rulings 2 and 15). Each
+ *  step opens its own page (`open`), so one failing step leaves the others meaningful. */
+const plan = (page, value) => page.evaluate(v => { window.__draftPlan = v; }, value);
+/** Opens row `id` (or, with none, keeps the open row, else opens the first). */
+const openReplyRow = async (page, settled, id) => {
+  await settled(page);
+  if (!id && await page.locator('.ws-crow-body #reply-body').count()) return;
+  await page.click(id ? `.ws-inbox-row[data-id="${id}"]` : '.ws-inbox-row >> nth=0');
+  await settled(page);
+  await page.waitForSelector('.ws-crow-body #reply-body');
+};
+const boxValue = page => page.inputValue('.ws-crow-body #reply-body');
+
+/** A change result that arrives on the user's own text replaces it, with Restore my text. */
+async function c7Change(page, { assert, settled, shot, theme }) {
+  await openReplyRow(page, settled, 'c-reply-1');
+  await page.fill('.ws-crow-body #reply-body', 'Sure, sending it at 14:30.');
+  // The mock answers a change with the text it was given plus "(changed: <words>)".
+  await plan(page, { outcome: 'ok', ms: 400, questions: [] });
+  await page.fill('#reply-change', 'make it 15:00');
+  await page.press('#reply-change', 'Enter');
+  await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Sure, sending it at 14:30. (changed: make it 15:00)', null, { timeout: 5000 });
+  await settled(page);
+  assert(await page.locator('.ws-draft-confirm').count() === 0, 'a change result asked "Replace your text?" instead of replacing it');
+  assert(await page.locator('[data-action="ai-draft-restore"]').count() === 1, 'no Restore my text after a change');
+  await shot(page, `compact-c7-${theme}-change`);
+  await page.click('[data-action="ai-draft-restore"]');
+  await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Sure, sending it at 14:30.', null, { timeout: 4000 });
+}
+
+/** A change that ended without a result (Stop) leaves no Restore for a later, unrelated draft. */
+async function c7Stale(page, { assert, settled }) {
+  await openReplyRow(page, settled, 'c-reply-1');
+  await page.fill('.ws-crow-body #reply-body', 'Sure, sending it at 14:30.');
+  await plan(page, { outcome: 'hold' });
+  await page.fill('#reply-change', 'shorter');
+  await page.press('#reply-change', 'Enter');
+  await page.click('.ws-draft-running [data-action="ai-draft-stop"]', { timeout: 5000 });
+  await page.waitForSelector('.ws-draft-running', { state: 'detached', timeout: 4000 });
+  await page.fill('.ws-crow-body #reply-body', '');
+  await plan(page, { outcome: 'ok', ms: 300, text: 'A fresh draft.', questions: [] });
+  await page.click('.ws-reply-hint [data-action="ai-draft-quick"]');
+  await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'A fresh draft.', null, { timeout: 5000 });
+  await settled(page);
+  assert(await page.locator('[data-action="ai-draft-restore"]').count() === 0, 'a stopped change left a Restore on an unrelated draft');
+}
+
+/** Leaving the box (blur), Done, Snooze and a lane move save the typed text at once. */
+async function c7Flush(page, { assert, settled, calls }) {
+  const savedSoon = async (text, what) => {
+    await page.waitForTimeout(500);
+    const saves = await calls(page, 'draft_save');
+    assert(saves.some(d => d.text === text), `${what} did not save the typed text at once: ${JSON.stringify(saves.map(d => d.text))}`);
+  };
+  await openReplyRow(page, settled);
+  await page.fill('.ws-crow-body #reply-body', 'typed then left');
+  await page.click('.ws-crow-body .ws-thread-compact');
+  await savedSoon('typed then left', 'blur');
+  // The decisions run with the focus still in the box (an element click does not move it).
+  const decide = [
+    ['Done', () => document.querySelector('.ws-crow-body [data-menu="reply-more"] [data-action="message-archive"]').click()],
+    ['Snooze', () => document.querySelector('.ws-crow-body [data-menu="reply-snooze"] [data-action="message-snooze"][data-preset="3h"]').click()],
+    ['a lane move', () => {
+      const lane = document.querySelector('.ws-crow-body select[data-action="message-lane"]');
+      lane.value = 'waiting';
+      lane.dispatchEvent(new Event('change', { bubbles: true }));
+    }],
+  ];
+  for (const [what, act] of decide) {
+    await openReplyRow(page, settled);
+    const text = `typed before ${what}`;
+    await page.fill('.ws-crow-body #reply-body', text);
+    assert(await page.evaluate(() => document.activeElement?.id === 'reply-body'), `the box lost focus before ${what}`);
+    await page.evaluate(act);
+    await savedSoon(text, what);
+    // Saved before the decision, not only when the closing row takes the focused box away.
+    const order = await page.evaluate(t => {
+      const ops = window.__bridgeCalls;
+      return { saved: ops.findIndex(([op, d]) => op === 'draft_save' && d.text === t), decided: ops.map(([op]) => op).lastIndexOf('inbox_decision') };
+    }, text);
+    assert(order.saved !== -1 && order.saved < order.decided, `${what}: the reply was saved after the decision ${JSON.stringify(order)}`);
+  }
+}
+
+/** Send's save drops the pending autosave: one save of the text, none 1.5 s later. */
+async function c7Send(page, { assert, settled, calls }) {
+  await openReplyRow(page, settled, 'c-reply-1');
+  const before = (await calls(page, 'draft_save')).length;
+  await page.fill('.ws-crow-body #reply-body', 'send me');
+  await page.click('.ws-crow-body [data-action="reply-send"]');
+  await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
+  await page.waitForTimeout(1900);
+  const saves = (await calls(page, 'draft_save')).slice(before);
+  assert(saves.length === 1 && saves[0].text === 'send me', `saves around a send: ${JSON.stringify(saves.map(d => d.text))}`);
+  await page.click('.ws-modal[open] button:has-text("Cancel")');
+}
+
 /** C1: Settings › Appearance → View. Compact applies at once (attributes, mirror, no reload) and
  *  is recorded; it survives a reload. `page` is already on the Appearance screen. */
 async function c1(theme, page, { assert, shot, settled, calls }) {
@@ -647,6 +744,18 @@ export async function compactChecks({ open, check, assert, shot, settled, calls,
   for (const theme of ['dark', 'light']) {
     const { page, context } = await open({ theme, width: 1440, height: 900, now: FIXED_NOW, settings: { view: 'compact' }, hash: '#/inbox' });
     await check(`compact C6 (${theme}): Inbox rows open in place`, () => c6(theme, page, { open, assert, shot, calls, settled }));
+    await context.close().catch(() => {});
+  }
+
+  const c7 = [
+    ['a change result replaces your text, with Restore my text', c7Change],
+    ['a stopped change leaves no Restore on a later draft', c7Stale],
+    ['blur, Done, Snooze and a lane move save the typed text at once', c7Flush],
+    ['a send drops the pending autosave', c7Send],
+  ];
+  for (const [name, run] of c7) {
+    const { page, context } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, settings: { view: 'compact' }, hash: '#/inbox', enable: ['chat_send', 'mail_send'] });
+    await check(`compact C7: ${name}`, () => run(page, { assert, shot, calls, settled, theme: 'dark' }));
     await context.close().catch(() => {});
   }
 }

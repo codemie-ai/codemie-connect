@@ -261,7 +261,8 @@ export function startChange(ui, live) {
 export function reconcile({ ui = {}, ai, manual, live }) {
   if (!ai || live == null || [ui.seen, ui.confirm, ui.kept].includes(ai.revision)) return null;
   const { action, text } = applyDraftResult({ current: live, dirty: live !== (ui.baseline ?? ''), result: ai.data });
-  if (action === 'confirm') return { ui: { ...ui, confirm: ai.revision, restore: null }, action, text: live, save: null };
+  // Asking ends a change too: Replace offers to restore what the box held when asked.
+  if (action === 'confirm') return { ui: { ...ui, confirm: ai.revision, restore: null, changeFrom: null }, action, text: live, save: null };
   const saved = manual?.data?.text;
   const changed = ui.changeFrom != null ? { restore: { previous: ui.changeFrom }, changeFrom: null } : { restore: null };
   return { ui: { ...ui, seen: ai.revision, confirm: null, kept: null, baseline: text, ...changed }, action, text, save: saved != null && saved !== text ? text : null };

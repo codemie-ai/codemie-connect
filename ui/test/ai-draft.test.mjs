@@ -354,6 +354,7 @@ test('a change fills the box and offers Restore of the text it changed', () => {
   assert.equal(filled.ui.changeFrom, null);
   const edited = reconcile({ ui, ai, manual: null, live: 'Sure, 14:30 ok' });
   assert.equal(edited.action, 'confirm');
+  assert.equal(edited.ui.changeFrom, null, 'a change that asks leaves no Restore for a later fill');
 
   const s = snapshot();
   assert.deepEqual(changeRequest(message(s, 'm-reply-1'), defaultOptions('mail'), 'Say 15:00 instead', 'Sure, 14:30, see you then.'), {

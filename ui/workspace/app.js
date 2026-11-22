@@ -240,7 +240,10 @@ async function mutate(op, data = {}, workspaceId) {
     if (err?.code === 'stale_view') err.message = 'Your inbox or calendar updated while this was open. Review the latest details and try again.';
     throw err;
   } finally {
-    if (ready && !modalOpen()) await render();
+    // A save that ran while the mouse button is down (the reply box's blur on a press) renders
+    // after the click, like the updates held then: a redraw mid-press would swallow the click.
+    if (ready && !modalOpen() && pressing) heldRender = true;
+    else if (ready && !modalOpen()) await render();
     flushNotification();
   }
 }
@@ -1188,7 +1191,7 @@ function applyArrivedDraft(s) {
     field.value = next.text;
     syncReplyBox(field);
   }
-  if (next.save != null) saveReply(m, next.save).catch(fail);
+  if (next.save != null) queueReplySave(m, next.save).catch(fail);
   return true;
 }
 
@@ -1198,8 +1201,16 @@ function rememberDraftBaseline(s) {
   if (!m) return;
   const key = draftKeyOf(m);
   const ui = draftUi(key);
+  // A change request in flight compares its result with the text it started from (`startChange`).
+  if (ui.changeFrom != null) return;
   const box = replyBox({ manual: savedReply(s, m), ai: latestDraft(s, key), ui });
   ui.baseline = box.fromAi ? box.text : null;
+}
+
+/** A change request ended without filling the box (stopped, failed and dismissed, the chooser
+ *  closed, another draft asked for): its result can no longer offer a Restore. */
+function endChange(key) {
+  if (key && state.drafts[key]) state.drafts[key].changeFrom = null;
 }
 
 /**
@@ -1208,9 +1219,13 @@ function rememberDraftBaseline(s) {
  */
 async function startDraft(m, options, instructions = '', request = null) {
   if (!m) throw new Error('This conversation is no longer available. Refresh and try again.');
+  const key = draftKeyOf(m);
+  // A fresh draft is not a change: its fill offers no Restore of an earlier change's text.
+  if (request?.revise == null) endChange(key);
   try {
     await withClaudeChoice(() => mutate('ai_draft', request || draftRequest(m, options, instructions)));
   } catch (err) {
+    endChange(key);
     // Closing the chooser is an answer, not an error.
     if (err?.code === 'needs_choice' || err?.class === 'needs_choice') return;
     throw err;
@@ -1246,21 +1261,35 @@ async function saveReply(m, text) {
  * 1.5 s after typing stops, and at once before the box leaves the screen (another row, a route
  * or view change, the window hidden). The text is read now, so a render right after loses nothing.
  */
-function flushReplySave() {
-  clearTimeout(replySaveTimer);
-  replySaveTimer = null;
-  const field = document.getElementById('reply-body');
-  const form = field?.closest('form[data-form="reply"]');
+function flushReplySave(field = document.getElementById('reply-body')) {
+  const form = field?.closest?.('form[data-form="reply"]');
   const m = form && store?.get() && getRecord('message', form.dataset.id);
-  if (!m || field.value === field.defaultValue) return replySaving;
+  if (!m || field.value === field.defaultValue) {
+    clearTimeout(replySaveTimer);
+    replySaveTimer = null;
+    return replySaving;
+  }
   const { key } = form.dataset;
   const text = field.value;
-  replySaving = replySaving.then(() => saveReply(m, text)).then(() => {
+  return queueReplySave(m, text).then(() => {
     field.defaultValue = text;
     delete state.replyCarry[key];
     showReplyStatus(key, 'Saved on this device');
   }).catch(fail);
-  return replySaving;
+}
+
+/**
+ * Every save of a reply goes through here, one at a time and in order: the autosave, Send's save
+ * before the review, a draft filling the box, Keep/Replace/Restore. A pending autosave is
+ * dropped (the caller's save is newer), and text already saved is not saved again. The returned
+ * promise fails with the save; the queue goes on.
+ */
+function queueReplySave(m, text) {
+  clearTimeout(replySaveTimer);
+  replySaveTimer = null;
+  const run = replySaving.then(() => ((savedReply(snap(), m)?.data.text || '') === text ? undefined : saveReply(m, text)));
+  replySaving = run.catch(() => {});
+  return run;
 }
 
 /** Writes a conversation's status line, on screen at once and in the next render. */
@@ -2067,6 +2096,8 @@ function rowMessages(id) {
 
 /** Applies one Inbox decision to every message a row stands for, then renders once. */
 async function decideRow(id, data, perMessage = () => ({})) {
+  // Done, Snooze, Acknowledge or a lane move can take the box away: its text is saved first.
+  await flushReplySave();
   const targets = rowMessages(id);
   try {
     for (const m of targets) await store.mutate('inbox_decision', { ...data, ...perMessage(m), id: m.id });
@@ -2379,6 +2410,7 @@ async function handle(action, el, ev) {
       return;
     }
     case 'ai-draft-stop':
+      endChange(s.jobs.find(j => j.id === id)?.payload?.draftKey);
       try {
         await mutate('job_cancel', { id });
       } catch (err) {
@@ -2395,9 +2427,18 @@ async function handle(action, el, ev) {
       const request = s.jobs.find(j => j.id === id)?.payload?.request || {};
       if (action === 'ai-draft-choose' && !(await ensureClaudeChoice())) return;
       dismissDraftError(id);
-      return startDraft(getRecord('message', retrySourceOf(request.sourceId, el)), request, request.instructions);
+      const m = getRecord('message', retrySourceOf(request.sourceId, el));
+      // Try again repeats a change with the text it was asked about.
+      if (m && request.revise != null) {
+        state.drafts[draftKeyOf(m)] = startChange(draftUi(draftKeyOf(m)), request.revise);
+        return startDraft(m, request, request.instructions, changeRequest(m, request, request.instructions, request.revise));
+      }
+      return startDraft(m, request, request.instructions);
     }
-    case 'ai-draft-dismiss': dismissDraftError(id); return render();
+    case 'ai-draft-dismiss':
+      endChange(s.jobs.find(j => j.id === id && j.kind === 'ai_draft')?.payload?.draftKey);
+      dismissDraftError(id);
+      return render();
     case 'ai-summarize': return startSummary(getRecord('message', id));
     case 'ai-summarize-retry': case 'ai-summarize-choose': {
       const job = s.jobs.find(j => j.id === id);
@@ -2436,7 +2477,7 @@ async function handle(action, el, ev) {
       const next = answer(draftUi(key), latestDraft(s, key), choice, field?.value ?? '');
       state.drafts[key] = next.ui;
       if (field && field.value !== next.text) field.value = next.text;
-      if (next.save != null) await saveReply(m, next.save);
+      if (next.save != null) await queueReplySave(m, next.save);
       else await render();
       document.getElementById('reply-body')?.focus({ preventScroll: true });
       return;
@@ -2551,7 +2592,7 @@ async function submitForm(form) {
 async function prepareReply(id, body) {
   const m = getRecord('message', id);
   if (!body.trim()) throw new Error('Write a reply first.');
-  await mutate('draft_save', { text: body, sourceId: id, sourceRevision: m.revision });
+  await queueReplySave(m, body);
   const result = await mutate('action_prepare', { kind: m.data.channel === 'mail' ? 'mail_reply' : 'chat_reply', sourceId: id, body });
   // Once the reply is sent there is nothing left to restore.
   return reviewAction(result, {
@@ -2747,6 +2788,11 @@ document.addEventListener('keydown', ev => {
     ev.target.value = '';
   }
 }, true);
+
+// A box the user leaves saves its text at once.
+document.addEventListener('focusout', ev => {
+  if (ev.target?.id === 'reply-body') flushReplySave(ev.target);
+});
 
 // A hidden window saves the reply typed in it at once.
 document.addEventListener('visibilitychange', () => {

@@ -288,7 +288,10 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       return { id };
     },
     local_delete: d => { s.records = s.records.filter(r => !(r.kind === d.kind && r.id === d.id)); return { deleted: true }; },
-    draft_save: (d, wid) => ops.local_save({ ...d, kind: 'draft', id: `manual:${d.sourceId}` }, wid),
+    draft_save: (d, wid) => {
+      calls.push(['draft_save', clone(d)]);
+      return ops.local_save({ ...d, kind: 'draft', id: `manual:${d.sourceId}` }, wid);
+    },
     layout_save: (d, wid) => {
       calls.push(['layout_save', clone(d)]);
       const w = active(wid);
@@ -1989,10 +1992,11 @@ for (const theme of ['dark', 'light']) {
     assert(/\d+ s/.test(await text(page, '.ws-summary .ws-draft-running')), 'elapsed seconds');
     assert(await page.locator('.ws-summary .ws-draft-running [data-action="ai-draft-stop"]').count() === 1, 'Stop');
     await shot(page, `${theme}-summary-running`);
-    await page.evaluate(() => { window.__replyNode = document.getElementById('reply-body'); });
     await page.evaluate(asks => window.__finishSummary({ outcome: 'ok', text: 'Priya asked for roadmap comments before Thursday. You said you would look today; she has since asked for the draft to go to Jordan and for the review room.', asks }), ASKS);
     await page.waitForSelector('.ws-summary .ws-summary-text');
-    assert(await page.evaluate(() => document.getElementById('reply-body') === window.__replyNode && document.getElementById('reply-body').value === 'Typing while Claude reads'), 'the reply box was recreated');
+    // Summarize is under ⋯, so the box was left (and saved on blur) before the summary came: it may
+    // be drawn again, but with the text typed in it.
+    assert(await page.evaluate(() => document.getElementById('reply-body').value === 'Typing while Claude reads'), 'the reply lost its text');
     assert(await page.locator('.ws-summary [data-action="summary-ask-commit"]').count() === 2, 'asks');
     assert(/Due Fri, Nov 20/.test(await text(page, '.ws-summary')), 'formatted due date');
     assert(/Summarized with CodeMie · Haiku 4\.5 · 3 s · from 5 messages/.test(await text(page, '.ws-summary')), 'provenance');
