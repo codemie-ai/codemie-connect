@@ -34,6 +34,10 @@ All steps go on one branch, `feat/workspace-next`, cut from `workspace-app`, and
 
 Later: the Podervianskyi notes plugin (Informal meeting summary through the `call.minutes` slot), sentence-based inbox rules.
 
+## How the remaining steps run
+
+The user asked (2026-11-22) to proceed through all steps without stopping. For each step: a design written from this overview's decisions and the code (decisions the overview leaves open are ruled on in the design and listed for the user), a plan, subagent-driven implementation with a review per task, the definition of done below, a final whole-branch review, then the next step.
+
 ## Definition of done for every step
 
 The user wants each step properly built and visually verified, so Connect stays fully functional after every merge. A step is done only when all of these pass and the screenshots have been shown to the user:
@@ -46,5 +50,7 @@ The user wants each step properly built and visually verified, so Connect stays 
 6. **Naya side by side** where the step ports a Naya screen (Inbox, Today, Meetings, Tasks, reply): the Connect screenshot next to the Naya one, differences named.
 
 ## Not ported
+
+Naya's Inbox row checkboxes, "Close all" and the "N done today · Show done" footer (decided 2026-11-22: not wanted at all).
 
 Naya's config editing, engine routes, Terminal logins, launchd jobs, CLI-first actions, the git knowledge base, and the personal skills (performance, repo digest, kid-guard, school meals, pitches).
