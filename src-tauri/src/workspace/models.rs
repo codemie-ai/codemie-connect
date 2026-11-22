@@ -214,6 +214,10 @@ pub struct Connection {
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
+    /// Settings › Appearance › View: "default" or "compact" (app-wide, like theme).
+    pub view: String,
+    /// Main-menu pages left out of the menu (ids from NAV, in menu order).
+    pub hidden_pages: Vec<String>,
     pub time_zone: String,
     pub background: bool,
     pub launch_at_login: bool,
@@ -239,6 +243,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "system".into(),
+            view: "default".into(),
+            hidden_pages: Vec::new(),
             time_zone: "UTC".into(),
             background: false,
             launch_at_login: false,

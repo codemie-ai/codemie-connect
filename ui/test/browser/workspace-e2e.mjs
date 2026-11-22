@@ -15,6 +15,7 @@ import { meetingChecks } from './meetings-checks.mjs';
 import { meetingSettingsChecks } from './meetings-settings-checks.mjs';
 import { layoutChecks } from './layout-checks.mjs';
 import { analyticsChecks } from './analytics-checks.mjs';
+import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
 const OUT = fileURLToPath(new URL('../../../output/playwright/workspace-e2e/', import.meta.url));
@@ -250,10 +251,15 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     snapshot: () => ({ snapshot: { ...clone(s), records: [...clone(s.records), ...clone(shownRuns())] }, authPending, authError }),
     settings_update: d => {
       calls.push(['settings_update', clone(d)]);
+      if ('view' in d && !['default', 'compact'].includes(d.view)) refuse('view', 'Unknown view.');
       const rootBefore = s.settings.meetings?.root ?? null;
       if (d.meetings) applyMeetings(d.meetings);
       if (d.capabilities) s.connection.enabled = d.capabilities;
-      for (const [k, v] of Object.entries(d)) if (k !== 'capabilities' && k !== 'meetings') s.settings[k] = v;
+      for (const [k, v] of Object.entries(d)) {
+        if (k === 'capabilities' || k === 'meetings') continue;
+        if (k === 'hiddenPages') { s.settings.hiddenPages = NAV.map(([id]) => id).filter(id => v.includes(id)); continue; }
+        s.settings[k] = v;
+      }
       // library_ops.rs `carry_texts`: a new meetings folder gets the glossary and the tag list
       // (the mock keeps one copy of each, so nothing is ever kept apart or fails).
       if (d.meetings && 'root' in d.meetings && (s.settings.meetings.root ?? null) !== rootBefore) {

@@ -138,6 +138,7 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
       theme, timeZone: zone, background: true, launchAtLogin: false, criticalRepeat: true, syncDays: 30, notifications: true, notificationPreview: false,
       quietStart: '22:00', quietEnd: '08:00', clientId: '3d7688c6-f449-4d04-8b0d-57d94818e922', tenant: 'common', activeWorkspace: 'personal',
       activeConnection: connected ? CID : null, notificationPermission: 'os_managed', focusUntil: null,
+      ...contract('settings-view').default,
     },
     workspaces: [
       { id: 'personal', name: 'Personal', color: '#2297F6', archived: false, isDefault: true, connectionId: connected ? CID : null, revision: 3, accessRevision: 1, profileRevision: 0, sources: { all: true }, layout: ['brief', 'focus', 'calendar', 'inbox', 'commitments'], widgetWidths: {}, today: {} },

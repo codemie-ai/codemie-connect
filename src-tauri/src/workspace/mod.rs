@@ -1295,6 +1295,23 @@ impl Core {
             }
             s.theme = theme.into();
         }
+        if let Some(view) = data["view"].as_str() {
+            if !matches!(view, "default" | "compact") {
+                return Err(WorkspaceError::new("validation", "Unknown view."));
+            }
+            s.view = view.into();
+        }
+        if let Some(v) = data.get("hiddenPages") {
+            let given = v
+                .as_array()
+                .ok_or_else(|| WorkspaceError::new("validation", "Choose pages from the menu."))?;
+            let given: Vec<&str> = given.iter().filter_map(Value::as_str).collect();
+            s.hidden_pages = MENU_PAGES
+                .iter()
+                .filter(|p| given.contains(p))
+                .map(|p| p.to_string())
+                .collect();
+        }
         if let Some(zone) = data["timeZone"].as_str() {
             zone.parse::<chrono_tz::Tz>().map_err(|_| {
                 WorkspaceError::new("validation", "Use an IANA time zone such as Europe/Kyiv.")
@@ -2027,6 +2044,17 @@ fn valid_color(v: &str) -> Result<String> {
 }
 /// The background sync intervals Settings › Microsoft 365 offers, in minutes.
 const SYNC_EVERY_MIN: [i64; 5] = [1, 2, 5, 15, 30];
+/// Main-menu pages, in menu order (mirrors `ui/workspace/shell.js`'s `NAV`); `hiddenPages` is
+/// restricted and reordered to this list.
+const MENU_PAGES: [&str; 7] = [
+    "today",
+    "inbox",
+    "calendar",
+    "meetings",
+    "tasks",
+    "automations",
+    "analytics",
+];
 /// Seconds between background syncs: the setting while the window is open, and never more often
 /// than every five minutes while it is hidden.
 fn sync_interval(settings: Option<Settings>, visible: bool) -> i64 {
@@ -2323,6 +2351,105 @@ mod tests {
         assert_eq!(core.repo().unwrap().settings().unwrap().sync_every_min, 5);
         assert_eq!(core.request(set(3)).await.unwrap_err().code, "validation");
         assert_eq!(core.repo().unwrap().settings().unwrap().sync_every_min, 5);
+    }
+
+    #[tokio::test]
+    async fn settings_update_takes_a_known_view_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ready(),
+        );
+        let set = |view: &str| mutation(&core, Operation::SettingsUpdate, json!({ "view": view }));
+        core.request(set("compact")).await.unwrap();
+        assert_eq!(core.repo().unwrap().settings().unwrap().view, "compact");
+        let err = core.request(set("dense")).await.unwrap_err();
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.message, "Unknown view.");
+        assert_eq!(core.repo().unwrap().settings().unwrap().view, "compact");
+    }
+
+    #[tokio::test]
+    async fn settings_update_keeps_known_menu_pages_in_menu_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ready(),
+        );
+        core.request(mutation(
+            &core,
+            Operation::SettingsUpdate,
+            json!({ "hiddenPages": ["tasks", "nope", "calendar", "tasks", 3] }),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            core.repo().unwrap().settings().unwrap().hidden_pages,
+            vec!["calendar".to_string(), "tasks".to_string()]
+        );
+        let err = core
+            .request(mutation(
+                &core,
+                Operation::SettingsUpdate,
+                json!({ "hiddenPages": "calendar" }),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "validation");
+        assert_eq!(err.message, "Choose pages from the menu.");
+        assert_eq!(
+            core.repo().unwrap().settings().unwrap().hidden_pages,
+            vec!["calendar".to_string(), "tasks".to_string()]
+        );
+        core.request(mutation(
+            &core,
+            Operation::SettingsUpdate,
+            json!({ "hiddenPages": [] }),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            core.repo().unwrap().settings().unwrap().hidden_pages,
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn older_settings_read_as_the_default_view_with_no_hidden_pages() {
+        let s: Settings = serde_json::from_str(r#"{"syncDays":7}"#).unwrap();
+        assert_eq!(s.view, "default");
+        assert!(s.hidden_pages.is_empty());
+    }
+
+    /// The default and updated `view`/`hiddenPages` the UI fixture and the browser mock build on.
+    /// Regenerate with `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+    #[tokio::test]
+    async fn contract_fixtures_match_the_real_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(
+            dir.path(),
+            Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            ready(),
+        );
+        let field = |s: &Settings| {
+            let full = serde_json::to_value(s).unwrap();
+            json!({ "view": full["view"], "hiddenPages": full["hiddenPages"] })
+        };
+        let default = field(&core.repo().unwrap().settings().unwrap());
+        core.request(mutation(
+            &core,
+            Operation::SettingsUpdate,
+            json!({ "view": "compact", "hiddenPages": ["tasks", "nope", "calendar"] }),
+        ))
+        .await
+        .unwrap();
+        let updated = field(&core.repo().unwrap().settings().unwrap());
+        crate::plugins::testkit::contract_fixture(
+            "settings-view.json",
+            &json!({ "default": default, "updated": updated }),
+        );
     }
 
     #[tokio::test]
