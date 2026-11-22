@@ -70,6 +70,118 @@ const firstChildView = page => page.evaluate(() => window.__firstChildView);
 
 const APPEARANCE = '#/settings/appearance';
 
+/** The pages C2 and C3 walk, as `window.__workspace.route` arguments (`name/tab`). */
+export const MATRIX_ROUTES = ['today', 'inbox', 'calendar', 'meetings', 'tasks', 'automations', 'analytics', 'settings/appearance', 'settings/layout'];
+
+/** Navigates the already-open page to `route` (one of MATRIX_ROUTES) the way a nav click does,
+ *  through the dev-only `window.__workspace.route` hook `app.js` exposes. */
+const gotoRoute = (page, route) => page.evaluate(route => {
+  const [name, tab] = route.split('/');
+  return window.__workspace.route(name, tab);
+}, route);
+
+/** Elements whose overflow or clipped text would be invisible to the user in Compact. Task 7 adds
+ *  its own rows here. */
+export const CLIP_SELECTORS = ['.ws-btn', '.ws-nav button', '.ws-menu-item', '.ws-lane', '.ws-segmented button', '.ws-inbox-row', '.ws-input'];
+
+/** Selectors (with a short description) of elements matching CLIP_SELECTORS whose content
+ *  overflows vertically, or is cut off horizontally without an ellipsis. Elements the user
+ *  cannot currently see (closed `<details>` menus among them: Chromium lays out their content
+ *  with `content-visibility:hidden` rather than `display:none`, so it still has real box sizes)
+ *  are skipped via `checkVisibility`. */
+export const noClip = page => page.evaluate(selectors => {
+  const out = [];
+  document.querySelectorAll(selectors.join(',')).forEach(el => {
+    if (!el.checkVisibility({ checkOpacityCSS: true, checkVisibilityCSS: true })) return;
+    const cs = getComputedStyle(el);
+    const heightClip = el.scrollHeight > el.clientHeight + 1;
+    const widthClip = el.scrollWidth > el.clientWidth + 1 && cs.textOverflow !== 'ellipsis';
+    if (!heightClip && !widthClip) return;
+    const sel = selectors.find(s => el.matches(s)) || el.tagName.toLowerCase();
+    const label = `${sel}${el.id ? `#${el.id}` : ''}${el.className ? `.${String(el.className).trim().replace(/\s+/g, '.')}` : ''}`;
+    out.push(`${label} "${(el.textContent || '').trim().slice(0, 40)}" (${heightClip ? 'height' : 'width'})`);
+  });
+  return out;
+}, CLIP_SELECTORS);
+
+/** C2: at `width`, in `view`, every MATRIX_ROUTES page stays inside the viewport and nothing
+ *  matching CLIP_SELECTORS clips. `page` is already open at `view`/`width`/`theme`. */
+async function c2(page, theme, view, width, { assert, shot, settled }) {
+  const problems = [];
+  for (const route of MATRIX_ROUTES) {
+    await gotoRoute(page, route);
+    await settled(page);
+    const over = await page.evaluate(() => {
+      const main = document.getElementById('workspace-main');
+      return { main: main.scrollWidth - main.clientWidth, page: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    });
+    if (over.main > 0 || over.page > 0) problems.push(`${route} overflows sideways: ${JSON.stringify(over)}`);
+    const clipped = await noClip(page);
+    if (clipped.length) problems.push(`${route} clipped: ${clipped.join(' | ')}`);
+    await shot(page, `compact-${theme}-${view}-${width}-${route.replace(/\//g, '-')}`);
+  }
+  assert(problems.length === 0, problems.join(' || '));
+}
+
+/** Every --ws-fs-* size token Task 2 defined. */
+const FS_TOKENS = ['--ws-fs-label', '--ws-fs-meta', '--ws-fs-meta-lg', '--ws-fs-secondary', '--ws-fs-secondary-lg', '--ws-fs-body-sm', '--ws-fs-body-lg', '--ws-fs-body', '--ws-fs-heading-sm', '--ws-fs-heading', '--ws-fs-heading-md', '--ws-fs-heading-lg', '--ws-fs-title', '--ws-fs-title-md', '--ws-fs-title-sm'];
+
+/** C3: Compact uses Naya's sizes, at 1440 (brief's exact spots), and the grid row height Today
+ *  gives `[data-tile=brief]` is unchanged from Default. `page` is already open in Compact at 1440. */
+async function c3(page, { open, assert, settled }) {
+  await gotoRoute(page, 'today');
+  await settled(page);
+  const compactBrief = await page.evaluate(() => document.querySelector('[data-tile="brief"]')?.offsetHeight);
+  assert(compactBrief != null, 'no [data-tile=brief] on Today');
+  const { page: defPage, context: defContext } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, tasks: true, meetings: true, automations: true, hash: '#/today' });
+  try {
+    await settled(defPage);
+    const defaultBrief = await defPage.evaluate(() => document.querySelector('[data-tile="brief"]')?.offsetHeight);
+    assert(defaultBrief === compactBrief, `[data-tile=brief] offsetHeight: compact ${compactBrief} vs default ${defaultBrief}`);
+  } finally {
+    await defContext.close().catch(() => {});
+  }
+
+  const appFont = await page.evaluate(() => { const cs = getComputedStyle(document.getElementById('workspace-app')); return { fontSize: cs.fontSize, lineHeight: cs.lineHeight }; });
+  assert(appFont.fontSize === '13px', `#workspace-app font-size: ${appFont.fontSize}`);
+  assert(appFont.lineHeight === '18px', `#workspace-app line-height: ${appFont.lineHeight}`);
+
+  await gotoRoute(page, 'tasks');
+  await settled(page);
+  const h1 = await page.evaluate(() => getComputedStyle(document.querySelector('.ws-page-heading h1')).fontSize);
+  assert(h1 === '20px', `.ws-page-heading h1 (Tasks) font-size: ${h1}`);
+  const radius = await page.evaluate(() => getComputedStyle(document.querySelector('.ws-btn')).borderRadius);
+  assert(radius === '6px', `.ws-btn border-radius: ${radius}`);
+  await page.evaluate(() => document.activeElement?.blur());
+  let focused = false;
+  for (let i = 0; i < 40 && !focused; i++) {
+    await page.keyboard.press('Tab');
+    focused = await page.evaluate(() => document.activeElement?.classList?.contains('ws-btn'));
+  }
+  assert(focused, 'could not Tab to a .ws-btn on Tasks');
+  const outline = await page.evaluate(() => getComputedStyle(document.activeElement).outlineWidth);
+  assert(outline === '2px', `:focus-visible outline on a focused .ws-btn: ${outline}`);
+
+  await gotoRoute(page, 'inbox');
+  await settled(page);
+  const navH = await page.evaluate(() => getComputedStyle(document.querySelector('.ws-nav button[data-route="inbox"]')).height);
+  assert(navH === '28px', `.ws-nav button[data-route=inbox] height: ${navH}`);
+  const searchH = await page.evaluate(() => getComputedStyle(document.getElementById('inbox-search')).height);
+  assert(searchH === '28px', `#inbox-search height: ${searchH}`);
+  const titleFs = await page.evaluate(() => getComputedStyle(document.querySelector('.ws-inbox-title h1')).fontSize);
+  assert(titleFs === '22px', `.ws-inbox-title h1 font-size: ${titleFs}`);
+
+  // A plain form field's .ws-input (Settings › General's Time zone), not the settings nav's own
+  // "Find a setting" box (`.ws-settings-find .ws-input`), which keeps its own fixed 30px height.
+  await gotoRoute(page, 'settings/general');
+  await settled(page);
+  const inputH = await page.evaluate(() => { const el = document.querySelector('.ws-field .ws-input'); return el && getComputedStyle(el).height; });
+  assert(inputH === '28px', `.ws-field .ws-input height: ${inputH}`);
+
+  const sizes = await page.evaluate(tokens => tokens.map(t => [t, parseFloat(getComputedStyle(document.documentElement).getPropertyValue(t))]), FS_TOKENS);
+  for (const [name, px] of sizes) assert(px >= 10.5, `${name} computes to ${px}px (< 10.5)`);
+}
+
 /** C1: Settings › Appearance → View. Compact applies at once (attributes, mirror, no reload) and
  *  is recorded; it survives a reload. `page` is already on the Appearance screen. */
 async function c1(theme, page, { assert, shot, settled, calls }) {
@@ -167,6 +279,23 @@ export async function compactChecks({ open, check, assert, shot, settled, calls,
   for (const [mirrorValue, wantFirst] of [['compact', 'compact'], ['zzz', 'default']]) {
     const { page, context } = await open({ hash: APPEARANCE, localPrefs: { 'codemie.view': mirrorValue } });
     await check(`compact C1: a mirror of '${mirrorValue}' decides the first paint ('${wantFirst}'), then native's 'default' corrects it`, () => c1Mismatch(page, assert, mirrorValue, wantFirst));
+    await context.close().catch(() => {});
+  }
+
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['compact', 'default']) {
+      for (const width of [1000, 1440, 1680]) {
+        const settings = view === 'compact' ? { view: 'compact' } : null;
+        const { page, context } = await open({ theme, width, height: 900, now: FIXED_NOW, tasks: true, meetings: true, automations: true, settings });
+        await check(`compact C2: ${theme} ${view} ${width}: no horizontal overflow, nothing clipped`, () => c2(page, theme, view, width, { assert, shot, settled }));
+        await context.close().catch(() => {});
+      }
+    }
+  }
+
+  {
+    const { page, context } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, tasks: true, meetings: true, automations: true, settings: { view: 'compact' } });
+    await check('compact C3: Compact uses Naya’s sizes', () => c3(page, { open, assert, settled }));
     await context.close().catch(() => {});
   }
 }
