@@ -83,7 +83,7 @@ const gotoRoute = (page, route) => page.evaluate(route => {
 /** Elements whose overflow or clipped text would be invisible to the user in Compact, with the
  *  Compact Inbox's one-line rows and the parts of an open row. */
 export const CLIP_SELECTORS = ['.ws-btn', '.ws-nav button', '.ws-menu-item', '.ws-lane', '.ws-segmented button', '.ws-inbox-row', '.ws-input',
-  '.ws-inbox-row-compact', '.ws-crow-from', '.ws-crow-title', '.ws-crow-actions', '.ws-thread-earlier', '.ws-menu-field'];
+  '.ws-inbox-row-compact', '.ws-crow-from', '.ws-crow-title', '.ws-reply-bar', '.ws-thread-earlier', '.ws-menu-field'];
 
 /** Selectors (with a short description) of elements matching CLIP_SELECTORS whose content
  *  overflows vertically, or is cut off horizontally without an ellipsis. Elements the user
@@ -370,12 +370,13 @@ async function c6(theme, page, { open, assert, shot, calls, settled }) {
   await press('Enter');
   assert(eq(await openIds(), [ids[1]]), `focus on row 1, j, Enter: ${JSON.stringify(await rows())}`);
   const decisionsBefore = (await calls(page, 'inbox_decision')).length;
-  await page.focus('.ws-crow-body [data-action="message-archive"]');
+  // Done is under ⋯ now; Snooze ▾ is the action line's control that decides a row.
+  await page.focus('.ws-crow-body .ws-reply-bar details[data-menu="reply-snooze"] > summary');
   await press('j');
   await press('Enter');
-  assert((await calls(page, 'inbox_decision')).length === decisionsBefore, `j then Enter from Done decided a row: ${JSON.stringify(await calls(page, 'inbox_decision'))}`);
-  assert((await rows()).some(x => x.id === ids[1]), 'j then Enter from Done marked row 2 done');
-  assert(eq(await openIds(), [ids[2]]), `focus on Done, j, Enter: ${JSON.stringify(await rows())}`);
+  assert((await calls(page, 'inbox_decision')).length === decisionsBefore, `j then Enter from Snooze decided a row: ${JSON.stringify(await calls(page, 'inbox_decision'))}`);
+  assert((await rows()).some(x => x.id === ids[1]), 'j then Enter from Snooze moved row 2 away');
+  assert(eq(await openIds(), [ids[2]]), `focus on Snooze, j, Enter: ${JSON.stringify(await rows())}`);
   await press('Escape');
   assert(eq(await openIds(), []), `Escape did not close row 3: ${JSON.stringify(await rows())}`);
   await press('j');
@@ -387,9 +388,16 @@ async function c6(theme, page, { open, assert, shot, calls, settled }) {
   await row(1).focus();
   await press('Enter');
   assert(eq(await openIds(), [ids[1]]), `Enter on the row button: ${JSON.stringify(await rows())}`);
-  const more = '.ws-crow-body details[data-menu="crow-more"]';
+  const more = '.ws-crow-body details[data-menu="reply-more"]';
   await page.click(`${more} > summary`);
   await page.waitForSelector(`${more}[open]`);
+  const menuClip = await page.evaluate(sel => {
+    const panel = document.querySelector(`${sel} .ws-menu-panel`).getBoundingClientRect();
+    const list = document.querySelector('.ws-inbox-items').getBoundingClientRect();
+    return { panel: [panel.top, panel.bottom], list: [list.top, list.bottom] };
+  }, more);
+  assert(menuClip.panel[0] >= menuClip.list[0] - 1 && menuClip.panel[1] <= menuClip.list[1] + 1, `the ⋯ menu leaves the list: ${JSON.stringify(menuClip)}`);
+  await shot(page, `compact-c6-${theme}-more`);
   await press('Escape');
   assert(await page.locator(`${more}[open]`).count() === 0, 'Escape left the ⋯ menu open');
   assert(eq(await openIds(), [ids[1]]), 'Escape with the ⋯ menu open closed the row');
@@ -404,13 +412,13 @@ async function c6(theme, page, { open, assert, shot, calls, settled }) {
   await page.fill('#inbox-search', '');
   await settled(page);
 
-  // Acknowledge stays a visible button on an unacknowledged critical message.
+  // Acknowledge stays a visible button on the action line of an unacknowledged critical message.
   await page.click('.ws-lane[data-lane="critical"]');
   await settled(page);
   await row(0).click();
   await settled(page);
   const ack = await page.evaluate(() => {
-    const b = document.querySelector('.ws-crow-body [data-action="message-ack"]');
+    const b = document.querySelector('.ws-crow-body .ws-reply-bar [data-action="message-ack"]');
     return !!b && !b.closest('details') && b.checkVisibility();
   });
   assert(ack, 'Acknowledge is not a visible button on the open critical message');
@@ -423,7 +431,8 @@ async function c6(theme, page, { open, assert, shot, calls, settled }) {
   const reply = r.map(x => x.id);
   await row(1).click();
   await settled(page);
-  await page.click('.ws-crow-body [data-action="message-archive"]');
+  await page.click('.ws-crow-body details[data-menu="reply-more"] > summary');
+  await page.click('.ws-crow-body details[data-menu="reply-more"] [data-action="message-archive"]');
   await settled(page);
   r = await rows();
   assert(!r.some(x => x.id === reply[1]), 'Done left the row in the list');
@@ -431,7 +440,7 @@ async function c6(theme, page, { open, assert, shot, calls, settled }) {
   assert(eq(await openIds(), []), 'a row opened after Done');
   await row(1).click();
   await settled(page);
-  await page.click('.ws-crow-body details[data-menu="crow-snooze"] > summary');
+  await page.click('.ws-crow-body details[data-menu="reply-snooze"] > summary');
   await page.click('.ws-crow-body [data-action="message-snooze"][data-preset="3h"]');
   await settled(page);
   r = await rows();

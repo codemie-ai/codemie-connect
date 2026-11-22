@@ -7,6 +7,7 @@ import { icon, teamsGlyph, outlookGlyph } from './icons.js';
 import { avatar, badge, button, emptyState, segmented, checkbox, select, textArea } from './ui.js';
 import { LANES, laneLabel, visibleMessages, decisions, connectionState, messageTitle, conversation, can, collapseChats, draftKeyOf, draftJob, latestDraft, savedReply, summaryKeyOf, summaryFor, summaryJob, records, tasksDueJob } from './selectors.js';
 import { formatDateTime, relativeAge } from './format.js';
+import { primaryAction } from './reply-model.js';
 import { listTitle } from './view-today.js';
 import {
   INTENTS, TONES, LENGTHS, MAX_INSTRUCTIONS, replyBox, runningLabel, provenanceLabel, draftError, draftChoices, draftGaps, claudeAvailable, providerLabel,
@@ -139,33 +140,19 @@ function compactRow(s, m, zone, state, { isSelected, isOpen, count = 0, drafting
   </button>${isOpen ? openRow(s, m, zone, state, body) : ''}</div>`;
 }
 
-/** The open Compact row's body: Done, Snooze ▾, Acknowledge (an unacknowledged critical message
- *  only) and ⋯ with the rest of the reader's actions; the summary; the last messages; the reply. */
+/** The open Compact row's body: the unavailable note, the summary, the last messages, then the
+ *  composer and its action line (the same as the Default reader's). */
 function openRow(s, m, zone, state, bodyId) {
   const d = m.data;
-  const isChat = d.channel === 'chat';
   const fullThread = conversation(s, m);
   const all = state.threadAll?.has(m.id);
   const thread = all ? fullThread : fullThread.slice(-12);
   const unavailable = d.unavailable || d.deleted;
-  const item = (action, iconName, label, attrs = {}) => `<button type="button" class="ws-menu-item" role="menuitem" data-action="${action}"${Object.entries(attrs).map(([k, v]) => ` ${k}="${e(v)}"`).join('')}>${icon(iconName)}<span>${e(label)}</span></button>`;
-  const menu = [
-    d.url ? item('source', 'external', isChat ? 'Open in Teams' : 'Open in Outlook', { 'data-kind': 'message', 'data-id': m.id }) : '',
-    summaryOffer(s, m, state, { thread: fullThread, unavailable }) ? item('ai-summarize', 'spark', 'Summarize', { 'data-id': m.id }) : '',
-    `<label class="ws-menu-field"><span>Move to lane</span>${laneSelect(m)}</label>`,
-    item('commitment', 'check-circle', 'Add a task', { 'data-id': m.id }),
-  ].join('');
   return `<div class="ws-crow-body" id="${e(bodyId)}" data-message-id="${e(m.id)}">
-    <div class="ws-crow-actions">
-      ${doneButton(m)}
-      ${snoozeMenu(m, { compact: true })}
-      ${ackButton(m)}
-      <details class="ws-menu" data-menu="crow-more"><summary class="ws-btn ws-btn-ghost ws-btn-icon" aria-label="More actions" aria-haspopup="menu">${icon('dots')}</summary><div class="ws-menu-panel" role="menu">${menu}</div></details>
-    </div>
     ${unavailable ? `<p class="ws-inline-note ws-warning">${icon('alert')}This item moved or was deleted in Microsoft 365. The cached text stays for your decisions.</p>` : ''}
     ${summarySection(s, m, zone, state)}
     <div class="ws-thread ws-thread-compact" data-id="${e(m.id)}">${!all && fullThread.length > 12 ? `<button type="button" class="ws-thread-earlier" data-action="inbox-earlier" data-id="${e(m.id)}">Earlier</button>` : ''}${bubbles(s, m, thread, zone)}</div>
-    ${replyForm(s, m, zone, state)}
+    ${composer(s, m, zone, state)}
   </div>`;
 }
 
@@ -186,9 +173,9 @@ export function snoozeUntil(preset, nowMs = Date.now()) {
   return Math.floor(d.getTime() / 1000);
 }
 
-// The reader's actions and thread, shared with the open Compact row.
-const doneButton = m => button(m.data.lifecycle === 'archived' ? 'Restore' : 'Done', { action: 'message-archive', iconName: m.data.lifecycle === 'archived' ? 'inbox' : 'check', attrs: { 'data-id': m.id }, title: m.data.lifecycle === 'archived' ? 'Move back to the Inbox' : 'Archive in Connect' });
-const snoozeMenu = (m, { compact = false } = {}) => `<details class="ws-menu"${compact ? ' data-menu="crow-snooze"' : ''}><summary class="ws-btn ws-btn-secondary">${icon('snooze')}<span>Snooze</span>${compact ? icon('chevron-down') : ''}</summary><div class="ws-menu-panel">${SNOOZE.map(([value, label]) => `<button type="button" class="ws-menu-item" data-action="message-snooze" data-id="${e(m.id)}" data-preset="${value}">${e(label)}</button>`).join('')}</div></details>`;
+// The action line's controls and the thread, shared by the reader and the open Compact row.
+const doneButton = (m, variant = 'secondary') => button(m.data.lifecycle === 'archived' ? 'Restore' : 'Done', { action: 'message-archive', variant, iconName: m.data.lifecycle === 'archived' ? 'inbox' : 'check', attrs: { 'data-id': m.id }, title: m.data.lifecycle === 'archived' ? 'Move back to the Inbox' : 'Archive in Connect' });
+const snoozeMenu = m => `<details class="ws-menu" data-menu="reply-snooze"><summary class="ws-btn ws-btn-secondary">${icon('snooze')}<span>Snooze</span>${icon('chevron-down')}</summary><div class="ws-menu-panel" role="menu">${SNOOZE.map(([value, label]) => `<button type="button" class="ws-menu-item" role="menuitem" data-action="message-snooze" data-id="${e(m.id)}" data-preset="${value}">${e(label)}</button>`).join('')}</div></details>`;
 const ackButton = m => (m.data.lane === 'critical' && !m.data.acknowledgedAt ? button('Acknowledge', { action: 'message-ack', variant: 'danger', iconName: 'bell', attrs: { 'data-id': m.id } }) : '');
 const laneSelect = m => select(LANES.filter(([k]) => k !== 'decisions'), m.data.lane, { 'data-action': 'message-lane', 'data-id': m.id, 'aria-label': 'Move to lane' });
 const bubbles = (s, m, thread, zone) => thread.map(t => `<div class="ws-bubble${t.id === m.id ? ' ws-current' : ''}${t.data.isMine ? ' ws-mine' : ''}">
@@ -212,20 +199,12 @@ function reader(s, m, zone, state = {}) {
         <div><strong>${e(d.isMine ? 'You' : d.from || 'Unknown sender')}</strong>${d.fromAddress ? `<span>${e(d.fromAddress)}</span>` : ''}${recipients.length ? `<span class="ws-muted">To ${e(recipients.slice(0, 4).join(', '))}${recipients.length > 4 ? ` +${recipients.length - 4}` : ''}</span>` : ''}</div>
         <time>${e(formatDateTime(d.at, zone))}</time>
       </div>
-      <div class="ws-read-actions">
-        ${d.url ? button(isChat ? 'Open in Teams' : 'Open in Outlook', { action: 'source', iconName: 'external', variant: 'primary', attrs: { 'data-kind': 'message', 'data-id': m.id } }) : ''}
-        ${doneButton(m)}
-        ${snoozeMenu(m)}
-        ${summaryButton(s, m, state, { thread: fullThread, unavailable })}
-        <span class="ws-read-lane">${laneSelect(m)}${button('', { action: 'commitment', iconName: 'check-circle', variant: 'ghost', title: 'Add a task from this message', attrs: { 'data-id': m.id } })}</span>
-        ${ackButton(m)}
-      </div>
     </header>
     ${unavailable ? `<p class="ws-inline-note ws-warning">${icon('alert')}This item moved or was deleted in Microsoft 365. The cached text stays for your decisions.</p>` : ''}
     ${d.reason ? `<p class="ws-inline-note">${icon('info')}<span><strong>Why it's here:</strong> ${e(d.reason)}</span></p>` : ''}
     ${summarySection(s, m, zone, state)}
     <div class="ws-thread">${bubbles(s, m, thread, zone)}</div>
-    ${replyForm(s, m, zone, state)}
+    ${composer(s, m, zone, state)}
   </article>`;
 }
 
@@ -248,11 +227,6 @@ function summaryOffer(s, m, state, { thread, unavailable }) {
   if (unavailable || !claudeAvailable(state.ai) || !summaryOffered(thread)) return false;
   const { summary, running, failure } = summaryParts(s, m, state);
   return !(summary || running || failure);
-}
-
-function summaryButton(s, m, state, opts) {
-  if (!summaryOffer(s, m, state, opts)) return '';
-  return button('Summarize', { action: 'ai-summarize', variant: 'magic', iconName: 'spark', title: 'Summarize this conversation with Claude', attrs: { 'data-id': m.id } });
 }
 
 function summarySection(s, m, zone, state) {
@@ -297,11 +271,21 @@ function summarySection(s, m, zone, state) {
 
 // ---------------------------------------------------------------- reply box and drafts (DESIGN 6.4)
 
+/** What ends a conversation in both views: the reply form, or for your own Outlook message the
+ *  action line alone. */
+const composer = (s, m, zone, state) => replyForm(s, m, zone, state) || replyBar(s, m, state);
+
+/**
+ * The composer (DESIGN 6.4), the same in the Default reader and the open Compact row: the running,
+ * failure and "Replace your text?" rows, the box with its ✦ hint, provenance, "Before you send",
+ * the change line and the action line. Your own Outlook message cannot be answered: no form (the
+ * view draws the action line alone, with Done as its primary).
+ */
 function replyForm(s, m, zone, state) {
   const d = m.data;
   const isChat = d.channel === 'chat';
+  if (!isChat && d.isMine) return '';
   const unavailable = d.unavailable || d.deleted;
-  const canSend = can(s, isChat ? 'chat_send' : 'mail_send');
   const key = draftKeyOf(m);
   const ui = state.drafts?.[key] || {};
   const ai = latestDraft(s, key);
@@ -311,41 +295,80 @@ function replyForm(s, m, zone, state) {
   // A failure older than the draft that followed it is history; a dismissed one stays dismissed.
   const failure = !running && job && !(state.draftDismissed || []).includes(job.id) && !(ai && (ai.updatedAt || 0) > (job.dueAt || 0)) ? draftError(job, state.ai) : null;
   const showAi = !!ai && !box.confirm && (box.fromAi || ui.seen === ai.revision);
-  // Own Outlook messages cannot be answered through Review & send, so there is nothing to draft.
-  const draftable = isChat || !d.isMine;
-  const popover = draftable && state.draftPopover?.key === key ? draftPopover(m, state) : '';
+  const hint = !box.text && !running && !unavailable;
+  const popover = state.draftPopover?.key === key ? draftPopover(m, state) : '';
   return `<form class="ws-reply${showAi || running ? ' ws-reply-ai' : ''}" data-form="reply" data-id="${e(m.id)}" data-key="${e(key)}">
-      <div class="ws-reply-head">
-        <label class="ws-field-label" for="reply-body">${icon('reply')}Your reply</label>
-        ${draftable ? draftTrigger(m, state, { running, unavailable, open: !!popover }) : ''}
-      </div>
       ${running ? runningRow(job) : ''}
       ${failure ? errorRow(job, failure) : ''}
       ${box.confirm ? confirmRow(m, box.confirm) : ''}
-      <textarea id="reply-body" class="ws-textarea" name="body" maxlength="20000" placeholder="${isChat ? 'Write a Teams reply…' : 'Write a reply…'}" ${unavailable ? 'disabled' : ''}>${e(box.text)}</textarea>
+      <div class="ws-reply-box">
+        <textarea id="reply-body" class="ws-textarea" name="body" maxlength="20000" aria-label="Your reply"${hint ? ' aria-describedby="reply-hint"' : ''}${unavailable ? ' placeholder="This item moved or was deleted." disabled' : ''}>${e(box.text)}</textarea>
+        ${replyHint(state, { running, unavailable, hidden: !hint })}
+      </div>
       ${showAi ? provenanceRow(s, m, ai, ui, zone, running) : ''}
       ${todoPanel(box.text, ai?.data.text, showAi ? ai.data.questions : [])}
-      <div class="ws-reply-actions">
-        <span class="ws-muted ws-hint">${canSend ? 'You review every reply before it is sent.' : `Drafts stay on this device. Send from ${isChat ? 'Teams' : 'Outlook'}, or allow replies in Settings → Microsoft 365.`}</span>
-        <span class="ws-actions">
-          ${button('Save draft', { action: 'draft-save', attrs: { 'data-id': m.id } })}
-          ${canSend ? '' : button('Copy reply', { action: 'reply-copy', iconName: 'copy', title: `Copy the reply to paste it in ${isChat ? 'Teams' : 'Outlook'}`, attrs: { 'data-id': m.id } })}
-          ${canSend ? button('Review & send', { type: 'submit', variant: 'primary', iconName: 'reply', disabled: unavailable }) : d.url ? button(isChat ? 'Reply in Teams' : 'Reply in Outlook', { action: 'source', iconName: 'external', attrs: { 'data-kind': 'message', 'data-id': m.id } }) : ''}
-        </span>
-      </div>
+      ${box.text ? changeLine({ disabled: running || unavailable }) : ''}
+      ${replyBar(s, m, state, { empty: !box.text.trim(), locked: running || !!unavailable })}
       ${popover}
     </form>`;
 }
 
-function draftTrigger(m, state, { running, unavailable, open }) {
-  if (!claudeAvailable(state.ai)) {
-    return button('Set up Claude', { action: 'ai-open-settings', variant: 'secondary', iconName: 'spark', title: 'No Claude is ready to draft on this Mac yet' });
-  }
-  return button('Draft with AI', {
-    action: 'ai-draft-options', variant: 'magic', iconName: 'spark', iconRight: 'chevron-down', disabled: running || unavailable,
-    title: running ? 'Claude is already drafting this reply' : 'Draft a reply with Claude',
-    attrs: { 'aria-haspopup': 'dialog', 'aria-expanded': String(open), 'aria-controls': 'draft-options', 'data-id': m.id },
-  });
+/**
+ * "Write a reply, or ✦ draft with AI" over the empty box (✦ set up AI with no Claude ready). Only
+ * the link takes clicks; the words let them through to the box. The controller toggles `hidden`
+ * as the user types.
+ */
+export function replyHint(state, { running = false, unavailable = false, hidden = false } = {}) {
+  const link = claudeAvailable(state.ai)
+    ? '<button type="button" class="ws-reply-hint-link" data-action="ai-draft-quick" aria-label="Draft a reply with AI">✦ draft with AI</button>'
+    : '<button type="button" class="ws-reply-hint-link" data-action="ai-open-settings" title="No Claude is ready to draft on this Mac yet">✦ set up AI</button>';
+  return `<div class="ws-reply-hint" id="reply-hint"${hidden || running || unavailable ? ' hidden' : ''}><span>Write a reply, or </span>${link}</div>`;
+}
+
+/** The change line under a box with text: words for Claude, sent with the current text. */
+export function changeLine({ disabled = false } = {}) {
+  return `<div class="ws-reply-change">
+        <input id="reply-change" class="ws-input" type="text" maxlength="1000" placeholder="✦ Tell AI what to change" aria-label="Tell AI what to change" autocomplete="off"${disabled ? ' disabled' : ''}>
+        ${button('Change', { action: 'ai-draft-change', size: 'sm', disabled })}
+      </div>`;
+}
+
+const menuItem = (action, iconName, label, attrs = {}) => `<button type="button" class="ws-menu-item" role="menuitem" data-action="${action}"${Object.entries(attrs).map(([k, v]) => (v === true ? ` ${k}` : v == null || v === false ? '' : ` ${k}="${e(v)}"`)).join('')}>${icon(iconName)}<span>${e(label)}</span></button>`;
+
+/**
+ * The action line (DESIGN 6.4): exactly three controls — the primary named action (Send to …,
+ * Copy reply or Done), Snooze ▾ (Acknowledge on an unacknowledged critical message) and ⋯ — then
+ * the status line. `empty`: the box has no text; `locked`: a draft runs or the item is gone.
+ */
+export function replyBar(s, m, state, { empty = true, locked = false } = {}) {
+  const d = m.data;
+  const isChat = d.channel === 'chat';
+  const key = draftKeyOf(m);
+  const p = primaryAction(s, m);
+  const ack = ackButton(m);
+  const allowed = can(s, isChat ? 'chat_send' : 'mail_send');
+  // The send and copy buttons wait for text; the controller keeps `disabled` in step as the user
+  // types, except while a send is `data-locked` (a draft runs, the item is gone).
+  const lockAttrs = { 'data-id': m.id, 'data-needs-text': '', ...(locked ? { 'data-locked': '' } : {}) };
+  const primary = p.kind === 'send'
+    ? button(p.label, { type: 'submit', action: 'reply-send', variant: 'primary', iconName: 'reply', title: p.title, disabled: empty || locked, attrs: { 'aria-label': `${p.label}, ${isChat ? 'Teams' : 'Outlook'}`, ...lockAttrs } })
+    : p.kind === 'copy'
+      ? button(p.label, { action: 'reply-copy', variant: 'primary', iconName: 'copy', title: `Copy the reply to paste it in ${isChat ? 'Teams' : 'Outlook'}`, disabled: empty, attrs: { 'data-id': m.id, 'data-needs-text': '' } })
+      : doneButton(m, 'primary');
+  const draftable = isChat || !d.isMine;
+  const unavailable = d.unavailable || d.deleted;
+  const thread = conversation(s, m);
+  const items = [
+    p.kind === 'done' ? '' : menuItem('message-archive', d.lifecycle === 'archived' ? 'inbox' : 'check', d.lifecycle === 'archived' ? 'Restore' : 'Done', { 'data-id': m.id }),
+    ack ? `<span class="ws-menu-label">Snooze</span>${SNOOZE.map(([value, label]) => menuItem('message-snooze', 'snooze', label, { 'data-id': m.id, 'data-preset': value })).join('')}` : '',
+    draftable && !unavailable && claudeAvailable(state.ai) ? menuItem('ai-draft-options', 'spark', 'Draft options…', { 'data-id': m.id, disabled: locked }) : '',
+    summaryOffer(s, m, state, { thread, unavailable }) ? menuItem('ai-summarize', 'spark', 'Summarize', { 'data-id': m.id }) : '',
+    d.url ? menuItem('source', 'external', allowed ? (isChat ? 'Open in Teams' : 'Open in Outlook') : (isChat ? 'Reply in Teams ↗' : 'Reply in Outlook ↗'), { 'data-kind': 'message', 'data-id': m.id }) : '',
+    `<label class="ws-menu-field"><span>Move to lane</span>${laneSelect(m)}</label>`,
+    menuItem('commitment', 'check-circle', 'Add a task', { 'data-id': m.id }),
+  ].join('');
+  const status = state.replyStatus?.[key] || '';
+  return `<div class="ws-reply-bar" role="group" aria-label="Reply actions">${primary}${ack || snoozeMenu(m)}<details class="ws-menu" data-menu="reply-more"><summary class="ws-btn ws-btn-ghost ws-btn-icon" aria-label="More actions" aria-haspopup="menu">${icon('dots')}</summary><div class="ws-menu-panel" role="menu">${items}</div></details><span class="ws-reply-status" role="status">${e(status)}</span></div>`;
 }
 
 const chips = (field, choices, current) => `<div class="ws-draft-chips" role="group" aria-labelledby="draft-${field}-label">${choices.map(([value, label]) => `<button type="button" class="ws-draft-chip" data-action="ai-draft-pick" data-draft-${field}="${value}" aria-pressed="${value === current}">${e(label)}</button>`).join('')}</div>`;

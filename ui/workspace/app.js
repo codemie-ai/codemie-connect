@@ -15,9 +15,10 @@ import { GRID, todayOf } from './today-grid.js';
 import { activateTab, loadDock, saveDock, setCollapsed, visibleTabs } from './dock-model.js';
 import { attachDock } from './dock-controller.js';
 import { calendar, eventDetails, eventActions, HOUR_HEIGHT, CALENDAR_DOCK } from './view-calendar.js';
-import { inbox, filteredMessages, snoozeUntil, draftChecks, INBOX_DOCK } from './view-inbox.js';
+import { inbox, filteredMessages, snoozeUntil, draftChecks, changeLine, INBOX_DOCK } from './view-inbox.js';
 import {
   optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
+  startChange, changeRequest,
 } from './draft-state.js';
 import { settings, settingsTabFor, SETTINGS_GROUPS, SETTINGS_MENU } from './view-settings.js';
 import { trackPress } from './press.js';
@@ -93,6 +94,9 @@ const state = {
   // Reply drafts: this session's reply-box decisions per draft key (see `replyBox`), the open
   // options popover, and failed drafts the user dismissed.
   drafts: {}, summaryUi: {}, draftPopover: null, draftDismissed: localJson('codemie.draft.dismissed', []),
+  // The reply box the user clicked or typed in (its draft key; the ⌘↩ gate), and each
+  // conversation's status line ("Saved on this device").
+  replyTouched: null, replyStatus: {},
   // Automations: the open tab and the Run log pages read with `automation_runs` (null until read).
   automations: { tab: 'automations', highlight: null, runs: { items: null, next: null, error: '', filter: '', expanded: [], loadingMore: false } },
   // Tasks: board or list, filters, the open drawer and quick add (view state only; tasks are native's).
@@ -171,6 +175,9 @@ let ready = false;
 let deferredNotification;
 let calendarScrollKey = '';
 let noteTimer;
+// The reply box's autosave: the pending timer and the saves in order (one at a time).
+let replySaveTimer;
+let replySaving = Promise.resolve();
 let searchTimer;
 let taskSearchTimer;
 let meetingSearchTimer;
@@ -258,6 +265,7 @@ function applyView(view) {
 }
 
 function setView(view) {
+  flushReplySave();
   applyView(view);
   closeRow();
   return mutate('settings_update', { view });
@@ -438,6 +446,8 @@ async function render() {
   const reply = document.getElementById('reply-body');
   const replyKey = reply?.closest('form')?.dataset.key;
   const unsavedReply = reply && reply.value !== reply.defaultValue ? { key: replyKey, text: reply.value } : null;
+  // Words typed in the change line stay through the render (the line itself is redrawn).
+  const changeWords = document.getElementById('reply-change')?.value || '';
   // A reply box the user is in (or has typed in) is kept as it is, not recreated: its focus,
   // selection, undo history and IME composition survive the re-render around it.
   const keepReply = reply && (document.activeElement === reply || unsavedReply) ? reply : null;
@@ -513,7 +523,11 @@ async function render() {
     freshReply.value = state.replyCarry[freshKey];
     delete state.replyCarry[freshKey];
   }
+  // A box drawn for another conversation (or none) is not the one the user touched.
+  if (state.replyTouched !== freshKey) state.replyTouched = null;
   syncReplyBox(freshReply);
+  const freshChange = document.getElementById('reply-change');
+  if (changeWords && freshChange && freshKey === replyKey) freshChange.value = changeWords;
   for (const menu of openMenus) root.querySelector(`details.ws-menu[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
   if (state.route === 'inbox') rememberDraftBaseline(s);
   restoreScroll(saved);
@@ -660,6 +674,7 @@ function closeRow() {
 
 /** Applies a Compact `{selected, open}` move (inbox-open.js) and draws it. */
 function moveRows({ selected, open }) {
+  flushReplySave();
   const keyOf = id => { const m = id && getRecord('message', id); return m ? messageKey(m) : null; };
   Object.assign(state, { selectedMessage: selected, selectedKey: keyOf(selected), openMessage: open, openKey: keyOf(open) });
   return render().then(() => root.querySelector('.ws-inbox-row.ws-selected')?.scrollIntoView({ block: 'nearest' }));
@@ -706,6 +721,7 @@ async function saveNote(el) {
 
 async function route(name, tab, pluginPath = null) {
   await savePendingNote();
+  flushReplySave();
   state.meetings.rowMenu = null;
   // Arriving at the Inbox without a target finds every row closed.
   if (state.route === 'inbox' && name !== 'inbox') closeRow();
@@ -1186,11 +1202,14 @@ function rememberDraftBaseline(s) {
   ui.baseline = box.fromAi ? box.text : null;
 }
 
-/** Queues a draft; the first draft without a chosen Claude opens the chooser, then retries once. */
-async function startDraft(m, options, instructions = '') {
+/**
+ * Queues a draft (or, with `request`, a change of the current text); the first draft without a
+ * chosen Claude opens the chooser, then retries once.
+ */
+async function startDraft(m, options, instructions = '', request = null) {
   if (!m) throw new Error('This conversation is no longer available. Refresh and try again.');
   try {
-    await withClaudeChoice(() => mutate('ai_draft', draftRequest(m, options, instructions)));
+    await withClaudeChoice(() => mutate('ai_draft', request || draftRequest(m, options, instructions)));
   } catch (err) {
     // Closing the chooser is an answer, not an error.
     if (err?.code === 'needs_choice' || err?.class === 'needs_choice') return;
@@ -1223,24 +1242,71 @@ async function saveReply(m, text) {
 }
 
 /**
- * Keeps the reply box in step with its text: it grows to fit a draft, and Claude's bracketed
- * choices still in it are re-read as the user types.
+ * Saves the reply box on this device now when its text changed since the last save: the autosave
+ * 1.5 s after typing stops, and at once before the box leaves the screen (another row, a route
+ * or view change, the window hidden). The text is read now, so a render right after loses nothing.
+ */
+function flushReplySave() {
+  clearTimeout(replySaveTimer);
+  replySaveTimer = null;
+  const field = document.getElementById('reply-body');
+  const form = field?.closest('form[data-form="reply"]');
+  const m = form && store?.get() && getRecord('message', form.dataset.id);
+  if (!m || field.value === field.defaultValue) return replySaving;
+  const { key } = form.dataset;
+  const text = field.value;
+  replySaving = replySaving.then(() => saveReply(m, text)).then(() => {
+    field.defaultValue = text;
+    delete state.replyCarry[key];
+    showReplyStatus(key, 'Saved on this device');
+  }).catch(fail);
+  return replySaving;
+}
+
+/** Writes a conversation's status line, on screen at once and in the next render. */
+function showReplyStatus(key, text) {
+  state.replyStatus[key] = text;
+  const status = root.querySelector(`form[data-form="reply"][data-key="${CSS.escape(key)}"] .ws-reply-status`);
+  if (status) status.textContent = text;
+}
+
+/**
+ * Keeps the reply box in step with its text: it grows to fit a draft, the ✦ hint shows only while
+ * it is empty, the change line only while it has text, the send or copy button waits for text,
+ * and Claude's bracketed choices still in it are re-read as the user types.
  */
 function syncReplyBox(field) {
   if (!field) return;
   field.style.height = 'auto';
   field.style.height = `${Math.min(Math.max(field.scrollHeight + 2, 88), 360)}px`;
   const form = field.closest('form');
+  const hasText = !!field.value;
+  const hint = form?.querySelector('#reply-hint');
+  if (hint) {
+    // A running draft or a gone item keeps the hint hidden (the render decided).
+    const show = !hasText && !field.disabled && !form.querySelector('.ws-draft-running');
+    hint.hidden = !show;
+    if (show) field.setAttribute('aria-describedby', 'reply-hint');
+    else field.removeAttribute('aria-describedby');
+  }
+  const change = form?.querySelector('.ws-reply-change');
+  if (hasText && !change) form?.querySelector('.ws-reply-bar')?.insertAdjacentHTML('beforebegin', changeLine({ disabled: field.disabled || !!form.querySelector('.ws-draft-running') }));
+  else if (!hasText && change && !change.contains(document.activeElement)) change.remove();
+  const primary = form?.querySelector('[data-needs-text]');
+  if (primary && !primary.hasAttribute('data-locked')) primary.disabled = !field.value.trim();
   const checks = form?.querySelector('[data-draft-checks]');
   if (!checks || !store?.get()) return;
   checks.innerHTML = draftChecks(field.value, latestDraft(snap(), form.dataset.key)?.data.text);
   checks.closest('.ws-draft-todo').hidden = !checks.innerHTML.trim() && !form.querySelector('.ws-draft-questions');
 }
 
-/** Anchors the options popover to Draft with AI, below it when it fits, else above. */
+/** The ⋯ of the reply's action line: the options popover's anchor, and where focus returns. */
+const draftAnchor = () => root.querySelector('form[data-form="reply"] [data-menu="reply-more"] > summary');
+
+/** Anchors the options popover to the action line's ⋯, below it when it fits, else above. */
 function placeDraftPopover() {
   const pop = document.getElementById('draft-options');
-  const trigger = root.querySelector('[data-action="ai-draft-options"]');
+  const trigger = draftAnchor();
   if (!pop || !trigger) return;
   const t = trigger.getBoundingClientRect();
   const margin = 12;
@@ -1263,19 +1329,18 @@ async function openDraftPopover(m) {
 /**
  * Closes the popover in place, so a click elsewhere still lands on what was under the
  * pointer; updates held while it was open render after that click (or at once from the
- * keyboard), then focus returns to Draft with AI.
+ * keyboard), then focus returns to the action line's ⋯.
  */
 async function closeDraftPopover(focusTrigger = true) {
   if (!state.draftPopover) return;
   state.draftPopover = null;
   document.getElementById('draft-options')?.remove();
-  root.querySelector('[data-action="ai-draft-options"]')?.setAttribute('aria-expanded', 'false');
   if (!focusTrigger) {
     if (heldRender) document.addEventListener('mouseup', () => setTimeout(flushHeldRender, 0), { once: true, capture: true });
     return;
   }
   if (heldRender) await render();
-  root.querySelector('[data-action="ai-draft-options"]')?.focus();
+  draftAnchor()?.focus();
 }
 
 function flushHeldRender() {
@@ -2012,6 +2077,7 @@ async function decideRow(id, data, perMessage = () => ({})) {
 }
 
 function selectMessage(id) {
+  flushReplySave();
   const m = getRecord('message', id);
   state.selectedKey = m ? messageKey(m) : null;
   state.selectedMessage = id;
@@ -2244,15 +2310,6 @@ async function handle(action, el, ev) {
     }
     case 'message-ack': await decideRow(id, { action: 'acknowledge' }); return;
     case 'commitment': return commitmentDialog(id ? getRecord('message', id) : null);
-    case 'draft-save': {
-      const field = document.getElementById('reply-body');
-      // One draft per conversation: replaces any draft kept against an older message of this chat.
-      await saveReply(getRecord('message', id), field.value);
-      field.defaultValue = field.value;
-      delete state.replyCarry[field.closest('form')?.dataset.key];
-      return toast('Draft saved on this device.', 'success');
-    }
-
     // Reply drafts with Claude
     case 'draft-reply': {
       const m = getRecord('message', id);
@@ -2265,8 +2322,39 @@ async function handle(action, el, ev) {
       return;
     }
     case 'ai-draft-options': {
+      el.closest('details')?.removeAttribute('open');
       if (state.draftPopover) return closeDraftPopover();
       return openDraftPopover(getRecord('message', id));
+    }
+    // ✦ draft with AI: at once, with the options last used for this channel.
+    case 'ai-draft-quick': {
+      const m = getRecord('message', el.closest('form')?.dataset.id);
+      await startDraft(m, rememberedOptions(m?.data.channel));
+      document.getElementById('reply-body')?.focus({ preventScroll: true });
+      return;
+    }
+    // ✦ Tell AI what to change: the words with the current text; the result replaces the text the
+    // change started from, which Restore my text brings back.
+    case 'ai-draft-change': {
+      const input = document.getElementById('reply-change');
+      const box = document.getElementById('reply-body');
+      const form = box?.closest('form');
+      const words = input?.value.trim() || '';
+      if (!words || !form) return;
+      const m = getRecord('message', form.dataset.id);
+      if (!m) throw new Error('This conversation is no longer available. Refresh and try again.');
+      const key = form.dataset.key;
+      const options = rememberedOptions(m.data.channel);
+      state.drafts[key] = startChange(draftUi(key), box.value);
+      await startDraft(m, options, words, changeRequest(m, options, words, box.value));
+      const field = document.getElementById('reply-change');
+      if (field) field.value = '';
+      return;
+    }
+    // The primary Send: today's review (`submitForm('reply')`).
+    case 'reply-send': {
+      const form = el.closest('form[data-form="reply"]');
+      return form ? submitForm(form) : undefined;
     }
     case 'ai-draft-pick': {
       const pop = state.draftPopover;
@@ -2607,7 +2695,15 @@ document.addEventListener('input', ev => {
   }
   if (meetingsUi?.input(ev.target)) return;
   if (meetingsSettingsUi?.input(ev.target)) return;
-  if (ev.target.id === 'reply-body') syncReplyBox(ev.target);
+  if (ev.target.id === 'reply-body') {
+    syncReplyBox(ev.target);
+    // "Saved on this device" holds only until the text changes again.
+    const key = ev.target.closest('form')?.dataset.key;
+    if (key && state.replyStatus[key]) showReplyStatus(key, '');
+    // Autosave on this device 1.5 s after the last keystroke.
+    clearTimeout(replySaveTimer);
+    replySaveTimer = setTimeout(flushReplySave, 1500);
+  }
   if (ev.target.id === 'auto-prompt') {
     const count = ev.target.closest('form')?.querySelector('[data-auto-count]');
     if (count) count.textContent = `${ev.target.value.length.toLocaleString('en-US')} / 4,000`;
@@ -2624,6 +2720,37 @@ document.addEventListener('input', ev => {
     const el = ev.target;
     noteTimer = setTimeout(() => saveNote(el), 900);
   }
+});
+
+// The reply box counts as the user's once they click or type in it (the ⌘↩ gate); a box the app
+// focused (Today's Draft reply, a draft arriving) does not.
+const touchReply = target => {
+  const key = target?.id === 'reply-body' ? target.closest('form')?.dataset.key : null;
+  if (key) state.replyTouched = key;
+};
+document.addEventListener('pointerdown', ev => touchReply(ev.target), true);
+document.addEventListener('keydown', ev => {
+  if (ev.metaKey || ev.ctrlKey || !(ev.key.length === 1 || ['Backspace', 'Delete', 'Enter'].includes(ev.key))) return;
+  touchReply(ev.target);
+}, true);
+
+// The change line: Return sends the words (never the reply form), Esc empties a field with words
+// in it and goes no further; an empty field lets Esc through to the row.
+document.addEventListener('keydown', ev => {
+  if (ev.target?.id !== 'reply-change' || ev.isComposing || ev.keyCode === 229) return;
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    if (!ev.target.disabled) handle('ai-draft-change', ev.target).catch(fail);
+  } else if (ev.key === 'Escape' && ev.target.value) {
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    ev.target.value = '';
+  }
+}, true);
+
+// A hidden window saves the reply typed in it at once.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushReplySave();
 });
 
 // The draft options popover: Esc closes it, ⌘↵ drafts, Tab stays inside it.
@@ -2677,7 +2804,22 @@ document.addEventListener('toggle', ev => {
   const menu = ev.target;
   if (!menu.matches?.('details.ws-menu') || !menu.open) return;
   for (const other of document.querySelectorAll('details.ws-menu[open]')) if (other !== menu) other.removeAttribute('open');
+  if (menu.closest('.ws-reply-bar')) placeReplyMenu(menu);
 }, true);
+
+/** The reply's action line sits at the bottom of a scrolling pane: its menus open downwards, or
+ *  upwards when only that way they fit in the pane. */
+function placeReplyMenu(menu) {
+  menu.classList.remove('ws-menu-up');
+  const panel = menu.querySelector('.ws-menu-panel');
+  const summary = menu.querySelector('summary')?.getBoundingClientRect();
+  if (!panel || !summary) return;
+  const pane = menu.closest('.ws-reader, .ws-inbox-items')?.getBoundingClientRect() || { top: 0, bottom: innerHeight };
+  const below = Math.min(pane.bottom, innerHeight) - summary.bottom;
+  const above = summary.top - Math.max(pane.top, 0);
+  const need = panel.offsetHeight + 6;
+  if (below < need && above > below) menu.classList.add('ws-menu-up');
+}
 document.addEventListener('click', ev => {
   for (const menu of document.querySelectorAll('details.ws-menu[open]')) if (!menu.contains(ev.target)) menu.removeAttribute('open');
 }, true);

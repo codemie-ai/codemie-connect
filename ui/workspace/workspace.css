@@ -1078,9 +1078,6 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-crow-mark{display:inline-grid;place-items:center;flex-shrink:0;color:var(--ws-muted)}
 .ws-crow-mark .ws-icon{width:12px;height:12px}
 .ws-crow-body{padding:8px 12px 12px 24px;display:grid;gap:8px;min-width:0}
-.ws-crow-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.ws-crow-actions .ws-menu-panel{min-width:220px}
-.ws-crow-actions .ws-menu-item{width:100%;white-space:nowrap}
 .ws-menu-field{display:grid;gap:4px;padding:4px 10px 6px;font-size:var(--ws-fs-meta);color:var(--ws-muted)}
 .ws-menu-field .ws-select{height:28px;font-size:var(--ws-fs-secondary);font-weight:600}
 .ws-thread-compact{max-height:260px;overflow:auto;gap:6px;align-content:start}
@@ -1100,9 +1097,6 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-read-from strong{font-size:var(--ws-fs-body)}
 .ws-read-from span{font-size:var(--ws-fs-secondary);color:var(--ws-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ws-read-from time{font-size:var(--ws-fs-secondary);color:var(--ws-muted);white-space:nowrap}
-.ws-read-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 0;border-top:1px solid var(--ws-border);border-bottom:1px solid var(--ws-border)}
-.ws-read-lane{display:inline-flex;align-items:center;gap:8px;flex-wrap:nowrap}
-.ws-read-lane .ws-select{height:28px;font-size:var(--ws-fs-secondary);font-weight:600;width:150px}
 .ws-thread{display:grid;gap:10px}
 .ws-bubble{padding:var(--ws-bubble-pad);border:1px solid var(--ws-border);border-radius:var(--ws-r-row);background:var(--ws-card)}
 .ws-bubble.ws-current{border-color:color-mix(in srgb,var(--ws-accent) 55%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--ws-accent) 25%,transparent)}
@@ -1111,15 +1105,31 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-bubble-head time{margin-left:auto;color:var(--ws-faint);font-size:var(--ws-fs-meta)}
 .ws-bubble-body{font-family:var(--font-sans);font-size:var(--ws-fs-body);line-height:22px;color:var(--ws-text-2);white-space:pre-wrap;overflow-wrap:anywhere}
 .ws-reply{display:grid;gap:8px;padding:var(--ws-reply-pad);border:1px solid var(--ws-border);border-radius:var(--ws-r-row);background:var(--ws-card)}
-.ws-reply-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+/* The box with its ✦ hint laid over the textarea's top-left padding: the words let clicks through
+   to the box, only the link takes them. */
+.ws-reply-box{position:relative;min-width:0}
+.ws-reply-hint{position:absolute;top:11px;left:13px;right:13px;display:flex;align-items:baseline;gap:4px;pointer-events:none;font-family:var(--font-sans);font-size:var(--ws-fs-body);line-height:21px;color:var(--ws-faint);white-space:nowrap;overflow:hidden}
+.ws-reply-hint[hidden]{display:none}
+.ws-reply-hint-link{pointer-events:auto;padding:0 2px;border:0;border-radius:4px;background:none;font:inherit;font-weight:600;color:var(--ws-purple)}
+.ws-reply-hint-link:hover{text-decoration:underline}
+/* The change line: a one-line field for Claude and its Change button. */
+.ws-reply-change{display:flex;align-items:center;gap:8px;min-width:0}
+.ws-reply-change .ws-input{flex:1;min-width:0}
+/* The action line: three controls, the status pushed right. Its menus open upwards when only that
+   way they fit in the pane (`placeReplyMenu`). */
+.ws-reply-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.ws-reply-bar .ws-menu-panel{min-width:220px}
+.ws-reply-bar .ws-menu-up>.ws-menu-panel{top:auto;bottom:calc(100% + 6px)}
+.ws-reply-bar .ws-menu-item{width:100%;white-space:nowrap}
+.ws-reply-bar .ws-menu-item:disabled{opacity:.42;cursor:default;pointer-events:none}
+.ws-reply-status{margin-left:auto;font-size:var(--ws-fs-meta);color:var(--ws-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ws-reply-status:empty{display:none}
 .ws-msg-flags .ws-flag-ai{color:var(--ws-purple);font-weight:600}
 
 /* ------------------------------------------------------------------ Reply drafts with Claude */
 .ws-reply.ws-reply-ai{border-color:transparent;background:linear-gradient(var(--ws-card),var(--ws-card)) padding-box,var(--ws-primary-border) border-box}
-.ws-reply-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:28px}
 /* The reply box grows with its text (88–360 px), so it is not resized by hand. */
 .ws-reply #reply-body{resize:none;overflow-y:auto}
-.ws-reply-head .ws-btn-magic .ws-icon:last-child{width:12px;height:12px;margin-left:-2px;opacity:.85}
 .ws-draft-pulse{flex:0 0 22px;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--ws-magic);color:#fff}
 .ws-draft-pulse .ws-icon{width:13px;height:13px}
 .ws-draft-running .ws-draft-pulse{animation:ws-draft-pulse 1.6s ease-in-out infinite}

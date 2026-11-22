@@ -64,21 +64,83 @@ test('Compact Inbox: one list, every row closed and one line, no reading pane', 
   assert.equal([...html.matchAll(/aria-current="true"/g)].length, 1);
 });
 
-test('the open row: Done, Snooze, Acknowledge on an unacknowledged critical, ⋯, summary, thread, reply form', () => {
+/** The reply bar of `html` (the first one), and its top-level controls (a menu counts once). */
+const replyBarOf = html => html.match(/<div class="ws-reply-bar"[^]*?<span class="ws-reply-status"[^>]*>[^<]*<\/span><\/div>/)?.[0] || '';
+const topControls = bar => bar.replace(/<div class="ws-menu-panel"[^]*?<\/div><\/details>/g, '</details>').match(/<button\b|<details\b/g) || [];
+
+test('the open row: summary, thread, then the reply form with its three-control bar', () => {
   const s = buildSnapshot(Date.now(), { photo: false });
   const html = inbox(s, ctx({ lane: 'critical', selectedMessage: 'm-critical', openMessage: 'm-critical' }));
   assert.match(html, /aria-expanded="true" aria-controls="crow-m-critical"/);
   assert.match(html, /<div class="ws-crow-body" id="crow-m-critical" data-message-id="m-critical">/);
-  assert.match(html, /ws-crow-actions[^]*?data-action="message-archive"[^]*?message-snooze[^]*?data-action="message-ack"[^]*?data-menu="crow-more"/);
-  // The ⋯ holds Open in Outlook, Move to lane and Add a task; Acknowledge stays outside it.
-  const more = html.slice(html.indexOf('data-menu="crow-more"'));
-  assert.match(more, /Open in Outlook[^]*?data-action="message-lane"[^]*?data-action="commitment"/);
-  assert.doesNotMatch(more.slice(0, more.indexOf('</details>')), /message-ack/);
-  assert.match(html, /class="ws-thread ws-thread-compact"[^]*?<form class="ws-reply/);
+  assert.match(html, /class="ws-thread ws-thread-compact"[^]*?<form class="ws-reply[^]*?class="ws-reply-bar"/);
+  assert.doesNotMatch(html, /ws-crow-actions/);
   assert.equal([...html.matchAll(/id="reply-body"/g)].length, 1);
-  // Acknowledged: no Acknowledge button.
+  const bar = replyBarOf(html);
+  assert.equal(topControls(bar).length, 3, bar);
+  // Acknowledge takes Snooze's place on the line; Snooze goes under ⋯.
+  const more = bar.slice(bar.indexOf('data-menu="reply-more"'));
+  assert.match(bar.slice(0, bar.indexOf('data-menu="reply-more"')), /data-action="message-ack"/);
+  assert.match(more, /data-action="message-snooze"/);
+  assert.doesNotMatch(more, /message-ack/);
+  // ⋯ in its order: Done, Snooze ▸ and its presets, Draft options…, Reply in Outlook ↗ (no
+  // permission to send), Move to lane, Add a task.
+  assert.match(more, /data-action="message-archive"[^]*?>Snooze<[^]*?data-action="message-snooze"[^]*?data-action="ai-draft-options"[^]*?Reply in Outlook ↗[^]*?data-action="message-lane"[^]*?data-action="commitment"/);
+  // Acknowledged: Snooze is back on the line, no Acknowledge.
   s.records.find(r => r.id === 'm-critical').data.acknowledgedAt = 1;
-  assert.doesNotMatch(inbox(s, ctx({ lane: 'critical', selectedMessage: 'm-critical', openMessage: 'm-critical' })), /data-action="message-ack"/);
+  const acked = replyBarOf(inbox(s, ctx({ lane: 'critical', selectedMessage: 'm-critical', openMessage: 'm-critical' })));
+  assert.doesNotMatch(acked, /data-action="message-ack"/);
+  assert.equal(topControls(acked).length, 3, acked);
+  assert.doesNotMatch(acked.slice(acked.indexOf('data-menu="reply-more"')), /message-snooze/);
+});
+
+test('Default and Compact draw the same reply bar', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const def = replyBarOf(inbox(s, ctx({ selectedMessage: 'c-reply-1' }, 'default')));
+  const compact = replyBarOf(inbox(s, ctx({ selectedMessage: 'c-reply-1', openMessage: 'c-reply-1' })));
+  assert.ok(def, 'Default draws a reply bar');
+  assert.equal(def, compact);
+  assert.doesNotMatch(inbox(s, ctx({ selectedMessage: 'c-reply-1' }, 'default')), /ws-read-actions/);
+});
+
+test('the empty box offers ✦ draft with AI; text brings the change line', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const empty = inbox(s, ctx({ selectedMessage: 'c-reply-1', openMessage: 'c-reply-1' }));
+  assert.match(empty, /Write a reply, or <\/span><button[^>]*data-action="ai-draft-quick"[^>]*>✦ draft with AI/);
+  assert.match(empty, /<div class="ws-reply-hint" id="reply-hint">/);
+  assert.match(empty, /<textarea id="reply-body"[^>]*aria-describedby="reply-hint"/);
+  assert.doesNotMatch(empty, /<textarea id="reply-body"[^>]*placeholder/);
+  assert.doesNotMatch(empty, /reply-change/);
+  s.records.push({ id: 'd-hi', kind: 'draft', source: 'local', connectionId: null, workspaceId: 'personal', revision: 'r-d-hi', updatedAt: 1, data: { text: 'Hi', sourceId: 'c-reply-1' } });
+  const typed = inbox(s, ctx({ selectedMessage: 'c-reply-1', openMessage: 'c-reply-1' }));
+  assert.match(typed, /<div class="ws-reply-hint" id="reply-hint" hidden>/);
+  assert.doesNotMatch(typed, /<textarea id="reply-body"[^>]*aria-describedby/);
+  assert.match(typed, /<input[^>]*id="reply-change"[^>]*placeholder="✦ Tell AI what to change"/);
+  assert.match(typed, /data-action="ai-draft-change"[^>]*>(?:(?!<\/button>).)*Change</);
+});
+
+test('no Save draft, no Draft with AI button, Draft options under ⋯', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  for (const view of ['default', 'compact']) {
+    const html = inbox(s, ctx({ selectedMessage: 'c-reply-1', openMessage: 'c-reply-1' }, view));
+    assert.doesNotMatch(html, /draft-save|ai-draft-options" [^>]*aria-haspopup="dialog"/);
+    assert.doesNotMatch(html, />Draft with AI</);
+    assert.match(html, /data-menu="reply-more"[^]*?data-action="ai-draft-options"[^>]*>[^]*?Draft options…/);
+  }
+});
+
+test('your own Outlook message has no reply box and Done is the only primary', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  for (const view of ['default', 'compact']) {
+    const html = inbox(s, ctx({ lane: 'fyi', selectedMessage: 'm-thread-mine', openMessage: 'm-thread-mine' }, view));
+    assert.doesNotMatch(html, /id="reply-body"|data-form="reply"/);
+    const bar = replyBarOf(html);
+    assert.equal(topControls(bar).length, 3, bar);
+    assert.match(bar, /^<div class="ws-reply-bar"[^>]*>\s*<button[^>]*class="ws-btn ws-btn-primary"[^>]*data-action="message-archive"/);
+    const more = bar.slice(bar.indexOf('data-menu="reply-more"'));
+    assert.doesNotMatch(more, /message-archive|ai-draft-options/);
+    assert.doesNotMatch(bar, /reply-send|reply-copy/);
+  }
 });
 
 test('a thread longer than 12 shows Earlier until expanded', () => {

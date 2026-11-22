@@ -1345,15 +1345,13 @@ for (const theme of ['dark', 'light']) {
     assert(Number(z.line) < Number(z.event) && Number(z.dot) > Number(z.event), `now line is not under event text: ${JSON.stringify(z)}`);
     await shot(p, `${theme}-today-polish-${width}`);
     await p.click('.ws-nav button[data-route=inbox]');
-    await p.waitForSelector('.ws-read-actions');
+    await p.waitForSelector('.ws-reply-bar');
     const rows = await p.evaluate(() => {
-      const bar = document.querySelector('.ws-read-actions');
-      const tops = [...bar.querySelectorAll(':scope > *, .ws-read-lane > *')].map(el => Math.round(el.getBoundingClientRect().top));
-      const lane = bar.querySelector('.ws-read-lane').getBoundingClientRect();
-      const btn = bar.querySelector('[data-action="commitment"]').getBoundingClientRect();
-      return { sameRow: btn.top >= lane.top - 1 && btn.bottom <= lane.bottom + 1, tops };
+      const bar = document.querySelector('.ws-reply-bar');
+      const controls = [...bar.querySelectorAll(':scope > button, :scope > details > summary')].map(el => el.getBoundingClientRect());
+      return { count: controls.length, sameRow: controls.every(r => Math.abs(r.top - controls[0].top) < 2), tops: controls.map(r => Math.round(r.top)) };
     });
-    assert(rows.sameRow, `the commitment button wrapped away from the lane picker: ${JSON.stringify(rows)}`);
+    assert(rows.count === 3 && rows.sameRow, `the reply's three controls are not one row: ${JSON.stringify(rows)}`);
     await shot(p, `${theme}-inbox-actions-${width}`);
     await n.context.close().catch(() => {});
     const none = await open({ theme, width, height, ai: 'none', codemie: 'fresh', localPrefs: introduced });
@@ -1484,11 +1482,12 @@ for (const theme of ['dark', 'light']) {
     const first = await page.locator('.ws-inbox-row').first().getAttribute('data-id');
     assert(first === 'c-reply-1', `newest row ${first}`);
     assert(await page.locator('.ws-inbox-row[data-id="c-reply-1"] .ws-thread-count').innerText() === '2', 'chat count badge');
-    await page.locator('.ws-read-actions summary:has-text("Snooze")').click();
+    await page.click('.ws-reply-bar details[data-menu="reply-snooze"] > summary');
     await page.locator('.ws-menu-item:has-text("Tomorrow")').click();
     await page.waitForTimeout(300);
     assert(await page.locator('.ws-inbox-row:has-text("Jordan Lee")').count() === 0, 'snooze left part of the Teams chat behind');
-    await page.locator('.ws-read-actions button:has-text("Done")').click();
+    await page.click('.ws-reply-bar details[data-menu="reply-more"] > summary');
+    await page.click('.ws-reply-bar details[data-menu="reply-more"] [data-action="message-archive"]');
     await page.waitForTimeout(200);
     await page.click('.ws-lane[data-lane=critical]');
     await page.waitForSelector('.ws-read:has-text("Production alert")');
@@ -1666,8 +1665,11 @@ for (const theme of ['dark', 'light']) {
 // Reply drafts with Claude (DESIGN 6.4): composer, progress, result, replace, errors, Today.
 const lastCall = async (page, name) => (await page.evaluate(() => window.__bridgeCalls)).filter(([op]) => op === name).at(-1)?.[1];
 const plan = (page, value) => page.evaluate(v => { window.__draftPlan = v; }, value);
+const MORE = '.ws-reply-bar details[data-menu="reply-more"]';
+const onMore = () => document.activeElement?.matches('.ws-reply-bar details[data-menu="reply-more"] > summary');
 const openOptions = async page => {
-  await page.click('[data-action="ai-draft-options"]');
+  await page.click(`${MORE} > summary`);
+  await page.click(`${MORE} [data-action="ai-draft-options"]`);
   await page.waitForSelector('#draft-options');
   await page.waitForTimeout(150);
 };
@@ -1675,19 +1677,22 @@ for (const theme of ['dark', 'light']) {
   const { page, context, errors } = await open({ theme, hash: '#/inbox', enable: ['chat_send', 'mail_send'] });
 
   await check(`${theme}: ai draft flow`, async () => {
-    await page.waitForSelector('.ws-read[data-message-id="c-reply-1"] [data-action="ai-draft-options"]');
+    await page.waitForSelector('.ws-read[data-message-id="c-reply-1"] [data-action="ai-draft-options"]', { state: 'attached' });
+    // The empty box: the ✦ hint over it, no change line.
+    assert(await page.locator('.ws-reply-hint:visible [data-action="ai-draft-quick"]').count() === 1, 'the empty box has no ✦ draft with AI');
+    assert(await page.locator('#reply-change').count() === 0, 'a change line under the empty box');
     await openOptions(page);
     assert(await page.evaluate(() => document.activeElement?.dataset.action === 'ai-draft'), 'Draft is focused when the options open');
+    assert(await page.locator(`${MORE}[open]`).count() === 0, 'the ⋯ menu stays open under the options');
     await page.keyboard.press('Escape');
     await page.waitForSelector('#draft-options', { state: 'detached' });
-    assert(await page.evaluate(() => document.activeElement?.dataset.action === 'ai-draft-options'), 'Esc returns focus to Draft with AI');
-    await page.keyboard.press('Enter');
-    await page.waitForSelector('#draft-options');
+    assert(await page.evaluate(onMore), 'Esc returns focus to ⋯');
+    await openOptions(page);
     await page.keyboard.press('Tab');
     assert(await page.evaluate(() => document.activeElement?.dataset.draftIntent === 'reply'), 'Tab stays inside the popover');
     const geometry = await page.evaluate(() => {
       const pop = document.getElementById('draft-options').getBoundingClientRect();
-      const trigger = document.querySelector('[data-action="ai-draft-options"]').getBoundingClientRect();
+      const trigger = document.querySelector('.ws-reply-bar details[data-menu="reply-more"] > summary').getBoundingClientRect();
       return { pop: [pop.left, pop.top, pop.right, pop.bottom], trigger: [trigger.left, trigger.top, trigger.right, trigger.bottom], vw: innerWidth, vh: innerHeight };
     });
     const [l, t, r, b] = geometry.pop;
@@ -1716,6 +1721,7 @@ for (const theme of ['dark', 'light']) {
     await page.waitForFunction(() => document.getElementById('reply-body')?.value.startsWith('[Yes, 11:00 works for me / Sorry, I can'), null, { timeout: 4000 });
     await page.waitForSelector('.ws-draft-provenance:has-text("Drafted with Claude Code · Sonnet 4.5")');
     assert(/3 s · from 2 messages/.test(await text(page, '.ws-draft-provenance')), 'duration and message count');
+    assert(await page.locator('.ws-reply-hint:visible').count() === 0 && await page.locator('#reply-change').count() === 1, 'the filled box keeps the hint or has no change line');
     assert(/Choose an option in brackets before sending/.test(await text(page, '.ws-draft-todo')), 'bracket note');
     assert(/Can you join the call at 11:00\?/.test(await text(page, '.ws-draft-todo')), 'questions');
     await page.click('[data-action="ai-draft-context"]');
@@ -1733,7 +1739,7 @@ for (const theme of ['dark', 'light']) {
     await page.evaluate(() => window.__workspace.render());
     const refocused = await page.evaluate(() => ({ option: document.activeElement?.dataset.option, fresh: document.activeElement?.isConnected }));
     assert(refocused.option === "Sorry, I can't make 11:00" && refocused.fresh, `focus moved to ${JSON.stringify(refocused)}`);
-    await page.click('.ws-reply button[type=submit]');
+    await page.click('[data-action="reply-send"]');
     await page.waitForSelector('.ws-modal[open]:has-text("Finish your reply first?")');
     await page.waitForTimeout(250);
     await shot(page, `${theme}-draft-unfinished`);
@@ -1742,7 +1748,7 @@ for (const theme of ['dark', 'light']) {
     await page.click('[data-action="ai-draft-choice"][data-option="Yes, 11:00 works for me"]');
     const value = await page.locator('#reply-body').inputValue();
     assert(value.startsWith('Yes, 11:00 works for me. If that changes') && !value.includes('['), value);
-    await page.click('.ws-reply button[type=submit]');
+    await page.click('[data-action="reply-send"]');
     await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
     assert((await lastCall(page, 'action_prepare')).body.startsWith('Yes, 11:00 works for me'), 'review shows the chosen option');
     await page.click('.ws-modal[open] button:has-text("Cancel")');
@@ -1752,7 +1758,7 @@ for (const theme of ['dark', 'light']) {
 
   await check(`${theme}: the user's own brackets send without a warning`, async () => {
     await page.fill('#reply-body', 'Merged in [EPMCDME-1234], the rest is [WIP]. [Yes / No] for the demo?');
-    await page.click('.ws-reply button[type=submit]');
+    await page.click('[data-action="reply-send"]');
     await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
     assert(await page.locator('.ws-modal[open]:has-text("Finish your reply first?")').count() === 0, 'warned about hand-written brackets');
     assert(await page.locator('.ws-draft-todo:not([hidden]) .ws-draft-choice').count() === 0, 'hand-written brackets listed as choices');
@@ -1763,7 +1769,7 @@ for (const theme of ['dark', 'light']) {
   await check(`${theme}: a background sync while replying never blocks Review or Send`, async () => {
     await page.fill('#reply-body', 'Thanks, see you at 11.');
     await page.evaluate(() => { window.__syncBump = true; });
-    await page.click('.ws-reply button[type=submit]');
+    await page.click('[data-action="reply-send"]');
     await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
     await page.evaluate(() => { window.__syncBump = true; });
     await page.click('.ws-modal[open] button[type=submit]');
@@ -1814,6 +1820,23 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('[data-action="ai-draft-restore"]').count() === 0, 'Restore stays after restoring');
   });
 
+  await check(`${theme}: Tell AI what to change sends the words with the current text, and autosaves`, async () => {
+    await page.fill('#reply-body', 'Sure, sending it at 14:30.');
+    await page.waitForSelector('.ws-reply-status:has-text("Saved on this device")', { timeout: 4000 });
+    const saved = await page.evaluate(() => window.__workspace.store.get().snapshot.records.find(r => r.kind === 'draft' && r.id === 'manual:c-reply-1')?.data.text);
+    assert(saved === 'Sure, sending it at 14:30.', `autosave kept ${JSON.stringify(saved)}`);
+    await plan(page, { outcome: 'hold' });
+    await page.fill('#reply-change', 'make it 15:00');
+    await page.press('#reply-change', 'Enter');
+    await page.waitForSelector('.ws-draft-running', { timeout: 4000 });
+    const call = await lastCall(page, 'ai_draft');
+    assert(call.instructions === 'make it 15:00' && call.revise === 'Sure, sending it at 14:30.', JSON.stringify(call));
+    assert(await page.locator('.ws-modal[open]').count() === 0, 'Return in the change line submitted the reply');
+    assert(await page.inputValue('#reply-change') === '', 'the change line keeps its words');
+    await page.click('.ws-draft-running [data-action="ai-draft-stop"]');
+    await page.waitForSelector('.ws-draft-running', { state: 'detached', timeout: 4000 });
+  });
+
   await check(`${theme}: Stop cancels a running draft`, async () => {
     await plan(page, { outcome: 'hold' });
     await openOptions(page);
@@ -1847,7 +1870,7 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('.ws-inbox-row[data-id="m-reply-2"]').count() === 1, 'rendered under the open popover');
     await page.keyboard.press('Escape');
     await page.waitForSelector('.ws-inbox-row[data-id="m-reply-2"]', { state: 'detached', timeout: 3000 });
-    assert(await page.evaluate(() => document.activeElement?.dataset.action === 'ai-draft-options'), 'focus returns to Draft with AI');
+    assert(await page.evaluate(onMore), 'focus returns to ⋯');
   });
 
   await check(`${theme}: Today Draft reply opens the conversation and starts a draft`, async () => {
@@ -1883,7 +1906,7 @@ for (const theme of ['dark', 'light']) {
     const cm = await open({ theme, hash: '#/inbox', aiDefault: null });
     const p = cm.page;
     await plan(p, { outcome: 'hold' });
-    await p.waitForSelector('[data-action="ai-draft-options"]');
+    await p.waitForSelector('[data-action="ai-draft-options"]', { state: 'attached' });
     await openOptions(p);
     await p.click('#draft-options [data-action="ai-draft"]');
     await p.waitForSelector('.ws-modal[open] [data-action="ai-choose"]');
@@ -1896,7 +1919,8 @@ for (const theme of ['dark', 'light']) {
     await p.evaluate(() => { navigator.clipboard.writeText = async t => { window.__copied = t; }; });
     await p.evaluate(() => window.__finishDraft({ outcome: 'ok' }));
     await p.waitForSelector('.ws-draft-provenance:has-text("Drafted with CodeMie")', { timeout: 5000 });
-    assert(await p.locator('.ws-reply button[type=submit]').count() === 0, 'Review & send without permission');
+    assert(await p.locator('[data-action="reply-send"]').count() === 0, 'Send without permission');
+    assert(await p.locator('.ws-reply-bar > .ws-btn-primary[data-action="reply-copy"]').count() === 1, 'Copy reply is not the primary');
     await p.click('[data-action="reply-copy"]');
     await p.waitForSelector('.ws-modal[open]:has-text("Finish your reply first?")');
     await p.click('.ws-modal[open] button:has-text("Copy anyway")');
@@ -1913,7 +1937,7 @@ for (const theme of ['dark', 'light']) {
   for (const [width, height] of [[1000, 760], [1680, 900]]) await check(`${theme} ${width}px: the composer fits the window`, async () => {
     const narrow = await open({ theme, width, height, hash: '#/inbox', enable: ['chat_send'] });
     const p = narrow.page;
-    await p.waitForSelector('[data-action="ai-draft-options"]');
+    await p.waitForSelector('[data-action="ai-draft-options"]', { state: 'attached' });
     await openOptions(p);
     const box = await p.locator('#draft-options').boundingBox();
     assert(box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= height, `popover ${JSON.stringify(box)}`);
@@ -1936,6 +1960,11 @@ for (const theme of ['dark', 'light']) {
 // Thread summaries (DESIGN 6.5): Summarize on long conversations, progress, the card with its asks,
 // stale and failure.
 const summaryPlan = (page, value) => page.evaluate(v => { window.__summaryPlan = v; }, value);
+/** Summarize is under the action line's ⋯. */
+const summarize = async page => {
+  if (!(await page.locator(`${MORE}[open]`).count())) await page.click(`${MORE} > summary`);
+  await page.click(`${MORE} [data-action="ai-summarize"]`);
+};
 const ASKS = [{ text: 'Send Jordan the roadmap draft', due: '2026-11-20' }, { text: 'Book the review room for Thursday' }];
 for (const theme of ['dark', 'light']) {
   const { page, context, errors } = await open({ theme, hash: '#/inbox', longThread: true });
@@ -1945,13 +1974,14 @@ for (const theme of ['dark', 'light']) {
     await page.waitForSelector('.ws-read[data-message-id="m-reply-2"]');
     assert(await page.locator('[data-action="ai-summarize"]').count() === 0, 'Summarize on a one-message conversation');
     await page.click('.ws-inbox-row[data-id="m-reply-1"]');
-    await page.waitForSelector('.ws-read[data-message-id="m-reply-1"] .ws-read-actions [data-action="ai-summarize"]');
-    assert(/Summarize/.test(await text(page, '.ws-read-actions [data-action="ai-summarize"]')), 'label');
+    await page.waitForSelector(`.ws-read[data-message-id="m-reply-1"] ${MORE} [data-action="ai-summarize"]`, { state: 'attached' });
+    await page.click(`${MORE} > summary`);
+    assert(/Summarize/.test(await text(page, `${MORE} [data-action="ai-summarize"]`)), 'label');
     await shot(page, `${theme}-summary-button`);
     await page.fill('#reply-body', 'Typing while Claude reads');
     // The route for summaries is CodeMie in this fixture; it started long enough ago to be named.
     await summaryPlan(page, { outcome: 'hold', startedAgo: 20 });
-    await page.click('[data-action="ai-summarize"]');
+    await summarize(page);
     await page.waitForSelector('.ws-summary .ws-draft-running:has-text("Summarizing with CodeMie · Haiku 4.5")', { timeout: 4000 });
     assert((await lastCall(page, 'ai_summarize')).sourceId === 'm-reply-1', 'summarize request');
     assert(await page.locator('[data-action="ai-summarize"]').count() === 0, 'a second Summarize while running');
@@ -1966,7 +1996,7 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('.ws-summary [data-action="summary-ask-commit"]').count() === 2, 'asks');
     assert(/Due Fri, Nov 20/.test(await text(page, '.ws-summary')), 'formatted due date');
     assert(/Summarized with CodeMie · Haiku 4\.5 · 3 s · from 5 messages/.test(await text(page, '.ws-summary')), 'provenance');
-    assert(await page.locator('.ws-read-actions [data-action="ai-summarize"]').count() === 0, 'the button stays after a summary');
+    assert(await page.locator(`${MORE} [data-action="ai-summarize"]`).count() === 0, 'Summarize stays after a summary');
     // The card sits above the thread.
     assert(await page.evaluate(() => document.querySelector('.ws-summary').compareDocumentPosition(document.querySelector('.ws-thread')) & Node.DOCUMENT_POSITION_FOLLOWING), 'card below the thread');
     await page.waitForTimeout(250);
@@ -2016,7 +2046,7 @@ for (const theme of ['dark', 'light']) {
     await p.click('.ws-inbox-row[data-id="m-reply-1"]');
     const bell = await p.locator('.ws-bell-dot').count();
     await summaryPlan(p, { outcome: 'error', ms: 300, state: 'failed', errorClass: 'timeout', errorCode: 'timeout' });
-    await p.click('[data-action="ai-summarize"]');
+    await summarize(p);
     await p.waitForSelector('.ws-summary .ws-draft-error:has-text("Claude took too long to answer.")', { timeout: 5000 });
     assert(await p.locator('.ws-summary .ws-draft-error [data-action="ai-summarize-retry"]').count() === 1, 'Try again');
     assert(await p.locator('.ws-bell-dot').count() === bell, 'the failure reached the decisions bell');
@@ -2035,7 +2065,7 @@ for (const theme of ['dark', 'light']) {
     const p = n.page;
     await p.click('.ws-inbox-row[data-id="m-reply-1"]');
     await summaryPlan(p, { outcome: 'ok', ms: 300, asks: ASKS, partialText: true });
-    await p.click('[data-action="ai-summarize"]');
+    await summarize(p);
     await p.waitForSelector('.ws-summary .ws-summary-text', { timeout: 5000 });
     await p.evaluate(() => window.__setSummaryStale(true));
     await p.waitForSelector('.ws-summary-stale-note');
@@ -2503,11 +2533,11 @@ for (const theme of ['dark', 'light']) {
 // Claude set up while Connect is open: Inbox notices when the window gets focus again.
 {
   const { page, context, errors } = await open({ theme: 'dark', hash: '#/inbox', ai: 'none' });
-  await check('Set up Claude turns into Draft with AI once Claude is ready', async () => {
-    await page.waitForSelector('.ws-reply-head [data-action="ai-open-settings"]:has-text("Set up Claude")');
+  await check('✦ set up AI turns into ✦ draft with AI once Claude is ready', async () => {
+    await page.waitForSelector('.ws-reply-hint [data-action="ai-open-settings"]:has-text("✦ set up AI")');
     await page.evaluate(profiles => window.__setAiProfiles(profiles), aiStatus('native').profiles);
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await page.waitForSelector('.ws-reply-head [data-action="ai-draft-options"]', { timeout: 4000 });
+    await page.waitForSelector('.ws-reply-hint [data-action="ai-draft-quick"]:has-text("✦ draft with AI")', { timeout: 4000 });
     assert(errors.length === 0, errors.join(' | '));
   });
   await context.close().catch(() => {});

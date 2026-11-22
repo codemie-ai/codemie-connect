@@ -61,25 +61,25 @@ const unescape = text => text.replace(/&#39;/g, "'").replace(/&quot;/g, '"').rep
 test('reply_box_offers_draft_with_ai_or_set_up_claude', () => {
   const s = snapshot();
   const ready = view(s);
-  assert.match(ready, /data-action="ai-draft-options"[^>]*aria-haspopup="dialog"/);
-  assert.match(ready, />Draft with AI</);
+  assert.match(ready, /<button[^>]*data-action="ai-draft-quick"[^>]*aria-label="Draft a reply with AI"[^>]*>✦ draft with AI<\/button>/);
+  assert.match(ready, /data-menu="reply-more"[^]*?data-action="ai-draft-options"[^>]*>(?:(?!<\/button>).)*Draft options…/);
   assert.doesNotMatch(ready, /id="draft-options"/, 'the popover is closed until asked for');
 
   const none = view(s, { ai: { status: 'ready', ...aiStatus('none') } });
-  assert.doesNotMatch(none, /data-action="ai-draft-options"/);
-  assert.match(none, /data-action="ai-open-settings"[^>]*>(?:(?!<\/button>).)*Set up Claude/);
+  assert.doesNotMatch(none, /data-action="ai-draft-quick"|data-action="ai-draft-options"/);
+  assert.match(none, /Write a reply, or <\/span><button[^>]*data-action="ai-open-settings"[^>]*>✦ set up AI<\/button>/);
 
   const unknown = view(s, { ai: { status: 'idle', profiles: [], settings: {} } });
-  assert.match(unknown, /data-action="ai-draft-options"/, 'offered until detection says nothing is ready');
+  assert.match(unknown, /data-action="ai-draft-quick"/, 'offered until detection says nothing is ready');
+  assert.match(unknown, /data-action="ai-draft-options"/);
 
   const own = view(s, { lane: 'fyi', selectedMessage: 'm-thread-mine' });
   assert.match(own, /data-message-id="m-thread-mine"/);
-  assert.doesNotMatch(own, /data-action="ai-draft-options"/, 'own mail cannot be replied to through Review & send');
+  assert.doesNotMatch(own, /data-action="ai-draft-(?:quick|options)"/, 'own mail cannot be replied to');
 
   const opts = { ...defaultOptions('chat'), intent: 'propose_times', tone: 'friendly', includeFreeTimes: true };
   const open = view(s, { draftPopover: { key: 'chat:chat:chat-jordan', id: 'c-reply-1', options: opts, instructions: 'Keep it short' } });
   assert.match(open, /id="draft-options"[^>]*role="dialog"/);
-  assert.match(open, /data-action="ai-draft-options"[^>]*aria-expanded="true"/);
   for (const v of ['reply', 'acknowledge', 'decline', 'ask', 'propose_times']) assert.match(open, new RegExp(`data-draft-intent="${v}"`));
   for (const v of ['neutral', 'friendly', 'formal']) assert.match(open, new RegExp(`data-draft-tone="${v}"`));
   for (const v of ['short', 'medium', 'detailed']) assert.match(open, new RegExp(`data-draft-length="${v}"`));
@@ -123,6 +123,7 @@ test('running_draft_shows_profile_model_and_stop', () => {
   assert.match(row, new RegExp(`data-action="ai-draft-stop"[^>]*data-id="${job.id}"`));
   assert.match(html, /<textarea id="reply-body"(?![^>]*disabled)/, 'the reply stays editable');
   assert.match(html, /data-action="ai-draft-options"[^>]*disabled/, 'one draft per conversation at a time');
+  assert.match(html, /<div class="ws-reply-hint" id="reply-hint" hidden>/, 'no ✦ draft with AI while one runs');
 
   const unknown = { ...job, payload: { ...job.payload, runModel: undefined } };
   assert.equal(runningLabel(unknown, { nowMs: NOW }).text, 'Drafting with Claude Code… 6 s', 'no model until Claude names it');
@@ -364,11 +365,16 @@ test('a change fills the box and offers Restore of the text it changed', () => {
 test('without_send_permission_the_reply_can_be_copied', () => {
   const s = snapshot();
   const html = view(s);
-  assert.match(html, /data-action="reply-copy"[^>]*>(?:(?!<\/button>).)*Copy reply/);
+  const bar = html.match(/<div class="ws-reply-bar"[^]*$/)[0];
+  assert.match(bar, /^<div class="ws-reply-bar"[^>]*>\s*<button[^>]*class="ws-btn ws-btn-primary"[^>]*data-action="reply-copy"[^>]*>(?:(?!<\/button>).)*Copy reply/);
+  assert.match(bar, /data-menu="reply-more"[^]*?data-action="source"[^>]*>(?:(?!<\/button>).)*Reply in Teams ↗/);
+  assert.doesNotMatch(bar, /data-action="reply-send"|>Open in Teams</);
   s.connection.enabled.push('chat_send');
   const allowed = view(s);
   assert.doesNotMatch(allowed, /data-action="reply-copy"/);
-  assert.match(allowed, /Review &amp; send/);
+  assert.match(allowed, /<button type="submit" class="ws-btn ws-btn-primary"[^>]*data-action="reply-send"[^>]*aria-label="Send to Jordan, Teams"[^>]*>(?:(?!<\/button>).)*Send to Jordan</);
+  assert.match(allowed, /data-menu="reply-more"[^]*?>Open in Teams</);
+  assert.doesNotMatch(allowed, /Review &amp; send|Reply in Teams ↗/);
 });
 
 // ---------------------------------------------------------------- Today

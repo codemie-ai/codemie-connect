@@ -554,8 +554,11 @@ test('Inbox reader escapes untrusted mail and offers provider actions', () => {
   assert.doesNotMatch(html, /<img src=x/);
   assert.doesNotMatch(html, /<script>window/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
-  assert.match(html, /Open in Outlook/);
+  // Without permission to reply from Connect, ⋯ links to the original as "Reply in Outlook ↗".
+  assert.match(html, /data-menu="reply-more"[^]*?Reply in Outlook ↗/);
   assert.match(html, /Snooze/);
+  s.connection.enabled.push('mail_send');
+  assert.match(inbox(s, ctx()), /data-menu="reply-more"[^]*?Open in Outlook/);
 });
 
 test('Inbox draws its two sections in the saved order', () => {
