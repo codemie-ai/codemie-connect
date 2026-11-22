@@ -1368,7 +1368,10 @@ mod tests {
             );
         }
         let reg = Registry::load(&env.paths).unwrap();
-        assert_eq!(reg.markets.len(), 1, "the built-in marketplace only");
+        assert!(
+            reg.markets.len() == 2 && reg.markets.iter().all(|m| m.built_in),
+            "the built-in marketplaces only"
+        );
         let p = &reg.installed["hello"];
         assert!(!p.enabled && p.agreed.is_empty() && p.market.is_empty());
         assert_eq!(

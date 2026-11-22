@@ -1151,7 +1151,13 @@ mod tests {
         assert_eq!(catalog["market"]["ready"], false);
         assert_eq!(catalog["plugins"], json!([]));
         let markets = run("market_remove", json!({"market": "local"})).unwrap();
-        assert_eq!(markets.as_array().unwrap().len(), 1);
+        let names: Vec<_> = markets
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].clone())
+            .collect();
+        assert_eq!(names, [json!("codemie"), json!("onetest")]);
         // An unreadable list says so in every request, until it is reset.
         std::fs::write(env.paths.registry(), "{").unwrap();
         assert_eq!(
@@ -1167,7 +1173,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            1
+            2
         );
     }
 }
