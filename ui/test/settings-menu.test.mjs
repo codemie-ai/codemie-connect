@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { settings, SETTINGS_TABS } from '../workspace/view-settings.js';
 import { layoutPanel } from '../workspace/settings-layout.js';
+import { NAV } from '../workspace/shell.js';
 import { PRESETS } from '../workspace/today-grid.js';
 import { normalizeDock } from '../workspace/dock-model.js';
 import { INBOX_DOCK } from '../workspace/view-inbox.js';
@@ -141,6 +142,16 @@ test('Settings → Layout shows the preferences and the shortcuts', () => {
   assert.doesNotMatch(off, /<input[^>]*checked[^>]*data-action="(layout-lock|sidebar-toggle|settings-menu-toggle)"/);
   assert.match(off, /⌘\\/);
   assert.match(off, /⌘⇧\\/);
+});
+
+test('Settings → Layout: the Menu card sits above Side menus with one switch per page; the last one is kept', () => {
+  const hiddenPages = NAV.map(([id]) => id).filter(id => id !== 'inbox');
+  const withHiddenPages = { ...s, settings: { ...s.settings, hiddenPages } };
+  const html = layoutPanel(withHiddenPages, sample());
+  assert.ok(html.indexOf('>Menu</h2>') < html.indexOf('>Side menus</h2>'));
+  assert.equal([...html.matchAll(/data-action="menu-page"/g)].length, 7);
+  assert.match(html, /Hidden pages leave the menu\. Links and notifications still open them\./);
+  assert.match(html, /<span title="Keep one page in the menu\.">[^]*?data-page="inbox"[^>]*disabled/);
 });
 
 test('the Layout tab draws its panel in Settings', () => {

@@ -237,6 +237,61 @@ async function c4(theme, view, page, { assert, shot, calls, settled }) {
   assert(await page.locator('.ws-today-editbar').count() === 1, 'Customize did not show the edit bar');
 }
 
+/** C5: hidden pages leave the menu, stay reachable by route (greyed in the menu while open, a
+ *  Today link still opens one), the last visible page's switch is disabled, and an empty hash at
+ *  boot lands on the first visible page. `page` is already on Settings › Layout at 1440, in
+ *  `view`. */
+async function c5(view, page, { open, assert, shot, calls, settled }) {
+  const switchOf = id => page.locator(`label.ws-switch:has([data-page="${id}"])`);
+
+  await switchOf('calendar').click();
+  await settled(page);
+  const recorded = await calls(page, 'settings_update');
+  assert(recorded.some(d => Array.isArray(d.hiddenPages) && d.hiddenPages.includes('calendar')), `no settings_update {hiddenPages} recorded: ${JSON.stringify(recorded)}`);
+  assert(await page.locator('.ws-sidebar [data-route="calendar"]').count() === 0, 'Calendar is still in the menu');
+  await shot(page, `compact-c5-${view}-menu`);
+
+  // A hidden page still opens by its hash route, greyed in the menu, and a link elsewhere (the
+  // Today schedule's Calendar button) still reaches it too. A fresh session, since a real reload
+  // (not a hash the app's own router reads) would otherwise lose the mock bridge's one-time setup.
+  const routeSettings = view === 'compact' ? { view: 'compact', hiddenPages: ['calendar'] } : { hiddenPages: ['calendar'] };
+  const { page: byRoute, context: byRouteContext } = await open({ theme: 'dark', width: 1440, height: 900, settings: routeSettings, hash: '#/calendar' });
+  try {
+    await settled(byRoute);
+    assert(await byRoute.locator('.ws-page-calendar').count() === 1, 'Calendar did not open from #/calendar');
+    assert(await byRoute.locator('[data-route="calendar"].ws-nav-hidden').count() === 1, 'the open hidden page is not greyed in the menu');
+    await shot(byRoute, `compact-c5-${view}-hidden-open`);
+
+    await gotoRoute(byRoute, 'today');
+    await settled(byRoute);
+    await byRoute.click('.ws-schedule-card [data-action="route"][data-route="calendar"]');
+    await byRoute.waitForSelector('.ws-page-calendar');
+    assert((await byRoute.evaluate(() => location.hash)) === '#/calendar', 'the Today schedule’s Calendar link did not open Calendar');
+  } finally {
+    await byRouteContext.close().catch(() => {});
+  }
+
+  // Hide everything but Inbox (the page is still on Settings › Layout, with Calendar off).
+  for (const id of ['today', 'meetings', 'tasks', 'automations', 'analytics']) {
+    await switchOf(id).click();
+    await settled(page);
+  }
+  assert(await page.locator('.ws-switch [data-page="inbox"]').isDisabled(), 'the Inbox switch is not disabled once it is the last visible page');
+  const wrapperTitle = await page.evaluate(() => document.querySelector('.ws-switch [data-page="inbox"]')?.closest('span[title]')?.getAttribute('title'));
+  assert(wrapperTitle === 'Keep one page in the menu.', `the last-visible wrapper’s title: ${wrapperTitle}`);
+  assert(await page.locator('.ws-sidebar [data-group="ai"]').count() === 0, 'the AI group is still drawn with every page hidden');
+
+  // Reopen with an empty hash and Today hidden: the app lands on the first visible page.
+  const settings = view === 'compact' ? { view: 'compact', hiddenPages: ['today'] } : { hiddenPages: ['today'] };
+  const { page: reopened, context } = await open({ theme: 'dark', width: 1440, height: 900, settings, hash: '' });
+  try {
+    await settled(reopened);
+    assert(await reopened.locator('.ws-page-inbox').count() === 1, 'an empty hash with Today hidden did not land on Inbox');
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
 /** C1: Settings › Appearance → View. Compact applies at once (attributes, mirror, no reload) and
  *  is recorded; it survives a reload. `page` is already on the Appearance screen. */
 async function c1(theme, page, { assert, shot, settled, calls }) {
@@ -361,5 +416,12 @@ export async function compactChecks({ open, check, assert, shot, settled, calls,
       await check(`compact C4 (${theme} ${view}): Today’s toolbar lives in ⋯`, () => c4(theme, view, page, { assert, shot, calls, settled }));
       await context.close().catch(() => {});
     }
+  }
+
+  for (const view of ['compact', 'default']) {
+    const settings = view === 'compact' ? { view: 'compact' } : null;
+    const { page, context } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, tasks: true, meetings: true, automations: true, settings, hash: '#/settings/layout' });
+    await check(`compact C5 (${view}): hidden pages leave the menu and still open by route`, () => c5(view, page, { open, assert, shot, calls, settled }));
+    await context.close().catch(() => {});
   }
 }

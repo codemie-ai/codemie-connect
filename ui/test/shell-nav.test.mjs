@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyOnboardingNav } from '../shell-nav.js';
-import { renderShell } from '../workspace/shell.js';
+import { renderShell, NAV, firstVisiblePage, toggleHiddenPage } from '../workspace/shell.js';
 import { buildSnapshot, withTasks, withMeetings } from './fixtures/workspace-fixture.mjs';
 
 // A root holding the four sidebar entries, queried the way the module does.
@@ -144,6 +144,40 @@ test('more than three plugins start folded, with their marks on the label line; 
   assert.match(headOf(shell({ plugins: { activities: activities.slice(0, 2) }, sidebarFolded: { plugins: true } }), 'plugins'), /aria-expanded="false"/);
   // The current plugin stays under the folded label.
   assert.deepEqual([...groupOf(shell({ route: 'plugin', plugins: { activities, current: { plugin: 'gamma', id: 'home' } } }), 'plugins').matchAll(/data-plugin-id="([a-z]+)"/g)].map(m => m[1]), ['gamma']);
+});
+
+// ---------------------------------------------------------------- hiding menu pages
+
+test('a hidden page leaves the menu, its count and its group’s roll-up', () => {
+  const s = withMeetings(withTasks(buildSnapshot(NOW, { photo: false }), NOW), NOW);
+  const open = renderShell({ snapshot: s, route: 'today', resolvedDark: true, now: NOW, hiddenPages: ['inbox'] });
+  assert.ok(!routes(open).includes('inbox'), 'inbox left the menu');
+  const count = id => Number(open.match(new RegExp(`data-route="${id}"[^>]*>[^]*?<small class="ws-count"[^>]*>(\\d+)</small>`))?.[1] || 0);
+  const expected = count('tasks') + count('meetings');
+  assert.ok(expected > 0, 'the fixture has tasks to review or meetings waiting');
+  const folded = renderShell({ snapshot: s, route: 'today', resolvedDark: true, now: NOW, sidebarFolded: { work: true }, hiddenPages: ['inbox'] });
+  assert.match(headOf(folded, 'work'), new RegExp(`<small class="ws-count">${expected}</small>`), 'the hidden page’s count is excluded from the roll-up');
+});
+
+test('a hidden page that is open shows greyed with no count', () => {
+  const s = withTasks(buildSnapshot(NOW, { photo: false }), NOW);
+  const html = renderShell({ snapshot: s, route: 'calendar', resolvedDark: true, now: NOW, hiddenPages: ['calendar'] });
+  assert.match(html, /class="ws-nav-hidden"[^>]*data-route="calendar"|data-route="calendar"[^>]*class="ws-nav-hidden"/);
+  assert.match(html, /data-route="calendar"[^>]*title="Hidden from the menu"/);
+});
+
+test('a group with every page hidden is not drawn, nor Today when hidden', () => {
+  const html = shell({ route: 'inbox', hiddenPages: ['automations', 'analytics', 'today'] });
+  assert.doesNotMatch(html, /data-group="ai"/);
+  assert.doesNotMatch(html, /data-route="today"/);
+});
+
+test('firstVisiblePage and toggleHiddenPage keep menu order', () => {
+  assert.equal(firstVisiblePage([]), 'today');
+  assert.equal(firstVisiblePage(['today']), 'inbox');
+  assert.equal(firstVisiblePage(NAV.map(([id]) => id)), 'today');
+  assert.deepEqual(toggleHiddenPage(['tasks'], 'calendar', false), ['calendar', 'tasks']);
+  assert.deepEqual(toggleHiddenPage(['calendar', 'tasks'], 'calendar', true), ['tasks']);
 });
 
 test('the collapsed menu draws the rail: dots for counts, tooltips, a folded group as one icon', () => {

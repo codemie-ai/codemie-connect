@@ -19,6 +19,25 @@ const PLUGINS_GROUP = { id: 'plugins', label: 'Plugins', icon: 'puzzle' };
 export const PLUGINS_OPEN_UP_TO = 3;
 const NAV_LABEL = Object.fromEntries(NAV);
 
+/** NAV ids not hidden, in NAV order. */
+export function visiblePages(hiddenPages = []) {
+  return NAV.map(([id]) => id).filter(id => !hiddenPages.includes(id));
+}
+
+/** The first visible page in menu order, else 'today' (the fallback if every page were hidden,
+ *  which Settings › Layout's last-visible guard never actually allows). */
+export function firstVisiblePage(hiddenPages = []) {
+  return visiblePages(hiddenPages)[0] || 'today';
+}
+
+/** `hiddenPages` with `id` hidden (`visible` false) or shown (`visible` true), in NAV order,
+ *  never duplicated. */
+export function toggleHiddenPage(hiddenPages, id, visible) {
+  const set = new Set(hiddenPages);
+  if (visible) set.delete(id); else set.add(id);
+  return NAV.map(([pid]) => pid).filter(pid => set.has(pid));
+}
+
 /** Whether group `id` is folded: the person's click (`folded`, `codemie.sidebar.folded`), else
  *  open, but Plugins folded when more than three plugins add pages. */
 export function groupFolded(id, folded = {}, plugins = 0) {
@@ -62,6 +81,7 @@ const row = (key, label, html, { current = false, badge = '', mark = '' } = {}) 
  *  the label carries what the others add up to (on the rail, a dot), and for Plugins up to four
  *  marks. On the rail an open group's label is a hairline and a folded one its icon. */
 function navGroup({ id, label, icon: glyph }, rows, { folded, rail, cls = '' }) {
+  if (!rows.length) return '';
   const shown = folded ? rows.filter(r => r.current) : rows;
   const away = rows.filter(r => !shown.includes(r));
   const rolled = folded ? rollUp(away.map(r => r.badge)) : '';
@@ -107,7 +127,7 @@ export function pluginNav(activities = [], current = null, { rail = false, folde
 // state: { snapshot, route, resolvedDark, plugins: {activities, current}, settingsDot, sidebarCollapsed, sidebarFolded, now } — settingsDot: CodeMie needs the person;
 // sidebarCollapsed: the menu is the 64 px rail of icons (a count becomes a dot); sidebarFolded: the
 // groups folded by hand ({work, ai, plugins}).
-export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, sidebarCollapsed = false, sidebarFolded = {}, terminals = null, now = Date.now(), meetingsHidden = null }) {
+export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, settingsDot = false, sidebarCollapsed = false, sidebarFolded = {}, terminals = null, now = Date.now(), meetingsHidden = null, hiddenPages = [] }) {
   const w = active(s);
   const c = s.connection;
   const replies = attentionMessages(s).length;
@@ -119,15 +139,23 @@ export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, se
   const counted = { inbox: replies, tasks: toReview, meetings: meetingsWaiting };
   const countTitle = { tasks: ' title="Tasks to review"', meetings: ' title="Transcripts waiting for you"' };
   const count = id => (counted[id] ? `<small class="${cls}"${countTitle[id] || ''}>${counted[id]}</small>` : '');
-  const pageRow = id => row(id, NAV_LABEL[id], `<button type="button" data-action="route" data-tip="${NAV_LABEL[id]}" data-route="${id}" ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${NAV_LABEL[id]}</span>${count(id)}</button>`, { current: id === route, badge: counted[id] || '' });
-  const groups = NAV_GROUPS.map(g => navGroup(g, g.pages.map(pageRow), { folded: groupFolded(g.id, sidebarFolded), rail: sidebarCollapsed })).join('');
+  // A hidden page leaves the menu, its count and its group's roll-up — unless it is the open
+  // route, drawn greyed with no count so a notification or a link can still reach it.
+  const pageRow = id => {
+    const hidden = hiddenPages.includes(id);
+    if (hidden && id !== route) return null;
+    const label = NAV_LABEL[id];
+    return row(id, label, `<button type="button"${hidden ? ' class="ws-nav-hidden"' : ''} data-action="route" data-tip="${label}" data-route="${id}"${hidden ? ' title="Hidden from the menu"' : ''} ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${hidden ? '' : count(id)}</button>`, { current: id === route, badge: hidden ? '' : (counted[id] || '') });
+  };
+  const todayRow = pageRow('today');
+  const groups = NAV_GROUPS.map(g => navGroup(g, g.pages.map(pageRow).filter(Boolean), { folded: groupFolded(g.id, sidebarFolded), rail: sidebarCollapsed })).join('');
   const settingsAlert = (c && c.status !== 'connected' && c.status !== 'disconnected') || settingsDot;
   const shortcut = `⌘\\`;
   const toggleTitle = `${sidebarCollapsed ? 'Expand' : 'Collapse'} menu`;
   const connected = c && c.status !== 'disconnected';
   return `<aside class="ws-sidebar${sidebarCollapsed ? ' ws-sidebar-rail' : ''}">
       <div class="ws-brand"><span class="ws-brand-logo" role="img" aria-label="EPAM AI/Run CodeMie Connect"><img class="ws-logo-dark" src="workspace/assets/logo-full-dark.svg" alt=""><img class="ws-logo-light" src="workspace/assets/logo-full-light.svg" alt=""></span><button type="button" class="ws-brand-toggle" data-action="sidebar-toggle" aria-expanded="${!sidebarCollapsed}" aria-label="${toggleTitle}" title="${toggleTitle} (${shortcut})" data-tip="${toggleTitle}">${icon(sidebarCollapsed ? 'chevron-right' : 'chevron-left')}</button></div>
-      <nav class="ws-nav ws-main-nav" aria-label="Main navigation"><div class="ws-nav-group ws-nav-home">${pageRow('today').html}</div>${groups}${pluginNav(plugins.activities, plugins.current, { rail: sidebarCollapsed, folded: sidebarFolded })}</nav>
+      <nav class="ws-nav ws-main-nav" aria-label="Main navigation">${todayRow ? `<div class="ws-nav-group ws-nav-home">${todayRow.html}</div>` : ''}${groups}${pluginNav(plugins.activities, plugins.current, { rail: sidebarCollapsed, folded: sidebarFolded })}</nav>
       <div class="ws-sidebar-bottom">
         <button type="button" class="ws-user" data-action="settings-tab" data-tab="microsoft" title="${connected ? 'Microsoft 365 account' : 'Connect Microsoft 365'}" data-tip="${e(connected ? c.displayName : 'Connect Microsoft 365')}">
           ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 28 })}

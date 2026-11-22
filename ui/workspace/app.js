@@ -38,7 +38,7 @@ import { meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
-import { renderShell, terminalButton, groupFolded, NAV_GROUPS } from './shell.js';
+import { renderShell, terminalButton, groupFolded, NAV_GROUPS, firstVisiblePage, toggleHiddenPage } from './shell.js';
 import { createTerminalDock } from './terminal-dock.js';
 import { Terminal } from '../vendor/xterm.mjs';
 import { FitAddon } from '../vendor/addon-fit.mjs';
@@ -264,7 +264,7 @@ const shellMarkup = () => renderShell({
   terminals: terminalDock?.state(),
   plugins: { activities: pluginHost?.activities() || [], current: state.route === 'plugin' && state.pluginPage ? { plugin: state.pluginPage.id, id: state.pluginPage.activity } : null },
   settingsDot: codemie.settingsDot(), sidebarCollapsed: sidebarCollapsed(), sidebarFolded: sidebarFolded(),
-  meetingsHidden: state.meetings.hidden,
+  meetingsHidden: state.meetings.hidden, hiddenPages: snap().settings.hiddenPages || [],
 });
 
 function shell() {
@@ -2060,6 +2060,7 @@ async function handle(action, el, ev) {
     case 'theme': return mutate('settings_update', { theme: el.dataset.theme });
     case 'theme-toggle': return mutate('settings_update', { theme: document.documentElement.classList.contains('dark') ? 'light' : 'dark' });
     case 'view-set': return setView(el.dataset.view);
+    case 'menu-page': return mutate('settings_update', { hiddenPages: toggleHiddenPage(snap().settings.hiddenPages, el.dataset.page, el.checked) });
     case 'terminal-toggle': return terminalDock?.toggle();
     case 'setting-toggle': return mutate('settings_update', { [el.dataset.key]: el.checked }).catch(err => { el.checked = !el.checked; throw err; });
     case 'zone-detect': await mutate('settings_update', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }); return toast('Time zone updated.', 'success');
@@ -2925,12 +2926,14 @@ async function boot() {
     return;
   }
   const hash = location.hash.split('/');
+  let useFirstVisible = false;
   if (hash[1] === 'p' && PLUGIN_ID.test(hash[2] || '') && PLUGIN_ITEM.test(hash[3] || '')) {
     state.route = 'plugin';
     state.pluginPage = { id: hash[2], activity: hash[3], route: hash.slice(4).join('/') };
   } else {
     const target = parseHash(location.hash);
     if (target.route) state.route = target.route;
+    else useFirstVisible = true;
     // The hash's tab is shown in whichever section holds it.
     if (target.route === 'meetings') {
       if (target.meetingId) state.meetings.selected = target.meetingId;
@@ -2950,6 +2953,9 @@ async function boot() {
   } catch (err) {
     return showRecovery(err);
   }
+  // No route in the hash (an empty one, or home): land on the first page the menu shows, not
+  // necessarily Today, now that a page can be hidden.
+  if (useFirstVisible) state.route = firstVisiblePage(snap().settings.hiddenPages);
   await bootWorkspace(store, snap());
   state.appVersion = await invoke('get_app_version').catch(() => '');
   // Plugin UIs: one sandboxed frame per enabled plugin with a client half, in a layer outside the

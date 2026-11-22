@@ -5,6 +5,7 @@
 import { escapeHtml as e } from './store.js';
 import { badge, button, card, settingRow, toggle } from './ui.js';
 import { PRESETS, layoutChanged } from './today-grid.js';
+import { NAV } from './shell.js';
 
 const BUILT_IN = Object.keys(PRESETS);
 const HANDLES = [['hover', 'On hover'], ['always', 'Always'], ['customize', 'In Customize']];
@@ -56,6 +57,21 @@ function pagesCard({ defs = {}, layouts = {} }) {
   return card({ title: 'Page layouts', iconName: 'layout', body: Object.keys(defs).map(row).join('') });
 }
 
+/** One switch per NAV page; the last visible one is disabled so the menu always keeps a page. */
+function menuCard(hiddenPages = []) {
+  const visible = NAV.filter(([id]) => !hiddenPages.includes(id)).length;
+  const rows = NAV.map(([id, label]) => {
+    const hidden = hiddenPages.includes(id);
+    const lastVisible = !hidden && visible === 1;
+    const control = toggle({ action: 'menu-page', checked: !hidden, attrs: { 'data-page': id, 'aria-label': `Show ${label} in the menu`, disabled: lastVisible } });
+    return settingRow({ title: label, control: lastVisible ? `<span title="Keep one page in the menu.">${control}</span>` : control });
+  });
+  return card({
+    title: 'Menu', iconName: 'list',
+    body: `<p class="ws-muted ws-hint">Hidden pages leave the menu. Links and notifications still open them.</p>${rows.join('')}`,
+  });
+}
+
 function menusCard({ sidebarCollapsed, menuCollapsed }) {
   return card({
     title: 'Side menus', iconName: 'sidebar-close',
@@ -73,5 +89,5 @@ const keyboardCard = () => card({
 /** The Layout tab. `prefs`: {locked, handles, sidebarCollapsed, menuCollapsed}; `docks`: {defs,
  *  layouts} by page; `today`: the Today grid ({active, layouts}). */
 export function layoutPanel(s, { prefs, docks, today }) {
-  return `${movingCard(prefs)}${todayCard(today)}${pagesCard(docks)}${menusCard(prefs)}${keyboardCard()}`;
+  return `${movingCard(prefs)}${todayCard(today)}${pagesCard(docks)}${menuCard(s.settings.hiddenPages)}${menusCard(prefs)}${keyboardCard()}`;
 }

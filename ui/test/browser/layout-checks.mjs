@@ -136,6 +136,7 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
     await check('layout E1: the lowest widget dropped into the empty rows below is drawn back where it packs, nothing saved', async () => {
       const was = await placeOf(page, 'automations');
       const n = (await saves(page)).length;
+      await page.waitForSelector('[data-tile="automations"] .ws-tile-head h2');
       await intoView(page, '[data-tile="automations"]', 160);
       const head = await box(page, '[data-tile="automations"] .ws-tile-head h2');
       const from = { x: head.x + 30, y: head.y + head.height / 2 };

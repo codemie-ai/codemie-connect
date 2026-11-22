@@ -66,7 +66,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [] }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
@@ -269,7 +269,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       if (d.capabilities) s.connection.enabled = d.capabilities;
       for (const [k, v] of Object.entries(d)) {
         if (k === 'capabilities' || k === 'meetings') continue;
-        if (k === 'hiddenPages') { s.settings.hiddenPages = NAV.map(([id]) => id).filter(id => v.includes(id)); continue; }
+        if (k === 'hiddenPages') { s.settings.hiddenPages = navIds.filter(id => v.includes(id)); continue; }
         s.settings[k] = v;
       }
       // library_ops.rs `carry_texts`: a new meetings folder gets the glossary and the tag list
@@ -1248,7 +1248,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (settings) Object.assign(snapshot.settings, settings);
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id) })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   if (fixedNow != null) await context.clock.setFixedTime(fixedNow);
