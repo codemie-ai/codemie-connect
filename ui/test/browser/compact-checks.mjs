@@ -214,6 +214,11 @@ async function c4(theme, view, page, { assert, shot, calls, settled }) {
   for (const word of ['Layouts', 'Default', 'Add widget', 'Customize', 'Lock layouts']) {
     assert(menuText.includes(word.toLowerCase()), `the ⋯ menu is missing "${word}": ${menuText}`);
   }
+  const checkMark = await page.evaluate(sel => {
+    const el = document.querySelector(sel);
+    return el && getComputedStyle(el, '::after').content;
+  }, `${menu} [data-action="today-layout-use"][aria-checked="true"]`);
+  assert(checkMark === '"✓"', `the active layout's row draws no ✓ in the ⋯ menu: ${checkMark}`);
   await shot(page, `compact-c4-${view}-${theme}-menu`);
 
   const savesBefore = (await calls(page, 'layout_save')).length;
