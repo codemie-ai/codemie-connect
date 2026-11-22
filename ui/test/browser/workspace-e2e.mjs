@@ -69,6 +69,17 @@ await mkdir(OUT, { recursive: true });
 function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
+  // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
+  // child (the loading spinner boot() draws before the native snapshot arrives) — the view the
+  // import-time localStorage mirror picked, before a mismatched one is corrected against it.
+  window.__firstChildView = undefined;
+  new MutationObserver((_, obs) => {
+    const root = document.getElementById('workspace-app');
+    if (root?.firstElementChild && window.__firstChildView === undefined) {
+      window.__firstChildView = root.dataset.view ?? null;
+      obs.disconnect();
+    }
+  }).observe(document, { childList: true, subtree: true });
   // ---- CodeMie CLI, mocked by scenario: 'fresh' (nothing set up), 'ready', 'expired' (signed out).
   const NOT_CODEMIE = Symbol('not codemie');
   const cm = {
@@ -1209,7 +1220,7 @@ const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve
   timer = setTimeout(done, 150);
 }), limit).catch(() => {});
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, now: fixedNow = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -1234,6 +1245,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (pluginRecords) connected.records.push(...pluginRecords(now));
   if (workspace) Object.assign(connected.workspaces.find(w => w.id === connected.settings.activeWorkspace), workspace);
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
+  if (settings) Object.assign(snapshot.settings, settings);
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
   await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics })})`);

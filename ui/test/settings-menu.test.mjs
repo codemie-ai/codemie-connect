@@ -82,6 +82,15 @@ test('the menu edge is a separator with its width and a toggle button names the 
   assert.match(html, /data-action="settings-menu-toggle"[^>]*⌘⇧\\/);
 });
 
+test('Appearance shows the View card with Compact and Default', () => {
+  const compact = { ...s, settings: { ...s.settings, view: 'compact' } };
+  const html = settings(compact, { state: { settingsTab: 'appearance' }, auth: {}, now: NOW, menu: menu() });
+  assert.match(html, /<h2 class="ws-card-title">[^]*?View<\/h2>/);
+  assert.match(html, /data-action="view-set" data-view="compact" aria-selected="true">Compact/);
+  assert.match(html, /data-action="view-set" data-view="default" aria-selected="false">Default/);
+  assert.match(html, /Compact uses smaller text and opens messages in place\./);
+});
+
 test('Layout is the tab after Appearance', () => {
   const ids = SETTINGS_TABS.map(t => t[1]);
   assert.equal(ids[ids.indexOf('appearance') + 1], 'layout');

@@ -59,7 +59,52 @@ function screensToWrite() {
   return new Set();
 }
 
-export async function compactChecks({ open, check, assert, settled, OUT }) {
+/** The window's `data-view` on `#workspace-app` and on `<html>`. */
+const viewAttrs = page => page.evaluate(() => ({ root: document.getElementById('workspace-app').dataset.view, html: document.documentElement.dataset.view }));
+
+/** The view `#workspace-app`'s `data-view` held the moment it first got a child element — the
+ *  loading spinner `boot()` draws before the native snapshot arrives — recorded by a watcher
+ *  `installBridge` (workspace-e2e.mjs) always arms before the page's own scripts run, on every
+ *  navigation of the page including a reload. Reads whatever it last recorded. */
+const firstChildView = page => page.evaluate(() => window.__firstChildView);
+
+const APPEARANCE = '#/settings/appearance';
+
+/** C1: Settings › Appearance → View. Compact applies at once (attributes, mirror, no reload) and
+ *  is recorded; it survives a reload. `page` is already on the Appearance screen. */
+async function c1(theme, page, { assert, shot, settled, calls }) {
+  await page.click('[data-action="view-set"][data-view="compact"]');
+  await settled(page);
+  const recorded = await calls(page, 'settings_update');
+  assert(recorded.some(d => d.view === 'compact'), `no settings_update {view: compact} recorded: ${JSON.stringify(recorded)}`);
+  const attrs = await viewAttrs(page);
+  assert(attrs.root === 'compact', `#workspace-app data-view: ${attrs.root}`);
+  assert(attrs.html === 'compact', `html data-view: ${attrs.html}`);
+  const mirror = await page.evaluate(() => localStorage.getItem('codemie.view'));
+  assert(mirror === 'compact', `localStorage mirror: ${mirror}`);
+  await shot(page, `compact-c1-appearance-${theme}`);
+
+  // Reload: the native setting now agrees with the mirror, so the first paint is already Compact.
+  await page.reload();
+  await page.waitForSelector('.ws-sidebar');
+  await settled(page);
+  const first = await firstChildView(page);
+  assert(first === 'compact', `#workspace-app's data-view at its first child, after reload: ${first}`);
+}
+
+/** A mirror that disagrees with the native default: the first paint follows the mirror, the
+ *  snapshot then corrects both the attributes and the mirror back to native's `'default'`. `page`
+ *  is already open with that mirror value and the (default) native settings. */
+async function c1Mismatch(page, assert, mirrorValue, wantFirst) {
+  const first = await firstChildView(page);
+  assert(first === wantFirst, `#workspace-app's data-view at its first child (mirror '${mirrorValue}'): ${first}`);
+  const attrs = await viewAttrs(page);
+  assert(attrs.root === 'default' && attrs.html === 'default', `data-view after the snapshot loaded: ${JSON.stringify(attrs)}`);
+  const mirror = await page.evaluate(() => localStorage.getItem('codemie.view'));
+  assert(mirror === 'default', `localStorage mirror after the snapshot loaded: ${mirror}`);
+}
+
+export async function compactChecks({ open, check, assert, shot, settled, calls, OUT }) {
   const write = screensToWrite();
   let baseline = {};
   try { baseline = await readJson(BASELINE); } catch { /* first write */ }
@@ -111,4 +156,17 @@ export async function compactChecks({ open, check, assert, settled, OUT }) {
     assert(problems.length === 0, problems.join(' | '));
   });
   await first?.context.close().catch(() => {});
+
+  // Each check opens its own screen first (as the C0 check above does for its first screen), so
+  // `check`'s own look for a stray open dialog finds a page that is still open.
+  for (const theme of ['dark', 'light']) {
+    const { page, context } = await open({ theme, hash: APPEARANCE });
+    await check(`compact C1 (${theme}): Settings › Appearance › View switches to Compact at once, mirrored, and survives reload`, () => c1(theme, page, { assert, shot, settled, calls }));
+    await context.close().catch(() => {});
+  }
+  for (const [mirrorValue, wantFirst] of [['compact', 'compact'], ['zzz', 'default']]) {
+    const { page, context } = await open({ hash: APPEARANCE, localPrefs: { 'codemie.view': mirrorValue } });
+    await check(`compact C1: a mirror of '${mirrorValue}' decides the first paint ('${wantFirst}'), then native's 'default' corrects it`, () => c1Mismatch(page, assert, mirrorValue, wantFirst));
+    await context.close().catch(() => {});
+  }
 }

@@ -1,7 +1,7 @@
 // Settings. Microsoft 365 is one sign-in: every source syncs automatically.
 import { escapeHtml as e } from './store.js';
 import { icon, microsoftLogo, teamsGlyph, outlookGlyph } from './icons.js';
-import { avatar, badge, button, card, emptyState, field, select, settingRow, toggle, textInput, spinner } from './ui.js';
+import { avatar, badge, button, card, emptyState, field, segmented, select, settingRow, toggle, textInput, spinner } from './ui.js';
 import { records, syncShown, SYNC_EVERY, sourceCounts, chatCatalog, connectionState, tasksDueJob } from './selectors.js';
 import { calendarCatalog } from './calendar-model.js';
 import { formatDateTime, agoLabel } from './format.js';
@@ -10,6 +10,7 @@ import { storageCard } from './settings-storage.js';
 import { pluginsPage } from './settings-plugins.js';
 import { layoutPanel } from './settings-layout.js';
 import { meetingsSettingsHeader, meetingsSettingsPanel, newMeetingsSettingsView, TAB_TEXT as MEETINGS_TAB_TEXT } from './view-settings-meetings.js';
+import { viewOf } from './view-mode.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
@@ -264,7 +265,8 @@ function appearancePanel(s) {
     <span class="ws-theme-preview${theme === 'system' ? ' ws-theme-preview-system' : ''}">${theme === 'system' ? '<img src="workspace/assets/light-theme-card.svg" alt=""><img src="workspace/assets/dark-theme-card.svg" alt="">' : `<img src="workspace/assets/${theme}-theme-card.svg" alt="">`}</span>
     <span class="ws-theme-label"><span class="ws-radio-dot" aria-hidden="true"></span>${theme[0].toUpperCase() + theme.slice(1)}</span>
   </button>`;
-  return card({ title: 'Theme', iconName: 'palette', body: `<div class="ws-theme-options">${['light', 'dark', 'system'].map(choice).join('')}</div><p class="ws-muted ws-hint">System follows your operating-system appearance.</p>` });
+  return card({ title: 'Theme', iconName: 'palette', body: `<div class="ws-theme-options">${['light', 'dark', 'system'].map(choice).join('')}</div><p class="ws-muted ws-hint">System follows your operating-system appearance.</p>` })
+    + card({ title: 'View', iconName: 'layout', body: `${segmented([['compact', 'Compact'], ['default', 'Default']], viewOf(s.settings), 'view-set', 'view', 'View')}<p class="ws-muted ws-hint">Compact uses smaller text and opens messages in place.</p>` });
 }
 
 // ---------------------------------------------------------------- Notifications

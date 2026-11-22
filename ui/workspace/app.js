@@ -53,10 +53,17 @@ import { pluginUrl } from '../plugins/frame-url.js';
 import { createPluginHost, internalRoute } from '../plugins/host.js';
 import { createPluginsController } from './settings-plugins.js';
 import { pluginWidgetCatalog, parseLayoutId, heldText, textOfHtml } from './today-plugins.js';
+import { viewOf, readViewMirror, writeViewMirror } from './view-mode.js';
 
 const ROUTES = HASH_ROUTES;
 const root = document.getElementById('workspace-app');
 const legacy = document.getElementById('app');
+// First paint, before the native snapshot loads: the mirrored view, so Compact's size tokens
+// apply at once instead of flashing Default.
+let firstView = 'default';
+try { firstView = readViewMirror(localStorage); } catch { /* default */ }
+root.dataset.view = firstView;
+document.documentElement.dataset.view = firstView;
 const rawInvoke = window.__TAURI__?.core?.invoke;
 const invoke = rawInvoke && withAppOrigin(rawInvoke, location.origin);
 // Any workspace call that finds the data folder unusable switches to the recovery page.
@@ -239,6 +246,17 @@ function applyTheme(theme) {
   if (legacyToggle) legacyToggle.checked = resolved === 'dark';
 }
 
+function applyView(view) {
+  root.dataset.view = view;
+  document.documentElement.dataset.view = view;
+  writeViewMirror(localStorage, view);
+}
+
+function setView(view) {
+  applyView(view);
+  return mutate('settings_update', { view });
+}
+
 // ---------------------------------------------------------------- shell
 
 const shellMarkup = () => renderShell({
@@ -411,13 +429,14 @@ async function render() {
   const saved = captureScroll();
   const s = snap();
   applyTheme(s.settings.theme);
+  applyView(viewOf(s.settings));
   const locked = !!todayUi?.locked();
   applyLayoutPrefs(locked);
   // Find a setting starts empty each time Settings opens.
   if (state.route !== 'settings') state.settingsQuery = '';
   const ctx = {
     state, auth: auth(), hidden: hiddenCalendars(), banners: banners(s), plugins: pluginContext(), pluginsKnown: state.pluginsKnown,
-    meetingsHidden: state.meetings.hidden,
+    meetingsHidden: state.meetings.hidden, view: viewOf(s.settings),
     today: { ...state.today, locked },
     dock: { layouts: Object.fromEntries(Object.keys(DOCKS).map(page => [page, docks.get(page)])), locked },
     codemie: { panel: codemie.panel, headerActions: codemie.headerActions, tabDots: codemie.tabDots(), signIn: codemie.signIn() },
@@ -2040,6 +2059,7 @@ async function handle(action, el, ev) {
     // Appearance & settings
     case 'theme': return mutate('settings_update', { theme: el.dataset.theme });
     case 'theme-toggle': return mutate('settings_update', { theme: document.documentElement.classList.contains('dark') ? 'light' : 'dark' });
+    case 'view-set': return setView(el.dataset.view);
     case 'terminal-toggle': return terminalDock?.toggle();
     case 'setting-toggle': return mutate('settings_update', { [el.dataset.key]: el.checked }).catch(err => { el.checked = !el.checked; throw err; });
     case 'zone-detect': await mutate('settings_update', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' }); return toast('Time zone updated.', 'success');
@@ -2981,6 +3001,7 @@ async function boot() {
   });
   store.subscribe(result => {
     applyTheme(result.snapshot.settings.theme);
+    applyView(viewOf(result.snapshot.settings));
     if (!ready) return;
     // A run started, ended or was stored: the Run log reads its newest page again.
     automationsUi.snapshotChanged(result.snapshot)?.catch(() => {});
