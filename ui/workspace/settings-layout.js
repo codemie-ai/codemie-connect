@@ -21,7 +21,7 @@ const SHORTCUTS = [
 function movingCard({ locked, handles }) {
   return card({
     title: 'Moving and resizing', iconName: 'sliders',
-    body: `${settingRow({ title: 'Lock layouts', text: 'Nothing on Today or on a page moves or resizes until you unlock. The lock button on Today does the same.', control: toggle({ action: 'layout-lock', checked: locked, attrs: { 'aria-label': 'Lock layouts' } }) })}
+    body: `${settingRow({ title: 'Lock layouts', text: 'Nothing on Today or on a page moves or resizes until you unlock. Lock layouts in Today’s ⋯ menu does the same.', control: toggle({ action: 'layout-lock', checked: locked, attrs: { 'aria-label': 'Lock layouts' } }) })}
       ${settingRow({ title: 'Show handles', text: 'When the grips and resize edges appear.', control: `<div class="ws-segmented" role="group" aria-label="Show handles">${HANDLES.map(([value, text]) => `<button type="button" data-action="layout-handles" data-value="${value}" aria-pressed="${handles === value}">${e(text)}</button>`).join('')}</div>` })}`,
   });
 }

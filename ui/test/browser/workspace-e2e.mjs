@@ -1377,7 +1377,9 @@ for (const theme of ['dark', 'light']) {
   await check(`${theme}: Customize moves a widget by its header, undoes it, and removes and adds through the gallery`, async () => {
     const saves = () => page.evaluate(() => window.__bridgeCalls.filter(([op]) => op === 'layout_save').map(([, d]) => d));
     const before = (await saves()).length;
-    await page.click('.ws-today-actions [data-action="today-customize"]:has-text("Customize")');
+    await page.click('.ws-today-actions details[data-menu="today-more"] > summary');
+    await page.waitForSelector('.ws-today-actions details[data-menu="today-more"][open]');
+    await page.click('.ws-today-actions details[data-menu="today-more"] [data-action="today-customize"]:has-text("Customize")');
     await page.waitForSelector('.ws-today-editbar:has-text("Customizing Today")');
     await page.waitForSelector('.ws-gallery .ws-gallery-group:has-text("On Today")');
     await shot(page, `${theme}-customize`);

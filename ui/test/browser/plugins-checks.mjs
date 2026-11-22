@@ -181,7 +181,9 @@ export async function pluginChecks({ open, check, assert, shot, quiet }) {
       const card = await page.locator('.ws-plugins-card').innerText();
       assert(card.includes('Not sent — Connect never sends for plugins'), 'held message note');
       assert(card.includes('<img src=x'), 'plugin text shown as text');
-      await page.click('.ws-today-actions [data-action="today-customize"]:has-text("Customize")');
+      await page.click('.ws-today-actions details[data-menu="today-more"] > summary');
+      await page.waitForSelector('.ws-today-actions details[data-menu="today-more"][open]');
+      await page.click('.ws-today-actions details[data-menu="today-more"] [data-action="today-customize"]:has-text("Customize")');
       await page.click('.ws-gallery [data-action="today-add"][data-id="plugin:hello:greeting"]');
       await page.waitForSelector('[data-tile="plugin:hello:greeting"]');
       await page.click('.ws-gallery [data-action="today-add"][data-id="plugin:hello:board"]');

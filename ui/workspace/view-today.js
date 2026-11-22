@@ -11,7 +11,7 @@ import { PLUGINS_CARD, parseLayoutId, pluginWidgetCard, pluginsCard, showPlugins
 import { isMine, meOf, ownerOf, sortTasks, taskStatus } from './tasks-model.js';
 import { showMeetingsCard, todayMeetingsCard } from './view-meetings.js';
 import { GRID, autoCards, optionsOf, todayOf } from './today-grid.js';
-import { addTile, editBar, gallery, layoutMenu, optionsPanel, widgetMenu } from './today-edit-view.js';
+import { addTile, editBar, gallery, optionsPanel, todayMenu, widgetMenu } from './today-edit-view.js';
 
 const toggle = (key, label, def) => ({ key, type: 'toggle', label, def });
 const choice = (key, label, choices, def) => ({ key, type: 'select', label, choices, def });
@@ -175,17 +175,29 @@ export function today(s, ctx) {
     ? `<div class="ws-tiles" data-today-grid style="--rows:${rows + (editing ? 3 : 0)}">${tiles}${panel}${editing ? addTile(rows) : ''}</div>`
     : emptyState({ iconName: 'today', title: 'Make Today your own', text: 'Choose the cards you want on Today.', actions: button('Choose cards', { action: 'today-customize', variant: 'primary' }) });
   const locked = !!ui.locked;
-  const actions = editing ? '' : `${layoutMenu(t)}${button('', { action: 'today-lock', iconName: 'lock', title: locked ? 'Unlock layouts' : 'Lock layouts so nothing moves', attrs: { 'aria-label': 'Lock layouts', 'aria-pressed': String(locked) } })}${button('Add widget', { action: 'today-customize', iconName: 'plus', attrs: { 'data-focus': 'gallery' } })}${button('Customize', { action: 'today-customize', variant: 'primary', iconName: 'sliders' })}`;
-  return `<div class="ws-today ws-today-page${editing ? ' ws-today-editing' : ''}">
-    <header class="ws-today-head">
+  const actions = editing ? '' : todayMenu(t, { locked });
+  const date = e(formatDate(m.nowMs, m.zone, { weekday: 'long', month: 'long', day: 'numeric' }));
+  const summaryLink = p => `<button type="button" class="ws-today-sum-link" data-action="route" data-route="${e(p.route)}"${p.lane ? ` data-lane="${e(p.lane)}"` : ''}>${e(p.text)}</button>`;
+  const header = ctx.view === 'compact'
+    ? `<header class="ws-today-head ws-today-head-compact">
+      <div class="ws-today-title">
+        <h1 class="ws-sr">Today</h1>
+        <p class="ws-eyebrow">${date}</p>
+        <p class="ws-description">${connected ? daySummaryParts(m).map(summaryLink).join(' · ') : e(summary)}</p>
+      </div>
+      <div class="ws-actions ws-today-actions">${actions}</div>
+    </header>`
+    : `<header class="ws-today-head">
       ${avatar({ name: c?.displayName || w.name, photo: c?.photo, size: 56, className: 'ws-today-avatar' })}
       <div class="ws-today-title">
-        <p class="ws-eyebrow">${e(formatDate(m.nowMs, m.zone, { weekday: 'long', month: 'long', day: 'numeric' }))}</p>
+        <p class="ws-eyebrow">${date}</p>
         <h1>${e(greeting(hour))}${name ? `, ${e(name)}` : ''}</h1>
         <p class="ws-description">${e(summary)}</p>
       </div>
       <div class="ws-actions ws-today-actions">${actions}</div>
-    </header>
+    </header>`;
+  return `<div class="ws-today ws-today-page${editing ? ' ws-today-editing' : ''}">
+    ${header}
     ${editing ? editBar(t, { canUndo: !!ui.history?.length, canRedo: !!ui.future?.length }) : ''}
     ${banners}
     ${ctx.codemieCard || ''}
@@ -227,14 +239,20 @@ function tile(html, it, order, title, { editing = false, renaming = false } = {}
     .replace(/<\/section>$/, () => `${HANDLES}</section>`);
 }
 
-function daySummary(m) {
+/** The day summary's parts: meetings left (or none) and free time open Calendar; "needs you"
+ *  opens Inbox on the Needs reply lane. */
+export function daySummaryParts(m) {
   const parts = [];
   const left = m.remaining.length;
-  parts.push(left ? `${left} meeting${left === 1 ? '' : 's'} left today` : m.timed.length ? 'No more meetings today' : 'No meetings today');
-  if (m.freeMinutes >= 15 && m.nowMin < WORKDAY_END) parts.push(`${durationLabel(m.freeMinutes)} free until ${formatTime(endOfWorkday(m), m.zone)}`);
+  parts.push({ text: left ? `${left} meeting${left === 1 ? '' : 's'} left today` : m.timed.length ? 'No more meetings today' : 'No meetings today', route: 'calendar' });
+  if (m.freeMinutes >= 15 && m.nowMin < WORKDAY_END) parts.push({ text: `${durationLabel(m.freeMinutes)} free until ${formatTime(endOfWorkday(m), m.zone)}`, route: 'calendar' });
   const replies = m.attention.length;
-  if (replies) parts.push(`${replies} message${replies === 1 ? '' : 's'} need${replies === 1 ? 's' : ''} you`);
-  return parts.join(' · ');
+  if (replies) parts.push({ text: `${replies} message${replies === 1 ? '' : 's'} need${replies === 1 ? 's' : ''} you`, route: 'inbox', lane: 'reply' });
+  return parts;
+}
+
+function daySummary(m) {
+  return daySummaryParts(m).map(p => p.text).join(' · ');
 }
 
 function endOfWorkday(m) {

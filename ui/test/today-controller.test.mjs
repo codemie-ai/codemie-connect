@@ -436,9 +436,11 @@ test('Customize mode draws the edit bar, an × on each widget, the add tile, the
   const snapshot = buildSnapshot(NOW, { photo: false, zone: 'UTC' });
   const ctx = today => ({ auth: {}, hidden: new Set(), banners: '', plugins: { catalog: [] }, state: {}, today });
   const plain = todayPage(snapshot, ctx({ ...newTodayView(), locked: true }));
-  assert.match(plain, /data-action="today-lock"[^>]*aria-pressed="true"/);
-  assert.match(plain, /data-action="today-customize" data-focus="gallery"[^>]*>[^]*?Add widget/);
-  assert.match(plain, /<details class="ws-menu ws-menu-right ws-today-layouts" data-menu="today-layouts">[^]*?<span>Default<\/span>/);
+  assert.match(plain, /<details class="ws-menu ws-menu-right ws-today-more" data-menu="today-more">/);
+  assert.match(plain, /<div class="ws-menu-label">Layouts<\/div>[^]*?data-action="today-layout-use"[^>]*>[^]*?<span>Default<\/span>/);
+  assert.match(plain, /role="menuitem" data-action="today-customize" data-focus="gallery">[^]*?Add widget/);
+  assert.match(plain, /data-action="today-lock" aria-pressed="true">[^]*?Unlock layouts/);
+  assert.doesNotMatch(plain, /ws-today-layout-pill/);
   assert.match(plain, /data-form="today-layout-save"/);
   assert.doesNotMatch(plain, /ws-today-editbar|ws-tile-remove|ws-gallery/);
   const html = todayPage(snapshot, ctx({ ...newTodayView(), editing: true, history: [{}], options: 'calendar', locked: false }));

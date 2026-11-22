@@ -182,6 +182,56 @@ async function c3(page, { open, assert, settled }) {
   for (const [name, px] of sizes) assert(px >= 10.5, `${name} computes to ${px}px (< 10.5)`);
 }
 
+/** C4: Today's toolbar (the saved layouts, Add widget, Customize and Lock/Unlock) lives in one ⋯
+ *  menu in both views, with every control hidden until it opens; in Compact the head has no
+ *  avatar or greeting and its "need you" part opens Inbox on the Needs reply lane. `page` is
+ *  already open on Today at 1440, with messages needing a reply. */
+async function c4(theme, view, page, { assert, shot, calls, settled }) {
+  const menu = '.ws-today-actions details[data-menu="today-more"]';
+  const hiddenBefore = await page.evaluate(() => {
+    const head = document.querySelector('.ws-today-head');
+    const shown = sel => { const el = head.querySelector(sel); return !!el && el.checkVisibility({ checkOpacityCSS: true, checkVisibilityCSS: true }); };
+    return { lock: shown('[data-action="today-lock"]'), customize: shown('[data-action="today-customize"]'), pill: shown('.ws-today-layout-pill') };
+  });
+  assert(!hiddenBefore.lock && !hiddenBefore.customize && !hiddenBefore.pill, `the toolbar shows before ⋯ opens: ${JSON.stringify(hiddenBefore)}`);
+
+  if (view === 'compact') {
+    assert(await page.locator('.ws-today-avatar').count() === 0, 'Compact Today still shows the avatar');
+    const headText = await page.locator('.ws-today-head').innerText();
+    assert(!/Good (morning|afternoon|evening)/.test(headText), `the Compact head greets: ${headText}`);
+    assert(await page.locator('.ws-today-sum-link[data-route="inbox"][data-lane="reply"]').count() === 1, 'no "need you" part to click');
+    await page.click('.ws-today-sum-link[data-route="inbox"][data-lane="reply"]');
+    await page.waitForSelector('.ws-lane[data-lane="reply"][aria-selected="true"]');
+    assert((await page.evaluate(() => location.hash)) === '#/inbox', 'the "need you" part did not open Inbox');
+    await gotoRoute(page, 'today');
+    await settled(page);
+  }
+
+  await page.click(`${menu} > summary`);
+  await page.waitForSelector(`${menu}[open]`);
+  // .ws-menu-label (“Layouts”) renders upper-case via CSS text-transform, so compare case-folded.
+  const menuText = (await page.locator(`${menu} .ws-menu-panel`).innerText()).toLowerCase();
+  for (const word of ['Layouts', 'Default', 'Add widget', 'Customize', 'Lock layouts']) {
+    assert(menuText.includes(word.toLowerCase()), `the ⋯ menu is missing "${word}": ${menuText}`);
+  }
+  await shot(page, `compact-c4-${view}-${theme}-menu`);
+
+  const savesBefore = (await calls(page, 'layout_save')).length;
+  await page.click(`${menu} [data-action="today-lock"]`);
+  await page.waitForSelector(`${menu} [data-action="today-lock"][aria-pressed="true"]`);
+  const lockText = await page.locator(`${menu} [data-action="today-lock"]`).innerText();
+  assert(/Unlock layouts/.test(lockText), `the lock item does not say Unlock layouts: ${lockText}`);
+  assert((await calls(page, 'layout_save')).length === savesBefore, 'locking recorded a layout_save');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector(`${menu}:not([open])`);
+
+  await page.click(`${menu} > summary`);
+  await page.waitForSelector(`${menu}[open]`);
+  await page.click(`${menu} [data-action="today-customize"]:has-text("Customize")`);
+  await page.waitForSelector('.ws-today-editbar');
+  assert(await page.locator('.ws-today-editbar').count() === 1, 'Customize did not show the edit bar');
+}
+
 /** C1: Settings › Appearance → View. Compact applies at once (attributes, mirror, no reload) and
  *  is recorded; it survives a reload. `page` is already on the Appearance screen. */
 async function c1(theme, page, { assert, shot, settled, calls }) {
@@ -297,5 +347,14 @@ export async function compactChecks({ open, check, assert, shot, settled, calls,
     const { page, context } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, tasks: true, meetings: true, automations: true, settings: { view: 'compact' } });
     await check('compact C3: Compact uses Naya’s sizes', () => c3(page, { open, assert, settled }));
     await context.close().catch(() => {});
+  }
+
+  for (const theme of ['dark', 'light']) {
+    for (const view of ['compact', 'default']) {
+      const settings = view === 'compact' ? { view: 'compact' } : null;
+      const { page, context } = await open({ theme, width: 1440, height: 900, now: FIXED_NOW, tasks: true, meetings: true, automations: true, settings, hash: '#/today' });
+      await check(`compact C4 (${theme} ${view}): Today’s toolbar lives in ⋯`, () => c4(theme, view, page, { assert, shot, calls, settled }));
+      await context.close().catch(() => {});
+    }
   }
 }

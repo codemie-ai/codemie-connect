@@ -187,6 +187,9 @@ body{font-family:var(--font-ui);-webkit-font-smoothing:antialiased;margin:0}
 :where(#workspace-app,.ws-modal) :where(button,input,select,textarea){font:inherit;color:inherit}
 :where(#workspace-app,.ws-modal) :where(button){cursor:pointer}
 #workspace-app :focus-visible,.ws-modal :focus-visible{outline:2px solid var(--ws-focus);outline-offset:2px}
+/* route() moves focus to the page heading (tabindex="-1") so a screen reader announces the page
+   change; it is not reachable by Tab, so it draws no visible ring over the heading's content. */
+#workspace-app h1[tabindex="-1"],.ws-modal h1[tabindex="-1"]{outline:none}
 :where(#workspace-app,.ws-modal) :where(h1,h2,h3){margin:0;font-weight:600;color:var(--ws-text)}
 :where(#workspace-app,.ws-modal) :where(p){margin:0}
 .ws-icon{width:16px;height:16px;flex-shrink:0}
@@ -501,6 +504,12 @@ button.ws-sync-pill:hover{border-color:var(--ws-border);color:var(--ws-text)}
 .ws-today-head{display:flex;align-items:center;gap:16px;margin-bottom:var(--ws-today-head-mb)}
 .ws-today-title{flex:1;min-width:0}
 .ws-today-avatar{box-shadow:0 0 0 3px var(--ws-bg),0 0 0 4px var(--ws-border)}
+/* Compact Today: no avatar, no greeting — the date and the summary line (each part a link) are
+   the header. */
+.ws-today-head-compact .ws-eyebrow{font-size:var(--ws-fs-meta)}
+.ws-today-head-compact .ws-description{font-size:var(--ws-fs-body)}
+.ws-today-sum-link{padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer}
+.ws-today-sum-link:hover{text-decoration:underline}
 .ws-connect-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:22px 24px;margin-bottom:16px;border-radius:var(--ws-radius-lg);border:1px solid transparent;background:linear-gradient(var(--ws-card),var(--ws-card)) padding-box,var(--ws-primary-border) border-box}
 .ws-connect-copy{display:flex;gap:16px;align-items:flex-start}
 .ws-connect-mark{width:44px;height:44px;border-radius:10px;display:grid;place-items:center;background:var(--ws-raised);flex-shrink:0}

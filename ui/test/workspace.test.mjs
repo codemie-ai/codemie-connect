@@ -394,6 +394,15 @@ test('Today without Microsoft invites one sign-in and keeps local work', () => {
   assert.doesNotMatch(html, /Happening now/);
 });
 
+test('Compact Today: date over the summary line, no avatar or greeting, each part opens its page', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const html = today(s, { ...ctx(), view: 'compact' });
+  assert.doesNotMatch(html, /ws-today-avatar|Good (morning|afternoon|evening)/);
+  assert.match(html, /<h1 class="ws-sr">Today<\/h1>/);
+  assert.match(html, /class="ws-today-sum-link" data-action="route" data-route="calendar">\d+ meetings? left today</);
+  assert.match(html, /data-route="inbox" data-lane="reply">\d+ messages? needs? you</);
+});
+
 const tileOf = (html, id) => html.match(new RegExp(`<section class="ws-card ws-tile[^"]*"[^>]*? data-tile="${id}"[^]*?</section>`))?.[0] || '';
 
 test('Today draws tiles from the grid with their positions', () => {
