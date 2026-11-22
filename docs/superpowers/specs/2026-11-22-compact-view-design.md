@@ -1,6 +1,6 @@
 # Compact view · design
 
-**Status:** draft from brainstorming on 2026-11-22, step 1 of `2026-11-22-naya-port-rollout-design.md`.
+**Status:** draft from brainstorming on 2026-11-22, step 1 of `2026-11-22-workspace-next-rollout-design.md`.
 
 ## Intent
 
