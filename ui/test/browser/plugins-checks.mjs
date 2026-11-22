@@ -52,6 +52,14 @@ export async function pluginChecks({ open, check, assert, shot, quiet }) {
       await page.waitForSelector('[data-action="market-add"]');
       assert(await page.locator('.ws-settings-nav button[data-tab=plugins][aria-current=page]').count() === 1, 'Plugins tab current');
       await noOverflow(page, 'Plugins');
+      // The built-ins, CodeMie's first: badged, fetchable, never removable.
+      const markets = await page.evaluate(() => [...new Set([...document.querySelectorAll('[data-action="market-refresh"][data-market]')].map(b => b.dataset.market))]);
+      assert(markets[0] === 'codemie' && markets[1] === 'onetest', `marketplaces: ${markets}`);
+      for (const name of ['codemie', 'onetest']) {
+        const row = page.locator(`.ws-market-row[data-market="${name}"]`);
+        assert((await row.textContent()).includes('Built-in'), `${name} is badged Built-in`);
+        assert(await page.locator(`[data-action="market-remove"][data-market="${name}"]`).count() === 0, `${name} can’t be removed`);
+      }
       await shot(page, `plugins-${tag}-empty`);
 
       // A marketplace in a folder, chosen with the native picker (mocked).

@@ -185,8 +185,11 @@ test('a plugin’s page has Sign in, its addresses, its card slot and Remove wit
   assert.match(list, /data-action="market-add"/);
   assert.match(list, /data-action="market-remove" .*data-market="acme"/);
   assert.doesNotMatch(list, /data-action="market-remove"[^>]*data-market="onetest"/, 'the built-in marketplace stays');
+  assert.match(list, /<strong>codemie <span[^>]*>Built-in/, 'the CodeMie marketplace is built in');
+  assert.doesNotMatch(list, /data-action="market-remove"[^>]*data-market="codemie"/, 'the CodeMie marketplace stays');
+  assert.ok(list.indexOf('data-market="codemie"') < list.indexOf('data-market="onetest"'), 'the CodeMie marketplace is listed first');
   assert.match(list, /Update 1\.1\.0/);
-  const hostile = pluginsPanel(readyUi({ installed: [{ ...p, summary: HOSTILE }], markets: [{ ...contract('plugins-markets')[1], name: HOSTILE, source: HOSTILE }], catalogs: {} }));
+  const hostile = pluginsPanel(readyUi({ installed: [{ ...p, summary: HOSTILE }], markets: [{ ...contract('plugins-markets').find(m => m.name === 'acme'), name: HOSTILE, source: HOSTILE }], catalogs: {} }));
   assert.ok(escaped(hostile), hostile);
 });
 
