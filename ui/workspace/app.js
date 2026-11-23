@@ -3405,6 +3405,10 @@ async function boot() {
     if (target.route === 'meetings') {
       if (target.meetingId) state.meetings.selected = target.meetingId;
       state.meetings.pane = target.pane;
+      // A boot hash is always a link arrival; `ensureSelection`'s first render reads this to
+      // decide whether an old `/tasks` link may move focus to the column (it can't check the
+      // column setting yet here, before the snapshot is in).
+      state.meetings.tasksLink = target.pane === 'tasks';
     } else if (hash[2] && state.route === 'automations') showAutomationsTab(hash[2]);
     else if (hash[2]) state.settingsTab = settingsTabFor(hash[2]);
     if (state.route === 'settings' && hash[2] === 'plugins' && PLUGIN_ID.test(decodeURIComponent(hash[3] || ''))) {

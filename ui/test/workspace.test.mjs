@@ -1738,8 +1738,13 @@ test('a meeting without a transcript keeps its action items column, "+ Add" clos
   const d = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-northwind' })));
   assert.match(d, new RegExp(`data-action="task-open-today" data-id="${t.id}"`));
   // The people popover names a person's tasks, without a link to a pane that isn't there.
-  assert.doesNotMatch(d.match(/<details class="ws-menu[^"]*ws-mtg-stack[^"]*"[^]*?<\/details>/)?.[0] || '', /data-action="meeting-pane"/);
-  // With a transcript, a person's tasks open the Action items pane.
+  assert.doesNotMatch(d.match(/<details class="ws-menu[^"]*ws-mtg-stack[^"]*"[^]*?<\/details>/)?.[0] || '', /data-action="meeting-pane"|data-action="meeting-items-focus"/);
+  // With a transcript and the column on (the default), a person's tasks bring the column into
+  // view: there is no pane to send them to any more.
+  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }))).match(/<details class="ws-menu[^"]*ws-mtg-stack[^"]*"[^]*?<\/details>/)?.[0] || '', /data-action="meeting-items-focus">\d+ tasks?</);
+  // With the column off, the same link still opens the Action items pane: it's the only place
+  // left that shows them.
+  s.settings.meetings = { ...s.settings.meetings, actionItems: false };
   assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }))).match(/<details class="ws-menu[^"]*ws-mtg-stack[^"]*"[^]*?<\/details>/)?.[0] || '', /data-action="meeting-pane" data-pane="tasks">\d+ tasks?</);
 });
 

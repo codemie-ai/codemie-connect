@@ -139,15 +139,19 @@ export function createMeetingsController({
   /** The selected meeting, or the first in the list when there is none (or it is gone); a pane
    *  not chosen yet (a link without one) is the setting's. The Tasks tab is gone (spec ruling 9):
    *  with the column on, an old `/tasks` link means the summary, focused on the column, not the
-   *  pane `tasks` used to mean. */
+   *  pane `tasks` used to mean. The redirect always fixes the pane (so nothing can land on the
+   *  pane that no longer exists), but only raises `focusColumn` — which steals keyboard focus —
+   *  when `tasksLink` says this `tasks` came from an arrival (the boot hash parse or `open()`'s
+   *  own resolution), never from an in-page action re-rendering with `pane` left at `tasks`. */
   function ensureSelection() {
     const s = snap();
     const all = meetingItems(s, now());
     if (!PANES.includes(v().pane)) v().pane = openOn();
     else if (v().pane === 'tasks' && s.settings?.meetings?.actionItems !== false) {
       v().pane = 'summary';
-      v().focusColumn = true;
+      v().focusColumn = !!v().tasksLink;
     }
+    v().tasksLink = false;
     if (v().selected && all.some(m => m.id === v().selected)) return v().selected;
     v().selected = order()[0] || null;
     return v().selected;
@@ -264,9 +268,14 @@ export function createMeetingsController({
     const view = v();
     const same = view.selected === id;
     if (!same) leave(view.selected);
+    const resolvedPane = PANES.includes(pane) ? pane : same && PANES.includes(view.pane) ? view.pane : openOn();
     Object.assign(view, laneFor(m, view.filter, view.showNone), {
       q: '', selected: id,
-      pane: PANES.includes(pane) ? pane : same && PANES.includes(view.pane) ? view.pane : openOn(),
+      pane: resolvedPane,
+      // An arrival (this is the one function every "go to this meeting" route passes through):
+      // `ensureSelection` reads this to tell a genuine old `/tasks` link from an in-page action
+      // that happens to leave `pane` at `tasks`, so only the former moves focus to the column.
+      tasksLink: resolvedPane === 'tasks',
       focusLine: Number.isInteger(line) ? line : null,
     });
     if (!same || Number.isInteger(line)) Object.assign(view, { tq: '', speaker: '' });
@@ -847,11 +856,16 @@ export function createMeetingsController({
       case 'meeting-hide': return hide(id);
       case 'meeting-hide-series': return hide(id, { series: true });
       case 'meeting-unhide': return unhide(id);
-      // A pane behind ⋯ (or Review, or a person's tasks), and back to the summary.
+      // A pane behind ⋯ (or Review, with the column off), and back to the summary.
       case 'meeting-pane':
         view.pane = PANES.includes(el.dataset.pane) ? el.dataset.pane : 'summary';
         await rerender();
         return focus('.ws-mtg-strip [data-action="meeting-back"]');
+      // A person's tasks in the people popover, with the column on: it already shows beside
+      // whatever pane is open (the popover itself just closed, the same way any step in a menu
+      // does, above), so bring it into view rather than change the pane.
+      case 'meeting-items-focus':
+        return focus('.ws-mtg-items [data-action="meeting-item-add-open"]', { scroll: true });
       case 'meeting-back':
         view.pane = 'summary';
         await rerender();

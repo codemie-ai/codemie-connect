@@ -698,11 +698,17 @@ export function peopleList(p, mc) {
     const share = chars === null ? null : Math.round((chars / total) * 100);
     const note = [x.organizer ? 'organizer' : '', x.me ? 'you' : '', x.company].filter(Boolean).join(' · ');
     const tasks = mc.tasks.filter(t => String(t.data.owner || '').toLowerCase() === address || (x.me && isMine(t, me))).length;
+    // With the column on, there is no pane to send this to (the Tasks pane is gone): the column
+    // already shows beside whatever pane is open, so the link brings it into view instead. With
+    // the column off, the Action items pane is still the only place the tasks show.
+    const taskBtn = !tasks ? '' : !hasTranscript(mc.m) ? `<small>${plural(tasks, 'task')}</small>`
+      : p.columnOn !== false ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-items-focus">${plural(tasks, 'task')}</button>`
+        : `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-pane" data-pane="tasks">${plural(tasks, 'task')}</button>`;
     return `<div class="ws-mtg-person${chars === 0 ? ' ws-mtg-quiet' : ''}" title="${e(x.address || x.name)}">
       ${avatar({ name: x.name, size: 24, seed: address || x.name })}
       <span class="ws-mtg-person-copy"><strong>${e(x.name)}</strong>${note ? `<small>${e(note)}</small>` : ''}</span>
       <span class="ws-mtg-talk">${share === null ? '' : chars ? `${share}% talking` : 'didn’t speak'}</span>
-      <span class="ws-mtg-person-tasks">${tasks ? (hasTranscript(mc.m) ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-pane" data-pane="tasks">${plural(tasks, 'task')}</button>` : `<small>${plural(tasks, 'task')}</small>`) : ''}</span>
+      <span class="ws-mtg-person-tasks">${taskBtn}</span>
     </div>`;
   }).join('');
   const more = mc.people.length > shown.length ? `<button type="button" class="ws-link ws-mtg-linkbtn ws-mtg-people-more" data-action="meeting-people-all" data-id="${e(mc.m.id)}">+${mc.people.length - shown.length} more</button>` : '';

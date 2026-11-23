@@ -81,7 +81,7 @@ export function isHidden(m, hidden) {
 
 /** The Meetings page's view state (only view state lives in the window: meetings are native's). */
 export const newMeetingsView = ({ hidden = null } = {}) => ({
-  filter: 'all', q: '', selected: null, pane: null, showNone: false, compare: false, focusLine: null, focusColumn: false,
+  filter: 'all', q: '', selected: null, pane: null, showNone: false, compare: false, focusLine: null, focusColumn: false, tasksLink: false,
   // Hidden meetings (a preference) and whether they show greyed; the search field; folded days
   // (day key → true) and the folded Needs you card, for the session; the row's right-click menu.
   hidden: readHidden(hidden), showHidden: false, searchOpen: false, folded: {}, needsFolded: false, rowMenu: null,

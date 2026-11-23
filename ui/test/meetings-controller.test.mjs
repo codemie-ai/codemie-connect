@@ -112,18 +112,48 @@ test('open() with no pane uses Open a meeting on; the same meeting keeps its pan
   assert.match(calls.toasts.at(-1).message, /no longer/);
 });
 
-test('ensureSelection() sends an old /tasks link to the summary, focused on the column, with the column on; keeps the Action items pane with it off', () => {
-  const { ctl, state, s } = harness({ view: { selected: 'mtg-philips', pane: 'tasks' } });
-  // The Tasks tab is gone (spec ruling 9): with the column on, `/tasks` means the summary,
-  // focused on the column it already shows beside it, not the dedicated pane it used to open.
+test('ensureSelection() sends a link arrival at /tasks to the summary, focused on the column, with the column on; keeps the Action items pane with it off', () => {
+  const { ctl, state, s } = harness({ view: { selected: 'mtg-philips', pane: 'tasks', tasksLink: true } });
+  // The Tasks tab is gone (spec ruling 9): with the column on, a `/tasks` arrival (the boot hash
+  // parse or open(), both of which set `tasksLink`) means the summary, focused on the column it
+  // already shows beside it, not the dedicated pane it used to open.
   ctl.ensureSelection();
   assert.deepEqual([state.meetings.pane, state.meetings.focusColumn], ['summary', true]);
-  // With the column off, the old link still opens the Action items pane as before.
-  s.settings.meetings = { ...s.settings.meetings, actionItems: false };
+  // tasksLink is one-shot: a later render with nothing newly arrived never re-raises focus.
   state.meetings.pane = 'tasks';
-  state.meetings.focusColumn = false;
+  ctl.ensureSelection();
+  assert.deepEqual([state.meetings.pane, state.meetings.focusColumn], ['summary', false]);
+  // With the column off, a link arrival still opens the Action items pane as before.
+  state.meetings.pane = 'tasks';
+  state.meetings.tasksLink = true;
+  s.settings.meetings = { ...s.settings.meetings, actionItems: false };
   ctl.ensureSelection();
   assert.deepEqual([state.meetings.pane, state.meetings.focusColumn], ['tasks', false]);
+});
+
+test('ensureSelection() still corrects a stray pane left at tasks with the column on, but never steals focus for it: only a link arrival (tasksLink) may raise focusColumn', () => {
+  // Nothing in the app leaves `pane` at `tasks` with the column on any more (the Review button is
+  // column-off only, and the people popover's task link no longer navigates there), but the
+  // normalization stays a safety net — just one that, without `tasksLink`, never takes focus.
+  const { ctl, state } = harness({ view: { selected: 'mtg-philips', pane: 'tasks' } });
+  ctl.ensureSelection();
+  assert.deepEqual([state.meetings.pane, state.meetings.focusColumn], ['summary', false]);
+});
+
+test("open() tags an arrival at /tasks as tasksLink, so the next render's redirect may focus the column; a plain re-render of the same meeting never does", async () => {
+  const { ctl, state } = harness();
+  await ctl.open('mtg-philips', 'tasks');
+  assert.equal(state.meetings.tasksLink, true);
+  ctl.ensureSelection();
+  assert.deepEqual([state.meetings.pane, state.meetings.focusColumn], ['summary', true]);
+});
+
+test('meeting-items-focus (the people popover\'s task-count link, column on) focuses the column directly, never touching the pane', async () => {
+  const { ctl, state, calls } = harness({ view: { selected: 'mtg-philips', pane: 'notes' } });
+  await ctl.handle('meeting-items-focus', control({ id: 'mtg-philips' }));
+  assert.equal(state.meetings.pane, 'notes', 'the pane never moved');
+  assert.equal(calls.focus.at(-1), '.ws-mtg-items [data-action="meeting-item-add-open"]');
+  assert.deepEqual(calls.focusOpts, { scroll: true });
 });
 
 test('make notes dialog preselects a template without a document when the meeting has some', async () => {

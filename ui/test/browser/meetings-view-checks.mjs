@@ -410,4 +410,38 @@ export async function meetingsViewChecks({ open, check, assert, shot, settled, c
     });
     await context.close().catch(() => {});
   }
+
+  // ------------------------------------------------- fix round 2: the people popover's task link
+  // (code review on the /tasks fix): with the column on, a person's task count used to redirect
+  // the pane through `meeting-pane`/`tasks`, which a later render's redirect-to-summary could
+  // "steal" focus through — even though the popover had already closed and the column it was
+  // supposed to point at was already showing right there. It now closes the popover (as any step
+  // in a menu does) and focuses the column directly, with no pane change and no redirect involved.
+  {
+    const { page, context } = await open({ meetings: true, hash: '#/meetings/mtg-philips/notes', theme: 'dark', width: 1440, height: 900 });
+    await check('meetings-view fix round 2: a person’s task count, column on, closes the popover and focuses the column, staying on the pane it was clicked from', async () => {
+      await page.waitForSelector('.ws-mtg-doc-pick-sum');
+      await page.click('.ws-mtg-with');
+      await page.waitForSelector('.ws-mtg-people-pop [data-action="meeting-items-focus"]');
+      await page.click('.ws-mtg-people-pop [data-action="meeting-items-focus"]');
+      // Still on Notes: there is no pane left for this link to mean, so none is redirected to.
+      assert(await page.locator('.ws-mtg-detail[data-panel="notes"]').count() === 1, `stayed on Notes; hash is ${await hash(page)}`);
+      assert(!(await page.evaluate(() => document.querySelector('[data-menu^="people-"]')?.hasAttribute('open'))), 'the popover closed');
+      const focusedInColumn = await page.evaluate(() => !!document.activeElement?.closest('.ws-mtg-items'));
+      assert(focusedInColumn, 'focus lands in the action items column');
+    });
+    await context.close().catch(() => {});
+  }
+  {
+    const { page, context } = await open({ meetings: true, hash: '#/meetings/mtg-philips/summary', theme: 'dark', width: 1440, height: 900, settings: { meetings: { actionItems: false } } });
+    await check('meetings-view fix round 2: the same link, column off, still opens the Action items pane', async () => {
+      await page.waitForSelector('.ws-mtg-summary .ws-md');
+      await page.click('.ws-mtg-with');
+      await page.waitForSelector('.ws-mtg-people-pop [data-action="meeting-pane"][data-pane="tasks"]');
+      await page.click('.ws-mtg-people-pop [data-action="meeting-pane"][data-pane="tasks"]');
+      await page.waitForFunction(() => location.hash.endsWith('/tasks'));
+      assert(await page.locator('.ws-mtg-detail[data-panel="tasks"]').count() === 1, 'the dedicated Action items pane');
+    });
+    await context.close().catch(() => {});
+  }
 }
