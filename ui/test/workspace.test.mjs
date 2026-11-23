@@ -1610,6 +1610,42 @@ test('a meeting is Echo\'s call for plugins, and their call slots show as text o
   assert.doesNotMatch(plain, /ws-mtg-plugin|plugin-call-menu/);
 });
 
+test('a plugin tab draws escaped Markdown, no links (Review Focus 5)', () => {
+  const s = meetingsSnapshot();
+  s.settings.meetings.summaryTabs = ['plugin:obsidian'];
+  const rec = s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-philips');
+  const name = rec.data.folder.split('/').pop();
+  const minutesPlugins = [{ id: 'obsidian', name: 'Knowledge' }];
+  const callSlots = [{ plugin: 'obsidian', pluginName: 'Knowledge', call: name, header: [], menu: [], minutes: ['## Mood\n[x](https://e.test) <b>hi</b>'] }];
+  const html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }, { callSlots, minutesPlugins })));
+  assert.match(html, /<article class="ws-md"><h[23]>Mood<\/h[23]>/, 'a plugin tab, drawn with its ## heading');
+  assert.match(html, /&lt;b&gt;hi&lt;\/b&gt;/, 'the <b> tag is escaped text, not markup');
+  assert.doesNotMatch(html, /<a /, 'a Markdown link makes no link');
+  assert.match(html, /data-action="meeting-copy-tab"[^>]*data-key="plugin:obsidian"/, 'Copy for the plugin tab');
+  // Without minutes: the tab (chosen by hand, since without text it isn't picked by default
+  // while the meeting has real documents) shows "No Knowledge summary…", not a broken pane.
+  const empty = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', summaryTab: { 'mtg-philips': 'plugin:obsidian' } }, { callSlots: [{ ...callSlots[0], minutes: [] }], minutesPlugins })));
+  assert.match(empty, /No Knowledge summary for this meeting yet\./);
+});
+
+test('the run line shows one line per plugin, its first minutes line cut to 300', () => {
+  const s = meetingsSnapshot();
+  const rec = s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-philips');
+  const name = rec.data.folder.split('/').pop();
+  const long = 'x'.repeat(320);
+  const callSlots = [
+    { plugin: 'obsidian', pluginName: 'Knowledge', call: name, header: [], menu: [], minutes: [`${long}\nSecond line`, 'Another entry'] },
+    { plugin: 'hello', pluginName: 'Hello', call: name, header: [], menu: [], minutes: ['One short line'] },
+  ];
+  s.jobs.push(notesJob('mtg-philips', { step: 'Finding tasks' }));
+  const html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }, { callSlots })));
+  const lines = [...html.matchAll(/<p class="ws-mtg-plugin-line" title="([^"]*)">.*?<span>([^<]*)<\/span><\/p>/g)];
+  assert.equal(lines.length, 2, 'one line per plugin, not per minutes entry or content line');
+  assert.deepEqual(lines.map(m => m[1]), ['Knowledge', 'Hello']);
+  assert.equal(lines[0][2], `${'x'.repeat(299)}…`, 'its first entry\'s first line, cut to 300');
+  assert.equal(lines[1][2], 'One short line');
+});
+
 test('an unnamed speaker\'s line asks "Who is this?" without leaving the transcript', () => {
   const s = meetingsSnapshot();
   const transcript = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', pane: 'transcript' })));

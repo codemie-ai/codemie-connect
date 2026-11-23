@@ -1883,7 +1883,7 @@ const meetingsUi = store && createMeetingsController({
     return eventDialog(getRecord('event', id));
   },
   canRender: () => ready && !modalOpen() && !editing() && !taskDrag,
-  summaryInputs: () => ({ slots: pluginHost?.callSlots() || [], plugins: [] }),
+  summaryInputs: () => ({ slots: pluginHost?.callSlots() || [], plugins: pluginHost?.minutesPlugins?.() || [] }),
   dock: dockFor('meetings'),
 });
 

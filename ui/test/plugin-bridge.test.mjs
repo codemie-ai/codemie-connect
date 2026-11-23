@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createShim, startFrame, createStorage, textOf, hostWords, renameTable, renameHost } from '../plugins/frame/shim.js';
+import { createShim, startFrame, createStorage, textOf, minutesText, hostWords, renameTable, renameHost } from '../plugins/frame/shim.js';
 import { checkFromFrame, checkFromWindow, V } from '../plugins/frame/messages.js';
 import { esc, setRow, setCard, sw, relDay, ago } from '../plugins/frame/kit.js';
 import { createPluginHost, internalRoute, openableUrl, callLink } from '../plugins/host.js';
@@ -778,6 +778,17 @@ test('a_slots_html_becomes_one_line_of_text', () => {
   assert.equal(textOf('x'.repeat(400)).length, 300);
 });
 
+test('minutes keep lines, headings and bullets, and never markup', () => {
+  assert.equal(
+    minutesText('<h2>Mood</h2><p>Calm &amp; dry</p><ul><li>one</li><li>two</li></ul><script>x()</script><img src=x onerror=y>'),
+    '## Mood\nCalm & dry\n- one\n- two',
+  );
+  assert.equal(minutesText('a'.repeat(30000)).length, 20000);
+  assert.equal(minutesText(null), '');
+  // <br> ends a line; a <div> closes one too; folded spaces, trimmed lines.
+  assert.equal(minutesText('A<br>B<div>  C   D  </div>E'), 'A\nB\nC D\nE');
+});
+
 test('call_slots_reach_the_window_as_text_and_a_chosen_item_runs_in_the_frame', async () => {
   const seen = { after: [], runs: [] };
   const t = await connected(ctx => {
@@ -790,11 +801,11 @@ test('call_slots_reach_the_window_as_text_and_a_chosen_item_runs_in_the_frame', 
   });
   const slots = () => t.events().filter(m => m.type === 'slots');
   assert.equal(slots().length, 1, 'no meeting yet: empty slots, once');
-  assert.deepEqual(slots()[0], { type: 'slots', call: '', header: [], menu: [], minutes: [] });
+  assert.deepEqual(slots()[0], { type: 'slots', call: '', header: [], menu: [], minutes: [], minutesSlot: true });
   t.send({ kind: 'event', type: 'call', call: CALL, where: { view: 'calls', section: '', route: '' } });
   await settle(20);
   assert.deepEqual(t.ctx.where(), { view: 'calls', section: '', route: '' });
-  assert.deepEqual(slots().at(-1), { type: 'slots', call: CALL.name, header: ['Sync → Work'], menu: ['Open in Work', 'Save to Knowledge…'], minutes: ['Then saved to Work.'] });
+  assert.deepEqual(slots().at(-1), { type: 'slots', call: CALL.name, header: ['Sync → Work'], menu: ['Open in Work', 'Save to Knowledge…'], minutes: ['Then saved to Work.'], minutesSlot: true });
   assert.deepEqual(seen.after.at(-1), ['<button class="kn-chip">Sync → <b>Work</b> ▾</button>', CALL.name], 'after() gets a box with its HTML');
   assert.ok(t.events().some(m => m.type === 'error' && /when broke/.test(m.message)), 'a broken item is told, the rest drawn');
   // Drawn again with nothing new: not sent again.
@@ -816,7 +827,7 @@ test('call_slots_reach_the_window_as_text_and_a_chosen_item_runs_in_the_frame', 
   // No meeting: empty again; a stale index runs nothing.
   t.send({ kind: 'event', type: 'call', call: null, where: { view: 'meetings', section: '', route: '' } });
   await settle(20);
-  assert.deepEqual(slots().at(-1), { type: 'slots', call: '', header: [], menu: [], minutes: [] });
+  assert.deepEqual(slots().at(-1), { type: 'slots', call: '', header: [], menu: [], minutes: [], minutesSlot: true });
   t.send({ kind: 'event', type: 'slot', slot: 'call.menu', index: 0 });
   await settle(20);
   assert.equal(seen.runs.length, 2);
@@ -876,6 +887,18 @@ test('the_window_tells_frames_the_meeting_shows_their_slots_and_lays_a_sheet_ove
   assert.equal(w.shim.state.call, null);
 });
 
+test('minutesPlugins lists frames whose client declared call.minutes, installed and on', async () => {
+  const w = await helloLoaded();
+  assert.deepEqual(w.host.minutesPlugins(), [], 'hello\'s client registers no call.minutes slot');
+  w.shim.ctx.slots.add('call.minutes', { id: 'm', render: () => '<p>x</p>' });
+  w.shim.ctx.render();
+  await settle(20);
+  assert.deepEqual(w.host.minutesPlugins(), [{ id: 'hello', name: 'Hello' }]);
+  // Turned off: its frame goes, and so does the listing.
+  w.host.sync([{ ...HELLO_INSTALLED, enabled: false }]);
+  assert.deepEqual(w.host.minutesPlugins(), []);
+});
+
 test('the_schema_takes_a_call_its_slots_and_a_sheet_only_as_named', () => {
   const where = { view: 'calls', section: '', route: '' };
   const ok = m => checkFromWindow({ v: V, id: 0, kind: 'event', ...m });
@@ -890,10 +913,17 @@ test('the_schema_takes_a_call_its_slots_and_a_sheet_only_as_named', () => {
   assert.equal(ok({ type: 'slot', slot: 'call.header', index: 0 }), null);
   assert.equal(ok({ type: 'slot', slot: 'call.menu', index: 99 }), null);
   const fromFrame = m => checkFromFrame({ v: V, id: 0, kind: 'event', ...m });
-  assert.ok(fromFrame({ type: 'slots', call: 'x', header: ['a'], menu: [], minutes: [] }));
-  assert.equal(fromFrame({ type: 'slots', call: 'x', header: Array(9).fill('a'), menu: [], minutes: [] }), null);
-  assert.equal(fromFrame({ type: 'slots', call: 'x', header: ['<b>' + 'a'.repeat(300)], menu: [], minutes: [] }), null);
-  assert.equal(fromFrame({ type: 'slots', call: 'x', header: [' '], menu: [], minutes: [] }), null);
+  assert.ok(fromFrame({ type: 'slots', call: 'x', header: ['a'], menu: [], minutes: [], minutesSlot: false }));
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: Array(9).fill('a'), menu: [], minutes: [], minutesSlot: false }), null);
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: ['<b>' + 'a'.repeat(300)], menu: [], minutes: [], minutesSlot: false }), null);
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: [' '], menu: [], minutes: [], minutesSlot: false }), null);
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: [], menu: [], minutes: [] }), null, 'minutesSlot is required');
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: [], menu: [], minutes: [], minutesSlot: 'yes' }), null, 'minutesSlot is a boolean');
+  // A minutes item keeps its lines and is much longer than a chip or menu item.
+  assert.ok(fromFrame({ type: 'slots', call: 'x', header: [], menu: [], minutes: ['a'.repeat(20000)], minutesSlot: true }));
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: [], menu: [], minutes: ['a'.repeat(20001)], minutesSlot: true }), null);
+  assert.ok(fromFrame({ type: 'slots', call: 'x', header: [], menu: [], minutes: ['a'.repeat(301)], minutesSlot: true }), 'a minutes item may be longer than a chip or menu item');
+  assert.equal(fromFrame({ type: 'slots', call: 'x', header: ['a'.repeat(301)], menu: [], minutes: [], minutesSlot: false }), null, 'a header item still stays at 300');
   assert.ok(fromFrame({ type: 'sheet', open: true }));
   assert.equal(fromFrame({ type: 'sheet', open: 1 }), null);
   assert.equal(callLink('echo://call/2026-11-04_160426-sync'), '2026-11-04_160426-sync');

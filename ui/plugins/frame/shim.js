@@ -44,6 +44,8 @@ const DRAWN_SLOTS = ['call.header', 'call.menu', 'call.minutes'];
 /** A slot's text: at most this long, and this many of one slot. */
 const SLOT_TEXT = 300;
 const SLOT_ITEMS = 8;
+/** A `call.minutes` item's text: longer than a chip or menu item, since it keeps its lines. */
+const MINUTES_TEXT = 20000;
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', middot: '·', mdash: '—', ndash: '–', hellip: '…', rarr: '→' };
 /** What a slot's HTML says, as one line of text (Connect's window shows words, never a plugin's
@@ -62,6 +64,47 @@ export function textOf(html) {
     .replace(/\s+/g, ' ')
     .trim();
   return text.length > SLOT_TEXT ? `${text.slice(0, SLOT_TEXT - 1)}…` : text;
+}
+
+/** Tags whose edges (open or close) end the line a `call.minutes` item draws; a heading's or a
+ *  list item's own OPENING tag also starts the next line with its prefix. */
+const MINUTES_BLOCK = /<(\/?)(p|div|br|li|ul|ol|h[1-6])\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+const stripInline = seg => seg.replace(/<(?:[^>"']|"[^"]*"|'[^']*')*>/g, '');
+const readEntities = text => text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (all, name) => {
+  if (name[0] !== '#') return ENTITIES[name.toLowerCase()] ?? all;
+  const code = name[1] === 'x' || name[1] === 'X' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+  return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+});
+
+/** A `call.minutes` item's HTML with its lines kept (Connect's window never shows a plugin's
+ *  markup): `<br>`, `</p>` and `</div>` end a line; `<hN>` starts one with N `#` and a space;
+ *  `<li>` starts one with `- `; other tags are dropped — a `<script>` or `<style>` element's text
+ *  goes with it; the `ENTITIES` are read, spaces fold within a line, lines are trimmed, and 3 or
+ *  more newlines in a row become 2. At most `MINUTES_TEXT` characters. */
+export function minutesText(html) {
+  const src = String(html ?? '').replace(/<(style|script)\b[\s\S]*?<\/\1\s*>/gi, '');
+  const lines = [];
+  let line = '';
+  const flush = () => { if (line) { lines.push(line); line = ''; } };
+  const re = new RegExp(MINUTES_BLOCK);
+  let last = 0;
+  let m;
+  while ((m = re.exec(src))) {
+    line += stripInline(src.slice(last, m.index));
+    last = m.index + m[0].length;
+    flush();
+    const closing = m[1] === '/';
+    const tag = m[2].toLowerCase();
+    if (!closing && tag[0] === 'h') line = `${'#'.repeat(Number(tag[1]))} `;
+    else if (!closing && tag === 'li') line = '- ';
+  }
+  line += stripInline(src.slice(last));
+  flush();
+  const text = lines
+    .map(l => readEntities(l).replace(/\s+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
+  return text.length > MINUTES_TEXT ? text.slice(0, MINUTES_TEXT) : text;
 }
 
 /** Where a plugin shows the user's own text: never renamed (host-words.js), phrase or not. */
@@ -622,7 +665,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
   function drawSlots() {
     if (s.unloaded || !s.port) return;
     const call = s.call;
-    const out = { call: call ? call.name : '', header: [], menu: [], minutes: [] };
+    const out = { call: call ? call.name : '', header: [], menu: [], minutes: [], minutesSlot: (s.slots.get('call.minutes') || []).length > 0 };
     const shown = [];
     if (call) {
       const t = { kind: 'call', call: { ...call } };
@@ -652,7 +695,7 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
           }
         }
         for (const item of s.slots.get('call.minutes') || []) {
-          const text = renameHost(textOf(slotHtml('call.minutes', item, { ...call })), s.rename);
+          const text = renameHost(minutesText(slotHtml('call.minutes', item, { ...call })), s.rename);
           if (text && out.minutes.length < SLOT_ITEMS) out.minutes.push(text);
         }
       } finally {

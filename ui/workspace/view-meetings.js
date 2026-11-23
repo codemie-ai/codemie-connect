@@ -69,11 +69,12 @@ function pageOf(s, ctx = {}) {
     s, v, now, zone, items, byId: new Map(items.map(m => [m.id, m])), reads: ctx.reads || (() => ({})), glossary: ctx.glossary || null,
     rules: rulesOf(s), tasksBy: tasksByMeeting(s), callSlots: Array.isArray(ctx.callSlots) ? ctx.callSlots : [],
     // The meeting's pane: the one chosen, else "Open a meeting on"; whether the action items sit
-    // beside it; the plugins installed and on, for the pinned plugin tabs; the task target's
+    // beside it; the plugins installed and on, for the pinned plugin tabs (`ctx.minutesPlugins`,
+    // never `ctx.plugins`, which is the plugin page/activities context); the task target's
     // label for "Add N to <label>" (step 4's provider; "Tasks" for the local board).
     pane: PANES.includes(v.pane) ? v.pane : PANES.includes(settings.openOn) ? settings.openOn : 'summary',
     columnOn: settings.actionItems !== false,
-    plugins: Array.isArray(ctx.plugins) ? ctx.plugins : [],
+    plugins: Array.isArray(ctx.minutesPlugins) ? ctx.minutesPlugins : [],
     taskLabel: ctx.taskLabel || 'Tasks',
     // The list as it shows: the Needs you card and the days.
     model: listModel(s, v, { now, zone, items }),
@@ -91,10 +92,18 @@ function pluginChips(slots) {
   return slots.flatMap(x => x.header.map(t => `<span class="ws-mtg-plugin-chip" title="${e(`${x.pluginName}: ${t}`)}">${icon('puzzle')}<span>${e(t)}</span></span>`)).join('');
 }
 
-/** A plugin's lines while the meeting's notes are being made (`call.minutes`), as text. */
+/** A plugin's line while the meeting's notes are being made (`call.minutes`): its first item's
+ *  first line, cut to 300 characters — one line per plugin, however many lines or items it gave. */
 function pluginLines(slots, m) {
   if (m.run?.kind !== 'meeting_notes') return '';
-  return slots.flatMap(x => x.minutes.map(t => `<p class="ws-mtg-plugin-line" title="${e(x.pluginName)}">${icon('puzzle')}<span>${e(t)}</span></p>`)).join('');
+  const firstLine = x => {
+    const line = (x.minutes[0] || '').split('\n')[0];
+    return line.length > 300 ? `${line.slice(0, 299)}…` : line;
+  };
+  return slots.flatMap(x => {
+    const text = firstLine(x);
+    return text ? [`<p class="ws-mtg-plugin-line" title="${e(x.pluginName)}">${icon('puzzle')}<span>${e(text)}</span></p>`] : [];
+  }).join('');
 }
 
 /** "Today", "Yesterday", "Tomorrow" or null for a day further away. */

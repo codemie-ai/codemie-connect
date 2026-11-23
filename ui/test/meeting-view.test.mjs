@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSnapshot, withMeetings } from './fixtures/workspace-fixture.mjs';
-import { meetingItems, rulesOf, tasksByMeeting } from '../workspace/meetings-model.js';
+import { callOfMeeting, meetingItems, rulesOf, tasksByMeeting } from '../workspace/meetings-model.js';
 import { meetingContext } from '../workspace/view-meeting-tabs.js';
 import { meOf } from '../workspace/tasks-model.js';
 import {
@@ -101,6 +101,24 @@ test('the primary follows the tab', () => {
   const pluginTab = { key: 'plugin:pod', label: 'Podervianskyi', kind: 'plugin', templateId: null, doc: null, pluginId: 'pod', text: 'Informal summary' };
   assert.deepEqual(stripPrimary(philips, pluginTab), { kind: 'copy', label: 'Copy' });
   assert.deepEqual(stripPrimary(philips, { ...pluginTab, text: null }), { kind: 'none', label: '' });
+});
+
+test('a pinned plugin with minutes is a tab with its text and Copy; without minutes it says so', () => {
+  const s = snapshot();
+  s.settings.meetings.summaryTabs = ['plugin:pod'];
+  const mc = mcOf(s, 'mtg-philips');
+  const plugins = [{ id: 'pod', name: 'Podervianskyi' }];
+  const call = callOfMeeting(mc.m);
+  const withMinutes = [{ plugin: 'pod', pluginName: 'Podervianskyi', call: call.name, header: [], menu: [], minutes: ['Informal summary', 'More'] }];
+  const tab = summaryTabs(s, mc, { plugins, slots: withMinutes }).tabs[0];
+  assert.equal(tab.key, 'plugin:pod');
+  assert.equal(tab.text, 'Informal summary\n\nMore');
+  assert.deepEqual(stripPrimary(mc, tab), { kind: 'copy', label: 'Copy' });
+
+  const withoutMinutes = [{ ...withMinutes[0], minutes: [] }];
+  const empty = summaryTabs(s, mc, { plugins, slots: withoutMinutes }).tabs[0];
+  assert.equal(empty.text, null, 'no minutes: nothing to show or copy');
+  assert.deepEqual(stripPrimary(mc, empty), { kind: 'none', label: '' });
 });
 
 test('with-line names up to three people, else counts them', () => {
