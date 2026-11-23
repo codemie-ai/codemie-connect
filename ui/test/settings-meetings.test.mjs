@@ -205,6 +205,28 @@ test('pinning sends summaryTabs with the new id last; Move up swaps; Unpin remov
   assert.ok(panel());
 });
 
+test('pin, unpin and move keep the stored pins they cannot show (an off plugin, another workspace’s template) in place', async () => {
+  // Settings are app-wide; templates belong to a workspace and a plugin's frame may be off or not
+  // loaded yet. Neither may lose its pin because of an edit made while it is out of sight.
+  const s = snapshot();
+  s.settings.meetings.summaryTabs = ['plugin:pod', 'meeting-notes', 'tpl-other-workspace'];
+  const { ctl, calls } = harness({ s, plugins: [] });
+  await ctl.handle('meetings-settings-pin', control({ pin: 'short-summary' }));
+  assert.deepEqual(calls.mutate.at(-1), ['settings_update', { meetings: { summaryTabs: ['plugin:pod', 'meeting-notes', 'tpl-other-workspace', 'short-summary'] } }]);
+  s.settings.meetings.summaryTabs = ['plugin:pod', 'meeting-notes', 'tpl-other-workspace', 'short-summary'];
+  // Move up swaps with the shown pin before it; the hidden ones stay where they are.
+  await ctl.handle('meetings-settings-pin-move', control({ pin: 'short-summary', d: '-1' }));
+  assert.deepEqual(calls.mutate.at(-1), ['settings_update', { meetings: { summaryTabs: ['plugin:pod', 'short-summary', 'tpl-other-workspace', 'meeting-notes'] } }]);
+  s.settings.meetings.summaryTabs = ['plugin:pod', 'short-summary', 'tpl-other-workspace', 'meeting-notes'];
+  // The first shown pin cannot move up past a hidden one: nothing is sent.
+  const sent = calls.mutate.length;
+  await ctl.handle('meetings-settings-pin-move', control({ pin: 'short-summary', d: '-1' }));
+  assert.equal(calls.mutate.length, sent);
+  // Unpin removes only that one.
+  await ctl.handle('meetings-settings-unpin', control({ pin: 'meeting-notes' }));
+  assert.deepEqual(calls.mutate.at(-1), ['settings_update', { meetings: { summaryTabs: ['plugin:pod', 'short-summary', 'tpl-other-workspace'] } }]);
+});
+
 test('two different pin actions fired back-to-back, before a snapshot lands in between, both take effect', async () => {
   // The snapshot (`s`) never changes mid-test (the fake `mutate` is a spy, as every other test
   // here treats it) — so without a local pending copy, a second click computes its payload from

@@ -69,6 +69,7 @@ function harness({ answers = {}, s = snapshot(), view = {}, dock, timer, taskTar
   return { ctl, state, calls, s, record };
 }
 const control = (dataset = {}, extra = {}) => ({ dataset, closest: () => null, ...extra });
+const taskRecord = (s, id) => s.records.find(r => r.kind === 'commitment' && r.id === id);
 const form = fields => {
   const f = new FormData();
   for (const [k, v] of Object.entries(fields)) f.append(k, v);
@@ -771,12 +772,13 @@ test('Add moves the ticked tasks once, even on a double click; Undo moves only t
     add: async ids => { calls.push(['add', ids]); return { done: [...ids], failed: [] }; },
     undo: async ids => { calls.push(['undo', ids]); return { done: [...ids], failed: [] }; },
   };
-  const { ctl, state } = harness({ taskTarget });
+  const { ctl, state, s } = harness({ taskTarget });
   // mtg-philips: task-endpoint (mine, sure) ticks itself; task-pilot-list (Sam's) doesn't.
   const [p1, p2] = [ctl.handle('meeting-items-add', control({ id: 'mtg-philips' })), ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }))];
   await Promise.all([p1, p2]);
   assert.deepEqual(calls.filter(c => c[0] === 'add'), [['add', ['task-endpoint']]], 'one add, even from a double click');
   assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: ['task-endpoint'] });
+  taskRecord(s, 'task-endpoint').data.status = 'todo'; // where the add put it
   await ctl.handle('meeting-items-undo', control({ id: 'mtg-philips' }));
   assert.deepEqual(calls.filter(c => c[0] === 'undo'), [['undo', ['task-endpoint']]]);
   assert.equal(state.meetings.added, null);
@@ -812,7 +814,7 @@ test('a failed add keeps the row ticked and shows why', async () => {
   const { ctl, state } = harness({ taskTarget });
   await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
   assert.deepEqual(state.meetings.ticked['mtg-philips'], ['task-endpoint']);
-  assert.equal(state.meetings.addError, 'Todoist is unreachable.');
+  assert.deepEqual(state.meetings.addError, { meetingId: 'mtg-philips', message: 'Todoist is unreachable.' });
   assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: [] });
 });
 
@@ -844,7 +846,7 @@ test('a rejecting task target keeps the ticks, shows the error, and never throws
   const { ctl, state } = harness({ taskTarget });
   await assert.doesNotReject(ctl.handle('meeting-items-add', control({ id: 'mtg-philips' })));
   assert.deepEqual(state.meetings.ticked['mtg-philips'], ['task-endpoint']);
-  assert.equal(state.meetings.addError, 'Todoist timed out.');
+  assert.deepEqual(state.meetings.addError, { meetingId: 'mtg-philips', message: 'Todoist timed out.' });
   assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: [] });
   // The in-flight guard was released: a retry can run.
   const calls = [];
@@ -855,8 +857,9 @@ test('a rejecting task target keeps the ticks, shows the error, and never throws
 
 test('a rejecting Undo keeps "Added · Undo" so it can be tried again, and toasts rather than throwing', async () => {
   const taskTarget = { label: 'Tasks', add: async ids => ({ done: ids, failed: [] }), undo: async () => { throw new Error('Todoist timed out.'); } };
-  const { ctl, state, calls } = harness({ taskTarget });
+  const { ctl, state, calls, s } = harness({ taskTarget });
   await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  taskRecord(s, 'task-endpoint').data.status = 'todo';
   const added = state.meetings.added;
   await assert.doesNotReject(ctl.handle('meeting-items-undo', control({ id: 'mtg-philips' })));
   assert.deepEqual(state.meetings.added, added, 'kept, so Undo is still there to retry');
@@ -877,4 +880,129 @@ test('"+ Add" and an open row close when the person leaves the meeting (fix roun
   assert.equal(state.meetings.addOpen, true);
   await ctl.open('mtg-philips');
   assert.equal(state.meetings.addOpen, false);
+});
+
+test('the add error and "Added · Undo" belong to their meeting: leaving it clears them', async () => {
+  const taskTarget = {
+    label: 'Tasks',
+    add: async ids => ({ done: [], failed: ids.map(id => ({ id, message: 'Todoist is unreachable.' })) }),
+    undo: async () => ({ done: [], failed: [] }),
+  };
+  const { ctl, state } = harness({ taskTarget, view: { selected: 'mtg-philips' } });
+  await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  assert.equal(state.meetings.addError?.meetingId, 'mtg-philips');
+  await ctl.handle('meeting-select', control({ id: 'mtg-roadmap' }));
+  assert.equal(state.meetings.addError, null, 'the next meeting does not show it');
+  assert.equal(state.meetings.added, null);
+  // A successful add, then leaving: no Undo waits on the way back.
+  taskTarget.add = async ids => ({ done: ids, failed: [] });
+  await ctl.open('mtg-philips');
+  await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  assert.equal(state.meetings.added?.meetingId, 'mtg-philips');
+  await ctl.handle('meeting-select', control({ id: 'mtg-roadmap' }));
+  assert.equal(state.meetings.added, null);
+});
+
+test('Undo never moves back a task changed since the add (finished on the Tasks page): only those still in To do', async () => {
+  const calls = [];
+  const taskTarget = {
+    label: 'Tasks',
+    add: async ids => ({ done: ids, failed: [] }),
+    undo: async ids => { calls.push(ids); return { done: ids, failed: [] }; },
+  };
+  const { ctl, state, s } = harness({ taskTarget });
+  await ctl.handle('meeting-item-tick', control({ id: 'mtg-philips', task: 'task-pilot-list' }, { checked: true }));
+  await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  assert.deepEqual([...state.meetings.added.ids].sort(), ['task-endpoint', 'task-pilot-list']);
+  taskRecord(s, 'task-endpoint').data.status = 'todo';
+  taskRecord(s, 'task-pilot-list').data.status = 'done'; // finished since
+  await ctl.handle('meeting-items-undo', control({ id: 'mtg-philips' }));
+  assert.deepEqual(calls, [['task-endpoint']], 'the finished task stays done');
+  // Nothing left to undo: no undo call at all.
+  calls.length = 0;
+  state.meetings.added = { meetingId: 'mtg-philips', ids: ['task-pilot-list'] };
+  await ctl.handle('meeting-items-undo', control({ id: 'mtg-philips' }));
+  assert.deepEqual(calls, []);
+  assert.equal(state.meetings.added, null);
+});
+
+test('Undo reads the target’s failures: says why, keeps Undo for those, re-ticks only the ones moved back', async () => {
+  const taskTarget = {
+    label: 'Tasks',
+    add: async ids => ({ done: ids, failed: [] }),
+    undo: async ids => ({ done: ids.filter(id => id !== 'task-pilot-list'), failed: [{ id: 'task-pilot-list', message: 'This task is no longer there.' }] }),
+  };
+  const { ctl, state, s } = harness({ taskTarget });
+  await ctl.handle('meeting-item-tick', control({ id: 'mtg-philips', task: 'task-pilot-list' }, { checked: true }));
+  await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  taskRecord(s, 'task-endpoint').data.status = 'todo';
+  taskRecord(s, 'task-pilot-list').data.status = 'todo';
+  state.meetings.ticked['mtg-philips'] = [];
+  await ctl.handle('meeting-items-undo', control({ id: 'mtg-philips' }));
+  assert.deepEqual(state.meetings.ticked['mtg-philips'], ['task-endpoint'], 'only the moved-back one is ticked again');
+  assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: ['task-pilot-list'] }, 'Undo stays for the one that failed');
+  assert.deepEqual(state.meetings.addError, { meetingId: 'mtg-philips', message: 'This task is no longer there.' });
+});
+
+test('the task target’s label is the one the page draws', () => {
+  const { ctl } = harness({ taskTarget: { label: 'Todoist', add: async () => ({ done: [], failed: [] }), undo: async () => ({ done: [], failed: [] }) } });
+  assert.equal(ctl.taskLabel(), 'Todoist');
+  assert.equal(harness().ctl.taskLabel(), 'Tasks');
+});
+
+/** mtg-philips with three more documents: five tabs, the fifth (doc:extra-3) under More ▾. */
+function fiveTabs(s) {
+  const meeting = s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-philips');
+  const extra = [1, 2, 3].map(n => ({
+    id: `extra-${n}`, name: `Extra ${n}`, template: `extra-${n}`, file: `notes.extra-${n}.md`,
+    auto: false, createdAt: 0, updatedAt: 0, rev: 1, version: 1, versions: [], wishes: null,
+  }));
+  meeting.data = { ...meeting.data, docs: [...meeting.data.docs, ...extra] };
+  return s;
+}
+
+test('Esc back from a pane focuses the shown summary tab, or More ▾ when the shown tab sits under it (ruling 18)', async () => {
+  const { ctl, state, calls } = harness({ s: fiveTabs(snapshot()), view: { selected: 'mtg-philips', pane: 'transcript' } });
+  const outside = { closest: () => null };
+  assert.equal(await ctl.key({ key: 'Escape', target: outside }), true);
+  assert.equal(state.meetings.pane, 'summary');
+  assert.equal(calls.focus.at(-1), '.ws-mtg-tabs [aria-selected="true"]');
+  state.meetings.summaryTab = { 'mtg-philips': 'doc:extra-3' };
+  state.meetings.pane = 'files';
+  await ctl.key({ key: 'Escape', target: outside });
+  assert.equal(calls.focus.at(-1), '.ws-mtg-tabs .ws-mtg-more');
+  state.meetings.pane = 'files';
+  await ctl.handle('meeting-back', control({ id: 'mtg-philips' }));
+  assert.equal(calls.focus.at(-1), '.ws-mtg-tabs .ws-mtg-more', 'Back does the same');
+});
+
+test('←/→ onto a More tab focuses More ▾ (visible), and ←/→ from More ▾ goes on', async () => {
+  const { ctl, state, calls } = harness({ s: fiveTabs(snapshot()), view: { selected: 'mtg-philips', pane: 'summary', summaryTab: { 'mtg-philips': 'doc:extra-2' } } });
+  const tab = { closest: sel => (sel.includes('ws-mtg-tabs') && !sel.includes('details') ? {} : null) };
+  assert.equal(await ctl.key({ key: 'ArrowRight', target: tab }), true);
+  assert.equal(state.meetings.summaryTab['mtg-philips'], 'doc:extra-3');
+  assert.equal(calls.focus.at(-1), '.ws-mtg-tabs .ws-mtg-more', 'never the hidden menu item');
+  // From More ▾ itself (not a role=tab), the arrows still move.
+  const more = { closest: sel => (sel.includes('ws-mtg-more') ? {} : null) };
+  assert.equal(await ctl.key({ key: 'ArrowLeft', target: more }), true);
+  assert.equal(state.meetings.summaryTab['mtg-philips'], 'doc:extra-2');
+  assert.equal(calls.focus.at(-1), '.ws-mtg-tabs [aria-selected="true"]');
+  // With the More menu open, the arrows are the menu's.
+  const open = { closest: sel => (sel.includes('ws-mtg-more') || sel.includes('details[open]') ? {} : null) };
+  assert.equal(await ctl.key({ key: 'ArrowLeft', target: open }), false);
+});
+
+test('while a More tab is shown, the first visible tab stays the tablist’s Tab stop', () => {
+  const s = fiveTabs(snapshot());
+  const html = page(s, { selected: 'mtg-philips', pane: 'summary', summaryTab: { 'mtg-philips': 'doc:extra-3' } }, normalizeDock(MEETINGS_DOCK, null));
+  const tabs = [...html.matchAll(/<button type="button" class="ws-mtg-tab" role="tab"[^>]*>/g)].map(m => m[0]);
+  assert.equal(tabs.length, 4);
+  assert.match(tabs[0], /tabindex="0"/, 'reachable with Tab');
+  for (const t of tabs.slice(1)) assert.match(t, /tabindex="-1"/);
+  assert.match(html, /<summary class="ws-mtg-tab ws-mtg-more ws-mtg-more-on"/);
+  // With a visible tab shown, that tab is the stop, as before.
+  const plain = page(s, { selected: 'mtg-philips', pane: 'summary', summaryTab: { 'mtg-philips': 'doc:extra-1' } }, normalizeDock(MEETINGS_DOCK, null));
+  const stops = [...plain.matchAll(/<button type="button" class="ws-mtg-tab" role="tab"[^>]*tabindex="0"[^>]*>/g)].map(m => m[0]);
+  assert.equal(stops.length, 1);
+  assert.match(stops[0], /data-key="doc:extra-1"/);
 });

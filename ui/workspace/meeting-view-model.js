@@ -47,10 +47,19 @@ export function withLine(people, me) {
 /** The pins that still apply (spec "Pins"): `settings.meetings.summaryTabs`, in order, minus a
  *  deleted template's id or an off (or uninstalled) plugin's. */
 export function pinsOf(s, plugins = []) {
-  const raw = Array.isArray(s?.settings?.meetings?.summaryTabs) ? s.settings.meetings.summaryTabs : [];
+  return storedPins(s).filter(pinShows(s, plugins));
+}
+
+/** `settings.meetings.summaryTabs` as stored, every entry kept (Settings edits build on this). */
+export function storedPins(s) {
+  return Array.isArray(s?.settings?.meetings?.summaryTabs) ? s.settings.meetings.summaryTabs : [];
+}
+
+/** Whether a pin applies now: its template is in this workspace, or its plugin is on. */
+export function pinShows(s, plugins = []) {
   const templates = templatesOf(s);
   const on = new Set(plugins.map(p => p.id));
-  return raw.filter(id => (id.startsWith('plugin:') ? on.has(id.slice('plugin:'.length)) : templates.some(t => t.id === id)));
+  return id => (id.startsWith('plugin:') ? on.has(id.slice('plugin:'.length)) : templates.some(t => t.id === id));
 }
 
 /**

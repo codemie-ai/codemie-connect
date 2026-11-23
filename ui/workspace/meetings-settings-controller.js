@@ -12,7 +12,7 @@ import { formatDate, formatTime } from './format.js';
 import { COLUMN_NAMES } from './tasks-model.js';
 import { quoted } from './tasks-controller.js';
 import { templatesOf } from './meetings-model.js';
-import { pinsOf } from './meeting-view-model.js';
+import { pinShows, storedPins } from './meeting-view-model.js';
 import { badge, select } from './ui.js';
 import {
   draftOf, editorBar, exampleText, isDirty, latestCard, latestDoc, latestKey, mdEditor, mdStatus, mdSummary, ruleTestResult, sortedRules, swatches, templateOf, wordsHint,
@@ -172,15 +172,17 @@ export function createMeetingsSettingsController({
 
   // ---------------------------------------------------------------- "When you open a meeting"
 
-  // Pin, unpin and move each send the whole next array, and a fast click on a second pin control
-  // before the first's `settings_update` round-trip lands must build on that first click's
-  // result, not the snapshot it was sent from (still stale at that point) — the same shape
-  // dock-controller.js's `commit()` keeps for layouts. `pendingPins`, once set, is what `pins()`
-  // reads instead of the snapshot; a read reconciles it away once the snapshot itself catches up,
-  // and a refusal clears it back to whatever the snapshot actually holds.
+  // Pin, unpin and move each send the whole next array, built on every stored entry — a pin of a
+  // plugin that is off or not loaded yet, or of another workspace's template, is not shown here but
+  // must survive an edit made while it is out of sight. Only the list drawn filters (`pinsOf`).
+  // A fast click on a second pin control before the first's `settings_update` round-trip lands
+  // must build on that first click's result, not the snapshot it was sent from (still stale at
+  // that point) — the same shape dock-controller.js's `commit()` keeps for layouts. `pendingPins`,
+  // once set, is what `pins()` reads instead of the snapshot; a read reconciles it away once the
+  // snapshot itself catches up, and a refusal clears it back to whatever the snapshot holds.
   let pendingPins = null;
   function pins() {
-    const real = pinsOf(snap(), plugins());
+    const real = storedPins(snap());
     if (pendingPins && JSON.stringify(pendingPins) === JSON.stringify(real)) pendingPins = null;
     return pendingPins || real;
   }
@@ -206,13 +208,17 @@ export function createMeetingsSettingsController({
     await sendPins(pins().filter(x => x !== id));
   }
 
+  /** Swaps a pin with the shown pin before (`d` -1) or after (+1) it, as the card lists them;
+   *  the hidden ones keep their places. */
   async function movePin(id, d) {
     const ids = pins();
-    const at = ids.indexOf(id);
+    const shown = ids.filter(pinShows(snap(), plugins()));
+    const at = shown.indexOf(id);
     const to = at + d;
-    if (at < 0 || to < 0 || to >= ids.length) return;
+    if (at < 0 || to < 0 || to >= shown.length) return;
     const next = [...ids];
-    [next[at], next[to]] = [next[to], next[at]];
+    const [i, j] = [ids.indexOf(id), ids.indexOf(shown[to])];
+    [next[i], next[j]] = [next[j], next[i]];
     await sendPins(next);
   }
 

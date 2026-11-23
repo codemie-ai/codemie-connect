@@ -153,6 +153,10 @@ test('the drawer opens, saves its fields on change and closes', async () => {
   // The quote opens the transcript at its line.
   await ctl.handle('task-quote', control({ id: 'task-bug' }));
   assert.deepEqual(calls.meetings.at(-1), ['ev-sync', 'transcript', 7]);
+  // "Open the meeting" (the drawer's source, the menu item, the row's link) passes no pane, so
+  // "Open a meeting on" decides.
+  await ctl.handle('task-open-meeting', control({ id: 'ev-sync' }));
+  assert.deepEqual(calls.meetings.at(-1), ['ev-sync']);
   await ctl.handle('task-close', control());
   assert.equal(state.tasks.drawer, null);
   assert.ok(calls.focus.includes('[data-action="task-open"][data-id="task-bug"]'), 'focus goes back to the card');

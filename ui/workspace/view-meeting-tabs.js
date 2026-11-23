@@ -576,6 +576,15 @@ export function ticksOf(v, mc, me) {
   return (stored === undefined ? defaultTicks(toAdd, me) : stored).filter(id => ids.has(id));
 }
 
+/** The tasks the column's last add (`v.added`, for this meeting) can still put back: those still
+ *  in To do, where the add put them. One finished, moved or deleted since is left alone. Both the
+ *  footer ("Added N · Undo") and the controller's Undo read it. */
+export function undoableOf(v, mc) {
+  const added = v.added && v.added.meetingId === mc.m.id ? v.added.ids : [];
+  const inTodo = new Set((mc.tasks || []).filter(t => taskStatus(t) === 'todo').map(t => t.id));
+  return added.filter(id => inTodo.has(id));
+}
+
 /** A to-add row, closed: a checkbox, the text and the owner line. Open (`v.itemOpen` is its id):
  *  also the quote, the owner and due date, and "Not a task". */
 function toAddRow(p, mc, t, { open, ticked, me }) {
@@ -606,8 +615,8 @@ function boardRow(p, t) {
 /** The action items column (spec "The action items column"): the meeting's To review tasks to
  *  add, "Add N to Tasks" with Undo, and the tasks already in Tasks. Beside every pane (`pane`
  *  false, the default), or the Action items pane with the column off (`pane` true) — the same
- *  content, drawn full width. The label comes from `p.taskLabel` (the page's `ctx.taskLabel`,
- *  default "Tasks" — the task target's `label`). */
+ *  content, drawn full width. "Add N to …", "Added N to …" and "N in … ›" name `p.taskLabel` (the
+ *  page's `ctx.taskLabel`: the task target's own `label`, "Tasks" for the local board). */
 export function actionItems(p, mc, { pane = false } = {}) {
   const { m } = mc;
   const v = p.v;
@@ -621,13 +630,13 @@ export function actionItems(p, mc, { pane = false } = {}) {
   const toAddHtml = toAdd.length ? `<div class="ws-mtg-item-list">${toAdd.map(t => toAddRow(p, mc, t, { open: v.itemOpen, ticked, me })).join('')}</div>` : '';
   const n = ticked.size;
   const addBtn = n >= 1 ? button(`Add ${n} to ${label}`, { action: 'meeting-items-add', variant: 'primary', attrs: { 'data-id': m.id }, className: 'ws-mtg-items-add' }) : '';
-  const error = v.addError ? `<p class="ws-mtg-items-error">${e(v.addError)}</p>` : '';
+  const error = v.addError?.meetingId === m.id ? `<p class="ws-mtg-items-error">${e(v.addError.message)}</p>` : '';
   const inTasksHtml = inTasks.length ? `<div class="ws-mtg-items-board"><h4 class="ws-mtg-items-sub">In Tasks</h4>${inTasks.map(t => boardRow(p, t)).join('')}</div>` : '';
-  const added = v.added && v.added.meetingId === m.id ? v.added : null;
-  const footer = added && added.ids.length
-    ? `<p class="ws-mtg-items-foot" role="status">Added ${added.ids.length} to Tasks · ${button('Undo', { action: 'meeting-items-undo', attrs: { 'data-id': m.id } })}</p>`
+  const undoable = undoableOf(v, mc);
+  const footer = undoable.length
+    ? `<p class="ws-mtg-items-foot" role="status">Added ${undoable.length} to ${e(label)} · ${button('Undo', { action: 'meeting-items-undo', attrs: { 'data-id': m.id } })}</p>`
     : inTasks.length
-      ? `<p class="ws-mtg-items-foot" role="status">${button(`${inTasks.length} in Tasks ›`, { action: 'meeting-board', variant: 'ghost', attrs: { 'data-id': m.id } })}</p>`
+      ? `<p class="ws-mtg-items-foot" role="status">${button(`${inTasks.length} in ${label} ›`, { action: 'meeting-board', variant: 'ghost', attrs: { 'data-id': m.id } })}</p>`
       : `<p class="ws-mtg-items-foot" role="status">None in this meeting yet.</p>`;
   return `<aside class="ws-mtg-items${pane ? ' ws-mtg-items-pane' : ''}" aria-label="Action items">
     <header class="ws-mtg-items-head"><h3>Action items</h3>${button('+ Add', { action: 'meeting-item-add-open', variant: 'ghost', size: 'sm', attrs: { 'data-id': m.id } })}</header>

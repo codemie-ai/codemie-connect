@@ -1763,6 +1763,27 @@ test('the column: my sure task ticked, Sam’s not, Add 1 to Tasks, one In Tasks
   assert.match(column, /1 in Tasks ›/);
 });
 
+test('the column’s add error and Added · Undo show only on their meeting, Undo only while a task is still in To do; the target’s label throughout', () => {
+  const s = meetingsSnapshot();
+  const column = (view, extra) => detailOf(meetings(s, meetingsCtx(view, extra))).match(/<aside class="ws-mtg-items"[^]*?<\/aside>/)?.[0] || '';
+  const error = { meetingId: 'mtg-philips', message: 'Todoist is unreachable.' };
+  assert.match(column({ selected: 'mtg-philips', addError: error }), /Todoist is unreachable\./);
+  assert.doesNotMatch(column({ selected: 'mtg-roadmap', showNone: true, addError: error }), /Todoist is unreachable\./, 'not on another meeting');
+  // Added · Undo counts only the tasks still where the add put them (To do).
+  const added = { meetingId: 'mtg-philips', ids: ['task-endpoint', 'task-pilot-list'] };
+  s.records.find(r => r.id === 'task-endpoint').data.status = 'todo';
+  s.records.find(r => r.id === 'task-pilot-list').data.status = 'done';
+  assert.match(column({ selected: 'mtg-philips', added }), /Added 1 to Tasks · /);
+  s.records.find(r => r.id === 'task-endpoint').data.status = 'done';
+  assert.doesNotMatch(column({ selected: 'mtg-philips', added }), /meeting-items-undo/, 'nothing left to undo');
+  // The task target's label, in every string that names it.
+  s.records.find(r => r.id === 'task-endpoint').data.status = 'review';
+  assert.match(column({ selected: 'mtg-philips' }, { taskLabel: 'Todoist' }), /Add 1 to Todoist/);
+  assert.match(column({ selected: 'mtg-philips' }, { taskLabel: 'Todoist' }), /\d+ in Todoist ›/);
+  s.records.find(r => r.id === 'task-endpoint').data.status = 'todo';
+  assert.match(column({ selected: 'mtg-philips', added: { meetingId: 'mtg-philips', ids: ['task-endpoint'] } }, { taskLabel: 'Todoist' }), /Added 1 to Todoist · /);
+});
+
 test('with the column off, ⋯ has Action items and the header Review 2 tasks', () => {
   const s = meetingsSnapshot();
   s.settings.meetings = { ...s.settings.meetings, actionItems: false };

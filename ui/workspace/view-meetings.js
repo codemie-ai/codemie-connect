@@ -463,7 +463,10 @@ function primary(p, mc, tab, it) {
 function strip(p, mc, { tabs, more, tab, it }, slots) {
   const { m } = mc;
   const has = hasTranscript(m);
-  const tabButton = t => `<button type="button" class="ws-mtg-tab" role="tab" data-action="meeting-summary-tab" data-id="${e(m.id)}" data-key="${e(t.key)}" aria-selected="${t === tab}" aria-controls="${e(paneId(m))}" tabindex="${t === tab ? 0 : -1}">${e(t.label)}</button>`;
+  // One Tab stop in the tablist: the shown tab, or the first visible one while the shown tab
+  // sits under More ▾ (which is focusable itself).
+  const stop = tabs.includes(tab) ? tab : tabs[0];
+  const tabButton = t => `<button type="button" class="ws-mtg-tab" role="tab" data-action="meeting-summary-tab" data-id="${e(m.id)}" data-key="${e(t.key)}" aria-selected="${t === tab}" aria-controls="${e(paneId(m))}" tabindex="${t === stop ? 0 : -1}">${e(t.label)}</button>`;
   const moreMenu = more.length ? menu(`meeting-more-tabs-${m.id}`, `<summary class="ws-mtg-tab ws-mtg-more${more.includes(tab) ? ' ws-mtg-more-on' : ''}">More ▾</summary>`, more.map(t => [t.label, 'meeting-summary-tab', { 'data-id': m.id, 'data-key': t.key, 'aria-checked': String(t === tab) }])) : '';
   const left = !has ? ''
     : p.pane === 'summary' ? `<div class="ws-mtg-tabs" role="tablist" aria-label="Summaries">${tabs.map(tabButton).join('')}${moreMenu}</div>`

@@ -296,7 +296,7 @@ export function createTasksController({
         if (!t) throw missing();
         return openMeeting(t.data.meetingId, 'transcript', t.data.line ?? null);
       }
-      case 'task-open-meeting': return openMeeting(id, 'notes', null);
+      case 'task-open-meeting': return openMeeting(id);
       case 'task-open-message': return openMessage(id);
       case 'task-quick':
         v.quickAdd = el.dataset.col;

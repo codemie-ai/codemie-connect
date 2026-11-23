@@ -18,7 +18,7 @@ import {
 } from './meetings-model.js';
 import { paneOf } from './dock-model.js';
 import { importBody, makeNotesBody } from './view-meetings.js';
-import { meetingContext, plural, ticksOf } from './view-meeting-tabs.js';
+import { meetingContext, plural, ticksOf, undoableOf } from './view-meeting-tabs.js';
 import { shownTab, summaryTabs } from './meeting-view-model.js';
 
 const IMPORT_MAX = 5 * 1024 * 1024;
@@ -175,7 +175,15 @@ export function createMeetingsController({
     view.summaryTab = { ...view.summaryTab, [id]: key };
     view.pane = 'summary';
     await rerender();
-    focus(`.ws-mtg-tabs [data-action="meeting-summary-tab"][data-key="${quoted(key)}"]`);
+    focusShownTab(id);
+  }
+
+  /** Focus on the summary tab shown for `id`: its button, or More ▾ when it sits under that menu
+   *  (its item is hidden in the closed menu, so focus would be lost). */
+  function focusShownTab(id) {
+    const { more, tab } = tabsFor(id);
+    if (tab && more.some(t => t.key === tab.key)) return focus('.ws-mtg-tabs .ws-mtg-more');
+    return focus('.ws-mtg-tabs [aria-selected="true"]');
   }
 
   /** Copies the shown tab's text (its document's Markdown, or a plugin's minutes), then the
@@ -330,15 +338,21 @@ export function createMeetingsController({
       ev.preventDefault?.();
       v().pane = 'summary';
       await rerender();
+      focusShownTab(v().selected);
       return true;
     }
-    if (['ArrowLeft', 'ArrowRight'].includes(ev.key) && !ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.target?.closest?.('.ws-mtg-tabs [role=tab]')) {
+    // ←/→ on a tab, or on More ▾ (closed: an open menu keeps its own keys).
+    if (['ArrowLeft', 'ArrowRight'].includes(ev.key) && !ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.target?.closest?.('.ws-mtg-tabs [role=tab], .ws-mtg-tabs .ws-mtg-more') && !ev.target.closest('details[open]')) {
       const id = v().selected;
       const { tabs, more, tab } = tabsFor(id);
       const all = [...tabs, ...more];
       if (all.length < 2) return false;
       ev.preventDefault?.();
-      const at = Math.max(0, all.indexOf(tab));
+      // From the tab that has focus (the first visible one can be the Tab stop while a More tab
+      // is shown), else the one shown.
+      const fromKey = ev.target.closest('.ws-mtg-tabs [role=tab]')?.dataset?.key;
+      const from = all.findIndex(t => t.key === fromKey);
+      const at = from >= 0 ? from : Math.max(0, all.findIndex(t => t.key === tab?.key));
       const next = all[(at + (ev.key === 'ArrowRight' ? 1 : -1) + all.length) % all.length];
       await showSummaryTab(id, next.key);
       return true;
@@ -766,28 +780,35 @@ export function createMeetingsController({
       for (const f of failed) kept.add(f.id);
       view.ticked = { ...view.ticked, [id]: [...kept] };
       view.added = { meetingId: id, ids: done };
-      view.addError = failed[0]?.message || null;
+      view.addError = failed.length ? { meetingId: id, message: failed[0].message } : null;
       return render();
     } finally {
       addingItems.delete(id);
     }
   }
 
-  /** Undoes the last "Add N to Tasks": moves those tasks back to To review and ticks them
-   *  again. A rejection leaves `v.added` as it was (so Undo is still there to try again) and
-   *  tells the person through a toast, rather than throwing unhandled. */
+  /** Undoes the last "Add N to Tasks": moves back the tasks it added that are still in To do
+   *  (`undoableOf`: one finished or moved since stays put) and ticks again the ones moved back.
+   *  The target's failures keep Undo for those ids and say why, as an add does; a rejection
+   *  leaves `v.added` as it was and tells the person through a toast, rather than throwing. */
   async function undoItems(id) {
     const added = v().added;
     if (!added || added.meetingId !== id) return undefined;
-    try {
-      await taskTarget.undo(added.ids);
-    } catch (err) {
-      toast(err?.message || 'Couldn’t undo. Try again.', 'error');
-      return undefined;
+    const ids = undoableOf(v(), itemsFor(id));
+    let done = [];
+    let failed = [];
+    if (ids.length) {
+      try {
+        ({ done, failed } = await taskTarget.undo(ids));
+      } catch (err) {
+        toast(err?.message || 'Couldn’t undo. Try again.', 'error');
+        return undefined;
+      }
     }
     const view = v();
-    view.ticked = { ...view.ticked, [id]: [...new Set([...(view.ticked[id] || []), ...added.ids])] };
-    view.added = null;
+    view.ticked = { ...view.ticked, [id]: [...new Set([...(view.ticked[id] || []), ...done])] };
+    view.added = failed.length ? { meetingId: id, ids: failed.map(f => f.id) } : null;
+    view.addError = failed.length ? { meetingId: id, message: failed[0].message } : null;
     return render();
   }
 
@@ -869,7 +890,7 @@ export function createMeetingsController({
       case 'meeting-back':
         view.pane = 'summary';
         await rerender();
-        return focus('.ws-mtg-tabs [aria-selected="true"]');
+        return focusShownTab(id);
       // The strip: a summary tab, its primary (Copy, Make <name>, Try again), and ⋯'s Make again and Edit.
       case 'meeting-summary-tab': return showSummaryTab(id, el.dataset.key);
       case 'meeting-copy-tab': return copyTab(id, el.dataset.key);
@@ -1088,11 +1109,13 @@ export function createMeetingsController({
   }
 
   /** The person left a meeting: its unsent Make notes form starts afresh next time, and the
-   *  action items column's "+ Add" and open row close — neither is kept per meeting (`v.addOpen`
-   *  and `v.itemOpen` are single, page-wide values, not maps). */
-  function leave(id) {
+   *  action items column's "+ Add", open row, last add (its Undo) and add error go — none is kept
+   *  per meeting (`v.addOpen`, `v.itemOpen`, `v.added` and `v.addError` are single, page-wide
+   *  values, not maps). `meeting: false` (notes just queued, still on the meeting) keeps the
+   *  last add and its error. */
+  function leave(id, { meeting = true } = {}) {
     if (id && v().makeForm) delete v().makeForm[id];
-    Object.assign(v(), { addOpen: false, itemOpen: null });
+    Object.assign(v(), { addOpen: false, itemOpen: null }, meeting ? { added: null, addError: null } : {});
   }
 
   /** Forms: the Notes pane's Make notes and a task added from the Action items pane. */
@@ -1105,7 +1128,8 @@ export function createMeetingsController({
       const queued = await guarded(id, () => makeNotes(id, options));
       const name = (snap().noteTemplates || []).find(t => t.id === options.templateId)?.name || 'notes';
       if (queued) {
-        leave(id);
+        // Still on this meeting: its last add keeps its Undo.
+        leave(id, { meeting: false });
         toast(`Making ${name} for “${titleOf(id)}”`, 'success');
       }
       return undefined;
@@ -1114,5 +1138,8 @@ export function createMeetingsController({
     return undefined;
   }
 
-  return { open, handle, input, submit, key, load, data, glossary, ensureSelection, makeNotesDialog, importDialog, problem, guarded, makeNotes, transcriptsOn, forgetGlossary, contextMenu };
+  /** The task target's own name, for "Add N to …" and the column's other strings. */
+  const taskLabel = () => taskTarget.label || 'Tasks';
+
+  return { open, handle, input, submit, key, load, data, glossary, taskLabel, ensureSelection, makeNotesDialog, importDialog, problem, guarded, makeNotes, transcriptsOn, forgetGlossary, contextMenu };
 }
