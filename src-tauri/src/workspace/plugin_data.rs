@@ -92,7 +92,6 @@ impl Core {
 
     /// Sets Connect's way into provider plugins' host halves (`task_provider::TaskProviders`),
     /// once, as the plugin manager does for the event sink.
-    #[allow(dead_code)] // the plugin manager calls this once it registers providers (Task 2)
     pub(crate) fn set_task_providers(
         &self,
         providers: Arc<dyn super::task_provider::TaskProviders>,

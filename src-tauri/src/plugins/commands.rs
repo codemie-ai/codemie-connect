@@ -14,9 +14,10 @@
 //! | `update` | `{id, agreed?, sheetHash?}` | the same, or `{status: "needs_consent", id, name, version, lines, sheet, sheetHash}` |
 //! | `set_enabled` | `{id, enabled, agreed?, sheetHash?}` | `Installed`, or turning it on with lines not agreed to: `{status: "needs_consent", …}` as `update` |
 //! | `set_addresses` | `{id, key, value}` | `Installed`: the addresses the user typed for a `hosts_from` setting |
+//! | `set_setting` | `{id, key, value}` | `Installed`: a declared setting the user set in Connect (not a `hosts_from` one); a `secret` is write-only (`""` or `null` clears it), and saving or clearing a task provider's secret queues a sync |
 //! | `client_storage` | `{id, items?}` | `{items}`: what its client half keeps (read, or replaced with `items`) |
 //! | `remove` | `{id, deleteData}` | `{removed, deletedData}` (also for the kept data of a removed plugin) |
-//! | `installed` | | `[Installed]`, each with its `client`, `widgets`, `signin` and `addresses` (`extras`), and `loadError` when it is on but its host half didn't load |
+//! | `installed` | | `[Installed]`, each with its `client`, `widgets`, `signin`, `addresses` and `settings` (`extras`; a secret only as `set: true\|false`), and `loadError` when it is on but its host half didn't load |
 //! | `registry_reset` | | `{saved, adopted, leftovers}`, only when the list is `registry_unreadable` |
 //! | `signin` | `{id, host}` | `{signedIn, host, from}`: the user's Sign in on the plugin's settings |
 //! | `signout` | `{id, host}` | `{signedIn: false, host}` |
@@ -119,6 +120,18 @@ pub async fn plugins_request(
             .map_err(host_error);
     }
     let paths = PluginPaths::new(&core.paths.data, &core.paths.private);
+    if op == "set_setting" {
+        let core = core.clone();
+        return blocking(move || {
+            let _running = running;
+            let (view, provider_secret) = set_setting(&paths, data.unwrap_or(Value::Null))?;
+            if provider_secret {
+                core.task_sync_now();
+            }
+            Ok(view)
+        })
+        .await?;
+    }
     let changes = matches!(
         op.as_str(),
         "install" | "update" | "set_enabled" | "remove" | "registry_reset"
@@ -248,6 +261,13 @@ struct AddressArg {
     id: String,
     key: String,
     value: String,
+}
+#[derive(Deserialize)]
+struct SettingArg {
+    id: String,
+    key: String,
+    #[serde(default)]
+    value: Value,
 }
 #[derive(Deserialize)]
 struct StorageArg {
@@ -501,6 +521,7 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
             extras::set_addresses(paths, &a.id, &a.key, &a.value)?;
             to_json(installed_view(paths, &a.id)?)
         }
+        "set_setting" => set_setting(paths, data).map(|(view, _)| view),
         "host_phrases" => {
             let a: IdArg = arg(data)?;
             extras::host_phrases(paths, &a.id)
@@ -532,6 +553,14 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
             ),
         )),
     }
+}
+
+/// `set_setting`: the plugin's view after the change, and whether a task provider's secret
+/// changed (its sync is queued).
+fn set_setting(paths: &PluginPaths, data: Value) -> Result<(Value, bool)> {
+    let a: SettingArg = arg(data)?;
+    let provider_secret = extras::set_setting(paths, &a.id, &a.key, &a.value)?;
+    Ok((to_json(installed_view(paths, &a.id)?)?, provider_secret))
 }
 
 // --------------------------------------------------------------------- views
@@ -851,6 +880,144 @@ mod tests {
         }
         walk(&mut v);
         v
+    }
+
+    /// The token the tests save: it must never show up anywhere but the private secrets file.
+    const SENTINEL: &str = "tk_SENTINEL_do_not_log_0123456789";
+
+    /// A synthetic task provider (Todoist-like) installed from a local marketplace, every line of
+    /// its sheet agreed to.
+    fn installed_provider(env: &testkit::Env) {
+        let mut m = manifest("todoist", "1.0.0");
+        m.as_object_mut().unwrap().remove("client");
+        m["name"] = json!("Todoist");
+        m["summary"] = json!("Keeps Connect's tasks in your Todoist");
+        m["provides"] = json!(["tasks"]);
+        m["requires"] = json!(["tasks_provider"]);
+        m["uses"] = json!({"network": {"hosts": ["api.todoist.com"]}});
+        m["settings"] = json!([
+            {"key": "token", "label": "API token", "type": "secret", "help": "Todoist › Settings › Integrations › Developer"},
+            {"key": "project", "label": "Project", "type": "string", "default": "Connect"},
+            {"key": "label", "label": "App label", "type": "string", "default": "connect"}
+        ]);
+        testkit::local_market(env, &[m]);
+        let shown = dispatch(
+            &env.paths,
+            &testkit::NoGit,
+            "inspect",
+            json!({"market": "local", "id": "todoist"}),
+        )
+        .unwrap();
+        let keys: Vec<Value> = shown["sheet"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["key"].clone())
+            .collect();
+        assert!(keys.contains(&json!("provides_tasks")), "{keys:?}");
+        let out = dispatch(
+            &env.paths,
+            &testkit::NoGit,
+            "install",
+            json!({"market": "local", "id": "todoist", "agreed": keys, "sheetHash": shown["sheetHash"]}),
+        )
+        .unwrap();
+        assert_eq!(out["status"], "installed");
+    }
+
+    /// Every file under `dir` whose bytes contain `needle`.
+    fn files_containing(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(files_containing(&path, needle));
+            } else if std::fs::read(&path)
+                .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))
+            {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn secret_settings_are_write_only() {
+        let env = testkit::env();
+        installed_provider(&env);
+        let run = |data: Value| dispatch(&env.paths, &testkit::NoGit, "set_setting", data);
+        let view = run(json!({"id": "todoist", "key": "token", "value": SENTINEL})).unwrap();
+        assert!(!view.to_string().contains(SENTINEL), "{view}");
+        assert_eq!(
+            view["settings"][0],
+            json!({"key": "token", "label": "API token", "type": "secret",
+                   "help": "Todoist › Settings › Integrations › Developer", "set": true})
+        );
+        assert_eq!(
+            view["settings"][1],
+            json!({"key": "project", "label": "Project", "type": "string", "help": null, "value": "Connect"})
+        );
+        // Stored once, owner-only, in the private root; nowhere in the data root.
+        let secrets = env.private.join("credentials/plugins/todoist/secrets.json");
+        assert!(std::fs::read_to_string(&secrets)
+            .unwrap()
+            .contains(SENTINEL));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&secrets).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        assert_eq!(files_containing(&env.private, SENTINEL), [secrets.clone()]);
+        assert!(files_containing(&env.dir.path().join("data"), SENTINEL).is_empty());
+        let listed = dispatch(&env.paths, &testkit::NoGit, "installed", Value::Null).unwrap();
+        assert!(!listed.to_string().contains(SENTINEL));
+        assert_eq!(listed[0]["settings"][0]["set"], true);
+        // It is a task provider's secret: the caller queues a sync. A plain setting isn't.
+        assert!(extras::set_setting(&env.paths, "todoist", "token", &json!(SENTINEL)).unwrap());
+        assert!(!extras::set_setting(&env.paths, "todoist", "project", &json!("Work")).unwrap());
+        let view = run(json!({"id": "todoist", "key": "label", "value": "naya"})).unwrap();
+        assert_eq!(view["settings"][1]["value"], "Work");
+        assert_eq!(view["settings"][2]["value"], "naya");
+
+        // Refused: an undeclared key, a value of the wrong type (its words never echo the value).
+        let e = run(json!({"id": "todoist", "key": "nope", "value": "x"})).unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), e.message.as_str()),
+            ("invalid", "todoist has no setting “nope” in its manifest")
+        );
+        let e = run(json!({"id": "todoist", "key": "project", "value": 5})).unwrap_err();
+        assert_eq!(e.code, "invalid");
+        let e = run(json!({"id": "ghost", "key": "token", "value": SENTINEL})).unwrap_err();
+        assert_eq!(e.code, "not_found");
+        assert!(!e.message.contains(SENTINEL));
+
+        // `""` and `null` clear it.
+        let view = run(json!({"id": "todoist", "key": "token", "value": ""})).unwrap();
+        assert_eq!(view["settings"][0]["set"], false);
+        assert!(!std::fs::read_to_string(&secrets)
+            .unwrap()
+            .contains(SENTINEL));
+        run(json!({"id": "todoist", "key": "token", "value": SENTINEL})).unwrap();
+        let view = run(json!({"id": "todoist", "key": "token", "value": null})).unwrap();
+        assert_eq!(view["settings"][0]["set"], false);
+        assert!(files_containing(env.dir.path(), SENTINEL).is_empty());
+    }
+
+    #[test]
+    fn contract_fixtures_match_the_plugin_settings() {
+        let env = testkit::env();
+        installed_provider(&env);
+        let mut view = dispatch(
+            &env.paths,
+            &testkit::NoGit,
+            "set_setting",
+            json!({"id": "todoist", "key": "token", "value": SENTINEL}),
+        )
+        .unwrap();
+        assert!(!view.to_string().contains(SENTINEL));
+        view["source"] = json!("/Users/qa/Plugins/acme-market");
+        testkit::contract_fixture("plugin-settings.json", &pin(view));
     }
 
     fn standup(version: &str) -> Value {

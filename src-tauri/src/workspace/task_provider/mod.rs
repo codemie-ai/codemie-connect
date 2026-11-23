@@ -81,11 +81,10 @@ impl ProviderState {
 /// Connect's way into a provider plugin's host half (design §5): `call` reaches one of its
 /// registered `tasks:<op>` functions, `available` lists every installed plugin that provides
 /// tasks, and `secret_matches` keeps a plugin's token out of a log or error message. Implemented
-/// by the plugin manager (Task 2); tests use a `FakeProvider`.
+/// by the plugin manager; tests use a `FakeProvider`.
 pub trait TaskProviders: Send + Sync {
-    // Called from the outbox and sync job (Task 4), once a plugin manager implements this trait
-    // (Task 2).
-    #[allow(dead_code)]
+    /// Asks plugin `plugin`'s `tasks:<op>`.
+    #[allow(dead_code)] // the outbox and sync job (Task 3) call it
     fn call(
         &self,
         plugin: &str,
@@ -93,8 +92,8 @@ pub trait TaskProviders: Send + Sync {
         args: Value,
     ) -> BoxFuture<'static, std::result::Result<Value, ProviderError>>;
     fn available(&self) -> Vec<ProviderInfo>;
-    /// Whether `text` contains the plugin's stored secret.
-    #[allow(dead_code)] // the log and error-message checks of design §8 call this (a later task)
+    /// Whether `text` contains the plugin's stored secret (design §8's message check).
+    #[allow(dead_code)] // the sync job's message check (Task 3) calls it
     fn secret_matches(&self, plugin: &str, text: &str) -> bool;
 }
 
@@ -113,7 +112,6 @@ impl ProviderError {
     /// Maps a provider's thrown message to its code; anything unrecognised (or a host
     /// `timeout`) is `Offline`, since it is temporary. The rest of the message, cut to 200
     /// characters, is kept for `NotFound` and `Refused`.
-    #[allow(dead_code)] // called once the outbox and sync job (Task 4) call providers
     pub fn parse(message: &str) -> Self {
         const MAX: usize = 200;
         let rest_of = |prefix: &str| message.strip_prefix(prefix).map(str::trim);
@@ -141,6 +139,10 @@ impl ProviderError {
 }
 
 impl super::Core {
+    /// Queues a sync with the active provider now (a provider's secret was saved or cleared).
+    /// The outbox and sync job (Task 3) fill this in; until then there is nothing to sync.
+    pub(crate) fn task_sync_now(&self) {}
+
     /// Builds the snapshot's `taskProvider` (design §2): the active provider, every available
     /// one, its state, the outbox counts and whether a copy was already offered. This step
     /// (Task 1) answers for Local only; Task 3 fills in a real provider's `syncing` / `offline` /

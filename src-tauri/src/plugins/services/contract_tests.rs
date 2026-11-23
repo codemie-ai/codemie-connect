@@ -244,3 +244,17 @@ async fn connects_answers_have_the_shapes_the_plugins_fakes_give() {
         json!({"text": "str", "size": "num", "truncated": "bool"})
     );
 }
+
+#[test]
+fn tasks_provide_answers_null_and_refuses_a_plugin_without_the_role() {
+    let env = Env::new();
+    env.provider("todoist", &["tasks"], json!([]));
+    env.plugin("kn", json!({}), json!([]));
+    let given = json!([["status", "list", "changedSince"]]);
+    assert_eq!(
+        shape(&env.call("todoist", "tasks.provide", given.clone()).unwrap()),
+        json!("null")
+    );
+    let e = env.call("kn", "tasks.provide", given).unwrap_err();
+    matches(&e, &["/^permission: /", "/doesn't provide tasks/"]);
+}

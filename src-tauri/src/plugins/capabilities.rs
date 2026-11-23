@@ -152,8 +152,9 @@ fn or_words(w: &[String]) -> String {
     }
 }
 
-/// The sheet for a manifest, one line per `uses` key: Blocking, Unsupported, Partial, then
-/// Supported, each alphabetical. An unknown key, or a value that can't be read, refuses it all.
+/// The sheet for a manifest, one line per `uses` key and per role it takes (`provides`):
+/// Blocking, Unsupported, Partial, then Supported, each alphabetical. An unknown key, or a value
+/// that can't be read, refuses it all.
 pub fn sheet(m: &Manifest) -> Result<Vec<SheetLine>, ManifestError> {
     let mut lines = m
         .uses
@@ -178,6 +179,12 @@ pub fn sheet(m: &Manifest) -> Result<Vec<SheetLine>, ManifestError> {
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // The roles it takes (`provides`), each a line of its own: they are agreed to like `uses`.
+    lines.extend(m.provides.iter().map(|role| SheetLine {
+        key: role_key(role),
+        text: role_text(role).to_string(),
+        support: Support::Supported,
+    }));
     // What stops an install first, then what won't work, what works with limits, what works.
     let rank = |s: &Support| match s {
         Support::Blocking(_) => 0,
@@ -187,6 +194,19 @@ pub fn sheet(m: &Manifest) -> Result<Vec<SheetLine>, ManifestError> {
     };
     lines.sort_by(|a, b| (rank(&a.support), &a.key).cmp(&(rank(&b.support), &b.key)));
     Ok(lines)
+}
+
+/// The sheet key of role `role` (`provides_tasks`): what the user agrees to for it.
+pub fn role_key(role: &str) -> String {
+    format!("provides_{role}")
+}
+
+/// What taking role `role` means for the user (`manifest::ROLES` are the only roles parsed).
+fn role_text(role: &str) -> &'static str {
+    match role {
+        "tasks" => "Hold your tasks: what you add and change in Connect goes to it, and Connect shows the tasks it lists.",
+        _ => unreachable!("parse_manifest vets the role"),
+    }
 }
 
 /// A list of plain words from the manifest: at most `max` of them, each `ok` and not longer than
@@ -665,6 +685,33 @@ mod tests {
             sheet(&manifest_with(json!({"network": {}}))),
             Err(ManifestError::BadValue { .. })
         ));
+    }
+
+    #[test]
+    fn the_sheet_says_it_holds_your_tasks() {
+        let d = tempfile::tempdir().unwrap();
+        let j = json!({"id": "todoist", "name": "Todoist", "version": "1.0.0",
+                       "provides": ["tasks"], "requires": ["tasks_provider"],
+                       "uses": {"network": {"hosts": ["api.todoist.com"]}}});
+        std::fs::write(d.path().join(MANIFEST_FILE), j.to_string()).unwrap();
+        let lines = sheet(&parse_manifest(d.path()).unwrap()).unwrap();
+        let role = lines
+            .iter()
+            .find(|l| l.key == "provides_tasks")
+            .expect("a line for the role");
+        assert_eq!(
+            role.text,
+            "Hold your tasks: what you add and change in Connect goes to it, and Connect shows the tasks it lists."
+        );
+        assert_eq!(role.support, Support::Supported);
+        let network = lines.iter().find(|l| l.key == "network").unwrap();
+        assert_eq!(network.text, "Connect to api.todoist.com");
+        // A plugin that takes no role has no such line.
+        let plain = manifest_with(json!({"network": {"hosts": ["api.todoist.com"]}}));
+        assert!(sheet(&plain)
+            .unwrap()
+            .iter()
+            .all(|l| l.key != "provides_tasks"));
     }
 
     #[test]

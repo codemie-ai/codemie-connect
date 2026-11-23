@@ -13,7 +13,7 @@
 //!
 //! The services: `store` (with `package`), `settings`, `fs` (with `system`), `http`, `notify`
 //! (with `log`), `markdown`; `claude` (with `profiles`), `deliver`, `today` (inbox, widgets,
-//! work rows), `echo_read`, `events` (shared values) and `signin`.
+//! work rows), `echo_read`, `events` (shared values), `signin` and `tasks` (a provider's ops).
 pub mod cas;
 pub mod claude;
 #[cfg(test)]
@@ -33,6 +33,7 @@ pub mod signin;
 pub mod skills;
 pub mod snapshot;
 pub mod store;
+pub mod tasks;
 pub mod today;
 pub mod vault_git;
 pub mod web;
@@ -63,6 +64,8 @@ pub struct Granted {
     pub uses: Map<String, Value>,
     pub settings: Vec<SettingDef>,
     pub widgets: Vec<WidgetDef>,
+    /// The roles it takes in Connect (`provides`), only those the user agreed to.
+    pub provides: Vec<String>,
     /// The namespace of the values it shares with its marketplace's plugins: the marketplace's
     /// name, lowercase.
     pub namespace: String,
@@ -77,10 +80,12 @@ impl Granted {
         if m.id != id {
             return Err(format!("its manifest names it “{}”", m.id));
         }
-        let uses = m
-            .uses
+        let agreed = |k: &str| installed.agreed.iter().any(|a| a == k);
+        let uses = m.uses.into_iter().filter(|(k, _)| agreed(k)).collect();
+        let provides = m
+            .provides
             .into_iter()
-            .filter(|(k, _)| installed.agreed.iter().any(|a| a == k))
+            .filter(|r| agreed(&super::capabilities::role_key(r)))
             .collect();
         Ok(Granted {
             id: id.to_string(),
@@ -91,6 +96,7 @@ impl Granted {
             uses,
             settings: m.settings,
             widgets: m.widgets,
+            provides,
             namespace: installed.market.to_lowercase(),
         })
     }
@@ -125,6 +131,11 @@ impl Granted {
 
     pub fn setting(&self, key: &str) -> Option<&SettingDef> {
         self.settings.iter().find(|s| s.key == key)
+    }
+
+    /// It takes role `role` in Connect (its manifest's `provides`, agreed to).
+    pub fn provides(&self, role: &str) -> bool {
+        self.provides.iter().any(|r| r == role)
     }
 }
 
@@ -174,6 +185,8 @@ pub struct Services {
     providers: Mutex<std::collections::BTreeMap<String, deliver::Provider>>,
     /// The widgets and work rows plugins give by `provide`, and which changed.
     today: Mutex<today::Provided>,
+    /// The task ops each provider plugin registered (`tasks.provide`), by plugin.
+    pub(crate) task_plugins: Mutex<std::collections::BTreeMap<String, Vec<String>>>,
     /// `ctx.profiles()`, refreshed by the plugin manager (detection is too slow for a turn).
     profiles: RwLock<Value>,
     /// Orders guarded writes (`{ifSha, createNew}`): a comparison and its write are one step.
@@ -197,6 +210,7 @@ impl Services {
             host: OnceLock::new(),
             providers: Mutex::default(),
             today: Mutex::default(),
+            task_plugins: Mutex::default(),
             profiles: RwLock::new(serde_json::json!({"default": null, "profiles": []})),
             writes: Mutex::new(()),
             files: Mutex::default(),
@@ -256,7 +270,8 @@ impl Services {
             .insert(granted.id.clone(), Arc::new(granted));
     }
 
-    /// Ends the plugin's services (it was unloaded): its delivery ways and providers go too.
+    /// Ends the plugin's services (it was unloaded): its delivery ways, providers and task ops go
+    /// too.
     pub fn forget(&self, id: &str) {
         self.plugins
             .write()
@@ -264,6 +279,7 @@ impl Services {
             .remove(id);
         lock(&self.providers).retain(|_, p| p.plugin != id);
         lock(&self.today).forget(id);
+        lock(&self.task_plugins).remove(id);
     }
 
     /// The grants of a loaded plugin.
@@ -342,6 +358,7 @@ impl HostServices for Services {
                 today::call(self, &p, n, &args)
             }
             n if n.starts_with("deliver.") => deliver::call(self, &p, n, &args),
+            n if n.starts_with("tasks.") => tasks::call(self, &p, n, &args),
             "echo.read" => echo_read::read(self, &p, &args),
             "echo.dictionary.add" => echo_read::dictionary_add(self, &p, at(&args, 0)),
             "shared.get" => events::shared_get(self, text(&args, 0, "a shared key")?),
@@ -530,6 +547,11 @@ pub(crate) mod testing {
             self.plugin_with(id, uses, settings, json!([]), &[])
         }
 
+        /// Registers plugin `id` taking these roles (`provides`, agreed to).
+        pub fn provider(&self, id: &str, roles: &[&str], settings: Value) -> Arc<Granted> {
+            self.register_with(id, json!({}), settings, json!([]), &[], roles)
+        }
+
         pub fn plugin_with(
             &self,
             id: &str,
@@ -537,6 +559,18 @@ pub(crate) mod testing {
             settings: Value,
             widgets: Value,
             files: &[(&str, &str)],
+        ) -> Arc<Granted> {
+            self.register_with(id, uses, settings, widgets, files, &[])
+        }
+
+        fn register_with(
+            &self,
+            id: &str,
+            uses: Value,
+            settings: Value,
+            widgets: Value,
+            files: &[(&str, &str)],
+            roles: &[&str],
         ) -> Arc<Granted> {
             let dir = self.services.paths.installed().join(id).join("1.0.0");
             std::fs::create_dir_all(&dir).unwrap();
@@ -554,6 +588,7 @@ pub(crate) mod testing {
                 uses: serde_json::from_value(uses).unwrap(),
                 settings: serde_json::from_value(settings).unwrap(),
                 widgets: serde_json::from_value(widgets).unwrap(),
+                provides: roles.iter().map(|r| r.to_string()).collect(),
                 namespace: "acme".into(),
             });
             self.services.granted(id).unwrap()

@@ -17,7 +17,16 @@ pub const ENGINE: &str = "1.0";
 /// as needing a newer Connect instead of installing and failing.
 pub const ECHO_COMPAT: &str = "0.10.1";
 /// The optional features (`requires`, PLUGIN-ENGINE.md §6) Connect has.
-const FEATURES: [&str; 4] = ["work", "deliver", "deliver_provider", "echo"];
+const FEATURES: [&str; 5] = [
+    "work",
+    "deliver",
+    "deliver_provider",
+    "echo",
+    "tasks_provider",
+];
+/// The roles a plugin can take in Connect (`provides`): `tasks` holds the user's tasks
+/// (`ctx.tasks.provide`).
+pub const ROLES: [&str; 1] = ["tasks"];
 const SETTING_KINDS: [&str; 4] = ["string", "bool", "folder", "secret"];
 /// The kinds of widget Echo draws (and Connect's Today draws) for a plugin.
 pub const WIDGET_KINDS: [&str; 8] = [
@@ -102,6 +111,8 @@ pub struct Manifest {
     pub echo: Option<VersionReq>,
     /// The optional features it can't work without.
     pub requires: Vec<String>,
+    /// The roles it takes in Connect (`ROLES`).
+    pub provides: Vec<String>,
     pub summary: String,
     pub uses: Map<String, Value>,
     pub settings: Vec<SettingDef>,
@@ -125,6 +136,9 @@ struct Raw {
     echo: Option<Value>,
     #[serde(default)]
     requires: Vec<String>,
+    /// One role as a string, or a list of them.
+    #[serde(default)]
+    provides: Option<Value>,
     #[serde(default)]
     summary: String,
     #[serde(default)]
@@ -231,6 +245,7 @@ pub fn parse_manifest(dir: &Path) -> Result<Manifest, ManifestError> {
             "\"requires\" lists at most 16 feature names (a-z, _)".into(),
         ));
     }
+    let provides = roles(raw.provides.as_ref())?;
     for w in &raw.widgets {
         if !WIDGET_KINDS.contains(&w.kind.as_str()) {
             return Err(ManifestError::BadWidgetKind {
@@ -270,6 +285,7 @@ pub fn parse_manifest(dir: &Path) -> Result<Manifest, ManifestError> {
             .and_then(Value::as_str)
             .and_then(|t| parse_min_req("echo", t).ok()),
         requires: raw.requires,
+        provides,
         summary: raw.summary,
         uses: raw.uses,
         settings: raw.settings,
@@ -280,6 +296,33 @@ pub fn parse_manifest(dir: &Path) -> Result<Manifest, ManifestError> {
         agent: raw.agent,
         icon: raw.icon,
     })
+}
+
+/// `provides`: one role or a list of them, each one Connect knows (`ROLES`).
+fn roles(v: Option<&Value>) -> Result<Vec<String>, ManifestError> {
+    let listed: Vec<&Value> = match v {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(one) => vec![one],
+    };
+    let mut roles = Vec::new();
+    for role in listed {
+        let Some(role) = role.as_str() else {
+            return Err(ManifestError::Invalid(
+                "\"provides\" lists roles by name".into(),
+            ));
+        };
+        if !ROLES.contains(&role) {
+            return Err(ManifestError::Invalid(format!(
+                "provides a role Connect doesn't know ({})",
+                role.escape_debug()
+            )));
+        }
+        if !roles.iter().any(|r| r == role) {
+            roles.push(role.to_string());
+        }
+    }
+    Ok(roles)
 }
 
 fn is_feature(f: &str) -> bool {
@@ -496,6 +539,35 @@ mod tests {
         assert!(parse_min_req("engine", "0.10")
             .unwrap()
             .matches(&Version::parse("0.11.0").unwrap()));
+    }
+
+    #[test]
+    fn provides_tasks_parses_and_needs_the_feature() {
+        for provides in [json!("tasks"), json!(["tasks"]), json!(["tasks", "tasks"])] {
+            let mut j = base();
+            j["provides"] = provides.clone();
+            j["requires"] = json!(["tasks_provider"]);
+            let m = parse_manifest(package(j).path()).unwrap();
+            assert_eq!(m.provides, ["tasks"], "{provides}");
+            assert!(
+                check_compat(&m).is_ok(),
+                "tasks_provider is a feature Connect has"
+            );
+        }
+        let m = parse_manifest(package(base()).path()).unwrap();
+        assert!(m.provides.is_empty());
+        let mut j = base();
+        j["provides"] = json!(["calendar"]);
+        assert_eq!(
+            parse_manifest(package(j).path()).unwrap_err(),
+            ManifestError::Invalid("provides a role Connect doesn't know (calendar)".into())
+        );
+        let mut j = base();
+        j["provides"] = json!([7]);
+        assert!(matches!(
+            parse_manifest(package(j).path()),
+            Err(ManifestError::Invalid(_))
+        ));
     }
 
     #[test]

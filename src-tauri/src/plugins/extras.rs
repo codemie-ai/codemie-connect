@@ -4,12 +4,14 @@
 //! - its GitHub sign-ins (`uses.signin.hosts`): whether the user signed it in, never the token;
 //! - the network addresses only the user gives it (`uses.network.hosts_from`): the plugin can't
 //!   set those settings itself (`services::settings::set`);
+//! - its other declared settings, which the user sets in Connect (`set_setting`): a `secret` is
+//!   write-only, reported only as set or not, never read back to the window;
 //! - what its client half keeps in its frame's `localStorage` stand-in (an opaque frame has no
 //!   storage of its own), in `<data>/plugins/data/<id>/client-storage.json`, which goes with
 //!   "Also delete its data".
 use super::manifest::Manifest;
 use super::registry::{Installed, PluginPaths, Registry};
-use super::services::{read_json, write_json};
+use super::services::{read_json, settings, write_json};
 use crate::workspace::models::{Result, WorkspaceError};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -27,6 +29,31 @@ pub struct Extras {
     pub widgets: Vec<WidgetView>,
     pub signin: Vec<SigninView>,
     pub addresses: Vec<AddressView>,
+    pub settings: Vec<SettingView>,
+}
+
+/// One declared setting the user sets in Connect (not an address setting: those are
+/// `addresses`). A secret says only whether it is set.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum SettingView {
+    Plain {
+        key: String,
+        label: String,
+        #[serde(rename = "type")]
+        kind: String,
+        help: Option<String>,
+        /// What was set, else the manifest's default, else `null`.
+        value: Value,
+    },
+    Secret {
+        key: String,
+        label: String,
+        #[serde(rename = "type")]
+        kind: String,
+        help: Option<String>,
+        set: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -124,6 +151,38 @@ pub fn extras(paths: &PluginPaths, id: &str, p: &Installed, m: Option<&Manifest>
                 }
             })
             .collect(),
+        settings: user_settings(m)
+            .map(|d| {
+                let (key, label, kind, help) = (
+                    d.key.clone(),
+                    d.label.clone(),
+                    d.kind.clone(),
+                    d.help.clone(),
+                );
+                if d.kind == "secret" {
+                    SettingView::Secret {
+                        set: settings::secret_is_set(paths, id, &d.key),
+                        key,
+                        label,
+                        kind,
+                        help,
+                    }
+                } else {
+                    SettingView::Plain {
+                        value: set
+                            .get(&d.key)
+                            .filter(|v| !v.is_null())
+                            .or(d.default.as_ref())
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                        key,
+                        label,
+                        kind,
+                        help,
+                    }
+                }
+            })
+            .collect(),
         addresses: address_settings(m, p)
             .into_iter()
             .map(|(key, label, help)| AddressView {
@@ -147,6 +206,60 @@ fn address_settings(m: &Manifest, p: &Installed) -> Vec<(String, String, Option<
         .filter_map(|key| m.settings.iter().find(|s| s.key == key))
         .map(|s| (s.key.clone(), s.label.clone(), s.help.clone()))
         .collect()
+}
+
+/// Every setting its manifest names in `uses.network.hosts_from`, agreed to or not: only
+/// `set_addresses` sets those.
+fn hosts_from(m: &Manifest) -> Vec<&str> {
+    m.uses
+        .get("network")
+        .and_then(|v| v.get("hosts_from"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
+/// The declared settings the user sets with `set_setting`: all but the address settings.
+fn user_settings(m: &Manifest) -> impl Iterator<Item = &super::manifest::SettingDef> {
+    let addresses = hosts_from(m);
+    m.settings
+        .iter()
+        .filter(move |s| !addresses.contains(&s.key.as_str()))
+}
+
+/// The user set plugin `id`'s declared setting `key` in Connect (Settings › Tasks). `null`, or
+/// `""` for a secret, clears it. A secret goes only to the private root (0600) and is never read
+/// back. Whether it was the secret of a plugin that provides tasks, so the caller queues a sync.
+pub fn set_setting(paths: &PluginPaths, id: &str, key: &str, value: &Value) -> Result<bool> {
+    let (p, m) = installed_with_manifest(paths, id)?;
+    if hosts_from(&m).contains(&key) {
+        return Err(WorkspaceError::new(
+            "invalid",
+            format!(
+                "“{}” lists the addresses {id} may reach: set it under its addresses",
+                key.escape_debug()
+            ),
+        ));
+    }
+    let def = user_settings(&m).find(|s| s.key == key).ok_or_else(|| {
+        WorkspaceError::new(
+            "invalid",
+            format!(
+                "{id} has no setting “{}” in its manifest",
+                key.escape_debug()
+            ),
+        )
+    })?;
+    settings::store(paths, id, def, value).map_err(|e| match e.code {
+        crate::plugins::host::ErrorCode::PluginError => WorkspaceError::new("invalid", e.message),
+        _ => saved(e),
+    })?;
+    let role = super::capabilities::role_key("tasks");
+    Ok(def.kind == "secret"
+        && m.provides.iter().any(|r| r == "tasks")
+        && p.agreed.iter().any(|a| a == &role))
 }
 
 fn installed_with_manifest(paths: &PluginPaths, id: &str) -> Result<(Installed, Manifest)> {
@@ -333,6 +446,29 @@ mod tests {
         set_addresses(&env.paths, "relay", "servers", "").unwrap();
         let cleared = serde_json::to_value(extras(&env.paths, "relay", p, Some(&m))).unwrap();
         assert_eq!(cleared["addresses"][0]["value"], "");
+    }
+
+    #[test]
+    fn address_settings_are_set_only_as_addresses() {
+        let env = testkit::env();
+        installed(&env, relay());
+        let e = set_setting(&env.paths, "relay", "servers", &json!("10.0.0.5")).unwrap_err();
+        assert_eq!(e.code, "invalid");
+        assert!(
+            e.message.contains("set it under its addresses"),
+            "{}",
+            e.message
+        );
+        // Its other setting is the user's to set, and is no task provider's secret.
+        assert!(!set_setting(&env.paths, "relay", "mode", &json!("fast")).unwrap());
+        let reg = Registry::load(&env.paths).unwrap();
+        let p = &reg.installed["relay"];
+        let m = install::installed_manifest(&env.paths, "relay", p).unwrap();
+        let view = serde_json::to_value(extras(&env.paths, "relay", p, Some(&m))).unwrap();
+        assert_eq!(
+            view["settings"],
+            json!([{"key": "mode", "label": "Mode", "type": "string", "help": null, "value": "fast"}])
+        );
     }
 
     #[test]

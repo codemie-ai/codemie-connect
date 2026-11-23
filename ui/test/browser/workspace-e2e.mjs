@@ -1093,13 +1093,14 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   // `__pluginCalls` records what reached native, with the plugin id it went out with.
   const pl = {
     markets: clone(pluginInit.markets), installed: [], storage: {}, addresses: {}, signedIn: {},
-    calls: [], loadErrors: {}, opened: [],
+    calls: [], loadErrors: {}, opened: [], settings: {},
   };
   window.__pluginCalls = pl.calls;
   // Links the user agreed to open (`open_link`): recorded, never opened in a browser.
   window.__pluginOpened = pl.opened;
   // Why a plugin's host half didn't load, as the manager would say (`installed` answers it).
   window.__setPluginLoadError = (id, text) => { pl.loadErrors[id] = text; };
+  const isAddress = x => (pluginInit.hello.manifest.uses?.network?.hosts_from || []).includes(x.key);
   const helloView = () => {
     const m = pluginInit.hello.manifest;
     const p = pl.installed.find(x => x.id === 'hello');
@@ -1108,7 +1109,11 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       hash: '5eed5eed', enabled: p.enabled, agreed: p.agreed, installedAt: '2026-11-17T09:30:00Z', update: null, problem: null,
       client: m.client, widgets: m.widgets.map(w => ({ id: w.id, label: w.label, about: w.about || '', kind: w.kind, sizes: w.sizes || [] })),
       signin: [{ host: 'github.com', signedIn: !!pl.signedIn.hello, from: pl.signedIn.hello ? 'gh' : null }],
-      addresses: m.settings.map(x => ({ key: x.key, label: x.label, help: x.help || null, value: pl.addresses[x.key] || '' })),
+      addresses: m.settings.filter(isAddress).map(x => ({ key: x.key, label: x.label, help: x.help || null, value: pl.addresses[x.key] || '' })),
+      // Every other declared setting (`set_setting`); a secret says only whether it is set.
+      settings: m.settings.filter(x => !isAddress(x)).map(x => (x.type === 'secret'
+        ? { key: x.key, label: x.label, type: 'secret', help: x.help || null, set: !!pl.settings[x.key] }
+        : { key: x.key, label: x.label, type: x.type || 'string', help: x.help || null, value: pl.settings[x.key] ?? x.default ?? null })),
       ...(pl.loadErrors[m.id] && p.enabled ? { loadError: pl.loadErrors[m.id] } : {}),
     };
   };
@@ -1153,6 +1158,14 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     signin: d => { pl.signedIn[d.id] = true; return clone(pluginInit.signin.signin); },
     signout: d => { delete pl.signedIn[d.id]; return clone(pluginInit.signin.signout); },
     set_addresses: d => { pl.addresses[d.key] = d.value.trim(); return helloView(); },
+    set_setting: d => {
+      const def = pluginInit.hello.manifest.settings.find(x => x.key === d.key);
+      if (!def) fail('invalid', `${d.id} has no setting “${d.key}” in its manifest`);
+      if (isAddress(def)) fail('invalid', `“${d.key}” lists the addresses ${d.id} may reach: set it under its addresses`);
+      if (d.value === '' || d.value === null || d.value === undefined) delete pl.settings[d.key];
+      else pl.settings[d.key] = def.type === 'secret' ? true : d.value; // a secret is never kept, as in Connect
+      return helloView();
+    },
     open_link: d => {
       if (!/^(https|obsidian):/.test(d.url)) fail('validation', 'Connect opens only https:// and obsidian:// links.');
       pl.opened.push(clone(d));

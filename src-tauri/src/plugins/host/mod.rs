@@ -301,7 +301,8 @@ impl PluginHost {
     }
 
     /// Asks one of the plugin's providers: `widget:<id>` (`ctx.widgets.provide`), `work`
-    /// (`ctx.work.provide`) or `deliver:<kind>` (`ctx.deliver.provide`).
+    /// (`ctx.work.provide`), `deliver:<kind>` (`ctx.deliver.provide`) or `tasks:<op>`
+    /// (`ctx.tasks.provide`).
     pub async fn ask(&self, id: &str, provider: &str, args: Value) -> Result<Value, HostError> {
         self.request(id, Kind::Provider, provider, args).await
     }

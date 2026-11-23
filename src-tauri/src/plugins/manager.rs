@@ -1,27 +1,31 @@
 //! The `PluginManager` (DESIGN 7.2): it starts after `Core`, loads every enabled plugin's host
 //! half into the `PluginHost` with Connect's `Services`, and reloads when the registry changes
-//! (install, update, enable, disable, remove, reset). It gives `Core` its event sink, keeps
-//! Today's plugin records to the plugins that are on, and on its tick asks the plugins' widget
-//! and work-row providers (on load, after `refresh`, after `changed()`), refreshes what
-//! `ctx.profiles()` answers, and starts again plugins stopped for a fault.
+//! (install, update, enable, disable, remove, reset). It gives `Core` its event sink and its way
+//! into task providers (`TaskProviders`), keeps Today's plugin records to the plugins that are
+//! on, and on its tick asks the plugins' widget and work-row providers (on load, after
+//! `refresh`, after `changed()`), refreshes what `ctx.profiles()` answers, and starts again
+//! plugins stopped for a fault.
 use super::host::{ErrorCode, Grants, HostError, Limits, PluginHost};
 use super::registry::{Installed, PluginPaths, Registry};
 use super::services::events::HostEvents;
 use super::services::signin::{self, GhCli};
 use super::services::today::{widget_record, work_record};
-use super::services::{http, lock, FolderPicker, Granted, Outside, Services};
+use super::services::{http, lock, settings, tasks, FolderPicker, Granted, Outside, Services};
+use crate::workspace::task_provider::{ProviderError, ProviderInfo, TaskProviders};
 use crate::workspace::Core;
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 /// How often the manager looks after its plugins.
 const TICK: Duration = Duration::from_secs(2);
 /// A provider answers within this (PLUGIN-ENGINE.md §4.1).
 const PROVIDER_ANSWER: Duration = Duration::from_secs(5);
+/// A task provider answers within this (task-provider design §5).
+const TASK_ANSWER: Duration = Duration::from_secs(30);
 /// A provider asked again after `changed()` no sooner than this.
 const CHANGED_AFTER: Duration = Duration::from_secs(10);
 /// Work rows are asked again this often; a widget after its `refresh` (60 s at least).
@@ -76,17 +80,20 @@ impl PluginManager {
         let host = Arc::new(PluginHost::with_limits(services.clone(), limits));
         services.set_host(&host);
         core.set_event_sink(Arc::new(HostEvents(Arc::downgrade(&host))));
-        Arc::new(PluginManager {
-            paths,
-            core,
-            services,
-            host,
-            loaded: Mutex::default(),
-            problems: Mutex::default(),
-            asked: Mutex::default(),
-            profiles_at: Mutex::default(),
-            reloading: tokio::sync::Mutex::new(()),
-            reloads: tokio::sync::watch::Sender::new(0),
+        Arc::new_cyclic(|me| {
+            core.set_task_providers(Arc::new(ManagerTasks(me.clone())));
+            PluginManager {
+                paths,
+                core,
+                services,
+                host,
+                loaded: Mutex::default(),
+                problems: Mutex::default(),
+                asked: Mutex::default(),
+                profiles_at: Mutex::default(),
+                reloading: tokio::sync::Mutex::new(()),
+                reloads: tokio::sync::watch::Sender::new(0),
+            }
         })
     }
 
@@ -401,6 +408,89 @@ impl PluginManager {
     }
 }
 
+/// Connect's way into the task providers (design §5): a provider plugin's `tasks:<op>` asked
+/// through the host, with 30 s to answer.
+impl TaskProviders for PluginManager {
+    fn call(
+        &self,
+        plugin: &str,
+        op: &str,
+        args: Value,
+    ) -> BoxFuture<'static, Result<Value, ProviderError>> {
+        let host = self.host.clone();
+        let (plugin, provider) = (plugin.to_string(), format!("tasks:{op}"));
+        Box::pin(async move {
+            match tokio::time::timeout(TASK_ANSWER, host.ask(&plugin, &provider, args)).await {
+                Ok(Ok(answer)) => Ok(answer),
+                Ok(Err(e)) if e.code == ErrorCode::Timeout => Err(ProviderError::Offline),
+                Ok(Err(e)) => Err(ProviderError::parse(&e.message)),
+                Err(_) => Err(ProviderError::Offline),
+            }
+        })
+    }
+
+    /// Every installed plugin whose manifest provides tasks (agreed to on its sheet): on when it
+    /// is turned on, ready once it is loaded and registered its ops (`ctx.tasks.provide`).
+    fn available(&self) -> Vec<ProviderInfo> {
+        let Ok(reg) = Registry::load(&self.paths) else {
+            return Vec::new();
+        };
+        let role = super::capabilities::role_key("tasks");
+        let loaded: Vec<String> = lock(&self.loaded).keys().cloned().collect();
+        reg.installed
+            .iter()
+            .filter(|(id, p)| super::valid_id(id) && p.agreed.contains(&role))
+            .filter_map(|(id, p)| {
+                let m = super::install::installed_manifest(&self.paths, id, p)?;
+                m.provides
+                    .iter()
+                    .any(|r| r == "tasks")
+                    .then(|| ProviderInfo {
+                        id: format!("plugin:{id}"),
+                        name: m.name,
+                        on: p.enabled,
+                        ready: p.enabled
+                            && loaded.contains(id)
+                            && tasks::ops_of(&self.services, id).is_some(),
+                    })
+            })
+            .collect()
+    }
+
+    fn secret_matches(&self, plugin: &str, text: &str) -> bool {
+        settings::secret_values(&self.paths, plugin)
+            .iter()
+            .any(|secret| text.contains(secret.as_str()))
+    }
+}
+
+/// What `Core` holds of the manager (it holds `Core`, so not the manager itself).
+struct ManagerTasks(Weak<PluginManager>);
+
+impl TaskProviders for ManagerTasks {
+    fn call(
+        &self,
+        plugin: &str,
+        op: &str,
+        args: Value,
+    ) -> BoxFuture<'static, Result<Value, ProviderError>> {
+        match self.0.upgrade() {
+            Some(m) => TaskProviders::call(&*m, plugin, op, args),
+            None => Box::pin(async { Err(ProviderError::Offline) }),
+        }
+    }
+
+    fn available(&self) -> Vec<ProviderInfo> {
+        self.0.upgrade().map(|m| m.available()).unwrap_or_default()
+    }
+
+    fn secret_matches(&self, plugin: &str, text: &str) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|m| m.secret_matches(plugin, text))
+    }
+}
+
 /// A reload asked for and not finished: dropped (run, or its task gone), it is no longer counted,
 /// and the window reads the installed list again (what loaded, what didn't and why).
 struct ReloadAsked(Arc<PluginManager>);
@@ -566,6 +656,7 @@ mod tests {
     use crate::ai::fake::FakeRunner;
     use crate::plugins::registry::Source;
     use crate::plugins::services::testing::{FakeGh, Picked};
+    use crate::workspace::task_provider::{ProviderError, TaskProviders};
     use crate::workspace::test_core;
 
     pub struct Setup {
@@ -609,10 +700,15 @@ mod tests {
             }
             std::fs::write(dir.join("echo-plugin.json"), m.to_string()).unwrap();
             std::fs::write(dir.join("main.js"), main).unwrap();
-            let agreed: Vec<String> = m["uses"]
+            let mut agreed: Vec<String> = m["uses"]
                 .as_object()
                 .map(|u| u.keys().cloned().collect())
                 .unwrap_or_default();
+            for role in m["provides"].as_array().into_iter().flatten() {
+                agreed.push(crate::plugins::capabilities::role_key(
+                    role.as_str().unwrap(),
+                ));
+            }
             Registry::update(paths, |r| {
                 r.installed.insert(
                     id.to_string(),
@@ -935,5 +1031,172 @@ mod tests {
             widget(&s.core, "gh:ci").unwrap().data["data"]["state"],
             "bad"
         );
+    }
+
+    /// The Todoist-like provider's manifest: it provides tasks and has a token.
+    fn provider_manifest() -> Value {
+        json!({
+            "name": "Todoist", "provides": ["tasks"], "requires": ["tasks_provider"],
+            "settings": [
+                {"key": "token", "label": "API token", "type": "secret"},
+                {"key": "project", "label": "Project", "type": "string", "default": "Connect"}
+            ]
+        })
+    }
+
+    fn providers(s: &Setup) -> &dyn TaskProviders {
+        &*s.manager
+    }
+
+    #[tokio::test]
+    async fn a_provider_plugin_answers_tasks_ops_through_the_host() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "todoist",
+            "1.0.0",
+            provider_manifest(),
+            r#"
+            export function apply(ctx) {
+              ctx.tasks.provide({
+                status: async () => ({ ok: true, account: 'Taylor', project: 'Connect' }),
+                list: async (args) => ({ tasks: [], asked: args }),
+              })
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        assert_eq!(
+            s.manager.loaded(),
+            ["todoist"],
+            "{:?}",
+            s.manager.problems()
+        );
+        let p = providers(&s);
+        assert_eq!(
+            p.call("todoist", "status", json!({})).await,
+            Ok(json!({"ok": true, "account": "Taylor", "project": "Connect"}))
+        );
+        assert_eq!(
+            p.call("todoist", "list", json!({"x": 1})).await,
+            Ok(json!({"tasks": [], "asked": {"x": 1}}))
+        );
+        // An op it didn't give is a temporary failure, never a crash.
+        assert_eq!(
+            p.call("todoist", "create", json!({})).await,
+            Err(ProviderError::Offline)
+        );
+        let available = serde_json::to_value(p.available()).unwrap();
+        assert_eq!(
+            available,
+            json!([{"id": "plugin:todoist", "name": "Todoist", "on": true, "ready": true}])
+        );
+        // The core sees it too.
+        let snap = s.core.task_provider_snapshot(&Default::default());
+        assert_eq!(snap["available"][1]["id"], "plugin:todoist");
+
+        // Turned off: listed, not on and not ready; its ops went with it.
+        s.set_enabled("todoist", false);
+        s.manager.reload().await;
+        assert_eq!(
+            serde_json::to_value(p.available()).unwrap(),
+            json!([{"id": "plugin:todoist", "name": "Todoist", "on": false, "ready": false}])
+        );
+        assert_eq!(
+            p.call("todoist", "status", json!({})).await,
+            Err(ProviderError::Offline)
+        );
+    }
+
+    #[tokio::test]
+    async fn tasks_provide_is_refused_without_the_role() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "sneaky",
+            "1.0.0",
+            json!({}),
+            r#"
+            let refused = null
+            export function apply(ctx) {
+              try { ctx.tasks.provide({ status: () => ({ ok: true }) }) } catch (e) { refused = e.message }
+              ctx.command('refused', () => refused)
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        assert_eq!(
+            s.manager.call("sneaky", "refused", Value::Null).await,
+            Ok(json!(
+                "permission: sneaky doesn't provide tasks (provides in its manifest)"
+            ))
+        );
+        let p = providers(&s);
+        assert!(p.available().is_empty());
+        assert_eq!(
+            p.call("sneaky", "status", json!({})).await,
+            Err(ProviderError::Offline)
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_errors_map_to_codes() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "todoist",
+            "1.0.0",
+            provider_manifest(),
+            r#"
+            export function apply(ctx) {
+              ctx.tasks.provide({
+                status: async () => { throw new Error('rate_limited:90: slow down') },
+                list: async () => { throw new Error('needs_token: no token') },
+                create: async () => { throw new Error('refused: Todoist didn\'t accept the change (400)') },
+                update: async () => { throw new Error('something odd') },
+              })
+            }
+            "#,
+            true,
+        );
+        s.manager.reload().await;
+        let p = providers(&s);
+        assert_eq!(
+            p.call("todoist", "status", json!({})).await,
+            Err(ProviderError::RateLimited { retry_after: 90 })
+        );
+        assert_eq!(
+            p.call("todoist", "list", json!({})).await,
+            Err(ProviderError::NeedsToken)
+        );
+        assert_eq!(
+            p.call("todoist", "create", json!({})).await,
+            Err(ProviderError::Refused(
+                "Todoist didn't accept the change (400)".into()
+            ))
+        );
+        assert_eq!(
+            p.call("todoist", "update", json!({})).await,
+            Err(ProviderError::Offline)
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_matches_finds_the_stored_secret_only() {
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        s.install(
+            "todoist",
+            "1.0.0",
+            provider_manifest(),
+            "export function apply(ctx) {}",
+            true,
+        );
+        let p = providers(&s);
+        const SENTINEL: &str = "tk_SENTINEL_do_not_log_0123456789";
+        assert!(!p.secret_matches("todoist", &format!("echo {SENTINEL}")));
+        crate::plugins::extras::set_setting(&s.manager.paths, "todoist", "token", &json!(SENTINEL))
+            .unwrap();
+        assert!(p.secret_matches("todoist", &format!("echo {SENTINEL} back")));
+        assert!(!p.secret_matches("todoist", "nothing secret here"));
+        assert!(!p.secret_matches("other", &format!("echo {SENTINEL}")));
     }
 }
