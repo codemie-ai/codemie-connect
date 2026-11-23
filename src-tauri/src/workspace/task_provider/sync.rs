@@ -185,6 +185,11 @@ pub(crate) async fn run(core: &Arc<Core>, provider: &str, now: i64) -> Result<Sy
     let (mut st, me) = {
         let r = core.repo()?;
         let s = r.settings()?;
+        // Switched away: its cache and unsent changes wait, untouched, for it to be chosen
+        // again (design §11, ruling 16).
+        if super::active_provider(&s) != provider {
+            return Ok(SyncOutcome::of("inactive"));
+        }
         let me = s
             .active_connection
             .as_deref()
@@ -379,7 +384,9 @@ impl Run<'_> {
                 .as_ref()
                 .and_then(|t| t.data["remote"]["id"].as_str().map(str::to_string));
             let args = if op == "remove" {
-                match e["patch"]["id"].as_str() {
+                // A remove aimed at a task made again under its key is stale: never sent.
+                let stale = outbox::remove_is_stale(&*self.repo()?, &e)?;
+                match e["patch"]["id"].as_str().filter(|_| !stale) {
                     Some(rid) => json!({"id": rid}),
                     None => {
                         self.drop_entry(&current)?;
@@ -489,7 +496,18 @@ impl Run<'_> {
         e.data["op"] = "update".into();
         e.data["patch"] =
             json!({"text": true, "notes": true, "due": true, "kind": true, "owner": true});
-        r.commit_local(&[t, e], &[], true)?;
+        let stale = outbox::stale_removes(&r, &self.provider, key, Some(rid))?;
+        let gone: Vec<(&str, &str, &str)> = stale
+            .iter()
+            .map(|s| {
+                (
+                    outbox::KIND,
+                    s.id.as_str(),
+                    s.workspace_id.as_deref().unwrap_or(""),
+                )
+            })
+            .collect();
+        r.commit_local(&[t, e], &gone, true)?;
         Ok(true)
     }
 
@@ -501,7 +519,7 @@ impl Run<'_> {
         task: &mut Record,
         answer: &Value,
         now: i64,
-        except: &str,
+        except: &[&str],
     ) -> Result<()> {
         let (mut body, lines) = merge::merge(&task.data, answer, task.updated_at);
         body["remote"]["syncedAt"] = now.into();
@@ -512,7 +530,7 @@ impl Run<'_> {
         let others: Vec<Value> = r
             .records_of_kind(outbox::KIND)?
             .into_iter()
-            .filter(|e| e.data["taskId"] == task.id.as_str() && e.id != except)
+            .filter(|e| e.data["taskId"] == task.id.as_str() && !except.contains(&e.id.as_str()))
             .map(|e| e.data)
             .collect();
         task.data["pending"] = (!others.is_empty()).into();
@@ -539,7 +557,15 @@ impl Run<'_> {
             .to_string();
         let edited = self.differing(&task, answer);
         let mut puts = Vec::new();
-        Self::settled(&r, &mut task, answer, now, &entry.id)?;
+        // The key lives again at `rid`: a remove parked or aimed there from an earlier life of
+        // it would delete this task, so it goes with the create (carried MUST-fix).
+        let stale = match task.data["key"].as_str() {
+            Some(key) => outbox::stale_removes(&r, &self.provider, key, Some(&rid))?,
+            None => Vec::new(),
+        };
+        let mut except: Vec<&str> = stale.iter().map(|s| s.id.as_str()).collect();
+        except.push(&entry.id);
+        Self::settled(&r, &mut task, answer, now, &except)?;
         if !edited.is_empty() {
             let seq = outbox::next_seq(&r)?;
             puts.push(outbox::entry(
@@ -563,7 +589,15 @@ impl Run<'_> {
         task.updated_at = now;
         puts.push(task);
         let wid = entry.workspace_id.clone().unwrap_or_default();
-        r.commit_local(&puts, &[(outbox::KIND, &entry.id, &wid)], true)
+        let mut gone = vec![(outbox::KIND, entry.id.as_str(), wid.as_str())];
+        gone.extend(stale.iter().map(|s| {
+            (
+                outbox::KIND,
+                s.id.as_str(),
+                s.workspace_id.as_deref().unwrap_or(""),
+            )
+        }));
+        r.commit_local(&puts, &gone, true)
     }
 
     /// An update or complete answered: the task's `remote` follows the answer; the entry goes
@@ -583,7 +617,7 @@ impl Run<'_> {
             gone.push((outbox::KIND, entry.id.as_str(), wid.as_str()));
         }
         if let Some(mut task) = Self::task_of(&r, &entry.data)? {
-            let except = if unchanged { entry.id.as_str() } else { "" };
+            let except: &[&str] = if unchanged { &[entry.id.as_str()] } else { &[] };
             Self::settled(&r, &mut task, answer, now, except)?;
             if entry.data["op"] == "complete" {
                 if let Some(key) = task.data["key"].as_str() {
@@ -624,7 +658,12 @@ impl Run<'_> {
             ));
         }
         let wid = entry.workspace_id.clone().unwrap_or_default();
-        r.commit_local(&puts, &[(outbox::KIND, &entry.id, &wid)], false)
+        // A withdrawn task stays (To review): nothing waits for it any more.
+        let tid = entry.data["taskId"].as_str().unwrap_or_default();
+        let task = outbox::pending_put(&r, tid, &wid, &[entry.id.as_str()], false)?;
+        let bump = task.is_some();
+        puts.extend(task);
+        r.commit_local(&puts, &[(outbox::KIND, &entry.id, &wid)], bump)
     }
 
     async fn pull(&mut self) -> Result<Option<Stop>> {
@@ -727,9 +766,14 @@ impl Run<'_> {
             }
             // A task whose create got lost on the way back: the key finds it.
             let key = v["key"].as_str().filter(|k| !k.is_empty());
+            // Only a task Connect sent: one To review or Dismissed (withdrawn, say) has no
+            // create in flight, and its key's tombstone below keeps it out of the provider.
             if let Some(t) = key.and_then(|k| {
-                mine.iter()
-                    .find(|t| t.data["key"] == k && t.data["remote"]["id"].is_null())
+                mine.iter().find(|t| {
+                    t.data["key"] == k
+                        && t.data["remote"]["id"].is_null()
+                        && !matches!(tasks::status_of(&t.data), "review" | "dismissed")
+                })
             }) {
                 let mut adopted = t.clone();
                 adopted.data["remote"] = wire::remote_of(v, Some(now));
@@ -746,12 +790,26 @@ impl Run<'_> {
                         e.workspace_id.clone().unwrap_or_default(),
                     ));
                 }
+                // Removes made stale by the key living again at `rid` go too.
+                let stale =
+                    outbox::stale_removes(&r, &self.provider, key.unwrap_or_default(), Some(&rid))?;
+                for e in &stale {
+                    gone.push((
+                        outbox::KIND.into(),
+                        e.id.clone(),
+                        e.workspace_id.clone().unwrap_or_default(),
+                    ));
+                }
                 // An edit made after the lost create still has to reach the provider.
                 let edited = self.differing(t, v);
                 let any_edit = !edited.is_empty();
                 let left: Vec<&Record> = entries
                     .iter()
-                    .filter(|e| e.data["taskId"] == t.id.as_str() && e.data["op"] != "create")
+                    .filter(|e| {
+                        e.data["taskId"] == t.id.as_str()
+                            && e.data["op"] != "create"
+                            && !stale.iter().any(|s| s.id == e.id)
+                    })
                     .collect();
                 if any_edit {
                     puts.push(outbox::entry(

@@ -1089,6 +1089,107 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       return { deleted: true, id: d.id, body: clone(stored.data) };
     },
   });
+  // Task providers (task_provider/ops.rs): the snapshot keeps `taskProvider` (Local's shape from
+  // task-provider-states.json unless a check sets another); the ops answer in native's shapes,
+  // with its refusals (`field`). The mock has no outbox: nothing is ever sent anywhere.
+  s.taskProvider ||= { active: 'local', name: 'Connect', available: [{ id: 'local', name: 'Connect' }], state: 'local', pending: 0, parked: 0, lastSync: null, retryAt: null, message: null, copyOffered: false };
+  s.settings.tasks ||= { provider: 'local', copyOffered: [] };
+  const providerOf = b => b.provider || 'local';
+  const taskRecord = (id, wid) => s.records.find(r => r.kind === 'commitment' && r.id === id && (!wid || (r.workspaceId || 'personal') === wid));
+  const OPEN = ['todo', 'doing', 'waiting'];
+  Object.assign(ops, {
+    task_sync_now: () => { calls.push(['task_sync_now', {}]); return { queued: s.taskProvider.active !== 'local' }; },
+    task_provider_set: d => {
+      calls.push(['task_provider_set', clone(d)]);
+      const tp = s.taskProvider;
+      const listed = tp.available.find(p => p.id === d.provider);
+      if (!listed) refuse('provider', 'Choose Connect or an installed task plugin.');
+      if (d.provider !== 'local' && listed.on === false) refuse('provider', `Turn ${listed.name} on in Settings › Plugins first.`);
+      const offered = s.settings.tasks.copyOffered;
+      if (d.provider !== 'local' && !offered.includes(d.provider)) offered.push(d.provider);
+      s.settings.tasks.provider = d.provider;
+      Object.assign(tp, { active: d.provider, name: listed.name, copyOffered: offered.includes(d.provider), state: d.provider === 'local' ? 'local' : 'ready' });
+      // To review tasks follow the provider; nothing is deleted or closed.
+      for (const r of s.records.filter(r => r.kind === 'commitment' && taskStatus(r.data) === 'review')) {
+        if (d.provider === 'local') delete r.data.provider; else r.data.provider = d.provider;
+      }
+      let copied = 0;
+      if (d.copy && d.provider !== 'local') {
+        const held = new Set(s.records.filter(r => r.kind === 'commitment' && providerOf(r.data) === d.provider).map(r => r.data.key));
+        for (const r of s.records.filter(r => r.kind === 'commitment' && providerOf(r.data) === 'local' && OPEN.includes(taskStatus(r.data)))) {
+          if (r.data.key && held.has(r.data.key)) continue;
+          held.add(r.data.key);
+          s.records.push({ ...clone(r), id: crypto.randomUUID(), revision: crypto.randomUUID(), updatedAt: now(),
+            data: { ...clone(r.data), provider: d.provider, copiedFrom: r.id, pending: true, history: [...(r.data.history || []), { at: now(), text: 'Copied from Connect' }] } });
+          copied++;
+        }
+      }
+      return { provider: d.provider, copied };
+    },
+    task_withdraw: (d, wid) => {
+      calls.push(['task_withdraw', clone(d)]);
+      if (!Array.isArray(d.ids)) refuse('ids', 'Choose the tasks.');
+      if (d.ids.length > 200) refuse('ids', 'Choose up to 200 tasks.');
+      let done = 0, failed = 0;
+      for (const id of d.ids) {
+        const stored = taskRecord(id, wid);
+        if (!stored) { failed++; continue; }
+        if (taskStatus(stored.data) !== 'review') {
+          Object.assign(stored.data, { status: 'review', done: false, doneAt: null, history: [...(stored.data.history || []), { at: now(), text: 'Moved back to review' }] });
+          if (stored.data.provider) Object.assign(stored.data, { remote: null, pending: false });
+        }
+        done++;
+      }
+      return { done, failed };
+    },
+    task_bulk: (d, wid) => {
+      calls.push(['task_bulk', clone(d)]);
+      if (!Array.isArray(d.items) || d.items.length > 200) refuse('items', 'Choose up to 200 tasks.');
+      let done = 0, failed = 0;
+      const before = [];
+      for (const item of d.items) {
+        const stored = taskRecord(item.id, wid);
+        if (!stored) { failed++; continue; }
+        const was = { id: item.id, due: stored.data.due ?? null, status: taskStatus(stored.data) };
+        const change = { id: item.id };
+        if ('due' in item) change.due = item.due;
+        if ('status' in item) change.status = item.status;
+        ops.task_save(change, wid);
+        before.push(was);
+        done++;
+      }
+      return { done, failed, before };
+    },
+    task_handled: (d, wid) => {
+      calls.push(['task_handled', clone(d)]);
+      const stored = taskRecord(d.id, wid);
+      if (!stored) fail('not_found', 'This task is no longer there.');
+      const kept = stored.data.keptEvidence || [];
+      if (d.evidence !== undefined && d.evidence !== null) {
+        const evidence = String(d.evidence).trim();
+        if (!evidence || evidence.length > 500) refuse('evidence', 'Say what shows the task is handled.');
+        // The mock keeps evidence as given; native keeps sha1(evidence)[..16].
+        if (OPEN.includes(taskStatus(stored.data)) && !kept.includes(evidence)) stored.data.handled = { evidence, at: now(), auto: false };
+      } else if (d.action === 'done') {
+        ops.task_save({ id: d.id, status: 'done' }, wid);
+        stored.data.handled = null;
+      } else if (d.action === 'keep') {
+        if (stored.data.handled) stored.data.keptEvidence = [...new Set([...kept, stored.data.handled.evidence])];
+        stored.data.handled = null;
+      } else refuse('action', 'Choose Done or Keep open.');
+      return { id: d.id };
+    },
+    task_parked: (d, wid) => {
+      calls.push(['task_parked', clone(d)]);
+      if (!['retry', 'discard'].includes(d.action)) refuse('action', 'Choose Try again or Discard change.');
+      const stored = taskRecord(d.id, wid);
+      if (stored) {
+        stored.data.syncError = null;
+        if (d.action === 'discard') stored.data.pending = false;
+      }
+      return { id: d.id };
+    },
+  });
   // Plugins (`plugins_request`, `plugin_call`): an in-memory registry over the contract answers.
   // `__pluginCalls` records what reached native, with the plugin id it went out with.
   const pl = {
@@ -1255,7 +1356,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal', 'task_sync_now'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },

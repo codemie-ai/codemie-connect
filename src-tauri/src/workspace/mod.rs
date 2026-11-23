@@ -650,6 +650,17 @@ impl Core {
                 let started = now();
                 self.sync(c, job.payload["force"] == true).await?;
                 self.refresh_incidents()?;
+                // A round that changed messages may hold the user's own replies (design §6).
+                let changed = self
+                    .repo()?
+                    .records_of_kind("message")?
+                    .iter()
+                    .any(|m| m.updated_at >= started);
+                if changed {
+                    if let Err(e) = task_provider::handled::sweep(self, now()) {
+                        eprintln!("tasks: the own-reply sweep failed: {}", e.code);
+                    }
+                }
                 // Plugins hear once per round which sources changed.
                 self.after_sync_round(started);
                 // New messages may start automations; a failure here must not fail the sync.
@@ -1294,6 +1305,11 @@ impl Core {
             | Operation::MeetingRuleOrder
             | Operation::MeetingTextSave => self.library_op(&req)?,
             Operation::TaskSave | Operation::TaskDelete => self.task_op(&req)?,
+            Operation::TaskProviderSet
+            | Operation::TaskWithdraw
+            | Operation::TaskBulk
+            | Operation::TaskHandled
+            | Operation::TaskParked => self.task_provider_op(&req)?,
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
         self.repo()?

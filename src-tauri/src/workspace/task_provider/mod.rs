@@ -16,8 +16,10 @@ use serde_json::{json, Value};
 #[cfg(any(test, feature = "test-support"))]
 #[cfg_attr(not(test), allow(dead_code))] // no test outside the crate drives a provider yet
 pub mod fake;
+pub(crate) mod handled;
 pub(crate) mod keys;
 pub(crate) mod merge;
+pub(crate) mod ops;
 pub(crate) mod outbox;
 pub(crate) mod sync;
 pub(crate) mod wire;

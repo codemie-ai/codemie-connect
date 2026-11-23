@@ -277,9 +277,51 @@ pub(crate) fn park(
     r.commit_local(&puts, &[], true)
 }
 
+/// The `remove` entries of `provider` for `key` that a create (or an adopt) of that key made
+/// stale: every parked one, and any aimed at `rid`, the remote the key now lives at. Sent, they
+/// would delete the task just made again (design §10 Undo, §3 "Withdrawn lets a later add
+/// create again").
+pub(crate) fn stale_removes(
+    r: &Repository,
+    provider: &str,
+    key: &str,
+    rid: Option<&str>,
+) -> Result<Vec<Record>> {
+    Ok(r.records_of_kind(KIND)?
+        .into_iter()
+        .filter(|e| {
+            e.data["provider"] == provider
+                && e.data["op"] == "remove"
+                && e.data["patch"]["key"] == key
+                && (e.data["parked"] == true || rid.is_some_and(|rid| e.data["patch"]["id"] == rid))
+        })
+        .collect())
+}
+
+/// Whether `remove` entry `entry` aims at a task that lives again: its key's ledger entry is live
+/// (`created` or `done`) at the same remote id, or a task of the provider holds that id. Such a
+/// remove is never sent.
+pub(crate) fn remove_is_stale(r: &Repository, entry: &Value) -> Result<bool> {
+    let (Some(rid), Some(provider)) = (entry["patch"]["id"].as_str(), entry["provider"].as_str())
+    else {
+        return Ok(false);
+    };
+    if let Some(key) = entry["patch"]["key"].as_str() {
+        let ledger = super::keys::ledger_get(r, provider, key)?;
+        if ledger.is_some_and(|l| {
+            matches!(l["state"].as_str(), Some("created" | "done")) && l["remoteId"] == rid
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(r.records_of_kind(crate::workspace::tasks::KIND)?
+        .iter()
+        .any(|t| t.data["provider"] == provider && t.data["remote"]["id"] == rid))
+}
+
 /// Drops the waiting entries of task `task_id` whose op is `op` (a withdrawn create, design §10),
 /// and returns how many went.
-#[cfg_attr(not(test), allow(dead_code))] // `task_withdraw` (Task 4) drops a create still waiting
+#[cfg_attr(not(test), allow(dead_code))] // `task_withdraw` drops in its own transaction (ops.rs)
 pub(crate) fn drop_for(r: &mut Repository, task_id: &str, op: &str) -> Result<usize> {
     let gone: Vec<Record> = of_task(r, task_id)?
         .into_iter()

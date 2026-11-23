@@ -226,6 +226,67 @@ pub(crate) fn task_save(
     data: &Value,
     now: i64,
 ) -> Result<Record> {
+    let Prepared {
+        mut record,
+        ops,
+        before,
+    } = prepare(r, workspace_id, data, now)?;
+    // A provider's task is written with its outbox entries, in one transaction (design §4).
+    if ops.is_empty() {
+        r.put_record(&record)?;
+    } else {
+        record.data["pending"] = true.into();
+        outbox::enqueue_all(r, &record, &ops, now)?;
+    }
+    meetings_follow(r, workspace_id, &before, &record.data);
+    Ok(record)
+}
+
+/// What [`task_save`] would write: the merged task, the outbox ops a provider's task needs, and
+/// the body it had before. Nothing is written.
+pub(crate) struct Prepared {
+    pub(crate) record: Record,
+    pub(crate) ops: Vec<(&'static str, Value)>,
+    pub(crate) before: Value,
+}
+
+/// Rewrites `tasks.json` of the meeting a task is in (and of the one it left).
+pub(crate) fn meetings_follow(r: &Repository, workspace_id: &str, before: &Value, after: &Value) {
+    let mut meetings: Vec<&str> = [&before["meetingId"], &after["meetingId"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .collect();
+    meetings.dedup();
+    for meeting in meetings {
+        write_tasks_json(r, workspace_id, meeting);
+    }
+}
+
+/// Whether `key` is a task key: 16 lower-case hex characters (design §3).
+pub(crate) fn valid_key(key: &str) -> bool {
+    key.len() == 16 && key.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+}
+
+/// The key a task without one gets (design §3): from its transcript line, its message, or its
+/// id for a task typed by hand.
+pub(crate) fn key_of(id: &str, body: &Value) -> String {
+    let source = match (body["meetingId"].as_str(), body["line"].as_u64()) {
+        (Some(meeting), Some(line)) => format!("meeting:{meeting}:{line}"),
+        _ => match body["sourceId"].as_str() {
+            Some(source_id) => format!("message:{source_id}"),
+            None => format!("manual:{id}"),
+        },
+    };
+    keys::task_key(&source, body["text"].as_str().unwrap_or(""))
+}
+
+/// The merge [`task_save`] makes, without writing it.
+pub(crate) fn prepare(
+    r: &Repository,
+    workspace_id: &str,
+    data: &Value,
+    now: i64,
+) -> Result<Prepared> {
     if !data.is_object() {
         return Err(invalid("task", "Send the task as an object."));
     }
@@ -275,6 +336,7 @@ pub(crate) fn task_save(
         ("speaker", NAME_MAX, "Choose a speaker."),
         ("sourceId", REF_MAX, "Choose a message."),
         ("sourceRevision", REF_MAX, "Choose a message."),
+        ("copiedFrom", ID_MAX, "Choose a task."),
     ] {
         if has(key) {
             body[key] = text(&data[key], key, max, message)?.map_or(Value::Null, Value::from);
@@ -282,6 +344,9 @@ pub(crate) fn task_save(
     }
     if has("due") {
         body["due"] = due(&data["due"])?.map_or(Value::Null, Value::from);
+    }
+    if has("handled") {
+        body["handled"] = handled(&data["handled"], now)?;
     }
     if has("confidence") {
         body["confidence"] = match &data["confidence"] {
@@ -389,17 +454,19 @@ pub(crate) fn task_save(
             body["provider"] = provider.into();
         }
     }
+    // A new task may bring its key: Undo of a delete, a copy to a provider, step 5's
+    // `create_by_key` (design §3, §10).
+    if creating && has("key") {
+        body["key"] = data["key"]
+            .as_str()
+            .filter(|k| valid_key(k))
+            .map(Value::from)
+            .ok_or_else(|| invalid("key", "Choose a task key."))?;
+    }
     // A task without a key gets one: every new task, and an older one saved for the first time
     // since this step (design §13 "Migration"). Never changed once set.
     if body["key"].as_str().filter(|k| !k.is_empty()).is_none() {
-        let source = match (body["meetingId"].as_str(), body["line"].as_u64()) {
-            (Some(meeting), Some(line)) => format!("meeting:{meeting}:{line}"),
-            _ => match body["sourceId"].as_str() {
-                Some(source_id) => format!("message:{source_id}"),
-                None => format!("manual:{id}"),
-            },
-        };
-        body["key"] = keys::task_key(&source, body["text"].as_str().unwrap_or("")).into();
+        body["key"] = key_of(&id, &body).into();
     }
 
     let mut log = text(
@@ -459,7 +526,7 @@ pub(crate) fn task_save(
     history.drain(..excess);
     body["history"] = history.into();
 
-    let mut record = Record {
+    let record = Record {
         id,
         kind: KIND.into(),
         connection_id: None,
@@ -469,23 +536,23 @@ pub(crate) fn task_save(
         updated_at: now,
         data: body,
     };
-    // A provider's task is written with its outbox entries, in one transaction (design §4).
     let ops = provider_ops(&before, &record.data, creating);
-    if ops.is_empty() {
-        r.put_record(&record)?;
-    } else {
-        record.data["pending"] = true.into();
-        outbox::enqueue_all(r, &record, &ops, now)?;
+    Ok(Prepared {
+        record,
+        ops,
+        before,
+    })
+}
+
+/// "Looks handled" (design §6): `null` clears it; `{evidence, auto?}` sets it, stamped `now`.
+fn handled(v: &Value, now: i64) -> Result<Value> {
+    const MESSAGE: &str = "Say what shows the task is handled.";
+    if v.is_null() {
+        return Ok(Value::Null);
     }
-    let mut meetings: Vec<&str> = [&before["meetingId"], &record.data["meetingId"]]
-        .into_iter()
-        .filter_map(Value::as_str)
-        .collect();
-    meetings.dedup();
-    for meeting in meetings {
-        write_tasks_json(r, workspace_id, meeting);
-    }
-    Ok(record)
+    let evidence = text(&v["evidence"], "handled", HISTORY_TEXT_MAX, MESSAGE)?
+        .ok_or_else(|| invalid("handled", MESSAGE))?;
+    Ok(json!({"evidence": evidence, "at": now, "auto": v["auto"] == true}))
 }
 
 /// What saving a provider's task from `before` to `after` sends (design §1, §4): nothing for
@@ -582,8 +649,8 @@ fn try_write_tasks_json(r: &Repository, workspace_id: &str, meeting_id: &str) ->
         return Ok(());
     };
     let names = people_names(&dir);
-    let mut tasks: Vec<Record> = r
-        .local_records(workspace_id, KIND)?
+    // The active provider's tasks only: a copy to a provider is not a second task.
+    let mut tasks: Vec<Record> = active(r, workspace_id)?
         .into_iter()
         .filter(|t| t.data["meetingId"] == meeting_id)
         .collect();
@@ -739,6 +806,56 @@ pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
         policy,
         json!({"title": title, "body": body, "route": "tasks", "expiresAt": expires}),
     ))
+}
+
+/// Step 5's only way to make a task (design §3): idempotent by `key`. A task of `workspace` with
+/// that key, or a live ledger entry for it with the active provider, makes nothing and answers
+/// `(id, false)`; otherwise `body` is saved as a new task with that key, `(id, true)`.
+#[cfg_attr(not(test), allow(dead_code))] // step 5's automations call it
+pub(crate) fn create_by_key(
+    core: &Core,
+    workspace: &str,
+    body: &Value,
+    key: &str,
+) -> Result<(String, bool)> {
+    if !valid_key(key) {
+        return Err(invalid("key", "Choose a task key."));
+    }
+    let _folders = core.meeting_lock();
+    let mut r = core.repo()?;
+    if let Some(t) = r
+        .local_records(workspace, KIND)?
+        .into_iter()
+        .find(|t| t.data["key"] == key)
+    {
+        return Ok((t.id, false));
+    }
+    let provider = active_provider(&r.settings()?).to_string();
+    if provider != "local" {
+        let ledger = keys::ledger_get(&r, &provider, key)?;
+        let live = ledger
+            .as_ref()
+            .filter(|l| matches!(l["state"].as_str(), Some("created" | "done")))
+            .and_then(|l| l["remoteId"].as_str());
+        if let Some(rid) = live {
+            // The pull's record for it (`<plugin>-<remote id>`), made there or still to come.
+            let plugin = provider.strip_prefix("plugin:").unwrap_or(&provider);
+            return Ok((format!("{plugin}-{rid}"), false));
+        }
+    }
+    let mut data = body.clone();
+    let fields = data
+        .as_object_mut()
+        .ok_or_else(|| invalid("task", "Send the task as an object."))?;
+    fields.insert("key".into(), key.into());
+    if fields.get("id").is_none_or(Value::is_null) {
+        fields.insert("id".into(), super::models::id().into());
+    }
+    let task = task_save(&mut r, workspace, &data, now())?;
+    if task.data["pending"] == true {
+        sync::queue(&mut r, provider_of(&task.data), now())?;
+    }
+    Ok((task.id, true))
 }
 
 impl Core {

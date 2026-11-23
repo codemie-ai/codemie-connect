@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { createTasksController } from '../workspace/tasks-controller.js';
 import { newTasksView, taskOrder, sortTasks, taskStatus } from '../workspace/tasks-model.js';
 import { buildSnapshot, withTasks, taskContract } from './fixtures/workspace-fixture.mjs';
+import { REBASE_SAFE } from '../workspace/store.js';
 
 const NOW = Date.UTC(2026, 10, 18, 12);
 
@@ -264,4 +265,8 @@ test('a date typed only in part, left behind, keeps the due date', async () => {
   // Emptied on purpose: the date goes.
   await ctl.handle('task-due', control({ id: 'task-legal' }, { value: '', validity: { badInput: false } }));
   assert.deepEqual(calls.mutate[0], ['task_save', { id: 'task-legal', due: null }]);
+});
+
+test('the task provider operations rebase onto a fresh snapshot (native fences them itself)', () => {
+  for (const op of ['task_provider_set', 'task_withdraw', 'task_bulk', 'task_handled', 'task_parked']) assert.ok(REBASE_SAFE.has(op), op);
 });
