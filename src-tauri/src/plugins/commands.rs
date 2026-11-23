@@ -124,11 +124,7 @@ pub async fn plugins_request(
         let core = core.clone();
         return blocking(move || {
             let _running = running;
-            let (view, provider_secret) = set_setting(&paths, data.unwrap_or(Value::Null))?;
-            if let Some(plugin) = provider_secret {
-                core.task_secret_saved(&plugin)?;
-            }
-            Ok(view)
+            set_setting_then_sync(&core, &paths, data.unwrap_or(Value::Null))
         })
         .await?;
     }
@@ -564,6 +560,20 @@ fn set_setting(paths: &PluginPaths, data: Value) -> Result<(Value, Option<String
     Ok((view, provider_secret.then_some(a.id)))
 }
 
+/// The window's `set_setting`: sets the setting and, for a task provider's secret, tells the
+/// core (a rejected token no longer stops its calls, and a sync is queued).
+fn set_setting_then_sync(
+    core: &crate::workspace::Core,
+    paths: &PluginPaths,
+    data: Value,
+) -> Result<Value> {
+    let (view, provider_secret) = set_setting(paths, data)?;
+    if let Some(plugin) = provider_secret {
+        core.task_secret_saved(&plugin)?;
+    }
+    Ok(view)
+}
+
 // --------------------------------------------------------------------- views
 
 #[derive(Serialize)]
@@ -924,6 +934,50 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out["status"], "installed");
+    }
+
+    /// Saving the provider's token through the window's `set_setting` lifts `needs_token` and
+    /// queues a sync.
+    #[test]
+    fn saving_the_token_lifts_needs_token_and_queues_a_sync() {
+        use crate::workspace::task_provider::{fake::FakeProvider, sync};
+        let env = testkit::env();
+        installed_provider(&env);
+        let core = crate::workspace::test_core(
+            &env.dir.path().join("core"),
+            std::sync::Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            vec![],
+        );
+        core.set_task_providers(std::sync::Arc::new(FakeProvider::new()));
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.tasks.provider = "plugin:todoist".into();
+            r.settings_update(&s).unwrap();
+            sync::save_state(
+                &mut r,
+                "plugin:todoist",
+                &json!({"state": "needs_token"}),
+                1,
+            )
+            .unwrap();
+        }
+        set_setting_then_sync(
+            &core,
+            &env.paths,
+            json!({"id": "todoist", "key": "token", "value": SENTINEL}),
+        )
+        .unwrap();
+        let r = core.repo().unwrap();
+        assert_eq!(
+            sync::load_state(&r, "plugin:todoist").unwrap()["state"],
+            "ready"
+        );
+        assert!(r
+            .jobs()
+            .unwrap()
+            .iter()
+            .any(|j| j.kind == "task_sync" && j.state == "queued"));
     }
 
     /// Every file under `dir` whose bytes contain `needle`.

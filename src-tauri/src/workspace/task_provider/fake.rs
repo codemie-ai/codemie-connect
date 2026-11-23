@@ -26,6 +26,10 @@ struct Inner {
     next_id: u64,
     time: i64,
     available: Option<Vec<ProviderInfo>>,
+    /// Runs once at the next call of an op, while that call is on its way.
+    during: HashMap<String, Box<dyn FnOnce() + Send>>,
+    /// How long each answer takes (tokio's clock).
+    delay: Option<std::time::Duration>,
     secret: Option<String>,
 }
 
@@ -129,6 +133,17 @@ impl FakeProvider {
     /// What `available` lists (default: Todoist, on and ready).
     pub fn set_available(&self, available: Vec<ProviderInfo>) {
         self.lock().available = Some(available);
+    }
+
+    /// Runs `f` once, at the next call of `op`, before that call answers: an edit made while
+    /// the call is on its way.
+    pub fn during(&self, op: &str, f: impl FnOnce() + Send + 'static) {
+        self.lock().during.insert(op.into(), Box::new(f));
+    }
+
+    /// Every answer takes `delay` from now on.
+    pub fn set_delay(&self, delay: std::time::Duration) {
+        self.lock().delay = Some(delay);
     }
 
     /// The provider's stored secret, for `secret_matches`.
@@ -247,7 +262,17 @@ impl TaskProviders for FakeProvider {
         } else {
             Self::perform(&mut s, op, &args)
         };
-        Box::pin(async move { answer })
+        let (during, delay) = (s.during.remove(op), s.delay);
+        drop(s);
+        if let Some(f) = during {
+            f();
+        }
+        Box::pin(async move {
+            if let Some(d) = delay {
+                tokio::time::sleep(d).await;
+            }
+            answer
+        })
     }
 
     fn available(&self) -> Vec<ProviderInfo> {

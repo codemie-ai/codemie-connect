@@ -222,10 +222,13 @@ impl super::Core {
         if provider == "local" {
             return Ok(());
         }
+        // Queued, running, or due in the last 5 minutes whatever became of it: a run that failed
+        // before writing its state is not queued again every round.
         let busy = r.jobs()?.iter().any(|j| {
             j.kind == sync::JOB_KIND
                 && j.payload["provider"] == provider.as_str()
-                && matches!(j.state.as_str(), "queued" | "running")
+                && (matches!(j.state.as_str(), "queued" | "running")
+                    || j.due_at > now - BACKGROUND_EVERY)
         });
         let st = sync::load_state(&r, &provider)?;
         if !busy

@@ -61,33 +61,78 @@ fn of_task(r: &Repository, task_id: &str) -> Result<Vec<Record>> {
         .collect())
 }
 
+/// A new entry for `task`, ordered by `seq`.
+pub(crate) fn entry(task: &Record, op: &str, patch: Value, seq: i64, now: i64) -> Record {
+    let wid = task.workspace_id.clone().unwrap_or_default();
+    let provider = task.data["provider"].as_str().unwrap_or_default();
+    entry_for(&task.id, &wid, provider, op, patch, seq, now)
+}
+
+/// A new entry for task `task_id` of workspace `wid` (the task record may be gone: a `remove`).
+pub(crate) fn entry_for(
+    task_id: &str,
+    wid: &str,
+    provider: &str,
+    op: &str,
+    patch: Value,
+    seq: i64,
+    now: i64,
+) -> Record {
+    let eid = id();
+    Record {
+        id: eid.clone(),
+        kind: KIND.into(),
+        connection_id: None,
+        workspace_id: Some(wid.into()),
+        source: "local".into(),
+        revision: id(),
+        updated_at: now,
+        data: json!({"id": eid, "taskId": task_id, "workspaceId": wid,
+            "provider": provider, "op": op, "patch": patch, "seq": seq,
+            "enqueuedAt": now, "editedAt": now, "attempts": 0, "lastError": null,
+            "message": null, "parked": false}),
+    }
+}
+
+/// Task `task_id` (of workspace `wid`) with `pending` set to whether an entry still waits for
+/// it once `removed` are gone (or `added` is true); `None` when there is no such task or its
+/// `pending` is already that. Its `syncError` goes when no parked entry is left.
+pub(crate) fn pending_put(
+    r: &Repository,
+    task_id: &str,
+    wid: &str,
+    removed: &[&str],
+    added: bool,
+) -> Result<Option<Record>> {
+    let Ok(mut task) = r.record(crate::workspace::tasks::KIND, task_id, None, Some(wid)) else {
+        return Ok(None);
+    };
+    let left: Vec<Record> = r
+        .records_of_kind(KIND)?
+        .into_iter()
+        .filter(|e| e.data["taskId"] == task_id && !removed.contains(&e.id.as_str()))
+        .collect();
+    let pending = added || !left.is_empty();
+    let parked = left.iter().any(|e| e.data["parked"] == true);
+    if task.data["pending"] == pending && (parked || task.data["syncError"].is_null()) {
+        return Ok(None);
+    }
+    task.data["pending"] = pending.into();
+    if !parked {
+        task.data["syncError"] = Value::Null;
+    }
+    task.revision = id();
+    Ok(Some(task))
+}
+
 /// The next free `seq`.
-fn next_seq(r: &Repository) -> Result<i64> {
+pub(crate) fn next_seq(r: &Repository) -> Result<i64> {
     Ok(r.records_of_kind(KIND)?
         .iter()
         .filter_map(|e| e.data["seq"].as_i64())
         .max()
         .unwrap_or(0)
         + 1)
-}
-
-/// A new entry for `task`, ordered by `seq`.
-pub(crate) fn entry(task: &Record, op: &str, patch: Value, seq: i64, now: i64) -> Record {
-    let eid = id();
-    let wid = task.workspace_id.clone().unwrap_or_default();
-    Record {
-        id: eid.clone(),
-        kind: KIND.into(),
-        connection_id: None,
-        workspace_id: Some(wid.clone()),
-        source: "local".into(),
-        revision: id(),
-        updated_at: now,
-        data: json!({"id": eid, "taskId": task.id, "workspaceId": wid,
-            "provider": task.data["provider"], "op": op, "patch": patch, "seq": seq,
-            "enqueuedAt": now, "editedAt": now, "attempts": 0, "lastError": null,
-            "message": null, "parked": false}),
-    }
 }
 
 /// Queues `op` with `patch` onto `queued` (the task's waiting entries, oldest first), changing
@@ -165,7 +210,8 @@ pub(crate) fn delete_task(r: &mut Repository, task: &Record, now: i64) -> Result
         mine.iter()
             .map(|e| (KIND, e.id.as_str(), e.workspace_id.as_deref().unwrap_or(""))),
     );
-    let puts = match task.data["remote"]["id"].as_str() {
+    let rid = task.data["remote"]["id"].as_str();
+    let mut puts = match rid {
         Some(rid) => vec![entry(
             task,
             "remove",
@@ -175,6 +221,18 @@ pub(crate) fn delete_task(r: &mut Repository, task: &Record, now: i64) -> Result
         )],
         None => Vec::new(),
     };
+    // A tombstone by key: a create that reached the provider with its answer lost, or a remove
+    // still parked, must not bring the task back on a pull (the pull removes it there instead).
+    let sent = rid.is_some() || mine.iter().any(|e| e.data["op"] == "create");
+    if let (true, Some(key), Some(provider)) = (
+        sent,
+        task.data["key"].as_str(),
+        task.data["provider"].as_str(),
+    ) {
+        puts.push(super::keys::ledger_record(
+            provider, key, rid, "removed", now,
+        ));
+    }
     r.commit_local(&puts, &gone, true)
 }
 
@@ -231,7 +289,12 @@ pub(crate) fn drop_for(r: &mut Repository, task_id: &str, op: &str) -> Result<us
         .iter()
         .map(|e| (KIND, e.id.as_str(), e.workspace_id.as_deref().unwrap_or("")))
         .collect();
-    r.commit_local(&[], &keys, false)?;
+    let ids: Vec<&str> = gone.iter().map(|e| e.id.as_str()).collect();
+    let task = match gone.first().and_then(|e| e.workspace_id.as_deref()) {
+        Some(wid) => pending_put(r, task_id, wid, &ids, false)?,
+        None => None,
+    };
+    r.commit_local(task.as_slice(), &keys, task.is_some())?;
     Ok(gone.len())
 }
 
@@ -278,6 +341,13 @@ mod tests {
         assert_eq!(stored.data["pending"], true);
         assert_eq!(drop_for(&mut r, "t1", "update").unwrap(), 2);
         assert_eq!(waiting(&r, "plugin:todoist").unwrap().len(), 1);
-        assert_eq!(counts(&r, "plugin:todoist").unwrap(), (1, 0));
+        assert_eq!(drop_for(&mut r, "t1", "complete").unwrap(), 1);
+        let stored = r
+            .record("commitment", "t1", None, Some("personal"))
+            .unwrap();
+        assert_eq!(
+            stored.data["pending"], false,
+            "nothing waits for it any more"
+        );
     }
 }

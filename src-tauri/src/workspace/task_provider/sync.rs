@@ -34,6 +34,11 @@ pub(crate) const JOB_KIND: &str = "task_sync";
 const WORKSPACE: &str = "personal";
 /// The most outbox entries one pass sends.
 const PASS_MAX: usize = 50;
+/// A pass sends nothing more after this long, well inside the job's 300 s lease (which the
+/// background loop also renews every 15 s), so one pass never runs twice at once.
+const PASS_TIME: std::time::Duration = std::time::Duration::from_secs(120);
+/// The fields an `update` can carry.
+const UPDATABLE: [&str; 5] = ["text", "notes", "due", "kind", "owner"];
 /// A pull at most this often (s), unless something was pushed.
 const PULL_EVERY: i64 = 60;
 const BACKOFF_MIN: i64 = 30;
@@ -322,17 +327,29 @@ impl Run<'_> {
         }
     }
 
-    /// Removes `entry` (it is done with or has nothing left to do).
+    /// Removes `entry` (it is done with or has nothing left to do); its task's `pending`
+    /// follows.
     fn drop_entry(&self, entry: &Record) -> Result<()> {
-        self.repo()?.commit_local(
-            &[],
-            &[(
-                outbox::KIND,
-                &entry.id,
-                entry.workspace_id.as_deref().unwrap_or(""),
-            )],
-            false,
+        let mut r = self.repo()?;
+        let wid = entry.workspace_id.as_deref().unwrap_or("");
+        let tid = entry.data["taskId"].as_str().unwrap_or_default();
+        let task = outbox::pending_put(&r, tid, wid, &[entry.id.as_str()], false)?;
+        r.commit_local(
+            task.as_slice(),
+            &[(outbox::KIND, &entry.id, wid)],
+            task.is_some(),
         )
+    }
+
+    /// The fields of `task` (as Connect would send them) that differ from the provider's task
+    /// `theirs`, named for an `update`.
+    fn differing(&self, task: &Record, theirs: &Value) -> serde_json::Map<String, Value> {
+        let (mine, theirs) = (self.wire_of(task), wire::remote_fields(theirs));
+        UPDATABLE
+            .into_iter()
+            .filter(|k| mine[*k] != theirs[*k])
+            .map(|k| (k.to_string(), Value::Bool(true)))
+            .collect()
     }
 
     async fn push(&mut self) -> Result<Option<Stop>> {
@@ -345,7 +362,7 @@ impl Run<'_> {
             if blocked.contains(&tid) {
                 continue;
             }
-            if sent >= PASS_MAX {
+            if sent >= PASS_MAX || self.clock.started.elapsed() >= PASS_TIME {
                 self.more = true;
                 break;
             }
@@ -410,10 +427,15 @@ impl Run<'_> {
                 Err(stop) => return Ok(Some(stop)),
             };
             match answer {
+                // A create answered without an id made nothing Connect can address: parked, so
+                // it shows, and the task's later entries keep waiting behind it.
+                Ok(answer) if op == "create" && wire::remote_of(&answer, None)["id"].is_null() => {
+                    self.failed(&e, ProviderError::Refused(String::new()))?;
+                }
                 Ok(answer) => {
                     self.outcome.pushed += 1;
                     match op.as_str() {
-                        "create" => self.created(&current, &args["task"], &answer)?,
+                        "create" => self.created(&current, &answer)?,
                         "remove" => self.removed_sent(&current)?,
                         _ => self.answered(&current, &answer)?,
                     }
@@ -502,35 +524,24 @@ impl Run<'_> {
     }
 
     /// A create answered: the remote id goes into the task and the ledger, and the entry goes, in
-    /// one transaction. An edit made while it was on its way is queued as an update.
-    fn created(&self, entry: &Record, sent: &Value, answer: &Value) -> Result<()> {
+    /// one transaction. Where the task now differs from the provider's answer (an edit made while
+    /// the create was on its way, or a task adopted by its key that holds older words), an update
+    /// is queued (design §4 "an update if fields differ").
+    fn created(&self, entry: &Record, answer: &Value) -> Result<()> {
         let now = self.clock.secs();
         let mut r = self.repo()?;
         let Some(mut task) = Self::task_of(&r, &entry.data)? else {
             return Ok(());
         };
-        let rid = answer["id"].as_str().unwrap_or_default().to_string();
+        let rid = wire::remote_of(answer, None)["id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let edited = self.differing(&task, answer);
         let mut puts = Vec::new();
-        let edited: serde_json::Map<String, Value> = ["text", "notes", "due", "kind", "owner"]
-            .into_iter()
-            .filter(|k| {
-                let mut now_wire = wire::to_wire(&task);
-                if tasks::is_mine(&task.data, &self.me) {
-                    now_wire["owner"] = Value::Null;
-                }
-                now_wire[*k] != sent[*k]
-            })
-            .map(|k| (k.to_string(), Value::Bool(true)))
-            .collect();
         Self::settled(&r, &mut task, answer, now, &entry.id)?;
         if !edited.is_empty() {
-            let seq = r
-                .records_of_kind(outbox::KIND)?
-                .iter()
-                .filter_map(|e| e.data["seq"].as_i64())
-                .max()
-                .unwrap_or(0)
-                + 1;
+            let seq = outbox::next_seq(&r)?;
             puts.push(outbox::entry(
                 &task,
                 "update",
@@ -556,14 +567,15 @@ impl Run<'_> {
     }
 
     /// An update or complete answered: the task's `remote` follows the answer; the entry goes
-    /// unless it was changed (an edit coalesced into it) while it was on its way.
+    /// unless it was changed (an edit coalesced into it, which gives it a new revision) while it
+    /// was on its way.
     fn answered(&self, entry: &Record, answer: &Value) -> Result<()> {
         let now = self.clock.secs();
         let mut r = self.repo()?;
         let stored = outbox::current(&r, &entry.data)?;
         let unchanged = stored
             .as_ref()
-            .is_some_and(|s| s.data["editedAt"] == entry.data["editedAt"]);
+            .is_some_and(|s| s.revision == entry.revision);
         let mut puts = Vec::new();
         let mut gone = Vec::new();
         let wid = entry.workspace_id.clone().unwrap_or_default();
@@ -674,6 +686,7 @@ impl Run<'_> {
         }
         let mut puts: Vec<Record> = Vec::new();
         let mut gone: Vec<(String, String, String)> = Vec::new();
+        let mut seq = outbox::next_seq(&r)?;
         for v in changes["tasks"].as_array().into_iter().flatten() {
             let Some(rid) = wire::remote_of(v, None)["id"].as_str().map(str::to_string) else {
                 continue;
@@ -722,15 +735,37 @@ impl Run<'_> {
                 adopted.data["remote"] = wire::remote_of(v, Some(now));
                 adopted.revision = id();
                 adopted.updated_at = now;
-                for e in entries
+                let creates: Vec<&Record> = entries
                     .iter()
                     .filter(|e| e.data["taskId"] == t.id.as_str() && e.data["op"] == "create")
-                {
+                    .collect();
+                for e in &creates {
                     gone.push((
                         outbox::KIND.into(),
                         e.id.clone(),
                         e.workspace_id.clone().unwrap_or_default(),
                     ));
+                }
+                // An edit made after the lost create still has to reach the provider.
+                let edited = self.differing(t, v);
+                let any_edit = !edited.is_empty();
+                let left: Vec<&Record> = entries
+                    .iter()
+                    .filter(|e| e.data["taskId"] == t.id.as_str() && e.data["op"] != "create")
+                    .collect();
+                if any_edit {
+                    puts.push(outbox::entry(
+                        &adopted,
+                        "update",
+                        Value::Object(edited),
+                        seq,
+                        now,
+                    ));
+                    seq += 1;
+                }
+                adopted.data["pending"] = (any_edit || !left.is_empty()).into();
+                if !left.iter().any(|e| e.data["parked"] == true) {
+                    adopted.data["syncError"] = Value::Null;
                 }
                 puts.push(super::keys::ledger_record(
                     &self.provider,
@@ -742,6 +777,42 @@ impl Run<'_> {
                 puts.push(adopted);
                 self.outcome.pulled += 1;
                 continue;
+            }
+            // Deleted in Connect (a tombstone by key): removed there too, never brought back.
+            if let Some(k) = key {
+                let ledger = super::keys::ledger_get(&r, &self.provider, k)?;
+                let tombstone = ledger.as_ref().filter(|l| {
+                    matches!(l["state"].as_str(), Some("removed" | "withdrawn"))
+                        && (l["remoteId"].is_null() || l["remoteId"] == rid.as_str())
+                });
+                if let Some(l) = tombstone {
+                    let queued = entries
+                        .iter()
+                        .any(|e| e.data["op"] == "remove" && e.data["patch"]["id"] == rid.as_str());
+                    if !queued {
+                        let state = l["state"].as_str().unwrap_or("removed");
+                        puts.push(outbox::entry_for(
+                            &format!("{}-{rid}", self.plugin),
+                            WORKSPACE,
+                            &self.provider,
+                            "remove",
+                            json!({"id": rid, "key": k, "ledger": state}),
+                            seq,
+                            now,
+                        ));
+                        seq += 1;
+                        self.more = true;
+                    }
+                    let state = l["state"].as_str().unwrap_or("removed");
+                    puts.push(super::keys::ledger_record(
+                        &self.provider,
+                        k,
+                        Some(&rid),
+                        state,
+                        now,
+                    ));
+                    continue;
+                }
             }
             if v["done"] == true {
                 continue;
@@ -1388,6 +1459,216 @@ mod tests {
             e.core.request(req()).await.unwrap(),
             json!({"queued": false})
         );
+    }
+
+    /// Review fix 1: a create replayed after its answer was lost is adopted by key; an edit made
+    /// meanwhile must still reach Todoist (spec §4 "an update if fields differ").
+    #[tokio::test]
+    async fn an_edit_after_a_lost_create_reaches_todoist() {
+        let e = env();
+        e.fake.lose_answer("create");
+        e.save(json!({"id": "t1", "text": "Send the pilot user list"}), NOW);
+        e.sync(NOW).await;
+        e.save(
+            json!({"id": "t1", "text": "Send the pilot user list to Marek"}),
+            NOW + 1,
+        );
+        e.sync(NOW + 30).await;
+        e.sync(NOW + 31).await;
+        assert_eq!(e.fake.tasks().len(), 1);
+        assert_eq!(
+            e.fake.tasks()[0]["text"],
+            "Send the pilot user list to Marek"
+        );
+        assert!(e.outbox().is_empty());
+        assert_eq!(e.task("t1").unwrap()["pending"], false);
+    }
+
+    /// The same through the pull: the create stays parked, the pull finds the task by its key.
+    #[tokio::test]
+    async fn a_task_adopted_by_the_pull_sends_its_edit_and_settles_pending() {
+        let e = env();
+        e.fake.lose_answer("create");
+        e.save(json!({"id": "t1", "text": "Send the pilot user list"}), NOW);
+        e.sync(NOW).await;
+        e.save(
+            json!({"id": "t1", "text": "Send the pilot user list to Marek"}),
+            NOW + 1,
+        );
+        e.fake.answer(
+            "create",
+            Err(ProviderError::Refused(
+                "Todoist didn't accept the change (400)".into(),
+            )),
+        );
+        e.sync(NOW + 30).await;
+        let t = e.task("t1").unwrap();
+        assert!(t["remote"]["id"].is_string(), "adopted by the pull: {t}");
+        assert_eq!(e.outbox().len(), 1, "an update for the edit");
+        e.sync(NOW + 31).await;
+        assert_eq!(
+            e.fake.tasks()[0]["text"],
+            "Send the pilot user list to Marek"
+        );
+        let t = e.task("t1").unwrap();
+        assert_eq!(t["pending"], false);
+        assert_eq!(t["syncError"], Value::Null);
+        assert_eq!(outbox::counts(&e.core.repo().unwrap(), P).unwrap(), (0, 0));
+
+        // Nothing differs: the adopted task is not pending.
+        let e = env();
+        e.fake.lose_answer("create");
+        e.save(json!({"id": "t1", "text": "Book a room"}), NOW);
+        e.sync(NOW).await;
+        e.fake
+            .answer("create", Err(ProviderError::Refused("x".into())));
+        e.sync(NOW + 30).await;
+        assert_eq!(e.task("t1").unwrap()["pending"], false);
+        assert!(e.outbox().is_empty());
+    }
+
+    /// Review fix 2: an edit that joins an update while it is on its way, in the same second,
+    /// is sent, not dropped.
+    #[tokio::test]
+    async fn an_edit_joining_an_update_in_flight_is_sent() {
+        let e = Arc::new(env());
+        e.save(json!({"id": "t1", "text": "Send the pilot user list"}), NOW);
+        e.sync(NOW).await;
+        e.save(json!({"id": "t1", "text": "Send the list"}), NOW + 10);
+        let core = e.core.clone();
+        e.fake.during("update", move || {
+            tasks::task_save(
+                &mut core.repo().unwrap(),
+                "personal",
+                &json!({"id": "t1", "due": "2026-11-21"}),
+                NOW + 10,
+            )
+            .unwrap();
+        });
+        e.sync(NOW + 10).await;
+        assert_eq!(e.outbox().len(), 1, "the joined edit still waits");
+        e.sync(NOW + 11).await;
+        assert_eq!(e.fake.tasks()[0]["due"], "2026-11-21");
+        assert_eq!(e.fake.tasks()[0]["text"], "Send the list");
+    }
+
+    /// Review fix 3: a task deleted in Connect whose create reached Todoist (answer lost) is
+    /// removed there, not brought back by the pull; nor while its remove is parked.
+    #[tokio::test]
+    async fn a_deleted_task_never_comes_back_from_the_pull() {
+        let e = env();
+        e.fake.lose_answer("create");
+        e.save(json!({"id": "t1", "text": "Send the pilot user list"}), NOW);
+        e.sync(NOW).await;
+        tasks::task_delete(&mut e.core.repo().unwrap(), "personal", "t1").unwrap();
+        e.sync(NOW + 30).await;
+        e.sync(NOW + 31).await;
+        assert!(e.task("todoist-8124").is_none(), "not brought back");
+        assert!(e.fake.tasks().is_empty(), "removed in Todoist too");
+
+        // Its remove is parked; Todoist changes it; the pull still doesn't bring it back.
+        e.save(json!({"id": "t2", "text": "Book a room"}), NOW + 100);
+        e.sync(NOW + 100).await;
+        let rid = e.task("t2").unwrap()["remote"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        e.fake
+            .answer("remove", Err(ProviderError::Refused("x".into())));
+        tasks::task_delete(&mut e.core.repo().unwrap(), "personal", "t2").unwrap();
+        e.sync(NOW + 200).await;
+        let mut changed = e
+            .fake
+            .tasks()
+            .into_iter()
+            .find(|t| t["id"] == rid.as_str())
+            .unwrap();
+        changed["text"] = "Book a bigger room".into();
+        e.fake.put_remote(changed);
+        e.sync(NOW + 300).await;
+        assert!(e.task(&format!("todoist-{rid}")).is_none());
+        assert_eq!(
+            e.calls_of("remove").len(),
+            2,
+            "no second remove queued: {:?}",
+            e.fake.ops()
+        );
+    }
+
+    /// Review fix 4: a pass ends well inside the job's lease, so it never runs twice at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_pass_ends_well_inside_the_job_lease() {
+        let e = env();
+        for i in 0..30 {
+            e.save(
+                json!({"id": format!("t{i}"), "text": format!("Task {i}")}),
+                NOW,
+            );
+        }
+        e.fake.set_delay(std::time::Duration::from_secs(20));
+        let started = tokio::time::Instant::now();
+        e.sync(NOW).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(150),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!e.outbox().is_empty(), "the rest waits for the next pass");
+        let jobs = e.core.repo().unwrap().jobs().unwrap();
+        assert!(jobs
+            .iter()
+            .any(|j| j.kind == JOB_KIND && j.state == "queued"));
+    }
+
+    /// Review fix 5: a create answered without an id parks; it is not dropped.
+    #[tokio::test]
+    async fn a_create_answered_without_an_id_parks() {
+        let e = env();
+        e.save(json!({"id": "t1", "text": "Send the pilot user list"}), NOW);
+        e.fake
+            .answer("create", Ok(json!({"text": "Send the pilot user list"})));
+        let o = e.sync(NOW).await;
+        assert_eq!(o.parked, 1);
+        assert_eq!(outbox::counts(&e.core.repo().unwrap(), P).unwrap(), (0, 1));
+        let t = e.task("t1").unwrap();
+        assert!(t["remote"]["id"].is_null());
+        assert_eq!(t["pending"], true);
+        let key = t["key"].as_str().unwrap().to_string();
+        assert!(
+            super::super::keys::ledger_get(&e.core.repo().unwrap(), P, &key)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Review fix 7: a run that failed before its end doesn't make the background round queue
+    /// a job every second.
+    #[tokio::test]
+    async fn a_failed_run_is_not_queued_again_every_round() {
+        let e = env();
+        let t = crate::workspace::models::now();
+        {
+            let mut r = e.core.repo().unwrap();
+            queue(&mut r, P, t).unwrap();
+            let mut job = r.claim(t).unwrap().unwrap();
+            job.state = "failed".into();
+            job.lease_until = None;
+            r.save_job(&job).unwrap();
+        }
+        let queued = |e: &Env| {
+            e.core
+                .repo()
+                .unwrap()
+                .jobs()
+                .unwrap()
+                .iter()
+                .filter(|j| j.state == "queued")
+                .count()
+        };
+        e.core.task_sync_round(t + 10).unwrap();
+        assert_eq!(queued(&e), 0);
+        e.core.task_sync_round(t + 300).unwrap();
+        assert_eq!(queued(&e), 1);
     }
 
     /// A finished `taskProvider` part of the real snapshot for each state (design §2), and the
