@@ -238,6 +238,8 @@ pub struct Settings {
     pub ai: AiSettings,
     /// Settings › Meetings.
     pub meetings: super::meetings::model::MeetingSettings,
+    /// Settings › Tasks: the active task provider (design §2 of the task-provider spec).
+    pub tasks: super::task_provider::TaskSettings,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -263,6 +265,7 @@ impl Default for Settings {
             focus_until: None,
             ai: AiSettings::default(),
             meetings: Default::default(),
+            tasks: Default::default(),
         }
     }
 }
@@ -348,6 +351,10 @@ pub struct Snapshot {
     /// Every note template: the built-ins (with the person's changes) and the person's own and
     /// skills. Filled by `Core` for the window's snapshot; empty elsewhere.
     pub note_templates: Vec<super::meetings::templates::Template>,
+    /// `taskProvider` (task-provider design §2): the active provider, every available one, its
+    /// state and the outbox counts. Filled by `Core` for the window's snapshot; `Value::Null`
+    /// elsewhere.
+    pub task_provider: Value,
 }
 
 pub fn required<'a>(data: &'a Value, key: &str, max: usize) -> Result<&'a str> {

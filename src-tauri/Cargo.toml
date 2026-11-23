@@ -72,6 +72,8 @@ rquickjs = "0.14"
 # `ctx.web.read` (plugins/services/web_page.rs): an HTML5 parse of a page (html5ever). The version
 # tauri-utils already locks; its own Markdown output is off, Connect writes the contract's.
 dom_query = { version = "0.28.0", default-features = false }
+sha1 = "0.11.0"
+unicode-normalization = "0.1.26"
 
 # The data-folder picker (DESIGN 8). Used directly rather than through tauri-plugin-dialog, whose
 # window script replaces window.alert/confirm (ruling R23).

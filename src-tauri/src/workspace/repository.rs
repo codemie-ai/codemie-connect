@@ -408,6 +408,7 @@ impl Repository {
             available,
             meetings_root: None,
             note_templates: Vec::new(),
+            task_provider: Value::Null,
         })
     }
     /// The account workspace `w` shows: the active connection while it is connected and `w` is

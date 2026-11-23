@@ -21,6 +21,7 @@ mod prompts;
 pub mod repository;
 pub mod schedules;
 mod slots;
+pub(crate) mod task_provider;
 pub(crate) mod tasks;
 mod today;
 
@@ -113,6 +114,10 @@ pub struct Core {
     plugin_ops: AtomicUsize,
     /// Where plugins hear what happened (`plugin_data`), once the plugin manager has started.
     events: std::sync::OnceLock<Arc<dyn EventSink>>,
+    /// Connect's way into provider plugins' host halves (`task_provider`), set once by the
+    /// plugin manager; `None` while nothing has set it (every workspace test, and Task 1's own
+    /// Local-only snapshot).
+    task_providers: std::sync::OnceLock<Arc<dyn task_provider::TaskProviders>>,
     /// The meetings plugins were told of (`meeting_soon`), with their start.
     meetings_told: Mutex<std::collections::HashMap<String, i64>>,
     /// Held by one writer of meeting records and transcript files at a time
@@ -239,6 +244,7 @@ impl Core {
             jobs_in_flight: AtomicUsize::new(0),
             plugin_ops: AtomicUsize::new(0),
             events: std::sync::OnceLock::new(),
+            task_providers: std::sync::OnceLock::new(),
             meetings_told: Default::default(),
             meeting_writes: Default::default(),
             home,
@@ -737,6 +743,7 @@ impl Core {
                         is_default,
                     });
             snapshot.note_templates = meetings::templates::all(&snapshot.records);
+            snapshot.task_provider = self.task_provider_snapshot(&snapshot.settings);
             return Ok(
                 json!({"snapshot":snapshot,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
             );

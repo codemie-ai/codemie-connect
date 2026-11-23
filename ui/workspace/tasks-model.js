@@ -20,7 +20,16 @@ const DAY_MS = 86_400_000;
 const bodyOf = task => task?.data ?? task ?? {};
 const lower = v => String(v ?? '').trim().toLowerCase();
 
-export const tasksOf = s => s.records.filter(r => r.kind === 'commitment');
+/** The snapshot's active task provider: `'local'` or `'plugin:<id>'`; no `taskProvider` (an
+ *  older snapshot, or one built without it) means Local. */
+export const activeProvider = s => s.taskProvider?.active || 'local';
+
+/** The commitment records of the active provider (`data.provider || 'local'`): what the Tasks
+ *  page, Today's widget, the meeting column and the people popover's task links all show. */
+export const tasksOf = s => {
+  const active = activeProvider(s);
+  return s.records.filter(r => r.kind === 'commitment' && (r.data.provider || 'local') === active);
+};
 
 /** A column's name: the one set in Settings › Meetings › Tasks, or the built-in one. */
 export function columnName(status, settings) {

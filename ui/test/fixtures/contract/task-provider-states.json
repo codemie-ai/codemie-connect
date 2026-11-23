@@ -1,0 +1,19 @@
+{
+  "local": {
+    "active": "local",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": null,
+    "message": null,
+    "name": "Connect",
+    "parked": 0,
+    "pending": 0,
+    "retryAt": null,
+    "state": "local"
+  }
+}

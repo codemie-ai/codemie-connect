@@ -15,6 +15,7 @@
 use super::meetings::{folder, model::MeAlias};
 use super::models::*;
 use super::repository::Repository;
+use super::task_provider::{active_provider, keys};
 use super::{new_job, workspace_id_active, Core};
 use chrono::{Datelike, Timelike};
 use serde_json::{json, Value};
@@ -36,6 +37,9 @@ const NAMES: [(&str, &str); 6] = [
 ];
 /// Statuses of a task someone still has to do.
 const OPEN: [&str; 3] = ["todo", "doing", "waiting"];
+/// Every kind a task can be (design §1): Naya's `TASK_SCHEMA` kinds minus `client`. Absent reads
+/// as `"task"`.
+const KINDS: [&str; 4] = ["task", "reply", "waiting", "budget"];
 
 const ID_MAX: usize = 200;
 const TEXT_MAX: usize = 2000;
@@ -86,6 +90,24 @@ pub(crate) fn status_of(body: &Value) -> &str {
 /// done or dismissed.
 pub(crate) fn is_open(body: &Value) -> bool {
     OPEN.contains(&status_of(body))
+}
+
+/// A task's provider: the one it was stamped with, or `"local"` for one without a `provider`
+/// field (every task before this step, and every Local task since).
+fn provider_of(body: &Value) -> &str {
+    body["provider"].as_str().unwrap_or("local")
+}
+
+/// The records of `workspace` whose provider is the settings' active one (design §1): what the
+/// Tasks page, Today's widget, the meeting column and the 09:00 reminder show. A task found in
+/// notes and still To review follows this rule too: it is stamped with the active provider at
+/// creation and re-stamped on a switch (a later task).
+pub(crate) fn active(r: &Repository, workspace: &str) -> Result<Vec<Record>> {
+    let active = active_provider(&r.settings()?).to_string();
+    Ok(r.local_records(workspace, KIND)?
+        .into_iter()
+        .filter(|t| provider_of(&t.data) == active)
+        .collect())
 }
 
 /// The name of a status's column: the person's own name for it, or the built-in one.
@@ -271,6 +293,13 @@ pub(crate) fn task_save(
                 .ok_or_else(|| invalid("confidence", "Say whether the owner is certain."))?,
         };
     }
+    if has("kind") {
+        body["kind"] = data["kind"]
+            .as_str()
+            .filter(|k| KINDS.contains(k))
+            .map(Value::from)
+            .ok_or_else(|| invalid("kind", "Choose a kind of task."))?;
+    }
     if has("line") {
         body["line"] = match &data["line"] {
             Value::Null => Value::Null,
@@ -345,6 +374,32 @@ pub(crate) fn task_save(
     }
     if creating {
         body["createdAt"] = data["createdAt"].as_i64().unwrap_or(now).into();
+        // Set from the active provider unless the data names one (design §1); never written for
+        // Local, so a Local task's body, and every fixture of one, stays exactly as it was.
+        let provider = match text(
+            &data["provider"],
+            "provider",
+            REF_MAX,
+            "Choose a task provider.",
+        )? {
+            Some(given) => given,
+            None => active_provider(&r.settings()?).to_string(),
+        };
+        if provider != "local" {
+            body["provider"] = provider.into();
+        }
+    }
+    // A task without a key gets one: every new task, and an older one saved for the first time
+    // since this step (design §13 "Migration"). Never changed once set.
+    if body["key"].as_str().filter(|k| !k.is_empty()).is_none() {
+        let source = match (body["meetingId"].as_str(), body["line"].as_u64()) {
+            (Some(meeting), Some(line)) => format!("meeting:{meeting}:{line}"),
+            _ => match body["sourceId"].as_str() {
+                Some(source_id) => format!("message:{source_id}"),
+                None => format!("manual:{id}"),
+            },
+        };
+        body["key"] = keys::task_key(&source, body["text"].as_str().unwrap_or("")).into();
     }
 
     let mut log = text(
@@ -597,8 +652,7 @@ pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
         .and_then(|id| r.connection(id).ok())
         .map(|c| core.me_alias(&c, &s.meetings))
         .unwrap_or_default();
-    let mut due: Vec<Record> = r
-        .local_records(PERSONAL, KIND)?
+    let mut due: Vec<Record> = active(&r, PERSONAL)?
         .into_iter()
         .filter(|t| {
             OPEN.contains(&status_of(&t.data))
@@ -950,6 +1004,150 @@ mod tests {
         assert_eq!(
             history(&e.core, "t2"),
             vec!["Found in the notes (Meeting notes)"]
+        );
+    }
+
+    fn set_provider(core: &Core, provider: &str) {
+        let mut r = core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.tasks.provider = provider.into();
+        r.settings_update(&s).unwrap();
+    }
+
+    #[test]
+    fn task_save_stamps_provider_key_and_kind() {
+        let e = env();
+        // Local: no "provider" field at all, a 16-hex key, and an absent "kind" (reads as "task").
+        let local = save(
+            &e.core,
+            json!({"id": "t1", "text": "Send the pilot user list"}),
+            NOW,
+        )
+        .unwrap();
+        assert!(local.data.get("provider").is_none(), "{}", local.data);
+        let key = local.data["key"].as_str().expect("a key");
+        assert_eq!(key.len(), 16);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(local.data.get("kind").is_none(), "{}", local.data);
+        // The key never changes on a later save.
+        let resaved = save(&e.core, json!({"id": "t1", "status": "doing"}), NOW + 1).unwrap();
+        assert_eq!(resaved.data["key"], key);
+
+        // With a provider active, a new task is stamped with it.
+        set_provider(&e.core, "plugin:todoist");
+        let provided = save(
+            &e.core,
+            json!({"id": "t2", "text": "Check with Marek about the pilot list"}),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(provided.data["provider"], "plugin:todoist");
+
+        // An unknown kind is refused; a known one is kept.
+        let error = save(
+            &e.core,
+            json!({"id": "t3", "text": "x", "kind": "bogus"}),
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "validation");
+        assert_eq!(error.field.as_deref(), Some("kind"));
+        let waiting = save(
+            &e.core,
+            json!({"id": "t4", "text": "Ask Marek", "kind": "waiting"}),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(waiting.data["kind"], "waiting");
+    }
+
+    #[test]
+    fn tasks_active_and_the_reminder_follow_the_provider() {
+        let e = env();
+        save(
+            &e.core,
+            json!({"id": "local-1", "text": "Task kept in Connect", "owner": "You", "due": "2026-11-18"}),
+            NOW,
+        )
+        .unwrap();
+        set_provider(&e.core, "plugin:todoist");
+        save(
+            &e.core,
+            json!({"id": "todoist-1", "text": "Task kept in Todoist", "owner": "You", "due": "2026-11-18"}),
+            NOW,
+        )
+        .unwrap();
+        let active_tasks = active(&e.core.repo().unwrap(), "personal").unwrap();
+        assert_eq!(
+            active_tasks
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["todoist-1"]
+        );
+        // The 09:00 reminder names only the active provider's task.
+        let nine = 1_794_985_200;
+        due_today_reminders(&e.core, nine).unwrap();
+        let job = e
+            .core
+            .repo()
+            .unwrap()
+            .jobs()
+            .unwrap()
+            .into_iter()
+            .find(|j| j.key.starts_with("tasks_due:"))
+            .expect("a reminder job");
+        assert_eq!(job.payload["title"], "1 task due today");
+        assert_eq!(job.payload["body"], "Task kept in Todoist");
+    }
+
+    #[tokio::test]
+    async fn local_saves_queue_nothing() {
+        let e = env();
+        op(
+            &e.core,
+            Operation::TaskSave,
+            json!({"text": "A Local task"}),
+        )
+        .await
+        .unwrap();
+        let jobs = e.core.repo().unwrap().jobs().unwrap();
+        assert!(
+            jobs.iter().all(|j| j.kind != "task_sync"),
+            "no task_sync job is queued for Local: {jobs:?}"
+        );
+        let outbox = e
+            .core
+            .repo()
+            .unwrap()
+            .records_of_kind("task_outbox")
+            .unwrap();
+        assert!(outbox.is_empty(), "no outbox entry for Local: {outbox:?}");
+    }
+
+    /// The `taskProvider` the snapshot carries for each state (design §2). This step only has
+    /// Local to show; a later task adds the rest. Regenerate with
+    /// `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+    #[tokio::test]
+    async fn contract_fixtures_match_the_task_provider_states() {
+        let e = env();
+        let snap = e
+            .core
+            .request(Request {
+                op: Operation::Snapshot,
+                workspace_id: None,
+                expected_revision: None,
+                operation_id: None,
+                data: json!({}),
+            })
+            .await
+            .unwrap();
+        let local = snap["snapshot"]["taskProvider"].clone();
+        assert_eq!(local["active"], "local");
+        assert_eq!(local["state"], "local");
+        crate::plugins::testkit::contract_fixture(
+            "task-provider-states.json",
+            &json!({"local": local}),
         );
     }
 

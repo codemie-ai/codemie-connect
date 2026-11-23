@@ -578,8 +578,7 @@ fn sender_mail(
 /// (`"You"`, their address or name), "Sam Stone promised you: …" for someone else's (by name when
 /// known), "Nobody named: …" for one without an owner.
 fn commitments(repo: &Repository, w: &Workspace, me: &MeAlias) -> Result<(Vec<Block>, usize)> {
-    let open: Vec<Record> = repo
-        .local_records(&w.id, tasks::KIND)?
+    let open: Vec<Record> = tasks::active(repo, &w.id)?
         .into_iter()
         .filter(|c| tasks::is_open(&c.data))
         .collect();
