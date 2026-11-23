@@ -771,3 +771,66 @@ test('a failed add keeps the row ticked and shows why', async () => {
   assert.equal(state.meetings.addError, 'Todoist is unreachable.');
   assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: [] });
 });
+
+test('a tick made on another task while Add is in flight survives the merge (fix round 1, Review Focus 3)', async () => {
+  let resolveAdd;
+  const taskTarget = {
+    label: 'Tasks',
+    add: async ids => new Promise(resolve => { resolveAdd = () => resolve({ done: [...ids], failed: [] }); }),
+    undo: async () => ({ done: [], failed: [] }),
+  };
+  const { ctl, state } = harness({ taskTarget });
+  const adding = ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  // While task-endpoint's add is in flight, Sam's row is ticked too.
+  await ctl.handle('meeting-item-tick', control({ id: 'mtg-philips', task: 'task-pilot-list' }, { checked: true }));
+  assert.deepEqual(state.meetings.ticked['mtg-philips'].sort(), ['task-endpoint', 'task-pilot-list']);
+  resolveAdd();
+  await adding;
+  // task-endpoint is gone (this add moved it); the interleaved tick on task-pilot-list survives.
+  assert.deepEqual(state.meetings.ticked['mtg-philips'], ['task-pilot-list']);
+  assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: ['task-endpoint'] });
+});
+
+test('a rejecting task target keeps the ticks, shows the error, and never throws unhandled', async () => {
+  const taskTarget = {
+    label: 'Tasks',
+    add: async () => { throw new Error('Todoist timed out.'); },
+    undo: async () => ({ done: [], failed: [] }),
+  };
+  const { ctl, state } = harness({ taskTarget });
+  await assert.doesNotReject(ctl.handle('meeting-items-add', control({ id: 'mtg-philips' })));
+  assert.deepEqual(state.meetings.ticked['mtg-philips'], ['task-endpoint']);
+  assert.equal(state.meetings.addError, 'Todoist timed out.');
+  assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: [] });
+  // The in-flight guard was released: a retry can run.
+  const calls = [];
+  taskTarget.add = async ids => { calls.push(ids); return { done: ids, failed: [] }; };
+  await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  assert.deepEqual(calls, [['task-endpoint']]);
+});
+
+test('a rejecting Undo keeps "Added · Undo" so it can be tried again, and toasts rather than throwing', async () => {
+  const taskTarget = { label: 'Tasks', add: async ids => ({ done: ids, failed: [] }), undo: async () => { throw new Error('Todoist timed out.'); } };
+  const { ctl, state, calls } = harness({ taskTarget });
+  await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  const added = state.meetings.added;
+  await assert.doesNotReject(ctl.handle('meeting-items-undo', control({ id: 'mtg-philips' })));
+  assert.deepEqual(state.meetings.added, added, 'kept, so Undo is still there to retry');
+  assert.match(calls.toasts.at(-1).message, /Todoist timed out\./);
+});
+
+test('"+ Add" and an open row close when the person leaves the meeting (fix round 1)', async () => {
+  const { ctl, state } = harness();
+  await ctl.handle('meeting-item-add-open', control({ id: 'mtg-philips' }));
+  await ctl.handle('meeting-item-open', control({ id: 'mtg-philips', task: 'task-endpoint' }));
+  assert.equal(state.meetings.addOpen, true);
+  assert.equal(state.meetings.itemOpen, 'task-endpoint');
+  await ctl.handle('meeting-select', control({ id: 'mtg-roadmap' }));
+  assert.equal(state.meetings.addOpen, false, 'the next meeting does not inherit the open form');
+  assert.equal(state.meetings.itemOpen, null);
+  // Opening a meeting from elsewhere (not just the list's selection) resets them too.
+  await ctl.handle('meeting-item-add-open', control({ id: 'mtg-roadmap' }));
+  assert.equal(state.meetings.addOpen, true);
+  await ctl.open('mtg-philips');
+  assert.equal(state.meetings.addOpen, false);
+});

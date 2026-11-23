@@ -721,19 +721,35 @@ export function createMeetingsController({
   /** Meetings with "Add N to Tasks" in flight: a second click while one runs is ignored. */
   const addingItems = new Set();
 
+  /** The column's tasks and ticks for `id`, read fresh (the review's tasks change once an add
+   *  succeeds, and a tick made while an add is in flight must count). */
+  const itemsFor = id => ({ m: { id }, tasks: meetingTasks(snap(), id) });
+
   /** Calls the task target's `add` with the column's current ticks (`ticksOf`): moves the added
    *  tasks off To review, keeps a failed one ticked with why, and lets Undo put a whole add
-   *  back. */
+   *  back. A rejection (the provider is unreachable, say) is a failure of every ticked id, same
+   *  as a structured one — never an unhandled rejection. */
   async function addItems(id) {
     if (addingItems.has(id)) return undefined;
-    const mc = { m: { id }, tasks: meetingTasks(snap(), id) };
-    const ticked = ticksOf(v(), mc, meOf(snap()));
+    const ticked = ticksOf(v(), itemsFor(id), meOf(snap()));
     if (!ticked.length) return undefined;
     addingItems.add(id);
     try {
-      const { done, failed } = await taskTarget.add(ticked);
+      let done = [];
+      let failed = [];
+      try {
+        ({ done, failed } = await taskTarget.add(ticked));
+      } catch (err) {
+        failed = ticked.map(taskId => ({ id: taskId, message: err?.message || String(err) }));
+      }
       const view = v();
-      view.ticked = { ...view.ticked, [id]: failed.map(f => f.id) };
+      // A tick made on another To review task while this add was in flight survives: start from
+      // the column's ticks now, drop the ones this add just moved off To review (pruning may not
+      // have caught up yet), and keep a failed one ticked whatever else changed.
+      const kept = new Set(ticksOf(view, itemsFor(id), meOf(snap())));
+      for (const d of done) kept.delete(d);
+      for (const f of failed) kept.add(f.id);
+      view.ticked = { ...view.ticked, [id]: [...kept] };
       view.added = { meetingId: id, ids: done };
       view.addError = failed[0]?.message || null;
       return render();
@@ -743,12 +759,18 @@ export function createMeetingsController({
   }
 
   /** Undoes the last "Add N to Tasks": moves those tasks back to To review and ticks them
-   *  again. */
+   *  again. A rejection leaves `v.added` as it was (so Undo is still there to try again) and
+   *  tells the person through a toast, rather than throwing unhandled. */
   async function undoItems(id) {
-    const view = v();
-    const added = view.added;
+    const added = v().added;
     if (!added || added.meetingId !== id) return undefined;
-    await taskTarget.undo(added.ids);
+    try {
+      await taskTarget.undo(added.ids);
+    } catch (err) {
+      toast(err?.message || 'Couldn’t undo. Try again.', 'error');
+      return undefined;
+    }
+    const view = v();
     view.ticked = { ...view.ticked, [id]: [...new Set([...(view.ticked[id] || []), ...added.ids])] };
     view.added = null;
     return render();
@@ -930,8 +952,7 @@ export function createMeetingsController({
       // The action items column: a checkbox, which row is open, "Add N to Tasks" and Undo, "+ Add".
       case 'meeting-item-tick': {
         const taskId = el.dataset.task;
-        const mc = { m: { id }, tasks: meetingTasks(snap(), id) };
-        const ticked = new Set(ticksOf(view, mc, meOf(snap())));
+        const ticked = new Set(ticksOf(view, itemsFor(id), meOf(snap())));
         if (el.checked) ticked.add(taskId); else ticked.delete(taskId);
         view.ticked = { ...view.ticked, [id]: [...ticked] };
         return render();
@@ -1046,9 +1067,12 @@ export function createMeetingsController({
     return true;
   }
 
-  /** The person left a meeting: its unsent Make notes form starts afresh next time. */
+  /** The person left a meeting: its unsent Make notes form starts afresh next time, and the
+   *  action items column's "+ Add" and open row close — neither is kept per meeting (`v.addOpen`
+   *  and `v.itemOpen` are single, page-wide values, not maps). */
   function leave(id) {
     if (id && v().makeForm) delete v().makeForm[id];
+    Object.assign(v(), { addOpen: false, itemOpen: null });
   }
 
   /** Forms: the Notes pane's Make notes and a task added from the Action items pane. */
