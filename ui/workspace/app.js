@@ -38,6 +38,7 @@ import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { newTasksView } from './tasks-model.js';
 import { legacyMeetingsLayout, meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
+import { localTaskTarget } from './task-target.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
 import { renderShell, terminalButton, groupFolded, NAV_GROUPS, firstVisiblePage, toggleHiddenPage } from './shell.js';
@@ -1870,6 +1871,7 @@ const meetingsUi = store && createMeetingsController({
   syncHash: () => { if (state.route === 'meetings') history.replaceState(null, '', routeHash()); },
   ensureClaudeChoice,
   moveTask: (id, status, options) => tasksUi.move(id, status, options),
+  taskTarget: localTaskTarget({ moveTask: (id, status, o) => tasksUi.move(id, status, o) }),
   connect: capabilities => connectMicrosoft(capabilities),
   showEvent: async id => {
     const ev = getRecord('event', id);

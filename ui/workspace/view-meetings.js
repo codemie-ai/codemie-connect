@@ -24,7 +24,7 @@ import {
 } from './meetings-model.js';
 import { shownTab, stripPrimary, summaryTabs, withLine } from './meeting-view-model.js';
 import {
-  dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, menuItems, notesTab, peopleList, plural, PAUSED, pausedFix, saveNextStep, summaryPane, tasksTab, tplChip, tplColor, transcriptTab,
+  actionItems, dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, menuItems, notesTab, peopleList, plural, PAUSED, pausedFix, saveNextStep, summaryPane, tplChip, tplColor, transcriptTab,
 } from './view-meeting-tabs.js';
 
 /** Meetings' sections (spec "Page sections"): the list, pinned to Today as "From your meetings"
@@ -69,10 +69,12 @@ function pageOf(s, ctx = {}) {
     s, v, now, zone, items, byId: new Map(items.map(m => [m.id, m])), reads: ctx.reads || (() => ({})), glossary: ctx.glossary || null,
     rules: rulesOf(s), tasksBy: tasksByMeeting(s), callSlots: Array.isArray(ctx.callSlots) ? ctx.callSlots : [],
     // The meeting's pane: the one chosen, else "Open a meeting on"; whether the action items sit
-    // beside it; the plugins installed and on, for the pinned plugin tabs.
+    // beside it; the plugins installed and on, for the pinned plugin tabs; the task target's
+    // label for "Add N to <label>" (step 4's provider; "Tasks" for the local board).
     pane: PANES.includes(v.pane) ? v.pane : PANES.includes(settings.openOn) ? settings.openOn : 'summary',
     columnOn: settings.actionItems !== false,
     plugins: Array.isArray(ctx.plugins) ? ctx.plugins : [],
+    taskLabel: ctx.taskLabel || 'Tasks',
     // The list as it shows: the Needs you card and the days.
     model: listModel(s, v, { now, zone, items }),
   };
@@ -459,18 +461,23 @@ function strip(p, mc, { tabs, more, tab, it }, slots) {
   return `<div class="ws-mtg-strip">${left}<span class="ws-spacer"></span>${primary(p, mc, tab, it)}${meetingMenu(p, mc, tab, slots)}</div>`;
 }
 
-const PANE_BODIES = { transcript: transcriptTab, notes: notesTab, tasks: tasksTab, files: filesTab };
+const PANE_BODIES = { transcript: transcriptTab, notes: notesTab, files: filesTab };
 
-/** The pane's body: the summary tab shown, or the pane behind ⋯; before a transcript, why there
- *  is none, with the meeting's tasks and Add a task. */
+/** The pane's body: the summary tab shown, or the pane behind ⋯ (the Action items pane is the
+ *  column's own content, full width); before a transcript, why there is none, with the column
+ *  (`actionItems`, `pane: true`) regardless of whether it also sits beside the pane — there is no
+ *  pane to sit beside yet. */
 function paneBody(p, mc, pane, tab, it) {
-  if (!hasTranscript(mc.m)) return `<div class="ws-mtg-panel-alone">${explainer(p, mc)}${tasksTab(p, mc, { alone: true })}</div>`;
+  if (!hasTranscript(mc.m)) return `<div class="ws-mtg-panel-alone">${explainer(p, mc)}${actionItems(p, mc, { pane: true })}</div>`;
+  if (pane === 'tasks') return actionItems(p, mc, { pane: true });
   // The strip's Try again is the failed run's: the banner then says why without its own.
   return pane === 'summary' ? summaryPane(p, mc, tab, { retry: it.kind !== 'retry' }) : PANE_BODIES[pane](p, mc);
 }
 
 /** The meeting's section (spec "The meeting section"): the banners, the header, the strip, then
- *  the pane shown in `.ws-mtg-body` (which the action items column joins). */
+ *  the pane shown in `.ws-mtg-body`, with the action items column beside it (`p.columnOn`,
+ *  settings' "Show action items beside the summary") unless the pane shown is the column's own
+ *  Action items pane (the column off, reached via ⋯ or "Review N tasks"). */
 function meetingSection(p, m, mc) {
   if (!m) return `<section class="ws-mtg-meeting-section">${p.banners}<div class="ws-mtg-pane ws-mtg-detail"><div class="ws-mtg-detail-empty">${emptyDetail(p.s)}</div></div></section>`;
   const slots = slotsOf(p, m);
@@ -479,7 +486,8 @@ function meetingSection(p, m, mc) {
   const it = primaryOf(p, mc, tab);
   const summary = p.pane === 'summary' && hasTranscript(m);
   const labelled = summary && tab ? ` aria-label="${e(tab.label)}"` : ` aria-label="${e(PANE_NAMES[p.pane] || 'Summary')}"`;
-  return `<section class="ws-mtg-meeting-section" data-meeting="${e(m.id)}" data-pane="${e(p.pane)}">${p.banners}${meetingHeader(p, m, mc)}${strip(p, mc, { tabs, more, tab, it }, slots)}<div class="ws-mtg-body"><div class="ws-mtg-pane ws-mtg-detail" role="tabpanel" id="${e(paneId(m))}"${labelled} data-meeting="${e(m.id)}" data-panel="${e(p.pane)}">${paneBody(p, mc, p.pane, tab, it)}</div></div></section>`;
+  const column = p.columnOn !== false && hasTranscript(m) && p.pane !== 'tasks' ? actionItems(p, mc) : '';
+  return `<section class="ws-mtg-meeting-section" data-meeting="${e(m.id)}" data-pane="${e(p.pane)}">${p.banners}${meetingHeader(p, m, mc)}${strip(p, mc, { tabs, more, tab, it }, slots)}<div class="ws-mtg-body"><div class="ws-mtg-pane ws-mtg-detail" role="tabpanel" id="${e(paneId(m))}"${labelled} data-meeting="${e(m.id)}" data-panel="${e(p.pane)}">${paneBody(p, mc, p.pane, tab, it)}</div>${column}</div></section>`;
 }
 
 function emptyDetail(s) {

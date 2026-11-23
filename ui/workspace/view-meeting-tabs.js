@@ -8,8 +8,9 @@ import { icon } from './icons.js';
 import { avatar, badge, button, card, emptyState, toggle } from './ui.js';
 import { agoLabel, durationLabel, formatTime } from './format.js';
 import { renderMarkdown } from './markdown.js';
-import { columnName, isMine, meOf, ownerOf, peopleFor, taskStatus } from './tasks-model.js';
+import { columnName, dueInfo, isMine, meOf, ownerOf, peopleFor, taskStatus } from './tasks-model.js';
 import { hasTranscript, meetingErrors, meetingTasks, peopleOf, resolveTemplate, ruleText, templatesOf } from './meetings-model.js';
+import { defaultTicks, itemsOf, ownerLine } from './meeting-view-model.js';
 
 export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const option = (value, label, selected) => `<option value="${e(value)}"${selected ? ' selected' : ''}>${e(label)}</option>`;
@@ -536,7 +537,7 @@ export function transcriptTab(p, mc) {
   </div>`;
 }
 
-// ---------------------------------------------------------------- tasks
+// ---------------------------------------------------------------- action items column
 
 function ownerSelect(p, t) {
   const me = meOf(p.s);
@@ -551,54 +552,91 @@ function ownerSelect(p, t) {
   return `<span class="ws-mtg-owner">${owner.key ? avatar({ name: owner.name, size: 20, seed: owner.seed }) : `<span class="ws-task-nobody" style="--size:20px" aria-hidden="true">${icon('user')}</span>`}${selectBox(`data-action="task-owner" data-id="${e(t.id)}" aria-label="Owner of ${e(t.data.text)}"`, body)}</span>`;
 }
 
-/** The Tasks tab; `alone` under the explainer of a meeting without a transcript: its tasks and
- *  Add a task, no empty state. */
-export function tasksTab(p, mc, { alone = false } = {}) {
+/** The quote in an open to-add row (spec "The action items column"): its transcript line (today's
+ *  `meeting-goto-line`), or "Added by you" when there is none. */
+function itemQuote(p, mc, t) {
+  const seg = Number.isInteger(t.data.line) ? mc.segments?.[t.data.line] : null;
+  const text = seg?.text || t.data.quote;
+  if (!text) return '<small class="ws-muted">Added by you</small>';
+  const who = seg?.name || t.data.speaker || '';
+  const first = who.includes(',') ? who.split(',')[1].trim().split(/\s+/)[0] : who.split(/\s+/)[0];
+  const at = seg ? formatTime(transcriptBase(mc) + Number(seg.start || 0) * 1000, p.zone) : Number.isFinite(t.data.quoteAt) ? formatTime(transcriptBase(mc) + t.data.quoteAt * 1000, p.zone) : '';
+  const short = text.length > 140 ? `${text.slice(0, 138)}…` : text;
+  return `<button type="button" class="ws-mtg-quote" data-action="meeting-goto-line" data-id="${e(mc.m.id)}" data-line="${e(t.data.line ?? '')}" title="Show in the transcript">${icon('quote')}<span>${first ? `${e(first)}: ` : ''}“${e(short)}”</span>${at ? `<em>${e(at)}</em>` : ''}</button>`;
+}
+
+/** The action items column's ticks for a meeting (spec "Ticks"): `v.ticked[id]` pruned to tasks
+ *  still in To review, or `defaultTicks` the first time it is drawn (`v.ticked[id]` undefined).
+ *  Both the column (the checkboxes and the count) and the controller (what "Add N to Tasks"
+ *  sends) read it, so a render and an add see the same set. */
+export function ticksOf(v, mc, me) {
+  const { toAdd } = itemsOf(mc);
+  const ids = new Set(toAdd.map(t => t.id));
+  const stored = v.ticked[mc.m.id];
+  return (stored === undefined ? defaultTicks(toAdd, me) : stored).filter(id => ids.has(id));
+}
+
+/** A to-add row, closed: a checkbox, the text and the owner line. Open (`v.itemOpen` is its id):
+ *  also the quote, the owner and due date, and "Not a task". */
+function toAddRow(p, mc, t, { open, ticked, me }) {
+  const text = t.data.text;
+  const isOpen = open === t.id;
+  const detail = isOpen ? `<div class="ws-mtg-item-detail">${itemQuote(p, mc, t)}${ownerSelect(p, t)}<input type="date" class="ws-input ws-mtg-date" value="${e(t.data.due || '')}" data-commit="task-due" data-id="${e(t.id)}" aria-label="${e(`Due date of ${text}`)}">${button('Not a task', { action: 'task-dismiss', variant: 'ghost', size: 'sm', iconName: 'close', attrs: { 'data-id': t.id } })}</div>` : '';
+  return `<div class="ws-mtg-item" data-task="${e(t.id)}">
+    <label class="ws-check"><input type="checkbox" data-action="meeting-item-tick" data-task="${e(t.id)}" aria-label="${e(`Add ${text}`)}"${ticked.has(t.id) ? ' checked' : ''}><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
+    <button type="button" class="ws-mtg-item-open" data-action="meeting-item-open" data-task="${e(t.id)}" aria-expanded="${isOpen}"><span class="ws-mtg-item-text">${e(text)}</span><span class="ws-mtg-item-owner">${e(ownerLine(t, me, p.zone))}</span></button>
+    ${detail}
+  </div>`;
+}
+
+/** An "In Tasks" row (spec "In Tasks"): a done checkbox, the text (opens it in Tasks) and its
+ *  due date, or its column name when it has none. */
+function boardRow(p, t) {
+  const status = taskStatus(t);
+  const done = status === 'done';
+  const info = !done && dueInfo(t.data.due, p.now, p.zone);
+  const when = info ? info.text : columnName(status, p.s.settings);
+  return `<div class="ws-mtg-item-board${done ? ' ws-mtg-item-done' : ''}">
+    <label class="ws-check" title="${done ? 'Mark as not done' : 'Mark as done'}"><input type="checkbox" data-action="task-done" data-id="${e(t.id)}"${done ? ' checked' : ''} aria-label="${e(`${done ? 'Reopen' : 'Mark as done'}: ${t.data.text}`)}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
+    <button type="button" class="ws-mtg-item-title" data-action="task-open-today" data-id="${e(t.id)}">${e(t.data.text)}</button>
+    <span class="ws-mtg-item-when">${e(when)}</span>
+  </div>`;
+}
+
+/** The action items column (spec "The action items column"): the meeting's To review tasks to
+ *  add, "Add N to Tasks" with Undo, and the tasks already in Tasks. Beside every pane (`pane`
+ *  false, the default), or the Action items pane with the column off (`pane` true) — the same
+ *  content, drawn full width. The label comes from `p.taskLabel` (the page's `ctx.taskLabel`,
+ *  default "Tasks" — the task target's `label`). */
+export function actionItems(p, mc, { pane = false } = {}) {
   const { m } = mc;
-  const order = t => (taskStatus(t) === 'review' ? 0 : taskStatus(t) === 'done' ? 2 : 1);
-  const tasks = [...mc.tasks].sort((a, b) => order(a) - order(b) || (Number(a.data.line) || 0) - (Number(b.data.line) || 0));
-  const review = mc.review.length;
+  const v = p.v;
   const me = meOf(p.s);
-  const quote = t => {
-    const seg = Number.isInteger(t.data.line) ? mc.segments?.[t.data.line] : null;
-    const text = seg?.text || t.data.quote;
-    if (!text) return '<small class="ws-muted">Added by you</small>';
-    const who = seg?.name || t.data.speaker || '';
-    const first = who.includes(',') ? who.split(',')[1].trim().split(/\s+/)[0] : who.split(/\s+/)[0];
-    const at = seg ? formatTime(transcriptBase(mc) + Number(seg.start || 0) * 1000, p.zone) : Number.isFinite(t.data.quoteAt) ? formatTime(transcriptBase(mc) + t.data.quoteAt * 1000, p.zone) : '';
-    const short = text.length > 140 ? `${text.slice(0, 138)}…` : text;
-    return `<button type="button" class="ws-mtg-quote" data-action="meeting-goto-line" data-id="${e(m.id)}" data-line="${e(t.data.line ?? '')}" title="Show in the transcript">${icon('quote')}<span>${first ? `${e(first)}: ` : ''}“${e(short)}”</span>${at ? `<em>${e(at)}</em>` : ''}</button>`;
-  };
-  const row = t => {
-    const status = taskStatus(t);
-    const isReview = status === 'review';
-    return `<div class="ws-mtg-trow${isReview ? ' ws-mtg-trow-review' : ''}${status === 'done' ? ' ws-mtg-trow-done' : ''}">
-      <label class="ws-check" title="${status === 'done' ? 'Mark as not done' : 'Mark as done'}"><input type="checkbox" data-action="task-done" data-id="${e(t.id)}"${status === 'done' ? ' checked' : ''} aria-label="${status === 'done' ? 'Reopen' : 'Mark as done'}: ${e(t.data.text)}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
-      <div class="ws-mtg-trow-main">
-        <button type="button" class="ws-mtg-trow-title" data-action="task-open-today" data-id="${e(t.id)}">${e(t.data.text)}</button>
-        ${quote(t)}
-        ${isReview && t.data.confidence === 'low' ? `<span class="ws-mtg-low">${icon('alert')}Not sure about the owner — check it</span>` : ''}
-      </div>
-      ${ownerSelect(p, t)}
-      <input type="date" class="ws-input ws-mtg-date" value="${e(t.data.due || '')}" data-commit="task-due" data-id="${e(t.id)}" aria-label="Due date of ${e(t.data.text)}">
-      ${isReview ? `<span class="ws-mtg-trow-act">${button('', { action: 'task-dismiss', iconName: 'close', variant: 'ghost', size: 'sm', title: 'Dismiss — not a task', attrs: { 'data-id': t.id } })}${button('Accept', { action: 'task-accept', variant: 'primary', size: 'sm', iconName: 'check', attrs: { 'data-id': t.id } })}</span>`
-    : selectBox(`data-action="task-status" data-id="${e(t.id)}" aria-label="Status of ${e(t.data.text)}"`, ['todo', 'doing', 'waiting', 'done'].map(c => option(c, columnName(c, p.s.settings), status === c)).join(''), 'ws-mtg-status')}
-    </div>`;
-  };
-  const empty = alone ? '' : m.state === 'ready'
-    ? emptyState({ iconName: 'tasks', title: 'No tasks in this meeting', text: 'The notes didn’t name any concrete next steps. Add one yourself if something was agreed.' })
-    : emptyState({ iconName: 'tasks', title: 'Tasks come from the notes', text: 'Make notes first: Connect finds the tasks and matches each owner to someone in the meeting.', actions: ['available', 'downloaded', 'failed'].includes(m.state) ? button('Make notes', { action: 'meeting-make-notes', variant: 'primary', iconName: 'sparkles', attrs: { 'data-id': m.id } }) : '' });
+  const { toAdd, inTasks } = itemsOf(mc);
+  const ticked = new Set(ticksOf(v, mc, me));
+  const label = p.taskLabel || 'Tasks';
   const people = mc.people.filter(x => x.address && !x.me);
   const mine = me.address || 'You';
-  const board = mc.tasks.length - review;
-  const heading = review ? `<h3>${review} to review</h3>${board ? `<small>· ${board} on the board</small>` : ''}` : `<h3>${mc.tasks.length ? plural(mc.tasks.length, 'task') : 'Tasks'}</h3>`;
-  return `<section class="ws-mtg-tasks${alone ? ' ws-mtg-tasks-alone' : ''}">
-    <header class="ws-mtg-tasks-head">${heading}<span class="ws-spacer"></span>${review > 1 ? button(`Accept all ${review}`, { action: 'meeting-tasks-accept', iconName: 'check', size: 'sm', attrs: { 'data-id': m.id } }) : ''}${button('Open board', { action: 'meeting-board', variant: 'ghost', size: 'sm', iconRight: 'arrow', attrs: { 'data-id': m.id } })}</header>
-    ${review ? '<p class="ws-mtg-tasks-hint">Found in the notes. Check the owner and the date, then accept.</p>' : ''}
-    <div class="ws-mtg-tasks-body">${tasks.length ? `<div class="ws-mtg-trows">${tasks.map(row).join('')}</div>` : empty}
-      <form class="ws-mtg-add-task" data-form="meeting-task" data-id="${e(m.id)}">${icon('plus')}<input class="ws-input" name="text" maxlength="2000" placeholder="Add a task from this meeting…" aria-label="New task from this meeting" autocomplete="off">${selectBox('name="owner" aria-label="Owner of the new task"', `${option(mine, 'Me', true)}${people.map(x => option(x.address, x.name, false)).join('')}${option('', 'Nobody yet', false)}`)}${button('Add', { type: 'submit' })}</form>
-    </div>
-  </section>`;
+  const addForm = v.addOpen ? `<form class="ws-mtg-add-task" data-form="meeting-task" data-id="${e(m.id)}">${icon('plus')}<input class="ws-input" name="text" maxlength="2000" placeholder="Add a task from this meeting…" aria-label="New task from this meeting" autocomplete="off">${selectBox('name="owner" aria-label="Owner of the new task"', `${option(mine, 'Me', true)}${people.map(x => option(x.address, x.name, false)).join('')}${option('', 'Nobody yet', false)}`)}${button('Add', { type: 'submit' })}</form>` : '';
+  const toAddHtml = toAdd.length ? `<div class="ws-mtg-item-list">${toAdd.map(t => toAddRow(p, mc, t, { open: v.itemOpen, ticked, me })).join('')}</div>` : '';
+  const n = ticked.size;
+  const addBtn = n >= 1 ? button(`Add ${n} to ${label}`, { action: 'meeting-items-add', variant: 'primary', attrs: { 'data-id': m.id }, className: 'ws-mtg-items-add' }) : '';
+  const error = v.addError ? `<p class="ws-mtg-items-error">${e(v.addError)}</p>` : '';
+  const inTasksHtml = inTasks.length ? `<div class="ws-mtg-items-board"><h4 class="ws-mtg-items-sub">In Tasks</h4>${inTasks.map(t => boardRow(p, t)).join('')}</div>` : '';
+  const added = v.added && v.added.meetingId === m.id ? v.added : null;
+  const footer = added && added.ids.length
+    ? `<p class="ws-mtg-items-foot" role="status">Added ${added.ids.length} to Tasks · ${button('Undo', { action: 'meeting-items-undo', attrs: { 'data-id': m.id } })}</p>`
+    : inTasks.length
+      ? `<p class="ws-mtg-items-foot" role="status">${button(`${inTasks.length} in Tasks ›`, { action: 'meeting-board', variant: 'ghost', attrs: { 'data-id': m.id } })}</p>`
+      : `<p class="ws-mtg-items-foot" role="status">None in this meeting yet.</p>`;
+  return `<aside class="ws-mtg-items${pane ? ' ws-mtg-items-pane' : ''}" aria-label="Action items">
+    <header class="ws-mtg-items-head"><h3>Action items</h3>${button('+ Add', { action: 'meeting-item-add-open', variant: 'ghost', size: 'sm', attrs: { 'data-id': m.id } })}</header>
+    ${addForm}
+    ${toAddHtml}
+    ${addBtn}${error}
+    ${inTasksHtml}
+    ${footer}
+  </aside>`;
 }
 
 // ---------------------------------------------------------------- files

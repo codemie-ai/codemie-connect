@@ -24,7 +24,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
   const calls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
   const lastCall = async (page, op) => (await calls(page, op)).at(-1);
   const noOverflow = async (page, what) => {
-    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-mtg-list, .ws-mtg-detail, .ws-mtg-list-body, .ws-modal[open] .ws-modal-body, .ws-mtg-legend')].filter(el => el.clientWidth > 0 && getComputedStyle(el).visibility !== 'hidden').map(el => el.scrollWidth - el.clientWidth)));
+    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-mtg-list, .ws-mtg-detail, .ws-mtg-list-body, .ws-mtg-items, .ws-modal[open] .ws-modal-body, .ws-mtg-legend')].filter(el => el.clientWidth > 0 && getComputedStyle(el).visibility !== 'hidden').map(el => el.scrollWidth - el.clientWidth)));
     assert(overflow <= 0, `${what} overflows by ${overflow}px`);
   };
   /** The meeting's header and strip fit the section they sit in: the title row's actions, the
@@ -448,7 +448,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await shot(page, `${tag}-meetings-failed`);
       });
 
-      await check(`${tag}: task quote → transcript line highlighted`, async () => {
+      await check(`${tag}: the action items column — Add N to Tasks, Undo, task quote → transcript line highlighted`, async () => {
         await select(page, 'mtg-philips', 'all');
         // With the column off, Review in the header and ⋯ › Action items open the Action items pane.
         assert(await page.locator('.ws-mtg-head .ws-actions [data-action="meeting-pane"][data-pane="tasks"]').count() === 0, 'no Review while the column is on');
@@ -456,13 +456,24 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForSelector('.ws-mtg-head .ws-actions [data-action="meeting-pane"][data-pane="tasks"]:has-text("Review 2 tasks")');
         await page.click('.ws-mtg-head .ws-actions [data-action="meeting-pane"][data-pane="tasks"]');
         await page.waitForFunction(() => location.hash === '#/meetings/mtg-philips/tasks');
-        await page.waitForSelector('.ws-mtg-trow');
+        await page.waitForSelector('.ws-mtg-item');
         assert(/Action items/.test(await page.locator('.ws-mtg-strip .ws-mtg-pane-name').innerText()), 'the Action items pane');
+        assert(await page.locator('.ws-mtg-item[data-task]').count() === 2, 'both To review tasks are to add');
+        assert(await page.locator('[data-task="task-endpoint"] [data-action="meeting-item-tick"]:checked').count() === 1, 'my sure task ticks itself');
         await page.evaluate(() => window.__workspace.store.mutate('settings_update', { meetings: { actionItems: true } }));
         await page.waitForSelector('.ws-mtg-head .ws-actions [data-action="meeting-pane"][data-pane="tasks"]', { state: 'detached' });
         await noOverflow(page, 'action items pane');
         await shot(page, `${tag}-meetings-tasks`);
-        await page.click('.ws-mtg-trow:has-text("Prepare the pilot user list") .ws-mtg-quote');
+        // Add N to Tasks (today's Accept, no click per task): tick Sam's too, add both, then Undo
+        // puts them back ticked.
+        await page.click('[data-task="task-pilot-list"] label.ws-check');
+        await page.click('[data-action="meeting-items-add"]:has-text("Add 2 to Tasks")');
+        await page.waitForSelector('.ws-mtg-items-foot:has-text("Added 2 to Tasks")');
+        await page.click('.ws-mtg-items-foot [data-action="meeting-items-undo"]');
+        await page.waitForSelector('[data-task="task-pilot-list"] [data-action="meeting-item-tick"]:checked');
+        // Its quote opens in the open row, and takes to the transcript line.
+        await page.click('[data-task="task-pilot-list"] [data-action="meeting-item-open"]');
+        await page.click('[data-task="task-pilot-list"] .ws-mtg-quote');
         await page.waitForSelector('#meeting-line-8.ws-mtg-focus');
         assert(await hash(page) === '#/meetings/mtg-philips/transcript', await hash(page));
         const inView = await page.evaluate(() => { const r = document.getElementById('meeting-line-8').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; });

@@ -38,7 +38,7 @@ const sectionOf = (html, id) => html.match(new RegExp(`<section class="ws-pane[^
 
 /** A controller over fakes; `answers` maps an op to what it returns (a function of the data, a
  *  value, or an error to throw). */
-function harness({ answers = {}, s = snapshot(), view = {}, dock, timer } = {}) {
+function harness({ answers = {}, s = snapshot(), view = {}, dock, timer, taskTarget } = {}) {
   const calls = { mutate: [], query: [], render: 0, toasts: [], modals: [], routes: [], focus: [], copied: [], saved: [], prefs: [] };
   const state = { route: 'meetings', meetings: { ...newMeetingsView(), ...view }, tasks: newTasksView() };
   const answer = (op, data) => {
@@ -63,6 +63,7 @@ function harness({ answers = {}, s = snapshot(), view = {}, dock, timer } = {}) 
     now: () => NOW,
     ...(dock ? { dock } : {}),
     ...(timer ? { timer } : {}),
+    ...(taskTarget ? { taskTarget } : {}),
   });
   const record = id => s.records.find(r => r.kind === 'meeting' && r.id === id);
   return { ctl, state, calls, s, record };
@@ -166,7 +167,7 @@ test('before a transcript the meeting section explains why, with the tasks; the 
   const layout = normalizeDock(MEETINGS_DOCK, null);
   const html = page(s, { selected: 'mtg-northwind', pane: 'notes' }, layout);
   const section = sectionOf(html, layout.panes[1].id);
-  assert.match(section, /class="ws-mtg-panel-alone"[^]*doesn’t share this transcript[^]*form class="ws-mtg-add-task"/);
+  assert.match(section, /class="ws-mtg-panel-alone"[^]*doesn’t share this transcript[^]*aria-label="Action items"/);
   const strip = section.match(/<div class="ws-mtg-strip">[^]*?(?=<div class="ws-mtg-body")/)?.[0] || '';
   assert.match(strip, /data-menu="meeting-mtg-northwind"/);
   assert.doesNotMatch(strip, /role="tablist"|meeting-back|meeting-copy-tab|meeting-make-tab/);
@@ -715,4 +716,58 @@ test('"+n more" keeps the people list open', async () => {
   await ctl.handle('meeting-people-all', control({ id: 'mtg-philips' }, { closest: () => ({ removeAttribute: () => { closed = true; } }) }));
   assert.equal(state.meetings.peopleAll, 'mtg-philips');
   assert.equal(closed, false);
+});
+
+// ---------------------------------------------------------------- the action items column
+
+test('Add moves the ticked tasks once, even on a double click; Undo moves only those back', async () => {
+  const calls = [];
+  const taskTarget = {
+    label: 'Tasks',
+    add: async ids => { calls.push(['add', ids]); return { done: [...ids], failed: [] }; },
+    undo: async ids => { calls.push(['undo', ids]); return { done: [...ids], failed: [] }; },
+  };
+  const { ctl, state } = harness({ taskTarget });
+  // mtg-philips: task-endpoint (mine, sure) ticks itself; task-pilot-list (Sam's) doesn't.
+  const [p1, p2] = [ctl.handle('meeting-items-add', control({ id: 'mtg-philips' })), ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }))];
+  await Promise.all([p1, p2]);
+  assert.deepEqual(calls.filter(c => c[0] === 'add'), [['add', ['task-endpoint']]], 'one add, even from a double click');
+  assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: ['task-endpoint'] });
+  await ctl.handle('meeting-items-undo', control({ id: 'mtg-philips' }));
+  assert.deepEqual(calls.filter(c => c[0] === 'undo'), [['undo', ['task-endpoint']]]);
+  assert.equal(state.meetings.added, null);
+  assert.deepEqual(state.meetings.ticked['mtg-philips'], ['task-endpoint'], 'the tick comes back');
+});
+
+test('a re-render keeps ticks; a task that left review leaves the ticks', async () => {
+  const s = snapshot();
+  // A third review task ("Review Focus 3"), Sam's: it starts unticked, like task-pilot-list.
+  s.records.push({
+    id: 'task-focus-3', kind: 'commitment', source: 'claude',
+    data: { text: 'Review Focus 3', owner: 'sam.okafor@example.test', ownerName: 'Sam Okafor', status: 'review', meetingId: 'mtg-philips', line: 10 },
+    connectionId: 'fixture-account', workspaceId: null, revision: 'r-task-focus-3', updatedAt: NOW - 100,
+  });
+  const { ctl, state } = harness({ s });
+  await ctl.handle('meeting-item-tick', control({ id: 'mtg-philips', task: 'task-focus-3' }, { checked: true }));
+  assert.deepEqual(state.meetings.ticked['mtg-philips'].sort(), ['task-endpoint', 'task-focus-3']);
+  // A re-render (another action touching the column) keeps both ticks.
+  await ctl.handle('meeting-item-open', control({ id: 'mtg-philips', task: 'task-endpoint' }));
+  assert.deepEqual(state.meetings.ticked['mtg-philips'].sort(), ['task-endpoint', 'task-focus-3']);
+  // task-focus-3 leaves To review: the next time the column's ticks are read, it drops out.
+  s.records.find(r => r.id === 'task-focus-3').data.status = 'todo';
+  await ctl.handle('meeting-item-tick', control({ id: 'mtg-philips', task: 'task-pilot-list' }, { checked: true }));
+  assert.deepEqual(state.meetings.ticked['mtg-philips'].sort(), ['task-endpoint', 'task-pilot-list']);
+});
+
+test('a failed add keeps the row ticked and shows why', async () => {
+  const taskTarget = {
+    label: 'Tasks',
+    add: async ids => ({ done: [], failed: ids.map(id => ({ id, message: 'Todoist is unreachable.' })) }),
+    undo: async () => ({ done: [], failed: [] }),
+  };
+  const { ctl, state } = harness({ taskTarget });
+  await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  assert.deepEqual(state.meetings.ticked['mtg-philips'], ['task-endpoint']);
+  assert.equal(state.meetings.addError, 'Todoist is unreachable.');
+  assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: [] });
 });

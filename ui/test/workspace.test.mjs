@@ -1663,29 +1663,37 @@ test('notes: the document reads as a page', () => {
   assert.match(other.match(/<p class="ws-mtg-docfoot">[^]*?<\/p>/)?.[0] || '', /data-action="doc-main" data-id="mtg-philips" data-doc="short-summary"[^>]*>make it the main notes/);
 });
 
-test('tasks: "2 to review · 1 on the board", Accept only on tasks to review', () => {
+test('the Action items pane: Add 1 by default, both when both are ticked, In Tasks lists the board', () => {
   const s = meetingsSnapshot();
   const tab = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', pane: 'tasks' })));
-  assert.match(tab, /<h3>2 to review<\/h3><small>· 1 on the board<\/small>/);
-  assert.match(tab, /data-action="meeting-tasks-accept"[^>]*>[^]*?Accept all 2/);
-  assert.match(tab, /data-action="meeting-board"[^>]*>[^]*?Open board/);
-  assert.equal((tab.match(/data-action="task-accept"/g) || []).length, 2);
-  assert.doesNotMatch(tab, /Tasks from this meeting/);
-  // Nothing to review: just how many.
+  assert.match(tab, /<aside class="ws-mtg-items ws-mtg-items-pane" aria-label="Action items">/);
+  assert.equal((tab.match(/class="ws-mtg-item" data-task=/g) || []).length, 2, 'both review tasks are to add');
+  assert.match(tab, /Add 1 to Tasks/);
+  assert.doesNotMatch(tab, /data-action="task-status"|data-action="task-accept"|Accept all/, 'the old status select and Accept are gone');
+  assert.match(tab, /In Tasks[^]*?Send Legal the written retention requirement/);
+  const both = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', pane: 'tasks', ticked: { 'mtg-philips': ['task-endpoint', 'task-pilot-list'] } })));
+  assert.match(both, /Add 2 to Tasks/);
+  // Nothing to review: no Add button, just the footer.
   for (const t of s.records.filter(r => r.kind === 'commitment' && r.data.meetingId === 'mtg-philips')) t.data.status = 'todo';
-  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', pane: 'tasks' }))), /<h3>3 tasks<\/h3>/);
+  const none = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', pane: 'tasks' })));
+  assert.doesNotMatch(none, /Add \d+ to Tasks/);
+  assert.match(none, /3 in Tasks ›/);
 });
 
-test('a meeting without a transcript keeps its tasks and the add form under its card', () => {
+test('a meeting without a transcript keeps its action items column, "+ Add" closed by default', () => {
   const s = meetingsSnapshot();
   for (const id of ['mtg-northwind', 'ev-next']) {
-    const d = detailOf(meetings(s, meetingsCtx({ selected: id })));
+    const d = detailOf(meetings(s, meetingsCtx({ selected: id, showNone: true })));
     assert.match(d, /class="ws-mtg-panel-alone"/, id);
-    assert.match(d, /form class="ws-mtg-add-task" data-form="meeting-task" data-id="[^"]+"/, `${id}: Add a task`);
-    assert.doesNotMatch(d, /Tasks come from the notes/, `${id}: no empty state under the card`);
+    assert.match(d, /<aside class="ws-mtg-items ws-mtg-items-pane" aria-label="Action items">/, `${id}: the column`);
+    assert.match(d, /data-action="meeting-item-add-open"[^>]*>[^]*?\+ Add/, `${id}: + Add`);
+    assert.doesNotMatch(d, /form class="ws-mtg-add-task"/, `${id}: the form is closed by default`);
   }
-  // A task already linked to it shows there.
-  const t = s.records.find(r => r.kind === 'commitment' && r.data.meetingId === 'mtg-philips');
+  // "+ Add" open: the form shows.
+  const open = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-northwind', showNone: true, addOpen: true })));
+  assert.match(open, /form class="ws-mtg-add-task" data-form="meeting-task" data-id="mtg-northwind"/);
+  // A task already on the board (not To review) shows in In Tasks there.
+  const t = s.records.find(r => r.kind === 'commitment' && r.id === 'task-legal-req');
   t.data.meetingId = 'mtg-northwind';
   const d = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-northwind' })));
   assert.match(d, new RegExp(`data-action="task-open-today" data-id="${t.id}"`));
@@ -1693,4 +1701,41 @@ test('a meeting without a transcript keeps its tasks and the add form under its 
   assert.doesNotMatch(d.match(/<details class="ws-menu[^"]*ws-mtg-stack[^"]*"[^]*?<\/details>/)?.[0] || '', /data-action="meeting-pane"/);
   // With a transcript, a person's tasks open the Action items pane.
   assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }))).match(/<details class="ws-menu[^"]*ws-mtg-stack[^"]*"[^]*?<\/details>/)?.[0] || '', /data-action="meeting-pane" data-pane="tasks">\d+ tasks?</);
+});
+
+test('the column: my sure task ticked, Sam’s not, Add 1 to Tasks, one In Tasks, the footer', () => {
+  const s = meetingsSnapshot();
+  const detail = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' })));
+  const column = detail.match(/<aside class="ws-mtg-items"[^]*?<\/aside>/)?.[0] || '';
+  assert.ok(column, 'the column renders beside the pane');
+  assert.match(column, /aria-label="Action items"/);
+  const endpoint = column.match(/<div class="ws-mtg-item" data-task="task-endpoint">[^]*?<input type="checkbox"[^>]*>/)?.[0] || '';
+  assert.match(endpoint, / checked/, 'my sure task is ticked');
+  const pilot = column.match(/<div class="ws-mtg-item" data-task="task-pilot-list">[^]*?<input type="checkbox"[^>]*>/)?.[0] || '';
+  assert.doesNotMatch(pilot, / checked/, 'Sam’s is not');
+  assert.match(column, /Add 1 to Tasks/);
+  assert.match(column, /In Tasks[^]*?Send Legal the written retention requirement/);
+  assert.match(column, /1 in Tasks ›/);
+});
+
+test('with the column off, ⋯ has Action items and the header Review 2 tasks', () => {
+  const s = meetingsSnapshot();
+  s.settings.meetings = { ...s.settings.meetings, actionItems: false };
+  const detail = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' })));
+  assert.doesNotMatch(detail, /<aside class="ws-mtg-items"/, 'no side column');
+  assert.match(meetingMenuOf(stripOf(detail), 'mtg-philips'), /data-action="meeting-pane" data-id="mtg-philips" data-pane="tasks"[^>]*>[^]*?Action items/);
+  assert.match(outsideMenus(headOf(detail)), /data-action="meeting-pane"[^>]*data-pane="tasks"[^>]*>[^]*?Review 2 tasks/);
+  // Opening it shows the same column content, full width, as the pane.
+  const pane = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', pane: 'tasks' })));
+  assert.match(pane, /<aside class="ws-mtg-items ws-mtg-items-pane" aria-label="Action items">/);
+  assert.match(pane, /Add 1 to Tasks/);
+});
+
+test('the column’s markup is the same in Default and Compact', () => {
+  const s = meetingsSnapshot();
+  const asideOf = html => html.match(/<aside class="ws-mtg-items"[^]*?<\/aside>/)?.[0] || '';
+  const a = asideOf(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }))));
+  const b = asideOf(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }))));
+  assert.ok(a, 'the column renders');
+  assert.equal(a, b, 'Default and Compact share the same markup; only --ws-mtg-items-w differs, in CSS');
 });

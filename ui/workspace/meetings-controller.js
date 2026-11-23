@@ -10,7 +10,7 @@
 // `doc-*` actions here; everything it touches is injected, so node:test drives it without a
 // browser. No optimistic updates: every change is an operation and the snapshot after it.
 import { escapeHtml } from './store.js';
-import { DEFAULT_FILTERS } from './tasks-model.js';
+import { DEFAULT_FILTERS, meOf } from './tasks-model.js';
 import { quoted } from './tasks-controller.js';
 import { formatDate, formatTime } from './format.js';
 import {
@@ -18,7 +18,7 @@ import {
 } from './meetings-model.js';
 import { paneOf } from './dock-model.js';
 import { importBody, makeNotesBody } from './view-meetings.js';
-import { meetingContext, plural } from './view-meeting-tabs.js';
+import { meetingContext, plural, ticksOf } from './view-meeting-tabs.js';
 import { shownTab, summaryTabs } from './meeting-view-model.js';
 
 const IMPORT_MAX = 5 * 1024 * 1024;
@@ -57,6 +57,9 @@ export function createMeetingsController({
   ensureClaudeChoice = async () => null, moveTask = null, connect = null, showEvent = null, canRender = () => true,
   summaryInputs = () => ({ slots: [], plugins: [] }), timer = (fn, ms) => setTimeout(fn, ms),
   dock = { layout: () => null, collapse: async () => false },
+  // The action items column's "Add N to Tasks" and Undo (spec "The task target"): Connect's own
+  // board by default (app.js's `localTaskTarget`); step 4 swaps in the provider's.
+  taskTarget = { label: 'Tasks', add: async () => ({ done: [], failed: [] }), undo: async () => ({ done: [], failed: [] }) },
 }) {
   const v = () => state.meetings;
   const items = () => meetingItems(snap(), now());
@@ -713,13 +716,42 @@ export function createMeetingsController({
     await rerender();
   }
 
-  async function acceptAll(id) {
-    const review = meetingTasks(snap(), id).filter(t => t.data.status === 'review');
-    for (const t of review) {
-      if (moveTask) await moveTask(t.id, 'todo', { log: 'Accepted from review' });
-      else await mutate('task_save', { id: t.id, status: 'todo', log: 'Accepted from review' });
+  // ---------------------------------------------------------------- the action items column
+
+  /** Meetings with "Add N to Tasks" in flight: a second click while one runs is ignored. */
+  const addingItems = new Set();
+
+  /** Calls the task target's `add` with the column's current ticks (`ticksOf`): moves the added
+   *  tasks off To review, keeps a failed one ticked with why, and lets Undo put a whole add
+   *  back. */
+  async function addItems(id) {
+    if (addingItems.has(id)) return undefined;
+    const mc = { m: { id }, tasks: meetingTasks(snap(), id) };
+    const ticked = ticksOf(v(), mc, meOf(snap()));
+    if (!ticked.length) return undefined;
+    addingItems.add(id);
+    try {
+      const { done, failed } = await taskTarget.add(ticked);
+      const view = v();
+      view.ticked = { ...view.ticked, [id]: failed.map(f => f.id) };
+      view.added = { meetingId: id, ids: done };
+      view.addError = failed[0]?.message || null;
+      return render();
+    } finally {
+      addingItems.delete(id);
     }
-    if (review.length) toast(`${plural(review.length, 'task')} accepted. They’re on your board.`, 'success');
+  }
+
+  /** Undoes the last "Add N to Tasks": moves those tasks back to To review and ticks them
+   *  again. */
+  async function undoItems(id) {
+    const view = v();
+    const added = view.added;
+    if (!added || added.meetingId !== id) return undefined;
+    await taskTarget.undo(added.ids);
+    view.ticked = { ...view.ticked, [id]: [...new Set([...(view.ticked[id] || []), ...added.ids])] };
+    view.added = null;
+    return render();
   }
 
   async function addTask(id, f) {
@@ -789,7 +821,6 @@ export function createMeetingsController({
       case 'meeting-unhide': return unhide(id);
       // A pane behind ⋯ (or Review, or a person's tasks), and back to the summary.
       case 'meeting-pane':
-        // Until the action items column (Task 4), Action items is a pane whatever the setting.
         view.pane = PANES.includes(el.dataset.pane) ? el.dataset.pane : 'summary';
         await rerender();
         return focus('.ws-mtg-strip [data-action="meeting-back"]');
@@ -896,7 +927,26 @@ export function createMeetingsController({
       case 'meeting-board':
         state.tasks.filters = { ...DEFAULT_FILTERS, meeting: id };
         return route('tasks');
-      case 'meeting-tasks-accept': return acceptAll(id);
+      // The action items column: a checkbox, which row is open, "Add N to Tasks" and Undo, "+ Add".
+      case 'meeting-item-tick': {
+        const taskId = el.dataset.task;
+        const mc = { m: { id }, tasks: meetingTasks(snap(), id) };
+        const ticked = new Set(ticksOf(view, mc, meOf(snap())));
+        if (el.checked) ticked.add(taskId); else ticked.delete(taskId);
+        view.ticked = { ...view.ticked, [id]: [...ticked] };
+        return render();
+      }
+      case 'meeting-item-open':
+        view.itemOpen = view.itemOpen === el.dataset.task ? null : el.dataset.task;
+        return render();
+      case 'meeting-item-add-open': {
+        view.addOpen = !view.addOpen;
+        await render();
+        if (view.addOpen) focus(`[data-form="meeting-task"][data-id="${quoted(id)}"] [name=text]`);
+        return undefined;
+      }
+      case 'meeting-items-add': return addItems(id);
+      case 'meeting-items-undo': return undoItems(id);
       case 'meeting-reload': cache.delete(id); return load();
       case 'meeting-file-preview': return filePreview(id, el.dataset.file).catch(err => problem(err, id));
       case 'meeting-file-save': {
