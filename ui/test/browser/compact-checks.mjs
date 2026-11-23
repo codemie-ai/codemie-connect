@@ -127,7 +127,7 @@ async function c2(page, theme, view, width, { assert, shot, settled }) {
 /** Every --ws-fs-* size token Task 2 defined. */
 const FS_TOKENS = ['--ws-fs-label', '--ws-fs-meta', '--ws-fs-meta-lg', '--ws-fs-secondary', '--ws-fs-secondary-lg', '--ws-fs-body-sm', '--ws-fs-body-lg', '--ws-fs-body', '--ws-fs-heading-sm', '--ws-fs-heading', '--ws-fs-heading-md', '--ws-fs-heading-lg', '--ws-fs-title', '--ws-fs-title-md', '--ws-fs-title-sm'];
 
-/** C3: Compact uses Naya's sizes, at 1440 (brief's exact spots), and the grid row height Today
+/** C3: Compact uses the compact sizes (13 / 12 / 11 …), at 1440 (brief's exact spots), and the grid row height Today
  *  gives `[data-tile=brief]` is unchanged from Default. `page` is already open in Compact at 1440. */
 async function c3(page, { open, assert, settled }) {
   await gotoRoute(page, 'today');
@@ -722,7 +722,7 @@ export async function compactChecks({ open, check, assert, shot, settled, calls,
 
   {
     const { page, context } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, tasks: true, meetings: true, automations: true, settings: { view: 'compact' } });
-    await check('compact C3: Compact uses Naya’s sizes', () => c3(page, { open, assert, settled }));
+    await check('compact C3: Compact uses the compact sizes', () => c3(page, { open, assert, settled }));
     await context.close().catch(() => {});
   }
 

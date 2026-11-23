@@ -1031,9 +1031,9 @@ mod tests {
         // It is a task provider's secret: the caller queues a sync. A plain setting isn't.
         assert!(extras::set_setting(&env.paths, "todoist", "token", &json!(SENTINEL)).unwrap());
         assert!(!extras::set_setting(&env.paths, "todoist", "project", &json!("Work")).unwrap());
-        let view = run(json!({"id": "todoist", "key": "label", "value": "naya"})).unwrap();
+        let view = run(json!({"id": "todoist", "key": "label", "value": "errands"})).unwrap();
         assert_eq!(view["settings"][1]["value"], "Work");
-        assert_eq!(view["settings"][2]["value"], "naya");
+        assert_eq!(view["settings"][2]["value"], "errands");
 
         // Refused: an undeclared key, a value of the wrong type (its words never echo the value).
         let e = run(json!({"id": "todoist", "key": "nope", "value": "x"})).unwrap_err();

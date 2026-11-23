@@ -5,8 +5,8 @@
 **Goal:** Tasks get one active provider:
 - built-in Local (Connect) by default; a provider plugin replaces it while it is on, everywhere a task is shown or added;
 - the core keeps a cache and an outbox and talks to the provider through the QuickJS host, window open or closed;
-- the first provider is a Todoist plugin in `codemie-connect-marketplace` that works the way Naya uses Todoist;
-- with a provider on, the Tasks page shows Naya's date layout.
+- the first provider is a Todoist plugin in `codemie-connect-marketplace` that works the way the reference app uses Todoist;
+- with a provider on, the Tasks page shows the reference app's date layout.
 
 **Architecture:**
 - Native: `commitment` records gain `provider`, `key`, `kind`, `remote`, `pending`, `syncError`, `handled`. A new module `src-tauri/src/workspace/task_provider/` holds the `TaskProviders` trait, keys and the ledger, the outbox, the `task_sync` job, the merge and the new operations.
@@ -41,7 +41,7 @@
   - New Tauri-facing state goes through `workspace_request` or `plugins_request`, both already caller-checked; no new Tauri command.
   - Default and Compact draw the same markup.
 - **Values:**
-  - key: first 16 hex of `sha1("<source>#<normalized text>")`, Naya's `normalizeCommitment` (NFKC, lower case, keep letters, digits and `#`, collapse the rest to one space, trim);
+  - key: first 16 hex of `sha1("<source>#<normalized text>")`, the reference app's `normalizeCommitment` (NFKC, lower case, keep letters, digits and `#`, collapse the rest to one space, trim);
   - key sources: `meeting:<meetingId>:<line>`, `message:<sourceId>`, `manual:<task id>`;
   - kinds: `task | reply | waiting | budget`; labels `reply`, `waiting`, `budget`, app label default `connect`; project default `Connect`;
   - states: `local | ready | syncing | offline | rate_limited | needs_token | off | failed`;
@@ -93,7 +93,7 @@
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-#[test] fn task_key_matches_nayas_normalization()
+#[test] fn task_key_matches_reference_normalization()
 // task_key("meeting:m1:4", "I'll send you the names by Friday.") == task_key("meeting:m1:4", "  i'll SEND you the names, by friday ")
 // len 16, all hex; another source gives another key; normalize("Ёлка — #2!") == "ёлка #2"
 #[test] fn task_save_stamps_provider_key_and_kind()
@@ -330,7 +330,7 @@ git commit -m "feat(tasks): switch providers safely, withdraw, bulk moves, looks
 
 **Interfaces:**
 - Produces (exports of `main.js`):
-  - `MARKER_LINE` (Naya's: `/^[\s*_`>#~|-]*(source|key|meeting|owner)[\s*_`~]*:/i`) and `stripMarkers(text)`;
+  - `MARKER_LINE` (the reference app's: `/^[\s*_`>#~|-]*(source|key|meeting|owner)[\s*_`~]*:/i`) and `stripMarkers(text)`;
   - `describe({notes, key, source, meetingId, owner}) → string`: the notes without marker-looking lines, a blank line, then `key: …`, `source: …` (https only), `meeting: …`, `owner: Name <address>`, each only when present;
   - `parseDescription(desc) → {notes, key, source, meetingId, owner}`: the last of each marker wins;
   - `toTodoist(task, {projectId, label}) → body`:
@@ -672,8 +672,8 @@ git commit -m "test(tasks): browser checks for the task provider in both views, 
   4. `T=$(mktemp -d)/workspace`; copy `workspace.sqlite` (with `-wal` and `-shm`) from `~/Library/Application Support/com.epam.codemie.installer/workspace/` into it, never `credentials/`; then `CODEMIE_WORKSPACE_TEST_DIR=$T CODEMIE_STATUS_SMOKE=status ./target/debug/app`. Expected: exit 0; the report shows the workspace with Local as the task provider and no `task_sync` job.
   5. Grep for the sentinel: `grep -r tk_SENTINEL ui/test/fixtures output/playwright "$TMPDIR"/connect-*-smoke.json ~/Library/Logs/CodeMie/` finds nothing.
 
-- [ ] **Step 5: Naya side by side from browser screenshots.**
-  1. Render `/Users/Nikita_Levyankov/repos/personal/naya.ai/docs/superpowers/specs/mockups/tasks-v1.html` in Playwright at 1440 px (light), saved as `output/playwright/naya-tasks-v1.png`.
+- [ ] **Step 5: A side-by-side comparison with the reference mockups, from browser screenshots.**
+  1. Render the reference tasks mockup in Playwright at 1440 px (light), saved as `output/playwright/reference-tasks-v1.png`.
   2. Put it beside `tasks-provider-light-compact-1440` and `-default-1440`.
   3. List every visible difference, as kept on purpose (with the spec's ruling number) or as a follow-up. Examples:
      - Later than that fold (ruling 7);
@@ -681,12 +681,12 @@ git commit -m "test(tasks): browser checks for the task provider in both views, 
      - no ✦ nudge draft and no inline composer (ruling 19);
      - the header status line in place of "updated 16:15 ↻";
      - no "Add task ⌘N" (step 9);
-     - no Waiting on others panel, check-in rows by date instead (as Naya's Revision 2026-11-14).
+     - no Waiting on others panel, check-in rows by date instead (an earlier revision, 2026-11-14).
 
 - [ ] **Step 6: Show the user:**
   - the gate results, the browser-run summary and the P1/P2 screenshots in both views;
   - the three smoke reports;
-  - the Naya comparison with its differences;
+  - the reference-mockup comparison with its differences;
   - the marketplace commits to be pushed (`git -C <marketplace> log origin/main..main --oneline`).
 
   Ask: "Push the Todoist plugin to codemie-ai/codemie-connect-marketplace (public)?" Do not push Connect.

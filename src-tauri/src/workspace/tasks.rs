@@ -37,8 +37,8 @@ const NAMES: [(&str, &str); 6] = [
 ];
 /// Statuses of a task someone still has to do.
 const OPEN: [&str; 3] = ["todo", "doing", "waiting"];
-/// Every kind a task can be (design §1): Naya's `TASK_SCHEMA` kinds minus `client`. Absent reads
-/// as `"task"`.
+/// Every kind a task can be (design §1): the reference task schema's kinds minus `client`.
+/// Absent reads as `"task"`.
 const KINDS: [&str; 4] = ["task", "reply", "waiting", "budget"];
 
 const ID_MAX: usize = 200;

@@ -2,13 +2,13 @@
 
 **Status:** written on 2026-11-22 from the rollout overview's decisions and the code, step 2 of `2026-11-22-workspace-next-rollout-design.md`. Decisions the overview and the user left open are ruled on below under "Rulings for the user".
 **Builds on:** step 1, `2026-11-22-compact-view-design.md` (Compact Inbox rows open in place and reuse `replyForm`).
-**Reference:** Naya's composer (`NayaApp/Compose/RowComposerView.swift`, `ComposerView.swift`, `Inbox/ConversationRowView.swift` `ConversationActionLine`, `NayaCore/Compose/ComposerModel.swift` `sendLabel` / `askSend` / `postNow`, `NayaCore/Inbox/RowCopy.swift`) and Naya's UX standard `docs/superpowers/specs/2026-11-12-ux-simplification-design.md`.
+**Reference:** the reference app's composer and reply-row action line, and the UX standard in `docs/superpowers/specs/2026-11-12-ux-simplification-design.md`.
 
 ## Intent
 
 Replying in Connect takes too many controls and too many steps. Today an open message shows up to seven buttons in the reader header (Open in…, Done, Snooze, Summarize, a lane select, Add a task, Acknowledge) and four more under the reply box (Draft with AI ▾, Save draft, Copy reply or Review & send). Drafting opens a popover with intent, tone, length, free times and instructions. Every send, Teams included, goes through a "Review before sending" dialog that repeats the text the user just read.
 
-Naya does the same job with one named Send button, a ✦ link that drafts in place, a line to tell the AI what to change, Teams that sends on click and a short To/Cc confirm for mail. The user wants Naya's reply rules in Connect, in both views, without giving up Connect's safety: nothing leaves without the user's click, and only when they allowed sending in Settings.
+The reference app does the same job with one named Send button, a ✦ link that drafts in place, a line to tell the AI what to change, Teams that sends on click and a short To/Cc confirm for mail. The user wants the reference app's reply rules in Connect, in both views, without giving up Connect's safety: nothing leaves without the user's click, and only when they allowed sending in Settings.
 
 ## Goals
 
@@ -25,8 +25,8 @@ Naya does the same job with one named Send button, a ✦ link that drafts in pla
 
 - Reply all, forward, new messages, attachments or editing recipients. Connect replies through Graph's `/reply`, which goes to the message's Reply-To or sender only (`actions.rs` `reply_recipients`). That does not change here.
 - A signature setting or a signature added by Connect.
-- Rewrite / Shorter / Fix grammar presets (Naya's ⋯ › Rewrite). "Tell AI what to change" covers them in the user's own words.
-- Quoting the replied-to message (Naya Decision 40).
+- Rewrite / Shorter / Fix grammar presets (the reference app's ⋯ › Rewrite). "Tell AI what to change" covers them in the user's own words.
+- Quoting the replied-to message (an earlier ruling, Decision 40).
 - A reply box on Today's rows. Today keeps its Draft reply entry, which opens the conversation.
 - Row checkboxes, "Close all" or "N done today" (rejected in the overview).
 - The reply in the user's voice (`reply-context`), which is step 8.
@@ -44,7 +44,7 @@ Naya does the same job with one named Send button, a ✦ link that drafts in pla
 
 | Approach | Trade-off | Decision |
 |---|---|---|
-| **A. Naya's composer and action line in the UI, native sending unchanged.** The UI chains `action_prepare` → `action_confirm` for Teams in one click and shows a short confirm for mail. Native gains only fields the UI cannot know: the new-address tag in the mail review and the current text for "Tell AI what to change". | The two-step, content-bound native record stays the only way anything is sent. One click runs two calls for Teams. | **Chosen** |
+| **A. The reference app's composer and action line in the UI, native sending unchanged.** The UI chains `action_prepare` → `action_confirm` for Teams in one click and shows a short confirm for mail. Native gains only fields the UI cannot know: the new-address tag in the mail review and the current text for "Tell AI what to change". | The two-step, content-bound native record stays the only way anything is sent. One click runs two calls for Teams. | **Chosen** |
 | B. A native one-shot `action_send` for Teams. | One call and simpler UI code, but a second path to Graph that skips the reviewed record and has to repeat every check `confirm_action` makes. | Rejected: weakens the gate's single path |
 | C. Keep "Review before sending" for both and only rename the button. | Least work, but it keeps Connect's extra step on every Teams reply, which the user rejected. | Rejected |
 
@@ -199,9 +199,9 @@ Because a Teams reply now goes on the click, the copy says so before the user tu
 ## Rulings for the user
 
 1. **Draft options go under ⋯ › "Draft options…"**, which opens the existing popover anchored to ⋯. The ✦ link uses the remembered options. *Why:* it keeps intent, tone, length and free times for people who use them, without a fourth control.
-2. **Save draft is replaced by autosave** (1.5 s after typing stops, and at once on blur, row close, route change or hide), with "Saved on this device" in the status line. *Why:* Naya has no save button, and removing it must not lose text.
+2. **Save draft is replaced by autosave** (1.5 s after typing stops, and at once on blur, row close, route change or hide), with "Saved on this device" in the status line. *Why:* the reference app has no save button, and removing it must not lose text.
 3. **"Review before sending" becomes the short "Send this reply?" confirm for Outlook replies only.** It lists To, Cc, subject and signature, not the body. It keeps the 5-minute expiry and native's recipient recheck. Events and Decisions' prepared actions keep the full review. *Why:* the body is on screen in the box. The confirm is about where the mail goes.
-4. **Return never confirms any send dialog:** the mail confirm, the full review and "Finish your reply first?". Cancel is focused, Return cancels even with focus on Send, and Space on Send sends. *Why:* Naya ruling T12-a, a held or habitual Return must not send.
+4. **Return never confirms any send dialog:** the mail confirm, the full review and "Finish your reply first?". Cancel is focused, Return cancels even with focus on Send, and Space on Send sends. *Why:* an earlier ruling (T12-a), a held or habitual Return must not send.
 5. **Teams has no undo window.** The click sends, and the status line confirms it. *Why:* a delayed send would be a send that happens after the click, from a timer. The decision is "sends at once", and Connect cannot recall a Graph chat message.
 6. **Teams sends through the same two native calls** (`action_prepare`, then `action_confirm`), chained in one click. There is no new native send path. *Why:* one gated path to Graph. The permission and source checks stay in one place.
 7. **The recipients guard is "(new)" on a To that is not the message's sender**, computed natively. *Why:* Graph's `/reply` goes to Reply-To or the sender. A Reply-To pointing elsewhere is the only way a reply reaches an address the thread did not show.
@@ -210,10 +210,10 @@ Because a Teams reply now goes on the click, the copy says so before the user tu
 10. **The Send label comes from the cached message**: 1:1 first name, group title, sender's first name. It has no "+N" count, because the exact addresses show in the mail confirm. *Why:* the label must show before any Microsoft call.
 11. **Done moves under ⋯** (first item) except where nothing can be answered (your own Outlook message, an unavailable item), where Done is the primary. *Why:* the binding three-control rule. Done stays one click plus one on every item.
 12. **Acknowledge takes Snooze's place on an unacknowledged critical message**, and Snooze goes under ⋯. *Why:* step 1 kept Acknowledge visible so critical alerts are not weakened. This keeps that and still shows three controls.
-13. **The action line sits under the reply box in both views**, as in Naya. Step 1's actions bar at the top of the Compact row, and the Default reader's header actions, go. *Why:* one layout for both views, and the named Send sits where the text is.
+13. **The action line sits under the reply box in both views**, as in the reference app. Step 1's actions bar at the top of the Compact row, and the Default reader's header actions, go. *Why:* one layout for both views, and the named Send sits where the text is.
 14. **Your own Outlook message shows no reply box**, and Done is its primary. *Why:* native refuses a reply to your own mail, so the box could never be sent.
 15. **"Tell AI what to change" sends the current text natively as `revise`**, a new optional `ai_draft` field. Its result replaces the text, with Restore my text. *Why:* without the current text Claude could only draft afresh, and the user's edits would be lost.
-16. **⌘↩ is armed per conversation** by the user's click or keystroke in that box, and resets after a send and on any other conversation. A box the app focused does not count. *Why:* Naya Review Focus 6, so an auto-advance or Today's Draft reply cannot turn ⌘↩ into a send of the wrong reply.
+16. **⌘↩ is armed per conversation** by the user's click or keystroke in that box, and resets after a send and on any other conversation. A box the app focused does not count. *Why:* an earlier review ruling (Review Focus 6), so an auto-advance or Today's Draft reply cannot turn ⌘↩ into a send of the wrong reply.
 17. **After a send the row stays where it is.** No automatic Done or lane move, and the box empties. *Why:* moving a conversation is the user's decision. The next sync files a replied thread as it does today.
 18. **The Allow actions copy changes** to say a Teams reply goes on the click. *Why:* the user turns on `chat_send` knowing what it now does, and the gate itself is unchanged.
 19. **Today keeps its Draft reply pill and gets no reply box.** *Why:* Today's rows are a list of what needs you. The reply happens in the conversation, where the thread and the named Send are.

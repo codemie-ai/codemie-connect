@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Implementers also follow the shared rules in `.superpowers/sdd/common-implementer.md`.
 
-**Goal:** A meeting opens the way Naya opens it, in both views:
+**Goal:** A meeting opens the way the reference app opens it, in both views:
 - the main summary first, with summary tabs for the templates the user pins;
 - one strip holding the tabs (or "← Back to summary"), one primary and ⋯;
 - Transcript and Notes behind ⋯, Files under ⋯ › Advanced;
@@ -307,7 +307,7 @@ git commit -m "feat(meetings): pure rules for summary tabs, the strip's primary,
 
 - [ ] **Step 3: Implement** as in Interfaces.
   - Remove `TABS`, `tabsOf` and the controller's `follow`.
-  - CSS: the strip is a flex row with a bottom rule (`--ws-line`); tabs are pills (Naya `.tab`: 4×12 padding, radius `--ws-radius-control`, the open one on `--ws-surface-2`); `.ws-mtg-body` is a grid that Task 4 extends.
+  - CSS: the strip is a flex row with a bottom rule (`--ws-line`); tabs are pills (the reference app's tab style: 4×12 padding, radius `--ws-radius-control`, the open one on `--ws-surface-2`); `.ws-mtg-body` is a grid that Task 4 extends.
 
 - [ ] **Step 4: Run** `npm test`. Expected: PASS.
 
@@ -593,8 +593,8 @@ git commit -m "test(meetings): browser checks for the meeting view in both views
   6. Pin two templates there first. Real meeting folders are read from disk, and nothing reaches Microsoft.
   7. Quit, and run `CODEMIE_WORKSPACE_TEST_DIR=$T CODEMIE_STATUS_SMOKE=status ./target/debug/app`. Expected: exit 0, and `$TMPDIR/connect-status-smoke.json` reports the workspace and settings.
 
-- [ ] **Step 4: Naya side by side.**
-  1. Capture Naya's open meeting at the same width: a live Naya window if one runs, else `/Users/Nikita_Levyankov/repos/personal/naya.ai/docs/superpowers/specs/mockups/meetings-v4.html`.
+- [ ] **Step 4: A side-by-side comparison with the reference mockups.**
+  1. Capture the reference app's open meeting at the same width: a live run of the reference app if one is available, else the reference meetings mockup.
   2. Put it next to the Compact and Default screenshots.
   3. List every visible difference, either as kept on purpose (with the ruling number from the spec) or as a follow-up. Examples:
      - no "Send summary to …" (ruling 1);
@@ -603,4 +603,4 @@ git commit -m "test(meetings): browser checks for the meeting view in both views
      - no recording or "Hear it";
      - the people line opening a popover.
 
-- [ ] **Step 5: Show the user** the browser-run summary, the real-app screenshots in both views, the status smoke result, and the Naya comparison with its differences. Do not push.
+- [ ] **Step 5: Show the user** the browser-run summary, the real-app screenshots in both views, the status smoke result, and the reference-mockup comparison with its differences. Do not push.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Settings › Appearance › View (Compact | Default): Compact uses Naya's sizes everywhere and Naya's layout on Inbox and Today. Today's toolbar moves into one ⋯ menu in both views, and main-menu pages can be hidden.
+**Goal:** Settings › Appearance › View (Compact | Default): Compact uses the compact sizes (13 / 12 / 11 …) everywhere and the reference app's layout on Inbox and Today. Today's toolbar moves into one ⋯ menu in both views, and main-menu pages can be hidden.
 
 **Architecture:** Two app-wide native settings (`view`, `hiddenPages`) travel in the snapshot. The window mirrors `view` onto `data-view` on `#workspace-app` and `<html>` and into localStorage for the first paint. `workspace.css` moves its sizes onto `--ws-*` size tokens whose Default values are today's pixels, so Default is pixel-identical, and Compact overrides the tokens. Compact Inbox renders the list section only, with rows that open in place (`state.openMessage`, separate from `state.selectedMessage`). Compact Today drops the avatar and greeting. Hidden pages are filtered in `renderShell` and stay reachable by route.
 
@@ -251,7 +251,7 @@ git commit -m "feat(ui): Settings › Appearance › View, applied at once with 
 
 - [ ] **Step 1: Write C2 and C3**
   - C2 `compact C2: <theme> <view> <width>: no horizontal overflow, nothing clipped`: for `theme` × `view` in {compact, default} × `width` in {1000, 1440, 1680}, open each `MATRIX_ROUTES` entry (hash `#/<route>`). Assert `main.scrollWidth - main.clientWidth <= 0` and `documentElement.scrollWidth - clientWidth <= 0` (the `noOverflow` of `layout-checks.mjs:49-56`), assert `noClip(page)` is empty, and save `compact-<theme>-<view>-<width>-<route with / as ->`.
-  - C3 `compact C3: Compact uses Naya’s sizes`, at 1440 in Compact: computed `#workspace-app` font-size `13px` and line-height `18px`; `.ws-nav button[data-route=inbox]` height `28px`; `.ws-input` height `28px`; `.ws-btn` border-radius `6px`; `#inbox-search` height `28px`; `.ws-page-heading h1` (on Tasks) `20px`; `.ws-inbox-title h1` `22px`; every `--ws-fs-*` on `html` ≥ 10.5. `[data-tile=brief]` has the same `offsetHeight` in Compact and Default (grid rows unchanged). The `:focus-visible` outline on a focused `.ws-btn` is `2px`.
+  - C3 `compact C3: Compact uses the compact sizes`, at 1440 in Compact: computed `#workspace-app` font-size `13px` and line-height `18px`; `.ws-nav button[data-route=inbox]` height `28px`; `.ws-input` height `28px`; `.ws-btn` border-radius `6px`; `#inbox-search` height `28px`; `.ws-page-heading h1` (on Tasks) `20px`; `.ws-inbox-title h1` `22px`; every `--ws-fs-*` on `html` ≥ 10.5. `[data-tile=brief]` has the same `offsetHeight` in Compact and Default (grid rows unchanged). The `:focus-visible` outline on a focused `.ws-btn` is `2px`.
 
 - [ ] **Step 2: Run** `WORKSPACE_E2E_ONLY=compact …`. Expected: C3 FAILS (no Compact values yet). C2 passes, or fails only where Compact needs work.
 
@@ -263,7 +263,7 @@ git commit -m "feat(ui): Settings › Appearance › View, applied at once with 
 
 ```bash
 git add ui/workspace/workspace.css ui/test/browser/compact-checks.mjs
-git commit -m "feat(ui): Compact sizes from Naya on every page, checked at three widths in both themes"
+git commit -m "feat(ui): Compact sizes from the reference app on every page, checked at three widths in both themes"
 ```
 
 ### Task 5: Today's ⋯ menu (both views) and Compact Today
@@ -500,6 +500,6 @@ git commit -m "feat(inbox): Compact rows open in place with the thread and reply
   - Launch `CODEMIE_WORKSPACE_TEST_DIR=$T ./target/debug/app`. Drive it with a CGEvent clicker (a small Swift or Python script posting mouse and key events) and capture each screen with `screencapture -l <windowid>`. Capture in Default and in Compact: Today (header, ⋯ menu open), Inbox (Default reader; Compact closed, open, and critical with Acknowledge), Settings › Appearance (View card), Settings › Layout (Menu card), a hidden page open by route (greyed row), Calendar and Tasks (Compact sizes).
   - Then quit and run `CODEMIE_WORKSPACE_TEST_DIR=$T CODEMIE_STATUS_SMOKE=status ./target/debug/app`. Expected: exit 0, and `$TMPDIR/connect-status-smoke.json` reports the workspace and settings.
 
-- [ ] **Step 4: Naya side by side.** Open `/Users/Nikita_Levyankov/repos/personal/naya.ai/docs/superpowers/specs/mockups/inbox-v5.html` and `today-v11.html` (or a live Naya window if one is running) at the same window width, and capture them. Put each next to the Compact Inbox and Compact Today screenshots, and list every visible difference (sizes, spacing, header, row anatomy, open-row order, reply controls deferred to step 2) as kept-on-purpose or follow-up.
+- [ ] **Step 4: A side-by-side comparison with the reference mockups.** Open the reference Inbox and Today mockups (or a live run of the reference app, if one is available) at the same window width, and capture them. Put each next to the Compact Inbox and Compact Today screenshots, and list every visible difference (sizes, spacing, header, row anatomy, open-row order, reply controls deferred to step 2) as kept-on-purpose or follow-up.
 
-- [ ] **Step 5: Show the user** the browser-run summary, the real-app screenshots for both views, the status smoke result and the Naya comparison with its list of differences. Do not push.
+- [ ] **Step 5: Show the user** the browser-run summary, the real-app screenshots for both views, the status smoke result and the reference-mockup comparison with its list of differences. Do not push.

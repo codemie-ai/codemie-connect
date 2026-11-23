@@ -1,21 +1,21 @@
 # Workspace next · rollout overview
 
 **Status:** agreed in brainstorming on 2026-11-22. Each step gets its own design before it is planned.
-**Background:** `../../../../connect-vs-naya-analysis.md` (features, 2026-11-19) and the UI comparison done in the same session.
+**Background:** the earlier feature and UI comparison analysis (2026-11-19) and the UI comparison done in the same session.
 
 ## Intent
 
-The user wants CodeMie Connect to be their primary app instead of Naya. Connect keeps what it already does better (installer, safety defaults, the Automations page, the Today grid, the plugin platform). Naya supplies what it does better: a compact look, rows that open in place with the reply under the thread, a calm Today, Todoist as the task store, and its daily habits as automations.
+The user wants CodeMie Connect to be their primary app instead of the reference app they use today. Connect keeps what it already does better (installer, safety defaults, the Automations page, the Today grid, the plugin platform). The reference app does better: a compact look, rows that open in place with the reply under the thread, a calm Today, Todoist as the task store, and its daily habits as automations.
 
 ## Decisions taken
 
-- **No separate "Naya mode".** Connect gets a view setting with two values, **Compact** and **Default**. Compact uses Naya's sizes and, on the screens where Naya's layout is better, Naya's layout. Default keeps today's look and layouts.
+- **No separate "reference-app mode".** Connect gets a view setting with two values, **Compact** and **Default**. Compact uses the compact sizes (13 / 12 / 11 …) and, on the screens where the reference app's layout is better, that layout. Default keeps today's look and layouts.
 - **Menu items can be hidden** in Settings, Today included.
 - **Today's toolbar** (layout picker, lock, Add widget, Customize) is too much on screen and can go away.
-- **Tasks get a pluggable provider.** One provider is active at a time. Built-in Local is the default; a provider plugin (Todoist first, Obsidian or OneNote later) replaces it while it is on. Connect keeps a local copy as cache and outbox, so tasks made with the window closed (automations, automatic meeting notes) are not lost. Todoist works the way Naya uses it: `@reply`, `@waiting`, `@budget` and an app label, a hidden key and source line in the description against duplicates, absolute due dates, Late / Today / Later, "looks handled".
-- **Meetings open the way Naya opens them:** the main summary first, action items in a column on the right with "Add N to <provider>", transcript and notes behind ⋯, files under ⋯ › Advanced. Summary tabs are the templates the user pins; this builds on the existing template processing and automatic rules. No layouts per meeting type.
-- **Reply** follows Naya's rules in both views: one Send button named for its target, a ✦ draft link instead of the intent/tone/length popover, Teams sends at once, mail asks a short confirm with To/Cc.
-- **Automation templates from Naya habits:** Morning briefing (weekdays 08:07, replaces "Morning brief"), Inbox triage (`@reply` task per item needing the user), Commitments (mine and `@waiting`), Budget request reply (`@budget` task plus a reply draft, without the project-exists check), and Formal and Informal meeting summaries (Informal as a marketplace plugin). One new delivery is needed: **create tasks**, through the task provider. End of day, repo digest and performance stay in Naya.
+- **Tasks get a pluggable provider.** One provider is active at a time. Built-in Local is the default; a provider plugin (Todoist first, Obsidian or OneNote later) replaces it while it is on. Connect keeps a local copy as cache and outbox, so tasks made with the window closed (automations, automatic meeting notes) are not lost. Todoist works the way the reference app uses it: `@reply`, `@waiting`, `@budget` and an app label, a hidden key and source line in the description against duplicates, absolute due dates, Late / Today / Later, "looks handled".
+- **Meetings open the way the reference app opens them:** the main summary first, action items in a column on the right with "Add N to <provider>", transcript and notes behind ⋯, files under ⋯ › Advanced. Summary tabs are the templates the user pins; this builds on the existing template processing and automatic rules. No layouts per meeting type.
+- **Reply** follows the reference app's rules in both views: one Send button named for its target, a ✦ draft link instead of the intent/tone/length popover, Teams sends at once, mail asks a short confirm with To/Cc.
+- **Automation templates from the reference app's habits:** Morning briefing (weekdays 08:07, replaces "Morning brief"), Inbox triage (`@reply` task per item needing the user), Commitments (mine and `@waiting`), Budget request reply (`@budget` task plus a reply draft, without the project-exists check), and Formal and Informal meeting summaries (Informal as a marketplace plugin). One new delivery is needed: **create tasks**, through the task provider. End of day, repo digest and performance stay in the reference app.
 
 ## Order
 
@@ -23,12 +23,12 @@ All steps go on one branch, `feat/workspace-next`, cut from `workspace-app`, and
 
 0. **Connect marketplace** — a public `codemie-ai/codemie-connect-marketplace` repo in the `echo-plugins` layout, added to Connect as a second built-in marketplace (listed first; `onetest` stays). Home of the Todoist, reply-context and Podervianskyi notes plugins.
 1. **Compact view** — view setting, size tokens, compact Inbox and Today, hiding menu items and Today's toolbar. Design: `2026-11-22-compact-view-design.md`.
-2. **Reply** — Naya's reply controls in both views.
+2. **Reply** — the reference app's reply controls in both views.
 3. **Meetings default view** — summary first, action items column, pinned templates, "Open a meeting on" setting.
 4. **Task provider and the Todoist plugin.** Plugins run natively in QuickJS, so the core can call the provider with the window closed; the local copy is a cache and an outbox for offline or provider failures.
-5. **Create-tasks delivery and the Naya templates.**
+5. **Create-tasks delivery and the reference-app templates.**
 6. **Menu-bar count** — needs-reply by default; Settings › Notifications chooses what else counts (tasks due or late, meetings with new notes, automation results); amber when something needs fixing.
-7. **Profiles and models** — routes for the new features (Ask, triage, commitments, briefing), one route per plugin, a fallback profile per route, a working status per row. Engines: Claude (Claude Code and CodeMie profiles) and Ollama, reached through a CodeMie profile whose provider is ollama, as Naya does; no Codex, pi or opencode.
+7. **Profiles and models** — routes for the new features (Ask, triage, commitments, briefing), one route per plugin, a fallback profile per route, a working status per row. Engines: Claude (Claude Code and CodeMie profiles) and Ollama, reached through a CodeMie profile whose provider is ollama, as the reference app does; no Codex, pi or opencode.
 8. **Reply in the user's voice** — a `reply-context` plugin role (per-person profile, style card from Sent mail, instructions per sender or topic); Connect keeps a copy and adds it to every draft, background ones included. The Knowledge plugin is the first provider.
 9. **Ask, inline in the window** — a ⌘K field at the top of the menu; the answer and follow-ups show inside the Connect window, no floating panel. Quick capture (⌘N) with it.
 
@@ -47,10 +47,10 @@ The user wants each step properly built and visually verified, so Connect stays 
 3. **Browser run, no regressions:** the whole `workspace-e2e.mjs` run passes (plugins, meetings, meetings-settings, layout, analytics), not only the new set.
 4. **The real app:** a debug build launched on real data, with screenshots of every changed screen, and `CODEMIE_STATUS_SMOKE=status` passing.
 5. **Plugin steps:** `CODEMIE_PLUGIN_SMOKE=<marketplace folder>` passes against `codemie-connect-marketplace`.
-6. **Naya side by side** where the step ports a Naya screen (Inbox, Today, Meetings, Tasks, reply): the Connect screenshot next to the Naya one, differences named.
+6. **A side-by-side comparison with the reference mockups** where the step ports a reference-app screen (Inbox, Today, Meetings, Tasks, reply): the Connect screenshot next to the reference one, differences named.
 
 ## Not ported
 
-Naya's Inbox row checkboxes, "Close all" and the "N done today · Show done" footer (decided 2026-11-22: not wanted at all).
+The reference app's Inbox row checkboxes, "Close all" and the "N done today · Show done" footer (decided 2026-11-22: not wanted at all).
 
-Naya's config editing, engine routes, Terminal logins, launchd jobs, CLI-first actions, the git knowledge base, and the personal skills (performance, repo digest, kid-guard, school meals, pitches).
+The reference app's config editing, engine routes, Terminal logins, launchd jobs, CLI-first actions, the git knowledge base, and the personal skills (performance, repo digest, kid-guard, school meals, pitches).

@@ -4,12 +4,12 @@
 
 ## Intent
 
-The user is moving from Naya to Connect as their primary app. Next to Naya, Connect feels loud: larger text, taller rows, a big Today header with a layout toolbar, an Inbox split into a list and a reading pane that "looks conflicting", and a menu showing pages they do not use (Calendar, for one). They want Naya's density and its Inbox in Connect, without a separate "Naya mode", and they want to remove pages and controls they do not need.
+The user is moving from their current reference app to Connect as their primary app. Next to the reference app, Connect feels loud: larger text, taller rows, a big Today header with a layout toolbar, an Inbox split into a list and a reading pane that "looks conflicting", and a menu showing pages they do not use (Calendar, for one). They want the reference app's density and its Inbox in Connect, without a separate "reference-app mode", and they want to remove pages and controls they do not need.
 
 ## Goals
 
-- **Settings › Appearance › View: Compact | Default.** Default is today's look. Compact uses Naya's sizes everywhere and Naya's layout on Inbox and Today. It applies at once, with no restart and no Save.
-- **Compact sizes** (Naya, `NayaApp/Design/CM.swift`): body 13, secondary 12, meta 11, small labels 10.5; page title 20 (Today and Inbox 22); spacing 4 / 8 / 12 / 16 / 24; menu rows 28 px; inputs and buttons 28 px; control radius 6, row radius 8. Font stays Connect's (Geist Mono).
+- **Settings › Appearance › View: Compact | Default.** Default is today's look. Compact uses the compact sizes everywhere and the reference app's layout on Inbox and Today. It applies at once, with no restart and no Save.
+- **Compact sizes** (the reference app's): body 13, secondary 12, meta 11, small labels 10.5; page title 20 (Today and Inbox 22); spacing 4 / 8 / 12 / 16 / 24; menu rows 28 px; inputs and buttons 28 px; control radius 6, row radius 8. Font stays Connect's (Geist Mono).
 - **Compact Inbox:** one list, no reading pane. A row opens in place and shows the thread and the reply box under it; opening a row closes the one open before. Details below.
 - **Compact Today:** no avatar, no greeting line; the date and the summary line ("1 meeting left · 2 h 37 min free until 18:00 · 58 need you") form the header. Each part of the summary opens its page.
 - **Today's toolbar hides in both views.** The layout picker, lock, Add widget and Customize move into one ⋯ menu at the right of the Today header. Customize mode itself is unchanged.
@@ -35,9 +35,9 @@ The user is moving from Naya to Connect as their primary app. Next to Naya, Conn
 
 | Approach | Trade-off | Decision |
 |---|---|---|
-| Density setting: size tokens for both views, plus compact layouts for the screens where Naya's is better | Two layouts to keep on Inbox and Today; everything else is one layout with two sets of sizes | **Chosen** |
-| A separate "Naya mode" shell with its own views | Fastest faithful copy, but every feature is built twice and they drift | Rejected by the user |
-| Replace Connect's layouts with Naya's for everyone | Least code, but removes the list-and-reader Inbox and the big Today for anyone who likes them | Rejected |
+| Density setting: size tokens for both views, plus compact layouts for the screens where the reference app's is better | Two layouts to keep on Inbox and Today; everything else is one layout with two sets of sizes | **Chosen** |
+| A separate "reference-app mode" shell with its own views | Fastest faithful copy, but every feature is built twice and they drift | Rejected by the user |
+| Replace Connect's layouts with the reference app's for everyone | Least code, but removes the list-and-reader Inbox and the big Today for anyone who likes them | Rejected |
 
 ## How it works
 
@@ -76,7 +76,7 @@ Needs reply 12 · Critical 2 · Waiting 3 · FYI 30 · Low · Decisions 1     Al
 
 - The Inbox is one section. In Compact, `INBOX_DOCK` has only `inbox-list`; the reading pane section is not drawn. The user's Default dock layout is kept untouched for when they switch back.
 - A closed row is one line: unread dot, sender, title, time, plus a thread count for chats. The preview line and the flags line are dropped; flags show as small marks after the title.
-- **Selected and open are separate** (Naya's behaviour, `ConversationListModel.swift`). `state.selectedMessage` stays the focused row, and `ensureSelection` keeps picking one as today. A new `state.openMessage` is the row shown open. The Inbox loads with every row closed.
+- **Selected and open are separate** (the reference app's behaviour). `state.selectedMessage` stays the focused row, and `ensureSelection` keeps picking one as today. A new `state.openMessage` is the row shown open. The Inbox loads with every row closed.
 - Clicking a row selects and opens it; clicking it again, or Esc, closes it and leaves it selected. ↑/↓ and j/k move the selection only; ↵ opens the selected row. One row is open at a time.
 - After Done, Snooze or a lane move, the row leaves the list and nothing opens by itself; the next row becomes selected.
 - The open row shows, in order: the header actions that `reader()` has today, under one ⋯ except Done, Snooze and, on an unacknowledged critical message, Acknowledge (it stays a visible button so critical alerts are not weakened); the summary if there is one; the last messages of the thread (at most 260 px, scrolling, with "Earlier" to show all); then `replyForm` unchanged.

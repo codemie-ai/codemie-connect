@@ -7,14 +7,14 @@
 - the calm Meetings page, `2026-11-19-meetings-calm-design.md`: the list, the Needs you card, hidden meetings, the header and the run line.
 
 **Reference (read-only):**
-- Naya's meeting panel: `NayaApp/MeetingsWindow.swift` (`MeetingPanelView`), `NayaCore/Meetings/MeetingPanel.swift` (panes, the primary, the ⋯ items), `MeetingActionsModel.swift` and `NayaApp/Meetings/ActionItemsPanel.swift` (the action items column);
-- the mockup `naya.ai/docs/superpowers/specs/mockups/meetings-v4.html`.
+- the reference app's meeting panel (panes, the primary, the ⋯ items, and the action items column);
+- the reference app's meetings mockup.
 
 ## Intent
 
 A meeting in Connect opens on four page sections: Notes, Transcript, Tasks and Files. Its documents sit behind a picker with versions, Side by side and a toolbar. The person has to choose a tab before reading anything, and the Tasks tab holds the action items far from the summary they came from.
 
-Naya opens a meeting on what the person came for. It shows the summary first, with tabs for the summaries they use (Formal, Informal). The action items sit in a column beside it, with "Add N to Todoist" and the person's own items ticked. Transcript and notes wait behind ⋯, and "← Back to summary" returns. The user wants Connect to open meetings this way in both views. It must build on Connect's template processing and automatic rules, and keep every tool the page has today.
+The reference app opens a meeting on what the person came for. It shows the summary first, with tabs for the summaries they use (Formal, Informal). The action items sit in a column beside it, with "Add N to Todoist" and the person's own items ticked. Transcript and notes wait behind ⋯, and "← Back to summary" returns. The user wants Connect to open meetings this way in both views. It must build on Connect's template processing and automatic rules, and keep every tool the page has today.
 
 ## Goals
 
@@ -34,7 +34,7 @@ Naya opens a meeting on what the person came for. It shows the summary first, wi
 - The task provider and Todoist, which are step 4. This step writes local tasks behind one swappable target.
 - The Podervianskyi plugin itself.
 - Changing the meetings list, the Needs you card, hiding, the calendar's event card, Today's "From your meetings" card or the Make notes and Import dialogs.
-- Naya's recording, rename, "Hear it" player and speaker-naming chips. Connect names speakers in the Transcript pane, as today.
+- The reference app's recording, rename, "Hear it" player and speaker-naming chips. Connect names speakers in the Transcript pane, as today.
 
 ## Anti-goals
 
@@ -52,7 +52,7 @@ Naya opens a meeting on what the person came for. It shows the summary first, wi
 |---|---|---|
 | **A. One meeting section with panes.** The Meetings page keeps two page sections, the list and the meeting. The meeting section draws the header, the strip, the current pane (summary, Transcript, Notes, Files) and the action items column. The existing tab bodies become the panes. | The meeting's panes can no longer be dragged into separate sections ("Notes beside Transcript"). Stored layouts move to a new key. | **Chosen** |
 | B. Keep the four sections and add a fifth "Summary" section and a sixth "Action items" section. | Least change, but it keeps the tab-first page the decision replaces. Transcript and Notes stay as visible sections instead of going behind ⋯. | Rejected: contradicts the decision |
-| C. The Naya layout in Compact only; Default keeps the sections. | Faithful in Compact, but two meeting pages to keep in step. The user asked for both views. | Rejected: views diverge |
+| C. The reference app's layout in Compact only; Default keeps the sections. | Faithful in Compact, but two meeting pages to keep in step. The user asked for both views. | Rejected: views diverge |
 
 ## Design
 
@@ -321,12 +321,12 @@ Each change saves at once through `mutate('settings_update', { meetings: { … }
 10. **"Add N to Tasks" accepts the ticked To review tasks** (review → todo) through an injected `taskTarget` (`label`, `add`, `undo`). Own tasks with a sure owner are pre-ticked. Undo moves only that add's rows back to review. *Why:* it reuses the existing tasks code and gives step 4 one object to swap.
 11. **`#/meetings/<id>/<pane>` takes summary, transcript, notes, files or tasks.** Old links open what they showed before (`/notes` the Notes pane, `/tasks` the column). A link without a pane, and every open from inside Connect, uses "Open a meeting on". *Why:* no old link breaks, and the setting decides everywhere else.
 12. **The Meetings page keeps two sections, the list and the meeting.** The panes are no longer separate sections, so "Notes beside Transcript" goes. The layout moves to the v2 key, keeping the list's width and folded state. *Why:* panes behind ⋯ cannot also be movable sections. Side by side for documents stays in Notes.
-13. **The header's people line is Naya's "with Jeroen V. and Anouk D."** (up to three names, else "with 6 people"). It opens today's people popover with talking share and tasks, and the faces go. *Why:* one calm line, and the talking share keeps a single home.
+13. **The header's people line is the reference app's "with Jeroen V. and Anouk D."** (up to three names, else "with 6 people"). It opens today's people popover with talking share and tasks, and the faces go. *Why:* one calm line, and the talking share keeps a single home.
 14. **The column sits beside every pane at a meeting width of 760 px or more, and below the pane when narrower.** *Why:* at 1000 px with the list open, three columns do not fit, and nothing may clip.
 15. **A plugin's `call.minutes` can be a pinned tab (`plugin:<id>`), drawn as escaped Markdown with Copy.** The shim keeps line breaks in minutes, up to 20,000 characters an item. The run line keeps one line per plugin. *Why:* the Podervianskyi Informal summary can arrive as a marketplace plugin with no new plumbing, and the window still never shows plugin HTML.
-16. **The ⋯ moves from the header to the strip, and "Review N tasks" shows only with the column off.** *Why:* Naya's strip, where the one primary and ⋯ sit together, keeps at most two visible controls beside the tabs.
+16. **The ⋯ moves from the header to the strip, and "Review N tasks" shows only with the column off.** *Why:* the reference app's strip, where the one primary and ⋯ sit together, keeps at most two visible controls beside the tabs.
 17. **The three settings are app-wide, in native `MeetingSettings`.** *Why:* they sit with the other meeting settings, and like `view` they are not per workspace.
-18. **Esc in a pane returns to the summary.** *Why:* the keyboard way back that Naya's "← Back to summary" implies.
+18. **Esc in a pane returns to the summary.** *Why:* the keyboard way back that the reference app's "← Back to summary" implies.
 
 ## Left to the builder
 

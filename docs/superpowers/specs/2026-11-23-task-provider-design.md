@@ -8,16 +8,16 @@
 - step 0, the `codemie-ai/codemie-connect-marketplace` repository (built-in marketplace `codemie`, empty `plugins/`).
 
 **Reference (read-only):**
-- Naya's Todoist behaviour: `naya.ai/plugin/scripts/lib/todoist.mjs` (API v1, the key and source marker lines, the key ledger, 429 handling, close / reopen / delete), `tasks.mjs` (the tasks plug-in facade and its `TASK_SCHEMA`: `id, nayaKey, content, description, due, kind ∈ reply|budget|client|waiting|task, sourceUrl, url, priority, closed`), `meeting-tasks.mjs`, `plugin/skills/followup/SKILL.md` (labels, absolute dates from the source date, "looks handled", closing only on the user's say-so, or when they replied themselves);
-- Naya's Tasks page: `macos/NayaCompanion/Sources/NayaApp/Tasks/TasksView.swift`, `CheckInRowView.swift`, the mockup `naya.ai/docs/superpowers/specs/mockups/tasks-v1.html`.
+- the reference app's Todoist behaviour (API v1, the key and source marker lines, the key ledger, 429 handling, close / reopen / delete; the tasks facade and its task schema: `id, key, content, description, due, kind ∈ reply|budget|client|waiting|task, sourceUrl, url, priority, closed`; meeting-found tasks; and the follow-up rules: labels, absolute dates from the source date, "looks handled", closing only on the user's say-so, or when they replied themselves);
+- the reference app's Tasks page and its mockup.
 
 ## Intent
 
-Connect keeps tasks on its own board (`commitment` records, `src-tauri/src/workspace/tasks.rs`). The user keeps their real task list in Todoist and wants Connect to use it, the way Naya does, without losing what Connect does well: tasks found in meeting notes, tasks from Inbox messages, the 09:00 reminder, and automations that make tasks with the window closed.
+Connect keeps tasks on its own board (`commitment` records, `src-tauri/src/workspace/tasks.rs`). The user keeps their real task list in Todoist and wants Connect to use it, the way the reference app does, without losing what Connect does well: tasks found in meeting notes, tasks from Inbox messages, the 09:00 reminder, and automations that make tasks with the window closed.
 
 This step makes the task store pluggable. One provider is active at a time. The built-in **Connect** provider (Local) is the default. Turning on a provider plugin makes it the place every task lives: the Tasks page, Today's Tasks widget, every "add a task" in Connect, and the meeting column's "Add N to …". Turning it off brings Local back. Connect keeps a local copy of the provider's tasks as a cache and an outbox, so nothing is lost while offline or while Todoist is down, and the core can talk to the provider through the QuickJS plugin host with the window closed.
 
-The first provider is a Todoist plugin in the Connect marketplace. It works the way Naya uses Todoist: the labels `reply`, `waiting`, the app label and the reserved `budget`; a key line and a source link at the end of the description, so reruns make nothing new; absolute due dates. With Todoist on, the Tasks page shows Naya's date layout: Late, Today, Later (Next 7 days, No date, Later than that), "Check with <name>" rows for waiting tasks, and a "Looks handled" flag.
+The first provider is a Todoist plugin in the Connect marketplace. It works the way the reference app uses Todoist: the labels `reply`, `waiting`, the app label and the reserved `budget`; a key line and a source link at the end of the description, so reruns make nothing new; absolute due dates. With Todoist on, the Tasks page shows the reference app's date layout: Late, Today, Later (Next 7 days, No date, Later than that), "Check with <name>" rows for waiting tasks, and a "Looks handled" flag.
 
 ## Goals
 
@@ -26,15 +26,15 @@ The first provider is a Todoist plugin in the Connect marketplace. It works the 
 - **Cache and outbox.** Every change is saved locally first and queued for the provider. A write in Connect never fails because the provider is unreachable. The outbox replays in order when the provider comes back.
 - **No duplicates.** Every task carries a stable key from its source. The key is written into the provider's task and remembered in a ledger, so a retry, a rerun or a crash between "sent" and "acknowledged" never makes a second task.
 - **The Todoist plugin** in `codemie-connect-marketplace`, network limited to `api.todoist.com`, the token a plugin secret the user types into Connect, tested against a fake Todoist.
-- **Naya's Tasks page** for a provider: Late (move all to Tomorrow or Monday, done all), Today, Later folded, "Check with <name>" rows with Nudge / Done / Snooze, "Looks handled" with Done / Keep open.
+- **The reference app's Tasks page** for a provider: Late (move all to Tomorrow or Monday, done all), Today, Later folded, "Check with <name>" rows with Nudge / Done / Snooze, "Looks handled" with Done / Keep open.
 - **Switching is safe.** Local → Todoist offers once to copy the open local tasks. Switching away never deletes anything, in Connect or in Todoist.
 - **Compact and Default** draw the same markup. Compact differs only through the step-1 tokens.
 
 ## Non-goals
 
 - Obsidian and OneNote providers. They are later plugins on the same contract.
-- Step 5's create-tasks delivery, the Naya automation templates and making `@budget` tasks. This step reserves the label and gives step 5 one native call to make a task by key.
-- Naya's People page, its "Chase" fold, AI-drafted nudges (✦) and the reply sweep's per-thread done marks.
+- Step 5's create-tasks delivery, the reference-app automation templates and making `@budget` tasks. This step reserves the label and gives step 5 one native call to make a task by key.
+- The reference app's People page, its "Chase" fold, AI-drafted nudges (✦) and the reply sweep's per-thread done marks.
 - Editing Todoist's priorities, sub-task trees, comments, recurrence rules or other projects. Connect reads one project and preserves what it doesn't own.
 - More than one active provider, or Local and Todoist side by side.
 - The real-desktop GUI pass and the live check with the user's own token. Both happen at the end of the rollout, by the user.
@@ -70,7 +70,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 |---|---|
 | `provider` | absent for Local; `"plugin:<id>"` for a provider's task. Set on creation from the active provider. |
 | `key` | 16 hex characters, set once on creation (§3), never changed, never shown. |
-| `kind` | `task` (absent reads as `task`), `reply`, `waiting` or `budget`: Naya's `TASK_SCHEMA` kinds minus `client`. |
+| `kind` | `task` (absent reads as `task`), `reply`, `waiting` or `budget`: the reference app's task-schema kinds minus `client`. |
 | `remote` | provider tasks only: `{id, url, labels, updatedAt, base, syncedAt}`. `base` is the provider's last-seen `{text, notes, due, done, kind, owner}` for the merge (§4). `labels` keeps labels Connect doesn't own. |
 | `pending` | `true` while an outbox entry for it waits. |
 | `syncError` | the sentence of a parked entry (§4), else null. |
@@ -97,7 +97,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 
 ### 3. Keys and the ledger
 
-- **The key** is `sha1("<source>#<normalized text>")`, first 16 hex characters, with Naya's normalization (`commitmentKey`: NFKC, lower case, letters, digits and `#` kept, spaces collapsed). `<source>` is:
+- **The key** is `sha1("<source>#<normalized text>")`, first 16 hex characters, with the reference app's normalization (`commitmentKey`: NFKC, lower case, letters, digits and `#` kept, spaces collapsed). `<source>` is:
   - `meeting:<meetingId>:<line>` for a task found in notes;
   - `message:<sourceId>` for a task from an Inbox message;
   - `manual:<task id>` for a task typed by hand (the id is the operation id, so a retried add has the same key);
@@ -187,7 +187,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 ```json
 { "id": "todoist", "name": "Todoist", "version": "1.0.0", "engine": ">=1.0", "requires": ["tasks_provider"],
   "provides": ["tasks"], "main": "main.js", "icon": "icon.svg",
-  "summary": "Keeps Connect's tasks in your Todoist: one project, Naya's labels, no duplicates",
+  "summary": "Keeps Connect's tasks in your Todoist: one project, the reference app's labels, no duplicates",
   "uses": {"network": {"hosts": ["api.todoist.com"]}},
   "settings": [
     {"key": "token", "label": "API token", "type": "secret", "help": "Todoist › Settings › Integrations › Developer"},
@@ -203,14 +203,14 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
   - `create`: the key lookup over the open tasks, then `POST /tasks`.
   - `update`: `POST /tasks/{id}`. `complete`: `POST /tasks/{id}/close` or `/reopen`. `remove`: `DELETE /tasks/{id}`.
 - **What a task looks like in Todoist:**
-  - **content** is the task's text. A waiting task reads `<First name>: <text>` (Naya's form); the prefix is removed again on reading when it matches the owner line.
+  - **content** is the task's text. A waiting task reads `<First name>: <text>` (the reference app's form); the prefix is removed again on reading when it matches the owner line.
   - **description**: the notes (with the quote and who said it), then a blank line, then Connect's marker lines, last, one per line:
     - `key: <key>` (always);
     - `source: <https link>` (a message's web link; never a Teams meeting join link);
     - `meeting: <meeting id>`;
     - `owner: <Name> <address>` (someone else's task only).
 
-    Any line of user text that looks like a marker (any case, Markdown-decorated, as Naya's `MARKER_LINE`) is dropped before writing, so text can't plant a key or a link. On reading, the last line of each marker wins.
+    Any line of user text that looks like a marker (any case, Markdown-decorated, as the reference app's `MARKER_LINE`) is dropped before writing, so text can't plant a key or a link. On reading, the last line of each marker wins.
   - **labels**: the app label (setting, default `connect`) on every task Connect makes; `reply`, `waiting`, `budget` by kind; labels Connect doesn't own are kept on every update.
   - **due**: `due_date` `YYYY-MM-DD` only. Connect resolves every date to an absolute day before it is saved (from the source date for found tasks), so the plugin refuses anything else. `null` clears with `due_string: "no date"`. A recurring task's due string is never sent back: Connect sends `due_date` only when the user changed the date.
   - **Owner**: the user's own task has no `waiting` label. Someone else's has `waiting`, the content prefix and the `owner:` line. "Nobody named" goes as the user's own.
@@ -393,21 +393,21 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
    - owner Me → plain task; someone else → `waiting` label, "<First>: " content prefix and an `owner:` line; Nobody → plain;
    - lanes: To review and Dismissed stay in Connect; To do and In progress → open; Waiting → `waiting`; Done → closed;
    - meeting → a `meeting:` line; quote → the description text; due → `due_date` only.
-   *Why:* Naya's form, readable in Todoist's own app, and fully re-readable by Connect.
+   *Why:* the reference app's form, readable in Todoist's own app, and fully re-readable by Connect.
 6. **With a provider, the Tasks page is "By date | List", By date first, and Board is hidden.** Local keeps Board first and gains By date as a third view. *Why:* Todoist has no lanes, and Local loses nothing.
-7. **Later folds: Next 7 days, No date, and Later than that** (Naya has the third). Folds are closed by default and drawn only with rows. *Why:* nothing due in three weeks is left out, and it matches Naya.
+7. **Later folds: Next 7 days, No date, and Later than that** (the reference app has the third). Folds are closed by default and drawn only with rows. *Why:* nothing due in three weeks is left out, and it matches the reference app.
 8. **The meeting column's Undo removes the Todoist task.** Before it was sent, the create is just dropped. After, it is a delete (not a close), the task returns to review, and its key is marked withdrawn so a later add works. *Why:* a closed task would sit in Todoist's completed list as if done.
-9. **Idempotent keys:** Naya's normalized sha1 of `<source>#<text>`, 16 hex. The key is written as a `key:` line at the end of the description, with the `source:`, `meeting:` and `owner:` lines. A per-provider ledger remembers every key, and `create` adopts an open task with the same key before making one. *Why:* reruns, retries and crashes make nothing new, as in Naya.
-10. **Rate limits:** Connect's own budget is 4 requests a second and 300 per 15 minutes, with full pulls only on the first sync, a switch or Check. *Why:* a wide margin under Todoist's per-user limits, shared with Naya while both run.
+9. **Idempotent keys:** the reference app's normalized sha1 of `<source>#<text>`, 16 hex. The key is written as a `key:` line at the end of the description, with the `source:`, `meeting:` and `owner:` lines. A per-provider ledger remembers every key, and `create` adopts an open task with the same key before making one. *Why:* reruns, retries and crashes make nothing new, as in the reference app.
+10. **Rate limits:** Connect's own budget is 4 requests a second and 300 per 15 minutes, with full pulls only on the first sync, a switch or Check. *Why:* a wide margin under Todoist's per-user limits, shared with the reference app while both run.
 11. **Offline outbox replay order:**
     - oldest first; one task's entries in order, waiting for its create;
     - updates coalesced;
     - a content refusal parks only that entry (with Try again or Discard), while offline, rate limits and a rejected token pause the queue in place.
     *Why:* nothing is lost or reordered, and one bad task never blocks the rest.
-12. **Todoist layout: one project, default "Connect", made once if missing, and no sections.** The proposed sections Reply / Waiting / Meetings are ruled out: the labels already say the kind, and a section per kind would put it in two places. The project name is a setting, so the user can point Connect at the project Naya uses during the switch-over. *Why:* the simplest layout that reads the same in Naya, Connect and Todoist.
+12. **Todoist layout: one project, default "Connect", made once if missing, and no sections.** The proposed sections Reply / Waiting / Meetings are ruled out: the labels already say the kind, and a section per kind would put it in two places. The project name is a setting, so the user can point Connect at the project the reference app uses during the switch-over. *Why:* the simplest layout that reads the same in the reference app, Connect and Todoist.
 13. **Labels:** `reply`, `waiting`, `budget` (reserved for step 5), and the app label `connect` (a setting) on every task Connect makes. Connect lists every open task of the project, whatever its labels, and keeps labels it doesn't own. *Why:* tasks the user adds in Todoist show in Connect too.
 14. **The role is `"provides": ["tasks"]` plus `"requires": ["tasks_provider"]`.** The ops are `status`, `list`, `changedSince`, `create`, `update`, `complete` and `remove`, registered with `ctx.tasks.provide`. `status` and `remove` are added to the five named: Check needs one, and Undo needs the other. *Why:* older Connects and Echo refuse the plugin cleanly, and Obsidian or OneNote can follow the same seven ops.
-15. **"Looks handled" closes on its own only for a `reply` task the user answered themselves** in the same thread, with a history line. Every other evidence only flags it, with Done / Keep open. Step 5's automations write that evidence. *Why:* Naya's rule; Connect never decides a task is done for the user.
+15. **"Looks handled" closes on its own only for a `reply` task the user answered themselves** in the same thread, with a history line. Every other evidence only flags it, with Done / Keep open. Step 5's automations write that evidence. *Why:* the reference app's rule; Connect never decides a task is done for the user.
 16. **Switching:**
     - the first switch to a provider offers once to copy the open Local tasks, with a quiet link to do it later;
     - To review tasks move with the switch;
