@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
+import { meetingsViewChecks } from './meetings-view-checks.mjs';
 import { meetingSettingsChecks } from './meetings-settings-checks.mjs';
 import { layoutChecks } from './layout-checks.mjs';
 import { analyticsChecks } from './analytics-checks.mjs';
@@ -51,6 +52,44 @@ const server = createServer(async (req, res) => {
         'x-content-type-options': 'nosniff',
       });
       res.end(body);
+      return;
+    }
+    // meetings-view-checks.mjs V9: a mock plugin frame hook, beside the existing plugin mocks
+    // above. No synthetic frame actually declares `call.minutes` for this check, so the served
+    // copy of the real host.js is wrapped to answer `callSlots()`/`minutesPlugins()` from a plain
+    // page global, `window.__minutes = {pluginId, name, minutes}`, as if a plugin's frame had
+    // declared that slot. The real module on disk (and every other import of it, including the
+    // node:test suite) is untouched; only what this server hands the browser for this one path is.
+    if (path === 'plugins/host.js') {
+      const real = await readFile(join(UI, path), 'utf8');
+      const marker = 'export function createPluginHost(';
+      const at = real.indexOf(marker);
+      if (at < 0) throw new Error('createPluginHost not found in plugins/host.js');
+      const patched = `${real.slice(0, at)}function __realCreatePluginHost(${real.slice(at + marker.length)}
+export function createPluginHost(opts) {
+  const api = __realCreatePluginHost(opts);
+  const realCallSlots = api.callSlots;
+  const realMinutesPlugins = api.minutesPlugins;
+  const realSetCall = api.setCall;
+  // callSlots() only answers slots whose \`call\` names the meeting shown (view-meetings.js
+  // \`slotsOf\`): remember the latest one setCall() was given, so the injected slot can match it.
+  let lastCall = null;
+  api.setCall = next => { lastCall = next; return realSetCall ? realSetCall(next) : undefined; };
+  api.callSlots = () => {
+    const base = realCallSlots ? realCallSlots() : [];
+    const extra = typeof window === 'undefined' ? null : window.__minutes;
+    return extra && lastCall ? [...base, { plugin: extra.pluginId, pluginName: extra.name, call: lastCall.name, header: [], menu: [], minutes: extra.minutes || [] }] : base;
+  };
+  api.minutesPlugins = () => {
+    const base = realMinutesPlugins ? realMinutesPlugins() : [];
+    const extra = typeof window === 'undefined' ? null : window.__minutes;
+    return extra ? [...base, { id: extra.pluginId, name: extra.name }] : base;
+  };
+  return api;
+}
+`;
+      res.writeHead(200, { 'content-type': 'text/javascript' });
+      res.end(patched);
       return;
     }
     const body = await readFile(join(UI, path));
@@ -1316,12 +1355,13 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'compact') await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'reply') await replyChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'analytics') await analyticsChecks({ open, check, assert, shot, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, settled, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-view') await meetingsViewChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'layout') await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
@@ -3150,6 +3190,12 @@ for (const theme of ['dark', 'light']) {
 // Meetings (Task 4): the list and the meeting, the calendar's badges and event card, Today's card,
 // import, speakers, Make notes as soon as it arrives, Try again, a task's quote, ↑/↓.
 await meetingChecks({ open, check, assert, shot, settled, OUT });
+
+// Meetings view (Task 7, spec 2026-11-23-meetings-view-design.md), V1–V11: the one meeting
+// section in both views, both themes and three widths, panes and old links, the action items
+// column, pins that vanish, the stored v1 layout, a plugin's minutes rendered safely, Default/
+// Compact markup parity, and nothing sent or written without a click.
+await meetingsViewChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // Flexible layout (spec docs/superpowers/specs/2026-11-19-flexible-layout-design.md, E1–E8): Today
 // arranged by pen, mouse, touch and keys, saved layouts, page sections, the folding menus.
