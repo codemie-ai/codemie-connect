@@ -1241,6 +1241,30 @@ test('before a summary: No Short summary yet. and Make Short summary', () => {
   assert.match(busy, /class="ws-mtg-skeleton"/);
 });
 
+test('a failed meeting has one Try again, and it carries the failed run’s options', async () => {
+  const s = meetingsSnapshot();
+  s.jobs.push({ ...notesJob('mtg-critique', { templateId: 'meeting-notes', wishes: 'Only the decisions', findTasks: false }), state: 'failed' });
+  const detail = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-critique' })));
+  assert.equal((outsideMenus(detail).match(/<span>Try again<\/span>/g) || []).length, 1, 'one Try again');
+  assert.doesNotMatch(detail, /data-action="meeting-make-tab"/, 'not a Make with other options');
+  const tryAgain = stripOf(detail).match(/<button [^>]*data-action="meeting-retry"[^>]*>/)?.[0] || '';
+  assert.match(tryAgain, /data-id="mtg-critique"/);
+  const { ctl, calls } = meetingsHarness(s);
+  await ctl.handle('meeting-retry', { dataset: { id: 'mtg-critique' }, closest: () => null });
+  assert.deepEqual(calls.mutate.at(-1), ['meeting_notes', { meetingId: 'mtg-critique', templateId: 'meeting-notes', wishes: 'Only the decisions', findTasks: false, remember: false }]);
+});
+
+test('⋯ offers Make again only for a document whose template exists, with that template', () => {
+  const s = meetingsSnapshot();
+  const data = meetingData(s, 'mtg-philips');
+  data.docs = [...data.docs, { ...data.docs[0], id: 'old-notes', name: 'Old notes', template: undefined, file: 'old-notes.md' }];
+  const menu = view => meetingMenuOf(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', ...view }))), 'mtg-philips');
+  const old = menu({ summaryTab: { 'mtg-philips': 'doc:old-notes' } });
+  assert.doesNotMatch(old, /data-action="meeting-make-tab"|again \(new version\)/);
+  assert.match(old, /data-action="meeting-edit-tab" data-id="mtg-philips" data-doc="old-notes"/);
+  assert.match(menu({}), /data-action="meeting-make-tab" data-id="mtg-philips" data-template="meeting-notes"[^>]*>[^]*?Make “Meeting notes” again \(new version\)/);
+});
+
 test('an upcoming, blocked, pending or untranscribed meeting shows its explainer instead of its tabs', () => {
   const s = meetingsSnapshot();
   for (const [id, text, action] of [
@@ -1288,7 +1312,7 @@ test('the meeting asks only where something waits: Review with the column off, t
   }
   assert.match(stripOf(detail('mtg-roadmap')), /data-action="meeting-make-tab" data-id="mtg-roadmap"[^>]*data-template="meeting-notes"/, 'Make notes: the strip’s primary');
   assert.match(detail('mtg-sprint'), /data-action="meeting-check"/, 'Check now: the waiting card');
-  assert.match(detail('mtg-critique'), /data-action="meeting-retry"/, 'Try again: the failed run banner');
+  assert.match(stripOf(detail('mtg-critique')), /data-action="meeting-retry" data-id="mtg-critique"/, 'Try again: the strip’s primary');
   assert.match(detail('mtg-northwind'), /data-action="meeting-import"/, 'Import: the blocked card');
   assert.match(detail('mtg-vendor'), /ws-mtg-run-failed[^]*?data-action="meeting-download"/, 'Try again: the failed save banner');
   assert.doesNotMatch(outsideMenus(headOf(detail('mtg-roadmap'))), /Review/);
@@ -1362,9 +1386,13 @@ test('save and notes errors show apart: a failed Download again on saved notes, 
   // Downloaded, the same: visible on the meeting.
   meetingData(s, 'mtg-roadmap').saveError = { code: 'provider', message: 'Teams didn’t answer in time.' };
   assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-roadmap' }))), /Download again didn’t work[^]*?data-action="meeting-download" data-id="mtg-roadmap"/);
-  // A failed notes run: the notes banner, whose Try again makes the notes again.
+  // A failed notes run: the notes banner; one Try again, the strip's, makes the notes again.
   const critique = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-critique' })));
-  assert.match(critique, /The notes weren’t written[^]*?data-action="meeting-retry" data-id="mtg-critique"/);
+  assert.match(critique, /The notes weren’t written/);
+  assert.equal((critique.match(/data-action="meeting-(retry|make-tab)"/g) || []).length, 1, 'one Try again');
+  assert.match(stripOf(critique), /data-action="meeting-retry" data-id="mtg-critique"[^>]*>[^]*?Try again/);
+  // In the Notes pane, which has no primary, the banner keeps its own.
+  assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-critique', pane: 'notes' }))), /The notes weren’t written[^]*?data-action="meeting-retry" data-id="mtg-critique"/);
   assert.doesNotMatch(critique, /Download again didn’t work|Couldn’t get the transcript/);
   // An older record with one lastError reads as before: on a found transcript, the save's.
   const vendor = meetingData(s, 'mtg-vendor');

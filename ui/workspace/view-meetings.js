@@ -20,7 +20,7 @@ import { taskStatus } from './tasks-model.js';
 import { normalizeDock, paneOf } from './dock-model.js';
 import { renderDock } from './dock-view.js';
 import {
-  FILTERS, LEGEND, PANES, STATES, callOfMeeting, failedNotesJob, hasTranscript, inLane, isHidden, legendOf, listModel, listOrder, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, seriesOf, tasksByMeeting, transcriptsAllowed,
+  FILTERS, LEGEND, PANES, STATES, callOfMeeting, failedNotesJob, hasTranscript, inLane, isHidden, legendOf, listModel, listOrder, meetingCounts, meetingErrors, meetingItems, meetingRows, newMeetingsView, resolveTemplate, rulesOf, seriesOf, tasksByMeeting, templatesOf, transcriptsAllowed,
 } from './meetings-model.js';
 import { shownTab, stripPrimary, summaryTabs, withLine } from './meeting-view-model.js';
 import {
@@ -365,6 +365,8 @@ function meetingMenu(p, mc, tab, slots = []) {
   const has = hasTranscript(m);
   const pane = paneTo => ({ ...id, 'data-pane': paneTo });
   const doc = tab?.doc || null;
+  // Made again only with a template that still exists: a document without one has nothing to remake.
+  const again = doc && templatesOf(p.s).some(t => t.id === tab.templateId);
   // The document shown: the Notes pane's, else the summary tab's.
   const view = p.pane === 'notes' ? mc.docs.find(x => x.id === p.v.docView?.[m.id]) || mc.main : p.pane === 'summary' ? doc : null;
   // A plugin's ⋯ items for this meeting (`call.menu`), each run in its own page.
@@ -376,7 +378,7 @@ function meetingMenu(p, mc, tab, slots = []) {
       has && !p.columnOn ? ['Action items', 'meeting-pane', pane('tasks'), 'tasks'] : null,
     ],
     [
-      doc ? [`Make “${tab.label}” again (new version)`, 'meeting-make-tab', { ...id, 'data-template': tab.templateId }, 'refresh'] : null,
+      again ? [`Make “${tab.label}” again (new version)`, 'meeting-make-tab', { ...id, 'data-template': tab.templateId }, 'refresh'] : null,
       doc ? [`Edit “${tab.label}”…`, 'meeting-edit-tab', { ...id, 'data-doc': doc.id }, 'edit'] : null,
       doc ? ['Save a copy (.md)', 'doc-save', { ...id, 'data-doc': doc.id }, 'download'] : null,
       ['available', 'downloaded', 'ready', 'failed'].includes(m.state) ? ['Make notes with…', 'meeting-make-notes', id, 'sparkles'] : null,
@@ -421,16 +423,24 @@ export function meetingHeader(p, m, mc = meetingContext(p, m)) {
 const PANE_NAMES = { transcript: 'Transcript', notes: 'Notes', files: 'Files', tasks: 'Action items' };
 const paneId = m => `mtg-pane-${m.id}`;
 
-/** The strip's one primary (spec "The primary in the summary"): Copy, Make <name>, Try again, or
- *  the words "Writing <name>…" in its place. */
-function primary(p, mc, tab) {
+/** The strip's one primary for the tab shown (spec "The primary in the summary"; meeting-view-model.js
+ *  `stripPrimary`), before a transcript none. */
+function primaryOf(p, mc, tab) {
   const { m } = mc;
+  if (!hasTranscript(m)) return { kind: 'none', label: '' };
   const run = m.run?.kind === 'meeting_notes' ? m.run : null;
   const failed = mc.notesError && !run ? failedNotesJob(p.s, m.id)?.payload?.templateId || mc.tpl.id : null;
-  const it = stripPrimary(mc, tab, { pane: p.pane, runningTemplateId: run?.templateId || null, failedTemplateId: failed });
+  return stripPrimary(mc, tab, { pane: p.pane, runningTemplateId: run?.templateId || null, failedTemplateId: failed });
+}
+
+/** The primary drawn: Copy, Make <name>, Try again (the failed run again, with its options), or
+ *  the words "Writing <name>…" in its place. */
+function primary(p, mc, tab, it) {
+  const { m } = mc;
   const attrs = { 'data-id': m.id, 'data-key': tab?.key };
   if (it.kind === 'copy') return button(p.v.copied === `${m.id}:${tab.key}` ? 'Copied' : 'Copy', { action: 'meeting-copy-tab', iconName: 'copy', size: 'sm', attrs });
-  if (it.kind === 'make' || it.kind === 'retry') return button(it.label, { action: 'meeting-make-tab', variant: 'primary', iconName: it.kind === 'retry' ? 'refresh' : 'sparkles', size: 'sm', attrs: { ...attrs, 'data-template': tab.templateId } });
+  if (it.kind === 'retry') return button(it.label, { action: 'meeting-retry', variant: 'primary', iconName: 'refresh', size: 'sm', attrs: { 'data-id': m.id } });
+  if (it.kind === 'make') return button(it.label, { action: 'meeting-make-tab', variant: 'primary', iconName: 'sparkles', size: 'sm', attrs: { ...attrs, 'data-template': tab.templateId } });
   if (it.kind === 'writing') return `<span class="ws-mtg-writing">${e(it.label)}</span>`;
   return '';
 }
@@ -438,7 +448,7 @@ function primary(p, mc, tab) {
 /** The strip under the header (spec "The strip"): in the summary, the summary tabs (four, the rest
  *  under More ▾); in another pane, "← Back to summary" and the pane's name; then the primary and
  *  ⋯. Before a transcript, ⋯ alone. */
-function strip(p, mc, { tabs, more, tab }, slots) {
+function strip(p, mc, { tabs, more, tab, it }, slots) {
   const { m } = mc;
   const has = hasTranscript(m);
   const tabButton = t => `<button type="button" class="ws-mtg-tab" role="tab" data-action="meeting-summary-tab" data-id="${e(m.id)}" data-key="${e(t.key)}" aria-selected="${t === tab}" aria-controls="${e(paneId(m))}" tabindex="${t === tab ? 0 : -1}">${e(t.label)}</button>`;
@@ -446,16 +456,17 @@ function strip(p, mc, { tabs, more, tab }, slots) {
   const left = !has ? ''
     : p.pane === 'summary' ? `<div class="ws-mtg-tabs" role="tablist" aria-label="Summaries">${tabs.map(tabButton).join('')}${moreMenu}</div>`
       : `<button type="button" class="ws-mtg-back" data-action="meeting-back" data-id="${e(m.id)}">← Back to summary</button><span class="ws-mtg-pane-name">${e(PANE_NAMES[p.pane])}</span>`;
-  return `<div class="ws-mtg-strip">${left}<span class="ws-spacer"></span>${has ? primary(p, mc, tab) : ''}${meetingMenu(p, mc, tab, slots)}</div>`;
+  return `<div class="ws-mtg-strip">${left}<span class="ws-spacer"></span>${primary(p, mc, tab, it)}${meetingMenu(p, mc, tab, slots)}</div>`;
 }
 
 const PANE_BODIES = { transcript: transcriptTab, notes: notesTab, tasks: tasksTab, files: filesTab };
 
 /** The pane's body: the summary tab shown, or the pane behind ⋯; before a transcript, why there
  *  is none, with the meeting's tasks and Add a task. */
-function paneBody(p, mc, pane, tab) {
+function paneBody(p, mc, pane, tab, it) {
   if (!hasTranscript(mc.m)) return `<div class="ws-mtg-panel-alone">${explainer(p, mc)}${tasksTab(p, mc, { alone: true })}</div>`;
-  return pane === 'summary' ? summaryPane(p, mc, tab) : PANE_BODIES[pane](p, mc);
+  // The strip's Try again is the failed run's: the banner then says why without its own.
+  return pane === 'summary' ? summaryPane(p, mc, tab, { retry: it.kind !== 'retry' }) : PANE_BODIES[pane](p, mc);
 }
 
 /** The meeting's section (spec "The meeting section"): the banners, the header, the strip, then
@@ -465,9 +476,10 @@ function meetingSection(p, m, mc) {
   const slots = slotsOf(p, m);
   const { tabs, more } = summaryTabs(p.s, mc, { slots, plugins: p.plugins });
   const tab = shownTab(tabs, more, p.v.summaryTab?.[m.id]);
+  const it = primaryOf(p, mc, tab);
   const summary = p.pane === 'summary' && hasTranscript(m);
   const labelled = summary && tab ? ` aria-label="${e(tab.label)}"` : ` aria-label="${e(PANE_NAMES[p.pane] || 'Summary')}"`;
-  return `<section class="ws-mtg-meeting-section" data-meeting="${e(m.id)}" data-pane="${e(p.pane)}">${p.banners}${meetingHeader(p, m, mc)}${strip(p, mc, { tabs, more, tab }, slots)}<div class="ws-mtg-body"><div class="ws-mtg-pane ws-mtg-detail" role="tabpanel" id="${e(paneId(m))}"${labelled} data-meeting="${e(m.id)}" data-panel="${e(p.pane)}">${paneBody(p, mc, p.pane, tab)}</div></div></section>`;
+  return `<section class="ws-mtg-meeting-section" data-meeting="${e(m.id)}" data-pane="${e(p.pane)}">${p.banners}${meetingHeader(p, m, mc)}${strip(p, mc, { tabs, more, tab, it }, slots)}<div class="ws-mtg-body"><div class="ws-mtg-pane ws-mtg-detail" role="tabpanel" id="${e(paneId(m))}"${labelled} data-meeting="${e(m.id)}" data-panel="${e(p.pane)}">${paneBody(p, mc, p.pane, tab, it)}</div></div></section>`;
 }
 
 function emptyDetail(s) {

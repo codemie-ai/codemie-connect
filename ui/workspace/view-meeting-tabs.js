@@ -325,12 +325,13 @@ export function noSummaryCard(p, mc, tab) {
 /** The summary pane (spec "The summary pane"): the failure banners, then the shown tab's document
  *  as a page with who made it under it; a plugin's minutes as escaped Markdown; or, before the
  *  document, the skeleton while a run makes it, else "No <name> yet.". */
-export function summaryPane(p, mc, tab) {
+export function summaryPane(p, mc, tab, { retry = true } = {}) {
   const { m, run } = mc;
   const notesRun = run?.kind === 'meeting_notes' ? run : null;
   const saving = run?.kind === 'transcript_download';
-  // As in the Notes pane: a save's failure and a notes run's, each with its own way on.
-  const failedBanner = `${saving || notesRun ? '' : saveBanner(mc)}${!notesRun && mc.notesError && ['failed', 'ready'].includes(m.state) ? lastRunBanner(mc) : ''}`;
+  // As in the Notes pane: a save's failure and a notes run's, each with its own way on (`retry`:
+  // false when the strip's primary is that Try again).
+  const failedBanner = `${saving || notesRun ? '' : saveBanner(mc)}${!notesRun && mc.notesError && ['failed', 'ready'].includes(m.state) ? lastRunBanner(mc, { retry }) : ''}`;
   let body;
   if (tab?.doc) {
     const { foot } = docParts(p, mc, tab.doc, { compare: true, side: 'summary' });
@@ -376,12 +377,13 @@ function saveBanner(mc) {
   return `<div class="ws-banner ws-banner-warning ws-mtg-run-failed" role="status">${icon('alert')}<div><strong>${e(title)}</strong><p>${[err.message || '', next, after].filter(Boolean).map(e).join(' ')}</p></div><div class="ws-actions">${saveFix(mc, err.code)}</div></div>`;
 }
 
-/** The last notes run failed: why, and the way on (sign in again, Try again). */
-function lastRunBanner(mc) {
+/** The last notes run failed: why, and the way on (sign in again, Try again; `retry` false when
+ *  the strip already offers Try again). */
+function lastRunBanner(mc, { retry = true } = {}) {
   const err = mc.notesError || {};
   const login = err.code === 'needs_login';
   const choice = err.code === 'needs_choice';
-  return `<div class="ws-banner ws-banner-warning ws-mtg-run-failed" role="status">${icon('alert')}<div><strong>${mc.docs.length ? 'The last notes run didn’t finish' : 'The notes weren’t written'}</strong><p>${e(err.message || 'Claude stopped before the notes were ready.')} ${mc.docs.length ? 'Your documents are as they were.' : 'Nothing was lost — the transcript is in the folder, and the run log is in Files.'}</p></div><div class="ws-actions">${login || choice ? button(login ? 'Sign in again' : 'Choose Claude', { action: 'ai-open-settings', variant: 'ghost' }) : ''}${button('Try again', { action: 'meeting-retry', variant: 'primary', iconName: 'refresh', attrs: { 'data-id': mc.m.id } })}</div></div>`;
+  return `<div class="ws-banner ws-banner-warning ws-mtg-run-failed" role="status">${icon('alert')}<div><strong>${mc.docs.length ? 'The last notes run didn’t finish' : 'The notes weren’t written'}</strong><p>${e(err.message || 'Claude stopped before the notes were ready.')} ${mc.docs.length ? 'Your documents are as they were.' : 'Nothing was lost — the transcript is in the folder, and the run log is in Files.'}</p></div><div class="ws-actions">${login || choice ? button(login ? 'Sign in again' : 'Choose Claude', { action: 'ai-open-settings', variant: 'ghost' }) : ''}${retry ? button('Try again', { action: 'meeting-retry', variant: 'primary', iconName: 'refresh', attrs: { 'data-id': mc.m.id } }) : ''}</div></div>`;
 }
 
 /** What fixes a missing meeting folder: download it again from Teams, or import it again. */
