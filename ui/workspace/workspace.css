@@ -2832,6 +2832,13 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-ms-naming strong{font-size:var(--ws-fs-body-sm)}
 .ws-ms-naming p{font-size:var(--ws-fs-body-sm);line-height:20px;color:var(--ws-muted);margin-top:2px}
 .ws-ms-naming em{font-style:normal;color:var(--ws-text);font-weight:600}
+/* "When you open a meeting" */
+.ws-ms-pins-block{display:grid;gap:8px;padding-top:4px}
+.ws-ms-pins-block>.ws-field-hint{margin:0}
+.ws-ms-pins{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.ws-ms-pins li{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--ws-border);border-radius:10px;background:var(--ws-card-2)}
+.ws-ms-pins .ws-ms-pin-name{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600;font-size:var(--ws-fs-body-sm)}
+.ws-ms-pins .ws-actions{flex-wrap:nowrap}
 .ws-ms-group-title{display:flex;align-items:baseline;gap:8px;margin:22px 0 10px;font-size:var(--ws-fs-secondary);font-weight:600;color:var(--ws-muted);text-transform:uppercase;letter-spacing:.5px}
 .ws-ms-group-title small{font-size:var(--ws-fs-meta);color:var(--ws-faint)}
 .ws-ms-tpl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:12px}

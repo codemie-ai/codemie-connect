@@ -23,7 +23,7 @@ const control = (dataset = {}, extra = {}) => ({ dataset, closest: () => null, .
 
 /** A controller over fakes. `answers` maps an op to what it returns (a function of the data, a
  *  value, or an error to throw); `later` timers run only when the test says so. */
-function harness({ s = snapshot(), answers = {}, view = {}, tab = 'meetings-templates', transcriptsOn } = {}) {
+function harness({ s = snapshot(), answers = {}, view = {}, tab = 'meetings-templates', transcriptsOn, plugins = [] } = {}) {
   const calls = { mutate: [], save: [], query: [], render: 0, patches: [], toasts: [], modals: [], routes: [], focus: [], timers: [], copied: [], opened: [], made: [], inserted: [] };
   const state = { route: 'settings', settingsTab: tab, meetingsSettings: { ...newMeetingsSettingsView(), ...view } };
   const answer = (op, data) => {
@@ -55,9 +55,10 @@ function harness({ s = snapshot(), answers = {}, view = {}, tab = 'meetings-temp
     later: fn => { calls.timers.push(fn); return calls.timers.length; },
     cancel: handle => { calls.timers[handle - 1] = null; },
     now: () => NOW,
+    plugins: () => plugins,
   });
   const v = () => state.meetingsSettings;
-  const panel = (t = state.settingsTab) => meetingsSettingsPanel(t, s, { v: v(), auth: {}, now: NOW });
+  const panel = (t = state.settingsTab) => meetingsSettingsPanel(t, s, { v: v(), auth: {}, now: NOW, plugins });
   const runTimers = async () => {
     const due = calls.timers.splice(0).filter(Boolean);
     for (const fn of due) await fn();
@@ -116,6 +117,91 @@ test('folder preview uses the chosen pattern for three sample meetings', () => {
     assert.deepEqual(names, samples.map(m => `${folderName(m.start, m.title, pattern, 'UTC')}/`));
     assert.match(html, new RegExp(`name="folderPattern" value="${pattern}"[^>]* checked`));
   }
+});
+
+test('the open-a-meeting card: three choices, the switch, pins in order with move and unpin', () => {
+  const s = snapshot();
+  s.settings.meetings.openOn = 'transcript';
+  s.settings.meetings.actionItems = false;
+  s.settings.meetings.summaryTabs = ['short-summary', 'meeting-notes'];
+  const html = meetingsSettingsPanel('meetings-templates', s, { v: newMeetingsSettingsView(), auth: {}, now: NOW });
+  assert.match(html, /When you open a meeting/);
+  assert.match(html, /<div class="ws-segmented" role="group" aria-label="Open a meeting on">/);
+  for (const [val, pressed] of [['summary', 'false'], ['transcript', 'true'], ['notes', 'false']]) {
+    assert.match(html, new RegExp(`data-action="meetings-settings-open-on" data-v="${val}" aria-pressed="${pressed}"`), val);
+  }
+  // The switch: off, since actionItems is false.
+  assert.match(html, /<input[^>]*data-action="meetings-settings-set"[^>]*data-key="actionItems"[^>]*>/);
+  assert.doesNotMatch(html.match(/<input[^>]*data-key="actionItems"[^>]*>/)[0], /checked/);
+  // Pins, in order, each with Move up / Move down and Unpin.
+  const order = [...html.matchAll(/<li data-pin="([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual(order, ['short-summary', 'meeting-notes']);
+  assert.match(html, /data-action="meetings-settings-pin-move" title="Move up" aria-label="Move up" disabled data-pin="short-summary" data-d="-1"/, 'Move up disabled on the first');
+  assert.match(html, /data-action="meetings-settings-pin-move" title="Move down" aria-label="Move down" disabled data-pin="meeting-notes" data-d="1"/, 'Move down disabled on the last');
+  assert.doesNotMatch(html, /data-action="meetings-settings-pin-move" title="Move down" aria-label="Move down" disabled data-pin="short-summary"/, 'Move down enabled on the first');
+  assert.match(html, /data-action="meetings-settings-unpin"[^>]*data-pin="short-summary"/);
+  assert.match(html, /data-action="meetings-settings-unpin"[^>]*data-pin="meeting-notes"/);
+});
+
+test('Pin a summary lists unpinned templates and summary plugins, disabled at four', () => {
+  const s = snapshot();
+  s.noteTemplates.push({ id: 'client-recap', name: 'Client recap', kind: 'custom', blurb: '', prompt: 'x', sections: ['summary'], extractTasks: true, color: '#2297F6', icon: 'note', skillPath: null, edited: false });
+  const plugins = [{ id: 'pod', name: 'Podervianskyi' }, { id: 'exec', name: 'Executive brief' }];
+  s.settings.meetings.summaryTabs = ['meeting-notes'];
+  const html = meetingsSettingsPanel('meetings-templates', s, { v: newMeetingsSettingsView(), auth: {}, now: NOW, plugins });
+  const start = html.indexOf('data-menu="ms-pin-add"');
+  const menuHtml = html.slice(start, html.indexOf('</details>', start));
+  assert.match(menuHtml, /data-action="meetings-settings-pin" data-pin="short-summary"/, 'an unpinned built-in');
+  assert.match(menuHtml, /data-action="meetings-settings-pin" data-pin="client-recap"/, 'an unpinned custom template');
+  assert.doesNotMatch(menuHtml, /data-pin="meeting-notes"/, 'already pinned, so not offered');
+  assert.match(menuHtml, /Plugins/);
+  assert.match(menuHtml, /data-action="meetings-settings-pin" data-pin="plugin:pod"/);
+  assert.match(menuHtml, /data-action="meetings-settings-pin" data-pin="plugin:exec"/);
+  assert.doesNotMatch(html.slice(0, start), /aria-disabled="true"/, 'not disabled with fewer than four pins');
+  // Disabled at four, with its reason.
+  s.settings.meetings.summaryTabs = ['meeting-notes', 'short-summary', 'client-recap', 'plugin:pod'];
+  const full = meetingsSettingsPanel('meetings-templates', s, { v: newMeetingsSettingsView(), auth: {}, now: NOW, plugins });
+  assert.match(full, /<details class="ws-menu" data-menu="ms-pin-add" title="Pin up to 4 summaries\."><summary class="ws-btn ws-btn-secondary" aria-disabled="true" title="Pin up to 4 summaries\."/);
+});
+
+test('pinning sends summaryTabs with the new id last; Move up swaps; Unpin removes', async () => {
+  const s = snapshot();
+  s.settings.meetings.summaryTabs = ['meeting-notes'];
+  const plugins = [{ id: 'pod', name: 'Podervianskyi' }];
+  const { ctl, calls, panel } = harness({ s, plugins });
+  await ctl.handle('meetings-settings-pin', control({ pin: 'short-summary' }));
+  assert.deepEqual(calls.mutate.at(-1), ['settings_update', { meetings: { summaryTabs: ['meeting-notes', 'short-summary'] } }]);
+  s.settings.meetings.summaryTabs = ['meeting-notes', 'short-summary'];
+  // A plugin pins the same way.
+  await ctl.handle('meetings-settings-pin', control({ pin: 'plugin:pod' }));
+  assert.deepEqual(calls.mutate.at(-1), ['settings_update', { meetings: { summaryTabs: ['meeting-notes', 'short-summary', 'plugin:pod'] } }]);
+  s.settings.meetings.summaryTabs = ['meeting-notes', 'short-summary', 'plugin:pod'];
+  // Move up swaps with the one before it.
+  await ctl.handle('meetings-settings-pin-move', control({ pin: 'short-summary', d: '-1' }));
+  assert.deepEqual(calls.mutate.at(-1), ['settings_update', { meetings: { summaryTabs: ['short-summary', 'meeting-notes', 'plugin:pod'] } }]);
+  s.settings.meetings.summaryTabs = ['short-summary', 'meeting-notes', 'plugin:pod'];
+  // Unpin removes it, keeping the others' order.
+  await ctl.handle('meetings-settings-unpin', control({ pin: 'meeting-notes' }));
+  assert.deepEqual(calls.mutate.at(-1), ['settings_update', { meetings: { summaryTabs: ['short-summary', 'plugin:pod'] } }]);
+  s.settings.meetings.summaryTabs = ['short-summary', 'plugin:pod'];
+  // Open a meeting on.
+  await ctl.handle('meetings-settings-open-on', control({ v: 'transcript' }));
+  assert.deepEqual(calls.mutate.at(-1), ['settings_update', { meetings: { openOn: 'transcript' } }]);
+  // A refusal (over 4) shows under the card.
+  const refused = harness({ s, answers: { settings_update: failure('validation', 'Pin up to 4 summaries.', 'summaryTabs') } });
+  await refused.ctl.handle('meetings-settings-pin', control({ pin: 'meeting-notes' }));
+  assert.match(refused.panel(), /data-error-for="meetings\.summaryTabs">Pin up to 4 summaries\./);
+  assert.ok(panel());
+});
+
+test('a template card’s ⋯ says Pin as a summary tab, or Unpin from summary tabs when pinned', () => {
+  const s = snapshot();
+  const unpinned = meetingsSettingsPanel('meetings-templates', s, { v: newMeetingsSettingsView(), auth: {}, now: NOW });
+  assert.match(unpinned, /data-action="meetings-settings-pin" data-pin="meeting-notes">[^]*?Pin as a summary tab/);
+  assert.doesNotMatch(unpinned.slice(unpinned.indexOf('data-template="meeting-notes"'), unpinned.indexOf('data-template="short-summary"')), /Unpin from summary tabs/);
+  s.settings.meetings.summaryTabs = ['meeting-notes'];
+  const pinned = meetingsSettingsPanel('meetings-templates', s, { v: newMeetingsSettingsView(), auth: {}, now: NOW });
+  assert.match(pinned, /data-action="meetings-settings-unpin" data-pin="meeting-notes">[^]*?Unpin from summary tabs/);
 });
 
 test('template editor marks unsaved changes and Save sends template_save with sections and prompt', async () => {

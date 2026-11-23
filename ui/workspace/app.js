@@ -481,6 +481,8 @@ async function render() {
     menu: { ...settingsMenu(), folded: foldedGroups(), query: state.settingsQuery },
     layout: layoutContext(),
     codemieCard: codemie.todayCard(),
+    // Settings › Meetings › Note templates: the summary plugins "Pin a summary" may offer.
+    minutesPlugins: pluginHost?.minutesPlugins?.() || [],
   };
   if (state.route === 'inbox') ensureSelection(s);
   // The hash names the meeting shown, also when the list picked it, and its pane
@@ -1909,6 +1911,7 @@ const meetingsSettingsUi = store && createMeetingsSettingsController({
   makeNotes: (id, options) => meetingsUi.makeNotes(id, options),
   guarded: (id, run) => meetingsUi.guarded(id, run),
   glossaryChanged: () => meetingsUi.forgetGlossary(),
+  plugins: () => pluginHost?.minutesPlugins?.() || [],
   openMeeting: async (id, tab, ref) => {
     await meetingsUi.open(id, tab);
     if (ref) await meetingsUi.handle('meeting-goto-line', { dataset: { id, t: ref } });

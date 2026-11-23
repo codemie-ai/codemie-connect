@@ -15,7 +15,7 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
   const lastCall = async (page, op) => (await calls(page, op)).at(-1);
   const waitCall = (page, op, test = '() => true') => page.waitForFunction(([o, t]) => window.__bridgeCalls.some(([x, d]) => x === o && new Function('d', `return (${t})(d)`)(d)), [op, test]);
   const noOverflow = async (page, what) => {
-    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-settings-panels, .ws-settings-content, .ws-ms-editor, .ws-ms-tpl-card, .ws-ms-rule, .ws-ms-md-card, .ws-ms-file-row, .ws-ms-pattern-preview, .ws-ms-location, .ws-modal[open] .ws-modal-body')].filter(el => el.clientWidth > 0).map(el => el.scrollWidth - el.clientWidth)));
+    const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-main, .ws-settings-panels, .ws-settings-content, .ws-ms-editor, .ws-ms-tpl-card, .ws-ms-rule, .ws-ms-md-card, .ws-ms-file-row, .ws-ms-pattern-preview, .ws-ms-location, .ws-ms-pins, .ws-modal[open] .ws-modal-body')].filter(el => el.clientWidth > 0).map(el => el.scrollWidth - el.clientWidth)));
     assert(overflow <= 0, `${what} overflows by ${overflow}px`);
   };
   const tab = async (page, id) => {
@@ -177,6 +177,24 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
         await page.waitForSelector('.ws-ms-tpl-card:has-text("Client recap") .ws-badge-info');
         await noOverflow(page, 'templates of every kind');
         await shot(page, `${tag}-settings-meetings-templates-all`);
+        // "When you open a meeting": pin Short summary, then Meeting notes, from a template's ⋯;
+        // Move up puts Meeting notes first; Open a meeting on → Transcript.
+        await page.click('.ws-ms-tpl-card[data-template="short-summary"] .ws-menu > summary');
+        await page.click('.ws-ms-tpl-card[data-template="short-summary"] [data-action="meetings-settings-pin"]');
+        await waitCall(page, 'settings_update', "d => JSON.stringify(d.meetings?.summaryTabs) === JSON.stringify(['short-summary'])");
+        await page.waitForSelector('.ws-ms-pins li[data-pin="short-summary"]');
+        await page.click('.ws-ms-tpl-card[data-template="meeting-notes"] .ws-menu > summary');
+        await page.click('.ws-ms-tpl-card[data-template="meeting-notes"] [data-action="meetings-settings-pin"]');
+        await waitCall(page, 'settings_update', "d => JSON.stringify(d.meetings?.summaryTabs) === JSON.stringify(['short-summary','meeting-notes'])");
+        await page.waitForSelector('.ws-ms-pins li[data-pin="meeting-notes"]');
+        await page.click('.ws-ms-pins li[data-pin="meeting-notes"] [data-action="meetings-settings-pin-move"][data-d="-1"]');
+        await waitCall(page, 'settings_update', "d => JSON.stringify(d.meetings?.summaryTabs) === JSON.stringify(['meeting-notes','short-summary'])");
+        await page.waitForFunction(() => [...document.querySelectorAll('.ws-ms-pins li')].map(li => li.dataset.pin).join() === 'meeting-notes,short-summary');
+        await page.click('[data-action="meetings-settings-open-on"][data-v="transcript"]');
+        await waitCall(page, 'settings_update', "d => d.meetings?.openOn === 'transcript'");
+        await page.waitForSelector('[data-action="meetings-settings-open-on"][data-v="transcript"][aria-pressed="true"]');
+        await noOverflow(page, 'the open-a-meeting card');
+        await shot(page, `${tag}-settings-meetings-open`);
         const mine = await page.locator('.ws-ms-tpl-card:has-text("Client recap")').getAttribute('data-template');
         await page.click(`.ws-ms-tpl-card[data-template="${mine}"] .ws-menu > summary`);
         await page.click(`.ws-ms-tpl-card[data-template="${mine}"] [data-action="meetings-settings-tpl-delete"]`);

@@ -937,6 +937,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       if (original) { s.noteTemplates = s.noteTemplates.map(t => (t.id === d.id ? clone(original) : t)); return { reset: true, id: d.id }; }
       if (!s.noteTemplates.some(t => t.id === d.id)) fail('not_found', 'This template is no longer there.');
       if (s.settings.meetings.defaultTemplate === d.id) s.settings.meetings.defaultTemplate = 'meeting-notes';
+      // model.rs / library_ops.rs: deleting a template unpins it from the meeting view's summary tabs.
+      if ((s.settings.meetings.summaryTabs || []).includes(d.id)) s.settings.meetings.summaryTabs = s.settings.meetings.summaryTabs.filter(t => t !== d.id);
       for (const r of s.records) if (r.kind === 'meeting_rule' && r.data.template === d.id) r.data.template = s.settings.meetings.defaultTemplate;
       s.noteTemplates = s.noteTemplates.filter(t => t.id !== d.id);
       return { deleted: true, id: d.id };

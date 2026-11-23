@@ -99,7 +99,7 @@ export function settings(s, ctx) {
   const msView = meetingsTab ? state.meetingsSettings || newMeetingsSettingsView() : null;
   const ms = meetingsTab ? meetingsSettingsHeader(tab, s, msView) : null;
   const content = plugins ? plugins.content : tab.startsWith('cm-') ? (codemie?.panel(tab) ?? '')
-    : meetingsTab ? meetingsSettingsPanel(tab, s, { v: msView, auth, now: ctx.now ?? Date.now() }) : (panels[tab] || panels.general)();
+    : meetingsTab ? meetingsSettingsPanel(tab, s, { v: msView, auth, now: ctx.now ?? Date.now(), plugins: ctx.minutesPlugins || [] }) : (panels[tab] || panels.general)();
   const label = plugins ? plugins.label : ms?.label || SETTINGS_TABS.find(([, id]) => id === tab)?.[2] || 'Settings';
   const description = plugins ? plugins.description : ms ? ms.description : TAB_DESCRIPTIONS[tab];
   const path = ctx.plugins?.path;
