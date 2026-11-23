@@ -352,6 +352,7 @@
   ],
   "settings": {
     "meetings": {
+      "actionItems": true,
       "askSpeakers": true,
       "autoNotes": "rules",
       "checkEveryMin": 10,
@@ -365,10 +366,12 @@
       "keepVersions": true,
       "keepVtt": true,
       "onlyAttendees": true,
+      "openOn": "summary",
       "remind": true,
       "review": true,
       "root": null,
       "skipShort": true,
+      "summaryTabs": [],
       "tagsFile": null,
       "waitMin": 15,
       "weMe": true

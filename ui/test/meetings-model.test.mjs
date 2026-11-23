@@ -257,6 +257,13 @@ test('resolveTemplate matches meeting-rules-cases.json', () => {
   assert.equal(resolveTemplate({ data: fixture.cases[6].event }, null, s).reason, 'Your default template');
 });
 
+test('the meeting view settings fixture: defaults, a dedupe and a delete unpin', () => {
+  const fixture = contract('meeting-view-settings');
+  assert.deepEqual(fixture.default, { openOn: 'summary', actionItems: true, summaryTabs: [] });
+  assert.deepEqual(fixture.updated.summaryTabs, ['short-summary', 'custom-formal', 'plugin:podervianskyi']);
+  assert.ok(!fixture.afterTemplateDelete.summaryTabs.includes('custom-formal'));
+});
+
 test('parseGlossary and parseTags match glossary-parse.json', () => {
   const fixture = contract('glossary-parse');
   assert.deepEqual(parseGlossary(fixture.glossary), fixture.expected.glossary);

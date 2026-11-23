@@ -262,8 +262,9 @@ impl Core {
     }
 
     /// `template_delete {id}`: a template of your own or a skill is deleted (its rules switch to
-    /// the default template, which is Meeting notes again if it was the default); a built-in is
-    /// reset to the original (`reset`). Notes already written stay.
+    /// the default template, which is Meeting notes again if it was the default, and it is unpinned
+    /// from the meeting view's summary tabs); a built-in is reset to the original (`reset`). Notes
+    /// already written stay.
     fn template_delete(&self, req: &Request, wid: &str) -> Result<Value> {
         let tid = required(&req.data, "id", 200)?.to_string();
         let mut r = self.repo()?;
@@ -274,8 +275,16 @@ impl Core {
         r.record(templates::KIND, &tid, None, Some(wid))
             .map_err(|_| WorkspaceError::new("not_found", "This template is no longer there."))?;
         let mut settings = r.settings()?;
+        let mut changed = false;
         if settings.meetings.default_template == tid {
             settings.meetings.default_template = DEFAULT_ID.into();
+            changed = true;
+        }
+        if settings.meetings.summary_tabs.iter().any(|t| t == &tid) {
+            settings.meetings.summary_tabs.retain(|t| t != &tid);
+            changed = true;
+        }
+        if changed {
             r.settings_update(&settings)?;
         }
         let fallback = settings.meetings.default_template.clone();
@@ -553,6 +562,94 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::meetings::model::MeetingSettings;
+    use crate::workspace::meetings::tests::{env, op};
+
+    /// The meeting view settings this fixture exercises: `openOn`, `actionItems` and
+    /// `summaryTabs` only.
+    fn view_of(s: &MeetingSettings) -> Value {
+        json!({"openOn": s.open_on, "actionItems": s.action_items, "summaryTabs": s.summary_tabs})
+    }
+
+    #[tokio::test]
+    async fn deleting_a_template_unpins_it() {
+        let e = env();
+        op(
+            &e.core,
+            Operation::TemplateSave,
+            json!({"id": "custom-formal", "name": "Custom formal", "prompt": "p"}),
+        )
+        .await
+        .unwrap();
+        op(
+            &e.core,
+            Operation::SettingsUpdate,
+            json!({"meetings": {"summaryTabs": ["short-summary", "custom-formal"]}}),
+        )
+        .await
+        .unwrap();
+        let settings = e.core.repo().unwrap().settings().unwrap();
+        assert_eq!(
+            settings.meetings.summary_tabs,
+            vec!["short-summary", "custom-formal"]
+        );
+        op(
+            &e.core,
+            Operation::TemplateDelete,
+            json!({"id": "custom-formal"}),
+        )
+        .await
+        .unwrap();
+        let settings = e.core.repo().unwrap().settings().unwrap();
+        assert_eq!(settings.meetings.summary_tabs, vec!["short-summary"]);
+    }
+
+    /// The default, an update and a template delete's unpin, as `meetings-model.test.mjs`
+    /// mirrors them. Regenerate with `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+    #[tokio::test]
+    async fn contract_fixtures_match_the_real_meeting_view_settings() {
+        let e = env();
+        let default = view_of(&MeetingSettings::default());
+        op(
+            &e.core,
+            Operation::TemplateSave,
+            json!({"id": "custom-formal", "name": "Custom formal", "prompt": "p"}),
+        )
+        .await
+        .unwrap();
+        op(
+            &e.core,
+            Operation::SettingsUpdate,
+            json!({"meetings": {"openOn": "transcript", "actionItems": false,
+                "summaryTabs": ["short-summary", "custom-formal", "plugin:podervianskyi", "short-summary"]}}),
+        )
+        .await
+        .unwrap();
+        let settings = e.core.repo().unwrap().settings().unwrap();
+        let updated = view_of(&settings.meetings);
+        assert_eq!(
+            updated["summaryTabs"],
+            json!(["short-summary", "custom-formal", "plugin:podervianskyi"])
+        );
+        op(
+            &e.core,
+            Operation::TemplateDelete,
+            json!({"id": "custom-formal"}),
+        )
+        .await
+        .unwrap();
+        let settings = e.core.repo().unwrap().settings().unwrap();
+        let after_template_delete = view_of(&settings.meetings);
+        assert!(!after_template_delete["summaryTabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "custom-formal"));
+        crate::plugins::testkit::contract_fixture(
+            "meeting-view-settings.json",
+            &json!({"default": default, "updated": updated, "afterTemplateDelete": after_template_delete}),
+        );
+    }
 
     #[test]
     fn skill_md_names_and_describes_itself() {

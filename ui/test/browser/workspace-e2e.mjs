@@ -242,6 +242,23 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         case 'autoNotes': one(k, v, ['off', 'rules', 'all'], 'Choose when notes are made automatically.'); break;
         case 'waitMin': int(k, v, 0, 240, 'Wait between 0 and 240 minutes after the meeting.'); break;
         case 'doneDays': int(k, v, 1, 365, 'Hide done tasks after 1 to 365 days.'); break;
+        case 'openOn': one(k, v, ['summary', 'transcript', 'notes'], 'Choose Summary, Transcript or Notes.'); break;
+        case 'actionItems':
+          if (typeof v !== 'boolean') refuse(k, 'Turn this setting on or off.');
+          next[k] = v;
+          break;
+        case 'summaryTabs': {
+          const message = 'Choose a template or a plugin to pin.';
+          if (!Array.isArray(v)) refuse(k, message);
+          const tabs = [];
+          for (const item of v) {
+            if (typeof item !== 'string' || item.length < 1 || item.length > 100 || !/^[A-Za-z0-9\-_.:]+$/.test(item)) refuse(k, message);
+            if (!tabs.includes(item)) tabs.push(item);
+          }
+          if (tabs.length > 4) refuse(k, 'Pin up to 4 summaries.');
+          next.summaryTabs = tabs;
+          break;
+        }
         case 'skipShort': case 'keepVtt': case 'keepVersions': case 'review': case 'onlyAttendees': case 'weMe': case 'askSpeakers': case 'remind': case 'dueOnlySaid':
           if (typeof v !== 'boolean') refuse(k, 'Turn this setting on or off.');
           next[k] = v;
