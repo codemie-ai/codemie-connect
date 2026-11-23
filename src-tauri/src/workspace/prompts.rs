@@ -1189,8 +1189,11 @@ mod tests {
         assert_eq!(o.revise, Some("Hi".into()));
         let o = DraftOptions::from_request(&json!({"revise": "  "})).unwrap();
         assert_eq!(o.revise, None);
-        for bad in [json!({"revise": "x".repeat(20_001)}), json!({"revise": 3}), json!({"revise": "a\0b"})]
-        {
+        for bad in [
+            json!({"revise": "x".repeat(20_001)}),
+            json!({"revise": 3}),
+            json!({"revise": "a\0b"}),
+        ] {
             assert_eq!(
                 DraftOptions::from_request(&bad).unwrap_err().code,
                 "validation"

@@ -404,11 +404,15 @@ mod tests {
 
     #[test]
     fn new_recipients_are_reply_to_addresses_that_are_not_the_sender() {
-        let from_priya = json!({"emailAddress": {"name": "Priya Nair", "address": "priya.n@example.test"}});
+        let from_priya =
+            json!({"emailAddress": {"name": "Priya Nair", "address": "priya.n@example.test"}});
 
         let no_reply_to = json!({"from": from_priya});
         let recipients = reply_recipients(&no_reply_to);
-        assert_eq!(new_recipients(&no_reply_to, &recipients), Vec::<String>::new());
+        assert_eq!(
+            new_recipients(&no_reply_to, &recipients),
+            Vec::<String>::new()
+        );
 
         let redirected = json!({
             "from": from_priya,
@@ -491,7 +495,12 @@ mod tests {
                 {"id": "m-2", "displayName": "Taylor Morgan"}
             ],
         });
-        let one_on_one = answer(chat_review(&chat_details, "Sounds good.", "msg-3", "chat-1"));
+        let one_on_one = answer(chat_review(
+            &chat_details,
+            "Sounds good.",
+            "msg-3",
+            "chat-1",
+        ));
 
         crate::plugins::testkit::contract_fixture(
             "action-prepare-chat.json",
