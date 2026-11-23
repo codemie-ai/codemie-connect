@@ -187,7 +187,10 @@ export function createMeetingsSettingsController({
   async function sendPins(next) {
     pendingPins = next;
     const ok = await saveSetting('summaryTabs', next);
-    if (!ok) pendingPins = null;
+    // Only undo this call's own pending value: an earlier call refused after a later one has
+    // already moved `pendingPins` on must not wipe out that later, still-in-flight (or already
+    // landed) array.
+    if (!ok && pendingPins === next) pendingPins = null;
     return ok;
   }
 

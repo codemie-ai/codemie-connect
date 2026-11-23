@@ -235,6 +235,28 @@ test('two different pin actions fired back-to-back, before a snapshot lands in b
   assert.deepEqual(refused.calls.mutate.at(-1), ['settings_update', { meetings: { summaryTabs: [] } }], 'the refused pin is gone from the base the next action reads');
 });
 
+test('a refused earlier pin does not wipe a later, still-pending one; the next call builds on the later one', async () => {
+  // call1 and call2 fire back-to-back (no snapshot update in between, as the snapshot never
+  // actually moves in this fake); call1 is refused once call2 has already moved the pending
+  // array past it — only call1's own pending value may be undone, not call2's.
+  const s = snapshot();
+  s.settings.meetings.summaryTabs = ['meeting-notes'];
+  let n = 0;
+  const { ctl, calls } = harness({
+    s,
+    answers: { settings_update: () => { n += 1; if (n === 1) throw failure('validation', 'Pin up to 4 summaries.', 'summaryTabs'); return { saved: true }; } },
+  });
+  const p1 = ctl.handle('meetings-settings-pin', control({ pin: 'short-summary' })); // refused
+  const p2 = ctl.handle('meetings-settings-pin', control({ pin: 'plugin:pod' })); // succeeds
+  await Promise.all([p1, p2]);
+  assert.deepEqual(calls.mutate[0], ['settings_update', { meetings: { summaryTabs: ['meeting-notes', 'short-summary'] } }]);
+  assert.deepEqual(calls.mutate[1], ['settings_update', { meetings: { summaryTabs: ['meeting-notes', 'short-summary', 'plugin:pod'] } }]);
+  // call3 must build on call2's intended result (still carrying "short-summary", the very pin
+  // call1's refusal undid natively) rather than falling back to the stale, never-moved snapshot.
+  await ctl.handle('meetings-settings-pin', control({ pin: 'client-recap' }));
+  assert.deepEqual(calls.mutate[2], ['settings_update', { meetings: { summaryTabs: ['meeting-notes', 'short-summary', 'plugin:pod', 'client-recap'] } }]);
+});
+
 test('a template card’s ⋯ says Pin as a summary tab, or Unpin from summary tabs when pinned', () => {
   const s = snapshot();
   const unpinned = meetingsSettingsPanel('meetings-templates', s, { v: newMeetingsSettingsView(), auth: {}, now: NOW });

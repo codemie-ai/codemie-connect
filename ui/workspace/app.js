@@ -2983,11 +2983,23 @@ window.addEventListener('resize', placeDraftPopover);
 window.addEventListener('resize', measureToday);
 document.addEventListener('scroll', placeDraftPopover, true);
 
+// A `<summary>` marked `aria-disabled` (e.g. "Pin a summary" at four pins) has no native
+// `disabled`: Enter/Space would otherwise still toggle it open. Block the key before it can.
+document.addEventListener('keydown', ev => {
+  if ((ev.key === 'Enter' || ev.key === ' ') && ev.target?.matches?.('summary[aria-disabled="true"]')) ev.preventDefault();
+});
+
 // ⋯ and the other ws-menu menus: one open at a time; a click anywhere else closes it, and so
 // does Escape, which puts focus back on its button.
 document.addEventListener('toggle', ev => {
   const menu = ev.target;
   if (!menu.matches?.('details.ws-menu') || !menu.open) return;
+  // A disabled opener (same reason as above: assistive tech can still activate it) closes again
+  // at once rather than showing a menu nothing should have been able to open.
+  if (menu.querySelector(':scope > summary[aria-disabled="true"]')) {
+    menu.removeAttribute('open');
+    return;
+  }
   for (const other of document.querySelectorAll('details.ws-menu[open]')) if (other !== menu) other.removeAttribute('open');
   if (menu.closest('.ws-reply-bar')) placeReplyMenu(menu);
   if (menu.matches('.ws-mtg-strip > .ws-menu')) fitSectionMenu(menu);

@@ -177,6 +177,8 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
         await page.waitForSelector('.ws-ms-tpl-card:has-text("Client recap") .ws-badge-info');
         await noOverflow(page, 'templates of every kind');
         await shot(page, `${tag}-settings-meetings-templates-all`);
+        const skillId = await page.locator('.ws-ms-tpl-card:has-text("Interview review")').getAttribute('data-template');
+        const recapId = await page.locator('.ws-ms-tpl-card:has-text("Client recap")').getAttribute('data-template');
         // "When you open a meeting": pin Short summary, then Meeting notes, from a template's ⋯;
         // Move up puts Meeting notes first; Open a meeting on → Transcript.
         await page.click('.ws-ms-tpl-card[data-template="short-summary"] .ws-menu > summary');
@@ -195,7 +197,24 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
         await page.waitForSelector('[data-action="meetings-settings-open-on"][data-v="transcript"][aria-pressed="true"]');
         await noOverflow(page, 'the open-a-meeting card');
         await shot(page, `${tag}-settings-meetings-open`);
-        const mine = await page.locator('.ws-ms-tpl-card:has-text("Client recap")').getAttribute('data-template');
+        // Pin the other two templates to reach four: "Pin a summary" disables, for a mouse
+        // (aria-disabled + pointer-events:none) and for the keyboard (tabindex="-1", and Enter/
+        // Space on it blocked outright even while focused).
+        await page.click(`.ws-ms-tpl-card[data-template="${skillId}"] .ws-menu > summary`);
+        await page.click(`.ws-ms-tpl-card[data-template="${skillId}"] [data-action="meetings-settings-pin"]`);
+        await waitCall(page, 'settings_update', 'd => (d.meetings?.summaryTabs || []).length === 3');
+        await page.click(`.ws-ms-tpl-card[data-template="${recapId}"] .ws-menu > summary`);
+        await page.click(`.ws-ms-tpl-card[data-template="${recapId}"] [data-action="meetings-settings-pin"]`);
+        await waitCall(page, 'settings_update', 'd => (d.meetings?.summaryTabs || []).length === 4');
+        await page.waitForSelector('[data-menu="ms-pin-add"] > summary[aria-disabled="true"][tabindex="-1"]');
+        await page.focus('[data-menu="ms-pin-add"] > summary');
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(150);
+        assert(await page.locator('[data-menu="ms-pin-add"][open]').count() === 0, 'Enter must not open the disabled menu');
+        await page.keyboard.press(' ');
+        await page.waitForTimeout(150);
+        assert(await page.locator('[data-menu="ms-pin-add"][open]').count() === 0, 'Space must not open the disabled menu');
+        const mine = recapId;
         await page.click(`.ws-ms-tpl-card[data-template="${mine}"] .ws-menu > summary`);
         await page.click(`.ws-ms-tpl-card[data-template="${mine}"] [data-action="meetings-settings-tpl-delete"]`);
         await page.waitForSelector(`${dialog}:has-text("Delete “Client recap”?")`);
