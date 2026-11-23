@@ -1023,7 +1023,10 @@ mod tests {
             let mode = std::fs::metadata(&secrets).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
-        assert_eq!(files_containing(&env.private, SENTINEL), [secrets.clone()]);
+        assert_eq!(
+            files_containing(&env.private, SENTINEL),
+            std::slice::from_ref(&secrets)
+        );
         assert!(files_containing(&env.dir.path().join("data"), SENTINEL).is_empty());
         let listed = dispatch(&env.paths, &testkit::NoGit, "installed", Value::Null).unwrap();
         assert!(!listed.to_string().contains(SENTINEL));

@@ -175,7 +175,7 @@ pub async fn smoke_plugins_report(app: AppHandle, report: Value) -> CmdResult<Va
     println!(
         "PLUGIN_SMOKE {}",
         json!({"path": path, "pass": pass, "runId": report["runId"], "failed": report["failed"],
-               "knownFailures": report["knownFailures"]})
+               "knownFailures": report["knownFailures"], "tasks": report["tasks"]})
     );
     // After this answer reaches the window.
     std::thread::spawn(move || {

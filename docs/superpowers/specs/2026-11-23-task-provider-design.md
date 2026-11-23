@@ -196,12 +196,12 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 ```
 
 - **API.** `https://api.todoist.com/api/v1` with `Authorization: Bearer <token>`, read from `ctx.settings.get('token')` inside each call and never kept anywhere else.
-  - `status`: `GET /user`, then the project.
-  - The project is found by name (paged `GET /projects`) and made once with `POST /projects` when missing. Its id is kept in the plugin's store.
+  - `status`: `GET /user`, then the project, verified (`GET /projects/{id}`): a project deleted or archived in Todoist is found again by name, or made again once, and the answer then carries a `message` saying so.
+  - The project is found by name (paged `GET /projects`; the first open one of that name, as names may repeat) and made once with `POST /projects` when missing. Its id is kept in the plugin's store. A project-scoped call that fails (`not_found`/`refused`) while the kept project no longer answers finds or makes it again and runs once more.
   - `list`: paged `GET /tasks?project_id=`.
   - `changedSince`: `POST /sync` with `sync_token` (`*` for null) and `resource_types: ["items"]`, filtered to the project; `checked` → `done`, `is_deleted` → `removed`.
-  - `create`: the key lookup over the open tasks, then `POST /tasks`.
-  - `update`: `POST /tasks/{id}`. `complete`: `POST /tasks/{id}/close` or `/reopen`. `remove`: `DELETE /tasks/{id}`.
+  - `create`: the key lookup over the open tasks, then `POST /tasks`. The open tasks are listed once and kept as a key index for 60 s (updated by each create and each `changedSince`, dropped when a create's answer is lost), so a copy of 50 tasks lists the project once.
+  - `update`: `POST /tasks/{id}`. `complete`: `POST /tasks/{id}/close` (the open task is read first and answered closed, since a completed task may not be readable) or `/reopen`. `remove`: `DELETE /tasks/{id}`; a 404 means the task is already gone and answers `{removed: true}`, never `not_found:` (a parked remove of a deleted task would never clear).
 - **What a task looks like in Todoist:**
   - **content** is the task's text. A waiting task reads `<First name>: <text>` (the reference app's form); the prefix is removed again on reading when it matches the owner line.
   - **description**: the notes (with the quote and who said it), then a blank line, then Connect's marker lines, last, one per line:
@@ -216,6 +216,10 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
   - **Owner**: the user's own task has no `waiting` label. Someone else's has `waiting`, the content prefix and the `owner:` line. "Nobody named" goes as the user's own.
 - **Errors**: 401 / 403 → `needs_token:`; 429 → `rate_limited:<Retry-After or error_extra.retry_after or 60>:`; network failure or 5xx → `offline:`; 404 → `not_found:`; other 4xx → `refused: Todoist didn't accept the change (<status>)`. Response bodies are never copied into messages.
 - **Network:** `uses.network.hosts` is exactly `["api.todoist.com"]`. The host refuses any other address. No sign-in host, no `hosts_from`.
+- **Known limits:**
+  - A create whose answer was lost is adopted on replay only while its task is still open in the project. If the user completes it or moves it to another project in Todoist before the replay, the replay makes a second task (the ledger has no remote id to recognise it by).
+  - A task moved to another Todoist project is left out of `changedSince` rather than reported as removed: reporting it would tombstone its key, and moving it back would then delete it. It stays in Connect's cache as last seen; edits still reach it by id.
+  - Lists stop at 100 pages (20,000 items) without a signal.
 
 ### 8. The token and plugin settings in Connect
 

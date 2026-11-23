@@ -361,12 +361,13 @@ impl TodoistState {
             ));
         }
         if let Some((code, retry)) = self.fail.remove(&route) {
+            // As Todoist: `retry_after` in the body, and here in `Retry-After` too.
             let extra = retry.map_or(String::new(), |s| format!("Retry-After: {s}\r\n"));
-            return Some((
-                code,
-                extra,
-                json!({"error": "forced failure (test)"}).to_string(),
-            ));
+            let mut body = json!({"error": "forced failure (test)"});
+            if let Some(s) = retry {
+                body["error_extra"] = json!({"retry_after": s});
+            }
+            return Some((code, extra, body.to_string()));
         }
         let lost = self.lose.remove(&route);
         let query: std::collections::HashMap<String, String> =
@@ -392,13 +393,17 @@ impl TodoistState {
                 json!({"id": "u1", "email": "taylor@example.test", "full_name": "Taylor Morgan"}),
             ),
             ("GET", "/projects", _) => ok(json!({"results": self.projects, "next_cursor": null})),
+            // Todoist allows two projects of one name.
             ("POST", "/projects", _) => {
-                if self.projects.iter().any(|p| p["name"] == data["name"]) {
-                    status(400)
-                } else {
-                    let p = json!({"id": self.new_id(), "name": data["name"]});
-                    self.projects.push(p.clone());
-                    ok(p)
+                let p = json!({"id": self.new_id(), "name": data["name"], "is_archived": false});
+                self.projects.push(p.clone());
+                ok(p)
+            }
+            ("GET", p, _) if p.starts_with("/projects/") => {
+                let id = &p["/projects/".len()..];
+                match self.projects.iter().find(|p| p["id"] == id) {
+                    Some(p) => ok(p.clone()),
+                    None => status(404),
                 }
             }
             ("GET", "/tasks", _) => {
@@ -439,7 +444,10 @@ impl TodoistState {
                 let items: Vec<Value> = self
                     .tasks
                     .iter()
-                    .filter(|(rev, _, _)| *rev > since)
+                    // A full sync lists open tasks only.
+                    .filter(|(rev, deleted, t)| {
+                        *rev > since && (since > 0 || (!deleted && t["checked"] != true))
+                    })
                     .map(|(_, deleted, t)| {
                         let mut t = t.clone();
                         t["is_deleted"] = (*deleted).into();
@@ -451,11 +459,20 @@ impl TodoistState {
                 )
             }
             (_, _, Some((id, action))) => {
-                let rev = self.bump();
-                match self.task_mut(&id) {
+                // Only a change moves the sync revision.
+                let rev = self.rev + 1;
+                let mut changed = false;
+                let answer = match self.task_mut(&id) {
                     None => status(404),
+                    // A completed task can't be read (as REST v2 did; v1 is unconfirmed).
+                    Some((_, _, t))
+                        if method == "GET" && action.is_empty() && t["checked"] == true =>
+                    {
+                        status(404)
+                    }
                     Some((_, _, t)) if method == "GET" && action.is_empty() => ok(t.clone()),
                     Some(entry) if method == "DELETE" && action.is_empty() => {
+                        changed = true;
                         entry.0 = rev;
                         entry.1 = true;
                         entry.2["updated_at"] = now.into();
@@ -484,6 +501,7 @@ impl TodoistState {
                         }
                         t["updated_at"] = now.into();
                         entry.0 = rev;
+                        changed = true;
                         if action.is_empty() {
                             ok(entry.2.clone())
                         } else {
@@ -491,7 +509,11 @@ impl TodoistState {
                         }
                     }
                     Some(_) => status(404),
+                };
+                if changed {
+                    self.rev = rev;
                 }
+                answer
             }
             _ => status(404),
         };
@@ -635,5 +657,116 @@ impl FakeTodoist {
     /// Every request so far, as `METHOD /path?query`.
     pub fn requests(&self) -> Vec<String> {
         self.lock().requests.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOKEN: &str = "tk_SENTINEL_do_not_log_0123456789";
+
+    /// `METHOD path` with `body` to `fake`: status, headers and JSON body.
+    async fn ask(
+        fake: &FakeTodoist,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> (u16, reqwest::header::HeaderMap, Value) {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("{}/api/v1{path}", fake.base());
+        let mut req = client
+            .request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(), url)
+            .header("Authorization", format!("Bearer {TOKEN}"));
+        if let Some(b) = body {
+            req = req
+                .header("Content-Type", "application/json")
+                .body(b.to_string());
+        }
+        let res = req.send().await.unwrap();
+        let status = res.status().as_u16();
+        let headers = res.headers().clone();
+        let text = res.text().await.unwrap();
+        (
+            status,
+            headers,
+            serde_json::from_str(&text).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn sync_token(fake: &FakeTodoist, token: &str) -> Value {
+        let body = format!("sync_token={token}&resource_types=%5B%22items%22%5D");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let res = client
+            .post(format!("{}/api/v1/sync", fake.base()))
+            .header("Authorization", format!("Bearer {TOKEN}"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        serde_json::from_str(&res.text().await.unwrap()).unwrap()
+    }
+
+    /// Review M3/M6 and I2: the fake behaves as Todoist does where the plugin depends on it.
+    #[tokio::test]
+    async fn the_fake_todoist_behaves_like_todoist() {
+        let fake = FakeTodoist::start(TOKEN);
+        // Project names may repeat; a project is read by id.
+        let (_, _, a) = ask(&fake, "POST", "/projects", Some(r#"{"name":"Connect"}"#)).await;
+        let (status, _, _) = ask(&fake, "POST", "/projects", Some(r#"{"name":"Connect"}"#)).await;
+        assert_eq!(status, 200, "a second project of the same name");
+        let pid = a["id"].as_str().unwrap().to_string();
+        let (status, _, p) = ask(&fake, "GET", &format!("/projects/{pid}"), None).await;
+        assert_eq!((status, p["name"].clone()), (200, json!("Connect")));
+
+        let make = |content: &str| format!(r#"{{"content":"{content}","project_id":"{pid}"}}"#);
+        let (_, _, open) = ask(&fake, "POST", "/tasks", Some(&make("Open"))).await;
+        let (_, _, done) = ask(&fake, "POST", "/tasks", Some(&make("Done"))).await;
+        let (_, _, gone) = ask(&fake, "POST", "/tasks", Some(&make("Gone"))).await;
+        let id = |v: &Value| v["id"].as_str().unwrap().to_string();
+        ask(&fake, "POST", &format!("/tasks/{}/close", id(&done)), None).await;
+        ask(&fake, "DELETE", &format!("/tasks/{}", id(&gone)), None).await;
+
+        // A completed task can't be read (as REST v2; v1 unconfirmed), an open one can.
+        let (status, _, _) = ask(&fake, "GET", &format!("/tasks/{}", id(&done)), None).await;
+        assert_eq!(status, 404);
+        let (status, _, _) = ask(&fake, "GET", &format!("/tasks/{}", id(&open)), None).await;
+        assert_eq!(status, 200);
+
+        // A full sync lists open tasks only; an incremental one lists done and deleted ones.
+        let full = sync_token(&fake, "*").await;
+        let contents: Vec<&str> = full["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["content"].as_str().unwrap())
+            .collect();
+        assert_eq!(contents, ["Open"]);
+        let delta = sync_token(&fake, "1").await;
+        let changed: Vec<(&str, bool, bool)> = delta["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                let content = i["content"].as_str().unwrap();
+                (content, i["checked"] == true, i["is_deleted"] == true)
+            })
+            .collect();
+        assert_eq!(changed, [("Done", true, false), ("Gone", false, true)]);
+
+        // Reads and 404s don't move the sync revision.
+        let before = sync_token(&fake, "*").await["sync_token"].clone();
+        ask(&fake, "GET", &format!("/tasks/{}", id(&open)), None).await;
+        ask(&fake, "GET", "/tasks/nope", None).await;
+        ask(&fake, "POST", "/tasks/nope", Some("{}")).await;
+        assert_eq!(sync_token(&fake, "*").await["sync_token"], before);
+
+        // A 429 says retry_after in its body, and in Retry-After.
+        fake.fail_once("GET /user", 429, Some(7));
+        let (status, headers, body) = ask(&fake, "GET", "/user", None).await;
+        assert_eq!(status, 429);
+        assert_eq!(headers["retry-after"], "7");
+        assert_eq!(body["error_extra"]["retry_after"], 7);
     }
 }

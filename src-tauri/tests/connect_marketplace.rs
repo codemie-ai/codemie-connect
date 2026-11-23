@@ -308,15 +308,34 @@ async fn todoist_syncs_a_core_task_through_the_real_host() {
     assert_eq!(task["due"], "2026-11-24");
     assert_eq!(task["status"], "waiting");
 
+    // Done in Connect: closed in Todoist, even though Todoist won't read a completed task back.
+    c.save(json!({"id": id, "status": "done"})).await;
+    let summary = testing::task_sync(&c.core, T0 + 160).await;
+    assert!(
+        summary.starts_with("Tasks ready:") && summary.contains(" 0 parked"),
+        "{summary}"
+    );
+    let closed = c
+        .todoist
+        .tasks()
+        .into_iter()
+        .find(|t| t["id"] == rid.as_str())
+        .unwrap();
+    assert_eq!(closed["checked"], true);
+    let task = c.task(&id);
+    assert_eq!(task["status"], "done");
+    assert_eq!(task["pending"], false);
+    assert_eq!(task["syncError"], Value::Null);
+
     // Todoist asks Connect to slow down: nothing is sent before Retry-After.
     c.todoist.fail_once("POST /sync", 429, Some(5));
-    let summary = testing::task_sync(&c.core, T0 + 200).await;
+    let summary = testing::task_sync(&c.core, T0 + 230).await;
     assert!(summary.starts_with("Tasks rate_limited"), "{summary}");
     let provider = testing::task_provider(&c.core);
     assert_eq!(provider["state"], "rate_limited");
-    assert_eq!(provider["retryAt"], T0 + 200 + 5);
+    assert_eq!(provider["retryAt"], T0 + 230 + 5);
     let before = c.todoist.requests().len();
-    testing::task_sync(&c.core, T0 + 202).await;
+    testing::task_sync(&c.core, T0 + 232).await;
     assert_eq!(c.todoist.requests().len(), before, "nothing before retryAt");
 
     c.token_kept_nowhere();

@@ -209,8 +209,9 @@ impl FakeProvider {
                 Self::touch(s, &id, |t| t["done"] = done.into()).ok_or_else(gone)
             }
             "remove" => {
+                // As the real plugin: a task the provider no longer has is removed already.
                 if s.tasks.remove(&id).is_none() {
-                    return Err(gone());
+                    return Ok(json!({"removed": true}));
                 }
                 s.version += 1;
                 let v = s.version;
@@ -291,5 +292,18 @@ impl TaskProviders for FakeProvider {
             .secret
             .as_deref()
             .is_some_and(|secret| text.contains(secret))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// As the real Todoist plugin: removing a task the provider no longer has is done already.
+    #[tokio::test]
+    async fn removing_a_task_already_gone_counts_as_removed() {
+        let fake = FakeProvider::new();
+        let answer = fake.call("todoist", "remove", json!({"id": "nope"})).await;
+        assert_eq!(answer, Ok(json!({"removed": true})));
     }
 }
