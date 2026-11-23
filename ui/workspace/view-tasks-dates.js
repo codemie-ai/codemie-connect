@@ -1,6 +1,7 @@
 // By date (task provider design §9): To review, Late (with its ⋯ menu), Today and Later's folds
-// (Next 7 days, No date, Later than that), "Check with <name>" rows with Nudge / Done / Snooze,
-// "Looks handled", pending and parked rows, the provider's banner and the footer. Pure: takes
+// (Next 7 days, No date, Later than that), "Check with <name>" rows with Nudge and Snooze ▾,
+// "Looks handled", pending and parked rows (a folded row has only its done box; unfolded, at most
+// three controls), the provider's banner and the footer. Pure: takes
 // the Tasks page's computed state (`pageOf` in view-tasks.js) and returns HTML; tasks-controller.js
 // handles the actions. Every provider string goes through `escapeHtml`.
 import { escapeHtml as e } from './store.js';
@@ -25,10 +26,49 @@ function banner(tp) {
   return '';
 }
 
-/** Date chips as buttons: a day sets the due date, Pick date… asks for one. */
-const chipButtons = (id, chips) => chips.map(([label, day]) => (day
-  ? `<button type="button" class="ws-tdate-chip" data-action="task-snooze" data-id="${e(id)}" data-value="${e(day)}">${e(label)}</button>`
-  : `<button type="button" class="ws-tdate-chip" data-action="task-pick-date" data-id="${e(id)}">${e(label)}</button>`)).join('');
+/** A menu item: `[label, action, attrs, danger]`. */
+const item = ([label, action, attrs = {}, danger = false]) => `<button type="button" class="ws-menu-item${danger ? ' ws-menu-danger' : ''}" data-action="${action}"${Object.entries(attrs).map(([k, v]) => ` ${k}="${e(v)}"`).join('')}><span>${e(label)}</span></button>`;
+
+/** The date choices of a row as menu items: a day sets the due date, Pick date… asks for one. */
+const dateItems = (id, group, p) => chipsFor(group, p).map(([label, day]) => item(day
+  ? [label, 'task-snooze', { 'data-id': id, 'data-value': day }]
+  : [label, 'task-pick-date', { 'data-id': id }]));
+
+/** Snooze ▾: the row's date choices, the only place they are offered. */
+const snoozeMenu = (x, group, p, primary) => `<details class="ws-menu ws-tdate-snooze" data-menu="task-snooze-${e(x.id)}">
+      <summary class="ws-btn ws-btn-${primary ? 'primary' : 'ghost'} ws-btn-sm" aria-label="Snooze: ${e(x.text)}">Snooze ▾</summary>
+      <div class="ws-menu-panel">${dateItems(x.id, group, p).join('')}</div></details>`;
+
+/** The row's ⋯: where it lives and what else can be done with it (dates too, when Snooze ▾
+ *  isn't one of the row's own controls). */
+function moreMenu(x, group, p, { dates }) {
+  const items = [
+    ...(dates ? [`<div class="ws-menu-label">Snooze</div>${dateItems(x.id, group, p).join('')}<hr>`] : []),
+    x.url ? item([`Open in ${p.providerName} ↗`, 'task-open-remote', { 'data-id': x.id }]) : '',
+    x.source?.kind === 'meeting' ? item(['Open meeting', 'task-open-meeting', { 'data-id': x.source.id }]) : '',
+    x.source?.kind === 'message' ? item(['Open message', 'task-open-message', { 'data-id': x.source.id }]) : '',
+    item(['Details', 'task-open', { 'data-id': x.id }]),
+    `<hr>${item(['Delete', 'task-delete', { 'data-id': x.id }, true])}`,
+  ].join('');
+  return `<details class="ws-menu ws-menu-right ws-tdate-more" data-menu="task-more-${e(x.id)}">
+      <summary class="ws-btn ws-btn-ghost ws-btn-icon ws-btn-sm" aria-label="More for “${e(x.text)}”" title="More">${icon('dots')}</summary>
+      <div class="ws-menu-panel">${items}</div></details>`;
+}
+
+/**
+ * An unfolded row's controls, at most three, the first the row's primary:
+ *   To review: Accept, Not a task, ⋯; parked: Try again, Discard change, ⋯;
+ *   looks handled: Done, Keep open, ⋯; check-in: Nudge <name> (with a synced thread), Snooze ▾, ⋯;
+ *   any other: Snooze ▾, ⋯. Done is the done box.
+ */
+function controls(x, group, p) {
+  const sm = (label, action, attrs, primary = false) => button(label, { action, size: 'sm', variant: primary ? 'primary' : 'ghost', attrs: { 'data-id': x.id, ...attrs } });
+  if (group === 'review') return [button('Accept', { action: 'task-accept', size: 'sm', attrs: { 'data-id': x.id, 'aria-label': `Accept: ${x.text}` } }), sm('Not a task', 'task-dismiss', { 'aria-label': `Not a task: ${x.text}` }), moreMenu(x, group, p, { dates: false })];
+  if (x.syncError) return [sm('Try again', 'task-parked', { 'data-act': 'retry' }, true), sm('Discard change', 'task-parked', { 'data-act': 'discard' }), moreMenu(x, group, p, { dates: true })];
+  if (x.handled) return [sm('Done', 'task-handled', { 'data-act': 'done', 'aria-label': `Done: ${x.text}` }, true), sm('Keep open', 'task-handled', { 'data-act': 'keep', 'aria-label': `Keep open: ${x.text}` }), moreMenu(x, group, p, { dates: true })];
+  const nudge = x.checkWith && x.nudge ? [sm(`Nudge ${x.checkWith.first}`, 'task-nudge', {}, true)] : [];
+  return [...nudge, snoozeMenu(x, group, p, !nudge.length), moreMenu(x, group, p, { dates: false })];
+}
 
 function row(p, r, group) {
   const x = rowOf(r, { me: p.me, s: p.s, now: p.now, zone: p.zone });
@@ -41,37 +81,16 @@ function row(p, r, group) {
   const pending = x.pending ? `<span class="ws-tdate-pending" title="Not in ${e(p.providerName)} yet"><span class="ws-sr">Not in ${e(p.providerName)} yet</span></span>` : '';
   const box = review ? '' : `<label class="ws-check ws-tdate-box"><input type="checkbox" data-action="task-done" data-id="${id}" aria-label="Mark “${e(x.text)}” done"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>`;
   const main = `<button type="button" class="ws-tdate-main" data-action="task-row-open" data-id="${id}" aria-expanded="${open}"${errId ? ` aria-describedby="${errId}"` : ''}><span class="ws-tdate-text">${e(review ? x.text : x.label)}</span>${src}${pending}${due}</button>`;
-  const acts = [];
-  if (review) {
-    acts.push(`<div class="ws-tdate-acts">${button('Accept', { action: 'task-accept', size: 'sm', variant: 'primary', attrs: { 'data-id': x.id, 'aria-label': `Accept: ${x.text}` } })}${button('Not a task', { action: 'task-dismiss', size: 'sm', variant: 'ghost', attrs: { 'data-id': x.id, 'aria-label': `Not a task: ${x.text}` } })}</div>`);
-  } else if (x.checkWith) {
-    const first = x.checkWith.first;
-    const snooze = `<details class="ws-menu ws-tdate-snooze" data-menu="task-snooze-${id}">
-      <summary class="ws-btn ws-btn-ghost ws-btn-sm" aria-label="Snooze: ${e(x.text)}">Snooze ▾</summary>
-      <div class="ws-menu-panel">${chipsFor(group, p).map(([label, day]) => (day
-        ? `<button type="button" class="ws-menu-item" data-action="task-snooze" data-id="${id}" data-value="${e(day)}"><span>${e(label)}</span></button>`
-        : `<button type="button" class="ws-menu-item" data-action="task-pick-date" data-id="${id}"><span>${e(label)}</span></button>`)).join('')}</div></details>`;
-    acts.push(`<div class="ws-tdate-acts">${x.nudge ? button(`Nudge ${first}`, { action: 'task-nudge', size: 'sm', variant: 'ghost', attrs: { 'data-id': x.id } }) : ''}${button('Done', { action: 'task-done', size: 'sm', variant: 'ghost', attrs: { 'data-id': x.id, 'aria-label': `Done: ${x.text}` } })}${snooze}</div>`);
-  }
-  if (x.handled && !review) {
-    acts.push(`<div class="ws-tdate-handled"><span>${icon('check-circle')}Looks handled · ${e(x.handled.evidence)}</span>${button('Done', { action: 'task-handled', size: 'sm', variant: 'ghost', attrs: { 'data-id': x.id, 'data-act': 'done', 'aria-label': `Done: ${x.text}` } })}${button('Keep open', { action: 'task-handled', size: 'sm', variant: 'ghost', attrs: { 'data-id': x.id, 'data-act': 'keep', 'aria-label': `Keep open: ${x.text}` } })}</div>`);
-  }
-  if (x.syncError) {
-    acts.push(`<div class="ws-tdate-parked"><span class="ws-tdate-error" id="${errId}">${e(x.syncError)}</span>${button('Try again', { action: 'task-parked', size: 'sm', variant: 'ghost', attrs: { 'data-id': x.id, 'data-act': 'retry' } })}${button('Discard change', { action: 'task-parked', size: 'sm', variant: 'ghost', attrs: { 'data-id': x.id, 'data-act': 'discard' } })}</div>`);
-  }
-  let chips = '';
-  if (open) {
-    const links = [
-      !review ? chipButtons(x.id, chipsFor(group, p)) : '',
-      x.url ? `<button type="button" class="ws-tdate-chip" data-action="task-open-remote" data-id="${id}">Open in ${e(p.providerName)} ↗</button>` : '',
-      x.source?.kind === 'meeting' ? `<button type="button" class="ws-tdate-chip" data-action="task-open-meeting" data-id="${e(x.source.id)}">Open meeting</button>` : '',
-      x.source?.kind === 'message' ? `<button type="button" class="ws-tdate-chip" data-action="task-open-message" data-id="${e(x.source.id)}">Open message</button>` : '',
-      `<button type="button" class="ws-tdate-chip" data-action="task-open" data-id="${id}">Details</button>`,
-    ].join('');
-    chips = `<div class="ws-tdate-chips">${links}</div>`;
-  }
+  // What the row says about itself shows folded too; its controls only unfolded.
+  const notes = [
+    x.handled && !review ? `<p class="ws-tdate-handled">${icon('check-circle')}<span>Looks handled · ${e(x.handled.evidence)}</span></p>` : '',
+    x.syncError ? `<p class="ws-tdate-error" id="${errId}">${e(x.syncError)}</p>` : '',
+  ].join('');
+  // Folded, a row to review keeps its one control, Accept (its done box, as it were).
+  const shown = open ? controls(x, group, p) : review ? controls(x, group, p).slice(0, 1) : [];
+  const acts = shown.length ? `<div class="ws-tdate-acts">${shown.join('')}</div>` : '';
   const classes = ['ws-tdate-row', open && 'ws-tdate-open', x.due?.tone === 'late' && 'ws-tdate-late', x.syncError && 'ws-tdate-row-parked'].filter(Boolean).join(' ');
-  return `<div class="${classes}" data-task="${id}"><div class="ws-tdate-line">${box}${main}</div>${acts.join('')}${chips}</div>`;
+  return `<div class="${classes}" data-task="${id}"><div class="ws-tdate-line">${box}${main}</div>${notes}${acts}</div>`;
 }
 
 function section(key, title, body, tools = '') {
@@ -79,12 +98,15 @@ function section(key, title, body, tools = '') {
     <header class="ws-tdate-head"><h2 id="tdate-h-${key}">${e(title)}</h2>${tools}</header>${body}</section>`;
 }
 
-function lateMenu(n) {
-  if (!n) return '';
-  const item = (action, label, attrs = '') => `<button type="button" class="ws-menu-item" data-action="${action}"${attrs}><span>${e(label)}</span></button>`;
+/** Late ⋯: each item carries the tasks and the day the screen shows, so a page left open past
+ *  midnight acts on what it says. */
+function lateMenu(p, late) {
+  if (!late.length) return '';
+  const ids = JSON.stringify(late.map(r => r.id));
+  const [[, tomorrow], [, monday]] = chipsFor('late', p);
   return `<details class="ws-menu ws-menu-right ws-tdate-menu" data-menu="tasks-late">
     <summary class="ws-btn ws-btn-ghost ws-btn-icon ws-btn-sm" aria-label="Late tasks: actions" title="Late tasks">${icon('dots')}</summary>
-    <div class="ws-menu-panel">${item('tasks-late-move', 'Move all to Tomorrow', ' data-to="tomorrow"')}${item('tasks-late-move', 'Move all to Monday', ' data-to="monday"')}${item('tasks-late-move', 'Pick date…', ' data-to="pick"')}<hr>${item('tasks-late-done', 'Done all')}</div></details>`;
+    <div class="ws-menu-panel">${item(['Move all to Tomorrow', 'tasks-late-move', { 'data-to': 'tomorrow', 'data-day': tomorrow, 'data-ids': ids }])}${item(['Move all to Monday', 'tasks-late-move', { 'data-to': 'monday', 'data-day': monday, 'data-ids': ids }])}${item(['Pick date…', 'tasks-late-move', { 'data-to': 'pick', 'data-ids': ids }])}<hr>${item(['Done all', 'tasks-late-done', { 'data-ids': ids }])}</div></details>`;
 }
 
 function fold(p, key, label, items) {
@@ -96,7 +118,8 @@ function fold(p, key, label, items) {
 }
 
 function footer(p, doneToday) {
-  const f = p.v.footer;
+  // The last action's Undo, while the provider it was made with is still the active one.
+  const f = p.v.footer && p.v.footer.provider === activeProvider(p.s) ? p.v.footer : null;
   const last = f ? ` · <span>${e(f.text)}</span> · <button type="button" class="ws-link" data-action="tasks-undo">Undo</button>` : '';
   return `<p class="ws-tdate-foot" role="status"><span>${doneToday} done today</span>${last}</p>`;
 }
@@ -107,17 +130,18 @@ export function datesView(p) {
   p = { ...p, providerName: p.s.taskProvider?.name || 'Connect' };
   const rows = (list, group) => `<div class="ws-tdate-rows">${list.map(r => row(p, r, group)).join('')}</div>`;
   const review = g.review.length
-    ? section('review', `To review · ${g.review.length}`, rows(g.review, 'review'), g.review.length > 1 ? button('Accept all', { action: 'task-accept-all', size: 'sm', variant: 'ghost' }) : '')
+    ? section('review', `To review · ${g.review.length}`, rows(g.review, 'review'), g.review.length > 1 ? button('Accept all', { action: 'task-accept-all', size: 'sm', variant: 'primary' }) : '')
     : '';
-  const late = section('late', g.late.length ? `Late · ${g.late.length}` : 'Late', g.late.length ? rows(g.late, 'late') : '<p class="ws-tdate-empty">Nothing late.</p>', lateMenu(g.late.length));
+  const late = section('late', g.late.length ? `Late · ${g.late.length}` : 'Late', g.late.length ? rows(g.late, 'late') : '<p class="ws-tdate-empty">Nothing late.</p>', lateMenu(p, g.late));
   const today = section('today', 'Today', g.today.length ? rows(g.today, 'today') : '<p class="ws-tdate-empty">Nothing for today.</p>');
   const folds = FOLDS.filter(([key]) => g[key].length).map(([key, label]) => fold(p, key, label, g[key])).join('');
   const later = folds ? section('later', 'Later', folds) : '';
   return `<div class="ws-tdate"${activeProvider(p.s) === 'local' ? '' : ' data-provider'}>
     ${banner(p.s.taskProvider)}
     <div class="ws-tdate-cols">
-      <div class="ws-tdate-col">${review}${late}${today}${footer(p, g.doneToday.length)}</div>
+      <div class="ws-tdate-col">${review}${late}${today}</div>
       <div class="ws-tdate-col">${later}</div>
     </div>
+    ${footer(p, g.doneToday.length)}
   </div>`;
 }

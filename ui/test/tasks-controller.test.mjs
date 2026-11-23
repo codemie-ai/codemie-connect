@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { createTasksController } from '../workspace/tasks-controller.js';
+import { tasksPage } from '../workspace/view-tasks.js';
 import { newTasksView, taskOrder, sortTasks, taskStatus } from '../workspace/tasks-model.js';
 import { buildSnapshot, withTasks, taskContract } from './fixtures/workspace-fixture.mjs';
 import { REBASE_SAFE } from '../workspace/store.js';
@@ -26,9 +27,24 @@ function harness({ answers = {}, snapshot = withTasks(buildSnapshot(NOW, { photo
         Object.assign(stored.data, fields, fields.status ? { done: fields.status === 'done' } : {});
       }
       if (op === 'task_delete') snapshot.records = snapshot.records.filter(r => r !== stored);
-      return typeof answers[op] === 'function' ? answers[op](data) : answers[op] ?? { id: data.id || 'task-new' };
+      if (op === 'task_handled' && stored && data.action === 'done') Object.assign(stored.data, { status: 'done', done: true, handled: null });
+      if (typeof answers[op] === 'function') return answers[op](data);
+      if (answers[op]) return answers[op];
+      if (op === 'task_bulk') {
+        // As native's `bulk`: each item saved, `before` what each had.
+        const before = [];
+        for (const item of data.items) {
+          const t = snapshot.records.find(r => r.kind === 'commitment' && r.id === item.id);
+          if (!t) continue;
+          before.push({ id: t.id, due: t.data.due ?? null, status: taskStatus(t) });
+          Object.assign(t.data, 'due' in item ? { due: item.due } : {}, 'status' in item ? { status: item.status, done: item.status === 'done' } : {});
+        }
+        return { done: before.length, failed: data.items.length - before.length, before };
+      }
+      return { id: data.id || 'task-new' };
     },
-    render: async () => { calls.render++; },
+    // What the page draws after each render (By date's footer, rows).
+    render: async () => { calls.render++; calls.html = tasksPage(snapshot, { state, now: NOW }); },
     openModal: options => { calls.modals.push(options); return { querySelector: () => null }; },
     confirmModal: options => { calls.modals.push(options); },
     toast: (message, tone, action) => calls.toasts.push({ message, tone, action }),
@@ -374,9 +390,100 @@ test('By date: folds, a row unfolds alone, snooze, Sync now, Open in Todoist and
   assert.deepEqual([state.tasks.providerView, state.tasks.view], ['list', 'board']);
   await ctl.handle('tasks-view', control({ view: 'board' }));
   assert.equal(state.tasks.providerView, 'list', 'no Board with a provider');
-  // The done box in By date offers Undo in the footer.
-  await ctl.handle('task-done', control({ id: 'late-2' }, { type: 'checkbox', checked: true, closest: sel => (sel === '.ws-tdate' ? {} : null) }));
-  assert.deepEqual(calls.mutate.at(-1)[1].status, 'done');
-  assert.equal(state.tasks.footer.text, 'Marked 1 done');
-  assert.deepEqual(state.tasks.footer.undo, [{ id: 'late-2', due: '2026-11-17', status: 'doing' }]);
 });
+
+/** The By date done box of task `id`. */
+const doneBox = id => control({ id }, { type: 'checkbox', checked: true, closest: sel => (sel === '.ws-tdate' ? {} : null) });
+const footerOf = html => html.match(/<p class="ws-tdate-foot"[^]*?<\/p>/)?.[0].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+const rowIn = (html, id) => html.includes(`data-task="${id}"`);
+
+test('By date: every completion leaves the row and draws "Marked 1 done · Undo", and Undo brings it back', async () => {
+  const { ctl, state, calls } = harness({ snapshot: todoist() });
+  state.tasks.rowOpen = 'late-2';
+  // The done box.
+  await ctl.handle('task-done', doneBox('late-2'));
+  assert.ok(!rowIn(calls.html, 'late-2'), 'the row left');
+  assert.equal(footerOf(calls.html), '0 done today · Marked 1 done · Undo');
+  assert.equal(calls.toasts.length, 0, 'no toast of its own');
+  await ctl.handle('tasks-undo', control());
+  assert.deepEqual(calls.mutate.at(-1), ['task_bulk', { items: [{ id: 'late-2', due: '2026-11-17', status: 'doing' }] }]);
+  assert.ok(rowIn(calls.html, 'late-2'), 'back on the page');
+  assert.equal(footerOf(calls.html), '0 done today');
+  // Looks handled › Done finishes the same way.
+  await ctl.handle('task-handled', control({ id: 'handled', act: 'done' }));
+  assert.deepEqual(calls.mutate.at(-1), ['task_handled', { id: 'handled', action: 'done' }]);
+  assert.ok(!rowIn(calls.html, 'handled'));
+  assert.equal(footerOf(calls.html), '0 done today · Marked 1 done · Undo');
+  assert.equal(calls.toasts.length, 0);
+  await ctl.handle('tasks-undo', control());
+  assert.deepEqual(calls.mutate.at(-1), ['task_bulk', { items: [{ id: 'handled', due: '2026-11-18', status: 'todo' }] }]);
+});
+
+test('a failed Undo keeps the footer and its Undo; the Undo of another provider is dropped', async () => {
+  let fail = true;
+  const { ctl, state, calls, snapshot } = harness({ snapshot: todoist(), answers: { task_bulk: () => { if (fail) throw new Error('offline'); return { done: 1, failed: 0, before: [] }; } } });
+  state.tasks.footer = { text: 'Marked 1 done', undo: [{ id: 'late-1', due: '2026-11-16', status: 'todo' }], provider: 'plugin:todoist' };
+  await assert.rejects(ctl.handle('tasks-undo', control()), /offline/);
+  assert.equal(state.tasks.footer?.text, 'Marked 1 done', 'Undo stays to try again');
+  fail = false;
+  // Back to Local: the footer's Undo was Todoist's.
+  snapshot.taskProvider = STATES.local;
+  await ctl.handle('tasks-fold', control({ fold: 'next7' }));
+  assert.equal(state.tasks.footer, null);
+  const before = calls.mutate.length;
+  await ctl.handle('tasks-undo', control());
+  assert.equal(calls.mutate.length, before);
+});
+
+test('Late ⋯ acts on the tasks and the day the screen showed, in batches of 200', async () => {
+  const { ctl, state, calls } = harness({ snapshot: todoist() });
+  // Drawn yesterday: two late tasks and yesterday's Tomorrow, whatever the clock says now.
+  await ctl.handle('tasks-late-move', control({ to: 'tomorrow', day: '2026-11-18', ids: '["late-1","late-3"]' }));
+  assert.deepEqual(calls.mutate.at(-1), ['task_bulk', { items: [{ id: 'late-1', due: '2026-11-18' }, { id: 'late-3', due: '2026-11-18' }] }]);
+  assert.equal(state.tasks.footer.text, 'Moved 2 to Tomorrow');
+  assert.ok(calls.html.includes('Moved 2 to Tomorrow'), 'drawn');
+  await ctl.handle('tasks-late-done', control({ ids: '["late-2"]' }));
+  assert.deepEqual(calls.mutate.at(-1), ['task_bulk', { items: [{ id: 'late-2', status: 'done' }] }]);
+  // 450 shown: three writes of at most 200, one footer, one Undo over all of them.
+  const ids = Array.from({ length: 450 }, (_, i) => `x${i}`);
+  const big = harness({ snapshot: todoist(), answers: { task_bulk: d => ({ done: d.items.length, failed: 0, before: d.items.map(i => ({ id: i.id, due: null, status: 'todo' })) }) } });
+  await big.ctl.handle('tasks-late-move', control({ to: 'monday', day: '2026-11-23', ids: JSON.stringify(ids) }));
+  assert.deepEqual(big.calls.mutate.map(([, d]) => d.items.length), [200, 200, 50]);
+  assert.equal(big.state.tasks.footer.text, 'Moved 450 to Monday');
+  await big.ctl.handle('tasks-undo', control());
+  assert.deepEqual(big.calls.mutate.slice(3).map(([, d]) => d.items.length), [200, 200, 50]);
+});
+
+test('By date rows: a closed row has only its done box; an unfolded one at most three controls', async () => {
+  const snap = todoist();
+  snap.records.find(r => r.id === 'late-1').data.remote = { url: 'https://app.todoist.com/app/task/1' };
+  const { ctl, state, calls } = harness({ snapshot: snap });
+  await ctl.handle('tasks-fold', control({ fold: 'next7' }));
+  /** The controls of row `id` besides the row itself (its unfold button) and the done box,
+   *  outside its ⋯ and Snooze ▾ menus' panels. */
+  const controls = id => {
+    const row = calls.html.match(new RegExp(`<div class="ws-tdate-row[^"]*" data-task="${id}">[^]*?(?=<div class="ws-tdate-row|</div></div><footer|<section|$)`))[0];
+    const outside = row.replace(/<div class="ws-menu-panel">[^]*?<\/div><\/details>/g, '</details>');
+    return [...outside.matchAll(/<(button|summary)[^>]*>([^]*?)<\/\1>/g)]
+      .filter(m => !/ws-tdate-main/.test(m[0])).map(m => m[2].replace(/<[^>]+>/g, '').trim() || 'icon');
+  };
+  for (const id of ['late-1', 'late-3', 'handled', 'parked']) assert.deepEqual(controls(id), [], `${id} closed`);
+  // `tasks-older` only re-renders By date.
+  const redraw = () => ctl.handle('tasks-older', control());
+  state.tasks.rowOpen = 'late-3';
+  await redraw();
+  assert.deepEqual(controls('late-3'), ['Nudge Marek', 'Snooze ▾', 'icon']);
+  assert.match(calls.html, /data-action="task-nudge"[^>]*class="ws-btn ws-btn-primary|class="ws-btn ws-btn-primary[^"]*"[^>]*data-action="task-nudge"/);
+  assert.ok(!/class="ws-tdate-chip"/.test(calls.html), 'no date chips beside Snooze ▾');
+  const without = { 'late-1': ['Snooze ▾', 'icon'], handled: ['Done', 'Keep open', 'icon'], parked: ['Try again', 'Discard change', 'icon'] };
+  for (const [id, want] of Object.entries(without)) {
+    state.tasks.rowOpen = id;
+    await redraw();
+    assert.deepEqual(controls(id), want, id);
+  }
+  // Open in Todoist ↗ lives in the row's ⋯.
+  state.tasks.rowOpen = 'late-1';
+  await redraw();
+  assert.match(calls.html, /<div class="ws-menu-panel">[^]*?Open in Todoist ↗/);
+});
+

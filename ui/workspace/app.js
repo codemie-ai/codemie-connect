@@ -441,6 +441,10 @@ function announce(text) {
   setTimeout(() => { live.textContent = text; }, 30);
 }
 
+/** The day (workspace zone) the Tasks page was last drawn on; the minute timer draws it again
+ *  once that day has passed. */
+let tasksDrawnDay = null;
+
 async function render() {
   if (layoutDrag) {
     heldRender = true;
@@ -491,6 +495,7 @@ async function render() {
   if (state.route === 'automations') automationsUi.follow();
   if (['meetings', 'automations'].includes(state.route) && location.hash !== routeHash()) history.replaceState(null, '', routeHash());
   if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
+  if (state.route === 'tasks') tasksDrawnDay = dayKey(Date.now(), s.settings.timeZone);
   const pageClass = `ws-page ws-page-${state.route}`;
   const html = state.route === 'today' ? today(s, ctx)
     : state.route === 'calendar' ? calendar(s, ctx)
@@ -3171,10 +3176,13 @@ function tick() {
 }
 
 let minuteTimer;
+// Tasks is drawn again once the day it was drawn on has passed (By date's Late, Today and the
+// dates its menus offer), when nothing is open or being typed in.
 function scheduleMinuteRender() {
   clearTimeout(minuteTimer);
   minuteTimer = setTimeout(async () => {
-    if (ready && ['today', 'calendar', 'automations', 'meetings', 'analytics'].includes(state.route) && !modalOpen() && !editing()) await render().catch(() => {});
+    const tasksDue = state.route === 'tasks' && tasksDrawnDay && store?.get() && dayKey(Date.now(), snap().settings.timeZone) !== tasksDrawnDay;
+    if (ready && (['today', 'calendar', 'automations', 'meetings', 'analytics'].includes(state.route) || tasksDue) && !modalOpen() && !editing()) await render().catch(() => {});
     scheduleMinuteRender();
   }, 60_000 - (Date.now() % 60_000) + 50);
 }

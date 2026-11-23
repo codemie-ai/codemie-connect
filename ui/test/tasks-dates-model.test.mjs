@@ -151,7 +151,10 @@ test('datesView escapes provider text and draws only folds with rows', () => {
   // Sections, the Late menu, the banner, the parked row, the pending dot, the footer.
   assert.ok(html.includes('<h2') && html.includes('Late · 1') && html.includes('data-menu="tasks-late"'));
   assert.ok(html.includes('Todoist needs your API token.') && html.includes('Open Settings'));
-  assert.ok(html.includes('Not in Todoist yet') && html.includes('Try again') && html.includes('Discard change'));
+  assert.ok(html.includes('Not in Todoist yet') && html.includes('Bad &lt;img'), 'pending dot and parked sentence, folded');
+  assert.ok(!html.includes('Try again'), 'a folded row has no controls but its done box');
+  const parked = tasksPage(s, { state: { tasks: { ...newTasksView(), rowOpen: 'c' } }, now: NOW });
+  assert.ok(parked.includes('Try again') && parked.includes('Discard change'));
   assert.match(html, /role="status"[^>]*>[^]*0 done today/);
   assert.ok(!html.includes('Nothing late.') && open.includes('Today'));
   // Empty Late and Today say so.
@@ -183,4 +186,15 @@ test('defaultView: dates with a provider, board with Local; Board hidden with a 
   const list = tasksPage(snapshot([task('t', provider({ text: 'One' }))]), { state: { tasks: { ...newTasksView(), providerView: 'list' } }, now: NOW });
   const select = list.match(/data-action="task-status"[^]*?<\/select>/)[0];
   assert.deepEqual([...select.matchAll(/value="(\w+)"/g)].map(m => m[1]), ['todo', 'waiting', 'done']);
+});
+
+test('one primary per page: "Accept all" with two or more to review, every row Accept secondary', () => {
+  const primaries = html => [...html.matchAll(/<button[^>]*class="ws-btn ws-btn-primary[^"]*"[^>]*>([^]*?)<\/button>/g)].map(m => m[1].replace(/<[^>]+>/g, '').trim());
+  const review = n => Array.from({ length: n }, (_, i) => task(`r${i}`, provider({ status: 'review', text: `Review ${i}` })));
+  const two = tasksPage(snapshot(review(2)), { state: { tasks: newTasksView() }, now: NOW });
+  assert.deepEqual(primaries(two), ['Accept all']);
+  assert.ok((two.match(/data-action="task-accept"/g) || []).length === 2, 'each row keeps its Accept');
+  const one = tasksPage(snapshot(review(1)), { state: { tasks: newTasksView() }, now: NOW });
+  assert.ok(!one.includes('Accept all'));
+  assert.deepEqual(primaries(one), ['New task'], 'the header keeps the page primary');
 });

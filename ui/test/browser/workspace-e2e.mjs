@@ -18,6 +18,7 @@ import { layoutChecks } from './layout-checks.mjs';
 import { analyticsChecks } from './analytics-checks.mjs';
 import { compactChecks } from './compact-checks.mjs';
 import { replyChecks } from './reply-checks.mjs';
+import { tasksDatesChecks } from './tasks-dates-checks.mjs';
 import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
@@ -1424,7 +1425,7 @@ const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve
   timer = setTimeout(done, 150);
 }), limit).catch(() => {});
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null } = {}) {
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null, patch = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -1450,6 +1451,8 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (workspace) Object.assign(connected.workspaces.find(w => w.id === connected.settings.activeWorkspace), workspace);
   const snapshot = start === 'connected' ? connected : buildSnapshot(now, { connected: false, theme, zone: 'Europe/Kyiv' });
   if (settings) Object.assign(snapshot.settings, settings);
+  // A check's own changes to the snapshot (e.g. a task provider and its tasks), before the page loads.
+  if (patch) patch(snapshot, now);
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
   await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id) })})`);
@@ -1470,9 +1473,10 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply'].includes(process.env.WORKSPACE_E2E_ONLY)) {
-  if (process.env.WORKSPACE_E2E_ONLY === 'compact') await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+  if (process.env.WORKSPACE_E2E_ONLY === 'tasks-dates') await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'compact') await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'reply') await replyChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'analytics') await analyticsChecks({ open, check, assert, shot, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, settled, OUT });
@@ -3311,6 +3315,10 @@ await meetingChecks({ open, check, assert, shot, settled, OUT });
 // column, pins that vanish, the stored v1 layout, a plugin's minutes rendered safely, Default/
 // Compact markup parity, and nothing sent or written without a click.
 await meetingsViewChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// By date (task provider design §9): completions with the footer's Undo, the row controls, one
+// primary, the Late ⋯ over what the screen shows and the page drawn again at midnight.
+await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // Flexible layout (spec docs/superpowers/specs/2026-11-19-flexible-layout-design.md, E1–E8): Today
 // arranged by pen, mouse, touch and keys, saved layouts, page sections, the folding menus.

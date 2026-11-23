@@ -2263,16 +2263,14 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-tdate-due-late{color:var(--ws-red)}
 .ws-tdate-due-today{color:var(--ws-amber)}
 .ws-tdate-pending{flex:none;width:7px;height:7px;border-radius:50%;background:var(--ws-amber)}
-.ws-tdate-acts,.ws-tdate-handled,.ws-tdate-parked,.ws-tdate-chips{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;padding-left:26px;font-size:var(--ws-fs-secondary)}
-.ws-tdate-handled>span{display:inline-flex;align-items:center;gap:6px;min-width:0;color:var(--ws-green)}
+.ws-tdate-acts,.ws-tdate-handled,.ws-tdate-error{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;padding-left:26px;font-size:var(--ws-fs-secondary)}
+.ws-tdate-handled{color:var(--ws-green)}
 .ws-tdate-handled .ws-icon{width:14px;height:14px}
-.ws-tdate-error{flex-basis:100%;min-width:0;color:var(--ws-red)}
+.ws-tdate-error{min-width:0;color:var(--ws-red)}
 .ws-tdate-row-parked{box-shadow:inset 3px 0 0 var(--ws-red);padding-left:8px}
-.ws-tdate-snooze .ws-menu-panel{min-width:160px}
-.ws-tdate-chip{height:24px;padding:0 9px;border:1px solid var(--ws-border);border-radius:12px;background:var(--ws-raised);color:var(--ws-text);font-size:var(--ws-fs-secondary);white-space:nowrap}
-.ws-tdate-chip:hover{border-color:var(--ws-border-strong)}
+.ws-tdate-snooze .ws-menu-panel,.ws-tdate-more .ws-menu-panel{min-width:180px}
 .ws-tdate-fold+.ws-tdate-fold{border-top:1px solid var(--ws-border)}
-.ws-tdate-fold-btn{display:flex;align-items:center;gap:6px;width:100%;min-height:32px;padding:4px 0;border:0;background:none;color:var(--ws-text);text-align:left;font-size:var(--ws-fs-body-sm);font-weight:600}
+.ws-tdate-fold-btn{display:flex;align-items:center;gap:6px;width:100%;min-height:var(--ws-menu-item-h);padding:4px 0;border:0;background:none;color:var(--ws-text);text-align:left;font-size:var(--ws-fs-body-sm);font-weight:600}
 .ws-tdate-fold-btn .ws-icon{width:14px;height:14px;color:var(--ws-muted)}
 .ws-tdate-fold-btn>span:first-of-type{flex:1;min-width:0}
 .ws-tdate-count{color:var(--ws-muted);font-size:var(--ws-fs-secondary);font-weight:600}

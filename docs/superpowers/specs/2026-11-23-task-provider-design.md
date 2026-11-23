@@ -242,19 +242,18 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 
 ```
 ┌ Left ───────────────────────────────────────────┐ ┌ Right ────────────────────────────┐
-│ To review · 2                    Accept all     │ │ Later                             │
-│  ☐ Prepare the pilot user list · Philips sync   │ │ ▸ Next 7 days               6     │
+│ To review · 2                  [Accept all]     │ │ Later                             │
+│  Prepare the pilot user list · Philips  Accept  │ │ ▸ Next 7 days               6     │
 │ Late · 3                                   ⋯    │ │ ▸ No date                   9     │
-│  ✓ Send the follow-ups      · CLI review  2d    │ │ ▸ Later than that           2     │
-│  ✓ Check with Marek: pilot user list      1d    │ │                                   │
-│     Nudge Marek · Done · Snooze ▾                │ │                                   │
+│  ☐ Send the follow-ups      · CLI review  2d    │ │ ▸ Later than that           2     │
+│  ☐ Check with Marek: pilot user list ▾    1d    │ │                                   │
+│     [Nudge Marek]  Snooze ▾  ⋯                  │ │                                   │
 │ Today                                           │ │                                   │
-│  ✓ Approve the hotfix                           │ │                                   │
-│  ✓ Reply to Olga about SOW section 4            │ │                                   │
+│  ☐ Approve the hotfix                           │ │                                   │
+│  ☐ Reply to Olga about SOW section 4            │ │                                   │
 │     Looks handled · you replied in Teams 17:32  │ │                                   │
-│     Done · Keep open                            │ │                                   │
-│ 3 done today · Undo                             │ │                                   │
 └─────────────────────────────────────────────────┘ └───────────────────────────────────┘
+3 done today · Marked 1 done · Undo
 ```
 
 - **Groups** (in the workspace time zone): Late (open, due before today), Today (due today), and Later's folds:
@@ -263,19 +262,20 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
   - Later than that (due after 7 days).
 
   Each fold shows its count, is closed by default, and is drawn only when it has rows. An empty Late or Today shows "Nothing late." / "Nothing for today."
-- **To review · N** shows at the top while there are review tasks, with "Accept all" and per row Accept / Not a task. Accept sends the task to the provider.
-- **A row**: a done box ("Mark “<text>” done"), the text, a dim "· <meeting title>" or "· <sender>" when it has a source, and the due tone on the right ("2d late", "Mon"). A click on the row (not the box) unfolds its chips, closing any other:
-  - Late and Today: Tomorrow · Monday · Pick date…;
-  - Later: Today · Tomorrow · Pick date…;
-  - then Open in Todoist ↗ (`url`), Open meeting / Open message, and the row's details (the existing drawer).
-- **Check with rows**: a `waiting` task reads "Check with <first name>: <text>" (the owner's first name) and shows in the group of its due date, which is its check date. Its controls are:
-  - "Nudge <first name>", only when its source is a synced mail thread or Teams chat. It opens that thread in Inbox with the reply box filled with "Hi <first name>, any news on <text>?". Nothing is sent without the step-2 Send.
-  - "Done".
-  - "Snooze ▾", with the row's date chips.
-- **Looks handled** shows under the row, as in §6.
-- **Late ⋯**: "Move all to Tomorrow", "Move all to Monday", "Pick date…", "Done all". Each is one `task_bulk`, with "Moved 3 to Tomorrow · Undo" (or "Marked 3 done · Undo") in the footer.
-- **Footer**: "<n> done today" and the last action's Undo (`role="status"`).
-- **Pending and parked**: a pending row shows a small "Not in Todoist yet" dot with that title. A parked row shows the sentence in red with "Try again" and "Discard change".
+- **To review · N** shows at the top while there are review tasks. Each row has Accept (a normal button); unfolded also Not a task and ⋯. With two or more, "Accept all" is the page's one primary (New task is then a normal button). Accept sends the task to the provider.
+- **A row**: a done box ("Mark “<text>” done"), the text, a dim "· <meeting title>" or "· <sender>" when it has a source, and the due tone on the right ("2d late", "Mon"). Folded, its only control is the done box. A click on the row (not the box) unfolds it, closing any other, and shows at most three controls, the first its primary:
+  - a Check with row: "Nudge <first name>" (only with a synced thread), "Snooze ▾", ⋯;
+  - looks handled: "Done", "Keep open", ⋯;
+  - parked: "Try again", "Discard change", ⋯;
+  - any other row: "Snooze ▾", ⋯.
+
+  "Snooze ▾" holds the dates (Late and Today: Tomorrow · Monday · Pick date…; Later: Today · Tomorrow · Pick date…), the only place they are offered. ⋯ holds Open in Todoist ↗ (`url`), Open meeting / Open message, Details (the existing drawer) and Delete, and the dates when the row has no Snooze ▾.
+- **Done** is the done box (or Looks handled's "Done"): every completion in By date leaves its row and the footer says "Marked 1 done · Undo"; Undo puts back its status and date.
+- **Check with rows**: a `waiting` task reads "Check with <first name>: <text>" (the owner's first name) and shows in the group of its due date, which is its check date. "Nudge <first name>" opens that mail thread or Teams chat in Inbox with the reply box filled with "Hi <first name>, any news on <text>?". Nothing is sent without the step-2 Send.
+- **Looks handled** shows under the row, as in §6; its Done and Keep open show unfolded.
+- **Late ⋯**: "Move all to Tomorrow", "Move all to Monday", "Pick date…", "Done all", over the rows and the dates the screen shows. Each is one `task_bulk` (in batches of 200), with "Moved 3 to Tomorrow · Undo" (or "Marked 3 done · Undo") in the footer. The page is drawn again when the day turns.
+- **Footer**: at the end of the page, "<n> done today" and the last action's Undo (`role="status"`); the Undo stays until it went through and is dropped when the provider changes.
+- **Pending and parked**: a pending row shows a small "Not in Todoist yet" dot with that title. A parked row shows the sentence in red; unfolded, "Try again" and "Discard change".
 - **Banners** (one at a time, above the groups):
   - `needs_token`: "Todoist needs your API token." with "Open Settings";
   - `off`: "Todoist is turned off in Settings › Plugins. You're seeing the last copy; changes wait.";

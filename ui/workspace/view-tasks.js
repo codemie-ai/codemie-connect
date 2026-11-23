@@ -49,13 +49,16 @@ export function tasksPage(s, ctx = {}) {
   </div>${drawer(p)}`;
 }
 
+/** Tasks to review: with two or more, By date's "Accept all" is the page's one primary. */
+const reviewCount = p => p.all.filter(r => taskStatus(r) === 'review').length;
+
 function heading(p) {
   const views = viewsFor(p.s);
   return `<header class="ws-page-heading ws-tasks-heading">
     <div><h1>Tasks</h1><p class="ws-description">What people agreed to do in your meetings, and anything you add yourself. Drag cards between columns, or use a card’s menu.</p></div>
     <div class="ws-actions">
       <div class="ws-segmented" role="tablist" aria-label="View">${views.map(([id, label, ico]) => `<button type="button" role="tab" data-action="tasks-view" data-view="${id}" aria-selected="${p.v.shown === id}">${icon(ico)}${label}</button>`).join('')}</div>
-      ${button('New task', { action: 'task-new', variant: 'primary', iconName: 'plus' })}
+      ${button('New task', { action: 'task-new', variant: p.v.shown === 'dates' && reviewCount(p) > 1 ? 'secondary' : 'primary', iconName: 'plus' })}
     </div>
   </header>`;
 }

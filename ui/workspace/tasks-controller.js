@@ -18,6 +18,8 @@ export const quoted = value => String(value).replace(/["\\]/g, '\\$&');
 /** Below this gap between two neighbours a dropped card gets no order of its own (orders near
  *  1.8e9 have about 2^-21 of room), so the column is renumbered first. */
 const MIN_GAP = 1e-3;
+/** Native's `task_bulk` takes at most this many tasks a write. */
+const BULK_MAX = 200;
 
 /**
  * `state.tasks` is the page's view state (`newTasksView()`); `snap()` the current snapshot;
@@ -172,13 +174,9 @@ export function createTasksController({
     const t = find(id);
     if (!t) throw missing();
     const from = taskStatus(t);
-    if (el.type === 'checkbox') {
-      const to = el.checked ? 'done' : from === 'done' ? 'todo' : from;
-      const result = await move(id, to);
-      // By date's done box: the footer's Undo puts it back.
-      if (to === 'done' && el.closest?.('.ws-tdate')) ui().footer = { text: 'Marked 1 done', undo: [{ id, due: t.data.due ?? null, status: from }] };
-      return result;
-    }
+    // By date's done box finishes as every By date completion does.
+    if (el.type === 'checkbox' && el.checked && el.closest?.('.ws-tdate')) return finish(id, () => move(id, 'done'));
+    if (el.type === 'checkbox') return move(id, el.checked ? 'done' : from === 'done' ? 'todo' : from);
     await move(id, 'done');
     toast(`Done: “${short(t.data.text)}”`, 'success', { label: 'Undo', run: () => move(id, from) });
     return undefined;
@@ -270,29 +268,68 @@ export function createTasksController({
     });
   }
 
-  /** One `task_bulk` over Late; the footer says what happened, with Undo sending `before`. */
-  async function bulkLate(item, say) {
-    const late = groups().late;
-    if (!late.length) return null;
-    const answer = await mutate('task_bulk', { items: late.map(r => ({ id: r.id, ...item })) });
-    const n = Number(answer?.done) || 0;
-    ui().footer = n ? { text: say(n), undo: Array.isArray(answer?.before) ? answer.before : [] } : null;
-    if (answer?.failed) toast(`${plural(answer.failed, 'task')} couldn’t be changed.`, 'error');
+  /** By date's footer: the last action, with Undo sending `undo` back (the active provider's). */
+  const setFooter = (text, undo) => { ui().footer = { text, undo, provider: activeProvider(snap()) }; };
+
+  /** `task_bulk` over `items`, at most 200 a write (native's limit): `{done, failed, before}`. */
+  async function bulk(items) {
+    const all = { done: 0, failed: 0, before: [] };
+    for (let i = 0; i < items.length; i += BULK_MAX) {
+      const answer = await mutate('task_bulk', { items: items.slice(i, i + BULK_MAX) });
+      all.done += Number(answer?.done) || 0;
+      all.failed += Number(answer?.failed) || 0;
+      if (Array.isArray(answer?.before)) all.before.push(...answer.before);
+    }
+    return all;
+  }
+
+  /** A By date completion (the done box, Looks handled › Done): the row leaves and the footer
+   *  says "Marked 1 done · Undo", Undo putting back its date and status. */
+  async function finish(id, write) {
+    const t = find(id);
+    if (!t) throw missing();
+    const before = { id, due: t.data.due ?? null, status: taskStatus(t) };
+    if (ui().rowOpen === id) ui().rowOpen = null;
+    await write();
+    setFooter('Marked 1 done', [before]);
     return render();
   }
 
-  function moveLate(to) {
-    if (to === 'pick') return pickDate('Move late tasks to', day => bulkLate({ due: day }, n => `Moved ${n} to ${dayLabel(day)}`));
-    const day = dayFor(to, now(), zone());
-    if (!day) return null;
-    return bulkLate({ due: day }, n => `Moved ${n} to ${to === 'monday' ? 'Monday' : 'Tomorrow'}`);
+  /** The Late tasks the screen showed (the menu item's `data-ids`), else the Late tasks now. */
+  function shownLate(el) {
+    try {
+      const ids = JSON.parse(el.dataset?.ids || 'null');
+      if (Array.isArray(ids)) return ids.map(String);
+    } catch { /* drawn without ids */ }
+    return groups().late.map(r => r.id);
   }
 
+  /** One Late ⋯ action over the tasks shown; the footer says what happened, with Undo. */
+  async function bulkLate(ids, item, say) {
+    if (!ids.length) return null;
+    const answer = await bulk(ids.map(id => ({ id, ...item })));
+    if (answer.done) setFooter(say(answer.done), answer.before);
+    else ui().footer = null;
+    if (answer.failed) toast(`${plural(answer.failed, 'task')} couldn’t be changed.`, 'error');
+    return render();
+  }
+
+  function moveLate(el) {
+    const ids = shownLate(el);
+    const to = el.dataset?.to;
+    if (to === 'pick') return pickDate('Move late tasks to', day => bulkLate(ids, { due: day }, n => `Moved ${n} to ${dayLabel(day)}`));
+    // The day the menu was drawn with: a page left open past midnight moves what it said.
+    const day = el.dataset?.day || dayFor(to, now(), zone());
+    if (!day || !['tomorrow', 'monday'].includes(to)) return null;
+    return bulkLate(ids, { due: day }, n => `Moved ${n} to ${to === 'monday' ? 'Monday' : 'Tomorrow'}`);
+  }
+
+  /** The footer's Undo; it stays (to try again) until the write went through. */
   async function undoLast() {
     const f = ui().footer;
     if (!f?.undo?.length) return null;
+    await bulk(f.undo);
     ui().footer = null;
-    await mutate('task_bulk', { items: f.undo });
     return render();
   }
 
@@ -322,6 +359,8 @@ export function createTasksController({
     const id = el.dataset?.id;
     el.closest?.('details')?.removeAttribute('open');
     const v = ui();
+    // The footer's Undo belongs to the provider it was made with.
+    if (v.footer && v.footer.provider !== activeProvider(snap())) v.footer = null;
     switch (action) {
       case 'tasks-view': {
         // Local remembers its choice; a provider's lasts this session (By date first, no Board).
@@ -340,10 +379,12 @@ export function createTasksController({
         if (!t) throw missing();
         return pickDate(`Move “${short(t.data.text)}” to`, day => mutate('task_save', { id, due: day }));
       }
-      case 'tasks-late-move': return moveLate(el.dataset.to);
-      case 'tasks-late-done': return bulkLate({ status: 'done' }, n => `Marked ${n} done`);
+      case 'tasks-late-move': return moveLate(el);
+      case 'tasks-late-done': return bulkLate(shownLate(el), { status: 'done' }, n => `Marked ${n} done`);
       case 'tasks-undo': return undoLast();
-      case 'task-handled': return mutate('task_handled', { id, action: el.dataset.act === 'done' ? 'done' : 'keep' });
+      case 'task-handled':
+        if (el.dataset.act === 'done') return finish(id, () => mutate('task_handled', { id, action: 'done' }));
+        return mutate('task_handled', { id, action: 'keep' });
       case 'task-parked': return mutate('task_parked', { id, action: el.dataset.act === 'discard' ? 'discard' : 'retry' });
       case 'task-nudge': return nudge(id);
       case 'task-open-remote': return openRemote(id);
