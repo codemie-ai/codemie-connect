@@ -377,6 +377,43 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForSelector(`${row('mtg-vendor')}:has-text("Short summary")`, { timeout: 8000 });
       });
 
+      await check(`${tag}: tasks tab: each task in two lines; the date chip's menu sets and clears a date`, async () => {
+        await select(page, 'mtg-philips', 'all', 'tasks');
+        await page.waitForSelector('.ws-mtg-trow');
+        // Line 1: the title and Accept or the status; line 2: the owner and date chips side by side.
+        const rows = await page.$$eval('.ws-mtg-trow', list => list.map(r => {
+          const box = sel => r.querySelector(sel).getBoundingClientRect();
+          const title = box('.ws-mtg-trow-title');
+          const act = box('.ws-mtg-trow-act');
+          return { title: r.querySelector('.ws-mtg-trow-title').textContent, owner: Math.round(box('.ws-mtg-chip-owner').top), due: Math.round(box('.ws-mtg-due > summary').top), actOnTitleLine: act.top < title.bottom && act.bottom > title.top, chipsUnder: box('.ws-mtg-chip-owner').top >= title.bottom - 1 };
+        }));
+        assert(rows.length === 3 && rows.every(r => r.owner === r.due && r.actOnTitleLine && r.chipsUnder), JSON.stringify(rows));
+        // WebKit fills an empty date field with today: the rows show none.
+        assert(await page.locator('.ws-mtg-trow input[type=date]:visible').count() === 0, 'no date field on the rows');
+        await noOverflow(page, 'task rows');
+        await shot(page, `${tag}-meetings-task-rows`);
+        const due = '.ws-mtg-trow:has-text("Add the by-id endpoint") details.ws-mtg-due';
+        await page.click(`${due} > summary:has-text("Add date")`);
+        await page.waitForSelector(`${due}[open] .ws-menu-panel`);
+        // A background update keeps the menu open.
+        await page.evaluate(() => window.__refresh());
+        await settled(page);
+        assert(await page.locator(`${due}[open]`).count() === 1, 'the date menu stays open through a refresh');
+        await shot(page, `${tag}-meetings-task-due-menu`);
+        const tomorrow = await page.getAttribute(`${due} [data-action="task-due-pick"]:has-text("Tomorrow")`, 'data-value');
+        const saves = (await calls(page, 'task_save')).length;
+        await page.click(`${due} [data-action="task-due-pick"]:has-text("Tomorrow")`);
+        await page.waitForFunction(n => window.__bridgeCalls.filter(([o]) => o === 'task_save').length > n, saves);
+        const sent = await lastCall(page, 'task_save');
+        assert(sent.id === 'task-endpoint' && sent.due === tomorrow, JSON.stringify(sent));
+        await page.waitForSelector(`${due}:not([open]) > summary.ws-due-soon:has-text("Tomorrow")`);
+        // No date clears it again.
+        await page.click(`${due} > summary`);
+        await page.click(`${due} [data-action="task-due-pick"]:has-text("No date")`);
+        await page.waitForSelector(`${due}:not([open]) > summary:has-text("Add date")`);
+        assert((await lastCall(page, 'task_save')).due === null, 'cleared');
+      });
+
       await check(`${tag}: Make notes for all goes on past a meeting whose folder is gone`, async () => {
         await setFilter(page, 'all');
         // What Make notes for N takes: the card's transcripts without notes (saved or still in Teams).

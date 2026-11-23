@@ -8,7 +8,7 @@ import { icon } from './icons.js';
 import { avatar, badge, button, card, emptyState, toggle } from './ui.js';
 import { agoLabel, durationLabel, formatTime } from './format.js';
 import { renderMarkdown } from './markdown.js';
-import { columnName, isMine, meOf, ownerOf, peopleFor, taskStatus } from './tasks-model.js';
+import { columnName, dueInfo, isMine, meOf, ownerOf, peopleFor, quickDates, taskStatus } from './tasks-model.js';
 import { meetingErrors, meetingTasks, peopleOf, resolveTemplate, ruleText, tabsOf, templatesOf } from './meetings-model.js';
 
 export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -500,7 +500,13 @@ export function transcriptTab(p, mc) {
 
 // ---------------------------------------------------------------- tasks
 
-function ownerSelect(p, t) {
+/** A quiet chip that is a native select underneath: the select covers the chip, transparent, so
+ *  a click opens the system list and the keyboard works as on any select. */
+const selectChip = ({ cls, title }, inner, attrs, options) => `<span class="ws-mtg-chip ${cls}" title="${e(title)}">${inner}${icon('chevron-down', 'ws-mtg-chip-caret')}<select class="ws-select" ${attrs}>${options}</select></span>`;
+
+/** The owner chip: the face and name, or "Check owner" in amber while Connect isn't sure of a task
+ *  to review (its face still shows whom it guessed). */
+function ownerChip(p, t) {
   const me = meOf(p.s);
   const people = peopleFor(p.s, t, me);
   const current = String(t.data.owner || '').trim().toLowerCase();
@@ -510,7 +516,28 @@ function ownerSelect(p, t) {
   const opts = list => list.map(x => option(x.key, label(x), pick(x))).join('');
   const body = people.meeting.length ? `${option('', 'Nobody named', !current)}<optgroup label="In this meeting">${opts(people.meeting)}</optgroup><optgroup label="Everyone else">${opts(people.others)}</optgroup>` : `${option('', 'Nobody named', !current)}${opts(people.others)}`;
   const owner = ownerOf(t, me);
-  return `<span class="ws-mtg-owner">${owner.key ? avatar({ name: owner.name, size: 20, seed: owner.seed }) : `<span class="ws-task-nobody" style="--size:20px" aria-hidden="true">${icon('user')}</span>`}${selectBox(`data-action="task-owner" data-id="${e(t.id)}" aria-label="Owner of ${e(t.data.text)}"`, body)}</span>`;
+  const unsure = taskStatus(t) === 'review' && t.data.confidence === 'low';
+  const face = owner.key ? avatar({ name: owner.name, size: 18, seed: owner.seed }) : `<span class="ws-task-nobody" style="--size:18px" aria-hidden="true">${icon('user')}</span>`;
+  const text = unsure ? `${icon('alert')}<span>Check owner</span>` : `<span>${e(owner.name)}</span>`;
+  const title = unsure ? `Connect isn’t sure ${owner.name} takes this: check the owner` : `Owner: ${owner.name}`;
+  return selectChip({ cls: `ws-mtg-chip-owner${unsure ? ' ws-mtg-chip-warn' : ''}`, title }, `${face}${text}`, `data-action="task-owner" data-id="${e(t.id)}" aria-label="Owner of ${e(t.data.text)}"`, body);
+}
+
+/** The due date chip ("Add date", or the board's due text and tone) and its menu: the quick picks,
+ *  a date field, and No date when there is one. The row shows no date field of its own: WebKit
+ *  fills an empty one with today's date. */
+function dueMenu(p, t) {
+  const due = t.data.due || '';
+  const done = taskStatus(t) === 'done';
+  const info = dueInfo(due, p.now, p.zone);
+  const tone = info && !done ? ` ws-due-${info.tone}` : '';
+  const picks = [...quickDates(p.now, p.zone), ...(due ? [['No date', '']] : [])]
+    .map(([label, day]) => `<button type="button" class="ws-menu-item" data-action="task-due-pick" data-id="${e(t.id)}" data-value="${day}">${icon(day ? 'calendar' : 'close')}<span>${label}</span></button>`).join('');
+  return `<details class="ws-menu ws-mtg-due" data-menu="due-${e(t.id)}">
+    <summary class="ws-mtg-chip ws-mtg-chip-due${tone}${info ? '' : ' ws-mtg-chip-empty'}" title="${e(info ? info.title : 'Add a due date')}" aria-label="Due date of ${e(t.data.text)}: ${e(info ? info.text : 'none')}">${icon('calendar')}<span>${e(info ? info.text : 'Add date')}</span></summary>
+    <div class="ws-menu-panel"><div class="ws-menu-label">Due</div>${picks}<hr>
+      <label class="ws-mtg-due-field"><span>Pick a date</span><input type="date" class="ws-input" value="${e(due)}" data-commit="task-due" data-id="${e(t.id)}" aria-label="Due date of ${e(t.data.text)}"></label>
+    </div></details>`;
 }
 
 /** The Tasks tab; `alone` under the explainer of a meeting without a transcript: its tasks and
@@ -534,17 +561,15 @@ export function tasksTab(p, mc, { alone = false } = {}) {
   const row = t => {
     const status = taskStatus(t);
     const isReview = status === 'review';
-    return `<div class="ws-mtg-trow${isReview ? ' ws-mtg-trow-review' : ''}${status === 'done' ? ' ws-mtg-trow-done' : ''}">
-      <label class="ws-check" title="${status === 'done' ? 'Mark as not done' : 'Mark as done'}"><input type="checkbox" data-action="task-done" data-id="${e(t.id)}"${status === 'done' ? ' checked' : ''} aria-label="${status === 'done' ? 'Reopen' : 'Mark as done'}: ${e(t.data.text)}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
-      <div class="ws-mtg-trow-main">
-        <button type="button" class="ws-mtg-trow-title" data-action="task-open-today" data-id="${e(t.id)}">${e(t.data.text)}</button>
-        ${quote(t)}
-        ${isReview && t.data.confidence === 'low' ? `<span class="ws-mtg-low">${icon('alert')}Not sure about the owner — check it</span>` : ''}
-      </div>
-      ${ownerSelect(p, t)}
-      <input type="date" class="ws-input ws-mtg-date" value="${e(t.data.due || '')}" data-commit="task-due" data-id="${e(t.id)}" aria-label="Due date of ${e(t.data.text)}">
-      ${isReview ? `<span class="ws-mtg-trow-act">${button('', { action: 'task-dismiss', iconName: 'close', variant: 'ghost', size: 'sm', title: 'Dismiss — not a task', attrs: { 'data-id': t.id } })}${button('Accept', { action: 'task-accept', variant: 'primary', size: 'sm', iconName: 'check', attrs: { 'data-id': t.id } })}</span>`
-    : selectBox(`data-action="task-status" data-id="${e(t.id)}" aria-label="Status of ${e(t.data.text)}"`, ['todo', 'doing', 'waiting', 'done'].map(c => option(c, columnName(c, p.s.settings), status === c)).join(''), 'ws-mtg-status')}
+    const done = status === 'done';
+    // Line 1: the check, the title and what to do; line 2: owner, due date and where it was said.
+    return `<div class="ws-mtg-trow${isReview ? ' ws-mtg-trow-review' : ''}${done ? ' ws-mtg-trow-done' : ''}">
+      <label class="ws-check" title="${done ? 'Mark as not done' : 'Mark as done'}"><input type="checkbox" data-action="task-done" data-id="${e(t.id)}"${done ? ' checked' : ''} aria-label="${done ? 'Reopen' : 'Mark as done'}: ${e(t.data.text)}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
+      <button type="button" class="ws-mtg-trow-title" data-action="task-open-today" data-id="${e(t.id)}">${e(t.data.text)}</button>
+      <span class="ws-mtg-trow-act">${isReview
+    ? `${button('', { action: 'task-dismiss', iconName: 'close', variant: 'ghost', size: 'sm', title: 'Dismiss — not a task', attrs: { 'data-id': t.id } })}${button('Accept', { action: 'task-accept', variant: 'primary', size: 'sm', iconName: 'check', attrs: { 'data-id': t.id } })}`
+    : selectChip({ cls: 'ws-mtg-chip-status', title: 'Status' }, `<span>${e(columnName(status, p.s.settings))}</span>`, `data-action="task-status" data-id="${e(t.id)}" aria-label="Status of ${e(t.data.text)}"`, ['todo', 'doing', 'waiting', 'done'].map(c => option(c, columnName(c, p.s.settings), status === c)).join(''))}</span>
+      <div class="ws-mtg-trow-meta">${ownerChip(p, t)}${dueMenu(p, t)}${quote(t)}</div>
     </div>`;
   };
   const empty = alone ? '' : m.state === 'ready'

@@ -2544,30 +2544,46 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
 .ws-mtg-tasks-head .ws-btn{align-self:center}
 .ws-mtg-tasks-hint{margin:0 0 6px;font-family:var(--font-sans);font-size:13px;color:var(--ws-muted)}
 .ws-mtg-trows{display:grid}
-/* Owner, date and status read as quiet text until pointed at. */
-.ws-mtg-trow .ws-mtg-owner .ws-select,.ws-mtg-trow .ws-mtg-status .ws-select,.ws-mtg-trow .ws-mtg-date{border-color:transparent;background-color:transparent;box-shadow:none;color:var(--ws-muted)}
-.ws-mtg-trow:hover .ws-mtg-owner .ws-select,.ws-mtg-trow:hover .ws-mtg-status .ws-select,.ws-mtg-trow:hover .ws-mtg-date,.ws-mtg-trow .ws-select:focus,.ws-mtg-trow .ws-mtg-date:focus{border-color:var(--ws-input-border);background-color:var(--ws-input);color:var(--ws-text)}
-.ws-mtg-trow{display:grid;grid-template-columns:24px minmax(0,1fr) 180px 136px auto;align-items:start;gap:12px;padding:12px 0;border-top:1px solid var(--ws-border)}
+/* A task in two lines: the check, its title and what to do; under them quiet chips (owner, due
+   date) and where it was said. Owner and status are native selects laid over their chips. */
+.ws-mtg-trow{display:grid;grid-template-columns:20px minmax(0,1fr) auto;grid-template-areas:"check title act" ". meta meta";column-gap:10px;row-gap:5px;align-items:center;padding:10px 0;border-top:1px solid var(--ws-border)}
 .ws-mtg-trow:first-child{border-top:0;padding-top:4px}
-.ws-mtg-trow>.ws-check{margin-top:3px}
+.ws-mtg-trow>.ws-check{grid-area:check}
 .ws-mtg-trow-review{background:linear-gradient(90deg,color-mix(in srgb,var(--ws-purple) 8%,transparent),transparent 60%);margin:0 -18px;padding-left:18px;padding-right:18px}
 .ws-mtg-trow-done .ws-mtg-trow-title{text-decoration:line-through;color:var(--ws-muted)}
-.ws-mtg-trow-main{display:grid;gap:6px;min-width:0}
-.ws-mtg-trow-title{border:0;background:none;padding:0;text-align:left;color:var(--ws-text);font-size:14px;font-weight:600;line-height:20px;overflow-wrap:anywhere}
+.ws-mtg-trow-title{grid-area:title;min-width:0;border:0;background:none;padding:0;text-align:left;color:var(--ws-text);font-size:14px;font-weight:600;line-height:20px;overflow-wrap:break-word}
 .ws-mtg-trow-title:hover{color:var(--ws-link)}
+.ws-mtg-trow-act{grid-area:act;display:flex;gap:4px;align-items:center}
+.ws-mtg-trow-meta{grid-area:meta;display:flex;align-items:center;gap:6px;min-width:0}
+.ws-mtg-trow-meta>small{white-space:nowrap}
+.ws-mtg-chip{position:relative;display:inline-flex;align-items:center;gap:5px;flex-shrink:0;max-width:200px;height:24px;box-sizing:border-box;padding:0 8px;border:1px solid transparent;border-radius:12px;background:var(--ws-raised);color:var(--ws-muted);font-size:11px;font-weight:600;line-height:1;white-space:nowrap;cursor:pointer}
+.ws-mtg-chip>span:not(.ws-avatar):not(.ws-task-nobody){min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ws-mtg-chip .ws-icon{width:12px;height:12px;flex-shrink:0}
+.ws-mtg-chip-caret{opacity:.55}
+.ws-mtg-chip-owner{padding-left:3px}
+.ws-mtg-chip:hover,.ws-mtg-chip:focus-within,.ws-mtg-due[open]>.ws-mtg-chip{border-color:var(--ws-border-strong);color:var(--ws-text)}
+.ws-mtg-chip:has(select:focus-visible){outline:2px solid var(--ws-focus);outline-offset:2px}
+.ws-mtg-chip>select.ws-select{position:absolute;inset:0;width:100%;height:100%;min-height:0;padding:0;border:0;opacity:0;cursor:pointer}
+.ws-mtg-chip-empty{background:none;border:1px dashed var(--ws-border)}
+.ws-mtg-chip-warn{background:var(--ws-amber-bg);color:var(--ws-amber)}
+.ws-mtg-chip.ws-due-overdue{background:var(--ws-red-bg);color:var(--ws-red)}
+.ws-mtg-chip.ws-due-today{background:var(--ws-amber-bg);color:var(--ws-amber)}
+.ws-mtg-chip.ws-due-soon{background:var(--ws-blue-bg);color:var(--ws-blue)}
+.ws-mtg-chip-status{padding-left:10px}
+.ws-mtg-due{flex-shrink:0}
+.ws-mtg-due .ws-menu-panel{min-width:180px}
+.ws-mtg-due .ws-menu-item{width:100%}
+.ws-mtg-due-field{display:grid;gap:4px;padding:4px 6px 2px;font-size:11px;color:var(--ws-muted)}
+.ws-mtg-due-field .ws-input{height:30px;font-size:12px}
+:root.dark .ws-mtg-due-field input{color-scheme:dark}
 .ws-mtg-quote{display:flex;align-items:flex-start;gap:6px;border:0;background:none;padding:0;text-align:left;color:var(--ws-muted);font-family:var(--font-sans);font-size:12px;line-height:17px;min-width:0}
 .ws-mtg-quote .ws-icon{width:12px;height:12px;flex-shrink:0;margin-top:2px;color:var(--ws-faint)}
 .ws-mtg-quote span{flex:1;min-width:0}
 .ws-mtg-quote em{font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--ws-blue);flex-shrink:0}
 .ws-mtg-quote:hover span{color:var(--ws-text)}
-.ws-mtg-low{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:var(--ws-amber)}
-.ws-mtg-low .ws-icon{width:12px;height:12px}
-.ws-mtg-owner{display:flex;align-items:center;gap:6px;min-width:0}
-.ws-mtg-owner .ws-select-wrap{flex:1;min-width:0}
-.ws-mtg-owner .ws-select,.ws-mtg-status .ws-select{height:30px;font-size:12px}
-.ws-mtg-date{height:30px;font-size:12px;padding:0 8px;min-width:0;width:100%;box-sizing:border-box}
-.ws-mtg-trow-act{display:flex;gap:4px;align-items:center}
-.ws-mtg-status{min-width:112px}
+.ws-mtg-trow-meta .ws-mtg-quote{flex:1;align-items:center;margin-left:4px}
+.ws-mtg-trow-meta .ws-mtg-quote .ws-icon{margin-top:0}
+.ws-mtg-trow-meta .ws-mtg-quote span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ws-mtg-add-task{display:flex;align-items:center;gap:8px;margin-top:12px;padding-top:12px;border-top:1px dashed var(--ws-border);color:var(--ws-faint)}
 .ws-mtg-add-task .ws-input{flex:1;min-width:0}
 .ws-mtg-add-task .ws-select-wrap{width:170px;flex-shrink:0}
@@ -2599,15 +2615,15 @@ mark.ws-mtg-hit{background:color-mix(in srgb,var(--ws-amber) 40%,transparent);co
   .ws-mtg-form-grid{grid-template-columns:minmax(0,1fr)}
   .ws-mtg-compare{grid-template-columns:minmax(0,1fr)}
   .ws-mtg-hide-narrow{display:none}
-  .ws-mtg-trow{grid-template-columns:24px minmax(0,1fr) auto}
-  .ws-mtg-trow .ws-mtg-owner,.ws-mtg-trow .ws-mtg-date{grid-column:2}
-  .ws-mtg-trow .ws-mtg-date{max-width:180px}
   .ws-mtg-file{grid-template-columns:32px minmax(0,1fr) auto}
   .ws-mtg-file-size{display:none}
   .ws-mtg-line{grid-template-columns:52px 30px minmax(0,1fr);padding-right:10px}
   .ws-md{padding:8px 18px 22px}
 }
 @container (max-width:560px){
+  /* The quote goes under the chips. */
+  .ws-mtg-trow-meta{flex-wrap:wrap;row-gap:4px}
+  .ws-mtg-trow-meta .ws-mtg-quote{flex-basis:100%;margin-left:0}
   /* Narrow: the buttons keep the first line, the title takes the full width under them. */
   .ws-mtg-head-title{flex-wrap:wrap;row-gap:4px}
   .ws-mtg-head-copy{order:2;flex-basis:100%}

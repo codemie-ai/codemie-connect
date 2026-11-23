@@ -22,7 +22,7 @@ import { bootWorkspace, notificationWorkspaceToSelect } from '../workspace/boot.
 import { controlSelector, soleMatch } from '../workspace/ui.js';
 import { tasksPage } from '../workspace/view-tasks.js';
 import { createTasksController } from '../workspace/tasks-controller.js';
-import { newTasksView } from '../workspace/tasks-model.js';
+import { dueInfo, newTasksView, quickDates } from '../workspace/tasks-model.js';
 import { meetings, makeNotesBody, shownCall } from '../workspace/view-meetings.js';
 import { createMeetingsController } from '../workspace/meetings-controller.js';
 import { callOfMeeting, meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
@@ -1738,6 +1738,40 @@ test('tasks: "2 to review · 1 on the board", Accept only on tasks to review', (
   // Nothing to review: just how many.
   for (const t of s.records.filter(r => r.kind === 'commitment' && r.data.meetingId === 'mtg-philips')) t.data.status = 'todo';
   assert.match(detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'tasks' }))), /<h3>3 tasks<\/h3>/);
+});
+
+test('tasks: two lines — owner and date chips, a date menu, no bare date field', () => {
+  const s = meetingsSnapshot();
+  const tab = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips', tab: 'tasks' })));
+  const rows = tab.split(/<div class="ws-mtg-trow(?=[" ])/).slice(1);
+  assert.equal(rows.length, 3);
+  const rowFor = id => rows.find(r => r.includes(`data-id="${id}"`)) || '';
+  for (const r of rows) {
+    assert.equal((r.match(/class="ws-mtg-trow-meta"/g) || []).length, 1);
+    // The only date field is inside the date menu: WebKit shows today's date in an empty one.
+    assert.doesNotMatch(outsideMenus(r), /type="date"/);
+    assert.match(r, /<select class="ws-select" data-action="task-owner" data-id="task-/);
+  }
+  // No date yet: "Add date"; the menu has the quick picks and a date field, and nothing to clear.
+  const endpoint = rowFor('task-endpoint');
+  const menu = endpoint.match(/<details class="ws-menu[^"]*ws-mtg-due"[^]*?<\/details>/)?.[0] || '';
+  assert.match(menu, /data-menu="due-task-endpoint"/);
+  assert.match(menu, /<summary[^>]*>[^]*?Add date/);
+  for (const [label, day] of quickDates(MEET_NOW, 'UTC')) assert.match(menu, new RegExp(`data-action="task-due-pick" data-id="task-endpoint" data-value="${day}"[^>]*>[^]*?${label}<`), label);
+  assert.match(menu, /type="date"[^>]*data-commit="task-due" data-id="task-endpoint"/);
+  assert.doesNotMatch(menu, /No date/);
+  assert.match(endpoint, /data-action="task-dismiss"[^>]*data-id="task-endpoint"/);
+  assert.match(endpoint, /data-action="task-accept"[^>]*data-id="task-endpoint"/);
+  // A due date: the board's text and tone, No date to clear it; on the board: the status pill.
+  const legal = rowFor('task-legal-req');
+  const due = dueInfo(s.records.find(r => r.id === 'task-legal-req').data.due, MEET_NOW, 'UTC');
+  assert.match(legal, new RegExp(`<summary class="[^"]*ws-due-${due.tone}[^>]*>[^]*?${due.text}`));
+  assert.match(legal, /data-action="task-due-pick" data-id="task-legal-req" data-value=""[^>]*>[^]*?No date</);
+  assert.match(legal, /data-action="task-status" data-id="task-legal-req"/);
+  assert.doesNotMatch(legal, /task-accept/);
+  // An owner Connect isn't sure of: the chip says so (no separate warning line).
+  assert.match(rowFor('task-pilot-list'), /ws-mtg-chip-warn[^]*?Check owner/);
+  assert.doesNotMatch(tab, /Not sure about the owner — check it<\/span>/);
 });
 
 test('a meeting without a transcript keeps its tasks and the add form under its card', () => {
