@@ -595,17 +595,18 @@ async function c7Flush(page, { assert, settled, calls }) {
   }
 }
 
-/** Send's save drops the pending autosave: one save of the text, none 1.5 s later. */
+/** Send's save drops the pending autosave: one save of the text, none 1.5 s later, and the sent
+ *  text does not come back (a Teams reply sends on the click). */
 async function c7Send(page, { assert, settled, calls }) {
   await openReplyRow(page, settled, 'c-reply-1');
   const before = (await calls(page, 'draft_save')).length;
   await page.fill('.ws-crow-body #reply-body', 'send me');
   await page.click('.ws-crow-body [data-action="reply-send"]');
-  await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
+  await page.waitForSelector('.ws-crow-body .ws-reply-status:has-text("Sent to Jordan.")');
   await page.waitForTimeout(1900);
   const saves = (await calls(page, 'draft_save')).slice(before);
   assert(saves.length === 1 && saves[0].text === 'send me', `saves around a send: ${JSON.stringify(saves.map(d => d.text))}`);
-  await page.click('.ws-modal[open] button:has-text("Cancel")');
+  assert(await page.locator('.ws-crow-body #reply-body').inputValue() === '', 'the sent text came back');
 }
 
 /** C1: Settings › Appearance → View. Compact applies at once (attributes, mirror, no reload) and

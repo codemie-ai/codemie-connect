@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { clickRow, enterRow, escRow, nextAfter, followOpen, retrySource } from '../workspace/inbox-open.js';
 import { inbox } from '../workspace/view-inbox.js';
 import { buildSnapshot } from './fixtures/workspace-fixture.mjs';
+import { draftKeyOf } from '../workspace/selectors.js';
 
 const ctx = (state = {}, view = 'compact') => ({
   state: { lane: 'reply', channel: 'all', search: '', showArchived: false, showSnoozed: false, inboxLimit: 200, selectedMessage: null, openMessage: null, threadAll: new Set(), ...state },
@@ -101,6 +102,18 @@ test('Default and Compact draw the same reply bar', () => {
   assert.ok(def, 'Default draws a reply bar');
   assert.equal(def, compact);
   assert.doesNotMatch(inbox(s, ctx({ selectedMessage: 'c-reply-1' }, 'default')), /ws-read-actions/);
+});
+
+test('after a send the status line says where it went, with a link to the conversation; a failure reads as an error', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const key = draftKeyOf(s.records.find(r => r.id === 'c-reply-1'));
+  const sent = inbox(s, ctx({ selectedMessage: 'c-reply-1', openMessage: 'c-reply-1', replyStatus: { [key]: { text: 'Sent to Jordan.', url: 'https://teams.microsoft.com/l/message/fixture' } } }));
+  assert.match(sent, /<span class="ws-reply-status" role="status">Sent to Jordan\. <button type="button" class="ws-link" data-action="source" data-kind="message" data-id="c-reply-1">Open in Teams ↗<\/button><\/span>/);
+  const mail = inbox(s, ctx({ selectedMessage: 'm-reply-1', openMessage: 'm-reply-1', replyStatus: { 'm-reply-1': { text: 'Sent to Priya.', url: 'https://outlook.office.com/mail/fixture' } } }));
+  assert.match(mail, /Sent to Priya\. <button[^>]*data-action="source"[^>]*data-id="m-reply-1">Open in Outlook ↗</);
+  const failed = inbox(s, ctx({ selectedMessage: 'c-reply-1', openMessage: 'c-reply-1', replyStatus: { [key]: { text: 'Allow replies in <Settings> first.', tone: 'error' } } }));
+  assert.match(failed, /<span class="ws-reply-status ws-reply-status-error" role="status">Allow replies in &lt;Settings&gt; first\.<\/span>/);
+  assert.match(inbox(s, ctx({ selectedMessage: 'c-reply-1', openMessage: 'c-reply-1', replyStatus: { [key]: 'Sending…' } })), /<span class="ws-reply-status" role="status">Sending…<\/span>/);
 });
 
 test('the empty box offers ✦ draft with AI; text brings the change line', () => {

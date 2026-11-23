@@ -15,7 +15,8 @@ import { GRID, todayOf } from './today-grid.js';
 import { activateTab, loadDock, saveDock, setCollapsed, visibleTabs } from './dock-model.js';
 import { attachDock } from './dock-controller.js';
 import { calendar, eventDetails, eventActions, HOUR_HEIGHT, CALENDAR_DOCK } from './view-calendar.js';
-import { inbox, filteredMessages, snoozeUntil, draftChecks, changeLine, INBOX_DOCK } from './view-inbox.js';
+import { inbox, filteredMessages, snoozeUntil, draftChecks, changeLine, replyStatusHtml, INBOX_DOCK } from './view-inbox.js';
+import { sendTarget, primaryAction, confirmLines, sendKeyAllowed } from './reply-model.js';
 import {
   optionsKey, readOptions, pickOption, draftRequest, reconcile, answer, replyBox, runningLabel, chooseOption, draftChoices, draftGaps, unfinishedParts, claudeAvailable, claudeCheck,
   startChange, changeRequest,
@@ -269,6 +270,7 @@ function applyView(view) {
 
 function setView(view) {
   flushReplySave();
+  state.replyTouched = null;
   applyView(view);
   closeRow();
   return mutate('settings_update', { view });
@@ -1189,10 +1191,17 @@ function applyArrivedDraft(s) {
   state.drafts[key] = next.ui;
   if (next.action === 'fill' && field.value !== next.text) {
     field.value = next.text;
+    // Text the app put in the box is not the user's: ⌘↩ waits for their next click or keystroke.
+    disarmSendKey(key);
     syncReplyBox(field);
   }
   if (next.save != null) queueReplySave(m, next.save).catch(fail);
   return true;
+}
+
+/** ⌘↩ no longer sends this conversation's reply until the user clicks or types in its box again. */
+function disarmSendKey(key) {
+  if (state.replyTouched === key) state.replyTouched = null;
 }
 
 /** Remembers which text in the box came from Claude, so editing it later counts as the user's. */
@@ -1292,11 +1301,13 @@ function queueReplySave(m, text) {
   return run;
 }
 
-/** Writes a conversation's status line, on screen at once and in the next render. */
-function showReplyStatus(key, text) {
-  state.replyStatus[key] = text;
-  const status = root.querySelector(`form[data-form="reply"][data-key="${CSS.escape(key)}"] .ws-reply-status`);
-  if (status) status.textContent = text;
+/** Writes a conversation's status line (text, or `{ text, tone, url }`), on screen at once and in
+ *  the next render. */
+function showReplyStatus(key, status) {
+  state.replyStatus[key] = status;
+  const line = root.querySelector(`form[data-form="reply"][data-key="${CSS.escape(key)}"] .ws-reply-status`);
+  const m = line && getRecord('message', line.closest('form').dataset.id);
+  if (m) line.outerHTML = replyStatusHtml(status, m);
 }
 
 /**
@@ -1322,7 +1333,8 @@ function syncReplyBox(field) {
   if (hasText && !change) form?.querySelector('.ws-reply-bar')?.insertAdjacentHTML('beforebegin', changeLine({ disabled: field.disabled || !!form.querySelector('.ws-draft-running') }));
   else if (!hasText && change && !change.contains(document.activeElement)) change.remove();
   const primary = form?.querySelector('[data-needs-text]');
-  if (primary && !primary.hasAttribute('data-locked')) primary.disabled = !field.value.trim();
+  // A send in flight keeps Send disabled through any re-render: one click, one message.
+  if (primary && !primary.hasAttribute('data-locked')) primary.disabled = !field.value.trim() || replyInFlight.has(form.dataset.key);
   const checks = form?.querySelector('[data-draft-checks]');
   if (!checks || !store?.get()) return;
   checks.innerHTML = draftChecks(field.value, latestDraft(snap(), form.dataset.key)?.data.text);
@@ -1393,6 +1405,7 @@ function confirmUnfinished(parts, { submit, then }) {
     submit,
     cancel: 'Edit reply',
     size: 'sm',
+    returnCancels: true,
     onSubmit: async (_form, dialog) => {
       dialog.close();
       await then();
@@ -1996,7 +2009,7 @@ function newEventDialog() {
   });
 }
 
-function reviewAction(result, { onSent } = {}) {
+function reviewAction(result) {
   const review = result.review || {};
   const people = review.recipients || review.attendees || [];
   openModal({
@@ -2012,9 +2025,9 @@ function reviewAction(result, { onSent } = {}) {
     </div>`,
     submit: review.start ? 'Create event' : 'Send reply',
     workspaceId: result.workspaceId,
+    returnCancels: true,
     onSubmit: async () => {
       const r = await mutate('action_confirm', { actionId: result.actionId, nonce: result.nonce });
-      onSent?.();
       toast(r.message || 'Sent for delivery.', 'success');
     },
   });
@@ -2477,6 +2490,8 @@ async function handle(action, el, ev) {
       const next = answer(draftUi(key), latestDraft(s, key), choice, field?.value ?? '');
       state.drafts[key] = next.ui;
       if (field && field.value !== next.text) field.value = next.text;
+      // The box now holds what the app chose: ⌘↩ waits for the user's next touch.
+      if (choice !== 'forget') disarmSendKey(key);
       if (next.save != null) await queueReplySave(m, next.save);
       else await render();
       document.getElementById('reply-body')?.focus({ preventScroll: true });
@@ -2576,31 +2591,105 @@ async function submitForm(form) {
       // A re-render can replace the form mid-request; never prepare two sends for one reply.
       if (replyInFlight.has(key)) return undefined;
       const body = String(f.get('body') || '');
+      const chat = getRecord('message', id)?.data.channel === 'chat';
       const open = unfinishedParts(body, latestDraft(snap(), key)?.data.text);
-      if (open.length) return confirmUnfinished(open, { submit: 'Review anyway', then: () => prepareReply(id, body) });
-      replyInFlight.add(key);
-      try {
-        return await prepareReply(id, body);
-      } finally {
-        replyInFlight.delete(key);
-      }
+      if (open.length) return confirmUnfinished(open, { submit: chat ? 'Send anyway' : 'Review anyway', then: () => guardedSend(key, id, body) });
+      return guardedSend(key, id, body);
     }
     default: return undefined;
   }
 }
 
-async function prepareReply(id, body) {
+/** One send per reply at a time: a second click, ⌘↩ or a re-rendered form mid-send sends nothing. */
+async function guardedSend(key, id, body) {
+  if (replyInFlight.has(key)) return undefined;
+  replyInFlight.add(key);
+  syncReplyBox(document.getElementById('reply-body'));
+  try {
+    return await sendReply(id, body);
+  } finally {
+    replyInFlight.delete(key);
+    syncReplyBox(document.getElementById('reply-body'));
+  }
+}
+
+/**
+ * Sends the reply in the box (DESIGN 6.4 Sending), on the user's click or armed ⌘↩: saves it, has
+ * native prepare it, then a Teams reply is confirmed in the same click and an Outlook reply asks
+ * "Send this reply?" first. A failure keeps the text and puts native's sentence in the status line.
+ */
+async function sendReply(id, body) {
   const m = getRecord('message', id);
+  if (!m) throw new Error('This conversation is no longer available. Refresh and try again.');
   if (!body.trim()) throw new Error('Write a reply first.');
-  await queueReplySave(m, body);
-  const result = await mutate('action_prepare', { kind: m.data.channel === 'mail' ? 'mail_reply' : 'chat_reply', sourceId: id, body });
-  // Once the reply is sent there is nothing left to restore.
-  return reviewAction(result, {
-    onSent: () => {
-      if (state.drafts[draftKeyOf(m)]) state.drafts[draftKeyOf(m)].restore = null;
-      delete state.replyCarry[draftKeyOf(m)];
+  const key = draftKeyOf(m);
+  const chat = m.data.channel === 'chat';
+  let result;
+  try {
+    await queueReplySave(m, body);
+    if (chat) showReplyStatus(key, 'Sending…');
+    result = await mutate('action_prepare', { kind: chat ? 'chat_reply' : 'mail_reply', sourceId: id, body });
+    if (!chat) return mailConfirm(result, m);
+    await mutate('action_confirm', { actionId: result.actionId, nonce: result.nonce });
+  } catch (err) {
+    showReplyStatus(key, { text: err?.message || String(err), tone: 'error' });
+    return undefined;
+  }
+  return afterSent(m);
+}
+
+/**
+ * The short Outlook confirm (DESIGN 6.4): where the mail goes — To (a Reply-To the thread never
+ * showed tagged "(new)"), Cc, the subject and the signature — not the body, which is on screen.
+ * Cancel is focused and Return cancels; Send takes a click or Space.
+ */
+function mailConfirm(result, m) {
+  return openModal({
+    title: 'Send this reply?',
+    subtitle: `${result.account || 'Microsoft 365'} · expires in 5 minutes`,
+    body: `<div class="ws-review">${confirmLines(result.review || {}).map(line => `<p>${e(line)}</p>`).join('')}</div>`,
+    submit: 'Send',
+    cancel: 'Cancel',
+    size: 'sm',
+    returnCancels: true,
+    workspaceId: result.workspaceId,
+    onSubmit: async () => {
+      try {
+        await mutate('action_confirm', { actionId: result.actionId, nonce: result.nonce });
+      } catch (err) {
+        if (err?.code === 'review_expired') throw new Error('This confirm expired. Click Send again.');
+        throw err;
+      }
+      await afterSent(m);
     },
   });
+}
+
+/**
+ * A sent reply: the box empties, its saved reply goes through the save queue (so no pending
+ * autosave brings the text back), the carried text, Restore and the ⌘↩ arming go, and the status
+ * line says where it went. The row stays where it is; no toast.
+ */
+async function afterSent(m) {
+  const key = draftKeyOf(m);
+  const field = document.getElementById('reply-body');
+  if (field?.closest('form')?.dataset.key === key) {
+    field.value = '';
+    field.defaultValue = '';
+    syncReplyBox(field);
+  }
+  delete state.replyCarry[key];
+  // Claude's draft that was sent is done with: the emptied box does not offer it again.
+  const ai = latestDraft(snap(), key);
+  state.drafts[key] = { ...draftUi(key), restore: null, confirm: null, baseline: null, changeFrom: null, ...(ai ? { kept: ai.revision } : {}) };
+  state.replyTouched = null;
+  showReplyStatus(key, { text: `Sent to ${sendTarget(snap(), m) || 'the chat'}.`, url: m.data.url });
+  try {
+    await queueReplySave(m, '');
+  } catch (err) {
+    fail(err);
+  }
+  if (!modalOpen()) await render();
 }
 
 // ---------------------------------------------------------------- events
@@ -2636,6 +2725,8 @@ document.addEventListener('click', async ev => {
     fail(err);
   } finally {
     el.disabled = false;
+    // The reply's Send and Copy follow their box (text, a send in flight), not the click.
+    if (el.hasAttribute('data-needs-text')) syncReplyBox(document.getElementById('reply-body'));
   }
 });
 
@@ -2670,6 +2761,7 @@ document.addEventListener('submit', async ev => {
     fail(err);
   } finally {
     buttons.forEach(b => { b.disabled = false; });
+    if (form.dataset.form === 'reply') syncReplyBox(document.getElementById('reply-body'));
   }
 });
 
@@ -2774,6 +2866,22 @@ document.addEventListener('keydown', ev => {
   if (ev.metaKey || ev.ctrlKey || !(ev.key.length === 1 || ['Backspace', 'Delete', 'Enter'].includes(ev.key))) return;
   touchReply(ev.target);
 }, true);
+
+// ⌘↩ in the Inbox runs the visible Send as a click would (DESIGN 6.4), only once the user has
+// clicked or typed in this reply box, never on a held key, and never with a confirm, popover,
+// sheet or menu open. Otherwise it does nothing. The change line and the draft popover keep
+// their own ⌘↩ (they handle it first, in capture).
+document.addEventListener('keydown', ev => {
+  if (!ready || state.route !== 'inbox' || ev.key !== 'Enter' || !(ev.metaKey || ev.ctrlKey) || ev.isComposing) return;
+  if (ev.defaultPrevented) return;
+  ev.preventDefault();
+  const form = root.querySelector('form[data-form="reply"]');
+  const m = form && getRecord('message', form.dataset.id);
+  const send = form?.querySelector('[data-action="reply-send"]');
+  if (!m || !send || send.disabled) return;
+  const blocked = modalOpen() || sheetOpen() || !!state.draftPopover || !!document.querySelector('details.ws-menu[open]');
+  if (sendKeyAllowed({ touchedKey: state.replyTouched, key: form.dataset.key, repeat: ev.repeat, blocked, primaryKind: primaryAction(snap(), m).kind })) form.requestSubmit(send);
+});
 
 // The change line: Return sends the words (never the reply form), Esc empties a field with words
 // in it and goes no further; an empty field lets Esc through to the row.

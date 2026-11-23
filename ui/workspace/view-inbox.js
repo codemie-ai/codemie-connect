@@ -367,8 +367,19 @@ export function replyBar(s, m, state, { empty = true, locked = false } = {}) {
     `<label class="ws-menu-field"><span>Move to lane</span>${laneSelect(m)}</label>`,
     menuItem('commitment', 'check-circle', 'Add a task', { 'data-id': m.id }),
   ].join('');
-  const status = state.replyStatus?.[key] || '';
-  return `<div class="ws-reply-bar" role="group" aria-label="Reply actions">${primary}${ack || snoozeMenu(m)}<details class="ws-menu" data-menu="reply-more"><summary class="ws-btn ws-btn-ghost ws-btn-icon" aria-label="More actions" aria-haspopup="menu">${icon('dots')}</summary><div class="ws-menu-panel" role="menu">${items}</div></details><span class="ws-reply-status" role="status">${e(status)}</span></div>`;
+  return `<div class="ws-reply-bar" role="group" aria-label="Reply actions">${primary}${ack || snoozeMenu(m)}<details class="ws-menu" data-menu="reply-more"><summary class="ws-btn ws-btn-ghost ws-btn-icon" aria-label="More actions" aria-haspopup="menu">${icon('dots')}</summary><div class="ws-menu-panel" role="menu">${items}</div></details>${replyStatusHtml(state.replyStatus?.[key], m)}</div>`;
+}
+
+/**
+ * The action line's status: a plain line ("Saved on this device", "Sending…"), or `{ text, tone,
+ * url }` — after a send, "Sent to …" with "Open in Teams ↗" / "Open in Outlook ↗"; a failure in
+ * the error tone.
+ */
+export function replyStatusHtml(status, m) {
+  const s = typeof status === 'string' ? { text: status } : status || { text: '' };
+  const where = m.data.channel === 'chat' ? 'Teams' : 'Outlook';
+  const link = s.url ? ` <button type="button" class="ws-link" data-action="source" data-kind="message" data-id="${e(m.id)}">Open in ${where} ↗</button>` : '';
+  return `<span class="ws-reply-status${s.tone === 'error' ? ' ws-reply-status-error' : ''}" role="status">${e(s.text || '')}${link}</span>`;
 }
 
 const chips = (field, choices, current) => `<div class="ws-draft-chips" role="group" aria-labelledby="draft-${field}-label">${choices.map(([value, label]) => `<button type="button" class="ws-draft-chip" data-action="ai-draft-pick" data-draft-${field}="${value}" aria-pressed="${value === current}">${e(label)}</button>`).join('')}</div>`;

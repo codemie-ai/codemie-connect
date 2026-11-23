@@ -168,8 +168,8 @@ function generalPanel(s, storage = {}) {
 
 const WRITE_CAPS = [
   ['calendar_write', 'Create calendar events', 'Schedule events from Connect. You review every event before it is created.', 'calendar'],
-  ['mail_send', 'Reply in Outlook', 'Send Outlook replies you wrote and reviewed in Connect.', 'mail'],
-  ['chat_send', 'Reply in Teams', 'Reply in existing Teams chats after review.', 'chat'],
+  ['mail_send', 'Reply in Outlook', 'Send Outlook replies from Connect. You see To, Cc and the subject before each one goes.', 'mail'],
+  ['chat_send', 'Reply in Teams', 'Send Teams replies from Connect when you click Send. They go at once.', 'chat'],
 ];
 
 function microsoftPanel(s, auth) {
@@ -226,7 +226,7 @@ function microsoftPanel(s, auth) {
   });
   const permissions = card({
     title: 'Allow actions', iconName: 'shield',
-    body: `<p class="ws-muted ws-hint">Connect reads only by default. Turn on an action and Microsoft asks you to approve it once. Every action is shown for review before anything is sent.</p>
+    body: `<p class="ws-muted ws-hint">Connect reads only by default. Turn on an action and Microsoft asks you to approve it once. Nothing is sent without your click.</p>
       ${WRITE_CAPS.map(([cap, title, text, ico]) => settingRow({ iconName: ico, title, text, control: toggle({ action: 'graph-permission', checked: c.enabled.includes(cap), attrs: { 'data-cap': cap, 'aria-label': title, disabled: needsLogin || pending } }) })).join('')}`,
   });
   return account + synced + permissions + advancedRegistration(s);

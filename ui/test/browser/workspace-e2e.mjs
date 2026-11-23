@@ -1751,34 +1751,97 @@ for (const theme of ['dark', 'light']) {
     await page.click('[data-action="ai-draft-choice"][data-option="Yes, 11:00 works for me"]');
     const value = await page.locator('#reply-body').inputValue();
     assert(value.startsWith('Yes, 11:00 works for me. If that changes') && !value.includes('['), value);
-    await page.click('[data-action="reply-send"]');
-    await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
-    assert((await lastCall(page, 'action_prepare')).body.startsWith('Yes, 11:00 works for me'), 'review shows the chosen option');
-    await page.click('.ws-modal[open] button:has-text("Cancel")');
-    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
-    assert(!(await page.evaluate(() => window.__bridgeCalls)).some(([op]) => op === 'action_confirm'), 'Cancel sent something');
+    // Teams sends on the click: no dialog, action_prepare then action_confirm with its nonce.
+    const before = (await page.evaluate(() => window.__bridgeCalls)).length;
+    assert(await text(page, '[data-action="reply-send"]') === 'Send to Jordan', `primary reads ${await text(page, '[data-action="reply-send"]')}`);
+    // A double click sends one message.
+    await page.dblclick('[data-action="reply-send"]');
+    await page.waitForSelector('.ws-reply-status:has-text("Sent to Jordan.")', { timeout: 4000 });
+    assert(await page.locator('.ws-modal[open]').count() === 0, 'a Teams send opened a dialog');
+    const sent = (await page.evaluate(() => window.__bridgeCalls)).slice(before).filter(([op]) => op.startsWith('action_'));
+    assert(sent.length === 2 && sent[0][0] === 'action_prepare' && sent[0][1].kind === 'chat_reply' && sent[0][1].body.startsWith('Yes, 11:00 works for me')
+      && sent[1][0] === 'action_confirm' && sent[1][1].actionId === 'action-1' && sent[1][1].nonce === 'nonce-1', JSON.stringify(sent));
+    assert(await page.locator('.ws-reply-status [data-action="source"]:has-text("Open in Teams ↗")').count() === 1, 'no Open in Teams ↗ after the send');
+    assert(await page.locator('#reply-body').inputValue() === '', 'the box keeps the sent text');
+    assert(await page.locator('.ws-toasts .ws-toast').count() === 0, 'a Teams send toasts');
+    // No pending autosave brings the sent text back as a saved reply.
+    await page.waitForTimeout(1800);
+    const left = await page.evaluate(() => window.__workspace.store.get().snapshot.records.find(r => r.kind === 'draft' && r.id === 'manual:c-reply-1')?.data.text);
+    assert(left === undefined, `the sent text is still saved: ${JSON.stringify(left)}`);
+    assert(await page.locator('#reply-body').inputValue() === '', 'the sent text came back');
+    await page.waitForTimeout(250);
+    await shot(page, `${theme}-reply-sent-teams`);
   });
 
   await check(`${theme}: the user's own brackets send without a warning`, async () => {
+    await page.click('.ws-inbox-row[data-id="m-reply-1"]');
+    await page.waitForSelector('.ws-read[data-message-id="m-reply-1"] #reply-body');
     await page.fill('#reply-body', 'Merged in [EPMCDME-1234], the rest is [WIP]. [Yes / No] for the demo?');
+    assert(await text(page, '[data-action="reply-send"]') === 'Send to Priya…', `primary reads ${await text(page, '[data-action="reply-send"]')}`);
+    const before = (await page.evaluate(() => window.__bridgeCalls)).length;
     await page.click('[data-action="reply-send"]');
-    await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
+    await page.waitForSelector('.ws-modal[open]:has-text("Send this reply?")');
     assert(await page.locator('.ws-modal[open]:has-text("Finish your reply first?")').count() === 0, 'warned about hand-written brackets');
     assert(await page.locator('.ws-draft-todo:not([hidden]) .ws-draft-choice').count() === 0, 'hand-written brackets listed as choices');
+    const dialog = await text(page, '.ws-modal[open] .ws-modal-body');
+    assert(dialog.includes('To: priya.n@example.test') && dialog.includes('Signature: none — Connect sends your text as written') && !dialog.includes('(new)'), dialog);
+    assert(/expires in 5 minutes/.test(await text(page, '.ws-modal[open] .ws-modal-header p')), 'no expiry in the subtitle');
+    assert(await page.evaluate(() => document.activeElement?.textContent.trim() === 'Cancel'), 'Cancel is not focused');
+    await page.waitForTimeout(250);
+    await shot(page, `${theme}-reply-mail-confirm`);
     await page.click('.ws-modal[open] button:has-text("Cancel")');
     await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+    const after = (await page.evaluate(() => window.__bridgeCalls)).slice(before).map(([op]) => op);
+    assert(after.includes('action_prepare') && !after.includes('action_confirm'), `Cancel sent something: ${after}`);
+    assert(await page.locator('#reply-body').inputValue().then(v => v.startsWith('Merged in')), 'Cancel emptied the box');
   });
 
   await check(`${theme}: a background sync while replying never blocks Review or Send`, async () => {
     await page.fill('#reply-body', 'Thanks, see you at 11.');
     await page.evaluate(() => { window.__syncBump = true; });
     await page.click('[data-action="reply-send"]');
-    await page.waitForSelector('.ws-modal[open]:has-text("Review before sending")');
+    await page.waitForSelector('.ws-modal[open]:has-text("Send this reply?")');
     await page.evaluate(() => { window.__syncBump = true; });
+    // The commit guard ignores a Send right after the dialog opens.
+    await page.waitForTimeout(500);
     await page.click('.ws-modal[open] button[type=submit]');
-    await page.waitForSelector('.ws-toast:has-text("Sent for delivery")');
+    await page.waitForSelector('.ws-reply-status:has-text("Sent to Priya.")', { timeout: 4000 });
+    await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+    assert(await page.locator('.ws-reply-status [data-action="source"]:has-text("Open in Outlook ↗")').count() === 1, 'no Open in Outlook ↗ after the send');
     assert(await page.locator('.ws-toasts .ws-toast-error').count() === 0, `an error toast appeared: ${await page.locator('.ws-toasts .ws-toast-error').allInnerTexts()}`);
-    assert((await lastCall(page, 'action_confirm'))?.actionId, 'the mock bridge got the confirm');
+    assert((await lastCall(page, 'action_confirm'))?.nonce === 'nonce-1', 'the mock bridge got the confirm');
+    assert(await page.locator('#reply-body').inputValue() === '', 'the box keeps the sent text');
+  });
+
+  await check(`${theme}: ⌘↩ waits for your touch: a draft that arrives disarms it, a click arms it once`, async () => {
+    await page.click('.ws-inbox-row[data-id="c-reply-1"]');
+    await page.waitForSelector('.ws-read[data-message-id="c-reply-1"] #reply-body');
+    // The user touches the box, then Claude fills it: ⌘↩ must not send text they have not touched since.
+    await page.click('#reply-body');
+    await page.keyboard.type('x');
+    await page.keyboard.press('Backspace');
+    await plan(page, { outcome: 'hold' });
+    await page.click('[data-action="ai-draft-regenerate"]');
+    await page.waitForSelector('.ws-draft-running:has-text("Drafting with")', { timeout: 4000 });
+    await page.evaluate(() => window.__finishDraft({ outcome: 'ok', text: 'Sure, the notes are attached.', questions: [] }));
+    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Sure, the notes are attached.', null, { timeout: 4000 });
+    const before = (await page.evaluate(() => window.__bridgeCalls)).length;
+    await page.focus('#reply-body');
+    await page.keyboard.press('Meta+Enter');
+    await page.waitForTimeout(400);
+    const armed = (await page.evaluate(() => window.__bridgeCalls)).slice(before).map(([op]) => op).filter(op => op.startsWith('action_'));
+    assert(armed.length === 0, `⌘↩ sent Claude's untouched draft: ${armed}`);
+    // A click in the box arms it: ⌘↩ sends once; the send disarms it, so ⌘↩ again sends nothing.
+    await page.click('#reply-body');
+    await page.keyboard.down('Meta');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('.ws-reply-status:has-text("Sent to Jordan.")', { timeout: 4000 });
+    await page.keyboard.press('Enter');
+    await page.keyboard.up('Meta');
+    await page.waitForTimeout(300);
+    const ops = (await page.evaluate(() => window.__bridgeCalls)).slice(before).map(([op]) => op).filter(op => op.startsWith('action_'));
+    assert(ops.join() === 'action_prepare,action_confirm', `⌘↩ sent ${ops}`);
+    assert(await page.locator('#reply-body').inputValue() === '', 'the box keeps the sent text');
   });
 
   await check(`${theme}: a draft arriving while you type asks first, in the same box; Restore survives edits`, async () => {
@@ -1926,6 +1989,8 @@ for (const theme of ['dark', 'light']) {
     assert(await p.locator('.ws-reply-bar > .ws-btn-primary[data-action="reply-copy"]').count() === 1, 'Copy reply is not the primary');
     await p.click('[data-action="reply-copy"]');
     await p.waitForSelector('.ws-modal[open]:has-text("Finish your reply first?")');
+    // Return cancels this dialog, and its commit guard ignores a click right after it opens.
+    await p.waitForTimeout(450);
     await p.click('.ws-modal[open] button:has-text("Copy anyway")');
     await p.waitForFunction(() => window.__copied?.startsWith('[Yes, 11:00 works for me'));
     await p.click('[data-action="ai-draft-choice"][data-option="Yes, 11:00 works for me"]');

@@ -159,3 +159,11 @@ test('the Layout tab draws its panel in Settings', () => {
   assert.match(html, /<h2>Layout<\/h2>/);
   assert.match(html, /Today layouts/);
 });
+
+test('Allow actions says a Teams reply goes on the click', () => {
+  const html = page('microsoft');
+  assert.match(html, /Connect reads only by default\. Turn on an action and Microsoft asks you to approve it once\. Nothing is sent without your click\./);
+  assert.match(html, /Send Outlook replies from Connect\. You see To, Cc and the subject before each one goes\./);
+  assert.match(html, /Send Teams replies from Connect when you click Send\. They go at once\./);
+  assert.doesNotMatch(html, /Every action is shown for review before anything is sent/);
+});

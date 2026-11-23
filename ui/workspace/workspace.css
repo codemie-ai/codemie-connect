@@ -1124,6 +1124,7 @@ button.ws-stat:hover{border-color:var(--ws-border-strong)}
 .ws-reply-bar .ws-menu-item:disabled{opacity:.42;cursor:default;pointer-events:none}
 .ws-reply-status{margin-left:auto;font-size:var(--ws-fs-meta);color:var(--ws-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .ws-reply-status:empty{display:none}
+.ws-reply-status-error{color:var(--ws-red);white-space:normal}
 .ws-msg-flags .ws-flag-ai{color:var(--ws-purple);font-weight:600}
 
 /* ------------------------------------------------------------------ Reply drafts with Claude */
