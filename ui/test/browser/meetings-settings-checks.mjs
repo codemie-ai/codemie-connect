@@ -193,9 +193,13 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
           await page.click('[data-menu="meetings-filter"] > summary');
           await page.click('[data-menu="meetings-filter"] [data-action="meeting-filter"][data-filter="all"]');
           await page.click('.ws-mtg-row[data-id="mtg-philips"]');
-          const notesTab = '[data-action="dock-tab"][data-page="meetings"][data-tab="mtg-notes"]';
-          await page.waitForSelector(notesTab);
-          if (await page.locator(`${notesTab}[aria-selected="true"]`).count() === 0) await page.click(notesTab);
+          // The Notes pane, behind the meeting's ⋯.
+          await page.waitForSelector('.ws-mtg-strip > .ws-menu > summary');
+          await settled(page);
+          if (!/\/notes$/.test(await page.evaluate(() => location.hash))) {
+            await page.click('.ws-mtg-strip > .ws-menu > summary');
+            await page.click('.ws-mtg-strip > .ws-menu [data-action="meeting-pane"][data-pane="notes"]');
+          }
           // The document's ⋯ is the last menu of the toolbar over the notes.
           const docMenu = '.ws-mtg-doctools [data-menu="doc-mtg-philips-meeting-notes-left"]';
           await page.waitForSelector(`${docMenu} > summary`);

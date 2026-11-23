@@ -1,12 +1,12 @@
 // The Meetings controller with its store, dialogs and navigation faked: opening a meeting from
 // anywhere, the Make notes dialog, Side by side, editing a document against its version, and the
-// page's sections (the list's section, the meeting's tabs side by side, the header above them).
+// page's sections (the list's section and the meeting's: its header, strip and panes).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMeetingsController } from '../workspace/meetings-controller.js';
 import { listModel, listOrder, meetingItems, newMeetingsView } from '../workspace/meetings-model.js';
-import { meetings, MEETINGS_DOCK } from '../workspace/view-meetings.js';
-import { activateTab, loadDock, moveTab, normalizeDock, paneOf, saveDock, setCollapsed, visibleTabs } from '../workspace/dock-model.js';
+import { legacyMeetingsLayout, meetings, MEETINGS_DOCK } from '../workspace/view-meetings.js';
+import { loadDock, moveTab, normalizeDock, paneOf, saveDock, setCollapsed } from '../workspace/dock-model.js';
 import { WIDGETS } from '../workspace/view-today.js';
 import { newTasksView } from '../workspace/tasks-model.js';
 import { buildSnapshot, withMeetings, meetingContract, meetingFolders } from './fixtures/workspace-fixture.mjs';
@@ -14,8 +14,8 @@ import { buildSnapshot, withMeetings, meetingContract, meetingFolders } from './
 const NOW = Date.UTC(2026, 10, 18, 15, 20);
 const snapshot = () => withMeetings(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), NOW);
 
-/** The page's sections as app.js keeps them, over `layout`: `collapse` and `show` change it the
- *  way the section controller and the hash do; `calls` lists what was collapsed or expanded. */
+/** The page's sections as app.js keeps them, over `layout`: `collapse` changes it the way the
+ *  section controller does; `calls` lists what was collapsed or expanded. */
 function fakeDock(layout = normalizeDock(MEETINGS_DOCK, null)) {
   const calls = [];
   const dock = {
@@ -25,8 +25,6 @@ function fakeDock(layout = normalizeDock(MEETINGS_DOCK, null)) {
       layout = setCollapsed(layout, MEETINGS_DOCK, id, on).layout;
       return true;
     },
-    visible: () => visibleTabs(layout),
-    show: id => { layout = setCollapsed(activateTab(layout, id), MEETINGS_DOCK, id, false).layout; },
   };
   return { dock, calls, get layout() { return layout; } };
 }
@@ -37,12 +35,10 @@ const reads = id => ({ transcript: FOLDERS[id] ? { segments: FOLDERS[id].segment
 const page = (s, view, layout) => meetings(s, { state: { meetings: { ...newMeetingsView(), ...view }, tasks: newTasksView() }, now: NOW, banners: '', reads, dock: { layouts: { meetings: layout }, locked: false } });
 /** One section of a drawn page, from its tag to the next divider. */
 const sectionOf = (html, id) => html.match(new RegExp(`<section class="ws-pane[^"]*" data-pane="${id}"[^]*?(?=<div class="ws-split"|$)`))?.[0] || '';
-/** Transcript dragged out of the meeting's section, onto `side` of it. */
-const transcriptApart = side => moveTab(normalizeDock(MEETINGS_DOCK, null), MEETINGS_DOCK, 'mtg-transcript', { type: 'split', pane: 'p2', side }).layout;
 
 /** A controller over fakes; `answers` maps an op to what it returns (a function of the data, a
  *  value, or an error to throw). */
-function harness({ answers = {}, s = snapshot(), view = {}, dock } = {}) {
+function harness({ answers = {}, s = snapshot(), view = {}, dock, timer } = {}) {
   const calls = { mutate: [], query: [], render: 0, toasts: [], modals: [], routes: [], focus: [], copied: [], saved: [], prefs: [] };
   const state = { route: 'meetings', meetings: { ...newMeetingsView(), ...view }, tasks: newTasksView() };
   const answer = (op, data) => {
@@ -66,6 +62,7 @@ function harness({ answers = {}, s = snapshot(), view = {}, dock } = {}) {
     setPref: (key, value) => calls.prefs.push([key, value]),
     now: () => NOW,
     ...(dock ? { dock } : {}),
+    ...(timer ? { timer } : {}),
   });
   const record = id => s.records.find(r => r.kind === 'meeting' && r.id === id);
   return { ctl, state, calls, s, record };
@@ -78,26 +75,36 @@ const form = fields => {
 };
 const failure = (code, message = code) => Object.assign(new Error(message), { code });
 
-test('open() switches the filter so the meeting is visible and sets the tab', async () => {
-  const { ctl, state, calls } = harness({ view: { filter: 'ready', q: 'philips' } });
+test('open() with no pane uses Open a meeting on; the same meeting keeps its pane; a line opens Transcript', async () => {
+  const { ctl, state, calls, s } = harness({ view: { filter: 'ready', q: 'philips' } });
   await ctl.open('mtg-sprint', 'transcript');
-  assert.deepEqual([state.meetings.filter, state.meetings.q, state.meetings.selected, state.meetings.tab], ['all', '', 'mtg-sprint', 'transcript']);
+  assert.deepEqual([state.meetings.filter, state.meetings.q, state.meetings.selected, state.meetings.pane], ['all', '', 'mtg-sprint', 'transcript']);
   assert.deepEqual(calls.routes.at(-1), ['meetings']);
-  // Another meeting without a tab opens on Notes; a meeting without a transcript turns the switch on.
+  // Another meeting without a pane opens on the setting (Summary by default); a meeting without
+  // a transcript turns the switch on.
   await ctl.open('mtg-planning');
-  assert.deepEqual([state.meetings.filter, state.meetings.showNone, state.meetings.tab], ['all', true, 'notes']);
+  assert.deepEqual([state.meetings.filter, state.meetings.showNone, state.meetings.pane], ['all', true, 'summary']);
+  s.settings.meetings = { ...s.settings.meetings, openOn: 'notes' };
   // Upcoming meetings live under Upcoming.
   await ctl.open('ev-next');
-  assert.equal(state.meetings.filter, 'upcoming');
+  assert.deepEqual([state.meetings.filter, state.meetings.pane], ['upcoming', 'notes']);
   // A lane that already shows the meeting stays.
   state.meetings.filter = 'ready';
   await ctl.open('mtg-philips', 'files');
-  assert.deepEqual([state.meetings.filter, state.meetings.tab], ['ready', 'files']);
-  // The same meeting again without a tab keeps its tab; a task quote lands on its line.
+  assert.deepEqual([state.meetings.filter, state.meetings.pane], ['ready', 'files']);
+  // The same meeting again without a pane keeps its pane; a task quote lands on its line.
   await ctl.open('mtg-philips');
-  assert.equal(state.meetings.tab, 'files');
+  assert.equal(state.meetings.pane, 'files');
   await ctl.open('mtg-philips', 'transcript', 3);
-  assert.deepEqual([state.meetings.tab, state.meetings.focusLine], ['transcript', 3]);
+  assert.deepEqual([state.meetings.pane, state.meetings.focusLine], ['transcript', 3]);
+  // An unknown pane (an old /people link) is the setting.
+  await ctl.open('mtg-roadmap', 'people');
+  assert.equal(state.meetings.pane, 'notes');
+  // Another meeting picked from the list opens on the setting too.
+  state.meetings.pane = 'files';
+  s.settings.meetings = { ...s.settings.meetings, openOn: 'transcript' };
+  await ctl.handle('meeting-select', control({ id: 'mtg-philips' }));
+  assert.deepEqual([state.meetings.selected, state.meetings.pane], ['mtg-philips', 'transcript']);
   // A meeting that is gone says so and leaves the page as it was.
   await ctl.open('gone');
   assert.equal(state.meetings.selected, 'mtg-philips');
@@ -130,44 +137,39 @@ test('make notes dialog preselects a template without a document when the meetin
   assert.deepEqual(calls.mutate.at(-1), ['meeting_notes', { meetingId: 'mtg-roadmap', templateId: 'short-summary', wishes: '', findTasks: false, remember: true }]);
 });
 
-test('the meeting header shows once, above the first section holding a meeting tab', () => {
-  // The spec's ids, minimum and default widths, and the pin to Today.
-  assert.deepEqual(MEETINGS_DOCK.initial, [['mtg-list'], ['mtg-notes', 'mtg-transcript', 'mtg-tasks', 'mtg-files']]);
-  assert.deepEqual(Object.entries(MEETINGS_DOCK.tabs).map(([id, t]) => [id, t.title, t.min, t.w, t.pin]), [
-    ['mtg-list', 'Meetings', 260, 340, 'meetings'], ['mtg-notes', 'Notes', 340, 760, undefined], ['mtg-transcript', 'Transcript', 320, 520, undefined],
-    ['mtg-tasks', 'Tasks', 300, 420, undefined], ['mtg-files', 'Files', 300, 420, undefined],
+test('one header, above the strip, in the meeting section', () => {
+  // Two sections: the list (pinned to Today) and the meeting; the layout is kept under v2.
+  assert.equal(MEETINGS_DOCK.version, 2);
+  assert.deepEqual(MEETINGS_DOCK.initial, [['mtg-list'], ['mtg-meeting']]);
+  assert.deepEqual(Object.entries(MEETINGS_DOCK.tabs).map(([id, t]) => [id, t.title, t.icon, t.min, t.w, t.pin]), [
+    ['mtg-list', 'Meetings', 'meetings', 260, 340, 'meetings'], ['mtg-meeting', 'Meeting', 'meetings', 420, 900, undefined],
   ]);
   assert.equal(MEETINGS_DOCK.tabs['mtg-list'].pinTitle, WIDGETS.meetings.title);
   const s = snapshot();
-  // Transcript dragged to the left of Notes: Meetings | Transcript | Notes, Tasks, Files.
-  const split = transcriptApart('left');
-  const [list, transcript, notes] = split.panes;
-  assert.deepEqual(split.panes.map(p => p.active), ['mtg-list', 'mtg-transcript', 'mtg-notes']);
-  const html = page(s, { selected: 'mtg-philips', tab: 'notes' }, split);
+  const layout = normalizeDock(MEETINGS_DOCK, null);
+  const [list, meeting] = layout.panes;
+  const html = page(s, { selected: 'mtg-philips' }, layout);
   assert.equal((html.match(/<header class="ws-mtg-head">/g) || []).length, 1, 'one header');
-  assert.match(sectionOf(html, transcript.id), /<header class="ws-mtg-head">[^]*<h2>Philips CodeMie conversations syncup<\/h2>[^]*<div class="ws-pane-strip">/, 'above the Transcript section’s tabs');
-  // Only the Tasks tab counts: the two tasks to review.
-  assert.deepEqual([...html.matchAll(/data-tab="(mtg-[a-z]+)"[^>]*>(?:(?!<\/button>)[^])*?<span class="ws-tab-count">(\d+)<\/span>/g)].map(m => [m[1], m[2]]), [['mtg-tasks', '2']]);
-  assert.doesNotMatch(sectionOf(html, notes.id), /ws-mtg-head/);
-  assert.doesNotMatch(sectionOf(html, list.id), /ws-mtg-head/);
-  // Both tabs in view are drawn, each in its section.
-  assert.match(sectionOf(html, transcript.id), /data-panel="transcript"[^]*id="meeting-line-3"/);
-  assert.match(sectionOf(html, notes.id), /data-panel="notes"[^]*<article class="ws-md">/);
-  // That section collapsed: the header moves to the next one holding a meeting tab.
-  const folded = page(s, { selected: 'mtg-philips' }, setCollapsed(split, MEETINGS_DOCK, transcript.id, true).layout);
-  assert.equal((folded.match(/<header class="ws-mtg-head">/g) || []).length, 1);
-  assert.match(sectionOf(folded, notes.id), /<header class="ws-mtg-head">[^]*<div class="ws-pane-strip">/);
+  assert.match(sectionOf(html, meeting.id), /<div class="ws-pane-body"[^>]*><section class="ws-mtg-meeting-section" data-meeting="mtg-philips" data-pane="summary"><div class="ws-mtg-meeting"[^>]*>\s*<header class="ws-mtg-head">[^]*?<h2>Philips CodeMie conversations syncup<\/h2>[^]*?<div class="ws-mtg-strip">[^]*?<div class="ws-mtg-body"><div class="ws-mtg-pane[^"]*" role="tabpanel"/);
+  assert.doesNotMatch(sectionOf(html, list.id), /ws-mtg-head|ws-mtg-strip/);
+  assert.doesNotMatch(html, /class="ws-tab-count"/, 'no tab counts');
+  // The list collapsed: the header stays in the meeting section.
+  const folded = page(s, { selected: 'mtg-philips' }, setCollapsed(layout, MEETINGS_DOCK, 'mtg-list', true).layout);
+  assert.match(sectionOf(folded, meeting.id), /<section class="ws-mtg-meeting-section"[^>]*>[^]*?<header class="ws-mtg-head">[^]*?<div class="ws-mtg-strip">/);
+  // Banners sit at the top of the meeting section, above the header.
+  const banner = meetings(s, { state: { meetings: { ...newMeetingsView(), selected: 'mtg-philips' }, tasks: newTasksView() }, now: NOW, banners: '<div class="ws-banner">Offline</div>', reads, dock: { layouts: { meetings: layout }, locked: false } });
+  assert.match(sectionOf(banner, meeting.id), /<section class="ws-mtg-meeting-section"[^>]*><div class="ws-banner">Offline<\/div><div class="ws-mtg-meeting"/);
 });
 
-test('before a transcript the first meeting section explains why, with the tasks; another waits', () => {
+test('before a transcript the meeting section explains why, with the tasks; the strip holds only ⋯', () => {
   const s = snapshot();
-  const split = transcriptApart('left');
-  const [, transcript, notes] = split.panes;
-  const html = page(s, { selected: 'mtg-northwind', tab: 'notes' }, split);
-  assert.match(sectionOf(html, transcript.id), /class="ws-mtg-panel-alone"[^]*doesn’t share this transcript[^]*form class="ws-mtg-add-task"/);
-  assert.doesNotMatch(sectionOf(html, notes.id), /ws-mtg-panel-alone|ws-mtg-add-task/);
-  assert.match(sectionOf(html, notes.id), /Nothing here until the meeting has a transcript\./);
-  // No count on its tabs and no Review in its header.
+  const layout = normalizeDock(MEETINGS_DOCK, null);
+  const html = page(s, { selected: 'mtg-northwind', pane: 'notes' }, layout);
+  const section = sectionOf(html, layout.panes[1].id);
+  assert.match(section, /class="ws-mtg-panel-alone"[^]*doesn’t share this transcript[^]*form class="ws-mtg-add-task"/);
+  const strip = section.match(/<div class="ws-mtg-strip">[^]*?(?=<div class="ws-mtg-body")/)?.[0] || '';
+  assert.match(strip, /data-menu="meeting-mtg-northwind"/);
+  assert.doesNotMatch(strip, /role="tablist"|meeting-back|meeting-copy-tab|meeting-make-tab/);
   assert.doesNotMatch(html, /class="ws-tab-count"|Review \d/);
 });
 
@@ -187,7 +189,7 @@ test('the list toggle collapses and expands the meeting list section', async () 
 
 test('compare mode collapses the list and gives it back afterwards', async () => {
   const d = fakeDock();
-  const { ctl, state, calls } = harness({ dock: d.dock, view: { selected: 'mtg-philips', tab: 'notes' } });
+  const { ctl, state, calls } = harness({ dock: d.dock, view: { selected: 'mtg-philips', pane: 'notes' } });
   const listCollapsed = () => paneOf(d.layout, 'mtg-list').collapsed;
   await ctl.handle('meeting-compare', control({ v: '1' }));
   assert.deepEqual([state.meetings.compare, listCollapsed()], [true, true]);
@@ -208,71 +210,95 @@ test('compare mode collapses the list and gives it back afterwards', async () =>
   assert.deepEqual([state.meetings.compare, listCollapsed()], [false, false]);
   // The list sharing the Notes section: Side by side leaves that section open.
   const shared = fakeDock(moveTab(normalizeDock(MEETINGS_DOCK, null), MEETINGS_DOCK, 'mtg-list', { type: 'merge', pane: 'p2' }).layout);
-  const h = harness({ dock: shared.dock, view: { selected: 'mtg-philips', tab: 'notes' } });
+  const h = harness({ dock: shared.dock, view: { selected: 'mtg-philips', pane: 'notes' } });
   await h.ctl.handle('meeting-compare', control({ v: '1' }));
   await h.ctl.handle('meeting-compare', control({ v: '0' }));
   assert.deepEqual(shared.calls, []);
   assert.deepEqual(calls.toasts.concat(h.calls.toasts), []);
 });
 
-test('with Notes and Transcript side by side both load', async () => {
-  const d = fakeDock(transcriptApart('right'));
+test('load reads what the pane shows: the summary’s document, the transcript with its glossary, the files', async () => {
   const answers = { meeting_read: data => (data.part === 'transcript' ? { segments: [] } : data.part === 'files' ? { files: [] } : { text: '# Notes' }), meeting_text: { text: '' } };
-  // Transcript was chosen last; Notes is in view too.
-  const { ctl, calls } = harness({ dock: d.dock, answers, view: { selected: 'mtg-philips', tab: 'transcript' } });
-  await ctl.load();
+  const { ctl, calls, state } = harness({ answers, view: { selected: 'mtg-philips', pane: 'summary' } });
   const reads = () => calls.query.filter(([op]) => op === 'meeting_read').map(([, x]) => (x.docId ? `${x.part}:${x.docId}` : x.part));
-  assert.deepEqual(reads().sort(), ['doc:meeting-notes', 'transcript']);
-  assert.ok(calls.query.some(([op]) => op === 'meeting_text'), 'the glossary, for the transcript');
-  assert.ok(calls.render > 0, 'drawn once read');
-  // Files brought into view beside them: read too.
-  d.dock.show('mtg-files');
   await ctl.load();
-  assert.deepEqual(reads().sort(), ['doc:meeting-notes', 'files', 'transcript']);
+  assert.deepEqual(reads().sort(), ['doc:meeting-notes', 'transcript'], 'the main document, shown first');
+  assert.ok(!calls.query.some(([op]) => op === 'meeting_text'), 'no glossary for the summary');
+  assert.ok(calls.render > 0, 'drawn once read');
+  // Another summary tab: its document.
+  state.meetings.summaryTab = { 'mtg-philips': 'doc:short-summary' };
+  await ctl.load();
+  assert.deepEqual(reads().sort(), ['doc:meeting-notes', 'doc:short-summary', 'transcript']);
+  // The Transcript pane: the glossary; the Files pane: the files.
+  state.meetings.pane = 'transcript';
+  await ctl.load();
+  assert.ok(calls.query.some(([op]) => op === 'meeting_text'), 'the glossary, for the transcript');
+  state.meetings.pane = 'files';
+  await ctl.load();
+  assert.deepEqual(reads().sort(), ['doc:meeting-notes', 'doc:short-summary', 'files', 'transcript']);
 });
 
-test('opening #/meetings/<id>/transcript activates Transcript in the section that holds it', async () => {
-  // Transcript in a section of its own, collapsed to a rail.
-  const apart = transcriptApart('right');
-  const d = fakeDock(setCollapsed(apart, MEETINGS_DOCK, 'mtg-transcript', true).layout);
-  const { ctl, state, calls } = harness({ dock: d.dock });
-  assert.ok(!d.dock.visible().includes('mtg-transcript'));
-  await ctl.open('mtg-philips', 'transcript');
-  assert.deepEqual([state.meetings.selected, state.meetings.tab, calls.routes.at(-1)], ['mtg-philips', 'transcript', ['meetings']]);
-  assert.deepEqual(visibleTabs(d.layout), ['mtg-list', 'mtg-notes', 'mtg-transcript'], 'its section is open again');
-  // In the designed layout it becomes the tab shown in the meeting's section.
-  const plain = fakeDock();
-  const h = harness({ dock: plain.dock });
-  await h.ctl.open('mtg-philips', 'transcript');
-  assert.equal(paneOf(plain.layout, 'mtg-transcript').active, 'mtg-transcript');
-  // Review, or a person's tasks in the people popover, does the same with its tab.
-  await h.ctl.handle('meeting-tab', control({ tab: 'tasks' }));
-  assert.deepEqual([h.state.meetings.tab, paneOf(plain.layout, 'mtg-tasks').active], ['tasks', 'mtg-tasks']);
-  assert.match(h.calls.focus.at(-1), /data-action="dock-tab"\]\[data-page="meetings"\]\[data-tab="mtg-tasks"\]/);
-  // A tab brought into view in the sections is the one the hash names; one gone from view is not.
-  plain.dock.show('mtg-tasks');
-  h.ctl.follow(['mtg-tasks']);
-  assert.equal(h.state.meetings.tab, 'tasks');
-  plain.dock.show('mtg-files');
-  h.ctl.follow();
-  assert.equal(h.state.meetings.tab, 'files', 'Tasks is no longer in view');
+test('panes: ⋯ opens one, Back and Esc return to the summary, a summary tab shows its document', async () => {
+  const answers = { meeting_read: data => ({ text: `# ${data.docId}` }) };
+  const timers = [];
+  const { ctl, state, calls } = harness({ answers, view: { selected: 'mtg-philips', pane: 'summary' }, timer: (fn, ms) => timers.push([fn, ms]) });
+  await ctl.handle('meeting-pane', control({ id: 'mtg-philips', pane: 'transcript' }));
+  assert.equal(state.meetings.pane, 'transcript');
+  // Esc in a field, or with a menu open, stays; otherwise it goes back to the summary.
+  const target = hit => ({ closest: sel => (hit && sel.includes(hit) ? {} : null) });
+  assert.equal(await ctl.key({ key: 'Escape', target: target('input') }), false);
+  assert.equal(await ctl.key({ key: 'Escape', target: target('details[open]') }), false);
+  assert.equal(state.meetings.pane, 'transcript');
+  assert.equal(await ctl.key({ key: 'Escape', target: target(null) }), true);
+  assert.equal(state.meetings.pane, 'summary');
+  assert.equal(await ctl.key({ key: 'Escape', target: target(null) }), false, 'nothing to go back from');
+  await ctl.handle('meeting-pane', control({ id: 'mtg-philips', pane: 'files' }));
+  await ctl.handle('meeting-back', control({ id: 'mtg-philips' }));
+  assert.equal(state.meetings.pane, 'summary');
+  // A summary tab: chosen for this meeting, and the summary shows.
+  state.meetings.pane = 'notes';
+  await ctl.handle('meeting-summary-tab', control({ id: 'mtg-philips', key: 'doc:short-summary' }));
+  assert.deepEqual([state.meetings.summaryTab['mtg-philips'], state.meetings.pane], ['doc:short-summary', 'summary']);
+  // ←/→ on the tabs move between them.
+  const tabs = { closest: sel => (sel.includes('ws-mtg-tabs') ? {} : null) };
+  assert.equal(await ctl.key({ key: 'ArrowRight', target: tabs }), true);
+  assert.equal(state.meetings.summaryTab['mtg-philips'], 'doc:meeting-notes', 'wraps to the first');
+  // Copy: the shown tab's Markdown, "Copied" for 1.5 s.
+  await ctl.handle('meeting-copy-tab', control({ id: 'mtg-philips', key: 'doc:short-summary' }));
+  assert.deepEqual(calls.copied, ['# short-summary']);
+  assert.equal(state.meetings.copied, 'mtg-philips:doc:short-summary');
+  assert.equal(timers.at(-1)[1], 1500);
+  await timers.at(-1)[0]();
+  assert.equal(state.meetings.copied, null);
+  // Make: one click, tasks found.
+  await ctl.handle('meeting-make-tab', control({ id: 'mtg-philips', template: 'short-summary' }));
+  assert.deepEqual(calls.mutate.at(-1), ['meeting_notes', { meetingId: 'mtg-philips', templateId: 'short-summary', wishes: '', findTasks: true, remember: false }]);
+  // Edit: the Notes pane with that document in the editor.
+  await ctl.handle('meeting-edit-tab', control({ id: 'mtg-philips', doc: 'short-summary' }));
+  assert.deepEqual([state.meetings.pane, state.meetings.docView['mtg-philips'], state.meetings.editing?.docId], ['notes', 'short-summary', 'short-summary']);
+  assert.equal(calls.focus.at(-1), '#meeting-doc-editor');
 });
 
-test('the old wide preference collapses the list once', () => {
-  const kept = new Map([['codemie.meetings.wide', 'true']]);
+test('the v1 layout is read once: the list’s width and fold, or the old wide preference', () => {
+  const v1 = JSON.stringify({ panes: [{ id: 'p1', tabs: ['mtg-list'], active: 'mtg-list', w: 300, collapsed: false }, { id: 'p2', tabs: ['mtg-notes'], active: 'mtg-notes', w: 760, collapsed: false }, { id: 'p3', tabs: ['mtg-transcript', 'mtg-tasks', 'mtg-files'], active: 'mtg-transcript', w: 520, collapsed: false }], max: null });
+  assert.deepEqual(legacyMeetingsLayout(v1, false), { widths: { 'mtg-list': 300 } });
+  assert.deepEqual(legacyMeetingsLayout(v1.replace('"collapsed":false', '"collapsed":true'), false), { collapse: ['mtg-list'], widths: { 'mtg-list': 300 } });
+  assert.deepEqual(legacyMeetingsLayout(null, true), { collapse: ['mtg-list'] });
+  assert.equal(legacyMeetingsLayout(null, false), null);
+  assert.equal(legacyMeetingsLayout('{', false), null);
+  // Notes beside Transcript, the list at 300 px: two sections, the list at 300 px, nothing written to v1.
+  const kept = new Map([['codemie.layout.meetings.v1', v1]]);
   const storage = { getItem: key => (kept.has(key) ? kept.get(key) : null), setItem: (key, value) => kept.set(key, value) };
-  // What app.js reads from codemie.meetings.wide = "true" when nothing is stored yet.
-  const legacy = { collapse: ['mtg-list'] };
-  const first = loadDock(storage, 'meetings', MEETINGS_DOCK, legacy);
-  assert.equal(paneOf(first, 'mtg-list').collapsed, true);
-  // Expanded and kept: the old preference no longer applies.
-  saveDock(storage, 'meetings', setCollapsed(first, MEETINGS_DOCK, 'mtg-list', false).layout);
-  assert.equal(paneOf(loadDock(storage, 'meetings', MEETINGS_DOCK, legacy), 'mtg-list').collapsed, false);
+  const first = loadDock(storage, 'meetings', MEETINGS_DOCK, legacyMeetingsLayout(kept.get('codemie.layout.meetings.v1'), false));
+  assert.deepEqual(first.panes.map(p => [p.tabs, p.w, p.collapsed]), [[['mtg-list'], 300, false], [['mtg-meeting'], 900, false]]);
+  saveDock(storage, 'meetings', setCollapsed(first, MEETINGS_DOCK, 'mtg-list', true).layout, MEETINGS_DOCK);
+  assert.equal(kept.get('codemie.layout.meetings.v1'), v1, 'v1 untouched');
+  assert.equal(paneOf(loadDock(storage, 'meetings', MEETINGS_DOCK, { widths: { 'mtg-list': 500 } }), 'mtg-list').collapsed, true, 'v2 wins once kept');
 });
 
 test('doc edit saves with the version it was opened on', async () => {
   const answers = { meeting_read: () => ({ text: '# Notes v1' }) };
-  const { ctl, state, calls, record } = harness({ answers, view: { selected: 'mtg-philips', tab: 'notes' } });
+  const { ctl, state, calls, record } = harness({ answers, view: { selected: 'mtg-philips', pane: 'notes' } });
   const doc = record('mtg-philips').data.docs.find(d => d.id === 'meeting-notes');
   assert.deepEqual([doc.version, doc.rev], [1, 1]);
   await ctl.handle('doc-edit', control({ id: 'mtg-philips', doc: 'meeting-notes' }));
@@ -389,7 +415,7 @@ function harnessWithConnect(connected, answers) {
 }
 
 test('the Notes tab’s Make notes form keeps what was chosen and typed in the view state until it is sent or the meeting is left', async () => {
-  const { ctl, state, calls } = harness({ view: { selected: 'mtg-roadmap', tab: 'notes' } });
+  const { ctl, state, calls } = harness({ view: { selected: 'mtg-roadmap', pane: 'notes' } });
   const field = (name, extra) => ({ dataset: { make: 'mtg-roadmap' }, name, closest: () => null, ...extra });
   assert.equal(ctl.input(field('template', { type: 'radio', checked: true, value: 'short-summary' })), true);
   ctl.input(field('wishes', { type: 'textarea', value: 'Only the decisions' }));
@@ -409,7 +435,7 @@ test('the Notes tab’s Make notes form keeps what was chosen and typed in the v
   await ctl.handle('meeting-select', control({ id: 'mtg-release' }));
   assert.equal(state.meetings.makeForm['mtg-roadmap'], undefined);
   // A refused send keeps them to try again.
-  const refused = harness({ view: { selected: 'mtg-roadmap', tab: 'notes' }, answers: { meeting_notes: failure('folder_missing') } });
+  const refused = harness({ view: { selected: 'mtg-roadmap', pane: 'notes' }, answers: { meeting_notes: failure('folder_missing') } });
   refused.ctl.input({ dataset: { make: 'mtg-roadmap' }, name: 'wishes', type: 'textarea', value: 'Keep me', closest: () => null });
   await refused.ctl.submit({ dataset: { form: 'meeting-notes', id: 'mtg-roadmap' } }, form({ template: 'meeting-notes', wishes: 'Keep me', findTasks: 'on' }));
   assert.equal(refused.state.meetings.makeForm['mtg-roadmap'].wishes, 'Keep me');
@@ -612,7 +638,7 @@ test('/ opens the search field, not while typing', async () => {
 });
 
 test('"Who is this?" on an unnamed line goes to that voice in the transcript\'s speaker list', async () => {
-  const { ctl, calls } = harness({ view: { selected: 'mtg-philips', tab: 'transcript' } });
+  const { ctl, calls } = harness({ view: { selected: 'mtg-philips', pane: 'transcript' } });
   await ctl.handle('meeting-name-speaker', control({ voice: '@1' }));
   assert.equal(calls.focus.at(-1), 'select[data-action="meeting-speaker"][data-voice="@1"]');
 });
@@ -625,7 +651,7 @@ test('Make notes for all takes the card’s meetings: a search narrows both the 
 });
 
 test('"Who is this?" scrolls the speaker list into view', async () => {
-  const { ctl, calls } = harness({ view: { selected: 'mtg-philips', tab: 'transcript' } });
+  const { ctl, calls } = harness({ view: { selected: 'mtg-philips', pane: 'transcript' } });
   await ctl.handle('meeting-name-speaker', control({ voice: '@1' }));
   assert.deepEqual(calls.focusOpts, { scroll: true });
 });

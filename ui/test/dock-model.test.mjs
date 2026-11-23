@@ -77,6 +77,23 @@ test('loadDock carries the old calendar sidebar choice once', () => {
   assert.equal(loadDock(store, 'calendar', CAL, { collapse: ['cal-side'] }).panes[0].collapsed, false);
 });
 
+test('a versioned definition stores under its own key and a legacy hook carries widths', () => {
+  const V2 = { ...DEF, version: 2 };
+  const keys = [];
+  const store = memory();
+  const watched = { getItem: k => { keys.push(k); return store.getItem(k); }, setItem: store.setItem };
+  // Nothing at v2: the legacy hook collapses the list at the width it had.
+  const first = loadDock(watched, 'meetings', V2, { collapse: ['a'], widths: { a: 300 } });
+  assert.deepEqual(keys, ['codemie.layout.meetings.v2']);
+  assert.deepEqual([first.panes[0].collapsed, first.panes[0].w], [true, 300]);
+  // A width under the section's minimum comes back at its minimum; unknown tabs are skipped.
+  assert.equal(loadDock(memory(), 'meetings', V2, { widths: { a: 50, zzz: 900 } }).panes[0].w, 200);
+  // Saved: v2 only, read back, and the legacy hook no longer applies.
+  saveDock(watched, 'meetings', setCollapsed(first, V2, 'a', false).layout, V2);
+  assert.deepEqual(Object.keys(store.items), ['codemie.layout.meetings.v2']);
+  assert.equal(loadDock(watched, 'meetings', V2, { collapse: ['a'] }).panes[0].collapsed, false);
+});
+
 test('pulling a divider past 55% of the minimum collapses that section', () => {
   const d = normalizeDock(DEF, null);
   // Alpha's minimum is 200, so it collapses below 110 px; above that it stops at its minimum.

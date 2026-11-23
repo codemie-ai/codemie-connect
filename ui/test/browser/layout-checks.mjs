@@ -466,40 +466,38 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
   // ---------------------------------------------------------------- E7
   {
     const { page, context, errors } = await open({ width: 1440, height: 900, hash: '#/meetings/mtg-philips/notes', meetings: true, workspace: { today: DEFAULT_TODAY } });
-    await check('layout E7: page sections: Transcript beside Notes, dividers, a rail, kept and Reset; Calendar and Inbox', async () => {
+    await check('layout E7: page sections: the meeting’s Notes pane, the list resizes and collapses, the strip stays in view, kept and Reset; Calendar and Inbox', async () => {
       const dock = '.ws-dock[data-page="meetings"]';
       await page.waitForSelector(`${dock} .ws-mtg-detail[data-panel="notes"] .ws-md h3`);
-      // Transcript dragged onto the right 30% of the Notes section opens beside it.
-      const tab = await box(page, '.ws-dock-tab[data-tab="mtg-transcript"]');
-      const notes = await box(page, `${dock} > .ws-pane:has(.ws-dock-tab[data-tab="mtg-notes"]) > .ws-pane-body`);
-      await page.mouse.move(tab.x + tab.width / 2, tab.y + tab.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(notes.x + notes.width * 0.85, notes.y + notes.height / 2, { steps: 12 });
-      await page.waitForSelector(`${dock} .ws-dock-zone:not([hidden]):has-text("Open beside Notes")`);
-      await page.mouse.up();
-      await page.waitForSelector('.ws-toast:has-text("Transcript opened beside Notes")');
-      await page.waitForSelector('.ws-mtg-detail[data-panel="notes"] .ws-md h3');
-      await page.waitForSelector('.ws-mtg-detail[data-panel="transcript"] #meeting-line-3');
       const panes = () => page.evaluate(sel => [...document.querySelectorAll(`${sel} > .ws-pane`)].map(p => ({ tabs: [...p.querySelectorAll('.ws-dock-tab, .ws-pane-rail-tab')].map(t => t.dataset.tab), width: Math.round(p.getBoundingClientRect().width), collapsed: p.classList.contains('ws-pane-collapsed') })), dock);
       let row = await panes();
-      assert(row.length === 3 && row[1].tabs.includes('mtg-notes') && row[2].tabs.join() === 'mtg-transcript', `sections ${JSON.stringify(row)}`);
-      const header = await page.evaluate(sel => {
-        const heads = [...document.querySelectorAll(`${sel} .ws-mtg-head`)];
-        const pane = heads[0]?.closest('.ws-pane');
-        return { count: heads.length, onNotes: !!pane?.querySelector('.ws-dock-tab[data-tab="mtg-notes"]'), above: !!pane && heads[0].getBoundingClientRect().bottom <= pane.querySelector(':scope > .ws-pane-strip').getBoundingClientRect().top + 1 };
+      assert(row.length === 2 && row[0].tabs.join() === 'mtg-list' && row[1].tabs.join() === 'mtg-meeting', `sections ${JSON.stringify(row)}`);
+      // The header and the strip sit at the top of the meeting's section, above its pane.
+      const strip = () => page.evaluate(sel => {
+        const section = document.querySelector(`${sel} .ws-mtg-meeting-section`);
+        const pane = section.closest('.ws-pane').getBoundingClientRect();
+        const head = section.querySelector('.ws-mtg-head').getBoundingClientRect();
+        const bar = section.querySelector('.ws-mtg-strip').getBoundingClientRect();
+        const body = section.querySelector('.ws-mtg-pane').getBoundingClientRect();
+        return { top: Math.round(bar.top), inView: head.top >= pane.top && bar.bottom <= body.top + 1 && bar.bottom <= pane.bottom };
       }, dock);
-      assert(header.count === 1 && header.onNotes && header.above, `the meeting header: ${JSON.stringify(header)}`);
-      await shot(page, 'layout-e7-beside');
-      // The new divider pulled 120 px: Notes wider, Transcript narrower.
+      const before = await strip();
+      assert(before.inView, `the strip: ${JSON.stringify(before)}`);
+      await shot(page, 'layout-e7-notes-pane');
+      // The divider pulled 120 px: the list wider, the meeting narrower.
       const split = async i => { const b = await box(page, `${dock} > .ws-split[data-split="${i}"]`); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
-      let s = await split(1);
+      let s = await split(0);
       await page.mouse.move(s.x, s.y);
       await page.mouse.down();
       await page.mouse.move(s.x + 120, s.y, { steps: 12 });
       await page.mouse.up();
-      await page.waitForFunction(([sel, w]) => Math.round(document.querySelector(`${sel} > .ws-pane:nth-of-type(2)`).getBoundingClientRect().width) > w, [dock, row[1].width]);
+      await page.waitForFunction(([sel, w]) => Math.round(document.querySelector(`${sel} > .ws-pane`).getBoundingClientRect().width) > w, [dock, row[0].width]);
       const pulled = await panes();
-      assert(pulled[1].width > row[1].width && pulled[2].width < row[2].width && Math.abs(pulled[1].width + pulled[2].width - row[1].width - row[2].width) <= 2, `widths ${JSON.stringify(row)} → ${JSON.stringify(pulled)}`);
+      assert(pulled[0].width > row[0].width && pulled[1].width < row[1].width && Math.abs(pulled[0].width + pulled[1].width - row[0].width - row[1].width) <= 2, `widths ${JSON.stringify(row)} → ${JSON.stringify(pulled)}`);
+      // The notes scrolled to their end: the strip stays where it was.
+      await page.evaluate(sel => { const pane = document.querySelector(`${sel} .ws-mtg-pane`); pane.scrollTop = pane.scrollHeight; }, dock);
+      const scrolled = await strip();
+      assert(scrolled.inView && scrolled.top === before.top, `the strip after scrolling: ${JSON.stringify(scrolled)} (before ${JSON.stringify(before)})`);
       // The list's divider pulled far left: the list becomes a 42 px rail.
       s = await split(0);
       await page.mouse.move(s.x, s.y);
@@ -509,30 +507,22 @@ export async function layoutChecks({ open, check, assert, shot, settled, calls }
       await page.waitForSelector('.ws-toast:has-text("Meetings collapsed to a rail")');
       row = await panes();
       assert(row[0].collapsed && row[0].width === 42, `the list: ${JSON.stringify(row[0])}`);
-      // In the Transcript section, about 320 px now, the "speaker without a name" card keeps its
-      // name and "Who is it?" control inside it.
-      const speakers = await page.evaluate(sel => {
-        const pane = document.querySelector(`${sel} > .ws-pane:has(.ws-dock-tab[data-tab="mtg-transcript"])`);
-        const card = pane.querySelector('.ws-mtg-speakers-banner').getBoundingClientRect();
-        const parts = [...pane.querySelectorAll('.ws-mtg-speakers-banner .ws-mtg-speaker-map :is(label, label > span, .ws-select-wrap)')];
-        const out = parts.map(el => [el.tagName, el.getBoundingClientRect()]).filter(([, r]) => r.left < card.left + 1 || r.right > card.right - 1).map(([tag, r]) => `${tag} ${Math.round(r.left)}–${Math.round(r.right)}`);
-        return { pane: Math.round(pane.getBoundingClientRect().width), card: `${Math.round(card.left)}–${Math.round(card.right)}`, parts: parts.length, out };
-      }, dock);
-      assert(speakers.pane <= 340 && speakers.parts > 0 && !speakers.out.length, `the speaker card in the Transcript section: ${JSON.stringify(speakers)}`);
+      assert((await strip()).inView, 'the strip with the list folded');
       await shot(page, 'layout-e7-rail');
-      const stored = await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v1'));
+      const stored = await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v2'));
+      assert(stored && await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v1')) === null, 'kept under v2 only');
       // Kept after a reload, then Reset brings the page back with a toast.
       await page.reload();
-      await page.waitForSelector(`${dock} .ws-mtg-detail[data-panel="transcript"] #meeting-line-3`);
+      await page.waitForSelector(`${dock} .ws-mtg-detail[data-panel="notes"] .ws-md h3`);
       const reloaded = await panes();
       assert(JSON.stringify(reloaded) === JSON.stringify(row), `after reload ${JSON.stringify(reloaded)} (before ${JSON.stringify(row)})`);
-      assert(await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v1')) === stored, 'the stored layout changed on reload');
-      const menu = `${dock} > .ws-pane:has(.ws-dock-tab[data-tab="mtg-notes"]) .ws-dock-menu`;
+      assert(await page.evaluate(() => localStorage.getItem('codemie.layout.meetings.v2')) === stored, 'the stored layout changed on reload');
+      const menu = `${dock} > .ws-pane:has(.ws-dock-tab[data-tab="mtg-meeting"]) .ws-dock-menu`;
       await page.click(`${menu} > summary`);
       await page.click(`${menu} [data-action="dock-reset"]`);
       await page.waitForSelector('.ws-toast:has-text("Meetings is back to its original layout")');
       row = await panes();
-      assert(row.length === 2 && !row[0].collapsed && row[0].tabs.join() === 'mtg-list' && row[1].tabs.length === 4, `after Reset ${JSON.stringify(row)}`);
+      assert(row.length === 2 && !row[0].collapsed && row[0].tabs.join() === 'mtg-list' && row[1].tabs.join() === 'mtg-meeting', `after Reset ${JSON.stringify(row)}`);
       // Calendar at 1000 px: the Calendars section is at its 220 px minimum, and its ⋯ menu stays
       // inside it (the section clips what sticks out).
       await page.click('.ws-nav button[data-route=calendar]');

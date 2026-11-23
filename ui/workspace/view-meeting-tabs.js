@@ -1,6 +1,6 @@
-// The meeting's four tabs on the Meetings page (Notes · Transcript · Tasks · Files), the people popover, the
-// explainers for meetings without a transcript, the template chip and the Make notes form the
-// dialog and the Notes tab share. Pure: each takes the page (`p`, see view-meetings.js) and one
+// The meeting's panes on the Meetings page (the summary; Transcript, Notes, Files and Action items
+// behind ⋯), the people popover, the explainers for meetings without a transcript, the template
+// chip and the Make notes form the dialog and the Notes pane share. Pure: each takes the page (`p`, see view-meetings.js) and one
 // meeting's context (`meetingContext`) and returns HTML; every meeting- or transcript-sourced
 // string is escaped, notes Markdown goes through markdown.js.
 import { escapeHtml as e } from './store.js';
@@ -9,7 +9,7 @@ import { avatar, badge, button, card, emptyState, toggle } from './ui.js';
 import { agoLabel, durationLabel, formatTime } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { columnName, isMine, meOf, ownerOf, peopleFor, taskStatus } from './tasks-model.js';
-import { meetingErrors, meetingTasks, peopleOf, resolveTemplate, ruleText, tabsOf, templatesOf } from './meetings-model.js';
+import { hasTranscript, meetingErrors, meetingTasks, peopleOf, resolveTemplate, ruleText, templatesOf } from './meetings-model.js';
 
 export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const option = (value, label, selected) => `<option value="${e(value)}"${selected ? ' selected' : ''}>${e(label)}</option>`;
@@ -150,9 +150,9 @@ export function explainer(p, mc) {
 
 // ---------------------------------------------------------------- make notes form
 
-/** The Make notes form (dialog and Notes tab): the template (the meeting's choice first; with
+/** The Make notes form (dialog and Notes pane): the template (the meeting's choice first; with
  *  documents already, the first template without one is picked), what to focus on, tasks,
- *  remembering the choice, and where the result goes. On the Notes tab (`kept`, the view
+ *  remembering the choice, and where the result goes. On the Notes pane (`kept`, the view
  *  state's `makeForm[meetingId]`) it shows what was chosen and typed, and its fields carry
  *  `data-make` so each change is kept there: a background render never resets it. */
 export function makeNotesForm(p, mc, { kept = null, tab = false } = {}) {
@@ -308,6 +308,42 @@ export function notesTab(p, mc) {
   // A run making another document is said once, by the line under the header.
   return `${failedBanner}${toolbar}
     <div class="ws-mtg-docpage" data-doc="${e(view.id)}">${x.earlierBar}${x.body}${x.ed ? '' : x.foot}</div>`;
+}
+
+// ---------------------------------------------------------------- the summary
+
+/** A summary tab whose document isn't made yet (spec "Before there is a document"): "No <name>
+ *  yet.", where the transcript stands, and "More options…" for the Make notes dialog. */
+export function noSummaryCard(p, mc, tab) {
+  const { m } = mc;
+  const line = m.state === 'available' ? 'Connect gets the transcript from Teams first, then writes the notes.'
+    : mc.segments ? `${plural(mc.segments.length, 'line')} from ${plural(new Set(mc.segments.map(x => x.address || x.voice)).size, 'speaker')} are in the meeting folder.`
+      : 'The transcript is in the meeting folder.';
+  return `<div class="ws-card ws-mtg-nosummary"><div class="ws-card-body"><h3>No ${e(tab?.label || mc.tpl.template.name)} yet.</h3><p class="ws-muted">${e(line)}</p><button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-make-notes" data-id="${e(m.id)}">More options…</button></div></div>`;
+}
+
+/** The summary pane (spec "The summary pane"): the failure banners, then the shown tab's document
+ *  as a page with who made it under it; a plugin's minutes as escaped Markdown; or, before the
+ *  document, the skeleton while a run makes it, else "No <name> yet.". */
+export function summaryPane(p, mc, tab) {
+  const { m, run } = mc;
+  const notesRun = run?.kind === 'meeting_notes' ? run : null;
+  const saving = run?.kind === 'transcript_download';
+  // As in the Notes pane: a save's failure and a notes run's, each with its own way on.
+  const failedBanner = `${saving || notesRun ? '' : saveBanner(mc)}${!notesRun && mc.notesError && ['failed', 'ready'].includes(m.state) ? lastRunBanner(mc) : ''}`;
+  let body;
+  if (tab?.doc) {
+    const { foot } = docParts(p, mc, tab.doc, { compare: true, side: 'summary' });
+    body = `<div class="ws-mtg-docpage ws-mtg-summary" data-doc="${e(tab.doc.id)}">${docBody(p, mc, tab.doc, null, false)}${foot}</div>`;
+  } else if (tab?.kind === 'plugin') {
+    body = tab.text ? `<div class="ws-mtg-docpage ws-mtg-summary"><article class="ws-md">${renderMarkdown(tab.text)}</article></div>`
+      : `<div class="ws-card ws-mtg-nosummary"><div class="ws-card-body"><p class="ws-muted">No ${e(tab.label)} summary for this meeting yet.</p></div></div>`;
+  } else if ((notesRun && (!tab || notesRun.templateId === tab.templateId)) || (saving && !mc.docs.length)) {
+    body = card({ className: 'ws-mtg-busy-card', body: skeleton() });
+  } else {
+    body = noSummaryCard(p, mc, tab);
+  }
+  return `${failedBanner}${body}`;
 }
 
 /** Why a found or awaited transcript waits (`mc.paused`, see meetingItems), in the words each
@@ -626,7 +662,7 @@ export function peopleList(p, mc) {
       ${avatar({ name: x.name, size: 24, seed: address || x.name })}
       <span class="ws-mtg-person-copy"><strong>${e(x.name)}</strong>${note ? `<small>${e(note)}</small>` : ''}</span>
       <span class="ws-mtg-talk">${share === null ? '' : chars ? `${share}% talking` : 'didn’t speak'}</span>
-      <span class="ws-mtg-person-tasks">${tasks ? (tabsOf(mc.m).length ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-tab" data-tab="tasks">${plural(tasks, 'task')}</button>` : `<small>${plural(tasks, 'task')}</small>`) : ''}</span>
+      <span class="ws-mtg-person-tasks">${tasks ? (hasTranscript(mc.m) ? `<button type="button" class="ws-link ws-mtg-linkbtn" data-action="meeting-pane" data-pane="tasks">${plural(tasks, 'task')}</button>` : `<small>${plural(tasks, 'task')}</small>`) : ''}</span>
     </div>`;
   }).join('');
   const more = mc.people.length > shown.length ? `<button type="button" class="ws-link ws-mtg-linkbtn ws-mtg-people-more" data-action="meeting-people-all" data-id="${e(mc.m.id)}">+${mc.people.length - shown.length} more</button>` : '';

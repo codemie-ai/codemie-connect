@@ -15,7 +15,9 @@ export const RAIL = 42;
 /** A divider pulled past this share of a section's minimum width collapses the section. */
 export const COLLAPSE_AT = 0.55;
 
-const KEY = page => `codemie.layout.${page}.v1`;
+/** Where a page's layout is kept: its definition's `version` (1 by default) is in the key, so a
+ *  page whose sections change starts afresh. */
+const KEY = (page, def) => `codemie.layout.${page}.v${def?.version || 1}`;
 const PANE_ID = /^p\d{1,6}$/;
 
 const clone = v => JSON.parse(JSON.stringify(v));
@@ -214,17 +216,22 @@ export function visibleTabs(layout) {
 /**
  * Page `page`'s layout from `storage` (`{getItem}`, such as localStorage), checked against `def`.
  * Unreadable storage gives the layout as designed. When nothing is stored, `legacy`
- * (`{collapse: [tab]}`, an older build's preference) collapses those sections.
+ * (`{collapse: [tab], widths: {[tab]: px}}`, an older build's preference) gives the sections
+ * holding those tabs that width (no less than their minimum) and collapses those sections.
  */
 export function loadDock(storage, page, def, legacy = null) {
   let raw;
   try {
-    raw = storage.getItem(KEY(page));
+    raw = storage.getItem(KEY(page, def));
   } catch {
     return initial(def);
   }
   if (raw === null || raw === undefined) {
     let layout = initial(def);
+    for (const [tab, w] of Object.entries(legacy?.widths || {})) {
+      const p = Object.hasOwn(def.tabs, tab) && Number.isFinite(w) && w > 0 ? paneOf(layout, tab) : null;
+      if (p) p.w = Math.max(minOf(def, p), w);
+    }
     for (const tab of legacy?.collapse || []) layout = setCollapsed(layout, def, tab, true).layout;
     return layout;
   }
@@ -235,9 +242,10 @@ export function loadDock(storage, page, def, legacy = null) {
   }
 }
 
-/** Keeps page `page`'s layout in `storage` (`{setItem}`); a storage that refuses is ignored. */
-export function saveDock(storage, page, layout) {
+/** Keeps page `page`'s layout in `storage` (`{setItem}`), under its definition `def`'s version;
+ *  a storage that refuses is ignored. */
+export function saveDock(storage, page, layout, def = null) {
   try {
-    storage.setItem(KEY(page), JSON.stringify(layout));
+    storage.setItem(KEY(page, def), JSON.stringify(layout));
   } catch { /* a preference only */ }
 }

@@ -11,19 +11,14 @@ import { dayKey } from './format.js';
  *  then the ones behind ⋯. */
 export const PANES = ['summary', 'transcript', 'notes', 'files', 'tasks'];
 
-// Deprecated: Task 3 removes these and their last callers.
-export const TABS = ['notes', 'transcript', 'tasks', 'files'];
-/** A meeting's tabs: all four once it has a transcript (saved, being saved, or found in Teams),
- *  none before (its explainer card says why and what to do). Who was there is the header's popover. */
-export function tabsOf(m) {
-  if (!m) return [];
-  const saving = m.run?.kind === 'transcript_download' || m.run?.kind === 'meeting_notes';
-  return saving || ['available', 'downloaded', 'ready', 'failed'].includes(m.state) ? TABS : [];
-}
-
 /** Whether a meeting has a transcript yet (saved, being saved, or found in Teams): the strip
- *  shows the summary tabs only then; before it, only the explainer and ⋯. */
-export const hasTranscript = m => tabsOf(m).length > 0;
+ *  shows the summary tabs and ⋯ the panes only then; before it, the explainer card says why and
+ *  what to do. Who was there is the header's popover. */
+export function hasTranscript(m) {
+  if (!m) return false;
+  const saving = m.run?.kind === 'transcript_download' || m.run?.kind === 'meeting_notes';
+  return saving || ['available', 'downloaded', 'ready', 'failed'].includes(m.state);
+}
 
 /** Every state a meeting shows, with the label and tone of its status text. `downloading` and
  *  `processing` are never stored: they are a meeting whose save or notes job is running. */
@@ -99,8 +94,9 @@ export const newMeetingsView = ({ hidden = null } = {}) => ({
   makeForm: {},
   // The summary tab chosen per meeting this session (meeting id → tab key), the action items
   // ticked per meeting (meeting id → task ids) and which row is open, and the last "Add N to
-  // Tasks" ({meetingId, ids}), its error and whether the add-a-task form is open.
-  summaryTab: {}, ticked: {}, itemOpen: null, added: null, addError: null, addOpen: false,
+  // Tasks" ({meetingId, ids}), its error and whether the add-a-task form is open; the summary tab
+  // whose Copy reads "Copied" for a moment ("<meeting id>:<tab key>").
+  summaryTab: {}, ticked: {}, itemOpen: null, added: null, addError: null, addOpen: false, copied: null,
 });
 
 const dataOf = x => (x && typeof x === 'object' && 'data' in x ? x.data : x) || null;

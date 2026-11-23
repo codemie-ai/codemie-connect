@@ -2365,15 +2365,36 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 
 .ws-mtg-list-foot .ws-switch-label{font-size:var(--ws-fs-secondary)}
 
-/* the meeting: its header above the first section holding a meeting tab, and each tab's body,
-   which scrolls on its own */
-/* One column no wider than the section: an auto column would grow to the header's one-line width
-   and push the title's actions past the section, which clips them. */
-.ws-mtg-top{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;flex-shrink:0;padding:12px 20px;border-bottom:1px solid var(--ws-border);container-type:inline-size}
-.ws-mtg-top>.ws-banner{max-width:1100px;margin:0}
+/* the meeting's section: the banners, the header and the strip stay put; the pane under them
+   scrolls on its own. `.ws-mtg-body` is a grid the action items column joins. */
+.ws-mtg-meeting-section{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column;container-type:inline-size}
+.ws-mtg-meeting-section>.ws-banner{flex-shrink:0;max-width:1100px;margin:12px 20px 0}
 .ws-mtg-detail{flex:1;min-height:0;min-width:0;overflow:auto;padding:16px 20px 40px;container-type:inline-size}
 .ws-mtg-detail-empty{display:grid;place-items:center;min-height:60%}
-.ws-mtg-meeting{max-width:1100px}
+/* One column no wider than the section: an auto column would grow to the header's one-line width
+   and push the title's actions past the section, which clips them. */
+.ws-mtg-meeting{flex-shrink:0;display:grid;grid-template-columns:minmax(0,1fr);max-width:1100px;padding:12px 20px 0;box-sizing:border-box}
+.ws-mtg-body{flex:1;min-height:0;min-width:0;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+/* The strip: the summary tabs (pills) or Back to summary, then the one primary and ⋯. */
+.ws-mtg-strip{flex-shrink:0;display:flex;align-items:center;gap:8px;min-width:0;padding:6px 20px;border-bottom:1px solid var(--ws-border)}
+.ws-mtg-tabs{display:flex;align-items:center;gap:2px;min-width:0;flex-wrap:wrap}
+.ws-mtg-tab{padding:4px 12px;border:0;border-radius:var(--ws-r-control);background:none;color:var(--ws-muted);font-size:var(--ws-fs-body-sm);font-weight:500;line-height:var(--ws-lh-body);white-space:nowrap;list-style:none;cursor:pointer}
+.ws-mtg-tab::-webkit-details-marker{display:none}
+.ws-mtg-tab:hover,.ws-mtg-tabs details[open]>.ws-mtg-tab{background:var(--ws-raised);color:var(--ws-text)}
+.ws-mtg-tab[aria-selected=true],.ws-mtg-more-on{background:var(--ws-raised);color:var(--ws-text);font-weight:600}
+.ws-mtg-back{flex-shrink:0;padding:4px 8px;margin-left:-8px;border:0;border-radius:var(--ws-r-control);background:none;color:var(--ws-accent);font-size:var(--ws-fs-body-sm);font-weight:500;line-height:var(--ws-lh-body);white-space:nowrap}
+.ws-mtg-back:hover{background:var(--ws-raised)}
+.ws-mtg-pane-name{min-width:0;font-size:var(--ws-fs-secondary);color:var(--ws-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-mtg-strip>.ws-btn{flex-shrink:0}
+/* The meeting's ⋯ is long: it scrolls rather than run past the section, which clips it
+   (app.js sets its max-height from the room below the strip). */
+.ws-mtg-strip>.ws-menu>.ws-menu-panel{overflow-y:auto;overscroll-behavior:contain;z-index:35}
+.ws-mtg-writing{flex-shrink:0;font-size:var(--ws-fs-secondary);color:var(--ws-purple);white-space:nowrap}
+/* A summary not made yet. */
+.ws-mtg-nosummary{max-width:720px}
+.ws-mtg-nosummary .ws-card-body{display:grid;gap:4px;justify-items:start}
+.ws-mtg-nosummary h3{font-size:var(--ws-fs-heading-sm)}
+.ws-mtg-nosummary p{font-size:var(--ws-fs-body-sm)}
 .ws-mtg-head{display:grid;gap:8px;margin-bottom:10px;min-width:0}
 .ws-mtg-head-title{display:flex;align-items:flex-start;gap:10px;min-width:0}
 .ws-mtg-head-title>.ws-btn{margin:2px 0 0 -6px;flex-shrink:0}
@@ -2382,14 +2403,11 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-mtg-head-title .ws-actions{flex-shrink:0;flex-wrap:nowrap;padding-top:2px}
 .ws-mtg-meta{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;font-size:var(--ws-fs-secondary);color:var(--ws-muted);min-width:0}
 .ws-mtg-when{white-space:nowrap}
-/* People as faces; the popover says who they are. */
+/* "with …" opens the people popover, which says who they are. */
 .ws-mtg-stack{position:relative}
-.ws-mtg-stack-sum{display:inline-flex;align-items:center;gap:8px;padding:2px 8px 2px 2px;border-radius:999px;list-style:none;cursor:pointer;color:var(--ws-muted);white-space:nowrap}
-.ws-mtg-stack-sum::-webkit-details-marker{display:none}
-.ws-mtg-stack-sum:hover,.ws-mtg-stack[open] .ws-mtg-stack-sum{background:var(--ws-raised);color:var(--ws-text)}
-.ws-mtg-faces{display:inline-flex}
-.ws-mtg-faces .ws-avatar{box-shadow:0 0 0 2px var(--ws-bg);font-size:9px}
-.ws-mtg-faces .ws-avatar+.ws-avatar{margin-left:-6px}
+.ws-mtg-with{display:inline-block;padding:1px 8px;margin-left:-8px;border-radius:999px;list-style:none;cursor:pointer;color:var(--ws-muted);white-space:nowrap}
+.ws-mtg-with::-webkit-details-marker{display:none}
+.ws-mtg-with:hover,.ws-mtg-stack[open] .ws-mtg-with{background:var(--ws-raised);color:var(--ws-text)}
 .ws-mtg-people-pop{width:min(420px,80vw);max-height:60vh;overflow:auto;padding:6px 10px}
 .ws-mtg-people-pop .ws-mtg-person{grid-template-columns:24px minmax(0,1fr) auto auto;gap:10px;padding:7px 0}
 .ws-mtg-people-pop .ws-mtg-person-copy{display:grid;grid-template-columns:minmax(0,1fr);gap:0}
@@ -2408,10 +2426,6 @@ button.ws-task-src:hover span{color:var(--ws-link)}
 .ws-mtg-tab-alert{background:var(--ws-accent)!important;color:#fff!important;opacity:1!important}
 .ws-mtg-panel-alone{margin-top:6px}
 .ws-mtg-tasks-alone{margin-top:22px}
-/* In the sections: the Tasks tab's count is the tasks to review, so it is the alert colour; a
-   meeting section other than the first waits for the transcript. */
-.ws-dock[data-page=meetings] .ws-dock-tab[data-tab=mtg-tasks] .ws-tab-count{background:var(--ws-accent);color:#fff;opacity:1}
-.ws-mtg-wait{margin:6px 0 0}
 .ws-runbar{display:block;flex:0 0 120px;height:3px;border-radius:2px;background:var(--ws-raised);overflow:hidden}
 .ws-runbar>span{display:block;height:100%;background:var(--ws-magic);transition:width .4s ease}
 .ws-runbar-busy>span{width:35%;animation:ws-mtg-slide 1.4s ease-in-out infinite}

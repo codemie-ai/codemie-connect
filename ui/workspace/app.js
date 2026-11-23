@@ -36,7 +36,7 @@ import { SESSIONS_PAGE } from './analytics-model.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
 import { newTasksView } from './tasks-model.js';
-import { meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
+import { legacyMeetingsLayout, meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
@@ -482,12 +482,9 @@ async function render() {
     codemieCard: codemie.todayCard(),
   };
   if (state.route === 'inbox') ensureSelection(s);
-  // The hash names the meeting shown, also when the list picked it, and the tab chosen last, one
-  // in view (`#/meetings/<id>/<tab>`, `#/automations/<tab>`).
-  if (state.route === 'meetings') {
-    meetingsUi.ensureSelection();
-    meetingsUi.follow();
-  }
+  // The hash names the meeting shown, also when the list picked it, and its pane
+  // (`#/meetings/<id>/<pane>`), or the tab chosen last, one in view (`#/automations/<tab>`).
+  if (state.route === 'meetings') meetingsUi.ensureSelection();
   if (state.route === 'automations') automationsUi.follow();
   if (['meetings', 'automations'].includes(state.route) && location.hash !== routeHash()) history.replaceState(null, '', routeHash());
   if (['inbox', 'today', 'automations'].includes(state.route)) readClaude();
@@ -534,6 +531,7 @@ async function render() {
   const freshChange = document.getElementById('reply-change');
   if (changeWords && freshChange && freshKey === replyKey) freshChange.value = changeWords;
   for (const menu of openMenus) root.querySelector(`details.ws-menu[data-menu="${CSS.escape(menu)}"]`)?.setAttribute('open', '');
+  root.querySelectorAll('.ws-mtg-strip > .ws-menu[open]').forEach(fitSectionMenu);
   if (state.route === 'inbox') rememberDraftBaseline(s);
   restoreScroll(saved);
   measureToday();
@@ -571,7 +569,7 @@ async function render() {
 let focusLineTimer = null;
 function showFocusLine() {
   const line = state.meetings.focusLine;
-  if (line === null || line === undefined || state.meetings.tab !== 'transcript') return;
+  if (line === null || line === undefined || state.meetings.pane !== 'transcript') return;
   const el = document.getElementById(`meeting-line-${line}`);
   if (!el) return;
   el.scrollIntoView({ block: 'center' });
@@ -758,9 +756,9 @@ async function route(name, tab, pluginPath = null) {
   if (state.route === 'analytics') analyticsUi.open().catch(fail);
 }
 
-/** The hash of the page open now: `#/route/tab`, `#/meetings/<id>/<tab>` for a meeting. */
+/** The hash of the page open now: `#/route/tab`, `#/meetings/<id>/<pane>` for a meeting. */
 function routeHash() {
-  if (state.route === 'meetings') return meetingHash(state.meetings.selected, state.meetings.tab);
+  if (state.route === 'meetings') return meetingHash(state.meetings.selected, state.meetings.pane);
   return `#/${state.route}${state.route === 'settings' ? `/${state.settingsTab}` : state.route === 'automations' && state.automations.tab !== 'automations' ? `/${state.automations.tab}` : ''}`;
 }
 
@@ -794,7 +792,8 @@ function goHash(hash) {
   if (head === 'settings') return route('settings', a);
   if (head === 'meetings') {
     const target = parseHash(`#/${[head, a, b].filter(x => x !== undefined).join('/')}`);
-    if (target.meetingId) return meetingsUi.open(target.meetingId, target.tab);
+    // An old link's tab is the same pane (/notes, /transcript, /files, /tasks); none is the setting's.
+    if (target.meetingId) return meetingsUi.open(target.meetingId, target.pane);
   }
   return route(ROUTES.includes(head) ? head : 'today', a);
 }
@@ -1527,7 +1526,7 @@ function focusFirst(selectors, { scroll = false } = {}) {
 
 const tasksUi = store && createTasksController({
   state, snap, mutate, render, openModal, toast,
-  openMeeting: (id, tab, line) => openMeeting(id, tab, line),
+  openMeeting: (id, pane, line) => openMeeting(id, pane, line),
   openMessage: id => handle('open-message', { dataset: { id } }),
   focus: focusFirst,
   setPref: setLocalPref,
@@ -1556,14 +1555,15 @@ if (todayUi) {
 
 // ---------------------------------------------------------------- page sections (spec "Page sections")
 
-// Each page's sections are a preference of this Mac (`codemie.layout.<page>.v1`), read once and
-// kept here. With nothing stored yet, Calendar takes the old calendar list choice
-// (`codemie.calendar.sidebar`) and Meetings the old hidden list (`codemie.meetings.wide`), which
-// are no longer written.
+// Each page's sections are a preference of this Mac (`codemie.layout.<page>.v<version>`), read
+// once and kept here. With nothing stored yet, Calendar takes the old calendar list choice
+// (`codemie.calendar.sidebar`), and Meetings the list's width and fold from its version 1 layout
+// (`codemie.layout.meetings.v1`) or the old hidden list (`codemie.meetings.wide`), none of which
+// are written again.
 const DOCKS = { inbox: INBOX_DOCK, calendar: CALENDAR_DOCK, meetings: MEETINGS_DOCK, automations: AUTOMATIONS_DOCK };
 const DOCK_LEGACY = {
   calendar: () => (localPref('codemie.calendar.sidebar', 'true') === 'false' ? { collapse: ['cal-side'] } : null),
-  meetings: () => (localPref('codemie.meetings.wide', 'false') === 'true' ? { collapse: ['mtg-list'] } : null),
+  meetings: () => legacyMeetingsLayout(localPref('codemie.layout.meetings.v1', null), localPref('codemie.meetings.wide', 'false') === 'true'),
 };
 const dockStorage = { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) };
 const dockLayouts = {};
@@ -1571,7 +1571,7 @@ const docks = {
   get: page => (dockLayouts[page] ||= loadDock(dockStorage, page, DOCKS[page], DOCK_LEGACY[page]?.() || null)),
   set: (page, layout) => {
     dockLayouts[page] = layout;
-    saveDock(dockStorage, page, layout);
+    saveDock(dockStorage, page, layout, DOCKS[page]);
   },
 };
 
@@ -1610,7 +1610,6 @@ const dockUi = store && attachDock(document, {
       const was = visibleTabs(docks.get(page));
       docks.set(page, layout);
       const fresh = visibleTabs(layout).filter(tab => !was.includes(tab));
-      if (page === 'meetings') meetingsUi.follow(fresh);
       if (page === 'automations') automationsUi.follow(fresh)?.catch(fail);
     },
   },
@@ -1880,6 +1879,7 @@ const meetingsUi = store && createMeetingsController({
     return eventDialog(getRecord('event', id));
   },
   canRender: () => ready && !modalOpen() && !editing() && !taskDrag,
+  summaryInputs: () => ({ slots: pluginHost?.callSlots() || [], plugins: [] }),
   dock: dockFor('meetings'),
 });
 
@@ -1922,9 +1922,10 @@ function openMeetingFolder(folder) {
   return openMeeting(m.id).catch(fail);
 }
 
-/** Opens a meeting on the Meetings page (`#/meetings/<id>/<tab>`; `line`: a transcript line). */
-function openMeeting(id, tab = 'notes', line = null) {
-  return meetingsUi.open(id, tab, line);
+/** Opens a meeting on the Meetings page (`#/meetings/<id>/<pane>`; with no pane, the "Open a
+ *  meeting on" setting's; `line`: a transcript line). */
+function openMeeting(id, pane = null, line = null) {
+  return meetingsUi.open(id, pane, line);
 }
 
 // ---------------------------------------------------------------- dialogs
@@ -2984,7 +2985,18 @@ document.addEventListener('toggle', ev => {
   if (!menu.matches?.('details.ws-menu') || !menu.open) return;
   for (const other of document.querySelectorAll('details.ws-menu[open]')) if (other !== menu) other.removeAttribute('open');
   if (menu.closest('.ws-reply-bar')) placeReplyMenu(menu);
+  if (menu.matches('.ws-mtg-strip > .ws-menu')) fitSectionMenu(menu);
 }, true);
+
+/** The meeting's ⋯ is long: it scrolls inside its section rather than run past the section's
+ *  bottom, which clips it. */
+function fitSectionMenu(menu) {
+  const panel = menu.querySelector('.ws-menu-panel');
+  const pane = menu.closest('.ws-pane')?.getBoundingClientRect();
+  const summary = menu.querySelector('summary')?.getBoundingClientRect();
+  if (!panel || !pane || !summary) return;
+  panel.style.maxHeight = `${Math.max(160, Math.floor(Math.min(pane.bottom, innerHeight) - summary.bottom - 14))}px`;
+}
 
 /** The reply's action line sits at the bottom of a scrolling pane: its menus open downwards, or
  *  upwards when only that way they fit in the pane. */
@@ -3166,7 +3178,7 @@ async function openNotification(payload) {
     return eventDialog(getRecord('event', payload.eventId));
   }
   // Notes made by themselves (and anything else about a meeting): the meeting.
-  if (payload.meetingId) return meetingsUi.open(payload.meetingId, 'notes');
+  if (payload.meetingId) return meetingsUi.open(payload.meetingId);
   // Tasks due today.
   if (payload.route === 'tasks') return route('tasks');
   // An automation's result or failure: its run, open in the Run log.
@@ -3368,13 +3380,10 @@ async function boot() {
     const target = parseHash(location.hash);
     if (target.route) state.route = target.route;
     else useFirstVisible = true;
-    // The hash's tab is shown in whichever section holds it.
+    // The hash's pane is the meeting's; with none, the setting decides once the snapshot is in.
     if (target.route === 'meetings') {
       if (target.meetingId) state.meetings.selected = target.meetingId;
-      if (target.tab) {
-        state.meetings.tab = target.tab;
-        showDockTab('meetings', `mtg-${target.tab}`);
-      }
+      state.meetings.pane = target.pane;
     } else if (hash[2] && state.route === 'automations') showAutomationsTab(hash[2]);
     else if (hash[2]) state.settingsTab = settingsTabFor(hash[2]);
     if (state.route === 'settings' && hash[2] === 'plugins' && PLUGIN_ID.test(decodeURIComponent(hash[3] || ''))) {
