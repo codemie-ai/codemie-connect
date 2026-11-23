@@ -332,21 +332,31 @@ const P = {
 const isoOf = ms => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /** The fixture's meetings: id, title, start, minutes, organizer, attendees, record state (null:
- *  no record), and what else the record holds. */
+ *  no record), and what else the record holds.
+ *
+ *  Meetings a day or more back (`anchor`) sit at a fixed, safe hour of that day rather than at
+ *  whatever hour the suite happens to run: anchoring them to `top` (the current hour) used to
+ *  wrap a meeting "a day ago" into the last hour of the day whenever the suite ran shortly after
+ *  local midnight, rendering it at the very bottom of the calendar's time grid — exactly where
+ *  the toast notifications sit — and blocking clicks on it until a toast cleared (six
+ *  WORKSPACE_E2E_ONLY=meetings "calendar badge → event card" checks, one per theme/width). Only
+ *  the same-day meetings below (`top - N hours`) still need to track the real current hour, so
+ *  they stay in the recent past however the suite is invoked; those are unaffected. */
 function meetingPlan(nowMs) {
   const hour = 3_600_000;
   const day = 24 * hour;
   const top = Math.floor(nowMs / hour) * hour;
+  const anchor = Math.floor(nowMs / day) * day + 13 * hour;
   return [
-    { id: 'mtg-philips', title: 'Philips CodeMie conversations syncup', start: top - 2 * day - 2 * hour, minutes: 60, organizer: P.jeroen, people: [P.anouk, P.me, P.priya, P.sam, P.jordan], state: 'ready' },
-    { id: 'mtg-roadmap', title: 'Roadmap review', start: top - day - hour, minutes: 60, organizer: P.jordan, people: [P.priya, P.me], state: 'downloaded' },
+    { id: 'mtg-philips', title: 'Philips CodeMie conversations syncup', start: anchor - 2 * day - 2 * hour, minutes: 60, organizer: P.jeroen, people: [P.anouk, P.me, P.priya, P.sam, P.jordan], state: 'ready' },
+    { id: 'mtg-roadmap', title: 'Roadmap review', start: anchor - day - hour, minutes: 60, organizer: P.jordan, people: [P.priya, P.me], state: 'downloaded' },
     { id: 'mtg-release', title: 'Release 2.4 go/no-go', start: top - 2 * hour, minutes: 45, organizer: P.sam, people: [P.elena, P.me], state: 'available' },
     { id: 'mtg-vendor', title: 'Vendor onboarding', start: top - 3 * hour, minutes: 30, organizer: P.elena, people: [P.me, P.jordan], state: 'available', saveError: { code: 'provider', message: 'Teams didn’t answer in time.' } },
     { id: 'mtg-sprint', title: 'Sprint 25 planning', start: nowMs - 80 * 60_000, minutes: 60, organizer: P.priya, people: [P.me, P.jordan, P.sam, P.elena], state: 'pending' },
     { id: 'mtg-northwind', title: 'Northwind partnership call', start: top - 5 * hour, minutes: 60, organizer: P.hannah, people: [P.me, P.jordan], state: 'blocked' },
-    { id: 'mtg-critique', title: 'Design critique: Tasks board', start: top - day - 4 * hour, minutes: 45, organizer: P.elena, people: [P.me, P.sam], state: 'failed' },
-    { id: 'mtg-planning', title: 'Quarterly planning', start: top - 3 * day - hour, minutes: 60, organizer: P.jordan, people: [P.me, P.priya], state: 'none' },
-    { id: 'mtg-lunch', title: 'Team lunch', start: top - day + hour, minutes: 60, organizer: P.me, people: [P.jordan, P.priya], state: null, inPerson: true },
+    { id: 'mtg-critique', title: 'Design critique: Tasks board', start: anchor - day - 4 * hour, minutes: 45, organizer: P.elena, people: [P.me, P.sam], state: 'failed' },
+    { id: 'mtg-planning', title: 'Quarterly planning', start: anchor - 3 * day - hour, minutes: 60, organizer: P.jordan, people: [P.me, P.priya], state: 'none' },
+    { id: 'mtg-lunch', title: 'Team lunch', start: anchor - day + hour, minutes: 60, organizer: P.me, people: [P.jordan, P.priya], state: null, inPerson: true },
   ];
 }
 

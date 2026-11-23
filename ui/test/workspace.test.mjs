@@ -1044,7 +1044,7 @@ test('meetings list: Needs you card with Make notes for N, rows without buttons'
   // Colour only for what needs the person; a ready meeting says its documents in grey.
   const philips = rowOf(html, 'mtg-philips');
   assert.match(philips, /class="ws-mtg-row ws-mtg-on" role="option" aria-selected="true"/);
-  assert.ok(philips.includes(formatTime(Date.UTC(2026, 10, 16, 13), 'UTC')), philips);
+  assert.ok(philips.includes(formatTime(Date.UTC(2026, 10, 16, 11), 'UTC')), philips);
   assert.match(philips, /<strong>Philips CodeMie conversations syncup<\/strong>/);
   assert.doesNotMatch(philips, /ws-tone-|Notes ready/);
   assert.match(philips, /2 documents<i>·<\/i><span class="ws-mtg-accent">2 to review<\/span>/);
@@ -1140,7 +1140,7 @@ test('meeting detail: the title once, one meta line with faces, no strip, four t
   const head = headOf(detail);
   assert.match(head, /<h2>Philips CodeMie conversations syncup<\/h2>/);
   assert.equal((head.match(/Philips CodeMie conversations syncup/g) || []).length, 1, 'the title once');
-  const when = `${formatDate(Date.UTC(2026, 10, 16, 12), 'UTC', { weekday: 'short', month: 'short', day: 'numeric' })} · ${formatTime(Date.UTC(2026, 10, 16, 13), 'UTC')}–${formatTime(Date.UTC(2026, 10, 16, 14), 'UTC')} · Teams`;
+  const when = `${formatDate(Date.UTC(2026, 10, 16, 12), 'UTC', { weekday: 'short', month: 'short', day: 'numeric' })} · ${formatTime(Date.UTC(2026, 10, 16, 11), 'UTC')}–${formatTime(Date.UTC(2026, 10, 16, 12), 'UTC')} · Teams`;
   assert.ok(head.includes(when), `${when} in ${head}`);
   // People as faces: the stack says how many; its popover lists them with who they are.
   const stack = head.match(/<details class="ws-menu[^"]*ws-mtg-stack[^"]*"[^]*?<\/details>/)?.[0] || '';
