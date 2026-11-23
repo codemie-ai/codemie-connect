@@ -19,6 +19,7 @@ import { analyticsChecks } from './analytics-checks.mjs';
 import { compactChecks } from './compact-checks.mjs';
 import { replyChecks } from './reply-checks.mjs';
 import { tasksDatesChecks } from './tasks-dates-checks.mjs';
+import { settingsTasksChecks } from './settings-tasks-checks.mjs';
 import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
@@ -1098,8 +1099,35 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   const providerOf = b => b.provider || 'local';
   const taskRecord = (id, wid) => s.records.find(r => r.kind === 'commitment' && r.id === id && (!wid || (r.workspaceId || 'personal') === wid));
   const OPEN = ['todo', 'doing', 'waiting'];
+  // The Todoist plugin's own settings (Settings › Tasks, design §11): present in
+  // `plugins_request installed` (and so Settings › Plugins and Settings › Tasks) whenever a
+  // check's `taskProvider.available` names `plugin:todoist`, which is also the one place a check
+  // turns it "off" or drops it (removed) for `settings-tasks-checks.mjs`.
+  const td = { token: false, project: 'Connect', label: 'connect' };
+  const todoistListed = () => s.taskProvider.available.some(p => p.id === 'plugin:todoist');
+  const todoistView = () => {
+    const listed = s.taskProvider.available.find(p => p.id === 'plugin:todoist');
+    return {
+      id: 'todoist', name: 'Todoist', version: '1.0.0', summary: "Keeps Connect's tasks in your Todoist",
+      market: 'codemie', source: './plugins/todoist', commit: null, hash: 'tdhash', enabled: listed?.on !== false,
+      agreed: ['network', 'provides_tasks'], installedAt: '2026-11-17T09:30:00Z', update: null, problem: null,
+      client: null, widgets: [], signin: [], addresses: [],
+      settings: [
+        { key: 'token', label: 'API token', type: 'secret', help: 'Todoist › Settings › Integrations › Developer', set: td.token },
+        { key: 'project', label: 'Project', type: 'string', help: null, value: td.project },
+        { key: 'label', label: 'App label', type: 'string', help: null, value: td.label },
+      ],
+    };
+  };
   Object.assign(ops, {
     task_sync_now: () => { calls.push(['task_sync_now', {}]); return { queued: s.taskProvider.active !== 'local' }; },
+    // Read-only, no operation id, like `task_sync_now`: Settings › Tasks's Check.
+    task_provider_check: () => {
+      calls.push(['task_provider_check', {}]);
+      if (s.taskProvider.active === 'local') return { ok: true };
+      if (!td.token) fail('needs_token', `${s.taskProvider.name} needs your API token.`);
+      return { ok: true, account: 'Taylor Morgan', project: td.project };
+    },
     task_provider_set: d => {
       calls.push(['task_provider_set', clone(d)]);
       const tp = s.taskProvider;
@@ -1254,14 +1282,28 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       pl.installed.push({ id: 'hello', market: d.market, source: marketOf(d.market).source, enabled: true, agreed: [...d.agreed].sort() });
       return { status: 'installed', plugin: helloView() };
     },
-    installed: () => (pl.installed.length ? [helloView()] : []),
-    set_enabled: d => { pl.installed.find(x => x.id === d.id).enabled = d.enabled; return helloView(); },
+    installed: () => [...(pl.installed.length ? [helloView()] : []), ...(todoistListed() ? [todoistView()] : [])],
+    set_enabled: d => {
+      if (d.id === 'todoist') {
+        const listed = s.taskProvider.available.find(p => p.id === 'plugin:todoist');
+        if (listed) listed.on = d.enabled;
+        return todoistView();
+      }
+      pl.installed.find(x => x.id === d.id).enabled = d.enabled;
+      return helloView();
+    },
     update: () => fail('up_to_date', '“hello” is up to date (1.0.0).'),
     remove: d => { pl.installed = pl.installed.filter(x => x.id !== d.id); return { removed: d.id, deletedData: !!d.deleteData }; },
     signin: d => { pl.signedIn[d.id] = true; return clone(pluginInit.signin.signin); },
     signout: d => { delete pl.signedIn[d.id]; return clone(pluginInit.signin.signout); },
     set_addresses: d => { pl.addresses[d.key] = d.value.trim(); return helloView(); },
     set_setting: d => {
+      if (d.id === 'todoist') {
+        if (!['token', 'project', 'label'].includes(d.key)) fail('invalid', `todoist has no setting “${d.key}” in its manifest`);
+        if (d.key === 'token') td.token = !!(d.value && String(d.value).length);
+        else td[d.key] = d.value === '' || d.value == null ? (d.key === 'project' ? 'Connect' : 'connect') : d.value;
+        return todoistView();
+      }
       const def = pluginInit.hello.manifest.settings.find(x => x.key === d.key);
       if (!def) fail('invalid', `${d.id} has no setting “${d.key}” in its manifest`);
       if (isAddress(def)) fail('invalid', `“${d.key}” lists the addresses ${d.id} may reach: set it under its addresses`);
@@ -1286,6 +1328,10 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   // A sync changes an event (e.g. Graph names its series): the window reads the new snapshot.
   window.__eventData = (id, data) => { const ev = s.records.find(r => r.kind === 'event' && r.id === id); Object.assign(ev.data, data); s.revision++; emit('workspace:changed'); };
   window.__setSummaryStale = value => { for (const r of s.records) if (r.kind === 'summary') r.data.stale = value; s.revision++; emit('workspace:changed'); };
+  // Todoist is uninstalled: dropped from `taskProvider.available` (and so from the next
+  // `plugins_request installed`, as a real removal drops it from the plugin registry); a check
+  // fires `plugins:reloaded` next, as the manager does after a real registry change.
+  window.__removeTodoist = () => { s.taskProvider.available = s.taskProvider.available.filter(p => p.id !== 'plugin:todoist'); };
   window.__bridgeCalls = calls;
   // What detection finds next time (Claude signed in or set up meanwhile).
   window.__setAiProfiles = profiles => { ai.profiles = profiles; };
@@ -1296,6 +1342,9 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         if (cmd === 'plugins_request') {
           const op = pluginOps[args.op];
           if (!op) throw { code: 'invalid', message: `Mock does not implement plugin request ${args.op}` };
+          // Recorded under its own op name (never collides with a workspace_request op), for a
+          // check's `calls(page, 'set_setting')` etc.
+          calls.push([args.op, clone(args.data || {})]);
           await sleep(40);
           return clone(op(args.data || {}));
         }
@@ -1358,7 +1407,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
         const op = ops[r.op];
         if (!op) throw { code: 'validation', message: `Mock does not implement ${r.op}` };
         const result = await op(r.data || {}, r.workspaceId);
-        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal', 'task_sync_now'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
+        if (r.op !== 'snapshot' && !['ai_status', 'ai_usage', 'ai_test', 'analytics_status', 'analytics_view', 'analytics_session', 'analytics_app', 'analytics_report', 'analytics_refresh', 'analytics_retry', 'automation_runs', 'meeting_read', 'meeting_text', 'meeting_skills', 'meetings_reveal', 'task_sync_now', 'task_provider_check'].includes(r.op)) { s.revision++; emit('workspace:changed'); }
         return clone(result);
       },
     },
@@ -1473,9 +1522,10 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'tasks-dates') await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'settings-tasks') await settingsTasksChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'compact') await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'reply') await replyChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'analytics') await analyticsChecks({ open, check, assert, shot, settled, OUT });

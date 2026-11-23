@@ -141,9 +141,10 @@ impl Core {
     }
 
     /// `task_provider_check {}` (read-only, design §11 "Check"): the active provider's `status`,
-    /// answered as `{ok, account, project}`; Local has nothing to check. A refusal's `code` is
-    /// the provider's state (`needs_token`, `rate_limited`, `offline`, `not_found`, `refused`)
-    /// and its `message` the sentence Settings › Tasks shows.
+    /// kept to exactly `{ok, account, project}` (never the plugin's whole answer); Local has
+    /// nothing to check. A refusal's `code` is the provider's state (`needs_token`,
+    /// `rate_limited`, `offline`, `not_found`, `refused`) and its `message` a sentence naming the
+    /// provider, e.g. "Todoist needs your API token."
     pub(in crate::workspace) async fn task_provider_check(&self) -> Result<Value> {
         let provider = active_provider(&self.repo()?.settings()?).to_string();
         if provider == "local" {
@@ -152,38 +153,80 @@ impl Core {
         let providers = self
             .task_providers
             .get()
-            .ok_or_else(|| WorkspaceError::new("offline", "The plugin host isn’t running."))?;
+            .ok_or_else(|| WorkspaceError::new("offline", "Can’t be reached right now."))?;
         let plugin = provider
             .strip_prefix("plugin:")
             .unwrap_or(provider.as_str());
-        providers
-            .call(plugin, "status", json!({}))
-            .await
-            .map_err(check_error)
+        match providers.call(plugin, "status", json!({})).await {
+            Ok(v) => Ok(json!({
+                "ok": true,
+                "account": v.get("account").cloned().unwrap_or(Value::Null),
+                "project": v.get("project").cloned().unwrap_or(Value::Null),
+            })),
+            Err(e) => Err(self.check_error(plugin, e)),
+        }
     }
-}
 
-/// `task_provider_check`'s refusal: the provider's state as `code`, its sentence as `message`.
-fn check_error(e: ProviderError) -> WorkspaceError {
-    match e {
-        ProviderError::NeedsToken => WorkspaceError::new("needs_token", "Needs your API token."),
-        ProviderError::RateLimited { .. } => WorkspaceError::new(
-            "rate_limited",
-            "Asked Connect to slow down. Try again soon.",
-        ),
-        ProviderError::Offline => WorkspaceError::new("offline", "Can’t be reached right now."),
-        ProviderError::NotFound(t) => WorkspaceError::new(
-            "not_found",
-            if t.is_empty() { "Not found.".into() } else { t },
-        ),
-        ProviderError::Refused(t) => WorkspaceError::new(
-            "refused",
-            if t.is_empty() {
-                "Refused the request.".into()
+    /// `task_provider_check`'s refusal: the provider's state as `code`, its sentence naming it as
+    /// `message`. A `Refused`/`NotFound` sentence that would echo the provider's stored secret
+    /// (design §5 "Errors", §8, the same check a parked entry's message gets, sync.rs) is dropped
+    /// for a plain one instead.
+    fn check_error(&self, plugin: &str, e: ProviderError) -> WorkspaceError {
+        let id = format!("plugin:{plugin}");
+        let name = self
+            .task_providers
+            .get()
+            .map(|p| p.available())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| p.id == id)
+            .map_or_else(|| "It".to_string(), |p| p.name);
+        let safe = |t: String| -> String {
+            if t.is_empty()
+                || self
+                    .task_providers
+                    .get()
+                    .is_some_and(|p| p.secret_matches(plugin, &t))
+            {
+                String::new()
             } else {
                 t
-            },
-        ),
+            }
+        };
+        match e {
+            ProviderError::NeedsToken => {
+                WorkspaceError::new("needs_token", format!("{name} needs your API token."))
+            }
+            ProviderError::RateLimited { .. } => WorkspaceError::new(
+                "rate_limited",
+                format!("{name} asked Connect to slow down. Try again soon."),
+            ),
+            ProviderError::Offline => {
+                WorkspaceError::new("offline", format!("{name} can’t be reached right now."))
+            }
+            ProviderError::NotFound(t) => {
+                let t = safe(t);
+                WorkspaceError::new(
+                    "not_found",
+                    if t.is_empty() {
+                        format!("{name} doesn’t have this any more.")
+                    } else {
+                        t
+                    },
+                )
+            }
+            ProviderError::Refused(t) => {
+                let t = safe(t);
+                WorkspaceError::new(
+                    "refused",
+                    if t.is_empty() {
+                        format!("{name} didn’t accept the request.")
+                    } else {
+                        t
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -675,6 +718,7 @@ mod tests {
     use std::sync::Arc;
 
     const P: &str = "plugin:todoist";
+    const SENTINEL: &str = "tk_SENTINEL_do_not_log_0123456789";
 
     struct Env {
         _dir: tempfile::TempDir,
@@ -937,10 +981,23 @@ mod tests {
         e.fake.answer("status", Err(ProviderError::NeedsToken));
         let err = e.core.task_provider_check().await.unwrap_err();
         assert_eq!(err.code, "needs_token");
+        assert_eq!(err.message, "Todoist needs your API token.");
 
         e.fake.answer("status", Err(ProviderError::Offline));
         let err = e.core.task_provider_check().await.unwrap_err();
         assert_eq!(err.code, "offline");
+        assert_eq!(err.message, "Todoist can’t be reached right now.");
+
+        // A refusal that would echo the stored secret is dropped for a plain sentence instead.
+        e.fake.set_secret(SENTINEL);
+        e.fake.answer(
+            "status",
+            Err(ProviderError::Refused(format!("x {SENTINEL}"))),
+        );
+        let err = e.core.task_provider_check().await.unwrap_err();
+        assert_eq!(err.code, "refused");
+        assert_eq!(err.message, "Todoist didn’t accept the request.");
+        assert!(!err.message.contains(SENTINEL));
     }
 
     #[tokio::test]

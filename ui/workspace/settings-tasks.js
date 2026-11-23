@@ -39,21 +39,34 @@ function statusLine(tp, now, zone) {
   }
 }
 
+/** Local's own state line (ruling 16): while Local is chosen, a provider with unsent changes
+ *  still queued from before names itself here ("<n> changes wait for Todoist."), since its own
+ *  row shows no status while it isn't active; otherwise a line that doesn't repeat Local's own
+ *  label. `p.available` is every entry `whereTasksLive` was given. */
+function localStateLine(p) {
+  if (p.active !== 'local') return 'Nothing leaves this Mac.';
+  const waiting = (p.available || [])
+    .filter(a => a.id !== 'local' && Number(a.pending) > 0)
+    .map(a => `${plural(a.pending, 'change')} wait for ${a.name}.`);
+  return waiting.length ? waiting.join(' ') : 'Nothing leaves this Mac.';
+}
+
 /** One radio row: Local, or an installed plugin that provides tasks. `a` is one entry of
- *  `taskProvider.available` (`{id, name}` for Local, `{id, name, on, ready}` for a plugin).
- *  `p`: `{active, tp, now, zone, busy}` (`busy`: `{[providerId]: true}` while Turn on runs). */
+ *  `taskProvider.available` (`{id, name}` for Local, `{id, name, on, ready, pending}` for a
+ *  plugin). `p`: `{active, available, tp, now, zone, busy}` (`busy`: `{[providerId]: true}` while
+ *  Turn on runs). */
 function optionRow(a, p) {
   const local = a.id === 'local';
   const label = local ? 'Connect: kept on this Mac' : a.name;
   const off = !local && a.on === false;
   const notReady = !local && a.on !== false && a.ready === false;
   const active = a.id === p.active;
-  const state = local ? 'Kept on this Mac; nothing leaves it.'
+  const state = local ? localStateLine(p)
     : off ? 'Turned off in Settings › Plugins'
       : notReady ? `The ${a.name} plugin didn’t load.`
         : active ? (statusLine(p.tp, p.now, p.zone) || 'Synced.') : 'Installed and on.';
   const descId = `ws-tp-state-${slug(a.id)}`;
-  const input = `<input type="radio" name="tasks-provider" value="${e(a.id)}" data-action="tasks-provider-choose" data-provider="${e(a.id)}"${active ? ' checked' : ''}${off ? ' disabled' : ''} aria-describedby="${descId}">`;
+  const input = `<input type="radio" name="tasks-provider" value="${e(a.id)}" data-change="tasks-provider-choose" data-provider="${e(a.id)}"${active ? ' checked' : ''}${off ? ' disabled' : ''} aria-describedby="${descId}">`;
   const turnOn = off ? button(p.busy?.[a.id] ? 'Turning on…' : 'Turn on', { action: 'tasks-provider-turn-on', size: 'sm', disabled: !!p.busy?.[a.id], attrs: { 'data-provider': a.id } }) : '';
   return `<div class="ws-tasks-provider-row">
     <label class="ws-ms-radio-card">${input}<span><strong>${e(label)}</strong><small id="${descId}">${e(state)}</small></span></label>
@@ -91,7 +104,7 @@ function secretField(def, p, helpUrl) {
       ${def.set ? button('Remove', { action: 'tasks-provider-secret-remove', size: 'sm', variant: 'ghost', disabled: !!p.savingSecret, attrs: { 'data-key': def.key } }) : ''}
     </div>
     ${def.help ? `<small class="ws-field-hint">${e(def.help)}</small>` : ''}
-    ${helpUrl ? `<a class="ws-link" data-action="tasks-provider-token-link" data-url="${e(helpUrl)}" data-name="${e(p.name)}" data-plugin-id="${e(p.pluginId)}">Get your token in ${e(p.name)} ↗</a>` : ''}
+    ${helpUrl ? `<button type="button" class="ws-link" data-action="tasks-provider-token-link" data-url="${e(helpUrl)}" data-name="${e(p.name)}" data-plugin-id="${e(p.pluginId)}">Get your token in ${e(p.name)} ↗</button>` : ''}
   </div>`;
 }
 

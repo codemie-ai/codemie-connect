@@ -245,10 +245,13 @@ impl super::Core {
     }
 
     /// Builds the snapshot's `taskProvider` (design §2): the active provider, every available
-    /// one, its state, the outbox counts and whether a copy was already offered. Never a secret:
-    /// a refusal sentence holding one reads as `null`.
+    /// one (each with its own `pending` count, ruling 16: "<n> changes wait for Todoist" while
+    /// Local is chosen reads an inactive provider's own entry), its state, the outbox counts and
+    /// whether a copy was already offered. Never a secret: a refusal sentence holding one reads
+    /// as `null`.
     pub(crate) fn task_provider_snapshot(&self, settings: &Settings) -> Value {
         let active = active_provider(settings).to_string();
+        let r = self.repo().ok();
         let mut available = vec![json!({"id": "local", "name": "Connect"})];
         let listed = self
             .task_providers
@@ -256,7 +259,11 @@ impl super::Core {
             .map(|p| p.available())
             .unwrap_or_default();
         for p in &listed {
-            available.push(json!({"id": p.id, "name": p.name, "on": p.on, "ready": p.ready}));
+            let pending = r
+                .as_deref()
+                .and_then(|r| outbox::counts(r, &p.id).ok())
+                .map_or(0, |(pending, _)| pending);
+            available.push(json!({"id": p.id, "name": p.name, "on": p.on, "ready": p.ready, "pending": pending}));
         }
         let name = available
             .iter()
@@ -280,13 +287,13 @@ impl super::Core {
         if active == "local" {
             return part;
         }
-        let (st, (pending, parked), syncing) = match self.repo() {
-            Ok(r) => (
-                sync::load_state(&r, &active).unwrap_or_default(),
-                outbox::counts(&r, &active).unwrap_or_default(),
-                sync::running(&r, &active, super::models::now()).unwrap_or(false),
+        let (st, (pending, parked), syncing) = match r.as_deref() {
+            Some(r) => (
+                sync::load_state(r, &active).unwrap_or_default(),
+                outbox::counts(r, &active).unwrap_or_default(),
+                sync::running(r, &active, super::models::now()).unwrap_or(false),
             ),
-            Err(_) => (Value::Null, (0, 0), false),
+            None => (Value::Null, (0, 0), false),
         };
         let state = match listed.iter().find(|p| p.id == active) {
             None => ProviderState::Failed,

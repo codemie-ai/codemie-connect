@@ -370,16 +370,24 @@ export function createTasksController({
   const pluginIdOf = id => String(id).replace(/^plugin:/, '');
   const settingOf = (pluginId, key) => (installed().find(x => x.id === pluginId)?.settings || []).find(s => s.key === key);
 
+  /** A stale Check answer belongs to the provider and the token it was asked of; a switch or a
+   *  token change starts the card without one again. */
+  const clearCheck = () => { ui().provider.check = null; };
+
   /** The copy dialog (ruling 16): shown once, the first time `id` is chosen while Local has open
    *  tasks (`settings.tasks.copyOffered` names every provider already offered, design §13). Its
    *  own two buttons send the one `task_provider_set` that switches, with `copy` either way. */
   function copyThenSwitch(id, count) {
-    const project = settingOf(pluginIdOf(id), 'project')?.value || providerOf(id)?.name || 'Connect';
+    const name = providerOf(id)?.name || 'it';
+    const project = settingOf(pluginIdOf(id), 'project')?.value || name;
     const decide = (label, decision, variant) => button(label, { type: 'submit', variant, attrs: { name: 'decision', value: decision } });
     return openModal({
-      title: 'Copy your open tasks to Todoist?', size: 'sm', submit: '', cancel: '',
-      body: `${copyDialog({ count, project })}<div class="ws-modal-footer" style="padding:0"><span class="ws-spacer"></span>${decide('Not now', 'skip', 'secondary')}${decide(`Copy ${count} tasks`, 'copy', 'primary')}</div>`,
-      onSubmit: f => mutate('task_provider_set', { provider: id, copy: f.get('decision') === 'copy' }),
+      title: `Copy your open tasks to ${name}?`, size: 'sm', submit: '', cancel: '',
+      body: `${copyDialog({ count, project })}<div class="ws-modal-footer" style="padding:0"><span class="ws-spacer"></span>${decide('Not now', 'skip', 'secondary')}${decide(`Copy ${plural(count, 'task')}`, 'copy', 'primary')}</div>`,
+      onSubmit: f => {
+        clearCheck();
+        return mutate('task_provider_set', { provider: id, copy: f.get('decision') === 'copy' });
+      },
     });
   }
 
@@ -394,6 +402,7 @@ export function createTasksController({
       const count = localOpenCount();
       if (!offered && count > 0) return copyThenSwitch(id, count);
     }
+    clearCheck();
     return mutate('task_provider_set', { provider: id });
   }
 
@@ -444,6 +453,7 @@ export function createTasksController({
     await render();
     try {
       await pluginRequest('set_setting', { id: pluginId, key: el.dataset.key, value });
+      clearCheck();
       await refreshInstalled();
     } finally {
       v.savingSecret = false;
@@ -455,6 +465,7 @@ export function createTasksController({
   async function removeSecret(el) {
     const pluginId = pluginIdOf(activeProvider(snap()));
     await pluginRequest('set_setting', { id: pluginId, key: el.dataset.key, value: '' });
+    clearCheck();
     return refreshInstalled().then(render);
   }
 

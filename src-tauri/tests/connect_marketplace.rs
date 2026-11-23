@@ -211,7 +211,7 @@ async fn todoist_installs_with_its_sheet_and_loads() {
     let provider = testing::task_provider(&c.core);
     assert_eq!(
         provider["available"][1],
-        json!({"id": PROVIDER, "name": "Todoist", "on": true, "ready": true})
+        json!({"id": PROVIDER, "name": "Todoist", "on": true, "ready": true, "pending": 0})
     );
     // Nothing is asked of Todoist until the user chooses it.
     assert!(c.todoist.requests().is_empty());

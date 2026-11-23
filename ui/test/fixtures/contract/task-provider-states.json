@@ -10,6 +10,7 @@
         "id": "plugin:todoist",
         "name": "Todoist",
         "on": true,
+        "pending": 1,
         "ready": false
       }
     ],
@@ -50,6 +51,7 @@
         "id": "plugin:todoist",
         "name": "Todoist",
         "on": true,
+        "pending": 1,
         "ready": true
       }
     ],
@@ -73,6 +75,7 @@
         "id": "plugin:todoist",
         "name": "Todoist",
         "on": false,
+        "pending": 1,
         "ready": false
       }
     ],
@@ -96,6 +99,7 @@
         "id": "plugin:todoist",
         "name": "Todoist",
         "on": true,
+        "pending": 1,
         "ready": true
       }
     ],
@@ -119,6 +123,7 @@
         "id": "plugin:todoist",
         "name": "Todoist",
         "on": true,
+        "pending": 1,
         "ready": true
       }
     ],
@@ -142,6 +147,7 @@
         "id": "plugin:todoist",
         "name": "Todoist",
         "on": true,
+        "pending": 0,
         "ready": true
       }
     ],
@@ -165,6 +171,7 @@
         "id": "plugin:todoist",
         "name": "Todoist",
         "on": true,
+        "pending": 1,
         "ready": true
       }
     ],

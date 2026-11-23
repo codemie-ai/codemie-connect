@@ -36,7 +36,7 @@ export const TAB_TEXT = {
   'meetings-templates': 'A template tells the AI what to write from a transcript. Two are built in; add your own or a skill for the meetings that need something else.',
   'meetings-rules': 'Pick a template automatically by meeting title, organizer, company or size, and decide what happens without you.',
   'meetings-glossary': 'Two plain Markdown documents the AI reads before every run: how names and terms are spelled, and which tags notes may use.',
-  'meetings-tasks': 'How tasks found in notes reach your board.',
+  'meetings-tasks': 'Where your tasks live, and how tasks found in notes reach your board.',
 };
 
 const set = (key, checked, label) => toggle({ action: 'meetings-settings-set', checked: !!checked, attrs: { 'data-key': key, 'aria-label': label } });

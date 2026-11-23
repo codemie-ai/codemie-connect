@@ -818,18 +818,21 @@ const pluginsUi = createPluginsController({
   installedChanged: list => {
     // Removing the active task provider's plugin switches Connect to Local on its own (design
     // §11): nothing is deleted, the cache and the outbox stay, and come back if it is installed
-    // again (ruling 16).
+    // again (ruling 16). Checked on every list this gives, not only a change while the window is
+    // open, so a plugin removed while Connect was closed is caught at boot too (the first
+    // `loadInstalled` also calls this). The name comes from the list this replaces (Settings →
+    // Plugins' own, "Todoist"), never `taskProvider.name`, which already reads "Connect" once the
+    // plugin is gone from `available` too.
     const active = snap().taskProvider?.active;
-    const name = snap().taskProvider?.name;
-    const wasInstalled = active?.startsWith('plugin:') && state.installedPlugins.some(p => `plugin:${p.id}` === active);
+    const removedName = state.installedPlugins.find(p => `plugin:${p.id}` === active)?.name;
     const stillIs = list.some(p => `plugin:${p.id}` === active);
     state.installedPlugins = list;
     state.pluginsKnown = true;
     pluginHost?.sync(list);
-    if (wasInstalled && !stillIs) {
+    if (active?.startsWith('plugin:') && !stillIs) {
       mutate('task_provider_set', { provider: 'local' })
-        .then(() => toast(`${name || 'It'} was removed, so tasks are back in Connect.`, 'info'))
-        .catch(() => {});
+        .then(() => toast(`${removedName || 'That plugin'} was removed, so tasks are back in Connect.`, 'info'))
+        .catch(fail);
     }
   },
   navigate: path => route('settings', 'plugins', path),

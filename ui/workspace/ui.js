@@ -219,15 +219,19 @@ export function openModal({ title, subtitle = '', body = '', submit = 'Save', ca
       return;
     }
     const submitter = ev.submitter || form.querySelector('[type=submit]');
-    if (submitter) submitter.disabled = true;
+    // Built before any button is disabled: a disabled control (including the submitter itself)
+    // is left out of FormData, which would silently drop the submitter's own name/value.
+    const data = new FormData(form, submitter);
+    const buttons = [...form.querySelectorAll('[type=submit]')];
+    buttons.forEach(b => { b.disabled = true; });
     error.textContent = '';
     try {
-      const result = await onSubmit(new FormData(form), dialog);
+      const result = await onSubmit(data, dialog);
       if (result !== false && dialog.open) dialog.close();
     } catch (err) {
       error.textContent = err?.message || String(err);
     } finally {
-      if (submitter) submitter.disabled = false;
+      buttons.forEach(b => { b.disabled = false; });
     }
   };
   document.body.append(dialog);
