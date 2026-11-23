@@ -5,14 +5,22 @@
 //! (`TaskProviders`), the settings and snapshot plumbing (`active_provider`,
 //! `Core::task_provider_snapshot`), and the keys that make a create idempotent (`keys`).
 //!
-//! This step (Task 1 of the plan) wires the trait and the snapshot for **Local only**: no plugin
-//! implements `TaskProviders` yet (Task 2), and there is no outbox or sync job yet (Task 4).
-use super::models::Settings;
+//! A provider's changes go through the outbox (`outbox`) and the `task_sync` job (`sync`), which
+//! pushes them in order, pulls what changed in the provider and merges it (`merge`), over the
+//! wire shape (`wire`). Tests use `fake::FakeProvider`.
+use super::models::{Result, Settings};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+#[cfg(any(test, feature = "test-support"))]
+#[cfg_attr(not(test), allow(dead_code))] // no test outside the crate drives a provider yet
+pub mod fake;
 pub(crate) mod keys;
+pub(crate) mod merge;
+pub(crate) mod outbox;
+pub(crate) mod sync;
+pub(crate) mod wire;
 
 /// Settings › Tasks (design §2): which provider is active, app-wide like `meetings`. Old
 /// settings without `tasks` read as Local (`Settings`'s container-level `#[serde(default)]`).
@@ -50,7 +58,6 @@ pub struct ProviderInfo {
 
 /// `taskProvider.state` (design §2): what the Tasks header and Settings › Tasks show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // only Local and Off are built yet; Task 3 maps a real provider onto the rest
 pub(crate) enum ProviderState {
     Local,
     Ready,
@@ -84,7 +91,6 @@ impl ProviderState {
 /// by the plugin manager; tests use a `FakeProvider`.
 pub trait TaskProviders: Send + Sync {
     /// Asks plugin `plugin`'s `tasks:<op>`.
-    #[allow(dead_code)] // the outbox and sync job (Task 3) call it
     fn call(
         &self,
         plugin: &str,
@@ -93,14 +99,12 @@ pub trait TaskProviders: Send + Sync {
     ) -> BoxFuture<'static, std::result::Result<Value, ProviderError>>;
     fn available(&self) -> Vec<ProviderInfo>;
     /// Whether `text` contains the plugin's stored secret (design §8's message check).
-    #[allow(dead_code)] // the sync job's message check (Task 3) calls it
     fn secret_matches(&self, plugin: &str, text: &str) -> bool;
 }
 
 /// The outcome of a provider call, mapped from the code a provider's thrown `Error` message
 /// starts with (design §5 "Errors").
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // built by `parse`, read once the outbox and sync job (Task 4) call providers
 pub enum ProviderError {
     NeedsToken,
     RateLimited { retry_after: u64 },
@@ -136,24 +140,118 @@ impl ProviderError {
         }
         Self::Offline
     }
+
+    /// The same code without the provider's sentence: what is kept of a message that contained a
+    /// stored secret (design §5 "Errors", §8).
+    pub fn without_text(self) -> Self {
+        match self {
+            Self::NotFound(_) => Self::NotFound(String::new()),
+            Self::Refused(_) => Self::Refused(String::new()),
+            other => other,
+        }
+    }
+
+    /// The provider's sentence for a parked entry, if it gave one.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::NotFound(t) | Self::Refused(t) => Some(t.as_str()).filter(|t| !t.is_empty()),
+            _ => None,
+        }
+    }
 }
 
+impl ProviderState {
+    fn of(state: &str) -> Self {
+        match state {
+            "offline" => Self::Offline,
+            "rate_limited" => Self::RateLimited,
+            "needs_token" => Self::NeedsToken,
+            _ => Self::Ready,
+        }
+    }
+}
+
+/// `task_sync_now` runs at most once in this many seconds (design §4 "Cadence").
+const SYNC_NOW_EVERY: i64 = 30;
+/// The background loop syncs this often, window open or closed (design ruling 4).
+const BACKGROUND_EVERY: i64 = 300;
+
 impl super::Core {
-    /// Queues a sync with the active provider now (a provider's secret was saved or cleared).
-    /// The outbox and sync job (Task 3) fill this in; until then there is nothing to sync.
-    pub(crate) fn task_sync_now(&self) {}
+    /// `task_sync_now` (read-only): queues a sync with the active provider unless one ran in the
+    /// last 30 s. Answers `{queued}`.
+    pub(crate) fn task_sync_now(self: &std::sync::Arc<Self>) -> Result<Value> {
+        let now = super::models::now();
+        let mut r = self.repo()?;
+        let provider = active_provider(&r.settings()?).to_string();
+        if provider == "local" {
+            return Ok(json!({"queued": false}));
+        }
+        let st = sync::load_state(&r, &provider)?;
+        if st["lastRun"]
+            .as_i64()
+            .is_some_and(|t| now - t < SYNC_NOW_EVERY)
+        {
+            return Ok(json!({"queued": false}));
+        }
+        sync::queue(&mut r, &provider, now)?;
+        Ok(json!({"queued": true}))
+    }
+
+    /// Plugin `plugin`'s secret was saved or cleared (Settings › Tasks): when it is the active
+    /// provider, a rejected token no longer stops its calls, and a sync is queued now.
+    pub(crate) fn task_secret_saved(&self, plugin: &str) -> Result<()> {
+        let now = super::models::now();
+        let mut r = self.repo()?;
+        let provider = active_provider(&r.settings()?).to_string();
+        if provider != format!("plugin:{plugin}") {
+            return Ok(());
+        }
+        let mut st = sync::load_state(&r, &provider)?;
+        if st["state"] == "needs_token" {
+            st["state"] = "ready".into();
+            sync::save_state(&mut r, &provider, &st, now)?;
+        }
+        sync::queue(&mut r, &provider, now)
+    }
+
+    /// The background loop's part (window open or closed): every 5 minutes, a sync with the
+    /// active provider, and finished sync jobs older than a day go.
+    pub(crate) fn task_sync_round(&self, now: i64) -> Result<()> {
+        let mut r = self.repo()?;
+        let provider = active_provider(&r.settings()?).to_string();
+        if provider == "local" {
+            return Ok(());
+        }
+        let busy = r.jobs()?.iter().any(|j| {
+            j.kind == sync::JOB_KIND
+                && j.payload["provider"] == provider.as_str()
+                && matches!(j.state.as_str(), "queued" | "running")
+        });
+        let st = sync::load_state(&r, &provider)?;
+        if !busy
+            && st["lastRun"]
+                .as_i64()
+                .is_none_or(|t| now - t >= BACKGROUND_EVERY)
+        {
+            r.prune_finished_jobs(&[sync::JOB_KIND], now - 86_400)?;
+            sync::queue(&mut r, &provider, now)?;
+        }
+        Ok(())
+    }
 
     /// Builds the snapshot's `taskProvider` (design §2): the active provider, every available
-    /// one, its state, the outbox counts and whether a copy was already offered. This step
-    /// (Task 1) answers for Local only; Task 3 fills in a real provider's `syncing` / `offline` /
-    /// `rate_limited` / `needs_token` states and the outbox's `pending` / `parked` counts.
+    /// one, its state, the outbox counts and whether a copy was already offered. Never a secret:
+    /// a refusal sentence holding one reads as `null`.
     pub(crate) fn task_provider_snapshot(&self, settings: &Settings) -> Value {
         let active = active_provider(settings).to_string();
         let mut available = vec![json!({"id": "local", "name": "Connect"})];
-        if let Some(providers) = self.task_providers.get() {
-            for p in providers.available() {
-                available.push(json!({"id": p.id, "name": p.name, "on": p.on, "ready": p.ready}));
-            }
+        let listed = self
+            .task_providers
+            .get()
+            .map(|p| p.available())
+            .unwrap_or_default();
+        for p in &listed {
+            available.push(json!({"id": p.id, "name": p.name, "on": p.on, "ready": p.ready}));
         }
         let name = available
             .iter()
@@ -161,26 +259,54 @@ impl super::Core {
             .and_then(|p| p["name"].as_str())
             .unwrap_or("Connect")
             .to_string();
-        // A plugin provider's real state (ready, syncing, offline, ...) is Task 3's; for now an
-        // active provider that isn't Local (nothing can set one yet) reads as `off`.
-        let state = if active == "local" {
-            ProviderState::Local
-        } else {
-            ProviderState::Off
-        };
         let copy_offered = settings.tasks.copy_offered.iter().any(|p| p == &active);
-        json!({
+        let mut part = json!({
             "active": active,
             "name": name,
             "available": available,
-            "state": state.as_str(),
+            "state": ProviderState::Local.as_str(),
             "pending": 0,
             "parked": 0,
             "lastSync": Value::Null,
             "retryAt": Value::Null,
             "message": Value::Null,
             "copyOffered": copy_offered,
-        })
+        });
+        if active == "local" {
+            return part;
+        }
+        let (st, (pending, parked), syncing) = match self.repo() {
+            Ok(r) => (
+                sync::load_state(&r, &active).unwrap_or_default(),
+                outbox::counts(&r, &active).unwrap_or_default(),
+                sync::running(&r, &active, super::models::now()).unwrap_or(false),
+            ),
+            Err(_) => (Value::Null, (0, 0), false),
+        };
+        let state = match listed.iter().find(|p| p.id == active) {
+            None => ProviderState::Failed,
+            Some(p) if !p.on => ProviderState::Off,
+            Some(p) if !p.ready => ProviderState::Failed,
+            Some(_) if syncing => ProviderState::Syncing,
+            Some(_) => ProviderState::of(st["state"].as_str().unwrap_or("ready")),
+        };
+        let retry_at = match state {
+            ProviderState::Offline | ProviderState::RateLimited => st["backoffUntil"].clone(),
+            _ => Value::Null,
+        };
+        let plugin = active.strip_prefix("plugin:").unwrap_or_default();
+        let message = st["message"].as_str().filter(|m| {
+            self.task_providers
+                .get()
+                .is_some_and(|p| !p.secret_matches(plugin, m))
+        });
+        part["state"] = state.as_str().into();
+        part["pending"] = pending.into();
+        part["parked"] = parked.into();
+        part["lastSync"] = st["lastSync"].clone();
+        part["retryAt"] = retry_at;
+        part["message"] = message.map_or(Value::Null, Value::from);
+        part
     }
 }
 

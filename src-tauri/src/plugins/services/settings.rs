@@ -13,6 +13,12 @@ use std::path::{Path, PathBuf};
 /// The longest text a setting holds.
 const MAX_TEXT: usize = 8 * 1024;
 
+/// Held while a settings or secrets file is read, changed and written back: the window's
+/// `set_setting` and a plugin's own `ctx.settings.set` both rewrite these files, and a write
+/// between another's read and write would lose its value. Writes are rare, so one lock for every
+/// plugin is enough.
+static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn settings_file(s: &Services, id: &str) -> PathBuf {
     plain_file(&s.paths, id)
 }
@@ -91,6 +97,9 @@ pub(crate) fn store(
             }
         )));
     }
+    let _writing = WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if def.kind == "secret" {
         let mut secrets = read_object(&secrets_file_of(paths, id));
         match value.as_str().filter(|t| !t.is_empty()) {
@@ -266,5 +275,36 @@ mod tests {
         assert!(
             listed_addresses(&env.services, &env.services.granted("telegram").unwrap()).is_empty()
         );
+    }
+
+    /// The window's `set_setting` and the plugin's own `ctx.settings.set` both rewrite the same
+    /// files: writes at the same moment must each keep the other's value.
+    #[test]
+    fn simultaneous_writes_keep_every_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = PluginPaths::new(&dir.path().join("data"), &dir.path().join("private"));
+        let def = |key: String, kind: &str| SettingDef {
+            key,
+            label: "L".into(),
+            kind: kind.into(),
+            default: None,
+            help: None,
+        };
+        std::thread::scope(|scope| {
+            for t in 0..16 {
+                let (paths, def) = (&paths, &def);
+                scope.spawn(move || {
+                    for i in 0..8 {
+                        let key = format!("k{t}_{i}");
+                        store(paths, "todoist", &def(key.clone(), "string"), &json!("v")).unwrap();
+                        store(paths, "todoist", &def(key, "secret"), &json!("s")).unwrap();
+                    }
+                });
+            }
+        });
+        let plain = read_object(&plain_file(&paths, "todoist"));
+        let secrets = read_object(&secrets_file_of(&paths, "todoist"));
+        assert_eq!(plain.len(), 128, "a plain write was lost");
+        assert_eq!(secrets.len(), 128, "a secret write was lost");
     }
 }

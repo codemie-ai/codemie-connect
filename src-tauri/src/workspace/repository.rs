@@ -828,6 +828,30 @@ impl Repository {
         tx.commit()?;
         Ok(())
     }
+    /// Writes `put` and deletes the local records `delete` (`(kind, id, workspace)`) in one
+    /// transaction, bumping the revision when `bump` (a task and its outbox entry, design §4).
+    pub fn commit_local(
+        &mut self,
+        put: &[Record],
+        delete: &[(&str, &str, &str)],
+        bump: bool,
+    ) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for (kind, id, wid) in delete {
+            tx.execute(
+                "DELETE FROM records WHERE id=?1 AND kind=?2 AND workspace_id=?3 AND connection_id=''",
+                params![id, kind, wid],
+            )?;
+        }
+        for record in put {
+            put_record(&tx, record)?;
+        }
+        if bump {
+            self::bump(&tx)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
     pub fn delete_local(&mut self, kind: &str, id: &str, wid: &str) -> Result<()> {
         let tx = self.db.transaction()?;
         tx.execute(
@@ -1162,7 +1186,7 @@ impl Repository {
     pub fn claim(&mut self, at: i64) -> Result<Option<Job>> {
         self.claim_ready(at, true)
     }
-    /// The next due job. Reminders and notifications go first; then everything the person asked
+    /// The next due job (a `task_sync` only while no other runs). Reminders and notifications go first; then everything the person asked
     /// for one at a time ("Draft with AI", a summary, notes for one meeting) and the rest; then
     /// the notes of Make notes for all (`payload.batch`); background Claude work (automation runs
     /// and automatic meeting notes, keyed `meeting_notes:auto:…`) goes last. Claude work
@@ -1176,7 +1200,7 @@ impl Repository {
         tx.execute("UPDATE jobs SET state='queued',body=json_set(body,'$.state','queued','$.leaseUntil',NULL) WHERE state='running' AND lease_until<?1",[at])?;
         let raw: Option<String> = tx
             .query_row(
-                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize','automation_run','meeting_notes') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize','automation_run','meeting_notes'))<2) AND (NOT (json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%') OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND (json_extract(busy.body,'$.kind')='automation_run' OR json_extract(busy.body,'$.key') LIKE 'meeting_notes:auto:%'))) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 WHEN json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%' THEN 3 WHEN json_extract(body,'$.kind')='meeting_notes' AND json_extract(body,'$.payload.batch')=1 THEN 2 ELSE 1 END,due_at LIMIT 1",
+                "SELECT body FROM jobs WHERE state='queued' AND due_at<=?1 AND (?2 OR json_extract(body,'$.kind')!='sync') AND (json_extract(body,'$.kind')!='calendar_window' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='calendar_window')) AND (json_extract(body,'$.kind')!='task_sync' OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind')='task_sync')) AND (json_extract(body,'$.kind') NOT IN ('ai_draft','ai_summarize','automation_run','meeting_notes') OR (SELECT count(*) FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND json_extract(busy.body,'$.kind') IN ('ai_draft','ai_summarize','automation_run','meeting_notes'))<2) AND (NOT (json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%') OR NOT EXISTS(SELECT 1 FROM jobs busy WHERE busy.state='running' AND busy.lease_until>=?1 AND (json_extract(busy.body,'$.kind')='automation_run' OR json_extract(busy.body,'$.key') LIKE 'meeting_notes:auto:%'))) ORDER BY CASE WHEN json_extract(body,'$.kind') IN ('notification','reminder') THEN 0 WHEN json_extract(body,'$.kind')='automation_run' OR json_extract(body,'$.key') LIKE 'meeting_notes:auto:%' THEN 3 WHEN json_extract(body,'$.kind')='meeting_notes' AND json_extract(body,'$.payload.batch')=1 THEN 2 ELSE 1 END,due_at LIMIT 1",
                 params![at,allow_sync],
                 |r| r.get(0),
             )

@@ -125,8 +125,8 @@ pub async fn plugins_request(
         return blocking(move || {
             let _running = running;
             let (view, provider_secret) = set_setting(&paths, data.unwrap_or(Value::Null))?;
-            if provider_secret {
-                core.task_sync_now();
+            if let Some(plugin) = provider_secret {
+                core.task_secret_saved(&plugin)?;
             }
             Ok(view)
         })
@@ -555,12 +555,13 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
     }
 }
 
-/// `set_setting`: the plugin's view after the change, and whether a task provider's secret
-/// changed (its sync is queued).
-fn set_setting(paths: &PluginPaths, data: Value) -> Result<(Value, bool)> {
+/// `set_setting`: sets a plugin's setting; answers its `installed` view and, when it was a task provider's
+/// secret, the plugin's id (a sync is queued for it).
+fn set_setting(paths: &PluginPaths, data: Value) -> Result<(Value, Option<String>)> {
     let a: SettingArg = arg(data)?;
     let provider_secret = extras::set_setting(paths, &a.id, &a.key, &a.value)?;
-    Ok((to_json(installed_view(paths, &a.id)?)?, provider_secret))
+    let view = to_json(installed_view(paths, &a.id)?)?;
+    Ok((view, provider_secret.then_some(a.id)))
 }
 
 // --------------------------------------------------------------------- views

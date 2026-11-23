@@ -417,12 +417,17 @@ impl TaskProviders for PluginManager {
         op: &str,
         args: Value,
     ) -> BoxFuture<'static, Result<Value, ProviderError>> {
-        let host = self.host.clone();
+        let (host, paths) = (self.host.clone(), self.paths.clone());
         let (plugin, provider) = (plugin.to_string(), format!("tasks:{op}"));
         Box::pin(async move {
             match tokio::time::timeout(TASK_ANSWER, host.ask(&plugin, &provider, args)).await {
                 Ok(Ok(answer)) => Ok(answer),
                 Ok(Err(e)) if e.code == ErrorCode::Timeout => Err(ProviderError::Offline),
+                // The whole message is checked for a stored secret before `parse` cuts it to 200
+                // characters: a token crossing the cut would leave its start behind.
+                Ok(Err(e)) if secret_in(&paths, &plugin, &e.message) => {
+                    Err(ProviderError::parse(&e.message).without_text())
+                }
                 Ok(Err(e)) => Err(ProviderError::parse(&e.message)),
                 Err(_) => Err(ProviderError::Offline),
             }
@@ -458,10 +463,15 @@ impl TaskProviders for PluginManager {
     }
 
     fn secret_matches(&self, plugin: &str, text: &str) -> bool {
-        settings::secret_values(&self.paths, plugin)
-            .iter()
-            .any(|secret| text.contains(secret.as_str()))
+        secret_in(&self.paths, plugin, text)
     }
+}
+
+/// Whether `text` contains one of plugin `plugin`'s stored secrets.
+fn secret_in(paths: &PluginPaths, plugin: &str, text: &str) -> bool {
+    settings::secret_values(paths, plugin)
+        .iter()
+        .any(|secret| text.contains(secret.as_str()))
 }
 
 /// What `Core` holds of the manager (it holds `Core`, so not the manager itself).
@@ -1198,5 +1208,45 @@ mod tests {
         assert!(p.secret_matches("todoist", &format!("echo {SENTINEL} back")));
         assert!(!p.secret_matches("todoist", "nothing secret here"));
         assert!(!p.secret_matches("other", &format!("echo {SENTINEL}")));
+    }
+
+    /// A refusal echoing the token is checked whole, before it is cut to 200 characters: a token
+    /// crossing the cut must not leave its first characters behind.
+    #[tokio::test]
+    async fn a_refusal_with_the_token_is_dropped_before_it_is_cut() {
+        const SENTINEL: &str = "tk_SENTINEL_do_not_log_0123456789";
+        let s = Setup::new(Arc::new(FakeRunner::new(vec![])), vec![]);
+        // 190 characters of text, then the token: the cut at 200 falls inside it.
+        let main = format!(
+            r#"
+            export function apply(ctx) {{
+              ctx.tasks.provide({{
+                update: async () => {{ throw new Error('refused: ' + 'x'.repeat(190) + '{SENTINEL} echoed') }},
+                remove: async () => {{ throw new Error('not_found: {SENTINEL} is gone') }},
+                complete: async () => {{ throw new Error('refused: Todoist didn\'t accept the change (400)') }},
+              }})
+            }}
+            "#
+        );
+        s.install("todoist", "1.0.0", provider_manifest(), &main, true);
+        s.manager.reload().await;
+        crate::plugins::extras::set_setting(&s.manager.paths, "todoist", "token", &json!(SENTINEL))
+            .unwrap();
+        let p = providers(&s);
+        assert_eq!(
+            p.call("todoist", "update", json!({})).await,
+            Err(ProviderError::Refused(String::new()))
+        );
+        assert_eq!(
+            p.call("todoist", "remove", json!({})).await,
+            Err(ProviderError::NotFound(String::new()))
+        );
+        // A refusal without the token keeps its sentence.
+        assert_eq!(
+            p.call("todoist", "complete", json!({})).await,
+            Err(ProviderError::Refused(
+                "Todoist didn't accept the change (400)".into()
+            ))
+        );
     }
 }

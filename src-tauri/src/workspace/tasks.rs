@@ -15,7 +15,7 @@
 use super::meetings::{folder, model::MeAlias};
 use super::models::*;
 use super::repository::Repository;
-use super::task_provider::{active_provider, keys};
+use super::task_provider::{active_provider, keys, outbox, sync, wire};
 use super::{new_job, workspace_id_active, Core};
 use chrono::{Datelike, Timelike};
 use serde_json::{json, Value};
@@ -94,7 +94,7 @@ pub(crate) fn is_open(body: &Value) -> bool {
 
 /// A task's provider: the one it was stamped with, or `"local"` for one without a `provider`
 /// field (every task before this step, and every Local task since).
-fn provider_of(body: &Value) -> &str {
+pub(crate) fn provider_of(body: &Value) -> &str {
     body["provider"].as_str().unwrap_or("local")
 }
 
@@ -459,7 +459,7 @@ pub(crate) fn task_save(
     history.drain(..excess);
     body["history"] = history.into();
 
-    let record = Record {
+    let mut record = Record {
         id,
         kind: KIND.into(),
         connection_id: None,
@@ -469,7 +469,14 @@ pub(crate) fn task_save(
         updated_at: now,
         data: body,
     };
-    r.put_record(&record)?;
+    // A provider's task is written with its outbox entries, in one transaction (design §4).
+    let ops = provider_ops(&before, &record.data, creating);
+    if ops.is_empty() {
+        r.put_record(&record)?;
+    } else {
+        record.data["pending"] = true.into();
+        outbox::enqueue_all(r, &record, &ops, now)?;
+    }
     let mut meetings: Vec<&str> = [&before["meetingId"], &record.data["meetingId"]]
         .into_iter()
         .filter_map(Value::as_str)
@@ -479,6 +486,40 @@ pub(crate) fn task_save(
         write_tasks_json(r, workspace_id, meeting);
     }
     Ok(record)
+}
+
+/// What saving a provider's task from `before` to `after` sends (design §1, §4): nothing for
+/// Local or for a task To review or Dismissed (Connect's drafts, never sent); a `create` the first
+/// time it is open or done; then an `update` naming the fields that changed and a `complete` when
+/// it was done or reopened. A move between To do, In progress and Waiting sends nothing unless
+/// the kind it reads as changes.
+fn provider_ops(before: &Value, after: &Value, creating: bool) -> Vec<(&'static str, Value)> {
+    let sent = |b: &Value| !matches!(status_of(b), "review" | "dismissed");
+    if provider_of(after) == "local" || !sent(after) {
+        return Vec::new();
+    }
+    let in_provider = !creating && (before["remote"]["id"].is_string() || sent(before));
+    let (b, a) = (wire::fields(before), wire::fields(after));
+    if !in_provider {
+        let mut ops = vec![("create", json!({}))];
+        if a["done"] == true {
+            ops.push(("complete", json!({"done": true})));
+        }
+        return ops;
+    }
+    let mut ops = Vec::new();
+    let changed: serde_json::Map<String, Value> = ["text", "notes", "due", "kind", "owner"]
+        .into_iter()
+        .filter(|k| a[*k] != b[*k])
+        .map(|k| (k.to_string(), Value::Bool(true)))
+        .collect();
+    if !changed.is_empty() {
+        ops.push(("update", Value::Object(changed)));
+    }
+    if a["done"] != b["done"] {
+        ops.push(("complete", json!({"done": a["done"]})));
+    }
+    ops
 }
 
 /// Deletes a task of `workspace_id` and returns its body, so Undo can save it back with
@@ -493,7 +534,13 @@ pub(crate) fn task_delete(r: &mut Repository, workspace_id: &str, id: &str) -> R
             e
         }
     })?;
-    r.delete_local(KIND, id, workspace_id)?;
+    if provider_of(&task.data) == "local" {
+        r.delete_local(KIND, id, workspace_id)?;
+    } else {
+        // Its unsent changes go with it; once it is in the provider, a `remove` is queued, in the
+        // same transaction (design §10 "Delete with a provider").
+        outbox::delete_task(r, &task, super::models::now())?;
+    }
     if let Some(meeting) = task.data["meetingId"].as_str() {
         if let Some(line) = task.data["line"].as_u64() {
             // Notes made again must not bring a deleted task back.
@@ -711,11 +758,18 @@ impl Core {
                     }
                 }
                 let task = task_save(&mut r, &w.id, &data, now())?;
+                if task.data["pending"] == true {
+                    // Pushed at once (design ruling 4), window open or closed.
+                    sync::queue(&mut r, provider_of(&task.data), now())?;
+                }
                 Ok(json!({"id": task.id}))
             }
             Operation::TaskDelete => {
                 let id = required(&req.data, "id", ID_MAX)?;
                 let body = task_delete(&mut r, &w.id, id)?;
+                if body["remote"]["id"].is_string() {
+                    sync::queue(&mut r, provider_of(&body), now())?;
+                }
                 Ok(json!({"deleted": true, "id": id, "body": body}))
             }
             _ => Err(WorkspaceError::new("validation", "Unsupported operation.")),
@@ -1123,32 +1177,6 @@ mod tests {
             .records_of_kind("task_outbox")
             .unwrap();
         assert!(outbox.is_empty(), "no outbox entry for Local: {outbox:?}");
-    }
-
-    /// The `taskProvider` the snapshot carries for each state (design §2). This step only has
-    /// Local to show; a later task adds the rest. Regenerate with
-    /// `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
-    #[tokio::test]
-    async fn contract_fixtures_match_the_task_provider_states() {
-        let e = env();
-        let snap = e
-            .core
-            .request(Request {
-                op: Operation::Snapshot,
-                workspace_id: None,
-                expected_revision: None,
-                operation_id: None,
-                data: json!({}),
-            })
-            .await
-            .unwrap();
-        let local = snap["snapshot"]["taskProvider"].clone();
-        assert_eq!(local["active"], "local");
-        assert_eq!(local["state"], "local");
-        crate::plugins::testkit::contract_fixture(
-            "task-provider-states.json",
-            &json!({"local": local}),
-        );
     }
 
     #[tokio::test]

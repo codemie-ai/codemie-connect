@@ -92,5 +92,7 @@ test-support = []
 
 [dev-dependencies]
 tempfile = "3"
+# A paused clock for the task sync's request budget test (`start_paused`).
+tokio = { version = "1", features = ["test-util"] }
 tauri-utils = { version = "2", features = ["resources"] }
 app = { path = ".", features = ["test-support"] }

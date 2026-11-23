@@ -503,6 +503,10 @@ impl Core {
             *last_sync = now();
             let _ = self.queue_sync();
         }
+        // The task provider syncs with the window closed too (every 5 minutes).
+        if let Err(e) = self.task_sync_round(now()) {
+            eprintln!("tasks: sync round failed: {}", e.code);
+        }
         if ticks.is_multiple_of(30) {
             self.announce_meetings(now());
         }
@@ -696,6 +700,12 @@ impl Core {
             "transcript_check" => self.run_transcript_check(job).await,
             "transcript_download" => self.run_transcript_download(job).await,
             "meeting_notes" => self.run_meeting_notes(job).await,
+            "task_sync" => {
+                let provider = job.payload["provider"].as_str().unwrap_or_default();
+                Ok(task_provider::sync::run(self, provider, now())
+                    .await?
+                    .summary())
+            }
             _ => Err(WorkspaceError::new("validation", "Unsupported job type.")),
         }
     }
@@ -754,6 +764,10 @@ impl Core {
         }
         if req.op == Operation::AiUsage {
             return self.ai_usage(&req);
+        }
+        // Read-only: queues a sync job at most once in 30 s; no operation id.
+        if req.op == Operation::TaskSyncNow {
+            return self.task_sync_now();
         }
         // The CodeMie CLI answers over the analytics store; a fetch runs in the background.
         if matches!(

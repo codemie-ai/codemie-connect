@@ -1,0 +1,278 @@
+{
+  "adopted": [
+    {
+      "connectionId": null,
+      "data": {
+        "createdAt": 1795003200,
+        "done": false,
+        "doneAt": null,
+        "due": null,
+        "history": [
+          {
+            "at": 1795003200,
+            "text": "Added by you"
+          }
+        ],
+        "key": "5cf34df66a48e666",
+        "notes": null,
+        "order": 1795003201.0,
+        "pending": false,
+        "provider": "plugin:todoist",
+        "remote": {
+          "base": {
+            "done": false,
+            "due": null,
+            "kind": "task",
+            "notes": null,
+            "owner": null,
+            "text": "Send the pilot user list"
+          },
+          "id": "8124",
+          "labels": [
+            "connect"
+          ],
+          "syncedAt": 1795003230,
+          "updatedAt": "2026-11-18T12:00:00Z",
+          "url": "https://app.todoist.com/app/task/8124"
+        },
+        "status": "todo",
+        "syncError": null,
+        "text": "Send the pilot user list"
+      },
+      "id": "t1",
+      "kind": "commitment",
+      "revision": "rev",
+      "source": "local",
+      "updatedAt": 1795003230,
+      "workspaceId": "personal"
+    }
+  ],
+  "merged": [
+    {
+      "connectionId": null,
+      "data": {
+        "createdAt": 1795003200,
+        "done": false,
+        "doneAt": null,
+        "due": "2026-11-21",
+        "history": [
+          {
+            "at": 1795003200,
+            "text": "Added by you"
+          },
+          {
+            "at": 1795003400,
+            "text": "Due date set to 2026-11-21"
+          }
+        ],
+        "key": "5cf34df66a48e666",
+        "notes": null,
+        "order": 1795003201.0,
+        "pending": false,
+        "provider": "plugin:todoist",
+        "remote": {
+          "base": {
+            "done": false,
+            "due": "2026-11-21",
+            "kind": "task",
+            "notes": null,
+            "owner": null,
+            "text": "Send the pilot user list to Marek"
+          },
+          "id": "8124",
+          "labels": [
+            "connect"
+          ],
+          "syncedAt": 1795003430,
+          "updatedAt": "2026-11-18T12:01:40Z",
+          "url": "https://app.todoist.com/app/task/8124"
+        },
+        "status": "todo",
+        "syncError": null,
+        "text": "Send the pilot user list to Marek"
+      },
+      "id": "t1",
+      "kind": "commitment",
+      "revision": "rev",
+      "source": "local",
+      "updatedAt": 1795003400,
+      "workspaceId": "personal"
+    }
+  ],
+  "offlineReplay": [
+    {
+      "connectionId": null,
+      "data": {
+        "createdAt": 1795003200,
+        "done": false,
+        "doneAt": null,
+        "due": "2026-11-20",
+        "history": [
+          {
+            "at": 1795003200,
+            "text": "Added by you"
+          },
+          {
+            "at": 1795003201,
+            "text": "Due date set to 2026-11-20"
+          }
+        ],
+        "key": "5cf34df66a48e666",
+        "notes": null,
+        "order": 1795003201.0,
+        "pending": false,
+        "provider": "plugin:todoist",
+        "remote": {
+          "base": {
+            "done": false,
+            "due": "2026-11-20",
+            "kind": "task",
+            "notes": null,
+            "owner": null,
+            "text": "Send the pilot user list"
+          },
+          "id": "8124",
+          "labels": [
+            "connect"
+          ],
+          "syncedAt": 1795003233,
+          "updatedAt": "2026-11-18T12:00:00Z",
+          "url": "https://app.todoist.com/app/task/8124"
+        },
+        "status": "todo",
+        "syncError": null,
+        "text": "Send the pilot user list"
+      },
+      "id": "t1",
+      "kind": "commitment",
+      "revision": "rev",
+      "source": "local",
+      "updatedAt": 1795003233,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "createdAt": 1795003202,
+        "done": false,
+        "doneAt": null,
+        "due": null,
+        "history": [
+          {
+            "at": 1795003202,
+            "text": "Added by you"
+          }
+        ],
+        "key": "42f70740b2809582",
+        "notes": null,
+        "order": 1795003203.0,
+        "pending": false,
+        "provider": "plugin:todoist",
+        "remote": {
+          "base": {
+            "done": false,
+            "due": null,
+            "kind": "task",
+            "notes": null,
+            "owner": null,
+            "text": "Book a room for demo day"
+          },
+          "id": "8125",
+          "labels": [
+            "connect"
+          ],
+          "syncedAt": 1795003233,
+          "updatedAt": "2026-11-18T12:00:00Z",
+          "url": "https://app.todoist.com/app/task/8125"
+        },
+        "status": "todo",
+        "syncError": null,
+        "text": "Book a room for demo day"
+      },
+      "id": "t2",
+      "kind": "commitment",
+      "revision": "rev",
+      "source": "local",
+      "updatedAt": 1795003233,
+      "workspaceId": "personal"
+    }
+  ],
+  "parked": [
+    {
+      "connectionId": null,
+      "data": {
+        "createdAt": 1795003200,
+        "done": false,
+        "doneAt": null,
+        "due": "2026-11-20",
+        "history": [
+          {
+            "at": 1795003200,
+            "text": "Added by you"
+          },
+          {
+            "at": 1795003210,
+            "text": "Due date set to 2026-11-20"
+          }
+        ],
+        "key": "5cf34df66a48e666",
+        "notes": null,
+        "order": 1795003201.0,
+        "pending": true,
+        "provider": "plugin:todoist",
+        "remote": {
+          "base": {
+            "done": false,
+            "due": null,
+            "kind": "task",
+            "notes": null,
+            "owner": null,
+            "text": "Send the pilot user list"
+          },
+          "id": "8124",
+          "labels": [
+            "connect"
+          ],
+          "syncedAt": 1795003200,
+          "updatedAt": "2026-11-18T12:00:00Z",
+          "url": "https://app.todoist.com/app/task/8124"
+        },
+        "status": "todo",
+        "syncError": "Todoist needs a date like 2026-11-20.",
+        "text": "Send the pilot user list"
+      },
+      "id": "t1",
+      "kind": "commitment",
+      "revision": "rev",
+      "source": "local",
+      "updatedAt": 1795003210,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
+        "attempts": 1,
+        "editedAt": 1795003210,
+        "enqueuedAt": 1795003210,
+        "id": "entry-1",
+        "lastError": "refused",
+        "message": "Todoist needs a date like 2026-11-20.",
+        "op": "update",
+        "parked": true,
+        "patch": {
+          "due": true
+        },
+        "provider": "plugin:todoist",
+        "seq": 1,
+        "taskId": "t1",
+        "workspaceId": "personal"
+      },
+      "id": "entry-1",
+      "kind": "task_outbox",
+      "revision": "rev",
+      "source": "local",
+      "updatedAt": 1795003210,
+      "workspaceId": "personal"
+    }
+  ]
+}

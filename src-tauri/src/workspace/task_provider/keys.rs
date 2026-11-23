@@ -23,9 +23,8 @@ use sha1::{Digest, Sha1};
 use unicode_normalization::UnicodeNormalization;
 
 /// Bookkeeping (kind `task_key`, id `<provider>|<key>`, unversioned, no workspace: the id is
-/// already unique). Read and written by the outbox and sync job (Task 4); until then
-/// `ledger_get`/`ledger_put` are exercised only by this module's own tests.
-const LEDGER_KIND: &str = "task_key";
+/// already unique). Read and written by the outbox and the sync job.
+pub(crate) const LEDGER_KIND: &str = "task_key";
 
 /// Naya's normalization (`normalizeCommitment` in `naya.ai/plugin/scripts/lib/todoist.mjs`):
 /// `text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}#]+/gu, ' ').trim()` — NFKC, lower
@@ -62,14 +61,12 @@ pub(crate) fn task_key(source: &str, text: &str) -> String {
     digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-#[allow(dead_code)] // called by ledger_get/ledger_put, which the outbox and sync job (Task 4) use
 fn ledger_id(provider: &str, key: &str) -> String {
     format!("{provider}|{key}")
 }
 
 /// The ledger entry for `provider`'s `key` (`{remoteId, state, at}`), or `None` when the key was
 /// never created for that provider.
-#[allow(dead_code)] // the outbox and sync job (Task 4) check the ledger before a create
 pub(crate) fn ledger_get(r: &Repository, provider: &str, key: &str) -> Result<Option<Value>> {
     match r.record(LEDGER_KIND, &ledger_id(provider, key), None, None) {
         Ok(record) => Ok(Some(record.data)),
@@ -80,7 +77,7 @@ pub(crate) fn ledger_get(r: &Repository, provider: &str, key: &str) -> Result<Op
 
 /// Remembers `key`'s outcome with `provider`: `state` is `created`, `done`, `withdrawn` or
 /// `removed` (design §3); `remote_id` is the provider's task id, when there is one.
-#[allow(dead_code)] // the outbox and sync job (Task 4) record a create's remote id this way
+#[cfg_attr(not(test), allow(dead_code))] // the sync job writes `ledger_record` with its task
 pub(crate) fn ledger_put(
     r: &mut Repository,
     provider: &str,
@@ -89,7 +86,18 @@ pub(crate) fn ledger_put(
     state: &str,
     now: i64,
 ) -> Result<()> {
-    r.put_record_unversioned(&Record {
+    r.put_record_unversioned(&ledger_record(provider, key, remote_id, state, now))
+}
+
+/// The ledger record `ledger_put` writes, for a caller that commits it together with its task.
+pub(crate) fn ledger_record(
+    provider: &str,
+    key: &str,
+    remote_id: Option<&str>,
+    state: &str,
+    now: i64,
+) -> Record {
+    Record {
         id: ledger_id(provider, key),
         kind: LEDGER_KIND.into(),
         connection_id: None,
@@ -98,7 +106,7 @@ pub(crate) fn ledger_put(
         revision: crate::workspace::models::id(),
         updated_at: now,
         data: json!({"remoteId": remote_id, "state": state, "at": now}),
-    })
+    }
 }
 
 #[cfg(test)]

@@ -141,6 +141,7 @@ pub enum Operation {
     MeetingRuleOrder,
     TaskSave,
     TaskDelete,
+    TaskSyncNow,
     AnalyticsStatus,
     AnalyticsRefresh,
     AnalyticsRetry,
