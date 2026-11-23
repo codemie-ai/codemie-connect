@@ -193,6 +193,23 @@ test('a plugin’s page has Sign in, its addresses, its card slot and Remove wit
   assert.ok(escaped(hostile), hostile);
 });
 
+test('a task provider’s summary gains "Provides tasks · Settings › Tasks", a real link on its own page', () => {
+  const p = { ...contract('plugins-installed')[0], id: 'hello', name: 'Hello', enabled: true };
+  const ui = readyUi({ installed: [p] });
+  const providesTasks = id => id === 'hello';
+  const list = pluginsPanel(ui, { providesTasks });
+  assert.match(list, /Provides tasks · Settings › Tasks/);
+  const without = pluginsPanel(ui, { providesTasks: () => false });
+  assert.doesNotMatch(without, /Provides tasks/);
+
+  const detail = installedDetail(ui, 'hello', null, true);
+  assert.match(detail, /Provides tasks · <button[^>]*data-action="settings-tab"[^>]*data-tab="meetings-tasks"[^>]*>(?:(?!<\/button>).)*Settings › Tasks/s);
+  assert.doesNotMatch(installedDetail(ui, 'hello', null, false), /Provides tasks/);
+
+  const page = pluginsPage(ui, { id: 'hello' }, { providesTasks });
+  assert.match(page.content, /Provides tasks/);
+});
+
 test('Remove asks first and sends whether to delete its data', async () => {
   const sent = [];
   let modal;

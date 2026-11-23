@@ -41,8 +41,12 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
       await check(`${tag}: settings meetings transcripts and folders`, async () => {
         await page.waitForSelector('.ws-ms-location');
         assert(await page.locator('.ws-settings-nav .ws-nav-group', { hasText: 'Meetings' }).count() === 1, 'the Meetings group');
+        // Tasks moved to the Workspace group (task-provider ruling 1), so it leads this list: its
+        // id (and so its own data-tab selector) is unchanged, just its nav group.
         const order = await page.locator('.ws-settings-nav button[data-tab^="meetings-"]').evaluateAll(els => els.map(b => b.dataset.tab));
-        assert(order.join() === 'meetings-transcripts,meetings-templates,meetings-rules,meetings-glossary,meetings-tasks', order.join());
+        assert(order.join() === 'meetings-tasks,meetings-transcripts,meetings-templates,meetings-rules,meetings-glossary', order.join());
+        const meetingsGroupOrder = await page.locator('.ws-settings-nav .ws-nav-section:has(.ws-nav-group:has-text("Meetings")) button[data-action="settings-tab"]').evaluateAll(els => els.map(b => b.dataset.tab));
+        assert(meetingsGroupOrder.join() === 'meetings-transcripts,meetings-templates,meetings-rules,meetings-glossary', meetingsGroupOrder.join());
         const toggle = '[data-action="meetings-settings-transcripts"]';
         assert(!await page.locator(toggle).isChecked(), 'off to begin with');
         // Declined in Microsoft: stays off and says why.

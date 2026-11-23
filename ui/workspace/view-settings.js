@@ -11,6 +11,7 @@ import { pluginsPage } from './settings-plugins.js';
 import { layoutPanel } from './settings-layout.js';
 import { meetingsSettingsHeader, meetingsSettingsPanel, newMeetingsSettingsView, TAB_TEXT as MEETINGS_TAB_TEXT } from './view-settings-meetings.js';
 import { viewOf } from './view-mode.js';
+import { providerSettings, whereTasksLive } from './settings-tasks.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
@@ -19,6 +20,7 @@ export const SETTINGS_TABS = [
   ['', 'appearance', 'Appearance', 'palette'],
   ['', 'layout', 'Layout', 'layout'],
   ['', 'notifications', 'Notifications', 'bell'],
+  ['', 'meetings-tasks', 'Tasks', 'tasks'],
   ['', 'queues', 'Rules & schedules', 'sliders'],
   ['', 'privacy', 'Data & privacy', 'shield'],
   ['', 'plugins', 'Plugins', 'puzzle'],
@@ -26,7 +28,6 @@ export const SETTINGS_TABS = [
   ['', 'meetings-templates', 'Note templates', 'note'],
   ['', 'meetings-rules', 'Automatic rules', 'automations'],
   ['', 'meetings-glossary', 'Glossary & tags', 'book'],
-  ['', 'meetings-tasks', 'Tasks', 'tasks'],
   ['CodeMie', 'cm-overview', 'Overview', 'spark'],
   ['', 'cm-profiles', 'Profiles', 'user'],
   ['', 'cm-agents', 'Coding agents', 'terminal'],
@@ -88,8 +89,9 @@ export function settings(s, ctx) {
     updates: () => updatesPanel(state),
   };
   // Settings → Plugins, a plugin's page there, or one of its own sections (drawn in its frame).
+  const providesTasks = id => (s.taskProvider?.available || []).some(a => a.id === `plugin:${id}`);
   const plugins = tab === 'plugins' && ctx.plugins
-    ? pluginsPage(ctx.plugins.ui, ctx.plugins.path, { status: ctx.plugins.status, sections: ctx.plugins.sections })
+    ? pluginsPage(ctx.plugins.ui, ctx.plugins.path, { status: ctx.plugins.status, sections: ctx.plugins.sections, providesTasks })
     : null;
   // Settings → CodeMie: panels, dots and header actions come from codemie/controller.js.
   const codemie = ctx.codemie;
@@ -99,7 +101,7 @@ export function settings(s, ctx) {
   const msView = meetingsTab ? state.meetingsSettings || newMeetingsSettingsView() : null;
   const ms = meetingsTab ? meetingsSettingsHeader(tab, s, msView) : null;
   const content = plugins ? plugins.content : tab.startsWith('cm-') ? (codemie?.panel(tab) ?? '')
-    : meetingsTab ? meetingsSettingsPanel(tab, s, { v: msView, auth, now: ctx.now ?? Date.now(), plugins: ctx.minutesPlugins || [] }) : (panels[tab] || panels.general)();
+    : meetingsTab ? (tab === 'meetings-tasks' ? taskProviderCards(s, ctx) : '') + meetingsSettingsPanel(tab, s, { v: msView, auth, now: ctx.now ?? Date.now(), plugins: ctx.minutesPlugins || [] }) : (panels[tab] || panels.general)();
   const label = plugins ? plugins.label : ms?.label || SETTINGS_TABS.find(([, id]) => id === tab)?.[2] || 'Settings';
   const description = plugins ? plugins.description : ms ? ms.description : TAB_DESCRIPTIONS[tab];
   const path = ctx.plugins?.path;
@@ -145,6 +147,31 @@ export function settings(s, ctx) {
       <div class="ws-settings-panels${plugins?.fill ? ' ws-settings-panels-fill' : ''}" data-plugin-clip>${content}</div>
     </section>
   </div>`;
+}
+
+// ---------------------------------------------------------------- Tasks (task-provider design §11)
+
+/** Settings › Tasks's own cards, drawn before the tab's existing content (ruling 1): "Where your
+ *  tasks live" and, under the chosen plugin, its settings. `ctx.state.tasks.provider` holds the
+ *  Check answer and the busy flags (`tasks-controller.js`'s own view state); `ctx.plugins.ui.installed`
+ *  is Task 2's `installed[].settings`. */
+function taskProviderCards(s, ctx) {
+  const tp = s.taskProvider;
+  const active = tp?.active || 'local';
+  const available = tp?.available || [{ id: 'local', name: 'Connect' }];
+  const now = ctx.now ?? Date.now();
+  const zone = s.settings.timeZone;
+  const v = ctx.state?.tasks?.provider || { busy: {}, check: null, checking: false, savingSecret: false };
+  const where = whereTasksLive({ active, available, tp, now, zone, busy: v.busy });
+  if (active === 'local') return where;
+  const pluginId = active.replace(/^plugin:/, '');
+  const plugin = (ctx.plugins?.ui?.installed || []).find(p => p.id === pluginId);
+  const under = providerSettings({
+    providerId: active, pluginId, name: available.find(a => a.id === active)?.name || pluginId,
+    settings: plugin?.settings || [], tp, now, zone, check: v.checking ? null : v.check, checking: v.checking,
+    savingSecret: v.savingSecret, copyOffered: !!tp?.copyOffered,
+  });
+  return where + under;
 }
 
 // ---------------------------------------------------------------- General

@@ -13,11 +13,13 @@ export const DEFAULT_FILTERS = Object.freeze({ who: 'all', person: '', meeting: 
 /** The Tasks page's view state (only view state lives in the window: the tasks are native's).
  *  `view` is Local's Board, List or By date; `providerView` the view chosen while a provider is
  *  active (null: By date); `folds` the Later folds opened, `rowOpen` the By date row unfolded and
- *  `footer` By date's last action with its Undo. */
+ *  `footer` By date's last action with its Undo. `provider` is Settings › Tasks's own state: a
+ *  "Turn on" in flight (`busy`), the last Check (`check`) and a token save in flight (`savingSecret`). */
 export const newTasksView = (view = 'board') => ({
   view: ['list', 'dates'].includes(view) ? view : 'board', providerView: null,
   filters: { ...DEFAULT_FILTERS }, drawer: null, quickAdd: null, showDismissed: false, showOlder: false,
   folds: {}, rowOpen: null, footer: null,
+  provider: { busy: {}, check: null, checking: false, savingSecret: false },
 });
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;

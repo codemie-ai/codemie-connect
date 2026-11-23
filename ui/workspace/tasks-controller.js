@@ -7,9 +7,10 @@
 import {
   COLUMNS, DEFAULT_FILTERS, activeProvider, columnName, dueInfo, filterTasks, meOf, meetingOf, orderBetween, peopleFor, personName, sortTasks, splitDone, taskOrder, taskStatus, tasksOf,
 } from './tasks-model.js';
-import { field, select, textArea, textInput } from './ui.js';
+import { button, field, select, textArea, textInput } from './ui.js';
 import { dateFromKey, formatDate } from './format.js';
 import { dateGroups, dayFor, rowOf, shownView } from './tasks-dates-model.js';
+import { copyDialog } from './settings-tasks.js';
 
 const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 const short = text => (String(text).length > 40 ? `${String(text).slice(0, 40)}…` : String(text));
@@ -30,11 +31,15 @@ const BULK_MAX = 200;
  * By date: `openReply(messageId, text)` opens a conversation in Inbox with its reply box filled
  * (nothing is sent), `openLink(url, providerName, pluginId)` opens a provider's link through
  * Connect's link confirmation, `query(op, data)` a read-only native request (Sync now).
+ * Settings › Tasks: `pluginRequest(op, data)` is `plugins_request` (`set_setting`, `set_enabled`);
+ * `refreshInstalled()` re-reads the installed list after one, so the token's "set" state and the
+ * string settings' values follow; `installed()` is that list (Task 2's `installed[].settings`).
  */
 export function createTasksController({
   state, snap, mutate, render, openModal = () => null, toast = () => {}, openMeeting = () => {}, openMessage = () => {},
   focus = () => {}, setPref = () => {}, now = () => Date.now(),
   openReply = () => {}, openLink = () => {}, query = async () => null,
+  pluginRequest = async () => null, refreshInstalled = async () => {}, installed = () => [],
 }) {
   const ui = () => state.tasks;
   const find = id => tasksOf(snap()).find(r => r.id === id);
@@ -354,6 +359,122 @@ export function createTasksController({
     return openLink(row.url, tp.name || plugin, plugin);
   }
 
+  // ---------------------------------------------------------------- Settings › Tasks (design §11)
+
+  /** To do, In progress or Waiting (not To review, done or dismissed): what a copy sends
+   *  (`tasks.rs`'s own `is_open`, narrower than the "Whose tasks" filter's `OPEN`). */
+  const COPYABLE = ['todo', 'doing', 'waiting'];
+  /** The open Local tasks (whatever the active provider is): the copy dialog's count. */
+  const localOpenCount = () => tasksOf({ ...snap(), taskProvider: undefined }).filter(r => COPYABLE.includes(taskStatus(r))).length;
+  const providerOf = id => snap().taskProvider?.available?.find(a => a.id === id);
+  const pluginIdOf = id => String(id).replace(/^plugin:/, '');
+  const settingOf = (pluginId, key) => (installed().find(x => x.id === pluginId)?.settings || []).find(s => s.key === key);
+
+  /** The copy dialog (ruling 16): shown once, the first time `id` is chosen while Local has open
+   *  tasks (`settings.tasks.copyOffered` names every provider already offered, design §13). Its
+   *  own two buttons send the one `task_provider_set` that switches, with `copy` either way. */
+  function copyThenSwitch(id, count) {
+    const project = settingOf(pluginIdOf(id), 'project')?.value || providerOf(id)?.name || 'Connect';
+    const decide = (label, decision, variant) => button(label, { type: 'submit', variant, attrs: { name: 'decision', value: decision } });
+    return openModal({
+      title: 'Copy your open tasks to Todoist?', size: 'sm', submit: '', cancel: '',
+      body: `${copyDialog({ count, project })}<div class="ws-modal-footer" style="padding:0"><span class="ws-spacer"></span>${decide('Not now', 'skip', 'secondary')}${decide(`Copy ${count} tasks`, 'copy', 'primary')}</div>`,
+      onSubmit: f => mutate('task_provider_set', { provider: id, copy: f.get('decision') === 'copy' }),
+    });
+  }
+
+  /** `tasks-provider-choose`: switches at once, unless this is the first time `id` is chosen
+   *  while Local has open tasks, which asks first (`copyThenSwitch`). Choosing Local again, or a
+   *  provider already offered, needs no dialog (ruling 16). */
+  function chooseProvider(id) {
+    const s = snap();
+    if (id === activeProvider(s)) return null;
+    if (id !== 'local') {
+      const offered = (s.settings?.tasks?.copyOffered || []).includes(id);
+      const count = localOpenCount();
+      if (!offered && count > 0) return copyThenSwitch(id, count);
+    }
+    return mutate('task_provider_set', { provider: id });
+  }
+
+  /** `tasks-provider-turn-on`: `set_enabled` for the plugin behind the radio that reads "Turned
+   *  off in Settings › Plugins". A sheet that changed is left to Settings › Plugins to review. */
+  async function turnOnProvider(id) {
+    const v = ui().provider;
+    v.busy = { ...v.busy, [id]: true };
+    await render();
+    try {
+      const answer = await pluginRequest('set_enabled', { id: pluginIdOf(id), enabled: true });
+      if (answer?.status === 'needs_consent') toast('Its permissions changed. Turn it on from Settings › Plugins to review them.', 'info');
+      else await refreshInstalled();
+    } finally {
+      delete v.busy[id];
+      await render();
+    }
+  }
+
+  /** `tasks-provider-check`: the active plugin's `status` (design §11 "Check"). */
+  async function checkProvider() {
+    const v = ui().provider;
+    v.checking = true;
+    await render();
+    try {
+      const answer = await query('task_provider_check', {});
+      v.check = { ok: true, account: answer?.account, project: answer?.project };
+    } catch (err) {
+      v.check = { ok: false, message: err?.message || String(err) };
+    } finally {
+      v.checking = false;
+      await render();
+    }
+  }
+
+  /** The secret field's wrapper an action button sits in (its password input is a sibling). */
+  const secretWrapOf = el => el.closest('[data-provider-secret]');
+
+  /** `tasks-provider-secret-save`: reads the field, sends `set_setting`, and clears it at once
+   *  (ruling 2: the token is never kept in the window). */
+  async function saveSecret(el) {
+    const pluginId = pluginIdOf(activeProvider(snap()));
+    const input = secretWrapOf(el)?.querySelector('input[type=password]');
+    const value = input?.value ?? '';
+    if (input) input.value = '';
+    const v = ui().provider;
+    v.savingSecret = true;
+    await render();
+    try {
+      await pluginRequest('set_setting', { id: pluginId, key: el.dataset.key, value });
+      await refreshInstalled();
+    } finally {
+      v.savingSecret = false;
+      await render();
+    }
+  }
+
+  /** `tasks-provider-secret-remove`: the same `set_setting`, with an empty value. */
+  async function removeSecret(el) {
+    const pluginId = pluginIdOf(activeProvider(snap()));
+    await pluginRequest('set_setting', { id: pluginId, key: el.dataset.key, value: '' });
+    return refreshInstalled().then(render);
+  }
+
+  /** `tasks-provider-setting`: a string setting (Project, App label), on change. */
+  async function saveProviderSetting(el) {
+    const pluginId = pluginIdOf(activeProvider(snap()));
+    await pluginRequest('set_setting', { id: pluginId, key: el.dataset.key, value: el.value });
+    return refreshInstalled().then(render);
+  }
+
+  /** The quiet "Copy open tasks from Connect…" link (ruling 16): no dialog, a key already copied
+   *  makes nothing new. */
+  async function copyQuietly() {
+    const id = activeProvider(snap());
+    const name = providerOf(id)?.name || 'it';
+    const answer = await mutate('task_provider_set', { provider: id, copy: true });
+    const n = Number(answer?.copied) || 0;
+    return toast(n ? `Copied ${plural(n, 'task')} to ${name}.` : `Nothing new to copy to ${name}.`, 'success');
+  }
+
   /** The `task-*` and `tasks-*` actions; `el` is the control (its dataset, value, checked). */
   async function handle(action, el) {
     const id = el.dataset?.id;
@@ -389,6 +510,16 @@ export function createTasksController({
       case 'task-nudge': return nudge(id);
       case 'task-open-remote': return openRemote(id);
       case 'tasks-sync': return query('task_sync_now', {});
+      // Settings › Tasks (design §11).
+      case 'tasks-provider-choose': return chooseProvider(el.dataset.provider);
+      case 'tasks-provider-turn-on': return turnOnProvider(el.dataset.provider);
+      case 'tasks-provider-check': return checkProvider();
+      case 'tasks-provider-sync': return query('task_sync_now', {});
+      case 'tasks-provider-copy': return copyQuietly();
+      case 'tasks-provider-secret-save': return saveSecret(el);
+      case 'tasks-provider-secret-remove': return removeSecret(el);
+      case 'tasks-provider-setting': return saveProviderSetting(el);
+      case 'tasks-provider-token-link': return openLink(el.dataset.url, el.dataset.name, el.dataset.pluginId);
       case 'tasks-who': v.filters.who = el.dataset.who || 'all'; return render();
       case 'tasks-filter': v.filters[el.dataset.filter] = el.value; return render();
       case 'tasks-clear': v.filters = { ...DEFAULT_FILTERS }; return render();

@@ -780,6 +780,10 @@ impl Core {
         if req.op == Operation::TaskSyncNow {
             return self.task_sync_now();
         }
+        // Read-only: Settings › Tasks's Check, the active provider's `status`; no operation id.
+        if req.op == Operation::TaskProviderCheck {
+            return self.task_provider_check().await;
+        }
         // The CodeMie CLI answers over the analytics store; a fetch runs in the background.
         if matches!(
             req.op,

@@ -1,13 +1,14 @@
 //! The task operations a provider brings (design §10–§12, rulings 8, 16, 17):
 //! `task_provider_set` (switching, with the copy offered once), `task_withdraw` (the meeting
 //! column's Undo), `task_bulk` (By date's moves, with what Undo sends back), `task_handled`
-//! ("Looks handled") and `task_parked` (Try again / Discard change).
+//! ("Looks handled"), `task_parked` (Try again / Discard change) and `task_provider_check`
+//! (Settings › Tasks's Check, design §11).
 //!
 //! Nothing here deletes or closes a task in a provider on its own: a switch keeps the old
 //! provider's cache and unsent changes, and only an explicit withdraw or delete queues a
 //! `remove`.
 use super::handled::{evidence_hash, kept};
-use super::{active_provider, keys, outbox, sync, wire};
+use super::{active_provider, keys, outbox, sync, wire, ProviderError};
 use crate::workspace::models::{id, now, Operation, Record, Request, Result, WorkspaceError};
 use crate::workspace::repository::Repository;
 use crate::workspace::tasks::{self, provider_of, status_of, Prepared, KIND};
@@ -137,6 +138,52 @@ impl Core {
             sync::queue(r, provider, now)?;
         }
         Ok(json!({"provider": provider, "copied": copied}))
+    }
+
+    /// `task_provider_check {}` (read-only, design §11 "Check"): the active provider's `status`,
+    /// answered as `{ok, account, project}`; Local has nothing to check. A refusal's `code` is
+    /// the provider's state (`needs_token`, `rate_limited`, `offline`, `not_found`, `refused`)
+    /// and its `message` the sentence Settings › Tasks shows.
+    pub(in crate::workspace) async fn task_provider_check(&self) -> Result<Value> {
+        let provider = active_provider(&self.repo()?.settings()?).to_string();
+        if provider == "local" {
+            return Ok(json!({"ok": true}));
+        }
+        let providers = self
+            .task_providers
+            .get()
+            .ok_or_else(|| WorkspaceError::new("offline", "The plugin host isn’t running."))?;
+        let plugin = provider
+            .strip_prefix("plugin:")
+            .unwrap_or(provider.as_str());
+        providers
+            .call(plugin, "status", json!({}))
+            .await
+            .map_err(check_error)
+    }
+}
+
+/// `task_provider_check`'s refusal: the provider's state as `code`, its sentence as `message`.
+fn check_error(e: ProviderError) -> WorkspaceError {
+    match e {
+        ProviderError::NeedsToken => WorkspaceError::new("needs_token", "Needs your API token."),
+        ProviderError::RateLimited { .. } => WorkspaceError::new(
+            "rate_limited",
+            "Asked Connect to slow down. Try again soon.",
+        ),
+        ProviderError::Offline => WorkspaceError::new("offline", "Can’t be reached right now."),
+        ProviderError::NotFound(t) => WorkspaceError::new(
+            "not_found",
+            if t.is_empty() { "Not found.".into() } else { t },
+        ),
+        ProviderError::Refused(t) => WorkspaceError::new(
+            "refused",
+            if t.is_empty() {
+                "Refused the request.".into()
+            } else {
+                t
+            },
+        ),
     }
 }
 
@@ -869,6 +916,31 @@ mod tests {
         assert_eq!(err.message, "Turn Todoist on in Settings › Plugins first.");
         assert_eq!(e.settings().tasks.provider, "local");
         assert!(e.settings().tasks.copy_offered.is_empty());
+    }
+
+    /// `task_provider_check` (Settings › Tasks's Check, design §11): Local has nothing to check;
+    /// a plugin answers its `status`, or refuses with its state as `code`.
+    #[tokio::test]
+    async fn task_provider_check_answers_status_or_the_state() {
+        let l = env("local");
+        assert_eq!(
+            l.core.task_provider_check().await.unwrap(),
+            json!({"ok": true})
+        );
+
+        let e = env(P);
+        assert_eq!(
+            e.core.task_provider_check().await.unwrap(),
+            json!({"ok": true, "account": "Taylor Morgan", "project": "Connect"})
+        );
+
+        e.fake.answer("status", Err(ProviderError::NeedsToken));
+        let err = e.core.task_provider_check().await.unwrap_err();
+        assert_eq!(err.code, "needs_token");
+
+        e.fake.answer("status", Err(ProviderError::Offline));
+        let err = e.core.task_provider_check().await.unwrap_err();
+        assert_eq!(err.code, "offline");
     }
 
     #[tokio::test]

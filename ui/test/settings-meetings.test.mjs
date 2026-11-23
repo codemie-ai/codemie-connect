@@ -66,16 +66,17 @@ function harness({ s = snapshot(), answers = {}, view = {}, tab = 'meetings-temp
   return { ctl, state, calls, s, v, panel, runTimers };
 }
 
-test('settings has a Meetings group with the five tabs in order', () => {
+test('settings has a Meetings group with four tabs in order; Tasks moved to Workspace (task-provider ruling 1)', () => {
   const ids = SETTINGS_TABS.map(([, id]) => id);
   const at = ids.indexOf('meetings-transcripts');
-  assert.deepEqual(ids.slice(at, at + 5), MEETING_TABS);
-  assert.deepEqual(SETTINGS_TABS.slice(at, at + 5).map(([group, , label]) => [group, label]), [
-    ['Meetings', 'Transcripts & folders'], ['', 'Note templates'], ['', 'Automatic rules'], ['', 'Glossary & tags'], ['', 'Tasks'],
+  const meetingsOnly = MEETING_TABS.filter(id => id !== 'meetings-tasks');
+  assert.deepEqual(ids.slice(at, at + 4), meetingsOnly);
+  assert.deepEqual(SETTINGS_TABS.slice(at, at + 4).map(([group, , label]) => [group, label]), [
+    ['Meetings', 'Transcripts & folders'], ['', 'Note templates'], ['', 'Automatic rules'], ['', 'Glossary & tags'],
   ]);
-  // After Workspace, before CodeMie (R2).
+  // After Workspace, before CodeMie (R2). Tasks (the Workspace group's own test covers its spot).
   assert.ok(at > ids.indexOf('plugins'), 'after the Workspace group');
-  assert.equal(SETTINGS_TABS[at + 5][0], 'CodeMie');
+  assert.equal(SETTINGS_TABS[at + 4][0], 'CodeMie');
   const s = snapshot();
   const ctx = tab => ({ state: { settingsTab: tab, meetingsSettings: newMeetingsSettingsView() }, auth: {}, now: NOW });
   const nav = settings(s, ctx('meetings-rules'));

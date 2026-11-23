@@ -142,6 +142,7 @@ pub enum Operation {
     TaskSave,
     TaskDelete,
     TaskSyncNow,
+    TaskProviderCheck,
     TaskProviderSet,
     TaskWithdraw,
     TaskBulk,

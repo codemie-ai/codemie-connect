@@ -816,9 +816,21 @@ const pluginsUi = createPluginsController({
   openModal,
   toast,
   installedChanged: list => {
+    // Removing the active task provider's plugin switches Connect to Local on its own (design
+    // §11): nothing is deleted, the cache and the outbox stay, and come back if it is installed
+    // again (ruling 16).
+    const active = snap().taskProvider?.active;
+    const name = snap().taskProvider?.name;
+    const wasInstalled = active?.startsWith('plugin:') && state.installedPlugins.some(p => `plugin:${p.id}` === active);
+    const stillIs = list.some(p => `plugin:${p.id}` === active);
     state.installedPlugins = list;
     state.pluginsKnown = true;
     pluginHost?.sync(list);
+    if (wasInstalled && !stillIs) {
+      mutate('task_provider_set', { provider: 'local' })
+        .then(() => toast(`${name || 'It'} was removed, so tasks are back in Connect.`, 'info'))
+        .catch(() => {});
+    }
   },
   navigate: path => route('settings', 'plugins', path),
 });
@@ -1554,9 +1566,15 @@ const tasksUi = store && createTasksController({
     await handle('open-message', { dataset: { id } });
     document.getElementById('reply-body')?.focus({ preventScroll: true });
   },
-  // A provider's link (Open in Todoist ↗) opens through Connect's own link confirmation.
+  // A provider's link (Open in Todoist ↗, Get your token in Todoist ↗) opens through Connect's
+  // own link confirmation.
   openLink: (url, name, id) => confirmPluginLink(url, name, id),
   query: (op, data) => store.query(op, data),
+  // Settings › Tasks: the token and the project/label settings are a plugin's own (`set_setting`,
+  // `set_enabled` for Turn on), read back through the same installed list Settings → Plugins uses.
+  pluginRequest: (op, data) => invoke('plugins_request', data === undefined ? { op } : { op, data }),
+  refreshInstalled: () => pluginsUi.loadInstalled(),
+  installed: () => pluginsUi.ui.installed,
 });
 if (tasksUi) {
   attachBoardDrag(document, tasksUi, {

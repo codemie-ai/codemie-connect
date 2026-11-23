@@ -1,7 +1,7 @@
 // The Settings menu: groups that fold, the menu shrunk to icons, Find a setting, and the Layout page.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { settings, SETTINGS_TABS } from '../workspace/view-settings.js';
+import { settings, SETTINGS_TABS, SETTINGS_GROUPS, settingsTabFor } from '../workspace/view-settings.js';
 import { layoutPanel } from '../workspace/settings-layout.js';
 import { NAV } from '../workspace/shell.js';
 import { PRESETS } from '../workspace/today-grid.js';
@@ -21,7 +21,7 @@ const drawn = (html, id) => new RegExp(`data-action="settings-tab" data-tab="${i
 test('a folded group hides its items but keeps the current one, with its count', () => {
   const html = page('meetings-templates', { folded: ['Meetings'] });
   assert.match(group(html, 'Meetings'), /aria-expanded="false"/);
-  assert.match(group(html, 'Meetings'), /<small class="ws-count">5<\/small>/);
+  assert.match(group(html, 'Meetings'), /<small class="ws-count">4<\/small>/);
   assert.ok(drawn(html, 'meetings-templates'), 'the current page stays');
   assert.ok(!drawn(html, 'meetings-rules'), 'the others fold away');
   assert.ok(drawn(html, 'general'), 'other groups stay open');
@@ -96,6 +96,22 @@ test('Layout is the tab after Appearance', () => {
   const ids = SETTINGS_TABS.map(t => t[1]);
   assert.equal(ids[ids.indexOf('appearance') + 1], 'layout');
   assert.deepEqual(SETTINGS_TABS[ids.indexOf('layout')], ['', 'layout', 'Layout', 'layout']);
+});
+
+test('the Tasks tab sits in the Workspace group after Notifications; #/settings/meetings-tasks still opens it', () => {
+  const ids = SETTINGS_TABS.map(t => t[1]);
+  assert.equal(ids[ids.indexOf('notifications') + 1], 'meetings-tasks', 'right after Notifications');
+  // The id (and so its links) is unchanged.
+  assert.deepEqual(SETTINGS_TABS[ids.indexOf('meetings-tasks')], ['', 'meetings-tasks', 'Tasks', 'tasks']);
+  assert.equal(settingsTabFor('meetings-tasks'), 'meetings-tasks');
+  const workspace = SETTINGS_GROUPS.find(g => g.name === 'Workspace');
+  assert.ok(workspace.items.some(([id]) => id === 'meetings-tasks'), 'now in the Workspace group');
+  const meetingsGroup = SETTINGS_GROUPS.find(g => g.name === 'Meetings');
+  assert.ok(!meetingsGroup.items.some(([id]) => id === 'meetings-tasks'), 'no longer in the Meetings group');
+  // The panel draws "Where your tasks live" first, its own content unchanged below it.
+  const html = page('meetings-tasks');
+  assert.match(html, /<h2[^>]*>Tasks<\/h2>/);
+  assert.ok(html.indexOf('Where your tasks live') < html.indexOf('Tasks from notes'), 'drawn first');
 });
 
 // ---------------------------------------------------------------- Settings → Layout
