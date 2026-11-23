@@ -172,18 +172,35 @@ export function createMeetingsSettingsController({
 
   // ---------------------------------------------------------------- "When you open a meeting"
 
-  const pins = () => pinsOf(snap(), plugins());
+  // Pin, unpin and move each send the whole next array, and a fast click on a second pin control
+  // before the first's `settings_update` round-trip lands must build on that first click's
+  // result, not the snapshot it was sent from (still stale at that point) — the same shape
+  // dock-controller.js's `commit()` keeps for layouts. `pendingPins`, once set, is what `pins()`
+  // reads instead of the snapshot; a read reconciles it away once the snapshot itself catches up,
+  // and a refusal clears it back to whatever the snapshot actually holds.
+  let pendingPins = null;
+  function pins() {
+    const real = pinsOf(snap(), plugins());
+    if (pendingPins && JSON.stringify(pendingPins) === JSON.stringify(real)) pendingPins = null;
+    return pendingPins || real;
+  }
+  async function sendPins(next) {
+    pendingPins = next;
+    const ok = await saveSetting('summaryTabs', next);
+    if (!ok) pendingPins = null;
+    return ok;
+  }
 
   /** Pins a template or a plugin (`id`, or `plugin:<id>`) last; a refusal (over 4) shows under
    *  the card. */
   async function pinTab(id) {
     if (!id || pins().includes(id)) return;
-    await saveSetting('summaryTabs', [...pins(), id]);
+    await sendPins([...pins(), id]);
   }
 
   async function unpinTab(id) {
     if (!id || !pins().includes(id)) return;
-    await saveSetting('summaryTabs', pins().filter(x => x !== id));
+    await sendPins(pins().filter(x => x !== id));
   }
 
   async function movePin(id, d) {
@@ -193,7 +210,7 @@ export function createMeetingsSettingsController({
     if (at < 0 || to < 0 || to >= ids.length) return;
     const next = [...ids];
     [next[at], next[to]] = [next[to], next[at]];
-    await saveSetting('summaryTabs', next);
+    await sendPins(next);
   }
 
   // ---------------------------------------------------------------- the template editor

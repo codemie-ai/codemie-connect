@@ -130,9 +130,12 @@ test('the open-a-meeting card: three choices, the switch, pins in order with mov
   for (const [val, pressed] of [['summary', 'false'], ['transcript', 'true'], ['notes', 'false']]) {
     assert.match(html, new RegExp(`data-action="meetings-settings-open-on" data-v="${val}" aria-pressed="${pressed}"`), val);
   }
-  // The switch: off, since actionItems is false.
+  // The switch: off, since actionItems is false — the spec's exact title and, off, where they went.
   assert.match(html, /<input[^>]*data-action="meetings-settings-set"[^>]*data-key="actionItems"[^>]*>/);
   assert.doesNotMatch(html.match(/<input[^>]*data-key="actionItems"[^>]*>/)[0], /checked/);
+  assert.match(html, /<strong>Show action items beside the summary<\/strong><p>Off: they move to ⋯ › Action items\.<\/p>/);
+  // The pins hint, verbatim.
+  assert.match(html, /<p class="ws-field-hint">The first one that has a summary opens\. With none pinned, a meeting shows its own documents\.<\/p>/);
   // Pins, in order, each with Move up / Move down and Unpin.
   const order = [...html.matchAll(/<li data-pin="([^"]+)"/g)].map(m => m[1]);
   assert.deepEqual(order, ['short-summary', 'meeting-notes']);
@@ -141,6 +144,11 @@ test('the open-a-meeting card: three choices, the switch, pins in order with mov
   assert.doesNotMatch(html, /data-action="meetings-settings-pin-move" title="Move down" aria-label="Move down" disabled data-pin="short-summary"/, 'Move down enabled on the first');
   assert.match(html, /data-action="meetings-settings-unpin"[^>]*data-pin="short-summary"/);
   assert.match(html, /data-action="meetings-settings-unpin"[^>]*data-pin="meeting-notes"/);
+  // On: checked, and no "Off: …" line.
+  s.settings.meetings.actionItems = true;
+  const on = meetingsSettingsPanel('meetings-templates', s, { v: newMeetingsSettingsView(), auth: {}, now: NOW });
+  assert.match(on, /<strong>Show action items beside the summary<\/strong><\/div>/, 'no text line when on');
+  assert.doesNotMatch(on, /Off: they move/);
 });
 
 test('Pin a summary lists unpinned templates and summary plugins, disabled at four', () => {
@@ -158,10 +166,13 @@ test('Pin a summary lists unpinned templates and summary plugins, disabled at fo
   assert.match(menuHtml, /data-action="meetings-settings-pin" data-pin="plugin:pod"/);
   assert.match(menuHtml, /data-action="meetings-settings-pin" data-pin="plugin:exec"/);
   assert.doesNotMatch(html.slice(0, start), /aria-disabled="true"/, 'not disabled with fewer than four pins');
-  // Disabled at four, with its reason.
+  assert.doesNotMatch(html.slice(0, start), /tabindex="-1"/, 'reachable by keyboard with fewer than four pins');
+  // Disabled at four, with its reason — blocked for a mouse (aria-disabled, the existing
+  // .ws-btn[aria-disabled=true] CSS) and kept out of keyboard Tab order (a <details> has no
+  // native disabled, so tabindex="-1" is what stops Enter/Space reaching it).
   s.settings.meetings.summaryTabs = ['meeting-notes', 'short-summary', 'client-recap', 'plugin:pod'];
   const full = meetingsSettingsPanel('meetings-templates', s, { v: newMeetingsSettingsView(), auth: {}, now: NOW, plugins });
-  assert.match(full, /<details class="ws-menu" data-menu="ms-pin-add" title="Pin up to 4 summaries\."><summary class="ws-btn ws-btn-secondary" aria-disabled="true" title="Pin up to 4 summaries\."/);
+  assert.match(full, /<details class="ws-menu" data-menu="ms-pin-add" title="Pin up to 4 summaries\."><summary class="ws-btn ws-btn-secondary" aria-disabled="true" tabindex="-1" title="Pin up to 4 summaries\."/);
 });
 
 test('pinning sends summaryTabs with the new id last; Move up swaps; Unpin removes', async () => {
@@ -192,6 +203,36 @@ test('pinning sends summaryTabs with the new id last; Move up swaps; Unpin remov
   await refused.ctl.handle('meetings-settings-pin', control({ pin: 'meeting-notes' }));
   assert.match(refused.panel(), /data-error-for="meetings\.summaryTabs">Pin up to 4 summaries\./);
   assert.ok(panel());
+});
+
+test('two different pin actions fired back-to-back, before a snapshot lands in between, both take effect', async () => {
+  // The snapshot (`s`) never changes mid-test (the fake `mutate` is a spy, as every other test
+  // here treats it) — so without a local pending copy, a second click computes its payload from
+  // the same stale base the first one did, and the second `settings_update` silently drops
+  // whatever the first one was about to add.
+  const s = snapshot();
+  s.settings.meetings.summaryTabs = ['meeting-notes'];
+  const { ctl, calls } = harness({ s });
+  const p1 = ctl.handle('meetings-settings-pin', control({ pin: 'short-summary' }));
+  const p2 = ctl.handle('meetings-settings-pin', control({ pin: 'plugin:pod' }));
+  await Promise.all([p1, p2]);
+  assert.deepEqual(calls.mutate[0], ['settings_update', { meetings: { summaryTabs: ['meeting-notes', 'short-summary'] } }]);
+  assert.deepEqual(calls.mutate[1], ['settings_update', { meetings: { summaryTabs: ['meeting-notes', 'short-summary', 'plugin:pod'] } }], 'builds on the first pin, not just the stale snapshot');
+  // The same for a move immediately followed by an unpin of a different pin.
+  s.settings.meetings.summaryTabs = ['short-summary', 'meeting-notes'];
+  const h2 = harness({ s });
+  const p3 = h2.ctl.handle('meetings-settings-pin-move', control({ pin: 'meeting-notes', d: '-1' }));
+  const p4 = h2.ctl.handle('meetings-settings-unpin', control({ pin: 'short-summary' }));
+  await Promise.all([p3, p4]);
+  assert.deepEqual(h2.calls.mutate[0], ['settings_update', { meetings: { summaryTabs: ['meeting-notes', 'short-summary'] } }]);
+  assert.deepEqual(h2.calls.mutate[1], ['settings_update', { meetings: { summaryTabs: ['meeting-notes'] } }]);
+  // A refusal clears the pending copy back to what the snapshot actually holds, rather than
+  // keeping the refused array as if it had been saved.
+  const refused = harness({ s: snapshot(), answers: { settings_update: failure('validation', 'Pin up to 4 summaries.', 'summaryTabs') } });
+  refused.s.settings.meetings.summaryTabs = ['meeting-notes'];
+  await refused.ctl.handle('meetings-settings-pin', control({ pin: 'short-summary' }));
+  await refused.ctl.handle('meetings-settings-unpin', control({ pin: 'meeting-notes' }));
+  assert.deepEqual(refused.calls.mutate.at(-1), ['settings_update', { meetings: { summaryTabs: [] } }], 'the refused pin is gone from the base the next action reads');
 });
 
 test('a template card’s ⋯ says Pin as a summary tab, or Unpin from summary tabs when pinned', () => {

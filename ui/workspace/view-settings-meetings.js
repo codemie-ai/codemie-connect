@@ -251,14 +251,18 @@ export function meetingViewCard(s, { v, plugins = [] } = {}) {
       return left.length ? ['-', ['#', 'Plugins'], ...left.map(p => [p.name, 'meetings-settings-pin', { 'data-pin': `plugin:${p.id}` }, 'puzzle'])] : [];
     })(),
   ];
-  const addMenu = `<details class="ws-menu" data-menu="ms-pin-add"${full ? ' title="Pin up to 4 summaries."' : ''}><summary class="ws-btn ws-btn-secondary"${full ? ' aria-disabled="true" title="Pin up to 4 summaries."' : ''}><span>Pin a summary</span>${icon('chevron-down')}</summary><div class="ws-menu-panel">${menuItems(addItems)}</div></details>`;
+  // Disabled at four: blocked for a mouse (`.ws-btn[aria-disabled=true]` is `pointer-events:none`)
+  // and, since a `<details>` has no native `disabled`, kept out of keyboard Tab order too
+  // (`tabindex="-1"`) so Enter/Space can't reach it either.
+  const addMenu = `<details class="ws-menu" data-menu="ms-pin-add"${full ? ' title="Pin up to 4 summaries."' : ''}><summary class="ws-btn ws-btn-secondary"${full ? ' aria-disabled="true" tabindex="-1" title="Pin up to 4 summaries."' : ''}><span>Pin a summary</span>${icon('chevron-down')}</summary><div class="ws-menu-panel">${menuItems(addItems)}</div></details>`;
+  const actionItemsText = m.actionItems !== false ? '' : 'Off: they move to ⋯ › Action items.';
   return card({
     title: 'When you open a meeting', iconName: 'eye',
     body: `${row(v, 'openOn', { title: 'Open a meeting on', text: 'Which pane a meeting’s own page opens on.', control: openOnControl })}
-      ${row(v, 'actionItems', { title: 'Show action items', text: 'The column beside the summary where tasks found in the notes wait to be added.', control: set('actionItems', m.actionItems !== false, 'Show action items') })}
+      ${row(v, 'actionItems', { title: 'Show action items beside the summary', text: actionItemsText, control: set('actionItems', m.actionItems !== false, 'Show action items beside the summary') })}
       <div class="ws-ms-pins-block">
         <span class="ws-field-label">Summary tabs</span>
-        <p class="ws-field-hint">Pin up to four templates or plugin summaries to show as tabs; with none pinned, a meeting shows its own documents.</p>
+        <p class="ws-field-hint">The first one that has a summary opens. With none pinned, a meeting shows its own documents.</p>
         <ol class="ws-ms-pins">${rows}</ol>
         ${addMenu}
       </div>
