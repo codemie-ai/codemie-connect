@@ -16,6 +16,7 @@ import { meetingSettingsChecks } from './meetings-settings-checks.mjs';
 import { layoutChecks } from './layout-checks.mjs';
 import { analyticsChecks } from './analytics-checks.mjs';
 import { compactChecks } from './compact-checks.mjs';
+import { replyChecks } from './reply-checks.mjs';
 import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
@@ -398,8 +399,11 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       // actions.rs `new_recipients`: the Reply-To addresses the thread never showed, lower-case
       // compared with the sender. `window.__replyTo` names the address the next mail prepare uses.
       const replyTo = window.__replyTo;
-      const newRecipients = replyTo && String(replyTo).toLowerCase() !== String(address).toLowerCase() ? [replyTo] : [];
-      return { actionId: 'action-1', nonce: 'nonce-1', workspaceId: 'personal', account: s.connection.email, review: { title: `Reply to ${m.data.from}`, recipients: [{ emailAddress: { name: m.data.from, address } }], newRecipients, body: d.body } };
+      const redirected = replyTo && String(replyTo).toLowerCase() !== String(address).toLowerCase();
+      const newRecipients = redirected ? [replyTo] : [];
+      // actions.rs builds `review.title` from the message's own subject (`Project update` in the
+      // contract fixture), not a "Reply to …" line.
+      return { actionId: 'action-1', nonce: 'nonce-1', workspaceId: 'personal', account: s.connection.email, review: { title: m.data.title, recipients: [{ emailAddress: { name: m.data.from, address: redirected ? replyTo : address } }], newRecipients, body: d.body } };
     },
     action_confirm: d => {
       calls.push(['action_confirm', d]);
@@ -1291,9 +1295,10 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`, `layout`, `compact`, `analytics`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-settings', 'layout', 'compact', 'analytics'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'compact') await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'reply') await replyChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'analytics') await analyticsChecks({ open, check, assert, shot, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings') await meetingChecks({ open, check, assert, shot, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
@@ -1821,57 +1826,8 @@ for (const theme of ['dark', 'light']) {
     assert(await page.locator('#reply-body').inputValue() === '', 'the box keeps the sent text');
   });
 
-  await check(`${theme}: ⌘↩ waits for your touch: a draft that arrives disarms it, a click arms it once`, async () => {
-    await page.click('.ws-inbox-row[data-id="c-reply-1"]');
-    await page.waitForSelector('.ws-read[data-message-id="c-reply-1"] #reply-body');
-    // The user touches the box, then Claude fills it: ⌘↩ must not send text they have not touched since.
-    await page.click('#reply-body');
-    await page.keyboard.type('x');
-    await page.keyboard.press('Backspace');
-    await plan(page, { outcome: 'hold' });
-    await page.click('.ws-reply-hint [data-action="ai-draft-quick"]');
-    await page.waitForSelector('.ws-draft-running:has-text("Drafting with")', { timeout: 4000 });
-    await page.evaluate(() => window.__finishDraft({ outcome: 'ok', text: 'Sure, the notes are attached.', questions: [] }));
-    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Sure, the notes are attached.', null, { timeout: 4000 });
-    const before = (await page.evaluate(() => window.__bridgeCalls)).length;
-    await page.focus('#reply-body');
-    await page.keyboard.press('Meta+Enter');
-    await page.waitForTimeout(400);
-    const armed = (await page.evaluate(() => window.__bridgeCalls)).slice(before).map(([op]) => op).filter(op => op.startsWith('action_'));
-    assert(armed.length === 0, `⌘↩ sent Claude's untouched draft: ${armed}`);
-    // A click in the box arms it: ⌘↩ sends once.
-    await page.click('#reply-body');
-    await page.keyboard.press('Meta+Enter');
-    await page.waitForSelector('.ws-reply-status:has-text("Sent to Jordan.")', { timeout: 4000 });
-    await page.waitForTimeout(300);
-    const ops = (await page.evaluate(() => window.__bridgeCalls)).slice(before).map(([op]) => op).filter(op => op.startsWith('action_'));
-    assert(ops.join() === 'action_prepare,action_confirm', `⌘↩ sent ${ops}`);
-    assert(await page.locator('#reply-body').inputValue() === '', 'the box keeps the sent text');
-  });
-
-  await check(`${theme}: after a send ⌘↩ stays disarmed: text the app puts in the box waits for your typing`, async () => {
-    // The box was emptied by the send, with the focus still in it; Claude fills it, nobody touches it.
-    await plan(page, { outcome: 'hold' });
-    await page.click('.ws-reply-hint [data-action="ai-draft-quick"]');
-    await page.waitForSelector('.ws-draft-running:has-text("Drafting with")', { timeout: 4000 });
-    await page.evaluate(() => window.__finishDraft({ outcome: 'ok', text: 'Glad to help.', questions: [] }));
-    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Glad to help.', null, { timeout: 4000 });
-    const actions = async () => (await page.evaluate(() => window.__bridgeCalls)).map(([op, d]) => [op, d]).filter(([op]) => op.startsWith('action_'));
-    const before = (await actions()).length;
-    await page.focus('#reply-body');
-    await page.keyboard.press('Meta+Enter');
-    await page.waitForTimeout(400);
-    assert((await actions()).length === before, `⌘↩ after a send sent the app's text: ${JSON.stringify((await actions()).slice(before))}`);
-    // Typing arms it again: ⌘↩ sends the typed text, once.
-    await page.keyboard.press('End');
-    await page.keyboard.type(' Thanks');
-    await page.keyboard.press('Meta+Enter');
-    await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op.startsWith('action_')).length >= n + 2, before, { timeout: 4000 });
-    await page.waitForTimeout(300);
-    const sent = (await actions()).slice(before);
-    assert(sent.map(([op]) => op).join() === 'action_prepare,action_confirm' && sent[0][1].body === 'Glad to help. Thanks', `typed ⌘↩ sent ${JSON.stringify(sent)}`);
-    await page.waitForFunction(() => document.getElementById('reply-body')?.value === '');
-  });
+  // The ⌘↩ gate (untouched draft disarmed, a click arms it once, re-armed only by typing, never
+  // after a send) moved to reply-checks.mjs R7 — the single home for reply behaviour.
 
   await check(`${theme}: a sent reply stays sent after a reload: the box is empty and Send waits for new text`, async () => {
     // Native keeps the drafts on disk: the mock carries the stored ones over the reload.
@@ -3181,6 +3137,13 @@ await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls
 // Compact view (spec docs/superpowers/specs/2026-11-22-compact-view-design.md): C0, Default's
 // computed sizes on ten screens match the committed baseline.
 await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// Reply (spec docs/superpowers/specs/2026-11-22-reply-design.md): R1–R12 — the three-control
+// action line in both views/themes/widths, the ✦ link and change line, Draft options, Teams
+// sends on the click (and once on a double click or a re-render), sending not allowed, the mail
+// confirm with Return never confirming it, the ⌘↩ gate, nothing sent without a click, autosave,
+// Today, a critical item's bar and Default/Compact parity.
+await replyChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // Settings › Meetings (Task 5): transcripts and folders, note templates and skills, rules and the
 // tester, the glossary typed and linked, tasks.
