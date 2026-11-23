@@ -560,6 +560,10 @@ async function render() {
   if (state.route === 'analytics') drawAnalyticsCharts();
   if (state.route === 'meetings') {
     showFocusLine();
+    if (state.meetings.focusColumn) {
+      state.meetings.focusColumn = false;
+      focusFirst(['.ws-mtg-items [data-action="meeting-item-add-open"]']);
+    }
     meetingsUi.load().catch(fail);
   }
   if (state.route === 'settings' && state.settingsTab.startsWith('meetings-')) meetingsSettingsUi.load().catch(fail);

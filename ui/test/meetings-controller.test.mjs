@@ -112,6 +112,20 @@ test('open() with no pane uses Open a meeting on; the same meeting keeps its pan
   assert.match(calls.toasts.at(-1).message, /no longer/);
 });
 
+test('ensureSelection() sends an old /tasks link to the summary, focused on the column, with the column on; keeps the Action items pane with it off', () => {
+  const { ctl, state, s } = harness({ view: { selected: 'mtg-philips', pane: 'tasks' } });
+  // The Tasks tab is gone (spec ruling 9): with the column on, `/tasks` means the summary,
+  // focused on the column it already shows beside it, not the dedicated pane it used to open.
+  ctl.ensureSelection();
+  assert.deepEqual([state.meetings.pane, state.meetings.focusColumn], ['summary', true]);
+  // With the column off, the old link still opens the Action items pane as before.
+  s.settings.meetings = { ...s.settings.meetings, actionItems: false };
+  state.meetings.pane = 'tasks';
+  state.meetings.focusColumn = false;
+  ctl.ensureSelection();
+  assert.deepEqual([state.meetings.pane, state.meetings.focusColumn], ['tasks', false]);
+});
+
 test('make notes dialog preselects a template without a document when the meeting has some', async () => {
   const s = snapshot();
   const client = meetingContract().rules.noteTemplates.find(t => t.id === 'client');

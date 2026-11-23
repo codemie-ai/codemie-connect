@@ -137,11 +137,17 @@ export function createMeetingsController({
   };
 
   /** The selected meeting, or the first in the list when there is none (or it is gone); a pane
-   *  not chosen yet (a link without one) is the setting's. */
+   *  not chosen yet (a link without one) is the setting's. The Tasks tab is gone (spec ruling 9):
+   *  with the column on, an old `/tasks` link means the summary, focused on the column, not the
+   *  pane `tasks` used to mean. */
   function ensureSelection() {
     const s = snap();
     const all = meetingItems(s, now());
     if (!PANES.includes(v().pane)) v().pane = openOn();
+    else if (v().pane === 'tasks' && s.settings?.meetings?.actionItems !== false) {
+      v().pane = 'summary';
+      v().focusColumn = true;
+    }
     if (v().selected && all.some(m => m.id === v().selected)) return v().selected;
     v().selected = order()[0] || null;
     return v().selected;
