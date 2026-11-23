@@ -349,9 +349,11 @@ export function replyBar(s, m, state, { empty = true, locked = false } = {}) {
   const allowed = can(s, isChat ? 'chat_send' : 'mail_send');
   // The send and copy buttons wait for text; the controller keeps `disabled` in step as the user
   // types, except while a send is `data-locked` (a draft runs, the item is gone).
+  // Send is a plain button, never a submit: Enter on a field in the reply form (a checkbox, the
+  // lane select) must not reach it through implicit submission. Only a click or armed ⌘↩ sends.
   const lockAttrs = { 'data-id': m.id, 'data-needs-text': '', ...(locked ? { 'data-locked': '' } : {}) };
   const primary = p.kind === 'send'
-    ? button(p.label, { type: 'submit', action: 'reply-send', variant: 'primary', iconName: 'reply', title: p.title, disabled: empty || locked, attrs: { 'aria-label': `${p.label}, ${isChat ? 'Teams' : 'Outlook'}`, ...lockAttrs } })
+    ? button(p.label, { action: 'reply-send', variant: 'primary', iconName: 'reply', title: p.title, disabled: empty || locked, attrs: { 'aria-label': `${p.label}, ${isChat ? 'Teams' : 'Outlook'}`, ...lockAttrs } })
     : p.kind === 'copy'
       ? button(p.label, { action: 'reply-copy', variant: 'primary', iconName: 'copy', title: `Copy the reply to paste it in ${isChat ? 'Teams' : 'Outlook'}`, disabled: empty, attrs: { 'data-id': m.id, 'data-needs-text': '' } })
       : doneButton(m, 'primary');

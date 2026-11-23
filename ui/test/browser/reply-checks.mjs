@@ -177,6 +177,107 @@ export async function replyChecks({ open, check, assert, shot, settled, calls, O
     }
   }
 
+  // R13 (C1): Enter on any field inside the reply form (the box, the change line, the lane
+  // select under ⋯, Draft options' "Suggest times from my calendar" and its instructions) never
+  // sends: the form has no submit button, so implicit submission cannot click Send. A button
+  // takes Enter as its own click, so the sweep covers fields only. A real click on Send, and an
+  // armed ⌘↩, still send once each.
+  for (const theme of ['dark', 'light']) {
+    const { page, context } = await open({ theme, hash: '#/inbox', enable: ['chat_send', 'mail_send'] });
+    await check(`reply R13 (${theme}): Enter on a field in the reply form never sends`, async () => {
+      const FIELDS = 'form[data-form="reply"] :is(input, select, textarea)';
+      const nothingSent = async what => {
+        await page.waitForTimeout(300);
+        const prepared = (await calls(page, 'action_prepare')).length;
+        const confirmed = await sent(page, calls);
+        assert(prepared === 0 && confirmed === 0, `Enter on ${what} sent: action_prepare ${prepared}, action_confirm ${confirmed}`);
+      };
+      const sweep = async where => {
+        const n = await page.locator(FIELDS).count();
+        let pressed = 0;
+        for (let i = 0; i < n; i++) {
+          const el = page.locator(FIELDS).nth(i);
+          if (!(await el.isVisible()) || await el.isDisabled()) continue;
+          const name = await el.evaluate(x => x.id || x.getAttribute('aria-label') || x.name || x.tagName);
+          await el.focus();
+          await page.keyboard.press('Enter');
+          await nothingSent(`${where} › ${name}`);
+          pressed++;
+        }
+        return pressed;
+      };
+      await openRow(page, settled, 'default', 'c-reply-1');
+      await page.fill('#reply-body', 'See you at 11.');
+
+      await openOptions(page);
+      await page.focus('#draft-free-times');
+      await page.keyboard.press('Enter');
+      await nothingSent('"Suggest times from my calendar"');
+      assert(await sweep('Draft options') >= 3, 'the Draft options sweep pressed too few fields');
+      await page.click('[data-action="ai-draft-cancel"]');
+      await page.waitForSelector('#draft-options', { state: 'detached' });
+
+      await page.click(`${MORE} > summary`);
+      await page.waitForSelector(`${MORE}[open]`);
+      await page.focus(`${MORE} select`);
+      await page.keyboard.press('Enter');
+      await nothingSent('the "Move to lane" select');
+      await page.keyboard.press('Escape');
+      await page.click(`${MORE} > summary`);
+      await page.waitForSelector(`${MORE}[open]`);
+      assert(await sweep('the ⋯ menu') >= 3, 'the ⋯ menu sweep pressed too few fields');
+      await page.keyboard.press('Escape');
+      if (await page.locator(`${MORE}[open]`).count()) await page.click(`${MORE} > summary`);
+      await page.waitForSelector(`${MORE}[open]`, { state: 'detached' });
+      assert(await sweep('the reply form') >= 2, 'the reply form sweep pressed too few fields');
+
+      await page.click('[data-action="reply-send"]');
+      await page.waitForSelector('.ws-reply-status:has-text("Sent to Jordan.")', { timeout: 4000 });
+      assert(await sent(page, calls) === 1 && (await calls(page, 'action_prepare')).length === 1, `a click on Send recorded ${await sent(page, calls)} confirms`);
+      // The sweep's Enter in the box added line breaks to the reply; the sent text still leaves the box.
+      assert(await page.inputValue('#reply-body') === '', `the box kept the sent text: ${JSON.stringify(await page.inputValue('#reply-body'))}`);
+
+      await page.click('#reply-body');
+      await page.keyboard.type('One more thing.');
+      await page.keyboard.press('Meta+Enter');
+      await page.waitForFunction(() => window.__bridgeCalls.filter(([op]) => op === 'action_confirm').length === 2, null, { timeout: 4000 });
+      await page.waitForTimeout(300);
+      assert(await sent(page, calls) === 2 && (await calls(page, 'action_prepare')).length === 2, `an armed ⌘↩ recorded ${await sent(page, calls)} confirms in all`);
+      assert((await lastCall(page, 'action_prepare'))?.body === 'One more thing.', JSON.stringify(await lastCall(page, 'action_prepare')));
+      assert(await page.locator('form[data-form="reply"] :is(button:not([type]), button[type=submit], input[type=submit], input[type=image])').count() === 0, 'the reply form has a submit-capable button');
+    });
+    await context.close().catch(() => {});
+  }
+
+  // R14 (I1): text typed while a Teams send is in flight stays in the box and is saved; only the
+  // text that was sent leaves.
+  for (const theme of ['dark', 'light']) {
+    const { page, context } = await open({ theme, hash: '#/inbox', enable: ['chat_send', 'mail_send'] });
+    await check(`reply R14 (${theme}): text typed during a Teams send survives it`, async () => {
+      await openRow(page, settled, 'default', 'c-reply-1');
+      await page.fill('#reply-body', 'See you at 11.');
+      await page.evaluate(() => { window.__confirmHold = true; window.__finishConfirm = null; });
+      await page.click('[data-action="reply-send"]');
+      await page.waitForFunction(() => typeof window.__finishConfirm === 'function', null, { timeout: 4000 });
+      await page.focus('#reply-body');
+      await page.keyboard.press('End');
+      await page.keyboard.type(' Also, bring the deck.');
+      await page.evaluate(() => { window.__confirmHold = false; window.__finishConfirm(); });
+      await page.waitForSelector('.ws-reply-status:has-text("Sent to Jordan.")', { timeout: 4000 });
+      await settled(page);
+      await page.waitForTimeout(300);
+      const want = 'See you at 11. Also, bring the deck.';
+      assert((await lastCall(page, 'action_prepare'))?.body === 'See you at 11.', JSON.stringify(await lastCall(page, 'action_prepare')));
+      assert(await page.inputValue('#reply-body') === want, `the box lost the new text: "${await page.inputValue('#reply-body')}"`);
+      const saves = await calls(page, 'draft_save');
+      assert(saves.at(-1)?.text === want, `the new text was not saved: ${JSON.stringify(saves.map(d => d.text))}`);
+      await openRow(page, settled, 'default', 'm-reply-1');
+      await openRow(page, settled, 'default', 'c-reply-1');
+      assert(await page.inputValue('#reply-body') === want, `the new text did not survive re-opening: "${await page.inputValue('#reply-body')}"`);
+    });
+    await context.close().catch(() => {});
+  }
+
   // R5: without chat_send and mail_send the primary is Copy reply; ⋯ offers a read-only link.
   for (const theme of ['dark', 'light']) {
     const { page, context } = await open({ theme, hash: '#/inbox' });

@@ -2629,13 +2629,13 @@ async function sendReply(id, body) {
     await queueReplySave(m, body);
     if (chat) showReplyStatus(key, 'Sending…');
     result = await mutate('action_prepare', { kind: chat ? 'chat_reply' : 'mail_reply', sourceId: id, body });
-    if (!chat) return mailConfirm(result, m);
+    if (!chat) return mailConfirm(result, m, body);
     await mutate('action_confirm', { actionId: result.actionId, nonce: result.nonce });
   } catch (err) {
     showReplyStatus(key, { text: err?.message || String(err), tone: 'error' });
     return undefined;
   }
-  return afterSent(m);
+  return afterSent(m, body);
 }
 
 /**
@@ -2643,7 +2643,7 @@ async function sendReply(id, body) {
  * showed tagged "(new)"), Cc, the subject and the signature — not the body, which is on screen.
  * Cancel is focused and Return cancels; Send takes a click or Space.
  */
-function mailConfirm(result, m) {
+function mailConfirm(result, m, body) {
   return openModal({
     title: 'Send this reply?',
     subtitle: `${result.account || 'Microsoft 365'} · expires in 5 minutes`,
@@ -2660,32 +2660,41 @@ function mailConfirm(result, m) {
         if (err?.code === 'review_expired') throw new Error('This confirm expired. Click Send again.');
         throw err;
       }
-      await afterSent(m);
+      await afterSent(m, body);
     },
   });
 }
 
 /**
- * A sent reply: the box empties, its saved reply and Claude's draft are deleted through the save
- * queue (so no pending autosave, and no reload, brings the text back), the carried text, Restore
- * and the ⌘↩ arming go, and the status line says where it went. The row stays where it is; no toast.
+ * A sent reply (`body`, the text that went): the box empties, its saved reply and Claude's draft
+ * are deleted through the save queue (so no pending autosave, and no reload, brings the text
+ * back), the carried text, Restore and the ⌘↩ arming go, and the status line says where it went.
+ * Text typed while the send was in flight is not the sent text: it stays in the box and is saved
+ * instead. The row stays where it is; no toast.
  */
-async function afterSent(m) {
+async function afterSent(m, body) {
   const key = draftKeyOf(m);
   const field = document.getElementById('reply-body');
-  if (field?.closest('form')?.dataset.key === key) {
+  const here = field?.closest('form')?.dataset.key === key;
+  const live = here ? field.value : Object.hasOwn(state.replyCarry, key) ? state.replyCarry[key] : savedReply(snap(), m)?.data.text || '';
+  // Compared without line-break style (the form sends CRLF, the box holds LF) or edge whitespace
+  // (a re-drawn <textarea> drops a leading line break): only new words keep the box.
+  const same = (a, b) => a.replace(/\r\n?/g, '\n').trim() === b.replace(/\r\n?/g, '\n').trim();
+  const kept = same(live, body) ? '' : live;
+  if (here && !kept) {
     field.value = '';
     field.defaultValue = '';
     syncReplyBox(field);
   }
-  delete state.replyCarry[key];
+  if (!kept) delete state.replyCarry[key];
   // Claude's draft that was sent is done with: the emptied box does not offer it again.
   const ai = latestDraft(snap(), key);
   state.drafts[key] = { ...draftUi(key), restore: null, confirm: null, baseline: null, changeFrom: null, ...(ai ? { kept: ai.revision } : {}) };
   state.replyTouched = null;
   showReplyStatus(key, { text: `Sent to ${sendTarget(snap(), m) || 'the chat'}.`, url: m.data.url });
   try {
-    await queueReplySave(m, '');
+    await queueReplySave(m, kept);
+    if (kept && here && field.value === kept) field.defaultValue = kept;
     await queueDraftDelete(key);
   } catch (err) {
     fail(err);
@@ -2765,6 +2774,9 @@ document.addEventListener('submit', async ev => {
   const form = ev.target.closest('form[data-form]');
   if (!form || !form.closest('#workspace-app')) return;
   ev.preventDefault();
+  // The reply form never sends on submit (implicit submission from Enter in a field); its Send
+  // is a plain button handled by the click handler and ⌘↩.
+  if (form.dataset.form === 'reply') return;
   const buttons = [...form.querySelectorAll('button[type=submit]')];
   buttons.forEach(b => { b.disabled = true; });
   try {
@@ -2892,7 +2904,8 @@ document.addEventListener('keydown', ev => {
   const send = form?.querySelector('[data-action="reply-send"]');
   if (!m || !send || send.disabled) return;
   const blocked = modalOpen() || sheetOpen() || !!state.draftPopover || !!document.querySelector('details.ws-menu[open]');
-  if (sendKeyAllowed({ touchedKey: state.replyTouched, key: form.dataset.key, repeat: ev.repeat, blocked, primaryKind: primaryAction(snap(), m).kind })) form.requestSubmit(send);
+  if (!sendKeyAllowed({ touchedKey: state.replyTouched, key: form.dataset.key, repeat: ev.repeat, blocked, primaryKind: primaryAction(snap(), m).kind })) return;
+  handle('reply-send', send).catch(fail).finally(() => syncReplyBox(document.getElementById('reply-body')));
 });
 
 // The change line: Return sends the words (never the reply form), Esc empties a field with words

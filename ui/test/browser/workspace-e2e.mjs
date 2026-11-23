@@ -405,8 +405,10 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       // contract fixture), not a "Reply to …" line.
       return { actionId: 'action-1', nonce: 'nonce-1', workspaceId: 'personal', account: s.connection.email, review: { title: m.data.title, recipients: [{ emailAddress: { name: m.data.from, address: redirected ? replyTo : address } }], newRecipients, body: d.body } };
     },
-    action_confirm: d => {
+    // `window.__confirmHold` keeps the confirm in flight until `window.__finishConfirm()`.
+    action_confirm: async d => {
       calls.push(['action_confirm', d]);
+      if (window.__confirmHold) await new Promise(resolve => { window.__finishConfirm = resolve; });
       if (window.__replyToChanged) fail('conflict', 'The Outlook message or reply destination changed. Review a new reply.');
       return { state: 'accepted', message: 'Sent for delivery.' };
     },

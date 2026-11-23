@@ -373,7 +373,7 @@ test('without_send_permission_the_reply_can_be_copied', () => {
   s.connection.enabled.push('chat_send');
   const allowed = view(s);
   assert.doesNotMatch(allowed, /data-action="reply-copy"/);
-  assert.match(allowed, /<button type="submit" class="ws-btn ws-btn-primary"[^>]*data-action="reply-send"[^>]*aria-label="Send to Jordan, Teams"[^>]*>(?:(?!<\/button>).)*Send to Jordan</);
+  assert.match(allowed, /<button type="button" class="ws-btn ws-btn-primary"[^>]*data-action="reply-send"[^>]*aria-label="Send to Jordan, Teams"[^>]*>(?:(?!<\/button>).)*Send to Jordan</);
   assert.match(allowed, /data-menu="reply-more"[^]*?>Open in Teams</);
   assert.doesNotMatch(allowed, /Review &amp; send|Reply in Teams ↗/);
 });
