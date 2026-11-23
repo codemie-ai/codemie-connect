@@ -46,6 +46,10 @@ const SLOT_TEXT = 300;
 const SLOT_ITEMS = 8;
 /** A `call.minutes` item's text: longer than a chip or menu item, since it keeps its lines. */
 const MINUTES_TEXT = 20000;
+/** The most of a slot's raw HTML `minutesText` reads before stripping tags: unclosed `<` make the
+ *  strip regexes costly (as in `textOf`), so very long input is capped first, well above any
+ *  legitimate render(). */
+const MINUTES_INPUT_MAX = 200000;
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', middot: '·', mdash: '—', ndash: '–', hellip: '…', rarr: '→' };
 /** What a slot's HTML says, as one line of text (Connect's window shows words, never a plugin's
@@ -69,23 +73,39 @@ export function textOf(html) {
 /** Tags whose edges (open or close) end the line a `call.minutes` item draws; a heading's or a
  *  list item's own OPENING tag also starts the next line with its prefix. */
 const MINUTES_BLOCK = /<(\/?)(p|div|br|li|ul|ol|h[1-6])\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+/** A line that is only its own heading or bullet prefix (an empty `<hN>` or `<li>`): dropped, not
+ *  kept as a bare "##" or "-". */
+const BARE_PREFIX = /^#{1,6}$|^-$/;
 const stripInline = seg => seg.replace(/<(?:[^>"']|"[^"]*"|'[^']*')*>/g, '');
 const readEntities = text => text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (all, name) => {
   if (name[0] !== '#') return ENTITIES[name.toLowerCase()] ?? all;
   const code = name[1] === 'x' || name[1] === 'X' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
   return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
 });
+/** Cuts `text` to `max` characters without splitting a surrogate pair (an emoji or other astral
+ *  character whose two halves would otherwise straddle the cut). */
+function sliceSafe(text, max) {
+  if (text.length <= max) return text;
+  const high = text.charCodeAt(max - 1);
+  return text.slice(0, high >= 0xd800 && high <= 0xdbff ? max - 1 : max);
+}
 
 /** A `call.minutes` item's HTML with its lines kept (Connect's window never shows a plugin's
  *  markup): `<br>`, `</p>` and `</div>` end a line; `<hN>` starts one with N `#` and a space;
  *  `<li>` starts one with `- `; other tags are dropped — a `<script>` or `<style>` element's text
- *  goes with it; the `ENTITIES` are read, spaces fold within a line, lines are trimmed, and 3 or
- *  more newlines in a row become 2. At most `MINUTES_TEXT` characters. */
+ *  goes with it; the `ENTITIES` are read, spaces fold within a line, lines are trimmed (an empty
+ *  one, including a bare heading or bullet prefix, is dropped rather than kept as a blank line),
+ *  and 3 or more newlines in a row become 2. At most `MINUTES_TEXT` characters, never splitting a
+ *  surrogate pair. */
 export function minutesText(html) {
-  const src = String(html ?? '').replace(/<(style|script)\b[\s\S]*?<\/\1\s*>/gi, '');
+  const src = String(html ?? '').slice(0, MINUTES_INPUT_MAX).replace(/<(style|script)\b[\s\S]*?<\/\1\s*>/gi, '');
   const lines = [];
   let line = '';
-  const flush = () => { if (line) { lines.push(line); line = ''; } };
+  const flush = () => {
+    const t = line.trim();
+    if (t && !BARE_PREFIX.test(t)) lines.push(t);
+    line = '';
+  };
   const re = new RegExp(MINUTES_BLOCK);
   let last = 0;
   let m;
@@ -103,8 +123,9 @@ export function minutesText(html) {
   const text = lines
     .map(l => readEntities(l).replace(/\s+/g, ' ').trim())
     .join('\n')
-    .replace(/\n{3,}/g, '\n\n');
-  return text.length > MINUTES_TEXT ? text.slice(0, MINUTES_TEXT) : text;
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return sliceSafe(text, MINUTES_TEXT);
 }
 
 /** Where a plugin shows the user's own text: never renamed (host-words.js), phrase or not. */
@@ -695,7 +716,10 @@ export function createShim({ win, doc, importClient, patch = domPatch, graphs = 
           }
         }
         for (const item of s.slots.get('call.minutes') || []) {
-          const text = renameHost(minutesText(slotHtml('call.minutes', item, { ...call })), s.rename);
+          // Cut again after renaming (never before): a rename that lengthens the text (e.g.
+          // "Echo" -> "Connect") must not push it past MINUTES_TEXT, or the schema would drop
+          // this whole `slots` message — header and menu with it.
+          const text = sliceSafe(renameHost(minutesText(slotHtml('call.minutes', item, { ...call })), s.rename), MINUTES_TEXT);
           if (text && out.minutes.length < SLOT_ITEMS) out.minutes.push(text);
         }
       } finally {

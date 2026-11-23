@@ -40,6 +40,17 @@ test('escapes HTML in every construct', () => {
   assert.equal(renderMarkdown(null), '');
 });
 
+test('bold formatting stays linear time on a long unclosed ** run (a plugin or note can hand it 20,000 characters)', () => {
+  // '**a ' never closes (every '**' is preceded by a space, so none can be a valid closing
+  // marker): the previous lazy-quantifier regex was quadratic here, costing ~500ms at this size.
+  const text = '**a '.repeat(20000); // 80,000 characters
+  const start = Date.now();
+  const html = renderMarkdown(text);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 150, `took ${elapsed}ms (expected well under 150ms; the old regex took ~500ms here)`);
+  assert.doesNotMatch(html, /<strong>/, 'no valid close exists anywhere, so nothing is bold');
+});
+
 test('renders front matter, tables, checkboxes and [mm:ss] buttons', () => {
   const md = [
     '---',

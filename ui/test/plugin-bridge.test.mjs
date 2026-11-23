@@ -75,8 +75,10 @@ function frameWindow() {
   return { win, doc, parent, els, head, classes, replaced };
 }
 
-/** A shim connected straight to a test port, its client half `apply`; `got` is what it posts. */
-async function connected(apply, { theme = 'light', id = 'obsidian' } = {}) {
+/** A shim connected straight to a test port, its client half `apply`; `got` is what it posts.
+ *  `phrases`: the plugin's own words that name Echo (`renameTable`), as the window would hand
+ *  them over from `plugins::phrases`. */
+async function connected(apply, { theme = 'light', id = 'obsidian', phrases = [] } = {}) {
   const fw = frameWindow();
   const shim = shimOf(fw, { importClient: async () => ({ apply }) });
   const { port1, port2 } = new MessageChannel();
@@ -84,7 +86,7 @@ async function connected(apply, { theme = 'light', id = 'obsidian' } = {}) {
   port1.onmessage = event => got.push(event.data);
   shim.onWindowMessage({
     source: fw.parent, ports: [port2],
-    data: { v: V, id: 0, kind: 'event', type: 'connect', plugin: { id, name: 'Knowledge', version: '1.0.1', client: 'client.js' }, host: { name: 'CodeMie Connect' }, theme, where: { view: '', section: '', route: '' }, storage: {} },
+    data: { v: V, id: 0, kind: 'event', type: 'connect', plugin: { id, name: 'Knowledge', version: '1.0.1', client: 'client.js', phrases }, host: { name: 'CodeMie Connect' }, theme, where: { view: '', section: '', route: '' }, storage: {} },
   });
   await settle(30);
   const send = m => port1.postMessage({ v: V, id: 0, ...m });
@@ -787,6 +789,18 @@ test('minutes keep lines, headings and bullets, and never markup', () => {
   assert.equal(minutesText(null), '');
   // <br> ends a line; a <div> closes one too; folded spaces, trimmed lines.
   assert.equal(minutesText('A<br>B<div>  C   D  </div>E'), 'A\nB\nC D\nE');
+  // Whitespace that only pretty-prints a plugin's HTML (before the first tag, or between tags)
+  // never becomes a leading or blank line (fix round 1, Important 1).
+  assert.equal(minutesText('  <p>x</p>'), 'x');
+  assert.equal(minutesText('<div>\n<h2>T</h2>\n<p>a</p></div>'), '## T\na');
+  // An empty heading or bullet is dropped, not kept as a bare "##" or "-".
+  assert.equal(minutesText('<h2></h2><p>x</p>'), 'x');
+  assert.equal(minutesText('<ul><li></li><li>x</li></ul>'), '- x');
+  // Cutting at 20,000 never splits a surrogate pair (an emoji straddling the cut is dropped
+  // whole, not left as a lone, unpaired surrogate).
+  const atBoundary = minutesText(`${'a'.repeat(19999)}\u{1F600}tail`);
+  assert.equal(atBoundary.length, 19999);
+  assert.doesNotMatch(atBoundary, /[\ud800-\udbff]$/, 'no lone leading surrogate at the end');
 });
 
 test('call_slots_reach_the_window_as_text_and_a_chosen_item_runs_in_the_frame', async () => {
@@ -836,6 +850,25 @@ test('call_slots_reach_the_window_as_text_and_a_chosen_item_runs_in_the_frame', 
   t.ctx.ui.closeSheet();
   await settle(20);
   assert.deepEqual(t.events().filter(m => m.type === 'sheet'), [{ type: 'sheet', open: true }, { type: 'sheet', open: false }]);
+});
+
+test('a rename that lengthens minutes is cut again afterward, so the schema never drops the whole slots message (fix round 1, Important 3)', async () => {
+  const phrase = "Echo's dashboard"; // renameHost: a phrase of 12+ chars is a plain substring swap
+  const prefix = 'a'.repeat(20000 - phrase.length - 2); // 2 characters short of 20,000 before the rename
+  const t = await connected(ctx => {
+    ctx.slots.add('call.minutes', { id: 'm', render: () => `${prefix}${phrase}` });
+  }, { phrases: [phrase] });
+  t.send({ kind: 'event', type: 'call', call: CALL, where: { view: 'calls', section: '', route: '' } });
+  await settle(20);
+  const slots = t.events().filter(m => m.type === 'slots').at(-1);
+  assert.equal(slots.minutes.length, 1);
+  // The rename happened (Echo -> Connect grew the text by 3, past 20,000) and the *renamed* text
+  // is what got cut — its tail, "dashboard", loses its last letter, not "Echo's" surviving unrenamed.
+  assert.doesNotMatch(slots.minutes[0], /Echo/, 'fully renamed, nothing left to rename');
+  assert.match(slots.minutes[0], /Connect's dashboar.?$/);
+  assert.ok(slots.minutes[0].length <= 20000, `length ${slots.minutes[0].length}: must be cut again after the rename, not before`);
+  // The whole message still passes the schema: header and menu are not dropped along with it.
+  assert.ok(checkFromFrame({ v: V, id: 0, kind: 'event', ...slots }));
 });
 
 test('the_window_tells_frames_the_meeting_shows_their_slots_and_lays_a_sheet_over_itself', async () => {

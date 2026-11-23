@@ -9,10 +9,38 @@ const TIME = /\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g;
 const LIST = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 const TABLE_RULE = /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 
+/** `**bold**`, scanned once left to right instead of with a backtracking regex: the previous
+ *  lazy-quantifier-plus-lookaround pattern was quadratic on an unclosed `**` run (a long
+ *  paragraph of untrusted plugin or note text could stall the window's render for hundreds of
+ *  milliseconds). Same rule as before — an opening and a closing `**` each need a non-whitespace
+ *  character on their inner side — but once no valid closing `**` exists anywhere further on,
+ *  nothing later can have one either, so the rest of the text is copied as is instead of
+ *  re-scanned. */
+function bold(html) {
+  const n = html.length;
+  let out = '';
+  let copied = 0;
+  let pos = 0;
+  while (pos < n - 1) {
+    if (html[pos] === '*' && html[pos + 1] === '*' && /\S/.test(html[pos + 2] || '')) {
+      let close = -1;
+      for (let j = pos + 3; j < n - 1; j++) {
+        if (html[j] === '*' && html[j + 1] === '*' && /\S/.test(html[j - 1])) { close = j; break; }
+      }
+      if (close === -1) break; // no valid close anywhere further on: nothing more to find
+      out += html.slice(copied, pos) + `<strong>${html.slice(pos + 2, close)}</strong>`;
+      copied = close + 2;
+      pos = close + 2;
+      continue;
+    }
+    pos++;
+  }
+  return out + html.slice(copied);
+}
+
 /** Bold, italic and time references in text that is already escaped. */
 function format(html) {
-  return html
-    .replace(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g, '<strong>$1</strong>')
+  return bold(html)
     .replace(/(^|[\s(“"'])\*(?=[^\s*])([^*]+?)(?<=[^\s*])\*(?=$|[\s).,;:!?”"'])/g, '$1<em>$2</em>')
     .replace(TIME, '<button type="button" class="ws-md-ts" data-action="meeting-goto-line" data-t="$1" title="Show in the transcript">$1</button>');
 }

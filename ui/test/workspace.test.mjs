@@ -1636,14 +1636,18 @@ test('the run line shows one line per plugin, its first minutes line cut to 300'
   const callSlots = [
     { plugin: 'obsidian', pluginName: 'Knowledge', call: name, header: [], menu: [], minutes: [`${long}\nSecond line`, 'Another entry'] },
     { plugin: 'hello', pluginName: 'Hello', call: name, header: [], menu: [], minutes: ['One short line'] },
+    // A leading blank/whitespace-only line (as plugin HTML can still produce, fix round 1) is
+    // skipped: the first *non-empty* line is what shows.
+    { plugin: 'blank-lead', pluginName: 'Blanky', call: name, header: [], menu: [], minutes: ['\n   \nReal line'] },
   ];
   s.jobs.push(notesJob('mtg-philips', { step: 'Finding tasks' }));
   const html = detailOf(meetings(s, meetingsCtx({ selected: 'mtg-philips' }, { callSlots })));
   const lines = [...html.matchAll(/<p class="ws-mtg-plugin-line" title="([^"]*)">.*?<span>([^<]*)<\/span><\/p>/g)];
-  assert.equal(lines.length, 2, 'one line per plugin, not per minutes entry or content line');
-  assert.deepEqual(lines.map(m => m[1]), ['Knowledge', 'Hello']);
+  assert.equal(lines.length, 3, 'one line per plugin, not per minutes entry or content line');
+  assert.deepEqual(lines.map(m => m[1]), ['Knowledge', 'Hello', 'Blanky']);
   assert.equal(lines[0][2], `${'x'.repeat(299)}…`, 'its first entry\'s first line, cut to 300');
   assert.equal(lines[1][2], 'One short line');
+  assert.equal(lines[2][2], 'Real line', 'a leading blank line is skipped, not shown as empty');
 });
 
 test('an unnamed speaker\'s line asks "Who is this?" without leaving the transcript', () => {

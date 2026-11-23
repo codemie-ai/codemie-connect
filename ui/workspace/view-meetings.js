@@ -93,11 +93,12 @@ function pluginChips(slots) {
 }
 
 /** A plugin's line while the meeting's notes are being made (`call.minutes`): its first item's
- *  first line, cut to 300 characters — one line per plugin, however many lines or items it gave. */
+ *  first non-empty line, cut to 300 characters — one line per plugin, however many lines or
+ *  items it gave. */
 function pluginLines(slots, m) {
   if (m.run?.kind !== 'meeting_notes') return '';
   const firstLine = x => {
-    const line = (x.minutes[0] || '').split('\n')[0];
+    const line = (x.minutes[0] || '').split('\n').find(l => l.trim() !== '') || '';
     return line.length > 300 ? `${line.slice(0, 299)}…` : line;
   };
   return slots.flatMap(x => {
