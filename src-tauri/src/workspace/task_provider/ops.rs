@@ -161,7 +161,24 @@ fn restamp_review(r: &mut Repository, provider: &str, now: i64) -> Result<()> {
     if moved.is_empty() {
         return Ok(());
     }
-    r.commit_local(&moved, &[], true)
+    r.commit_local(&moved, &[], true)?;
+    // Their meetings' tasks.json follow.
+    let mut meetings: Vec<(String, String)> = moved
+        .iter()
+        .filter_map(|t| {
+            let meeting = t.data["meetingId"].as_str()?;
+            Some((
+                t.workspace_id.clone().unwrap_or_default(),
+                meeting.to_string(),
+            ))
+        })
+        .collect();
+    meetings.sort();
+    meetings.dedup();
+    for (wid, meeting) in meetings {
+        tasks::write_tasks_json(r, &wid, &meeting);
+    }
+    Ok(())
 }
 
 /// Copies the open Local tasks of `wid` to `provider` (design §11 "Copy"): each copy keeps its
@@ -174,18 +191,33 @@ fn copy_open(r: &mut Repository, wid: &str, provider: &str, now: i64) -> Result<
         .filter(|t| provider_of(&t.data) == provider)
         .filter_map(|t| t.data["key"].as_str().map(str::to_string))
         .collect();
+    // A Local task copied before is never copied again, whatever its key says now.
+    let copied_from: HashSet<String> = r
+        .records_of_kind(KIND)?
+        .iter()
+        .filter(|t| provider_of(&t.data) == provider)
+        .filter_map(|t| t.data["copiedFrom"].as_str().map(str::to_string))
+        .collect();
     let locals: Vec<Record> = r
         .local_records(wid, KIND)?
         .into_iter()
         .filter(|t| provider_of(&t.data) == "local" && tasks::is_open(&t.data))
+        .filter(|t| !copied_from.contains(&t.id))
         .collect();
     let mut copied = 0;
-    for t in locals {
-        let key = t.data["key"]
-            .as_str()
-            .filter(|k| tasks::valid_key(k))
-            .map(str::to_string)
-            .unwrap_or_else(|| tasks::key_of(&t.id, &t.data));
+    for mut t in locals {
+        let key = match t.data["key"].as_str().filter(|k| tasks::valid_key(k)) {
+            Some(key) => key.to_string(),
+            None => {
+                // A task from before keys gets its key now, kept, so it never changes with
+                // its text (design §13).
+                let key = tasks::key_of(&t.id, &t.data);
+                t.data["key"] = key.clone().into();
+                t.revision = id();
+                r.put_record(&t)?;
+                key
+            }
+        };
         if held.contains(&key) || keys::ledger_get(r, provider, &key)?.is_some() {
             continue;
         }
@@ -267,18 +299,21 @@ fn withdraw_one(r: &mut Repository, wid: &str, tid: &str, now: i64) -> Result<()
                 gone.push(e);
             }
         }
-        if let Some(create) = gone.iter().find(|e| e.data["op"] == "create") {
-            // A create tried before may have reached the provider with its answer lost: a
-            // tombstone by key keeps a pull from bringing it back (it is removed there instead).
-            if let (true, Some(key)) = (create.data["attempts"].as_i64().unwrap_or(0) > 0, &key) {
+        if gone.iter().any(|e| e.data["op"] == "create") {
+            // The create may be on its way, or have reached the provider with its answer lost:
+            // a tombstone by key keeps a pull from bringing it back (it is removed there
+            // instead), as `outbox::delete_task` does.
+            if let Some(key) = &key {
                 puts.push(keys::ledger_record(&provider, key, None, "withdrawn", now));
             }
         } else if let Some(rid) = rid {
             let seq = outbox::next_seq(r)?;
+            // The remote as it was, for a Discard change of this remove to give it back.
             let remove = outbox::entry(
                 &record,
                 "remove",
-                json!({"id": rid, "key": key, "ledger": "withdrawn"}),
+                json!({"id": rid, "key": key, "ledger": "withdrawn",
+                    "remote": record.data["remote"]}),
                 seq,
                 now,
             );
@@ -315,6 +350,16 @@ fn bulk(r: &mut Repository, wid: &str, data: &Value, now: i64) -> Result<Value> 
         .ok_or_else(|| invalid("items", BULK_MESSAGE))?;
     if items.len() > BULK_MAX {
         return Err(invalid("items", BULK_MESSAGE));
+    }
+    // To review or Dismissed takes a task out of the provider: that is `task_withdraw`.
+    if items.iter().any(|i| {
+        i.get("status")
+            .is_some_and(|s| !matches!(s.as_str(), Some("todo" | "doing" | "waiting" | "done")))
+    }) {
+        return Err(invalid(
+            "items",
+            "Move tasks to To do, In progress, Waiting or Done.",
+        ));
     }
     let (mut done, mut failed, mut before) = (0, 0, Vec::new());
     for item in items {
@@ -443,6 +488,8 @@ fn parked(r: &mut Repository, wid: &str, data: &Value, now: i64) -> Result<Value
     let mut puts: Vec<Record> = Vec::new();
     let mut gone: Vec<Record> = Vec::new();
     let mut unsent = false;
+    // A withdraw's remove discarded: the task's remote, to link it back.
+    let mut relink: Option<Value> = None;
     for e in entries {
         if action == "retry" {
             if e.data["op"] == "remove" && outbox::remove_is_stale(r, &e.data)? {
@@ -475,10 +522,31 @@ fn parked(r: &mut Repository, wid: &str, data: &Value, now: i64) -> Result<Value
                         "created",
                         now,
                     ));
+                    if e.data["patch"]["ledger"] == "withdrawn" {
+                        let kept = &e.data["patch"]["remote"];
+                        relink = Some(if kept["id"] == rid {
+                            kept.clone()
+                        } else {
+                            json!({"id": rid})
+                        });
+                    }
                 }
             }
             _ => {}
         }
+    }
+    if unsent {
+        // Never sent: what waited behind the create goes with it.
+        let behind: Vec<Record> = all
+            .iter()
+            .filter(|e| {
+                e.data["taskId"] == tid
+                    && e.data["op"] != "remove"
+                    && !gone.iter().any(|g| g.id == e.id)
+            })
+            .cloned()
+            .collect();
+        gone.extend(behind);
     }
     let task_id = all
         .iter()
@@ -497,6 +565,15 @@ fn parked(r: &mut Repository, wid: &str, data: &Value, now: i64) -> Result<Value
             )?;
             before = p.before;
             Some(p.record)
+        }
+        Ok(stored) if relink.is_some() && stored.data["remote"]["id"].is_null() => {
+            // The withdraw is undone: the task is in the provider again, one record for it.
+            // Nothing is queued: it is there already.
+            let p = tasks::prepare(r, wid, &json!({"id": task_id, "status": "todo"}), now)?;
+            before = p.before;
+            let mut task = p.record;
+            task.data["remote"] = relink.take().unwrap_or_default();
+            Some(task)
         }
         Ok(mut stored) => {
             if action == "discard" {
@@ -892,6 +969,19 @@ mod tests {
         assert_eq!(e.task("t1").unwrap()["due"], "2026-11-19");
         assert_eq!(e.task("t2").unwrap()["status"], "todo");
 
+        // A move To review or Dismissed is a withdraw, never a bulk move.
+        for status in ["review", "dismissed"] {
+            let err = e
+                .op(
+                    Operation::TaskBulk,
+                    json!({"items": [{"id": "t1", "status": status}]}),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(err.field.as_deref(), Some("items"), "{status}");
+        }
+        assert_eq!(e.task("t1").unwrap()["status"], "todo");
+
         let many: Vec<Value> = (0..201).map(|i| json!({"id": format!("t{i}")})).collect();
         let err = e
             .op(Operation::TaskBulk, json!({"items": many}))
@@ -1176,36 +1266,253 @@ mod tests {
         );
         assert_eq!(e.calls_of("create").len(), 1);
 
-        // A key the ledger holds live makes nothing; one removed is made again.
+        // A key the ledger knows makes nothing, live or removed in Todoist (design §3: a task
+        // deleted there is not made again by a rerun); one withdrawn is made again.
         let live = keys::task_key("automation:a1:m2", "Send the deck");
         let gone = keys::task_key("automation:a1:m3", "Send the notes");
+        let back = keys::task_key("automation:a1:m4", "Send the slides");
         {
             let mut r = e.core.repo().unwrap();
             keys::ledger_put(&mut r, P, &live, Some("9000"), "created", now()).unwrap();
             keys::ledger_put(&mut r, P, &gone, Some("9001"), "removed", now()).unwrap();
+            keys::ledger_put(&mut r, P, &back, Some("9002"), "withdrawn", now()).unwrap();
         }
+        let by_key = |text: &str, key: &str| {
+            tasks::create_by_key(&e.core, "personal", &json!({"text": text}), key).unwrap()
+        };
         assert_eq!(
-            tasks::create_by_key(
-                &e.core,
-                "personal",
-                &json!({"text": "Send the deck"}),
-                &live
-            )
-            .unwrap(),
+            by_key("Send the deck", &live),
             ("todoist-9000".to_string(), false)
         );
-        assert!(!e.of(P).iter().any(|t| t.data["key"] == live.as_str()));
-        let (_, made) = tasks::create_by_key(
-            &e.core,
-            "personal",
-            &json!({"text": "Send the notes"}),
-            &gone,
-        )
-        .unwrap();
-        assert!(made);
+        assert_eq!(
+            by_key("Send the notes", &gone),
+            ("todoist-9001".to_string(), false),
+            "deleted in Todoist: not made again"
+        );
+        for key in [&live, &gone] {
+            assert!(!e.of(P).iter().any(|t| t.data["key"] == key.as_str()));
+        }
+        assert!(by_key("Send the slides", &back).1, "withdrawn: made again");
 
         let err = tasks::create_by_key(&e.core, "personal", &json!({"text": "x"}), "NOT-A-KEY")
             .unwrap_err();
         assert_eq!(err.field.as_deref(), Some("key"));
+    }
+
+    /// Review Important 1: Undo lands while the create is on its way. Todoist made the task, but
+    /// the user withdrew it: it is removed there, and Connect's task stays To review.
+    #[tokio::test]
+    async fn a_withdraw_while_the_create_is_on_its_way_removes_it() {
+        let e = env(P);
+        e.save(json!({"id": "t1", "text": "Send the pilot user list"}));
+        let key = e.task("t1").unwrap()["key"].as_str().unwrap().to_string();
+        let core = e.core.clone();
+        e.fake.during("create", move || {
+            super::withdraw_one(&mut core.repo().unwrap(), "personal", "t1", now()).unwrap();
+        });
+        e.sync().await;
+        let t = e.task("t1").unwrap();
+        assert_eq!(t["status"], "review");
+        assert!(t["remote"]["id"].is_null(), "{t}");
+        assert_eq!(e.ledger(&key).unwrap()["state"], "withdrawn");
+        e.sync().await;
+        assert_eq!(e.calls_of("remove").len(), 1);
+        assert!(e.fake.tasks().is_empty(), "nothing stays in Todoist");
+        assert_eq!(e.task("t1").unwrap()["pending"], false);
+        assert_eq!(e.counts(), (0, 0));
+    }
+
+    /// Review Important 3: a keyless Local task (from before keys) copied once is never copied
+    /// again, even after its text changed.
+    #[tokio::test]
+    async fn a_second_copy_of_a_keyless_task_makes_nothing() {
+        let e = env("local");
+        e.save(json!({"id": "l1", "text": "Send the pilot user list"}));
+        {
+            let mut r = e.core.repo().unwrap();
+            let mut t = r.record(tasks::KIND, "l1", None, Some("personal")).unwrap();
+            t.data.as_object_mut().unwrap().remove("key");
+            r.put_record(&t).unwrap();
+        }
+        let a = e
+            .op(
+                Operation::TaskProviderSet,
+                json!({"provider": P, "copy": true}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(a["copied"], 1);
+        let copy = e.of(P).remove(0);
+        assert_eq!(
+            e.task("l1").unwrap()["key"],
+            copy.data["key"],
+            "the key the copy got is kept on the Local task"
+        );
+        e.op(Operation::TaskProviderSet, json!({"provider": "local"}))
+            .await
+            .unwrap();
+        e.save(json!({"id": "l1", "text": "Send the pilot user list today"}));
+        let a = e
+            .op(
+                Operation::TaskProviderSet,
+                json!({"provider": P, "copy": true}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(a["copied"], 0);
+        assert_eq!(e.of(P).len(), 1);
+    }
+
+    /// Review Minor 1: discarding a parked create drops what waited behind it.
+    #[tokio::test]
+    async fn discarding_a_parked_create_drops_its_later_entries() {
+        let e = env(P);
+        e.fake.answer(
+            "create",
+            Err(ProviderError::Refused(
+                "Todoist needs a date like 2026-11-20.".into(),
+            )),
+        );
+        e.save(json!({"id": "t1", "text": "Bad"}));
+        e.sync().await;
+        e.save(json!({"id": "t1", "status": "done"}));
+        assert_eq!(e.counts(), (1, 1));
+        e.op(
+            Operation::TaskParked,
+            json!({"id": "t1", "action": "discard"}),
+        )
+        .await
+        .unwrap();
+        let t = e.task("t1").unwrap();
+        assert_eq!(t["status"], "review");
+        assert_eq!(t["pending"], false);
+        assert_eq!(e.counts(), (0, 0));
+    }
+
+    /// Review Minor 2: discarding a withdraw's parked remove gives the task its Todoist task
+    /// back; the pull makes no second record for it.
+    #[tokio::test]
+    async fn discarding_a_withdraws_parked_remove_relinks_the_task() {
+        let e = env(P);
+        e.save(json!({"id": "t1", "text": "Book a room for demo day"}));
+        e.sync().await;
+        let rid = e.task("t1").unwrap()["remote"]["id"].clone();
+        e.op(Operation::TaskWithdraw, json!({"ids": ["t1"]}))
+            .await
+            .unwrap();
+        e.fake.answer(
+            "remove",
+            Err(ProviderError::Refused(
+                "Todoist didn't accept the change (400)".into(),
+            )),
+        );
+        e.sync().await;
+        assert_eq!(e.counts(), (0, 1));
+        e.op(
+            Operation::TaskParked,
+            json!({"id": "t1", "action": "discard"}),
+        )
+        .await
+        .unwrap();
+        let t = e.task("t1").unwrap();
+        assert_eq!(t["remote"]["id"], rid);
+        assert_eq!(t["status"], "todo");
+        e.fake.put_remote(
+            json!({"id": rid, "key": t["key"], "text": "Book a room for Friday",
+            "done": false, "labels": ["connect"]}),
+        );
+        {
+            // The next run pulls (a pull waits 60 s otherwise).
+            let mut r = e.core.repo().unwrap();
+            let mut st = sync::load_state(&r, P).unwrap();
+            st["lastPull"] = Value::Null;
+            sync::save_state(&mut r, P, &st, now()).unwrap();
+        }
+        e.sync().await;
+        assert_eq!(e.of(P).len(), 1, "one Connect task for one Todoist task");
+        assert_eq!(e.task("t1").unwrap()["text"], "Book a room for Friday");
+        assert!(e.calls_of("create").len() == 1);
+    }
+
+    const ACCT: &str = "7f1c2a4e-0000-4000-8000-000000000001";
+
+    /// Signed in, with meeting `m1` whose folder is `folder`.
+    fn with_meeting(core: &Core, folder: &std::path::Path) {
+        let mut r = core.repo().unwrap();
+        r.save_connection(&crate::workspace::models::Connection {
+            id: ACCT.into(),
+            account_key: ACCT.into(),
+            display_name: "Taylor Morgan".into(),
+            email: "taylor@example.test".into(),
+            user_id: "me-1".into(),
+            generation: 1,
+            policy_revision: 1,
+            status: "connected".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut s = r.settings().unwrap();
+        s.active_connection = Some(ACCT.into());
+        r.settings_update(&s).unwrap();
+        r.put_record(&Record {
+            id: "m1".into(),
+            kind: "meeting".into(),
+            connection_id: Some(ACCT.into()),
+            workspace_id: None,
+            source: "calendar:cal-1".into(),
+            revision: "r".into(),
+            updated_at: now(),
+            data: json!({"eventId": "m1", "title": "Philips sync", "start": "2026-11-04T14:00:00Z",
+                "end": "2026-11-04T14:30:00Z", "state": "downloaded",
+                "folder": folder.to_string_lossy()}),
+        })
+        .unwrap();
+    }
+
+    /// Review Important 2: a meeting's `tasks.json` (what `echo.read('calls')` and other tools
+    /// read) keeps every action item through switches and copies, each once.
+    #[tokio::test]
+    async fn tasks_json_keeps_every_providers_items_once() {
+        let e = env("local");
+        let folder = e._dir.path().join("m1");
+        std::fs::create_dir_all(&folder).unwrap();
+        with_meeting(&e.core, &folder);
+        let items = || -> Vec<String> {
+            let v: Value =
+                serde_json::from_slice(&std::fs::read(folder.join("tasks.json")).unwrap()).unwrap();
+            let mut t: Vec<String> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["task"].as_str().unwrap().to_string())
+                .collect();
+            t.sort();
+            t
+        };
+        e.save(json!({"id": "a", "text": "Send the deck", "meetingId": "m1", "line": 1}));
+        e.save(json!({"id": "b", "text": "Close the SOW", "meetingId": "m1", "line": 2, "status": "done"}));
+        e.save(json!({"id": "c", "text": "Book a room", "meetingId": "m1", "line": 3, "status": "review"}));
+        let all = vec!["Book a room", "Close the SOW", "Send the deck"];
+        assert_eq!(items(), all);
+        e.op(
+            Operation::TaskProviderSet,
+            json!({"provider": P, "copy": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            items(),
+            all,
+            "a copy is not a second item, and nothing vanished"
+        );
+        e.op(Operation::TaskProviderSet, json!({"provider": "local"}))
+            .await
+            .unwrap();
+        e.save(json!({"id": "b", "notes": "Signed"}));
+        assert_eq!(items(), all);
+        // The review task follows the switch, and the file follows it.
+        let v: Value =
+            serde_json::from_slice(&std::fs::read(folder.join("tasks.json")).unwrap()).unwrap();
+        assert!(v.as_array().unwrap().iter().any(|i| i["id"] == "c"));
     }
 }

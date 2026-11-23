@@ -442,7 +442,11 @@ impl Run<'_> {
                 Ok(answer) => {
                     self.outcome.pushed += 1;
                     match op.as_str() {
-                        "create" => self.created(&current, &answer)?,
+                        "create" => {
+                            if self.created(&current, &answer)? {
+                                self.more = true;
+                            }
+                        }
                         "remove" => self.removed_sent(&current)?,
                         _ => self.answered(&current, &answer)?,
                     }
@@ -545,16 +549,72 @@ impl Run<'_> {
     /// one transaction. Where the task now differs from the provider's answer (an edit made while
     /// the create was on its way, or a task adopted by its key that holds older words), an update
     /// is queued (design §4 "an update if fields differ").
-    fn created(&self, entry: &Record, answer: &Value) -> Result<()> {
+    /// Answers whether something new was queued (a remove), for another pass.
+    fn created(&self, entry: &Record, answer: &Value) -> Result<bool> {
         let now = self.clock.secs();
         let mut r = self.repo()?;
-        let Some(mut task) = Self::task_of(&r, &entry.data)? else {
-            return Ok(());
-        };
         let rid = wire::remote_of(answer, None)["id"]
             .as_str()
             .unwrap_or_default()
             .to_string();
+        let current = outbox::current(&r, &entry.data)?;
+        let task = Self::task_of(&r, &entry.data)?;
+        let wanted = current
+            .as_ref()
+            .is_some_and(|c| c.revision == entry.revision)
+            && task
+                .as_ref()
+                .is_some_and(|t| !matches!(tasks::status_of(&t.data), "review" | "dismissed"));
+        if !wanted {
+            // Withdrawn (Undo) or deleted while the create was on its way: the provider made
+            // the task, so it is removed there, and the key keeps its tombstone (ruling 8).
+            let state = if task.is_some() {
+                "withdrawn"
+            } else {
+                "removed"
+            };
+            let key = task
+                .as_ref()
+                .and_then(|t| t.data["key"].as_str())
+                .or(answer["key"].as_str())
+                .map(str::to_string);
+            let wid = entry.workspace_id.clone().unwrap_or_default();
+            let tid = entry.data["taskId"].as_str().unwrap_or_default();
+            let mut puts = vec![outbox::entry_for(
+                tid,
+                &wid,
+                &self.provider,
+                "remove",
+                json!({"id": rid, "key": key, "ledger": state}),
+                outbox::next_seq(&r)?,
+                now,
+            )];
+            if let Some(key) = &key {
+                puts.push(super::keys::ledger_record(
+                    &self.provider,
+                    key,
+                    Some(&rid),
+                    state,
+                    now,
+                ));
+            }
+            puts.extend(outbox::pending_put(
+                &r,
+                tid,
+                &wid,
+                &[entry.id.as_str()],
+                true,
+            )?);
+            let gone: Vec<(&str, &str, &str)> = current
+                .iter()
+                .map(|c| (outbox::KIND, c.id.as_str(), wid.as_str()))
+                .collect();
+            r.commit_local(&puts, &gone, true)?;
+            return Ok(true);
+        }
+        let Some(mut task) = task else {
+            return Ok(false);
+        };
         let edited = self.differing(&task, answer);
         let mut puts = Vec::new();
         // The key lives again at `rid`: a remove parked or aimed there from an earlier life of
@@ -597,7 +657,8 @@ impl Run<'_> {
                 s.workspace_id.as_deref().unwrap_or(""),
             )
         }));
-        r.commit_local(&puts, &gone, true)
+        r.commit_local(&puts, &gone, true)?;
+        Ok(false)
     }
 
     /// An update or complete answered: the task's `remote` follows the answer; the entry goes

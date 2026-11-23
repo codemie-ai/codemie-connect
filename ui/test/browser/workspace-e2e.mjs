@@ -1145,6 +1145,7 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     task_bulk: (d, wid) => {
       calls.push(['task_bulk', clone(d)]);
       if (!Array.isArray(d.items) || d.items.length > 200) refuse('items', 'Choose up to 200 tasks.');
+      if (d.items.some(i => 'status' in i && !['todo', 'doing', 'waiting', 'done'].includes(i.status))) refuse('items', 'Move tasks to To do, In progress, Waiting or Done.');
       let done = 0, failed = 0;
       const before = [];
       for (const item of d.items) {

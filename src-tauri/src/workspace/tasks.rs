@@ -428,6 +428,20 @@ pub(crate) fn prepare(
     } else {
         previous.clone()
     };
+    if previous == "done" && status != "done" && !has("handled") && body["handled"]["auto"] == true
+    {
+        // Reopened after the sweep closed it: it doesn't look handled any more, and the same
+        // reply never closes it again (design §6, kept like "Keep open").
+        if let Some(evidence) = body["handled"]["evidence"].as_str() {
+            let hash = super::task_provider::handled::evidence_hash(evidence);
+            let mut kept = body["keptEvidence"].as_array().cloned().unwrap_or_default();
+            if !kept.iter().any(|h| h == hash.as_str()) {
+                kept.push(hash.into());
+            }
+            body["keptEvidence"] = kept.into();
+        }
+        body["handled"] = Value::Null;
+    }
     body["status"] = status.clone().into();
     body["done"] = (status == "done").into();
     if status != "done" {
@@ -622,7 +636,7 @@ pub(crate) fn task_delete(r: &mut Repository, workspace_id: &str, id: &str) -> R
 
 /// Best effort: the task is saved whatever happens to the file, and a folder that is gone is
 /// never made again.
-fn write_tasks_json(r: &Repository, workspace_id: &str, meeting_id: &str) {
+pub(crate) fn write_tasks_json(r: &Repository, workspace_id: &str, meeting_id: &str) {
     if let Err(e) = try_write_tasks_json(r, workspace_id, meeting_id) {
         log::warn!("tasks: cannot update a meeting's tasks.json: {}", e.code);
     }
@@ -649,10 +663,26 @@ fn try_write_tasks_json(r: &Repository, workspace_id: &str, meeting_id: &str) ->
         return Ok(());
     };
     let names = people_names(&dir);
-    // The active provider's tasks only: a copy to a provider is not a second task.
-    let mut tasks: Vec<Record> = active(r, workspace_id)?
+    // Every provider's tasks of the meeting (switching never makes an action item vanish from
+    // the file other tools read), one per key: a copy is not a second item, and the active
+    // provider's record stands for it.
+    let provider = active_provider(&r.settings()?).to_string();
+    let mut all: Vec<Record> = r
+        .local_records(workspace_id, KIND)?
         .into_iter()
         .filter(|t| t.data["meetingId"] == meeting_id)
+        .collect();
+    all.sort_by(|a, b| {
+        let active = |t: &Record| provider_of(&t.data) != provider;
+        active(a).cmp(&active(b)).then_with(|| by_order(a, b))
+    });
+    let mut seen = std::collections::HashSet::new();
+    let mut tasks: Vec<Record> = all
+        .into_iter()
+        .filter(|t| match t.data["key"].as_str() {
+            Some(key) => seen.insert(key.to_string()),
+            None => true,
+        })
         .collect();
     tasks.sort_by(by_order);
     let list: Vec<Value> = tasks
@@ -808,9 +838,10 @@ pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
     ))
 }
 
-/// Step 5's only way to make a task (design §3): idempotent by `key`. A task of `workspace` with
-/// that key, or a live ledger entry for it with the active provider, makes nothing and answers
-/// `(id, false)`; otherwise `body` is saved as a new task with that key, `(id, true)`.
+/// Step 5's only way to make a task (design §3): idempotent by `key`. A task with that key, or a
+/// ledger entry for it with the active provider that is `created`, `done` or `removed`, makes
+/// nothing and answers `(id, false)`; otherwise `body` is saved as a new task of `workspace` with
+/// that key, `(id, true)`.
 #[cfg_attr(not(test), allow(dead_code))] // step 5's automations call it
 pub(crate) fn create_by_key(
     core: &Core,
@@ -823,8 +854,9 @@ pub(crate) fn create_by_key(
     }
     let _folders = core.meeting_lock();
     let mut r = core.repo()?;
+    // Any workspace: a key is one task.
     if let Some(t) = r
-        .local_records(workspace, KIND)?
+        .records_of_kind(KIND)?
         .into_iter()
         .find(|t| t.data["key"] == key)
     {
@@ -832,15 +864,20 @@ pub(crate) fn create_by_key(
     }
     let provider = active_provider(&r.settings()?).to_string();
     if provider != "local" {
+        // Made before, done or deleted in the provider: a rerun makes nothing again (design
+        // §3). Only a withdrawn key (the column's Undo) may be made again.
         let ledger = keys::ledger_get(&r, &provider, key)?;
-        let live = ledger
+        let known = ledger
             .as_ref()
-            .filter(|l| matches!(l["state"].as_str(), Some("created" | "done")))
-            .and_then(|l| l["remoteId"].as_str());
-        if let Some(rid) = live {
-            // The pull's record for it (`<plugin>-<remote id>`), made there or still to come.
+            .filter(|l| matches!(l["state"].as_str(), Some("created" | "done" | "removed")));
+        if let Some(l) = known {
+            // The id the provider's task has (or had) in Connect, `<plugin>-<remote id>`; the
+            // key itself when no remote id was ever learned.
             let plugin = provider.strip_prefix("plugin:").unwrap_or(&provider);
-            return Ok((format!("{plugin}-{rid}"), false));
+            let id = l["remoteId"]
+                .as_str()
+                .map_or_else(|| key.to_string(), |rid| format!("{plugin}-{rid}"));
+            return Ok((id, false));
         }
     }
     let mut data = body.clone();

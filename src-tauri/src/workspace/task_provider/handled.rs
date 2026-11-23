@@ -235,6 +235,10 @@ mod tests {
             T0 + 3700,
         )
         .unwrap();
+        assert!(
+            body(&core, "a")["handled"].is_null(),
+            "reopened: it doesn't look handled any more"
+        );
         assert_eq!(sweep(&core, T0 + 7200).unwrap(), 0);
         assert_eq!(history(&core, "a").len(), lines + 1);
         assert_eq!(body(&core, "a")["status"], "todo");
