@@ -2666,9 +2666,9 @@ function mailConfirm(result, m) {
 }
 
 /**
- * A sent reply: the box empties, its saved reply goes through the save queue (so no pending
- * autosave brings the text back), the carried text, Restore and the ⌘↩ arming go, and the status
- * line says where it went. The row stays where it is; no toast.
+ * A sent reply: the box empties, its saved reply and Claude's draft are deleted through the save
+ * queue (so no pending autosave, and no reload, brings the text back), the carried text, Restore
+ * and the ⌘↩ arming go, and the status line says where it went. The row stays where it is; no toast.
  */
 async function afterSent(m) {
   const key = draftKeyOf(m);
@@ -2686,10 +2686,22 @@ async function afterSent(m) {
   showReplyStatus(key, { text: `Sent to ${sendTarget(snap(), m) || 'the chat'}.`, url: m.data.url });
   try {
     await queueReplySave(m, '');
+    await queueDraftDelete(key);
   } catch (err) {
     fail(err);
   }
   if (!modalOpen()) await render();
+}
+
+/** Deletes Claude's stored draft for a conversation, in turn with the reply saves (`queueReplySave`). */
+function queueDraftDelete(key) {
+  const run = replySaving.then(async () => {
+    for (const r of records(snap(), 'draft').filter(d => d.data.aiSuggested && (d.data.draftKey === key || d.id === `ai:${key}`))) {
+      await store.mutate('local_delete', { kind: 'draft', id: r.id });
+    }
+  });
+  replySaving = run.catch(() => {});
+  return run;
 }
 
 // ---------------------------------------------------------------- events

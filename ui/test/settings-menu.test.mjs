@@ -167,3 +167,9 @@ test('Allow actions says a Teams reply goes on the click', () => {
   assert.match(html, /Send Teams replies from Connect when you click Send\. They go at once\./);
   assert.doesNotMatch(html, /Every action is shown for review before anything is sent/);
 });
+
+test('General › AI reply drafts says nothing is sent without your click', () => {
+  const html = page('general');
+  assert.match(html, /Choose Claude Code or a CodeMie profile for drafts and summaries\. Nothing is sent without your click\./);
+  assert.doesNotMatch(html, /never sends without your review/);
+});

@@ -174,6 +174,14 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
   const s = snapshot;
   // Saved layouts survive page.reload(): the workspaces live in sessionStorage too.
   try { const kept = sessionStorage.getItem('e2e.workspaces'); if (kept) s.workspaces = JSON.parse(kept); } catch {}
+  // A check that reloads after a send keeps the stored drafts, as native does (read once).
+  try {
+    const drafts = sessionStorage.getItem('e2e.drafts');
+    if (drafts) {
+      sessionStorage.removeItem('e2e.drafts');
+      s.records = s.records.filter(r => r.kind !== 'draft').concat(JSON.parse(drafts));
+    }
+  } catch {}
   // Automation runs live beside the snapshot, as in native: the snapshot shows each
   // automation's latest run and its latest run on Today; `automation_runs` pages through all.
   let allRuns = s.records.filter(r => r.kind === 'automation_run');
@@ -1821,7 +1829,7 @@ for (const theme of ['dark', 'light']) {
     await page.keyboard.type('x');
     await page.keyboard.press('Backspace');
     await plan(page, { outcome: 'hold' });
-    await page.click('[data-action="ai-draft-regenerate"]');
+    await page.click('.ws-reply-hint [data-action="ai-draft-quick"]');
     await page.waitForSelector('.ws-draft-running:has-text("Drafting with")', { timeout: 4000 });
     await page.evaluate(() => window.__finishDraft({ outcome: 'ok', text: 'Sure, the notes are attached.', questions: [] }));
     await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Sure, the notes are attached.', null, { timeout: 4000 });
@@ -1831,22 +1839,58 @@ for (const theme of ['dark', 'light']) {
     await page.waitForTimeout(400);
     const armed = (await page.evaluate(() => window.__bridgeCalls)).slice(before).map(([op]) => op).filter(op => op.startsWith('action_'));
     assert(armed.length === 0, `⌘↩ sent Claude's untouched draft: ${armed}`);
-    // A click in the box arms it: ⌘↩ sends once; the send disarms it, so ⌘↩ again sends nothing.
+    // A click in the box arms it: ⌘↩ sends once.
     await page.click('#reply-body');
-    await page.keyboard.down('Meta');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Meta+Enter');
     await page.waitForSelector('.ws-reply-status:has-text("Sent to Jordan.")', { timeout: 4000 });
-    await page.keyboard.press('Enter');
-    await page.keyboard.up('Meta');
     await page.waitForTimeout(300);
     const ops = (await page.evaluate(() => window.__bridgeCalls)).slice(before).map(([op]) => op).filter(op => op.startsWith('action_'));
     assert(ops.join() === 'action_prepare,action_confirm', `⌘↩ sent ${ops}`);
     assert(await page.locator('#reply-body').inputValue() === '', 'the box keeps the sent text');
   });
 
+  await check(`${theme}: after a send ⌘↩ stays disarmed: text the app puts in the box waits for your typing`, async () => {
+    // The box was emptied by the send, with the focus still in it; Claude fills it, nobody touches it.
+    await plan(page, { outcome: 'hold' });
+    await page.click('.ws-reply-hint [data-action="ai-draft-quick"]');
+    await page.waitForSelector('.ws-draft-running:has-text("Drafting with")', { timeout: 4000 });
+    await page.evaluate(() => window.__finishDraft({ outcome: 'ok', text: 'Glad to help.', questions: [] }));
+    await page.waitForFunction(() => document.getElementById('reply-body')?.value === 'Glad to help.', null, { timeout: 4000 });
+    const actions = async () => (await page.evaluate(() => window.__bridgeCalls)).map(([op, d]) => [op, d]).filter(([op]) => op.startsWith('action_'));
+    const before = (await actions()).length;
+    await page.focus('#reply-body');
+    await page.keyboard.press('Meta+Enter');
+    await page.waitForTimeout(400);
+    assert((await actions()).length === before, `⌘↩ after a send sent the app's text: ${JSON.stringify((await actions()).slice(before))}`);
+    // Typing arms it again: ⌘↩ sends the typed text, once.
+    await page.keyboard.press('End');
+    await page.keyboard.type(' Thanks');
+    await page.keyboard.press('Meta+Enter');
+    await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op.startsWith('action_')).length >= n + 2, before, { timeout: 4000 });
+    await page.waitForTimeout(300);
+    const sent = (await actions()).slice(before);
+    assert(sent.map(([op]) => op).join() === 'action_prepare,action_confirm' && sent[0][1].body === 'Glad to help. Thanks', `typed ⌘↩ sent ${JSON.stringify(sent)}`);
+    await page.waitForFunction(() => document.getElementById('reply-body')?.value === '');
+  });
+
+  await check(`${theme}: a sent reply stays sent after a reload: the box is empty and Send waits for new text`, async () => {
+    // Native keeps the drafts on disk: the mock carries the stored ones over the reload.
+    await page.waitForTimeout(400);
+    await page.evaluate(() => sessionStorage.setItem('e2e.drafts', JSON.stringify(window.__workspace.store.get().snapshot.records.filter(r => r.kind === 'draft'))));
+    await page.reload();
+    await page.waitForSelector('.ws-inbox-row[data-id="c-reply-1"]');
+    await page.click('.ws-inbox-row[data-id="c-reply-1"]');
+    await page.waitForSelector('.ws-read[data-message-id="c-reply-1"] #reply-body');
+    await page.waitForTimeout(300);
+    const value = await page.locator('#reply-body').inputValue();
+    assert(value === '', `the sent text is back after a reload: ${JSON.stringify(value)}`);
+    assert(await page.locator('.ws-draft-provenance').count() === 0, 'the sent draft still shows Drafted with Claude');
+    assert(await page.locator('[data-action="reply-send"]').isDisabled(), 'Send is enabled on an empty box');
+  });
+
   await check(`${theme}: a draft arriving while you type asks first, in the same box; Restore survives edits`, async () => {
     await plan(page, { outcome: 'hold' });
-    await page.click('[data-action="ai-draft-regenerate"]');
+    await page.click('.ws-reply-hint [data-action="ai-draft-quick"]');
     await page.waitForSelector('.ws-draft-running:has-text("Drafting with")', { timeout: 4000 });
     // Type in the reply box while Claude writes; the box must stay the same element, focused.
     await page.fill('#reply-body', '');
