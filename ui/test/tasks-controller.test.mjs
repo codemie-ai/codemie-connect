@@ -384,7 +384,7 @@ test('By date: folds, a row unfolds alone, snooze, Sync now, Open in Todoist and
   await ctl.handle('tasks-sync', control());
   assert.deepEqual(calls.queries, [['task_sync_now', {}]]);
   await ctl.handle('task-open-remote', control({ id: 'late-1' }));
-  assert.deepEqual(calls.links, [['https://app.todoist.com/app/task/1', 'Todoist', 'todoist']]);
+  assert.deepEqual(calls.queries.at(-1), ['open_source', { kind: 'task', id: 'late-1' }]);
   // The view switch: with a provider the choice is the provider's, Local keeps its own.
   await ctl.handle('tasks-view', control({ view: 'list' }));
   assert.deepEqual([state.tasks.providerView, state.tasks.view], ['list', 'board']);
@@ -487,3 +487,96 @@ test('By date rows: a closed row has only its done box; an unfolded one at most 
   assert.match(calls.html, /<div class="ws-menu-panel">[^]*?Open in Todoist ↗/);
 });
 
+
+// ---------------------------------------------------------------- the provider everywhere (Task 9)
+
+test('delete with a provider asks first; Undo saves the body back', async () => {
+  const snap = todoist();
+  const body = { ...snap.records.find(r => r.id === 'late-1').data };
+  const { ctl, calls } = harness({ snapshot: snap, answers: { task_delete: data => ({ deleted: true, id: data.id, body }) } });
+  await ctl.handle('task-delete', control({ id: 'late-1' }));
+  assert.equal(calls.mutate.length, 0, 'nothing deleted before the confirm');
+  const modal = calls.modals.at(-1);
+  assert.match(modal.body, /Delete “late-1” in Todoist too\? Undo makes it again as a new task\./);
+  assert.equal(modal.variant, 'danger');
+  await modal.onSubmit(new Map());
+  assert.deepEqual(calls.mutate[0], ['task_delete', { id: 'late-1' }]);
+  const toast = calls.toasts.at(-1);
+  assert.equal(toast.message, 'Deleted “late-1”');
+  await toast.action.run();
+  assert.deepEqual(calls.mutate[1], ['task_save', { ...body, id: 'late-1' }]);
+  // Local deletes at once, as before.
+  const local = harness();
+  await local.ctl.handle('task-delete', control({ id: 'task-room' }));
+  assert.equal(local.calls.modals.length, 0);
+  assert.deepEqual(local.calls.mutate[0], ['task_delete', { id: 'task-room' }]);
+});
+
+/** The page heading's text, tags dropped. */
+const headingOf = html => html.match(/<header class="ws-page-heading ws-tasks-heading">[^]*?<\/header>/)[0];
+const textOf = html => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+test('the Tasks header: the provider status line, ⋯ › Sync now and Settings › Tasks, the meeting chip, a description for the view', async () => {
+  const snap = todoist();
+  snap.taskProvider = { ...STATES.ready, lastSync: Math.floor(NOW / 1000) - 300 };
+  snap.records.push({ id: 'mtg-1', kind: 'meeting', data: { title: 'Philips sync', start: '2026-11-17T10:00:00Z' } });
+  snap.records.find(r => r.id === 'late-1').data.meetingId = 'mtg-1';
+  const { ctl, state, calls } = harness({ snapshot: snap });
+  await ctl.handle('tasks-older', control());
+  let head = headingOf(calls.html);
+  assert.match(head, /<p class="ws-tasks-line" role="status">Todoist · synced 5 min ago<\/p>/);
+  assert.doesNotMatch(textOf(head), /Drag cards/, 'By date has no cards to drag');
+  assert.match(head, /data-menu="tasks-more"[^]*?data-action="tasks-sync"[^>]*>[^]*?Sync now[^]*?data-action="settings-tab" data-tab="meetings-tasks"[^]*?Settings › Tasks/);
+  assert.doesNotMatch(head, /ws-tasks-chip/, 'no chip without a meeting filter');
+  // "1 in Todoist ›" from the meeting: the chip, and By date shows that meeting's tasks only.
+  state.tasks.filters.meeting = 'mtg-1';
+  await ctl.handle('tasks-older', control());
+  head = headingOf(calls.html);
+  assert.match(head, /<button type="button" class="ws-tasks-chip" data-action="tasks-meeting-clear" aria-label="Show the tasks of every meeting">From Philips sync ✕<\/button>/);
+  assert.ok(calls.html.includes('data-task="late-1"') && !calls.html.includes('data-task="late-2"'), 'only the meeting’s tasks');
+  await ctl.handle('tasks-meeting-clear', control());
+  assert.equal(state.tasks.filters.meeting, '');
+  assert.ok(calls.html.includes('data-task="late-2"'));
+  await ctl.handle('tasks-sync', control());
+  assert.deepEqual(calls.queries.at(-1), ['task_sync_now', {}]);
+  // Local: "Connect · on this Mac", no ⋯, the Board's own description.
+  const local = harness();
+  await local.ctl.handle('tasks-older', control());
+  head = headingOf(local.calls.html);
+  assert.match(head, /<p class="ws-tasks-line" role="status">Connect · on this Mac<\/p>/);
+  assert.match(textOf(head), /Drag cards between columns/);
+  assert.doesNotMatch(head, /tasks-more/);
+});
+
+test('Open in Todoist ↗ opens the task’s own link from Connect, only for a Todoist address', async () => {
+  const snap = todoist();
+  snap.records.find(r => r.id === 'late-1').data.remote = { url: 'https://app.todoist.com/app/task/1' };
+  snap.records.find(r => r.id === 'late-2').data.remote = { url: 'https://evil.example/app/task/2' };
+  const { ctl, state, calls } = harness({ snapshot: snap });
+  await ctl.handle('task-open-remote', control({ id: 'late-1' }));
+  assert.deepEqual(calls.queries, [['open_source', { kind: 'task', id: 'late-1' }]]);
+  assert.deepEqual(calls.links, [], 'not through the plugin link confirmation');
+  state.tasks.rowOpen = 'late-2';
+  await ctl.handle('tasks-older', control());
+  const row = calls.html.match(/data-task="late-2">[^]*?(?=<div class="ws-tdate-row|$)/)[0];
+  assert.doesNotMatch(row, /Open in Todoist/, 'another host is not offered');
+  await ctl.handle('task-open-remote', control({ id: 'late-2' }));
+  assert.equal(calls.queries.length, 1, 'nor opened');
+});
+
+test('a parked change whose sentence was withheld reads "<Provider> refused this change." with Try again and Discard change', async () => {
+  const snap = todoist();
+  snap.records.find(r => r.id === 'parked').data.syncError = '';
+  const { ctl, state, calls } = harness({ snapshot: snap });
+  state.tasks.folds = { next7: true };
+  state.tasks.rowOpen = 'parked';
+  await ctl.handle('tasks-older', control());
+  const row = calls.html.match(/data-task="parked">[^]*?(?=<div class="ws-tdate-row|$)/)[0];
+  assert.match(row, /<p class="ws-tdate-error" id="tdate-err-parked">Todoist refused this change\.<\/p>/);
+  assert.match(row, /aria-describedby="tdate-err-parked"/);
+  assert.match(row, /Try again[^]*Discard change/);
+  // No sync error at all: an ordinary row.
+  snap.records.find(r => r.id === 'parked').data.syncError = null;
+  await ctl.handle('tasks-older', control());
+  assert.doesNotMatch(calls.html, /ws-tdate-error/);
+});

@@ -251,7 +251,8 @@ pub(crate) fn enqueue(
 
 /// Parks entry `eid` with the provider's sentence (none when it was dropped for carrying a
 /// secret): it waits for "Try again" or "Discard change" and blocks nothing else. Its task shows
-/// the sentence as `syncError`.
+/// the sentence as `syncError`, or `""` without one (still parked: the window writes its own
+/// "<Provider> refused this change.").
 pub(crate) fn park(
     r: &mut Repository,
     entry: &Value,
@@ -269,7 +270,7 @@ pub(crate) fn park(
     let wid = e.workspace_id.clone().unwrap_or_default();
     if let Some(task_id) = e.data["taskId"].as_str() {
         if let Ok(mut task) = r.record(crate::workspace::tasks::KIND, task_id, None, Some(&wid)) {
-            task.data["syncError"] = message.map_or(Value::Null, Value::from);
+            task.data["syncError"] = message.unwrap_or("").into();
             task.revision = id();
             puts.push(task);
         }

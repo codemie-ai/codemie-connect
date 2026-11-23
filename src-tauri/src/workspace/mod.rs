@@ -823,6 +823,16 @@ impl Core {
             return Ok(json!({"cancelled":true}));
         }
         if req.op == Operation::OpenSource {
+            // A task's "Open in Todoist ↗": the address comes from the stored task.
+            if req.data["kind"] == "task" {
+                let wid = req
+                    .workspace_id
+                    .as_deref()
+                    .ok_or_else(|| WorkspaceError::new("validation", "Choose a workspace."))?;
+                let link = self.task_remote_link(wid, required(&req.data, "id", 200)?)?;
+                graph::open_url(&link)?;
+                return Ok(json!({"opened":true}));
+            }
             // A link in an automation's result: the address comes from the stored run.
             if req.data["kind"] == "automation_run" {
                 let run = required(&req.data, "id", 200)?;

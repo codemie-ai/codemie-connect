@@ -35,10 +35,10 @@ import { createAnalyticsController, attachAnalyticsTips } from './analytics-cont
 import { SESSIONS_PAGE } from './analytics-model.js';
 import { tasksPage } from './view-tasks.js';
 import { createTasksController, attachBoardDrag } from './tasks-controller.js';
-import { newTasksView } from './tasks-model.js';
+import { activeProvider, newTasksView } from './tasks-model.js';
 import { legacyMeetingsLayout, meetings, shownCall, MEETINGS_DOCK } from './view-meetings.js';
 import { createMeetingsController } from './meetings-controller.js';
-import { localTaskTarget } from './task-target.js';
+import { activeTaskTarget, addedLine } from './task-target.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
 import { renderShell, terminalButton, groupFolded, NAV_GROUPS, firstVisiblePage, toggleHiddenPage } from './shell.js';
@@ -766,6 +766,14 @@ async function route(name, tab, pluginPath = null) {
   if (runLogOpen()) automationsUi.loadRuns().catch(fail);
   if (onPluginsTab) pluginsUi.load().catch(fail);
   if (state.route === 'analytics') analyticsUi.open().catch(fail);
+  if (state.route === 'tasks') syncTasks();
+}
+
+/** Asks the active task provider for a pull (Tasks open, the window back in front); native
+ *  runs it at most once in 30 s. Local has nothing to pull. */
+function syncTasks() {
+  const s = store?.get().snapshot;
+  if (s && activeProvider(s) !== 'local') store.query('task_sync_now', {}).catch(() => {});
 }
 
 /** The hash of the page open now: `#/route/tab`, `#/meetings/<id>/<pane>` for a meeting. */
@@ -1569,8 +1577,8 @@ const tasksUi = store && createTasksController({
     await handle('open-message', { dataset: { id } });
     document.getElementById('reply-body')?.focus({ preventScroll: true });
   },
-  // A provider's link (Open in Todoist ↗, Get your token in Todoist ↗) opens through Connect's
-  // own link confirmation.
+  // Settings › Tasks's "Get your token in Todoist ↗" opens through Connect's own link
+  // confirmation (Open in Todoist ↗ is the task's own link: `open_source`).
   openLink: (url, name, id) => confirmPluginLink(url, name, id),
   query: (op, data) => store.query(op, data),
   // Settings › Tasks: the token and the project/label settings are a plugin's own (`set_setting`,
@@ -1918,7 +1926,8 @@ const meetingsUi = store && createMeetingsController({
   syncHash: () => { if (state.route === 'meetings') history.replaceState(null, '', routeHash()); },
   ensureClaudeChoice,
   moveTask: (id, status, options) => tasksUi.move(id, status, options),
-  taskTarget: localTaskTarget({ moveTask: (id, status, o) => tasksUi.move(id, status, o) }),
+  // "Add N to …" goes to the active provider; Undo is one `task_withdraw` (design §10).
+  taskTarget: activeTaskTarget({ snap, moveTask: (id, status, o) => tasksUi.move(id, status, o), withdraw: ids => mutate('task_withdraw', { ids }) }),
   connect: capabilities => connectMicrosoft(capabilities),
   showEvent: async id => {
     const ev = getRecord('event', id);
@@ -1991,7 +2000,7 @@ function commitmentDialog(source) {
     submit: 'Add task',
     onSubmit: async f => {
       await mutate('task_save', { text: f.get('text'), owner: f.get('owner'), due: f.get('due') || null, status: 'todo', sourceId: source?.id || null, sourceRevision: source?.revision || null, quote: source?.data.text ? String(source.data.text).slice(0, 2000) : null });
-      toast('Task added to To do.', 'success', { label: 'Open', run: () => route('tasks') });
+      toast(addedLine(snap(), 'Task added to To do.'), 'success', { label: 'Open', run: () => route('tasks') });
     },
   });
 }
@@ -2530,7 +2539,7 @@ async function handle(action, el, ev) {
       } finally {
         asksSaving.delete(id);
       }
-      toast('Added to your tasks, in To do.', 'success');
+      toast(addedLine(snap(), 'Added to your tasks, in To do.'), 'success');
       return;
     }
     case 'ai-draft-keep': case 'ai-draft-replace': case 'ai-draft-restore': case 'ai-draft-forget': {
@@ -3595,6 +3604,7 @@ async function boot() {
       return;
     }
     store.refresh().catch(() => {});
+    syncTasks();
     // Back from Terminal or another app: an agent or app may have changed.
     if (!marketSmoke) codemie.onFocus();
     // Back from Terminal or Settings: Claude may be signed in or set up now.

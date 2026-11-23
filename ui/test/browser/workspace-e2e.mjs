@@ -1061,6 +1061,8 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       if (!stored) {
         const orders = s.records.filter(r => r.kind === 'commitment').map(r => r.data.order ?? r.updatedAt);
         const status = fields.status || (fields.done ? 'done' : 'todo');
+        // As native (tasks.rs): a new task is the active provider's unless it names one.
+        if (!fields.provider && s.taskProvider && s.taskProvider.active !== 'local') fields.provider = s.taskProvider.active;
         s.records.push({ id, kind: 'commitment', source: 'local', connectionId: null, workspaceId: wid || 'personal', revision: crypto.randomUUID(), updatedAt: at,
           data: { ...fields, status, done: status === 'done', doneAt: status === 'done' ? fields.doneAt || at : null, createdAt: fields.createdAt || at, order: fields.order ?? Math.max(at, ...orders) + 1, history: history?.length ? history : [{ at, text: log || 'Added by you' }] } });
         return { id };

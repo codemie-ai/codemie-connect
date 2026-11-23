@@ -9,6 +9,7 @@ import { legacyMeetingsLayout, meetings, MEETINGS_DOCK } from '../workspace/view
 import { loadDock, moveTab, normalizeDock, paneOf, saveDock, setCollapsed } from '../workspace/dock-model.js';
 import { WIDGETS } from '../workspace/view-today.js';
 import { newTasksView } from '../workspace/tasks-model.js';
+import { providerTaskTarget } from '../workspace/task-target.js';
 import { buildSnapshot, withMeetings, meetingContract, meetingFolders } from './fixtures/workspace-fixture.mjs';
 
 const NOW = Date.UTC(2026, 10, 18, 15, 20);
@@ -948,6 +949,32 @@ test('the task target’s label is the one the page draws', () => {
   const { ctl } = harness({ taskTarget: { label: 'Todoist', add: async () => ({ done: [], failed: [] }), undo: async () => ({ done: [], failed: [] }) } });
   assert.equal(ctl.taskLabel(), 'Todoist');
   assert.equal(harness().ctl.taskLabel(), 'Tasks');
+});
+
+test('a double click on "Add 2 to Todoist" saves each task once; Undo is one task_withdraw', async () => {
+  const saves = [];
+  const withdrawn = [];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const taskTarget = providerTaskTarget({
+    label: 'Todoist',
+    moveTask: async (id, status, opts) => { await gate; saves.push([id, status, opts]); },
+    withdraw: async ids => { withdrawn.push(ids); return { done: ids.length, failed: 0 }; },
+  });
+  const { ctl, state, s } = harness({ taskTarget });
+  await ctl.handle('meeting-item-tick', control({ id: 'mtg-philips', task: 'task-pilot-list' }, { checked: true }));
+  assert.equal(ctl.taskLabel(), 'Todoist');
+  const first = ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  const second = ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(saves.map(([id]) => id).sort(), ['task-endpoint', 'task-pilot-list'], 'each saved once');
+  assert.ok(saves.every(([, status, opts]) => status === 'todo' && opts.log === 'Accepted from review'));
+  for (const id of ['task-endpoint', 'task-pilot-list']) taskRecord(s, id).data.status = 'todo';
+  await ctl.handle('meeting-items-undo', control({ id: 'mtg-philips' }));
+  assert.equal(withdrawn.length, 1, 'one task_withdraw');
+  assert.deepEqual(withdrawn[0].sort(), ['task-endpoint', 'task-pilot-list']);
+  assert.equal(state.meetings.added, null);
 });
 
 /** mtg-philips with three more documents: five tabs, the fifth (doc:extra-3) under More ▾. */

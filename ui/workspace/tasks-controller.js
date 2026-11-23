@@ -9,7 +9,8 @@ import {
 } from './tasks-model.js';
 import { button, field, select, textArea, textInput } from './ui.js';
 import { dateFromKey, formatDate } from './format.js';
-import { dateGroups, dayFor, rowOf, shownView } from './tasks-dates-model.js';
+import { dateGroups, datesTasks, dayFor, rowOf, shownView } from './tasks-dates-model.js';
+import { escapeHtml } from './store.js';
 import { copyDialog } from './settings-tasks.js';
 
 const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
@@ -30,7 +31,8 @@ const BULK_MAX = 200;
  * selectors (a string or a list) that finds a control; `setPref` remembers Local's view choice.
  * By date: `openReply(messageId, text)` opens a conversation in Inbox with its reply box filled
  * (nothing is sent), `openLink(url, providerName, pluginId)` opens a provider's link through
- * Connect's link confirmation, `query(op, data)` a read-only native request (Sync now).
+ * Connect's link confirmation (Settings › Tasks's token link), `query(op, data)` a read-only
+ * native request (Sync now, and `open_source` for Open in Todoist ↗).
  * Settings › Tasks: `pluginRequest(op, data)` is `plugins_request` (`set_setting`, `set_enabled`);
  * `refreshInstalled()` re-reads the installed list after one, so the token's "set" state and the
  * string settings' values follow; `installed()` is that list (Task 2's `installed[].settings`).
@@ -187,7 +189,22 @@ export function createTasksController({
     return undefined;
   }
 
-  async function remove(id) {
+  /** Delete, with Undo saving the body back. With a provider it asks first (ruling 17): the
+   *  delete reaches the provider, and Undo makes the task there again as a new one. */
+  function remove(id) {
+    const t = find(id);
+    if (!t) throw missing();
+    const s = snap();
+    if (activeProvider(s) === 'local') return removeNow(id);
+    const name = s.taskProvider?.name || 'your task app';
+    return openModal({
+      title: 'Delete this task?', size: 'sm', submit: 'Delete', variant: 'danger', initialFocus: 'cancel',
+      body: `<p class="ws-modal-text">Delete “${escapeHtml(t.data.text)}” in ${escapeHtml(name)} too? Undo makes it again as a new task.</p>`,
+      onSubmit: () => removeNow(id),
+    });
+  }
+
+  async function removeNow(id) {
     const t = find(id);
     if (!t) throw missing();
     const landing = landingAfter(id);
@@ -257,7 +274,8 @@ export function createTasksController({
 
   // ---------------------------------------------------------------- By date (design §9)
 
-  const groups = () => dateGroups(tasksOf(snap()), { now: now(), zone: zone(), me: me() });
+  /** By date's groups over the tasks it shows: one meeting's while its chip is on. */
+  const groups = () => dateGroups(datesTasks(tasksOf(snap()), ui().filters), { now: now(), zone: zone(), me: me() });
   const dayLabel = key => formatDate(dateFromKey(key), undefined, { month: 'short', day: 'numeric' });
 
   /** Asks for a day (Pick date…), then runs `save(day)`. */
@@ -349,14 +367,14 @@ export function createTasksController({
     return openReply(row.source.id, `Hi ${row.checkWith.first}, any news on ${what}?`);
   }
 
+  /** Open in Todoist ↗: the task's own link, opened by Connect (`open_source`, which reads it
+   *  from the stored task and checks its host again), not a plugin's link confirmation. */
   function openRemote(id) {
     const t = find(id);
     if (!t) throw missing();
     const row = rowOf(t, { me: me(), s: snap(), now: now(), zone: zone() });
-    const tp = snap().taskProvider;
-    const plugin = String(tp?.active || '').replace(/^plugin:/, '');
-    if (!row.url || !plugin || plugin === 'local') return null;
-    return openLink(row.url, tp.name || plugin, plugin);
+    if (!row.url) return null;
+    return query('open_source', { kind: 'task', id });
   }
 
   // ---------------------------------------------------------------- Settings › Tasks (design §11)
@@ -521,6 +539,7 @@ export function createTasksController({
       case 'task-nudge': return nudge(id);
       case 'task-open-remote': return openRemote(id);
       case 'tasks-sync': return query('task_sync_now', {});
+      case 'tasks-meeting-clear': v.filters = { ...v.filters, meeting: '' }; return render();
       // Settings › Tasks (design §11).
       case 'tasks-provider-choose': return chooseProvider(el.dataset.provider);
       case 'tasks-provider-turn-on': return turnOnProvider(el.dataset.provider);

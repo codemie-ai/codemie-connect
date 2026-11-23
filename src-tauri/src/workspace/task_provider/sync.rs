@@ -1481,6 +1481,10 @@ mod tests {
         let parked = r.records_of_kind(outbox::KIND).unwrap();
         assert_eq!(parked[0].data["lastError"], "refused", "the code is kept");
         assert_eq!(parked[0].data["message"], Value::Null);
+        // The task still reads as parked, with no sentence: the window says "Todoist refused
+        // this change." instead.
+        let task = r.record(tasks::KIND, "t1", None, Some("personal")).unwrap();
+        assert_eq!(task.data["syncError"], "");
         // Nowhere in the store: tasks, outbox, state, ledger, jobs.
         for kind in [
             tasks::KIND,

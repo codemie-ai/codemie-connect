@@ -58,7 +58,7 @@ export function createMeetingsController({
   summaryInputs = () => ({ slots: [], plugins: [] }), timer = (fn, ms) => setTimeout(fn, ms),
   dock = { layout: () => null, collapse: async () => false },
   // The action items column's "Add N to Tasks" and Undo (spec "The task target"): Connect's own
-  // board by default (app.js's `localTaskTarget`); step 4 swaps in the provider's.
+  // board by default; app.js passes `activeTaskTarget`, the active provider's.
   taskTarget = { label: 'Tasks', add: async () => ({ done: [], failed: [] }), undo: async () => ({ done: [], failed: [] }) },
 }) {
   const v = () => state.meetings;

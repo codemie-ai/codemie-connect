@@ -8,7 +8,7 @@ import { escapeHtml as e } from './store.js';
 import { icon } from './icons.js';
 import { button } from './ui.js';
 import { activeProvider } from './tasks-model.js';
-import { chipsFor, dateGroups, rowOf } from './tasks-dates-model.js';
+import { chipsFor, dateGroups, datesTasks, rowOf } from './tasks-dates-model.js';
 
 const FOLDS = [['next7', 'Next 7 days'], ['noDate', 'No date'], ['later', 'Later than that']];
 /** A DOM id from a task id (ids are attribute-escaped where they are used). */
@@ -64,7 +64,7 @@ function moreMenu(x, group, p, { dates }) {
 function controls(x, group, p) {
   const sm = (label, action, attrs, primary = false) => button(label, { action, size: 'sm', variant: primary ? 'primary' : 'ghost', attrs: { 'data-id': x.id, ...attrs } });
   if (group === 'review') return [button('Accept', { action: 'task-accept', size: 'sm', attrs: { 'data-id': x.id, 'aria-label': `Accept: ${x.text}` } }), sm('Not a task', 'task-dismiss', { 'aria-label': `Not a task: ${x.text}` }), moreMenu(x, group, p, { dates: false })];
-  if (x.syncError) return [sm('Try again', 'task-parked', { 'data-act': 'retry' }, true), sm('Discard change', 'task-parked', { 'data-act': 'discard' }), moreMenu(x, group, p, { dates: true })];
+  if (x.parked) return [sm('Try again', 'task-parked', { 'data-act': 'retry' }, true), sm('Discard change', 'task-parked', { 'data-act': 'discard' }), moreMenu(x, group, p, { dates: true })];
   if (x.handled) return [sm('Done', 'task-handled', { 'data-act': 'done', 'aria-label': `Done: ${x.text}` }, true), sm('Keep open', 'task-handled', { 'data-act': 'keep', 'aria-label': `Keep open: ${x.text}` }), moreMenu(x, group, p, { dates: true })];
   const nudge = x.checkWith && x.nudge ? [sm(`Nudge ${x.checkWith.first}`, 'task-nudge', {}, true)] : [];
   return [...nudge, snoozeMenu(x, group, p, !nudge.length), moreMenu(x, group, p, { dates: false })];
@@ -75,7 +75,9 @@ function row(p, r, group) {
   const id = e(x.id);
   const review = group === 'review';
   const open = p.v.rowOpen === x.id;
-  const errId = x.syncError ? domId('tdate-err', x.id) : '';
+  const errId = x.parked ? domId('tdate-err', x.id) : '';
+  // A sentence native withheld (it held a secret) reads as a plain refusal.
+  const refusal = x.syncError || `${p.providerName} refused this change.`;
   const due = x.due && group !== 'today' ? `<span class="ws-tdate-due ws-tdate-due-${x.due.tone}">${e(x.due.text)}</span>` : '';
   const src = x.source ? `<span class="ws-tdate-src">· ${e(x.source.title)}</span>` : '';
   const pending = x.pending ? `<span class="ws-tdate-pending" title="Not in ${e(p.providerName)} yet"><span class="ws-sr">Not in ${e(p.providerName)} yet</span></span>` : '';
@@ -84,12 +86,12 @@ function row(p, r, group) {
   // What the row says about itself shows folded too; its controls only unfolded.
   const notes = [
     x.handled && !review ? `<p class="ws-tdate-handled">${icon('check-circle')}<span>Looks handled · ${e(x.handled.evidence)}</span></p>` : '',
-    x.syncError ? `<p class="ws-tdate-error" id="${errId}">${e(x.syncError)}</p>` : '',
+    x.parked ? `<p class="ws-tdate-error" id="${errId}">${e(refusal)}</p>` : '',
   ].join('');
   // Folded, a row to review keeps its one control, Accept (its done box, as it were).
   const shown = open ? controls(x, group, p) : review ? controls(x, group, p).slice(0, 1) : [];
   const acts = shown.length ? `<div class="ws-tdate-acts">${shown.join('')}</div>` : '';
-  const classes = ['ws-tdate-row', open && 'ws-tdate-open', x.due?.tone === 'late' && 'ws-tdate-late', x.syncError && 'ws-tdate-row-parked'].filter(Boolean).join(' ');
+  const classes = ['ws-tdate-row', open && 'ws-tdate-open', x.due?.tone === 'late' && 'ws-tdate-late', x.parked && 'ws-tdate-row-parked'].filter(Boolean).join(' ');
   return `<div class="${classes}" data-task="${id}"><div class="ws-tdate-line">${box}${main}</div>${notes}${acts}</div>`;
 }
 
@@ -126,7 +128,7 @@ function footer(p, doneToday) {
 
 /** By date for the page state `p` (`pageOf` in view-tasks.js): the active provider's tasks. */
 export function datesView(p) {
-  const g = dateGroups(p.all, { now: p.now, zone: p.zone, me: p.me });
+  const g = dateGroups(datesTasks(p.all, p.v.filters), { now: p.now, zone: p.zone, me: p.me });
   p = { ...p, providerName: p.s.taskProvider?.name || 'Connect' };
   const rows = (list, group) => `<div class="ws-tdate-rows">${list.map(r => row(p, r, group)).join('')}</div>`;
   const review = g.review.length

@@ -78,6 +78,89 @@ export async function tasksDatesChecks({ open, check, assert, shot, settled, cal
     await context.close().catch(() => {});
   }
 
+  {
+    // Task 9: the header, Open in Todoist ↗, a withheld refusal, delete with a confirm, Today and
+    // the Inbox add with the provider.
+    const patch = snapshot => {
+      todoist(snapshot);
+      const task = id => snapshot.records.find(r => r.id === id).data;
+      task('task-legal').remote = { id: '1', url: 'https://app.todoist.com/app/task/1' };
+      Object.assign(task('task-tenant'), { pending: true, syncError: '' });
+    };
+    const { page, context, errors } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, tasks: true, hash: '#/tasks', patch });
+    await check('tasks-dates provider: header line, ⋯ › Sync now, Open in Todoist ↗ from Connect, a withheld refusal, delete asks first, Today and Inbox', async () => {
+      await page.waitForSelector('.ws-tdate[data-provider]');
+      await settled(page);
+      const line = await page.locator('.ws-tasks-line').innerText();
+      assert(/^Todoist · synced /.test(line), `status line: ${line}`);
+      assert(await page.locator('.ws-tasks-line[role="status"]').count() === 1, 'the line is a status');
+      const description = await page.locator('.ws-tasks-heading .ws-description').innerText();
+      assert(!/Drag cards/.test(description), description);
+      assert(await page.locator('.ws-tasks-chip').count() === 0, 'no chip without a meeting');
+      // ⋯ › Sync now.
+      const syncs = (await calls(page, 'task_sync_now')).length;
+      await page.click('[data-menu="tasks-more"] > summary');
+      assert(await page.locator('[data-menu="tasks-more"] [data-action="settings-tab"][data-tab="meetings-tasks"]:has-text("Settings › Tasks")').isVisible(), 'Settings › Tasks');
+      await shot(page, 'tasks-dates-header-menu');
+      await page.click('[data-menu="tasks-more"] [data-action="tasks-sync"]');
+      await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op === 'task_sync_now').length > n, syncs);
+      // The window back in front asks for a sync too.
+      const focused = (await calls(page, 'task_sync_now')).length;
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await page.waitForFunction(n => window.__bridgeCalls.filter(([op]) => op === 'task_sync_now').length > n, focused);
+      // Open in Todoist ↗: the task's own link, straight from Connect (no plugin confirmation).
+      await page.click('.ws-tdate-row[data-task="task-legal"] .ws-tdate-main');
+      await page.click('.ws-tdate-row[data-task="task-legal"] .ws-tdate-more > summary');
+      await page.click('.ws-tdate-row[data-task="task-legal"] [data-action="task-open-remote"]');
+      await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'open_source' && d.kind === 'task' && d.id === 'task-legal'));
+      assert(await page.locator('.ws-modal[open]').count() === 0, 'no link confirmation');
+      // Delete asks first; Cancel deletes nothing.
+      await page.click('.ws-tdate-row[data-task="task-legal"] .ws-tdate-more > summary');
+      await page.click('.ws-tdate-row[data-task="task-legal"] [data-action="task-delete"]');
+      await page.waitForSelector('.ws-modal[open]');
+      const ask = (await page.locator('.ws-modal[open] .ws-modal-text').innerText()).trim();
+      assert(ask === 'Delete “Send Legal the written legal-hold requirement” in Todoist too? Undo makes it again as a new task.', ask);
+      await settled(page);
+      await shot(page, 'tasks-dates-delete-confirm');
+      await page.click('.ws-modal[open] [data-modal-close]');
+      await page.waitForSelector('.ws-modal[open]', { state: 'detached' });
+      assert((await calls(page, 'task_delete')).length === 0, 'deleted without a yes');
+      // A refusal whose sentence was withheld: a plain line, Try again and Discard change.
+      await page.click('[data-action="tasks-fold"][data-fold="noDate"]');
+      await page.waitForSelector('.ws-tdate-row[data-task="task-tenant"] .ws-tdate-error');
+      const refusal = await page.locator('.ws-tdate-row[data-task="task-tenant"] .ws-tdate-error').innerText();
+      assert(refusal === 'Todoist refused this change.', refusal);
+      await page.click('.ws-tdate-row[data-task="task-tenant"] .ws-tdate-main');
+      const parked = await controls(page, 'task-tenant');
+      assert(parked.join() === 'Try again,Discard change,icon', `parked controls: ${parked}`);
+      await settled(page);
+      await shot(page, 'tasks-dates-parked-withheld');
+      // Today's Tasks widget: Todoist's tasks, a done box, no trash, "Tasks"; the quick add is Todoist's.
+      await page.click('.ws-nav [data-action="route"][data-route="today"]');
+      await page.waitForSelector('.ws-commitments');
+      const tile = page.locator('.ws-commitments');
+      assert(await tile.locator('[data-action="task-delete"]').count() === 0, 'no trash with a provider');
+      assert(await tile.locator('[data-action="commitment-toggle"]').count() > 0, 'done boxes');
+      assert((await tile.locator('.ws-card-actions [data-action="route"][data-route="tasks"]').innerText()).trim() === 'Tasks', 'the Tasks button');
+      await tile.locator('[data-form="commitment-add"] [name="text"]').fill('Send the Todoist summary');
+      await tile.locator('[data-form="commitment-add"] button[type="submit"]').click();
+      await page.waitForSelector('.ws-commitments .ws-todo:has-text("Send the Todoist summary")');
+      await tile.scrollIntoViewIfNeeded();
+      await settled(page);
+      await shot(page, 'tasks-dates-today-widget');
+      // Inbox "Add a task": the toast names Todoist.
+      await page.click('.ws-nav [data-action="route"][data-route="inbox"]');
+      await page.waitForSelector('[data-menu="reply-more"]');
+      await page.click('[data-menu="reply-more"] > summary');
+      await page.click('[data-menu="reply-more"] [data-action="commitment"]');
+      await page.waitForSelector('.ws-modal[open] button[type="submit"]');
+      await page.click('.ws-modal[open] button[type="submit"]');
+      await page.waitForSelector('.ws-toast:has-text("Added to Todoist")');
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
   const { page, context, errors } = await open({ theme: 'dark', width: 1000, height: 900, now: FIXED_NOW, tasks: true, hash: '#/tasks', patch: todoist });
   await check('tasks-dates: Late ⋯ moves the rows shown; at midnight the page is drawn again; the footer ends the page below 1100 px', async () => {
     await page.waitForSelector('.ws-tdate[data-provider]');

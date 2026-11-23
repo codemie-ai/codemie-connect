@@ -52,6 +52,32 @@ fn counted(e: WorkspaceError) -> Result<()> {
     }
 }
 
+/// The hosts "Open in Todoist ↗" opens (design §9): the task's own link, opened by Connect
+/// itself rather than through a plugin's link confirmation.
+const REMOTE_HOSTS: [&str; 2] = ["todoist.com", "app.todoist.com"];
+
+/// A task's `remote.url` when it is a plain https link to one of `REMOTE_HOSTS` (no other port,
+/// no user name); a refusal otherwise.
+fn remote_link(task: &Value) -> Result<&str> {
+    let link = task["remote"]["url"]
+        .as_str()
+        .ok_or_else(|| WorkspaceError::new("not_found", "This task has no link to open."))?;
+    let secure = url::Url::parse(link).is_ok_and(|u| {
+        u.scheme() == "https"
+            && u.port().is_none()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.host_str().is_some_and(|h| REMOTE_HOSTS.contains(&h))
+    });
+    if !secure {
+        return Err(WorkspaceError::new(
+            "validation",
+            "Connect opens only the task’s own Todoist link.",
+        ));
+    }
+    Ok(link)
+}
+
 fn gone_of(entries: &[Record]) -> Vec<(&str, &str, &str)> {
     entries
         .iter()
@@ -66,6 +92,13 @@ fn gone_of(entries: &[Record]) -> Vec<(&str, &str, &str)> {
 }
 
 impl Core {
+    /// `open_source {kind: "task", id}`: the link "Open in Todoist ↗" opens, read from the
+    /// stored task of workspace `wid` (never an address the window sends).
+    pub(in crate::workspace) fn task_remote_link(&self, wid: &str, id: &str) -> Result<String> {
+        let task = task_of(&*self.repo()?, wid, id)?;
+        remote_link(&task.data).map(str::to_string)
+    }
+
     /// `task_provider_set`, `task_withdraw`, `task_bulk`, `task_handled` and `task_parked`.
     pub(in crate::workspace) fn task_provider_op(&self, req: &Request) -> Result<Value> {
         let (w, _) = self.active_workspace(req, false)?;
@@ -716,6 +749,36 @@ mod tests {
     use serde_json::{json, Value};
     use sha1::{Digest, Sha1};
     use std::sync::Arc;
+
+    #[test]
+    fn remote_link_opens_only_secure_todoist_addresses() {
+        let task = |url: &str| json!({"remote": {"id": "1", "url": url}});
+        for ok in [
+            "https://app.todoist.com/app/task/123",
+            "https://todoist.com/showTask?id=123",
+        ] {
+            assert_eq!(super::remote_link(&task(ok)).unwrap(), ok);
+        }
+        for bad in [
+            "http://app.todoist.com/app/task/123",
+            "https://evil.example/app/task/123",
+            "https://app.todoist.com.evil.example/x",
+            "https://user:pw@app.todoist.com/x",
+            "https://app.todoist.com:8443/x",
+            "javascript:alert(1)",
+            "not a link",
+        ] {
+            assert_eq!(
+                super::remote_link(&task(bad)).unwrap_err().code,
+                "validation",
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            super::remote_link(&json!({})).unwrap_err().code,
+            "not_found"
+        );
+    }
 
     const P: &str = "plugin:todoist";
     const SENTINEL: &str = "tk_SENTINEL_do_not_log_0123456789";

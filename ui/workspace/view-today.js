@@ -8,7 +8,7 @@ import { claudeAvailable } from './draft-state.js';
 import { dayKey, addDaysToKey, formatDate, formatTime, durationLabel, countdownLabel, greeting, firstName, zonedParts, relativeAge, hourLabel } from './format.js';
 import { automationResultsCard } from './view-automations.js';
 import { PLUGINS_CARD, parseLayoutId, pluginWidgetCard, pluginsCard, showPluginsCard } from './today-plugins.js';
-import { isMine, meOf, ownerOf, sortTasks, taskStatus } from './tasks-model.js';
+import { activeProvider, isMine, meOf, ownerOf, sortTasks, taskStatus, tasksOf } from './tasks-model.js';
 import { showMeetingsCard, todayMeetingsCard } from './view-meetings.js';
 import { GRID, autoCards, optionsOf, todayOf } from './today-grid.js';
 import { addTile, editBar, gallery, optionsPanel, todayMenu, widgetMenu } from './today-edit-view.js';
@@ -127,7 +127,8 @@ export function todayModel(s, hidden, nowMs = Date.now()) {
     zone, nowMs, nowMin, todayKey, today, timed, current, upcoming, remaining, busyMinutes, freeMinutes,
     tomorrowFirst: tomorrow.timed[0] || null,
     attention: attentionMessages(s),
-    commitments: records(s, 'commitment'),
+    // The active provider's tasks (task provider design §10): Local's, or Todoist's.
+    commitments: tasksOf(s),
   };
 }
 
@@ -473,6 +474,9 @@ function attentionCard(s, m, connected, ai, o) {
 
 function commitmentsCard(s, m, o) {
   const me = meOf(s);
+  // With a provider a row has no trash (delete asks first, on the Tasks page) and the page is By
+  // date, not the Board (design §10).
+  const local = activeProvider(s) === 'local';
   const shown = c => !o.mine || isMine(c, me);
   // Today lists what is on the board to do; To review and dismissed ones stay on the Tasks page.
   const open = m.commitments.filter(c => ['todo', 'doing', 'waiting'].includes(taskStatus(c)) && shown(c)).sort((a, b) => sortTasks(a, b, m.nowMs, m.zone));
@@ -485,12 +489,12 @@ function commitmentsCard(s, m, o) {
     return `<div class="ws-todo${isDone ? ' ws-done' : ''}">
     <label class="ws-check"><input type="checkbox" data-action="commitment-toggle" data-id="${e(c.id)}" ${isDone ? 'checked' : ''} aria-label="Mark “${e(c.data.text)}” ${isDone ? 'open' : 'done'}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label>
     <div class="ws-todo-text"><button type="button" class="ws-link-title" data-action="task-open-today" data-id="${e(c.id)}">${e(c.data.text)}</button>${due || owner ? `<small>${due}${owner ? `<span class="ws-todo-owner">${due ? ' · ' : ''}${e(owner)}</span>` : ''}</small>` : ''}</div>
-    ${button('', { action: 'task-delete', iconName: 'trash', variant: 'ghost', title: 'Delete task', attrs: { 'data-id': c.id } })}
+    ${local ? button('', { action: 'task-delete', iconName: 'trash', variant: 'ghost', title: 'Delete task', attrs: { 'data-id': c.id } }) : ''}
   </div>`;
   };
   return card({
     title: 'Tasks', iconName: 'tasks', className: 'ws-commitments',
-    actions: button('Board', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'tasks' } }),
+    actions: button(local ? 'Board' : 'Tasks', { action: 'route', variant: 'ghost', iconRight: 'arrow', attrs: { 'data-route': 'tasks' } }),
     body: `${o.add ? `<form class="ws-quick-add" data-form="commitment-add">
         <input class="ws-input" name="text" maxlength="2000" placeholder="Add a task… e.g. Send the roadmap to Anna" aria-label="New task" autocomplete="off">
         <input class="ws-input ws-date" name="due" type="date" aria-label="Due date">

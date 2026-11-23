@@ -480,6 +480,35 @@ test('Tasks no longer draws Notes; Notes keeps the textarea id today-note', () =
   assert.match(tileOf(today(s, ctx()), 'notes'), /class="ws-textarea ws-notes ws-notes-large"/);
 });
 
+/** A task of the Todoist provider (task provider design §10). */
+const todoistTask = (id, text, extra = {}) => ({ id, kind: 'commitment', source: 'local', connectionId: null, workspaceId: 'personal', revision: `r-${id}`, updatedAt: 0, data: { text, owner: 'You', status: 'todo', provider: 'plugin:todoist', ...extra } });
+
+test('Today\'s Tasks widget with a provider: no trash, a done box, "Tasks" button, the provider\'s tasks only', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const localTexts = s.records.filter(r => r.kind === 'commitment').map(r => r.data.text);
+  s.records.push(todoistTask('td-1', 'Send the Todoist summary'));
+  s.taskProvider = { active: 'plugin:todoist', name: 'Todoist', state: 'ready', available: [], pending: 0, parked: 0 };
+  const card = tileOf(today(s, ctx()), 'commitments');
+  assert.match(card, /Send the Todoist summary/);
+  for (const text of localTexts) assert.ok(!card.includes(escapeHtml(text)), `Local's “${text}” is not Todoist's`);
+  assert.match(card, /<input type="checkbox" data-action="commitment-toggle" data-id="td-1"/, 'the done box stays');
+  assert.doesNotMatch(card, /data-action="task-delete"/, 'no trash with a provider');
+  assert.match(card, /data-route="tasks"><span>Tasks<\/span>/);
+  assert.doesNotMatch(card, /<span>Board<\/span>/);
+  assert.match(card, /data-form="commitment-add"/, 'the quick add stays; native creates in the provider');
+});
+
+test('Local: the widget and the column are unchanged', () => {
+  const s = buildSnapshot(Date.now(), { photo: false });
+  const before = tileOf(today(s, ctx()), 'commitments');
+  // Another provider's cached task (Todoist chosen once, Local again): Local's widget never shows it.
+  s.records.push(todoistTask('td-1', 'Send the Todoist summary'));
+  const after = tileOf(today(s, ctx()), 'commitments');
+  assert.equal(after, before, 'exactly the same markup');
+  assert.match(after, /data-route="tasks"><span>Board<\/span>/);
+  assert.equal((after.match(/data-action="task-delete"/g) || []).length, (after.match(/data-action="commitment-toggle"/g) || []).length, 'a trash on every row');
+});
+
 test('widgets honour their options', t => {
   const now = Date.parse('2026-11-18T09:30:00Z');
   t.mock.timers.enable({ apis: ['Date'], now });

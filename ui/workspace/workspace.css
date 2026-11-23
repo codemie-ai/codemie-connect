@@ -2129,6 +2129,10 @@ button.ws-source-chip:hover .ws-icon{color:var(--ws-link)}
 .ws-menu-label{padding:6px 10px 2px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--ws-faint)}
 .ws-tasks-heading{align-items:flex-start;margin-bottom:18px}
 .ws-tasks-heading .ws-actions{flex-wrap:nowrap}
+.ws-tasks-status{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin-top:4px}
+.ws-tasks-line{color:var(--ws-faint);font-size:var(--ws-fs-secondary)}
+.ws-tasks-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;min-height:24px;padding:2px 10px;border:1px solid var(--ws-border);border-radius:999px;background:var(--ws-card-2);color:var(--ws-text);font-size:var(--ws-fs-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.ws-tasks-chip:hover{border-color:var(--ws-border-strong);background:var(--ws-hover)}
 .ws-tasks-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:10px 12px;margin-bottom:14px}
 .ws-tasks-toolbar .ws-lanes{flex-wrap:nowrap}
 .ws-tasks-filters{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;flex-wrap:wrap}

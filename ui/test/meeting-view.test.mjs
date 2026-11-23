@@ -13,7 +13,7 @@ import { meOf } from '../workspace/tasks-model.js';
 import {
   defaultTicks, itemsOf, ownerLine, pinsOf, shortName, shownTab, stripPrimary, summaryTabs, withLine,
 } from '../workspace/meeting-view-model.js';
-import { localTaskTarget } from '../workspace/task-target.js';
+import { activeTaskTarget, addedLine, localTaskTarget, providerTaskTarget } from '../workspace/task-target.js';
 
 const NOW = Date.UTC(2026, 10, 18, 15, 20);
 const snapshot = () => withMeetings(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), NOW);
@@ -151,13 +151,15 @@ test('itemsOf splits To review (by transcript line) from the board', () => {
   assert.deepEqual(inTasks.map(t => t.id), ['task-legal-req']);
 });
 
-test('the local task target moves to todo and back, and reports a failure per task', async () => {
+test('the local task target moves to todo, undoes through one task_withdraw, and reports a failure per task', async () => {
   const calls = [];
+  const withdrawn = [];
   const target = localTaskTarget({
     moveTask: async (id, status, opts) => {
       calls.push([id, status, opts]);
       if (id === 'bad') throw new Error('nope');
     },
+    withdraw: async ids => { withdrawn.push(ids); return { done: ids.length, failed: 0 }; },
   });
   assert.equal(target.label, 'Tasks');
   const added = await target.add(['task-endpoint', 'bad']);
@@ -165,5 +167,47 @@ test('the local task target moves to todo and back, and reports a failure per ta
   assert.deepEqual(calls[0], ['task-endpoint', 'todo', { log: 'Accepted from review' }]);
   const undone = await target.undo(['task-endpoint']);
   assert.deepEqual(undone, { done: ['task-endpoint'], failed: [] });
-  assert.deepEqual(calls.at(-1), ['task-endpoint', 'review', { log: 'Moved back to review' }]);
+  assert.deepEqual(withdrawn, [['task-endpoint']]);
+  assert.equal(calls.length, 2, 'Undo moves nothing itself');
+});
+
+test('providerTaskTarget labels the column with the provider and undoes with one task_withdraw', async () => {
+  const moved = [];
+  const withdrawn = [];
+  let answer = ids => ({ done: ids.length, failed: 0 });
+  const target = providerTaskTarget({
+    label: 'Todoist',
+    moveTask: async (id, status, opts) => { moved.push([id, status, opts]); },
+    withdraw: async ids => { withdrawn.push(ids); return answer(ids); },
+  });
+  assert.equal(target.label, 'Todoist');
+  assert.deepEqual(await target.add(['a', 'b']), { done: ['a', 'b'], failed: [] });
+  assert.deepEqual(moved, [['a', 'todo', { log: 'Accepted from review' }], ['b', 'todo', { log: 'Accepted from review' }]]);
+  assert.deepEqual(await target.undo(['a', 'b']), { done: ['a', 'b'], failed: [] });
+  assert.deepEqual(withdrawn, [['a', 'b']], 'one task_withdraw for the whole add');
+  // Native answers counts: a failure keeps Undo for every id (a repeat withdraw of one already
+  // back in review is a no-op there) and says why.
+  answer = () => ({ done: 1, failed: 1 });
+  const partial = await target.undo(['a', 'b']);
+  assert.deepEqual(partial.done, []);
+  assert.deepEqual(partial.failed.map(f => f.id), ['a', 'b']);
+  assert.equal(partial.failed[0].message, '1 of 2 couldn’t go back to review. Try again.');
+  // Nothing to undo calls nothing.
+  assert.deepEqual(await target.undo([]), { done: [], failed: [] });
+  assert.equal(withdrawn.length, 2);
+});
+
+test('the active task target follows taskProvider.active, and the add toasts name it', async () => {
+  const s = { taskProvider: { active: 'local', name: 'Connect' }, records: [] };
+  const withdrawn = [];
+  const target = activeTaskTarget({ snap: () => s, moveTask: async () => {}, withdraw: async ids => { withdrawn.push(ids); return { done: ids.length, failed: 0 }; } });
+  assert.equal(target.label, 'Tasks');
+  assert.equal(addedLine(s, 'Task added to To do.'), 'Task added to To do.');
+  s.taskProvider = { active: 'plugin:todoist', name: 'Todoist' };
+  assert.equal(target.label, 'Todoist');
+  assert.equal(addedLine(s, 'Task added to To do.'), 'Added to Todoist');
+  await target.undo(['x']);
+  assert.deepEqual(withdrawn, [['x']]);
+  s.taskProvider = { active: 'local', name: 'Connect' };
+  assert.equal(target.label, 'Tasks', 'back to Local');
 });

@@ -55,15 +55,28 @@ function dueTone(due, now, zone) {
   return { tone: 'later', text: formatDate(date, undefined, { month: 'short', day: 'numeric' }) };
 }
 
-const https = url => (typeof url === 'string' && /^https:\/\/[^\s/@]+(\/|$)/i.test(url) ? url : null);
+/** The hosts of a task's own link that Open in Todoist ↗ opens (native checks them again). */
+const REMOTE_HOSTS = ['todoist.com', 'app.todoist.com'];
+function remoteUrl(url) {
+  if (typeof url !== 'string' || !/^https:\/\/[^\s/@:]+(\/|$)/i.test(url)) return null;
+  try {
+    return REMOTE_HOSTS.includes(new URL(url).hostname) ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The tasks By date shows: one meeting's while the header's "From <meeting> ✕" chip is on. */
+export const datesTasks = (records, filters) => (filters?.meeting ? records.filter(r => r.data.meetingId === filters.meeting) : records);
 
 /**
  * A By date row: `{id, text, label, status, checkWith: {first} | null, due: {tone, text} | null,
- * source: {kind: 'meeting' | 'message', id, title} | null, nudge, url, pending, syncError,
+ * source: {kind: 'meeting' | 'message', id, title} | null, nudge, url, pending, parked, syncError,
  * handled: {evidence} | null}`. A task waiting on someone else (its kind or status is waiting,
  * or its owner is someone else) reads "Check with <first>: <text>". `nudge` says its source is a
- * synced mail thread or Teams chat, the only place Nudge can open. `url` is the provider's https
- * link.
+ * synced mail thread or Teams chat, the only place Nudge can open. `url` is the task's own
+ * https link on a Todoist host. `parked`: a change the provider refused waits for Try again or
+ * Discard change; `syncError` is its sentence, null when native withheld it.
  */
 export function rowOf(record, { me, s, now = Date.now(), zone } = {}) {
   const d = record.data;
@@ -92,8 +105,10 @@ export function rowOf(record, { me, s, now = Date.now(), zone } = {}) {
     checkWith,
     due: dueTone(dueOf(record, now, zone), now, zone),
     source, nudge: nudge && !!checkWith,
-    url: https(d.remote?.url),
+    url: remoteUrl(d.remote?.url),
     pending: !!d.pending,
+    // Parked: native keeps the provider's sentence, or "" when it held a secret and was dropped.
+    parked: typeof d.syncError === 'string',
     syncError: d.syncError ? String(d.syncError) : null,
     handled: d.handled?.evidence ? { evidence: String(d.handled.evidence) } : null,
   };

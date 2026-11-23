@@ -196,8 +196,9 @@ export async function meetingsViewChecks({ open, check, assert, shot, settled, c
       assert(saved.length === 1 && saved[0].id === 'task-endpoint' && saved[0].status === 'todo', JSON.stringify(saved));
       await page.click('.ws-mtg-items-foot [data-action="meeting-items-undo"]');
       await page.waitForSelector('[data-task="task-endpoint"] [data-action="meeting-item-tick"]:checked');
-      const undone = await lastCall(page, 'task_save');
-      assert(undone.id === 'task-endpoint' && undone.status === 'review', JSON.stringify(undone));
+      // Local's Undo is one task_withdraw too (native moves it back to review).
+      const undone = await lastCall(page, 'task_withdraw');
+      assert(JSON.stringify(undone) === JSON.stringify({ ids: ['task-endpoint'] }), JSON.stringify(undone));
       // Tick both, then three renders: both stay ticked.
       await page.click('[data-task="task-pilot-list"] label.ws-check');
       await page.evaluate(() => { window.__workspace.render(); window.__workspace.render(); window.__workspace.render(); });
@@ -211,6 +212,44 @@ export async function meetingsViewChecks({ open, check, assert, shot, settled, c
       await page.click('[data-task="task-pilot-list"] [data-action="task-dismiss"]');
       const dismissed = await lastCall(page, 'task_save');
       assert(dismissed.id === 'task-pilot-list' && dismissed.status === 'dismissed', JSON.stringify(dismissed));
+    });
+    await context.close().catch(() => {});
+  }
+
+  // ---------------------------------------------------------------- V4b: Todoist active (task provider §10)
+  {
+    const todoist = snapshot => {
+      snapshot.taskProvider = { active: 'plugin:todoist', name: 'Todoist', available: [{ id: 'local', name: 'Connect' }, { id: 'plugin:todoist', name: 'Todoist', on: true, ready: true, pending: 0 }], state: 'ready', pending: 0, parked: 0, lastSync: Math.floor(FIXED_NOW / 1000) - 60, retryAt: null, message: null, copyOffered: true };
+      for (const r of snapshot.records.filter(x => x.kind === 'commitment')) r.data.provider = 'plugin:todoist';
+    };
+    const { page, context, errors } = await open({ meetings: true, hash: '#/meetings/mtg-philips/summary', theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, patch: todoist });
+    await check('meetings-view V4b: Todoist active: "Add 2 to Todoist" saves each once, Undo is one task_withdraw, "N in Todoist ›" opens By date with the meeting chip', async () => {
+      await page.waitForSelector('.ws-mtg-items');
+      await page.click('[data-task="task-pilot-list"] label.ws-check');
+      await page.waitForSelector('[data-action="meeting-items-add"]:has-text("Add 2 to Todoist")');
+      const saves = (await calls(page, 'task_save')).length;
+      await page.evaluate(() => { const b = document.querySelector('[data-action="meeting-items-add"]'); b.click(); b.click(); });
+      await page.waitForSelector('.ws-mtg-items-foot:has-text("Added 2 to Todoist")');
+      const saved = (await calls(page, 'task_save')).slice(saves);
+      assert(saved.map(d => d.id).sort().join() === 'task-endpoint,task-pilot-list' && saved.every(d => d.status === 'todo'), JSON.stringify(saved));
+      assert(await page.locator('.ws-mtg-items-sub:has-text("In Todoist")').count() === 1, 'the In Todoist heading');
+      await shot(page, 'meetings-view-todoist-added');
+      await page.click('.ws-mtg-items-foot [data-action="meeting-items-undo"]');
+      await page.waitForSelector('[data-task="task-pilot-list"] [data-action="meeting-item-tick"]:checked');
+      const withdrawn = await calls(page, 'task_withdraw');
+      assert(withdrawn.length === 1 && withdrawn[0].ids.slice().sort().join() === 'task-endpoint,task-pilot-list', JSON.stringify(withdrawn));
+      // "1 in Todoist ›" (the meeting's legal task): By date of that meeting, with its chip.
+      const syncs = (await calls(page, 'task_sync_now')).length;
+      await page.click('.ws-mtg-items-foot [data-action="meeting-board"]:has-text("in Todoist ›")');
+      await page.waitForSelector('.ws-tdate[data-provider]');
+      await settled(page);
+      const chip = await page.locator('.ws-tasks-chip').innerText();
+      assert(chip === 'From Philips CodeMie conversations syncup ✕', chip);
+      assert((await calls(page, 'task_sync_now')).length > syncs, 'opening Tasks asks for a sync');
+      await shot(page, 'meetings-view-todoist-chip');
+      await page.click('.ws-tasks-chip');
+      await page.waitForSelector('.ws-tasks-chip', { state: 'detached' });
+      assert(errors.length === 0, errors.join(' | '));
     });
     await context.close().catch(() => {});
   }

@@ -10,7 +10,7 @@ import {
   COLUMNS, DEFAULT_FILTERS, columnName, dueInfo, filterTasks, isMine, laneCounts, meOf, meetingOf, newTasksView, ownerOf, peopleFor, quickDates, quoteTime,
   sortTasks, splitDone, taskStatus, tasksOf, activeProvider,
 } from './tasks-model.js';
-import { shownView, viewsFor } from './tasks-dates-model.js';
+import { shownView, statusLine, viewsFor } from './tasks-dates-model.js';
 import { datesView } from './view-tasks-dates.js';
 
 const TONES = { review: 'purple', todo: 'muted', doing: 'blue', waiting: 'amber', done: 'green' };
@@ -52,13 +52,36 @@ export function tasksPage(s, ctx = {}) {
 /** Tasks to review: with two or more, By date's "Accept all" is the page's one primary. */
 const reviewCount = p => p.all.filter(r => taskStatus(r) === 'review').length;
 
+/** What the page holds, said for the view shown (only the Board has cards to drag). */
+const DESCRIPTIONS = {
+  board: 'What people agreed to do in your meetings, and anything you add yourself. Drag cards between columns, or use a card’s menu.',
+  list: 'What people agreed to do in your meetings, and anything you add yourself, by who owes it.',
+  dates: 'What people agreed to do in your meetings, and anything you add yourself, by when it’s due.',
+};
+
+/** The header's ⋯ with a provider: Sync now and Settings › Tasks (design §9 "Header"). */
+const moreMenu = () => `<details class="ws-menu ws-menu-right" data-menu="tasks-more">
+      <summary class="ws-btn ws-btn-ghost ws-btn-icon" aria-label="More for Tasks" title="More">${icon('dots')}</summary>
+      <div class="ws-menu-panel">${menuItem('tasks-sync', 'refresh', 'Sync now', {})}${menuItem('settings-tab', 'settings', 'Settings › Tasks', { 'data-tab': 'meetings-tasks' })}</div></details>`;
+
+/** "From <meeting> ✕" while By date shows one meeting's tasks (its "N in Todoist ›"). */
+function meetingChip(p) {
+  const id = p.v.shown === 'dates' ? p.v.filters.meeting : '';
+  if (!id) return '';
+  const title = p.meeting(id)?.title || 'a meeting';
+  return `<button type="button" class="ws-tasks-chip" data-action="tasks-meeting-clear" aria-label="Show the tasks of every meeting">From ${e(title)} ✕</button>`;
+}
+
 function heading(p) {
   const views = viewsFor(p.s);
+  const provider = activeProvider(p.s) !== 'local';
   return `<header class="ws-page-heading ws-tasks-heading">
-    <div><h1>Tasks</h1><p class="ws-description">What people agreed to do in your meetings, and anything you add yourself. Drag cards between columns, or use a card’s menu.</p></div>
+    <div><h1>Tasks</h1><p class="ws-description">${e(DESCRIPTIONS[p.v.shown] || DESCRIPTIONS.board)}</p>
+      <div class="ws-tasks-status"><p class="ws-tasks-line" role="status">${e(statusLine(p.s.taskProvider, p.now, p.zone))}</p>${meetingChip(p)}</div></div>
     <div class="ws-actions">
       <div class="ws-segmented" role="tablist" aria-label="View">${views.map(([id, label, ico]) => `<button type="button" role="tab" data-action="tasks-view" data-view="${id}" aria-selected="${p.v.shown === id}">${icon(ico)}${label}</button>`).join('')}</div>
       ${button('New task', { action: 'task-new', variant: p.v.shown === 'dates' && reviewCount(p) > 1 ? 'secondary' : 'primary', iconName: 'plus' })}
+      ${provider ? moreMenu() : ''}
     </div>
   </header>`;
 }
