@@ -92,14 +92,31 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
     await page.click('.ws-nav button[data-route=meetings]');
     await page.waitForSelector('.ws-dock[data-page="meetings"]');
   };
+  /** Waits until no transcript check, save or notes run is queued or running in the snapshot the
+   *  page shows, then for the page to settle. Every step of a run changes the workspace and the
+   *  window refreshes at most every 1.2 s, so a 200 ms quiet spell alone can fall between two of
+   *  its renders, and the next render detaches what the check holds. */
+  const runsDone = async page => {
+    await page.waitForFunction(() => !(window.__workspace.store.get()?.snapshot.jobs || []).some(j => ['transcript_check', 'transcript_download', 'meeting_notes'].includes(j.kind) && ['queued', 'running'].includes(j.state)));
+    await settled(page);
+  };
 
   for (const theme of ['dark', 'light']) {
     for (const [width, height] of [[1440, 900], [1000, 760], [1680, 960]]) {
       const tag = `${theme}-${width}`;
       const { page, context, errors } = await open({ theme, width, height, hash: '#/meetings', meetings: true });
       await page.evaluate(() => { navigator.clipboard.writeText = async text => { window.__copied = text; }; });
+      /** A check of this page starts on Meetings whatever the last one left (one that failed
+       *  part-way can leave Today or Tasks showing), so one failure doesn't fail the rest. */
+      const step = (name, fn) => check(name, async () => {
+        if (!(await hash(page)).startsWith('#/meetings')) {
+          await toMeetings(page);
+          await settled(page);
+        }
+        await fn();
+      });
 
-      await check(`${tag}: meetings list and the Philips sync: the summary, two documents in Notes, side by side, make main`, async () => {
+      await step(`${tag}: meetings list and the Philips sync: the summary, two documents in Notes, side by side, make main`, async () => {
         await page.waitForSelector('.ws-dock[data-page="meetings"]');
         assert(await page.locator('.ws-nav button[data-route=meetings][aria-current=page]').count() === 1, 'Meetings is current');
         assert((await page.locator('.ws-nav button[data-route=meetings] .ws-count').innerText()) === '5', 'five meetings wait in the sidebar');
@@ -197,7 +214,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.keyboard.press('Escape');
       });
 
-      await check(`${tag}: calendar badge → event card → Make notes → one progress line → Ready`, async () => {
+      await step(`${tag}: calendar badge → event card → Make notes → one progress line → Ready`, async () => {
         await page.evaluate(async () => {
           const w = window.__workspace;
           const ev = w.store.get().snapshot.records.find(r => r.kind === 'event' && r.id === 'mtg-roadmap');
@@ -269,7 +286,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         assert(await page.locator(`${row('mtg-roadmap')} .ws-mtg-row-spin`).count() === 0, 'the spinner is gone');
       });
 
-      await check(`${tag}: blocked meeting → import a .vtt → name the speaker`, async () => {
+      await step(`${tag}: blocked meeting → import a .vtt → name the speaker`, async () => {
         await toMeetings(page);
         await select(page, 'mtg-northwind', 'needs');
         await page.waitForSelector('.ws-mtg-explain:has-text("doesn’t share this transcript")');
@@ -302,7 +319,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         assert(/Jordan Lee/.test(await page.locator('.ws-mtg-lines').innerText()), 'the line has its name');
       });
 
-      await check(`${tag}: Filter › Meetings without a transcript shows them, and hides them again`, async () => {
+      await step(`${tag}: Filter › Meetings without a transcript shows them, and hides them again`, async () => {
         await setFilter(page, 'all');
         assert(await page.locator(row('mtg-sprint')).count() === 0, 'a meeting waiting for Teams is out of All');
         const item = '[data-menu="meetings-filter"] [data-action="meeting-show-none"]';
@@ -322,7 +339,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForSelector(row('mtg-sprint'));
       });
 
-      await check(`${tag}: waiting meeting → Make notes as soon as it arrives → Check now → saved and notes made`, async () => {
+      await step(`${tag}: waiting meeting → Make notes as soon as it arrives → Check now → saved and notes made`, async () => {
         await select(page, 'mtg-sprint');
         await page.waitForSelector('.ws-mtg-explain:has-text("still preparing the transcript")');
         await shot(page, `${tag}-meetings-waiting`);
@@ -340,7 +357,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await noOverflow(page, 'notes made');
       });
 
-      await check(`${tag}: failed save → Try again`, async () => {
+      await step(`${tag}: failed save → Try again`, async () => {
         await select(page, 'mtg-vendor', 'needs');
         assert(/Couldn’t get the transcript from Teams/.test(await page.locator('.ws-mtg-run-failed').innerText()), 'the failed save');
         assert(await page.locator('text=/^Download$/').count() === 0, 'no Download button');
@@ -367,7 +384,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         assert(/Make Meeting notes/.test(await page.locator('.ws-mtg-strip [data-action="meeting-make-tab"]').innerText()), 'Make, the primary');
       });
 
-      await check(`${tag}: a failed Download again shows on the meeting, apart from the notes`, async () => {
+      await step(`${tag}: a failed Download again shows on the meeting, apart from the notes`, async () => {
         await select(page, 'mtg-philips', 'all');
         await page.evaluate(() => { window.__downloadPlan = { outcome: 'fail', ms: 300 }; });
         await page.click(`${meetingMenu} > summary`);
@@ -382,7 +399,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         assert(await page.locator('.ws-mtg-docpage .ws-md').count() === 1, 'the notes stay');
       });
 
-      await check(`${tag}: the Notes pane’s Make notes form keeps a template and wishes through a refresh`, async () => {
+      await step(`${tag}: the Notes pane’s Make notes form keeps a template and wishes through a refresh`, async () => {
         const make = 'form[data-form="meeting-notes"][data-id="mtg-vendor"]';
         await select(page, 'mtg-vendor', 'all', 'notes');
         await page.waitForSelector(make);
@@ -407,7 +424,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForSelector(`${row('mtg-vendor')}:has-text("Short summary")`, { timeout: 8000 });
       });
 
-      await check(`${tag}: Make notes for all goes on past a meeting whose folder is gone`, async () => {
+      await step(`${tag}: Make notes for all goes on past a meeting whose folder is gone`, async () => {
         await setFilter(page, 'all');
         // What Make notes for N takes: the card's transcripts without notes (saved or still in Teams).
         const todo = await page.locator('.ws-mtg-needs .ws-mtg-row').evaluateAll(rows => rows.filter(r => !r.querySelector('.ws-mtg-row-spin') && /No notes yet|Saving the transcript|Couldn’t get the transcript|Saving stopped/.test(r.innerText)).map(r => ({ id: r.dataset.id, title: r.querySelector('strong').innerText.trim(), saved: /No notes yet/.test(r.innerText) })));
@@ -428,14 +445,15 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForFunction(id => location.hash.startsWith(`#/meetings/${encodeURIComponent(id)}/`), gone.id);
       });
 
-      await check(`${tag}: Today card → meeting`, async () => {
+      await step(`${tag}: Today card → meeting`, async () => {
         await page.click('.ws-nav button[data-route=today]');
         await page.waitForSelector('.ws-mtg-today');
         const first = await page.locator('.ws-mtg-today [data-action="meeting-open"]').first().getAttribute('data-id');
         assert(['mtg-critique', 'mtg-northwind'].includes(first), `needs you first: ${first}`);
         await noOverflow(page, 'Today');
-        // The save the last check started may still re-render Today: act once it has settled.
-        await settled(page).catch(() => {});
+        // The notes runs Make notes for all started re-render Today as they step: act once they
+        // have ended and the page has settled.
+        await runsDone(page);
         await page.locator('.ws-mtg-today').scrollIntoViewIfNeeded();
         await page.evaluate(() => document.querySelectorAll('.ws-toast').forEach(t => t.remove()));
         await page.locator('.ws-mtg-today').screenshot({ path: `${OUT}/${tag}-today-meetings-card.png` });
@@ -448,7 +466,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await shot(page, `${tag}-meetings-failed`);
       });
 
-      await check(`${tag}: the action items column — Add N to Tasks, Undo, task quote → transcript line highlighted`, async () => {
+      await step(`${tag}: the action items column — Add N to Tasks, Undo, task quote → transcript line highlighted`, async () => {
         await select(page, 'mtg-philips', 'all');
         // With the column off, Review in the header and ⋯ › Action items open the Action items pane.
         assert(await page.locator('.ws-mtg-head .ws-actions [data-action="meeting-pane"][data-pane="tasks"]').count() === 0, 'no Review while the column is on');
@@ -495,7 +513,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForSelector('#meeting-line-5.ws-mtg-focus');
       });
 
-      await check(`${tag}: ↑/↓ move through the list`, async () => {
+      await step(`${tag}: ↑/↓ move through the list`, async () => {
         await select(page, 'mtg-philips', 'all');
         await page.focus(`${row('mtg-philips')}`);
         const ids = await page.locator('.ws-mtg-row').evaluateAll(rows => rows.map(r => r.dataset.id));
@@ -512,7 +530,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         assert(await page.locator('.ws-menu[open]').count() === 0, 'menu closed');
       });
 
-      await check(`${tag}: a day folds; ⌥-click keeps only that day open; Unfold all days`, async () => {
+      await step(`${tag}: a day folds; ⌥-click keeps only that day open; Unfold all days`, async () => {
         await setFilter(page, 'all');
         const days = await page.locator('.ws-mtg-group').evaluateAll(groups => groups.map(g => g.dataset.day));
         assert(days.length >= 2, days.join());
@@ -528,7 +546,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.waitForFunction(() => [...document.querySelectorAll('.ws-mtg-group')].every(g => g.querySelector('.ws-mtg-row')));
       });
 
-      await check(`${tag}: right-click → Hide from the list → Undo`, async () => {
+      await step(`${tag}: right-click → Hide from the list → Undo`, async () => {
         await setFilter(page, 'all');
         const count = async () => Number(await page.locator('.ws-nav button[data-route=meetings] .ws-count').innerText().catch(() => '0'));
         const before = await count();
@@ -567,7 +585,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await page.keyboard.press('Escape');
       });
 
-      await check(`${tag}: “Who is this?” on a scrolled transcript goes to the speaker list`, async () => {
+      await step(`${tag}: “Who is this?” on a scrolled transcript goes to the speaker list`, async () => {
         const size = page.viewportSize();
         await page.setViewportSize({ width: size.width, height: 520 });
         try {
@@ -589,7 +607,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         }
       });
 
-      await check(`${tag}: Hide every “<series>” → N hidden meetings · Show → Show again`, async () => {
+      await step(`${tag}: Hide every “<series>” → N hidden meetings · Show → Show again`, async () => {
         await page.evaluate(() => { window.__eventData('mtg-philips', { seriesId: 'series-sync' }); window.__eventData('mtg-planning', { seriesId: 'series-sync' }); });
         await settled(page);
         await setFilter(page, 'all');
@@ -611,7 +629,7 @@ export async function meetingChecks({ open, check, assert, shot, settled, OUT })
         await filterSwitch(page, 'meeting-show-hidden');
       });
 
-      await check(`${tag}: hiding survives a reload`, async () => {
+      await step(`${tag}: hiding survives a reload`, async () => {
         await setFilter(page, 'all');
         await page.click(row('mtg-northwind'), { button: 'right' });
         await page.click('.ws-mtg-rowmenu [data-action="meeting-hide"]');

@@ -615,8 +615,9 @@ function boardRow(p, t) {
 /** The action items column (spec "The action items column"): the meeting's To review tasks to
  *  add, "Add N to Tasks" with Undo, and the tasks already in Tasks. Beside every pane (`pane`
  *  false, the default), or the Action items pane with the column off (`pane` true) — the same
- *  content, drawn full width. "Add N to …", "Added N to …" and "N in … ›" name `p.taskLabel` (the
- *  page's `ctx.taskLabel`: the task target's own `label`, "Tasks" for the local board). */
+ *  content, drawn full width. "Add N to …", "Added N to …", "N in … ›" and the "In …" heading
+ *  name `p.taskLabel` (the page's `ctx.taskLabel`: the task target's own `label`, "Tasks" for
+ *  the local board). */
 export function actionItems(p, mc, { pane = false } = {}) {
   const { m } = mc;
   const v = p.v;
@@ -631,7 +632,7 @@ export function actionItems(p, mc, { pane = false } = {}) {
   const n = ticked.size;
   const addBtn = n >= 1 ? button(`Add ${n} to ${label}`, { action: 'meeting-items-add', variant: 'primary', attrs: { 'data-id': m.id }, className: 'ws-mtg-items-add' }) : '';
   const error = v.addError?.meetingId === m.id ? `<p class="ws-mtg-items-error">${e(v.addError.message)}</p>` : '';
-  const inTasksHtml = inTasks.length ? `<div class="ws-mtg-items-board"><h4 class="ws-mtg-items-sub">In Tasks</h4>${inTasks.map(t => boardRow(p, t)).join('')}</div>` : '';
+  const inTasksHtml = inTasks.length ? `<div class="ws-mtg-items-board"><h4 class="ws-mtg-items-sub">In ${e(label)}</h4>${inTasks.map(t => boardRow(p, t)).join('')}</div>` : '';
   const undoable = undoableOf(v, mc);
   const footer = undoable.length
     ? `<p class="ws-mtg-items-foot" role="status">Added ${undoable.length} to ${e(label)} · ${button('Undo', { action: 'meeting-items-undo', attrs: { 'data-id': m.id } })}</p>`

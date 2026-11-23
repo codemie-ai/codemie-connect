@@ -1780,6 +1780,7 @@ test('the column’s add error and Added · Undo show only on their meeting, Und
   s.records.find(r => r.id === 'task-endpoint').data.status = 'review';
   assert.match(column({ selected: 'mtg-philips' }, { taskLabel: 'Todoist' }), /Add 1 to Todoist/);
   assert.match(column({ selected: 'mtg-philips' }, { taskLabel: 'Todoist' }), /\d+ in Todoist ›/);
+  assert.match(column({ selected: 'mtg-philips' }, { taskLabel: 'Todoist' }), /<h4 class="ws-mtg-items-sub">In Todoist<\/h4>/, 'the board heading');
   s.records.find(r => r.id === 'task-endpoint').data.status = 'todo';
   assert.match(column({ selected: 'mtg-philips', added: { meetingId: 'mtg-philips', ids: ['task-endpoint'] } }, { taskLabel: 'Todoist' }), /Added 1 to Todoist · /);
 });
