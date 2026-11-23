@@ -6,12 +6,14 @@
 //! (`ui/plugins/market-smoke.js`) then adds the marketplace, installs every plugin it offers,
 //! agreeing to each permission sheet by its hash (only in this mode), waits for the plugin manager,
 //! opens each plugin's pages and Settings sections and collects what their frames reported. Rust
-//! adds its own view (which plugins loaded, why the others didn't), decides the verdict, writes
-//! `$TMPDIR/connect-plugin-smoke.json` and quits: 0 when it passed, 1 when it didn't, 2 when the
-//! window never reported, 3 when the smoke can't run.
+//! adds its own view (which plugins loaded, why the others didn't, and what each task provider's
+//! `tasks:status` answered: `ok`, or `needs_token` with no token saved, both a pass), decides the
+//! verdict, writes `$TMPDIR/connect-plugin-smoke.json` and quits: 0 when it passed, 1 when it
+//! didn't, 2 when the window never reported, 3 when the smoke can't run.
 use super::smoke::SmokeRun;
 use crate::error::{CmdResult, InstallerError};
 use crate::plugins::manager::PluginManager;
+use crate::workspace::task_provider::{ProviderError, TaskProviders};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -119,18 +121,52 @@ pub fn smoke_plugins_state(app: AppHandle) -> CmdResult<Value> {
     Ok(json!({"loaded": m.loaded(), "problems": m.problems()}))
 }
 
+/// The code a provider's failure maps to (design §5 "Errors").
+fn code_of(e: &ProviderError) -> &'static str {
+    match e {
+        ProviderError::NeedsToken => "needs_token",
+        ProviderError::RateLimited { .. } => "rate_limited",
+        ProviderError::Offline => "offline",
+        ProviderError::NotFound(_) => "not_found",
+        ProviderError::Refused(_) => "refused",
+    }
+}
+
+/// What each installed plugin that provides tasks answers to `tasks:status`: `{plugin, status}`,
+/// `ok` or the code it failed with.
+async fn task_statuses(m: &PluginManager) -> Vec<Value> {
+    let mut out = Vec::new();
+    for p in TaskProviders::available(m) {
+        let plugin = p.id.strip_prefix("plugin:").unwrap_or(&p.id).to_string();
+        let status = match TaskProviders::call(m, &plugin, "status", json!({})).await {
+            Ok(_) => "ok",
+            Err(e) => code_of(&e),
+        };
+        out.push(json!({"plugin": plugin, "status": status}));
+    }
+    out
+}
+
 /// Writes the smoke's report with Rust's own view and the verdict, prints it, and quits with
 /// the verdict's exit code.
 #[tauri::command]
-pub fn smoke_plugins_report(app: AppHandle, report: Value) -> CmdResult<Value> {
+pub async fn smoke_plugins_report(app: AppHandle, report: Value) -> CmdResult<Value> {
     let smoke = running()?;
     if REPORTED.swap(true, Ordering::SeqCst) {
         return Err(InstallerError::Other("This smoke already reported.".into()));
     }
-    let (loaded, problems) = manager(&app)
-        .map(|m| (m.loaded(), m.problems()))
-        .unwrap_or_default();
-    let report = verdict(report, &loaded, &problems, super::smoke::run(), Some(smoke));
+    let (loaded, problems, tasks) = match manager(&app) {
+        Some(m) => (m.loaded(), m.problems(), task_statuses(&m).await),
+        None => Default::default(),
+    };
+    let report = verdict(
+        report,
+        &loaded,
+        &problems,
+        &tasks,
+        super::smoke::run(),
+        Some(smoke),
+    );
     let path = report_path();
     let text =
         serde_json::to_string_pretty(&report).map_err(|e| InstallerError::Other(e.to_string()))?;
@@ -251,11 +287,13 @@ fn plugin_verdict(
 }
 
 /// The window's report with Rust's view added: this run's identity, which plugins loaded and why
-/// the others didn't, each plugin's verdict, the known failures, what failed, and `pass`.
+/// the others didn't, what each task provider's `tasks:status` answered (`tasks`), each plugin's
+/// verdict, the known failures, what failed, and `pass`.
 fn verdict(
     mut report: Value,
     loaded: &[String],
     problems: &BTreeMap<String, String>,
+    tasks: &[Value],
     run: Option<&SmokeRun>,
     smoke: Option<&MarketSmoke>,
 ) -> Value {
@@ -273,6 +311,7 @@ fn verdict(
     report["dataRoot"] = json!(smoke.map(|s| &s.data_root));
     report["loaded"] = json!(loaded);
     report["problems"] = json!(problems);
+    report["tasks"] = json!(tasks);
     let mut failed = Vec::new();
     if run.is_none() || window_run_id != report["runId"] {
         failed.push("runId: the window's run isn't this one".to_string());
@@ -291,7 +330,9 @@ fn verdict(
         .filter(|p| p["framedBeforeLoad"] == true)
         .map(|p| text(&p["id"]))
         .collect();
-    if !plugins.is_empty() && early.is_empty() {
+    // Only a plugin with a page has a frame to make early.
+    let framed = plugins.iter().any(|p| p["frame"].is_object());
+    if framed && early.is_empty() {
         failed.push(
             "no frame was made before its plugin loaded, so the smoke didn't try that case".into(),
         );
@@ -310,6 +351,16 @@ fn verdict(
             _ => {}
         }
         verdicts.insert(id, json!({"status": status, "why": why}));
+    }
+    // With no token saved, a task provider answers `needs_token`; anything but that or `ok` fails.
+    for t in tasks {
+        let status = text(&t["status"]);
+        if status != "ok" && status != "needs_token" {
+            failed.push(format!(
+                "{}: tasks:status answered {status}",
+                text(&t["plugin"])
+            ));
+        }
     }
     report["verdicts"] = Value::Object(verdicts);
     report["knownFailures"] = json!(known);
@@ -363,7 +414,7 @@ mod tests {
     #[test]
     fn telegram_is_a_known_failure_and_the_rest_pass() {
         let (report, loaded, problems) = published();
-        let out = verdict(report, &loaded, &problems, Some(&run()), None);
+        let out = verdict(report, &loaded, &problems, &[], Some(&run()), None);
         assert_eq!(out["pass"], true, "{out:#}");
         assert_eq!(out["failed"], json!([]));
         assert_eq!(
@@ -509,7 +560,7 @@ mod tests {
         for (want, change) in cases {
             let (mut report, mut loaded, mut problems) = published();
             change(&mut report, &mut loaded, &mut problems);
-            let out = verdict(report, &loaded, &problems, Some(&run()), None);
+            let out = verdict(report, &loaded, &problems, &[], Some(&run()), None);
             assert_eq!(out["pass"], false, "{want}: {out:#}");
             assert_eq!(out["failed"], json!([want]), "{want}");
         }
@@ -518,13 +569,51 @@ mod tests {
             json!({"runId": "run-1", "plugins": []}),
             &[],
             &BTreeMap::new(),
+            &[],
             Some(&run()),
             None,
         );
         assert_eq!(empty["failed"], json!(["no plugin was installed"]));
         let (report, loaded, problems) = published();
-        let unprepared = verdict(report, &loaded, &problems, None, None);
+        let unprepared = verdict(report, &loaded, &problems, &[], None, None);
         assert_eq!(unprepared["pass"], false);
+    }
+
+    /// The marketplace's Todoist: no page, so no frame to make early; with no token saved its
+    /// `tasks:status` answers `needs_token`, which passes; any other failure code fails.
+    #[test]
+    fn a_task_provider_passes_with_ok_or_needs_token() {
+        let report = json!({"runId": "run-1", "plugins": [{"id": "todoist", "install": "installed",
+            "framedBeforeLoad": false, "frame": null, "views": []}]});
+        let loaded = vec!["todoist".to_string()];
+        let run_with = |status: &str| {
+            let tasks = [json!({"plugin": "todoist", "status": status})];
+            verdict(
+                report.clone(),
+                &loaded,
+                &BTreeMap::new(),
+                &tasks,
+                Some(&run()),
+                None,
+            )
+        };
+        for status in ["needs_token", "ok"] {
+            let out = run_with(status);
+            assert_eq!(out["pass"], true, "{status}: {out:#}");
+            assert_eq!(
+                out["tasks"],
+                json!([{"plugin": "todoist", "status": status}])
+            );
+            assert_eq!(out["verdicts"]["todoist"]["status"], "pass");
+        }
+        for status in ["offline", "refused", "rate_limited"] {
+            let out = run_with(status);
+            assert_eq!(out["pass"], false, "{status}");
+            assert_eq!(
+                out["failed"],
+                json!([format!("todoist: tasks:status answered {status}")])
+            );
+        }
     }
 
     #[test]
@@ -532,7 +621,7 @@ mod tests {
         let (mut report, mut loaded, _) = published();
         report["plugins"][3] = page("telegram", json!([section("main")]));
         loaded.push("telegram".into());
-        let out = verdict(report, &loaded, &BTreeMap::new(), Some(&run()), None);
+        let out = verdict(report, &loaded, &BTreeMap::new(), &[], Some(&run()), None);
         assert_eq!(out["pass"], true, "{out:#}");
         assert_eq!(out["knownFailures"], json!([]));
         assert_eq!(out["verdicts"]["telegram"]["status"], "pass");

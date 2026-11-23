@@ -18,7 +18,7 @@ Two suites run in CI: `node:test` files in `ui/test/` (pure UI modules, controll
 | `ui/test/tools/` | replays a captured setup transcript into fixtures | `ui/test/tools/replay-capture.mjs::FIXTURE_DIR` |
 | `src-tauri/src/ (mod tests)` | unit tests next to the code, `test_core` for workspace tests | `src-tauri/src/workspace/mod.rs::test_core` |
 | `src-tauri/src/testing.rs` | doubles for the integration tests (test-support feature) | `src-tauri/src/testing.rs::claude_profile` |
-| `src-tauri/tests/` | integration tests: bundle resources, the published Echo plugins | `src-tauri/tests/echo_plugins.rs::CONNECT_ECHO_PLUGINS_DIR` |
+| `src-tauri/tests/` | integration tests: bundle resources, the published Echo plugins, Connect's own marketplace (Todoist) | `src-tauri/tests/echo_plugins.rs::CONNECT_ECHO_PLUGINS_DIR`, `src-tauri/tests/connect_marketplace.rs::CONNECT_MARKETPLACE_DIR` |
 
 ## Key abstractions
 
@@ -40,7 +40,7 @@ src-tauri/src/commands/
 src-tauri/src/workspace/meetings/
   tests.rs, notes_tests.rs   test modules declared in meetings/mod.rs
 src-tauri/tests/
-  bundle_resources.rs, echo_plugins.rs   integration tests (test-support feature)
+  bundle_resources.rs, echo_plugins.rs, connect_marketplace.rs   integration tests (test-support feature)
 
 ui/test/
   engine.test.mjs   Engine orchestration (step sequencing, gates, fatal logic)
@@ -159,6 +159,7 @@ Approval gate tests (`ignore()` / `approve()`) use a `setTimeout` shim to yield 
 
 ### Rules
 - R1. Point `CONNECT_ECHO_PLUGINS_DIR` at an echo-plugins checkout to run `tests/echo_plugins.rs` for real; when the folder is missing, its tests print `skipped:` and pass. Evidence: `src-tauri/tests/echo_plugins.rs::CONNECT_ECHO_PLUGINS_DIR`
+- R2. Point `CONNECT_MARKETPLACE_DIR` at a codemie-connect-marketplace checkout (default `$HOME/repos/codemie-ai/codemie-connect-marketplace`) to run `tests/connect_marketplace.rs` for real; when it has no Todoist plugin, its tests print `skipped:` and pass. Evidence: `src-tauri/tests/connect_marketplace.rs::CONNECT_MARKETPLACE_DIR`
 
 ---
 
@@ -170,6 +171,8 @@ Approval gate tests (`ignore()` / `approve()`) use a `setTimeout` shim to yield 
 
 **Real Echo plugins (`src-tauri/tests/echo_plugins.rs`).** The published plugins are never copied into this repo. The tests read them from `CONNECT_ECHO_PLUGINS_DIR` (a marketplace folder or its `plugins/`; default `$HOME/AI/projects/other/echo-plugins/plugins`), and skip with a message when it is missing. The conformance tests install the four plugins into a temp data root and load them in the real host with the real services over a real `Core`; only things outside Connect are faked (Claude by `FakeRunner`, whose `on_run` hook edits the folder a run was given; the folder and file pickers by `Picked`; web pages by `HttpClient::canned`). Knowledge has a test per flow (reads; writes with git history and picked files; Claude in the vault and in a copy; a web page; Connect's meetings into a vault) and `knowledge_full_flow_in_connect`, which chains them. `testing::signed_in`, `testing::saved_meeting` and `testing::minutes_written` give a test core a Microsoft account, a meeting with saved notes and the event a notes run sends. `my_vault_reads_in_connect` is `#[ignore]`: it runs Knowledge over a copy of a real vault the developer names (`KN_MY_VAULT=<copy> cargo test --test echo_plugins my_vault -- --ignored --nocapture`) and prints counts and timings only.
 
+**Connect's own marketplace (`src-tauri/tests/connect_marketplace.rs`).** The Todoist plugin is never copied into this repo either: the tests read the marketplace from `CONNECT_MARKETPLACE_DIR`, install Todoist from a temp copy (its sheet agreed to), load it in the real host through the real `PluginManager`, and drive the real `task_sync` over a real `Core` (`testing::workspace_op` runs a workspace operation as the window sends it, `testing::task_sync(core, at)` one sync run at a given time, `testing::task_provider` the snapshot's `taskProvider`). Todoist itself is `testing::FakeTodoist`, a loopback server with the endpoints of the marketplace's `tests/helpers/fake-todoist.mjs`, failures by route (`fail_once`, e.g. a 429 with `Retry-After`) and a lost answer (`lose_once`: the work is done, the connection closes unanswered); `HttpClient::for_tests(&[("api.todoist.com", fake.base())], …)` sends the plugin's requests there after the host checked the plugin may reach `api.todoist.com`. The token is the sentinel `tk_SENTINEL_do_not_log_0123456789`; no test calls the real Todoist. Core-only sync tests use `task_provider::fake::FakeProvider` instead.
+
 **Echo's contract.** `src-tauri/src/plugins/services/contract_tests.rs` runs each regex the plugin matches errors by in QuickJS against Connect's real message, and compares each answer's keys and types with what echo-plugins' `tests/helpers/fake-ctx.mjs` gives (`testing::shape`, or `has_shape` where Connect's answer says more). A new member or a changed message gets its case there.
 
 **`test-support` feature.** `app_lib::testing` (`FakeRunner` for Claude, `FakeGh`, an offline HTTP client that records requests, a folder picker, `Core`) exists only with `--features test-support`. The crate lists itself as a dev-dependency with that feature, so `cargo test` has it and the app build never does. Integration tests use it; unit tests use `#[cfg(test)]` helpers (`plugins::testkit`, `ai::fake`).
@@ -179,7 +182,7 @@ Approval gate tests (`ignore()` / `approve()`) use a `setTimeout` shim to yield 
 | Mode | What it proves |
 |---|---|
 | `CODEMIE_PLUGIN_SMOKE=isolation ./target/debug/app` | In a real sandboxed `connect-plugin://` frame, `__TAURI__` and `__TAURI_INTERNALS__` are absent, `fetch('ipc://…')` fails, `parent.document` throws. Report: `connect-plugin-isolation.json`. Run it after any change to the frame, CSP, scheme or caller checks |
-| `CODEMIE_PLUGIN_SMOKE=<marketplace folder>` | Installs every plugin the marketplace offers into a fresh temp data root (agreeing to sheets by hash, only in this mode), loads them, opens each page and Settings section, then tells every frame a meeting's page shows (`SMOKE_CALL`) so their `call.*` slots draw, and reports what loaded and why the rest did not. Report: `connect-plugin-smoke.json`. Exit 0 pass, 1 fail, 2 window never reported, 3 cannot run. Telegram is an expected, named failure |
+| `CODEMIE_PLUGIN_SMOKE=<marketplace folder>` | Installs every plugin the marketplace offers into a fresh temp data root (agreeing to sheets by hash, only in this mode), loads them, opens each page and Settings section, then tells every frame a meeting's page shows (`SMOKE_CALL`) so their `call.*` slots draw, and reports what loaded and why the rest did not. Each plugin that provides tasks is asked `tasks:status`; the report's `tasks` lists `{plugin, status}`, and `ok` or `needs_token` (no token in the smoke's data root, so nothing reaches the network) passes, any other code fails. Report: `connect-plugin-smoke.json`. Exit 0 pass, 1 fail, 2 window never reported, 3 cannot run. Telegram is an expected, named failure |
 | `CODEMIE_STATUS_SMOKE=status` | The real app boots as the user's own launch does (their data folder unless `CODEMIE_WORKSPACE_TEST_DIR` is set), waits for the workspace, the first sync and the plugin manager, and reports the version, Claude profiles and routes, the data folder, plugins, workspace counts, what needs attention and whether the CodeMie setup sheet would open. Report: `connect-status-smoke.json`, statuses, counts, lengths, timings and ids only (e-mail addresses `<redacted>`, the home folder `~`, no message, draft or summary text). Exit 0 pass, 1 fail, 2 nothing reported in time, 3 cannot run (also beside a running Connect) |
 | `CODEMIE_STATUS_SMOKE=live` | The status report, then one AI draft (discarded), one thread summary (removed) and one Morning brief run (an automation it made is deleted) through the UI's workspace ops; fails on any send op or a change in outgoing actions. Runs Claude three times: only with the owner's approval |
 | `CODEMIE_STATUS_SMOKE=move:<folder>`, `=default` | On a test data root only (refused without `CODEMIE_WORKSPACE_TEST_DIR`): the data-folder check and move into `<folder>`, or "Use the default folder", without the restart; a `status` run after each shows the rows the next start opens |
@@ -261,6 +264,7 @@ pub fn contract_fixture(name: &str, value: &Value) {
 | `cargo test` fails with `<name> is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures` | a native response or record shape changed | regenerate the fixtures and commit the JSON with the change | `src-tauri/src/plugins/testkit.rs::contract_fixture` |
 | A test that imports `app.js` fails under `node:test` | `app.js` reads `window` and `document` at import | move the logic into a pure module and test that | `ui/workspace/app.js::rawInvoke` |
 | `tests/echo_plugins.rs` passes but tested nothing | the plugins folder is missing, so each test prints `skipped:` and returns | set `CONNECT_ECHO_PLUGINS_DIR` | `src-tauri/tests/echo_plugins.rs::CONNECT_ECHO_PLUGINS_DIR` |
+| `tests/connect_marketplace.rs` passes but tested nothing | the marketplace folder is missing, so each test prints `skipped:` and returns | set `CONNECT_MARKETPLACE_DIR` | `src-tauri/tests/connect_marketplace.rs::CONNECT_MARKETPLACE_DIR` |
 | The browser run fails at start inside the agent sandbox | it serves `ui/` on a loopback port | run it outside the sandbox with `PLAYWRIGHT_CORE` set | `ui/test/browser/workspace-e2e.mjs::WORKSPACE_E2E_ONLY` |
 
 ## Quick reference

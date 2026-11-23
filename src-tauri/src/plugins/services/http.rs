@@ -154,8 +154,8 @@ impl Client {
     }
 
     /// A client that sends each `host` of `hosts` to its loopback base instead, with a shorter
-    /// timeout.
-    #[cfg(test)]
+    /// timeout (also for the tests in `tests/`, which run a real plugin against a fake server).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn for_tests(hosts: &[(&str, String)], timeout: Duration) -> Client {
         let inner = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
