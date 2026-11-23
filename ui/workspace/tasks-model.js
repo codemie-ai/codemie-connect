@@ -10,9 +10,14 @@ export const COLUMN_NAMES = { review: 'To review', todo: 'To do', doing: 'In pro
 export const OPEN = ['review', 'todo', 'doing', 'waiting'];
 export const DEFAULT_FILTERS = Object.freeze({ who: 'all', person: '', meeting: '', due: 'any', q: '' });
 
-/** The Tasks page's view state (only view state lives in the window: the tasks are native's). */
+/** The Tasks page's view state (only view state lives in the window: the tasks are native's).
+ *  `view` is Local's Board, List or By date; `providerView` the view chosen while a provider is
+ *  active (null: By date); `folds` the Later folds opened, `rowOpen` the By date row unfolded and
+ *  `footer` By date's last action with its Undo. */
 export const newTasksView = (view = 'board') => ({
-  view: view === 'list' ? 'list' : 'board', filters: { ...DEFAULT_FILTERS }, drawer: null, quickAdd: null, showDismissed: false, showOlder: false,
+  view: ['list', 'dates'].includes(view) ? view : 'board', providerView: null,
+  filters: { ...DEFAULT_FILTERS }, drawer: null, quickAdd: null, showDismissed: false, showOlder: false,
+  folds: {}, rowOpen: null, footer: null,
 });
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;

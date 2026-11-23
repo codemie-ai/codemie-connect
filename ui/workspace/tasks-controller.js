@@ -5,10 +5,11 @@
 // so node:test drives it without a browser; only `attachBoardDrag` and the dialog's form are DOM.
 // No optimistic updates: every change is a `task_save` / `task_delete` and the snapshot after it.
 import {
-  COLUMNS, DEFAULT_FILTERS, columnName, dueInfo, filterTasks, meOf, meetingOf, orderBetween, peopleFor, personName, sortTasks, splitDone, taskOrder, taskStatus, tasksOf,
+  COLUMNS, DEFAULT_FILTERS, activeProvider, columnName, dueInfo, filterTasks, meOf, meetingOf, orderBetween, peopleFor, personName, sortTasks, splitDone, taskOrder, taskStatus, tasksOf,
 } from './tasks-model.js';
 import { field, select, textArea, textInput } from './ui.js';
-import { formatDate } from './format.js';
+import { dateFromKey, formatDate } from './format.js';
+import { dateGroups, dayFor, rowOf, shownView } from './tasks-dates-model.js';
 
 const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 const short = text => (String(text).length > 40 ? `${String(text).slice(0, 40)}…` : String(text));
@@ -23,11 +24,15 @@ const MIN_GAP = 1e-3;
  * `mutate(op, data)` a fenced write that re-renders; `render()` a re-render; `openModal` and `toast`
  * (`toast(message, tone, {label, run})`) the dialogs; `openMeeting(id, tab, line)` and
  * `openMessage(id)` navigation; `focus(selectors)` moves focus after a render to the first of the
- * selectors (a string or a list) that finds a control; `setPref` remembers the board/list choice.
+ * selectors (a string or a list) that finds a control; `setPref` remembers Local's view choice.
+ * By date: `openReply(messageId, text)` opens a conversation in Inbox with its reply box filled
+ * (nothing is sent), `openLink(url, providerName, pluginId)` opens a provider's link through
+ * Connect's link confirmation, `query(op, data)` a read-only native request (Sync now).
  */
 export function createTasksController({
   state, snap, mutate, render, openModal = () => null, toast = () => {}, openMeeting = () => {}, openMessage = () => {},
   focus = () => {}, setPref = () => {}, now = () => Date.now(),
+  openReply = () => {}, openLink = () => {}, query = async () => null,
 }) {
   const ui = () => state.tasks;
   const find = id => tasksOf(snap()).find(r => r.id === id);
@@ -156,7 +161,8 @@ export function createTasksController({
   }
 
   async function acceptAll() {
-    const list = shown('review');
+    // By date shows every task to review (it has no filters).
+    const list = shownView(ui(), snap()) === 'dates' ? groups().review : shown('review');
     for (const t of list) await move(t.id, 'todo', { log: 'Accepted from review' });
     if (list.length) toast(`${plural(list.length, 'task')} accepted. They’re on your board.`, 'success');
   }
@@ -166,7 +172,13 @@ export function createTasksController({
     const t = find(id);
     if (!t) throw missing();
     const from = taskStatus(t);
-    if (el.type === 'checkbox') return move(id, el.checked ? 'done' : from === 'done' ? 'todo' : from);
+    if (el.type === 'checkbox') {
+      const to = el.checked ? 'done' : from === 'done' ? 'todo' : from;
+      const result = await move(id, to);
+      // By date's done box: the footer's Undo puts it back.
+      if (to === 'done' && el.closest?.('.ws-tdate')) ui().footer = { text: 'Marked 1 done', undo: [{ id, due: t.data.due ?? null, status: from }] };
+      return result;
+    }
     await move(id, 'done');
     toast(`Done: “${short(t.data.text)}”`, 'success', { label: 'Undo', run: () => move(id, from) });
     return undefined;
@@ -240,16 +252,102 @@ export function createTasksController({
     });
   }
 
+  // ---------------------------------------------------------------- By date (design §9)
+
+  const groups = () => dateGroups(tasksOf(snap()), { now: now(), zone: zone(), me: me() });
+  const dayLabel = key => formatDate(dateFromKey(key), undefined, { month: 'short', day: 'numeric' });
+
+  /** Asks for a day (Pick date…), then runs `save(day)`. */
+  function pickDate(title, save) {
+    return openModal({
+      title, size: 'sm', submit: 'Move',
+      body: field('Date', textInput({ name: 'due', type: 'date', required: true })),
+      onSubmit: async f => {
+        const day = String(f.get('due') || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('Choose a date.');
+        await save(day);
+      },
+    });
+  }
+
+  /** One `task_bulk` over Late; the footer says what happened, with Undo sending `before`. */
+  async function bulkLate(item, say) {
+    const late = groups().late;
+    if (!late.length) return null;
+    const answer = await mutate('task_bulk', { items: late.map(r => ({ id: r.id, ...item })) });
+    const n = Number(answer?.done) || 0;
+    ui().footer = n ? { text: say(n), undo: Array.isArray(answer?.before) ? answer.before : [] } : null;
+    if (answer?.failed) toast(`${plural(answer.failed, 'task')} couldn’t be changed.`, 'error');
+    return render();
+  }
+
+  function moveLate(to) {
+    if (to === 'pick') return pickDate('Move late tasks to', day => bulkLate({ due: day }, n => `Moved ${n} to ${dayLabel(day)}`));
+    const day = dayFor(to, now(), zone());
+    if (!day) return null;
+    return bulkLate({ due: day }, n => `Moved ${n} to ${to === 'monday' ? 'Monday' : 'Tomorrow'}`);
+  }
+
+  async function undoLast() {
+    const f = ui().footer;
+    if (!f?.undo?.length) return null;
+    ui().footer = null;
+    await mutate('task_bulk', { items: f.undo });
+    return render();
+  }
+
+  /** Nudge: the source conversation in Inbox, its reply box holding a plain line. Only for a
+   *  check-in row whose source is a synced mail thread or Teams chat; nothing is sent. */
+  function nudge(id) {
+    const t = find(id);
+    if (!t) throw missing();
+    const row = rowOf(t, { me: me(), s: snap(), now: now(), zone: zone() });
+    if (!row.nudge || !row.checkWith) return null;
+    const what = row.text.trim().replace(/[.!?]+$/, '');
+    return openReply(row.source.id, `Hi ${row.checkWith.first}, any news on ${what}?`);
+  }
+
+  function openRemote(id) {
+    const t = find(id);
+    if (!t) throw missing();
+    const row = rowOf(t, { me: me(), s: snap(), now: now(), zone: zone() });
+    const tp = snap().taskProvider;
+    const plugin = String(tp?.active || '').replace(/^plugin:/, '');
+    if (!row.url || !plugin || plugin === 'local') return null;
+    return openLink(row.url, tp.name || plugin, plugin);
+  }
+
   /** The `task-*` and `tasks-*` actions; `el` is the control (its dataset, value, checked). */
   async function handle(action, el) {
     const id = el.dataset?.id;
     el.closest?.('details')?.removeAttribute('open');
     const v = ui();
     switch (action) {
-      case 'tasks-view':
-        v.view = el.dataset.view === 'list' ? 'list' : 'board';
-        setPref('codemie.tasks.view', v.view);
+      case 'tasks-view': {
+        // Local remembers its choice; a provider's lasts this session (By date first, no Board).
+        const view = ['board', 'list', 'dates'].includes(el.dataset.view) ? el.dataset.view : 'board';
+        if (activeProvider(snap()) === 'local') {
+          v.view = view;
+          setPref('codemie.tasks.view', v.view);
+        } else if (view !== 'board') v.providerView = view;
         return render();
+      }
+      case 'tasks-fold': v.folds = { ...v.folds, [el.dataset.fold]: !v.folds?.[el.dataset.fold] }; return render();
+      case 'task-row-open': v.rowOpen = v.rowOpen === id ? null : id; return render();
+      case 'task-snooze': return mutate('task_save', { id, due: el.dataset.value || null });
+      case 'task-pick-date': {
+        const t = find(id);
+        if (!t) throw missing();
+        return pickDate(`Move “${short(t.data.text)}” to`, day => mutate('task_save', { id, due: day }));
+      }
+      case 'tasks-late-move': return moveLate(el.dataset.to);
+      case 'tasks-late-done': return bulkLate({ status: 'done' }, n => `Marked ${n} done`);
+      case 'tasks-undo': return undoLast();
+      case 'task-handled': return mutate('task_handled', { id, action: el.dataset.act === 'done' ? 'done' : 'keep' });
+      case 'task-parked': return mutate('task_parked', { id, action: el.dataset.act === 'discard' ? 'discard' : 'retry' });
+      case 'task-nudge': return nudge(id);
+      case 'task-open-remote': return openRemote(id);
+      case 'tasks-sync': return query('task_sync_now', {});
       case 'tasks-who': v.filters.who = el.dataset.who || 'all'; return render();
       case 'tasks-filter': v.filters[el.dataset.filter] = el.value; return render();
       case 'tasks-clear': v.filters = { ...DEFAULT_FILTERS }; return render();

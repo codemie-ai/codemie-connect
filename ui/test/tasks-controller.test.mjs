@@ -1,6 +1,7 @@
 // The Tasks controller with its store, dialogs and navigation faked: drops, the Move to menu,
 // delete with Undo, quick add, review and the drawer's fields.
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { createTasksController } from '../workspace/tasks-controller.js';
 import { newTasksView, taskOrder, sortTasks, taskStatus } from '../workspace/tasks-model.js';
@@ -12,7 +13,7 @@ const NOW = Date.UTC(2026, 10, 18, 12);
 /** A controller over fakes. `mutate` applies saves and deletes to the snapshot, as the snapshot
  *  after a real write would show them; `answers` maps an op to what it returns. */
 function harness({ answers = {}, snapshot = withTasks(buildSnapshot(NOW, { photo: false, zone: 'UTC' }), NOW) } = {}) {
-  const calls = { mutate: [], render: 0, toasts: [], modals: [], meetings: [], focus: [] };
+  const calls = { mutate: [], render: 0, toasts: [], modals: [], meetings: [], focus: [], replies: [], queries: [], links: [] };
   const state = { route: 'tasks', tasks: newTasksView() };
   const ctl = createTasksController({
     state,
@@ -33,6 +34,9 @@ function harness({ answers = {}, snapshot = withTasks(buildSnapshot(NOW, { photo
     toast: (message, tone, action) => calls.toasts.push({ message, tone, action }),
     openMeeting: (...args) => calls.meetings.push(args),
     focus: selector => calls.focus.push(selector),
+    openReply: (...args) => calls.replies.push(args),
+    openLink: (...args) => calls.links.push(args),
+    query: async (op, data) => { calls.queries.push([op, data]); return { queued: true }; },
     now: () => NOW,
   });
   const record = id => snapshot.records.find(r => r.id === id);
@@ -269,4 +273,110 @@ test('a date typed only in part, left behind, keeps the due date', async () => {
 
 test('the task provider operations rebase onto a fresh snapshot (native fences them itself)', () => {
   for (const op of ['task_provider_set', 'task_withdraw', 'task_bulk', 'task_handled', 'task_parked']) assert.ok(REBASE_SAFE.has(op), op);
+});
+
+// ---------------------------------------------------------------- By date (task provider §9)
+
+const STATES = JSON.parse(readFileSync(new URL('./fixtures/contract/task-provider-states.json', import.meta.url), 'utf8'));
+/** Todoist active, three late tasks (one a check-in with Marek from a synced chat), one that
+ *  looks handled and one parked. */
+const todoist = () => ({
+  settings: { timeZone: 'UTC', meetings: {} }, connection: { displayName: 'Taylor Morgan', email: 'taylor.morgan@example.test' },
+  taskProvider: STATES.ready,
+  records: [
+    { id: 'm-marek', kind: 'message', data: { channel: 'chat', from: 'Marek Nowak', conversationId: 'c1' } },
+    ...[
+      ['late-1', { due: '2026-11-16' }],
+      ['late-2', { due: '2026-11-17', status: 'doing' }],
+      ['late-3', { text: 'the pilot user list', owner: 'marek@example.test', ownerName: 'Marek Nowak', kind: 'waiting', status: 'waiting', due: '2026-11-17', sourceId: 'm-marek' }],
+      ['handled', { due: '2026-11-18', handled: { evidence: 'you replied in Teams 17:32', at: 0, auto: false } }],
+      ['parked', { due: '2026-11-20', pending: true, syncError: 'Todoist needs a date like 2026-11-20.' }],
+      ['other', { provider: undefined, due: '2026-11-10' }],
+    ].map(([id, data], i) => ({ id, kind: 'commitment', updatedAt: 0, data: { text: id, owner: 'You', status: 'todo', order: i, provider: 'plugin:todoist', ...data } })),
+  ],
+});
+
+test('Move all to Tomorrow is one task_bulk with Undo sending before', async () => {
+  const before = [{ id: 'late-1', due: '2026-11-16', status: 'todo' }, { id: 'late-2', due: '2026-11-17', status: 'doing' }, { id: 'late-3', due: '2026-11-17', status: 'waiting' }];
+  const { ctl, state, calls } = harness({ snapshot: todoist(), answers: { task_bulk: data => ({ done: data.items.length, failed: 0, before }) } });
+  await ctl.handle('tasks-late-move', control({ to: 'tomorrow' }));
+  assert.equal(calls.mutate.length, 1);
+  assert.deepEqual(calls.mutate[0], ['task_bulk', { items: ['late-1', 'late-2', 'late-3'].map(id => ({ id, due: '2026-11-19' })) }]);
+  assert.equal(state.tasks.footer.text, 'Moved 3 to Tomorrow');
+  await ctl.handle('tasks-undo', control());
+  assert.deepEqual(calls.mutate[1], ['task_bulk', { items: before }]);
+  assert.equal(state.tasks.footer, null, 'Undo is used once');
+  // Monday, and Done all.
+  await ctl.handle('tasks-late-move', control({ to: 'monday' }));
+  assert.deepEqual(calls.mutate[2][1].items[0], { id: 'late-1', due: '2026-11-23' });
+  assert.equal(state.tasks.footer.text, 'Moved 3 to Monday');
+  await ctl.handle('tasks-late-done', control());
+  assert.deepEqual(calls.mutate[3], ['task_bulk', { items: ['late-1', 'late-2', 'late-3'].map(id => ({ id, status: 'done' })) }]);
+  assert.equal(state.tasks.footer.text, 'Marked 3 done');
+  // Pick date… asks for the day first, then moves them all to it.
+  await ctl.handle('tasks-late-move', control({ to: 'pick' }));
+  assert.equal(calls.mutate.length, 4, 'nothing before a day is picked');
+  const form = new Map([['due', '2026-11-30']]);
+  await calls.modals.at(-1).onSubmit(form);
+  assert.deepEqual(calls.mutate[4][1].items.map(i => i.due), ['2026-11-30', '2026-11-30', '2026-11-30']);
+  assert.match(state.tasks.footer.text, /^Moved 3 to /);
+});
+
+test('Nudge opens the thread with the prefilled line and sends nothing', async () => {
+  const { ctl, calls } = harness({ snapshot: todoist() });
+  await ctl.handle('task-nudge', control({ id: 'late-3' }));
+  assert.deepEqual(calls.replies, [['m-marek', 'Hi Marek, any news on the pilot user list?']]);
+  assert.equal(calls.mutate.length, 0, 'nothing written, nothing sent');
+  // A task without a synced thread has no Nudge.
+  await ctl.handle('task-nudge', control({ id: 'late-1' }));
+  assert.equal(calls.replies.length, 1);
+});
+
+test('Keep open sends task_handled keep; Discard change sends task_parked discard', async () => {
+  const { ctl, calls } = harness({ snapshot: todoist() });
+  await ctl.handle('task-handled', control({ id: 'handled', act: 'keep' }));
+  await ctl.handle('task-handled', control({ id: 'handled', act: 'done' }));
+  await ctl.handle('task-parked', control({ id: 'parked', act: 'discard' }));
+  await ctl.handle('task-parked', control({ id: 'parked', act: 'retry' }));
+  assert.deepEqual(calls.mutate, [
+    ['task_handled', { id: 'handled', action: 'keep' }],
+    ['task_handled', { id: 'handled', action: 'done' }],
+    ['task_parked', { id: 'parked', action: 'discard' }],
+    ['task_parked', { id: 'parked', action: 'retry' }],
+  ]);
+});
+
+test('By date: folds, a row unfolds alone, snooze, Sync now, Open in Todoist and the view switch', async () => {
+  const snap = todoist();
+  snap.records.find(r => r.id === 'late-1').data.remote = { url: 'https://app.todoist.com/app/task/1' };
+  const { ctl, state, calls } = harness({ snapshot: snap });
+  await ctl.handle('tasks-fold', control({ fold: 'next7' }));
+  assert.equal(state.tasks.folds.next7, true);
+  await ctl.handle('tasks-fold', control({ fold: 'next7' }));
+  assert.equal(state.tasks.folds.next7, false);
+  await ctl.handle('task-row-open', control({ id: 'late-1' }));
+  assert.equal(state.tasks.rowOpen, 'late-1');
+  await ctl.handle('task-row-open', control({ id: 'late-2' }));
+  assert.equal(state.tasks.rowOpen, 'late-2', 'one row unfolded at a time');
+  await ctl.handle('task-row-open', control({ id: 'late-2' }));
+  assert.equal(state.tasks.rowOpen, null);
+  await ctl.handle('task-snooze', control({ id: 'late-1', value: '2026-11-23' }));
+  assert.deepEqual(calls.mutate.at(-1), ['task_save', { id: 'late-1', due: '2026-11-23' }]);
+  await ctl.handle('task-pick-date', control({ id: 'late-1' }));
+  await calls.modals.at(-1).onSubmit(new Map([['due', '2026-12-02']]));
+  assert.deepEqual(calls.mutate.at(-1), ['task_save', { id: 'late-1', due: '2026-12-02' }]);
+  await ctl.handle('tasks-sync', control());
+  assert.deepEqual(calls.queries, [['task_sync_now', {}]]);
+  await ctl.handle('task-open-remote', control({ id: 'late-1' }));
+  assert.deepEqual(calls.links, [['https://app.todoist.com/app/task/1', 'Todoist', 'todoist']]);
+  // The view switch: with a provider the choice is the provider's, Local keeps its own.
+  await ctl.handle('tasks-view', control({ view: 'list' }));
+  assert.deepEqual([state.tasks.providerView, state.tasks.view], ['list', 'board']);
+  await ctl.handle('tasks-view', control({ view: 'board' }));
+  assert.equal(state.tasks.providerView, 'list', 'no Board with a provider');
+  // The done box in By date offers Undo in the footer.
+  await ctl.handle('task-done', control({ id: 'late-2' }, { type: 'checkbox', checked: true, closest: sel => (sel === '.ws-tdate' ? {} : null) }));
+  assert.deepEqual(calls.mutate.at(-1)[1].status, 'done');
+  assert.equal(state.tasks.footer.text, 'Marked 1 done');
+  assert.deepEqual(state.tasks.footer.undo, [{ id: 'late-2', due: '2026-11-17', status: 'doing' }]);
 });

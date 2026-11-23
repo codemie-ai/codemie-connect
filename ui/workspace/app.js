@@ -1537,6 +1537,21 @@ const tasksUi = store && createTasksController({
   openMessage: id => handle('open-message', { dataset: { id } }),
   focus: focusFirst,
   setPref: setLocalPref,
+  // Nudge (By date): the conversation opens with its reply box holding the line, not saved and
+  // not sent (⌘↩ waits for a touch, Send for its review). A box with words already keeps them.
+  openReply: async (id, text) => {
+    const m = getRecord('message', id);
+    if (!m) throw new Error('This conversation is no longer in your Inbox.');
+    const key = draftKeyOf(m);
+    const s = snap();
+    const box = replyBox({ manual: savedReply(s, m), ai: latestDraft(s, key), ui: draftUi(key) });
+    if (!box.text.trim() && !Object.hasOwn(state.replyCarry, key)) state.replyCarry[key] = text;
+    await handle('open-message', { dataset: { id } });
+    document.getElementById('reply-body')?.focus({ preventScroll: true });
+  },
+  // A provider's link (Open in Todoist ↗) opens through Connect's own link confirmation.
+  openLink: (url, name, id) => confirmPluginLink(url, name, id),
+  query: (op, data) => store.query(op, data),
 });
 if (tasksUi) {
   attachBoardDrag(document, tasksUi, {

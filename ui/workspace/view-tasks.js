@@ -8,8 +8,10 @@ import { avatar, badge, button, emptyState } from './ui.js';
 import { addDaysToKey, agoLabel, dayKey, formatDate, formatDateTime, formatTime } from './format.js';
 import {
   COLUMNS, DEFAULT_FILTERS, columnName, dueInfo, filterTasks, isMine, laneCounts, meOf, meetingOf, newTasksView, ownerOf, peopleFor, quickDates, quoteTime,
-  sortTasks, splitDone, taskStatus, tasksOf,
+  sortTasks, splitDone, taskStatus, tasksOf, activeProvider,
 } from './tasks-model.js';
+import { shownView, viewsFor } from './tasks-dates-model.js';
+import { datesView } from './view-tasks-dates.js';
 
 const TONES = { review: 'purple', todo: 'muted', doing: 'blue', waiting: 'amber', done: 'green' };
 const BADGE = { review: 'purple', todo: 'neutral', doing: 'info', waiting: 'warning', done: 'success', dismissed: 'neutral' };
@@ -21,6 +23,7 @@ const selectBox = (attrs, options) => `<span class="ws-select-wrap"><select clas
 function pageOf(s, ctx) {
   const v = { ...newTasksView(), ...(ctx.state?.tasks || {}) };
   v.filters = { ...DEFAULT_FILTERS, ...v.filters };
+  v.shown = shownView(v, s);
   const now = ctx.now ?? Date.now();
   const zone = s.settings.timeZone;
   const me = meOf(s);
@@ -41,18 +44,17 @@ export function tasksPage(s, ctx = {}) {
   return `<div class="ws-tasks">
     ${heading(p)}
     ${ctx.banners || ''}
-    ${toolbar(p)}
-    ${p.v.view === 'list' ? listView(p) : boardView(p)}
+    ${p.v.shown === 'dates' ? datesView(p) : `${toolbar(p)}${p.v.shown === 'list' ? listView(p) : boardView(p)}`}
     ${dismissed(p)}
   </div>${drawer(p)}`;
 }
 
 function heading(p) {
-  const views = [['board', 'Board', 'board'], ['list', 'List', 'list']];
+  const views = viewsFor(p.s);
   return `<header class="ws-page-heading ws-tasks-heading">
     <div><h1>Tasks</h1><p class="ws-description">What people agreed to do in your meetings, and anything you add yourself. Drag cards between columns, or use a card’s menu.</p></div>
     <div class="ws-actions">
-      <div class="ws-segmented" role="tablist" aria-label="View">${views.map(([id, label, ico]) => `<button type="button" role="tab" data-action="tasks-view" data-view="${id}" aria-selected="${p.v.view === id}">${icon(ico)}${label}</button>`).join('')}</div>
+      <div class="ws-segmented" role="tablist" aria-label="View">${views.map(([id, label, ico]) => `<button type="button" role="tab" data-action="tasks-view" data-view="${id}" aria-selected="${p.v.shown === id}">${icon(ico)}${label}</button>`).join('')}</div>
       ${button('New task', { action: 'task-new', variant: 'primary', iconName: 'plus' })}
     </div>
   </header>`;
@@ -253,7 +255,9 @@ function listRow(p, r) {
   const owner = ownerOf(r, p.me);
   const m = p.meeting(d.meetingId);
   const due = dueInfo(d.due, p.now, p.zone);
-  const statuses = COLUMNS.filter(c => c !== 'review' || status === 'review');
+  // A provider has no lanes: To do, Waiting and Done (and the task's own status, to show it).
+  const statuses = activeProvider(p.s) === 'local' ? COLUMNS.filter(c => c !== 'review' || status === 'review')
+    : COLUMNS.filter(c => ['todo', 'waiting', 'done'].includes(c) || c === status);
   return `<div class="ws-task-row${done ? ' ws-task-row-done' : ''}${!done && due?.tone === 'overdue' ? ' ws-task-row-overdue' : ''}" role="row">
     <span role="cell"><label class="ws-check"><input type="checkbox" data-action="task-done" data-id="${id}"${done ? ' checked' : ''} aria-label="${done ? 'Reopen' : 'Mark as done'}: ${e(d.text)}"><span class="ws-check-box" aria-hidden="true">${icon('check')}</span></label></span>
     <span role="cell" class="ws-task-row-title"><button type="button" class="ws-link-title" data-action="task-open" data-id="${id}">${e(d.text)}</button>${status === 'review' ? badge('To review', 'purple') : ''}</span>
