@@ -856,10 +856,10 @@ pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
     ))
 }
 
-/// Step 5's only way to make a task (design §3): idempotent by `key`. A task with that key, or a
-/// ledger entry for it with the active provider that is `created`, `done` or `removed`, makes
-/// nothing and answers `(id, false)`; otherwise `body` is saved as a new task of `workspace` with
-/// that key, `(id, true)`.
+/// Step 5's only way to make a task (design §3): idempotent by `key`. A task with that key, a
+/// ledger entry for it with the active provider that is `created`, `done` or `removed`, or one
+/// with any other provider that is `done` or `removed`, makes nothing and answers `(id, false)`;
+/// otherwise `body` is saved as a new task of `workspace` with that key, `(id, true)`.
 pub(crate) fn create_by_key(
     core: &Core,
     workspace: &str,
@@ -882,11 +882,16 @@ pub(crate) fn create_by_key(
     let provider = active_provider(&r.settings()?).to_string();
     // Made before, done or deleted in the provider — Local's own ledger included (design §3): a
     // rerun makes nothing again. Only a withdrawn key (the column's Undo) may be made again.
+    // Done or deleted in any other provider counts too: switching Local and Todoist never
+    // brings back a task the user finished or deleted in the other one.
     let ledger = keys::ledger_get(&r, &provider, key)?;
-    let known = ledger
-        .as_ref()
-        .filter(|l| matches!(l["state"].as_str(), Some("created" | "done" | "removed")));
-    if let Some(l) = known {
+    let known = match ledger
+        .filter(|l| matches!(l["state"].as_str(), Some("created" | "done" | "removed")))
+    {
+        Some(l) => Some((provider, l)),
+        None => keys::ledger_settled(&r, key)?,
+    };
+    if let Some((provider, l)) = known {
         // The id the provider's task has (or had) in Connect, `<plugin>-<remote id>`; the
         // key itself when no remote id was ever learned (always, for Local).
         let plugin = provider.strip_prefix("plugin:").unwrap_or(&provider);

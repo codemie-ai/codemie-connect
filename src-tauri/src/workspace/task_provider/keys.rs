@@ -76,6 +76,18 @@ pub(crate) fn ledger_get(r: &Repository, provider: &str, key: &str) -> Result<Op
     }
 }
 
+/// A ledger entry for `key` under any provider that is `done` or `removed`, as
+/// `(provider, entry)`: the user finished or deleted that task, so it is never made again,
+/// in that provider or another one (design §3).
+pub(crate) fn ledger_settled(r: &Repository, key: &str) -> Result<Option<(String, Value)>> {
+    let suffix = format!("|{key}");
+    Ok(r.records_of_kind(LEDGER_KIND)?.into_iter().find_map(|rec| {
+        let provider = rec.id.strip_suffix(&suffix)?.to_string();
+        matches!(rec.data["state"].as_str(), Some("done" | "removed"))
+            .then_some((provider, rec.data))
+    }))
+}
+
 /// Remembers `key`'s outcome with `provider`: `state` is `created`, `done`, `withdrawn` or
 /// `removed` (design §3); `remote_id` is the provider's task id, when there is one.
 #[cfg_attr(not(test), allow(dead_code))] // the sync job writes `ledger_record` with its task

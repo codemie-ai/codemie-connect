@@ -69,15 +69,22 @@ fn event_name(a: &Automation) -> Value {
     }
 }
 
-/// Queues one run. The execution key makes a second enqueue of the same run a no-op.
-fn enqueue_run(r: &mut Repository, a: &Automation, key: String, trigger: Value) -> Result<String> {
+/// Queues one run, due at `due`. The execution key makes a second enqueue of the same run a
+/// no-op.
+fn enqueue_run(
+    r: &mut Repository,
+    a: &Automation,
+    key: String,
+    trigger: Value,
+    due: i64,
+) -> Result<String> {
     let policy = r.policy(Some(PERSONAL), None)?;
     let job = new_job(
         "automation_run",
         key,
         Some(PERSONAL.into()),
         None,
-        now(),
+        due,
         policy,
         json!({"automationId": a.id, "title": a.name, "trigger": trigger}),
     );
@@ -142,11 +149,14 @@ impl Core {
                     state.skip(&a.id, &format!("schedule:{slot}"), reason, now);
                     continue;
                 }
+                // Due at its scheduled time, so runs queued together (a catch-up morning) are
+                // claimed in schedule order: triage, Commitments, then the briefing.
                 enqueue_run(
                     &mut r,
                     a,
                     format!("automation:{}:{slot}", a.id),
                     json!({"kind": kind, "scheduledAt": slot}),
+                    slot,
                 )?;
                 state.started(&a.id, None, now);
             }
@@ -175,6 +185,7 @@ impl Core {
                             a,
                             format!("automation:{aid}:event:{source}"),
                             json!({"kind": "event", "event": event_name(a), "sourceId": source}),
+                            crate::workspace::models::now(),
                         )?;
                     }
                 }
@@ -278,6 +289,7 @@ impl Core {
                     a,
                     format!("automation:{}:event:{}", a.id, m.id),
                     json!({"kind": "event", "event": event_name(a), "sourceId": m.id}),
+                    crate::workspace::models::now(),
                 )?;
             }
         }
@@ -378,6 +390,7 @@ impl Core {
                         a,
                         format!("automation:{aid}:event:{source}"),
                         json!({"kind": "event", "event": event_name(a), "sourceId": source}),
+                        now(),
                     )?;
                 }
             }
@@ -491,6 +504,9 @@ impl Core {
             Operation::AutomationRunNow => {
                 let aid = required(&req.data, "id", 200)?;
                 let a = stored(&r, aid)?;
+                if a.is_summary() {
+                    return Err(WorkspaceError::new("conflict", SUMMARY_RUN_NOW));
+                }
                 let running = r.jobs()?.into_iter().any(|j| {
                     j.kind == "automation_run"
                         && matches!(j.state.as_str(), "queued" | "running")
@@ -514,7 +530,7 @@ impl Core {
                     "automation:{aid}:manual:{}",
                     req.operation_id.as_deref().unwrap_or("")
                 );
-                let job = enqueue_run(&mut r, &a, key, json!({"kind": "manual"}))?;
+                let job = enqueue_run(&mut r, &a, key, json!({"kind": "manual"}), now())?;
                 Ok(json!({"queued": true, "jobId": job}))
             }
             _ => Err(WorkspaceError::new("validation", "Unsupported operation.")),
@@ -779,8 +795,55 @@ mod engine_tests {
         // The same key can never be queued twice, even if the state were lost.
         let a = stored(&core.repo().unwrap(), "auto-schedule").unwrap();
         let key = jobs[0].key.clone();
-        enqueue_run(&mut core.repo().unwrap(), &a, key, json!({})).unwrap();
+        enqueue_run(&mut core.repo().unwrap(), &a, key, json!({}), 0).unwrap();
         assert_eq!(jobs_of(&core).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn catch_up_runs_are_claimed_in_their_scheduled_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        // The briefing was edited last, so it is listed (and queued) first.
+        let habits = [
+            ("auto-triage", "08:00", "2026-03-20T00:00:00Z"),
+            ("auto-commitments", "08:03", "2026-03-21T00:00:00Z"),
+            ("auto-briefing", "08:07", "2026-03-22T00:00:00Z"),
+        ];
+        for (id, time, edited) in habits {
+            let mut a = schedule_json();
+            a["id"] = id.into();
+            a["name"] = id.into();
+            a["trigger"]["time"] = time.into();
+            core.request(mutation(&core, Operation::AutomationSave, a))
+                .await
+                .unwrap();
+            let mut record = core
+                .repo()
+                .unwrap()
+                .record("automation", id, None, Some("personal"))
+                .unwrap();
+            record.updated_at = ts(edited);
+            core.repo().unwrap().put_record(&record).unwrap();
+        }
+        // The laptop opened at 09:00 on a Tuesday: all three are caught up in one round.
+        let (now, started) = (ts("2026-03-24T09:00:00Z"), ts("2026-03-24T08:59:00Z"));
+        core.automations_round_at(now, started).unwrap();
+        assert_eq!(jobs_of(&core).len(), 3);
+        let mut order = Vec::new();
+        loop {
+            let mut r = core.repo().unwrap();
+            let Some(mut job) = r.claim_ready(super::now() + 60, false).unwrap() else {
+                break;
+            };
+            order.push(job.payload["automationId"].as_str().unwrap().to_string());
+            job.state = "succeeded".into();
+            r.save_job(&job).unwrap();
+        }
+        assert_eq!(
+            order,
+            ["auto-triage", "auto-commitments", "auto-briefing"],
+            "triage, then Commitments, then the briefing"
+        );
     }
 
     fn seed(core: &Core) {

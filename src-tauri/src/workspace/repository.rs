@@ -1366,8 +1366,17 @@ fn bump(tx: &Transaction<'_>) -> Result<()> {
     tx.execute("UPDATE meta SET revision=revision+1 WHERE id=1", [])?;
     Ok(())
 }
+/// A message also keeps `seenAt`, when Connect first stored it (its first write, or for a row
+/// from before the field its last one): "Messages since the last run" reads a message synced
+/// after that run even when it arrived before it (DESIGN step 5 §3).
 fn put_record(tx: &Transaction<'_>, r: &Record) -> Result<()> {
-    tx.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id,kind,connection_id,workspace_id) DO UPDATE SET source=excluded.source,revision=excluded.revision,updated_at=excluded.updated_at,body=excluded.body",params![r.id,r.kind,r.connection_id.as_deref().unwrap_or(""),r.workspace_id.as_deref().unwrap_or(""),r.source,r.revision,r.updated_at,encode(&r.data)?])?;
+    let mut data = r.data.clone();
+    if r.kind == "message" && data.get("seenAt").is_none_or(Value::is_null) {
+        if let Some(fields) = data.as_object_mut() {
+            fields.insert("seenAt".into(), r.updated_at.into());
+        }
+    }
+    tx.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id,kind,connection_id,workspace_id) DO UPDATE SET source=excluded.source,revision=excluded.revision,updated_at=excluded.updated_at,body=CASE WHEN records.kind='message' AND json_valid(excluded.body) AND json_type(excluded.body)='object' THEN json_set(excluded.body,'$.seenAt',COALESCE(json_extract(records.body,'$.seenAt'),records.updated_at)) ELSE excluded.body END",params![r.id,r.kind,r.connection_id.as_deref().unwrap_or(""),r.workspace_id.as_deref().unwrap_or(""),r.source,r.revision,r.updated_at,encode(&data)?])?;
     Ok(())
 }
 fn record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Record> {
@@ -1966,6 +1975,30 @@ mod tests {
             updated_at: now(),
             data,
         }
+    }
+    #[test]
+    fn a_message_keeps_when_connect_first_stored_it() {
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Repository::open(&d.path().join("db")).unwrap();
+        let mut m = item("a", "m1", "message", "mail:inbox", json!({"at": 50}));
+        m.updated_at = 100;
+        r.put_record(&m).unwrap();
+        m.updated_at = 500;
+        m.revision = "v2".into();
+        r.put_record(&m).unwrap();
+        let got = r.record("message", "m1", Some("a"), None).unwrap();
+        assert_eq!(got.data["seenAt"], 100, "a re-sync keeps the first time");
+        assert_eq!(got.updated_at, 500);
+        // A message stored before `seenAt` existed: its last write stands in for it.
+        r.db.execute_batch(
+            "INSERT INTO records VALUES('m2','message','a','','mail:inbox','v1',200,'{\"at\":40}')",
+        )
+        .unwrap();
+        let mut m2 = item("a", "m2", "message", "mail:inbox", json!({"at": 40}));
+        m2.updated_at = 900;
+        r.put_record(&m2).unwrap();
+        let got = r.record("message", "m2", Some("a"), None).unwrap();
+        assert_eq!(got.data["seenAt"], 200);
     }
     #[test]
     fn chat_pruning_keeps_the_newest_tail_and_anything_acted_on() {

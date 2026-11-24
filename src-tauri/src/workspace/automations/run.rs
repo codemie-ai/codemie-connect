@@ -3,7 +3,7 @@
 //! notification or a reply draft. Automations never send and never create actions.
 use super::context::{self, Source};
 use super::engine::stored;
-use super::rules::Automation;
+use super::rules::{Automation, SUMMARY_RUN_NOW};
 use crate::ai::command::RunSpec;
 use crate::ai::profiles::AiProfile;
 use crate::ai::stream::{AiError, ErrorClass};
@@ -226,7 +226,9 @@ pub(crate) fn task_body(
 /// Where "Messages since the last run" begins (DESIGN step 5 §3): when the last `ok` run started,
 /// or a day back on the first run; never more than three days back.
 fn recent_since(last_ok: Option<i64>, now: i64) -> i64 {
-    last_ok.unwrap_or(now - 86_400).max(now - 3 * 86_400)
+    last_ok
+        .unwrap_or(now - 86_400)
+        .max(now - context::RECENT_FLOOR_SECS)
 }
 
 #[cfg(test)]
@@ -339,6 +341,12 @@ impl Core {
     /// meeting is no longer available, its template is gone, or it already has a document of
     /// that template.
     fn run_summary(&self, job: &Job, a: &Automation, log: &mut RunLog) -> Result<String> {
+        if log.trigger["kind"] == "manual" {
+            return self.commit_skipped(job, log, SUMMARY_RUN_NOW);
+        }
+        if !a.enabled {
+            return self.commit_skipped(job, log, "The automation was turned off before it ran.");
+        }
         let meeting_id = log.trigger["sourceId"].as_str().unwrap_or("").to_string();
         let Some(template_id) = a.deliver.meeting_summary.clone() else {
             return self.commit_skipped(job, log, "Choose the template to make.");
@@ -481,6 +489,8 @@ impl Core {
             draft: wants_draft,
             me: &me,
             since: Some(recent_since(last_ok, reading.now)),
+            // A message synced after the last run started is read though it arrived earlier.
+            seen_since: last_ok.map(|_| recent_since(last_ok, reading.now)),
         };
         let built = context::build(&*self.repo()?, &run, &reading)?;
         log.sources = built.sources.iter().map(Source::to_json).collect();
@@ -740,6 +750,7 @@ impl Core {
 
 #[cfg(test)]
 mod tests {
+    use super::SUMMARY_RUN_NOW;
     use crate::ai::command::RunSpec;
     use crate::ai::fake::{FakeRunner, Gate};
     use crate::ai::stream::{AiError, ErrorClass, RunOutcome, Usage};
@@ -2093,6 +2104,48 @@ mod tests {
         assert!(!second.contains("two hours old"));
     }
 
+    #[tokio::test]
+    async fn a_message_synced_after_the_last_run_is_read_though_it_arrived_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(brief_answer()),
+            Ok(brief_answer()),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        save(&core, morning_brief(json!({"recentMessages": true}))).await;
+        run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        // Olga's mail arrived four minutes before that run but was synced only after it.
+        let mut late = mail(
+            "late",
+            now() - 240,
+            "Olga Petrova",
+            "olga@example.test",
+            "I'll send the signed SOW by Thursday",
+        );
+        late.updated_at = now();
+        put(&core, late);
+        // Synced late too, but four days old: past the three-day floor.
+        let mut stale = mail(
+            "stale",
+            now() - 4 * 86_400,
+            "Olga Petrova",
+            "olga@example.test",
+            "an old thread",
+        );
+        stale.updated_at = now();
+        put(&core, stale);
+        run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+        let second = fake.calls()[1].input["recentMessages"].to_string();
+        assert!(
+            second.contains("signed SOW"),
+            "a late-synced message is read by the next run: {second}"
+        );
+        assert!(!second.contains("an old thread"), "never past three days");
+    }
+
     fn triage() -> Value {
         json!({"id": "auto-triage", "name": "Inbox triage", "enabled": true,
             "trigger": {"kind": "schedule", "days": [1, 2, 3, 4, 5], "time": "08:00"},
@@ -2373,6 +2426,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_key_removed_or_done_in_one_provider_is_not_made_in_another() {
+        // Local: the user deleted the reply to Olga, then turns Todoist on.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(triage_answer()),
+            Ok(triage_answer()),
+        ]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        two_mails(&core);
+        save(&core, triage()).await;
+        run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        let made = all_tasks(&core);
+        assert_eq!(made[0].data["key"], reply_key("m1"));
+        core.request(mutation(
+            &core,
+            Operation::TaskDelete,
+            json!({"id": made[0].id}),
+        ))
+        .await
+        .unwrap();
+        let provider = with_todoist(&core);
+        let rerun = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert!(
+            !all_tasks(&core)
+                .iter()
+                .any(|t| t.data["key"] == reply_key("m1")),
+            "the task deleted in Local is not made again in Todoist"
+        );
+        assert_eq!(creates(&provider), 0);
+        assert_eq!(run_of(&core, &rerun).data["tasks"]["made"], json!([]));
+
+        // Todoist: one done and one removed there, then back to Local.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(triage_answer())]));
+        let core = test_core(dir.path(), fake, ready());
+        seed(&core);
+        with_todoist(&core);
+        two_mails(&core);
+        {
+            let mut r = core.repo().unwrap();
+            keys::ledger_put(
+                &mut r,
+                TODOIST,
+                &reply_key("m1"),
+                Some("9001"),
+                "done",
+                now(),
+            )
+            .unwrap();
+            keys::ledger_put(
+                &mut r,
+                TODOIST,
+                &reply_key("m2"),
+                Some("9002"),
+                "removed",
+                now(),
+            )
+            .unwrap();
+            let mut s = r.settings().unwrap();
+            s.tasks.provider = "local".into();
+            r.settings_update(&s).unwrap();
+        }
+        save(&core, triage()).await;
+        let jid = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert!(all_tasks(&core).is_empty(), "nothing comes back in Local");
+        assert_eq!(run_of(&core, &jid).data["tasks"]["existing"], 2);
+    }
+
+    #[tokio::test]
     async fn a_message_gone_while_claude_worked_gets_no_task() {
         let dir = tempfile::tempdir().unwrap();
         let (fake, gate) = FakeRunner::gated(vec![Ok(triage_answer())]);
@@ -2637,21 +2763,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_now_on_a_summary_automation_is_skipped_not_an_empty_claude_run() {
+    async fn run_now_on_a_summary_automation_is_refused_with_why() {
         let dir = tempfile::tempdir().unwrap();
         let fake = Arc::new(FakeRunner::new(vec![]));
         let core = test_core(dir.path(), fake.clone(), ready());
         seed(&core);
         save(&core, summary_automation("auto-summary", "formal-summary")).await;
-        let jid = run_now(&core, "auto-summary").await;
+        let err = core
+            .request(mutation(
+                &core,
+                Operation::AutomationRunNow,
+                json!({"id": "auto-summary"}),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(err.message, SUMMARY_RUN_NOW);
+        assert!(jobs_of(&core, "automation_run").is_empty());
+        // A manual run queued before this check is skipped with the same sentence.
+        {
+            let mut r = core.repo().unwrap();
+            let policy = r.policy(Some("personal"), None).unwrap();
+            r.enqueue(&crate::workspace::new_job(
+                "automation_run",
+                "automation:auto-summary:manual:old".into(),
+                Some("personal".into()),
+                None,
+                now(),
+                policy,
+                json!({"automationId": "auto-summary", "title": "Formal summary",
+                    "trigger": {"kind": "manual"}}),
+            ))
+            .unwrap();
+        }
         let done = run_next(&core).await;
-        assert_eq!(done.id, jid);
         assert_eq!(done.state, "succeeded", "{:?}", done.result);
-        assert_eq!(run_of(&core, &done.id).data["status"], "skipped");
+        assert_eq!(run_of(&core, &done.id).data["reason"], SUMMARY_RUN_NOW);
         assert!(
             fake.calls().is_empty(),
             "a manual run with no meeting must never call Claude"
         );
+    }
+
+    #[tokio::test]
+    async fn a_summary_turned_off_before_it_ran_queues_no_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        put(&core, meeting_record("m1", BASE, json!([]), None));
+        queue_meeting_ready(&core, "auto-summary", "m1");
+        core.request(mutation(
+            &core,
+            Operation::AutomationToggle,
+            json!({"id": "auto-summary", "enabled": false}),
+        ))
+        .await
+        .unwrap();
+        let done = run_next(&core).await;
+        assert_eq!(
+            done.result.as_deref(),
+            Some("Skipped: The automation was turned off before it ran.")
+        );
+        assert!(jobs_of(&core, "meeting_notes").is_empty());
     }
 
     #[tokio::test]
@@ -2763,7 +2936,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn contract_fixture_summary_run() {
+    async fn contract_fixtures_summary_run() {
         let dir = tempfile::tempdir().unwrap();
         let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
         seed(&core);

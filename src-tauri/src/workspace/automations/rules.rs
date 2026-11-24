@@ -10,6 +10,9 @@ pub const NAME_MAX: usize = 80;
 pub const PROMPT_MAX: usize = 4000;
 pub const COOLDOWN_SECS: i64 = 600;
 pub const HOURLY_CAP: usize = 30;
+/// Why a meeting-summary automation has no Run now: it needs a meeting to run for.
+pub const SUMMARY_RUN_NOW: &str =
+    "Run now isn't available for a meeting summary. It runs when a meeting's notes are ready.";
 pub const CATCH_UP_SECS: i64 = 12 * 3600;
 /// A scheduled time this recent, while Connect was open, is an ordinary run; later is missed.
 pub const ON_TIME_SECS: i64 = 15 * 60;
@@ -473,6 +476,12 @@ impl State {
         if self.in_progress.contains(id) {
             return Some("An earlier run of this automation is still in progress.");
         }
+        self.limit(id, sender, now)
+    }
+    /// `refusal` without the run in progress: a message or meeting event is seen only once, so
+    /// it queues behind an earlier run instead (runs are claimed one at a time, so it still
+    /// never overlaps); only the sender's cooldown and the hourly cap hold it back.
+    pub fn limit(&self, id: &str, sender: Option<&str>, now: i64) -> Option<&'static str> {
         if let Some(sender) = sender {
             if self
                 .fired
@@ -494,6 +503,8 @@ impl State {
     pub fn started(&mut self, id: &str, sender: Option<&str>, now: i64) {
         self.runs.retain(|t| now - *t < 3600);
         self.runs.push(now);
+        // An expired cooldown (legacy bare-id keys too) holds nothing back any more.
+        self.fired.retain(|_, t| now - *t < COOLDOWN_SECS);
         if let Some(sender) = sender {
             self.fired.insert(format!("{id}|{sender}"), now);
         }
@@ -597,10 +608,10 @@ fn message_matches(
 }
 
 /// The (automation id, source id) pairs that start a run for the new messages and ended
-/// meetings. Each pair fires once; an automation is held back while a run is in progress, for
-/// ten minutes after its last event run for that sender (the mail address, the Teams chat id,
-/// or the meeting for `meeting_ended`), and when 30 runs started within the hour. A held-back
-/// match is recorded in `state.skipped` and not queued.
+/// meetings. Each pair fires once; a run in progress does not hold it back (it is queued behind
+/// it), but ten minutes after its last event run for that sender (the mail address, the Teams
+/// chat id, or the meeting for `meeting_ended`) and 30 runs started within the hour do. A
+/// held-back match is recorded in `state.skipped` and not queued.
 pub fn match_events(
     automations: &[Automation],
     new_messages: &[MessageIn],
@@ -639,7 +650,7 @@ pub fn match_events(
                 continue;
             }
             state.remember_source(key);
-            if let Some(reason) = state.refusal(&a.id, Some(&sender), now) {
+            if let Some(reason) = state.limit(&a.id, Some(&sender), now) {
                 state.skip(&a.id, source, reason, now);
                 continue;
             }
@@ -1184,34 +1195,57 @@ mod tests {
     }
 
     #[test]
-    fn no_overlap_while_run_in_progress() {
+    fn cooldown_entries_are_dropped_once_they_expire() {
+        let mut state = State::default();
+        state.fired.insert("e|old@epam.com".into(), 1_000);
+        state.fired.insert("e".into(), 1_000); // a legacy bare-id key
+        state.fired.insert("e|recent@epam.com".into(), 9_700);
+        state.started("e", Some("new@epam.com"), 10_000);
+        let keys: Vec<&str> = state.fired.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["e|new@epam.com", "e|recent@epam.com"]);
+    }
+
+    #[test]
+    fn a_second_sender_while_an_earlier_run_is_queued_still_runs() {
+        // Ann's run is still queued when Bob's mail arrives in the next sync round: Bob's run is
+        // queued behind it (runs are claimed one at a time), never dropped.
         let a = vec![event("e", EventKind::MailFrom, &["epam.com"], &[])];
         let mut state = State::default();
-        state.in_progress.insert("e".into());
-        let got = match_events(
+        let first = match_events(
             &a,
-            &[mail("m1", "a@epam.com", "", "")],
+            &[mail("m1", "ann@epam.com", "", "")],
             &[],
             &HashSet::new(),
             &mut state,
             1_000,
         );
-        assert!(got.is_empty());
-        assert_eq!(
-            state.skipped.last().unwrap().reason,
-            "An earlier run of this automation is still in progress."
-        );
-        // Once it finishes the next message runs; the skipped one is not queued behind it.
-        state.in_progress.clear();
-        let next = match_events(
+        assert_eq!(first, vec![("e".to_string(), "m1".to_string())]);
+        state.in_progress.insert("e".into());
+        let got = match_events(
             &a,
-            &[mail("m2", "a@epam.com", "", "")],
+            &[mail("m2", "bob@epam.com", "", "")],
             &[],
             &HashSet::new(),
             &mut state,
-            5_000,
+            1_180,
         );
-        assert_eq!(next, vec![("e".to_string(), "m2".to_string())]);
+        assert_eq!(got, vec![("e".to_string(), "m2".to_string())]);
+        assert!(state.skipped.is_empty(), "{:?}", state.skipped);
+        // The sender's own cooldown still holds while the run is queued.
+        let again = match_events(
+            &a,
+            &[mail("m3", "bob@epam.com", "", "")],
+            &[],
+            &HashSet::new(),
+            &mut state,
+            1_200,
+        );
+        assert!(again.is_empty());
+        // A schedule (no sender) still waits for the run in progress.
+        assert_eq!(
+            state.refusal("e", None, 1_200),
+            Some("An earlier run of this automation is still in progress.")
+        );
     }
 
     #[test]

@@ -20,6 +20,8 @@ use std::collections::{HashMap, HashSet};
 const MAX_EVENTS: usize = 30;
 const MAX_NEEDS_REPLY: usize = 20;
 const MAX_RECENT_MESSAGES: usize = 40;
+/// "Messages since the last run" never reaches further back than three days.
+pub(super) const RECENT_FLOOR_SECS: i64 = 3 * 86_400;
 const MAX_SENDER_MAIL: usize = 20;
 const MAX_COMMITMENTS: usize = 30;
 const MAX_NOTES: usize = 10;
@@ -51,6 +53,10 @@ pub struct Run<'a> {
     /// first-run/floor default. `None` when it is not yet known, which skips the section
     /// (DESIGN step 5 §3; Task 4 computes it).
     pub since: Option<i64>,
+    /// After an earlier `ok` run, when it started (floored like `since`): a message Connect first
+    /// stored (`seenAt`) at or after this is read too, though it arrived before `since` (a late
+    /// sync), as long as it arrived within the last three days. `None` on a first run.
+    pub seen_since: Option<i64>,
 }
 
 /// One block Claude read, and the record it stands for.
@@ -203,7 +209,7 @@ pub fn build(repo: &Repository, run: &Run, reading: &Reading) -> Result<RunInput
             if let Some(since) = run.since {
                 add(
                     "recentMessages",
-                    recent_messages(repo, w, c, since, reading.now, tz)?,
+                    recent_messages(repo, w, c, (since, run.seen_since), reading.now, tz)?,
                 );
             }
         }
@@ -550,20 +556,25 @@ fn needs_reply(
 
 /// "Messages since the last run" (DESIGN step 5 §3): every synced mail and Teams message the
 /// workspace shows, both directions, since `since` and no later than `now`, newest first;
-/// `by="user"` marks a message the user sent.
+/// `by="user"` marks a message the user sent. With `seen_since`, a message Connect first stored
+/// at or after it counts too when it arrived within [`RECENT_FLOOR_SECS`] (a late sync).
 fn recent_messages(
     repo: &Repository,
     w: &Workspace,
     c: &Connection,
-    since: i64,
+    (since, seen_since): (i64, Option<i64>),
     now: i64,
     tz: Tz,
 ) -> Result<(Vec<Block>, usize)> {
+    let late = |m: &Record| {
+        seen_since.is_some_and(|s| m.data["seenAt"].as_i64().is_some_and(|seen| seen >= s))
+            && at(m) >= now - RECENT_FLOOR_SECS
+    };
     let mut messages: Vec<Record> = repo
         .provider_records(&c.id, "message")?
         .into_iter()
         .filter(|m| {
-            at(m) >= since
+            (at(m) >= since || late(m))
                 && at(m) <= now
                 && record_selected(m, w)
                 && source_permitted(m, c)
@@ -859,6 +870,7 @@ mod tests {
             draft: false,
             me: &me,
             since: None,
+            seen_since: None,
         };
         build(r, &run, &reading).unwrap()
     }
@@ -1122,6 +1134,7 @@ mod tests {
             draft: false,
             me: &me,
             since: Some(since),
+            seen_since: None,
         };
         let built = build(&r, &run, &reading).unwrap();
         let blocks: Vec<&str> = built.input["recentMessages"]
