@@ -732,6 +732,58 @@ async fn auto_notes_follow_rules_and_wait() {
         .any(|j| j.payload["meetingId"] == "quiet"));
 }
 
+/// Review fix (Important 2 / Task 5 brief step 3's pin): a Formal-summary-style job
+/// (`meeting_notes:auto:<id>:<template>`) must not stand in for the meeting's own one automatic
+/// attempt (`meeting_notes:auto:<id>`) — the round must still queue the plain key.
+#[tokio::test]
+async fn a_summary_job_does_not_stand_in_for_the_meetings_own_automatic_notes() {
+    let n = notes_env(vec![]);
+    let e = &n.e;
+    op(
+        &e.core,
+        Operation::MeetingRuleSave,
+        json!({"field": "title", "value": "Philips", "template": "short-summary", "autoNotes": true}),
+    )
+    .await
+    .unwrap();
+    let end = now() - 600;
+    put(
+        &e.core,
+        event("m1", SYNC, &rfc(end - 1800), &rfc(end), json!({})),
+    );
+    teams(&e.graph, &rfc(end - 1500), LONG_VTT);
+    meetings_round_at(&e.core, now()).unwrap();
+    run_jobs(&e.core).await;
+    assert_eq!(meeting(&e.core, "m1").state, MeetingState::Downloaded);
+
+    // A Formal-summary automation already queued its own job for this meeting, under its own
+    // key, before the meeting's automatic attempt was due.
+    {
+        let mut r = e.core.repo().unwrap();
+        r.enqueue(&crate::workspace::new_job(
+            "meeting_notes",
+            "meeting_notes:auto:m1:formal-summary".into(),
+            Some("personal".into()),
+            Some(ACCT.into()),
+            now(),
+            json!({}),
+            json!({"meetingId": "m1", "title": SYNC, "templateId": "formal-summary",
+                "notesKey": "m1:formal-summary", "wishes": "", "findTasks": false,
+                "auto": true, "step": null, "steps": []}),
+        ))
+        .unwrap();
+    }
+
+    // The rule waits 15 minutes after the meeting; at that point the round still queues the
+    // meeting's own automatic key, undeterred by the summary job that already exists for it.
+    meetings_round_at(&e.core, end + 15 * 60).unwrap();
+    let auto = notes_jobs(&e.core);
+    assert!(
+        auto.iter().any(|j| j.key == "meeting_notes:auto:m1"),
+        "{auto:?}"
+    );
+}
+
 #[tokio::test]
 async fn meeting_doc_main_delete_and_edit() {
     let n = notes_env(vec![outcome("# A", json!([])), outcome("# B", json!([]))]);

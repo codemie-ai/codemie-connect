@@ -264,11 +264,14 @@ impl Core {
                 if state.fired_sources.contains(&key) {
                     continue;
                 }
-                state.remember_source(key);
+                // Remembered only once the run is actually queued: a meeting held back by
+                // `refusal` (an earlier run still in progress, or the hourly cap) stays
+                // eligible for the next round, instead of being skipped forever.
                 if let Some(reason) = state.refusal(&a.id, None, now) {
                     state.skip(&a.id, &m.id, reason, now);
                     continue;
                 }
+                state.remember_source(key);
                 state.started(&a.id, None, now);
                 enqueue_run(
                     r,
@@ -1468,7 +1471,20 @@ mod engine_tests {
             let mut r = core.repo().unwrap();
             let mut s = r.settings().unwrap();
             s.ai.default_profile = Some("claude".into());
+            // Not the focus of this test: the fixture's one short segment would otherwise trip
+            // "skip very short meetings" (by talk time), independently of the automatic-notes
+            // rule this test is about.
+            s.meetings.skip_short = false;
             r.settings_update(&s).unwrap();
+            // The real meetings round (driven below) also needs transcripts permitted.
+            let mut c = r.connection("acct").unwrap();
+            c.enabled
+                .extend(["meetings".to_string(), "transcripts".to_string()]);
+            c.scopes.extend([
+                "OnlineMeetings.Read".to_string(),
+                "OnlineMeetingTranscript.Read.All".to_string(),
+            ]);
+            r.save_connection(&c).unwrap();
         }
         // A rule makes this meeting's notes automatic (field "title" is enough to match it).
         core.repo()
@@ -1508,24 +1524,19 @@ mod engine_tests {
             .put_record(&transcript_meeting("m1", end, &folder))
             .unwrap();
 
-        // Round 1: the meeting's own automatic notes are already queued (as the meetings round
-        // would have queued them); the summary waits for them, not racing them.
-        {
-            let mut r = core.repo().unwrap();
-            let policy = r.policy(Some(PERSONAL), Some("acct")).unwrap();
-            r.enqueue(&new_job(
-                "meeting_notes",
-                "meeting_notes:auto:m1".into(),
-                Some(PERSONAL.into()),
-                Some("acct".into()),
-                now(),
-                policy,
-                json!({"meetingId": "m1", "title": "Weekly sync", "templateId": "meeting-notes",
-                    "notesKey": "m1:meeting-notes", "wishes": "", "findTasks": true,
-                    "auto": true, "step": null, "steps": []}),
-            ))
-            .unwrap();
-        }
+        // Round 1: the real meetings round queues the meeting's own automatic notes (the rule
+        // wants them, and the transcript is saved); the summary waits for them, not racing
+        // them, whichever of the two gates (`wants_auto` or `busy`) is the one holding it.
+        crate::workspace::meetings::meetings_round_at(&core, armed + 3600).unwrap();
+        let auto_notes_job = core
+            .repo()
+            .unwrap()
+            .jobs()
+            .unwrap()
+            .into_iter()
+            .find(|j| j.kind == "meeting_notes")
+            .expect("the meetings round queued the meeting's own automatic notes");
+        assert_eq!(auto_notes_job.key, "meeting_notes:auto:m1");
         core.automations_round_at(armed + 3600, armed).unwrap();
         assert!(
             jobs_of(&core).is_empty(),
@@ -1533,7 +1544,7 @@ mod engine_tests {
         );
 
         // Running the automatic notes job: the meeting becomes ready with a main document.
-        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        let claimed = core.repo().unwrap().claim(armed + 3600).unwrap().unwrap();
         assert_eq!(claimed.kind, "meeting_notes");
         core.clone().run_claimed_job(claimed).await;
         let m = core
@@ -1554,7 +1565,7 @@ mod engine_tests {
             let claimed = core
                 .repo()
                 .unwrap()
-                .claim(now())
+                .claim(armed + 7200)
                 .unwrap()
                 .expect("a due job");
             if claimed.kind == "automation_run" {
@@ -1577,6 +1588,66 @@ mod engine_tests {
             fake.calls().len(),
             1,
             "Claude ran once, for the notes; never for the automation itself"
+        );
+    }
+
+    /// Review fix (Important 1): a meeting ready while an earlier run of the same summary
+    /// automation is still queued must not be dropped forever. It is refused this round (one
+    /// run at a time per automation), but stays eligible for the next one.
+    #[tokio::test]
+    async fn a_meeting_ready_while_another_run_is_queued_stays_eligible_next_round() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        seed(&core);
+        core.request(mutation(
+            &core,
+            Operation::AutomationSave,
+            json!({"id": "auto-summary", "name": "Formal summary", "enabled": true,
+                "trigger": {"kind": "event", "event": "meeting_ready"}, "prompt": "",
+                "deliver": {"meetingSummary": "formal-summary"}}),
+        ))
+        .await
+        .unwrap();
+        let armed = now();
+        let end = armed + 1800;
+        // `run_summary` never reads the folder; it only needs to exist for other summary tests
+        // that actually run the queued `meeting_notes` job.
+        let folder = dir.path().join("none");
+        core.repo()
+            .unwrap()
+            .put_record(&transcript_meeting("m1", end, &folder))
+            .unwrap();
+
+        // Round 1: m1 is ready and queues a run, left queued (not run yet).
+        core.automations_round_at(armed + 3600, armed).unwrap();
+        let first = jobs_of(&core);
+        assert_eq!(first.len(), 1, "{first:?}");
+
+        // m2 becomes ready while m1's run is still queued ("one run at a time per automation"):
+        // refused, but not remembered as fired.
+        core.repo()
+            .unwrap()
+            .put_record(&transcript_meeting("m2", end, &folder))
+            .unwrap();
+        core.automations_round_at(armed + 3700, armed).unwrap();
+        assert_eq!(
+            jobs_of(&core).len(),
+            1,
+            "m2 is held back while m1's run is in progress, not queued"
+        );
+
+        // m1's run finishes: "in progress" clears.
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        assert_eq!(claimed.kind, "automation_run");
+        core.clone().run_claimed_job(claimed).await;
+
+        // The next round queues m2 too: it was never marked as fired while it was refused.
+        core.automations_round_at(armed + 7200, armed).unwrap();
+        let keys: Vec<String> = jobs_of(&core).into_iter().map(|j| j.key).collect();
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        assert!(
+            keys.contains(&"automation:auto-summary:event:m2".to_string()),
+            "{keys:?}"
         );
     }
 }

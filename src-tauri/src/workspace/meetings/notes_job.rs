@@ -822,7 +822,9 @@ pub(super) struct AutoNotes {
     rules: Vec<Rule>,
     templates: Vec<Template>,
     /// The meetings that had a notes job that didn't fail (a failed one made no notes, so it
-    /// doesn't stand in for the automatic ones).
+    /// doesn't stand in for the automatic ones). A Formal-summary-style job
+    /// (`meeting_notes:auto:<id>:<template>`, DESIGN step 5 §6) is not this meeting's one
+    /// automatic attempt (`meeting_notes:auto:<id>`), so it never stands in for it either.
     noted: std::collections::HashSet<String>,
     connection: String,
     policy: Value,
@@ -846,7 +848,13 @@ impl AutoNotes {
                 .filter(|j| {
                     j.kind == "meeting_notes" && !matches!(j.state.as_str(), "failed" | "blocked")
                 })
-                .filter_map(|j| j.payload["meetingId"].as_str().map(String::from))
+                .filter_map(|j| {
+                    let id = j.payload["meetingId"].as_str()?;
+                    // A Formal-summary-style run's own key has a template suffix the meeting's
+                    // one automatic attempt never does; such a job must not count as it.
+                    let is_summary_job = j.key.starts_with(&format!("meeting_notes:auto:{id}:"));
+                    (!is_summary_job).then(|| id.to_string())
+                })
                 .collect(),
             connection: c.id.clone(),
             policy: r.policy(Some(PERSONAL), Some(&c.id))?,
