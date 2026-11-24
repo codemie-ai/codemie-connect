@@ -674,6 +674,7 @@ fn ai_summary(status: &Value) -> Value {
                 "id": p["id"],
                 "type": p["kind"]["type"],
                 "label": p["label"],
+                "provider": p["provider"],
                 "state": p["state"],
                 "message": p["message"],
                 "version": p["version"],
@@ -693,7 +694,35 @@ fn ai_summary(status: &Value) -> Value {
         "ready": ready,
         "defaultProfile": status["settings"]["defaultProfile"],
         "routes": status["settings"]["routes"],
+        "chosen": status["chosen"],
+        "ollama": ollama_facts(&profiles),
     })
+}
+
+/// States the Ollama probe can leave on a profile (ruling 10): never `needs_login` or
+/// `too_old`, which don't apply to it.
+const OLLAMA_STATES: &[&str] = &["ready", "not_running", "not_configured", "not_installed"];
+
+/// Ollama facts for the smoke, from the profiles [`ai_summary`] already redacted of any
+/// `baseUrl`/`apiKey`: `probed` is whether an Ollama profile was found at all, `running`
+/// whether one of them answers, `models` the most models any of them offers.
+fn ollama_facts(profiles: &[Value]) -> Value {
+    let ollama: Vec<&Value> = profiles
+        .iter()
+        .filter(|p| {
+            p["provider"] == "ollama"
+                && OLLAMA_STATES.contains(&p["state"].as_str().unwrap_or_default())
+        })
+        .collect();
+    let running = ollama
+        .iter()
+        .any(|p| !matches!(p["state"].as_str(), Some("not_running" | "not_installed")));
+    let models = ollama
+        .iter()
+        .map(|p| p["models"].as_u64().unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+    json!({"probed": !ollama.is_empty(), "running": running, "models": models})
 }
 
 pub struct Inputs<'a> {
@@ -939,6 +968,53 @@ mod tests {
         // An error answer is kept as one.
         let failed = ai_summary(&json!({"error": "Workspace storage is unavailable"}));
         assert_eq!(failed["error"], "Workspace storage is unavailable");
+    }
+
+    #[test]
+    fn status_smoke_reports_rows_and_ollama_without_urls() {
+        let status = json!({
+            "profiles": [
+                {"id": "claude", "kind": {"type": "native"}, "label": "Claude Code · your subscription",
+                 "state": "ready", "version": "2.1.150", "message": null, "defaultModel": null,
+                 "models": [], "account": null},
+                {"id": "codemie:ol", "kind": {"type": "code_mie", "name": "ol"}, "label": "CodeMie \u{b7} ol",
+                 "provider": "ollama", "state": "not_running", "message": "Ollama isn't running.",
+                 "account": null, "defaultModel": "llama3.2", "models": [], "version": null}
+            ],
+            "chosen": {
+                "default": {"profile": "claude", "model": null, "fallback": null, "group": null},
+                "triage": {"profile": "codemie:ol", "model": null, "fallback": "claude", "group": "automation"},
+                // A broken row: it names a profile nothing detected. Reporting it is not
+                // evaluating it, so it must not turn the smoke's own pass/fail.
+                "commitments": {"profile": "codemie:missing", "model": null, "fallback": null, "group": "automation"},
+            },
+            "settings": {"defaultProfile": "claude", "routes": {}},
+        });
+        let window = json!({"runId": "run-1", "failed": []});
+        let report = build_report(Inputs {
+            mode: &Mode::Status,
+            run: Some(&run()),
+            home: Path::new("/Users/taylor"),
+            facts: facts(),
+            ai: status,
+            window,
+        });
+        assert_eq!(report["pass"], true, "{report:#}");
+        assert_eq!(report["failed"], json!([]));
+        assert_eq!(report["ai"]["chosen"]["triage"]["fallback"], "claude");
+        assert_eq!(report["ai"]["chosen"]["triage"]["profile"], "codemie:ol");
+        assert_eq!(
+            report["ai"]["chosen"]["commitments"]["profile"],
+            "codemie:missing"
+        );
+        assert_eq!(report["ai"]["profiles"][1]["provider"], "ollama");
+        assert_eq!(
+            report["ai"]["ollama"],
+            json!({"probed": true, "running": false, "models": 0})
+        );
+        let dump = report.to_string();
+        assert!(!dump.contains("http"), "{dump}");
+        assert!(!dump.contains("apiKey"), "{dump}");
     }
 
     fn facts() -> Value {
