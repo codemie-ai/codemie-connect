@@ -229,10 +229,24 @@ fn user_settings(m: &Manifest) -> impl Iterator<Item = &super::manifest::Setting
         .filter(move |s| !addresses.contains(&s.key.as_str()))
 }
 
+/// A setting of a plugin that provides tasks, as `set_setting` saw it (the caller tells the core).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskSetting {
+    /// Its secret (the token): a sync is queued.
+    Secret,
+    /// Any other setting (its project, its label): the provider is read again in full.
+    Other,
+}
+
 /// The user set plugin `id`'s declared setting `key` in Connect (Settings › Tasks). `null`, or
 /// `""` for a secret, clears it. A secret goes only to the private root (0600) and is never read
-/// back. Whether it was the secret of a plugin that provides tasks, so the caller queues a sync.
-pub fn set_setting(paths: &PluginPaths, id: &str, key: &str, value: &Value) -> Result<bool> {
+/// back. Answers which setting of a plugin that provides tasks it was, if it was one.
+pub fn set_setting(
+    paths: &PluginPaths,
+    id: &str,
+    key: &str,
+    value: &Value,
+) -> Result<Option<TaskSetting>> {
     let (p, m) = installed_with_manifest(paths, id)?;
     if hosts_from(&m).contains(&key) {
         return Err(WorkspaceError::new(
@@ -257,9 +271,12 @@ pub fn set_setting(paths: &PluginPaths, id: &str, key: &str, value: &Value) -> R
         _ => saved(e),
     })?;
     let role = super::capabilities::role_key("tasks");
-    Ok(def.kind == "secret"
-        && m.provides.iter().any(|r| r == "tasks")
-        && p.agreed.iter().any(|a| a == &role))
+    let provider = m.provides.iter().any(|r| r == "tasks") && p.agreed.iter().any(|a| a == &role);
+    Ok(provider.then_some(if def.kind == "secret" {
+        TaskSetting::Secret
+    } else {
+        TaskSetting::Other
+    }))
 }
 
 fn installed_with_manifest(paths: &PluginPaths, id: &str) -> Result<(Installed, Manifest)> {
@@ -460,7 +477,10 @@ mod tests {
             e.message
         );
         // Its other setting is the user's to set, and is no task provider's secret.
-        assert!(!set_setting(&env.paths, "relay", "mode", &json!("fast")).unwrap());
+        assert_eq!(
+            set_setting(&env.paths, "relay", "mode", &json!("fast")).unwrap(),
+            None
+        );
         let reg = Registry::load(&env.paths).unwrap();
         let p = &reg.installed["relay"];
         let m = install::installed_manifest(&env.paths, "relay", p).unwrap();

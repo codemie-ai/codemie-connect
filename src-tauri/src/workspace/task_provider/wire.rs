@@ -19,11 +19,18 @@ fn text_of(v: &Value) -> Value {
 }
 
 /// A task's kind as a provider sees it: its own kind, `waiting` for a task in the Waiting column
-/// (design ruling 5), else `task`.
+/// (design ruling 5), else `task`. A done task keeps the kind the provider last had, so
+/// completing a Waiting task never sends a kind change that would drop its label.
 fn kind_of(body: &Value) -> &str {
+    let last_seen = || {
+        body["remote"]["base"]["kind"]
+            .as_str()
+            .filter(|k| KINDS.contains(k))
+    };
     match body["kind"].as_str().filter(|k| KINDS.contains(k)) {
         Some(k) if k != "task" => k,
         _ if body["status"] == "waiting" => "waiting",
+        _ if body["status"] == "done" => last_seen().unwrap_or("task"),
         _ => "task",
     }
 }

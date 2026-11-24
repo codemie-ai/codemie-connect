@@ -167,10 +167,7 @@ impl Core {
         if provider != "local" {
             if switched {
                 // A full pull (design §4 "Budget": on the first sync, a switch, and Check).
-                let mut st = sync::load_state(r, provider)?;
-                st["cursor"] = Value::Null;
-                st["lastPull"] = Value::Null;
-                sync::save_state(r, provider, &st, now)?;
+                sync::reread(r, provider, now)?;
             }
             sync::queue(r, provider, now)?;
         }
@@ -178,7 +175,8 @@ impl Core {
     }
 
     /// `task_provider_check {}` (read-only, design §11 "Check"): the active provider's `status`,
-    /// kept to exactly `{ok, account, project}` (never the plugin's whole answer); Local has
+    /// kept to exactly `{ok, account, project}` (never the plugin's whole answer), and once it
+    /// answers, a full pull queued (`sync::reread`); Local has
     /// nothing to check. A refusal's `code` is the provider's state (`needs_token`,
     /// `rate_limited`, `offline`, `not_found`, `refused`) and its `message` a sentence naming the
     /// provider, e.g. "Todoist needs your API token."
@@ -195,11 +193,15 @@ impl Core {
             .strip_prefix("plugin:")
             .unwrap_or(provider.as_str());
         match providers.call(plugin, "status", json!({})).await {
-            Ok(v) => Ok(json!({
-                "ok": true,
-                "account": v.get("account").cloned().unwrap_or(Value::Null),
-                "project": v.get("project").cloned().unwrap_or(Value::Null),
-            })),
+            Ok(v) => {
+                // Check reads the project again in full (design §4 "Budget").
+                sync::reread(&mut *self.repo()?, &provider, now())?;
+                Ok(json!({
+                    "ok": true,
+                    "account": v.get("account").cloned().unwrap_or(Value::Null),
+                    "project": v.get("project").cloned().unwrap_or(Value::Null),
+                }))
+            }
             Err(e) => Err(self.check_error(plugin, e)),
         }
     }
@@ -1072,6 +1074,107 @@ mod tests {
         assert_eq!(err.code, "refused");
         assert_eq!(err.message, "Todoist didn’t accept the request.");
         assert!(!err.message.contains(SENTINEL));
+    }
+
+    /// Review I1: switching back to Todoist finds what was done or deleted there while Connect
+    /// was chosen, by the usual rules (done → Done, deleted → gone), and sends nothing.
+    #[tokio::test]
+    async fn switching_back_finds_what_was_done_or_deleted_in_todoist_meanwhile() {
+        let e = env(P);
+        for (id, text) in [
+            ("t1", "Send the list"),
+            ("t2", "Book a room"),
+            ("t3", "Draft"),
+        ] {
+            e.save(json!({"id": id, "text": text}));
+        }
+        e.sync().await;
+        let rid = |id: &str| {
+            e.task(id).unwrap()["remote"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        e.op(Operation::TaskProviderSet, json!({"provider": "local"}))
+            .await
+            .unwrap();
+        // A week of using Todoist alone: t1 completed, t2 deleted.
+        let mut t1 = e
+            .fake
+            .tasks()
+            .into_iter()
+            .find(|t| t["id"] == rid("t1").as_str())
+            .unwrap();
+        t1["done"] = true.into();
+        e.fake.put_remote(t1);
+        e.fake.remove_remote(&rid("t2"));
+        e.op(Operation::TaskProviderSet, json!({"provider": P}))
+            .await
+            .unwrap();
+        e.sync().await;
+        assert_eq!(e.task("t1").unwrap()["status"], "done");
+        assert_eq!(e.history("t1").last().unwrap(), "Done in Todoist");
+        assert!(e.task("t2").is_none(), "deleted in Todoist: gone");
+        assert_eq!(e.task("t3").unwrap()["status"], "todo");
+        let ops = e.fake.ops();
+        assert!(
+            !ops.iter()
+                .any(|o| matches!(o.as_str(), "remove" | "complete" | "update")),
+            "{ops:?}"
+        );
+    }
+
+    /// Review I1/I2: a full pull (Check, here) retires a cached open task the provider no
+    /// longer lists, without deleting it anywhere, and brings in what it lists.
+    #[tokio::test]
+    async fn check_reads_the_project_again_and_retires_what_it_no_longer_lists() {
+        let e = env(P);
+        e.save(json!({"id": "t1", "text": "Send the list"}));
+        e.save(json!({"id": "t2", "text": "Book a room"}));
+        e.sync().await;
+        let gone = e.task("t1").unwrap()["remote"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Todoist stops listing t1 without saying so; its project holds one more task.
+        e.fake.forget_remote(&gone);
+        e.fake
+            .put_remote_unchanged(json!({"id": "9001", "text": "Already in Todoist",
+            "labels": [], "done": false}));
+        let before = e.calls_of("changedSince").len();
+        e.core.task_provider_check().await.unwrap();
+        e.sync().await;
+        assert!(
+            e.calls_of("changedSince")[before..]
+                .iter()
+                .any(|c| c["cursor"].is_null()),
+            "Check asks for everything again"
+        );
+        assert!(e.task("t1").is_none(), "retired from the cache");
+        assert_eq!(e.task("t2").unwrap()["status"], "todo");
+        assert_eq!(
+            e.task("todoist-9001").unwrap()["text"],
+            "Already in Todoist"
+        );
+        assert!(!e.fake.ops().iter().any(|o| o == "remove"));
+        // A task with a change still waiting is never retired.
+        let rid2 = e.task("t2").unwrap()["remote"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        e.fake.fail_all(Some(ProviderError::Offline));
+        e.save(json!({"id": "t2", "due": "2026-12-01"}));
+        e.sync().await;
+        e.fake.fail_all(None);
+        e.fake.forget_remote(&rid2);
+        e.core.task_provider_check().await.unwrap();
+        let mut r = e.core.repo().unwrap();
+        let mut st = sync::load_state(&r, P).unwrap();
+        st["backoffUntil"] = Value::Null;
+        sync::save_state(&mut r, P, &st, now()).unwrap();
+        drop(r);
+        e.sync().await;
+        assert!(e.task("t2").is_some(), "its waiting change keeps it");
     }
 
     #[tokio::test]

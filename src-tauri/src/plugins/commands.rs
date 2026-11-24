@@ -551,27 +551,37 @@ pub fn dispatch(paths: &PluginPaths, git: &dyn Git, op: &str, data: Value) -> Re
     }
 }
 
-/// `set_setting`: sets a plugin's setting; answers its `installed` view and, when it was a task provider's
-/// secret, the plugin's id (a sync is queued for it).
-fn set_setting(paths: &PluginPaths, data: Value) -> Result<(Value, Option<String>)> {
+/// `set_setting`: sets a plugin's setting; answers its `installed` view and, when it was a task
+/// provider's setting, the plugin's id and which setting (the core is told).
+fn set_setting(
+    paths: &PluginPaths,
+    data: Value,
+) -> Result<(Value, Option<(String, extras::TaskSetting)>)> {
     let a: SettingArg = arg(data)?;
-    let provider_secret = extras::set_setting(paths, &a.id, &a.key, &a.value)?;
+    let task_setting = extras::set_setting(paths, &a.id, &a.key, &a.value)?;
     let view = to_json(installed_view(paths, &a.id)?)?;
-    Ok((view, provider_secret.then_some(a.id)))
+    Ok((view, task_setting.map(|t| (a.id, t))))
 }
 
-/// The window's `set_setting`: sets the setting and, for a task provider's secret, tells the
-/// core (a rejected token no longer stops its calls, and a sync is queued).
+/// The window's `set_setting`: sets the setting and, for a task provider's, tells the core: its
+/// secret lifts a rejected token and queues a sync; another setting (its project) has it read
+/// again in full.
 fn set_setting_then_sync(
     core: &crate::workspace::Core,
     paths: &PluginPaths,
     data: Value,
 ) -> Result<Value> {
-    let (view, provider_secret) = set_setting(paths, data)?;
-    if let Some(plugin) = provider_secret {
-        core.task_secret_saved(&plugin)?;
+    match set_setting(paths, data)? {
+        (view, Some((plugin, extras::TaskSetting::Secret))) => {
+            core.task_secret_saved(&plugin)?;
+            Ok(view)
+        }
+        (view, Some((plugin, extras::TaskSetting::Other))) => {
+            core.task_setting_saved(&plugin)?;
+            Ok(view)
+        }
+        (view, None) => Ok(view),
     }
-    Ok(view)
 }
 
 // --------------------------------------------------------------------- views
@@ -980,7 +990,68 @@ mod tests {
             .any(|j| j.kind == "task_sync" && j.state == "queued"));
     }
 
-    /// Every file under `dir` whose bytes contain `needle`.
+    /// Review I2: a new Project is read again in full: its tasks come in, the old project's
+    /// leave the cache, and nothing is deleted in Todoist.
+    #[tokio::test]
+    async fn changing_the_project_reads_the_new_one() {
+        use crate::workspace::task_provider::{fake::FakeProvider, sync};
+        let env = testkit::env();
+        installed_provider(&env);
+        let core = crate::workspace::test_core(
+            &env.dir.path().join("core"),
+            std::sync::Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            vec![],
+        );
+        let fake = std::sync::Arc::new(FakeProvider::new());
+        core.set_task_providers(fake.clone());
+        let now = crate::workspace::models::now();
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.tasks.provider = "plugin:todoist".into();
+            r.settings_update(&s).unwrap();
+            crate::workspace::tasks::task_save(
+                &mut r,
+                "personal",
+                &json!({"id": "t1", "text": "In the Connect project"}),
+                now,
+            )
+            .unwrap();
+        }
+        sync::run(&core, "plugin:todoist", now).await.unwrap();
+        let old = fake.tasks()[0]["id"].as_str().unwrap().to_string();
+        // What the plugin lists once the setting names "Work".
+        fake.forget_remote(&old);
+        fake.put_remote_unchanged(json!({"id": "9001", "text": "Already in Work",
+            "labels": [], "done": false}));
+        set_setting_then_sync(
+            &core,
+            &env.paths,
+            json!({"id": "todoist", "key": "project", "value": "Work"}),
+        )
+        .unwrap();
+        sync::run(&core, "plugin:todoist", now + 1).await.unwrap();
+        let r = core.repo().unwrap();
+        let task = |id: &str| {
+            r.record(crate::workspace::tasks::KIND, id, None, Some("personal"))
+                .ok()
+        };
+        assert!(
+            task("t1").is_none(),
+            "the old project's task left the cache"
+        );
+        assert_eq!(
+            task("todoist-9001").unwrap().data["text"],
+            "Already in Work"
+        );
+        assert!(
+            !fake.ops().iter().any(|o| o == "remove"),
+            "{:?}",
+            fake.ops()
+        );
+    }
+
+    /// Every file under `dir` whose bytes contain `needle`.    /// Every file under `dir` whose bytes contain `needle`.
     fn files_containing(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf> {
         let mut found = Vec::new();
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -1032,8 +1103,14 @@ mod tests {
         assert!(!listed.to_string().contains(SENTINEL));
         assert_eq!(listed[0]["settings"][0]["set"], true);
         // It is a task provider's secret: the caller queues a sync. A plain setting isn't.
-        assert!(extras::set_setting(&env.paths, "todoist", "token", &json!(SENTINEL)).unwrap());
-        assert!(!extras::set_setting(&env.paths, "todoist", "project", &json!("Work")).unwrap());
+        assert_eq!(
+            extras::set_setting(&env.paths, "todoist", "token", &json!(SENTINEL)).unwrap(),
+            Some(extras::TaskSetting::Secret)
+        );
+        assert_eq!(
+            extras::set_setting(&env.paths, "todoist", "project", &json!("Work")).unwrap(),
+            Some(extras::TaskSetting::Other)
+        );
         let view = run(json!({"id": "todoist", "key": "label", "value": "errands"})).unwrap();
         assert_eq!(view["settings"][1]["value"], "Work");
         assert_eq!(view["settings"][2]["value"], "errands");

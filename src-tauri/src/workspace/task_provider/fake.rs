@@ -130,6 +130,21 @@ impl FakeProvider {
         s.removed.push((v, id.into()));
     }
 
+    /// A task the full list holds that no `changedSince` with a cursor reports (one of another
+    /// project, now the chosen one): stored unchanged since the beginning.
+    pub fn put_remote_unchanged(&self, mut task: Value) {
+        let mut s = self.lock();
+        task["updatedAt"] = at(s.time).into();
+        let id = task["id"].as_str().unwrap_or_default().to_string();
+        s.tasks.insert(id, (0, task));
+    }
+
+    /// A task the provider stops listing without reporting it removed (moved to another project,
+    /// or the project setting now names another one).
+    pub fn forget_remote(&self, id: &str) {
+        self.lock().tasks.remove(id);
+    }
+
     /// What `available` lists (default: Todoist, on and ready).
     pub fn set_available(&self, available: Vec<ProviderInfo>) {
         self.lock().available = Some(available);

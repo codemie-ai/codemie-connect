@@ -7,7 +7,11 @@
 //!   A content refusal (`refused`, `not_found`) parks only that entry; `offline`, `rate_limited`
 //!   and `needs_token` stop the pass and keep the order.
 //! - **Pull** `changedSince` with the cursor kept in the bookkeeping record `task_state`
-//!   `sync:<provider>`; at once after a push, else at most every 60 s.
+//!   `sync:<provider>`; at once after a push, else at most every 60 s. While an `update` waits the
+//!   pull comes first, so the merge decides a field changed on both sides, and the update then
+//!   sends only what still differs from the provider's last-seen fields. After [`reread`] (a
+//!   switch, Check, a changed setting) it pulls since the cursor, then the full list, and retires
+//!   cached open tasks the full list no longer holds (deleted nowhere).
 //! - **Backoff**: `offline` retries after 30 s, doubling to 15 minutes, reset on success;
 //!   `rate_limited` waits for its `retryAt`; `needs_token` makes no call until the token is saved
 //!   again (`Core::task_secret_saved`).
@@ -15,8 +19,8 @@
 //!   wait in the pass, a later job for a long one).
 //!
 //! The state record holds `{cursor, lastSync, lastPull, lastRun, backoffUntil, backoff, state,
-//! message, requests}`; `requests` are the times (ms) of the calls of the last 15 minutes. No
-//! provider text reaches it, a job record or a log unless it passed `secret_matches`.
+//! message, requests, reread?}`; `requests` are the times (ms) of the calls of the last 15
+//! minutes. No provider text reaches it, a job record or a log unless it passed `secret_matches`.
 use super::{merge, outbox, wire, ProviderError, TaskProviders};
 use crate::workspace::meetings::model::MeAlias;
 use crate::workspace::models::{id, Job, Record, Result, WorkspaceError};
@@ -100,6 +104,17 @@ pub(crate) fn save_state(r: &mut Repository, provider: &str, st: &Value, now: i6
     })
 }
 
+/// Asks `provider` for everything again (design §4 "Budget": a switch, Check, or a changed
+/// provider setting such as its project): the next run pulls what changed since its cursor, then
+/// the full list, and retires cached tasks the full list no longer holds. Queues that run now.
+pub(crate) fn reread(r: &mut Repository, provider: &str, now: i64) -> Result<()> {
+    let mut st = load_state(r, provider)?;
+    st["reread"] = true.into();
+    st["lastPull"] = Value::Null;
+    save_state(r, provider, &st, now)?;
+    queue(r, provider, now)
+}
+
 fn of_provider(job: &Job, provider: &str) -> bool {
     job.kind == JOB_KIND && job.payload["provider"] == provider
 }
@@ -175,6 +190,8 @@ struct Run<'a> {
     more: bool,
     /// A refusal's sentence this run (already checked against the secret).
     message: Option<String>,
+    /// A pull ran this run.
+    pulled: bool,
 }
 
 /// The `task_sync` job's executor: one push and pull with `provider` (`plugin:<id>`), at `now`.
@@ -245,10 +262,19 @@ pub(crate) async fn run(core: &Arc<Core>, provider: &str, now: i64) -> Result<Sy
         outcome: SyncOutcome::of("ready"),
         more: false,
         message: None,
+        pulled: false,
     };
-    let mut stop = run.push().await?;
+    let mut stop = None;
+    if run.updates_wait()? {
+        // Pulled first, so the merge decides a field changed on both sides (ruling 3): an older
+        // offline edit never overwrites a newer one made in the provider.
+        stop = run.pull(true).await?;
+    }
     if stop.is_none() {
-        stop = run.pull().await?;
+        stop = run.push().await?;
+    }
+    if stop.is_none() && !run.pulled {
+        stop = run.pull(false).await?;
     }
     run.finish(stop)
 }
@@ -288,11 +314,22 @@ impl Run<'_> {
         Ok(self.providers.call(&self.plugin, op, args).await)
     }
 
-    /// The task as the provider takes it; my own task carries no owner.
+    /// Whether an `update` waits to be sent.
+    fn updates_wait(&self) -> Result<bool> {
+        Ok(outbox::waiting(&*self.repo()?, &self.provider)?
+            .iter()
+            .any(|e| e["op"] == "update"))
+    }
+
+    /// The task as the provider takes it; my own task carries no owner, and someone else's plain
+    /// task goes as `waiting` (design ruling 5: its label, prefix and owner line).
     fn wire_of(&self, task: &Record) -> Value {
         let mut w = wire::to_wire(task);
         if tasks::is_mine(&task.data, &self.me) {
             w["owner"] = Value::Null;
+        }
+        if !w["owner"].is_null() && w["kind"] == "task" {
+            w["kind"] = "waiting".into();
         }
         w
     }
@@ -423,6 +460,20 @@ impl Run<'_> {
                         let mut patch = json!({});
                         for k in e["patch"].as_object().into_iter().flatten().map(|(k, _)| k) {
                             patch[k] = w[k].clone();
+                        }
+                        // Whose task it is decides `waiting` (`wire_of`): the kind goes with it.
+                        if patch.get("owner").is_some() {
+                            patch["kind"] = w["kind"].clone();
+                        }
+                        // Only what still differs from the provider's last-seen fields: a field
+                        // whose newer provider value the merge kept is not sent back.
+                        let base = &t.data["remote"]["base"];
+                        if let (Some(p), true) = (patch.as_object_mut(), base.is_object()) {
+                            p.retain(|k, v| base[k] != *v);
+                        }
+                        if patch.as_object().is_some_and(serde_json::Map::is_empty) {
+                            self.drop_entry(&current)?;
+                            continue;
                         }
                         json!({"id": rid, "patch": patch, "requestId": e["id"]})
                     }
@@ -727,35 +778,60 @@ impl Run<'_> {
         r.commit_local(&puts, &[(outbox::KIND, &entry.id, &wid)], bump)
     }
 
-    async fn pull(&mut self) -> Result<Option<Stop>> {
+    /// Pulls what changed; `force` pulls whatever the cadence says (before a push).
+    async fn pull(&mut self, force: bool) -> Result<Option<Stop>> {
         let now = self.clock.secs();
         let last = self.st["lastPull"].as_i64();
-        if self.outcome.pushed == 0 && last.is_some_and(|t| now - t < PULL_EVERY) {
+        if !force && self.outcome.pushed == 0 && last.is_some_and(|t| now - t < PULL_EVERY) {
             return Ok(None);
         }
-        let cursor = self.st["cursor"].clone();
-        let answer = match self.ask("changedSince", json!({"cursor": cursor})).await {
-            Ok(answer) => answer,
-            Err(stop) => return Ok(Some(stop)),
-        };
-        match answer {
+        self.pulled = true;
+        let mut cursor = self.st["cursor"].clone();
+        if self.st["reread"] == true && !cursor.is_null() {
+            // Asked to read everything again: first what changed since the cursor, so what was
+            // done or deleted there meanwhile follows the usual rules (I1). A cursor the provider
+            // no longer takes is skipped for the full list.
+            match self.changed_since(cursor.clone()).await {
+                Ok(changes) => self.apply(&changes, false)?,
+                Err(None) => {}
+                Err(Some(stop)) => return Ok(Some(stop)),
+            }
+            cursor = Value::Null;
+        }
+        let full = cursor.is_null();
+        match self.changed_since(cursor).await {
             Ok(changes) => {
-                self.apply(&changes)?;
+                self.apply(&changes, full)?;
                 self.st["cursor"] = changes["cursor"].clone();
                 self.st["lastPull"] = self.clock.secs().into();
+                if let Some(st) = self.st.as_object_mut() {
+                    st.remove("reread");
+                }
                 Ok(None)
             }
-            Err(ProviderError::Refused(_) | ProviderError::NotFound(_)) => Ok(Some(Stop::Offline)),
-            Err(ProviderError::Offline) => Ok(Some(Stop::Offline)),
-            Err(ProviderError::RateLimited { retry_after }) => {
-                Ok(Some(Stop::RateLimited(retry_after)))
-            }
-            Err(ProviderError::NeedsToken) => Ok(Some(Stop::NeedsToken)),
+            Err(stop) => Ok(Some(stop.unwrap_or(Stop::Offline))),
         }
     }
 
-    /// Merges what changed in the provider into the cache, in one transaction.
-    fn apply(&mut self, changes: &Value) -> Result<()> {
+    /// `changedSince {cursor}`; a refusal is `Err(None)`, any other failure its stop.
+    async fn changed_since(&mut self, cursor: Value) -> std::result::Result<Value, Option<Stop>> {
+        match self.ask("changedSince", json!({"cursor": cursor})).await {
+            Err(stop) => Err(Some(stop)),
+            Ok(Ok(changes)) => Ok(changes),
+            Ok(Err(ProviderError::Refused(_) | ProviderError::NotFound(_))) => Err(None),
+            Ok(Err(ProviderError::Offline)) => Err(Some(Stop::Offline)),
+            Ok(Err(ProviderError::RateLimited { retry_after })) => {
+                Err(Some(Stop::RateLimited(retry_after)))
+            }
+            Ok(Err(ProviderError::NeedsToken)) => Err(Some(Stop::NeedsToken)),
+        }
+    }
+
+    /// Merges what changed in the provider into the cache, in one transaction. `full`: the
+    /// answer lists every open task, so a cached open task it doesn't list (done or deleted
+    /// there, or in a project no longer chosen) leaves the cache, deleted nowhere; one with a
+    /// change still waiting stays for the push to settle.
+    fn apply(&mut self, changes: &Value, full: bool) -> Result<()> {
         let now = self.clock.secs();
         let core = self.core;
         let mut r = core.repo()?;
@@ -981,6 +1057,31 @@ impl Run<'_> {
                 ));
             }
             self.outcome.removed += 1;
+        }
+        if full {
+            let listed: HashSet<String> = changes["tasks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| wire::remote_of(v, None)["id"].as_str().map(str::to_string))
+                .collect();
+            for t in &mine {
+                let Some(rid) = t.data["remote"]["id"].as_str() else {
+                    continue;
+                };
+                let open = !matches!(tasks::status_of(&t.data), "done" | "review" | "dismissed");
+                let waits = entries.iter().any(|e| e.data["taskId"] == t.id.as_str());
+                let gone_already = gone.iter().any(|(k, i, _)| k == tasks::KIND && i == &t.id);
+                if !open || waits || listed.contains(rid) || gone_already {
+                    continue;
+                }
+                gone.push((
+                    tasks::KIND.into(),
+                    t.id.clone(),
+                    t.workspace_id.clone().unwrap_or_default(),
+                ));
+                self.outcome.removed += 1;
+            }
         }
         if puts.is_empty() && gone.is_empty() {
             return Ok(());
@@ -1792,6 +1893,119 @@ mod tests {
         assert_eq!(queued(&e), 0);
         e.core.task_sync_round(t + 300).unwrap();
         assert_eq!(queued(&e), 1);
+    }
+
+    /// Review Focus 2, same field, through the job: an offline due date edit made before a newer
+    /// Todoist edit of the same field never overwrites it; the history says Todoist's won. A
+    /// Connect edit later than Todoist's still wins and is sent.
+    #[tokio::test]
+    async fn an_older_offline_edit_never_overwrites_a_newer_todoist_edit() {
+        let e = env();
+        e.save(json!({"id": "t1", "text": "Send the pilot list"}), NOW);
+        e.sync(NOW).await;
+        // Offline at NOW + 100, moved to Friday in Connect.
+        e.fake.fail_all(Some(ProviderError::Offline));
+        e.save(json!({"id": "t1", "due": "2026-11-20"}), NOW + 100);
+        assert_eq!(e.sync(NOW + 100).await.state, "offline");
+        // At NOW + 200, moved to Monday in Todoist.
+        let mut remote = e.fake.tasks()[0].clone();
+        remote["due"] = "2026-11-23".into();
+        e.fake.set_time(NOW + 200);
+        e.fake.put_remote(remote);
+        // Back at NOW + 300.
+        e.fake.fail_all(None);
+        assert_eq!(e.sync(NOW + 300).await.state, "ready");
+        assert_eq!(
+            e.fake.tasks()[0]["due"],
+            "2026-11-23",
+            "Todoist's newer date stays"
+        );
+        assert!(
+            !e.calls_of("update")
+                .iter()
+                .any(|u| u["patch"]["due"] == "2026-11-20"),
+            "{:?}",
+            e.calls_of("update")
+        );
+        let t1 = e.task("t1").unwrap();
+        assert_eq!(t1["due"], "2026-11-23");
+        assert_eq!(t1["pending"], false);
+        assert_eq!(
+            t1["history"].as_array().unwrap().last().unwrap()["text"],
+            "Todoist had a newer due date; Connect kept it."
+        );
+        assert!(e.outbox().is_empty());
+
+        // Connect's edit is the later one: it wins and reaches Todoist.
+        e.fake.set_time(NOW + 400);
+        let mut remote = e.fake.tasks()[0].clone();
+        remote["due"] = "2026-11-24".into();
+        e.fake.put_remote(remote);
+        e.fake.fail_all(Some(ProviderError::Offline));
+        e.save(json!({"id": "t1", "due": "2026-11-25"}), NOW + 500);
+        e.sync(NOW + 500).await;
+        e.fake.fail_all(None);
+        e.sync(NOW + 600).await;
+        assert_eq!(e.fake.tasks()[0]["due"], "2026-11-25");
+        assert_eq!(e.task("t1").unwrap()["due"], "2026-11-25");
+        assert!(e.outbox().is_empty());
+    }
+
+    /// Ruling 5: someone else's To do task goes to the provider as `waiting` (its label, the
+    /// "<First>: " prefix and the owner line are the plugin's); completing a Waiting task sends
+    /// only the completion, so Todoist keeps its label; a change of owner to me sends the kind.
+    #[tokio::test]
+    async fn someone_elses_task_goes_as_waiting_and_completing_keeps_the_label() {
+        let e = env();
+        e.save(
+            json!({"id": "t1", "text": "Send the pilot user list", "status": "todo",
+                "owner": "marek.novak@example.test", "ownerName": "Marek Novak"}),
+            NOW,
+        );
+        e.save(
+            json!({"id": "t2", "text": "Book a room", "status": "waiting",
+                "owner": "marek.novak@example.test", "ownerName": "Marek Novak"}),
+            NOW,
+        );
+        e.save(
+            json!({"id": "t3", "text": "Draft the plan", "owner": "You"}),
+            NOW,
+        );
+        e.sync(NOW).await;
+        let creates = e.calls_of("create");
+        assert_eq!(creates[0]["task"]["kind"], "waiting", "{:?}", creates[0]);
+        assert_eq!(creates[0]["task"]["owner"]["name"], "Marek Novak");
+        assert_eq!(creates[1]["task"]["kind"], "waiting");
+        assert_eq!(creates[2]["task"]["kind"], "task");
+        assert_eq!(creates[2]["task"]["owner"], Value::Null);
+        assert!(
+            e.outbox().is_empty(),
+            "nothing left to send: {:?}",
+            e.outbox()
+        );
+
+        // Done from the Waiting column: only the completion goes.
+        e.save(json!({"id": "t2", "status": "done"}), NOW + 100);
+        let waiting: Vec<Value> = e.outbox().iter().map(|w| w["op"].clone()).collect();
+        assert_eq!(waiting, ["complete"]);
+        e.sync(NOW + 100).await;
+        assert!(
+            e.calls_of("update").is_empty(),
+            "{:?}",
+            e.calls_of("update")
+        );
+        // Undo: reopened to Waiting, again only the completion.
+        e.save(json!({"id": "t2", "status": "waiting"}), NOW + 110);
+        let waiting: Vec<Value> = e.outbox().iter().map(|w| w["op"].clone()).collect();
+        assert_eq!(waiting, ["complete"]);
+
+        // Mine now: the kind goes with the owner, so the plugin drops the label and prefix.
+        e.save(json!({"id": "t1", "owner": "You"}), NOW + 200);
+        e.sync(NOW + 200).await;
+        let updates = e.calls_of("update");
+        let last = updates.last().unwrap();
+        assert_eq!(last["patch"]["owner"], Value::Null);
+        assert_eq!(last["patch"]["kind"], "task", "{last}");
     }
 
     /// A finished `taskProvider` part of the real snapshot for each state (design §2), and the

@@ -216,6 +216,18 @@ impl super::Core {
         sync::queue(&mut r, &provider, now)
     }
 
+    /// Another setting of plugin `plugin` was saved (its project, say): when it is the active
+    /// provider, it is read again in full (`sync::reread`), so the new project's tasks come in
+    /// and the old one's leave the cache.
+    pub(crate) fn task_setting_saved(&self, plugin: &str) -> Result<()> {
+        let mut r = self.repo()?;
+        let provider = active_provider(&r.settings()?).to_string();
+        if provider != format!("plugin:{plugin}") {
+            return Ok(());
+        }
+        sync::reread(&mut r, &provider, super::models::now())
+    }
+
     /// The background loop's part (window open or closed): every 5 minutes, a sync with the
     /// active provider, and finished sync jobs older than a day go.
     pub(crate) fn task_sync_round(&self, now: i64) -> Result<()> {
