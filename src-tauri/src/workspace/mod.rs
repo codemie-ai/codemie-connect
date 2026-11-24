@@ -181,8 +181,8 @@ fn touring() -> bool {
 }
 
 /// Whether this process is touring (design § 2, rulings 7 and 9): [`Core::start`] then starts
-/// only the menu-bar refresher, and [`Core::request`] refuses `ActionPrepare`/`ActionConfirm`
-/// with "The tour sends nothing." The app reads [`touring`] (the real tour's
+/// only the menu-bar refresher, and [`Core::request`] refuses the ops that would send or open
+/// something on the user's desktop. The app reads [`touring`] (the real tour's
 /// `commands::tour::active()`, always `false` without the `tour` feature); `cfg(test)` reads
 /// [`TOUR_FOR_TESTS`] instead, so both quiet behaviors can be tested without the real,
 /// environment-driven tour startup.
@@ -302,7 +302,7 @@ impl Core {
         Self::open_with(
             Some(app),
             paths,
-            Arc::new(crate::commands::tour::quiet::fake_runner()),
+            Arc::new(crate::commands::tour::quiet::QuietRunner),
             ProfileCache::fixed(profiles),
             Arc::new(ai_jobs::FakeGraph::default()),
             Arc::new(analytics::cli::FakeAnalyticsCli::new()),
@@ -487,40 +487,50 @@ impl Core {
             let _ = app.emit(event, json!({"changed":true}));
         }
     }
+    /// Whether [`start`](Self::start) would run anything past the menu-bar refresher: a real
+    /// app to run it with (the only caller, `workspace::startup`, always has one; every unit
+    /// test's `Core` has none), and not touring. A pure, directly-testable decision — `start`
+    /// itself still keeps the plain `self.app` check too, so an app-less test `Core` behaves
+    /// exactly as it did before this module knew about the tour.
+    fn starts_background(&self) -> bool {
+        self.app.is_some() && !tour_sends_nothing()
+    }
     /// Starts the background work: the menu-bar refresher, notification clicks and the
     /// background loop. Touring (design § 2, ruling 9) starts only the menu-bar refresher: no
     /// schedules, jobs, Graph sync, task sync, automations or notifications, so every screenshot
-    /// is deterministic for the seed.
+    /// is deterministic for the seed. A `Core` with no app (every unit test) runs nothing at
+    /// all, as before the tour existed.
     pub fn start(self: &Arc<Self>) {
-        self.start_menu_bar();
-        if tour_sends_nothing() {
+        let Some(app) = self.app.clone() else { return };
+        if !self.starts_background() {
+            // Touring: the tour's windows are fixed sizes (design § 2), so there is nothing for
+            // `geometry::restore` to do, and no notification will ever fire to click.
+            self.start_menu_bar();
             return;
         }
-        // `None` only in unit tests, which have no webview runtime; the loop below needs no app.
-        if let Some(app) = self.app.clone() {
-            geometry::restore(&app, &self.paths.private);
-            let click_app = app.clone();
-            let _ = app.notification().on_action(move |action| {
-                if action.action_id() == "dismiss" {
-                    return;
-                }
-                if let Some(notification) = action.notification() {
-                    let extra = notification.extra();
-                    if let Some(state) = click_app.try_state::<WorkspaceState>() {
-                        if state.core.is_some() {
-                            let _ = click_app.emit(
-                                "workspace:notification-open",
-                                notification_open_payload(extra),
-                            );
-                        }
+        geometry::restore(&app, &self.paths.private);
+        self.start_menu_bar();
+        let click_app = app.clone();
+        let _ = app.notification().on_action(move |action| {
+            if action.action_id() == "dismiss" {
+                return;
+            }
+            if let Some(notification) = action.notification() {
+                let extra = notification.extra();
+                if let Some(state) = click_app.try_state::<WorkspaceState>() {
+                    if state.core.is_some() {
+                        let _ = click_app.emit(
+                            "workspace:notification-open",
+                            notification_open_payload(extra),
+                        );
                     }
                 }
-                if let Some(w) = click_app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            });
-        }
+            }
+            if let Some(w) = click_app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        });
         let core = self.clone();
         tauri::async_runtime::spawn(async move {
             let mut last_sync = 0;
@@ -830,11 +840,20 @@ impl Core {
     }
     pub async fn request(self: &Arc<Self>, req: Request) -> Result<Value> {
         // Checked before the mutation lock (design § 2, ruling 7): no revision bump, and the
-        // runner's own deny-list (design § 5) is the first guard, this the second.
-        if matches!(req.op, Operation::ActionPrepare | Operation::ActionConfirm)
-            && tour_sends_nothing()
-        {
-            return Err(WorkspaceError::new("tour", "The tour sends nothing."));
+        // runner's own deny-list (design § 5) is the first guard, this the second. `GraphConnect`,
+        // `OpenSource` and `MeetingsReveal` each open another app on the user's desktop (the
+        // Microsoft sign-in page, or Finder); the tour's deny-list regex does not name them, so
+        // they are refused here too (controller ruling, Task 2 fix round 1).
+        if tour_sends_nothing() {
+            if matches!(req.op, Operation::ActionPrepare | Operation::ActionConfirm) {
+                return Err(WorkspaceError::new("tour", "The tour sends nothing."));
+            }
+            if matches!(
+                req.op,
+                Operation::GraphConnect | Operation::OpenSource | Operation::MeetingsReveal
+            ) {
+                return Err(WorkspaceError::new("tour", "The tour opens nothing."));
+            }
         }
         if req.op == Operation::Snapshot {
             let mut snapshot = self.repo()?.snapshot()?;
@@ -3274,18 +3293,20 @@ mod tests {
         assert!(connect_capabilities(&json!({"capabilities":"calendar"})).is_err());
     }
 
-    /// Flips [`TOUR_FOR_TESTS`] on, awaits `f`, then always flips it back off, even on panic
-    /// (unwinding drops `_reset` on the way out).
-    async fn touring<T>(f: impl std::future::Future<Output = T>) -> T {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                TOUR_FOR_TESTS.fetch_sub(1, Ordering::SeqCst);
-            }
+    /// RAII: increments [`TOUR_FOR_TESTS`] while alive, decrements on drop (even on panic, since
+    /// unwinding still runs `Drop`). Kept alive across `.await` points by simply staying in
+    /// scope, with no need for the function under test to be given a future to run inside.
+    struct Touring;
+    impl Touring {
+        fn on() -> Self {
+            TOUR_FOR_TESTS.fetch_add(1, Ordering::SeqCst);
+            Touring
         }
-        TOUR_FOR_TESTS.fetch_add(1, Ordering::SeqCst);
-        let _reset = Reset;
-        f.await
+    }
+    impl Drop for Touring {
+        fn drop(&mut self) {
+            TOUR_FOR_TESTS.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     #[tokio::test]
@@ -3293,46 +3314,62 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let core = quiet_core(dir.path());
         let revision_before = core.repo().unwrap().revision().unwrap();
-        touring(async {
-            for op in [Operation::ActionPrepare, Operation::ActionConfirm] {
-                let req = mutation(&core, op, json!({"kind": "chat_reply"}));
-                let err = core.request(req).await.unwrap_err();
-                assert_eq!(err.code, "tour");
-                assert_eq!(err.message, "The tour sends nothing.");
-            }
-        })
-        .await;
+        let _touring = Touring::on();
+        for op in [Operation::ActionPrepare, Operation::ActionConfirm] {
+            let req = mutation(&core, op, json!({"kind": "chat_reply"}));
+            let err = core.request(req).await.unwrap_err();
+            assert_eq!(err.code, "tour");
+            assert_eq!(err.message, "The tour sends nothing.");
+        }
         // No mutation ran: the refusal is checked before the mutation lock.
         assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
     }
 
+    /// `GraphConnect`, `OpenSource` and `MeetingsReveal` each open another app on the user's
+    /// desktop (the Microsoft sign-in page, or Finder); the tour's deny-list regex names none of
+    /// them, so `Core::request` refuses them too (controller ruling, Task 2 fix round 1).
     #[tokio::test]
-    async fn a_tour_core_starts_no_background_loop() {
+    async fn tour_refuses_ops_that_open_the_desktop() {
         let dir = tempfile::tempdir().unwrap();
         let core = quiet_core(dir.path());
-        let job = new_job(
-            "sync",
-            format!("sync:{}", id()),
-            None,
-            None,
-            now(),
-            json!({}),
-            json!({}),
+        let revision_before = core.repo().unwrap().revision().unwrap();
+        let _touring = Touring::on();
+        for op in [
+            Operation::GraphConnect,
+            Operation::OpenSource,
+            Operation::MeetingsReveal,
+        ] {
+            let label = format!("{op:?}");
+            let req = mutation(&core, op, json!({}));
+            let err = core.request(req).await.unwrap_err();
+            assert_eq!(err.code, "tour", "{label}");
+            assert_eq!(err.message, "The tour opens nothing.", "{label}");
+        }
+        assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
+    }
+
+    /// A pure-function test of `start()`'s decision — no `Core::start`, no sleeping, no
+    /// background loop ever actually spawned, so it cannot be flaky and proves nothing by
+    /// accident. `starts_background()` ANDs two independent things: `self.app.is_some()` (this
+    /// task restored `start()`'s original early return for it, so every pre-existing app-less
+    /// test `Core` is unaffected — asserted below, though it is not new) and `!tour_sends_nothing()`
+    /// (what this task adds — exercised directly on the predicate itself, since no unit test in
+    /// this crate can build a real `tauri::AppHandle` to flip the first half to `true` and
+    /// isolate the second).
+    #[test]
+    fn a_tour_core_starts_no_background_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        assert!(
+            !core.starts_background(),
+            "every unit test's Core has no app"
         );
-        core.repo().unwrap().enqueue(&job).unwrap();
-        touring(async {
-            core.start();
-            // Polled, not just checked once at the end: a loop that ran would flip this back to
-            // false between rounds too.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
-            while std::time::Instant::now() < deadline {
-                assert!(!core.loop_busy.load(Ordering::SeqCst));
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await;
-        let jobs = core.repo().unwrap().jobs().unwrap();
-        let seeded = jobs.iter().find(|j| j.id == job.id).expect("job kept");
-        assert_eq!(seeded.state, "queued");
+        assert!(!tour_sends_nothing());
+        {
+            let _touring = Touring::on();
+            assert!(tour_sends_nothing());
+            assert!(!core.starts_background(), "still false: no app either way");
+        }
+        assert!(!tour_sends_nothing());
     }
 }

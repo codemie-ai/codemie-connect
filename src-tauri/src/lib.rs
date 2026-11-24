@@ -207,12 +207,15 @@ pub fn run() {
                 app.manage(plugins::manager::PluginManager::start(app.handle(), core));
             }
             commands::status_smoke::arm(app.handle());
-            workspace::setup_tray(app)?;
-            // No icon in the menu bar while touring (design § 3).
+            // No icon in the menu bar while touring (design § 3): the tray is never built in the
+            // first place, rather than built and then hidden, so it never shows even briefly
+            // (controller ruling, Task 2 fix round 1, M6).
             #[cfg(feature = "tour")]
-            if tour {
-                let _ = app.tray_by_id("main").map(|t| t.set_visible(false));
+            if !tour {
+                workspace::setup_tray(app)?;
             }
+            #[cfg(not(feature = "tour"))]
+            workspace::setup_tray(app)?;
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
