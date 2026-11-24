@@ -5,6 +5,7 @@
 //! is done for the user otherwise.
 use super::{active_provider, sync};
 use crate::workspace::models::{Record, Result};
+use crate::workspace::repository::Repository;
 use crate::workspace::{tasks, Core};
 use serde_json::json;
 use sha1::{Digest, Sha1};
@@ -25,6 +26,30 @@ pub(crate) fn kept(task: &serde_json::Value, evidence: &str) -> bool {
     task["keptEvidence"]
         .as_array()
         .is_some_and(|k| k.iter().any(|h| h == hash.as_str()))
+}
+
+/// Flags `task` as looking handled by `evidence` (ruling 7: an automation, and `task_handled`'s
+/// own evidence branch, only flag a task — never complete it): `true` when it flagged; `false`
+/// when the task is not open, is already flagged with that same evidence, or was kept open
+/// against it.
+pub(crate) fn flag(
+    r: &mut Repository,
+    wid: &str,
+    task: &Record,
+    evidence: &str,
+    now: i64,
+) -> Result<bool> {
+    let flagged = task.data["handled"]["evidence"] == evidence;
+    if tasks::is_open(&task.data) && !flagged && !kept(&task.data, evidence) {
+        tasks::task_save(
+            r,
+            wid,
+            &json!({"id": task.id, "handled": {"evidence": evidence}}),
+            now,
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Completes each open `reply` task of the active provider the user answered themselves; returns
@@ -177,6 +202,75 @@ mod tests {
             .iter()
             .map(|h| h["text"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    fn record(core: &Core, id: &str) -> Record {
+        core.repo()
+            .unwrap()
+            .record(tasks::KIND, id, None, Some("personal"))
+            .unwrap()
+    }
+
+    /// `flag` (ruling 7): flags an open task, never completes one, is idempotent on the same
+    /// evidence, and respects "Keep open" against that evidence (design §6).
+    #[test]
+    fn flag_never_closes_and_respects_keep_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        tasks::task_save(
+            &mut core.repo().unwrap(),
+            "personal",
+            &json!({"id": "t1", "text": "Reply to Olga about SOW section 4", "kind": "reply"}),
+            T0,
+        )
+        .unwrap();
+        let said = "Olga said thanks in the thread";
+
+        let t1 = record(&core, "t1");
+        assert!(flag(&mut core.repo().unwrap(), "personal", &t1, said, T0).unwrap());
+        assert_eq!(body(&core, "t1")["handled"]["evidence"], said);
+        assert_eq!(body(&core, "t1")["status"], "todo", "flag never completes");
+
+        // The same evidence again: already flagged, so nothing is written.
+        let t1 = record(&core, "t1");
+        assert!(
+            !flag(&mut core.repo().unwrap(), "personal", &t1, said, T0 + 1).unwrap(),
+            "already flagged with that evidence"
+        );
+
+        // Kept open against it (what `task_handled {action: "keep"}` records): the same
+        // evidence never flags it again.
+        let mut kept_task = record(&core, "t1");
+        kept_task.data["keptEvidence"] = json!([evidence_hash(said)]);
+        kept_task.data["handled"] = Value::Null;
+        core.repo().unwrap().put_record(&kept_task).unwrap();
+        let t1 = record(&core, "t1");
+        assert!(
+            !flag(&mut core.repo().unwrap(), "personal", &t1, said, T0 + 2).unwrap(),
+            "kept open against this evidence"
+        );
+
+        // Done: flag neither completes nor flags a task that is no longer open.
+        tasks::task_save(
+            &mut core.repo().unwrap(),
+            "personal",
+            &json!({"id": "t1", "status": "done"}),
+            T0 + 3,
+        )
+        .unwrap();
+        let t1 = record(&core, "t1");
+        assert!(
+            !flag(
+                &mut core.repo().unwrap(),
+                "personal",
+                &t1,
+                "a brand new sentence",
+                T0 + 4
+            )
+            .unwrap(),
+            "not open"
+        );
+        assert_eq!(body(&core, "t1")["status"], "done");
     }
 
     #[test]

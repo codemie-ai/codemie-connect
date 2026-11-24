@@ -622,7 +622,19 @@ pub(crate) fn task_delete(r: &mut Repository, workspace_id: &str, id: &str) -> R
         }
     })?;
     if provider_of(&task.data) == "local" {
-        r.delete_local(KIND, id, workspace_id)?;
+        // A key's local task is tombstoned with the delete (design §3), so an automation that
+        // made it never remakes it on a later run; the task and the ledger entry as one change.
+        let mut put = Vec::new();
+        if let Some(key) = task.data["key"].as_str() {
+            put.push(keys::ledger_record(
+                "local",
+                key,
+                None,
+                "removed",
+                super::models::now(),
+            ));
+        }
+        r.commit_local(&put, &[(KIND, id, workspace_id)], true)?;
     } else {
         // Its unsent changes go with it; once it is in the provider, a `remove` is queued, in the
         // same transaction (design §10 "Delete with a provider").
@@ -848,7 +860,6 @@ pub(crate) fn due_today_reminders(core: &Core, now: i64) -> Result<()> {
 /// ledger entry for it with the active provider that is `created`, `done` or `removed`, makes
 /// nothing and answers `(id, false)`; otherwise `body` is saved as a new task of `workspace` with
 /// that key, `(id, true)`.
-#[cfg_attr(not(test), allow(dead_code))] // step 5's automations call it
 pub(crate) fn create_by_key(
     core: &Core,
     workspace: &str,
@@ -869,22 +880,20 @@ pub(crate) fn create_by_key(
         return Ok((t.id, false));
     }
     let provider = active_provider(&r.settings()?).to_string();
-    if provider != "local" {
-        // Made before, done or deleted in the provider: a rerun makes nothing again (design
-        // §3). Only a withdrawn key (the column's Undo) may be made again.
-        let ledger = keys::ledger_get(&r, &provider, key)?;
-        let known = ledger
-            .as_ref()
-            .filter(|l| matches!(l["state"].as_str(), Some("created" | "done" | "removed")));
-        if let Some(l) = known {
-            // The id the provider's task has (or had) in Connect, `<plugin>-<remote id>`; the
-            // key itself when no remote id was ever learned.
-            let plugin = provider.strip_prefix("plugin:").unwrap_or(&provider);
-            let id = l["remoteId"]
-                .as_str()
-                .map_or_else(|| key.to_string(), |rid| format!("{plugin}-{rid}"));
-            return Ok((id, false));
-        }
+    // Made before, done or deleted in the provider — Local's own ledger included (design §3): a
+    // rerun makes nothing again. Only a withdrawn key (the column's Undo) may be made again.
+    let ledger = keys::ledger_get(&r, &provider, key)?;
+    let known = ledger
+        .as_ref()
+        .filter(|l| matches!(l["state"].as_str(), Some("created" | "done" | "removed")));
+    if let Some(l) = known {
+        // The id the provider's task has (or had) in Connect, `<plugin>-<remote id>`; the
+        // key itself when no remote id was ever learned (always, for Local).
+        let plugin = provider.strip_prefix("plugin:").unwrap_or(&provider);
+        let id = l["remoteId"]
+            .as_str()
+            .map_or_else(|| key.to_string(), |rid| format!("{plugin}-{rid}"));
+        return Ok((id, false));
     }
     let mut data = body.clone();
     let fields = data
@@ -1451,6 +1460,67 @@ mod tests {
         assert_eq!(
             history(&e.core, &id),
             vec!["Added by you", "Moved from To do to Waiting"]
+        );
+    }
+
+    /// Design §3: Local, like a provider, tombstones a key it deleted, so step 5's
+    /// `create_by_key` never remakes it on a later run; Undo (saving the deleted body back)
+    /// brings the key back to life.
+    #[test]
+    fn local_delete_tombstones_the_key() {
+        let e = env();
+        let key = keys::task_key("message:m1", "Reply to Olga");
+        let (id, created) =
+            create_by_key(&e.core, "personal", &json!({"text": "Reply to Olga"}), &key).unwrap();
+        assert!(created);
+        let deleted = task_delete(&mut e.core.repo().unwrap(), "personal", &id).unwrap();
+        assert!(e
+            .core
+            .repo()
+            .unwrap()
+            .records_of_kind(KIND)
+            .unwrap()
+            .iter()
+            .all(|t| t.data["key"] != key.as_str()));
+        let (again, remade) =
+            create_by_key(&e.core, "personal", &json!({"text": "Reply to Olga"}), &key).unwrap();
+        assert!(!remade, "the key is tombstoned");
+        assert_eq!(again, key);
+
+        // Undo: the deleted body, saved back under the same id, is live under its key again.
+        let mut restore = deleted;
+        restore["id"] = id.clone().into();
+        save(&e.core, restore, NOW).unwrap();
+        assert_eq!(
+            create_by_key(&e.core, "personal", &json!({"text": "Reply to Olga"}), &key).unwrap(),
+            (id, false)
+        );
+    }
+
+    /// A Local task marked done is still found by its key (never duplicated) without needing
+    /// the ledger at all: it is still a record of kind `commitment` with that key.
+    #[test]
+    fn local_done_keys_are_not_made_again() {
+        let e = env();
+        let key = keys::task_key("message:m2", "Reply to Olga about the budget");
+        let (id, created) = create_by_key(
+            &e.core,
+            "personal",
+            &json!({"text": "Reply to Olga about the budget"}),
+            &key,
+        )
+        .unwrap();
+        assert!(created);
+        save(&e.core, json!({"id": id, "status": "done"}), NOW).unwrap();
+        assert_eq!(
+            create_by_key(
+                &e.core,
+                "personal",
+                &json!({"text": "Reply to Olga about the budget"}),
+                &key
+            )
+            .unwrap(),
+            (id, false)
         );
     }
 

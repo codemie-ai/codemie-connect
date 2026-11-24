@@ -7,7 +7,7 @@
 //! Nothing here deletes or closes a task in a provider on its own: a switch keeps the old
 //! provider's cache and unsent changes, and only an explicit withdraw or delete queues a
 //! `remove`.
-use super::handled::{evidence_hash, kept};
+use super::handled::{self, evidence_hash};
 use super::{active_provider, keys, outbox, sync, wire, ProviderError};
 use crate::workspace::models::{id, now, Operation, Record, Request, Result, WorkspaceError};
 use crate::workspace::repository::Repository;
@@ -538,15 +538,7 @@ fn handled(r: &mut Repository, wid: &str, data: &Value, now: i64) -> Result<Valu
             .map(str::trim)
             .filter(|e| !e.is_empty() && e.chars().count() <= 500)
             .ok_or_else(|| invalid("evidence", MESSAGE))?;
-        let flagged = task.data["handled"]["evidence"] == evidence;
-        if tasks::is_open(&task.data) && !flagged && !kept(&task.data, evidence) {
-            tasks::task_save(
-                r,
-                wid,
-                &json!({"id": tid, "handled": {"evidence": evidence}}),
-                now,
-            )?;
-        }
+        handled::flag(r, wid, &task, evidence, now)?;
         return Ok(json!({"id": tid}));
     }
     match data["action"].as_str() {
@@ -1381,6 +1373,65 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "not_found");
+    }
+
+    /// `task_handled`'s evidence branch now goes through `handled::flag`; the op answers exactly
+    /// as it did before the refactor.
+    #[tokio::test]
+    async fn task_handled_evidence_still_answers_as_before() {
+        let e = env(P);
+        e.save(json!({"id": "t1", "text": "Reply to Olga about SOW section 4", "kind": "reply"}));
+        let said = "Olga said thanks in the thread";
+        let revision = |e: &Env| {
+            e.core
+                .repo()
+                .unwrap()
+                .record(tasks::KIND, "t1", None, Some("personal"))
+                .unwrap()
+                .revision
+        };
+
+        let a = e
+            .op(
+                Operation::TaskHandled,
+                json!({"id": "t1", "evidence": said}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(a, json!({"id": "t1"}));
+        assert_eq!(e.task("t1").unwrap()["handled"]["evidence"], said);
+        let after_first = revision(&e);
+
+        // The same evidence again: already flagged, so `flag` writes nothing.
+        e.op(
+            Operation::TaskHandled,
+            json!({"id": "t1", "evidence": said}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            revision(&e),
+            after_first,
+            "already flagged with that evidence: no write"
+        );
+
+        // Done, then evidence never flags a task that is no longer open.
+        e.op(
+            Operation::TaskHandled,
+            json!({"id": "t1", "action": "done"}),
+        )
+        .await
+        .unwrap();
+        e.op(
+            Operation::TaskHandled,
+            json!({"id": "t1", "evidence": "a different sentence"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            e.task("t1").unwrap()["handled"].is_null(),
+            "done: evidence never flags it"
+        );
     }
 
     #[tokio::test]
