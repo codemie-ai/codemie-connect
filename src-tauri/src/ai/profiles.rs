@@ -273,7 +273,7 @@ impl DetectEnv {
     pub fn system(extra_dirs: Vec<PathBuf>) -> Self {
         Self {
             path_var: std::env::var("PATH").unwrap_or_default(),
-            home: PathBuf::from(std::env::var("HOME").unwrap_or_default()),
+            home: super::discover::home_dir(),
             extra_dirs,
             config_path: PathBuf::from(codemie_config::config_path()),
         }

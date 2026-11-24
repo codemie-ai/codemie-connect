@@ -6,6 +6,7 @@ import { active, attentionMessages, decisions, syncShown } from './selectors.js'
 import { agoLabel } from './format.js';
 import { taskStatus } from './tasks-model.js';
 import { meetingCounts } from './meetings-model.js';
+import { MOD } from './platform.js';
 
 export const NAV = [['today', 'Today'], ['inbox', 'Inbox'], ['calendar', 'Calendar'], ['meetings', 'Meetings'], ['tasks', 'Tasks'], ['automations', 'Automations'], ['analytics', 'Analytics']];
 /** The main menu's groups under Today (spec docs/superpowers/specs/2026-11-20-grouped-menu-design.md);
@@ -122,7 +123,7 @@ export function renderShell({ snapshot: s, route, resolvedDark, plugins = {}, se
   const pageRow = id => row(id, NAV_LABEL[id], `<button type="button" data-action="route" data-tip="${NAV_LABEL[id]}" data-route="${id}" ${id === route ? 'aria-current="page"' : ''}>${icon(id)}<span>${NAV_LABEL[id]}</span>${count(id)}</button>`, { current: id === route, badge: counted[id] || '' });
   const groups = NAV_GROUPS.map(g => navGroup(g, g.pages.map(pageRow), { folded: groupFolded(g.id, sidebarFolded), rail: sidebarCollapsed })).join('');
   const settingsAlert = (c && c.status !== 'connected' && c.status !== 'disconnected') || settingsDot;
-  const shortcut = `⌘\\`;
+  const shortcut = `${MOD}\\`;
   const toggleTitle = `${sidebarCollapsed ? 'Expand' : 'Collapse'} menu`;
   const connected = c && c.status !== 'disconnected';
   return `<aside class="ws-sidebar${sidebarCollapsed ? ' ws-sidebar-rail' : ''}">

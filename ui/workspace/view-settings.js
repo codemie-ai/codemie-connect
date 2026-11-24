@@ -10,6 +10,7 @@ import { storageCard } from './settings-storage.js';
 import { pluginsPage } from './settings-plugins.js';
 import { layoutPanel } from './settings-layout.js';
 import { meetingsSettingsHeader, meetingsSettingsPanel, newMeetingsSettingsView, TAB_TEXT as MEETINGS_TAB_TEXT } from './view-settings-meetings.js';
+import { MOD_THEN_SHIFT } from './platform.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
@@ -128,7 +129,7 @@ export function settings(s, ctx) {
   };
   const anyOpen = SETTINGS_GROUPS.some(g => !menu.folded.includes(g.name));
   const foldTitle = anyOpen ? 'Fold all groups' : 'Unfold all groups';
-  const shrinkTitle = `${rail ? 'Expand' : 'Shrink'} the Settings menu (⌘⇧\\)`;
+  const shrinkTitle = `${rail ? 'Expand' : 'Shrink'} the Settings menu (${MOD_THEN_SHIFT}\\)`;
   const width = rail ? SETTINGS_MENU.rail : Math.min(SETTINGS_MENU.max, Math.max(SETTINGS_MENU.min, menu.width));
   const sized = rail || width !== SETTINGS_MENU.def ? ` style="--ws-settings-w:${width}px"` : '';
   const found = SETTINGS_GROUPS.map(menuGroup).join('');

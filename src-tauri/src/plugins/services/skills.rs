@@ -29,8 +29,7 @@ fn folder(home: &Path, name: &str) -> PathBuf {
 
 /// The user's home folder, where their Claude Code keeps its skills.
 pub fn home() -> Result<PathBuf, HostError> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
+    Some(crate::ai::discover::home_dir())
         .filter(|h| h.is_absolute())
         .ok_or_else(|| bad("Connect can't find your home folder"))
 }

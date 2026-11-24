@@ -13,6 +13,7 @@ import { dotsSummary, menu, plural, tplColor } from './view-meeting-tabs.js';
 import {
   SECTION_LABELS, fieldError, mdEditor, ruleTestResult, sortedRules, subCard, templateEditor, tplIcon,
 } from './settings-meetings-editors.js';
+import { FILE_MANAGER } from './platform.js';
 
 /** The page's view state: the template being edited (`{id, isNew, draft}`), refusals by field,
  *  the glossary and tag texts as read (and typed), Write/Preview, the rule tester, and the
@@ -149,7 +150,7 @@ function transcriptsPanel(s, { v, auth = {}, now }) {
     title: 'Meeting folders', iconName: 'folder',
     body: `<div class="ws-ms-location">
         <div class="ws-ms-location-path"><span class="ws-field-label">Location</span><span class="ws-ms-path-line"><code class="ws-ms-path" title="${e(root.path || '')}">${e(root.path || 'Your home folder › CodeMie Connect › Meetings')}</code>${root.isDefault !== false ? badge('Default', 'neutral') : ''}</span></div>
-        <div class="ws-actions">${button('Change…', { action: 'meetings-settings-root-pick', size: 'sm', iconName: 'folder' })}${button('Show in Finder', { action: 'meetings-settings-root-reveal', variant: 'ghost', size: 'sm', iconName: 'folder-open' })}${root.isDefault === false ? button('Use the default', { action: 'meetings-settings-root-default', variant: 'ghost', size: 'sm', iconName: 'undo' }) : ''}</div>
+        <div class="ws-actions">${button('Change…', { action: 'meetings-settings-root-pick', size: 'sm', iconName: 'folder' })}${button(`Show in ${FILE_MANAGER}`, { action: 'meetings-settings-root-reveal', variant: 'ghost', size: 'sm', iconName: 'folder-open' })}${root.isDefault === false ? button('Use the default', { action: 'meetings-settings-root-default', variant: 'ghost', size: 'sm', iconName: 'undo' }) : ''}</div>
       </div>
       ${fieldError(v, 'meetings.root')}
       <p class="ws-field-hint ws-ms-location-hint">New meetings are saved here. Meetings saved before keep their folders.</p>

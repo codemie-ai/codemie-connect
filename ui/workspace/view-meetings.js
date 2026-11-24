@@ -24,6 +24,7 @@ import {
 import {
   dotsSummary, explainer, filesTab, makeNotesForm, meetingContext, menu, menuItems, notesTab, peopleList, plural, PAUSED, pausedFix, saveNextStep, tasksTab, tplChip, tplColor, transcriptTab,
 } from './view-meeting-tabs.js';
+import { FILE_MANAGER } from './platform.js';
 
 /** Meetings' sections (spec "Page sections"): the list, pinned to Today as "From your meetings"
  *  (the `meetings` widget), and the meeting's four tabs, `mtg-<tab>` for each of `TABS`. Who was
@@ -340,7 +341,7 @@ function meetingMenu(p, mc, slots = []) {
   return menu(`meeting-${m.id}`, dotsSummary('More for this meeting'), [
     ...hideMenuItems(m, p.v.hidden),
     '-',
-    mc.r.folder ? ['Show folder in Finder', 'meeting-reveal', id, 'folder-open'] : null,
+    mc.r.folder ? [`Show folder in ${FILE_MANAGER}`, 'meeting-reveal', id, 'folder-open'] : null,
     mc.r.folder ? ['Copy folder path', 'meeting-copy-folder', id, 'copy'] : null,
     mc.saved && mc.fromTeams && !mc.imported ? ['Download again from Teams', 'meeting-download', id, 'refresh'] : null,
     ['available', 'downloaded', 'ready', 'failed'].includes(m.state) ? ['Make notes with…', 'meeting-make-notes', id, 'sparkles'] : null,

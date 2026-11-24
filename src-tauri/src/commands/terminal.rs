@@ -487,7 +487,7 @@ fn command(launch: &Launch, resume: bool) -> CommandBuilder {
 }
 
 fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+    crate::ai::discover::home_dir()
 }
 
 /// Claude Code's theme (`theme` in `~/.claude.json`, the only value read there): "light" for its

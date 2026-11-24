@@ -139,16 +139,29 @@ pub fn session(
     Ok((dir, argv))
 }
 
-/// Finder, selecting `path`.
+/// The file manager (Finder, File Explorer), selecting `path`.
 pub fn open_in_finder(path: &Path) -> std::io::Result<()> {
-    let status = std::process::Command::new("/usr/bin/open")
-        .arg("-R")
-        .arg(path)
-        .status()?;
-    if status.success() {
+    #[cfg(windows)]
+    {
+        // Explorer wants `/select,<path>` as one argument and answers 1 even when it worked.
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(path);
+        std::process::Command::new("explorer.exe")
+            .arg(arg)
+            .status()?;
         Ok(())
-    } else {
-        Err(std::io::Error::other("Finder didn't open it"))
+    }
+    #[cfg(not(windows))]
+    {
+        let status = std::process::Command::new("/usr/bin/open")
+            .arg("-R")
+            .arg(path)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("Finder didn't open it"))
+        }
     }
 }
 

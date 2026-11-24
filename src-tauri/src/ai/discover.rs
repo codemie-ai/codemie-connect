@@ -70,19 +70,40 @@ pub fn find_program_in(
     dirs.push(PathBuf::from("/usr/local/bin"));
     dirs.extend(nvm_bins(home));
     dirs.extend(extra.iter().cloned());
+    if cfg!(windows) {
+        // npm's global folder on Windows (`npm i -g` puts `claude.cmd` here).
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            dirs.push(PathBuf::from(appdata).join("npm"));
+        }
+    }
     dirs.into_iter()
-        .map(|d| d.join(name))
+        .flat_map(|d| program_names(name).into_iter().map(move |n| d.join(n)))
         .find(|p| is_executable(p))
 }
 
-/// `find_program_in` with the process PATH and HOME.
+/// The file names `name` can be installed under: itself, and on Windows with `.exe` or `.cmd`.
+fn program_names(name: &str) -> Vec<String> {
+    let mut names = vec![name.to_string()];
+    if cfg!(windows) {
+        names.extend([format!("{name}.exe"), format!("{name}.cmd")]);
+    }
+    names
+}
+
+/// The user's home folder: `HOME`, or `USERPROFILE` on Windows, where `HOME` is normally unset.
+/// Empty when neither is set.
+pub fn home_dir() -> PathBuf {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    PathBuf::from(std::env::var_os(var).unwrap_or_default())
+}
+
+/// `find_program_in` with the process PATH and home folder.
 #[allow(dead_code)] // used from Task 5
 pub fn find_program(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_default();
     find_program_in(
         name,
         &std::env::var("PATH").unwrap_or_default(),
-        Path::new(&home),
+        &home_dir(),
         extra,
     )
 }

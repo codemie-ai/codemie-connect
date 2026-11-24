@@ -5,14 +5,15 @@
 import { escapeHtml as e } from './store.js';
 import { badge, button, card, settingRow, toggle } from './ui.js';
 import { PRESETS, layoutChanged } from './today-grid.js';
+import { MOD, MOD_SHIFT, MOD_THEN_SHIFT } from './platform.js';
 
 const BUILT_IN = Object.keys(PRESETS);
 const HANDLES = [['hover', 'On hover'], ['always', 'Always'], ['customize', 'In Customize']];
 
 const SHORTCUTS = [
-  ['⌘\\', 'Collapse or expand the main menu'],
-  ['⌘⇧\\', 'Shrink or expand the Settings menu'],
-  ['⌘Z · ⇧⌘Z', 'Undo or redo a change to Today while customizing'],
+  [`${MOD}\\`, 'Collapse or expand the main menu'],
+  [`${MOD_THEN_SHIFT}\\`, 'Shrink or expand the Settings menu'],
+  [`${MOD}Z · ${MOD_SHIFT}Z`, 'Undo or redo a change to Today while customizing'],
   ['Arrow keys', 'Move a focused widget or section header'],
   ['Shift + arrow keys', 'Resize it'],
   ['⌥-click a Settings group', 'Keep only that group open'],
