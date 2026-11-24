@@ -1,6 +1,7 @@
 //! Note templates (spec "Templates"): the instructions the AI follows to turn a transcript into
-//! notes. Two are built in (*Meeting notes*, the default, and *Short summary*); the person adds
-//! their own (`custom`) and Claude Code skills (`skill`, whose `SKILL.md` is read at every run).
+//! notes. Three are built in (*Meeting notes*, the default, *Short summary* and *Formal
+//! summary*, made by the Formal summary automation); the person adds their own (`custom`) and
+//! Claude Code skills (`skill`, whose `SKILL.md` is read at every run).
 //!
 //! A template the person saved is a local record of kind [`KIND`] in the active workspace. A
 //! record with a built-in's id overrides that built-in (*Edited*); deleting it is *Reset to
@@ -91,8 +92,28 @@ Glossary:
 Transcript:
 {{transcript}}"##;
 
+/// *Formal summary* (spec step 5 §6): what the Formal summary automation makes for each
+/// meeting, always in English and neutral about people, on the existing note-template engine.
+const FORMAL_PROMPT: &str = r##"Write a summary of "{{title}}" ({{date}}) that {{me}} can send to the attendees. Always write in English, whatever language the meeting was held in. Be neutral: report positions and decisions, not opinions of the people who hold them.
+
+# {{title}} — {{date}}
+Attendees: {{participants}}
+
+## Summary — two or three sentences: who met, why, and what came out of it
+## Discussion — by topic, each a short paragraph or a few bullets
+## Decisions — if any: <decision> — <why>
+## Action items — owner · action · due date only when someone said one
+
+Name the subject instead of "it" or "this". Spell names and terms as the glossary does. A collective "we" becomes {{me}}. Extra wishes for this run: {{wishes}}
+
+Glossary:
+{{glossary}}
+
+Transcript:
+{{transcript}}"##;
+
 /// The built-in templates, the default first.
-pub const BUILT_INS: [BuiltIn; 2] = [
+pub const BUILT_INS: [BuiltIn; 3] = [
     BuiltIn {
         id: DEFAULT_ID,
         name: "Meeting notes",
@@ -119,6 +140,15 @@ pub const BUILT_INS: [BuiltIn; 2] = [
         prompt: BRIEF_PROMPT,
         sections: &["summary", "decisions", "actions"],
         color: "#259F4C",
+        icon: "list",
+    },
+    BuiltIn {
+        id: "formal-summary",
+        name: "Formal summary",
+        blurb: "A summary you can send to the attendees: in English, the real title and people, what was discussed, decided and who does what by when.",
+        prompt: FORMAL_PROMPT,
+        sections: &["summary", "attendees", "discussion", "decisions", "actions"],
+        color: "#8A5CC2",
         icon: "list",
     },
 ];
@@ -370,6 +400,22 @@ mod tests {
     }
 
     #[test]
+    fn formal_summary_is_a_built_in() {
+        let plain = all(&[]);
+        assert_eq!(plain.len(), 3);
+        assert_eq!(plain[2].id, "formal-summary");
+        let formal = built_in("formal-summary").unwrap();
+        assert_eq!(formal.name, "Formal summary");
+        assert_eq!(
+            formal.sections,
+            vec!["summary", "attendees", "discussion", "decisions", "actions"]
+        );
+        for needle in ["{{participants}}", "English", "{{transcript}}"] {
+            assert!(formal.prompt.contains(needle), "lacks {needle}");
+        }
+    }
+
+    #[test]
     fn resolve_prefers_meeting_choice_then_rule_then_default() {
         let records = vec![record(
             "client",
@@ -429,11 +475,11 @@ mod tests {
     #[test]
     fn built_in_override_and_reset() {
         let original = built_in("meeting-notes").unwrap();
-        // No records: the two built-ins, unedited.
+        // No records: the three built-ins, unedited.
         let plain = all(&[]);
         assert_eq!(
             plain.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
-            vec!["meeting-notes", "short-summary"]
+            vec!["meeting-notes", "short-summary", "formal-summary"]
         );
         assert!(!plain[0].edited);
         assert_eq!(plain[0], original);
@@ -461,7 +507,13 @@ mod tests {
         let edited = all(&records);
         assert_eq!(
             edited.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
-            vec!["meeting-notes", "short-summary", "aa-mine", "zz-skill"]
+            vec![
+                "meeting-notes",
+                "short-summary",
+                "formal-summary",
+                "aa-mine",
+                "zz-skill"
+            ]
         );
         assert_eq!(edited[0].prompt, "Only decisions, please.");
         assert_eq!(edited[0].kind, "builtin");
@@ -469,9 +521,9 @@ mod tests {
         assert!(edited[0].edited);
         assert!(!edited[1].edited);
         // Only a built-in's id makes a built-in.
-        assert_eq!(edited[2].kind, "custom");
-        assert_eq!(edited[3].kind, "skill");
-        assert!(!edited[3].extract_tasks);
+        assert_eq!(edited[3].kind, "custom");
+        assert_eq!(edited[4].kind, "skill");
+        assert!(!edited[4].extract_tasks);
         // Reset to built-in: the override record is gone, the original is back.
         let reset = all(&records[..1]);
         assert_eq!(reset[0], original);

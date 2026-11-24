@@ -1,5 +1,6 @@
 //! Automations (DESIGN 6.6): the model, its validation, when a run is due and which new
 //! messages or ended meetings start one. A due run is queued as an `automation_run` job.
+use crate::workspace::meetings::model::{MeetingRecord, MeetingState};
 use crate::workspace::meetings::templates::Template;
 use crate::workspace::models::*;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,11 @@ pub const HOURLY_CAP: usize = 30;
 pub const CATCH_UP_SECS: i64 = 12 * 3600;
 /// A scheduled time this recent, while Connect was open, is an ordinary run; later is missed.
 pub const ON_TIME_SECS: i64 = 15 * 60;
+/// A Formal-summary-style automation still considers a meeting that ended this recently (DESIGN
+/// step 5 §6), the same window automatic notes use.
+pub const AUTO_WINDOW: i64 = 2 * 24 * 3600;
+/// "Skip short meetings": under three minutes long, the same threshold automatic notes use.
+pub const SHORT: f64 = 180.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -514,7 +520,7 @@ impl State {
             self.skipped.remove(0);
         }
     }
-    fn remember_source(&mut self, key: String) {
+    pub(super) fn remember_source(&mut self, key: String) {
         self.fired_sources.push(key);
         if self.fired_sources.len() > 2000 {
             self.fired_sources.drain(..500);
@@ -536,7 +542,7 @@ fn words(text: &str) -> String {
 }
 
 /// Case-insensitive whole-word match of any keyword; no keywords matches everything.
-fn keywords_match(keywords: &[String], text: &str) -> bool {
+pub(super) fn keywords_match(keywords: &[String], text: &str) -> bool {
     if keywords.is_empty() {
         return true;
     }
@@ -688,6 +694,43 @@ pub fn ended_meetings(events: &[Record], last_check: i64, now: i64) -> Vec<Meeti
                 id: e.id.clone(),
                 title: d["title"].as_str().unwrap_or("").to_string(),
             })
+        })
+        .collect()
+}
+
+/// Meetings a Formal-summary-style automation should run for now (DESIGN step 5 §6): the
+/// transcript is saved (`Downloaded` or `Ready`), the meeting ended within [`AUTO_WINDOW`] and
+/// after `armed_at`, it is not short when `skip_short` is on (under [`SHORT`] seconds of
+/// start-to-end), it is not waiting for its own automatic notes (`wants_auto` and no document
+/// yet), and no `meeting_notes` job for it is queued or running (`busy`, keyed by meeting id).
+pub fn ready_meetings(
+    meetings: &[MeetingRecord],
+    wants_auto: impl Fn(&MeetingRecord) -> bool,
+    busy: &HashSet<String>,
+    armed_at: i64,
+    now: i64,
+    skip_short: bool,
+) -> Vec<MeetingIn> {
+    meetings
+        .iter()
+        .filter(|m| matches!(m.state, MeetingState::Downloaded | MeetingState::Ready))
+        .filter(|m| {
+            let end = crate::workspace::graph::timestamp(&m.end);
+            end > armed_at && now - end < AUTO_WINDOW
+        })
+        .filter(|m| {
+            if !skip_short {
+                return true;
+            }
+            let start = crate::workspace::graph::timestamp(&m.start);
+            let end = crate::workspace::graph::timestamp(&m.end);
+            (end - start) as f64 >= SHORT
+        })
+        .filter(|m| !(wants_auto(m) && m.docs.is_empty()))
+        .filter(|m| !busy.contains(&m.event_id))
+        .map(|m| MeetingIn {
+            id: m.event_id.clone(),
+            title: m.title.clone(),
         })
         .collect()
 }
@@ -1360,5 +1403,73 @@ mod tests {
             state.skipped.last().unwrap().reason,
             "This automation already ran in the last 10 minutes."
         );
+    }
+
+    #[test]
+    fn ready_meetings_follow_the_rules() {
+        use crate::workspace::meetings::model::Doc;
+        const END: i64 = 1_795_000_000;
+        fn at(t: i64) -> String {
+            chrono::DateTime::from_timestamp(t, 0).unwrap().to_rfc3339()
+        }
+        fn meeting(id: &str, minutes: i64, state: MeetingState, docs: &[&str]) -> MeetingRecord {
+            MeetingRecord {
+                event_id: id.into(),
+                title: "Weekly sync".into(),
+                start: at(END - minutes * 60),
+                end: at(END),
+                state,
+                docs: docs
+                    .iter()
+                    .map(|t| Doc {
+                        id: (*t).into(),
+                        ..Doc::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }
+        }
+        let armed = END - 3600;
+        let no_auto = |_: &MeetingRecord| false;
+        let wants_auto = |_: &MeetingRecord| true;
+        let empty: HashSet<String> = HashSet::new();
+
+        // Downloaded, ended 1h ago, after armed_at: in.
+        let m1 = meeting("m1", 30, MeetingState::Downloaded, &[]);
+        let one = std::slice::from_ref(&m1);
+        assert_eq!(
+            ready_meetings(one, no_auto, &empty, armed, END, true).len(),
+            1
+        );
+        // Ended 3 days ago: out.
+        assert!(ready_meetings(one, no_auto, &empty, armed, END + 3 * 24 * 3600, true).is_empty());
+        // Ended before armed_at: out.
+        assert!(ready_meetings(one, no_auto, &empty, END + 1, END, true).is_empty());
+        // A 2-minute meeting with skip_short on: out; with it off: in.
+        let short = meeting("m-short", 2, MeetingState::Downloaded, &[]);
+        assert!(ready_meetings(
+            std::slice::from_ref(&short),
+            no_auto,
+            &empty,
+            armed,
+            END,
+            true
+        )
+        .is_empty());
+        assert_eq!(
+            ready_meetings(&[short], no_auto, &empty, armed, END, false).len(),
+            1
+        );
+        // Wants its own automatic notes and has no document yet: out.
+        assert!(ready_meetings(one, wants_auto, &empty, armed, END, true).is_empty());
+        // Same, but a document already exists (the automatic notes came through): in.
+        let has_doc = meeting("m1", 30, MeetingState::Ready, &["meeting-notes"]);
+        assert_eq!(
+            ready_meetings(&[has_doc], wants_auto, &empty, armed, END, true).len(),
+            1
+        );
+        // A meeting_notes job already queued or running for it: out.
+        let busy: HashSet<String> = ["m1".to_string()].into();
+        assert!(ready_meetings(&[m1], no_auto, &busy, armed, END, true).is_empty());
     }
 }

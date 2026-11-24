@@ -38,7 +38,7 @@ test('the fixture snapshot carries the note templates native sends', () => {
     const { noteTemplates } = buildSnapshot(Date.now(), { connected });
     assert.deepEqual(noteTemplates, native);
   }
-  assert.deepEqual(native.map(t => [t.id, t.kind, t.edited]), [['meeting-notes', 'builtin', false], ['short-summary', 'builtin', false]]);
+  assert.deepEqual(native.map(t => [t.id, t.kind, t.edited]), [['meeting-notes', 'builtin', false], ['short-summary', 'builtin', false], ['formal-summary', 'builtin', false]]);
   assert.match(native[0].prompt, /^You turn one meeting transcript into meeting notes for \{\{me\}\}\./);
 });
 

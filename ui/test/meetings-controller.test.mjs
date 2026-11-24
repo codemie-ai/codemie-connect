@@ -162,15 +162,26 @@ test('make notes dialog preselects a template without a document when the meetin
   const s = snapshot();
   const client = meetingContract().rules.noteTemplates.find(t => t.id === 'client');
   s.noteTemplates = [...s.noteTemplates, client];
+  // Formal summary (a built-in) already has a document too, so My client recap is still the
+  // first template without one.
+  const meeting = s.records.find(r => r.kind === 'meeting' && r.id === 'mtg-philips');
+  meeting.data = {
+    ...meeting.data,
+    docs: [...meeting.data.docs, {
+      id: 'formal-summary', name: 'Formal summary', template: 'formal-summary', file: 'notes.formal-summary.md',
+      auto: false, createdAt: 0, updatedAt: 0, rev: 1, version: 1, versions: [], wishes: null,
+    }],
+  };
   const { ctl, calls } = harness({ s });
-  // The Philips sync has Meeting notes and Short summary: My client recap is offered first.
+  // The Philips sync has Meeting notes, Short summary and Formal summary: My client recap is
+  // offered first.
   await ctl.handle('meeting-make-notes', control({ id: 'mtg-philips' }));
   const another = calls.modals.at(-1);
   assert.equal(another.title, 'Another summary');
   assert.match(another.body, /name="template" value="client" checked/);
   assert.doesNotMatch(another.body, /value="meeting-notes" checked/);
   assert.match(another.body, /Made · adds version 2/);
-  assert.match(another.body, /Your 2 documents stay as they are/);
+  assert.match(another.body, /Your 3 documents stay as they are/);
   assert.doesNotMatch(another.body, /name="remember"/, 'no rule offer once there are documents');
   await another.onSubmit(form({ template: 'client', wishes: '  focus on the pilot ', findTasks: 'on' }));
   assert.deepEqual(calls.mutate.at(-1), ['meeting_notes', { meetingId: 'mtg-philips', templateId: 'client', wishes: 'focus on the pilot', findTasks: true, remember: false }]);

@@ -1,6 +1,6 @@
 //! Engine glue: persistence, the job queue and the operations. The decisions are in `rules`.
 use super::rules::*;
-use crate::workspace::meetings::templates;
+use crate::workspace::meetings::{model::MeetingRecord, rules as meeting_rules, templates};
 use crate::workspace::models::*;
 use crate::workspace::{
     inbox, new_job,
@@ -8,7 +8,7 @@ use crate::workspace::{
     workspace_id_active, Core, MAX_WIDGETS,
 };
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 const PERSONAL: &str = "personal";
@@ -99,7 +99,7 @@ impl Core {
         self.automations_round_at(now, started)
     }
 
-    fn automations_round_at(&self, now: i64, started: i64) -> Result<()> {
+    pub(super) fn automations_round_at(&self, now: i64, started: i64) -> Result<()> {
         if !workspace_id_active(PERSONAL) {
             return Ok(());
         }
@@ -179,10 +179,104 @@ impl Core {
                     }
                 }
             }
+            if automations.iter().any(|(_, a)| a.is_summary()) {
+                self.match_summary_automations(&mut r, &jobs, &automations, &mut state, now)?;
+            }
             state.last_meeting_check = Some(now);
         }
         if serde_json::to_value(&state).unwrap_or(Value::Null) != before {
             save_state(&mut r, &state)?;
+        }
+        Ok(())
+    }
+
+    /// Formal-summary-style automations (DESIGN step 5 §6): for each, the meetings ready for it
+    /// (`ready_meetings`) whose title matches its keywords start a run, deduped by
+    /// `fired_sources` like every event automation; `meeting_ready` has no cooldown.
+    fn match_summary_automations(
+        &self,
+        r: &mut Repository,
+        jobs: &[Job],
+        automations: &[(Record, Automation)],
+        state: &mut State,
+        now: i64,
+    ) -> Result<()> {
+        let w = r.workspace(PERSONAL)?;
+        let Some(c) = r
+            .settings()?
+            .active_connection
+            .and_then(|id| r.connection(&id).ok())
+            .filter(|c| c.status == "connected")
+        else {
+            return Ok(());
+        };
+        let visible = |rec: &Record| record_selected(rec, &w) && source_permitted(rec, &c);
+        let meetings: Vec<MeetingRecord> = r
+            .provider_records(&c.id, crate::workspace::meetings::model::KIND)?
+            .into_iter()
+            .filter(|rec| visible(rec))
+            .filter_map(|rec| serde_json::from_value(rec.data).ok())
+            .collect();
+        let events: HashMap<String, Record> = r
+            .provider_records(&c.id, "event")?
+            .into_iter()
+            .filter(|rec| visible(rec))
+            .map(|rec| (rec.id.clone(), rec))
+            .collect();
+        let auto_rules: Vec<meeting_rules::Rule> = r
+            .local_records(PERSONAL, meeting_rules::KIND)?
+            .iter()
+            .filter_map(meeting_rules::from_record)
+            .collect();
+        let meeting_settings = r.settings()?.meetings;
+        let busy: HashSet<String> = jobs
+            .iter()
+            .filter(|j| {
+                j.kind == "meeting_notes" && matches!(j.state.as_str(), "queued" | "running")
+            })
+            .filter_map(|j| j.payload["meetingId"].as_str().map(String::from))
+            .collect();
+        let wants_auto = |m: &MeetingRecord| {
+            let data = events
+                .get(&m.event_id)
+                .map(|e| e.data.clone())
+                .unwrap_or_else(|| json!({"title": m.title}));
+            meeting_rules::auto_notes(m.auto, &data, &auto_rules, &meeting_settings).0
+        };
+        for (_, a) in automations.iter().filter(|(_, a)| a.is_summary()) {
+            let Trigger::Event { keywords, .. } = &a.trigger else {
+                continue;
+            };
+            let armed = state.armed_at.get(&a.id).copied().unwrap_or(0);
+            let ready = ready_meetings(
+                &meetings,
+                wants_auto,
+                &busy,
+                armed,
+                now,
+                meeting_settings.skip_short,
+            );
+            for m in ready
+                .into_iter()
+                .filter(|m| keywords_match(keywords, &m.title))
+            {
+                let key = format!("{}:{}", a.id, m.id);
+                if state.fired_sources.contains(&key) {
+                    continue;
+                }
+                state.remember_source(key);
+                if let Some(reason) = state.refusal(&a.id, None, now) {
+                    state.skip(&a.id, &m.id, reason, now);
+                    continue;
+                }
+                state.started(&a.id, None, now);
+                enqueue_run(
+                    r,
+                    a,
+                    format!("automation:{}:event:{}", a.id, m.id),
+                    json!({"kind": "event", "event": event_name(a), "sourceId": m.id}),
+                )?;
+            }
         }
         Ok(())
     }
@@ -530,6 +624,7 @@ fn automation_record(a: &Automation) -> Result<Record> {
 mod engine_tests {
     use super::*;
     use crate::ai::fake::FakeRunner;
+    use crate::ai::stream::{RunOutcome, Usage};
     use crate::workspace::ai::tests::{mutation, ready};
     use crate::workspace::test_core;
     use std::sync::Arc;
@@ -555,8 +650,8 @@ mod engine_tests {
             "prompt":"Draft a short reply to the message that started this run.",
             "ai":{},"deliver":{"today":true,"draftReply":true},"catchUp":false})
     }
-    /// A summary automation: `meetingSummary` names an existing note template (`meeting-notes`;
-    /// `formal-summary` is not built yet) and reads nothing.
+    /// A summary automation: `meetingSummary` names an existing note template (`meeting-notes`,
+    /// so this fixture stays unchanged by the Formal summary built-in) and reads nothing.
     fn summary_json() -> Value {
         json!({"id":"auto-summary","name":"Formal summary","enabled":true,
             "trigger":{"kind":"event","event":"meeting_ready"},
@@ -1335,5 +1430,153 @@ mod engine_tests {
         let at_on = *armed(&core).get("auto-schedule").unwrap();
         assert!(at_on >= at_save, "turning on re-arms it");
         assert!((now() - at_on).abs() <= 5);
+    }
+
+    /// A meeting record (kind `meeting`) with a saved transcript, folder included.
+    fn transcript_meeting(id: &str, end: i64, folder: &std::path::Path) -> Record {
+        let at = |t: i64| chrono::DateTime::from_timestamp(t, 0).unwrap().to_rfc3339();
+        Record {
+            id: id.into(),
+            kind: "meeting".into(),
+            connection_id: Some("acct".into()),
+            workspace_id: None,
+            source: "calendar:cal1".into(),
+            revision: "v1".into(),
+            updated_at: 1,
+            data: json!({"eventId": id, "title": "Weekly sync", "start": at(end - 1800),
+                "end": at(end), "state": "downloaded", "docs": [],
+                "folder": folder.to_string_lossy().to_string()}),
+        }
+    }
+
+    #[tokio::test]
+    async fn formal_summary_waits_for_automatic_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(RunOutcome {
+            structured: Some(
+                json!({"notesMarkdown": "# Weekly sync\n\nDiscussed the plan.", "tasks": []}),
+            ),
+            text: String::new(),
+            usage: Usage::default(),
+            cost_usd: Some(0.01),
+            duration_ms: 500,
+            model: Some("claude-sonnet-4-5".into()),
+        })]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.default_profile = Some("claude".into());
+            r.settings_update(&s).unwrap();
+        }
+        // A rule makes this meeting's notes automatic (field "title" is enough to match it).
+        core.repo()
+            .unwrap()
+            .put_record(&Record {
+                id: "r-weekly".into(),
+                kind: "meeting_rule".into(),
+                connection_id: None,
+                workspace_id: Some(PERSONAL.into()),
+                source: "local".into(),
+                revision: "v1".into(),
+                updated_at: 1,
+                data: json!({"field": "title", "value": "weekly", "template": "meeting-notes",
+                    "autoNotes": true, "on": true, "order": 0}),
+            })
+            .unwrap();
+        core.request(mutation(
+            &core,
+            Operation::AutomationSave,
+            json!({"id": "auto-summary", "name": "Formal summary", "enabled": true,
+                "trigger": {"kind": "event", "event": "meeting_ready"}, "prompt": "",
+                "deliver": {"meetingSummary": "formal-summary"}}),
+        ))
+        .await
+        .unwrap();
+        let armed = now();
+        let end = armed + 1800;
+        let folder = dir.path().join("m1");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("segments.json"),
+            r#"[{"voice":"Jeroen","speaker":"remote","name":"Jeroen","address":null,"start":0.0,"end":5.0,"text":"Hello."}]"#,
+        )
+        .unwrap();
+        core.repo()
+            .unwrap()
+            .put_record(&transcript_meeting("m1", end, &folder))
+            .unwrap();
+
+        // Round 1: the meeting's own automatic notes are already queued (as the meetings round
+        // would have queued them); the summary waits for them, not racing them.
+        {
+            let mut r = core.repo().unwrap();
+            let policy = r.policy(Some(PERSONAL), Some("acct")).unwrap();
+            r.enqueue(&new_job(
+                "meeting_notes",
+                "meeting_notes:auto:m1".into(),
+                Some(PERSONAL.into()),
+                Some("acct".into()),
+                now(),
+                policy,
+                json!({"meetingId": "m1", "title": "Weekly sync", "templateId": "meeting-notes",
+                    "notesKey": "m1:meeting-notes", "wishes": "", "findTasks": true,
+                    "auto": true, "step": null, "steps": []}),
+            ))
+            .unwrap();
+        }
+        core.automations_round_at(armed + 3600, armed).unwrap();
+        assert!(
+            jobs_of(&core).is_empty(),
+            "the summary automation queues nothing while notes are still coming"
+        );
+
+        // Running the automatic notes job: the meeting becomes ready with a main document.
+        let claimed = core.repo().unwrap().claim(now()).unwrap().unwrap();
+        assert_eq!(claimed.kind, "meeting_notes");
+        core.clone().run_claimed_job(claimed).await;
+        let m = core
+            .repo()
+            .unwrap()
+            .record("meeting", "m1", Some("acct"), None)
+            .unwrap();
+        assert_eq!(m.data["state"], "ready");
+        assert!(m.data["main"].is_string(), "{}", m.data);
+
+        // Round 2: one automation_run now queues, and running it queues the summary's own
+        // notes job with findTasks false (the meeting already has a document). A "Notes
+        // ready" notification from the automatic run is also due; drain it first.
+        core.automations_round_at(armed + 7200, armed).unwrap();
+        let runs = jobs_of(&core);
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        let claimed = loop {
+            let claimed = core
+                .repo()
+                .unwrap()
+                .claim(now())
+                .unwrap()
+                .expect("a due job");
+            if claimed.kind == "automation_run" {
+                break claimed;
+            }
+            core.clone().run_claimed_job(claimed).await;
+        };
+        core.clone().run_claimed_job(claimed).await;
+        let summary_notes = core
+            .repo()
+            .unwrap()
+            .jobs()
+            .unwrap()
+            .into_iter()
+            .find(|j| j.key == "meeting_notes:auto:m1:formal-summary")
+            .expect("the summary's own notes job was queued");
+        assert_eq!(summary_notes.payload["findTasks"], false);
+        assert_eq!(summary_notes.payload["auto"], true);
+        assert_eq!(
+            fake.calls().len(),
+            1,
+            "Claude ran once, for the notes; never for the automation itself"
+        );
     }
 }

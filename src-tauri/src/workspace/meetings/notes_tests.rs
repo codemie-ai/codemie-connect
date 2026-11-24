@@ -1134,9 +1134,14 @@ async fn templates_and_rules_save_validate_and_delete() {
         .collect();
     assert_eq!(
         names,
-        vec!["Meeting notes", "Short summary", "My client recap"]
+        vec![
+            "Meeting notes",
+            "Short summary",
+            "Formal summary",
+            "My client recap"
+        ]
     );
-    let own = &s["noteTemplates"][2];
+    let own = &s["noteTemplates"][3];
     assert_eq!(
         (own["kind"].as_str(), own["id"].as_str()),
         (Some("custom"), Some(mine.as_str()))

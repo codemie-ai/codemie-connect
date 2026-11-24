@@ -12,7 +12,7 @@ use crate::workspace::{
     ai_jobs::{
         ai_draft_record, provenance, still_readable, stored_job, DraftOf, MAIL_READ_DEADLINE,
     },
-    meetings::model::MeAlias,
+    meetings::{model::MeAlias, templates as meeting_templates},
     models::*,
     new_job,
     prompts::{self, AutomationTask, FullTexts, Reading},
@@ -318,13 +318,100 @@ impl Core {
             })?
         };
         let mut log = RunLog::new(job, &a);
-        match self.attempt(job, &a, &mut log).await {
+        let result = if a.is_summary() {
+            self.run_summary(job, &a, &mut log)
+        } else {
+            self.attempt(job, &a, &mut log).await
+        };
+        match result {
             Err(e) if e.code != "cancelled" => {
                 self.record_failure(&log, &e);
                 Err(e)
             }
             result => result,
         }
+    }
+
+    /// A Formal-summary-style automation's run (DESIGN step 5 §6): no read set, no Claude.
+    /// Queues the meeting's `meeting_notes` job for the automation's template under the fixed
+    /// key `meeting_notes:auto:<meetingId>:<templateId>`, finding tasks only when the meeting
+    /// has no document yet (then the summary becomes its first document). Skipped when the
+    /// meeting is no longer available, its template is gone, or it already has a document of
+    /// that template.
+    fn run_summary(&self, job: &Job, a: &Automation, log: &mut RunLog) -> Result<String> {
+        let meeting_id = log.trigger["sourceId"].as_str().unwrap_or("").to_string();
+        let Some(template_id) = a.deliver.meeting_summary.clone() else {
+            return self.commit_skipped(job, log, "Choose the template to make.");
+        };
+        let mut r = self.repo()?;
+        r.check_claim(&job.id, job.attempts)?;
+        let w = r.workspace(PERSONAL)?;
+        let Ok(c) = signed_in(&r, &w) else {
+            drop(r);
+            return self.commit_skipped(
+                job,
+                log,
+                "Sign in to Microsoft 365 in Settings. This automation reads a meeting’s transcript.",
+            );
+        };
+        log.connection_id = Some(c.id.clone());
+        let meeting = r
+            .record("meeting", &meeting_id, Some(&c.id), None)
+            .ok()
+            .filter(|rec| {
+                source_available(rec) && record_selected(rec, &w) && source_permitted(rec, &c)
+            });
+        let Some(meeting) = meeting else {
+            drop(r);
+            return self.commit_skipped(
+                job,
+                log,
+                "The meeting that started this run is no longer available.",
+            );
+        };
+        let title = meeting.data["title"].as_str().unwrap_or("").to_string();
+        let all = meeting_templates::all(&r.local_records(PERSONAL, meeting_templates::KIND)?);
+        let Some(template) = meeting_templates::find(&all, &template_id).cloned() else {
+            drop(r);
+            return self.commit_skipped(
+                job,
+                log,
+                "This note template no longer exists. Choose another one.",
+            );
+        };
+        let docs = meeting.data["docs"].as_array().cloned().unwrap_or_default();
+        if docs
+            .iter()
+            .any(|d| d["id"].as_str() == Some(template.id.as_str()))
+        {
+            let reason = format!("{title} already has a {}.", template.name);
+            drop(r);
+            return self.commit_skipped(job, log, &reason);
+        }
+        let find_tasks = template.extract_tasks && docs.is_empty();
+        let policy = r.policy(Some(PERSONAL), Some(&c.id))?;
+        r.enqueue(&new_job(
+            "meeting_notes",
+            format!("meeting_notes:auto:{meeting_id}:{}", template.id),
+            Some(PERSONAL.into()),
+            Some(c.id.clone()),
+            now(),
+            policy,
+            json!({"meetingId": meeting_id, "title": title, "templateId": template.id,
+                "notesKey": format!("{meeting_id}:{}", template.id), "wishes": a.prompt,
+                "findTasks": find_tasks, "auto": true, "step": null, "steps": []}),
+        ))?;
+        let record = log.record(
+            "ok",
+            json!({
+                "output": {"title": format!("{} queued for {title}", template.name)},
+                "delivered": ["meeting_summary"],
+                "meetingId": meeting_id,
+            }),
+        );
+        let current = stored_job(&r, job)?;
+        r.commit_automation_run(&current, &record, None, None, DONE)?;
+        Ok(DONE.into())
     }
 
     async fn attempt(&self, job: &Job, a: &Automation, log: &mut RunLog) -> Result<String> {
@@ -2491,6 +2578,223 @@ mod tests {
         assert_eq!(all_tasks(&core).len(), 1, "only c1: no task was made");
         assert!(all_tasks(&core)[0].data["handled"].is_null(), "and no flag");
         assert!(runs(&core).is_empty());
+    }
+
+    // ---------------------------------------------------------- Formal summary (DESIGN step 5 §6)
+
+    fn summary_automation(id: &str, template: &str) -> Value {
+        json!({"id": id, "name": "Formal summary", "enabled": true,
+            "trigger": {"kind": "event", "event": "meeting_ready"},
+            "prompt": "",
+            "deliver": {"meetingSummary": template}})
+    }
+
+    /// A meeting record (kind `meeting`) with a saved transcript, for Formal-summary tests.
+    fn meeting_record(id: &str, end: i64, docs: Value, folder: Option<&std::path::Path>) -> Record {
+        Record {
+            id: id.into(),
+            kind: "meeting".into(),
+            connection_id: Some(ACCT.into()),
+            workspace_id: None,
+            source: "calendar:cal1".into(),
+            revision: "v1".into(),
+            updated_at: 1,
+            data: json!({"eventId": id, "title": "Weekly sync", "start": rfc(end - 1800),
+                "end": rfc(end), "state": "downloaded", "docs": docs,
+                "folder": folder.map(|p| p.to_string_lossy().to_string())}),
+        }
+    }
+
+    /// Queues a run of `id` the way an event match does for a meeting (DESIGN step 5 §6).
+    fn queue_meeting_ready(core: &Core, id: &str, meeting_id: &str) -> String {
+        let mut r = core.repo().unwrap();
+        let policy = r.policy(Some("personal"), None).unwrap();
+        let job = crate::workspace::new_job(
+            "automation_run",
+            format!("automation:{id}:event:{meeting_id}"),
+            Some("personal".into()),
+            None,
+            now(),
+            policy,
+            json!({"automationId": id, "title": "Formal summary",
+                "trigger": {"kind": "event", "event": "meeting_ready", "sourceId": meeting_id}}),
+        );
+        r.enqueue(&job).unwrap();
+        job.id
+    }
+
+    /// Claims and runs exactly one due job, whatever its kind.
+    async fn run_one(core: &Arc<Core>) -> Job {
+        let claimed = core
+            .repo()
+            .unwrap()
+            .claim(now())
+            .unwrap()
+            .expect("a due job");
+        let id = claimed.id.clone();
+        core.clone().run_claimed_job(claimed).await;
+        job(core, &id)
+    }
+
+    #[tokio::test]
+    async fn run_now_on_a_summary_automation_is_skipped_not_an_empty_claude_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        let jid = run_now(&core, "auto-summary").await;
+        let done = run_next(&core).await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        assert_eq!(run_of(&core, &done.id).data["status"], "skipped");
+        assert!(
+            fake.calls().is_empty(),
+            "a manual run with no meeting must never call Claude"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_meeting_without_notes_gets_its_summary_as_first_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let notes = Ok(RunOutcome {
+            structured: Some(
+                json!({"notesMarkdown": "# Weekly sync\n\nDiscussed the plan.", "tasks": []}),
+            ),
+            text: String::new(),
+            usage: Usage::default(),
+            cost_usd: Some(0.01),
+            duration_ms: 900,
+            model: Some("claude-sonnet-4-5".into()),
+        });
+        let fake = Arc::new(FakeRunner::new(vec![notes]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        let folder = dir.path().join("meeting-m1");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("segments.json"),
+            r#"[{"voice":"Jeroen","speaker":"remote","name":"Jeroen","address":null,"start":0.0,"end":5.0,"text":"Hello."}]"#,
+        )
+        .unwrap();
+        put(&core, meeting_record("m1", BASE, json!([]), Some(&folder)));
+        let jid = queue_meeting_ready(&core, "auto-summary", "m1");
+
+        let done = run_next(&core).await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+        let run = run_of(&core, &done.id);
+        assert_eq!(run.data["status"], "ok");
+        assert_eq!(run.data["delivered"], json!(["meeting_summary"]));
+        assert_eq!(
+            run.data["output"]["title"],
+            "Formal summary queued for Weekly sync"
+        );
+        assert_eq!(run.data["meetingId"], "m1");
+
+        // The meeting's own automatic-notes key is untouched, and findTasks is true: the
+        // summary is this meeting's first document.
+        let queued = jobs_of(&core, "meeting_notes");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].key, "meeting_notes:auto:m1:formal-summary");
+        assert_eq!(queued[0].payload["findTasks"], true);
+        assert_eq!(queued[0].payload["auto"], true);
+        assert_eq!(queued[0].payload["templateId"], "formal-summary");
+
+        // Running it is the unchanged notes job: the summary becomes the main document.
+        let notes_job = run_one(&core).await;
+        assert_eq!(notes_job.kind, "meeting_notes");
+        assert_eq!(notes_job.state, "succeeded", "{:?}", notes_job.result);
+        let m = core
+            .repo()
+            .unwrap()
+            .record("meeting", "m1", Some(ACCT), None)
+            .unwrap();
+        assert_eq!(m.data["main"], "formal-summary");
+        assert_eq!(fake.calls().len(), 1, "Claude ran once, for the notes job");
+    }
+
+    #[tokio::test]
+    async fn a_meeting_runs_once_and_never_waits_for_a_cooldown() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        // Saving just armed the automation; the meetings must end after that moment.
+        let armed = now();
+        let end = armed + 1800;
+        put(&core, meeting_record("m1", end, json!([]), None));
+        put(&core, meeting_record("m2", end, json!([]), None));
+        // Already has the template's document: its run is skipped with the sentence.
+        put(
+            &core,
+            meeting_record(
+                "m3",
+                end,
+                json!([{"id": "formal-summary", "template": "formal-summary"}]),
+                None,
+            ),
+        );
+        core.automations_round_at(armed + 3600, armed).unwrap();
+        let queued = jobs_of(&core, "automation_run");
+        assert_eq!(queued.len(), 3, "{queued:?}");
+        for _ in &queued {
+            run_one(&core).await;
+        }
+        let m3_run = queued
+            .iter()
+            .find(|j| j.payload["trigger"]["sourceId"] == "m3")
+            .unwrap();
+        assert_eq!(run_of(&core, &m3_run.id).data["status"], "skipped");
+        assert_eq!(
+            run_of(&core, &m3_run.id).data.get("reason").cloned(),
+            Some(json!("Weekly sync already has a Formal summary."))
+        );
+        let ok_runs = queued
+            .iter()
+            .filter(|j| j.payload["trigger"]["sourceId"] != "m3")
+            .count();
+        assert_eq!(ok_runs, 2);
+
+        // A third round: fired_sources holds every meeting back, even the skipped one.
+        core.automations_round_at(armed + 7200, armed).unwrap();
+        assert_eq!(jobs_of(&core, "automation_run").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn contract_fixture_summary_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        seed(&core);
+        save(&core, summary_automation("auto-summary", "formal-summary")).await;
+        put(&core, meeting_record("m1", BASE, json!([]), None));
+        let jid = queue_meeting_ready(&core, "auto-summary", "m1");
+        let done = run_next(&core).await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+
+        let mut value = serde_json::to_value(run_of(&core, &done.id)).unwrap();
+        value["id"] = "run-1".into();
+        value["revision"] = "rev-1".into();
+        value["updatedAt"] = 1_795_000_500.into();
+        value["data"]["startedAt"] = 1_795_000_480.into();
+        value["data"]["durationMs"] = 0.into();
+
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/test/fixtures/contract");
+        let path = dir.join("automation-run-summary.json");
+        let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
+        if std::env::var("UPDATE_CONTRACT_FIXTURES").is_ok_and(|v| v == "1") {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&path, &text).unwrap();
+        } else {
+            let saved = std::fs::read_to_string(&path).unwrap_or_default();
+            assert_eq!(
+                saved, text,
+                "automation-run-summary.json is stale: run UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures"
+            );
+        }
     }
 
     #[tokio::test]
