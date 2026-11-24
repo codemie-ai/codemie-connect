@@ -122,8 +122,9 @@ test('statusLine covers every provider state', () => {
   assert.equal(lines.syncing, 'Todoist · syncing…');
   assert.equal(lines.offline, `Todoist can't be reached · 1 change waits · trying again at ${formatTime(1795003230 * 1000, 'UTC')}`);
   assert.equal(lines.rate_limited, `Todoist asked Connect to slow down · trying again at ${formatTime(1795003320 * 1000, 'UTC')}`);
-  // The banner says the rest; the line keeps the provider's name.
-  for (const k of ['needs_token', 'off', 'failed']) assert.equal(lines[k], 'Todoist', k);
+  // The banner says the rest; the line keeps the provider's name. A still-loading plugin (I1)
+  // reads the same neutral way, never "didn't load".
+  for (const k of ['needs_token', 'off', 'failed', 'loading']) assert.equal(lines[k], 'Todoist', k);
   assert.equal(statusLine(undefined, now, 'UTC'), 'Connect · on this Mac');
   assert.equal(statusLine({ ...STATES.offline, pending: 3, retryAt: null }, now, 'UTC'), "Todoist can't be reached · 3 changes wait");
 });

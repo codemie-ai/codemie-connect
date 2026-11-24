@@ -23,6 +23,30 @@
     "retryAt": null,
     "state": "failed"
   },
+  "loading": {
+    "active": "plugin:todoist",
+    "available": [
+      {
+        "id": "local",
+        "name": "Connect"
+      },
+      {
+        "id": "plugin:todoist",
+        "name": "Todoist",
+        "on": true,
+        "pending": 1,
+        "ready": false
+      }
+    ],
+    "copyOffered": false,
+    "lastSync": null,
+    "message": null,
+    "name": "Todoist",
+    "parked": 0,
+    "pending": 1,
+    "retryAt": null,
+    "state": "loading"
+  },
   "local": {
     "active": "local",
     "available": [

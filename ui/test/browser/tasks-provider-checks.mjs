@@ -451,6 +451,24 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
     await context.close().catch(() => {});
   }
 
+  // I1: a plugin still loading reads as neutral, never the "didn't load" banner.
+  {
+    const patch = snapshot => {
+      snapshot.taskProvider = STATES.loading;
+      for (const r of snapshot.records.filter(x => x.kind === 'commitment')) r.data.provider = 'plugin:todoist';
+    };
+    const { page, context, errors } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, tasks: true, hash: '#/tasks', patch });
+    await check('tasks-provider P8: the loading state shows no banner and a neutral header line', async () => {
+      await page.waitForSelector('.ws-tdate[data-provider]');
+      await settled(page);
+      assert(await page.locator('.ws-tdate-banner').count() === 0, 'no banner while loading');
+      const line = await page.locator('.ws-tasks-line').innerText();
+      assert(line.trim() === 'Todoist', line);
+      assert(errors.length === 0, errors.join(' | '));
+    });
+    await context.close().catch(() => {});
+  }
+
   {
     const patch = snapshot => {
       allTodoist(snapshot);

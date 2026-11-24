@@ -93,7 +93,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
   "copyOffered": false }
 ```
 
-`state` is one of `local`, `ready`, `syncing`, `offline`, `rate_limited`, `needs_token`, `off` (the plugin is installed and turned off) or `failed` (it didn't load). A contract fixture, `task-provider-states.json`, holds one real snapshot part per state.
+`state` is one of `local`, `ready`, `syncing`, `offline`, `rate_limited`, `needs_token`, `off` (the plugin is installed and turned off), `loading` (the plugin manager still has a reload under way; a provider that isn't `ready` yet may simply not have finished loading, not have failed — I1) or `failed` (it ran and didn't load). A contract fixture, `task-provider-states.json`, holds one real snapshot part per state.
 
 ### 3. Keys and the ledger
 

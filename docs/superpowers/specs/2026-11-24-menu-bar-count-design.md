@@ -4,7 +4,7 @@
 **Builds on:**
 - the tray as it is today: `src-tauri/src/workspace/mod.rs::setup_tray` (a template icon, `icons/tray-template.png`, 36 × 36, tinted by AppKit; a menu with "Open CodeMie Connect" and "Quit CodeMie Connect"; no id, no title);
 - the sidebar counts in `ui/workspace/shell.js::renderShell` (Inbox: `attentionMessages`, Tasks: To review, Meetings: `meetingCounts` process + attention) and the Settings dot;
-- step 4, `2026-11-23-task-provider-design.md`: the snapshot's `taskProvider` (`state` one of `local`, `ready`, `syncing`, `offline`, `rate_limited`, `needs_token`, `off`, `failed`; `parked`, `pending`), `tasks::active`, `tasks::is_mine`, `tasks::is_open`;
+- step 4, `2026-11-23-task-provider-design.md`: the snapshot's `taskProvider` (`state` one of `local`, `ready`, `syncing`, `offline`, `rate_limited`, `needs_token`, `off`, `loading`, `failed`; `parked`, `pending`), `tasks::active`, `tasks::is_mine`, `tasks::is_open`;
 - step 5, `2026-11-24-create-tasks-templates-design.md`: automation runs (`automation_run` records with `status` `ok | failed | skipped | cancelled`, `delivered`), reply tasks made by Inbox triage, the Formal summary as a meeting document;
 - `Core::emit("workspace:changed")`, sent after every operation, every finished job and once a minute by the background loop.
 
@@ -103,7 +103,7 @@ Amber is on while any of these holds; each is one fix row `{id, text, open}`:
 | `automation:<id>` | an enabled automation's newest run has `status: "failed"`, unless it failed because Connect was offline or something was rate limited (`error.code` `offline`, `throttled` or `rate_limited`, or `error.class` `rate_limited`) | "<Automation name> failed: <error message>" | Automations › Run log, that run |
 | `meetings-folder` | any meeting's `saveError.code == "folder_unwritable"` | "Connect can't write to the meetings folder." | Settings › Transcripts & folders |
 
-`offline`, `rate_limited`, `syncing` and `off` are not fixes (they pass by themselves or were chosen), and neither is an automation run that failed for one of those reasons. A fix clears when its condition stops holding: a new sign-in, a saved token, Try again or Discard change, a later `ok` run or the automation turned off, a writable folder.
+`offline`, `rate_limited`, `syncing`, `off` and `loading` are not fixes (they pass by themselves, were chosen, or the plugin manager simply hasn't finished loading the plugin yet — I1), and neither is an automation run that failed for one of those reasons. A fix clears when its condition stops holding: a new sign-in, a saved token, Try again or Discard change, a later `ok` run or the automation turned off, a writable folder.
 
 ### 5. The menu bar
 

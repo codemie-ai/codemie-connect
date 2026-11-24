@@ -2102,7 +2102,14 @@ mod tests {
         e.sync(NOW).await;
         states.insert("needs_token".into(), e.snapshot());
 
-        for (state, on, ready) in [("off", false, false), ("failed", true, false)] {
+        for (state, on, ready, loading) in [
+            ("off", false, false, false),
+            ("failed", true, false, false),
+            // I1: a reload still under way (`FakeProvider::set_loading(true)`) reads as
+            // "loading", not "failed" — sync's own idle classification doesn't know about it
+            // (out of this fixture's scope), so only the snapshot is asserted for this case.
+            ("loading", true, false, true),
+        ] {
             let e = env();
             e.fake.set_available(vec![super::super::ProviderInfo {
                 id: P.into(),
@@ -2110,13 +2117,17 @@ mod tests {
                 on,
                 ready,
             }]);
+            e.fake.set_loading(loading);
             e.save(json!({"id": "t1", "text": "Send the pilot user list"}), NOW);
-            assert_eq!(e.sync(NOW).await.state, state);
-            assert!(e.fake.calls().is_empty(), "no call while {state}");
-            // It still counts as a run: the background loop doesn't queue it again every second.
-            assert_eq!(e.state()["lastRun"], NOW);
-            e.core.task_sync_round(NOW + 1).unwrap();
-            assert!(e.core.repo().unwrap().jobs().unwrap().is_empty());
+            if !loading {
+                assert_eq!(e.sync(NOW).await.state, state);
+                assert!(e.fake.calls().is_empty(), "no call while {state}");
+                // It still counts as a run: the background loop doesn't queue it again every
+                // second.
+                assert_eq!(e.state()["lastRun"], NOW);
+                e.core.task_sync_round(NOW + 1).unwrap();
+                assert!(e.core.repo().unwrap().jobs().unwrap().is_empty());
+            }
             states.insert(state.into(), e.snapshot());
         }
         for (state, part) in &states {
