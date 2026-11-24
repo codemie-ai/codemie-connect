@@ -113,6 +113,7 @@ fn pinned(mut ai: AiSettings, pin: &Route) -> AiSettings {
 fn reads_microsoft(a: &Automation, trigger: &Value) -> bool {
     a.read.calendar_today
         || a.read.needs_reply
+        || a.read.recent_messages
         || a.read.mail_from_sender_days > 0
         || trigger["sourceId"].is_string()
 }
@@ -242,17 +243,23 @@ impl Core {
             source: source.as_ref(),
             draft: wants_draft,
             me: &me,
+            // The start of "Messages since the last run" (Task 4 computes it from this
+            // automation's last `ok` run).
+            since: None,
         };
         let built = context::build(&*self.repo()?, &run, &reading)?;
         log.sources = built.sources.iter().map(Source::to_json).collect();
-        let handles = built.handles();
+        let mut system = prompts::AUTOMATION_SYSTEM.to_string();
+        if a.deliver.create_tasks {
+            system.push_str(prompts::AUTOMATION_TASK_RULES);
+        }
         let spec = RunSpec {
             purpose: wire_name(Purpose::Automation),
             profile_id: profile.id.clone(),
             model: model.clone(),
-            system: prompts::AUTOMATION_SYSTEM.into(),
+            system,
             input: built.input.clone(),
-            schema: Some(prompts::schema(prompts::AUTOMATION_SCHEMA)),
+            schema: Some(prompts::automation_schema(a.deliver.create_tasks)),
             timeout: AUTOMATION_TIMEOUT,
             cap_usd: a.cap_usd,
             staging_root: self.paths.ensure_staging()?,
@@ -260,7 +267,12 @@ impl Core {
         };
         let (reported, answer) = self
             .run_claude_reported(&started, spec, &profile, &log.id, |answer| {
-                prompts::parse_automation(answer, &handles, wants_draft)
+                prompts::parse_automation(
+                    answer,
+                    &built.sources,
+                    wants_draft,
+                    a.deliver.create_tasks,
+                )
             })
             .await;
         if let Some(o) = &reported {
