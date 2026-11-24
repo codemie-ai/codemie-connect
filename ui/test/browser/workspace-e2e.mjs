@@ -348,6 +348,15 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
       }
       return { saved: true };
     },
+    // Design §2/§6: a meeting seen (in front and focused, or hidden) drops out of `newMeetings`;
+    // automation results seen (Automations, or Today's card) zero `sources.automations` — both so
+    // a mark, once sent, doesn't keep re-qualifying as new on the next render.
+    menu_bar_seen: d => {
+      calls.push(['menu_bar_seen', clone(d)]);
+      if (d?.meetingId) { s.menuBar = { ...s.menuBar, newMeetings: s.menuBar.newMeetings.filter(id => id !== d.meetingId) }; return { seen: true }; }
+      if (d?.automations === true) { s.menuBar = { ...s.menuBar, sources: { ...s.menuBar.sources, automations: 0 } }; return { seen: true }; }
+      refuse('menuBarSeen', 'Say what was seen.');
+    },
     local_save: (d, wid) => {
       const id = d.id || crypto.randomUUID();
       const existing = s.records.find(r => r.id === id && r.kind === d.kind);

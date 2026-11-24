@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { menuBarCard, statusLine, ROWS } from '../workspace/menu-bar.js';
+import { menuBarCard, statusLine, ROWS, seenToSend, openTarget } from '../workspace/menu-bar.js';
 import { buildSnapshot, withMenuBar } from './fixtures/workspace-fixture.mjs';
 import { attentionMessages } from '../workspace/selectors.js';
 
@@ -96,4 +96,54 @@ test('Default and Compact draw the same card', () => {
   const defaultView = buildSnapshot(NOW, { zone: 'UTC' });
   defaultView.settings.view = 'default';
   assert.equal(menuBarCard(compact), menuBarCard(defaultView));
+});
+
+// ---------------------------------------------------------------- seen marks and opening (Task 6)
+
+const HIDDEN_NONE = { ids: [], series: [] };
+
+test('an open meeting with new notes is marked seen once', () => {
+  const snapshot = { revision: 7, records: [], menuBar: { newMeetings: ['m-ready'], sources: { automations: 0 } } };
+  const args = { snapshot, route: 'meetings', openMeeting: 'm-ready', hidden: HIDDEN_NONE, focused: true, editing: false, modal: false, sent: new Set() };
+  assert.deepEqual(seenToSend(args), [{ meetingId: 'm-ready' }]);
+  // The same revision, already sent: nothing more to send.
+  assert.deepEqual(seenToSend({ ...args, sent: new Set(['7|meeting:m-ready']) }), []);
+});
+
+test('hidden meetings with new notes are marked seen on any page', () => {
+  const snapshot = { revision: 7, records: [], menuBar: { newMeetings: ['m-x'], sources: { automations: 0 } } };
+  const out = seenToSend({ snapshot, route: 'inbox', openMeeting: null, hidden: { ids: ['m-x'], series: [] }, focused: true, editing: false, modal: false, sent: new Set() });
+  assert.deepEqual(out, [{ meetingId: 'm-x' }]);
+});
+
+test('automation results are seen on Automations, or on Today with its card', () => {
+  const some = { revision: 7, records: [], menuBar: { newMeetings: [], sources: { automations: 2 } } };
+  const base = { openMeeting: null, hidden: HIDDEN_NONE, focused: true, editing: false, modal: false, sent: new Set() };
+  assert.deepEqual(seenToSend({ ...base, snapshot: some, route: 'automations' }), [{ automations: true }]);
+  assert.deepEqual(seenToSend({ ...base, snapshot: some, route: 'today', todayCards: ['automations'] }), [{ automations: true }]);
+  assert.deepEqual(seenToSend({ ...base, snapshot: some, route: 'today', todayCards: [] }), []);
+  const none = { ...some, menuBar: { newMeetings: [], sources: { automations: 0 } } };
+  assert.deepEqual(seenToSend({ ...base, snapshot: none, route: 'automations' }), []);
+});
+
+test('seen waits for focus and no typing', () => {
+  const snapshot = { revision: 7, records: [], menuBar: { newMeetings: ['m-ready'], sources: { automations: 2 } } };
+  const hidden = { ids: ['m-ready'], series: [] };
+  const situations = [
+    { route: 'meetings', openMeeting: 'm-ready' },
+    { route: 'inbox', openMeeting: null },
+    { route: 'automations', openMeeting: null },
+    { route: 'today', todayCards: ['automations'], openMeeting: null },
+  ];
+  const blocked = [{ focused: false, editing: false, modal: false }, { focused: true, editing: true, modal: false }, { focused: true, editing: false, modal: true }];
+  for (const situation of situations) {
+    for (const block of blocked) assert.deepEqual(seenToSend({ snapshot, hidden, sent: new Set(), ...situation, ...block }), []);
+  }
+});
+
+test('menu rows open their place', () => {
+  assert.deepEqual(openTarget({ route: 'inbox', lane: 'reply' }), { route: 'inbox', lane: 'reply' });
+  assert.deepEqual(openTarget({ route: 'settings', tab: 'meetings-tasks' }), { route: 'settings', tab: 'meetings-tasks' });
+  assert.deepEqual(openTarget({ route: 'automations', runId: 'r1', automationId: 'a1' }), { route: 'automations', runId: 'r1', automationId: 'a1' });
+  assert.equal(openTarget({ route: 'nope' }), null);
 });

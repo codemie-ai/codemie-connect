@@ -41,6 +41,7 @@ import { createMeetingsController } from './meetings-controller.js';
 import { activeTaskTarget, addedLine } from './task-target.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
+import { seenToSend, openTarget } from './menu-bar.js';
 import { renderShell, terminalButton, groupFolded, NAV_GROUPS, firstVisiblePage, toggleHiddenPage } from './shell.js';
 import { createTerminalDock } from './terminal-dock.js';
 import { Terminal } from '../vendor/xterm.mjs';
@@ -575,6 +576,35 @@ async function render() {
   lastDraftSignature = draftSignature(s);
   renderSheet();
   hideTip();
+  sendSeenMarks(s);
+}
+
+// ---------------------------------------------------------------- menu-bar seen marks
+
+// Marks already sent (or being sent) this run, keyed `"<revision>|<key>"` (design §6): a mark
+// goes out at most once per snapshot revision, even across renders and focus changes.
+const menuBarSeenSent = new Set();
+
+/** After a render, while the window is in front, focused and nothing is being typed in or in a
+ *  dialog, sends the `menu_bar_seen` marks `seenToSend` decides on; a failure is ignored (the
+ *  next render tries again). */
+function sendSeenMarks(s) {
+  const marks = seenToSend({
+    snapshot: s,
+    route: state.route,
+    openMeeting: state.meetings.selected,
+    todayCards: onToday('automations') ? ['automations'] : [],
+    hidden: state.meetings.hidden,
+    focused: document.visibilityState === 'visible' && document.hasFocus(),
+    editing: editing(),
+    modal: modalOpen(),
+    sent: menuBarSeenSent,
+  });
+  for (const payload of marks) {
+    const key = `${s.revision}|${payload.meetingId ? `meeting:${payload.meetingId}` : 'automations'}`;
+    menuBarSeenSent.add(key);
+    mutate('menu_bar_seen', payload).catch(() => menuBarSeenSent.delete(key));
+  }
 }
 
 /** A transcript line a task quote or a note's time opened: scrolled to and highlighted a moment. */
@@ -2613,10 +2643,9 @@ async function handle(action, el, ev) {
     case 'notification-test': await mutate('notification_test'); return toast('Test reminder queued. Check Notification Center.');
     case 'menu-bar-toggle': return mutate('settings_update', { menuBar: { [el.dataset.source]: el.checked } }).catch(err => { el.checked = !el.checked; throw err; });
     case 'menu-bar-fix': {
-      // §6's general `route` branch inside `openNotification` lands in Task 6; until then a fix
-      // opens its place directly.
+      // A fix opens its place through the same router as a clicked menu row or notification.
       const fix = (s.menuBar?.fixes || []).find(f => f.id === el.dataset.fix);
-      return fix ? route(fix.open.route, fix.open.tab) : undefined;
+      return fix ? openNotification(fix.open) : undefined;
     }
     case 'export': {
       const result = await store.query('export');
@@ -3261,9 +3290,23 @@ async function openNotification(payload) {
   }
   // Notes made by themselves (and anything else about a meeting): the meeting.
   if (payload.meetingId) return meetingsUi.open(payload.meetingId);
-  // Tasks due today.
-  if (payload.route === 'tasks') return route('tasks');
-  // An automation's result or failure: its run, open in the Run log.
+  // A menu row, a fix, or a notification naming the page it opens (design §6 "Opening from the
+  // menu"): tasks due today, the chat lane in Inbox, more than one new meeting, a settings tab,
+  // or Automations (that run, when named, else the Run log).
+  const target = openTarget(payload);
+  if (target) {
+    switch (target.route) {
+      case 'inbox':
+        if (target.lane) state.lane = target.lane;
+        return route('inbox');
+      case 'tasks': return route('tasks');
+      case 'meetings': return route('meetings');
+      case 'settings': return route('settings', target.tab);
+      case 'automations':
+        return target.runId ? automationsUi.openRun(target.runId, target.automationId || '') : route('automations', 'runs');
+    }
+  }
+  // An automation's result or failure named by `runId` alone (an older notification shape).
   const run = notificationTarget(payload);
   if (run) return automationsUi.openRun(run.expanded[0], run.filter);
   return route('settings', 'activity');

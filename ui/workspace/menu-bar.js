@@ -5,6 +5,7 @@
 // CSS tokens the card sits in change size.
 import { escapeHtml as e } from './store.js';
 import { card, settingRow, toggle, button } from './ui.js';
+import { isHidden } from './meetings-model.js';
 
 const hintId = key => `ws-mb-hint-${key}`;
 
@@ -74,4 +75,65 @@ export function menuBarCard(s) {
       ${fixesSection(menuBar.fixes)}`,
     footer: "Amber means something needs fixing, such as a sign-in or a plugin token. It can't be turned off.",
   });
+}
+
+// ---------------------------------------------------------------- seen marks and opening
+
+/**
+ * What `menu_bar_seen` marks `app.js` should send after this render (design §6, rulings 6-7):
+ * pure — `app.js` computes `focused` (`document.visibilityState === 'visible' && document.
+ * hasFocus()`), `editing` and `modal` from the DOM, sends each payload through
+ * `mutate('menu_bar_seen', …)`, and ignores a failure (the next render tries again). `openMeeting`
+ * is the meeting the Meetings page has open (`state.meetings.selected`); `todayCards` the widget
+ * ids on Today's grid; `hidden` the meetings view's hidden ids and series (`state.meetings.hidden`);
+ * `sent` the caller's set of `"<revision>|<key>"` marks already sent, so a mark goes out once per
+ * revision even across renders.
+ */
+export function seenToSend({ snapshot, route, openMeeting, todayCards = [], hidden, focused, editing, modal, sent }) {
+  if (!focused || editing || modal) return [];
+  const menuBar = snapshot?.menuBar || {};
+  const revision = snapshot?.revision;
+  const alreadySent = key => !!sent?.has(`${revision}|${key}`);
+
+  // A meeting record, by id, to tell a hidden series apart (`isHidden` wants `{ev, rec}`).
+  const meetingRecords = new Map();
+  for (const r of snapshot?.records || []) {
+    if (r.kind !== 'meeting' && r.kind !== 'event') continue;
+    const m = meetingRecords.get(r.id) || { id: r.id };
+    m[r.kind === 'meeting' ? 'rec' : 'ev'] = r;
+    meetingRecords.set(r.id, m);
+  }
+
+  const out = [];
+  for (const id of menuBar.newMeetings || []) {
+    const key = `meeting:${id}`;
+    if (alreadySent(key)) continue;
+    const inFront = route === 'meetings' && openMeeting === id;
+    const hiddenNow = isHidden(meetingRecords.get(id) || { id }, hidden);
+    if (inFront || hiddenNow) out.push({ meetingId: id });
+  }
+
+  if (!alreadySent('automations') && (menuBar.sources?.automations || 0) > 0) {
+    const shown = route === 'automations' || (route === 'today' && todayCards.includes('automations'));
+    if (shown) out.push({ automations: true });
+  }
+
+  return out;
+}
+
+/** The menu's and the fixes' routes a `workspace:notification-open` payload may open (design §6
+ *  "Opening from the menu"). */
+const OPEN_ROUTES = new Set(['inbox', 'meetings', 'automations', 'settings', 'tasks']);
+
+/**
+ * What a menu row's or a fix's `open` (or a clicked notification's payload) opens — `null` for a
+ * route this window doesn't know. Pure: `app.js`'s `openNotification` acts on the result.
+ */
+export function openTarget(payload) {
+  if (!OPEN_ROUTES.has(payload?.route)) return null;
+  const target = { route: payload.route };
+  for (const key of ['tab', 'lane', 'meetingId', 'runId', 'automationId']) {
+    if (payload[key] != null) target[key] = payload[key];
+  }
+  return target;
 }
