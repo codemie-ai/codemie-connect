@@ -184,7 +184,7 @@ pub const AUTOMATION_SCHEMA: &str = r#"{"type":"object","properties":{"title":{"
 
 /// Appended to [`AUTOMATION_SYSTEM`] only when `createTasks` is on (DESIGN step 5 §2 "Asking").
 pub const AUTOMATION_TASK_RULES: &str = concat!(
-    "Tasks (only when \"createTasks\" is true):\n",
+    "\nTasks (only when \"createTasks\" is true):\n",
     "- Make at most one task per message and kind: when a message deserves two different kinds of tasks, make two; never two of the same kind for the same message.\n",
     "- \"kind\" is \"reply\" when the user owes an answer, \"waiting\" when someone promised the user something, \"task\" when the user promised something, or \"budget\" for a budget request to approve.\n",
     "- Write \"text\" as a short instruction that starts with a verb, such as \"Reply to Ann about the budget\".\n",
@@ -1041,6 +1041,8 @@ pub fn parse_automation(
 
     let mut handled: Vec<HandledEntry> = Vec::new();
     if allow_tasks {
+        // One entry per task: a second one for the same task would write again and count twice.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for item in structured["handled"].as_array().into_iter().flatten() {
             if handled.len() >= MAX_HANDLED_ENTRIES {
                 break;
@@ -1064,6 +1066,9 @@ pub fn parse_automation(
             else {
                 continue;
             };
+            if !seen.insert(source.record_id.clone()) {
+                continue;
+            }
             handled.push(HandledEntry {
                 task_id: source.record_id.clone(),
                 evidence: cap_chars(&evidence, MAX_EVIDENCE_CHARS),
@@ -1614,6 +1619,9 @@ mod tests {
         ] {
             assert!(AUTOMATION_TASK_RULES.contains(words), "{words}");
         }
+        // Its own paragraph after the system prompt, not run on from the draft bullet.
+        assert!(AUTOMATION_TASK_RULES.starts_with("\nTasks"));
+        assert!(AUTOMATION_SYSTEM.ends_with('\n'));
     }
 
     #[test]
@@ -1656,6 +1664,7 @@ mod tests {
                 {"sourceId": "s4", "evidence": "Looks done"},
                 {"sourceId": "s5", "evidence": "Already closed"},
                 {"sourceId": "s1", "evidence": "Not a commitment"},
+                {"sourceId": "s3", "evidence": "Olga said thanks"},
             ],
         });
         let out = parse_automation(&answer, &sources, false, true).unwrap();
@@ -1667,6 +1676,7 @@ mod tests {
             [("msg-1", "reply"), ("msg-1", "waiting"), ("msg-1", "task")]
         );
         assert_eq!(out.dropped, 3, "the duplicate, s2 and s9");
+        // One entry per task: the second for s3 neither writes again nor counts toward the cap.
         assert_eq!(
             out.handled,
             vec![HandledEntry {

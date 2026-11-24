@@ -801,6 +801,15 @@ impl Repository {
         ).optional()?;
         Ok(last.is_some_and(|(status, started)| status == "failed" && started >= since))
     }
+    /// When an automation's latest `ok` run (not `except`) started: where its next "Messages
+    /// since the last run" begins (DESIGN step 5 §3).
+    pub fn last_ok_started(&self, automation_id: &str, except: &str) -> Result<Option<i64>> {
+        Ok(self.db.query_row(
+            "SELECT MAX(CAST(json_extract(body,'$.startedAt') AS INTEGER)) FROM records WHERE kind='automation_run' AND json_extract(body,'$.automationId')=?1 AND id<>?2 AND json_extract(body,'$.status')='ok'",
+            params![automation_id, except],
+            |row| row.get::<_, Option<i64>>(0),
+        )?)
+    }
     /// Saves an automation and, when given, the workspace whose Today layout gains the
     /// Automation results card, as one change.
     pub fn save_automation(&mut self, record: &Record, today: Option<&Workspace>) -> Result<()> {

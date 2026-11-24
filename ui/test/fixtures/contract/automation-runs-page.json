@@ -126,9 +126,11 @@
           "costUsd": 0.021,
           "delivered": [
             "today",
-            "notification_queued"
+            "notification_queued",
+            "tasks"
           ],
           "durationMs": 3100,
+          "handled": 0,
           "model": "claude-haiku-4-5",
           "output": {
             "items": [
@@ -198,6 +200,17 @@
           ],
           "startedAt": 1795000300,
           "status": "ok",
+          "tasks": {
+            "dropped": 0,
+            "existing": 0,
+            "made": [
+              {
+                "id": "task-1",
+                "kind": "reply",
+                "text": "Reply to Ann about the plan"
+              }
+            ]
+          },
           "trigger": {
             "kind": "manual"
           }
