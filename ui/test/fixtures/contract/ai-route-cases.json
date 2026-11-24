@@ -3,56 +3,67 @@
     "chosen": {
       "ask": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": null
       },
       "automation": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": null
       },
       "briefing": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": null
       },
       "chat_draft": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": null
       },
       "commitments": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": null
       },
       "default": {
         "fallback": null,
+        "group": null,
         "model": null,
         "profile": null
       },
       "mail_draft": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": null
       },
       "meeting": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": null
       },
       "plugin": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": null
       },
       "summary": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": null
       },
       "triage": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": null
       }
@@ -70,56 +81,67 @@
     "chosen": {
       "ask": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "automation": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "briefing": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": "claude"
       },
       "chat_draft": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "commitments": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": "claude"
       },
       "default": {
         "fallback": null,
+        "group": null,
         "model": null,
         "profile": "claude"
       },
       "mail_draft": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "meeting": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "plugin": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "summary": {
         "fallback": null,
+        "group": "default",
         "model": "claude-haiku-4-5",
         "profile": "codemie:prod"
       },
       "triage": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": "claude"
       }
@@ -143,56 +165,67 @@
     "chosen": {
       "ask": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "automation": {
         "fallback": null,
+        "group": "default",
         "model": "claude-haiku-4-5",
         "profile": "codemie:prod"
       },
       "briefing": {
         "fallback": null,
+        "group": "automation",
         "model": "claude-haiku-4-5",
         "profile": "codemie:prod"
       },
       "chat_draft": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "commitments": {
         "fallback": null,
+        "group": "automation",
         "model": "claude-haiku-4-5",
         "profile": "codemie:prod"
       },
       "default": {
         "fallback": null,
+        "group": null,
         "model": null,
         "profile": "claude"
       },
       "mail_draft": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "meeting": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "plugin": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "summary": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "triage": {
         "fallback": null,
+        "group": "automation",
         "model": "claude-sonnet-4-5",
         "profile": "codemie:prod"
       }
@@ -221,66 +254,79 @@
     "chosen": {
       "ask": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "automation": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "briefing": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": "claude"
       },
       "chat_draft": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "commitments": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": "claude"
       },
       "default": {
         "fallback": null,
+        "group": null,
         "model": null,
         "profile": "claude"
       },
       "mail_draft": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "meeting": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "plugin": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "codemie:prod"
       },
       "plugin:github": {
         "fallback": null,
+        "group": "plugin",
         "model": "claude-haiku-4-5",
         "profile": "codemie:prod"
       },
       "plugin:knowledge": {
         "fallback": null,
+        "group": "plugin",
         "model": "qwen3:8b",
         "profile": "codemie:local-ollama"
       },
       "summary": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "triage": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": "claude"
       }
@@ -315,56 +361,67 @@
     "chosen": {
       "ask": {
         "fallback": "codemie:prod",
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "automation": {
         "fallback": "codemie:local-ollama",
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "briefing": {
         "fallback": null,
+        "group": "automation",
         "model": null,
         "profile": "codemie:local-ollama"
       },
       "chat_draft": {
         "fallback": "codemie:prod",
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "commitments": {
         "fallback": "codemie:local-ollama",
+        "group": "automation",
         "model": null,
         "profile": "claude"
       },
       "default": {
         "fallback": "codemie:prod",
+        "group": null,
         "model": null,
         "profile": "claude"
       },
       "mail_draft": {
         "fallback": "codemie:prod",
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "meeting": {
         "fallback": "codemie:prod",
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "plugin": {
         "fallback": "codemie:prod",
+        "group": "default",
         "model": null,
         "profile": "claude"
       },
       "summary": {
         "fallback": null,
+        "group": "default",
         "model": null,
         "profile": "codemie:prod"
       },
       "triage": {
         "fallback": "codemie:local-ollama",
+        "group": "automation",
         "model": null,
         "profile": "claude"
       }

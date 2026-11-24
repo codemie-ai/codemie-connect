@@ -98,14 +98,14 @@ test('chooser_lists_only_ready_profiles_with_privacy_note', () => {
 });
 
 test('next_ai_settings_resets_models_a_profile_does_not_offer', () => {
+  // The window sends the edit as made; Rust's save drops a model whose row moved to a profile
+  // without it (workspace::ai a_row_moved_to_a_profile_without_its_model_drops_the_model).
   const { profiles, settings } = aiStatus('both');
-  // Summaries uses codemie:prod + haiku; switching its profile to Claude drops the model.
   const a = nextAiSettings(settings, profiles, { purpose: 'summary', field: 'profile', value: 'claude' });
-  assert.deepEqual(a.routes.summary, { profile: 'claude' });
-  // Changing the default drops models of routes that follow it and the new default lacks.
+  assert.deepEqual(a.routes.summary, { profile: 'claude', model: 'claude-haiku-4-5' });
   const b = nextAiSettings(settings, profiles, { field: 'default', value: 'codemie:prod' });
   assert.equal(b.defaultProfile, 'codemie:prod');
-  assert.equal(b.routes.mail_draft, undefined);
+  assert.deepEqual(b.routes.mail_draft, { model: 'sonnet' });
   assert.deepEqual(b.routes.summary, { profile: 'codemie:prod', model: 'claude-haiku-4-5' });
   // Setting a model keeps the profile; clearing everything removes the route.
   const c = nextAiSettings(b, profiles, { purpose: 'plugin', field: 'model', value: 'claude-haiku-4-5' });
@@ -207,7 +207,7 @@ test('route_state_covers_working_fallback_broken_and_unset', () => {
   const { profiles } = aiStatus('all');
   const claude = profiles.find(p => p.id === 'claude');
   const signedOut = profiles.map(p => (p.id === 'claude' ? { ...claude, state: 'needs_login', message: 'Claude Code is not signed in.' } : p));
-  assert.deepEqual(routeState({ profile: 'claude', model: null, fallback: 'codemie:prod' }, profiles), { state: 'working', text: 'Claude Code · Profile default', using: 'claude' });
+  assert.deepEqual(routeState({ profile: 'claude', model: null, fallback: 'codemie:prod' }, profiles), { state: 'working', text: 'Claude Code · Account default', using: 'claude' });
   assert.equal(routeState({ profile: 'codemie:prod', model: 'claude-haiku-4-5', fallback: null }, profiles).text, 'CodeMie · prod · claude-haiku-4-5');
   const fell = routeState({ profile: 'claude', model: null, fallback: 'codemie:prod' }, signedOut);
   assert.equal(fell.state, 'fallback');
@@ -220,17 +220,17 @@ test('route_state_covers_working_fallback_broken_and_unset', () => {
   assert.equal(routeState(undefined, profiles).state, 'unset');
   // Ollama is running but no longer has the saved model: the row says so instead of dropping it.
   const pulledNone = profiles.map(p => (p.provider === 'ollama' ? { ...p, models: [{ id: 'llama3.2:latest', label: 'llama3.2:latest' }] } : p));
-  assert.deepEqual(routeState({ profile: 'codemie:local-ollama', model: 'qwen3:8b', fallback: null }, pulledNone, { savedModel: 'qwen3:8b' }), { state: 'broken', text: 'CodeMie · local-ollama doesn’t offer qwen3:8b.', using: null });
+  assert.deepEqual(routeState({ profile: 'codemie:local-ollama', model: 'qwen3:8b', fallback: null }, pulledNone), { state: 'broken', text: "CodeMie · local-ollama doesn't offer qwen3:8b.", using: null });
   // A name without a tag is the :latest one.
   assert.equal(routeState({ profile: 'codemie:local-ollama', model: 'llama3.2', fallback: null }, pulledNone).state, 'working');
   // The model a profile lacks falls back like an unready profile.
-  assert.equal(routeState({ profile: 'codemie:local-ollama', model: 'qwen3:8b', fallback: 'claude' }, pulledNone).text, 'Using Claude Code: CodeMie · local-ollama doesn’t offer qwen3:8b.');
+  assert.equal(routeState({ profile: 'codemie:local-ollama', model: 'qwen3:8b', fallback: 'claude' }, pulledNone).text, "Using Claude Code: CodeMie · local-ollama doesn't offer qwen3:8b.");
   // A saved profile that no longer exists is not ready; its fallback runs.
   assert.equal(routeState({ profile: 'codemie:gone', model: null, fallback: null }, profiles).state, 'broken');
   assert.equal(routeState({ profile: 'codemie:gone', model: null, fallback: 'claude' }, profiles).state, 'fallback');
   // Not running Ollama.
-  const stopped = profiles.map(p => (p.provider === 'ollama' ? { ...p, state: 'not_running', message: 'Ollama isn’t running. Open Ollama, then check again.' } : p));
-  assert.deepEqual(routeState({ profile: 'codemie:local-ollama', model: 'qwen3:8b', fallback: null }, stopped), { state: 'broken', text: 'Ollama isn’t running. Open Ollama, then check again.', using: null });
+  const stopped = profiles.map(p => (p.provider === 'ollama' ? { ...p, state: 'not_running', message: "Ollama isn't running. Open Ollama, then check again." } : p));
+  assert.deepEqual(routeState({ profile: 'codemie:local-ollama', model: 'qwen3:8b', fallback: null }, stopped), { state: 'broken', text: "Ollama isn't running. Open Ollama, then check again.", using: null });
 });
 
 test('route_state_reads_profiles_after_the_codemie_sign_in_overlay', () => {
@@ -289,19 +289,27 @@ test('ai_panel_draws_groups_plugin_rows_and_fallback_columns', () => {
 });
 
 test('same_as_labels_follow_the_native_groups', () => {
+  // Expected groups come from Rust (`chosen[key].group` in ai-route-cases.json), and the names
+  // are written here, apart from the renderer.
   const { profiles } = aiStatus('all');
   const label = id => (!id ? 'None' : id === 'claude' ? 'Claude Code' : profiles.find(p => p.id === id).label);
+  const NAME = { default: 'Default', automation: 'Automations', plugin: 'All plugins' };
   for (const c of routeCases()) {
     const ai = { status: 'ready', profiles, settings: c.settings, chosen: c.chosen, usage: aiUsage(), tests: {} };
     const html = aiPanel(ai, { plugins: [github, knowledge] });
-    for (const r of ROUTES.filter(x => !x.hidden).concat([{ key: 'plugin:github', parent: 'plugin' }, { key: 'plugin:knowledge', parent: 'plugin' }])) {
-      const group = c.chosen[r.parent || 'default'];
-      const name = ROW_LABEL[r.parent] || 'Default';
-      const row = rowOf(html, r.key);
-      assert.equal(firstOption(row, 'profile'), `Same as ${name} (${label(group.profile)})`, `${c.name} ${r.key} profile`);
-      assert.equal(firstOption(row, 'fallback'), `Same as ${name} (${label(group.fallback)})`, `${c.name} ${r.key} fallback`);
+    for (const key of [...ROUTES.filter(x => !x.hidden).map(x => x.key), 'plugin:github', 'plugin:knowledge']) {
+      const own = c.chosen[key] || c.chosen.plugin;
+      const groupKey = c.chosen[key] ? own.group : 'plugin';
+      assert.ok(NAME[groupKey], `${c.name} ${key} group ${groupKey}`);
+      const group = c.chosen[groupKey];
+      const row = rowOf(html, key);
+      assert.equal(firstOption(row, 'profile'), `Same as ${NAME[groupKey]} (${label(group.profile)})`, `${c.name} ${key} profile`);
+      assert.equal(firstOption(row, 'fallback'), `Same as ${NAME[groupKey]} (${label(group.fallback)})`, `${c.name} ${key} fallback`);
     }
   }
+  // Rust's groups for the rows the spec names.
+  const { chosen } = routeCases()[0];
+  assert.deepEqual(['briefing', 'triage', 'commitments', 'summary', 'plugin'].map(k => chosen[k].group), ['automation', 'automation', 'automation', 'default', 'default']);
 });
 
 test('profile_cards_show_engine_and_provider_and_not_running', () => {
@@ -320,12 +328,12 @@ test('profile_cards_show_engine_and_provider_and_not_running', () => {
   const card = cardOf(stopped, 'codemie:local-ollama');
   assert.match(card, /Not running/);
   assert.match(card, /ws-badge-warning/);
-  assert.match(card, /Ollama isn’t running\. Open Ollama, then check again\./);
+  assert.match(card, /Ollama isn(?:'|&#39;)t running\. Open Ollama, then check again\./);
   assert.match(card, /data-action="ai-refresh"/);
   assert.doesNotMatch(card, /data-action="cm-setup-open"/);
-  const missing = aiPanel({ ...ai, profiles: ai.profiles.map(p => (p.provider === 'ollama' ? { ...p, state: 'not_configured', message: 'Ollama doesn’t have qwen3:8b. Pull it in Ollama, then check again.' } : p)) });
+  const missing = aiPanel({ ...ai, profiles: ai.profiles.map(p => (p.provider === 'ollama' ? { ...p, state: 'not_configured', message: "Ollama doesn't have qwen3:8b. Pull it in Ollama, then check again." } : p)) });
   const nc = cardOf(missing, 'codemie:local-ollama');
-  assert.match(nc, /Ollama doesn’t have qwen3:8b\. Pull it in Ollama, then check again\./);
+  assert.match(nc, /Ollama doesn(?:'|&#39;)t have qwen3:8b\. Pull it in Ollama, then check again\./);
   assert.match(nc, /data-action="ai-refresh"/);
   assert.doesNotMatch(nc, /data-action="cm-setup-open"/);
 });
@@ -333,42 +341,68 @@ test('profile_cards_show_engine_and_provider_and_not_running', () => {
 test('next_ai_settings_handles_fallback_and_plugin_rows', () => {
   const { profiles, settings } = aiStatus('all');
   const a = nextAiSettings(settings, profiles, { purpose: 'plugin:knowledge', field: 'profile', value: 'claude' });
-  // The plugin row's profile changed and Claude Code doesn't offer qwen3:8b: the model goes.
-  assert.deepEqual(a.plugins.knowledge, { profile: 'claude' });
+  assert.deepEqual(a.plugins.knowledge, { profile: 'claude', model: 'qwen3:8b' });
   const b = nextAiSettings(settings, profiles, { purpose: 'plugin:github', field: 'model', value: 'claude-haiku-4-5' });
   assert.deepEqual(b.plugins.github, { model: 'claude-haiku-4-5' });
   const c = nextAiSettings(settings, profiles, { purpose: 'triage', field: 'fallback', value: 'codemie:prod' });
   assert.deepEqual(c.routes.triage, { fallback: 'codemie:prod' });
   const d = nextAiSettings(c, profiles, { purpose: 'triage', field: 'fallback', value: '' });
   assert.equal(d.routes.triage, undefined);
-  const e1 = nextAiSettings(settings, profiles, { field: 'defaultFallback', value: 'codemie:local-ollama' });
-  assert.equal(e1.defaultFallback, 'codemie:local-ollama');
-  const e2 = nextAiSettings(settings, profiles, { field: 'defaultModel', value: 'opus' });
-  assert.equal(e2.defaultModel, 'opus');
-  // The default moving to a profile without that model drops it.
-  assert.equal(nextAiSettings(e2, profiles, { field: 'default', value: 'codemie:prod' }).defaultModel, null);
+  assert.equal(nextAiSettings(settings, profiles, { field: 'defaultFallback', value: 'codemie:local-ollama' }).defaultFallback, 'codemie:local-ollama');
+  assert.equal(nextAiSettings(settings, profiles, { field: 'defaultModel', value: 'opus' }).defaultModel, 'opus');
   const cleared = nextAiSettings(settings, profiles, { purpose: 'plugin:knowledge', field: 'profile', value: '' });
-  // Back on All plugins (Claude Code) the Ollama model is not offered.
-  assert.equal(cleared.plugins.knowledge, undefined);
-  // Every other field is carried as it was.
-  assert.deepEqual(a.routes, Object.fromEntries(Object.entries(settings.routes).map(([k, r]) => [k, Object.fromEntries(Object.entries(r).filter(([, v]) => v))])));
-  assert.equal(a.defaultFallback, 'codemie:prod');
+  assert.deepEqual(cleared.plugins.knowledge, { model: 'qwen3:8b' });
 });
 
 test('next_ai_settings_keeps_a_model_when_its_profile_did_not_change', () => {
-  // Ollama closed: its profile lists no models, but the saved choice stays.
+  // Ollama closed: its profile lists no models, and an edit of another row keeps the saved choice.
   const { profiles } = aiStatus('all');
   const closed = profiles.map(p => (p.provider === 'ollama' ? { ...p, id: 'codemie:ol', state: 'not_running', models: [] } : p));
   const settings = { defaultProfile: 'claude', routes: { plugin: { profile: 'codemie:ol', model: 'qwen3:8b' } }, plugins: { knowledge: { model: 'qwen3:8b' } } };
   const next = nextAiSettings(settings, closed, { purpose: 'summary', field: 'profile', value: 'codemie:prod' });
   assert.deepEqual(next.routes.plugin, { profile: 'codemie:ol', model: 'qwen3:8b' });
-  assert.deepEqual(next.plugins.knowledge, { model: 'qwen3:8b' }, 'a plugin row following All plugins keeps its model too');
-  // Changing the default does not touch rows whose profile it does not decide.
+  assert.deepEqual(next.plugins.knowledge, { model: 'qwen3:8b' });
   assert.deepEqual(nextAiSettings(settings, closed, { field: 'default', value: 'codemie:prod' }).routes.plugin, { profile: 'codemie:ol', model: 'qwen3:8b' });
-  // Moving All plugins to another profile moves its followers: their model goes when it isn't offered.
-  const moved = nextAiSettings(settings, closed, { purpose: 'plugin', field: 'profile', value: 'claude' });
-  assert.deepEqual(moved.routes.plugin, { profile: 'claude' });
-  assert.equal(moved.plugins.knowledge, undefined);
+});
+
+test('next_ai_settings_sends_only_the_changed_field', () => {
+  // ruling 16: the window walks no chain; Rust's save decides what a moved row's model becomes.
+  const { profiles, settings } = aiStatus('all');
+  const clean = rows => Object.fromEntries(Object.entries(rows).map(([k, r]) => [k, Object.fromEntries(Object.entries(r).filter(([, v]) => v))]));
+  const base = { defaultProfile: 'claude', defaultModel: null, defaultFallback: 'codemie:prod', routes: clean(settings.routes), plugins: clean(settings.plugins) };
+  const edits = [
+    [{ field: 'default', value: 'codemie:local-ollama' }, { defaultProfile: 'codemie:local-ollama' }],
+    [{ field: 'defaultModel', value: 'opus' }, { defaultModel: 'opus' }],
+    [{ purpose: 'plugin', field: 'profile', value: 'codemie:prod' }, { routes: { ...base.routes, plugin: { profile: 'codemie:prod' } } }],
+    [{ purpose: 'summary', field: 'profile', value: 'claude' }, { routes: { ...base.routes, summary: { profile: 'claude', model: 'claude-haiku-4-5' } } }],
+    [{ purpose: 'plugin:knowledge', field: 'model', value: 'llama3.2:latest' }, { plugins: { knowledge: { profile: 'codemie:local-ollama', model: 'llama3.2:latest' } } }],
+  ];
+  for (const [edit, changed] of edits) assert.deepEqual(nextAiSettings(settings, profiles, edit), { ...base, ...changed }, JSON.stringify(edit));
+});
+
+test('next_ai_settings_clears_a_fallback_the_row_now_runs_on', () => {
+  // Rust refuses a row whose own profile and fallback are equal; picking the fallback as the
+  // profile clears the fallback in the same edit, which Rust accepts
+  // (workspace::ai moving_a_row_onto_its_own_fallback_with_the_fallback_cleared_is_saved).
+  const { profiles, settings } = aiStatus('all');
+  const a = nextAiSettings(settings, profiles, { field: 'default', value: 'codemie:prod' });
+  assert.equal(a.defaultProfile, 'codemie:prod');
+  assert.equal(a.defaultFallback, null);
+  const b = nextAiSettings(settings, profiles, { purpose: 'triage', field: 'profile', value: 'codemie:local-ollama' });
+  assert.deepEqual(b.routes.triage, { profile: 'codemie:local-ollama' });
+  const withFallback = { ...settings, plugins: { knowledge: { profile: 'codemie:local-ollama', fallback: 'claude' } } };
+  assert.deepEqual(nextAiSettings(withFallback, profiles, { purpose: 'plugin:knowledge', field: 'profile', value: 'claude' }).plugins.knowledge, { profile: 'claude' });
+  // Another profile leaves the fallback alone.
+  assert.equal(nextAiSettings(settings, profiles, { field: 'default', value: 'codemie:local-ollama' }).defaultFallback, 'codemie:prod');
+});
+
+test('same_as_label_follows_the_group_chosen_names', () => {
+  // The group comes from Rust's `chosen[key].group`, not from a copy of the chain.
+  const ai = loaded('all');
+  ai.chosen = { ...ai.chosen, briefing: { ...ai.chosen.briefing, group: 'default' }, default: { ...ai.chosen.default, profile: 'codemie:prod', fallback: null } };
+  const row = rowOf(aiPanel(ai), 'briefing');
+  assert.equal(firstOption(row, 'profile'), 'Same as Default (CodeMie · prod)');
+  assert.equal(firstOption(row, 'fallback'), 'Same as Default (None)');
 });
 
 test('chooser_names_ollama', () => {

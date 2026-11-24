@@ -2,61 +2,73 @@
   "chosen": {
     "ask": {
       "fallback": "codemie:prod",
+      "group": "default",
       "model": null,
       "profile": "claude"
     },
     "automation": {
       "fallback": "codemie:prod",
+      "group": "default",
       "model": null,
       "profile": "claude"
     },
     "briefing": {
       "fallback": "codemie:prod",
+      "group": "automation",
       "model": null,
       "profile": "claude"
     },
     "chat_draft": {
       "fallback": "codemie:prod",
+      "group": "default",
       "model": null,
       "profile": "claude"
     },
     "commitments": {
       "fallback": "codemie:prod",
+      "group": "automation",
       "model": null,
       "profile": "claude"
     },
     "default": {
       "fallback": "codemie:prod",
+      "group": null,
       "model": null,
       "profile": "claude"
     },
     "mail_draft": {
       "fallback": "codemie:prod",
+      "group": "default",
       "model": "sonnet",
       "profile": "claude"
     },
     "meeting": {
       "fallback": "codemie:prod",
+      "group": "default",
       "model": null,
       "profile": "claude"
     },
     "plugin": {
       "fallback": "codemie:prod",
+      "group": "default",
       "model": null,
       "profile": "claude"
     },
     "plugin:knowledge": {
       "fallback": "codemie:prod",
+      "group": "plugin",
       "model": "qwen3:8b",
       "profile": "codemie:local-ollama"
     },
     "summary": {
       "fallback": null,
+      "group": "default",
       "model": "claude-haiku-4-5",
       "profile": "codemie:prod"
     },
     "triage": {
       "fallback": "codemie:local-ollama",
+      "group": "automation",
       "model": null,
       "profile": "claude"
     }

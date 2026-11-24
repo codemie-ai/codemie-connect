@@ -199,9 +199,10 @@ export function chooseAll(s = {}) {
   };
   const purposes = ['mail_draft', 'chat_draft', 'summary', 'automation', 'plugin', 'meeting', 'briefing', 'triage', 'commitments', 'ask'];
   const keys = [null, ...purposes, ...Object.keys(s.plugins || {}).map(id => `plugin:${id}`)];
+  const groupOf = key => (key == null ? null : key.startsWith('plugin:') ? 'plugin' : GROUP[key] || 'default');
   return Object.fromEntries(keys.map(key => {
     const c = inherited(key);
-    return [key ?? 'default', c.fallback && c.fallback === c.profile ? { ...c, fallback: null } : c];
+    return [key ?? 'default', { ...c, fallback: c.fallback && c.fallback === c.profile ? null : c.fallback, group: groupOf(key) }];
   }));
 }
 

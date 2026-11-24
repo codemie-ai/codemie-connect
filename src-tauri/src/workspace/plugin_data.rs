@@ -213,7 +213,7 @@ impl Core {
             None if own_row => resolved.model.clone(),
             None => run
                 .model
-                .filter(|m| !m.is_empty() && resolved.profile.models.iter().any(|c| &c.id == m))
+                .filter(|m| !m.is_empty() && super::ai::offers_model(&resolved.profile, m))
                 .or(resolved.model.clone()),
         };
         let spec = RunSpec {

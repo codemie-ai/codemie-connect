@@ -1352,7 +1352,7 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-ai-routes .ws-card-body{container:ws-ai-routes/inline-size}
 @container ws-ai-routes (max-width:979px){
   .ws-ai-table thead{display:none}
-  .ws-ai-table tr[data-ai-route-row]:not([hidden]){display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-areas:"job job status" "profile model fallback";gap:6px 10px;padding:10px 0;border-top:1px solid var(--ws-border)}
+  .ws-ai-table tr[data-ai-route-row]:not([hidden]){display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1.3fr);grid-template-areas:"job job status" "profile model fallback";gap:6px 10px;padding:10px 0;border-top:1px solid var(--ws-border)}
   .ws-ai-table tr[data-ai-route-row]>*{border-top:0;padding:0}
   .ws-ai-table tbody th.ws-ai-job{grid-area:job;width:auto}
   .ws-ai-table .ws-ai-cell-profile{grid-area:profile}
@@ -1384,7 +1384,6 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-ai-choice-copy span{font-size:var(--ws-fs-secondary);color:var(--ws-muted);overflow-wrap:anywhere}
 .ws-ai-setup{margin:0;padding-left:20px;display:grid;gap:6px;font-size:var(--ws-fs-body-sm);line-height:20px;color:var(--ws-text-2)}
 .ws-modal-body .ws-inline-note{margin:0}
-
 
 /* ------------------------------------------------------------------ Thread summary card */
 .ws-summary{display:grid;gap:10px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--ws-purple) 30%,var(--ws-border));border-radius:10px;background:color-mix(in srgb,var(--ws-purple) 5%,var(--ws-card))}

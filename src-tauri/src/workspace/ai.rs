@@ -276,16 +276,26 @@ fn without_self_fallback(mut c: Chosen) -> Chosen {
 
 /// `chosen` of `ai_status` and `ai_settings_save`: `default`, every purpose, and
 /// `plugin:<id>` for each saved plugin row.
+/// Each entry also names its `group`: the row it follows when it sets nothing (`default`,
+/// `automation` or `plugin`; null for Default itself), so the window's "Same as" labels
+/// come from this rule and not from a copy of it.
 pub(super) fn chosen_all(s: &AiSettings) -> serde_json::Map<String, Value> {
-    let value = |c: Chosen| serde_json::to_value(c).unwrap_or(Value::Null);
+    let value = |c: Chosen, group: Value| {
+        let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
+        if let Some(o) = v.as_object_mut() {
+            o.insert("group".into(), group);
+        }
+        v
+    };
     let mut out = serde_json::Map::new();
-    out.insert("default".into(), value(choose_default(s)));
+    out.insert("default".into(), value(choose_default(s), Value::Null));
     let keys = Purpose::ALL
         .into_iter()
         .map(RouteKey::Purpose)
         .chain(s.plugins.keys().cloned().map(RouteKey::Plugin));
     for key in keys {
-        out.insert(key.wire(), value(choose(s, &key)));
+        let group = group_of(&key).map_or_else(|| "default".to_string(), |g| g.wire());
+        out.insert(key.wire(), value(choose(s, &key), Value::String(group)));
     }
     out
 }
@@ -296,13 +306,54 @@ fn invalid(message: &str) -> WorkspaceError {
 
 const NOT_OFFERED: &str = "That model is not offered by this profile.";
 
+/// Whether `profile` offers `model`. Ollama reads a name without a tag as `<name>:latest`
+/// (ruling 11), so `llama3.2` is `llama3.2:latest`; other ids compare exactly.
+pub(crate) fn offers_model(profile: &AiProfile, model: &str) -> bool {
+    let ollama = profile.provider.as_deref() == Some("ollama");
+    let tagged = |m: &str| {
+        if ollama && !m.contains(':') {
+            format!("{m}:latest")
+        } else {
+            m.to_string()
+        }
+    };
+    let want = tagged(model);
+    profile.models.iter().any(|c| tagged(&c.id) == want)
+}
+
 /// A model must be one the profile offers; empty means the profile's own default.
 fn checked_model(profile: &AiProfile, model: Option<&str>) -> Result<Option<String>> {
     match model.filter(|m| !m.is_empty()) {
         None => Ok(None),
-        Some(m) if profile.models.iter().any(|c| c.id == m) => Ok(Some(m.to_string())),
+        Some(m) if offers_model(profile, m) => Ok(Some(m.to_string())),
         Some(_) => Err(invalid(NOT_OFFERED)),
     }
+}
+
+/// The row `key` names in `s` (`None` is the Default row), as a route.
+fn row_of(s: &AiSettings, key: Option<&RouteKey>) -> Route {
+    match key {
+        Some(k) => saved_route(s, k).cloned().unwrap_or_default(),
+        None => Route {
+            profile: set(&s.default_profile),
+            model: set(&s.default_model),
+            fallback: set(&s.default_fallback),
+        },
+    }
+}
+
+/// Clears the model saved on row `key`, dropping the row when it then sets nothing.
+fn drop_model(s: &mut AiSettings, key: Option<&RouteKey>) {
+    let rows = match key {
+        None => return s.default_model = None,
+        Some(RouteKey::Purpose(p)) => s.routes.get_mut(p),
+        Some(RouteKey::Plugin(id)) => s.plugins.get_mut(id),
+    };
+    if let Some(r) = rows {
+        r.model = None;
+    }
+    s.routes.retain(|_, r| *r != Route::default());
+    s.plugins.retain(|_, r| *r != Route::default());
 }
 
 /// A route with empty strings cleared, `None` when it sets nothing.
@@ -316,9 +367,11 @@ fn normalized(route: Route) -> Option<Route> {
 }
 
 /// Checks every profile, fallback and model of `settings` against the detected profiles
-/// and returns the normalised settings (empty rows dropped). A model the chosen profile
-/// doesn't list is kept when `saved` has it on the same row with the same profile, so a
-/// closed Ollama doesn't refuse an edit of another row.
+/// and returns the normalised settings (empty rows dropped). A model already saved on a
+/// row whose chosen profile did not change is kept as it is, so a closed Ollama doesn't
+/// refuse an edit of another row (ruling 13). A saved model whose row moved, in this edit,
+/// to a profile that doesn't offer it is dropped; a model picked in this edit that the
+/// profile doesn't offer is refused. The window sends only the field the user changed.
 fn validate_ai_settings(
     settings: AiSettings,
     profiles: &[AiProfile],
@@ -331,7 +384,7 @@ fn validate_ai_settings(
     {
         return Err(invalid("That plugin is not known."));
     }
-    let s = AiSettings {
+    let mut s = AiSettings {
         default_profile: set(&settings.default_profile),
         default_model: set(&settings.default_model),
         default_fallback: set(&settings.default_fallback),
@@ -352,36 +405,24 @@ fn validate_ai_settings(
             .find(|p| p.id == id)
             .ok_or_else(|| invalid("Choose one of the listed profiles."))
     };
-    let default_row = Route {
-        profile: s.default_profile.clone(),
-        model: s.default_model.clone(),
-        fallback: s.default_fallback.clone(),
-    };
-    let rows = std::iter::once((None, &default_row))
-        .chain(
-            s.routes
-                .iter()
-                .map(|(p, r)| (Some(RouteKey::Purpose(*p)), r)),
-        )
+    // Default first, then the groups before their rows (`Purpose` order puts Automation and
+    // Plugin before the rows that follow them), so a dropped group model is seen below it.
+    let keys: Vec<Option<RouteKey>> = std::iter::once(None)
+        .chain(s.routes.keys().map(|p| Some(RouteKey::Purpose(*p))))
         .chain(
             s.plugins
-                .iter()
-                .map(|(id, r)| (Some(RouteKey::Plugin(id.clone())), r)),
-        );
-    for (key, row) in rows {
+                .keys()
+                .map(|id| Some(RouteKey::Plugin(id.clone()))),
+        )
+        .collect();
+    for key in keys {
+        let row = row_of(&s, key.as_ref());
         for id in [&row.profile, &row.fallback].into_iter().flatten() {
             find(id)?;
         }
         let pick = |s: &AiSettings| inherited(s, key.as_ref());
         let chosen = pick(&s);
-        let before = match &key {
-            Some(k) => saved_route(saved, k).cloned().unwrap_or_default(),
-            None => Route {
-                profile: set(&saved.default_profile),
-                model: set(&saved.default_model),
-                fallback: set(&saved.default_fallback),
-            },
-        };
+        let before = row_of(saved, key.as_ref());
         // Refused only when the row itself sets both, or sets this fallback in this edit.
         // A group moving onto a row's saved fallback is fine: `choose` drops it.
         let sets_both = row.profile.is_some() && row.fallback == row.profile;
@@ -394,11 +435,15 @@ fn validate_ai_settings(
             .profile
             .as_deref()
             .ok_or_else(|| invalid("Choose a profile before choosing a model."))?;
-        let before = set(&before.model);
-        let kept = before.as_ref() == Some(model) && pick(saved).profile == chosen.profile;
-        if !kept {
-            checked_model(find(profile)?, Some(model))?;
+        let was_saved = before.model.as_ref() == Some(model);
+        let moved = pick(saved).profile != chosen.profile;
+        if (was_saved && !moved) || offers_model(find(profile)?, model) {
+            continue;
         }
+        if !was_saved {
+            return Err(invalid(NOT_OFFERED));
+        }
+        drop_model(&mut s, key.as_ref());
     }
     Ok(s)
 }
@@ -1061,6 +1106,151 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn a_row_moved_to_a_profile_without_its_model_drops_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = vec![
+            profile("claude", ProfileState::Ready),
+            ollama("codemie:ol", &["qwen3:8b"]),
+        ];
+        let core = test_core(
+            dir.path(),
+            Arc::new(FakeRunner::new(vec![])),
+            profiles.clone(),
+        );
+        let save = |data: Value| {
+            let req = mutation(&core, Operation::AiSettingsSave, data);
+            core.ai_settings_save(&req, &profiles)
+        };
+        save(
+            json!({"defaultProfile": "claude", "routes": {"summary": {"model": "sonnet"}},
+                    "plugins": {"knowledge": {"profile": "claude", "model": "haiku"}}}),
+        )
+        .unwrap();
+        // Default moves Summaries onto Ollama, which has no sonnet: the model goes, not the edit.
+        let out = save(
+            json!({"defaultProfile": "codemie:ol", "routes": {"summary": {"model": "sonnet"}},
+                              "plugins": {"knowledge": {"profile": "claude", "model": "haiku"}}}),
+        )
+        .unwrap();
+        let ai = core.repo().unwrap().settings().unwrap().ai;
+        assert_eq!(ai.default_profile.as_deref(), Some("codemie:ol"));
+        assert!(
+            !ai.routes.contains_key(&Purpose::Summary),
+            "{:?}",
+            ai.routes
+        );
+        assert_eq!(out["chosen"]["summary"]["model"], Value::Null);
+        // The row's own profile changes: its model goes with the old profile.
+        save(json!({"defaultProfile": "codemie:ol",
+                    "plugins": {"knowledge": {"profile": "codemie:ol", "model": "haiku"}}}))
+        .unwrap();
+        let ai = core.repo().unwrap().settings().unwrap().ai;
+        assert_eq!(
+            ai.plugins["knowledge"].profile.as_deref(),
+            Some("codemie:ol")
+        );
+        assert_eq!(ai.plugins["knowledge"].model, None);
+        // A model picked in this edit that the profile doesn't offer is still refused.
+        let e = save(json!({"defaultProfile": "codemie:ol",
+                            "routes": {"meeting": {"model": "sonnet"}}}))
+        .unwrap_err();
+        assert_eq!(e.message, "That model is not offered by this profile.");
+    }
+
+    #[tokio::test]
+    async fn an_ollama_profile_that_lists_nothing_keeps_the_saved_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let open = vec![
+            profile("claude", ProfileState::Ready),
+            ollama("codemie:ol", &["qwen3:8b"]),
+        ];
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), open.clone());
+        let saved = json!({"defaultProfile": "claude",
+                           "routes": {"plugin": {"profile": "codemie:ol", "model": "qwen3:8b"}}});
+        core.ai_settings_save(&mutation(&core, Operation::AiSettingsSave, saved), &open)
+            .unwrap();
+        let mut closed_ol = ollama("codemie:ol", &[]);
+        closed_ol.state = ProfileState::NotRunning;
+        let closed = vec![profile("claude", ProfileState::Ready), closed_ol];
+        // Another row changes while Ollama is closed: the plugin row keeps its model.
+        let req = mutation(
+            &core,
+            Operation::AiSettingsSave,
+            json!({"defaultProfile": "claude",
+                   "routes": {"plugin": {"profile": "codemie:ol", "model": "qwen3:8b"},
+                              "summary": {"model": "haiku"}}}),
+        );
+        core.ai_settings_save(&req, &closed).unwrap();
+        let ai = core.repo().unwrap().settings().unwrap().ai;
+        assert_eq!(
+            ai.routes[&Purpose::Plugin].model.as_deref(),
+            Some("qwen3:8b")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ollama_name_without_a_tag_is_its_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = vec![
+            profile("claude", ProfileState::Ready),
+            ollama("codemie:ol", &["llama3.2:latest"]),
+        ];
+        let core = test_core(
+            dir.path(),
+            Arc::new(FakeRunner::new(vec![])),
+            profiles.clone(),
+        );
+        let req = mutation(
+            &core,
+            Operation::AiSettingsSave,
+            json!({"defaultProfile": "claude",
+                   "routes": {"summary": {"profile": "codemie:ol", "model": "llama3.2"}}}),
+        );
+        core.ai_settings_save(&req, &profiles).unwrap();
+        // Only Ollama names work this way: Claude's ids compare exactly.
+        let req = mutation(
+            &core,
+            Operation::AiSettingsSave,
+            json!({"defaultProfile": "claude", "routes": {"meeting": {"model": "sonnet:latest"}}}),
+        );
+        assert_eq!(
+            core.ai_settings_save(&req, &profiles).unwrap_err().message,
+            "That model is not offered by this profile."
+        );
+    }
+
+    #[tokio::test]
+    async fn moving_a_row_onto_its_own_fallback_with_the_fallback_cleared_is_saved() {
+        // What Settings › AI sends when Default (Claude Code, fallback prod) moves to prod.
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let save = |data: Value| {
+            let req = mutation(&core, Operation::AiSettingsSave, data);
+            let core = core.clone();
+            async move { core.request(req).await }
+        };
+        save(
+            json!({"defaultProfile": "claude", "defaultFallback": "codemie:prod",
+                    "routes": {"summary": {"profile": "claude", "fallback": "codemie:prod"}}}),
+        )
+        .await
+        .unwrap();
+        save(
+            json!({"defaultProfile": "codemie:prod", "defaultFallback": null,
+                    "routes": {"summary": {"profile": "claude", "fallback": "codemie:prod"}}}),
+        )
+        .await
+        .unwrap();
+        save(json!({"defaultProfile": "codemie:prod",
+                    "routes": {"summary": {"profile": "codemie:prod"}}}))
+        .await
+        .unwrap();
+        let ai = core.repo().unwrap().settings().unwrap().ai;
+        assert_eq!(ai.default_fallback, None);
+        assert_eq!(ai.routes[&Purpose::Summary].fallback, None);
+    }
+
+    #[tokio::test]
     async fn a_group_change_onto_a_rows_fallback_is_saved() {
         let dir = tempfile::tempdir().unwrap();
         let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
@@ -1085,7 +1275,8 @@ pub(super) mod tests {
         for row in ["summary", "triage"] {
             assert_eq!(
                 out["chosen"][row],
-                json!({"profile": "codemie:prod", "model": null, "fallback": null}),
+                json!({"profile": "codemie:prod", "model": null, "fallback": null,
+                       "group": if row == "triage" { "automation" } else { "default" }}),
                 "{row}"
             );
         }
@@ -1166,9 +1357,22 @@ pub(super) mod tests {
         assert_eq!(keys, want);
         assert_eq!(
             status["chosen"]["plugin:knowledge"],
-            json!({"profile": "codemie:prod", "model": null, "fallback": null})
+            json!({"profile": "codemie:prod", "model": null, "fallback": null, "group": "plugin"})
         );
         assert_eq!(status["chosen"]["ask"]["profile"], "claude");
+        // Each row names the row it follows when it sets nothing (`group_of`).
+        for (row, group) in [
+            ("default", Value::Null),
+            ("summary", json!("default")),
+            ("ask", json!("default")),
+            ("plugin", json!("default")),
+            ("automation", json!("default")),
+            ("briefing", json!("automation")),
+            ("triage", json!("automation")),
+            ("commitments", json!("automation")),
+        ] {
+            assert_eq!(status["chosen"][row]["group"], group, "{row}");
+        }
     }
 
     #[test]

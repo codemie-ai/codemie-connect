@@ -3504,6 +3504,16 @@ for (const view of ['default', 'compact']) {
       const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-settings-panels, .ws-ai-table-wrap')].map(e => e.scrollWidth - e.clientWidth)));
       assert(overflow <= 0, `Settings › AI overflows by ${overflow}px`);
       await shot(page, `light-settings-ai-routes-${view}-${width}`);
+      if (width !== 1680) return;
+      // Even with the Settings menu folded to its rail the panel caps the card below the table's
+      // width, so every job stays two lines: the table head is never shown at these sizes.
+      await page.click('[data-action="settings-menu-toggle"]');
+      await page.waitForTimeout(300);
+      await page.evaluate(() => document.querySelector('.ws-ai-routes').scrollIntoView({ block: 'start' }));
+      assert(!(await page.locator('.ws-ai-table thead').isVisible()), 'the job rows are two lines in the widest card');
+      const wide = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-settings-panels, .ws-ai-table-wrap')].map(e => e.scrollWidth - e.clientWidth)));
+      assert(wide <= 0, `the table overflows by ${wide}px`);
+      await shot(page, `light-settings-ai-routes-${view}-${width}-rail`);
     });
     await context.close().catch(() => {});
   }

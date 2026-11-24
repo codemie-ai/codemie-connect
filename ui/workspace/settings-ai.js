@@ -9,23 +9,24 @@ export const PRIVACY_NOTE = 'The message text you draft from is sent to this pro
 export const LOGIN_STEPS = 'Open Terminal and run claude, then type /login';
 
 /**
- * The rows of "What each job uses", in spec §2 order. `group`: the heading it is drawn under;
- * `parent`: the row it follows when it sets nothing (null = Default). Ask is hidden until step 9.
+ * The rows of "What each job uses", in spec §2 order. `group`: the heading it is drawn under.
+ * The row each one follows when it sets nothing is Rust's (`chosen[key].group`). Ask is hidden
+ * until step 9.
  */
 export const ROUTES = [
-  { key: 'mail_draft', label: 'Mail replies', hint: 'Drafts for Outlook messages.', group: 'replies', parent: null },
-  { key: 'chat_draft', label: 'Teams replies', hint: 'Drafts for Teams chats.', group: 'replies', parent: null },
-  { key: 'summary', label: 'Summaries', hint: 'Thread and day summaries.', group: 'notes', parent: null },
-  { key: 'meeting', label: 'Meeting notes', hint: 'Notes and summaries from transcripts.', group: 'notes', parent: null },
-  { key: 'briefing', label: 'Morning briefing', hint: 'Automations made from the Morning briefing template.', group: 'automations', parent: 'automation' },
-  { key: 'triage', label: 'Inbox triage', hint: 'Automations made from the Inbox triage template.', group: 'automations', parent: 'automation' },
-  { key: 'commitments', label: 'Commitments', hint: 'Automations made from the Commitments template.', group: 'automations', parent: 'automation' },
-  { key: 'automation', label: 'Automations', hint: 'Every other automation, unless it picks its own profile.', group: 'automations', parent: null },
-  { key: 'ask', label: 'Ask', hint: 'Questions you type in ⌘K.', group: null, parent: null, hidden: true },
-  { key: 'plugin', label: 'All plugins', hint: 'Plugins without a choice of their own.', group: 'plugins', parent: null },
+  { key: 'mail_draft', label: 'Mail replies', hint: 'Drafts for Outlook messages.', group: 'replies' },
+  { key: 'chat_draft', label: 'Teams replies', hint: 'Drafts for Teams chats.', group: 'replies' },
+  { key: 'summary', label: 'Summaries', hint: 'Thread and day summaries.', group: 'notes' },
+  { key: 'meeting', label: 'Meeting notes', hint: 'Notes and summaries from transcripts.', group: 'notes' },
+  { key: 'briefing', label: 'Morning briefing', hint: 'Automations made from the Morning briefing template.', group: 'automations' },
+  { key: 'triage', label: 'Inbox triage', hint: 'Automations made from the Inbox triage template.', group: 'automations' },
+  { key: 'commitments', label: 'Commitments', hint: 'Automations made from the Commitments template.', group: 'automations' },
+  { key: 'automation', label: 'Automations', hint: 'Every other automation, unless it picks its own profile.', group: 'automations' },
+  { key: 'ask', label: 'Ask', hint: 'Questions you type in ⌘K.', group: null, hidden: true },
+  { key: 'plugin', label: 'All plugins', hint: 'Plugins without a choice of their own.', group: 'plugins' },
 ];
-/** A row's name by key: "Inbox triage", "All plugins". */
-export const ROW_LABEL = Object.fromEntries(ROUTES.map(r => [r.key, r.label]));
+/** A row's name by key: "Inbox triage", "All plugins", and "Default" for the Default row. */
+export const ROW_LABEL = { default: 'Default', ...Object.fromEntries(ROUTES.map(r => [r.key, r.label])) };
 const GROUPS = [['replies', 'Replies'], ['notes', 'Summaries and notes'], ['automations', 'Automations'], [null, ''], ['plugins', 'Plugins']];
 const PLUGIN_HINT = 'Your choice here wins over the profile the plugin asks for.';
 
@@ -52,7 +53,7 @@ const STATE_TEXT = {
   not_installed: 'This profile is not installed on this Mac.',
   too_old: 'This version is too old for AI features.',
   not_configured: 'This profile is not fully set up yet.',
-  not_running: 'Ollama isn’t running. Open Ollama, then check again.',
+  not_running: "Ollama isn't running. Open Ollama, then check again.",
   checking: 'Checking this profile…',
   error: 'Connect could not check this profile.',
 };
@@ -88,22 +89,23 @@ const tagged = (p, id) => (isOllama(p) && id && !String(id).includes(':') ? `${i
 const offers = (p, model) => !model || (p?.models || []).some(m => tagged(p, m.id) === tagged(p, model));
 
 /**
- * A row's status from Rust's `chosen` for it and the profiles as drawn (after `withCodemieSignIn`),
- * so a row and its profile card never disagree. Never probes. `savedModel`: the model saved on the
- * row, checked when `chosen` names none.
+ * A row's status from Rust's `chosen` for it (which carries the row's saved model) and the
+ * profiles as drawn (after `withCodemieSignIn`), so a row and its profile card never disagree.
+ * Never probes.
  */
-export function routeState(chosen, profiles = [], { savedModel } = {}) {
+export function routeState(chosen, profiles = []) {
   const id = chosen?.profile;
   if (!id) return { state: 'unset', text: 'Nothing runs until you choose one.', using: null };
   const p = profiles.find(x => x.id === id);
-  const model = chosen.model || savedModel || null;
+  const model = chosen.model || null;
   const name = shortLabel(profiles, id);
   let reason;
   if (!p) reason = `Connect has no AI profile “${id}”.`;
   else if (p.state !== 'ready') reason = p.message || STATE_TEXT[p.state] || STATE_TEXT.error;
-  else if (!offers(p, model)) reason = `${name} doesn’t offer ${model}.`;
+  else if (!offers(p, model)) reason = `${name} doesn't offer ${model}.`;
   else {
-    const m = model ? (p.models || []).find(x => tagged(p, x.id) === tagged(p, model))?.label || model : 'Profile default';
+    // No model: the name the row's Model select gives the profile's default ("Account default").
+    const m = model ? (p.models || []).find(x => tagged(p, x.id) === tagged(p, model))?.label || model : modelOptions(p)[0][1];
     return { state: 'working', text: `${name} · ${m}`, using: id };
   }
   const f = chosen.fallback && chosen.fallback !== id ? profiles.find(x => x.id === chosen.fallback) : null;
@@ -125,44 +127,33 @@ export function testResultLabel(t) {
   return ['OK', seconds(t.ms), t.costUsd != null ? money(t.costUsd) : ''].filter(Boolean).join(' · ');
 }
 
-const PARENT = Object.fromEntries(ROUTES.map(r => [r.key, r.parent]));
-/** The row a key follows when it sets no profile: its group, `plugin` for a plugin row, else Default (null). */
-const parentOf = key => (key.startsWith('plugin:') ? 'plugin' : PARENT[key] ?? null);
-const rowOfKey = (s, key) => (key.startsWith('plugin:') ? s.plugins[key.slice(7)] : s.routes[key]);
-/** Which profile a row runs on, only to tell whether an edit moved it (the rule itself is Rust's `choose`). */
-const profileAt = (s, key) => (key == null ? s.defaultProfile || null : rowOfKey(s, key)?.profile || profileAt(s, parentOf(key)));
-
 /**
- * Next `settings.ai` after one control changed. `field`: default | defaultModel | defaultFallback
- * for the Default row, or profile | model | fallback on row `purpose` (a purpose or `plugin:<id>`).
- * A saved model is dropped only when this edit moved its row to another profile that doesn't offer
- * it, so a model kept while Ollama is closed survives edits to other rows (ruling 13).
+ * Next `settings.ai` after one control changed: only that field changes. `field`: default |
+ * defaultModel | defaultFallback for the Default row, or profile | model | fallback on row
+ * `purpose` (a purpose or `plugin:<id>`). Rust's save decides what a moved row's saved model
+ * becomes (dropped when its new profile doesn't offer it, kept otherwise; ruling 13). Picking a
+ * row's own fallback as its profile clears that fallback, which Rust would refuse as equal.
  */
 export function nextAiSettings(settings, profiles, { field, purpose, value }) {
   const copy = rows => Object.fromEntries(Object.entries(rows || {}).map(([k, r]) => [k, { ...r }]));
-  const before = { defaultProfile: settings.defaultProfile || null, routes: settings.routes || {}, plugins: settings.plugins || {} };
   const next = {
     defaultProfile: settings.defaultProfile || null, defaultModel: settings.defaultModel || null, defaultFallback: settings.defaultFallback || null,
     routes: copy(settings.routes), plugins: copy(settings.plugins),
   };
-  if (field === 'default') next.defaultProfile = value || null;
-  else if (field === 'defaultModel') next.defaultModel = value || null;
+  if (field === 'default') {
+    next.defaultProfile = value || null;
+    if (value && next.defaultFallback === value) next.defaultFallback = null;
+  } else if (field === 'defaultModel') next.defaultModel = value || null;
   else if (field === 'defaultFallback') next.defaultFallback = value || null;
   else {
     const plugin = purpose.startsWith('plugin:');
     const rows = plugin ? next.plugins : next.routes;
     const r = rows[plugin ? purpose.slice(7) : purpose] ||= {};
     if (['profile', 'model', 'fallback'].includes(field)) r[field] = value || undefined;
+    if (field === 'profile' && value && r.fallback === value) r.fallback = undefined;
   }
-  const moved = (key, model) => {
-    const was = profileAt(before, key);
-    const now = profileAt(next, key);
-    return model && was !== now && !offers(profiles.find(p => p.id === now), model);
-  };
-  if (moved(null, next.defaultModel)) next.defaultModel = null;
-  for (const [rows, prefix] of [[next.routes, ''], [next.plugins, 'plugin:']]) {
+  for (const rows of [next.routes, next.plugins]) {
     for (const [k, r] of Object.entries(rows)) {
-      if (moved(prefix + k, r.model)) r.model = undefined;
       const clean = Object.fromEntries(Object.entries(r).filter(([, v]) => v));
       if (Object.keys(clean).length) rows[k] = clean; else delete rows[k];
     }
@@ -256,13 +247,15 @@ function modelChoices(profile, saved) {
 function routeRow(r, { profiles, settings, chosen }) {
   const plugin = r.key.startsWith('plugin:');
   const saved = (plugin ? settings.plugins?.[r.key.slice(7)] : settings.routes?.[r.key]) || {};
+  // A plugin row with nothing saved has no entry of its own: it runs as All plugins.
   const mine = chosen[r.key] || (plugin ? chosen.plugin : null) || {};
-  const group = chosen[r.parent || 'default'] || {};
-  const name = ROW_LABEL[r.parent] || 'Default';
+  const groupKey = chosen[r.key]?.group || (plugin ? 'plugin' : 'default');
+  const group = chosen[groupKey] || {};
+  const name = ROW_LABEL[groupKey] || groupKey;
   const same = id => `Same as ${name} (${id ? shortLabel(profiles, id) : 'None'})`;
   const profile = profiles.find(p => p.id === mine.profile);
   const attrs = field => ({ 'data-action': 'ai-route', 'data-route': r.key, 'data-field': field, 'aria-label': `${r.label}: ${field}` });
-  const status = routeState(mine, profiles, { savedModel: saved.model });
+  const status = routeState(mine, profiles);
   const [chipText, tone, ico] = STATUS_CHIP[status.state];
   const again = status.state === 'broken' ? button('Check again', { action: 'ai-refresh', variant: 'ghost', size: 'sm', iconName: 'refresh' }) : '';
   return `<tr data-ai-route-row="${e(r.key)}"${r.hidden ? ' hidden' : ''}>
@@ -292,7 +285,7 @@ function routesCard(ai, plugins) {
   const pluginRows = plugins
     .filter(p => p?.enabled && (p.agreed || []).includes('claude'))
     .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)))
-    .map(p => ({ key: `plugin:${p.id}`, label: p.name || p.id, hint: PLUGIN_HINT, group: 'plugins', parent: 'plugin' }));
+    .map(p => ({ key: `plugin:${p.id}`, label: p.name || p.id, hint: PLUGIN_HINT, group: 'plugins' }));
   const rows = [...ROUTES, ...pluginRows];
   const state = { ...ai, chosen: ai.chosen || {} };
   const bodies = GROUPS.map(([group, heading]) => {
@@ -328,10 +321,10 @@ function usageCard(ai) {
  */
 export function aiPanel(ai = {}, { codemie, plugins = [] } = {}) {
   if (ai.status === 'loading' || !ai.status || ai.status === 'idle') {
-    return card({ body: `<div class="ws-ai-loading" role="status">${spinner('Checking Claude')}<span>Checking your Claude setup…</span></div>` });
+    return card({ body: `<div class="ws-ai-loading" role="status">${spinner('Checking your AI profiles')}<span>Checking your AI profiles…</span></div>` });
   }
   if (ai.status === 'error') {
-    return card({ body: emptyState({ iconName: 'alert', title: 'Could not check Claude', text: ai.error || 'Something went wrong while checking.', actions: button('Retry', { action: 'ai-refresh', variant: 'primary', iconName: 'refresh' }) }) });
+    return card({ body: emptyState({ iconName: 'alert', title: 'Could not check your AI profiles', text: ai.error || 'Something went wrong while checking.', actions: button('Retry', { action: 'ai-refresh', variant: 'primary', iconName: 'refresh' }) }) });
   }
   const profiles = withCodemieSignIn(ai.profiles || [], codemie);
   const state = { ...ai, profiles, settings: ai.settings || { defaultProfile: null, routes: {} } };
