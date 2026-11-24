@@ -12,6 +12,7 @@ import { layoutPanel } from './settings-layout.js';
 import { meetingsSettingsHeader, meetingsSettingsPanel, newMeetingsSettingsView, TAB_TEXT as MEETINGS_TAB_TEXT } from './view-settings-meetings.js';
 import { viewOf } from './view-mode.js';
 import { providerSettings, whereTasksLive } from './settings-tasks.js';
+import { menuBarCard } from './menu-bar.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
@@ -64,7 +65,7 @@ const TAB_DESCRIPTIONS = {
   ai: 'Choose which Claude drafts and summarizes for you, and what it costs.',
   microsoft: 'Your calendar, Outlook and Teams — connected with one sign-in.',
   appearance: 'Choose how CodeMie Connect looks on your desktop.',
-  notifications: 'Desktop reminders, critical alerts and quiet hours.',
+  notifications: 'Desktop reminders, critical alerts, quiet hours and the menu-bar count.',
   queues: 'Critical keywords and scheduled reminders.',
   privacy: 'What is stored on this device and how to remove it.',
   activity: 'Background work: synchronization, reminders and drafts.',
@@ -313,7 +314,7 @@ function notificationsPanel(s) {
         ${button('Save', { type: 'submit' })}
       </form>
       <p class="ws-muted ws-hint">Critical alerts can bypass Connect’s quiet hours, never macOS Focus.</p>`,
-  });
+  }) + menuBarCard(s);
 }
 
 // ---------------------------------------------------------------- Rules & schedules

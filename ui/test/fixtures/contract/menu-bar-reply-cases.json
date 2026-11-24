@@ -130,6 +130,21 @@
     {
       "connectionId": null,
       "data": {
+        "acknowledgedAt": 0,
+        "channel": "chat",
+        "conversationId": "c3",
+        "lane": "critical"
+      },
+      "id": "c3-critical-zero",
+      "kind": "message",
+      "revision": "r1",
+      "source": "mail:inbox",
+      "updatedAt": 0,
+      "workspaceId": "personal"
+    },
+    {
+      "connectionId": null,
+      "data": {
         "channel": "mail",
         "lane": "reply",
         "lifecycle": "archived"

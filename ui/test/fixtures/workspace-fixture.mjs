@@ -138,6 +138,8 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
       theme, timeZone: zone, background: true, launchAtLogin: false, criticalRepeat: true, syncDays: 30, notifications: true, notificationPreview: false,
       quietStart: '22:00', quietEnd: '08:00', clientId: '3d7688c6-f449-4d04-8b0d-57d94818e922', tenant: 'common', activeWorkspace: 'personal',
       activeConnection: connected ? CID : null, notificationPermission: 'os_managed', focusUntil: null,
+      // Settings › Notifications' "Menu bar" card (menu-bar-count design §1): only replies on.
+      menuBar: { replies: true, tasks: false, meetings: false, automations: false },
       ...contract('settings-view').default,
     },
     workspaces: [
@@ -147,7 +149,23 @@ export function buildSnapshot(nowMs = Date.now(), { connected = true, zone = 'UT
     connection,
     records: connected ? [...events, ...messages, calendars, chats, ...windows, ...localRecords] : localRecords,
     jobs: connected ? [{ id: 'job-sync-1', workspaceId: null, connectionId: CID, kind: 'sync', key: 'sync:1', state: 'succeeded', dueAt: now - 95, leaseUntil: null, attempts: 1, policy: {}, payload: { force: false }, result: 'Sources refreshed' }] : [],
+    // The snapshot's own menu-bar count (menu-bar-count design §5), matching the settings above
+    // (replies only): Task 2's "replies" contract state. `withMenuBar` swaps in another one.
+    menuBar: contract('menu-bar-states').replies,
   };
+}
+
+// ---------------------------------------------------------------- menu bar (Task 5)
+// Written by the Rust test `contract_fixtures_match_the_menu_bar` (menu-bar-states.json,
+// menu-bar-reply-cases.json).
+
+export const menuBarStates = () => contract('menu-bar-states');
+
+/** `snapshot.menuBar` replaced with one of Task 2's named states: `zero`, `replies`, `several`,
+ *  `capped`, `amberOnly`, `amberWithCount`, `nothingChosen`. */
+export function withMenuBar(s, stateName) {
+  s.menuBar = menuBarStates()[stateName];
+  return s;
 }
 
 // ---------------------------------------------------------------- Claude (AI) status presets

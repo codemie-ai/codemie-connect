@@ -1075,6 +1075,15 @@ mod tests {
                 "reply",
                 json!({"channel": "chat", "conversationId": "c2"}),
             ),
+            // chat c3: critical with acknowledgedAt 0 (never written this way in practice, only
+            // null or a real epoch timestamp) -> acknowledged, same as a real timestamp; pins the
+            // parity gap against the JS port (selectors.js::attentionMessages), which used to
+            // treat 0 as falsy and so unacknowledged.
+            message(
+                "c3-critical-zero",
+                "critical",
+                json!({"channel": "chat", "conversationId": "c3", "acknowledgedAt": 0}),
+            ),
             // archived, deleted, snoozed -> none of these count
             message(
                 "archived",

@@ -67,8 +67,8 @@ export function select(options, value, attrs = {}) {
   return `<span class="ws-select-wrap"><select ${attrsOf({ class: 'ws-select', ...attrs })}>${options.map(([v, label]) => `<option value="${e(v)}" ${String(v) === String(value) ? 'selected' : ''}>${e(label)}</option>`).join('')}</select>${icon('chevron-down', 'ws-select-caret')}</span>`;
 }
 
-export function settingRow({ title, text = '', control = '', iconName }) {
-  return `<div class="ws-setting-row">${iconName ? `<span class="ws-setting-icon">${icon(iconName)}</span>` : ''}<div class="ws-setting-copy"><strong>${e(title)}</strong>${text ? `<p>${e(text)}</p>` : ''}</div><div class="ws-setting-control">${control}</div></div>`;
+export function settingRow({ title, text = '', control = '', iconName, hintId }) {
+  return `<div class="ws-setting-row">${iconName ? `<span class="ws-setting-icon">${icon(iconName)}</span>` : ''}<div class="ws-setting-copy"><strong>${e(title)}</strong>${text ? `<p${hintId ? ` id="${e(hintId)}"` : ''}>${e(text)}</p>` : ''}</div><div class="ws-setting-control">${control}</div></div>`;
 }
 
 export const spinner = (label = 'Loading') => `<span class="ws-spinner" role="status" aria-label="${e(label)}"></span>`;

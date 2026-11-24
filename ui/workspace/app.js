@@ -2611,6 +2611,13 @@ async function handle(action, el, ev) {
     case 'job-retry': return mutate('job_retry', { id });
     case 'notification-permission': return mutate('notification_permission');
     case 'notification-test': await mutate('notification_test'); return toast('Test reminder queued. Check Notification Center.');
+    case 'menu-bar-toggle': return mutate('settings_update', { menuBar: { [el.dataset.source]: el.checked } }).catch(err => { el.checked = !el.checked; throw err; });
+    case 'menu-bar-fix': {
+      // §6's general `route` branch inside `openNotification` lands in Task 6; until then a fix
+      // opens its place directly.
+      const fix = (s.menuBar?.fixes || []).find(f => f.id === el.dataset.fix);
+      return fix ? route(fix.open.route, fix.open.tab) : undefined;
+    }
     case 'export': {
       const result = await store.query('export');
       const url = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' }));

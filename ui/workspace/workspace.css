@@ -1246,6 +1246,10 @@ ul.ws-draft-context[hidden]{display:none}
 .ws-setting-copy strong{font-size:var(--ws-fs-body);font-weight:600}
 .ws-setting-copy p{font-size:var(--ws-fs-secondary);line-height:18px;color:var(--ws-muted)}
 .ws-setting-control{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.ws-mb-fixes{padding-top:12px}
+.ws-mb-fixes>strong{font-size:var(--ws-fs-body-sm);font-weight:600}
+.ws-mb-fixes ul{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:8px}
+.ws-mb-fix{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:var(--ws-fs-secondary);color:var(--ws-muted)}
 .ws-rows{display:grid}
 .ws-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--ws-border)}
 .ws-row:last-child{border-bottom:0}
