@@ -409,6 +409,7 @@ impl Repository {
             meetings_root: None,
             note_templates: Vec::new(),
             task_provider: Value::Null,
+            menu_bar: Value::Null,
         })
     }
     /// The account workspace `w` shows: the active connection while it is connected and `w` is
@@ -449,6 +450,28 @@ impl Repository {
         let more = runs.len() > limit;
         runs.truncate(limit);
         Ok((runs, more))
+    }
+    /// The automation runs of workspace `wid` that `account` may see, updated after `since`:
+    /// every one, where the snapshot keeps only each automation's latest (menu-bar design §3).
+    pub fn automation_runs_since(
+        &self,
+        wid: &str,
+        account: Option<&str>,
+        since: i64,
+    ) -> Result<Vec<Record>> {
+        let mut stmt = self.db.prepare(&format!("SELECT r.id,r.kind,r.connection_id,r.workspace_id,r.source,r.revision,r.updated_at,r.body FROM ({VISIBLE_RUNS}) v JOIN records r ON r.rowid=v.rid WHERE v.updated_at>?4"))?;
+        let runs = stmt
+            .query_map(
+                params![
+                    wid,
+                    account.unwrap_or("__unavailable__"),
+                    None::<&str>,
+                    since
+                ],
+                record_row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(runs)
     }
     pub fn record(
         &self,

@@ -155,6 +155,7 @@ pub enum Operation {
     AnalyticsSession,
     AnalyticsReport,
     AnalyticsApp,
+    MenuBarSeen,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -366,6 +367,9 @@ pub struct Snapshot {
     /// state and the outbox counts. Filled by `Core` for the window's snapshot; `Value::Null`
     /// elsewhere.
     pub task_provider: Value,
+    /// `menuBar` (menu-bar design §5): the count, what it is made of and what needs fixing.
+    /// Filled by `Core` for the window's snapshot; `Value::Null` elsewhere.
+    pub menu_bar: Value,
 }
 
 pub fn required<'a>(data: &'a Value, key: &str, max: usize) -> Result<&'a str> {

@@ -2278,3 +2278,98 @@ async fn plugins_hear_transcribed_then_minutes_written() {
     assert_eq!(told[1]["rewritten"], true);
     assert_ne!(told[1]["revision"], told[0]["revision"]);
 }
+
+/// The menu bar's "meetings with new notes": `menu_bar_seen` marks a meeting or the automation
+/// results seen, and editing or choosing in a meeting stamps it seen in the same request.
+#[tokio::test]
+async fn menu_bar_seen_clears_and_meeting_ops_stamp() {
+    use crate::workspace::menu_bar;
+    let n = notes_env(vec![outcome("# A", json!([]))]);
+    let e = &n.e;
+    downloaded(e, "m1").await;
+    let start_over = || menu_bar::reset_seen_for_tests(&mut e.core.repo().unwrap(), now() - 100);
+    start_over();
+    make_notes(e, "m1", "meeting-notes", json!({}))
+        .await
+        .unwrap();
+    run_jobs(&e.core).await;
+    let menu = || async {
+        e.core
+            .request(read(Operation::Snapshot, json!({})))
+            .await
+            .unwrap()["snapshot"]["menuBar"]
+            .clone()
+    };
+    assert_eq!(menu().await["newMeetings"], json!(["m1"]));
+
+    let seen = op(&e.core, Operation::MenuBarSeen, json!({"meetingId": "m1"}))
+        .await
+        .unwrap();
+    assert_eq!(seen, json!({"seen": true}));
+    assert_eq!(menu().await["newMeetings"], json!([]));
+
+    // An automation result made after the mark, then seen.
+    put(
+        &e.core,
+        Record {
+            id: "run-1".into(),
+            kind: "automation_run".into(),
+            connection_id: None,
+            workspace_id: Some("personal".into()),
+            source: "automation".into(),
+            revision: "v1".into(),
+            updated_at: now() - 10,
+            data: json!({"automationId": "auto-brief", "status": "ok", "startedAt": now() - 15,
+                "delivered": ["today"]}),
+        },
+    );
+    assert_eq!(menu().await["sources"]["automations"], 1);
+    op(
+        &e.core,
+        Operation::MenuBarSeen,
+        json!({"automations": true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(menu().await["sources"]["automations"], 0);
+
+    let gone = op(
+        &e.core,
+        Operation::MenuBarSeen,
+        json!({"meetingId": "nope"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(gone.code, "not_found");
+    assert_eq!(gone.message, "This meeting is no longer available.");
+    let nothing = op(&e.core, Operation::MenuBarSeen, json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(nothing.code, "validation");
+    assert_eq!(nothing.message, "Say what was seen.");
+
+    // Editing the notes stamps the meeting seen.
+    start_over();
+    assert_eq!(menu().await["newMeetings"], json!(["m1"]));
+    op(
+        &e.core,
+        Operation::MeetingDoc,
+        json!({"meetingId": "m1", "docId": "meeting-notes", "action": "edit",
+            "text": "# A, edited", "baseVersion": 1, "baseRev": 1}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(menu().await["newMeetings"], json!([]));
+
+    // So does choosing in it.
+    start_over();
+    assert_eq!(menu().await["newMeetings"], json!(["m1"]));
+    op(
+        &e.core,
+        Operation::MeetingSet,
+        json!({"meetingId": "m1", "auto": false}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(menu().await["newMeetings"], json!([]));
+}

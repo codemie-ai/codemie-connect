@@ -1,13 +1,14 @@
 //! Menu-bar count (design `docs/superpowers/specs/2026-11-24-menu-bar-count-design.md`): the
 //! settings that choose what is counted (§1), the seen marks that decide what is "new" (§2) and
-//! the four counted sources (§3). Later steps add the fixes, `compute` and the tray.
+//! the four counted sources (§3), what needs fixing (§4), the snapshot's `menuBar` (§5) and the
+//! `menu_bar_seen` operation (§2). Later steps add the tray.
 use super::meetings::model::{MeAlias, MeetingRecord};
 use super::models::*;
 use super::repository::Repository;
 use super::task_provider::active_provider;
 use super::tasks;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 /// Tasks and the seen record live in the workspace Connect boots into.
@@ -260,6 +261,377 @@ pub(crate) fn sources(s: &Snapshot, me: &MeAlias, seen: &Seen, now: i64) -> (Sou
     )
 }
 
+/// One "needs fixing" row (design §4): what is broken and where the window fixes it
+/// (`{route, tab?, runId?, automationId?}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fix {
+    pub id: String,
+    pub text: String,
+    pub open: Value,
+}
+
+/// The snapshot's `menuBar` (design §5): the count of the chosen sources, every source's own
+/// count, what needs fixing, the meetings counted as new and the tooltip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MenuBar {
+    pub count: u32,
+    pub label: String,
+    pub amber: bool,
+    pub sources: Sources,
+    pub counted: Vec<String>,
+    pub fixes: Vec<Fix>,
+    pub new_meetings: Vec<String>,
+    pub tooltip: String,
+}
+
+/// The four sources in the order the menu and the tooltip name them.
+const SOURCE_NAMES: [&str; 4] = ["replies", "tasks", "meetings", "automations"];
+
+fn count_of(s: &Sources, name: &str) -> u32 {
+    match name {
+        "replies" => s.replies,
+        "tasks" => s.tasks,
+        "meetings" => s.meetings,
+        _ => s.automations,
+    }
+}
+
+fn chosen(m: &MenuBarSettings, name: &str) -> bool {
+    match name {
+        "replies" => m.replies,
+        "tasks" => m.tasks,
+        "meetings" => m.meetings,
+        _ => m.automations,
+    }
+}
+
+/// A source's menu row (design § Copy).
+fn source_text(name: &str, n: u32) -> String {
+    let one = n == 1;
+    match name {
+        "replies" if one => "1 message needs a reply".into(),
+        "replies" => format!("{n} messages need a reply"),
+        "tasks" if one => "1 task due or late".into(),
+        "tasks" => format!("{n} tasks due or late"),
+        "meetings" if one => "1 meeting with new notes".into(),
+        "meetings" => format!("{n} meetings with new notes"),
+        _ if one => "1 automation result".into(),
+        _ => format!("{n} automation results"),
+    }
+}
+
+/// The menu-bar title: nothing at zero, the number up to 99, then "99+".
+pub fn label(count: u32) -> String {
+    match count {
+        0 => String::new(),
+        1..=99 => count.to_string(),
+        _ => "99+".into(),
+    }
+}
+
+/// The counted sources with a non-zero count, in menu order.
+fn source_rows(m: &MenuBar) -> Vec<(String, String)> {
+    SOURCE_NAMES
+        .iter()
+        .filter(|name| m.counted.iter().any(|c| c == *name))
+        .map(|name| (*name, count_of(&m.sources, name)))
+        .filter(|(_, n)| *n > 0)
+        .map(|(name, n)| (name.to_string(), source_text(name, n)))
+        .collect()
+}
+
+/// "CodeMie Connect", then the counted rows, then the first fix (design §5).
+fn tooltip(m: &MenuBar) -> String {
+    let parts: Vec<String> = source_rows(m).into_iter().map(|(_, text)| text).collect();
+    let mut text = "CodeMie Connect".to_string();
+    if !parts.is_empty() {
+        text.push_str(" · ");
+        text.push_str(&parts.join(", "));
+    }
+    if let Some(fix) = m.fixes.first() {
+        text.push_str(" · Needs fixing: ");
+        text.push_str(&fix.text);
+    }
+    text
+}
+
+/// The menu's rows above the separator (design §5): each counted non-zero source, then at most
+/// three fixes, then "and <n> more". Each row is `(id, text)`: the source name or the fix id.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the tray draws these rows; it is wired in the next task"
+    )
+)]
+pub fn rows(m: &MenuBar) -> Vec<(String, String)> {
+    /// At most this many fix rows, then "and <n> more".
+    const FIX_ROWS: usize = 3;
+    let mut rows = source_rows(m);
+    rows.extend(
+        m.fixes
+            .iter()
+            .take(FIX_ROWS)
+            .map(|f| (f.id.clone(), f.text.clone())),
+    );
+    if m.fixes.len() > FIX_ROWS {
+        rows.push((
+            "more".into(),
+            format!("and {} more", m.fixes.len() - FIX_ROWS),
+        ));
+    }
+    rows
+}
+
+fn fix(id: impl Into<String>, text: impl Into<String>, open: Value) -> Fix {
+    Fix {
+        id: id.into(),
+        text: text.into(),
+        open,
+    }
+}
+
+/// The six "needs fixing" conditions (design §4, ruling 10). Offline, rate limits, a sync in
+/// progress and a provider turned off are not fixes.
+fn fixes(s: &Snapshot, task_provider: &Value) -> Vec<Fix> {
+    let mut out = Vec::new();
+    if s.connection
+        .as_ref()
+        .is_some_and(|c| c.status != "connected" && c.status != "disconnected")
+    {
+        out.push(fix(
+            "microsoft",
+            "Microsoft 365 needs you to sign in again.",
+            json!({"route": "settings", "tab": "microsoft"}),
+        ));
+    }
+    let provider = task_provider["name"]
+        .as_str()
+        .filter(|n| !n.is_empty())
+        .unwrap_or("Connect");
+    let tasks_tab = json!({"route": "settings", "tab": "meetings-tasks"});
+    match task_provider["state"].as_str() {
+        Some("needs_token") => out.push(fix(
+            "tasks-token",
+            format!("{provider} needs your API token."),
+            tasks_tab,
+        )),
+        Some("failed") => out.push(fix(
+            "tasks-plugin",
+            format!("The {provider} plugin didn't load."),
+            tasks_tab,
+        )),
+        _ => {}
+    }
+    let parked = task_provider["parked"].as_u64().unwrap_or(0);
+    if parked > 0 {
+        out.push(fix(
+            "tasks-parked",
+            format!("{provider} refused {parked} task change(s)."),
+            json!({"route": "tasks"}),
+        ));
+    }
+    let mut automations: Vec<&Record> = s
+        .records
+        .iter()
+        .filter(|r| r.kind == "automation" && r.data["enabled"] != false)
+        .collect();
+    automations.sort_by(|a, b| a.id.cmp(&b.id));
+    for a in automations {
+        let newest = s
+            .records
+            .iter()
+            .filter(|r| r.kind == "automation_run" && r.data["automationId"] == a.id.as_str())
+            .max_by_key(|r| {
+                (
+                    r.data["startedAt"].as_i64().unwrap_or(0),
+                    r.updated_at,
+                    r.id.clone(),
+                )
+            });
+        let Some(run) = newest.filter(|r| r.data["status"] == "failed") else {
+            continue;
+        };
+        let name = a.data["name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&a.id);
+        let text = match run.data["error"]["message"]
+            .as_str()
+            .filter(|m| !m.is_empty())
+        {
+            Some(message) => format!("{name} failed: {message}"),
+            None => format!("{name} failed."),
+        };
+        out.push(fix(
+            format!("automation:{}", a.id),
+            text,
+            json!({"route": "automations", "runId": run.id, "automationId": a.id}),
+        ));
+    }
+    if s.records.iter().any(|r| {
+        r.kind == super::meetings::model::KIND && r.data["saveError"]["code"] == "folder_unwritable"
+    }) {
+        out.push(fix(
+            "meetings-folder",
+            "Connect can't write to the meetings folder.",
+            json!({"route": "settings", "tab": "meetings-transcripts"}),
+        ));
+    }
+    out
+}
+
+/// The menu bar for snapshot `s` (design §5): pure, so the window's snapshot and the tray
+/// compute the same thing.
+pub fn compute(
+    s: &Snapshot,
+    task_provider: &Value,
+    me: &MeAlias,
+    seen: &Seen,
+    now: i64,
+) -> MenuBar {
+    let (sources, new_meetings) = sources(s, me, seen, now);
+    let counted: Vec<String> = SOURCE_NAMES
+        .iter()
+        .filter(|name| chosen(&s.settings.menu_bar, name))
+        .map(|name| name.to_string())
+        .collect();
+    let count = counted.iter().map(|name| count_of(&sources, name)).sum();
+    let fixes = fixes(s, task_provider);
+    let mut m = MenuBar {
+        count,
+        label: label(count),
+        amber: !fixes.is_empty(),
+        sources,
+        counted,
+        fixes,
+        new_meetings,
+        tooltip: String::new(),
+    };
+    m.tooltip = tooltip(&m);
+    m
+}
+
+/// [`compute`] over the repository's snapshot `s`: the snapshot keeps only each automation's
+/// latest runs, so the unseen results of the last 7 days are read from the repository and
+/// counted with it, then taken out again.
+pub(crate) fn read(
+    r: &Repository,
+    s: &mut Snapshot,
+    task_provider: &Value,
+    me: &MeAlias,
+    now: i64,
+) -> Result<MenuBar> {
+    let seen = seen(r);
+    let mark = seen.automations.max(seen.since).max(now - NEW_FOR);
+    let workspace = r.workspace(&s.settings.active_workspace)?;
+    let account = r.visible_account(&workspace)?;
+    let shown: std::collections::HashSet<String> = s
+        .records
+        .iter()
+        .filter(|rec| rec.kind == "automation_run")
+        .map(|rec| rec.id.clone())
+        .collect();
+    let kept = s.records.len();
+    s.records.extend(
+        r.automation_runs_since(&workspace.id, account.as_deref(), mark)?
+            .into_iter()
+            .filter(|rec| !shown.contains(&rec.id)),
+    );
+    let m = compute(s, task_provider, me, &seen, now);
+    s.records.truncate(kept);
+    Ok(m)
+}
+
+fn not_found() -> WorkspaceError {
+    WorkspaceError::new("not_found", "This meeting is no longer available.")
+}
+
+/// Keeps the per-meeting marks whose meeting record still exists.
+fn keep_existing(r: &Repository, seen: &mut Seen) -> Result<()> {
+    let account = r.settings()?.active_connection;
+    seen.meetings.retain(|id, _| {
+        account.as_deref().is_some_and(|c| {
+            r.record(super::meetings::model::KIND, id, Some(c), None)
+                .is_ok()
+        })
+    });
+    Ok(())
+}
+
+/// Marks meeting `meeting_id` seen at `now` (design §2); an unknown meeting is `not_found`.
+/// Drops the marks of meetings that are gone.
+pub(crate) fn mark_meeting(r: &mut Repository, meeting_id: &str, now: i64) -> Result<()> {
+    let mut seen = seen(r);
+    seen.meetings.insert(meeting_id.to_string(), now);
+    keep_existing(r, &mut seen)?;
+    if !seen.meetings.contains_key(meeting_id) {
+        return Err(not_found());
+    }
+    save(r, &seen, now)
+}
+
+/// Marks the automation results seen at `now` (design §2). Drops the marks of meetings that
+/// are gone.
+pub(crate) fn mark_automations(r: &mut Repository, now: i64) -> Result<()> {
+    let mut seen = seen(r);
+    seen.automations = now;
+    keep_existing(r, &mut seen)?;
+    save(r, &seen, now)
+}
+
+impl super::Core {
+    /// The window's `menuBar`, computed after `taskProvider` (design §7). `null` when the
+    /// repository can't be read.
+    pub(in crate::workspace) fn menu_bar_snapshot(&self, s: &mut Snapshot) -> Value {
+        let me = s
+            .connection
+            .as_ref()
+            .map(|c| self.me_alias(c, &s.settings.meetings))
+            .unwrap_or_default();
+        let task_provider = s.task_provider.clone();
+        let Ok(r) = self.repo() else {
+            return Value::Null;
+        };
+        read(&r, s, &task_provider, &me, now())
+            .ok()
+            .and_then(|m| serde_json::to_value(m).ok())
+            .unwrap_or(Value::Null)
+    }
+
+    /// `menu_bar_seen {meetingId}` or `{automations: true}` (design §2): answers `{seen: true}`.
+    pub(in crate::workspace) fn menu_bar_seen(&self, req: &Request) -> Result<Value> {
+        let said = || WorkspaceError::new("validation", "Say what was seen.");
+        let mut r = self.repo()?;
+        match req.data.get("meetingId").filter(|v| !v.is_null()) {
+            Some(v) => {
+                let id = v.as_str().filter(|id| !id.is_empty()).ok_or_else(said)?;
+                mark_meeting(&mut r, id, now())?;
+            }
+            None if req.data["automations"] == true => mark_automations(&mut r, now())?,
+            None => return Err(said()),
+        }
+        Ok(json!({"seen": true}))
+    }
+}
+
+/// Test support: starts the seen marks over at `since`, as if nothing had been seen.
+#[cfg(test)]
+pub(crate) fn reset_seen_for_tests(r: &mut Repository, since: i64) {
+    save(
+        r,
+        &Seen {
+            since,
+            automations: 0,
+            meetings: BTreeMap::new(),
+        },
+        since,
+    )
+    .unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +666,7 @@ mod tests {
             meetings_root: None,
             note_templates: Vec::new(),
             task_provider: Value::Null,
+            menu_bar: Value::Null,
         }
     }
 
@@ -372,10 +745,12 @@ mod tests {
         assert_eq!(err.message, "Choose on or off.");
     }
 
-    #[test]
-    fn replies_match_inbox_one_per_chat() {
-        let now = 1_000_000;
-        let records = vec![
+    /// Snoozed far ahead, so the UI's own clock agrees when it checks the reply cases.
+    const SNOOZED: i64 = 4_102_444_800;
+
+    /// The Inbox cases the reply count must agree on (also the UI's parity fixture).
+    fn inbox_cases() -> Vec<Record> {
+        vec![
             // mail reply
             message("m1", "reply", json!({"channel": "mail"})),
             // chat c1: five reply messages + one critical unacknowledged -> one row
@@ -434,9 +809,15 @@ mod tests {
             message(
                 "snoozed",
                 "reply",
-                json!({"channel": "mail", "snoozedUntil": now + 100}),
+                json!({"channel": "mail", "snoozedUntil": SNOOZED}),
             ),
-        ];
+        ]
+    }
+
+    #[test]
+    fn replies_match_inbox_one_per_chat() {
+        let now = 1_000_000;
+        let records = inbox_cases();
         assert_eq!(attention_rows(&records, now), 3);
     }
 
@@ -597,5 +978,623 @@ mod tests {
         core.request(req).await.unwrap();
         let snapshot = core.repo().unwrap().snapshot().unwrap();
         assert!(snapshot.settings.menu_bar.meetings);
+    }
+
+    fn bar(sources: Sources, counted: &[&str], fixes: Vec<Fix>) -> MenuBar {
+        let count = counted
+            .iter()
+            .map(|name| match *name {
+                "replies" => sources.replies,
+                "tasks" => sources.tasks,
+                "meetings" => sources.meetings,
+                _ => sources.automations,
+            })
+            .sum();
+        let mut m = MenuBar {
+            count,
+            label: label(count),
+            amber: !fixes.is_empty(),
+            sources,
+            counted: counted.iter().map(|s| s.to_string()).collect(),
+            fixes,
+            new_meetings: Vec::new(),
+            tooltip: String::new(),
+        };
+        m.tooltip = tooltip(&m);
+        m
+    }
+
+    fn fix(id: &str, text: &str) -> Fix {
+        Fix {
+            id: id.into(),
+            text: text.into(),
+            open: json!({"route": "tasks"}),
+        }
+    }
+
+    #[test]
+    fn label_and_tooltip() {
+        assert_eq!(label(0), "");
+        assert_eq!(label(7), "7");
+        assert_eq!(label(99), "99");
+        assert_eq!(label(100), "99+");
+
+        let zero = bar(Sources::default(), &["replies"], Vec::new());
+        assert_eq!(zero.tooltip, "CodeMie Connect");
+
+        let two = Sources {
+            replies: 2,
+            tasks: 1,
+            meetings: 0,
+            automations: 0,
+        };
+        let m = bar(two.clone(), &["replies", "tasks"], Vec::new());
+        assert_eq!(
+            m.tooltip,
+            "CodeMie Connect · 2 messages need a reply, 1 task due or late"
+        );
+
+        let m = bar(
+            two,
+            &["replies", "tasks"],
+            vec![fix("tasks-token", "Todoist needs your API token.")],
+        );
+        assert!(
+            m.tooltip
+                .ends_with(" · Needs fixing: Todoist needs your API token."),
+            "{}",
+            m.tooltip
+        );
+    }
+
+    #[test]
+    fn only_counted_sources_add_up() {
+        let now = 1_000_000;
+        let mut settings = Settings::default();
+        settings.menu_bar = MenuBarSettings {
+            replies: true,
+            tasks: true,
+            meetings: false,
+            automations: false,
+        };
+        let me = MeAlias {
+            name: "Me".into(),
+            aliases: Vec::new(),
+            address: Some("me@example.test".into()),
+        };
+        let today = day_key(&settings.time_zone, now);
+        let seen = Seen {
+            since: now - 10 * NEW_FOR,
+            automations: 0,
+            meetings: BTreeMap::new(),
+        };
+        let records = vec![
+            message("r1", "reply", json!({"channel": "mail"})),
+            message("r2", "reply", json!({"channel": "mail"})),
+            task("t1", json!({"owner": "me@example.test", "due": today})),
+            meeting("m1", vec![json!({"updatedAt": now - 10})]),
+            meeting("m2", vec![json!({"updatedAt": now - 10})]),
+            meeting("m3", vec![json!({"updatedAt": now - 10})]),
+            automation_run("a1", "ok", vec!["today"], now - 10),
+            automation_run("a2", "ok", vec!["today"], now - 10),
+            automation_run("a3", "ok", vec!["today"], now - 10),
+            automation_run("a4", "ok", vec!["today"], now - 10),
+        ];
+        let m = compute(
+            &snapshot(settings.clone(), records.clone()),
+            &Value::Null,
+            &me,
+            &seen,
+            now,
+        );
+        assert_eq!(
+            m.sources,
+            Sources {
+                replies: 2,
+                tasks: 1,
+                meetings: 3,
+                automations: 4
+            }
+        );
+        assert_eq!(m.count, 3);
+        assert_eq!(m.label, "3");
+        assert_eq!(m.counted, vec!["replies".to_string(), "tasks".to_string()]);
+
+        settings.menu_bar = MenuBarSettings {
+            replies: false,
+            tasks: false,
+            meetings: false,
+            automations: false,
+        };
+        let m = compute(&snapshot(settings, records), &Value::Null, &me, &seen, now);
+        assert_eq!(m.count, 0);
+        assert_eq!(m.label, "");
+        assert!(m.counted.is_empty());
+    }
+
+    fn automation(id: &str, name: &str, enabled: bool) -> Record {
+        Record {
+            id: id.into(),
+            kind: "automation".into(),
+            connection_id: None,
+            workspace_id: Some(PERSONAL.into()),
+            source: "local".into(),
+            revision: "r1".into(),
+            updated_at: 0,
+            data: json!({"id": id, "name": name, "enabled": enabled}),
+        }
+    }
+
+    fn run_of(id: &str, automation: &str, status: &str, started: i64, message: &str) -> Record {
+        let mut data = json!({"automationId": automation, "automationName": "Old name",
+            "status": status, "startedAt": started, "delivered": []});
+        if status == "failed" {
+            data["error"] = json!({"class": "failed", "code": "failed", "message": message});
+        }
+        Record {
+            id: id.into(),
+            kind: "automation_run".into(),
+            connection_id: None,
+            workspace_id: Some(PERSONAL.into()),
+            source: "automation".into(),
+            revision: "r1".into(),
+            updated_at: started + 5,
+            data,
+        }
+    }
+
+    fn fixes_of(connection: Option<Connection>, records: Vec<Record>, tp: Value) -> Vec<Fix> {
+        let mut s = snapshot(Settings::default(), records);
+        s.connection = connection;
+        compute(&s, &tp, &MeAlias::default(), &Seen::default(), 1_000_000).fixes
+    }
+
+    fn ids_of(fixes: &[Fix]) -> Vec<&str> {
+        fixes.iter().map(|f| f.id.as_str()).collect()
+    }
+
+    #[test]
+    fn each_fix_has_its_condition() {
+        let account = |status: &str| Connection {
+            status: status.into(),
+            ..Default::default()
+        };
+        let tp =
+            |state: &str, parked: u64| json!({"name": "Todoist", "state": state, "parked": parked});
+
+        // Microsoft 365: anything but connected or disconnected is "Sign in again".
+        let f = fixes_of(Some(account("needs_login")), vec![], Value::Null);
+        assert_eq!(ids_of(&f), vec!["microsoft"]);
+        assert_eq!(f[0].text, "Microsoft 365 needs you to sign in again.");
+        assert_eq!(f[0].open, json!({"route": "settings", "tab": "microsoft"}));
+        assert!(fixes_of(Some(account("disconnected")), vec![], Value::Null).is_empty());
+        assert!(fixes_of(Some(account("connected")), vec![], Value::Null).is_empty());
+        assert!(fixes_of(None, vec![], Value::Null).is_empty());
+
+        // The task provider.
+        let f = fixes_of(None, vec![], tp("needs_token", 0));
+        assert_eq!(ids_of(&f), vec!["tasks-token"]);
+        assert_eq!(f[0].text, "Todoist needs your API token.");
+        assert_eq!(
+            f[0].open,
+            json!({"route": "settings", "tab": "meetings-tasks"})
+        );
+        let f = fixes_of(None, vec![], tp("failed", 0));
+        assert_eq!(ids_of(&f), vec!["tasks-plugin"]);
+        assert_eq!(f[0].text, "The Todoist plugin didn't load.");
+        assert_eq!(
+            f[0].open,
+            json!({"route": "settings", "tab": "meetings-tasks"})
+        );
+        let f = fixes_of(None, vec![], tp("ready", 2));
+        assert_eq!(ids_of(&f), vec!["tasks-parked"]);
+        assert_eq!(f[0].text, "Todoist refused 2 task change(s).");
+        assert_eq!(f[0].open, json!({"route": "tasks"}));
+        for state in [
+            "offline",
+            "rate_limited",
+            "syncing",
+            "off",
+            "ready",
+            "local",
+        ] {
+            assert!(
+                fixes_of(None, vec![], tp(state, 0)).is_empty(),
+                "{state} is not a fix"
+            );
+        }
+        // No provider name: Connect.
+        let f = fixes_of(None, vec![], json!({"state": "needs_token", "parked": 0}));
+        assert_eq!(f[0].text, "Connect needs your API token.");
+
+        // An enabled automation whose newest run failed.
+        let failed = vec![
+            automation("auto-brief", "Morning brief", true),
+            run_of("run-old", "auto-brief", "ok", 100, ""),
+            run_of(
+                "run-new",
+                "auto-brief",
+                "failed",
+                200,
+                "Claude is not signed in.",
+            ),
+        ];
+        let f = fixes_of(None, failed.clone(), Value::Null);
+        assert_eq!(ids_of(&f), vec!["automation:auto-brief"]);
+        assert_eq!(f[0].text, "Morning brief failed: Claude is not signed in.");
+        assert_eq!(
+            f[0].open,
+            json!({"route": "automations", "runId": "run-new", "automationId": "auto-brief"})
+        );
+        // Turned off, or a newer ok run: none.
+        let mut off = failed.clone();
+        off[0] = automation("auto-brief", "Morning brief", false);
+        assert!(fixes_of(None, off, Value::Null).is_empty());
+        let mut later = failed;
+        later.push(run_of("run-later", "auto-brief", "ok", 300, ""));
+        assert!(fixes_of(None, later, Value::Null).is_empty());
+
+        // A meeting Connect could not save into its folder.
+        let mut stuck = meeting("m1", vec![]);
+        stuck.data["saveError"] = json!({"code": "folder_unwritable", "message": "x"});
+        let mut offline = meeting("m2", vec![]);
+        offline.data["saveError"] = json!({"code": "offline", "message": "x"});
+        let f = fixes_of(None, vec![stuck, offline.clone()], Value::Null);
+        assert_eq!(ids_of(&f), vec!["meetings-folder"]);
+        assert_eq!(f[0].text, "Connect can't write to the meetings folder.");
+        assert_eq!(
+            f[0].open,
+            json!({"route": "settings", "tab": "meetings-transcripts"})
+        );
+        assert!(fixes_of(None, vec![offline], Value::Null).is_empty());
+
+        // Amber is exactly "something needs fixing".
+        let mut s = snapshot(Settings::default(), vec![]);
+        s.connection = Some(account("needs_login"));
+        let m = compute(&s, &Value::Null, &MeAlias::default(), &Seen::default(), 0);
+        assert!(m.amber);
+        assert_eq!(m.count, 0);
+        assert_eq!(m.label, "");
+        assert_eq!(
+            m.tooltip,
+            "CodeMie Connect · Needs fixing: Microsoft 365 needs you to sign in again."
+        );
+        let m = compute(
+            &snapshot(Settings::default(), vec![]),
+            &Value::Null,
+            &MeAlias::default(),
+            &Seen::default(),
+            0,
+        );
+        assert!(!m.amber);
+        assert!(m.fixes.is_empty());
+    }
+
+    #[test]
+    fn rows_name_the_parts_and_cap_fixes() {
+        let one = |name: &str, n: u32| {
+            let mut s = Sources::default();
+            match name {
+                "replies" => s.replies = n,
+                "tasks" => s.tasks = n,
+                "meetings" => s.meetings = n,
+                _ => s.automations = n,
+            }
+            rows(&bar(s, &[name], Vec::new()))
+        };
+        assert_eq!(
+            one("replies", 1),
+            vec![("replies".to_string(), "1 message needs a reply".to_string())]
+        );
+        assert_eq!(one("replies", 3)[0].1, "3 messages need a reply");
+        assert_eq!(one("tasks", 2)[0].1, "2 tasks due or late");
+        assert_eq!(one("tasks", 1)[0].1, "1 task due or late");
+        assert_eq!(one("meetings", 1)[0].1, "1 meeting with new notes");
+        assert_eq!(one("meetings", 2)[0].1, "2 meetings with new notes");
+        assert_eq!(one("automations", 4)[0].1, "4 automation results");
+        assert_eq!(one("automations", 1)[0].1, "1 automation result");
+
+        // Counted sources in order, zero and uncounted ones left out, then three fixes and the
+        // rest as "and <n> more".
+        let s = Sources {
+            replies: 1,
+            tasks: 0,
+            meetings: 2,
+            automations: 5,
+        };
+        let fixes: Vec<Fix> = (1..=5)
+            .map(|n| fix(&format!("f{n}"), &format!("Fix {n}.")))
+            .collect();
+        let r = rows(&bar(s, &["replies", "tasks", "meetings"], fixes));
+        assert_eq!(
+            r,
+            vec![
+                ("replies".to_string(), "1 message needs a reply".to_string()),
+                (
+                    "meetings".to_string(),
+                    "2 meetings with new notes".to_string()
+                ),
+                ("f1".to_string(), "Fix 1.".to_string()),
+                ("f2".to_string(), "Fix 2.".to_string()),
+                ("f3".to_string(), "Fix 3.".to_string()),
+                ("more".to_string(), "and 2 more".to_string()),
+            ]
+        );
+        assert!(rows(&bar(Sources::default(), &["replies"], Vec::new())).is_empty());
+    }
+
+    fn read_snapshot(op: Operation) -> Request {
+        Request {
+            op,
+            workspace_id: Some(PERSONAL.into()),
+            expected_revision: None,
+            operation_id: None,
+            data: json!({}),
+        }
+    }
+
+    /// The snapshot keeps each automation's latest run (and its latest run delivered to Today);
+    /// the menu bar still counts every unseen result of the last 7 days.
+    #[tokio::test]
+    async fn automation_results_count_every_unseen_run() {
+        use crate::ai::fake::FakeRunner;
+        use crate::workspace::ai::tests::ready;
+        use crate::workspace::test_core;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let at = super::super::models::now();
+        {
+            let mut r = core.repo().unwrap();
+            save(
+                &mut r,
+                &Seen {
+                    since: at - 2 * NEW_FOR,
+                    automations: at - 3_600,
+                    meetings: BTreeMap::new(),
+                },
+                at,
+            )
+            .unwrap();
+            let mut settings = r.settings().unwrap();
+            settings.menu_bar.automations = true;
+            r.settings_update(&settings).unwrap();
+            r.put_record(&automation("auto-brief", "Morning brief", true))
+                .unwrap();
+            // Four results since the mark, one before it, one older than 7 days.
+            for (n, ago) in [60, 600, 1_200, 1_800, 7_200, NEW_FOR + 60]
+                .into_iter()
+                .enumerate()
+            {
+                let mut run = automation_run(&format!("run-{n}"), "ok", vec!["today"], at - ago);
+                run.data["automationId"] = "auto-brief".into();
+                run.data["startedAt"] = (at - ago - 5).into();
+                r.put_record(&run).unwrap();
+            }
+        }
+        let shown = core.repo().unwrap().snapshot().unwrap();
+        let runs = shown
+            .records
+            .iter()
+            .filter(|r| r.kind == "automation_run")
+            .count();
+        assert!(
+            runs < 4,
+            "the snapshot keeps fewer runs ({runs}) than results"
+        );
+
+        let v = core
+            .request(read_snapshot(Operation::Snapshot))
+            .await
+            .unwrap();
+        let menu = &v["snapshot"]["menuBar"];
+        assert_eq!(menu["sources"]["automations"], 4, "{menu}");
+        assert_eq!(menu["count"], 4, "{menu}");
+    }
+
+    /// A test core at a fixed clock: the account (Taylor Morgan) signed in with mail, chats and
+    /// the calendar, nothing seen since an hour before `FIXTURE_NOW`.
+    const FIXTURE_NOW: i64 = 1_795_003_600;
+    const FIXTURE_ACCT: &str = "acct-1";
+
+    fn fixture_core(dir: &std::path::Path) -> std::sync::Arc<crate::workspace::Core> {
+        use crate::ai::fake::FakeRunner;
+        use crate::workspace::ai::tests::ready;
+        use crate::workspace::test_core;
+        let core = test_core(dir, std::sync::Arc::new(FakeRunner::new(vec![])), ready());
+        {
+            let mut r = core.repo().unwrap();
+            r.save_connection(&Connection {
+                id: FIXTURE_ACCT.into(),
+                account_key: FIXTURE_ACCT.into(),
+                display_name: "Taylor Morgan".into(),
+                email: "taylor@example.test".into(),
+                user_id: "me-1".into(),
+                generation: 1,
+                policy_revision: 1,
+                scopes: vec![
+                    "Mail.Read".into(),
+                    "Chat.Read".into(),
+                    "Calendars.Read".into(),
+                ],
+                enabled: vec!["mail".into(), "chats".into(), "calendar".into()],
+                status: "connected".into(),
+                ..Default::default()
+            })
+            .unwrap();
+            let mut settings = r.settings().unwrap();
+            settings.active_connection = Some(FIXTURE_ACCT.into());
+            settings.time_zone = "Europe/Vilnius".into();
+            r.settings_update(&settings).unwrap();
+            let mut w = r.workspace(PERSONAL).unwrap();
+            w.connection_id = Some(FIXTURE_ACCT.into());
+            w.sources = json!({"all": true});
+            r.save_workspace(&w).unwrap();
+            save(
+                &mut r,
+                &Seen {
+                    since: FIXTURE_NOW - 3_600,
+                    automations: 0,
+                    meetings: BTreeMap::new(),
+                },
+                FIXTURE_NOW,
+            )
+            .unwrap();
+        }
+        core
+    }
+
+    fn inbound(id: &str, conversation: Option<&str>, at: i64) -> Record {
+        let (channel, source) = match conversation {
+            Some(_) => ("chat", "chat:19:c1@thread.v2"),
+            None => ("mail", "mail:inbox"),
+        };
+        Record {
+            id: id.into(),
+            kind: "message".into(),
+            connection_id: Some(FIXTURE_ACCT.into()),
+            workspace_id: None,
+            source: source.into(),
+            revision: "v1".into(),
+            updated_at: at,
+            // A direct question with no later reply: Inbox triage puts it in Needs reply.
+            data: json!({"lane": "reply", "channel": channel, "conversationId": conversation,
+                "title": format!("Can you send the plan ({id})?"), "mentionsMe": true, "at": at,
+                "from": {"name": "Jordan Lee", "address": "jordan@example.test"}}),
+        }
+    }
+
+    /// Two replies (a mail and a chat of two messages), a task due today, a meeting with new
+    /// notes and two automation results.
+    fn fill(core: &crate::workspace::Core) {
+        let mut r = core.repo().unwrap();
+        let at = FIXTURE_NOW - 600;
+        for rec in [
+            inbound("mail-1", None, at),
+            inbound("chat-1", Some("c1"), at),
+            inbound("chat-2", Some("c1"), at + 1),
+        ] {
+            r.put_record(&rec).unwrap();
+        }
+        let mut t = task(
+            "task-1",
+            json!({"text": "Send the pilot plan", "owner": "taylor@example.test",
+                "due": day_key("Europe/Vilnius", FIXTURE_NOW)}),
+        );
+        t.updated_at = at;
+        r.put_record(&t).unwrap();
+        r.put_record(&Record {
+            id: "m-ready".into(),
+            kind: super::super::meetings::model::KIND.into(),
+            connection_id: Some(FIXTURE_ACCT.into()),
+            workspace_id: None,
+            source: "calendar:cal-1".into(),
+            revision: "v1".into(),
+            updated_at: at,
+            data: json!({"eventId": "m-ready", "title": "Pilot sync", "start": "", "end": "",
+                "docs": [{"id": "meeting-notes", "updatedAt": at}]}),
+        })
+        .unwrap();
+        r.put_record(&automation("auto-brief", "Morning brief", true))
+            .unwrap();
+        for (id, ago) in [("run-1", 1_200), ("run-2", 300)] {
+            let mut run = automation_run(id, "ok", vec!["today"], FIXTURE_NOW - ago);
+            run.data["automationId"] = "auto-brief".into();
+            run.data["startedAt"] = (FIXTURE_NOW - ago - 5).into();
+            r.put_record(&run).unwrap();
+        }
+    }
+
+    fn choose(core: &crate::workspace::Core, chosen: [bool; 4]) {
+        let mut r = core.repo().unwrap();
+        let mut settings = r.settings().unwrap();
+        settings.menu_bar = MenuBarSettings {
+            replies: chosen[0],
+            tasks: chosen[1],
+            meetings: chosen[2],
+            automations: chosen[3],
+        };
+        r.settings_update(&settings).unwrap();
+    }
+
+    fn state(core: &crate::workspace::Core, task_provider: Value) -> Value {
+        let r = core.repo().unwrap();
+        let mut s = r.snapshot().unwrap();
+        let me = MeAlias::of(s.connection.as_ref().unwrap());
+        serde_json::to_value(read(&r, &mut s, &task_provider, &me, FIXTURE_NOW).unwrap()).unwrap()
+    }
+
+    /// The snapshot's `menuBar` in each state the window draws, and the Inbox cases the UI's
+    /// reply count is checked against. Regenerate with
+    /// `UPDATE_CONTRACT_FIXTURES=1 cargo test contract_fixtures`.
+    #[tokio::test]
+    async fn contract_fixtures_match_the_menu_bar() {
+        use crate::plugins::testkit::contract_fixture;
+        let local = json!({"active": "local", "name": "Connect", "state": "local", "parked": 0});
+        let todoist = |state: &str, parked: u64| json!({"active": "plugin:todoist", "name": "Todoist", "state": state, "parked": parked});
+
+        let empty_dir = tempfile::tempdir().unwrap();
+        let empty = fixture_core(empty_dir.path());
+        let zero = state(&empty, local.clone());
+        let amber_only = state(&empty, todoist("needs_token", 0));
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = fixture_core(dir.path());
+        fill(&core);
+        let replies = state(&core, local.clone());
+        let amber_with_count = state(&core, todoist("needs_token", 0));
+        choose(&core, [true, true, true, true]);
+        let several = state(&core, todoist("ready", 0));
+        choose(&core, [false, false, false, false]);
+        let nothing_chosen = state(&core, local.clone());
+
+        let capped_dir = tempfile::tempdir().unwrap();
+        let capped_core = fixture_core(capped_dir.path());
+        {
+            let mut r = capped_core.repo().unwrap();
+            for n in 0..120 {
+                r.put_record(&inbound(&format!("mail-{n}"), None, FIXTURE_NOW - 600 - n))
+                    .unwrap();
+            }
+        }
+        let capped = state(&capped_core, local);
+
+        assert_eq!(zero["label"], "");
+        assert_eq!(replies["count"], 2, "{replies}");
+        assert_eq!(
+            several["sources"],
+            json!({"replies": 2, "tasks": 1, "meetings": 1, "automations": 2}),
+            "{several}"
+        );
+        assert_eq!(several["count"], 6);
+        assert_eq!(capped["label"], "99+");
+        assert_eq!(
+            (amber_only["amber"].clone(), amber_only["count"].clone()),
+            (json!(true), json!(0))
+        );
+        assert_eq!(amber_with_count["count"], 2);
+        assert_eq!(amber_with_count["amber"], true);
+        assert_eq!(nothing_chosen["count"], 0);
+        assert_eq!(nothing_chosen["label"], "");
+
+        contract_fixture(
+            "menu-bar-states.json",
+            &json!({
+                "zero": zero,
+                "replies": replies,
+                "several": several,
+                "capped": capped,
+                "amberOnly": amber_only,
+                "amberWithCount": amber_with_count,
+                "nothingChosen": nothing_chosen,
+            }),
+        );
+        let records = inbox_cases();
+        let count = attention_rows(&records, FIXTURE_NOW);
+        contract_fixture(
+            "menu-bar-reply-cases.json",
+            &json!({"records": records, "replies": count}),
+        );
     }
 }

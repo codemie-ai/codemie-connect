@@ -770,6 +770,7 @@ impl Core {
                     });
             snapshot.note_templates = meetings::templates::all(&snapshot.records);
             snapshot.task_provider = self.task_provider_snapshot(&snapshot.settings);
+            snapshot.menu_bar = self.menu_bar_snapshot(&mut snapshot);
             return Ok(
                 json!({"snapshot":snapshot,"authPending":self.auth_attempt.lock().await.is_some(),"authError":self.auth_error.lock().await.clone()}),
             );
@@ -1329,6 +1330,7 @@ impl Core {
             | Operation::TaskBulk
             | Operation::TaskHandled
             | Operation::TaskParked => self.task_provider_op(&req)?,
+            Operation::MenuBarSeen => self.menu_bar_seen(&req)?,
             _ => return Err(WorkspaceError::new("validation", "Unsupported operation.")),
         };
         self.repo()?
