@@ -173,6 +173,7 @@ mod tests {
         AiProfile {
             id: "x".into(),
             kind,
+            provider: None,
             label: "x".into(),
             state: ProfileState::Ready,
             version: None,

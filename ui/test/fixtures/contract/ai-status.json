@@ -32,6 +32,7 @@
           "label": "Opus"
         }
       ],
+      "provider": null,
       "state": "ready",
       "version": "2.1.150"
     },
@@ -55,6 +56,7 @@
           "label": "claude-haiku-4-5"
         }
       ],
+      "provider": "ai-run-sso",
       "state": "ready",
       "version": null
     },
@@ -78,6 +80,7 @@
           "label": "claude-haiku-4-5"
         }
       ],
+      "provider": "ai-run-sso",
       "state": "needs_login",
       "version": null
     }

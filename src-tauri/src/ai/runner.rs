@@ -354,6 +354,7 @@ mod tests {
         AiProfile {
             id: NATIVE_ID.into(),
             kind: ProfileKind::Native,
+            provider: None,
             label: "x".into(),
             state: ProfileState::Ready,
             version: None,

@@ -39,7 +39,9 @@ pub(super) fn unready_error(profile: &AiProfile) -> Option<AiError> {
         ProfileState::TooOld => ErrorClass::TooOld,
         ProfileState::NeedsLogin => ErrorClass::NeedsLogin,
         ProfileState::NotConfigured => ErrorClass::NotConfigured,
-        ProfileState::Checking | ProfileState::Error => ErrorClass::Failed,
+        ProfileState::NotRunning | ProfileState::Checking | ProfileState::Error => {
+            ErrorClass::Failed
+        }
     };
     let mut e = AiError::new(class);
     if let Some(m) = profile.message.as_ref().filter(|m| !m.is_empty()) {
@@ -357,6 +359,7 @@ pub(super) mod tests {
                     name: id.trim_start_matches("codemie:").into(),
                 }
             },
+            provider: None,
             label: id.into(),
             state,
             version: None,
@@ -710,6 +713,7 @@ pub(super) mod tests {
         let native = AiProfile {
             id: "claude".into(),
             kind: ProfileKind::Native,
+            provider: None,
             label: "Claude Code · your subscription".into(),
             state: ProfileState::Ready,
             version: Some("2.1.150".into()),
@@ -731,6 +735,7 @@ pub(super) mod tests {
         let codemie = |name: &str, state, message: Option<&str>| AiProfile {
             id: format!("codemie:{name}"),
             kind: ProfileKind::CodeMie { name: name.into() },
+            provider: Some("ai-run-sso".into()),
             label: format!("CodeMie · {name}"),
             state,
             version: None,

@@ -110,6 +110,9 @@ pub struct ProfileSummary {
     pub haiku_model: String,
     pub sonnet_model: String,
     pub opus_model: String,
+    /// The profile's `baseUrl`, read only so `ai::profiles` can tell a local Ollama
+    /// from a remote one. Never serialized or logged.
+    pub base_url: String,
 }
 
 /// Every profile in the parsed config, sorted by name. An entry that is not an
@@ -128,6 +131,7 @@ pub fn list_profiles(json: &serde_json::Value) -> Vec<ProfileSummary> {
             haiku_model: str_field(p, "haikuModel"),
             sonnet_model: str_field(p, "sonnetModel"),
             opus_model: str_field(p, "opusModel"),
+            base_url: str_field(p, "baseUrl"),
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));

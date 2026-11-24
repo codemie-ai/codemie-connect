@@ -26,6 +26,7 @@ pub fn claude_profile() -> AiProfile {
     AiProfile {
         id: "claude".into(),
         kind: ProfileKind::Native,
+        provider: None,
         label: "Claude Code · your subscription".into(),
         state: ProfileState::Ready,
         version: None,
