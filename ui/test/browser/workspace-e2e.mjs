@@ -23,6 +23,7 @@ import { settingsTasksChecks } from './settings-tasks-checks.mjs';
 import { tasksProviderChecks } from './tasks-provider-checks.mjs';
 import { automationsChecks } from './automations-checks.mjs';
 import { menuBarChecks } from './menu-bar-checks.mjs';
+import { aiRoutesChecks } from './ai-routes-checks.mjs';
 import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
@@ -111,7 +112,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {} }) {
+function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {}, aiPlugin = false }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
@@ -1286,6 +1287,15 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
       ...(pl.loadErrors[m.id] && p.enabled ? { loadError: pl.loadErrors[m.id] } : {}),
     };
   };
+  // ai-routes-checks.mjs: a plugin with the `claude` permission agreed, enabled, so Settings › AI
+  // draws its own row under "All plugins" (DESIGN §5, ruling 4). Its id ("knowledge") matches
+  // `ai-status.json` / `ai-route-cases.json`'s own example plugin row.
+  const knowledgeView = () => ({
+    id: 'knowledge', name: 'Knowledge', version: '1.0.0', summary: 'Keeps a notes vault in sync.',
+    market: 'codemie', source: './plugins/knowledge', commit: null, hash: 'knhash', enabled: true,
+    agreed: ['claude'], installedAt: '2026-11-17T09:30:00Z', update: null, problem: null,
+    client: null, widgets: [], signin: [], addresses: [], settings: [],
+  });
   const offerOf = market => {
     const installed = pl.installed.find(x => x.id === 'hello');
     return [{ ...pluginInit.hello.offer, installed: installed && installed.market === market ? pluginInit.hello.offer.version : null }, ...clone(pluginInit.others)];
@@ -1320,7 +1330,7 @@ function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, test
       pl.installed.push({ id: 'hello', market: d.market, source: marketOf(d.market).source, enabled: true, agreed: [...d.agreed].sort() });
       return { status: 'installed', plugin: helloView() };
     },
-    installed: () => [...(pl.installed.length ? [helloView()] : []), ...(todoistListed() ? [todoistView()] : [])],
+    installed: () => [...(pl.installed.length ? [helloView()] : []), ...(todoistListed() ? [todoistView()] : []), ...(aiPlugin ? [knowledgeView()] : [])],
     set_enabled: d => {
       if (d.id === 'todoist') {
         const listed = s.taskProvider.available.find(p => p.id === 'plugin:todoist');
@@ -1512,7 +1522,30 @@ const quiet = (page, limit = 2000) => page.evaluate(limit => new Promise(resolve
   timer = setTimeout(done, 150);
 }), limit).catch(() => {});
 
-async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null, patch = null } = {}) {
+// ai-routes-checks.mjs: the `ai` option also takes a named Ollama state, built on the full
+// contract fixture (`aiStatus('all', …)`, ai-status.json: Claude Code, two CodeMie profiles and
+// an Ollama one) with only the Ollama profile patched — `ollama-running` leaves it exactly as the
+// fixture has it (Ready), `ollama-down` matches `ai::profiles`' own `NotRunning` copy, and
+// `ollama-no-model` its `NotConfigured` one (spec §1). `aiSettings` (a full `settings.ai` object)
+// and `aiProfilePatch` (profile id → fields to merge) let a check build an exact routing or
+// status scenario without a second native round trip; `chosen` is always recomputed from
+// `aiSettings` with the same `chooseAll` the mock's `ai_status`/`ai_settings_save` use.
+const OLLAMA_STATES = {
+  'ollama-running': null,
+  'ollama-down': { state: 'not_running', message: "Ollama isn't running. Open Ollama, then check again." },
+  'ollama-no-model': { state: 'not_configured', message: "Ollama doesn't have qwen3:8b. Pull it in Ollama, then check again." },
+};
+function aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch } = {}) {
+  const ollamaPatch = OLLAMA_STATES[ai];
+  const kind = ollamaPatch !== undefined ? 'all' : ai;
+  const out = aiStatus(kind, aiDefault === undefined ? {} : { defaultProfile: aiDefault });
+  const patches = { ...(ollamaPatch ? { 'codemie:local-ollama': ollamaPatch } : {}), ...(aiProfilePatch || {}) };
+  if (Object.keys(patches).length) out.profiles = out.profiles.map(p => (patches[p.id] ? { ...p, ...patches[p.id] } : p));
+  if (aiSettings) { out.settings = aiSettings; out.chosen = chooseAll(aiSettings); }
+  return out;
+}
+
+async function open({ theme = 'dark', width = 1440, height = 900, start = 'connected', hash = '#/today', ai = 'both', aiDefault, aiSettings = null, aiProfilePatch = null, aiPlugin = false, enable = [], longThread = false, storage = storageOf('ready', { dataRoot: DEFAULT_ROOT, custom: false }), unavailable = false, location = 'default', automations = false, tasks = false, meetings = false, transcriptsOff = false, pluginRecords = null, codemie = 'ready', localPrefs = null, workspace = null, analytics = null, settings = null, now: fixedNow = null, patch = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -1543,7 +1576,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (patch) patch(snapshot, now);
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates() })})`);
+  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiForRoutes(ai, { aiDefault, aiSettings, aiProfilePatch }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates(), aiPlugin })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   if (fixedNow != null) await context.clock.setFixedTime(fixedNow);
@@ -1561,8 +1594,8 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`, `automations`, `menu-bar`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider', 'automations', 'menu-bar'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`, `automations`, `menu-bar`, `ai-routes`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider', 'automations', 'menu-bar', 'ai-routes'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'tasks-dates') await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'settings-tasks') await settingsTasksChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'tasks-provider') await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
@@ -1575,6 +1608,7 @@ if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'com
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-view') await meetingsViewChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'meetings-settings') await meetingSettingsChecks({ open, check, assert, shot, quiet, settled, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'layout') await layoutChecks({ open, check, assert, shot, settled, OUT, calls: bridgeCalls });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'ai-routes') await aiRoutesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else await pluginChecks({ open, check, assert, shot, quiet, OUT });
   await browser.close();
   server.close();
@@ -3442,6 +3476,15 @@ await automationsChecks({ open, check, assert, shot, settled, calls: bridgeCalls
 // findings: a persistent `storage` refusal with two marks due at once sends at most 2 in 1 s
 // (Task 6 review I1), and the card lists every fix with no cap (Task 5 review).
 await menuBarChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// Profiles and models (2026-11-24-profiles-models), R1–R8: Settings › AI's profile cards and
+// "What each job uses" table across both views/themes/three widths, the working/fallback/broken/
+// unset statuses (a missing profile shown as "not ready"), exactly one save per fallback or
+// plugin-row change with the chip tracking the answer's `chosen`, a kept model while Ollama is
+// down, the first-use chooser's Ollama line, the automation editor's row-aware label and a
+// fallback run's "Ran on …" line, Default/Compact parity, and no `ai_test` from drawing or Check
+// again.
+await aiRoutesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // By date (task provider design §9): completions with the footer's Undo, the row controls, one
 // primary, the Late ⋯ over what the screen shows and the page drawn again at midnight.
