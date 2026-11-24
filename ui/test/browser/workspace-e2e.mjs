@@ -20,6 +20,7 @@ import { compactChecks } from './compact-checks.mjs';
 import { replyChecks } from './reply-checks.mjs';
 import { tasksDatesChecks } from './tasks-dates-checks.mjs';
 import { settingsTasksChecks } from './settings-tasks-checks.mjs';
+import { tasksProviderChecks } from './tasks-provider-checks.mjs';
 import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
@@ -1524,10 +1525,11 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'tasks-dates') await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'settings-tasks') await settingsTasksChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'tasks-provider') await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'compact') await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'reply') await replyChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'analytics') await analyticsChecks({ open, check, assert, shot, settled, OUT });
@@ -3367,6 +3369,15 @@ await meetingChecks({ open, check, assert, shot, settled, OUT });
 // column, pins that vanish, the stored v1 layout, a plugin's minutes rendered safely, Default/
 // Compact markup parity, and nothing sent or written without a click.
 await meetingsViewChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// The task provider (task provider design, Task 11), P1–P12: both views and both themes across
+// three widths, Settings › Tasks's copy dialog and token (never leaked to the DOM, storage, a
+// later request or a plugin frame, spec §8), Late ⋯ over exactly the tasks shown, a check-in row's
+// Nudge and Snooze, Looks handled's Keep open, the meeting column singular wording, Today's widget
+// filtered to the active provider, every state's banner or header line, a real parked sentence,
+// switching back to Local, Default/Compact parity, nothing written by rendering, and Local
+// untouched with no taskProvider at all.
+await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // By date (task provider design §9): completions with the footer's Undo, the row controls, one
 // primary, the Late ⋯ over what the screen shows and the page drawn again at midnight.
