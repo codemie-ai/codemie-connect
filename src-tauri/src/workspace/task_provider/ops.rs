@@ -352,7 +352,14 @@ fn copy_open(r: &mut Repository, wid: &str, provider: &str, now: i64) -> Result<
         }
         let mut data = t.data.clone();
         if let Some(body) = data.as_object_mut() {
-            for gone in ["pending", "remote", "syncError", "handled", "keptEvidence"] {
+            for gone in [
+                "pending",
+                "remote",
+                "syncError",
+                "handled",
+                "keptEvidence",
+                "keptAt",
+            ] {
                 body.remove(gone);
             }
         }
@@ -561,6 +568,8 @@ fn handled(r: &mut Repository, wid: &str, data: &Value, now: i64) -> Result<Valu
                     kept.push(hash.into());
                 }
                 task.data["keptEvidence"] = kept.into();
+                // An automation flags it again only after a newer message (DESIGN step 5 §2).
+                task.data["keptAt"] = now.into();
                 task.data["handled"] = Value::Null;
                 task.revision = id();
                 task.updated_at = now;
@@ -1329,6 +1338,10 @@ mod tests {
         let t = e.task("t1").unwrap();
         assert!(t["handled"].is_null());
         assert_eq!(t["keptEvidence"], json!([hash(said)]));
+        assert!(
+            t["keptAt"].is_i64(),
+            "an automation's flag needs a newer message after it"
+        );
         e.op(
             Operation::TaskHandled,
             json!({"id": "t1", "evidence": said}),

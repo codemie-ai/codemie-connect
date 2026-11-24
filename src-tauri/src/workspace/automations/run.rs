@@ -232,6 +232,7 @@ fn recent_since(last_ok: Option<i64>, now: i64) -> i64 {
 #[cfg(test)]
 thread_local! {
     /// Fails the next run commit once, after the run made its tasks (a crash between the two).
+    /// Thread-local is enough: `#[tokio::test]` runs the job on the test's own thread.
     static FAIL_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -255,6 +256,24 @@ struct TasksMade {
     existing: usize,
     dropped: usize,
     handled: usize,
+}
+
+/// Flags each checked `handled` entry's task as looking handled (never completes it); a task the
+/// user kept open is flagged again only after a newer message. Callers hold the meeting-folder
+/// lock. Returns how many tasks it flagged.
+fn flag_handled(r: &mut Repository, entries: &[prompts::HandledEntry]) -> Result<usize> {
+    let mut flagged = 0;
+    for h in entries {
+        let task = match r.record(tasks::KIND, &h.task_id, None, Some(PERSONAL)) {
+            Ok(task) => task,
+            Err(e) if e.code == "not_found" => continue,
+            Err(e) => return Err(e),
+        };
+        if handled::flag_by_automation(r, PERSONAL, &task, &h.evidence, now())? {
+            flagged += 1;
+        }
+    }
+    Ok(flagged)
 }
 
 /// Whether the run may still store what it made: its claim holds, its access did not change and
@@ -413,15 +432,21 @@ impl Core {
         log.model = log.model.take().or_else(|| profile.default_model.clone());
 
         // Tasks are made before the run is stored; a retried job finds them by their keys.
-        let made = if a.deliver.create_tasks {
+        let mut made = if a.deliver.create_tasks {
             let at = reading.now;
             Some(self.make_tasks(job, a, &w, account.as_ref(), &output, &me, &zone, at)?)
         } else {
             None
         };
 
+        // Same order as every task writer: the meeting-folder lock, then the repository.
+        let _folders = made.is_some().then(|| self.meeting_lock());
         let mut r = self.repo()?;
         still_current(&r, job, &w, account.as_ref())?;
+        if let Some(m) = &mut made {
+            // Only once the run may still be stored: a run cancelled here leaves no flag.
+            m.handled = flag_handled(&mut r, &output.handled)?;
+        }
         let draft = match (&output.draft, &account, message, &built.conversation) {
             (Some(text), Some(account), Some(source), Some(conversation)) => {
                 let of = DraftOf {
@@ -503,8 +528,8 @@ impl Core {
     }
 
     /// The create-tasks delivery (DESIGN step 5 §2 "Making"): each checked task is made in the
-    /// active provider under its message-and-kind key, then each checked `handled` entry flags
-    /// its task (never completes it). No repository guard is held across `create_by_key`, which
+    /// active provider under its message-and-kind key (the `handled` flags wait for the commit,
+    /// see [`flag_handled`]). No repository guard is held across `create_by_key`, which
     /// takes the meeting-folder lock and the repository itself. A message gone while Claude
     /// worked, or a task the board refuses, is dropped; the run goes on.
     #[allow(clippy::too_many_arguments)]
@@ -553,21 +578,6 @@ impl Core {
                 Ok((_, false)) => out.existing += 1,
                 Err(e) if e.code == "validation" => out.dropped += 1,
                 Err(e) => return Err(e),
-            }
-        }
-        if !output.handled.is_empty() {
-            // Same order as every task writer: the meeting-folder lock, then the repository.
-            let _folders = self.meeting_lock();
-            let mut r = self.repo()?;
-            for h in &output.handled {
-                let task = match r.record(tasks::KIND, &h.task_id, None, Some(PERSONAL)) {
-                    Ok(task) => task,
-                    Err(e) if e.code == "not_found" => continue,
-                    Err(e) => return Err(e),
-                };
-                if handled::flag(&mut r, PERSONAL, &task, &h.evidence, now())? {
-                    out.handled += 1;
-                }
             }
         }
         Ok(out)
@@ -2082,6 +2092,16 @@ mod tests {
             .to_string()
     }
 
+    /// `due` is the run's day: the UTC day when the run was queued (`before`) or now, so a run
+    /// that straddles midnight passes either way.
+    fn on_run_day(due: &Value, before: &str) {
+        let due = due.as_str().unwrap();
+        assert!(
+            due == before || due == today_utc(),
+            "{due} is not the run's day"
+        );
+    }
+
     #[tokio::test]
     async fn a_triage_run_makes_reply_tasks_in_the_active_provider() {
         for todoist in [false, true] {
@@ -2092,6 +2112,7 @@ mod tests {
             let provider = todoist.then(|| with_todoist(&core));
             two_mails(&core);
             save(&core, triage()).await;
+            let before = today_utc();
             let jid = run_now(&core, "auto-triage").await;
             let done = run_next(&core).await;
             assert_eq!(done.state, "succeeded", "{:?}", done.result);
@@ -2107,7 +2128,7 @@ mod tests {
                 assert_eq!(b["kind"], "reply");
                 assert_eq!(b["status"], "todo");
                 assert_eq!(b["owner"], "You");
-                assert_eq!(b["due"], today_utc().as_str());
+                on_run_day(&b["due"], &before);
                 assert_eq!(b["key"], reply_key(source).as_str());
                 assert_eq!(b["history"][0]["text"], "Made by Inbox triage");
                 if todoist {
@@ -2335,6 +2356,143 @@ mod tests {
         assert_eq!(run_of(&core, &again).data["handled"], 0);
     }
 
+    /// Review fix: Keep open survives the daily run. Claude words its evidence anew each morning;
+    /// a kept task is flagged again only after a newer message in its source conversation, and
+    /// one with no source message never is.
+    #[tokio::test]
+    async fn a_kept_task_is_flagged_again_only_after_a_newer_message() {
+        let dir = tempfile::tempdir().unwrap();
+        // Every block cited: parse keeps only the commitments, whatever their handles are.
+        let reworded = |evidence: &str| {
+            let cited: Vec<Value> = (1..=4)
+                .map(|i| json!({"sourceId": format!("s{i}"), "evidence": evidence}))
+                .collect();
+            answer(
+                json!({"title": "Checked", "summary_markdown": "Checked the replies.", "items": [],
+                    "handled": cited}),
+                "claude-haiku-4-5",
+                900,
+                0.002,
+            )
+        };
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(reworded("Olga confirmed the SOW is signed")),
+            Ok(reworded("Olga wrote back again")),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        put(
+            &core,
+            mail(
+                "m1",
+                BASE,
+                "Olga Petrova",
+                "olga@example.test",
+                "Here is the SOW.",
+            ),
+        );
+        let flagged = json!({"evidence": "Olga got the SOW", "at": BASE, "auto": false});
+        for (id, source) in [("c1", json!("m1")), ("c2", Value::Null)] {
+            put(
+                &core,
+                local(
+                    id,
+                    "commitment",
+                    json!({"text": format!("Reply to Olga {id}"), "kind": "reply", "status": "todo",
+                        "done": false, "owner": "You", "sourceId": source, "handled": flagged}),
+                ),
+            );
+            core.request(mutation(
+                &core,
+                Operation::TaskHandled,
+                json!({"id": id, "action": "keep"}),
+            ))
+            .await
+            .unwrap();
+        }
+        let task = |id: &str| {
+            core.repo()
+                .unwrap()
+                .record(tasks::KIND, id, None, Some("personal"))
+                .unwrap()
+                .data
+        };
+        assert!(task("c1")["keptAt"].is_i64(), "Keep open says when");
+        let mut automation = triage();
+        automation["read"] = json!({"recentMessages": true, "commitmentsNotes": true});
+        save(&core, automation).await;
+
+        // Reworded evidence, nothing new in the conversation: no flag.
+        let first = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert!(fake.calls()[0].input["commitments"]
+            .to_string()
+            .contains("kept=\\\"true\\\""));
+        assert_eq!(run_of(&core, &first).data["handled"], 0);
+        assert!(task("c1")["handled"].is_null());
+
+        // Olga writes again in the same conversation: c1 is flagged; c2 has no source, never.
+        let mut newer = mail(
+            "m2",
+            now() + 1,
+            "Olga Petrova",
+            "olga@example.test",
+            "Signed, thanks.",
+        );
+        newer.data["conversationId"] = "conv-1".into();
+        put(&core, newer);
+        let second = run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert_eq!(run_of(&core, &second).data["handled"], 1);
+        assert_eq!(task("c1")["handled"]["evidence"], "Olga wrote back again");
+        assert_eq!(task("c1")["status"], "todo", "flagged, never closed");
+        assert!(task("c2")["handled"].is_null());
+    }
+
+    /// Review fixes: an account switch while Claude worked makes no task and leaves no flag.
+    #[tokio::test]
+    async fn an_account_switch_mid_run_makes_no_task_and_no_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut both = triage_answer();
+        both.structured.as_mut().unwrap()["handled"] = json!([
+            {"sourceId": "s1", "evidence": "Olga got the SOW"},
+            {"sourceId": "s2", "evidence": "Olga got the SOW"},
+            {"sourceId": "s3", "evidence": "Olga got the SOW"},
+        ]);
+        let (fake, gate) = FakeRunner::gated(vec![Ok(both)]);
+        let core = test_core(dir.path(), Arc::new(fake), ready());
+        seed(&core);
+        two_mails(&core);
+        put(
+            &core,
+            local(
+                "c1",
+                "commitment",
+                json!({"text": "Reply to Olga", "kind": "reply", "status": "todo", "done": false, "owner": "You"}),
+            ),
+        );
+        let mut automation = triage();
+        automation["read"] = json!({"needsReply": true, "commitmentsNotes": true});
+        save(&core, automation).await;
+        let jid = run_now(&core, "auto-triage").await;
+        let done = run_with(&core, &gate, || {
+            let mut r = core.repo().unwrap();
+            let mut other = r.connection(ACCT).unwrap();
+            other.id = "acct-2".into();
+            other.account_key = "acct-2".into();
+            r.save_connection(&other).unwrap();
+            let mut s = r.settings().unwrap();
+            s.active_connection = Some("acct-2".into());
+            r.settings_update(&s).unwrap();
+        })
+        .await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "cancelled");
+        assert_eq!(all_tasks(&core).len(), 1, "only c1: no task was made");
+        assert!(all_tasks(&core)[0].data["handled"].is_null(), "and no flag");
+        assert!(runs(&core).is_empty());
+    }
+
     #[tokio::test]
     async fn a_budget_run_makes_a_budget_task_and_a_draft_and_sends_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -2352,6 +2510,7 @@ mod tests {
         let mut automation = reply_automation();
         automation["name"] = "Budget request reply".into();
         automation["deliver"]["createTasks"] = true.into();
+        let before = today_utc();
         ann_writes_to(&core, &graph, automation).await;
         let done = run_next(&core).await;
         assert_eq!(done.state, "succeeded", "{:?}", done.result);
@@ -2362,7 +2521,7 @@ mod tests {
         assert_eq!(b["kind"], "budget");
         assert_eq!(b["owner"], "You");
         assert_eq!(b["sourceId"], "m1");
-        assert_eq!(b["due"], today_utc().as_str());
+        on_run_day(&b["due"], &before);
         assert_eq!(b["history"][0]["text"], "Made by Budget request reply");
         let draft = core
             .repo()

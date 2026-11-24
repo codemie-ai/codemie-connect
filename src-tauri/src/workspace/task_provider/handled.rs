@@ -52,6 +52,45 @@ pub(crate) fn flag(
     Ok(false)
 }
 
+/// An automation's flag (DESIGN step 5 §2 "Looks handled"): as [`flag`], except that a task the
+/// user kept open (`keptAt`) is flagged again only when its source conversation has a message
+/// newer than the keep. Claude words its evidence anew on every run, so the evidence hash alone
+/// would flag a kept task again each morning; a kept task with no source message never is.
+pub(crate) fn flag_by_automation(
+    r: &mut Repository,
+    wid: &str,
+    task: &Record,
+    evidence: &str,
+    now: i64,
+) -> Result<bool> {
+    if let Some(kept_at) = task.data["keptAt"].as_i64() {
+        if !newer_in_source(r, task, kept_at)? {
+            return Ok(false);
+        }
+    }
+    flag(r, wid, task, evidence, now)
+}
+
+/// Whether the conversation of `task`'s source message has a message newer than `after`.
+fn newer_in_source(r: &Repository, task: &Record, after: i64) -> Result<bool> {
+    let Some(source_id) = task.data["sourceId"].as_str() else {
+        return Ok(false);
+    };
+    let messages = r.records_of_kind("message")?;
+    let Some(conversation) = messages
+        .iter()
+        .find(|m| m.id == source_id)
+        .and_then(|m| m.data["conversationId"].as_str())
+    else {
+        return Ok(false);
+    };
+    Ok(messages.iter().any(|m| {
+        m.data["conversationId"] == conversation
+            && m.data["deleted"] != true
+            && m.data["at"].as_i64().is_some_and(|at| at > after)
+    }))
+}
+
 /// Completes each open `reply` task of the active provider the user answered themselves; returns
 /// how many it closed. A task already closed once by the same reply (and reopened by the user),
 /// or kept open against it, is left alone.

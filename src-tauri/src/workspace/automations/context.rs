@@ -665,6 +665,11 @@ fn commitments(repo: &Repository, w: &Workspace, me: &MeAlias) -> Result<(Vec<Bl
             } else {
                 String::new()
             };
+            let kept_attr = if c.data["keptAt"].is_i64() {
+                " kept=\"true\""
+            } else {
+                ""
+            };
             let name = Some(text(c, "ownerName"))
                 .filter(|n| !n.trim().is_empty())
                 .unwrap_or_else(|| text(c, "owner"));
@@ -688,7 +693,7 @@ fn commitments(repo: &Repository, w: &Workspace, me: &MeAlias) -> Result<(Vec<Bl
                 section: "commitments",
                 order: i,
                 template: format!(
-                    "<item {ID} kind=\"commitment\"{task_kind_attr}{due}{handled_attr}>\n{who}: {body}\n</item>"
+                    "<item {ID} kind=\"commitment\"{task_kind_attr}{due}{handled_attr}{kept_attr}>\n{who}: {body}\n</item>"
                 ),
                 source: src,
             }
