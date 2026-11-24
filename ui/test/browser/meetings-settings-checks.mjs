@@ -107,7 +107,7 @@ export async function meetingSettingsChecks({ open, check, assert, shot, quiet, 
       await check(`${tag}: note templates: edit Meeting notes and save, reset with Undo, add a skill`, async () => {
         await tab(page, 'meetings-templates');
         await page.waitForSelector('.ws-ms-tpl-card[data-template="meeting-notes"]');
-        assert(await page.locator('.ws-ms-tpl-card').count() === 2, 'the two built-ins');
+        assert(await page.locator('.ws-ms-tpl-card').count() === 3, 'the three built-ins');
         assert(/default/i.test(await page.locator('.ws-ms-tpl-card[data-template="meeting-notes"] .ws-ms-tpl-badges').innerText()), 'Meeting notes is the default');
         await noOverflow(page, 'templates');
         await shot(page, `${tag}-settings-meetings-templates`);
