@@ -5,10 +5,11 @@
 // everywhere else this file deliberately tests what those two don't: the responsive matrix, the
 // state banners' and header line's exact text, a non-empty parked sentence, a mixed Local/Todoist
 // snapshot's filtering (Today's widget, the meeting column, switching back), nothing-written-by-
-// rendering, and that a plugin frame can never see the Todoist secret (spec §8). Reference, don't
-// duplicate: row controls, Nudge/Snooze mechanics, the copy dialog's own wiring, Open in Todoist ↗,
-// delete-with-a-provider and the removed-plugin fallback are already proven once by
-// tasks-dates-checks.mjs / settings-tasks-checks.mjs.
+// rendering, and that the Todoist token never reaches the DOM, storage or a later native request
+// (spec §8's surfaces this Chromium harness can exercise — its frame/IPC boundary is native, see
+// P2's own comment). Reference, don't duplicate: row controls, Nudge/Snooze mechanics, the copy
+// dialog's own wiring, Open in Todoist ↗, delete-with-a-provider and the removed-plugin fallback
+// are already proven once by tasks-dates-checks.mjs / settings-tasks-checks.mjs.
 import { readFileSync } from 'node:fs';
 import { CLIP_SELECTORS, FIXED_NOW } from './compact-checks.mjs';
 
@@ -214,7 +215,7 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
   {
     const SENTINEL = 'tk_SENTINEL_do_not_log_0123456789';
     const { page, context, errors } = await open({ theme: 'dark', width: 1440, height: 900, now: FIXED_NOW, hash: '#/settings/meetings-tasks', patch: readyToOfferThree });
-    await check('tasks-provider P2: the radio, "Copy 3 tasks", the token never leaks (DOM, storage, a later request or a plugin frame), choosing again shows no dialog', async () => {
+    await check('tasks-provider P2: the radio, "Copy 3 tasks", the token never leaks (DOM, storage, a later request), choosing again shows no dialog', async () => {
       await page.waitForSelector('.ws-tasks-provider-list');
       assert(await page.locator('input[name="tasks-provider"]:checked').getAttribute('value') === 'local', 'Local starts checked');
       await page.click('.ws-ms-radio-card:has(input[value="plugin:todoist"])');
@@ -248,22 +249,14 @@ export async function tasksProviderChecks({ open, check, assert, shot, settled, 
       const leaked = allCalls.filter(([op, d]) => op !== 'set_setting' && JSON.stringify(d).includes(SENTINEL));
       assert(leaked.length === 0, `the sentinel reached a later request: ${JSON.stringify(leaked)}`);
 
-      // Spec §8: no plugin frame ever gets the native bridge (installBridge's own
-      // `if (window.top !== window) return;`), so none can ever read any secret, Todoist's
-      // included — proven directly against the real frame harness, with the token already set.
-      await page.evaluate(() => {
-        const f = document.createElement('iframe');
-        f.id = 'leak-probe';
-        f.setAttribute('sandbox', 'allow-scripts');
-        f.src = '/plugin-frames/hello/__host/frame.html?v=1';
-        document.body.appendChild(f);
-      });
-      const probe = page.frameLocator('#leak-probe');
-      await probe.locator('html').waitFor({ timeout: 5000 }).catch(() => {});
-      const leak = await probe.locator('html').evaluate(el => ({ bridge: typeof window.__TAURI__, html: el.outerHTML }));
-      assert(leak.bridge === 'undefined', `a plugin frame has the native bridge: ${leak.bridge}`);
-      assert(!leak.html.includes(SENTINEL), 'the token reached a plugin frame');
-      await page.evaluate(() => document.getElementById('leak-probe')?.remove());
+      // Spec §8's "no plugin frame ever gets the token" is enforced natively, not by this harness:
+      // the real frame/IPC boundary (main-frame-only invoke key, IPC Origin checks, frame
+      // sandbox/CSP) lives in src-tauri/src/plugins/caller.rs and is covered by its own Rust
+      // tests. A Chromium/Playwright probe against a fixture plugin's static frame.html has no
+      // path to the Todoist token either way, so it would only prove this harness's own mock
+      // `installBridge` guard (workspace-e2e.mjs) works as written, not the production guarantee
+      // (review: task-11-review.md). The DOM/localStorage/sessionStorage/later-call assertions
+      // above already cover the leak surfaces this browser harness can actually exercise.
 
       // Choosing Connect, then Todoist again: no dialog either way (already offered), only the quiet link.
       await page.click('.ws-ms-radio-card:has(input[value="local"])');

@@ -3371,12 +3371,12 @@ await meetingChecks({ open, check, assert, shot, settled, OUT });
 await meetingsViewChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // The task provider (task provider design, Task 11), P1–P12: both views and both themes across
-// three widths, Settings › Tasks's copy dialog and token (never leaked to the DOM, storage, a
-// later request or a plugin frame, spec §8), Late ⋯ over exactly the tasks shown, a check-in row's
-// Nudge and Snooze, Looks handled's Keep open, the meeting column singular wording, Today's widget
-// filtered to the active provider, every state's banner or header line, a real parked sentence,
-// switching back to Local, Default/Compact parity, nothing written by rendering, and Local
-// untouched with no taskProvider at all.
+// three widths, Settings › Tasks's copy dialog and token (never leaked to the DOM, storage or a
+// later request — the frame/IPC boundary of spec §8 is native, src-tauri/src/plugins/caller.rs),
+// Late ⋯ over exactly the tasks shown, a check-in row's Nudge and Snooze, Looks handled's Keep
+// open, the meeting column singular wording, Today's widget filtered to the active provider, every
+// state's banner or header line, a real parked sentence, switching back to Local, Default/Compact
+// parity, nothing written by rendering, and Local untouched with no taskProvider at all.
 await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // By date (task provider design §9): completions with the footer's Undo, the row controls, one
