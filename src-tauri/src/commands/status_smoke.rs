@@ -681,6 +681,7 @@ fn ai_summary(status: &Value) -> Value {
                 "defaultModel": p["defaultModel"],
                 "models": p["models"].as_array().map_or(0, Vec::len),
                 "account": account,
+                "local": p["local"],
             })
         })
         .collect();
@@ -699,20 +700,15 @@ fn ai_summary(status: &Value) -> Value {
     })
 }
 
-/// States the Ollama probe can leave on a profile (ruling 10): never `needs_login` or
-/// `too_old`, which don't apply to it.
-const OLLAMA_STATES: &[&str] = &["ready", "not_running", "not_configured", "not_installed"];
-
 /// Ollama facts for the smoke, from the profiles [`ai_summary`] already redacted of any
-/// `baseUrl`/`apiKey`: `probed` is whether an Ollama profile was found at all, `running`
-/// whether one of them answers, `models` the most models any of them offers.
+/// `baseUrl`/`apiKey`: `probed` is whether a *local* Ollama profile was found (`local ==
+/// true`, ruling 10 — a remote Ollama is never probed and must not count, even though it
+/// also reports `state: "ready"`), `running` whether one of them answers, `models` the most
+/// models any of them offers.
 fn ollama_facts(profiles: &[Value]) -> Value {
     let ollama: Vec<&Value> = profiles
         .iter()
-        .filter(|p| {
-            p["provider"] == "ollama"
-                && OLLAMA_STATES.contains(&p["state"].as_str().unwrap_or_default())
-        })
+        .filter(|p| p["provider"] == "ollama" && p["local"] == true)
         .collect();
     let running = ollama
         .iter()
@@ -979,7 +975,8 @@ mod tests {
                  "models": [], "account": null},
                 {"id": "codemie:ol", "kind": {"type": "code_mie", "name": "ol"}, "label": "CodeMie \u{b7} ol",
                  "provider": "ollama", "state": "not_running", "message": "Ollama isn't running.",
-                 "account": null, "defaultModel": "llama3.2", "models": [], "version": null}
+                 "account": null, "defaultModel": "llama3.2", "models": [], "version": null,
+                 "local": true}
             ],
             "chosen": {
                 "default": {"profile": "claude", "model": null, "fallback": null, "group": null},
@@ -1015,6 +1012,27 @@ mod tests {
         let dump = report.to_string();
         assert!(!dump.contains("http"), "{dump}");
         assert!(!dump.contains("apiKey"), "{dump}");
+
+        // A remote Ollama (ruling 10: never probed, its own `ollama list` was never run)
+        // reports `state: "ready"` too, same as a working local one — only `local` tells them
+        // apart. It must not count as probed.
+        let remote = ai_summary(&json!({
+            "profiles": [
+                {"id": "codemie:remote-ol", "kind": {"type": "code_mie", "name": "remote-ol"},
+                 "label": "CodeMie \u{b7} remote-ol", "provider": "ollama", "state": "ready",
+                 "message": null, "account": null, "defaultModel": "llama3.2",
+                 "models": [{"id": "llama3.2:latest"}], "version": null, "local": false}
+            ],
+            "chosen": {},
+            "settings": {"defaultProfile": null, "routes": {}},
+        }));
+        assert_eq!(
+            remote["ollama"],
+            json!({"probed": false, "running": false, "models": 0})
+        );
+        let remote_dump = remote.to_string();
+        assert!(!remote_dump.contains("http"), "{remote_dump}");
+        assert!(!remote_dump.contains("example.test"), "{remote_dump}");
     }
 
     fn facts() -> Value {

@@ -40,6 +40,7 @@ pub fn claude_profile() -> AiProfile {
             .collect(),
         default_model: None,
         message: None,
+        local: None,
     }
 }
 

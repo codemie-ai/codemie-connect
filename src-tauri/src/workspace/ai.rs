@@ -784,6 +784,7 @@ pub(super) mod tests {
                 .collect(),
             default_model: None,
             message: None,
+            local: None,
         }
     }
     pub(crate) fn ready() -> Vec<AiProfile> {
@@ -826,6 +827,7 @@ pub(super) mod tests {
     fn ollama(id: &str, models: &[&str]) -> AiProfile {
         let mut p = profile(id, ProfileState::Ready);
         p.provider = Some("ollama".into());
+        p.local = Some(true);
         p.models = models
             .iter()
             .map(|m| ModelChoice {
@@ -1707,6 +1709,7 @@ pub(super) mod tests {
             ]),
             default_model: None,
             message: None,
+            local: None,
         };
         let codemie = |name: &str, state, message: Option<&str>| AiProfile {
             id: format!("codemie:{name}"),
@@ -1722,6 +1725,7 @@ pub(super) mod tests {
             ]),
             default_model: Some("claude-sonnet-4-5".into()),
             message: message.map(str::to_string),
+            local: None,
         };
         let local_ollama = AiProfile {
             provider: Some("ollama".into()),
@@ -1730,6 +1734,7 @@ pub(super) mod tests {
                 ("llama3.2:latest", "llama3.2:latest"),
             ]),
             default_model: Some("qwen3:8b".into()),
+            local: Some(true),
             ..codemie("local-ollama", ProfileState::Ready, None)
         };
         let profiles = vec![

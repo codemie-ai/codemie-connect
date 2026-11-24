@@ -95,6 +95,10 @@ pub struct AiProfile {
     pub models: Vec<ModelChoice>,
     pub default_model: Option<String>,
     pub message: Option<String>,
+    /// For an Ollama profile, whether its base URL is local (ruling 10) — the only thing that
+    /// decides whether it was actually probed with `ollama list`; `None` for every other
+    /// profile. Not a secret: it carries no host or path, only yes/no.
+    pub local: Option<bool>,
 }
 
 /// A CodeMie CLI profile with the models it offers.
@@ -368,6 +372,7 @@ fn profile(id: &str, kind: ProfileKind, label: &str, state: ProfileState) -> AiP
         models: Vec::new(),
         default_model: None,
         message: None,
+        local: None,
     }
 }
 
@@ -552,6 +557,9 @@ async fn detect_codemie(probe: &dyn CommandProbe, env: &DetectEnv) -> Vec<AiProf
             p.provider = Some(c.provider.clone()).filter(|s| !s.is_empty());
             p.models = c.models.clone();
             p.default_model = c.default_model.clone();
+            if c.provider == "ollama" {
+                p.local = Some(is_local_ollama(&c));
+            }
             if is_local_ollama(&c) {
                 if let Some(probed) = &ollama {
                     apply_ollama(&mut p, &c.default_model, probed);

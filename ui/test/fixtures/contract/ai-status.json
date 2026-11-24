@@ -87,6 +87,7 @@
         "type": "native"
       },
       "label": "Claude Code · your subscription",
+      "local": null,
       "message": null,
       "models": [
         {
@@ -119,6 +120,7 @@
         "type": "code_mie"
       },
       "label": "CodeMie · prod",
+      "local": null,
       "message": null,
       "models": [
         {
@@ -143,6 +145,7 @@
         "type": "code_mie"
       },
       "label": "CodeMie · staging",
+      "local": null,
       "message": "Sign in to this CodeMie profile.",
       "models": [
         {
@@ -167,6 +170,7 @@
         "type": "code_mie"
       },
       "label": "CodeMie · local-ollama",
+      "local": true,
       "message": null,
       "models": [
         {

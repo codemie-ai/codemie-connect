@@ -367,6 +367,7 @@ mod tests {
             models: vec![],
             default_model: None,
             message: None,
+            local: None,
         }
     }
 
