@@ -2332,8 +2332,8 @@ impl menu_bar::TraySink for AppTray {
             } else {
                 TRAY_TEMPLATE.clone()
             };
-            let _ = tray.set_icon(Some(icon));
-            let _ = tray.set_icon_as_template(!view.amber);
+            // One call, so the amber glyph is never drawn as a template.
+            let _ = tray.set_icon_with_as_template(Some(icon), !view.amber);
         }
         #[cfg(not(target_os = "macos"))]
         {

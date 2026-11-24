@@ -672,11 +672,15 @@ pub trait TraySink: Send + Sync {
     fn apply(&self, view: &TrayView);
 }
 
-/// Records each applied view.
+/// Records each applied view. `slow` makes each apply take that long, like the main-thread
+/// round-trips of the real tray, and `overlapped` says whether two applies ever ran at once.
 #[cfg(test)]
 #[derive(Clone, Default)]
 pub struct FakeTray {
     applied: std::sync::Arc<std::sync::Mutex<Vec<TrayView>>>,
+    slow: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    applying: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    overlapped: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(test)]
@@ -684,12 +688,24 @@ impl FakeTray {
     pub fn applied(&self) -> Vec<TrayView> {
         self.applied.lock().unwrap().clone()
     }
+    pub fn set_slow(&self, ms: u64) {
+        self.slow.store(ms, std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn overlapped(&self) -> bool {
+        self.overlapped.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 #[cfg(test)]
 impl TraySink for FakeTray {
     fn apply(&self, view: &TrayView) {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.applying.swap(true, SeqCst) {
+            self.overlapped.store(true, SeqCst);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(self.slow.load(SeqCst)));
         self.applied.lock().unwrap().push(view.clone());
+        self.applying.store(false, SeqCst);
     }
 }
 
@@ -701,6 +717,10 @@ const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 pub struct Refresher {
     notify: std::sync::Arc<tokio::sync::Notify>,
     last: std::sync::Mutex<Option<TrayView>>,
+    /// Held across compare, record and apply, so applies never overlap and the tray always
+    /// shows what `last` holds. Never taken on the main thread (`open_menu_row` reads `last`
+    /// only), and `last` is let go before the tray is set.
+    applying: std::sync::Mutex<()>,
     /// Installed once the tray exists; until then views are counted but not applied.
     sink: std::sync::OnceLock<Box<dyn TraySink>>,
     clock: std::sync::Mutex<fn() -> i64>,
@@ -713,6 +733,7 @@ impl Refresher {
         Self {
             notify: Default::default(),
             last: Default::default(),
+            applying: Default::default(),
             sink: Default::default(),
             clock: std::sync::Mutex::new(clock),
             #[cfg(test)]
@@ -740,9 +761,10 @@ impl Refresher {
     }
 
     /// Applies `view` when a sink is installed and the view differs from the last one applied.
-    /// The tray is set outside the lock.
+    /// One apply at a time; the tray is set outside the `last` lock.
     fn offer(&self, view: &TrayView) {
         let Some(sink) = self.sink.get() else { return };
+        let _applying = self.applying.lock().unwrap_or_else(|e| e.into_inner());
         {
             let Ok(mut last) = self.last.lock() else {
                 return;
@@ -2105,5 +2127,36 @@ mod tests {
         assert_eq!(applied[1].title.as_deref(), Some("1"));
         assert_eq!(applied[1].rows[0].text, "1 task due or late");
         core.stop_background();
+    }
+
+    /// Two counts at once (the loop and a forced refresh) set the tray one after the other, and
+    /// the tray ends on the view `last` holds.
+    #[tokio::test]
+    async fn concurrent_refreshes_apply_one_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = fixture_core(dir.path());
+        core.menu_bar.set_clock(fixture_now);
+        core.menu_bar.fake().set_slow(200);
+        let first = {
+            let core = core.clone();
+            std::thread::spawn(move || core.refresh_menu_bar_now().unwrap())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        core.repo()
+            .unwrap()
+            .put_record(&inbound("mail-1", None, FIXTURE_NOW - 60))
+            .unwrap();
+        let second = {
+            let core = core.clone();
+            std::thread::spawn(move || core.refresh_menu_bar_now().unwrap())
+        };
+        first.join().unwrap();
+        second.join().unwrap();
+        let fake = core.menu_bar.fake();
+        assert!(!fake.overlapped(), "two applies ran at once");
+        let applied = fake.applied();
+        assert_eq!(applied.len(), 2, "{applied:?}");
+        assert_eq!(applied.last().cloned(), core.menu_bar.last());
+        assert_eq!(applied[1].title.as_deref(), Some("1"));
     }
 }
