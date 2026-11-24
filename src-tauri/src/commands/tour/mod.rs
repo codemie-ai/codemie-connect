@@ -1,0 +1,350 @@
+//! The real-app tour (`CODEMIE_TOUR`): a debug-only mode in which the app walks its own screens on
+//! a seeded test folder and captures its own window. Everything but [`requested`], the [`start`]
+//! that refuses it and [`lifecycle_plugins`] is behind the `tour` Cargo feature, which only
+//! `make tour` turns on; `lib.rs` refuses to compile that feature without debug assertions.
+
+const TOUR: &str = "CODEMIE_TOUR";
+
+/// Whether this launch asked for the tour. It says nothing about whether the build can run one.
+pub fn requested() -> bool {
+    std::env::var_os(TOUR).is_some()
+}
+
+/// Without the `tour` feature: a debug launch that asks for the tour exits 3, so it never opens the
+/// workspace thinking it's on a tour. A release build ignores the variable.
+#[cfg(not(feature = "tour"))]
+pub fn start() -> Option<()> {
+    if cfg!(debug_assertions) && requested() {
+        eprintln!("Build the tour with `make tour`.");
+        std::process::exit(3);
+    }
+    None
+}
+
+/// The lifecycle plugins `lib.rs` registers, in order. A tour runs beside the user's own Connect,
+/// so it never creates or connects to the single-instance socket: neither app hands a launch to
+/// the other.
+pub fn lifecycle_plugins(tour: bool) -> Vec<&'static str> {
+    let all = ["single-instance", "notification", "autostart"];
+    all.into_iter()
+        .filter(|name| !(tour && *name == "single-instance"))
+        .collect()
+}
+
+#[cfg(feature = "tour")]
+pub use run::*;
+
+#[cfg(feature = "tour")]
+mod run {
+    use super::{requested, TOUR};
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
+    /// What `CODEMIE_TOUR` asks for: every stop, the stops of some rollout steps, or named stops.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Only {
+        All,
+        Steps(Vec<u8>),
+        Stops(Vec<String>),
+    }
+
+    /// This launch's tour, fixed at startup so its results can't be mistaken for another run's.
+    #[derive(Debug)]
+    pub struct TourRun {
+        pub run_id: String,
+        pub sha: String,
+        pub only: Only,
+        pub test_dir: PathBuf,
+        pub started_unix: i64,
+    }
+
+    /// The environment [`parse`] judges, read once by [`start`].
+    pub struct TourEnv {
+        pub(super) tour: Option<String>,
+        pub(super) sha: Option<String>,
+        pub(super) test_dir: Option<String>,
+        pub(super) status_smoke: bool,
+        pub(super) plugin_smoke: bool,
+        pub(super) debug: bool,
+    }
+
+    impl TourEnv {
+        fn from_env() -> Self {
+            TourEnv {
+                tour: std::env::var(TOUR).ok(),
+                sha: std::env::var("CODEMIE_TOUR_SHA").ok(),
+                test_dir: std::env::var("CODEMIE_WORKSPACE_TEST_DIR").ok(),
+                status_smoke: std::env::var_os("CODEMIE_STATUS_SMOKE").is_some(),
+                plugin_smoke: std::env::var_os("CODEMIE_PLUGIN_SMOKE").is_some(),
+                debug: cfg!(debug_assertions),
+            }
+        }
+    }
+
+    /// The rollout steps a tour can name.
+    const LAST_STEP: u8 = 9;
+
+    fn parse_only(value: &str) -> Option<Only> {
+        if value.trim() == "all" {
+            return Some(Only::All);
+        }
+        let items: Vec<&str> = value.split(',').map(str::trim).collect();
+        if let Some(steps) = items
+            .iter()
+            .map(|i| i.parse::<u8>().ok().filter(|s| *s <= LAST_STEP))
+            .collect::<Option<Vec<u8>>>()
+        {
+            return Some(Only::Steps(steps));
+        }
+        let stop = |i: &&str| {
+            i.len() == 3 && i.starts_with('T') && i[1..].bytes().all(|b| b.is_ascii_digit())
+        };
+        items
+            .iter()
+            .all(stop)
+            .then(|| Only::Stops(items.iter().map(|i| i.to_string()).collect()))
+    }
+
+    /// Judges a launch's environment; each refusal is the sentence the tour exits 3 with.
+    pub fn parse(env: &TourEnv) -> Result<TourRun, String> {
+        if !env.debug {
+            return Err("CODEMIE_TOUR runs in a debug build made with `make tour`.".into());
+        }
+        let test_dir = env
+            .test_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .ok_or("Set CODEMIE_WORKSPACE_TEST_DIR to a fresh folder; the tour never opens your own data.")?;
+        if env.status_smoke || env.plugin_smoke {
+            return Err(
+                "Run the tour without CODEMIE_STATUS_SMOKE or CODEMIE_PLUGIN_SMOKE.".into(),
+            );
+        }
+        let sha =
+            env.sha.clone().filter(|sha| !sha.trim().is_empty()).ok_or(
+                "Set CODEMIE_TOUR_SHA to the commit this build is from; the report names it.",
+            )?;
+        let value = env.tour.as_deref().unwrap_or_default();
+        let only = parse_only(value).ok_or_else(|| {
+            format!(
+                "CODEMIE_TOUR={value:?} is not `all`, a list of rollout steps (0,3,7) or a list \
+                 of stop ids (T05,T21)."
+            )
+        })?;
+        Ok(TourRun {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            sha,
+            only,
+            test_dir,
+            started_unix: chrono::Utc::now().timestamp(),
+        })
+    }
+
+    /// The test folder may hold only the seed: `tour-seed.json`, `Meetings/` and `home/`. Anything
+    /// else (a database, an earlier run's results or shots) means it isn't fresh.
+    pub fn fresh_folder(dir: &Path) -> Result<(), String> {
+        let refusal = || format!("That folder isn't a fresh tour seed: {}.", dir.display());
+        let entries = std::fs::read_dir(dir).map_err(|_| refusal())?;
+        for entry in entries {
+            let name = entry.map_err(|_| refusal())?.file_name();
+            if !matches!(name.to_str(), Some("tour-seed.json" | "Meetings" | "home")) {
+                return Err(refusal());
+            }
+        }
+        Ok(())
+    }
+
+    static RUN: OnceLock<TourRun> = OnceLock::new();
+
+    /// Starts the tour when `CODEMIE_TOUR` is set, before the app is built. A launch that can't
+    /// run one exits 3 with the reason on stderr.
+    pub fn start() -> Option<&'static TourRun> {
+        if !requested() {
+            return None;
+        }
+        let run = parse(&TourEnv::from_env())
+            .and_then(|run| fresh_folder(&run.test_dir).map(|()| run))
+            .unwrap_or_else(|refusal| {
+                eprintln!("{refusal}");
+                std::process::exit(3);
+            });
+        eprintln!(
+            "CODEMIE_TOUR: run {} of {}, {:?}, started {} in {}",
+            run.run_id,
+            run.sha,
+            run.only,
+            run.started_unix,
+            run.test_dir.display()
+        );
+        Some(RUN.get_or_init(|| run))
+    }
+
+    /// This launch's tour, once started.
+    pub fn active() -> Option<&'static TourRun> {
+        RUN.get()
+    }
+
+    /// The main window is created hidden and can't take focus, so the tour never shows a window
+    /// or activates the app; `incognito` keeps WebKit storage in memory, apart from the user's.
+    pub fn edit_window_config(w: &mut tauri::utils::config::WindowConfig) {
+        w.visible = false;
+        w.focus = false;
+        w.focusable = false;
+        w.skip_taskbar = true;
+        w.incognito = true;
+    }
+}
+
+#[cfg(all(test, feature = "tour"))]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn ok_env() -> TourEnv {
+        TourEnv {
+            tour: Some("all".into()),
+            sha: Some("abc1234".into()),
+            test_dir: Some("/tmp/connect-tour-1/workspace".into()),
+            status_smoke: false,
+            plugin_smoke: false,
+            debug: true,
+        }
+    }
+
+    #[test]
+    fn parse_refuses_what_spec_lists() {
+        assert!(parse(&ok_env()).is_ok());
+        let not_debug = TourEnv {
+            debug: false,
+            ..ok_env()
+        };
+        assert_eq!(
+            parse(&not_debug).unwrap_err(),
+            "CODEMIE_TOUR runs in a debug build made with `make tour`."
+        );
+        let folder =
+            "Set CODEMIE_WORKSPACE_TEST_DIR to a fresh folder; the tour never opens your own data.";
+        for dir in [None, Some(""), Some("relative/dir")] {
+            let env = TourEnv {
+                test_dir: dir.map(String::from),
+                ..ok_env()
+            };
+            assert_eq!(parse(&env).unwrap_err(), folder, "{dir:?}");
+        }
+        let smokes = "Run the tour without CODEMIE_STATUS_SMOKE or CODEMIE_PLUGIN_SMOKE.";
+        let status = TourEnv {
+            status_smoke: true,
+            ..ok_env()
+        };
+        assert_eq!(parse(&status).unwrap_err(), smokes);
+        let plugin = TourEnv {
+            plugin_smoke: true,
+            ..ok_env()
+        };
+        assert_eq!(parse(&plugin).unwrap_err(), smokes);
+        for sha in [None, Some("")] {
+            let env = TourEnv {
+                sha: sha.map(String::from),
+                ..ok_env()
+            };
+            assert!(
+                parse(&env).unwrap_err().contains("CODEMIE_TOUR_SHA"),
+                "{sha:?}"
+            );
+        }
+        for bad in ["nine", "", "0,,3", "0,T05", "42", "T5x"] {
+            let env = TourEnv {
+                tour: Some(bad.into()),
+                ..ok_env()
+            };
+            let err = parse(&env).unwrap_err();
+            assert!(err.contains(&format!("{bad:?}")), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_reads_all_steps_and_stops() {
+        let only = |v: &str| {
+            parse(&TourEnv {
+                tour: Some(v.into()),
+                ..ok_env()
+            })
+            .unwrap()
+            .only
+        };
+        assert_eq!(only("all"), Only::All);
+        assert_eq!(only("0, 3,7"), Only::Steps(vec![0, 3, 7]));
+        assert_eq!(
+            only("T05,T21"),
+            Only::Stops(vec!["T05".into(), "T21".into()])
+        );
+        let run = parse(&ok_env()).unwrap();
+        assert_eq!(run.sha, "abc1234");
+        assert_eq!(run.test_dir, PathBuf::from("/tmp/connect-tour-1/workspace"));
+        assert!(!run.run_id.is_empty());
+        assert!(run.started_unix > 0);
+    }
+
+    #[test]
+    fn fresh_folder_allows_only_the_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(fresh_folder(dir.path()).is_ok());
+        std::fs::write(dir.path().join("tour-seed.json"), "{}").unwrap();
+        std::fs::create_dir(dir.path().join("Meetings")).unwrap();
+        std::fs::create_dir(dir.path().join("home")).unwrap();
+        assert!(fresh_folder(dir.path()).is_ok());
+        let refusal = format!(
+            "That folder isn't a fresh tour seed: {}.",
+            dir.path().display()
+        );
+
+        std::fs::write(dir.path().join("workspace.sqlite"), "").unwrap();
+        assert_eq!(fresh_folder(dir.path()).unwrap_err(), refusal);
+        std::fs::remove_file(dir.path().join("workspace.sqlite")).unwrap();
+
+        std::fs::create_dir(dir.path().join("tour")).unwrap();
+        std::fs::write(dir.path().join("tour/results.json"), "{}").unwrap();
+        assert_eq!(fresh_folder(dir.path()).unwrap_err(), refusal);
+
+        let missing = dir.path().join("missing");
+        assert_eq!(
+            fresh_folder(&missing).unwrap_err(),
+            format!(
+                "That folder isn't a fresh tour seed: {}.",
+                missing.display()
+            )
+        );
+    }
+
+    #[test]
+    fn edit_window_config_hides_and_unfocuses() {
+        let mut w = tauri::utils::config::WindowConfig {
+            label: "main".into(),
+            ..Default::default()
+        };
+        assert!(w.visible && w.focus && w.focusable);
+        edit_window_config(&mut w);
+        assert!(!w.visible);
+        assert!(!w.focus);
+        assert!(!w.focusable);
+        assert!(w.skip_taskbar);
+        assert!(w.incognito);
+        assert_eq!(w.label, "main");
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn tour_never_registers_single_instance() {
+        assert_eq!(
+            lifecycle_plugins(false),
+            ["single-instance", "notification", "autostart"]
+        );
+        assert!(!lifecycle_plugins(true).contains(&"single-instance"));
+        assert_eq!(lifecycle_plugins(true), ["notification", "autostart"]);
+    }
+}

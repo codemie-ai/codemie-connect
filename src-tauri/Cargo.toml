@@ -80,15 +80,27 @@ unicode-normalization = "0.1.26"
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 rfd = { version = "0.17", default-features = false }
 
+# The real-app tour (`commands::tour`) hides its window and captures the webview through these.
+# All are already in Cargo.lock through wry; only the `tour` feature turns them on.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSWindow", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSGraphics", "NSRunningApplication", "NSApplication", "NSScreen"] }
+objc2-web-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "WKWebView", "WKSnapshotConfiguration", "block2"] }
+block2 = { version = "0.6", optional = true }
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_System_Memory"] }
 
 [features]
 # Test doubles (a scripted Claude, a `Core` over a temp folder, offline stand-ins) for the tests in
-# `tests/`, which can't see `#[cfg(test)]` items. Only the dev-dependency below turns it on, so the
-# app is never built with it.
+# `tests/`, which can't see `#[cfg(test)]` items. The dev-dependency below turns it on for tests;
+# the app is built with it only by `make tour`.
 test-support = []
+# The real-app tour (`CODEMIE_TOUR`, `commands::tour`): debug builds only (`lib.rs` refuses to
+# compile it with optimisations), built by `make tour` into target/tour, never bundled.
+tour = ["test-support", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-web-kit", "dep:block2"]
 
 [dev-dependencies]
 tempfile = "3"

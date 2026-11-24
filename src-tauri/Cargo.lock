@@ -87,6 +87,7 @@ version = "2.1.1"
 dependencies = [
  "app",
  "base64 0.22.1",
+ "block2",
  "chrono",
  "chrono-tz",
  "dom_query 0.28.0",
@@ -95,6 +96,10 @@ dependencies = [
  "futures-util",
  "libc",
  "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
  "portable-pty",
  "pulldown-cmark",
  "rand 0.8.6",

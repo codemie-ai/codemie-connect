@@ -17,9 +17,28 @@ mod workspace;
 use state::AppState;
 use tauri::Manager;
 
+// The real-app tour (`commands::tour`) never reaches a release build.
+#[cfg(all(feature = "tour", not(debug_assertions)))]
+compile_error!("the tour runs in debug builds only");
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // Before anything opens: a tour launch that can't run exits 3 here.
+    let tour = commands::tour::start().is_some();
+    #[cfg_attr(not(feature = "tour"), allow(unused_mut))]
+    let mut context = tauri::generate_context!();
+    #[cfg(feature = "tour")]
+    if tour {
+        commands::tour::edit_window_config(&mut context.config_mut().app.windows[0]);
+    }
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    {
+        // tao activates the app at launch otherwise, taking focus from whatever the user is in.
+        builder = builder.activate_ignoring_other_apps(!tour);
+    }
+    builder
         // Every webview stays on Connect's own pages; links open in the browser instead.
         .plugin(navigation::guard())
         // Plugin UIs, served to sandboxed frames only (DESIGN 7.3).
@@ -27,7 +46,12 @@ pub fn run() {
             plugins::protocol::SCHEME,
             plugins::protocol::handle,
         )
-        .setup(|app| {
+        .setup(move |app| {
+            // A tour has no Dock icon or app menu and never becomes the active app.
+            #[cfg(target_os = "macos")]
+            if tour {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
             plugins::caller::trust_dev_server(app.config());
             // Before single-instance, which would hand a smoke launch to a running Connect.
             commands::smoke::start_plugin_smoke(
@@ -105,16 +129,26 @@ pub fn run() {
             });
             // Connect's terminal dock: the Claude Code sessions it runs (commands::terminal).
             app.manage(commands::terminal::Terminals::default());
-            // Register lifecycle plugins only after all process PATH mutations above.
-            app.handle().plugin(tauri_plugin_single_instance::init(|app, _, _| {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
+            // Register lifecycle plugins only after all process PATH mutations above. A tour skips
+            // single-instance, so it runs beside the user's Connect without touching its socket.
+            for name in commands::tour::lifecycle_plugins(tour) {
+                match name {
+                    "single-instance" => {
+                        app.handle().plugin(tauri_plugin_single_instance::init(|app, _, _| {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }))?
+                    }
+                    "notification" => app.handle().plugin(tauri_plugin_notification::init())?,
+                    "autostart" => app
+                        .handle()
+                        .plugin(tauri_plugin_autostart::Builder::new().build())?,
+                    other => unreachable!("unknown lifecycle plugin {other}"),
                 }
-            }))?;
-            app.handle().plugin(tauri_plugin_notification::init())?;
-            app.handle().plugin(tauri_plugin_autostart::Builder::new().build())?;
+            }
             // The default folder holds the pointer, sign-in data and the locks; the data itself
             // may live in a user-chosen folder it points at (DESIGN 8).
             // A plugin marketplace smoke opens its own fresh data root, never the user's.
@@ -260,7 +294,7 @@ pub fn run() {
             plugins::commands::plugins_request,
             plugins::commands::plugin_call,
         ]))
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app,event|{
             // Quitting ends the dock's sessions, as closing Terminal.app does.

@@ -28,6 +28,10 @@ pub struct SmokeFlags {
     /// That run's id, which the window's report must carry, and when it started (unix seconds).
     pub status_run_id: Option<String>,
     pub status_started_at: Option<i64>,
+    /// `CODEMIE_TOUR` as given (`all`, steps or stop ids), only while a tour runs.
+    pub tour: Option<String>,
+    /// That tour's run id, which its results must carry.
+    pub tour_run_id: Option<String>,
 }
 
 #[tauri::command]
@@ -46,6 +50,14 @@ pub fn smoke_mode() -> SmokeFlags {
         status: super::status_smoke::running().map(|s| s.mode.name().to_string()),
         status_run_id: super::status_smoke::running().map(|s| s.run.run_id.clone()),
         status_started_at: super::status_smoke::running().map(|s| s.started_unix),
+        #[cfg(feature = "tour")]
+        tour: super::tour::active().and_then(|_| std::env::var("CODEMIE_TOUR").ok()),
+        #[cfg(not(feature = "tour"))]
+        tour: None,
+        #[cfg(feature = "tour")]
+        tour_run_id: super::tour::active().map(|run| run.run_id.clone()),
+        #[cfg(not(feature = "tour"))]
+        tour_run_id: None,
     }
 }
 
