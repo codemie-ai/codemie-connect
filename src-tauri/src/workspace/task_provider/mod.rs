@@ -71,6 +71,8 @@ pub(crate) enum ProviderState {
     Off,
     /// The plugin didn't load.
     Failed,
+    /// The plugin manager hasn't finished loading it yet (I1: not a failure, so not a fix).
+    Loading,
 }
 impl ProviderState {
     pub(crate) fn as_str(self) -> &'static str {
@@ -83,6 +85,7 @@ impl ProviderState {
             Self::NeedsToken => "needs_token",
             Self::Off => "off",
             Self::Failed => "failed",
+            Self::Loading => "loading",
         }
     }
 }
@@ -100,6 +103,9 @@ pub trait TaskProviders: Send + Sync {
         args: Value,
     ) -> BoxFuture<'static, std::result::Result<Value, ProviderError>>;
     fn available(&self) -> Vec<ProviderInfo>;
+    /// Whether the manager still has a reload under way: a provider that isn't `ready` yet
+    /// might simply not have finished loading, not have failed (I1).
+    fn loading(&self) -> bool;
     /// Whether `text` contains the plugin's stored secret (design §8's message check).
     fn secret_matches(&self, plugin: &str, text: &str) -> bool;
 }
@@ -307,9 +313,12 @@ impl super::Core {
             ),
             None => (Value::Null, (0, 0), false),
         };
+        let loading = self.task_providers.get().is_some_and(|p| p.loading());
         let state = match listed.iter().find(|p| p.id == active) {
+            None if loading => ProviderState::Loading,
             None => ProviderState::Failed,
             Some(p) if !p.on => ProviderState::Off,
+            Some(p) if !p.ready && loading => ProviderState::Loading,
             Some(p) if !p.ready => ProviderState::Failed,
             Some(_) if syncing => ProviderState::Syncing,
             Some(_) => ProviderState::of(st["state"].as_str().unwrap_or("ready")),
@@ -358,5 +367,63 @@ mod tests {
             ProviderError::Refused("Todoist didn't accept the change (400)".into())
         );
         assert_eq!(ProviderError::parse("boom"), ProviderError::Offline);
+    }
+
+    /// I1: at start, or right after a reload is asked for, the plugin hasn't finished loading
+    /// yet. That is not the same as a load that ran and failed.
+    #[test]
+    fn a_still_loading_plugin_is_not_called_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::workspace::test_core(
+            dir.path(),
+            std::sync::Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            crate::workspace::ai::tests::ready(),
+        );
+        let provider = std::sync::Arc::new(fake::FakeProvider::new());
+        provider.set_available(vec![ProviderInfo {
+            id: "plugin:todoist".into(),
+            name: "Todoist".into(),
+            on: true,
+            ready: false,
+        }]);
+        provider.set_loading(true);
+        core.set_task_providers(provider.clone());
+
+        let mut settings = Settings::default();
+        settings.tasks.provider = "plugin:todoist".into();
+
+        assert_eq!(
+            core.task_provider_snapshot(&settings)["state"],
+            "loading",
+            "still loading is not failed"
+        );
+
+        // Once the manager has settled and the plugin is still not ready, it genuinely failed.
+        provider.set_loading(false);
+        assert_eq!(core.task_provider_snapshot(&settings)["state"], "failed");
+    }
+
+    /// I1: a provider not even listed yet (the registry hasn't been read, or the reload hasn't
+    /// made it on, so `available()` is still empty) is the same "not failed while loading" case.
+    #[test]
+    fn an_unlisted_plugin_is_not_called_failed_while_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::workspace::test_core(
+            dir.path(),
+            std::sync::Arc::new(crate::ai::fake::FakeRunner::new(vec![])),
+            crate::workspace::ai::tests::ready(),
+        );
+        let provider = std::sync::Arc::new(fake::FakeProvider::new());
+        provider.set_available(vec![]);
+        provider.set_loading(true);
+        core.set_task_providers(provider.clone());
+
+        let mut settings = Settings::default();
+        settings.tasks.provider = "plugin:todoist".into();
+
+        assert_eq!(core.task_provider_snapshot(&settings)["state"], "loading");
+
+        provider.set_loading(false);
+        assert_eq!(core.task_provider_snapshot(&settings)["state"], "failed");
     }
 }

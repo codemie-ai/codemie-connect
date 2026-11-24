@@ -1486,6 +1486,7 @@ mod tests {
             "off",
             "ready",
             "local",
+            "loading",
         ] {
             assert!(
                 fixes_of(None, vec![], tp(state, 0)).is_empty(),
@@ -2104,6 +2105,28 @@ mod tests {
             core.emit("workspace:changed");
             assert!(at.elapsed() < std::time::Duration::from_millis(50));
         }
+        let applied = applied_within(&core, 2, 2_000).await;
+        assert_eq!(applied.len(), 2);
+        assert_eq!(applied[1].title.as_deref(), Some("1"));
+        core.stop_background();
+    }
+
+    /// I1: a finished plugin reload recounts too, not only `workspace:changed` — the task
+    /// plugin may have gone from "still loading" to ready (or to a genuine failure) without any
+    /// workspace record changing.
+    #[tokio::test]
+    async fn a_finished_plugin_reload_also_recounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = fixture_core(dir.path());
+        core.menu_bar.set_clock(fixture_now);
+        core.start_menu_bar();
+        assert_eq!(applied_within(&core, 1, 2_000).await.len(), 1);
+
+        core.repo()
+            .unwrap()
+            .put_record(&inbound("mail-1", None, FIXTURE_NOW - 60))
+            .unwrap();
+        core.emit("plugins:reloaded");
         let applied = applied_within(&core, 2, 2_000).await;
         assert_eq!(applied.len(), 2);
         assert_eq!(applied[1].title.as_deref(), Some("1"));

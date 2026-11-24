@@ -26,6 +26,8 @@ struct Inner {
     next_id: u64,
     time: i64,
     available: Option<Vec<ProviderInfo>>,
+    /// What `loading` answers (default false: the manager has settled).
+    loading: bool,
     /// Runs once at the next call of an op, while that call is on its way.
     during: HashMap<String, Box<dyn FnOnce() + Send>>,
     /// How long each answer takes (tokio's clock).
@@ -148,6 +150,12 @@ impl FakeProvider {
     /// What `available` lists (default: Todoist, on and ready).
     pub fn set_available(&self, available: Vec<ProviderInfo>) {
         self.lock().available = Some(available);
+    }
+
+    /// What `loading` answers from now on (default false): simulates a reload still under way
+    /// (I1), so a provider that isn't `ready` yet is not called failed.
+    pub fn set_loading(&self, loading: bool) {
+        self.lock().loading = loading;
     }
 
     /// Runs `f` once, at the next call of `op`, before that call answers: an edit made while
@@ -300,6 +308,10 @@ impl TaskProviders for FakeProvider {
                 ready: true,
             }]
         })
+    }
+
+    fn loading(&self) -> bool {
+        self.lock().loading
     }
 
     fn secret_matches(&self, _plugin: &str, text: &str) -> bool {

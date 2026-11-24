@@ -462,6 +462,12 @@ impl TaskProviders for PluginManager {
             .collect()
     }
 
+    /// Whether a reload is still under way (I1): a provider not yet `ready` might just not have
+    /// finished loading.
+    fn loading(&self) -> bool {
+        self.reloads_pending() > 0
+    }
+
     fn secret_matches(&self, plugin: &str, text: &str) -> bool {
         secret_in(&self.paths, plugin, text)
     }
@@ -492,6 +498,10 @@ impl TaskProviders for ManagerTasks {
 
     fn available(&self) -> Vec<ProviderInfo> {
         self.0.upgrade().map(|m| m.available()).unwrap_or_default()
+    }
+
+    fn loading(&self) -> bool {
+        self.0.upgrade().is_some_and(|m| m.loading())
     }
 
     fn secret_matches(&self, plugin: &str, text: &str) -> bool {

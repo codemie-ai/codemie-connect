@@ -427,8 +427,10 @@ impl Core {
         Ok(repo)
     }
     pub fn emit(&self, event: &str) {
-        // Only a wake: callers may hold the repository guard, so the count happens later.
-        if event == "workspace:changed" {
+        // Only a wake: callers may hold the repository guard, so the count happens later. A
+        // finished plugin reload recounts too (I1): the task plugin's `ready`/`failed` state can
+        // only have changed once it settles.
+        if event == "workspace:changed" || event == "plugins:reloaded" {
             self.menu_bar.wake();
         }
         if let Some(app) = &self.app {

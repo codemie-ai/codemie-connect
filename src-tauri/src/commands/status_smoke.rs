@@ -748,6 +748,10 @@ fn build_report(i: Inputs) -> Value {
     if let Some(menu_bar) = i.facts.get("menuBar").filter(|m| !m.is_null()) {
         if menu_bar["tray"] != true {
             failed.push("menuBar: no tray icon".into());
+        } else if menu_bar["computed"].is_null() {
+            // T4/M3: a compute error folds into `computed: null`, which must not be read as an
+            // empty, non-amber view that happens to match a quiet tray.
+            failed.push("menuBar: the count could not be computed".into());
         } else {
             let applied_title = menu_bar["applied"]["title"].as_str().unwrap_or_default();
             let applied_amber = menu_bar["applied"]["amber"] == true;
@@ -1096,6 +1100,27 @@ mod tests {
             let s = v.as_str().expect("a string");
             assert!(s.chars().count() <= 1, "{equal:#}");
         }
+    }
+
+    #[test]
+    fn a_failed_recount_fails_the_check_instead_of_matching_a_quiet_tray() {
+        // T4/M3: `computed` folds a compute error into `null`. Indexing into it reads back as
+        // "" and `false`, which must not be allowed to match a tray that happens to show
+        // nothing right now.
+        let null_computed = report_with_menu_bar(menu_bar(
+            true,
+            json!({"title": "", "amber": false, "tooltipLength": 18, "rows": 0}),
+            Value::Null,
+        ));
+        assert_eq!(null_computed["pass"], false, "{null_computed:#}");
+        assert!(
+            null_computed["failed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f == "menuBar: the count could not be computed"),
+            "{null_computed:#}"
+        );
     }
 
     #[test]
