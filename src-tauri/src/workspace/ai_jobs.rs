@@ -1,7 +1,7 @@
 //! The reply-draft and thread-summary jobs (DESIGN 6.3-6.5): queueing them, reading the
 //! conversation, running Claude on the purpose's route, and storing the draft or summary.
 use super::{
-    ai::{chosen_profile, wire_name},
+    ai::{chosen_profile, wire_name, Resolved, RouteKey},
     graph,
     models::*,
     new_job,
@@ -306,9 +306,9 @@ impl Core {
         let channel = Channel::of(&source)
             .ok_or_else(|| invalid("Choose an Outlook message or a Teams chat."))?;
         let purpose = channel.draft_purpose();
-        let (profile, model) = self.route(purpose).await?;
+        let resolved = self.resolve_key(&RouteKey::Purpose(purpose)).await?;
         let draft_id = format!("ai:{}", draft_key(&source));
-        let run = self.start_run(job, &profile, &model)?;
+        let run = self.start_run(job, &resolved.profile, &resolved.model)?;
         let window = prompts::draft_window(&*self.repo()?, &w, &c, &source)?;
         let texts = self
             .full_mail_texts(&c, &window, &run.cancel, MAIL_READ_DEADLINE)
@@ -322,8 +322,8 @@ impl Core {
         let ctx = prompts::draft_context(&*self.repo()?, &w, &source, &c, &opts, &reading)?;
         let spec = RunSpec {
             purpose: wire_name(purpose),
-            profile_id: profile.id.clone(),
-            model,
+            profile_id: resolved.profile.id.clone(),
+            model: resolved.model.clone(),
             system: channel.draft_system().into(),
             input: ctx.input.clone(),
             schema: Some(prompts::schema(prompts::DRAFT_SCHEMA)),
@@ -332,9 +332,8 @@ impl Core {
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        let requested_model = spec.model.clone();
-        let (outcome, (text, questions)) = self
-            .run_claude(&run, spec, &profile, &draft_id, prompts::parse_draft)
+        let (outcome, (text, questions), used) = self
+            .run_claude(&run, spec, &resolved, &draft_id, prompts::parse_draft)
             .await?;
         let mut r = self.repo()?;
         r.check_policy(
@@ -354,7 +353,7 @@ impl Core {
                 "The conversation changed while Claude was drafting. Draft again.",
             ));
         }
-        let made = provenance(&profile, &outcome, requested_model, &ctx);
+        let made = provenance(resolved.profile_of(&used), &outcome, used.model, &ctx);
         // The reply being changed is only for this run; the stored draft keeps its own options.
         let mut options = json!(opts);
         if let Some(obj) = options.as_object_mut() {
@@ -375,8 +374,10 @@ impl Core {
     /// [`Self::run_ai_summary`] with the time its Outlook reads may take.
     async fn run_ai_summary_within(&self, job: &Job, read_deadline: Duration) -> Result<String> {
         let (w, c, source) = self.repo()?.ai_job_source(job)?;
-        let (profile, model) = self.route(Purpose::Summary).await?;
-        let run = self.start_run(job, &profile, &model)?;
+        let resolved = self
+            .resolve_key(&RouteKey::Purpose(Purpose::Summary))
+            .await?;
+        let run = self.start_run(job, &resolved.profile, &resolved.model)?;
         let window = prompts::summary_window(&*self.repo()?, &w, &c, &source)?;
         let texts = self
             .full_mail_texts(&c, &window, &run.cancel, read_deadline)
@@ -391,8 +392,8 @@ impl Core {
         let summary_id = ctx.conversation_key.clone();
         let spec = RunSpec {
             purpose: wire_name(Purpose::Summary),
-            profile_id: profile.id.clone(),
-            model,
+            profile_id: resolved.profile.id.clone(),
+            model: resolved.model.clone(),
             system: prompts::SUMMARY_SYSTEM.into(),
             input: ctx.input.clone(),
             schema: Some(prompts::schema(prompts::SUMMARY_SCHEMA)),
@@ -401,9 +402,8 @@ impl Core {
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        let requested_model = spec.model.clone();
-        let (outcome, (text, asks)) = self
-            .run_claude(&run, spec, &profile, &summary_id, prompts::parse_summary)
+        let (outcome, (text, asks), used) = self
+            .run_claude(&run, spec, &resolved, &summary_id, prompts::parse_summary)
             .await?;
         let mut r = self.repo()?;
         r.check_policy(
@@ -428,7 +428,7 @@ impl Core {
                 "latestMessageId": ctx.newest.id,
                 "latestRevision": ctx.newest.revision,
                 "latestFingerprint": ctx.newest.fingerprint,
-                "provenance": provenance(&profile, &outcome, requested_model, &ctx),
+                "provenance": provenance(resolved.profile_of(&used), &outcome, used.model.clone(), &ctx),
             }),
         };
         let stored = stored_job(&r, job)?;
@@ -547,23 +547,25 @@ impl Core {
             .collect())
     }
 
-    /// One Claude run for a started job, recorded in the ledger under `ref_id` however it
-    /// ends, and its answer read with `parse` (an answer `parse` rejects is `invalid_output`).
+    /// One Claude run for a started job (with its fallback, see [`Core::run_resolved`]),
+    /// recorded in the ledger under `ref_id` however it ends, and its answer read with `parse`
+    /// (an answer `parse` rejects is `invalid_output`). Also answers the spec of the attempt
+    /// that answered.
     pub(super) async fn run_claude<T>(
         &self,
         run: &StartedRun<'_>,
         spec: RunSpec,
-        profile: &AiProfile,
+        resolved: &Resolved,
         ref_id: &str,
         parse: impl Fn(&Value) -> Option<T>,
-    ) -> Result<(RunOutcome, T)> {
+    ) -> Result<(RunOutcome, T, RunSpec)> {
         match self
-            .run_claude_reported(run, spec, profile, ref_id, parse)
+            .run_claude_reported(run, spec, resolved, ref_id, parse)
             .await
         {
-            (Some(outcome), Ok(answer)) => Ok((outcome, answer)),
-            (_, Err(e)) => Err(e.into()),
-            (None, Ok(_)) => Err(AiError::new(ErrorClass::Failed).into()),
+            (Some(outcome), Ok(answer), used) => Ok((outcome, answer, used)),
+            (_, Err(e), _) => Err(e.into()),
+            (None, Ok(_), _) => Err(AiError::new(ErrorClass::Failed).into()),
         }
     }
 
@@ -573,26 +575,27 @@ impl Core {
         &self,
         run: &StartedRun<'_>,
         spec: RunSpec,
-        profile: &AiProfile,
+        resolved: &Resolved,
         ref_id: &str,
         parse: impl Fn(&Value) -> Option<T>,
-    ) -> (Option<RunOutcome>, std::result::Result<T, AiError>) {
+    ) -> (Option<RunOutcome>, std::result::Result<T, AiError>, RunSpec) {
         if run.cancel.is_cancelled() {
-            return (None, Err(AiError::new(ErrorClass::Cancelled)));
+            return (None, Err(AiError::new(ErrorClass::Cancelled)), spec);
         }
-        let ledger = LedgerEntry::open(self, spec.clone(), ref_id);
+        let ledger = LedgerEntry::open(self, spec.clone(), ref_id, resolved.fell_back_from.clone());
         let (models, mut reported) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let on_event: Box<dyn Fn(RunEvent) + Send> = Box::new(move |event| {
-            if let RunEvent::Started {
-                model: Some(model), ..
-            } = event
-            {
-                let _ = models.send(model);
-            }
-        });
-        let running = self.runner.run(spec, profile, run.cancel.clone(), on_event);
+        let on_event: std::sync::Arc<dyn Fn(RunEvent) + Send + Sync> =
+            std::sync::Arc::new(move |event| {
+                if let RunEvent::Started {
+                    model: Some(model), ..
+                } = event
+                {
+                    let _ = models.send(model);
+                }
+            });
+        let running = self.run_resolved(resolved, spec, run.cancel.clone(), on_event, Some(ref_id));
         tokio::pin!(running);
-        let result = loop {
+        let (result, used) = loop {
             tokio::select! {
                 biased;
                 Some(model) = reported.recv() => self.note_run_model(&run.job_id, &model),
@@ -612,8 +615,13 @@ impl Core {
             Ok(outcome) => Some(outcome),
             Err(e) => e.spent.map(|spent| *spent),
         };
-        ledger.close(reported.as_ref(), answer.as_ref().err());
-        (reported, answer)
+        ledger.close(
+            &used,
+            resolved.fallback_from(&used),
+            reported.as_ref(),
+            answer.as_ref().err(),
+        );
+        (reported, answer, used)
     }
 
     /// Stop for a running AI job (`job_cancel`); nothing happens for other jobs.
@@ -669,25 +677,41 @@ struct LedgerEntry<'a> {
     core: &'a Core,
     spec: RunSpec,
     ref_id: String,
+    fallback_from: Option<String>,
     started: Instant,
     open: bool,
 }
 
 impl<'a> LedgerEntry<'a> {
-    fn open(core: &'a Core, spec: RunSpec, ref_id: &str) -> Self {
+    fn open(core: &'a Core, spec: RunSpec, ref_id: &str, fallback_from: Option<String>) -> Self {
         Self {
             core,
             spec,
             ref_id: ref_id.to_string(),
+            fallback_from,
             started: Instant::now(),
             open: true,
         }
     }
-    fn close(mut self, outcome: Option<&RunOutcome>, error: Option<&AiError>) {
+    /// Records the attempt that answered (`spec`; a failed first attempt before a fallback
+    /// was recorded by [`Core::run_resolved`]).
+    fn close(
+        mut self,
+        spec: &RunSpec,
+        fallback_from: Option<String>,
+        outcome: Option<&RunOutcome>,
+        error: Option<&AiError>,
+    ) {
         self.open = false;
         let elapsed = self.started.elapsed();
-        self.core
-            .record_run(&self.spec, outcome, error, elapsed, Some(&self.ref_id));
+        self.core.record_run(
+            spec,
+            outcome,
+            error,
+            elapsed,
+            Some(&self.ref_id),
+            fallback_from.as_deref(),
+        );
     }
 }
 
@@ -702,6 +726,7 @@ impl Drop for LedgerEntry<'_> {
                 Some(&cancelled),
                 elapsed,
                 Some(&self.ref_id),
+                self.fallback_from.as_deref(),
             );
         }
     }
@@ -1452,6 +1477,172 @@ mod tests {
         assert_eq!(failed.error_class.as_deref(), Some("needs_choice"));
         assert!(fake.calls().is_empty(), "nothing is sent without a choice");
         assert!(ai_runs(&core).is_empty(), "no run, no ledger entry");
+    }
+
+    /// Sets the default's fallback on top of [`seed`]'s default (Claude Code).
+    fn with_fallback(core: &Core, fallback: &str) {
+        let mut r = core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.ai.default_fallback = Some(fallback.into());
+        r.settings_update(&s).unwrap();
+    }
+
+    fn failure(class: ErrorClass, message: &str) -> std::result::Result<RunOutcome, AiError> {
+        let mut e = AiError::new(class);
+        e.message = message.into();
+        Err(e)
+    }
+
+    #[tokio::test]
+    async fn fallback_runs_once_and_both_attempts_are_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            failure(ErrorClass::NeedsLogin, "Claude is not signed in."),
+            failure(ErrorClass::NeedsLogin, "CodeMie is not signed in."),
+            failure(ErrorClass::NeedsLogin, "never asked"),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        with_fallback(&core, "codemie:prod");
+        budget_thread(&core, None);
+        let queued = core
+            .request(mutation(
+                &core,
+                Operation::AiSummarize,
+                json!({"sourceId": "m3"}),
+            ))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2, "one extra attempt, never a loop");
+        assert_eq!(calls[0].profile_id, "claude");
+        assert_eq!(calls[1].profile_id, "codemie:prod");
+        assert_eq!(calls[1].model, None, "the fallback's own default model");
+        assert_eq!(
+            calls[1].input, calls[0].input,
+            "the same run, on the fallback"
+        );
+        let failed = job(&core, &queued["jobId"]);
+        assert_eq!(failed.error_class.as_deref(), Some("needs_login"));
+        assert_eq!(
+            failed.result.as_deref(),
+            Some("CodeMie is not signed in."),
+            "the fallback's error"
+        );
+        let mut runs = ai_runs(&core);
+        // The first attempt is the one not made on a fallback.
+        runs.sort_by_key(|r| !r.data["fallbackFrom"].is_null());
+        assert_eq!(runs.len(), 2);
+        let field = |i: usize, f: &str| runs[i].data[f].clone();
+        assert_eq!(field(0, "profile"), "claude");
+        assert_eq!(field(0, "fallbackFrom"), Value::Null);
+        assert_eq!(field(1, "profile"), "codemie:prod");
+        assert_eq!(field(1, "fallbackFrom"), "claude");
+        for i in 0..2 {
+            assert_eq!(field(i, "status"), "needs_login");
+            assert_eq!(field(i, "purpose"), "summary");
+            assert_eq!(field(i, "refId"), runs[0].data["refId"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_falls_back_and_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            failure(ErrorClass::RateLimited, "Claude is busy."),
+            Ok(draft_answer()),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        with_fallback(&core, "codemie:prod");
+        budget_thread(&core, None);
+        let queued = core
+            .request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        assert_eq!(
+            job(&core, &queued["jobId"]).result.as_deref(),
+            Some("AI draft ready for review")
+        );
+        let made = draft(&core, "ai:m3").unwrap();
+        assert_eq!(
+            made.data["provenance"]["profile"], "codemie:prod",
+            "the draft names the profile that wrote it"
+        );
+        let mut runs = ai_runs(&core);
+        // The first attempt is the one not made on a fallback.
+        runs.sort_by_key(|r| !r.data["fallbackFrom"].is_null());
+        let statuses: Vec<&str> = runs
+            .iter()
+            .map(|r| r.data["status"].as_str().unwrap())
+            .collect();
+        assert_eq!(statuses, ["rate_limited", "ok"]);
+        assert_eq!(runs[1].data["fallbackFrom"], "claude");
+        assert_eq!(runs[1].data["costUsd"], 0.0123);
+    }
+
+    #[tokio::test]
+    async fn no_fallback_after_timeout_invalid_output_failed_or_cancelled() {
+        let bad = || {
+            Ok(answer(
+                json!({"draft": "  ", "questions": []}),
+                "claude-sonnet-4-5",
+                900,
+                0.004,
+            ))
+        };
+        let cases = [
+            failure(ErrorClass::Timeout, "Claude took too long."),
+            failure(
+                ErrorClass::InvalidOutput,
+                "Claude answered in a way Connect can't read.",
+            ),
+            bad(),
+            failure(ErrorClass::Failed, "Claude could not run."),
+            failure(ErrorClass::Cancelled, "Stopped."),
+        ];
+        for first in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = Arc::new(FakeRunner::new(vec![first, Ok(draft_answer())]));
+            let core = test_core(dir.path(), fake.clone(), ready());
+            seed(&core);
+            with_fallback(&core, "codemie:prod");
+            budget_thread(&core, None);
+            core.request(draft_request(&core, json!({"sourceId": "m3"})))
+                .await
+                .unwrap();
+            run_jobs(&core).await;
+            assert_eq!(fake.calls().len(), 1, "no second, paid run");
+            assert!(draft(&core, "ai:m3").is_none());
+            let runs = ai_runs(&core);
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].data["profile"], "claude");
+            assert_eq!(runs[0].data["fallbackFrom"], Value::Null);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unready_profile_runs_on_the_fallback_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(draft_answer())]));
+        let mut profiles = ready();
+        profiles[0].state = crate::ai::profiles::ProfileState::NeedsLogin;
+        let core = test_core(dir.path(), fake.clone(), profiles);
+        seed(&core);
+        with_fallback(&core, "codemie:prod");
+        budget_thread(&core, None);
+        core.request(draft_request(&core, json!({"sourceId": "m3"})))
+            .await
+            .unwrap();
+        run_jobs(&core).await;
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "the unready profile is never run");
+        assert_eq!(calls[0].profile_id, "codemie:prod");
+        let runs = ai_runs(&core);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].data["fallbackFrom"], "claude");
     }
 
     #[tokio::test]

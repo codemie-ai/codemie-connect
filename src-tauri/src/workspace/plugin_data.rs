@@ -7,7 +7,7 @@
 //! Plugin records are global (no workspace, no account) and shown in every snapshot for Today:
 //! `plugin_item` (inbox items, deliveries, held messages) and `plugin_widget` (widget data, work
 //! rows). Each one's id starts with `<plugin>:` and its data names the `plugin`.
-use super::ai::{resolve_route, unready_error, wire_name};
+use super::ai::{resolve_plugin, wire_name};
 use super::{graph, models::*, Core};
 use crate::ai::command::{FolderRun, RunSpec};
 use crate::ai::stream::{AiError, ErrorClass};
@@ -184,42 +184,33 @@ impl Core {
         })
     }
 
-    /// A plugin's Claude run: tool-free (DESIGN 6.2) on the profile it named or the `plugin`
-    /// route, recorded as an `ai_run` of purpose `plugin` with the plugin and the tools it asked
-    /// for. Answers `{answer, model, usage, costUsd, actions: []}`.
+    /// A plugin's Claude run: tool-free (DESIGN 6.2) on the plugin's row when the user set a
+    /// profile on it, else the profile it named, else the `plugin` route (spec §3 "Plugins"),
+    /// with the row's fallback. Each attempt is recorded as an `ai_run` of purpose `plugin` with
+    /// the plugin and the tools it asked for. Answers `{answer, model, usage, costUsd, actions: []}`.
     pub(crate) async fn plugin_claude(
         &self,
         run: PluginRun,
     ) -> std::result::Result<Value, AiError> {
         let profiles = self.profiles.profiles().await;
-        let (profile, route_model) = match &run.profile {
-            Some(id) => {
-                let p = profiles.iter().find(|p| &p.id == id).ok_or_else(|| {
-                    let mut e = AiError::new(ErrorClass::NotConfigured);
-                    e.message = format!("Connect has no AI profile “{id}”.");
-                    e
-                })?;
-                if let Some(e) = unready_error(p) {
-                    return Err(e);
-                }
-                (p.clone(), None)
-            }
-            None => {
-                let settings = self
-                    .repo()
-                    .and_then(|r| r.settings())
-                    .map_err(|_| AiError::new(ErrorClass::Failed))?;
-                resolve_route(&settings.ai, &profiles, Purpose::Plugin)?
-            }
+        let settings = self
+            .repo()
+            .and_then(|r| r.settings())
+            .map_err(|_| AiError::new(ErrorClass::Failed))?;
+        let resolved =
+            resolve_plugin(&settings.ai, &profiles, &run.plugin, run.profile.as_deref())?;
+        // A model the profile doesn't offer (another provider's name) gives way to the row's;
+        // a fallback runs on its own default model.
+        let model = match resolved.fell_back_from {
+            Some(_) => None,
+            None => run
+                .model
+                .filter(|m| !m.is_empty() && resolved.profile.models.iter().any(|c| &c.id == m))
+                .or(resolved.model.clone()),
         };
-        // A model the profile doesn't offer (another provider's name) falls back to the route's.
-        let model = run
-            .model
-            .filter(|m| !m.is_empty() && profile.models.iter().any(|c| &c.id == m))
-            .or(route_model);
         let spec = RunSpec {
             purpose: wire_name(Purpose::Plugin),
-            profile_id: profile.id.clone(),
+            profile_id: resolved.profile.id.clone(),
             model,
             system: if run.folder.is_some() {
                 PLUGIN_FOLDER_SYSTEM
@@ -238,11 +229,21 @@ impl Core {
             folder: run.folder.clone(),
         };
         let started = Instant::now();
-        let result = self
-            .runner
-            .run(spec.clone(), &profile, run.cancel.clone(), Box::new(|_| {}))
-            .await;
         let ref_id = format!("plugin:{}", run.plugin);
+        let decorate = |record: &mut Record| {
+            record.data["plugin"] = json!(run.plugin);
+            record.data["tools"] = json!(run.tools);
+        };
+        let (result, spec) = self
+            .run_resolved_with(
+                &resolved,
+                spec,
+                run.cancel.clone(),
+                Arc::new(|_| {}),
+                Some(&ref_id),
+                &decorate,
+            )
+            .await;
         let mut record = self.ai_run_record(
             &spec,
             result.as_ref().ok(),
@@ -250,8 +251,8 @@ impl Core {
             started.elapsed(),
             Some(&ref_id),
         );
-        record.data["plugin"] = json!(run.plugin);
-        record.data["tools"] = json!(run.tools);
+        record.data["fallbackFrom"] = json!(resolved.fallback_from(&spec));
+        decorate(&mut record);
         self.put_ai_run(&record);
         let outcome = result?;
         let usage = &outcome.usage;
@@ -483,5 +484,120 @@ pub(crate) mod tests {
         // The later one, once its ten minutes have come.
         core.announce_meetings(t + 1800 - 500);
         assert_eq!(heard.of("meeting_soon").len(), 2);
+    }
+
+    fn plugin_run(profile: Option<&str>, model: Option<&str>) -> PluginRun {
+        PluginRun {
+            plugin: "knowledge".into(),
+            title: "Ask".into(),
+            prompt: "What changed?".into(),
+            profile: profile.map(String::from),
+            model: model.map(String::from),
+            tools: String::new(),
+            timeout: Duration::from_secs(30),
+            folder: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    fn answered() -> std::result::Result<crate::ai::stream::RunOutcome, AiError> {
+        Ok(crate::ai::stream::RunOutcome {
+            structured: None,
+            text: "ok".into(),
+            usage: Default::default(),
+            cost_usd: Some(0.001),
+            duration_ms: 10,
+            model: None,
+        })
+    }
+
+    fn set_ai(core: &Core, ai: Value) {
+        let mut r = core.repo().unwrap();
+        let mut s = r.settings().unwrap();
+        s.ai = serde_json::from_value(ai).unwrap();
+        r.settings_update(&s).unwrap();
+    }
+
+    #[tokio::test]
+    async fn plugin_row_wins_over_the_profile_the_plugin_names() {
+        use crate::workspace::ai::tests::ready;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new((0..5).map(|_| answered()).collect()));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        let ran = |i: usize| {
+            let c = &fake.calls()[i];
+            (c.profile_id.clone(), c.model.clone())
+        };
+        // The user's row wins, with its own model, over the plugin's profile and model.
+        set_ai(
+            &core,
+            json!({"defaultProfile": "claude",
+            "plugins": {"knowledge": {"profile": "codemie:prod", "model": "haiku"}}}),
+        );
+        core.plugin_claude(plugin_run(Some("claude"), Some("sonnet")))
+            .await
+            .unwrap();
+        assert_eq!(
+            ran(0),
+            ("codemie:prod".into(), Some("sonnet".into())),
+            "a model the plugin names is used when the profile offers it"
+        );
+        core.plugin_claude(plugin_run(Some("claude"), Some("gpt-5")))
+            .await
+            .unwrap();
+        assert_eq!(ran(1), ("codemie:prod".into(), Some("haiku".into())));
+        // No row: the profile the plugin names, as today.
+        set_ai(&core, json!({"defaultProfile": "codemie:prod"}));
+        core.plugin_claude(plugin_run(Some("claude"), None))
+            .await
+            .unwrap();
+        assert_eq!(ran(2), ("claude".into(), None));
+        // Neither: All plugins, then Default.
+        set_ai(
+            &core,
+            json!({"defaultProfile": "claude",
+            "routes": {"plugin": {"profile": "codemie:prod", "model": "haiku"}}}),
+        );
+        core.plugin_claude(plugin_run(None, None)).await.unwrap();
+        assert_eq!(ran(3), ("codemie:prod".into(), Some("haiku".into())));
+        set_ai(&core, json!({"defaultProfile": "claude"}));
+        core.plugin_claude(plugin_run(None, None)).await.unwrap();
+        assert_eq!(ran(4), ("claude".into(), None));
+    }
+
+    #[tokio::test]
+    async fn a_plugin_run_falls_back_to_its_row_fallback() {
+        use crate::workspace::ai::tests::ready;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Err(AiError::new(ErrorClass::NotInstalled)),
+            answered(),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        set_ai(
+            &core,
+            json!({"defaultProfile": "claude",
+            "plugins": {"knowledge": {"fallback": "codemie:prod"}}}),
+        );
+        let out = core
+            .plugin_claude(plugin_run(Some("claude"), Some("sonnet")))
+            .await
+            .unwrap();
+        assert_eq!(out["answer"], "ok");
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].profile_id, "codemie:prod");
+        assert_eq!(calls[1].model, None);
+        let mut runs = core.repo().unwrap().records_of_kind("ai_run").unwrap();
+        runs.sort_by_key(|r| !r.data["fallbackFrom"].is_null());
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].data["status"], "not_installed");
+        assert_eq!(runs[1].data["fallbackFrom"], "claude");
+        for r in &runs {
+            assert_eq!(r.data["plugin"], "knowledge");
+            assert_eq!(r.data["refId"], "plugin:knowledge");
+        }
     }
 }

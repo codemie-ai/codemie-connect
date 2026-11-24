@@ -15,7 +15,12 @@ use super::templates::{self, Template};
 use crate::ai::command::RunSpec;
 use crate::ai::stream::AiError;
 use crate::workspace::{
-    ai::wire_name, ai_jobs::stored_job, graph, models::*, new_job, prompts, repository::Repository,
+    ai::{wire_name, RouteKey},
+    ai_jobs::stored_job,
+    graph,
+    models::*,
+    new_job, prompts,
+    repository::Repository,
     tasks, Core,
 };
 use serde_json::{json, Value};
@@ -367,8 +372,10 @@ impl Core {
             None
         };
         self.note_step(job, steps, &format!("Writing notes with {}", t.name))?;
-        let (profile, model) = self.route(Purpose::Meeting).await?;
-        let run = self.start_run(job, &profile, &model)?;
+        let resolved = self
+            .resolve_key(&RouteKey::Purpose(Purpose::Meeting))
+            .await?;
+        let run = self.start_run(job, &resolved.profile, &resolved.model)?;
         let s = &settings.meetings;
         let me = self.me_alias(c, s);
         let people = with_me(people_of(event.as_ref()), c);
@@ -406,8 +413,8 @@ impl Core {
         });
         let spec = RunSpec {
             purpose: wire_name(Purpose::Meeting),
-            profile_id: profile.id.clone(),
-            model,
+            profile_id: resolved.profile.id.clone(),
+            model: resolved.model.clone(),
             system: skill
                 .as_deref()
                 .map_or_else(|| notes::NOTES_SYSTEM.to_string(), notes::skill_system),
@@ -418,11 +425,12 @@ impl Core {
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        let requested = spec.model.clone();
         let lines = segments.len();
-        let (reported, answer) = self
-            .run_claude_reported(&run, spec, &profile, id, |v| notes::parse_notes(v, lines))
+        let (reported, answer, used) = self
+            .run_claude_reported(&run, spec, &resolved, id, |v| notes::parse_notes(v, lines))
             .await;
+        let requested = used.model.clone();
+        let profile = resolved.profile_of(&used);
         let out = answer?;
         if plan.find_tasks {
             self.note_step(job, steps, FINDING)?;

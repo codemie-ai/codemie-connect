@@ -520,8 +520,15 @@ impl Core {
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        let (reported, answer) = self
-            .run_claude_reported(&started, spec, &profile, &log.id, |answer| {
+        // No fallback for automations yet (they move to `resolve` with their template rows).
+        let resolved = crate::workspace::ai::Resolved {
+            profile: profile.clone(),
+            model: model.clone(),
+            fallback: None,
+            fell_back_from: None,
+        };
+        let (reported, answer, _) = self
+            .run_claude_reported(&started, spec, &resolved, &log.id, |answer| {
                 prompts::parse_automation(
                     answer,
                     &built.sources,

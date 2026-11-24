@@ -4,10 +4,12 @@
 use super::{models::*, Core};
 use crate::ai::command::RunSpec;
 use crate::ai::profiles::{AiProfile, ProfileState};
-use crate::ai::stream::{AiError, ErrorClass, RunOutcome};
+use crate::ai::stream::{AiError, ErrorClass, RunEvent, RunOutcome};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 /// The ledger purpose of the Settings test run; not a routable [`Purpose`].
 const TEST_PURPOSE: &str = "test";
@@ -51,8 +53,9 @@ pub(super) fn unready_error(profile: &AiProfile) -> Option<AiError> {
     Some(e)
 }
 
-/// The profile and model for one purpose (see [`choose`]). With no profile chosen the
-/// caller must ask the user (`NeedsChoice`); nothing is picked automatically.
+/// The profile and model for one purpose (see [`choose`]), with no fallback: automations
+/// only, until they move to [`resolve`]. With no profile chosen the caller must ask the user
+/// (`NeedsChoice`); nothing is picked automatically.
 pub fn resolve_route(
     settings: &AiSettings,
     profiles: &[AiProfile],
@@ -70,6 +73,122 @@ pub fn resolve_route(
         return Err(e);
     }
     Ok((profile.clone(), chosen.model))
+}
+
+/// What a run uses: the profile and model, the fallback for one retry after a failure that
+/// says the profile itself can't run, and the chosen profile when the fallback is already in
+/// use because the chosen one wasn't ready.
+#[derive(Clone, Debug)]
+pub struct Resolved {
+    pub profile: AiProfile,
+    pub model: Option<String>,
+    pub fallback: Option<AiProfile>,
+    pub fell_back_from: Option<String>,
+}
+
+impl Resolved {
+    /// `fallbackFrom` of the ledger entry for the attempt that ran `spec`.
+    pub(super) fn fallback_from(&self, spec: &RunSpec) -> Option<String> {
+        if spec.profile_id == self.profile.id {
+            self.fell_back_from.clone()
+        } else {
+            Some(self.profile.id.clone())
+        }
+    }
+
+    /// The profile that ran `spec`: the resolved one, or the fallback it retried on.
+    pub(super) fn profile_of(&self, spec: &RunSpec) -> &AiProfile {
+        self.fallback
+            .as_ref()
+            .filter(|f| f.id == spec.profile_id)
+            .unwrap_or(&self.profile)
+    }
+}
+
+/// A run that failed with one of these classes may be retried once on the fallback: they
+/// say the profile itself can't run. Timeout, invalid output, failed and cancelled never are.
+fn falls_back_after(class: ErrorClass) -> bool {
+    matches!(
+        class,
+        ErrorClass::NeedsLogin
+            | ErrorClass::NotInstalled
+            | ErrorClass::TooOld
+            | ErrorClass::NotConfigured
+            | ErrorClass::RateLimited
+    )
+}
+
+/// The profile and model for a row (spec §3). The chosen profile runs when it is ready;
+/// otherwise a ready fallback runs with its own default model and `fell_back_from` names the
+/// chosen one; otherwise the chosen profile's own error. No profile: `NeedsChoice`.
+pub fn resolve(
+    s: &AiSettings,
+    profiles: &[AiProfile],
+    key: &RouteKey,
+) -> std::result::Result<Resolved, AiError> {
+    resolve_chosen(choose(s, key), profiles)
+}
+
+/// The row of a plugin's run (spec §3 "Plugins"): its own row when the user set a profile on
+/// it; else the profile the plugin `named`; else All plugins, else Default. The fallback is
+/// always the plugin row's.
+pub fn resolve_plugin(
+    s: &AiSettings,
+    profiles: &[AiProfile],
+    plugin: &str,
+    named: Option<&str>,
+) -> std::result::Result<Resolved, AiError> {
+    let key = RouteKey::Plugin(plugin.to_string());
+    let row = choose(s, &key);
+    let own = s
+        .plugins
+        .get(plugin)
+        .and_then(|r| set(&r.profile))
+        .is_some();
+    let chosen = match named.filter(|n| !own && !n.is_empty()) {
+        Some(named) => without_self_fallback(Chosen {
+            profile: Some(named.to_string()),
+            model: None,
+            fallback: row.fallback,
+        }),
+        None => row,
+    };
+    resolve_chosen(chosen, profiles)
+}
+
+fn resolve_chosen(c: Chosen, profiles: &[AiProfile]) -> std::result::Result<Resolved, AiError> {
+    let id = c
+        .profile
+        .ok_or_else(|| AiError::new(ErrorClass::NeedsChoice))?;
+    let find = |id: &str| profiles.iter().find(|p| p.id == id);
+    let fallback = c.fallback.as_deref().and_then(find).cloned();
+    let error = match find(&id) {
+        Some(p) => match unready_error(p) {
+            None => {
+                return Ok(Resolved {
+                    profile: p.clone(),
+                    model: c.model,
+                    fallback,
+                    fell_back_from: None,
+                })
+            }
+            Some(e) => e,
+        },
+        None => {
+            let mut e = AiError::new(ErrorClass::NotConfigured);
+            e.message = format!("Connect has no AI profile “{id}”.");
+            e
+        }
+    };
+    match fallback.filter(|f| f.state == ProfileState::Ready) {
+        Some(f) => Ok(Resolved {
+            profile: f,
+            model: None,
+            fallback: None,
+            fell_back_from: Some(id),
+        }),
+        None => Err(error),
+    }
 }
 
 /// The profile id `purpose` is routed to, `None` until the user has chosen one.
@@ -321,17 +440,87 @@ fn valid_month(month: &str) -> bool {
 }
 
 impl Core {
-    /// The profile and model for `purpose` from the saved settings and a fresh-enough
-    /// detection. Errors are the class a caller shows (including `NeedsChoice`).
-    pub(super) async fn route(
+    /// [`resolve`] for `key` from the saved settings and a fresh-enough detection. Errors are
+    /// the class a caller shows (including `NeedsChoice`).
+    pub(super) async fn resolve_key(
         &self,
-        purpose: Purpose,
-    ) -> std::result::Result<(AiProfile, Option<String>), AiError> {
+        key: &RouteKey,
+    ) -> std::result::Result<Resolved, AiError> {
         let settings = self
             .repo()
             .and_then(|r| r.settings())
             .map_err(|_| AiError::new(ErrorClass::Failed))?;
-        resolve_route(&settings.ai, &self.profiles.profiles().await, purpose)
+        resolve(&settings.ai, &self.profiles.profiles().await, key)
+    }
+
+    /// Runs `spec` (built on `r.profile` and `r.model`) once. When that run fails with a class
+    /// that says the profile can't run and a ready fallback was not used yet, the failed
+    /// attempt is recorded here and the same run goes once more to the fallback, on its own
+    /// default model. Answers the last attempt's result and spec; the caller records that one.
+    pub(super) async fn run_resolved(
+        &self,
+        r: &Resolved,
+        spec: RunSpec,
+        cancel: CancellationToken,
+        on_event: Arc<dyn Fn(RunEvent) + Send + Sync>,
+        ref_id: Option<&str>,
+    ) -> (std::result::Result<RunOutcome, AiError>, RunSpec) {
+        self.run_resolved_with(r, spec, cancel, on_event, ref_id, &|_| {})
+            .await
+    }
+
+    /// [`Self::run_resolved`] whose own ledger entry is completed by `decorate` (a plugin's
+    /// name and tools).
+    pub(super) async fn run_resolved_with(
+        &self,
+        r: &Resolved,
+        spec: RunSpec,
+        cancel: CancellationToken,
+        on_event: Arc<dyn Fn(RunEvent) + Send + Sync>,
+        ref_id: Option<&str>,
+        decorate: &(dyn Fn(&mut Record) + Sync),
+    ) -> (std::result::Result<RunOutcome, AiError>, RunSpec) {
+        let events = |f: &Arc<dyn Fn(RunEvent) + Send + Sync>| -> Box<dyn Fn(RunEvent) + Send> {
+            let f = f.clone();
+            Box::new(move |e| f(e))
+        };
+        let started = Instant::now();
+        let first = self
+            .runner
+            .run(spec.clone(), &r.profile, cancel.clone(), events(&on_event))
+            .await;
+        let fallback = match (&first, &r.fallback) {
+            (Err(e), Some(f))
+                if falls_back_after(e.class)
+                    && f.state == ProfileState::Ready
+                    && r.fell_back_from.is_none()
+                    && !cancel.is_cancelled() =>
+            {
+                f
+            }
+            _ => return (first, spec),
+        };
+        let error = first.as_ref().err();
+        let spent = error.and_then(|e| e.spent.as_deref());
+        let mut record = self.ai_run_record(&spec, spent, error, started.elapsed(), ref_id);
+        record.data["fallbackFrom"] = json!(r.fallback_from(&spec));
+        decorate(&mut record);
+        self.put_ai_run(&record);
+        log::info!(
+            "ai: {} could not run ({}), trying its fallback",
+            spec.purpose,
+            wire_name(error.map_or(ErrorClass::Failed, |e| e.class))
+        );
+        let retry = RunSpec {
+            profile_id: fallback.id.clone(),
+            model: None,
+            ..spec
+        };
+        let second = self
+            .runner
+            .run(retry.clone(), fallback, cancel, events(&on_event))
+            .await;
+        (second, retry)
     }
 
     /// Appends one `ai_run` record. Never fails the caller: a ledger problem is logged
@@ -349,6 +538,7 @@ impl Core {
             result.as_ref().err(),
             elapsed,
             ref_id,
+            None,
         );
     }
 
@@ -361,8 +551,10 @@ impl Core {
         error: Option<&AiError>,
         elapsed: Duration,
         ref_id: Option<&str>,
+        fallback_from: Option<&str>,
     ) {
-        let record = self.ai_run_record(spec, outcome, error, elapsed, ref_id);
+        let mut record = self.ai_run_record(spec, outcome, error, elapsed, ref_id);
+        record.data["fallbackFrom"] = json!(fallback_from);
         self.put_ai_run(&record);
     }
 
@@ -419,6 +611,7 @@ impl Core {
                 "tokens": tokens,
                 "costUsd": cost,
                 "refId": ref_id,
+                "fallbackFrom": null,
                 "month": month_now(&zone),
                 "at": at,
             }),
@@ -1047,6 +1240,88 @@ pub(super) mod tests {
                 .unwrap_err()
                 .class,
             ErrorClass::NotConfigured
+        );
+    }
+
+    #[test]
+    fn resolve_uses_the_fallback_when_the_profile_is_not_ready() {
+        let s = settings(
+            json!({"defaultProfile": "codemie:prod", "defaultModel": "sonnet",
+            "defaultFallback": "claude"}),
+        );
+        let k = key(Purpose::Summary);
+        // The chosen profile can run: it is used with its model, the fallback kept for later.
+        let r = resolve(&s, &ready(), &k).unwrap();
+        assert_eq!(r.profile.id, "codemie:prod");
+        assert_eq!(r.model.as_deref(), Some("sonnet"));
+        assert_eq!(r.fallback.as_ref().map(|f| f.id.as_str()), Some("claude"));
+        assert_eq!(r.fell_back_from, None);
+        // Not signed in: the fallback runs with its own default model.
+        let profiles = [
+            profile("claude", ProfileState::Ready),
+            profile("codemie:prod", ProfileState::NeedsLogin),
+        ];
+        let r = resolve(&s, &profiles, &k).unwrap();
+        assert_eq!(r.profile.id, "claude");
+        assert_eq!(r.model, None);
+        assert!(r.fallback.is_none(), "the fallback is used once");
+        assert_eq!(r.fell_back_from.as_deref(), Some("codemie:prod"));
+        // Neither can run: the chosen profile's own error.
+        let profiles = [
+            profile("claude", ProfileState::NotInstalled),
+            profile("codemie:prod", ProfileState::NeedsLogin),
+        ];
+        assert_eq!(
+            resolve(&s, &profiles, &k).unwrap_err().class,
+            ErrorClass::NeedsLogin
+        );
+        // A closed Ollama falls back too.
+        let mut closed = ollama("codemie:local", &["qwen3:8b"]);
+        closed.state = ProfileState::NotRunning;
+        let s = settings(json!({"defaultProfile": "codemie:local", "defaultFallback": "claude"}));
+        let r = resolve(&s, &[closed, profile("claude", ProfileState::Ready)], &k).unwrap();
+        assert_eq!(r.profile.id, "claude");
+        assert_eq!(r.fell_back_from.as_deref(), Some("codemie:local"));
+        // No profile anywhere asks the user, even with a fallback set.
+        let s = settings(json!({"defaultFallback": "claude"}));
+        assert_eq!(
+            resolve(&s, &ready(), &k).unwrap_err().class,
+            ErrorClass::NeedsChoice
+        );
+    }
+
+    #[tokio::test]
+    async fn meeting_notes_need_a_choice_through_the_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let set = |ai: Value| {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai = settings(ai);
+            r.settings_update(&s).unwrap();
+        };
+        let meeting = key(Purpose::Meeting);
+        // Other rows and a fallback are not a choice for meeting notes.
+        set(
+            json!({"routes": {"summary": {"profile": "claude"}, "automation": {"profile": "claude"}},
+            "defaultFallback": "codemie:prod"}),
+        );
+        assert_eq!(
+            core.resolve_key(&meeting).await.unwrap_err().class,
+            ErrorClass::NeedsChoice
+        );
+        assert_eq!(
+            chosen_profile(
+                &core.repo().unwrap().settings().unwrap().ai,
+                Purpose::Meeting
+            ),
+            None
+        );
+        // The default is.
+        set(json!({"defaultProfile": "claude"}));
+        assert_eq!(
+            core.resolve_key(&meeting).await.unwrap().profile.id,
+            "claude"
         );
     }
 
