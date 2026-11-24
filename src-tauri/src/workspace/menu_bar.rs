@@ -393,6 +393,18 @@ fn fix(id: impl Into<String>, text: impl Into<String>, open: Value) -> Fix {
     }
 }
 
+/// A run that failed because Connect was offline or something was rate limited (Claude's
+/// `rate_limited` class, Microsoft's `throttled` code): it passes by itself, so it is not a fix
+/// (ruling 10).
+fn passes_by_itself(run: &Record) -> bool {
+    let error = &run.data["error"];
+    error["class"] == "rate_limited"
+        || matches!(
+            error["code"].as_str(),
+            Some("offline" | "rate_limited" | "throttled")
+        )
+}
+
 /// The six "needs fixing" conditions (design §4, ruling 10). Offline, rate limits, a sync in
 /// progress and a provider turned off are not fixes.
 fn fixes(s: &Snapshot, task_provider: &Value) -> Vec<Fix> {
@@ -451,7 +463,8 @@ fn fixes(s: &Snapshot, task_provider: &Value) -> Vec<Fix> {
                     r.id.clone(),
                 )
             });
-        let Some(run) = newest.filter(|r| r.data["status"] == "failed") else {
+        let Some(run) = newest.filter(|r| r.data["status"] == "failed" && !passes_by_itself(r))
+        else {
             continue;
         };
         let name = a.data["name"]
@@ -549,15 +562,18 @@ fn not_found() -> WorkspaceError {
     WorkspaceError::new("not_found", "This meeting is no longer available.")
 }
 
-/// Keeps the per-meeting marks whose meeting record still exists.
+/// Keeps the per-meeting marks whose meeting record still exists, under whichever account
+/// stored it (a meeting of an account signed out for now keeps its mark).
 fn keep_existing(r: &Repository, seen: &mut Seen) -> Result<()> {
-    let account = r.settings()?.active_connection;
-    seen.meetings.retain(|id, _| {
-        account.as_deref().is_some_and(|c| {
-            r.record(super::meetings::model::KIND, id, Some(c), None)
-                .is_ok()
-        })
-    });
+    let mut gone = Vec::new();
+    for id in seen.meetings.keys() {
+        if !r.has_record(super::meetings::model::KIND, id)? {
+            gone.push(id.clone());
+        }
+    }
+    for id in gone {
+        seen.meetings.remove(&id);
+    }
     Ok(())
 }
 
@@ -595,10 +611,13 @@ impl super::Core {
         let Ok(r) = self.repo() else {
             return Value::Null;
         };
-        read(&r, s, &task_provider, &me, now())
-            .ok()
-            .and_then(|m| serde_json::to_value(m).ok())
-            .unwrap_or(Value::Null)
+        match read(&r, s, &task_provider, &me, now()) {
+            Ok(m) => serde_json::to_value(m).unwrap_or(Value::Null),
+            Err(e) => {
+                log::warn!("menu bar: the count could not be computed ({})", e.code);
+                Value::Null
+            }
+        }
     }
 
     /// `menu_bar_seen {meetingId}` or `{automations: true}` (design §2): answers `{seen: true}`.
@@ -1230,9 +1249,40 @@ mod tests {
         let mut off = failed.clone();
         off[0] = automation("auto-brief", "Morning brief", false);
         assert!(fixes_of(None, off, Value::Null).is_empty());
-        let mut later = failed;
+        let mut later = failed.clone();
         later.push(run_of("run-later", "auto-brief", "ok", 300, ""));
         assert!(fixes_of(None, later, Value::Null).is_empty());
+        // Offline or rate limited passes by itself: no amber. Any other failure: amber.
+        for (error, amber) in [
+            (
+                json!({"class": "failed", "code": "offline", "message": "No network."}),
+                false,
+            ),
+            (
+                json!({"class": "rate_limited", "code": "rate_limited",
+                "message": "Claude is rate limited right now."}),
+                false,
+            ),
+            (
+                json!({"class": "failed", "code": "throttled", "message": "Microsoft is busy."}),
+                false,
+            ),
+            (
+                json!({"class": "needs_login", "code": "needs_login",
+                "message": "Claude is not signed in."}),
+                true,
+            ),
+            (
+                json!({"class": "timeout", "code": "timeout",
+                "message": "Claude took too long to answer."}),
+                true,
+            ),
+        ] {
+            let mut runs = failed.clone();
+            runs[2].data["error"] = error.clone();
+            let f = fixes_of(None, runs, Value::Null);
+            assert_eq!(!f.is_empty(), amber, "{error}");
+        }
 
         // A meeting Connect could not save into its folder.
         let mut stuck = meeting("m1", vec![]);

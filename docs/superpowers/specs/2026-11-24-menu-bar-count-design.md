@@ -100,10 +100,10 @@ Amber is on while any of these holds; each is one fix row `{id, text, open}`:
 | `tasks-token` | `taskProvider.state == "needs_token"` | "<Provider> needs your API token." | Settings › Tasks |
 | `tasks-plugin` | `taskProvider.state == "failed"` | "The <Provider> plugin didn't load." | Settings › Tasks |
 | `tasks-parked` | `taskProvider.parked > 0` | "<Provider> refused <n> task change(s)." | Tasks |
-| `automation:<id>` | an enabled automation's newest run has `status: "failed"` | "<Automation name> failed: <error message>" | Automations › Run log, that run |
+| `automation:<id>` | an enabled automation's newest run has `status: "failed"`, unless it failed because Connect was offline or something was rate limited (`error.code` `offline`, `throttled` or `rate_limited`, or `error.class` `rate_limited`) | "<Automation name> failed: <error message>" | Automations › Run log, that run |
 | `meetings-folder` | any meeting's `saveError.code == "folder_unwritable"` | "Connect can't write to the meetings folder." | Settings › Transcripts & folders |
 
-`offline`, `rate_limited`, `syncing` and `off` are not fixes (they pass by themselves or were chosen). A fix clears when its condition stops holding: a new sign-in, a saved token, Try again or Discard change, a later `ok` run or the automation turned off, a writable folder.
+`offline`, `rate_limited`, `syncing` and `off` are not fixes (they pass by themselves or were chosen), and neither is an automation run that failed for one of those reasons. A fix clears when its condition stops holding: a new sign-in, a saved token, Try again or Discard change, a later `ok` run or the automation turned off, a writable folder.
 
 ### 5. The menu bar
 

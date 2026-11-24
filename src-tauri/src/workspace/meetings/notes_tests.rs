@@ -2347,6 +2347,16 @@ async fn menu_bar_seen_clears_and_meeting_ops_stamp() {
         .unwrap_err();
     assert_eq!(nothing.code, "validation");
     assert_eq!(nothing.message, "Say what was seen.");
+    for said in [json!({"meetingId": ""}), json!({"automations": false})] {
+        let e = op(&e.core, Operation::MenuBarSeen, said.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), e.message.as_str()),
+            ("validation", "Say what was seen."),
+            "{said}"
+        );
+    }
 
     // Editing the notes stamps the meeting seen.
     start_over();
@@ -2372,4 +2382,25 @@ async fn menu_bar_seen_clears_and_meeting_ops_stamp() {
     .await
     .unwrap();
     assert_eq!(menu().await["newMeetings"], json!([]));
+}
+
+/// The stamp finds the meeting under the account that stored it, whichever account is active
+/// (`target()` resolves it under the workspace's bound account), and switching accounts does not
+/// drop the marks of the other account's meetings.
+#[tokio::test]
+async fn meeting_stamp_follows_the_meetings_own_account() {
+    use crate::workspace::menu_bar;
+    let n = notes_env(vec![]);
+    let e = &n.e;
+    downloaded(e, "m1").await;
+    let mut r = e.core.repo().unwrap();
+    let mut s = r.settings().unwrap();
+    s.active_connection = Some("another-account".into());
+    r.settings_update(&s).unwrap();
+    menu_bar::mark_meeting(&mut r, "m1", now()).unwrap();
+    menu_bar::mark_automations(&mut r, now()).unwrap();
+    assert!(menu_bar::seen(&r).meetings.contains_key("m1"));
+    let gone = menu_bar::mark_meeting(&mut r, "nope", now()).unwrap_err();
+    assert_eq!(gone.code, "not_found");
+    assert!(menu_bar::seen(&r).meetings.contains_key("m1"));
 }

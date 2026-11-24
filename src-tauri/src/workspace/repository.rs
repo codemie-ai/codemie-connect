@@ -473,6 +473,14 @@ impl Repository {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(runs)
     }
+    /// Whether a record of `kind` with `id` exists under any connection or workspace.
+    pub fn has_record(&self, kind: &str, id: &str) -> Result<bool> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM records WHERE kind=?1 AND id=?2)",
+            params![kind, id],
+            |row| row.get::<_, bool>(0),
+        )?)
+    }
     pub fn record(
         &self,
         kind: &str,
