@@ -776,6 +776,67 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    /// Settings saved before step 7 resolve to the same profile and model as they did then,
+    /// through the automation pin (`pinned`) and `resolve_route`.
+    #[test]
+    fn todays_settings_and_pins_run_where_they_did_before_step_7() {
+        use crate::workspace::ai::resolve_route;
+        let s = |v: Value| -> AiSettings { serde_json::from_value(v).unwrap() };
+        let pin = |v: Value| -> Route { serde_json::from_value(v).unwrap() };
+        let today = s(json!({"defaultProfile": "claude", "routes": {
+            "summary": {"profile": "codemie:prod", "model": "haiku"},
+            "chat_draft": {"model": "haiku"},
+            "meeting": {"profile": "codemie:prod"},
+            "automation": {"profile": "codemie:prod", "model": "sonnet"},
+            "plugin": {"profile": "codemie:prod", "model": "haiku"}}}));
+        let at = |ai: &AiSettings, p: Purpose| {
+            let (profile, model) = resolve_route(ai, &ready(), p).unwrap();
+            (profile.id, model)
+        };
+        let want = |p: &str, m: Option<&str>| (p.to_string(), m.map(str::to_string));
+        assert_eq!(at(&today, Purpose::MailDraft), want("claude", None));
+        assert_eq!(
+            at(&today, Purpose::Summary),
+            want("codemie:prod", Some("haiku"))
+        );
+        assert_eq!(
+            at(&today, Purpose::ChatDraft),
+            want("claude", Some("haiku"))
+        );
+        assert_eq!(at(&today, Purpose::Meeting), want("codemie:prod", None));
+        assert_eq!(
+            at(&today, Purpose::Plugin),
+            want("codemie:prod", Some("haiku"))
+        );
+        // No pin: the automation route.
+        let ai = super::pinned(today.clone(), &Route::default());
+        assert_eq!(
+            at(&ai, Purpose::Automation),
+            want("codemie:prod", Some("sonnet"))
+        );
+        // A profile pin replaces the route's profile and model.
+        let ai = super::pinned(today.clone(), &pin(json!({"profile": "claude"})));
+        assert_eq!(at(&ai, Purpose::Automation), want("claude", None));
+        // A model-only pin keeps the route's profile.
+        let ai = super::pinned(today.clone(), &pin(json!({"model": "haiku"})));
+        assert_eq!(
+            at(&ai, Purpose::Automation),
+            want("codemie:prod", Some("haiku"))
+        );
+        // A model-only pin with no automation route runs on the default profile.
+        let bare = s(json!({"defaultProfile": "claude"}));
+        let ai = super::pinned(bare, &pin(json!({"model": "sonnet"})));
+        assert_eq!(at(&ai, Purpose::Automation), want("claude", Some("sonnet")));
+        // Nothing chosen still asks the user.
+        let none = super::pinned(AiSettings::default(), &Route::default());
+        assert_eq!(
+            resolve_route(&none, &ready(), Purpose::Automation)
+                .unwrap_err()
+                .class,
+            ErrorClass::NeedsChoice
+        );
+    }
+
     const ACCT: &str = "acct";
     const BASE: i64 = 1_795_000_000;
 

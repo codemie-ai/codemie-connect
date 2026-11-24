@@ -270,7 +270,19 @@ fn validate_ai_settings(
         }
         let pick = |s: &AiSettings| inherited(s, key.as_ref());
         let chosen = pick(&s);
-        if row.fallback.is_some() && row.fallback == chosen.profile {
+        let before = match &key {
+            Some(k) => saved_route(saved, k).cloned().unwrap_or_default(),
+            None => Route {
+                profile: set(&saved.default_profile),
+                model: set(&saved.default_model),
+                fallback: set(&saved.default_fallback),
+            },
+        };
+        // Refused only when the row itself sets both, or sets this fallback in this edit.
+        // A group moving onto a row's saved fallback is fine: `choose` drops it.
+        let sets_both = row.profile.is_some() && row.fallback == row.profile;
+        let new_fallback = row.fallback != before.fallback && row.fallback == chosen.profile;
+        if row.fallback.is_some() && (sets_both || new_fallback) {
             return Err(invalid("The fallback must be a different profile."));
         }
         let Some(model) = &row.model else { continue };
@@ -278,10 +290,7 @@ fn validate_ai_settings(
             .profile
             .as_deref()
             .ok_or_else(|| invalid("Choose a profile before choosing a model."))?;
-        let before = match &key {
-            Some(k) => saved_route(saved, k).and_then(|r| set(&r.model)),
-            None => set(&saved.default_model),
-        };
+        let before = set(&before.model);
         let kept = before.as_ref() == Some(model) && pick(saved).profile == chosen.profile;
         if !kept {
             checked_model(find(profile)?, Some(model))?;
@@ -855,6 +864,69 @@ pub(super) mod tests {
             assert_eq!(
                 e.message, "That model is not offered by this profile.",
                 "{data}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_group_change_onto_a_rows_fallback_is_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let save = |data: Value| {
+            let req = mutation(&core, Operation::AiSettingsSave, data);
+            let core = core.clone();
+            async move { core.request(req).await }
+        };
+        save(json!({"defaultProfile": "claude",
+                    "routes": {"summary": {"fallback": "codemie:prod"},
+                               "automation": {"profile": "claude"},
+                               "triage": {"fallback": "codemie:prod"}}}))
+        .await
+        .unwrap();
+        // Default, then Automations, move onto the profile those rows fall back to.
+        let out = save(json!({"defaultProfile": "codemie:prod",
+                              "routes": {"summary": {"fallback": "codemie:prod"},
+                                         "automation": {"profile": "codemie:prod"},
+                                         "triage": {"fallback": "codemie:prod"}}}))
+        .await
+        .unwrap();
+        for row in ["summary", "triage"] {
+            assert_eq!(
+                out["chosen"][row],
+                json!({"profile": "codemie:prod", "model": null, "fallback": null}),
+                "{row}"
+            );
+        }
+        let ai = core.repo().unwrap().settings().unwrap().ai;
+        assert_eq!(ai.default_profile.as_deref(), Some("codemie:prod"));
+        assert_eq!(
+            ai.routes[&Purpose::Summary].fallback.as_deref(),
+            Some("codemie:prod")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_row_whose_own_fallback_equals_its_profile_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = test_core(dir.path(), Arc::new(FakeRunner::new(vec![])), ready());
+        let save = |data: Value| {
+            let req = mutation(&core, Operation::AiSettingsSave, data);
+            let core = core.clone();
+            async move { core.request(req).await }
+        };
+        for bad in [
+            // The row sets both, equal.
+            json!({"defaultProfile": "claude",
+                   "routes": {"summary": {"profile": "codemie:prod", "fallback": "codemie:prod"}}}),
+            json!({"defaultProfile": "claude",
+                   "plugins": {"knowledge": {"profile": "claude", "fallback": "claude"}}}),
+            // A fallback set in this edit onto the profile the row inherits.
+            json!({"defaultProfile": "claude", "routes": {"summary": {"fallback": "claude"}}}),
+        ] {
+            let e = save(bad.clone()).await.unwrap_err();
+            assert_eq!(
+                e.message, "The fallback must be a different profile.",
+                "{bad}"
             );
         }
     }
