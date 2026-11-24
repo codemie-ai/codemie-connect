@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
 import { meetingsViewChecks } from './meetings-view-checks.mjs';
@@ -22,6 +22,7 @@ import { tasksDatesChecks } from './tasks-dates-checks.mjs';
 import { settingsTasksChecks } from './settings-tasks-checks.mjs';
 import { tasksProviderChecks } from './tasks-provider-checks.mjs';
 import { automationsChecks } from './automations-checks.mjs';
+import { menuBarChecks } from './menu-bar-checks.mjs';
 import { NAV } from '../../workspace/shell.js';
 
 const UI = fileURLToPath(new URL('../../', import.meta.url));
@@ -110,7 +111,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [] }) {
+function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {} }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
@@ -333,11 +334,23 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     settings_update: d => {
       calls.push(['settings_update', clone(d)]);
       if ('view' in d && !['default', 'compact'].includes(d.view)) refuse('view', 'Unknown view.');
+      // menu-bar-checks.mjs: only the fields given change (model.rs's `MenuBarSettings::apply`
+      // shape), merged into the existing four booleans rather than replacing them. The mock can't
+      // recompute the real count from the new settings (that's native, menu_bar.rs `compute`), so
+      // a test hook names which menu-bar-states.json state the next snapshot answers with.
+      if (d.menuBar) {
+        if (window.__menuBarRefuse) refuse('menuBar', 'Couldn’t save the menu bar setting.');
+        s.settings.menuBar = { ...s.settings.menuBar, ...d.menuBar };
+        if (window.__nextMenuBarState) {
+          s.menuBar = clone(menuBarStates[window.__nextMenuBarState]);
+          window.__nextMenuBarState = null;
+        }
+      }
       const rootBefore = s.settings.meetings?.root ?? null;
       if (d.meetings) applyMeetings(d.meetings);
       if (d.capabilities) s.connection.enabled = d.capabilities;
       for (const [k, v] of Object.entries(d)) {
-        if (k === 'capabilities' || k === 'meetings') continue;
+        if (k === 'capabilities' || k === 'meetings' || k === 'menuBar') continue;
         if (k === 'hiddenPages') { s.settings.hiddenPages = navIds.filter(id => v.includes(id)); continue; }
         s.settings[k] = v;
       }
@@ -353,6 +366,12 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     // a mark, once sent, doesn't keep re-qualifying as new on the next render.
     menu_bar_seen: d => {
       calls.push(['menu_bar_seen', clone(d)]);
+      // menu-bar-checks.mjs (a), carried from the Task 6 review (I1): an opt-in switch refuses
+      // every attempt with the persistent `storage` code menu_bar.rs can answer (a repository
+      // write failure), rather than the lenient always-succeeds default, so a check can prove two
+      // marks due at once don't loop (491fcda keeps a refused mark's key, so it isn't resent until
+      // the revision moves).
+      if (window.__menuBarSeenRefuse) throw { code: 'storage', message: 'Workspace storage is unavailable; existing tools are still accessible.' };
       if (d?.meetingId) { s.menuBar = { ...s.menuBar, newMeetings: s.menuBar.newMeetings.filter(id => id !== d.meetingId) }; return { seen: true }; }
       if (d?.automations === true) { s.menuBar = { ...s.menuBar, sources: { ...s.menuBar.sources, automations: 0 } }; return { seen: true }; }
       refuse('menuBarSeen', 'Say what was seen.');
@@ -1524,7 +1543,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (patch) patch(snapshot, now);
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id) })})`);
+  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates() })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   if (fixedNow != null) await context.clock.setFixedTime(fixedNow);
@@ -1542,12 +1561,13 @@ const text = (page, selector) => page.locator(selector).first().innerText();
 /** What the mock recorded for native operation `op` (e.g. `layout_save`), oldest first. */
 const bridgeCalls = async (page, op) => (await page.evaluate(() => window.__bridgeCalls)).filter(([o]) => o === op).map(([, d]) => d);
 
-// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`, `automations`) runs those checks alone (they run last otherwise).
-if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider', 'automations'].includes(process.env.WORKSPACE_E2E_ONLY)) {
+// `WORKSPACE_E2E_ONLY=plugins` (or `meetings`, `meetings-view`, `meetings-settings`, `layout`, `compact`, `analytics`, `reply`, `tasks-dates`, `settings-tasks`, `tasks-provider`, `automations`, `menu-bar`) runs those checks alone (they run last otherwise).
+if (['plugins', 'meetings', 'meetings-view', 'meetings-settings', 'layout', 'compact', 'analytics', 'reply', 'tasks-dates', 'settings-tasks', 'tasks-provider', 'automations', 'menu-bar'].includes(process.env.WORKSPACE_E2E_ONLY)) {
   if (process.env.WORKSPACE_E2E_ONLY === 'tasks-dates') await tasksDatesChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'settings-tasks') await settingsTasksChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'tasks-provider') await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'automations') await automationsChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+  else if (process.env.WORKSPACE_E2E_ONLY === 'menu-bar') await menuBarChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'compact') await compactChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'reply') await replyChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
   else if (process.env.WORKSPACE_E2E_ONLY === 'analytics') await analyticsChecks({ open, check, assert, shot, settled, OUT });
@@ -3404,6 +3424,15 @@ await tasksProviderChecks({ open, check, assert, shot, settled, calls: bridgeCal
 // From field, a triage run's made tasks and a summary run's meeting link, Today's "Made N tasks"
 // line, Default/Compact editor parity, and nothing written or sent by rendering alone.
 await automationsChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
+
+// The Menu bar card (Settings › Notifications), seen marks and menu-row routing (2026-11-24
+// menu-bar-count), M1–M8: the card across both views/themes/three widths, the Tasks switch's
+// settings_update and a forced refusal, the amber "Needs fixing" row and its Fix button, "Nothing
+// is counted.", menu_bar_seen marks sent on open (never twice, never unfocused), notification-open
+// routing, Default/Compact parity, and nothing written by rendering alone. Plus two carried review
+// findings: a persistent `storage` refusal with two marks due at once sends at most 2 in 1 s
+// (Task 6 review I1), and the card lists every fix with no cap (Task 5 review).
+await menuBarChecks({ open, check, assert, shot, settled, calls: bridgeCalls, OUT });
 
 // By date (task provider design §9): completions with the footer's Undo, the row controls, one
 // primary, the Late ⋯ over what the screen shows and the page drawn again at midnight.
