@@ -164,6 +164,12 @@ pub fn run() {
                 // Analytics reads where the dock started its sessions; the private root stays put
                 // when the data folder moves.
                 terminals.set_launch_log(paths.private.join("terminal-launches.jsonl"));
+                // A quiet Core for the tour (design § 2): the test fakes for Claude, Microsoft
+                // and analytics, and the seed's fixed AI profiles.
+                #[cfg(feature = "tour")]
+                if tour {
+                    return workspace::Core::open_tour(handle, paths, commands::tour::quiet::profiles());
+                }
                 workspace::Core::open(handle, paths)
             });
             let core = workspace_state.core.clone();
@@ -176,10 +182,37 @@ pub fn run() {
             app.manage(workspace_state);
             // Plugins start after Core, with the data folder it opened (DESIGN 7.2).
             if let Some(core) = &core {
+                #[cfg(feature = "tour")]
+                if tour {
+                    // Seeded before the plugin manager starts, so its own `set_task_providers`
+                    // finds one set already and does nothing (design § 2). Task 3 gives this its
+                    // own seeded builder; until then, one provider, on and ready.
+                    let tasks = workspace::task_provider::fake::FakeProvider::new();
+                    tasks.set_available(vec![workspace::task_provider::ProviderInfo {
+                        id: "plugin:todoist".into(),
+                        name: "Todoist".into(),
+                        on: true,
+                        ready: true,
+                    }]);
+                    core.set_task_providers(std::sync::Arc::new(tasks));
+                    app.manage(plugins::manager::PluginManager::start_with_http(
+                        app.handle(),
+                        core,
+                        plugins::services::http::Client::offline().0,
+                    ));
+                } else {
+                    app.manage(plugins::manager::PluginManager::start(app.handle(), core));
+                }
+                #[cfg(not(feature = "tour"))]
                 app.manage(plugins::manager::PluginManager::start(app.handle(), core));
             }
             commands::status_smoke::arm(app.handle());
             workspace::setup_tray(app)?;
+            // No icon in the menu bar while touring (design § 3).
+            #[cfg(feature = "tour")]
+            if tour {
+                let _ = app.tray_by_id("main").map(|t| t.set_visible(false));
+            }
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()

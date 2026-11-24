@@ -34,6 +34,10 @@ pub fn lifecycle_plugins(tour: bool) -> Vec<&'static str> {
 #[cfg(feature = "tour")]
 pub use run::*;
 
+/// The tour's quiet AI state: fixed profiles and the answer a stray Claude run would get.
+#[cfg(feature = "tour")]
+pub mod quiet;
+
 #[cfg(feature = "tour")]
 mod run {
     use super::{requested, TOUR};

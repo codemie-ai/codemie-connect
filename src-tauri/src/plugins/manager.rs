@@ -100,10 +100,20 @@ impl PluginManager {
     /// The app's manager: native folder picker, the GitHub CLI and the network; plugins load in
     /// the background, and the tick runs while the app does.
     pub fn start(app: &tauri::AppHandle, core: &Arc<Core>) -> Arc<PluginManager> {
+        Self::start_with_http(app, core, http::Client::new())
+    }
+
+    /// [`start`], with `http` as the `Outside.http` plugins reach the network through: the tour
+    /// passes an offline client (design § 2), so Settings › Plugins is real but sends nothing.
+    pub fn start_with_http(
+        app: &tauri::AppHandle,
+        core: &Arc<Core>,
+        http: http::Client,
+    ) -> Arc<PluginManager> {
         let outside = Outside {
             picker: Arc::new(NativePicker(app.clone())),
             signin: Arc::new(GhCli),
-            http: http::Client::new(),
+            http,
         };
         let manager = PluginManager::new(core.clone(), outside, Limits::default());
         let running = manager.clone();

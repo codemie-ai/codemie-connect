@@ -162,6 +162,38 @@ impl Drop for PluginOp {
         self.0.plugin_ops.fetch_sub(1, Ordering::SeqCst);
     }
 }
+
+/// Tests flip this instead of driving the real, environment-driven tour startup: see
+/// [`tour_sends_nothing`]. A depth, not a bool: `cargo test` runs tests from the same binary
+/// concurrently, and two tests touring at once must not let the first to finish turn this back
+/// off under the second, still-running one.
+#[cfg(test)]
+static TOUR_FOR_TESTS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "tour")]
+fn touring() -> bool {
+    crate::commands::tour::active().is_some()
+}
+
+#[cfg(not(feature = "tour"))]
+fn touring() -> bool {
+    false
+}
+
+/// Whether this process is touring (design § 2, rulings 7 and 9): [`Core::start`] then starts
+/// only the menu-bar refresher, and [`Core::request`] refuses `ActionPrepare`/`ActionConfirm`
+/// with "The tour sends nothing." The app reads [`touring`] (the real tour's
+/// `commands::tour::active()`, always `false` without the `tour` feature); `cfg(test)` reads
+/// [`TOUR_FOR_TESTS`] instead, so both quiet behaviors can be tested without the real,
+/// environment-driven tour startup.
+fn tour_sends_nothing() -> bool {
+    #[cfg(test)]
+    if TOUR_FOR_TESTS.load(Ordering::SeqCst) > 0 {
+        return true;
+    }
+    touring()
+}
+
 impl Core {
     pub fn open(app: tauri::AppHandle, paths: &CorePaths) -> Result<Arc<Self>> {
         // The bundled `codemie-claude` shim is searched after the user's own install.
@@ -257,6 +289,24 @@ impl Core {
             home,
             menu_bar: menu_bar::Refresher::new(now),
         }))
+    }
+    /// A quiet `Core` for the tour (design § 2): Claude, Microsoft reads and the analytics CLI
+    /// are the test fakes, and `profiles` (the seed's fixed three, `commands::tour::quiet`)
+    /// never probes a CLI.
+    #[cfg(feature = "tour")]
+    pub fn open_tour(
+        app: tauri::AppHandle,
+        paths: &CorePaths,
+        profiles: Vec<crate::ai::profiles::AiProfile>,
+    ) -> Result<Arc<Self>> {
+        Self::open_with(
+            Some(app),
+            paths,
+            Arc::new(crate::commands::tour::quiet::fake_runner()),
+            ProfileCache::fixed(profiles),
+            Arc::new(ai_jobs::FakeGraph::default()),
+            Arc::new(analytics::cli::FakeAnalyticsCli::new()),
+        )
     }
     /// Counts a plugin request as running, or refuses it while the workspace is held for a
     /// data-folder change. Counted before `hold` is read, and `quiesce` sets `hold` before it
@@ -437,31 +487,40 @@ impl Core {
             let _ = app.emit(event, json!({"changed":true}));
         }
     }
+    /// Starts the background work: the menu-bar refresher, notification clicks and the
+    /// background loop. Touring (design § 2, ruling 9) starts only the menu-bar refresher: no
+    /// schedules, jobs, Graph sync, task sync, automations or notifications, so every screenshot
+    /// is deterministic for the seed.
     pub fn start(self: &Arc<Self>) {
-        let Some(app) = self.app.clone() else { return };
-        geometry::restore(&app, &self.paths.private);
         self.start_menu_bar();
-        let click_app = app.clone();
-        let _ = app.notification().on_action(move |action| {
-            if action.action_id() == "dismiss" {
-                return;
-            }
-            if let Some(notification) = action.notification() {
-                let extra = notification.extra();
-                if let Some(state) = click_app.try_state::<WorkspaceState>() {
-                    if state.core.is_some() {
-                        let _ = click_app.emit(
-                            "workspace:notification-open",
-                            notification_open_payload(extra),
-                        );
+        if tour_sends_nothing() {
+            return;
+        }
+        // `None` only in unit tests, which have no webview runtime; the loop below needs no app.
+        if let Some(app) = self.app.clone() {
+            geometry::restore(&app, &self.paths.private);
+            let click_app = app.clone();
+            let _ = app.notification().on_action(move |action| {
+                if action.action_id() == "dismiss" {
+                    return;
+                }
+                if let Some(notification) = action.notification() {
+                    let extra = notification.extra();
+                    if let Some(state) = click_app.try_state::<WorkspaceState>() {
+                        if state.core.is_some() {
+                            let _ = click_app.emit(
+                                "workspace:notification-open",
+                                notification_open_payload(extra),
+                            );
+                        }
                     }
                 }
-            }
-            if let Some(w) = click_app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
-        });
+                if let Some(w) = click_app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            });
+        }
         let core = self.clone();
         tauri::async_runtime::spawn(async move {
             let mut last_sync = 0;
@@ -770,6 +829,13 @@ impl Core {
         Ok((w, c))
     }
     pub async fn request(self: &Arc<Self>, req: Request) -> Result<Value> {
+        // Checked before the mutation lock (design § 2, ruling 7): no revision bump, and the
+        // runner's own deny-list (design § 5) is the first guard, this the second.
+        if matches!(req.op, Operation::ActionPrepare | Operation::ActionConfirm)
+            && tour_sends_nothing()
+        {
+            return Err(WorkspaceError::new("tour", "The tour sends nothing."));
+        }
         if req.op == Operation::Snapshot {
             let mut snapshot = self.repo()?.snapshot()?;
             // A setting, not account data: shown whatever the account may read.
@@ -3206,5 +3272,67 @@ mod tests {
         assert!(connect_capabilities(&json!({"capabilities":["everything"]})).is_err());
         assert!(connect_capabilities(&json!({"capabilities":[1]})).is_err());
         assert!(connect_capabilities(&json!({"capabilities":"calendar"})).is_err());
+    }
+
+    /// Flips [`TOUR_FOR_TESTS`] on, awaits `f`, then always flips it back off, even on panic
+    /// (unwinding drops `_reset` on the way out).
+    async fn touring<T>(f: impl std::future::Future<Output = T>) -> T {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TOUR_FOR_TESTS.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        TOUR_FOR_TESTS.fetch_add(1, Ordering::SeqCst);
+        let _reset = Reset;
+        f.await
+    }
+
+    #[tokio::test]
+    async fn tour_refuses_action_prepare_and_confirm() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let revision_before = core.repo().unwrap().revision().unwrap();
+        touring(async {
+            for op in [Operation::ActionPrepare, Operation::ActionConfirm] {
+                let req = mutation(&core, op, json!({"kind": "chat_reply"}));
+                let err = core.request(req).await.unwrap_err();
+                assert_eq!(err.code, "tour");
+                assert_eq!(err.message, "The tour sends nothing.");
+            }
+        })
+        .await;
+        // No mutation ran: the refusal is checked before the mutation lock.
+        assert_eq!(core.repo().unwrap().revision().unwrap(), revision_before);
+    }
+
+    #[tokio::test]
+    async fn a_tour_core_starts_no_background_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = quiet_core(dir.path());
+        let job = new_job(
+            "sync",
+            format!("sync:{}", id()),
+            None,
+            None,
+            now(),
+            json!({}),
+            json!({}),
+        );
+        core.repo().unwrap().enqueue(&job).unwrap();
+        touring(async {
+            core.start();
+            // Polled, not just checked once at the end: a loop that ran would flip this back to
+            // false between rounds too.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+            while std::time::Instant::now() < deadline {
+                assert!(!core.loop_busy.load(Ordering::SeqCst));
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        let jobs = core.repo().unwrap().jobs().unwrap();
+        let seeded = jobs.iter().find(|j| j.id == job.id).expect("job kept");
+        assert_eq!(seeded.state, "queued");
     }
 }

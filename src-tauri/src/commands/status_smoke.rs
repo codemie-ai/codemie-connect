@@ -289,7 +289,7 @@ fn folder_change(app: &AppHandle, mode: &Mode) -> Value {
 /// the tray, not just the workspace). Forces a refresh first (off the main thread: the caller
 /// runs this under `spawn_blocking`), then reads whether the tray with id `main` exists and the
 /// view it last applied. `None` title compares as `""`.
-fn menu_bar_facts(app: &AppHandle, core: &crate::workspace::Core) -> Value {
+pub(crate) fn menu_bar_facts(app: &AppHandle, core: &crate::workspace::Core) -> Value {
     let computed = core.refresh_menu_bar_now().ok();
     let tray = app.tray_by_id("main").is_some();
     let applied = core.menu_bar.last();
