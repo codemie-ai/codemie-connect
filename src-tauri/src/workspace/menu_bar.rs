@@ -721,6 +721,10 @@ pub struct Refresher {
     /// shows what `last` holds. Never taken on the main thread (`open_menu_row` reads `last`
     /// only), and `last` is let go before the tray is set.
     applying: std::sync::Mutex<()>,
+    /// The main thread, recorded by `install` (`setup_tray` calls it there). Each macOS tray
+    /// setter blocks on that thread, so `offer` never waits for `applying` while running on it:
+    /// a busy lock there would deadlock against the apply it is waiting for.
+    main_thread: std::sync::OnceLock<std::thread::ThreadId>,
     /// Installed once the tray exists; until then views are counted but not applied.
     sink: std::sync::OnceLock<Box<dyn TraySink>>,
     clock: std::sync::Mutex<fn() -> i64>,
@@ -734,6 +738,7 @@ impl Refresher {
             notify: Default::default(),
             last: Default::default(),
             applying: Default::default(),
+            main_thread: Default::default(),
             sink: Default::default(),
             clock: std::sync::Mutex::new(clock),
             #[cfg(test)]
@@ -741,8 +746,10 @@ impl Refresher {
         }
     }
 
-    /// Where views go from now on; a second sink is ignored.
+    /// Where views go from now on; a second sink is ignored. Records the calling thread as the
+    /// main thread (`setup_tray` calls this there), so `offer` knows when it must not block.
     pub fn install(&self, sink: Box<dyn TraySink>) {
+        let _ = self.main_thread.set(std::thread::current().id());
         let _ = self.sink.set(sink);
     }
 
@@ -761,10 +768,24 @@ impl Refresher {
     }
 
     /// Applies `view` when a sink is installed and the view differs from the last one applied.
-    /// One apply at a time; the tray is set outside the `last` lock.
+    /// One apply at a time; the tray is set outside the `last` lock. On the main thread, a busy
+    /// `applying` lock is never waited on (ruling: that would deadlock the apply holding it, on
+    /// macOS blocked on this same thread's tray setters); instead this asks for a recount.
     fn offer(&self, view: &TrayView) {
         let Some(sink) = self.sink.get() else { return };
-        let _applying = self.applying.lock().unwrap_or_else(|e| e.into_inner());
+        let on_main_thread = self.main_thread.get() == Some(&std::thread::current().id());
+        let _applying = if on_main_thread {
+            match self.applying.try_lock() {
+                Ok(guard) => guard,
+                Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    self.wake();
+                    return;
+                }
+            }
+        } else {
+            self.applying.lock().unwrap_or_else(|e| e.into_inner())
+        };
         {
             let Ok(mut last) = self.last.lock() else {
                 return;
@@ -2158,5 +2179,65 @@ mod tests {
         assert_eq!(applied.len(), 2, "{applied:?}");
         assert_eq!(applied.last().cloned(), core.menu_bar.last());
         assert_eq!(applied[1].title.as_deref(), Some("1"));
+    }
+
+    fn view(title: &str, amber: bool) -> TrayView {
+        TrayView {
+            title: (!title.is_empty()).then(|| title.to_string()),
+            amber,
+            tooltip: format!("CodeMie Connect ({title})"),
+            rows: Vec::new(),
+        }
+    }
+
+    /// `install` records the calling thread; a thread recorded that way is "the main thread"
+    /// for the guard below, exactly how `setup_tray` makes the real main thread the one that
+    /// matters (ruling: make the tray/loop deadlock impossible).
+    #[test]
+    fn offer_on_the_main_thread_never_waits_for_a_busy_apply() {
+        let refresher = std::sync::Arc::new(Refresher::new(fixture_now));
+        refresher.install_fake(); // this test thread is now "the main thread"
+        refresher.fake().set_slow(200);
+
+        let busy = view("1", false);
+        let worker = {
+            let refresher = refresher.clone();
+            let busy = busy.clone();
+            std::thread::spawn(move || refresher.offer(&busy))
+        };
+        // Give the worker time to take `applying` and start its slow apply.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let main_view = view("2", false);
+        let started = std::time::Instant::now();
+        refresher.offer(&main_view); // on the recorded main thread
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "the main thread waited on a busy apply instead of backing off"
+        );
+
+        worker.join().unwrap();
+        // Only the worker's view was applied; the main thread's offer backed off rather than
+        // overlapping or waiting, so the tray still shows what the worker applied.
+        assert_eq!(refresher.fake().applied(), vec![busy.clone()]);
+        assert_eq!(refresher.last(), Some(busy));
+        assert!(!refresher.fake().overlapped());
+        // It asked for a recount instead of applying `main_view` itself.
+        let woken = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(50),
+                    refresher.notify.notified(),
+                )
+                .await
+                .is_ok()
+            });
+        assert!(
+            woken,
+            "a busy apply on the main thread should wake the loop"
+        );
     }
 }

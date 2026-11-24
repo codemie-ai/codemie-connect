@@ -285,7 +285,40 @@ fn folder_change(app: &AppHandle, mode: &Mode) -> Value {
     out
 }
 
-/// What Rust knows: whether the workspace opened, the data folder, its rows, the plugins.
+/// The tray's menu-bar count, checked against a forced recount (ruling: the status smoke checks
+/// the tray, not just the workspace). Forces a refresh first (off the main thread: the caller
+/// runs this under `spawn_blocking`), then reads whether the tray with id `main` exists and the
+/// view it last applied. `None` title compares as `""`.
+fn menu_bar_facts(app: &AppHandle, core: &crate::workspace::Core) -> Value {
+    let computed = core.refresh_menu_bar_now().ok();
+    let tray = app.tray_by_id("main").is_some();
+    let applied = core.menu_bar.last();
+    let label_of = |title: &Option<String>| title.clone().unwrap_or_default();
+    // The label parses back to the raw count, except capped at 99 ("99+" never ran further).
+    let count_of = |label: &str| -> u64 {
+        match label {
+            "" => 0,
+            "99+" => 100,
+            n => n.parse().unwrap_or(0),
+        }
+    };
+    let applied = applied.map(|v| {
+        json!({
+            "title": label_of(&v.title),
+            "amber": v.amber,
+            "tooltipLength": v.tooltip.chars().count(),
+            "rows": v.rows.len(),
+        })
+    });
+    let computed = computed.map(|v| {
+        let label = label_of(&v.title);
+        json!({"count": count_of(&label), "label": label, "amber": v.amber})
+    });
+    json!({"tray": tray, "applied": applied, "computed": computed})
+}
+
+/// What Rust knows: whether the workspace opened, the data folder, its rows, the plugins, the
+/// menu-bar tray.
 fn facts(app: &AppHandle) -> Value {
     let state = app.state::<WorkspaceState>();
     let core = state.core.clone();
@@ -310,12 +343,14 @@ fn facts(app: &AppHandle) -> Value {
         }
         None => json!({"settled": core.is_none(), "running": false}),
     };
+    let menu_bar = core.as_ref().map(|c| menu_bar_facts(app, c));
     json!({
         "workspaceOpen": core.is_some(),
         "storage": storage,
         "location": location,
         "rows": rows,
         "plugins": plugins,
+        "menuBar": menu_bar,
     })
 }
 
@@ -708,6 +743,23 @@ fn build_report(i: Inputs) -> Value {
             .flatten()
             .map(|f| f.as_str().map_or_else(|| f.to_string(), String::from)),
     );
+    // menuBar is absent when the workspace never opened; present otherwise (facts always adds
+    // it once a Core exists). The tray must exist, and what it shows must match a forced count.
+    if let Some(menu_bar) = i.facts.get("menuBar").filter(|m| !m.is_null()) {
+        if menu_bar["tray"] != true {
+            failed.push("menuBar: no tray icon".into());
+        } else {
+            let applied_title = menu_bar["applied"]["title"].as_str().unwrap_or_default();
+            let applied_amber = menu_bar["applied"]["amber"] == true;
+            let computed_label = menu_bar["computed"]["label"].as_str().unwrap_or_default();
+            let computed_amber = menu_bar["computed"]["amber"] == true;
+            if applied_title != computed_label || applied_amber != computed_amber {
+                failed.push(format!(
+                    "menuBar: the tray shows {applied_title} but the count is {computed_label}"
+                ));
+            }
+        }
+    }
     let report = json!({
         "mode": i.mode.name(),
         "runId": i.run.map(|r| &r.run_id),
@@ -720,6 +772,7 @@ fn build_report(i: Inputs) -> Value {
         "location": i.facts["location"],
         "rows": i.facts["rows"],
         "plugins": i.facts["plugins"],
+        "menuBar": i.facts["menuBar"],
         "ai": ai_summary(&i.ai),
         "window": window,
         "pass": failed.is_empty(),
@@ -968,6 +1021,81 @@ mod tests {
             window: ok,
         });
         assert_eq!(unprepared["pass"], false);
+    }
+
+    fn menu_bar(tray: bool, applied: Value, computed: Value) -> Value {
+        json!({"tray": tray, "applied": applied, "computed": computed})
+    }
+
+    fn report_with_menu_bar(menu_bar: Value) -> Value {
+        let mut f = facts();
+        f["menuBar"] = menu_bar;
+        build_report(Inputs {
+            mode: &Mode::Status,
+            run: Some(&run()),
+            home: Path::new("/Users/taylor"),
+            facts: f,
+            ai: ai_status(),
+            window: json!({"runId": "run-1", "failed": []}),
+        })
+    }
+
+    #[test]
+    fn the_report_checks_the_tray() {
+        let no_tray = report_with_menu_bar(menu_bar(
+            false,
+            json!({"title": "", "amber": false, "tooltipLength": 18, "rows": 0}),
+            json!({"count": 0, "label": "", "amber": false}),
+        ));
+        assert_eq!(no_tray["pass"], false, "{no_tray:#}");
+        assert!(
+            no_tray["failed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f == "menuBar: no tray icon"),
+            "{no_tray:#}"
+        );
+
+        let mismatch = report_with_menu_bar(menu_bar(
+            true,
+            json!({"title": "2", "amber": false, "tooltipLength": 40, "rows": 1}),
+            json!({"count": 3, "label": "3", "amber": false}),
+        ));
+        assert!(
+            mismatch["failed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f == "menuBar: the tray shows 2 but the count is 3"),
+            "{mismatch:#}"
+        );
+
+        let equal = report_with_menu_bar(menu_bar(
+            true,
+            json!({"title": "3", "amber": false, "tooltipLength": 40, "rows": 1}),
+            json!({"count": 3, "label": "3", "amber": false}),
+        ));
+        assert_eq!(equal["pass"], true, "{equal:#}");
+        assert!(
+            !equal["failed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f.as_str().unwrap_or_default().starts_with("menuBar")),
+            "{equal:#}"
+        );
+        // No string in the report's menuBar is longer than the label; tooltipLength is a number.
+        assert!(equal["menuBar"]["applied"]["tooltipLength"].is_number());
+        assert!(equal["menuBar"]["applied"]["rows"].is_number());
+        assert!(equal["menuBar"]["computed"]["count"].is_number());
+        for v in [
+            &equal["menuBar"]["applied"]["title"],
+            &equal["menuBar"]["computed"]["label"],
+        ] {
+            let s = v.as_str().expect("a string");
+            assert!(s.chars().count() <= 1, "{equal:#}");
+        }
     }
 
     #[test]
