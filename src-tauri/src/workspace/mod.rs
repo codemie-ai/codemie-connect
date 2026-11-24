@@ -12,6 +12,7 @@ pub mod graph;
 mod inbox;
 pub(crate) mod markdown;
 pub mod meetings;
+pub(crate) mod menu_bar;
 pub mod models;
 mod paths;
 mod plugin_calls;
@@ -210,8 +211,12 @@ impl Core {
         let home = paths::home_dir();
         #[cfg(any(test, feature = "test-support"))]
         let home = Some(paths.data.join("home"));
+        let mut repository = Repository::open(&paths.database())?;
+        // Written once, the first time Core opens with this step: nothing made before it is new
+        // (menu-bar count design §2).
+        menu_bar::ensure_since(&mut repository, now())?;
         Ok(Arc::new(Self {
-            repository: Mutex::new(Repository::open(&paths.database())?),
+            repository: Mutex::new(repository),
             paths: paths.clone(),
             owner_lock,
             connect_lock,
@@ -1338,6 +1343,9 @@ impl Core {
         // First: a refused meeting setting leaves everything else untouched too.
         if let Some(meetings) = data.get("meetings") {
             s.meetings.apply(meetings)?;
+        }
+        if let Some(menu_bar) = data.get("menuBar") {
+            s.menu_bar.apply(menu_bar)?;
         }
         let old_registration = (s.client_id.clone(), s.tenant.clone());
         if let Some(theme) = data["theme"].as_str() {

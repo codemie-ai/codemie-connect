@@ -247,6 +247,9 @@ pub struct Settings {
     pub meetings: super::meetings::model::MeetingSettings,
     /// Settings › Tasks: the active task provider (design §2 of the task-provider spec).
     pub tasks: super::task_provider::TaskSettings,
+    /// Settings › Notifications › Menu bar: which of the four sources are counted (menu-bar
+    /// count design §1).
+    pub menu_bar: super::menu_bar::MenuBarSettings,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -273,6 +276,7 @@ impl Default for Settings {
             ai: AiSettings::default(),
             meetings: Default::default(),
             tasks: Default::default(),
+            menu_bar: Default::default(),
         }
     }
 }
