@@ -127,6 +127,8 @@ pub struct Core {
     /// The user's home folder, where the default meetings root lives. Tests use a folder inside
     /// their temp data folder, so they never write into the real home.
     home: Option<PathBuf>,
+    /// Keeps the menu-bar tray's count, icon and rows up to date (`menu_bar::Refresher`).
+    pub(crate) menu_bar: menu_bar::Refresher,
 }
 
 fn poisoned() -> WorkspaceError {
@@ -253,6 +255,7 @@ impl Core {
             meetings_told: Default::default(),
             meeting_writes: Default::default(),
             home,
+            menu_bar: menu_bar::Refresher::new(now),
         }))
     }
     /// Counts a plugin request as running, or refuses it while the workspace is held for a
@@ -376,6 +379,8 @@ impl Core {
     }
     pub fn stop_background(&self) {
         self.stop.store(true, Ordering::Relaxed);
+        // The menu-bar refresher sees `stop` and ends.
+        self.menu_bar.wake();
         self.ai_cancel.cancel();
         self.kill_graph_reads();
         // The process exits without dropping tasks: an analytics export would outlive it.
@@ -422,6 +427,10 @@ impl Core {
         Ok(repo)
     }
     pub fn emit(&self, event: &str) {
+        // Only a wake: callers may hold the repository guard, so the count happens later.
+        if event == "workspace:changed" {
+            self.menu_bar.wake();
+        }
         if let Some(app) = &self.app {
             let _ = app.emit(event, json!({"changed":true}));
         }
@@ -429,6 +438,7 @@ impl Core {
     pub fn start(self: &Arc<Self>) {
         let Some(app) = self.app.clone() else { return };
         geometry::restore(&app, &self.paths.private);
+        self.start_menu_bar();
         let click_app = app.clone();
         let _ = app.notification().on_action(move |action| {
             if action.action_id() == "dismiss" {
@@ -2248,15 +2258,131 @@ pub fn workspace_installer_busy(state: tauri::State<'_, WorkspaceState>, busy: b
     }
 }
 
-pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    use tauri::{
-        menu::{Menu, MenuItem},
-        tray::TrayIconBuilder,
+/// The menu bar's template glyph (36 × 36), tinted by AppKit unless it is amber.
+const TRAY_TEMPLATE: tauri::image::Image<'static> =
+    tauri::include_image!("icons/tray-template.png");
+
+/// The menu: the menu-bar rows, a separator when there are any, then Open and Quit.
+fn tray_menu<M: Manager<tauri::Wry>>(
+    app: &M,
+    rows: &[menu_bar::TrayRow],
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    let menu = Menu::new(app)?;
+    for row in rows {
+        menu.append(&MenuItem::with_id(
+            app,
+            &row.id,
+            &row.text,
+            true,
+            None::<&str>,
+        )?)?;
+    }
+    if !rows.is_empty() {
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+    menu.append(&MenuItem::with_id(
+        app,
+        "show",
+        "Open CodeMie Connect",
+        true,
+        None::<&str>,
+    )?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "quit",
+        "Quit CodeMie Connect",
+        true,
+        None::<&str>,
+    )?)?;
+    Ok(menu)
+}
+
+/// The app's tray (id `main`) as the menu-bar refresher sets it (design §5): on macOS the
+/// title and the template or amber glyph; elsewhere no title, the amber glyph when amber.
+struct AppTray {
+    app: tauri::AppHandle,
+    amber: tauri::image::Image<'static>,
+}
+
+impl AppTray {
+    fn new(app: &tauri::AppHandle) -> Self {
+        let amber = tauri::image::Image::new_owned(
+            menu_bar::amber_rgba(TRAY_TEMPLATE.rgba()),
+            TRAY_TEMPLATE.width(),
+            TRAY_TEMPLATE.height(),
+        );
+        Self {
+            app: app.clone(),
+            amber,
+        }
+    }
+}
+
+impl menu_bar::TraySink for AppTray {
+    fn apply(&self, view: &menu_bar::TrayView) {
+        let Some(tray) = self.app.tray_by_id("main") else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let _ = tray.set_title(view.title.as_deref());
+            let icon = if view.amber {
+                self.amber.clone()
+            } else {
+                TRAY_TEMPLATE.clone()
+            };
+            let _ = tray.set_icon(Some(icon));
+            let _ = tray.set_icon_as_template(!view.amber);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let icon = if view.amber {
+                Some(self.amber.clone())
+            } else {
+                self.app.default_window_icon().cloned()
+            };
+            if let Some(icon) = icon {
+                let _ = tray.set_icon(Some(icon));
+            }
+        }
+        let _ = tray.set_tooltip(Some(&view.tooltip));
+        match tray_menu(&self.app, &view.rows) {
+            Ok(menu) => {
+                let _ = tray.set_menu(Some(menu));
+            }
+            Err(e) => log::warn!("menu bar: the tray menu could not be built ({e})"),
+        }
+    }
+}
+
+/// A menu-bar row was clicked: show the window and open the row's place.
+fn open_menu_row(app: &tauri::AppHandle, id: &str) {
+    let Some(state) = app.try_state::<WorkspaceState>() else {
+        return;
     };
-    let show = MenuItem::with_id(app, "show", "Open CodeMie Connect", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit CodeMie Connect", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-    let tray = TrayIconBuilder::new()
+    let Some(core) = &state.core else { return };
+    let Some(row) = core
+        .menu_bar
+        .last()
+        .and_then(|v| v.rows.into_iter().find(|r| r.id == id))
+    else {
+        return;
+    };
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    let _ = app.emit(
+        "workspace:notification-open",
+        menu_bar::open_payload(&row.open),
+    );
+}
+
+pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use tauri::tray::TrayIconBuilder;
+    let menu = tray_menu(app, &[])?;
+    let tray = TrayIconBuilder::with_id("main")
         .tooltip("CodeMie Connect")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -2282,20 +2408,26 @@ pub fn setup_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::erro
                 }
                 app.exit(0);
             }
+            id if id.starts_with("mb:") => open_menu_row(app, id),
             _ => {}
         });
     // The menu bar wants a monochrome template that AppKit tints for the light or dark
     // bar, like the system icons; the colour app icon stays for other platforms' trays.
     #[cfg(target_os = "macos")]
-    let tray = tray
-        .icon(tauri::include_image!("icons/tray-template.png"))
-        .icon_as_template(true);
+    let tray = tray.icon(TRAY_TEMPLATE).icon_as_template(true);
     #[cfg(not(target_os = "macos"))]
     let tray = match app.default_window_icon() {
         Some(icon) => tray.icon(icon.clone()),
         None => tray,
     };
     tray.build(app)?;
+    // The tray exists now: the refresher sets it from here on, starting with a count.
+    if let Some(state) = app.try_state::<WorkspaceState>() {
+        if let Some(core) = &state.core {
+            core.menu_bar.install(Box::new(AppTray::new(app.handle())));
+            core.menu_bar.wake();
+        }
+    }
     Ok(())
 }
 
@@ -2335,7 +2467,7 @@ fn test_core_with_graph(
     profiles: Vec<crate::ai::profiles::AiProfile>,
     graph: Arc<dyn ai_jobs::GraphReads>,
 ) -> Arc<Core> {
-    Core::open_with(
+    let core = Core::open_with(
         None,
         &test_paths(dir),
         runner,
@@ -2343,7 +2475,10 @@ fn test_core_with_graph(
         graph,
         Arc::new(analytics::cli::FakeAnalyticsCli::default()),
     )
-    .unwrap()
+    .unwrap();
+    #[cfg(test)]
+    core.menu_bar.install_fake();
+    core
 }
 
 /// Opens a `Core` on `paths` with no window and a scripted runner, for tests outside this module.

@@ -359,13 +359,6 @@ fn tooltip(m: &MenuBar) -> String {
 
 /// The menu's rows above the separator (design §5): each counted non-zero source, then at most
 /// three fixes, then "and <n> more". Each row is `(id, text)`: the source name or the fix id.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the tray draws these rows; it is wired in the next task"
-    )
-)]
 pub fn rows(m: &MenuBar) -> Vec<(String, String)> {
     /// At most this many fix rows, then "and <n> more".
     const FIX_ROWS: usize = 3;
@@ -598,15 +591,240 @@ pub(crate) fn mark_automations(r: &mut Repository, now: i64) -> Result<()> {
     save(r, &seen, now)
 }
 
+/// One row of the tray's menu: `mb:<row id>`, its text and the place it opens (design §5).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrayRow {
+    pub id: String,
+    pub text: String,
+    pub open: Value,
+}
+
+/// What the tray shows: the title (a number or nothing), whether the icon is amber, the
+/// tooltip and the menu's rows above the separator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrayView {
+    pub title: Option<String>,
+    pub amber: bool,
+    pub tooltip: String,
+    pub rows: Vec<TrayRow>,
+}
+
+/// The place a menu row opens (design §5 "A row's click").
+fn row_open(m: &MenuBar, id: &str) -> Value {
+    match id {
+        "replies" => json!({"route": "inbox", "lane": "reply"}),
+        "tasks" => json!({"route": "tasks"}),
+        "meetings" => match m.new_meetings.as_slice() {
+            [one] => json!({"meetingId": one}),
+            _ => json!({"route": "meetings"}),
+        },
+        "automations" => json!({"route": "automations"}),
+        // Settings › Notifications lists every fix in its Menu bar card.
+        "more" => json!({"route": "settings", "tab": "notifications"}),
+        fix => m
+            .fixes
+            .iter()
+            .find(|f| f.id == fix)
+            .map(|f| f.open.clone())
+            .unwrap_or(Value::Null),
+    }
+}
+
+/// The tray for menu bar `m`: no title at zero.
+pub fn tray_view(m: &MenuBar) -> TrayView {
+    TrayView {
+        title: (!m.label.is_empty()).then(|| m.label.clone()),
+        amber: m.amber,
+        tooltip: m.tooltip.clone(),
+        rows: rows(m)
+            .into_iter()
+            .map(|(id, text)| TrayRow {
+                open: row_open(m, &id),
+                id: format!("mb:{id}"),
+                text,
+            })
+            .collect(),
+    }
+}
+
+/// The `workspace:notification-open` payload of a clicked menu row.
+pub fn open_payload(open: &Value) -> Value {
+    let mut payload = match open {
+        Value::Object(_) => open.clone(),
+        _ => json!({}),
+    };
+    payload["workspaceId"] = PERSONAL.into();
+    payload
+}
+
+/// Amber `#F5A623`.
+const AMBER: [u8; 3] = [245, 166, 35];
+
+/// The template glyph recoloured amber, alpha kept (ruling 9: no new image ships).
+pub fn amber_rgba(rgba: &[u8]) -> Vec<u8> {
+    rgba.chunks_exact(4)
+        .flat_map(|px| [AMBER[0], AMBER[1], AMBER[2], px[3]])
+        .collect()
+}
+
+/// Where a tray view goes: the app's tray, or `FakeTray` in tests.
+pub trait TraySink: Send + Sync {
+    fn apply(&self, view: &TrayView);
+}
+
+/// Records each applied view.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub struct FakeTray {
+    applied: std::sync::Arc<std::sync::Mutex<Vec<TrayView>>>,
+}
+
+#[cfg(test)]
+impl FakeTray {
+    pub fn applied(&self) -> Vec<TrayView> {
+        self.applied.lock().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+impl TraySink for FakeTray {
+    fn apply(&self, view: &TrayView) {
+        self.applied.lock().unwrap().push(view.clone());
+    }
+}
+
+/// How long the refresher waits for more changes before it counts (design §5).
+const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Keeps the tray in step with the workspace: `Core::emit("workspace:changed")` wakes it, and
+/// it applies a view only when it differs from the last one applied.
+pub struct Refresher {
+    notify: std::sync::Arc<tokio::sync::Notify>,
+    last: std::sync::Mutex<Option<TrayView>>,
+    /// Installed once the tray exists; until then views are counted but not applied.
+    sink: std::sync::OnceLock<Box<dyn TraySink>>,
+    clock: std::sync::Mutex<fn() -> i64>,
+    #[cfg(test)]
+    fake: std::sync::OnceLock<FakeTray>,
+}
+
+impl Refresher {
+    pub fn new(clock: fn() -> i64) -> Self {
+        Self {
+            notify: Default::default(),
+            last: Default::default(),
+            sink: Default::default(),
+            clock: std::sync::Mutex::new(clock),
+            #[cfg(test)]
+            fake: Default::default(),
+        }
+    }
+
+    /// Where views go from now on; a second sink is ignored.
+    pub fn install(&self, sink: Box<dyn TraySink>) {
+        let _ = self.sink.set(sink);
+    }
+
+    /// Asks for a recount. Takes no lock, so callers may hold the repository guard.
+    pub fn wake(&self) {
+        self.notify.notify_one();
+    }
+
+    /// The view last applied to the tray.
+    pub fn last(&self) -> Option<TrayView> {
+        self.last.lock().map(|l| l.clone()).unwrap_or(None)
+    }
+
+    fn now(&self) -> i64 {
+        self.clock.lock().map(|c| (*c)()).unwrap_or_else(|_| now())
+    }
+
+    /// Applies `view` when a sink is installed and the view differs from the last one applied.
+    /// The tray is set outside the lock.
+    fn offer(&self, view: &TrayView) {
+        let Some(sink) = self.sink.get() else { return };
+        {
+            let Ok(mut last) = self.last.lock() else {
+                return;
+            };
+            if last.as_ref() == Some(view) {
+                return;
+            }
+            *last = Some(view.clone());
+        }
+        sink.apply(view);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_fake(&self) {
+        let fake = FakeTray::default();
+        self.install(Box::new(fake.clone()));
+        let _ = self.fake.set(fake);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fake(&self) -> &FakeTray {
+        self.fake.get().expect("test_core installs a FakeTray")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_clock(&self, clock: fn() -> i64) {
+        *self.clock.lock().unwrap() = clock;
+    }
+}
+
 impl super::Core {
+    fn me_of(&self, s: &Snapshot) -> MeAlias {
+        s.connection
+            .as_ref()
+            .map(|c| self.me_alias(c, &s.settings.meetings))
+            .unwrap_or_default()
+    }
+
+    /// Counts now and applies the tray view if it changed (design §5). The repository guard is
+    /// held only while reading; it is let go before the tray is set.
+    pub(crate) fn refresh_menu_bar_now(&self) -> Result<TrayView> {
+        let at = self.menu_bar.now();
+        let mut s = self.repo()?.snapshot()?;
+        s.task_provider = self.task_provider_snapshot(&s.settings);
+        let me = self.me_of(&s);
+        let task_provider = s.task_provider.clone();
+        let m = {
+            let r = self.repo()?;
+            read(&r, &mut s, &task_provider, &me, at)?
+        };
+        let view = tray_view(&m);
+        self.menu_bar.offer(&view);
+        Ok(view)
+    }
+
+    /// Starts the refresher: each wake waits [`DEBOUNCE`] for more, then counts once. It runs
+    /// once at start and ends when Connect stops or Core is gone.
+    pub(crate) fn start_menu_bar(self: &std::sync::Arc<Self>) {
+        let notify = self.menu_bar.notify.clone();
+        let core = std::sync::Arc::downgrade(self);
+        tauri::async_runtime::spawn(async move {
+            loop {
+                notify.notified().await;
+                tokio::time::sleep(DEBOUNCE).await;
+                // The wakes that came while waiting are this same count.
+                let _ = tokio::time::timeout(std::time::Duration::ZERO, notify.notified()).await;
+                let Some(core) = core.upgrade() else { break };
+                if core.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                if let Err(e) = core.refresh_menu_bar_now() {
+                    log::warn!("menu bar: the tray could not be refreshed ({})", e.code);
+                }
+            }
+        });
+        self.menu_bar.wake();
+    }
+
     /// The window's `menuBar`, computed after `taskProvider` (design §7). `null` when the
     /// repository can't be read.
     pub(in crate::workspace) fn menu_bar_snapshot(&self, s: &mut Snapshot) -> Value {
-        let me = s
-            .connection
-            .as_ref()
-            .map(|c| self.me_alias(c, &s.settings.meetings))
-            .unwrap_or_default();
+        let me = self.me_of(s);
         let task_provider = s.task_provider.clone();
         let Ok(r) = self.repo() else {
             return Value::Null;
@@ -1646,5 +1864,246 @@ mod tests {
             "menu-bar-reply-cases.json",
             &json!({"records": records, "replies": count}),
         );
+    }
+
+    fn states() -> BTreeMap<String, MenuBar> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../ui/test/fixtures/contract/menu-bar-states.json");
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn tray_view_for_each_state() {
+        let states = states();
+        let zero = tray_view(&states["zero"]);
+        assert_eq!(
+            zero,
+            TrayView {
+                title: None,
+                amber: false,
+                tooltip: "CodeMie Connect".into(),
+                rows: Vec::new(),
+            }
+        );
+
+        let replies = tray_view(&states["replies"]);
+        assert_eq!(replies.title.as_deref(), Some("2"));
+        assert!(!replies.amber);
+        assert_eq!(
+            replies.rows,
+            vec![TrayRow {
+                id: "mb:replies".into(),
+                text: "2 messages need a reply".into(),
+                open: json!({"route": "inbox", "lane": "reply"}),
+            }]
+        );
+
+        assert_eq!(tray_view(&states["capped"]).title.as_deref(), Some("99+"));
+        assert_eq!(tray_view(&states["nothingChosen"]).title, None);
+
+        let amber_only = tray_view(&states["amberOnly"]);
+        assert_eq!(amber_only.title, None);
+        assert!(amber_only.amber);
+        assert_eq!(amber_only.rows.len(), 1);
+        assert_eq!(amber_only.rows[0].id, "mb:tasks-token");
+        assert_eq!(amber_only.rows[0].text, "Todoist needs your API token.");
+        assert_eq!(
+            amber_only.rows[0].open,
+            json!({"route": "settings", "tab": "meetings-tasks"})
+        );
+        assert!(amber_only.tooltip.contains("Needs fixing: "));
+
+        let with_count = tray_view(&states["amberWithCount"]);
+        assert_eq!(
+            (with_count.title.as_deref(), with_count.amber),
+            (Some("2"), true)
+        );
+
+        // "several": one new meeting opens that meeting; two open Meetings.
+        let several = tray_view(&states["several"]);
+        let ids: Vec<&str> = several.rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["mb:replies", "mb:tasks", "mb:meetings", "mb:automations"]
+        );
+        let open_of =
+            |v: &TrayView, id: &str| v.rows.iter().find(|r| r.id == id).unwrap().open.clone();
+        assert_eq!(open_of(&several, "mb:tasks"), json!({"route": "tasks"}));
+        assert_eq!(
+            open_of(&several, "mb:meetings"),
+            json!({"meetingId": "m-ready"})
+        );
+        assert_eq!(
+            open_of(&several, "mb:automations"),
+            json!({"route": "automations"})
+        );
+        let mut two = states["several"].clone();
+        two.sources.meetings = 2;
+        two.new_meetings.push("m-other".into());
+        assert_eq!(
+            open_of(&tray_view(&two), "mb:meetings"),
+            json!({"route": "meetings"})
+        );
+
+        // Beyond three fixes, "and <n> more" opens the card that lists them all.
+        let mut many = states["zero"].clone();
+        many.amber = true;
+        many.fixes = (0..5).map(|n| fix(&format!("f{n}"), "Broken.")).collect();
+        let view = tray_view(&many);
+        assert_eq!(view.rows.len(), 4);
+        assert_eq!(view.rows[3].text, "and 2 more");
+        assert_eq!(
+            view.rows[3].open,
+            json!({"route": "settings", "tab": "notifications"})
+        );
+
+        assert_eq!(
+            open_payload(&json!({"route": "inbox", "lane": "reply"})),
+            json!({"route": "inbox", "lane": "reply", "workspaceId": "personal"})
+        );
+    }
+
+    #[test]
+    fn amber_keeps_alpha() {
+        assert_eq!(
+            amber_rgba(&[0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 255]),
+            vec![245, 166, 35, 0, 245, 166, 35, 128, 245, 166, 35, 255]
+        );
+    }
+
+    fn fixture_now() -> i64 {
+        FIXTURE_NOW
+    }
+
+    /// Waits up to `ms` for the fake tray to hold `n` views.
+    async fn applied_within(core: &crate::workspace::Core, n: usize, ms: u64) -> Vec<TrayView> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        loop {
+            let applied = core.menu_bar.fake().applied();
+            if applied.len() >= n || std::time::Instant::now() >= deadline {
+                return applied;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_applies_only_when_the_view_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = fixture_core(dir.path());
+        core.menu_bar.set_clock(fixture_now);
+        let first = core.refresh_menu_bar_now().unwrap();
+        assert_eq!(first.title, None);
+        core.refresh_menu_bar_now().unwrap();
+        assert_eq!(core.menu_bar.fake().applied().len(), 1);
+
+        core.repo()
+            .unwrap()
+            .put_record(&inbound("mail-1", None, FIXTURE_NOW - 60))
+            .unwrap();
+        let second = core.refresh_menu_bar_now().unwrap();
+        let applied = core.menu_bar.fake().applied();
+        assert_eq!(applied.len(), 2);
+        assert_eq!(applied[1].title.as_deref(), Some("1"));
+        assert_eq!(second, applied[1]);
+        assert_eq!(core.menu_bar.last(), Some(second));
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_changes_applies_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = fixture_core(dir.path());
+        core.menu_bar.set_clock(fixture_now);
+        core.start_menu_bar();
+        // It runs once at start.
+        assert_eq!(applied_within(&core, 1, 2_000).await.len(), 1);
+
+        // Forty writes, each changing the count and emitting, as a sync round does.
+        let at = std::time::Instant::now();
+        for n in 0..40 {
+            core.repo()
+                .unwrap()
+                .put_record(&inbound(&format!("mail-{n}"), None, FIXTURE_NOW - 60 - n))
+                .unwrap();
+            core.emit("workspace:changed");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let burst = at.elapsed();
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let applied = core.menu_bar.fake().applied();
+        assert_eq!(applied.len(), 2, "burst took {burst:?}: {applied:?}");
+        assert_eq!(applied[1].title.as_deref(), Some("40"));
+        core.stop_background();
+    }
+
+    #[tokio::test]
+    async fn emit_under_a_repository_guard_does_not_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = fixture_core(dir.path());
+        core.menu_bar.set_clock(fixture_now);
+        core.start_menu_bar();
+        assert_eq!(applied_within(&core, 1, 2_000).await.len(), 1);
+
+        {
+            let mut g = core.repo().unwrap();
+            g.put_record(&inbound("mail-1", None, FIXTURE_NOW - 60))
+                .unwrap();
+            let at = std::time::Instant::now();
+            core.emit("workspace:changed");
+            assert!(at.elapsed() < std::time::Duration::from_millis(50));
+        }
+        let applied = applied_within(&core, 2, 2_000).await;
+        assert_eq!(applied.len(), 2);
+        assert_eq!(applied[1].title.as_deref(), Some("1"));
+        core.stop_background();
+    }
+
+    static MIDNIGHT_CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    fn midnight_clock() -> i64 {
+        MIDNIGHT_CLOCK.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn the_minute_emit_recounts_after_midnight() {
+        use chrono::TimeZone;
+        let tz: chrono_tz::Tz = "Europe/Vilnius".parse().unwrap();
+        let day = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0)
+            .unwrap()
+            .with_timezone(&tz)
+            .date_naive()
+            .succ_opt()
+            .unwrap();
+        let midnight = tz
+            .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .timestamp();
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = fixture_core(dir.path());
+        choose(&core, [false, true, false, false]);
+        core.repo()
+            .unwrap()
+            .put_record(&task(
+                "task-tomorrow",
+                json!({"text": "Send the plan", "owner": "taylor@example.test",
+                    "due": day.format("%Y-%m-%d").to_string()}),
+            ))
+            .unwrap();
+        MIDNIGHT_CLOCK.store(midnight - 30, std::sync::atomic::Ordering::SeqCst);
+        core.menu_bar.set_clock(midnight_clock);
+        core.start_menu_bar();
+        let applied = applied_within(&core, 1, 2_000).await;
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].title, None);
+
+        MIDNIGHT_CLOCK.store(midnight + 30, std::sync::atomic::Ordering::SeqCst);
+        // The background loop's minute emit; no snapshot is asked for.
+        core.emit("workspace:changed");
+        let applied = applied_within(&core, 2, 2_000).await;
+        assert_eq!(applied.len(), 2);
+        assert_eq!(applied[1].title.as_deref(), Some("1"));
+        assert_eq!(applied[1].rows[0].text, "1 task due or late");
+        core.stop_background();
     }
 }
