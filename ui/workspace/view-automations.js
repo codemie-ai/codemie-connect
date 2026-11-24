@@ -37,6 +37,14 @@ export const EVENTS = [
   ['meeting_ended', 'A meeting ends'],
   ['meeting_ready', 'A meeting’s transcript is ready'],
 ];
+/** The row an automation runs on (DESIGN §2/§3): the template it was made from names its row;
+ *  anything else, or none, is the Automations row. Shared with Task 5 (`settings-ai.js`). */
+export function routeRowOf(draft) {
+  return { 'morning-brief': 'briefing', 'inbox-triage': 'triage', commitments: 'commitments' }[draft.template] || 'automation';
+}
+/** The row labels the automation editor names (DESIGN §2's table), shared with Task 5. */
+export const ROW_LABEL = { briefing: 'Morning briefing', triage: 'Inbox triage', commitments: 'Commitments', automation: 'Automations' };
+
 /** Events a message starts (it has a sender and a conversation). */
 const MESSAGE_EVENTS = new Set(['mail_from', 'chat_from', 'critical']);
 /** The event of a summary automation: it makes a note template's document, no Claude run of its own. */
@@ -381,12 +389,24 @@ function madeHtml(run, s) {
   return parts.length ? `<div class="ws-run-made-block">${parts.join('')}</div>` : '';
 }
 
+/** "Ran on Claude Code because CodeMie · prod Claude is not signed in." when the run fell back
+ *  to a second profile (DESIGN §3 "Automations"); '' otherwise. */
+function fallbackLine(d, ai) {
+  if (!d.fallbackFrom) return '';
+  const profiles = ai?.profiles || [];
+  const fallback = claudeLabel(d.profile, profiles) || d.profile;
+  const chosen = claudeLabel(d.fallbackFrom, profiles) || d.fallbackFrom;
+  const reason = profiles.find(p => p.id === d.fallbackFrom)?.message || 'could not run';
+  return `<p class="ws-inline-note">${icon('info')}<span>${e(`Ran on ${fallback} because ${chosen} ${reason}`)}</span></p>`;
+}
+
 function runDetail(run, s, ai) {
   const d = run.data;
   const parts = [];
   const failure = d.status === 'failed' ? runError(run, ai) : null;
   if (failure) parts.push(errorBox(failure));
   if (d.status === 'skipped') parts.push(`<p class="ws-inline-note">${icon('info')}<span>${e(d.reason || 'This run was skipped.')}</span></p>`);
+  parts.push(fallbackLine(d, ai));
   if (d.output) {
     parts.push(`<div class="ws-run-output">
       <h3 class="ws-run-title">${e(d.output.title || 'Result')}</h3>
@@ -629,6 +649,7 @@ export function draftFromAutomation(a = {}) {
     read: { calendarToday: !!r.calendarToday, needsReply: !!r.needsReply, triggerConversation: !!r.triggerConversation, senderMail: (r.mailFromSenderDays || 0) > 0, commitmentsNotes: !!r.commitmentsNotes, recentMessages: !!r.recentMessages },
     prompt: a.prompt || '', profile: a.ai?.profile || '', model: a.ai?.model || '', cap: a.capUsd != null ? String(a.capUsd) : '',
     deliver: { today: !!d.today, notify: !!d.notify, draftReply: !!d.draftReply, createTasks: !!d.createTasks }, meetingSummary: d.meetingSummary || '', catchUp: !!a.catchUp,
+    template: a.template || '',
   };
 }
 
@@ -656,7 +677,7 @@ export function editorDraft(form) {
     read: { calendarToday: read.has('calendarToday'), needsReply: read.has('needsReply'), triggerConversation: read.has('triggerConversation'), senderMail: read.has('senderMail'), commitmentsNotes: read.has('commitmentsNotes'), recentMessages: read.has('recentMessages') },
     prompt: str('auto-prompt'), profile: str('auto-profile'), model: str('auto-model'), cap: str('auto-cap').trim(),
     deliver: { today: deliver.has('today'), notify: deliver.has('notify'), draftReply: deliver.has('draftReply'), createTasks: deliver.has('createTasks') },
-    meetingSummary: str('auto-summary'), catchUp: form.has('auto-catchup'),
+    meetingSummary: str('auto-summary'), catchUp: form.has('auto-catchup'), template: str('auto-template'),
   };
 }
 
@@ -684,6 +705,7 @@ export function toAutomation(d) {
       read: { calendarToday: false, needsReply: false, triggerConversation: false, mailFromSenderDays: 0, commitmentsNotes: false, recentMessages: false },
       prompt: d.prompt, ai: { profile: null, model: null }, capUsd: null,
       deliver: { today: false, notify: false, draftReply: false, createTasks: false, meetingSummary: d.meetingSummary || null }, catchUp: false,
+      template: d.template || null,
     };
   }
   const message = event && MESSAGE_EVENTS.has(d.event);
@@ -706,7 +728,7 @@ export function toAutomation(d) {
     prompt: d.prompt, ai: { profile: d.profile || null, model: d.profile && d.model ? d.model : null }, capUsd,
     // Tasks only while the switch shows: a hidden one (nothing read gives messages) is kept in the form, not saved.
     deliver: { today: !!d.deliver.today, notify: !!d.deliver.notify, draftReply, createTasks: readsMessages(d) && !!d.deliver.createTasks, meetingSummary: null },
-    catchUp: !event && !!d.catchUp,
+    catchUp: !event && !!d.catchUp, template: d.template || null,
   };
 }
 
@@ -757,9 +779,12 @@ export const needsSenders = draft => draft.kind === 'event' && REPLY_EVENTS.has(
 
 const PROFILE_STATE = { not_installed: 'not installed', too_old: 'update needed', needs_login: 'sign in needed', not_configured: 'not set up', error: 'unavailable', checking: 'checking' };
 
-/** The profile a run would use: the automation's own, else the Automations route, else the default. */
+/** "Claude Code" or the CodeMie profile's own label, "CodeMie · prod"; empty for no profile. */
+const claudeLabel = (id, profiles = []) => (!id ? '' : id.startsWith('codemie:') ? providerLabel(id, profiles) : profileName(id));
+
+/** The profile a run would use: the automation's own, else its row's (DESIGN §2/§3). */
 function effectiveProfile(draft, ai) {
-  return draft.profile || ai?.settings?.routes?.automation?.profile || ai?.settings?.defaultProfile || '';
+  return draft.profile || ai?.chosen?.[routeRowOf(draft)]?.profile || '';
 }
 /** The cost cap only applies to CodeMie: off when the run is known to use Claude Code. */
 function capOff(draft, ai) {
@@ -769,10 +794,11 @@ function capOff(draft, ai) {
 
 function aiSection(draft, ai, errorAt, hidden = false) {
   const profiles = ai?.profiles || [];
-  const routeProfile = ai?.settings?.routes?.automation?.profile || ai?.settings?.defaultProfile || '';
+  const row = routeRowOf(draft);
+  const rowProfile = ai?.chosen?.[row]?.profile || '';
   // Short enough for the half-width select: "Claude Code" or the CodeMie profile, "CodeMie · prod".
-  const routeLabel = !routeProfile ? 'chosen on first use' : routeProfile.startsWith('codemie:') ? providerLabel(routeProfile, profiles) : profileName(routeProfile);
-  const options = [['', `Default · ${routeLabel}`], ...profiles.map(p => [p.id, p.state === 'ready' || !PROFILE_STATE[p.state] ? p.label : `${p.label} (${PROFILE_STATE[p.state]})`])];
+  const rowLabel = rowProfile ? claudeLabel(rowProfile, profiles) : 'chosen on first use';
+  const options = [['', `Default · ${ROW_LABEL[row]} (${rowLabel})`], ...profiles.map(p => [p.id, p.state === 'ready' || !PROFILE_STATE[p.state] ? p.label : `${p.label} (${PROFILE_STATE[p.state]})`])];
   if (draft.profile && !profiles.some(p => p.id === draft.profile)) options.push([draft.profile, `${draft.profile} (not found)`]);
   const chosen = profiles.find(p => p.id === draft.profile);
   let models = [['', 'Model of the default route']];
@@ -864,6 +890,7 @@ export function automationEditor(draft, { zone = 'UTC', ai = {}, error = null, p
   return `<input type="hidden" name="auto-id" value="${e(draft.id)}">
     <input type="hidden" name="auto-enabled" value="${draft.enabled ? 'true' : 'false'}">
     <input type="hidden" name="auto-kind" value="${event ? 'event' : 'schedule'}">
+    <input type="hidden" name="auto-template" value="${e(draft.template || '')}">
     ${errorField('Name', textInput({ id: 'auto-name', name: 'auto-name', value: draft.name, maxlength: NAME_MAX, placeholder: 'e.g. Morning brief', autocomplete: 'off', ...invalid('auto-name', error) }), '', 'auto-name', error)}
 
     <fieldset class="ws-auto-section"><legend>When</legend>

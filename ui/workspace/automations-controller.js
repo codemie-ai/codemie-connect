@@ -195,7 +195,7 @@ export function createAutomationsController({
   async function openEditor(draft, { title } = {}) {
     // Profiles and models for the AI choice; a failure leaves "Default" to choose.
     if (state.ai?.status !== 'ready') {
-      await store.query('ai_status', {}).then(status => Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings })).catch(() => {});
+      await store.query('ai_status', {}).then(status => Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen })).catch(() => {});
     }
     const creating = !draft.id;
     const dialog = openModal({
@@ -243,7 +243,9 @@ export function createAutomationsController({
       case 'automation-new': return openEditor(newAutomationDraft());
       case 'automation-template': {
         const template = TEMPLATES.find(t => t.id === id);
-        return template ? openEditor(draftFromAutomation(template.automation), { title: `New automation: ${template.name}` }) : undefined;
+        return template
+          ? openEditor({ ...draftFromAutomation(template.automation), template: template.id }, { title: `New automation: ${template.name}` })
+          : undefined;
       }
       case 'automation-edit': {
         const rec = automation(id);

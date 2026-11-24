@@ -199,10 +199,13 @@ export function aiStatus(kind = 'both', { defaultProfile } = {}) {
   const profiles = sets[kind];
   if (!profiles) throw new Error(`Unknown aiStatus kind ${kind}`);
   const defaults = { none: null, native: 'claude', native_needs_login: null, codemie_only: 'codemie:prod', both: settings.defaultProfile };
-  return {
+  const out = {
     profiles: JSON.parse(JSON.stringify(profiles)),
     settings: { defaultProfile: defaultProfile === undefined ? defaults[kind] : defaultProfile, routes: kind === 'both' ? settings.routes : {} },
   };
+  // `chosen` (DESIGN §2) matches the contract fixture only for the untouched "both" case.
+  if (kind === 'both' && defaultProfile === undefined) out.chosen = JSON.parse(JSON.stringify(contract('ai-status').chosen));
+  return out;
 }
 
 export const aiUsage = () => contract('ai-usage');

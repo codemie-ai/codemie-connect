@@ -12,6 +12,7 @@
         "tasks"
       ],
       "durationMs": 3100,
+      "fallbackFrom": null,
       "handled": 0,
       "model": "claude-haiku-4-5",
       "output": {
@@ -118,6 +119,7 @@
         "code": "needs_login",
         "message": "Claude is not signed in."
       },
+      "fallbackFrom": null,
       "model": null,
       "profile": "claude",
       "sources": [
@@ -161,6 +163,7 @@
       ],
       "draftId": "ai:m1",
       "durationMs": 4200,
+      "fallbackFrom": null,
       "model": "claude-sonnet-4-5",
       "output": {
         "items": [

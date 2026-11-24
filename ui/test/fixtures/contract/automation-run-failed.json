@@ -12,6 +12,7 @@
       "code": "needs_login",
       "message": "Claude is not signed in."
     },
+    "fallbackFrom": null,
     "model": null,
     "profile": "claude",
     "sources": [

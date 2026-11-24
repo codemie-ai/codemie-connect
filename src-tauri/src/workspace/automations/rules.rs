@@ -1,5 +1,6 @@
 //! Automations (DESIGN 6.6): the model, its validation, when a run is due and which new
 //! messages or ended meetings start one. A due run is queued as an `automation_run` job.
+use crate::workspace::ai::RouteKey;
 use crate::workspace::meetings::model::{MeetingRecord, MeetingState};
 use crate::workspace::meetings::templates::Template;
 use crate::workspace::models::*;
@@ -31,10 +32,24 @@ pub struct Automation {
     pub trigger: Trigger,
     pub read: ReadSet,
     pub prompt: String,
-    pub ai: Route,
+    pub ai: Pin,
     pub cap_usd: Option<f64>,
     pub deliver: Deliver,
     pub catch_up: bool,
+    /// The gallery template this automation was made from ("morning-brief", …), set by Use
+    /// template and kept through edits (DESIGN §3 "Automations"). `None` for an automation
+    /// built from scratch, or saved before this step (DESIGN ruling 12): it keeps the
+    /// Automations row.
+    pub template: Option<String>,
+}
+
+/// The editor's own Claude choice for an automation (DESIGN §3 "Automations"): only a profile
+/// and a model, kept on save. Its fallback is always its row's; a pin never sets its own.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Pin {
+    pub profile: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -104,10 +119,11 @@ impl Default for Automation {
             trigger: Trigger::default(),
             read: ReadSet::default(),
             prompt: String::new(),
-            ai: Route::default(),
+            ai: Pin::default(),
             cap_usd: None,
             deliver: Deliver::default(),
             catch_up: false,
+            template: None,
         }
     }
 }
@@ -229,6 +245,19 @@ impl Automation {
     pub fn is_summary(&self) -> bool {
         self.deliver.meeting_summary.is_some()
     }
+}
+
+/// The row this automation runs on (DESIGN §3 "Automations", spec Values): the template it
+/// was made from names its row; anything else, including none, is the Automations row (an
+/// automation saved before this step has no `template` and keeps that row, DESIGN ruling 12).
+pub fn row_of(a: &Automation) -> RouteKey {
+    let purpose = match a.template.as_deref() {
+        Some("morning-brief") => Purpose::Briefing,
+        Some("inbox-triage") => Purpose::Triage,
+        Some("commitments") => Purpose::Commitments,
+        _ => Purpose::Automation,
+    };
+    RouteKey::Purpose(purpose)
 }
 
 fn valid_time(time: &str) -> bool {
@@ -1316,6 +1345,52 @@ mod tests {
         assert!(!a.read.recent_messages);
         assert!(!a.deliver.create_tasks);
         assert_eq!(a.deliver.meeting_summary, None);
+    }
+
+    #[test]
+    fn template_is_kept_and_old_automations_read_without_it() {
+        // An automation saved before this step has no "template" key: it reads as `None`.
+        let old = json!({
+            "ai": {"profile": "claude"}, "deliver": {}, "enabled": true, "id": "a1",
+            "name": "Old", "prompt": "Do it.",
+            "trigger": {"days": [1], "kind": "schedule", "time": "08:45"}
+        });
+        let a: Automation = serde_json::from_value(old).unwrap();
+        assert_eq!(a.template, None);
+
+        // Use template, then an edit: the template is kept through the round trip.
+        let mut triage = schedule(&[1], "08:00");
+        triage.template = Some("inbox-triage".into());
+        let value = serde_json::to_value(&triage).unwrap();
+        assert_eq!(value["template"], "inbox-triage");
+        let back: Automation = serde_json::from_value(value).unwrap();
+        assert_eq!(back.template.as_deref(), Some("inbox-triage"));
+    }
+
+    #[test]
+    fn row_of_maps_templates() {
+        let with = |t: Option<&str>| Automation {
+            template: t.map(String::from),
+            ..schedule(&[1], "08:45")
+        };
+        assert_eq!(
+            row_of(&with(Some("morning-brief"))),
+            RouteKey::Purpose(Purpose::Briefing)
+        );
+        assert_eq!(
+            row_of(&with(Some("inbox-triage"))),
+            RouteKey::Purpose(Purpose::Triage)
+        );
+        assert_eq!(
+            row_of(&with(Some("commitments"))),
+            RouteKey::Purpose(Purpose::Commitments)
+        );
+        // Any other template, or none, is the Automations row.
+        assert_eq!(
+            row_of(&with(Some("draft-replies"))),
+            RouteKey::Purpose(Purpose::Automation)
+        );
+        assert_eq!(row_of(&with(None)), RouteKey::Purpose(Purpose::Automation));
     }
 
     #[test]

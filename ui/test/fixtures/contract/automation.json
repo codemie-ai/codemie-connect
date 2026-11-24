@@ -3,7 +3,6 @@
     "connectionId": null,
     "data": {
       "ai": {
-        "fallback": null,
         "model": null,
         "profile": null
       },
@@ -28,6 +27,7 @@
         "recentMessages": false,
         "triggerConversation": true
       },
+      "template": null,
       "trigger": {
         "event": "mail_from",
         "keywords": [
@@ -51,7 +51,6 @@
     "connectionId": null,
     "data": {
       "ai": {
-        "fallback": null,
         "model": "claude-haiku-4-5",
         "profile": "claude"
       },
@@ -76,6 +75,7 @@
         "recentMessages": false,
         "triggerConversation": false
       },
+      "template": null,
       "trigger": {
         "days": [
           1,
@@ -99,7 +99,6 @@
     "connectionId": null,
     "data": {
       "ai": {
-        "fallback": null,
         "model": null,
         "profile": null
       },
@@ -124,6 +123,7 @@
         "recentMessages": false,
         "triggerConversation": false
       },
+      "template": null,
       "trigger": {
         "event": "meeting_ready",
         "keywords": [],

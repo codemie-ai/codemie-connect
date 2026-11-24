@@ -53,28 +53,6 @@ pub(super) fn unready_error(profile: &AiProfile) -> Option<AiError> {
     Some(e)
 }
 
-/// The profile and model for one purpose (see [`choose`]), with no fallback: automations
-/// only, until they move to [`resolve`]. With no profile chosen the caller must ask the user
-/// (`NeedsChoice`); nothing is picked automatically.
-pub fn resolve_route(
-    settings: &AiSettings,
-    profiles: &[AiProfile],
-    purpose: Purpose,
-) -> std::result::Result<(AiProfile, Option<String>), AiError> {
-    let chosen = choose(settings, &RouteKey::Purpose(purpose));
-    let id = chosen
-        .profile
-        .ok_or_else(|| AiError::new(ErrorClass::NeedsChoice))?;
-    let profile = profiles
-        .iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| AiError::new(ErrorClass::NotConfigured))?;
-    if let Some(e) = unready_error(profile) {
-        return Err(e);
-    }
-    Ok((profile.clone(), chosen.model))
-}
-
 /// What a run uses: the profile and model, the fallback for one retry after a failure that
 /// says the profile itself can't run, and the chosen profile when the fallback is already in
 /// use because the chosen one wasn't ready.
@@ -1173,77 +1151,6 @@ pub(super) mod tests {
             json!({"profile": "codemie:prod", "model": null, "fallback": null})
         );
         assert_eq!(status["chosen"]["ask"]["profile"], "claude");
-    }
-
-    #[test]
-    fn resolve_route_without_choice_needs_choice() {
-        let e = resolve_route(&AiSettings::default(), &ready(), Purpose::MailDraft).unwrap_err();
-        assert_eq!(e.class, ErrorClass::NeedsChoice);
-        // Detected profiles never become an automatic choice.
-        let only = [profile("claude", ProfileState::Ready)];
-        assert!(resolve_route(&AiSettings::default(), &only, Purpose::Summary).is_err());
-    }
-
-    #[test]
-    fn resolve_route_uses_route_then_default() {
-        let mut s = AiSettings {
-            default_profile: Some("claude".into()),
-            ..Default::default()
-        };
-        s.routes.insert(
-            Purpose::Summary,
-            Route {
-                profile: Some("codemie:prod".into()),
-                model: Some("sonnet".into()),
-                fallback: None,
-            },
-        );
-        s.routes.insert(
-            Purpose::ChatDraft,
-            Route {
-                profile: None,
-                model: Some("haiku".into()),
-                fallback: None,
-            },
-        );
-        let (p, m) = resolve_route(&s, &ready(), Purpose::Summary).unwrap();
-        assert_eq!(
-            (p.id.as_str(), m.as_deref()),
-            ("codemie:prod", Some("sonnet"))
-        );
-        let (p, m) = resolve_route(&s, &ready(), Purpose::ChatDraft).unwrap();
-        assert_eq!((p.id.as_str(), m.as_deref()), ("claude", Some("haiku")));
-        let (p, m) = resolve_route(&s, &ready(), Purpose::MailDraft).unwrap();
-        assert_eq!((p.id.as_str(), m), ("claude", None));
-    }
-
-    #[test]
-    fn resolve_route_unready_profile_errors_with_state() {
-        let s = AiSettings {
-            default_profile: Some("claude".into()),
-            ..Default::default()
-        };
-        for (state, class) in [
-            (ProfileState::NotInstalled, ErrorClass::NotInstalled),
-            (ProfileState::TooOld, ErrorClass::TooOld),
-            (ProfileState::NeedsLogin, ErrorClass::NeedsLogin),
-            (ProfileState::NotConfigured, ErrorClass::NotConfigured),
-            (ProfileState::Error, ErrorClass::Failed),
-        ] {
-            let e = resolve_route(&s, &[profile("claude", state)], Purpose::Plugin).unwrap_err();
-            assert_eq!(e.class, class);
-        }
-        // A saved profile that no longer exists is reported, not replaced.
-        let gone = AiSettings {
-            default_profile: Some("codemie:old".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            resolve_route(&gone, &ready(), Purpose::Plugin)
-                .unwrap_err()
-                .class,
-            ErrorClass::NotConfigured
-        );
     }
 
     #[test]

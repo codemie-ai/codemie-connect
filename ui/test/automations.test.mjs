@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   automations, automationEditor, draftFromAutomation, editorDraft, toAutomation, fieldForError, runLog, outputText,
-  triggerSummary, newAutomationDraft, duplicateDraft, nextRunLabel, deliveriesSentence, errorTarget, needsSenders, TEMPLATES, AUTOMATIONS_DOCK,
+  triggerSummary, newAutomationDraft, duplicateDraft, nextRunLabel, deliveriesSentence, errorTarget, needsSenders, TEMPLATES, AUTOMATIONS_DOCK, routeRowOf,
 } from '../workspace/view-automations.js';
 import { createAutomationsController } from '../workspace/automations-controller.js';
 import { moveTab, normalizeDock, visibleTabs } from '../workspace/dock-model.js';
@@ -183,7 +183,7 @@ test('editor_validates_and_hides_draft_reply_for_schedules', () => {
     trigger: { kind: 'schedule', days: [1, 5], time: '17:30' },
     read: { calendarToday: false, needsReply: true, triggerConversation: false, mailFromSenderDays: 0, commitmentsNotes: false, recentMessages: false },
     prompt: 'Wrap up.', ai: { profile: null, model: null }, capUsd: null,
-    deliver: { today: true, notify: false, draftReply: false, createTasks: false, meetingSummary: null }, catchUp: false,
+    deliver: { today: true, notify: false, draftReply: false, createTasks: false, meetingSummary: null }, catchUp: false, template: null,
   });
   // A reply draft reads the triggering conversation even when its box was locked (not sent).
   const mail = toAutomation({ ...switched, kind: 'event', read: { ...switched.read, triggerConversation: false }, cap: '0.5', profile: 'codemie:prod', model: 'claude-haiku-4-5' });
@@ -237,7 +237,7 @@ test('profiles, models and the cap hint follow the chosen Claude', () => {
   const ctx = { zone: 'UTC', ai: AI };
   const base = newAutomationDraft();
   const html = automationEditor(base, ctx);
-  assert.match(html, /<option value="" selected>Default · Claude Code<\/option>/);
+  assert.match(html, /<option value="" selected>Default · Automations \(Claude Code\)<\/option>/);
   assert.match(html, /name="auto-model"[^>]*disabled/);
   const codemie = automationEditor({ ...base, profile: 'codemie:prod' }, ctx);
   assert.match(codemie, /<option value="claude-haiku-4-5"/);
@@ -596,6 +596,38 @@ test('the editor round-trips the new fields', () => {
   const { summary } = automationContract().automation;
   assert.equal(draftFromAutomation(summary.data).meetingSummary, 'meeting-notes');
   assert.equal(draftFromAutomation(summary.data).event, 'meeting_ready');
+});
+
+test('use template records the template and the editor names its row', () => {
+  // The template names its row; anything else, or none, is the Automations row.
+  assert.equal(routeRowOf({ template: 'morning-brief' }), 'briefing');
+  assert.equal(routeRowOf({ template: 'inbox-triage' }), 'triage');
+  assert.equal(routeRowOf({ template: 'commitments' }), 'commitments');
+  assert.equal(routeRowOf({ template: 'draft-replies' }), 'automation');
+  assert.equal(routeRowOf({}), 'automation');
+
+  const triage = TEMPLATES.find(t => t.id === 'inbox-triage');
+  const draft = { ...draftFromAutomation(triage.automation), template: triage.id };
+  assert.equal(draft.template, 'inbox-triage');
+  assert.equal(toAutomation(draft).template, 'inbox-triage');
+  assert.equal(draftFromAutomation(toAutomation(draft)).template, 'inbox-triage', 'kept through a save round trip');
+  // An automation with no template keeps its blank template through the same round trip.
+  assert.equal(toAutomation(draftFromAutomation(TEMPLATES.find(t => t.id === 'draft-replies').automation)).template, null);
+
+  // The editor's empty Profile option names the row this automation runs on, from `ai.chosen`.
+  const ai = { ...AI, chosen: { ...AI.chosen, triage: { profile: 'claude', model: null, fallback: null } } };
+  const html = automationEditor(draft, { zone: 'UTC', ai });
+  assert.match(html, /<option value="" selected>Default · Inbox triage \(Claude Code\)<\/option>/);
+});
+
+test('run detail names a fallback run', () => {
+  const { runOk } = automationContract();
+  const s = snapshot();
+  const fellBack = { ...runOk, data: { ...runOk.data, fallbackFrom: 'claude', profile: 'codemie:prod' } };
+  const html = runLog([fellBack], { s, expanded: ['run-1'], ai: AI });
+  assert.match(html, /Ran on CodeMie · prod because Claude Code/);
+  // No fallback: no such line.
+  assert.doesNotMatch(runLog([runOk], { s, expanded: ['run-1'], ai: AI }), /Ran on/);
 });
 
 test('the run detail says what tasks were made and links them', () => {

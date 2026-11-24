@@ -3,12 +3,11 @@
 //! notification or a reply draft. Automations never send and never create actions.
 use super::context::{self, Source};
 use super::engine::stored;
-use super::rules::{Automation, SUMMARY_RUN_NOW};
+use super::rules::{row_of, Automation, Pin, SUMMARY_RUN_NOW};
 use crate::ai::command::RunSpec;
-use crate::ai::profiles::AiProfile;
 use crate::ai::stream::{AiError, ErrorClass};
 use crate::workspace::{
-    ai::{resolve_route, wire_name},
+    ai::{resolve, wire_name, Resolved, RouteKey},
     ai_jobs::{
         ai_draft_record, provenance, still_readable, stored_job, DraftOf, MAIL_READ_DEADLINE,
     },
@@ -45,6 +44,9 @@ struct RunLog {
     /// What Claude reported the run cost, even when its answer could not be used.
     cost_usd: Option<f64>,
     sources: Vec<Value>,
+    /// The row's own profile, set once the run fell back to a second one (DESIGN §3
+    /// "Automations").
+    fallback_from: Option<String>,
 }
 
 impl RunLog {
@@ -61,6 +63,7 @@ impl RunLog {
             model: None,
             cost_usd: None,
             sources: Vec::new(),
+            fallback_from: None,
         }
     }
 
@@ -79,6 +82,7 @@ impl RunLog {
             "sources": self.sources,
             "delivered": [],
             "connectionId": self.connection_id,
+            "fallbackFrom": self.fallback_from,
         });
         if let Some(fields) = fields.as_object() {
             for (key, value) in fields {
@@ -98,17 +102,15 @@ impl RunLog {
     }
 }
 
-/// The automation's own profile and model when it pins them, else the `automation` route.
-fn pinned(mut ai: AiSettings, pin: &Route) -> AiSettings {
+/// The automation's own profile and model when it pins them, else its row's (DESIGN §3
+/// "Automations"). The row's own fallback applies either way: the pin has none of its own.
+fn pinned(mut ai: AiSettings, pin: &Pin, row: Purpose) -> AiSettings {
     let profile = pin.profile.clone().filter(|p| !p.is_empty());
     let model = pin.model.clone().filter(|m| !m.is_empty());
     if profile.is_some() {
-        let fallback = ai
-            .routes
-            .get(&Purpose::Automation)
-            .and_then(|r| r.fallback.clone());
+        let fallback = ai.routes.get(&row).and_then(|r| r.fallback.clone());
         ai.routes.insert(
-            Purpose::Automation,
+            row,
             Route {
                 profile,
                 model,
@@ -116,7 +118,7 @@ fn pinned(mut ai: AiSettings, pin: &Route) -> AiSettings {
             },
         );
     } else if model.is_some() {
-        ai.routes.entry(Purpose::Automation).or_default().model = model;
+        ai.routes.entry(row).or_default().model = model;
     }
     ai
 }
@@ -466,10 +468,10 @@ impl Core {
             };
             return self.commit_skipped(job, log, reason);
         }
-        let (profile, model) = self.automation_route(a).await?;
-        log.profile = Some(profile.id.clone());
-        log.model = model.clone();
-        let started = self.start_run(job, &profile, &model)?;
+        let resolved = self.automation_route(a).await?;
+        log.profile = Some(resolved.profile.id.clone());
+        log.model = resolved.model.clone();
+        let started = self.start_run(job, &resolved.profile, &resolved.model)?;
 
         let message = source.as_ref().filter(|s| s.kind == "message");
         let wants_draft = a.deliver.draft_reply && a.replies_to_message() && message.is_some();
@@ -510,8 +512,8 @@ impl Core {
         }
         let spec = RunSpec {
             purpose: wire_name(Purpose::Automation),
-            profile_id: profile.id.clone(),
-            model: model.clone(),
+            profile_id: resolved.profile.id.clone(),
+            model: resolved.model.clone(),
             system,
             input: built.input.clone(),
             schema: Some(prompts::automation_schema(a.deliver.create_tasks)),
@@ -520,14 +522,7 @@ impl Core {
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        // No fallback for automations yet (they move to `resolve` with their template rows).
-        let resolved = crate::workspace::ai::Resolved {
-            profile: profile.clone(),
-            model: model.clone(),
-            fallback: None,
-            fell_back_from: None,
-        };
-        let (reported, answer, _) = self
+        let (reported, answer, used) = self
             .run_claude_reported(&started, spec, &resolved, &log.id, |answer| {
                 prompts::parse_automation(
                     answer,
@@ -537,13 +532,16 @@ impl Core {
                 )
             })
             .await;
+        log.fallback_from = resolved.fallback_from(&used);
+        let ran_on = resolved.profile_of(&used).clone();
+        log.profile = Some(ran_on.id.clone());
         if let Some(o) = &reported {
             log.cost_usd = o.cost_usd;
-            log.model = o.model.clone().or(model.clone());
+            log.model = o.model.clone().or(used.model.clone());
         }
         let output = answer?;
         let outcome = reported.ok_or_else(|| AiError::new(ErrorClass::Failed))?;
-        log.model = log.model.take().or_else(|| profile.default_model.clone());
+        log.model = log.model.take().or_else(|| ran_on.default_model.clone());
 
         // Tasks are made before the run is stored; a retried job finds them by their keys.
         let mut made = if a.deliver.create_tasks {
@@ -571,7 +569,7 @@ impl Core {
                 };
                 // A conversation that changed (or went away) while Claude worked gets no draft.
                 if still_readable(&r, &of)? {
-                    let mut made = provenance(&profile, &outcome, model, conversation);
+                    let mut made = provenance(&ran_on, &outcome, used.model, conversation);
                     made["automationId"] = log.automation_id.clone().into();
                     made["runId"] = log.id.clone().into();
                     Some(ai_draft_record(&of, text, &[], Value::Null, made))
@@ -697,16 +695,18 @@ impl Core {
         Ok(out)
     }
 
-    /// The profile and model for this automation. A storage problem reading the settings keeps
-    /// its own code; only a Claude problem is reported as one.
-    async fn automation_route(&self, a: &Automation) -> Result<(AiProfile, Option<String>)> {
+    /// The profile, model and fallback for this automation's row (DESIGN §3 "Automations"):
+    /// its own pin wins over the row, and the row's own fallback applies either way. A storage
+    /// problem reading the settings keeps its own code; only a Claude problem is reported as
+    /// one.
+    async fn automation_route(&self, a: &Automation) -> Result<Resolved> {
         let settings = self.repo()?.settings()?;
-        let ai = pinned(settings.ai, &a.ai);
-        Ok(resolve_route(
-            &ai,
-            &self.profiles.profiles().await,
-            Purpose::Automation,
-        )?)
+        let row = row_of(a);
+        let RouteKey::Purpose(purpose) = &row else {
+            unreachable!("row_of only ever names a purpose row")
+        };
+        let ai = pinned(settings.ai, &a.ai, *purpose);
+        Ok(resolve(&ai, &self.profiles.profiles().await, &row)?)
     }
 
     /// Ends the job with a `skipped` run that says why.
@@ -767,7 +767,7 @@ impl Core {
 
 #[cfg(test)]
 mod tests {
-    use super::SUMMARY_RUN_NOW;
+    use super::{Pin, SUMMARY_RUN_NOW};
     use crate::ai::command::RunSpec;
     use crate::ai::fake::{FakeRunner, Gate};
     use crate::ai::stream::{AiError, ErrorClass, RunOutcome, Usage};
@@ -784,12 +784,13 @@ mod tests {
     use std::time::Duration;
 
     /// Settings saved before step 7 resolve to the same profile and model as they did then,
-    /// through the automation pin (`pinned`) and `resolve_route`.
+    /// through `choose`/`resolve` and the automation's own pin (`pinned`); an automation with
+    /// no `template` keeps the Automations row (DESIGN ruling 12).
     #[test]
     fn todays_settings_and_pins_run_where_they_did_before_step_7() {
-        use crate::workspace::ai::resolve_route;
+        use crate::workspace::ai::{resolve, RouteKey};
         let s = |v: Value| -> AiSettings { serde_json::from_value(v).unwrap() };
-        let pin = |v: Value| -> Route { serde_json::from_value(v).unwrap() };
+        let pin = |v: Value| -> Pin { serde_json::from_value(v).unwrap() };
         let today = s(json!({"defaultProfile": "claude", "routes": {
             "summary": {"profile": "codemie:prod", "model": "haiku"},
             "chat_draft": {"model": "haiku"},
@@ -797,8 +798,8 @@ mod tests {
             "automation": {"profile": "codemie:prod", "model": "sonnet"},
             "plugin": {"profile": "codemie:prod", "model": "haiku"}}}));
         let at = |ai: &AiSettings, p: Purpose| {
-            let (profile, model) = resolve_route(ai, &ready(), p).unwrap();
-            (profile.id, model)
+            let r = resolve(ai, &ready(), &RouteKey::Purpose(p)).unwrap();
+            (r.profile.id, r.model)
         };
         let want = |p: &str, m: Option<&str>| (p.to_string(), m.map(str::to_string));
         assert_eq!(at(&today, Purpose::MailDraft), want("claude", None));
@@ -815,29 +816,37 @@ mod tests {
             at(&today, Purpose::Plugin),
             want("codemie:prod", Some("haiku"))
         );
-        // No pin: the automation route.
-        let ai = super::pinned(today.clone(), &Route::default());
+        // No pin: the automation's own row (no template → Automations).
+        let ai = super::pinned(today.clone(), &Pin::default(), Purpose::Automation);
         assert_eq!(
             at(&ai, Purpose::Automation),
             want("codemie:prod", Some("sonnet"))
         );
-        // A profile pin replaces the route's profile and model.
-        let ai = super::pinned(today.clone(), &pin(json!({"profile": "claude"})));
+        // A profile pin replaces the row's profile and model.
+        let ai = super::pinned(
+            today.clone(),
+            &pin(json!({"profile": "claude"})),
+            Purpose::Automation,
+        );
         assert_eq!(at(&ai, Purpose::Automation), want("claude", None));
-        // A model-only pin keeps the route's profile.
-        let ai = super::pinned(today.clone(), &pin(json!({"model": "haiku"})));
+        // A model-only pin keeps the row's profile.
+        let ai = super::pinned(
+            today.clone(),
+            &pin(json!({"model": "haiku"})),
+            Purpose::Automation,
+        );
         assert_eq!(
             at(&ai, Purpose::Automation),
             want("codemie:prod", Some("haiku"))
         );
         // A model-only pin with no automation route runs on the default profile.
         let bare = s(json!({"defaultProfile": "claude"}));
-        let ai = super::pinned(bare, &pin(json!({"model": "sonnet"})));
+        let ai = super::pinned(bare, &pin(json!({"model": "sonnet"})), Purpose::Automation);
         assert_eq!(at(&ai, Purpose::Automation), want("claude", Some("sonnet")));
         // Nothing chosen still asks the user.
-        let none = super::pinned(AiSettings::default(), &Route::default());
+        let none = super::pinned(AiSettings::default(), &Pin::default(), Purpose::Automation);
         assert_eq!(
-            resolve_route(&none, &ready(), Purpose::Automation)
+            resolve(&none, &ready(), &RouteKey::Purpose(Purpose::Automation))
                 .unwrap_err()
                 .class,
             ErrorClass::NeedsChoice
@@ -1269,6 +1278,106 @@ mod tests {
         assert_eq!(runs(&core).len(), 2, "kept for when the account is back");
         core.repo().unwrap().purge_connection(ACCT, false).unwrap();
         assert!(runs(&core).is_empty());
+    }
+
+    fn failure(class: ErrorClass, message: &str) -> std::result::Result<RunOutcome, AiError> {
+        let mut e = AiError::new(class);
+        e.message = message.into();
+        Err(e)
+    }
+
+    /// An automation made from the Inbox triage template runs on the Triage row, not
+    /// Automations; its own pin still wins over the row (DESIGN §3 "Automations").
+    #[tokio::test]
+    async fn triage_runs_on_its_row_and_the_pin_still_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            Ok(brief_answer()),
+            Ok(brief_answer()),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.routes.insert(
+                Purpose::Triage,
+                Route {
+                    profile: Some("codemie:prod".into()),
+                    ..Route::default()
+                },
+            );
+            r.settings_update(&s).unwrap();
+        }
+        let mut triage = morning_brief(json!({"needsReply": true}));
+        triage["id"] = json!("auto-triage");
+        triage["name"] = json!("Inbox triage");
+        triage["template"] = json!("inbox-triage");
+        save(&core, triage.clone()).await;
+        run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert_eq!(
+            fake.calls()[0].profile_id,
+            "codemie:prod",
+            "the triage row, no pin"
+        );
+
+        // The automation's own pin still wins over its row.
+        triage["ai"] = json!({"profile": "claude"});
+        save(&core, triage).await;
+        run_now(&core, "auto-triage").await;
+        run_next(&core).await;
+        assert_eq!(
+            fake.calls()[1].profile_id,
+            "claude",
+            "the pin wins over the row"
+        );
+    }
+
+    /// A run whose chosen profile fails for a reason that says it can't run falls back once,
+    /// and the run record says so (DESIGN §3 "Automations").
+    #[tokio::test]
+    async fn a_fallback_run_says_so_in_the_run_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![
+            failure(ErrorClass::NeedsLogin, "Claude Code is not signed in."),
+            Ok(brief_answer()),
+        ]));
+        let core = test_core(dir.path(), fake.clone(), ready());
+        seed(&core);
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.default_fallback = Some("codemie:prod".into());
+            r.settings_update(&s).unwrap();
+        }
+        put(
+            &core,
+            mail(
+                "m1",
+                BASE,
+                "Ann Lee",
+                "ann@example.test",
+                "Can you send the Q3 numbers?",
+            ),
+        );
+        save(&core, morning_brief(json!({"needsReply": true}))).await;
+        let jid = run_now(&core, "auto-brief").await;
+        let done = run_next(&core).await;
+        assert_eq!(done.id, jid);
+        assert_eq!(done.state, "succeeded", "{:?}", done.result);
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2, "one extra attempt, never a loop");
+        assert_eq!(calls[0].profile_id, "claude");
+        assert_eq!(calls[1].profile_id, "codemie:prod");
+
+        let all = runs(&core);
+        assert_eq!(all.len(), 1);
+        let run = &all[0];
+        assert_eq!(run.data["status"], "ok");
+        assert_eq!(run.data["profile"], "codemie:prod", "the fallback that ran");
+        assert_eq!(run.data["fallbackFrom"], "claude");
     }
 
     fn reply_automation() -> Value {
