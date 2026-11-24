@@ -124,6 +124,8 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
    - unknown remote task → a new record (`kind` from its labels, `key` from its key line or `remote:<id>` hashed);
    - removed in the provider → the record goes (its ledger entry becomes `removed`);
    - known task → the merge rule below.
+   - **While an `update` waits, the pull runs before the push**, so the merge decides a field changed on both sides; the update then sends only the fields that still differ from the provider's last-seen values (nothing when the provider's newer value won).
+   - **Reading everything again** (a switch, Check, or a changed provider setting such as the project) pulls what changed since the kept cursor first, so what was done or deleted there meanwhile follows the rules above, then the full list. A cached open task the full list doesn't hold (done or deleted with no cursor to say which, or in a project no longer chosen) leaves the cache and is deleted nowhere; one with a change still waiting stays for the push to settle.
 
 **The merge rule** (three-way, per field, against `remote.base`):
 - only Todoist changed a field → Todoist's value;
@@ -137,7 +139,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - `rate_limited`: nothing is sent until `retryAt` (`Retry-After`, else 60 s), shown in Settings and the Tasks header;
 - `needs_token` (401 or 403): no call until the token is saved again, which queues a sync;
 - `off` or `failed`: no call; changes keep queueing.
-- **Budget:** at most 4 requests a second and 300 in any 15 minutes. That is well under Todoist's published per-user limits (about 1,000 requests and 100 full syncs per 15 minutes at the time of writing). A full pull happens on the first sync, on a switch, and on "Check" only.
+- **Budget:** at most 4 requests a second and 300 in any 15 minutes. That is well under Todoist's published per-user limits (about 1,000 requests and 100 full syncs per 15 minutes at the time of writing). A full pull happens on the first sync, on a switch, on "Check", and when a provider setting (its project) changes.
 
 ### 5. Plugin role and host wiring
 
@@ -218,7 +220,8 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 - **Network:** `uses.network.hosts` is exactly `["api.todoist.com"]`. The host refuses any other address. No sign-in host, no `hosts_from`.
 - **Known limits:**
   - A create whose answer was lost is adopted on replay only while its task is still open in the project. If the user completes it or moves it to another project in Todoist before the replay, the replay makes a second task (the ledger has no remote id to recognise it by).
-  - A task moved to another Todoist project is left out of `changedSince` rather than reported as removed: reporting it would tombstone its key, and moving it back would then delete it. It stays in Connect's cache as last seen; edits still reach it by id.
+  - A task moved to another Todoist project is left out of `changedSince` rather than reported as removed: reporting it would tombstone its key, and moving it back would then delete it. It stays in Connect's cache as last seen, and edits still reach it by id, until the next full pull (a switch, Check, or a changed setting) drops it from the cache, deleting nothing.
+  - `create`'s key lookup is a list of the project's open tasks kept for 60 s. A task with the same key made meanwhile somewhere else (Connect on another Mac, or another app writing the same key) is not in that list, so a create in that window makes a second task. Within one Connect, the ledger and the outbox order rule this out.
   - Lists stop at 100 pages (20,000 items) without a signal.
 
 ### 8. The token and plugin settings in Connect
@@ -402,7 +405,7 @@ Tasks stay `commitment` records. The body (see `tasks.rs`) gains:
 7. **Later folds: Next 7 days, No date, and Later than that** (the reference app has the third). Folds are closed by default and drawn only with rows. *Why:* nothing due in three weeks is left out, and it matches the reference app.
 8. **The meeting column's Undo removes the Todoist task.** Before it was sent, the create is just dropped. After, it is a delete (not a close), the task returns to review, and its key is marked withdrawn so a later add works. *Why:* a closed task would sit in Todoist's completed list as if done.
 9. **Idempotent keys:** the reference app's normalized sha1 of `<source>#<text>`, 16 hex. The key is written as a `key:` line at the end of the description, with the `source:`, `meeting:` and `owner:` lines. A per-provider ledger remembers every key, and `create` adopts an open task with the same key before making one. *Why:* reruns, retries and crashes make nothing new, as in the reference app.
-10. **Rate limits:** Connect's own budget is 4 requests a second and 300 per 15 minutes, with full pulls only on the first sync, a switch or Check. *Why:* a wide margin under Todoist's per-user limits, shared with the reference app while both run.
+10. **Rate limits:** Connect's own budget is 4 requests a second and 300 per 15 minutes, with full pulls only on the first sync, a switch, Check or a changed provider setting. *Why:* a wide margin under Todoist's per-user limits, shared with the reference app while both run.
 11. **Offline outbox replay order:**
     - oldest first; one task's entries in order, waiting for its create;
     - updates coalesced;
