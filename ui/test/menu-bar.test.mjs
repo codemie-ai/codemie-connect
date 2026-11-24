@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { menuBarCard, statusLine, ROWS, seenToSend, openTarget } from '../workspace/menu-bar.js';
+import { menuBarCard, statusLine, ROWS, seenToSend, openTarget, sendSeen } from '../workspace/menu-bar.js';
 import { buildSnapshot, withMenuBar } from './fixtures/workspace-fixture.mjs';
 import { attentionMessages } from '../workspace/selectors.js';
 
@@ -146,4 +146,42 @@ test('menu rows open their place', () => {
   assert.deepEqual(openTarget({ route: 'settings', tab: 'meetings-tasks' }), { route: 'settings', tab: 'meetings-tasks' });
   assert.deepEqual(openTarget({ route: 'automations', runId: 'r1', automationId: 'a1' }), { route: 'automations', runId: 'r1', automationId: 'a1' });
   assert.equal(openTarget({ route: 'nope' }), null);
+});
+
+test('a hidden recurring series marks its new meeting seen too', () => {
+  // A real record this time (review M2): the event carries the series id `isHidden` reads.
+  const snapshot = {
+    revision: 7,
+    records: [{ id: 'm-series', kind: 'event', data: { seriesId: 'series-x' } }],
+    menuBar: { newMeetings: ['m-series'], sources: { automations: 0 } },
+  };
+  const out = seenToSend({ snapshot, route: 'inbox', openMeeting: null, hidden: { ids: [], series: ['series-x'] }, focused: true, editing: false, modal: false, sent: new Set() });
+  assert.deepEqual(out, [{ meetingId: 'm-series' }]);
+});
+
+test('a refused send keeps its mark for the revision; a new revision retries once (review I1)', async () => {
+  const snapshot = { revision: 7, records: [], menuBar: { newMeetings: ['m-1'], sources: { automations: 0 } } };
+  const args = { snapshot, route: 'meetings', openMeeting: 'm-1', hidden: HIDDEN_NONE, focused: true, editing: false, modal: false };
+  const sent = new Set();
+  let attempts = 0;
+  const send = () => { attempts++; return Promise.reject(new Error('storage')); };
+
+  const first = seenToSend({ ...args, sent });
+  assert.deepEqual(first, [{ meetingId: 'm-1' }]);
+  sendSeen(first, snapshot.revision, sent, send);
+  await Promise.resolve().then(() => {});
+
+  // A re-render at the same revision: the refused mark's key survived, so nothing is due again —
+  // unlike deleting the key on failure, which would resend it forever against another mark due
+  // the same render (review I1: 429 sends/s measured that way).
+  assert.deepEqual(seenToSend({ ...args, sent }), []);
+  assert.equal(attempts, 1);
+
+  // A new revision: the key no longer matches, so the mark is due once more.
+  const laterSnapshot = { ...snapshot, revision: 8 };
+  const second = seenToSend({ ...args, snapshot: laterSnapshot, sent });
+  assert.deepEqual(second, [{ meetingId: 'm-1' }]);
+  sendSeen(second, laterSnapshot.revision, sent, send);
+  await Promise.resolve().then(() => {});
+  assert.equal(attempts, 2);
 });

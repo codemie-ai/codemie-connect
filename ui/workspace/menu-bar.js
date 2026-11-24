@@ -79,6 +79,11 @@ export function menuBarCard(s) {
 
 // ---------------------------------------------------------------- seen marks and opening
 
+// A payload's own key: one meeting, or the one shared `"automations"` key (results are seen all
+// together, design §2). `seenToSend` and `sendSeen` share it so a key one writes to `sent` is the
+// same one the other reads.
+const seenKey = payload => (payload.meetingId ? `meeting:${payload.meetingId}` : 'automations');
+
 /**
  * What `menu_bar_seen` marks `app.js` should send after this render (design §6, rulings 6-7):
  * pure — `app.js` computes `focused` (`document.visibilityState === 'visible' && document.
@@ -93,7 +98,7 @@ export function seenToSend({ snapshot, route, openMeeting, todayCards = [], hidd
   if (!focused || editing || modal) return [];
   const menuBar = snapshot?.menuBar || {};
   const revision = snapshot?.revision;
-  const alreadySent = key => !!sent?.has(`${revision}|${key}`);
+  const alreadySent = payload => !!sent?.has(`${revision}|${seenKey(payload)}`);
 
   // A meeting record, by id, to tell a hidden series apart (`isHidden` wants `{ev, rec}`).
   const meetingRecords = new Map();
@@ -106,19 +111,38 @@ export function seenToSend({ snapshot, route, openMeeting, todayCards = [], hidd
 
   const out = [];
   for (const id of menuBar.newMeetings || []) {
-    const key = `meeting:${id}`;
-    if (alreadySent(key)) continue;
+    const payload = { meetingId: id };
+    if (alreadySent(payload)) continue;
     const inFront = route === 'meetings' && openMeeting === id;
     const hiddenNow = isHidden(meetingRecords.get(id) || { id }, hidden);
-    if (inFront || hiddenNow) out.push({ meetingId: id });
+    if (inFront || hiddenNow) out.push(payload);
   }
 
-  if (!alreadySent('automations') && (menuBar.sources?.automations || 0) > 0) {
+  if ((menuBar.sources?.automations || 0) > 0) {
+    const payload = { automations: true };
     const shown = route === 'automations' || (route === 'today' && todayCards.includes('automations'));
-    if (shown) out.push({ automations: true });
+    if (shown && !alreadySent(payload)) out.push(payload);
   }
 
   return out;
+}
+
+/**
+ * Sends each mark in `marks` through `send(payload) -> Promise`, recording `"<revision>|<key>"` in
+ * `sent` before the call settles, so a render the send's own refresh triggers never resends the
+ * same mark. A refusal keeps the key: design §6 says "a failure is ignored (the next render tries
+ * again)", and read with "each mark is sent at most once per snapshot revision" that means the
+ * next render at a *new* revision — a refused attempt reserves no revision (`store.js`), so
+ * nothing has changed for this mark to retry yet. Deleting the key on refusal instead lets two
+ * marks due in the same render take turns re-sending each other without end (one render's refresh
+ * finds the other's key gone and resends it, forever) — a review measured 429 sends/s against a
+ * persistent `storage` refusal that way.
+ */
+export function sendSeen(marks, revision, sent, send) {
+  for (const payload of marks) {
+    sent.add(`${revision}|${seenKey(payload)}`);
+    send(payload).catch(() => {});
+  }
 }
 
 /** The menu's and the fixes' routes a `workspace:notification-open` payload may open (design §6

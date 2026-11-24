@@ -41,7 +41,7 @@ import { createMeetingsController } from './meetings-controller.js';
 import { activeTaskTarget, addedLine } from './task-target.js';
 import { createMeetingsSettingsController, newMeetingsSettingsView } from './meetings-settings-controller.js';
 import { HASH_ROUTES, meetingHash, newMeetingsView, parseHash } from './meetings-model.js';
-import { seenToSend, openTarget } from './menu-bar.js';
+import { seenToSend, openTarget, sendSeen } from './menu-bar.js';
 import { renderShell, terminalButton, groupFolded, NAV_GROUPS, firstVisiblePage, toggleHiddenPage } from './shell.js';
 import { createTerminalDock } from './terminal-dock.js';
 import { Terminal } from '../vendor/xterm.mjs';
@@ -581,30 +581,43 @@ async function render() {
 
 // ---------------------------------------------------------------- menu-bar seen marks
 
-// Marks already sent (or being sent) this run, keyed `"<revision>|<key>"` (design §6): a mark
-// goes out at most once per snapshot revision, even across renders and focus changes.
+// Marks already sent (or refused) this run, keyed `"<revision>|<key>"` (design §6): a mark goes
+// out at most once per snapshot revision, even across renders and focus changes. A refusal keeps
+// its key (review I1): the mark is due again only once the revision moves, not on the next render
+// at the same one — see `sendSeen`'s doc in menu-bar.js for why.
 const menuBarSeenSent = new Set();
 
+/** Whether the Automation results widget is in Today's own grid now (`drawn.placed`, not
+ *  `drawn.below`'s auto-appended cards — "automations" is never one of those: `drawnGrid`'s
+ *  `wanted` list is `['meetings', PLUGINS_CARD]` only). Checked apart from the general `onToday`
+ *  on purpose (review M4): design §6 ties the seen mark to "Today with its card", and ruling 7's
+ *  "If wrong" warns against clearing results a below-the-grid card left the user scrolling past;
+ *  `drawn.placed` is unambiguously "the grid" by `drawnGrid`'s own naming. */
+function automationsCardOnToday() {
+  const defs = tileDefs(pluginWidgetCatalog(state.installedPlugins || []));
+  const drawn = drawnGrid(snap(), todayOf(current(), defs), defs, { pluginsKnown: !!state.pluginsKnown, meetingsHidden: state.meetings.hidden });
+  return drawn.placed.some(it => it.id === 'automations');
+}
+
 /** After a render, while the window is in front, focused and nothing is being typed in or in a
- *  dialog, sends the `menu_bar_seen` marks `seenToSend` decides on; a failure is ignored (the
- *  next render tries again). */
+ *  dialog, sends the `menu_bar_seen` marks `seenToSend` decides on through `sendSeen`; a failure
+ *  is ignored (the next render, at a later revision, tries again). */
 function sendSeenMarks(s) {
+  // Keys from an earlier revision are dead weight (review M1): a mark only ever retries at a new
+  // one, so nothing later ever looks an old key up again.
+  for (const key of menuBarSeenSent) if (!key.startsWith(`${s.revision}|`)) menuBarSeenSent.delete(key);
   const marks = seenToSend({
     snapshot: s,
     route: state.route,
     openMeeting: state.meetings.selected,
-    todayCards: onToday('automations') ? ['automations'] : [],
+    todayCards: state.route === 'today' && automationsCardOnToday() ? ['automations'] : [],
     hidden: state.meetings.hidden,
     focused: document.visibilityState === 'visible' && document.hasFocus(),
     editing: editing(),
     modal: modalOpen(),
     sent: menuBarSeenSent,
   });
-  for (const payload of marks) {
-    const key = `${s.revision}|${payload.meetingId ? `meeting:${payload.meetingId}` : 'automations'}`;
-    menuBarSeenSent.add(key);
-    mutate('menu_bar_seen', payload).catch(() => menuBarSeenSent.delete(key));
-  }
+  sendSeen(marks, s.revision, menuBarSeenSent, payload => mutate('menu_bar_seen', payload));
 }
 
 /** A transcript line a task quote or a note's time opened: scrolled to and highlighted a moment. */
