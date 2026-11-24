@@ -12,6 +12,7 @@ import { agoLabel, dateFromKey, dayKey, formatDateTime, formatTime, zonedParts }
 import { draftError, modelLabel, profileName, providerLabel } from './draft-state.js';
 import { activateTab, normalizeDock, visibleTabs } from './dock-model.js';
 import { renderDock } from './dock-view.js';
+import { ROW_LABEL } from './settings-ai.js';
 
 /** The page's tabs as the hash names them (`#/automations/<tab>`), with their section tab. */
 export const AUTOMATION_TABS = [['automations', 'auto-list'], ['runs', 'auto-runs'], ['templates', 'auto-templates']];
@@ -38,12 +39,10 @@ export const EVENTS = [
   ['meeting_ready', 'A meeting’s transcript is ready'],
 ];
 /** The row an automation runs on (DESIGN §2/§3): the template it was made from names its row;
- *  anything else, or none, is the Automations row. Shared with Task 5 (`settings-ai.js`). */
+ *  anything else, or none, is the Automations row. Its name is `ROW_LABEL` (`settings-ai.js`). */
 export function routeRowOf(draft) {
   return { 'morning-brief': 'briefing', 'inbox-triage': 'triage', commitments: 'commitments' }[draft.template] || 'automation';
 }
-/** The row labels the automation editor names (DESIGN §2's table), shared with Task 5. */
-export const ROW_LABEL = { briefing: 'Morning briefing', triage: 'Inbox triage', commitments: 'Commitments', automation: 'Automations' };
 
 /** Events a message starts (it has a sender and a conversation). */
 const MESSAGE_EVENTS = new Set(['mail_from', 'chat_from', 'critical']);

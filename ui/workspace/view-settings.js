@@ -16,7 +16,7 @@ import { menuBarCard } from './menu-bar.js';
 
 export const SETTINGS_TABS = [
   ['Workspace', 'general', 'General', 'settings'],
-  ['', 'ai', 'Claude', 'spark'],
+  ['', 'ai', 'AI', 'spark'],
   ['', 'microsoft', 'Microsoft 365', 'link'],
   ['', 'appearance', 'Appearance', 'palette'],
   ['', 'layout', 'Layout', 'layout'],
@@ -62,7 +62,7 @@ const TAB_DESCRIPTIONS = {
   'cm-apps': 'Let the apps you already use answer with CodeMie models.',
   'cm-health': 'Checks in plain language with a fix for each problem — and every command CodeMie ran.',
   general: 'Time zone, background behaviour, optional AI and where your data is kept.',
-  ai: 'Choose which Claude drafts and summarizes for you, and what it costs.',
+  ai: 'Which profile and model does each job, a fallback for each, and what it costs.',
   microsoft: 'Your calendar, Outlook and Teams — connected with one sign-in.',
   appearance: 'Choose how CodeMie Connect looks on your desktop.',
   notifications: 'Desktop reminders, critical alerts, quiet hours and the menu-bar count.',
@@ -79,7 +79,7 @@ export function settings(s, ctx) {
   const panels = {
     general: () => generalPanel(s, state.storage),
     // A CodeMie profile's sign-in as Settings → CodeMie read it (one readiness per profile).
-    ai: () => aiPanel(state.ai, { codemie: ctx.codemie?.signIn }),
+    ai: () => aiPanel(state.ai, { codemie: ctx.codemie?.signIn, plugins: ctx.plugins?.ui?.installed || [] }),
     microsoft: () => microsoftPanel(s, auth),
     appearance: () => appearancePanel(s),
     layout: () => layoutPanel(s, ctx.layout),

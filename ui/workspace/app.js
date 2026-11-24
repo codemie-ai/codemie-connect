@@ -91,7 +91,7 @@ const state = {
   // reply text typed in a box that left the screen, per draft key (both views).
   openMessage: null, openKey: null, selectAfter: null, threadAll: new Set(), replyCarry: {},
   appVersion: '', latestVersion: null, updateStatus: '', updateBusy: false,
-  ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, usage: null, error: '', tests: {}, testModels: {} },
+  ai: { status: 'idle', profiles: [], settings: { defaultProfile: null, routes: {} }, chosen: {}, usage: null, error: '', tests: {}, testModels: {} },
   // Settings → General → Data location: the `data_location_get` answer (null until read).
   storage: { info: null, error: '', restarting: false },
   // Reply drafts: this session's reply-box decisions per draft key (see `replyBox`), the open
@@ -1087,9 +1087,12 @@ async function loadAi() {
   if (state.ai.status !== 'ready') state.ai.status = 'loading';
   if (aiTabOpen() && !modalOpen()) await render();
   try {
+    // Settings › AI draws a row per enabled plugin that asks for AI: the installed list is read
+    // again beside it (drawn when it lands), never holding up the profiles.
+    pluginsUi.loadInstalled().catch(() => {});
     const [status, usage] = await Promise.all([store.query('ai_status', { refresh: true }), store.query('ai_usage', {}).catch(() => null)]);
     if (load !== aiLoads) return;
-    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, usage, error: '' });
+    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen || {}, usage, error: '' });
   } catch (err) {
     if (load !== aiLoads) return;
     Object.assign(state.ai, { status: 'error', error: err?.message || String(err) });
@@ -1101,6 +1104,7 @@ async function saveAiSettings(next) {
   try {
     const result = await store.mutate('ai_settings_save', next);
     state.ai.settings = result.settings;
+    state.ai.chosen = result.chosen || {};
   } catch (err) {
     loadAi().catch(() => {});
     throw err;
@@ -1140,14 +1144,14 @@ async function askClaudeChoice() {
     fail(err);
     return null;
   }
-  Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
+  Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen || {} });
   // A CodeMie profile Settings → CodeMie found signed out is not offered as ready.
   const offered = withCodemieSignIn(status.profiles, codemie.signIn());
   const anyReady = offered.some(p => p.state === 'ready');
   return new Promise(resolve => {
     let chosen = null;
     openModal({
-      title: CHOOSER_TITLE, subtitle: anyReady ? 'Connect asks once. You can change it in Settings → Claude.' : '',
+      title: CHOOSER_TITLE, subtitle: anyReady ? 'Connect asks once. You can change it in Settings → AI.' : '',
       body: chooserBody(offered), submit: anyReady ? 'Choose' : null, cancel: anyReady ? 'Cancel' : 'Close', size: 'md',
       onSubmit: async (_form, dialog) => {
         const id = dialog.dataset.choice;
@@ -1191,7 +1195,7 @@ function readClaude({ now = false, detect = false } = {}) {
   claudeRead = store.query('ai_status', { refresh: plan.detect }).then(status => {
     if (state.ai.status === 'loading') return;
     const changed = JSON.stringify([state.ai.profiles, state.ai.settings]) !== JSON.stringify([status.profiles, status.settings]);
-    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings });
+    Object.assign(state.ai, { status: 'ready', profiles: status.profiles, settings: status.settings, chosen: status.chosen || {} });
     if (changed && ['inbox', 'today', 'automations'].includes(state.route) && !modalOpen() && !editing() && !state.draftPopover) render();
   }).catch(() => { /* drafts stay offered; Settings → Claude explains problems */ }).finally(() => { claudeRead = null; });
   return plan.detect;
@@ -2288,7 +2292,9 @@ async function handle(action, el, ev) {
     case 'ai-refresh': return loadAi();
     case 'ai-test': return testAiProfile(el.dataset.profile);
     case 'ai-test-model': state.ai.testModels[el.dataset.profile] = el.value; return;
-    case 'ai-default': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: 'default', value: el.value }));
+    // The Default row: its profile (`field` unset), model (`defaultModel`) or fallback (`defaultFallback`).
+    case 'ai-default': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: el.dataset.field || 'default', value: el.value }));
+    // A job's row (a purpose or `plugin:<id>`): its profile, model or fallback.
     case 'ai-route': return saveAiSettings(nextAiSettings(state.ai.settings, state.ai.profiles, { field: el.dataset.field, purpose: el.dataset.route, value: el.value }));
     case 'ai-copy-login':
       claudeRecheck = true;

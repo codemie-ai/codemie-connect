@@ -29,14 +29,14 @@
   },
   "settings-general": {
     "count": 782,
-    "sha256": "ba405712a53656caf13346d56e69c2c8fc999488db43eb43efb3d62994fef424"
+    "sha256": "e6e9538b05ede59a9a14ac680ad048ab02eca6b09ebf918143bbbb113fec88b6"
   },
   "settings-appearance": {
     "count": 299,
-    "sha256": "2de4195720a144f5691b361346aeda50b8a3ac9c5e53ca79798692784973afa2"
+    "sha256": "2cdc2de98ca6b165978df05df1db91473717a4cd74ffb4f31c2bafcd8571a723"
   },
   "settings-layout": {
     "count": 494,
-    "sha256": "f01721c6f7a330c809eaf151bf00d77856c5927d1119b5ac3ae3645108be952a"
+    "sha256": "e88647fde2d20211a90538a03e5fecb462c3e7f940470351742df6ea34aca79c"
   }
 }

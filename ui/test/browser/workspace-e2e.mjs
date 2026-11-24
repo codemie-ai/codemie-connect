@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildSnapshot, aiStatus, aiUsage, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates } from '../fixtures/workspace-fixture.mjs';
+import { buildSnapshot, aiStatus, aiUsage, chooseAll, contractFixtures, dataLocation, folderCheck, CHECKS, automationContract, withAutomations, pluginContract, withTasks, withMeetings, meetingFolders, meetingContract, menuBarStates } from '../fixtures/workspace-fixture.mjs';
 import { pluginChecks } from './plugins-checks.mjs';
 import { meetingChecks } from './meetings-checks.mjs';
 import { meetingsViewChecks } from './meetings-view-checks.mjs';
@@ -111,7 +111,7 @@ await mkdir(OUT, { recursive: true });
 
 // ---------------------------------------------------------------- mocked native bridge
 
-function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {} }) {
+function installBridge(chooseAll, { snapshot, connected, ai: aiInit, usage, testOk, testFail, draft: mailDraft, draftChat: chatDraft, jobFailed: jobTemplate, summary: summaryTemplate, storage, unavailable, location: locationInit, checks, automation: automationTemplates, plugins: pluginInit, frameBase, codemie = 'ready', folders: folderInit = {}, notesJob = null, glossaryText = '', analytics = null, navIds = [], menuBarStates = {} }) {
   // Connect's window only: a plugin frame gets nothing of the native bridge.
   if (window.top !== window) return;
   // compact-checks.mjs C1: records #workspace-app's data-view the moment it gets its first element
@@ -460,22 +460,22 @@ function installBridge({ snapshot, connected, ai: aiInit, usage, testOk, testFai
     notification_permission: () => ({ permission: 'os_managed' }),
     notification_test: () => ({ queued: true }),
     export: () => ({ version: 1, workspaces: [], records: [] }),
-    ai_status: () => ({ profiles: clone(ai.profiles), settings: clone(ai.settings) }),
+    ai_status: () => ({ profiles: clone(ai.profiles), settings: clone(ai.settings), chosen: chooseAll(ai.settings) }),
     ai_usage: () => clone(usage),
     // ---- Analytics (contract fixtures from the checks): the CLI's answers as the page's operations return them.
     ...(analytics ? analyticsOps() : {}),
     ai_settings_save: d => {
       calls.push(['ai_settings_save', d]);
       const known = id => ai.profiles.some(p => p.id === id);
-      if (d.defaultProfile && !known(d.defaultProfile)) fail('validation', 'Choose one of the listed Claude profiles.');
-      ai.settings = { defaultProfile: d.defaultProfile || null, routes: d.routes || {} };
-      return { settings: clone(ai.settings) };
+      if (d.defaultProfile && !known(d.defaultProfile)) fail('validation', 'Choose one of the listed profiles.');
+      ai.settings = { defaultProfile: d.defaultProfile || null, defaultModel: d.defaultModel || null, defaultFallback: d.defaultFallback || null, routes: d.routes || {}, plugins: d.plugins || {} };
+      return { settings: clone(ai.settings), chosen: chooseAll(ai.settings) };
     },
     ai_test: async d => {
       calls.push(['ai_test', d]);
       await sleep(700);
       const p = ai.profiles.find(x => x.id === d.profileId);
-      if (!p) fail('validation', 'Choose one of the listed Claude profiles.');
+      if (!p) fail('validation', 'Choose one of the listed profiles.');
       if (p.state !== 'ready') return { ...testFail, message: p.message || testFail.message };
       return clone(testOk);
     },
@@ -1543,7 +1543,7 @@ async function open({ theme = 'dark', width = 1440, height = 900, start = 'conne
   if (patch) patch(snapshot, now);
   const { testOk, testFail, draft, draftChat, jobFailed, summary } = contractFixtures();
   const checks = Object.fromEntries(CHECKS.map(name => [name, folderCheck(name)]));
-  await page.addInitScript(`(${installBridge})(${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates() })})`);
+  await page.addInitScript(`(${installBridge})(${chooseAll}, ${JSON.stringify({ snapshot, connected, ai: aiStatus(ai, aiDefault === undefined ? {} : { defaultProfile: aiDefault }), usage: aiUsage(), testOk, testFail, draft, draftChat, jobFailed, summary, storage, unavailable, location: dataLocation(location), checks, automation: automationContract(), plugins: pluginContract(), codemie, frameBase: `${base.replace(/index\.html$/, '')}plugin-frames/`, folders: meetings ? meetingFolders(now) : {}, notesJob: meetingContract().job, glossaryText: '## Products\n- **CodeMie** — heard as “code me”\n', analytics, navIds: NAV.map(([id]) => id), menuBarStates: menuBarStates() })})`);
   // Preferences Connect keeps in the window's localStorage (e.g. CodeMie setup already introduced).
   if (localPrefs) await page.addInitScript(prefs => { if (window.top === window) for (const [k, v] of Object.entries(prefs)) localStorage.setItem(k, v); }, localPrefs);
   if (fixedNow != null) await context.clock.setFixedTime(fixedNow);
@@ -1850,30 +1850,39 @@ for (const theme of ['dark', 'light']) {
     await page.waitForFunction(() => document.querySelector('select[data-action="sync-every"]')?.value === '1');
   });
 
-  await check(`${theme}: settings claude page`, async () => {
+  await check(`${theme}: settings AI page`, async () => {
     await page.click('.ws-nav button[data-route=settings]');
+    assert((await text(page, '.ws-settings-nav button[data-tab=ai]')).trim() === 'AI', 'tab label');
     await page.click('.ws-settings-nav button[data-tab=ai]');
     await page.waitForSelector('[data-ai-profile="claude"]');
     assert(await page.locator('[data-ai-profile]').count() === 3, 'profile cards');
     const native = await text(page, '[data-ai-profile="claude"]');
     assert(/Ready/i.test(native) && /Max/.test(native) && /taylor@example\.com/.test(native) && /2\.1\.150/.test(native), native);
     assert(/Needs sign-in/i.test(await text(page, '[data-ai-profile="codemie:staging"]')), 'needs sign-in chip');
-    assert(await page.locator('[data-ai-route-row]').count() === 6, 'route rows');
+    // Nine visible rows (Ask's is hidden until step 9; no plugin asks for AI here).
+    assert(await page.locator('[data-ai-route-row]:visible').count() === 9, 'route rows');
+    assert(await page.locator('[data-ai-route-row="ask"]').isHidden(), 'Ask row hidden');
     assert(/Meeting notes/.test(await text(page, '[data-ai-route-row="meeting"]')), 'meeting notes route row');
+    assert(/Working/i.test(await text(page, '[data-ai-route-row="summary"]')), 'summary row status');
+    for (const g of ['Replies', 'Summaries and notes', 'Automations', 'Plugins']) assert(await page.locator(`th[scope=rowgroup]:text-is("${g}")`).count() === 1, `group ${g}`);
     assert(/runs/.test(await text(page, '#ai-usage')) && /estimate/i.test(await text(page, '#ai-usage')), 'usage');
-    await shot(page, `${theme}-settings-claude-both`);
+    await shot(page, `${theme}-settings-ai-both`);
+    await page.evaluate(() => document.querySelector('.ws-ai-routes').scrollIntoView({ block: 'start' }));
+    await shot(page, `${theme}-settings-ai-both-routes`);
     await page.locator('.ws-settings-panels').evaluate(el => { el.scrollTop = el.scrollHeight; });
-    await shot(page, `${theme}-settings-claude-both-bottom`);
+    await shot(page, `${theme}-settings-ai-both-bottom`);
     await page.locator('.ws-settings-panels').evaluate(el => { el.scrollTop = 0; });
     await page.locator('[data-action="ai-test"][data-profile="claude"]').click();
     await page.waitForSelector('[data-ai-profile="claude"] .ws-spinner');
     await page.waitForSelector('[data-ai-profile="claude"] [data-ai-test-result]');
     assert(/OK · 2\.1 s · \$0\.0004/.test(await text(page, '[data-ai-profile="claude"] [data-ai-test-result]')), 'test result text');
-    await shot(page, `${theme}-settings-claude-test`);
+    await shot(page, `${theme}-settings-ai-test`);
     await page.locator('select[name="ai-default"]').selectOption('codemie:prod');
     await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'ai_settings_save' && d.defaultProfile === 'codemie:prod'));
     await page.locator('select[data-route="plugin"][data-field="profile"]').selectOption('claude');
     await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'ai_settings_save' && d.routes.plugin?.profile === 'claude'));
+    await page.locator('select[data-route="triage"][data-field="fallback"]').selectOption('claude');
+    await page.waitForFunction(() => window.__bridgeCalls.some(([op, d]) => op === 'ai_settings_save' && d.routes.triage?.fallback === 'claude'));
     assert(await page.locator('select[name="ai-default"]').inputValue() === 'codemie:prod', 'default did not persist');
     assert(await page.locator('.ws-toasts .ws-toast-error').count() === 0, 'error toast');
     const failing = page.locator('[data-action="ai-test"][data-profile="codemie:staging"]');
@@ -3484,6 +3493,21 @@ for (const width of [1000, 1680]) {
   });
   await context.close().catch(() => {});
 }
+// Settings › AI's job rows: a table when the card is wide, two lines per job when it is not; never sideways.
+for (const view of ['default', 'compact']) {
+  for (const width of [1000, 1440, 1680]) {
+    const { page, context } = await open({ theme: 'light', width, height: 900, settings: view === 'compact' ? { view: 'compact' } : null, hash: '#/settings/ai' });
+    await check(`layout ${width}px ${view}: Settings › AI job rows fit`, async () => {
+      await page.waitForSelector('[data-ai-route-row="mail_draft"]');
+      await page.waitForTimeout(300);
+      await page.evaluate(() => document.querySelector('.ws-ai-routes').scrollIntoView({ block: 'start' }));
+      const overflow = await page.evaluate(() => Math.max(document.documentElement.scrollWidth - window.innerWidth, ...[...document.querySelectorAll('.ws-settings-panels, .ws-ai-table-wrap')].map(e => e.scrollWidth - e.clientWidth)));
+      assert(overflow <= 0, `Settings › AI overflows by ${overflow}px`);
+      await shot(page, `light-settings-ai-routes-${view}-${width}`);
+    });
+    await context.close().catch(() => {});
+  }
+}
 
 // ---------------------------------------------------------------- Settings → CodeMie
 
@@ -3598,6 +3622,10 @@ for (const theme of ['dark', 'light']) {
       assert(await page.locator('select[name=ai-default] option[value="codemie:prod"]').count() === 0, 'routing offers the signed-out profile');
       assert(await fits(page) <= 0, 'the Claude tab overflows');
       await shot(page, `${theme}-merge-claude-expired-${width}`);
+      // Its rows agree with its card: Summaries runs on prod with no fallback, so it is Not working.
+      assert(/Not working/i.test(await text(page, '[data-ai-route-row="summary"]')), 'the summary row on the signed-out profile');
+      await page.evaluate(() => document.querySelector('[data-ai-route-row="summary"]').scrollIntoView({ block: 'center' }));
+      await shot(page, `${theme}-merge-claude-expired-rows-${width}`);
       await page.click(`${aiCard('codemie:prod')} button[data-action=cm-profile-login][data-id=prod]`);
       await page.waitForSelector('.ws-toast:has-text("Signed in again to “prod”")', { timeout: 6000 });
       await page.waitForSelector(`${aiCard('codemie:prod')} .ws-badge-success`);

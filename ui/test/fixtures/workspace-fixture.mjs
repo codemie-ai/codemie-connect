@@ -180,12 +180,43 @@ export const contractFixtures = () => ({
   jobFailed: contract('job-ai-draft-failed'), jobConflict: contract('job-ai-draft-conflict'), jobRunning: contract('job-ai-draft-running'),
 });
 
+// A test-only mirror of Rust `workspace::ai::choose` for the browser mock and the presets below.
+// The window never resolves rows itself; `chooses_like_rust` (ai-settings.test.mjs) pins this
+// mirror to ai-route-cases.json and ai-status.json, which Rust writes from `choose`. Self-contained,
+// so the browser mock gets it as source.
+/** `chosen` of `ai_status` / `ai_settings_save` for `settings` (test mirror of Rust `chosen_all`). */
+export function chooseAll(s = {}) {
+  const GROUP = { briefing: 'automation', triage: 'automation', commitments: 'automation' };
+  const set = v => v || null;
+  const inherited = key => {
+    if (key == null) return { profile: set(s.defaultProfile), model: set(s.defaultModel), fallback: set(s.defaultFallback) };
+    const plugin = key.startsWith('plugin:');
+    const group = inherited(plugin ? 'plugin' : GROUP[key] || null);
+    const r = plugin ? s.plugins?.[key.slice(7)] : s.routes?.[key];
+    if (!r) return group;
+    const own = set(r.profile);
+    return { profile: own || group.profile, model: own ? set(r.model) : set(r.model) || group.model, fallback: set(r.fallback) || group.fallback };
+  };
+  const purposes = ['mail_draft', 'chat_draft', 'summary', 'automation', 'plugin', 'meeting', 'briefing', 'triage', 'commitments', 'ask'];
+  const keys = [null, ...purposes, ...Object.keys(s.plugins || {}).map(id => `plugin:${id}`)];
+  return Object.fromEntries(keys.map(key => {
+    const c = inherited(key);
+    return [key ?? 'default', c.fallback && c.fallback === c.profile ? { ...c, fallback: null } : c];
+  }));
+}
+
 /**
  * `ai_status` answers for the browser mock and unit tests. Kinds: none, native,
- * native_needs_login, codemie_only, both. `defaultProfile` overrides the saved default.
+ * native_needs_login, codemie_only, both, and `all` (the whole contract fixture: an Ollama
+ * profile, a default fallback and a plugin row). `defaultProfile` overrides the saved default.
  */
 export function aiStatus(kind = 'both', { defaultProfile } = {}) {
   const { profiles: all, settings } = contract('ai-status');
+  if (kind === 'all') {
+    const out = JSON.parse(JSON.stringify({ profiles: all, settings }));
+    if (defaultProfile !== undefined) out.settings.defaultProfile = defaultProfile;
+    return { ...out, chosen: chooseAll(out.settings) };
+  }
   const [native, prod, staging] = all;
   const notInstalled = { ...native, state: 'not_installed', version: null, account: null, message: 'Claude Code is not installed.' };
   const needsLogin = { ...native, state: 'needs_login', account: null, message: 'Claude Code is not signed in.' };
@@ -203,8 +234,7 @@ export function aiStatus(kind = 'both', { defaultProfile } = {}) {
     profiles: JSON.parse(JSON.stringify(profiles)),
     settings: { defaultProfile: defaultProfile === undefined ? defaults[kind] : defaultProfile, routes: kind === 'both' ? settings.routes : {} },
   };
-  // `chosen` (DESIGN §2) matches the contract fixture only for the untouched "both" case.
-  if (kind === 'both' && defaultProfile === undefined) out.chosen = JSON.parse(JSON.stringify(contract('ai-status').chosen));
+  out.chosen = chooseAll(out.settings);
   return out;
 }
 
