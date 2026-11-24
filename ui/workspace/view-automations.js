@@ -911,7 +911,7 @@ export function automationEditor(draft, { zone = 'UTC', ai = {}, error = null, p
 
     ${aiSection(draft, ai, error, summary)}
 
-    <fieldset class="ws-auto-section"${summary ? ' hidden' : ' id="auto-deliver"'}><legend>Deliver</legend>
+    <fieldset class="ws-auto-section"${summary ? ' hidden' : ` id="auto-deliver"${error?.field === 'auto-deliver' ? ' aria-invalid="true" aria-describedby="auto-deliver-error"' : ''}`}><legend>Deliver</legend>
       ${switchRow({ name: 'auto-deliver', value: 'today', data: ['data-deliver', 'today'], checked: draft.deliver.today, label: 'A card on Today', hint: 'The latest result shows in Automation results on Today.' })}
       ${switchRow({ name: 'auto-deliver', value: 'notify', data: ['data-deliver', 'notify'], checked: draft.deliver.notify, label: 'A notification', hint: 'Quiet hours and focus sessions hold it back.' })}
       ${replies ? switchRow({ name: 'auto-deliver', value: 'draftReply', data: ['data-deliver', 'draftReply'], checked: draft.deliver.draftReply, action: 'automation-form', label: 'A reply draft on the conversation', hint: 'Prepared in the Inbox for you to review and send. Automations never send.' }) : ''}
