@@ -185,16 +185,17 @@ test('providerTaskTarget labels the column with the provider and undoes with one
   assert.deepEqual(moved, [['a', 'todo', { log: 'Accepted from review' }], ['b', 'todo', { log: 'Accepted from review' }]]);
   assert.deepEqual(await target.undo(['a', 'b']), { done: ['a', 'b'], failed: [] });
   assert.deepEqual(withdrawn, [['a', 'b']], 'one task_withdraw for the whole add');
-  // Native answers counts: a failure keeps Undo for every id (a repeat withdraw of one already
-  // back in review is a no-op there) and says why.
+  // Native answers counts: with a failure, the snapshot after the call says which went back
+  // (in review) and which stayed sent, so exactly those keep Undo.
   answer = () => ({ done: 1, failed: 1 });
-  const partial = await target.undo(['a', 'b']);
-  assert.deepEqual(partial.done, []);
-  assert.deepEqual(partial.failed.map(f => f.id), ['a', 'b']);
-  assert.equal(partial.failed[0].message, '1 of 2 couldn’t go back to review. Try again.');
+  const statuses = { a: 'review', b: 'todo' };
+  const sorted = providerTaskTarget({ label: 'Todoist', moveTask: async () => {}, withdraw: async ids => answer(ids), statusOf: id => statuses[id] ?? null });
+  const partial = await sorted.undo(['a', 'b']);
+  assert.deepEqual(partial.done, ['a']);
+  assert.deepEqual(partial.failed, [{ id: 'b', message: '1 of 2 couldn’t go back to review. Try again.' }]);
   // Nothing to undo calls nothing.
   assert.deepEqual(await target.undo([]), { done: [], failed: [] });
-  assert.equal(withdrawn.length, 2);
+  assert.equal(withdrawn.length, 1);
 });
 
 test('the active task target follows taskProvider.active, and the add toasts name it', async () => {

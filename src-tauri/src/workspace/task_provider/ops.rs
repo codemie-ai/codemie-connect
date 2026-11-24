@@ -57,13 +57,17 @@ fn counted(e: WorkspaceError) -> Result<()> {
 const REMOTE_HOSTS: [&str; 2] = ["todoist.com", "app.todoist.com"];
 
 /// A task's `remote.url` when it is a plain https link to one of `REMOTE_HOSTS` (no other port,
-/// no user name); a refusal otherwise.
+/// no user name), already in its normal form; a refusal otherwise. The normal form is required
+/// so the address the system opens is exactly the one checked here: a backslash, a tab or a
+/// newline that the parser drops or rewrites could read as another host to the opener.
+/// A second provider adds its own hosts here (and in tasks-dates-model.js's `REMOTE_HOSTS`).
 fn remote_link(task: &Value) -> Result<&str> {
     let link = task["remote"]["url"]
         .as_str()
         .ok_or_else(|| WorkspaceError::new("not_found", "This task has no link to open."))?;
     let secure = url::Url::parse(link).is_ok_and(|u| {
-        u.scheme() == "https"
+        u.as_str() == link
+            && u.scheme() == "https"
             && u.port().is_none()
             && u.username().is_empty()
             && u.password().is_none()
@@ -767,6 +771,13 @@ mod tests {
             "https://app.todoist.com:8443/x",
             "javascript:alert(1)",
             "not a link",
+            // What the check parses must be what is opened: a WHATWG parser reads these as
+            // app.todoist.com, the system opener may not.
+            "https://app.todoist.com\\@evil.example/",
+            "https://app.todoist.com/app/\ttask/1",
+            "https://app.todoist.com/app/\ntask/1",
+            "HTTPS://APP.TODOIST.COM/app/task/1",
+            "https://app.todoist.com./app/task/1",
         ] {
             assert_eq!(
                 super::remote_link(&task(bad)).unwrap_err().code,

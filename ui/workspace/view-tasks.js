@@ -73,11 +73,12 @@ function meetingChip(p) {
 }
 
 function heading(p) {
+  // The status line is no live region: "synced <ago>" changes text on every redraw.
   const views = viewsFor(p.s);
   const provider = activeProvider(p.s) !== 'local';
   return `<header class="ws-page-heading ws-tasks-heading">
     <div><h1>Tasks</h1><p class="ws-description">${e(DESCRIPTIONS[p.v.shown] || DESCRIPTIONS.board)}</p>
-      <div class="ws-tasks-status"><p class="ws-tasks-line" role="status">${e(statusLine(p.s.taskProvider, p.now, p.zone))}</p>${meetingChip(p)}</div></div>
+      <div class="ws-tasks-status"><p class="ws-tasks-line">${e(statusLine(p.s.taskProvider, p.now, p.zone))}</p>${meetingChip(p)}</div></div>
     <div class="ws-actions">
       <div class="ws-segmented" role="tablist" aria-label="View">${views.map(([id, label, ico]) => `<button type="button" role="tab" data-action="tasks-view" data-view="${id}" aria-selected="${p.v.shown === id}">${icon(ico)}${label}</button>`).join('')}</div>
       ${button('New task', { action: 'task-new', variant: p.v.shown === 'dates' && reviewCount(p) > 1 ? 'secondary' : 'primary', iconName: 'plus' })}

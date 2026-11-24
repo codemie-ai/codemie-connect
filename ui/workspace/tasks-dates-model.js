@@ -55,7 +55,8 @@ function dueTone(due, now, zone) {
   return { tone: 'later', text: formatDate(date, undefined, { month: 'short', day: 'numeric' }) };
 }
 
-/** The hosts of a task's own link that Open in Todoist ↗ opens (native checks them again). */
+/** The hosts of a task's own link that Open in Todoist ↗ opens (native checks them again, in
+ *  ops.rs's `REMOTE_HOSTS`); a second provider adds its own hosts in both places. */
 const REMOTE_HOSTS = ['todoist.com', 'app.todoist.com'];
 function remoteUrl(url) {
   if (typeof url !== 'string' || !/^https:\/\/[^\s/@:]+(\/|$)/i.test(url)) return null;

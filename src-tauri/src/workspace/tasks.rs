@@ -8,6 +8,12 @@
 //! (older commitments say `"You"`); `ownerName` is the name to show. `done` always equals
 //! `status == "done"`; a body without a status reads as `done ? "done" : "todo"`.
 //!
+//! With a task provider the body also carries `provider`, `key`, `remote`, `pending` and
+//! `syncError`. `syncError` is `null` when no change is parked; a string means a change the
+//! provider refused is parked (Try again / Discard change): the provider's sentence, or `""`
+//! when that sentence was withheld for holding a secret (the window then writes "<Provider>
+//! refused this change."). Never write `""` to mean "cleared": clear it with `null`.
+//!
 //! [`task_save`] merges a change into the stored body and writes one history line for each move,
 //! owner and due date change. A task from a meeting is also written to the meeting folder's
 //! `tasks.json` (Echo's `actions.json` shape), so other tools see the same list. Callers hold

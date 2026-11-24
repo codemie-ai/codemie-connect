@@ -524,8 +524,9 @@ test('the Tasks header: the provider status line, ⋯ › Sync now and Settings 
   const { ctl, state, calls } = harness({ snapshot: snap });
   await ctl.handle('tasks-older', control());
   let head = headingOf(calls.html);
-  assert.match(head, /<p class="ws-tasks-line" role="status">Todoist · synced 5 min ago<\/p>/);
+  assert.match(head, /<p class="ws-tasks-line">Todoist · synced 5 min ago<\/p>/);
   assert.doesNotMatch(textOf(head), /Drag cards/, 'By date has no cards to drag');
+  assert.doesNotMatch(head, /role="status"/, '"synced <ago>" is not a live region redrawn every minute');
   assert.match(head, /data-menu="tasks-more"[^]*?data-action="tasks-sync"[^>]*>[^]*?Sync now[^]*?data-action="settings-tab" data-tab="meetings-tasks"[^]*?Settings › Tasks/);
   assert.doesNotMatch(head, /ws-tasks-chip/, 'no chip without a meeting filter');
   // "1 in Todoist ›" from the meeting: the chip, and By date shows that meeting's tasks only.
@@ -543,7 +544,7 @@ test('the Tasks header: the provider status line, ⋯ › Sync now and Settings 
   const local = harness();
   await local.ctl.handle('tasks-older', control());
   head = headingOf(local.calls.html);
-  assert.match(head, /<p class="ws-tasks-line" role="status">Connect · on this Mac<\/p>/);
+  assert.match(head, /<p class="ws-tasks-line">Connect · on this Mac<\/p>/);
   assert.match(textOf(head), /Drag cards between columns/);
   assert.doesNotMatch(head, /tasks-more/);
 });

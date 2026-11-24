@@ -3,7 +3,7 @@
 // `localTaskTarget` is Connect's own board, `providerTaskTarget` the active provider (Todoist);
 // both add through `moveTask` and undo through one `task_withdraw`. `activeTaskTarget` is the one
 // app.js hands the meetings controller: the target of whichever provider is active now.
-import { activeProvider } from './tasks-model.js';
+import { activeProvider, taskStatus } from './tasks-model.js';
 
 /** `add(ids)`: moves each id to To do, as accepting it from review does. Never throws for one
  *  task's failure; resolves `{done, failed}` with every id sorted into one or the other. */
@@ -23,37 +23,45 @@ async function accept(moveTask, ids) {
 
 /** `undo(ids)`: one `withdraw(ids)` (`task_withdraw`, which answers counts). Each task goes back
  *  To review; a provider drops a create not sent yet, or deletes one already there (ruling 8).
- *  When any fails, every id keeps its Undo (withdrawing one already back in review changes
- *  nothing), with why. A rejection is left to the caller. */
-async function withdrawAll(withdraw, ids) {
+ *  When any fails, `statusOf(id)` (the task's status in the snapshot after the call) says which
+ *  went back (`review`) and which stayed sent; only those keep Undo, with why. Without
+ *  `statusOf` every id keeps it (withdrawing one already back changes nothing). A rejection is
+ *  left to the caller. */
+async function withdrawAll(withdraw, statusOf, ids) {
   const list = [...(ids || [])];
   if (!list.length) return { done: [], failed: [] };
   const answer = await withdraw(list);
   const failed = Number(answer?.failed) || 0;
   if (!failed) return { done: list, failed: [] };
   const message = failed >= list.length ? 'Couldn’t go back to review. Try again.' : `${failed} of ${list.length} couldn’t go back to review. Try again.`;
-  return { done: [], failed: list.map(id => ({ id, message })) };
+  const back = statusOf ? list.filter(id => statusOf(id) === 'review') : [];
+  return { done: back, failed: list.filter(id => !back.includes(id)).map(id => ({ id, message })) };
 }
 
 /** A provider as a task target: the column reads "Add N to <label>", "In <label>". */
-export function providerTaskTarget({ label, moveTask, withdraw }) {
+export function providerTaskTarget({ label, moveTask, withdraw, statusOf = null }) {
   return {
     label,
     add: ids => accept(moveTask, ids),
-    undo: ids => withdrawAll(withdraw, ids),
+    undo: ids => withdrawAll(withdraw, statusOf, ids),
   };
 }
 
 /** The local Tasks board as a task target (`task_withdraw` for Local is the move back to
  *  review, "Moved back to review"). */
-export function localTaskTarget({ moveTask, withdraw }) {
-  return providerTaskTarget({ label: 'Tasks', moveTask, withdraw });
+export function localTaskTarget({ moveTask, withdraw, statusOf = null }) {
+  return providerTaskTarget({ label: 'Tasks', moveTask, withdraw, statusOf });
 }
 
 /** The target of the provider active in `snap()`, made again when `taskProvider.active` (or its
  *  name) changes; its `label` is read at each draw. */
 export function activeTaskTarget({ snap, moveTask, withdraw }) {
   let made = null;
+  // Read after `withdraw` resolves: the store has refreshed the snapshot by then.
+  const statusOf = id => {
+    const r = snap().records.find(x => x.kind === 'commitment' && x.id === id);
+    return r ? taskStatus(r) : null;
+  };
   const current = () => {
     const s = snap();
     const id = activeProvider(s);
@@ -61,7 +69,7 @@ export function activeTaskTarget({ snap, moveTask, withdraw }) {
     if (made?.id !== id || made.name !== name) {
       made = {
         id, name,
-        target: id === 'local' ? localTaskTarget({ moveTask, withdraw }) : providerTaskTarget({ label: name, moveTask, withdraw }),
+        target: id === 'local' ? localTaskTarget({ moveTask, withdraw, statusOf }) : providerTaskTarget({ label: name, moveTask, withdraw, statusOf }),
       };
     }
     return made.target;

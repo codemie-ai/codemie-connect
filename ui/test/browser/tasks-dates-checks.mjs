@@ -93,7 +93,7 @@ export async function tasksDatesChecks({ open, check, assert, shot, settled, cal
       await settled(page);
       const line = await page.locator('.ws-tasks-line').innerText();
       assert(/^Todoist · synced /.test(line), `status line: ${line}`);
-      assert(await page.locator('.ws-tasks-line[role="status"]').count() === 1, 'the line is a status');
+      assert(await page.locator('.ws-tasks-line[role]').count() === 0, 'not a live region');
       const description = await page.locator('.ws-tasks-heading .ws-description').innerText();
       assert(!/Drag cards/.test(description), description);
       assert(await page.locator('.ws-tasks-chip').count() === 0, 'no chip without a meeting');

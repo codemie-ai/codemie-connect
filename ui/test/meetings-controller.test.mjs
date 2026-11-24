@@ -9,7 +9,7 @@ import { legacyMeetingsLayout, meetings, MEETINGS_DOCK } from '../workspace/view
 import { loadDock, moveTab, normalizeDock, paneOf, saveDock, setCollapsed } from '../workspace/dock-model.js';
 import { WIDGETS } from '../workspace/view-today.js';
 import { newTasksView } from '../workspace/tasks-model.js';
-import { providerTaskTarget } from '../workspace/task-target.js';
+import { activeTaskTarget, providerTaskTarget } from '../workspace/task-target.js';
 import { buildSnapshot, withMeetings, meetingContract, meetingFolders } from './fixtures/workspace-fixture.mjs';
 
 const NOW = Date.UTC(2026, 10, 18, 15, 20);
@@ -975,6 +975,26 @@ test('a double click on "Add 2 to Todoist" saves each task once; Undo is one tas
   assert.equal(withdrawn.length, 1, 'one task_withdraw');
   assert.deepEqual(withdrawn[0].sort(), ['task-endpoint', 'task-pilot-list']);
   assert.equal(state.meetings.added, null);
+});
+
+test('a partial task_withdraw re-ticks exactly the tasks that went back; the one still sent keeps Undo', async () => {
+  const s = snapshot();
+  s.taskProvider = { active: 'plugin:todoist', name: 'Todoist' };
+  for (const r of s.records.filter(x => x.kind === 'commitment')) r.data.provider = 'plugin:todoist';
+  const taskTarget = activeTaskTarget({
+    snap: () => s,
+    moveTask: async id => { taskRecord(s, id).data.status = 'todo'; },
+    // Native moved task-endpoint back; task-pilot-list failed and is still in Todoist.
+    withdraw: async () => { taskRecord(s, 'task-endpoint').data.status = 'review'; return { done: 1, failed: 1 }; },
+  });
+  const { ctl, state } = harness({ s, taskTarget });
+  await ctl.handle('meeting-item-tick', control({ id: 'mtg-philips', task: 'task-pilot-list' }, { checked: true }));
+  await ctl.handle('meeting-items-add', control({ id: 'mtg-philips' }));
+  state.meetings.ticked['mtg-philips'] = [];
+  await ctl.handle('meeting-items-undo', control({ id: 'mtg-philips' }));
+  assert.deepEqual(state.meetings.ticked['mtg-philips'], ['task-endpoint'], 'the one that went back is ticked again');
+  assert.deepEqual(state.meetings.added, { meetingId: 'mtg-philips', ids: ['task-pilot-list'] }, 'Undo stays for the one still sent');
+  assert.match(state.meetings.addError.message, /1 of 2 couldn’t go back to review/);
 });
 
 /** mtg-philips with three more documents: five tabs, the fifth (doc:extra-3) under More ▾. */
