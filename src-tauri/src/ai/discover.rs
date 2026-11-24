@@ -45,12 +45,16 @@ fn nvm_bins(home: &Path) -> Vec<PathBuf> {
 }
 
 /// Look for `name` in the order of DESIGN 6.1: the PATH, `~/.local/bin`,
-/// `~/.claude/local`, `~/.npm-global/bin`, `~/.codemie/agents/bin`,
-/// `/opt/homebrew/bin`, `/usr/local/bin`, nvm bins (newest first), then `extra`.
+/// `~/.claude/local`, `~/.npm-global/bin`, `~/.codemie/agents/bin`, `system_dirs`
+/// (the fixed OS dirs: `/opt/homebrew/bin`, `/usr/local/bin`, the Ollama.app
+/// Resources dir in production; empty in tests, so a program that happens to be
+/// installed there does not leak into a test's "nothing installed" case), nvm
+/// bins (newest first), then `extra`.
 pub fn find_program_in(
     name: &str,
     path_var: &str,
     home: &Path,
+    system_dirs: &[PathBuf],
     extra: &[PathBuf],
 ) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::split_paths(path_var)
@@ -66,8 +70,7 @@ pub fn find_program_in(
         .iter()
         .map(|d| home.join(d)),
     );
-    dirs.push(PathBuf::from("/opt/homebrew/bin"));
-    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.extend(system_dirs.iter().cloned());
     dirs.extend(nvm_bins(home));
     dirs.extend(extra.iter().cloned());
     dirs.into_iter()
@@ -75,7 +78,21 @@ pub fn find_program_in(
         .find(|p| is_executable(p))
 }
 
-/// `find_program_in` with the process PATH and HOME.
+/// The fixed OS dirs `find_program_in` searches unconditionally in production:
+/// Homebrew, `/usr/local/bin`, and the Ollama.app Resources dir (DESIGN 6.1 plus
+/// spec §1's Ollama extra dir). `DetectEnv::system` seeds `system_dirs` with
+/// these; a test's `DetectEnv` leaves `system_dirs` empty so a program actually
+/// installed there on the developer's own Mac cannot leak into a "nothing
+/// installed" assertion.
+pub fn system_dirs() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/Applications/Ollama.app/Contents/Resources"),
+    ]
+}
+
+/// `find_program_in` with the process PATH and HOME, and the real system dirs.
 #[allow(dead_code)] // used from Task 5
 pub fn find_program(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -83,6 +100,7 @@ pub fn find_program(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
         name,
         &std::env::var("PATH").unwrap_or_default(),
         Path::new(&home),
+        &system_dirs(),
         extra,
     )
 }
@@ -108,21 +126,21 @@ mod tests {
 
         // Newest nvm version wins (numerically: v22 beats v9).
         assert_eq!(
-            find_program_in("claude", "", h, &[]),
+            find_program_in("claude", "", h, &[], &[]),
             Some(h.join(".nvm/versions/node/v22.3.0/bin/claude"))
         );
 
         // A non-executable file is ignored.
         touch(&h.join(".local/bin/claude"), 0o644);
         assert_eq!(
-            find_program_in("claude", "", h, &[]),
+            find_program_in("claude", "", h, &[], &[]),
             Some(h.join(".nvm/versions/node/v22.3.0/bin/claude"))
         );
 
         // With an empty PATH, ~/.local/bin wins over nvm.
         touch(&h.join(".local/bin/claude"), 0o755);
         assert_eq!(
-            find_program_in("claude", "", h, &[]),
+            find_program_in("claude", "", h, &[], &[]),
             Some(h.join(".local/bin/claude"))
         );
 
@@ -130,7 +148,7 @@ mod tests {
         let on_path = tempfile::tempdir().unwrap();
         touch(&on_path.path().join("claude"), 0o755);
         assert_eq!(
-            find_program_in("claude", on_path.path().to_str().unwrap(), h, &[]),
+            find_program_in("claude", on_path.path().to_str().unwrap(), h, &[], &[]),
             Some(on_path.path().join("claude"))
         );
 
@@ -143,10 +161,43 @@ mod tests {
                 "claude",
                 "",
                 empty_home.path(),
+                &[],
                 &[extra.path().to_path_buf()]
             ),
             Some(extra.path().join("claude"))
         );
-        assert_eq!(find_program_in("claude", "", empty_home.path(), &[]), None);
+        assert_eq!(
+            find_program_in("claude", "", empty_home.path(), &[], &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn find_program_in_system_dirs_lose_to_home_and_are_empty_by_default_in_tests() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let sys = tempfile::tempdir().unwrap();
+        touch(&sys.path().join("claude"), 0o755);
+
+        // A program only in a `system_dirs` entry is found.
+        assert_eq!(
+            find_program_in("claude", "", h, &[sys.path().to_path_buf()], &[]),
+            Some(sys.path().join("claude"))
+        );
+
+        // `~/.local/bin` still wins over `system_dirs`.
+        touch(&h.join(".local/bin/claude"), 0o755);
+        assert_eq!(
+            find_program_in("claude", "", h, &[sys.path().to_path_buf()], &[]),
+            Some(h.join(".local/bin/claude"))
+        );
+
+        // An empty `system_dirs` (the test `DetectEnv`) never finds a program that
+        // happens to be installed at a real, fixed OS dir on the developer's Mac.
+        let empty_home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            find_program_in("claude", "", empty_home.path(), &[], &[]),
+            None
+        );
     }
 }

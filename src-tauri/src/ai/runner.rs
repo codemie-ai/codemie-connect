@@ -35,13 +35,18 @@ impl CliRunner {
     /// Finds `claude` / `codemie-claude` the same way detection does.
     pub fn new(env: DetectEnv) -> Self {
         Self::with_resolver(Arc::new(move |kind| match kind {
-            ProfileKind::Native => {
-                super::discover::find_program_in("claude", &env.path_var, &env.home, &[])
-            }
+            ProfileKind::Native => super::discover::find_program_in(
+                "claude",
+                &env.path_var,
+                &env.home,
+                &env.system_dirs,
+                &[],
+            ),
             ProfileKind::CodeMie { .. } => super::discover::find_program_in(
                 "codemie-claude",
                 &env.path_var,
                 &env.home,
+                &env.system_dirs,
                 &env.extra_dirs,
             ),
         }))

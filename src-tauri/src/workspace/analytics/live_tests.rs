@@ -68,8 +68,14 @@ fn secs(d: Duration) -> f64 {
 /// install folders under HOME.
 fn real_codemie() -> PathBuf {
     let env = DetectEnv::system(Vec::new());
-    find_program_in("codemie", &env.path_var, &env.home, &env.extra_dirs)
-        .expect("no codemie on PATH or in the usual install folders")
+    find_program_in(
+        "codemie",
+        &env.path_var,
+        &env.home,
+        &env.system_dirs,
+        &env.extra_dirs,
+    )
+    .expect("no codemie on PATH or in the usual install folders")
 }
 
 /// A `codemie` in `dir/bin` that notes each call as `<pid> <arguments>` in `dir/calls.log`, then
@@ -986,9 +992,15 @@ async fn live_a_stopped_first_open_continues_after_restart() {
 async fn live_old_cli_shows_needs_cli() {
     let env = DetectEnv::system(Vec::new());
     let old_bin = env.home.join(".npm-global/bin");
-    let old = find_program_in("codemie", &old_bin.to_string_lossy(), &env.home, &[])
-        .filter(|p| p.starts_with(&old_bin))
-        .expect("no codemie in ~/.npm-global/bin");
+    let old = find_program_in(
+        "codemie",
+        &old_bin.to_string_lossy(),
+        &env.home,
+        &env.system_dirs,
+        &[],
+    )
+    .filter(|p| p.starts_with(&old_bin))
+    .expect("no codemie in ~/.npm-global/bin");
     let version = std::process::Command::new(&old)
         .arg("--version")
         .output()

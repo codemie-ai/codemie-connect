@@ -98,14 +98,33 @@ pub struct AiProfile {
 }
 
 /// A CodeMie CLI profile with the models it offers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CodemieProfile {
     pub name: String,
     pub provider: String,
-    /// Read only to decide where Ollama is (`ollama_is_local`); never leaves `ai::profiles`.
+    /// Read only to decide where Ollama is (`ollama_is_local`); never leaves
+    /// `ai::profiles`. Redacted from `Debug` below (a `baseUrl` can carry
+    /// `user:pass@host`).
     pub base_url: String,
     pub models: Vec<ModelChoice>,
     pub default_model: Option<String>,
+}
+
+impl std::fmt::Debug for CodemieProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let base_url = if self.base_url.is_empty() {
+            String::new()
+        } else {
+            "<redacted>".to_string()
+        };
+        f.debug_struct("CodemieProfile")
+            .field("name", &self.name)
+            .field("provider", &self.provider)
+            .field("base_url", &base_url)
+            .field("models", &self.models)
+            .field("default_model", &self.default_model)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,9 +280,6 @@ fn same_ollama_model(a: &str, b: &str) -> bool {
     tagged(a) == tagged(b)
 }
 
-/// Searched after the user's own dirs and `DetectEnv::extra_dirs` when looking for `ollama`.
-const OLLAMA_EXTRA_DIR: &str = "/Applications/Ollama.app/Contents/Resources";
-
 // ------------------------------------------------------------- command probing
 
 pub struct ProbeOutput {
@@ -294,6 +310,10 @@ impl CommandProbe for SystemProbe {
             for k in super::command::NATIVE_ENV_REMOVE {
                 child.env_remove(k);
             }
+            // Ruling 10: only a local Ollama is ever probed. `ollama list` itself has no
+            // "local only" flag — it asks whatever `OLLAMA_HOST` names — so an `OLLAMA_HOST`
+            // the app inherited (for example from a dev shell) must never reach the probe.
+            child.env_remove("OLLAMA_HOST");
             let child = child.output();
             match tokio::time::timeout(PROBE_TIMEOUT, child).await {
                 Err(_) => Err("timed out".to_string()),
@@ -314,6 +334,11 @@ impl CommandProbe for SystemProbe {
 pub struct DetectEnv {
     pub path_var: String,
     pub home: PathBuf,
+    /// The fixed OS dirs `find_program_in` always searches in production (Homebrew,
+    /// `/usr/local/bin`, the Ollama.app Resources dir — see `discover::system_dirs`).
+    /// Empty in tests, so a program actually installed there on the developer's own
+    /// Mac cannot leak into a "nothing installed" assertion.
+    pub system_dirs: Vec<PathBuf>,
     /// Searched after the user's own dirs (for example the bundled `codemie-claude` shim).
     pub extra_dirs: Vec<PathBuf>,
     pub config_path: PathBuf,
@@ -324,6 +349,7 @@ impl DetectEnv {
         Self {
             path_var: std::env::var("PATH").unwrap_or_default(),
             home: PathBuf::from(std::env::var("HOME").unwrap_or_default()),
+            system_dirs: super::discover::system_dirs(),
             extra_dirs,
             config_path: PathBuf::from(codemie_config::config_path()),
         }
@@ -353,7 +379,8 @@ async fn detect_native(probe: &dyn CommandProbe, env: &DetectEnv) -> AiProfile {
         ProfileState::NotInstalled,
     );
     p.models = native_models();
-    let Some(bin) = find_program_in("claude", &env.path_var, &env.home, &[]) else {
+    let Some(bin) = find_program_in("claude", &env.path_var, &env.home, &env.system_dirs, &[])
+    else {
         p.message = Some("Claude Code is not installed.".to_string());
         return p;
     };
@@ -412,8 +439,8 @@ enum OllamaProbe {
 
 /// Find `ollama` and run `list` once. Never runs when no local Ollama profile exists.
 async fn probe_ollama(probe: &dyn CommandProbe, env: &DetectEnv) -> OllamaProbe {
-    let extra = [PathBuf::from(OLLAMA_EXTRA_DIR)];
-    let Some(bin) = find_program_in("ollama", &env.path_var, &env.home, &extra) else {
+    let Some(bin) = find_program_in("ollama", &env.path_var, &env.home, &env.system_dirs, &[])
+    else {
         return OllamaProbe::NotInstalled;
     };
     match probe.run(&bin, &["list"]).await {
@@ -469,7 +496,13 @@ async fn detect_codemie(probe: &dyn CommandProbe, env: &DetectEnv) -> Vec<AiProf
     let kind_none = || ProfileKind::CodeMie {
         name: String::new(),
     };
-    let found = find_program_in("codemie-claude", &env.path_var, &env.home, &env.extra_dirs);
+    let found = find_program_in(
+        "codemie-claude",
+        &env.path_var,
+        &env.home,
+        &env.system_dirs,
+        &env.extra_dirs,
+    );
     if found.is_none() {
         let mut p = profile(
             "codemie",
@@ -694,8 +727,11 @@ mod tests {
             ids,
             vec!["claude-sonnet-5", "claude-haiku-4-5", "claude-opus-5"]
         );
+        // `base_url` ("https://x.test") is redacted from `Debug`, not just `apiKey`/`token`.
         let dump = format!("{list:?}");
         assert!(!dump.contains("SECRET"), "{dump}");
+        assert!(!dump.contains("x.test"), "{dump}");
+        assert!(dump.contains("<redacted>"), "{dump}");
     }
     struct Fake {
         calls: std::sync::atomic::AtomicUsize,
@@ -748,6 +784,9 @@ mod tests {
         DetectEnv {
             path_var: String::new(),
             home: h.to_path_buf(),
+            // Empty, unlike `DetectEnv::system`: a real `claude`/`codemie-claude`/`ollama`
+            // installed at a fixed OS dir on the developer's own Mac must never leak in.
+            system_dirs: vec![],
             extra_dirs: vec![],
             config_path: h.join("cfg.json"),
         }
@@ -868,6 +907,32 @@ mod tests {
         }
     }
 
+    /// Ruling 10: the probe never inherits a remote `OLLAMA_HOST` the app's own
+    /// environment set (for example a dev shell's). `SystemProbe` is the only thing
+    /// that ever actually runs a program; this test exercises it directly, against
+    /// a throwaway shell script, never against a real `ollama`/`claude`/`codemie`.
+    #[tokio::test]
+    async fn system_probe_never_passes_on_a_remote_ollama_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("print-ollama-host.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'OLLAMA_HOST=[%s]' \"$OLLAMA_HOST\"\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // SAFETY: this test alone reads `OLLAMA_HOST`; it restores the prior value
+        // (absent) when done. No other test in this crate touches it.
+        std::env::set_var("OLLAMA_HOST", "http://ollama.example.test:9999");
+        let out = SystemProbe.run(&script, &["list"]).await.unwrap();
+        std::env::remove_var("OLLAMA_HOST");
+
+        assert!(out.success);
+        assert_eq!(out.stdout, "OLLAMA_HOST=[]");
+    }
+
     #[tokio::test]
     async fn local_ollama_profile_states_and_models() {
         let home = tempfile::tempdir().unwrap();
@@ -879,28 +944,17 @@ mod tests {
         );
         let env = env_in(h);
 
-        // No ollama binary — unless this machine has a real one at a fixed search
-        // dir (`/opt/homebrew/bin`, `/usr/local/bin`, the Ollama.app Resources dir),
-        // which `find_program_in` always searches: the same environment leak
-        // documented for `detects_native_and_codemie_states_and_caches`. The fake
-        // probe never runs a real binary either way.
-        let real_ollama = find_program_in(
-            "ollama",
-            "",
-            Path::new("/nonexistent-empty-home-for-this-check"),
-            &[PathBuf::from(OLLAMA_EXTRA_DIR)],
-        )
-        .is_some();
-        if !real_ollama {
-            let fake = ollama_fake(None);
-            let got = detect_profiles(&fake, &env).await;
-            let ol = got.iter().find(|p| p.id == "codemie:ol").unwrap();
-            assert_eq!(ol.state, ProfileState::NotInstalled);
-            assert_eq!(
-                ol.message.as_deref(),
-                Some("Ollama is not installed on this Mac.")
-            );
-        }
+        // No ollama binary. `env.system_dirs` is empty (see `env_in`), so this is
+        // deterministic on every Mac, including one with a real Ollama installed at
+        // a fixed OS dir.
+        let fake = ollama_fake(None);
+        let got = detect_profiles(&fake, &env).await;
+        let ol = got.iter().find(|p| p.id == "codemie:ol").unwrap();
+        assert_eq!(ol.state, ProfileState::NotInstalled);
+        assert_eq!(
+            ol.message.as_deref(),
+            Some("Ollama is not installed on this Mac.")
+        );
 
         // ollama present, `list` fails.
         exe(&h.join(".local/bin/ollama"));
