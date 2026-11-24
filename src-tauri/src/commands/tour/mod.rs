@@ -37,7 +37,7 @@ pub use run::*;
 #[cfg(feature = "tour")]
 mod run {
     use super::{requested, TOUR};
-    use std::path::{Path, PathBuf};
+    use std::path::{Component, Path, PathBuf};
     use std::sync::OnceLock;
 
     /// What `CODEMIE_TOUR` asks for: every stop, the stops of some rollout steps, or named stops.
@@ -66,17 +66,22 @@ mod run {
         pub(super) status_smoke: bool,
         pub(super) plugin_smoke: bool,
         pub(super) debug: bool,
+        pub(super) home: Option<String>,
+        pub(super) cf_home: Option<String>,
     }
 
     impl TourEnv {
         fn from_env() -> Self {
             TourEnv {
-                tour: std::env::var(TOUR).ok(),
+                // Set but not UTF-8 reads as "", which `parse` refuses as an unknown value.
+                tour: requested().then(|| std::env::var(TOUR).unwrap_or_default()),
                 sha: std::env::var("CODEMIE_TOUR_SHA").ok(),
                 test_dir: std::env::var("CODEMIE_WORKSPACE_TEST_DIR").ok(),
                 status_smoke: std::env::var_os("CODEMIE_STATUS_SMOKE").is_some(),
                 plugin_smoke: std::env::var_os("CODEMIE_PLUGIN_SMOKE").is_some(),
                 debug: cfg!(debug_assertions),
+                home: std::env::var("HOME").ok(),
+                cf_home: std::env::var("CFFIXED_USER_HOME").ok(),
             }
         }
     }
@@ -107,6 +112,10 @@ mod run {
 
     /// Judges a launch's environment; each refusal is the sentence the tour exits 3 with.
     pub fn parse(env: &TourEnv) -> Result<TourRun, String> {
+        // A tour build has test-support compiled in; it never opens the user's own data folder.
+        if env.tour.is_none() {
+            return Err("This build runs only the tour; start it with `make tour`.".into());
+        }
         if !env.debug {
             return Err("CODEMIE_TOUR runs in a debug build made with `make tour`.".into());
         }
@@ -116,6 +125,22 @@ mod run {
             .map(PathBuf::from)
             .filter(|dir| dir.is_absolute())
             .ok_or("Set CODEMIE_WORKSPACE_TEST_DIR to a fresh folder; the tour never opens your own data.")?;
+        // `dirs` reads HOME and AppKit reads CFFIXED_USER_HOME: both must land in the test root
+        // (the test folder's parent), or logs and login items go to the user's own ~/Library.
+        let root = test_dir.parent().filter(|root| root.parent().is_some());
+        let home = env.home.as_deref().map(Path::new).filter(|home| {
+            home.is_absolute()
+                && env.cf_home.as_deref().map(Path::new) == Some(*home)
+                && !home.components().any(|c| c == Component::ParentDir)
+                && root.is_some_and(|root| home.starts_with(root) && *home != root)
+        });
+        if home.is_none() {
+            return Err(
+                "Set HOME and CFFIXED_USER_HOME to the same absolute folder inside the \
+                        tour's test root; the tour never writes to your own home."
+                    .into(),
+            );
+        }
         if env.status_smoke || env.plugin_smoke {
             return Err(
                 "Run the tour without CODEMIE_STATUS_SMOKE or CODEMIE_PLUGIN_SMOKE.".into(),
@@ -157,12 +182,9 @@ mod run {
 
     static RUN: OnceLock<TourRun> = OnceLock::new();
 
-    /// Starts the tour when `CODEMIE_TOUR` is set, before the app is built. A launch that can't
-    /// run one exits 3 with the reason on stderr.
+    /// Starts the tour before the app is built. A tour build runs nothing else: a launch that
+    /// can't run one, `CODEMIE_TOUR` unset included, exits 3 with the reason on stderr.
     pub fn start() -> Option<&'static TourRun> {
-        if !requested() {
-            return None;
-        }
         let run = parse(&TourEnv::from_env())
             .and_then(|run| fresh_folder(&run.test_dir).map(|()| run))
             .unwrap_or_else(|refusal| {
@@ -209,7 +231,76 @@ mod tests {
             status_smoke: false,
             plugin_smoke: false,
             debug: true,
+            home: Some("/tmp/connect-tour-1/home".into()),
+            cf_home: Some("/tmp/connect-tour-1/home".into()),
         }
+    }
+
+    #[test]
+    fn a_tour_build_runs_only_the_tour() {
+        let plain = TourEnv {
+            tour: None,
+            ..ok_env()
+        };
+        assert_eq!(
+            parse(&plain).unwrap_err(),
+            "This build runs only the tour; start it with `make tour`."
+        );
+    }
+
+    #[test]
+    fn parse_refuses_a_home_outside_the_test_root() {
+        let refusal = "Set HOME and CFFIXED_USER_HOME to the same absolute folder inside the \
+                       tour's test root; the tour never writes to your own home.";
+        // The launcher's layout (`<run>/home` beside `<run>/workspace`) and `home/` in the test
+        // folder are both inside the test root.
+        for home in [
+            "/tmp/connect-tour-1/home",
+            "/tmp/connect-tour-1/workspace/home",
+        ] {
+            let env = TourEnv {
+                home: Some(home.into()),
+                cf_home: Some(home.into()),
+                ..ok_env()
+            };
+            assert!(parse(&env).is_ok(), "{home}");
+        }
+        let cases: [(Option<&str>, Option<&str>); 9] = [
+            (None, Some("/tmp/connect-tour-1/home")),
+            (Some("/tmp/connect-tour-1/home"), None),
+            (Some(""), Some("")),
+            (Some("connect-tour-1/home"), Some("connect-tour-1/home")),
+            (Some("/Users/someone"), Some("/Users/someone")),
+            (Some("/tmp/connect-tour-1"), Some("/tmp/connect-tour-1")),
+            (
+                Some("/tmp/connect-tour-1/home"),
+                Some("/tmp/connect-tour-1/workspace/home"),
+            ),
+            (
+                Some("/tmp/connect-tour-1/../../Users/someone"),
+                Some("/tmp/connect-tour-1/../../Users/someone"),
+            ),
+            (
+                Some("/tmp/connect-tour-2/home"),
+                Some("/tmp/connect-tour-2/home"),
+            ),
+        ];
+        for (home, cf_home) in cases {
+            let env = TourEnv {
+                home: home.map(String::from),
+                cf_home: cf_home.map(String::from),
+                ..ok_env()
+            };
+            assert_eq!(parse(&env).unwrap_err(), refusal, "{home:?} {cf_home:?}");
+        }
+        // A test folder at the top of the disk has no test root to hold a home.
+        let top = TourEnv {
+            test_dir: Some("/workspace".into()),
+            home: Some("/home".into()),
+            cf_home: Some("/home".into()),
+            ..ok_env()
+        };
+        assert_eq!(parse(&top).unwrap_err(), refusal);
     }
 
     #[test]

@@ -86,7 +86,7 @@ rfd = { version = "0.17", default-features = false }
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
 objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSWindow", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSGraphics", "NSRunningApplication", "NSApplication", "NSScreen"] }
-objc2-web-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "WKWebView", "WKSnapshotConfiguration", "block2"] }
+objc2-web-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "objc2-app-kit", "WKWebView", "WKSnapshotConfiguration", "block2"] }
 block2 = { version = "0.6", optional = true }
 
 [target.'cfg(windows)'.dependencies]
