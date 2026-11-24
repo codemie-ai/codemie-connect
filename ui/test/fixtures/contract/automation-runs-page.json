@@ -16,6 +16,7 @@
           "draftId": "ai:m1",
           "durationMs": 4200,
           "fallbackFrom": null,
+          "fallbackReason": null,
           "model": "claude-sonnet-4-5",
           "output": {
             "items": [
@@ -84,6 +85,7 @@
             "message": "Claude is not signed in."
           },
           "fallbackFrom": null,
+          "fallbackReason": null,
           "model": null,
           "profile": "claude",
           "sources": [
@@ -133,6 +135,7 @@
           ],
           "durationMs": 3100,
           "fallbackFrom": null,
+          "fallbackReason": null,
           "handled": 0,
           "model": "claude-haiku-4-5",
           "output": {

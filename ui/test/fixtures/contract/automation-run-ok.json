@@ -12,6 +12,7 @@
     ],
     "durationMs": 3100,
     "fallbackFrom": null,
+    "fallbackReason": null,
     "handled": 0,
     "model": "claude-haiku-4-5",
     "output": {

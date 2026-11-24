@@ -242,7 +242,7 @@ impl Core {
             record.data["plugin"] = json!(run.plugin);
             record.data["tools"] = json!(run.tools);
         };
-        let (result, spec) = self
+        let (result, spec, _) = self
             .run_resolved_with(
                 &resolved,
                 spec,

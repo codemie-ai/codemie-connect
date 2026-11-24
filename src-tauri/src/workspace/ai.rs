@@ -62,6 +62,10 @@ pub struct Resolved {
     pub model: Option<String>,
     pub fallback: Option<AiProfile>,
     pub fell_back_from: Option<String>,
+    /// The chosen profile's own readiness class, kept only when the fallback was already in
+    /// use before the run started (`fell_back_from.is_some()`). A fixed class code, never a
+    /// message: a caller that wants to say why (the Run log) maps it to its own copy.
+    pub(super) pre_run_reason: Option<ErrorClass>,
 }
 
 impl Resolved {
@@ -148,6 +152,7 @@ fn resolve_chosen(c: Chosen, profiles: &[AiProfile]) -> std::result::Result<Reso
                     model: c.model,
                     fallback,
                     fell_back_from: None,
+                    pre_run_reason: None,
                 })
             }
             Some(e) => e,
@@ -158,12 +163,14 @@ fn resolve_chosen(c: Chosen, profiles: &[AiProfile]) -> std::result::Result<Reso
             e
         }
     };
+    let class = error.class;
     match fallback.filter(|f| f.state == ProfileState::Ready) {
         Some(f) => Ok(Resolved {
             profile: f,
             model: None,
             fallback: None,
             fell_back_from: Some(id),
+            pre_run_reason: Some(class),
         }),
         None => Err(error),
     }
@@ -443,13 +450,19 @@ impl Core {
         cancel: CancellationToken,
         on_event: Arc<dyn Fn(RunEvent) + Send + Sync>,
         ref_id: Option<&str>,
-    ) -> (std::result::Result<RunOutcome, AiError>, RunSpec) {
+    ) -> (
+        std::result::Result<RunOutcome, AiError>,
+        RunSpec,
+        Option<ErrorClass>,
+    ) {
         self.run_resolved_with(r, spec, cancel, on_event, ref_id, &|_| {})
             .await
     }
 
     /// [`Self::run_resolved`] whose own ledger entry is completed by `decorate` (a plugin's
-    /// name and tools).
+    /// name and tools). The third answer is the class of the first attempt's own failure, kept
+    /// only when this run retried on the fallback after it (not when the fallback was already
+    /// in use before the run started — that's [`Resolved::pre_run_reason`]).
     pub(super) async fn run_resolved_with(
         &self,
         r: &Resolved,
@@ -458,7 +471,11 @@ impl Core {
         on_event: Arc<dyn Fn(RunEvent) + Send + Sync>,
         ref_id: Option<&str>,
         decorate: &(dyn Fn(&mut Record) + Sync),
-    ) -> (std::result::Result<RunOutcome, AiError>, RunSpec) {
+    ) -> (
+        std::result::Result<RunOutcome, AiError>,
+        RunSpec,
+        Option<ErrorClass>,
+    ) {
         let events = |f: &Arc<dyn Fn(RunEvent) + Send + Sync>| -> Box<dyn Fn(RunEvent) + Send> {
             let f = f.clone();
             Box::new(move |e| f(e))
@@ -479,9 +496,10 @@ impl Core {
             {
                 f
             }
-            _ => return (first, spec),
+            _ => return (first, spec, None),
         };
         let error = first.as_ref().err();
+        let reason = error.map(|e| e.class);
         let spent = error.and_then(|e| e.spent.as_deref());
         let mut record = self.ai_run_record(&spec, spent, error, started.elapsed(), ref_id);
         record.data["fallbackFrom"] = json!(r.fallback_from(&spec));
@@ -501,7 +519,7 @@ impl Core {
             .runner
             .run(retry.clone(), fallback, cancel, events(&on_event))
             .await;
-        (second, retry)
+        (second, retry, reason)
     }
 
     /// Appends one `ai_run` record. Never fails the caller: a ledger problem is logged

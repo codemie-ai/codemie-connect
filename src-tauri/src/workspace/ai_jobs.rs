@@ -563,14 +563,17 @@ impl Core {
             .run_claude_reported(run, spec, resolved, ref_id, parse)
             .await
         {
-            (Some(outcome), Ok(answer), used) => Ok((outcome, answer, used)),
-            (_, Err(e), _) => Err(e.into()),
-            (None, Ok(_), _) => Err(AiError::new(ErrorClass::Failed).into()),
+            (Some(outcome), Ok(answer), used, _) => Ok((outcome, answer, used)),
+            (_, Err(e), _, _) => Err(e.into()),
+            (None, Ok(_), _, _) => Err(AiError::new(ErrorClass::Failed).into()),
         }
     }
 
     /// [`Self::run_claude`] that also gives back what Claude reported (model, duration, cost)
-    /// when its answer could not be used, so a failed run can still show what it cost.
+    /// when its answer could not be used, so a failed run can still show what it cost, and the
+    /// class of why the chosen profile didn't run this time, when it fell back to a second one
+    /// (either because it wasn't ready, or because this attempt on it failed) — a fixed code,
+    /// never a message, for a caller that wants to say why (the automations Run log).
     pub(super) async fn run_claude_reported<T>(
         &self,
         run: &StartedRun<'_>,
@@ -578,9 +581,14 @@ impl Core {
         resolved: &Resolved,
         ref_id: &str,
         parse: impl Fn(&Value) -> Option<T>,
-    ) -> (Option<RunOutcome>, std::result::Result<T, AiError>, RunSpec) {
+    ) -> (
+        Option<RunOutcome>,
+        std::result::Result<T, AiError>,
+        RunSpec,
+        Option<ErrorClass>,
+    ) {
         if run.cancel.is_cancelled() {
-            return (None, Err(AiError::new(ErrorClass::Cancelled)), spec);
+            return (None, Err(AiError::new(ErrorClass::Cancelled)), spec, None);
         }
         let ledger = LedgerEntry::open(self, spec.clone(), ref_id, resolved.fell_back_from.clone());
         let (models, mut reported) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -595,11 +603,11 @@ impl Core {
             });
         let running = self.run_resolved(resolved, spec, run.cancel.clone(), on_event, Some(ref_id));
         tokio::pin!(running);
-        let (result, used) = loop {
+        let (result, used, post_run_reason) = loop {
             tokio::select! {
                 biased;
                 Some(model) = reported.recv() => self.note_run_model(&run.job_id, &model),
-                result = &mut running => break result,
+                done = &mut running => break done,
             }
         };
         let answer = match &result {
@@ -621,7 +629,8 @@ impl Core {
             reported.as_ref(),
             answer.as_ref().err(),
         );
-        (reported, answer, used)
+        let reason = resolved.pre_run_reason.or(post_run_reason);
+        (reported, answer, used, reason)
     }
 
     /// Stop for a running AI job (`job_cancel`); nothing happens for other jobs.

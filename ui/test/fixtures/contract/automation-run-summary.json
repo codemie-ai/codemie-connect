@@ -10,6 +10,7 @@
     ],
     "durationMs": 0,
     "fallbackFrom": null,
+    "fallbackReason": null,
     "meetingId": "m1",
     "model": null,
     "output": {

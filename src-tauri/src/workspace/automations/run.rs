@@ -47,6 +47,10 @@ struct RunLog {
     /// The row's own profile, set once the run fell back to a second one (DESIGN §3
     /// "Automations").
     fallback_from: Option<String>,
+    /// The fixed class code of why that profile didn't run this time (its own readiness, or
+    /// why its attempt failed); `None` when there was no fallback. Never a message: the Run
+    /// log maps the code to its own copy.
+    fallback_reason: Option<ErrorClass>,
 }
 
 impl RunLog {
@@ -64,6 +68,7 @@ impl RunLog {
             cost_usd: None,
             sources: Vec::new(),
             fallback_from: None,
+            fallback_reason: None,
         }
     }
 
@@ -83,6 +88,7 @@ impl RunLog {
             "delivered": [],
             "connectionId": self.connection_id,
             "fallbackFrom": self.fallback_from,
+            "fallbackReason": self.fallback_reason.map(wire_name),
         });
         if let Some(fields) = fields.as_object() {
             for (key, value) in fields {
@@ -522,7 +528,7 @@ impl Core {
             staging_root: self.paths.ensure_staging()?,
             folder: None,
         };
-        let (reported, answer, used) = self
+        let (reported, answer, used, fallback_reason) = self
             .run_claude_reported(&started, spec, &resolved, &log.id, |answer| {
                 prompts::parse_automation(
                     answer,
@@ -533,6 +539,7 @@ impl Core {
             })
             .await;
         log.fallback_from = resolved.fallback_from(&used);
+        log.fallback_reason = fallback_reason;
         let ran_on = resolved.profile_of(&used).clone();
         log.profile = Some(ran_on.id.clone());
         if let Some(o) = &reported {
@@ -770,6 +777,7 @@ mod tests {
     use super::{Pin, SUMMARY_RUN_NOW};
     use crate::ai::command::RunSpec;
     use crate::ai::fake::{FakeRunner, Gate};
+    use crate::ai::profiles::ProfileState;
     use crate::ai::stream::{AiError, ErrorClass, RunOutcome, Usage};
     use crate::workspace::ai::tests::{mutation, ready};
     use crate::workspace::ai_jobs::FakeGraph;
@@ -1378,6 +1386,52 @@ mod tests {
         assert_eq!(run.data["status"], "ok");
         assert_eq!(run.data["profile"], "codemie:prod", "the fallback that ran");
         assert_eq!(run.data["fallbackFrom"], "claude");
+        assert_eq!(
+            run.data["fallbackReason"], "needs_login",
+            "the class the first attempt failed with, not a message"
+        );
+    }
+
+    /// The chosen profile isn't ready before the run even starts: the fallback runs once, and
+    /// the run record says why in the same fixed-code shape as a post-run fallback (DESIGN §3
+    /// "Automations").
+    #[tokio::test]
+    async fn a_pre_run_fallback_says_so_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Arc::new(FakeRunner::new(vec![Ok(brief_answer())]));
+        let mut profiles = ready();
+        profiles[0].state = ProfileState::NeedsLogin; // "claude" is not signed in
+        let core = test_core(dir.path(), fake.clone(), profiles);
+        seed(&core);
+        {
+            let mut r = core.repo().unwrap();
+            let mut s = r.settings().unwrap();
+            s.ai.default_fallback = Some("codemie:prod".into());
+            r.settings_update(&s).unwrap();
+        }
+        put(
+            &core,
+            mail(
+                "m1",
+                BASE,
+                "Ann Lee",
+                "ann@example.test",
+                "Can you send the Q3 numbers?",
+            ),
+        );
+        save(&core, morning_brief(json!({"needsReply": true}))).await;
+        run_now(&core, "auto-brief").await;
+        run_next(&core).await;
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "no attempt on the unready profile at all");
+        assert_eq!(calls[0].profile_id, "codemie:prod");
+
+        let run = &runs(&core)[0];
+        assert_eq!(run.data["status"], "ok");
+        assert_eq!(run.data["profile"], "codemie:prod");
+        assert_eq!(run.data["fallbackFrom"], "claude");
+        assert_eq!(run.data["fallbackReason"], "needs_login");
     }
 
     fn reply_automation() -> Value {

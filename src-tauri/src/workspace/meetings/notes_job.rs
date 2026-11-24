@@ -426,7 +426,7 @@ impl Core {
             folder: None,
         };
         let lines = segments.len();
-        let (reported, answer, used) = self
+        let (reported, answer, used, _) = self
             .run_claude_reported(&run, spec, &resolved, id, |v| notes::parse_notes(v, lines))
             .await;
         let requested = used.model.clone();

@@ -389,15 +389,31 @@ function madeHtml(run, s) {
   return parts.length ? `<div class="ws-run-made-block">${parts.join('')}</div>` : '';
 }
 
-/** "Ran on Claude Code because CodeMie · prod Claude is not signed in." when the run fell back
- *  to a second profile (DESIGN §3 "Automations"); '' otherwise. */
+/** Fixed copy for a run record's stored `fallbackReason` class (DESIGN §3 "Automations"): a
+ *  class the run, or the readiness check before it, reported — never a message, so nothing a
+ *  provider said and no secret ever reaches this text. */
+const FALLBACK_REASON = {
+  needs_login: 'wasn’t signed in',
+  not_installed: 'wasn’t installed',
+  too_old: 'needed an update',
+  not_configured: 'wasn’t fully set up',
+  rate_limited: 'reached its usage limit',
+  failed: 'couldn’t run',
+};
+
+/** "Ran on Claude Code because CodeMie · prod wasn’t signed in." when the run fell back to a
+ *  second profile (DESIGN §3 "Automations"); '' otherwise. The reason is the stored class's
+ *  fixed copy; an older record with no stored class falls back to the first profile's current
+ *  detected message instead, which can go stale once that profile's state has since changed. */
 function fallbackLine(d, ai) {
   if (!d.fallbackFrom) return '';
   const profiles = ai?.profiles || [];
-  const fallback = claudeLabel(d.profile, profiles) || d.profile;
-  const chosen = claudeLabel(d.fallbackFrom, profiles) || d.fallbackFrom;
-  const reason = profiles.find(p => p.id === d.fallbackFrom)?.message || 'could not run';
-  return `<p class="ws-inline-note">${icon('info')}<span>${e(`Ran on ${fallback} because ${chosen} ${reason}`)}</span></p>`;
+  const fellBackTo = claudeLabel(d.profile, profiles) || d.profile;
+  const fellBackFrom = claudeLabel(d.fallbackFrom, profiles) || d.fallbackFrom;
+  const reason = FALLBACK_REASON[d.fallbackReason]
+    || profiles.find(p => p.id === d.fallbackFrom)?.message?.replace(/\.$/, '')
+    || 'could not run';
+  return `<p class="ws-inline-note">${icon('info')}<span>${e(`Ran on ${fellBackTo} because ${fellBackFrom} ${reason}.`)}</span></p>`;
 }
 
 function runDetail(run, s, ai) {

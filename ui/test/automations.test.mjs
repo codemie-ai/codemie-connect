@@ -620,14 +620,19 @@ test('use template records the template and the editor names its row', () => {
   assert.match(html, /<option value="" selected>Default · Inbox triage \(Claude Code\)<\/option>/);
 });
 
-test('run detail names a fallback run', () => {
+test('run detail names a fallback run, from the stored reason, not the profile’s current state', () => {
   const { runOk } = automationContract();
   const s = snapshot();
-  const fellBack = { ...runOk, data: { ...runOk.data, fallbackFrom: 'claude', profile: 'codemie:prod' } };
+  // "claude" is Ready right now in AI's fixture, but this run stored why it wasn't when it ran.
+  assert.equal(AI.profiles.find(p => p.id === 'claude').state, 'ready');
+  const fellBack = { ...runOk, data: { ...runOk.data, fallbackFrom: 'claude', profile: 'codemie:prod', fallbackReason: 'needs_login' } };
   const html = runLog([fellBack], { s, expanded: ['run-1'], ai: AI });
-  assert.match(html, /Ran on CodeMie · prod because Claude Code/);
+  assert.match(html, /Ran on CodeMie · prod because Claude Code wasn’t signed in\./);
   // No fallback: no such line.
   assert.doesNotMatch(runLog([runOk], { s, expanded: ['run-1'], ai: AI }), /Ran on/);
+  // An older record with no stored reason falls back to the chosen profile's live message.
+  const noCode = { ...runOk, data: { ...runOk.data, fallbackFrom: 'claude', profile: 'codemie:prod' } };
+  assert.match(runLog([noCode], { s, expanded: ['run-1'], ai: AI }), /Ran on CodeMie · prod because Claude Code could not run\./);
 });
 
 test('the run detail says what tasks were made and links them', () => {
